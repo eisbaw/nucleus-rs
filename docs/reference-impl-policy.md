@@ -171,9 +171,9 @@ the e2e harness exists, the drift check costs almost nothing to add.
 ## 8. Follow-up tasks tracked elsewhere
 
 - CI hook to verify `reference.bin` freshness on PRs touching
-  `*.algo.nuc` (lands at M2). Filed as TASK-0061.
+  `*.algo.nuc` (lands at M2). Filed as TASK-0076.
 - A `just regen-references` recipe (or `nucleus-e2e --regen-refs`
   flag) that re-runs every example's reference command in one shot.
-  Filed as TASK-0062.
-- Project-wide floating-point determinism policy. Filed as TASK-0060
-  per task brief.
+  Filed as TASK-0077.
+- Project-wide floating-point determinism policy: TASK-0060 (per
+  task brief — not yet filed at time of writing).
