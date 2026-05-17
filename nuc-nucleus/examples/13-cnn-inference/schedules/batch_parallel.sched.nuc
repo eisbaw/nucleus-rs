@@ -1,0 +1,29 @@
+// Batch-parallel schedule: replicate the whole network across N workers,
+// partition the batch loop so each worker processes B/N samples.
+//
+// Demonstrates the "embarrassingly parallel" pattern: every layer runs
+// on every worker; only input/output need to cross worker boundaries.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_input    on host;
+    place save_output   on host;
+
+    // All compute layers placed on every compute worker. The compiler
+    // sees the same kernel mapped to {w0,w1,w2,w3} and, combined with
+    // `partition=workers` on the batch loop below, hands each worker
+    // a disjoint slice of the batch.
+    place conv_block_1  on { w0, w1, w2, w3 };
+    place conv_block_2  on { w0, w1, w2, w3 };
+    place classifier    on { w0, w1, w2, w3 };
+
+    // Split the batch dimension evenly across the compute workers.
+    loop n : partition=workers;
+
+    // host -> each compute worker: send its slice of the input batch.
+    transfer input  : sync;
+
+    // each compute worker -> host: send its slice of the output.
+    transfer output : sync;
+}

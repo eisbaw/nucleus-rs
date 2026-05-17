@@ -1,0 +1,17 @@
+// Naive schedule: single worker, sequential batch.
+//
+// Smoke test. Same output as the reference. Required for any backend
+// to be considered correct on this example.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place save_output   on host;
+    place conv_block_1  on host;
+    place conv_block_2  on host;
+    place classifier    on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

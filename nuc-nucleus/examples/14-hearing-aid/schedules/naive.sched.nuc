@@ -1,0 +1,15 @@
+// Naive schedule: single host worker, sequential frames.
+//
+// Reference smoke test. Used on tier-1 backends to establish the
+// reference output; later schedules must produce bit-identical output.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place fe_capture  on host;
+    place rf_receive  on host;
+    place mix2        on host;
+    place denoise     on host;
+    place fe_emit     on host;
+    place rf_transmit on host;
+}

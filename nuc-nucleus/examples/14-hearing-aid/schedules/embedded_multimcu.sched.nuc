@@ -1,0 +1,106 @@
+// Embedded multi-MCU schedule: three MCUs of different classes
+// representing the three subsystems of a real hearing aid.
+//
+// This is the schedule M11 needs to compile and validate in Renode
+// co-simulation (FE_MCU + DSP_MCU + RF_MCU connected over SPI).
+//
+// What's new compared to earlier examples:
+//   - Three worker CLASSES, not just three workers. The classes
+//     declare what each MCU is good at: FE has analog IO and small
+//     memory, DSP has SIMD + TCM, RF has the radio.
+//   - Memory regions are explicit. The frame buffers live in shared
+//     SRAM accessible to both FE and DSP; FFT scratch lives in DSP's
+//     tightly-coupled memory.
+//   - Async transfers with buffering so producer MCUs don't stall
+//     waiting for consumer MCUs.
+
+schedule for "../prog.algo.nuc" {
+
+    // ---------- worker topology ----------
+
+    worker_class fe_core {
+        simd   = none;
+        memory = shared;
+    };
+
+    worker_class dsp_core {
+        simd   = neon128;
+        memory = tightly_coupled[64KB] + shared;
+    };
+
+    worker_class rf_core {
+        simd   = none;
+        memory = shared;
+    };
+
+    memory_region sram_shared {
+        size           = 128KB;
+        accessible_by  = { fe_core, dsp_core, rf_core };
+    };
+
+    memory_region dsp_tcm {
+        size           = 64KB;
+        accessible_by  = { dsp_core };
+        per_worker     = true;
+    };
+
+    workers = {
+        fe  : fe_core,
+        dsp : dsp_core,
+        rf  : rf_core,
+    };
+
+    // ---------- data placement ----------
+
+    // Audio frame buffers must be reachable by both producer and
+    // consumer MCUs over SPI, so they live in shared SRAM.
+    place_data mic_in  in sram_shared;
+    place_data bt_in   in sram_shared;
+    place_data spk_out in sram_shared;
+    place_data bt_out  in sram_shared;
+
+    // ---------- kernel placement ----------
+
+    place fe_capture  on fe;
+    place fe_emit     on fe;
+
+    place rf_receive  on rf;
+    place rf_transmit on rf;
+
+    place mix2        on dsp;
+    place denoise     on dsp;     // both denoise firings (outbound and inbound) run on dsp
+
+    // ---------- pipelining ----------
+
+    // Three frames in flight so the three MCUs stay busy. This makes
+    // FE capture frame N+2 while DSP processes frame N+1 and RF
+    // transmits frame N.
+    loop frame : pipeline=3;
+
+    // ---------- IO semantics ----------
+
+    // Mic and BT data into DSP: async with 2-deep buffering so FE/RF
+    // can produce the next frame while DSP works on the current one.
+    transfer mic_in  : async, buffer=2, notify=event;
+    transfer bt_in   : async, buffer=2, notify=event;
+
+    // DSP output back to FE (speaker) and RF (Bluetooth tx): same
+    // async pattern in the other direction.
+    transfer spk_out : async, buffer=2, notify=event;
+    transfer bt_out  : async, buffer=2, notify=event;
+
+    // ---------- runtime assertions (checkable, not prescriptive) ----------
+
+    // A real hearing aid needs <10 ms ear-to-ear. v2 cannot SCHEDULE
+    // to meet this constraint (no cost model). It can MEASURE
+    // whether the actual scheduled execution meets it. If this
+    // assertion fires during tier-1 differential testing or Renode
+    // simulation, the schedule needs revision (more pipeline depth,
+    // larger transfer buffer, kernel moved to a different MCU class,
+    // etc).
+    //
+    // Default action is panic — loud failure during testing. For a
+    // deployed product one would change to on_violation=log so an
+    // occasional missed deadline doesn't brick the device.
+    check frame : latency_max = 10ms;
+}

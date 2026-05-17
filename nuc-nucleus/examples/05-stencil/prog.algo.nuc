@@ -1,0 +1,49 @@
+// 3x3 box blur.
+//
+// Reads an image, applies a 3x3 averaging stencil, writes the result.
+// This file says WHAT to compute. It says nothing about workers, blocking,
+// vectorisation, buffer sizes, or IO semantics — those belong in a schedule.
+
+const H : usize = 600;
+const W : usize = 800;
+
+data img_in  : f32[H][W];
+data img_out : f32[H][W];
+
+
+// Side-effecting kernels: read/write the filesystem. Ordering with respect
+// to other kernels in the same BB is preserved; bodies are never duplicated.
+kernel load_image() -> out  where !effectful {{
+    ${out} = nuc_rt::read_f32_image("input.bin", H, W);
+}};
+
+kernel save_image(img)  where !effectful {{
+    nuc_rt::write_f32_image("output.bin", &${img});
+}};
+
+
+// Pure compute kernel: reorderable, deduplicable, eliminable. The compiler
+// may move it across workers as the schedule directs.
+kernel blur3(a, b, c, d, e, f, g, h, i) -> out  where pure {{
+    ${out} = (${a} + ${b} + ${c}
+           +  ${d} + ${e} + ${f}
+           +  ${g} + ${h} + ${i}) * (1.0 / 9.0);
+}};
+
+
+// Dataflow. The for-loop iteration variables (y, x) are the handles a
+// schedule will reference. The kernel's access pattern on img_in is what
+// the compiler reads to infer halo regions when distributing.
+
+img_in <-- load_image();
+
+for y : 1 .. H-1 {
+for x : 1 .. W-1 {
+    img_out[y][x] <-- blur3(
+        img_in[y-1][x-1], img_in[y-1][x], img_in[y-1][x+1],
+        img_in[y  ][x-1], img_in[y  ][x], img_in[y  ][x+1],
+        img_in[y+1][x-1], img_in[y+1][x], img_in[y+1][x+1]
+    );
+}}
+
+save_image(img_out);

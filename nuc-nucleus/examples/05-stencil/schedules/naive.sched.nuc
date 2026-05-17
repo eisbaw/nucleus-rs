@@ -1,0 +1,16 @@
+// Naive schedule: one worker, no decomposition.
+//
+// This is the smoke-test schedule. Every algorithm must produce correct
+// output under naive.sched.nuc on every backend before any other schedule
+// is allowed to claim correctness.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

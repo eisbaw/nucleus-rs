@@ -1,0 +1,56 @@
+// Small CNN inference — forward pass only.
+//
+// Layer-wise dataflow over a batch of images. Each "conv_block" hides
+// conv + relu + maxpool inside its Rust body. The algorithm sees four
+// dataflow stages: load, two conv blocks, classifier, save.
+//
+// What this example demonstrates:
+//   - Dataflow of large kernels (whole-layer granularity).
+//   - Batch dimension as an explicit loop, so a schedule can partition
+//     it across workers (batch-parallel) or pipeline-stage it
+//     (pipeline-parallel).
+//   - The same algorithm under three radically different decompositions
+//     (one worker, batch split, layer split).
+//
+// What this example does NOT demonstrate:
+//   - Training. No backward pass, no gradient sync, no optimisers.
+//     Backward pass needs collective semantics v2 deliberately omits.
+
+const B  : usize = 16;     // batch size
+const H  : usize = 28;     // input height
+const W  : usize = 28;     // input width
+const C0 : usize = 1;      // input channels (greyscale MNIST-like)
+const C1 : usize = 8;      // channels after conv_block_1
+const C2 : usize = 16;     // channels after conv_block_2
+const N_CLASSES : usize = 10;
+
+// Per-sample tensors. The batch dimension is exposed at the algorithm
+// level so a schedule can partition it.
+data input  : f32[B][C0][H  ][W  ];
+data feat1  : f32[B][C1][H/2][W/2];
+data feat2  : f32[B][C2][H/4][W/4];
+data output : f32[B][N_CLASSES];
+
+
+kernel load_input   : ()                     -> f32[B][C0][H][W]                effectful;
+kernel save_output  : (f32[B][N_CLASSES])    -> ()                              effectful;
+
+// Each conv_block is (conv -> relu -> 2x2 maxpool) on a single sample.
+// Implementation lives in kernels.rs; Nucleus only sees the contract.
+kernel conv_block_1 : (f32[C0][H  ][W  ])    -> f32[C1][H/2][W/2]               pure;
+kernel conv_block_2 : (f32[C1][H/2][W/2])    -> f32[C2][H/4][W/4]               pure;
+kernel classifier   : (f32[C2][H/4][W/4])    -> f32[N_CLASSES]                  pure;
+
+
+input <-- load_input();
+
+// Per-sample dataflow inside a batch loop. The schedule decides whether
+// `n` is partitioned (batch-parallel), pipelined (pipeline-parallel),
+// or just iterated sequentially (naive).
+for n : 0 .. B {
+    feat1[n]  <-- conv_block_1(input[n]);
+    feat2[n]  <-- conv_block_2(feat1[n]);
+    output[n] <-- classifier(feat2[n]);
+}
+
+save_output(output);

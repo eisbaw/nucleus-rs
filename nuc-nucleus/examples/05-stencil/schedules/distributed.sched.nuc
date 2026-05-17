@@ -1,0 +1,34 @@
+// Distributed schedule: 4 compute workers, async input streaming, sync output.
+//
+// Same algorithm as naive.sched.nuc, different mapping. The differential
+// test in CI must show this produces bit-identical output to the naive
+// schedule for the same input.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on { w0, w1, w2, w3 };
+
+    // Outer loop partitioned by row-bands across the four compute workers.
+    // The compiler reads blur3's access pattern on img_in in the algorithm
+    // (offsets of -1, 0, +1 in both dimensions) and infers a halo of 1
+    // around each worker's row-band automatically. Halo is not part of
+    // the schedule surface.
+    loop y : partition=rows;
+
+    // Inner loop: SIMD-friendly, with the reuse pattern that was the
+    // unshipped piece in the 2013 thesis (slide a 3-wide window in x,
+    // recycle 2 of 3 reads each step).
+    loop x : block=64, vectorize=8, reuse;
+
+    // host -> workers: pipelined async streaming, two row-bands in flight.
+    // Event-driven notification (the backend must support it; a sync-only
+    // backend rejects this schedule at compile time, by design).
+    transfer img_in  : async, buffer=2, notify=event;
+
+    // workers -> host: simple blocking write-back. Host waits for all
+    // workers to finish before save_image runs.
+    transfer img_out : sync;
+}

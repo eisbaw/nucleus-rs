@@ -1,0 +1,34 @@
+// Pipeline-parallel schedule: each layer on its own worker, samples
+// flow through the pipeline. Different decomposition pattern from
+// batch_parallel — same algorithm, same output.
+//
+// Demonstrates that the pipelining + buffering machinery delivers
+// stage-parallelism without algorithm changes.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w_stage1, w_stage2, w_stage3 };
+
+    place load_input    on host;
+    place save_output   on host;
+
+    // One layer per worker. The batch loop now drives the pipeline:
+    // sample n is in conv_block_1 on w_stage1 while sample n-1 is in
+    // conv_block_2 on w_stage2 and sample n-2 is in classifier on
+    // w_stage3.
+    place conv_block_1  on w_stage1;
+    place conv_block_2  on w_stage2;
+    place classifier    on w_stage3;
+
+    // Three samples in flight, one per pipeline stage.
+    loop n : pipeline=3;
+
+    // Each inter-stage edge is an async streaming channel. Buffer=3
+    // matches the pipeline depth so a fast producer doesn't block on
+    // a slow consumer within steady state.
+    transfer input  : async, buffer=3, notify=event;
+    transfer feat1  : async, buffer=3, notify=event;
+    transfer feat2  : async, buffer=3, notify=event;
+
+    // Final hop back to host can be simple.
+    transfer output : sync;
+}
