@@ -5,3 +5,7 @@ __pycache__/
 *~
 .idea/
 .vscode/
+
+# Rust / Cargo build artefacts.
+target/
+Cargo.lock.bak

@@ -1,0 +1,20 @@
+# Nucleus v2 Cargo workspace. See nuc-nucleus/PRD.md §12.2.
+#
+# Workspace members are the registry of which crates exist. There is no
+# in-code plugin discovery. Adding a backend at M1+ means adding a crate
+# directory plus a sibling capabilities.toml plus a line below.
+#
+# MSRV is NOT pinned here. The single source of truth is flake.nix
+# (PRD §12.1 / §13). See TASK-0001 notes.
+
+[workspace]
+resolver = "2"
+members = [
+    "compiler",
+    "e2e",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
