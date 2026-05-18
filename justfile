@@ -43,6 +43,16 @@ e2e:
 determinism-check:
     cd nucleus && cargo run --release --bin nucleus-e2e -- --check-determinism
 
+# Prove the determinism check actually BITES (TASK-0145 / TASK-0033
+# AC#4 negative arm). Builds the driver with the
+# `nondeterministic-test` feature so slot declarations emit in
+# process-randomised HashMap order; the two determinism builds then
+# differ. SUCCEEDS iff `--check-determinism` correctly FAILS (non-zero
+# exit, naming the offending file). A green `determinism-check` is
+# only meaningful because this one is too.
+determinism-check-negative:
+    cd nucleus && if NUC_NONDET_TEST=1 cargo run --release --bin nucleus-e2e -- --check-determinism; then echo "FAIL: determinism check did NOT detect injected nondeterminism"; exit 1; else echo "OK: determinism check correctly bit on injected nondeterminism"; fi
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

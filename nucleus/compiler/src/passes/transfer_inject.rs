@@ -804,9 +804,9 @@ fn produced_data_set(node: &ACFGNode, acc: &mut BTreeSet<DataId>) {
 fn contains_block_inner(node: &ACFGNode, block_inner: &BTreeSet<IterVar>) -> bool {
     match node {
         ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => false,
-        ACFGNode::Repeat {
-            iter_var, body, ..
-        } => block_inner.contains(iter_var) || contains_block_inner(body, block_inner),
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            block_inner.contains(iter_var) || contains_block_inner(body, block_inner)
+        }
         ACFGNode::Sequence(children) => children
             .iter()
             .any(|c| contains_block_inner(c, block_inner)),
@@ -821,9 +821,7 @@ fn count_producers(node: &ACFGNode, data: DataId) -> usize {
         ACFGNode::Operation(op) => usize::from(output_data(op) == Some(data)),
         ACFGNode::Sync(_) | ACFGNode::Xfer(_) => 0,
         ACFGNode::Repeat { body, .. } => count_producers(body, data),
-        ACFGNode::Sequence(children) => {
-            children.iter().map(|c| count_producers(c, data)).sum()
-        }
+        ACFGNode::Sequence(children) => children.iter().map(|c| count_producers(c, data)).sum(),
     }
 }
 
@@ -910,8 +908,7 @@ fn hoist_invariant_waits(
                         slots.push((Slot::Wait(x), Vec::new()));
                     }
                     other => {
-                        let (c2, esc) =
-                            hoist_invariant_waits(other, enclosing_tile, block_inner);
+                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile, block_inner);
                         slots.push((Slot::Node(c2), esc));
                     }
                 }
@@ -1135,10 +1132,7 @@ fn splice_after_repeat(node: ACFGNode, cut_iv: IterVar, push: &XferPlaceholder) 
     }
 }
 
-fn collect_push_seqs(
-    node: &ACFGNode,
-    seqs: &mut BTreeSet<u64>,
-) {
+fn collect_push_seqs(node: &ACFGNode, seqs: &mut BTreeSet<u64>) {
     match node {
         ACFGNode::Xfer(x) if x.role == XferRole::Push => {
             seqs.insert(x.seq.0);
@@ -1156,11 +1150,7 @@ fn collect_push_seqs(
 /// Collect Waits eligible for whole-symbol Push finalisation. Waits
 /// inside a block-governed Repeat nest are excluded (TASK-0151): their
 /// per-tile Push is TASK-0149's job, not this pass's.
-fn collect_waits(
-    node: &ACFGNode,
-    block_inner: &BTreeSet<IterVar>,
-    out: &mut Vec<XferPlaceholder>,
-) {
+fn collect_waits(node: &ACFGNode, block_inner: &BTreeSet<IterVar>, out: &mut Vec<XferPlaceholder>) {
     match node {
         ACFGNode::Xfer(x) if x.role == XferRole::Wait => out.push(x.clone()),
         ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}

@@ -433,7 +433,38 @@ impl<'a> Plan<'a> {
         writeln!(out, "fn main() {{").ok();
 
         // ---- Allocate slots and barriers. ----
-        for (data_id, slot_id) in &self.slot_ids {
+        //
+        // Iteration order of `slot_ids` IS observable in the emitted
+        // source (one `let slot_N` line per entry). `slot_ids` is a
+        // BTreeMap, so the default order is sorted and deterministic —
+        // that is what makes `just determinism-check` green (PRD §1 /
+        // §10.1: same source + backend = byte-identical output).
+        //
+        // TASK-0145: when the `NUC_NONDET_TEST` env var is set we copy
+        // the entries into a `HashMap` and iterate THAT. std's HashMap
+        // uses a per-process random seed, so the order varies run to
+        // run — two `nucleus build` invocations emit byte-different
+        // `main.rs`, and `just determinism-check-negative` then reports
+        // a non-zero exit pointing at the offending file. This proves
+        // the byte-identical check actually bites (TASK-0033 AC#4's
+        // negative arm).
+        //
+        // A RUNTIME env gate, not a `#[cfg(feature)]`: the harness
+        // drives codegen by spawning `cargo run --bin nucleus` *inside*
+        // its own `cargo run`, and a nested `cargo --features` does not
+        // reliably rebuild the driver against a shared target cache —
+        // the compile-time gate was flaky (sometimes didn't bite). An
+        // env var propagated via `Command::env` is deterministic and
+        // has zero footprint in any normal build (the var is never set
+        // outside this one recipe). Off by default.
+        let slot_iter: Vec<(&DataId, &SlotId)> = if std::env::var_os("NUC_NONDET_TEST").is_some() {
+            std::collections::HashMap::<&DataId, &SlotId>::from_iter(self.slot_ids.iter())
+                .into_iter()
+                .collect()
+        } else {
+            self.slot_ids.iter().collect()
+        };
+        for (data_id, slot_id) in slot_iter {
             let name = self.data_name.get(data_id).expect("data id has name");
             let ty = self
                 .linked

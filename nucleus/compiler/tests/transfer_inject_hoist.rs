@@ -719,7 +719,11 @@ fn example_02_shape_pairs_every_wait_with_a_push() {
                     && y.data == x.data
             })
             .count();
-        assert_eq!(mates, 1, "Push seq {:?} must have exactly one Wait peer", x.seq);
+        assert_eq!(
+            mates, 1,
+            "Push seq {:?} must have exactly one Wait peer",
+            x.seq
+        );
     }
 
     // a, b Waits are hoisted clear out of the loop to the top-level
@@ -819,11 +823,13 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
     // Pass B must NOT have collapsed/finalised it (no whole-symbol
     // Push spliced for d). It still has its HoistSink-placed Wait.
     assert!(
-        xs.iter().any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
+        xs.iter()
+            .any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
         "d's block-path Wait must still be present"
     );
     assert!(
-        !xs.iter().any(|x| x.role == XferRole::Push && x.data == DataId(0)),
+        !xs.iter()
+            .any(|x| x.role == XferRole::Push && x.data == DataId(0)),
         "Pass B must NOT splice a whole-symbol Push for the block-governed d \
          (that is TASK-0149's per-tile job)"
     );
@@ -939,11 +945,13 @@ fn block_nested_in_plain_loop_strands_the_invariant_wait() {
     // the enclosing plain loop is tainted by the block nest. Pinned
     // limitation — see module docs.
     assert!(
-        xs.iter().any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
+        xs.iter()
+            .any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
         "d's Wait should still be present (emitted, just not finalised)"
     );
     assert!(
-        !xs.iter().any(|x| x.role == XferRole::Push && x.data == DataId(0)),
+        !xs.iter()
+            .any(|x| x.role == XferRole::Push && x.data == DataId(0)),
         "TASK-0151 over-approximation: d is block-entangled so Pass B does \
          NOT pair it. If this flips, TASK-0149/0150 improved the gate — \
          update this pinning test."
@@ -1001,7 +1009,10 @@ fn mixed_block_nonblock_tree_is_structurally_idempotent() {
     let once = inject_transfers(&linked, build());
     let twice = inject_transfers(&linked, once.clone());
     let thrice = inject_transfers(&linked, twice.clone());
-    assert_eq!(once, twice, "mixed tree: inject_transfers must be idempotent");
+    assert_eq!(
+        once, twice,
+        "mixed tree: inject_transfers must be idempotent"
+    );
     assert_eq!(twice, thrice, "mixed tree: idempotence stable on re-run");
 }
 
