@@ -830,6 +830,43 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
 }
 
 #[test]
+#[should_panic(expected = "no producing Operation")]
+fn malformed_acfg_wait_without_producer_op_panics() {
+    // TASK-0152: a cross-worker Wait is only emitted because the
+    // schedule records a producer for the symbol, so a producing
+    // Operation MUST exist in a well-formed ACFG. Feeding a tree where
+    // the producer kernel was never lowered (consumer present, no
+    // producer Operation) must fail LOUD with context, not silently
+    // leave an unpaired Wait for a downstream pass to mis-diagnose.
+    //
+    //   Sequence(top)
+    //     consume_d on w0 reads d   (no producer Operation for d)
+    // data_producers says d is produced on host -> a cross-worker
+    // Wait is emitted -> Pass B finds no producer -> panic.
+    let consume_d = op(&[1], 102, vec![0], Some(1));
+    let root = ACFGNode::Sequence(vec![consume_d]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("f".into(), DataId(1));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars: BTreeSet::new(),
+    };
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    // Should panic inside splice_pushes_global (TASK-0152 invariant).
+    let _ = inject_transfers(&linked, acfg);
+}
+
+#[test]
 fn block_nested_in_plain_loop_strands_the_invariant_wait() {
     // PINNING TEST for the documented TASK-0151 over-approximation
     // ("Block-entangled non-block transfers are stranded" in the

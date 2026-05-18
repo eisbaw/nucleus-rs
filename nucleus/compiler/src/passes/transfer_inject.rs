@@ -266,9 +266,32 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // always false, so behaviour is identical to the non-blocked
     // M2-acceptance path (example 02-split).
     let new_root = {
-        let (hoisted, _escaped_at_root) =
+        let (hoisted, escaped_at_root) =
             hoist_invariant_waits(new_root, &[], &inner_block_iter_vars);
-        splice_pushes_global(hoisted, &inner_block_iter_vars)
+        // A Wait that bubbled all the way out of the tree had no
+        // producing scope anywhere (its data is produced by no
+        // Operation in the whole ACFG). For a well-formed ACFG this
+        // never happens — a cross-worker Wait is only emitted because
+        // the schedule records a producer, which `build_acfg` lowers
+        // to an Operation. Dropping it silently here would hand a
+        // downstream pass an unpaired Wait to mis-diagnose. Fail loud
+        // with context instead (TASK-0152).
+        if let Some(w) = escaped_at_root.first() {
+            let data_name = name_data
+                .iter()
+                .find_map(|(n, id)| (*id == w.data).then_some(n.as_str()))
+                .unwrap_or("<unknown>");
+            panic!(
+                "transfer_inject invariant violation: cross-worker Wait for \
+                 data `{data_name}` (id {:?}, seq {:?}, {:?} -> {:?}) escaped \
+                 the whole ACFG with no producing Operation. A Wait is only \
+                 emitted when the schedule records a producer for the symbol, \
+                 so this is a malformed ACFG (producer kernel not lowered), \
+                 not a partial test input.",
+                w.data, w.seq, w.src, w.dst
+            );
+        }
+        splice_pushes_global(hoisted, &inner_block_iter_vars, &name_data)
     };
 
     ACFG {
@@ -1142,7 +1165,11 @@ fn collect_waits(
     }
 }
 
-fn splice_pushes_global(mut root: ACFGNode, block_inner: &BTreeSet<IterVar>) -> ACFGNode {
+fn splice_pushes_global(
+    mut root: ACFGNode,
+    block_inner: &BTreeSet<IterVar>,
+    name_data: &BTreeMap<String, DataId>,
+) -> ACFGNode {
     let mut have_seqs: BTreeSet<u64> = BTreeSet::new();
     collect_push_seqs(&root, &mut have_seqs);
 
@@ -1178,10 +1205,32 @@ fn splice_pushes_global(mut root: ACFGNode, block_inner: &BTreeSet<IterVar>) -> 
         producer_repeat_path(&root, w.data, &mut Vec::new(), &mut pp);
         let producer_path = match pp {
             Some(p) => p,
-            // No producer Operation for this data (e.g. a synthetic
-            // partial ACFG in a unit test). Nothing to pair; leave the
-            // Wait — downstream analysis will report the gap honestly.
-            None => continue,
+            // Invariant violation, not a tolerable partial input
+            // (TASK-0152). A cross-worker Wait only exists because
+            // `build_waits_for_op` found this symbol in
+            // `producers_by_data` (mirrors `linked.data_producers`);
+            // therefore a producing Operation MUST exist somewhere in
+            // the ACFG (`build_acfg` places the producing kernel).
+            // `None` here means the ACFG is malformed — a Wait whose
+            // producer kernel was never lowered to an Operation. Fail
+            // loud with full context per the `acfg.rs` fail-fast
+            // precedent rather than silently leaving an unpaired Wait
+            // for a downstream pass to mis-diagnose as a deadlock.
+            None => {
+                let data_name = name_data
+                    .iter()
+                    .find_map(|(n, id)| (*id == w.data).then_some(n.as_str()))
+                    .unwrap_or("<unknown>");
+                panic!(
+                    "transfer_inject invariant violation: cross-worker Wait \
+                     for data `{data_name}` (id {:?}, seq {:?}, {:?} -> {:?}) \
+                     has no producing Operation in the ACFG. A Wait is only \
+                     emitted when the schedule records a producer for the \
+                     symbol, so this is a malformed ACFG (producer kernel not \
+                     lowered), not a partial test input.",
+                    w.data, w.seq, w.src, w.dst
+                );
+            }
         };
         let mut wp = None;
         wait_repeat_path(&root, w.seq, &mut Vec::new(), &mut wp);
