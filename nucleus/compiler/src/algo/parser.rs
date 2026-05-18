@@ -46,6 +46,8 @@ use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
     Purity, ScalarType, Stmt, Type, UnaryOp,
 };
+pub use crate::error::{ParseError, ParseErrorKind};
+use crate::error::map_first_chumsky_error;
 
 /// Internal: the tail of an identifier-led atom — either a call's
 /// argument list or zero-or-more index suffixes. Kept local because it
@@ -55,40 +57,6 @@ enum IdentTail {
     Indices(Vec<Expr>),
 }
 
-/// A parse error with `(line, column)` source location.
-///
-/// Only the first error in the source is reported; see module-level
-/// limitations. The `kind` distinguishes the broad failure category so
-/// tests can match on a variant without scraping a message string.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParseError {
-    pub line: usize,
-    pub column: usize,
-    pub kind: ParseErrorKind,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseErrorKind {
-    /// Unexpected token / character. The default for combinator
-    /// failures that don't map to a more specific variant.
-    Unexpected,
-    /// Unexpected end of input mid-construct.
-    UnexpectedEof,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "parse error at line {}, column {}: {}",
-            self.line, self.column, self.message
-        )
-    }
-}
-
-impl std::error::Error for ParseError {}
-
 /// Parse a `*.algo.nuc` source string into an [`AlgoAst`].
 ///
 /// Errors carry `(line, column)` (1-based) of the first failure. The
@@ -97,56 +65,8 @@ pub fn parse_algo(src: &str) -> Result<AlgoAst, ParseError> {
     let parser = program_parser();
     match parser.parse(src) {
         Ok(items) => Ok(AlgoAst { items }),
-        Err(errors) => Err(map_first_error(src, errors)),
+        Err(errors) => Err(map_first_chumsky_error(src, errors)),
     }
-}
-
-fn map_first_error(src: &str, errors: Vec<Simple<char>>) -> ParseError {
-    // Take the first error. `chumsky` may surface several alternatives
-    // at the same position; we treat them as one logical failure.
-    let err = errors.into_iter().next().expect("non-empty error list");
-    let span = err.span();
-    let offset = span.start.min(src.len());
-    let (line, column) = offset_to_line_col(src, offset);
-
-    let kind = match err.reason() {
-        chumsky::error::SimpleReason::Unexpected if err.found().is_none() => {
-            ParseErrorKind::UnexpectedEof
-        }
-        _ => ParseErrorKind::Unexpected,
-    };
-
-    // chumsky's default Display gives a serviceable message; we keep
-    // it as-is to avoid hiding information. Callers can match `kind`
-    // for behavioural checks.
-    let message = err.to_string();
-
-    ParseError {
-        line,
-        column,
-        kind,
-        message,
-    }
-}
-
-/// 1-based `(line, column)` for a byte offset into `src`. UTF-8 safe
-/// because the grammar restricts source to ASCII (grammar §6 #5), but
-/// counting bytes is still correct for ASCII columns.
-fn offset_to_line_col(src: &str, offset: usize) -> (usize, usize) {
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for (i, ch) in src.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
 }
 
 // --------------------------------------------------------------------
