@@ -11,6 +11,8 @@
 
 pub mod algo;
 pub mod error;
+pub mod link;
 pub mod sched;
 
 pub use error::{ParseError, ParseErrorKind};
+pub use link::{link, LinkError, LinkedIR, WorkerEntity};
