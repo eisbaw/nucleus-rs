@@ -16,6 +16,7 @@
 
 pub mod acfg_to_petri;
 pub mod boundedness;
+pub mod deadlock;
 pub mod petri_to_events;
 pub mod sync_inject;
 pub mod transfer_inject;
