@@ -15,6 +15,7 @@
 //! function-composition rules and tests can pipe them in any order.
 
 pub mod acfg_to_petri;
+pub mod block_transform;
 pub mod boundedness;
 pub mod deadlock;
 pub mod petri_to_events;

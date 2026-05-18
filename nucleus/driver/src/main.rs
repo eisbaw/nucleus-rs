@@ -31,8 +31,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use compiler::{
-    build_acfg, check_kernels_contract, check_schedule_compat, inject_syncs, inject_transfers,
-    link, load_capabilities,
+    apply_block_transforms, build_acfg, check_kernels_contract, check_schedule_compat,
+    inject_syncs, inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -181,8 +181,15 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         s
     })?;
 
-    // ---- Build ACFG + inject syncs + inject transfers ----
+    // ---- Build ACFG + block transforms + inject syncs + inject transfers ----
+    //
+    // Block-transform runs *between* ACFG construction and the
+    // sync/transfer injection passes (TASK-0030). For schedules with
+    // no `block=` directives (examples 01-03 at M2), this pass is a
+    // pure identity and the downstream ACFG is bit-identical.
     let acfg = build_acfg(&linked);
+    let acfg = apply_block_transforms(&linked, acfg)
+        .map_err(|e| format!("block-transform error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

@@ -36,6 +36,7 @@ pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 // crate root to avoid shadowing `std::sync::Arc` for downstream code;
 // reach for it via `compiler::petri::Arc` when you actually need it.
 pub use passes::acfg_to_petri::acfg_to_net;
+pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
