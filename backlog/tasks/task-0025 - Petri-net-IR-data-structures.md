@@ -1,9 +1,10 @@
 ---
 id: TASK-0025
 title: Petri-net IR data structures
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-17 23:05'
+updated_date: '2026-05-18 03:22'
 labels:
   - M2
   - ir
