@@ -101,6 +101,36 @@ fn synthetic_one_loop(h: i64, with_block: Option<u64>) -> (LinkedIR, ACFG) {
     (linked, acfg)
 }
 
+/// Collect (in tree order) every `Repeat` node whose `iter_var`
+/// matches `target`, recursing through `Sequence` children and into
+/// `Repeat` bodies that themselves don't match. Used to find the
+/// full-tile and trailing-partial-tile nests regardless of where the
+/// rewritten `Sequence` sits in the surrounding program tree.
+fn collect_repeats_with_var<'a>(
+    node: &'a ACFGNode,
+    target: IterVar,
+    out: &mut Vec<&'a ACFGNode>,
+) {
+    match node {
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            if *iter_var == target {
+                out.push(node);
+                // Do not descend further: the inner intra-tile loop
+                // carries a different iter var, so it can't match
+                // `target` (the tile id) anyway.
+            } else {
+                collect_repeats_with_var(body, target, out);
+            }
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_repeats_with_var(c, target, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Find the first `Repeat` matching `iter_var` in the tree. Helper
 /// for assertions on the post-transform shape.
 fn first_repeat_with_var(node: &ACFGNode, target: IterVar) -> Option<&ACFGNode> {
@@ -239,20 +269,123 @@ fn examples_01_02_03_unchanged_by_block_transform() {
 // 3. Error cases
 // --------------------------------------------------------------------
 
+/// TASK-0142: a non-divisible range is no longer rejected — it is
+/// rewritten into `Sequence[ full-tile nest, trailing partial tile ]`.
+///
+/// example 01's loop is `0..256`; `block=100` -> 2 full tiles of 100
+/// (`num_full = 256 / 100 = 2`) plus a trailing partial tile of
+/// `256 % 100 = 56`.
 #[test]
-fn block_rejects_non_divisible_range() {
-    // example 01's loop is 0..256; block=100 doesn't divide evenly.
+fn block_non_divisible_emits_trailing_partial_tile() {
     let (linked, acfg) = synthetic_one_loop(256, Some(100));
-    let err = apply_block_transforms(&linked, acfg).expect_err("100 doesn't divide 256 -> reject");
-    match err {
-        BlockTransformError::NotDivisible { var, lo, hi, block } => {
-            assert_eq!(var, "i");
-            assert_eq!(lo, 0);
-            assert_eq!(hi, 256);
-            assert_eq!(block, 100);
+    let acfg = apply_block_transforms(&linked, acfg)
+        .expect("non-divisible range is supported (TASK-0142)");
+
+    let i_id = *acfg.name_iter_vars.get("i").expect("i kept");
+    let tile_id = *acfg.name_iter_vars.get("i__tile").expect("i__tile added");
+
+    // The rewritten `Sequence[full-nest, partial-nest]` replaces the
+    // original `Repeat(i,...)` in place inside example-01's program
+    // tree, so collect the tile nests recursively rather than
+    // assuming they sit at the root.
+    let mut tile_nests: Vec<&ACFGNode> = Vec::new();
+    collect_repeats_with_var(&acfg.root, tile_id, &mut tile_nests);
+    assert_eq!(
+        tile_nests.len(),
+        2,
+        "full-tile nest + trailing partial tile, got {tile_nests:?}"
+    );
+
+    let assert_nest = |node: &ACFGNode, outer: std::ops::Range<i64>, inner_len: i64| {
+        if let ACFGNode::Repeat {
+            iter_var: ov,
+            range: or,
+            body,
+        } = node
+        {
+            assert_eq!(*ov, tile_id);
+            assert_eq!(*or, outer, "outer tile-loop range");
+            match &**body {
+                ACFGNode::Sequence(inner) => match &inner[0] {
+                    ACFGNode::Repeat {
+                        iter_var: iv,
+                        range: ir,
+                        ..
+                    } => {
+                        assert_eq!(*iv, i_id, "inner keeps the source iter var");
+                        assert_eq!(*ir, 0..inner_len, "intra-tile chunk size");
+                    }
+                    o => panic!("inner not Repeat: {o:?}"),
+                },
+                o => panic!("nest body not Sequence: {o:?}"),
+            }
+        } else {
+            panic!("nest not a Repeat: {node:?}");
         }
-        other => panic!("expected NotDivisible, got {other:?}"),
-    }
+    };
+    assert_nest(tile_nests[0], 0..2, 100); // 2 full tiles of 100
+    assert_nest(tile_nests[1], 0..1, 56); // trailing partial tile
+
+    // Operation count preserved (each nest carries a copy of the body).
+    // example 01: load_a, load_b, add(in loop), save -> the in-loop op
+    // is duplicated across the two nests, so 3 non-loop + 2 in-loop = 5.
+    assert!(
+        acfg.operation_count() >= 4,
+        "block transform must not drop operations (got {})",
+        acfg.operation_count()
+    );
+}
+
+/// TASK-0142 AC#2 (structure, on the real `apply_block_transforms`
+/// pipeline): a single non-divisible `block=N` produces an outer
+/// "tile" sequence of `num_full + 1` nests — full tiles first, then
+/// one trailing partial tile whose inner length is the remainder.
+///
+/// `synthetic_one_loop` is pinned to example-01's `0..256`. With
+/// `block=200`: `num_full = 256 / 200 = 1` full tile of 200 plus a
+/// trailing partial tile of `256 % 200 = 56` — exactly the AC#2
+/// shape ("outer loop of 2 tiles, inner X for tile 0, inner Y for
+/// tile 1"). The exact `block=64`-on-`0..100` -> 64-then-36 numbers
+/// are pinned by the `rewrite_node_ac2_64_then_36` unit test in
+/// `passes::block_transform` (it can use an arbitrary range; this
+/// helper cannot).
+#[test]
+fn block_non_divisible_two_tiles_full_then_partial() {
+    let (linked, acfg) = synthetic_one_loop(256, Some(200));
+    let acfg = apply_block_transforms(&linked, acfg).expect("non-divisible supported (TASK-0142)");
+
+    let i_id = *acfg.name_iter_vars.get("i").expect("i kept");
+    let tile_id = *acfg.name_iter_vars.get("i__tile").expect("i__tile added");
+
+    let mut nests: Vec<&ACFGNode> = Vec::new();
+    collect_repeats_with_var(&acfg.root, tile_id, &mut nests);
+    assert_eq!(nests.len(), 2, "an outer loop of 2 tiles (1 full + 1 partial)");
+
+    let inner_of = |node: &ACFGNode| -> (std::ops::Range<i64>, std::ops::Range<i64>) {
+        if let ACFGNode::Repeat {
+            range: or, body, ..
+        } = node
+        {
+            if let ACFGNode::Sequence(inner) = &**body {
+                if let ACFGNode::Repeat {
+                    iter_var: iv,
+                    range: ir,
+                    ..
+                } = &inner[0]
+                {
+                    assert_eq!(*iv, i_id, "inner keeps source iter var");
+                    return (or.clone(), ir.clone());
+                }
+            }
+        }
+        panic!("unexpected nest shape: {node:?}");
+    };
+    let (o0, i0) = inner_of(nests[0]);
+    let (o1, i1) = inner_of(nests[1]);
+    assert_eq!(o0, 0..1, "tile 0: 1 full tile");
+    assert_eq!(i0, 0..200, "inner of 200 for the full tile");
+    assert_eq!(o1, 0..1, "tile 1: single trailing partial tile");
+    assert_eq!(i1, 0..56, "inner of 56 for the partial tile (256 - 200)");
 }
 
 #[test]

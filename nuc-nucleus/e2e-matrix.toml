@@ -83,6 +83,19 @@ example  = "07-matmul"
 schedule = "blocked"
 backend  = "pthreads-sync"
 
+# TASK-0142 (trailing-remainder tiles) has landed. 05-stencil/blocked
+# walks `for y : 1..15` (length 14) with `loop y : block=4` — NOT
+# divisible by 4. `apply_block_transforms` now rewrites this into the
+# full-tile nest (3 tiles of 4) plus one trailing partial tile (width
+# 2) using only static-range Repeat/Sequence nodes. The schedule is
+# single-`host` (no cross-worker transfers), and the single-worker
+# backend emits code from the source algorithm, so the result is
+# byte-identical to the schedule-independent reference.
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "pthreads-sync"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -94,12 +107,6 @@ example  = "03-reduction"
 schedule = "distributed"
 backend  = "pthreads-sync"
 reason   = "TASK-0117 + TASK-0126: distributed placement + per-tile transfer codegen not yet implemented"
-
-[[skip]]
-example  = "05-stencil"
-schedule = "blocked"
-backend  = "pthreads-sync"
-reason   = "TASK-0142: trailing-remainder tiles not yet supported (block=4 on length-14 range fails apply_block_transforms divisibility check); TASK-0143 hoisting has landed"
 
 [[skip]]
 example  = "05-stencil"
