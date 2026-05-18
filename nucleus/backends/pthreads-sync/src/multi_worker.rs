@@ -1464,4 +1464,3 @@ fn policy_from_directive(dir: &compiler::sched::ResolvedTransferDirective) -> Tr
     }
     p
 }
-
