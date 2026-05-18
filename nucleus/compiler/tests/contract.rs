@@ -265,6 +265,90 @@ fn example_01_elementwise_add_contract_passes_for_add_and_loud_on_aggregates() {
 }
 
 // --------------------------------------------------------------------
+// Example 02-split-add: same contract-pass behaviour as example 01
+// (TASK-0021). The two examples share an algorithm shape and a
+// kernels.rs shape (Vec<i32> aggregates, scalar `add`). Until
+// TASK-0012's aggregate matching lands, the pass is loud on the
+// aggregates and clean on `add`.
+//
+// If example 02's algorithm gains kernels of new shape (it
+// shouldn't — its job is the *schedule*-side decomposition, not new
+// algorithmic surface), update this test.
+// --------------------------------------------------------------------
+
+#[test]
+fn example_02_split_add_contract_passes_for_add_and_loud_on_aggregates() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let example_dir = repo_root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(example_dir.join("prog.algo.nuc"))
+        .expect("example 02 prog.algo.nuc must be readable");
+    let ast = parse_algo(&algo_src).expect("example 02 must parse");
+    let ir = lower_algo(&ast).expect("example 02 must lower");
+
+    let kernels_rs = example_dir.join("kernels.rs");
+    let errs = check_kernels_contract(&ir, &kernels_rs)
+        .expect_err("aggregate kernels currently produce TypeMismatch");
+
+    // Loud failure mode: every error is a TypeMismatch on one of the
+    // three aggregate I/O kernels. No KernelNotFound, MissingPub,
+    // ArityMismatch, RustCheckFailed, file-IO variants.
+    for e in &errs {
+        match e {
+            ContractError::TypeMismatch { kernel, .. } => {
+                assert!(
+                    matches!(
+                        kernel.as_str(),
+                        "load_input" | "load_input_b" | "save_output"
+                    ),
+                    "unexpected TypeMismatch on `{kernel}`: scalar `add` must pass; got {errs:?}"
+                );
+            }
+            other => panic!(
+                "unexpected ContractError variant on example 02: {other:?}; \
+                 only TypeMismatch on the three aggregate I/O kernels is expected. \
+                 Did rustc reject kernels.rs? Did the parser fail on the algo?"
+            ),
+        }
+    }
+
+    // All three aggregate I/O kernels must have surfaced; if the
+    // matcher started silently accepting Vec<i32> for some, that's
+    // a regression in loudness, not progress.
+    let aggregates: std::collections::BTreeSet<&str> = errs
+        .iter()
+        .filter_map(|e| match e {
+            ContractError::TypeMismatch { kernel, .. } => Some(kernel.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        aggregates.contains("load_input"),
+        "expected TypeMismatch on load_input; got {errs:?}"
+    );
+    assert!(
+        aggregates.contains("load_input_b"),
+        "expected TypeMismatch on load_input_b; got {errs:?}"
+    );
+    assert!(
+        aggregates.contains("save_output"),
+        "expected TypeMismatch on save_output; got {errs:?}"
+    );
+
+    // Scalar `add` MUST NOT appear.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| matches!(e, ContractError::TypeMismatch { kernel, .. } if kernel == "add")),
+        "scalar `add` must pass; got {errs:?}"
+    );
+}
+
+// --------------------------------------------------------------------
 // File-level negative: missing file
 // --------------------------------------------------------------------
 

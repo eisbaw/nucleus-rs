@@ -77,6 +77,40 @@ fn lowers_example_01_elementwise_add() {
 }
 
 #[test]
+fn lowers_example_02_split_add() {
+    // TASK-0021: example 02's algorithm IR matches example 01's
+    // (the two examples share an algorithm shape; only the schedule
+    // differs).
+    let src = read_example("02-split-add/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("02-split-add must parse");
+    let ir = lower_algo(&ast).expect("02-split-add must lower");
+
+    assert_eq!(ir.consts.len(), 1);
+    assert_eq!(ir.data.len(), 3);
+    assert_eq!(ir.kernels.len(), 4);
+
+    assert_eq!(ir.consts["N"].value, 256);
+
+    let a = &ir.data["a"].ty;
+    assert_eq!(
+        a,
+        &ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![256],
+        }
+    );
+    let c = &ir.data["c"].ty;
+    assert_eq!(c.scalar, ScalarType::I32);
+    assert_eq!(c.dims, vec![256]);
+
+    assert_eq!(ir.stmts.len(), 4);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[2], IrStmt::For { .. }));
+    assert!(matches!(ir.stmts[3], IrStmt::Effect { .. }));
+}
+
+#[test]
 fn lowers_example_13_cnn_inference() {
     let src = read_example("13-cnn-inference/prog.algo.nuc");
     let ast = parse_algo(&src).expect("13-cnn-inference must parse");

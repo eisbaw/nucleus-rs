@@ -63,6 +63,62 @@ fn lowers_01_elementwise_add_naive() {
 }
 
 #[test]
+fn lowers_02_split_add_naive() {
+    // TASK-0021: smoke variant.
+    let src = read_example("02-split-add/schedules/naive.sched.nuc");
+    let ir = lower_str(&src).expect("02-split-add/naive must lower");
+
+    assert_eq!(ir.workers.len(), 1);
+    assert_eq!(ir.workers["host"].class, DEFAULT_WORKER_CLASS);
+    assert_eq!(ir.places.len(), 4);
+    assert!(ir.transfers.is_empty());
+    assert!(ir.loops.is_empty());
+    assert!(ir.checks.is_empty());
+}
+
+#[test]
+fn lowers_02_split_add_split() {
+    // TASK-0021: two-worker schedule with three sync transfers.
+    let src = read_example("02-split-add/schedules/split.sched.nuc");
+    let ir = lower_str(&src).expect("02-split-add/split must lower");
+
+    assert_eq!(ir.workers.len(), 2);
+    assert_eq!(ir.workers["host"].class, DEFAULT_WORKER_CLASS);
+    assert_eq!(ir.workers["w0"].class, DEFAULT_WORKER_CLASS);
+
+    assert_eq!(ir.places.len(), 4);
+    // Spot-check placements after lowering.
+    match &ir.places["add"].target {
+        ResolvedPlaceTarget::One(w) => assert_eq!(w, "w0"),
+        other => panic!("expected single-worker target for add, got {:?}", other),
+    }
+    match &ir.places["load_input"].target {
+        ResolvedPlaceTarget::One(w) => assert_eq!(w, "host"),
+        other => panic!(
+            "expected single-worker target for load_input, got {:?}",
+            other
+        ),
+    }
+
+    assert_eq!(ir.transfers.len(), 3);
+    for name in ["a", "b", "c"] {
+        let t = ir
+            .transfers
+            .get(name)
+            .unwrap_or_else(|| panic!("missing transfer {}", name));
+        assert_eq!(
+            t.options,
+            vec![ResolvedTransferOption::Sync],
+            "transfer {} should be sync-only",
+            name
+        );
+    }
+
+    assert!(ir.loops.is_empty());
+    assert!(ir.checks.is_empty());
+}
+
+#[test]
 fn lowers_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ir = lower_str(&src).expect("05-stencil/naive must lower");

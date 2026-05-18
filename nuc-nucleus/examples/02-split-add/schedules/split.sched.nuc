@@ -1,0 +1,49 @@
+// Split schedule for example 02-split-add — the load-bearing
+// schedule for this example.
+//
+// Two workers:
+//   host  -- runs the effectful I/O kernels (load_input, load_input_b,
+//            save_output). Owns the file system.
+//   w0    -- runs the pure `add` kernel; the loop body executes here.
+//
+// Cross-worker dataflow edges (host <-> w0), one `transfer` per
+// crossing data symbol (PRD §6.3.4: omitting a required transfer is
+// a hard error, not a silent default).
+//
+//   a (host -> w0)   produced by load_input  on host,
+//                    consumed by add         on w0.
+//   b (host -> w0)   produced by load_input_b on host,
+//                    consumed by add          on w0.
+//   c (w0 -> host)   produced by add          on w0,
+//                    consumed by save_output  on host.
+//
+// All three transfers are `sync`: producer blocks until consumer has
+// received. This is the minimum semantic the pthreads-sync backend
+// can offer (PRD §7.1 capabilities matrix). Buffering and async land
+// in later schedules of later examples.
+//
+// What's intentionally NOT here
+// -----------------------------
+//   - No loop options (no `block=`, no `vectorize=`, no `pipeline=`).
+//     The split is across worker boundaries only.
+//   - No `notify=`, no `buffer=N`. `sync` alone, with default notify.
+//   - No distributed placement (`place add on { w0, w1, ... }`). A
+//     single `w0` runs the whole loop here; distributing across many
+//     workers gets its own example.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0 };
+
+    // I/O on host (owns the file system).
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+
+    // Compute on w0.
+    place add           on w0;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

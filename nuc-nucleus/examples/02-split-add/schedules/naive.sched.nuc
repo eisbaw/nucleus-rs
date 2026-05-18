@@ -1,0 +1,22 @@
+// Naive schedule for example 02-split-add.
+//
+// Single worker, no decomposition — the smoke test for the
+// algorithm/schedule split end-to-end against THIS algorithm file. If
+// `02-split-add/prog.algo.nuc` parses, lowers, and links under a one-
+// worker schedule, the algorithm IR is healthy independent of the
+// multi-worker split exercised by split.sched.nuc.
+//
+// Mirrors the shape of `01-elementwise-add/schedules/naive.sched.nuc`.
+// The interesting schedule for this example is split.sched.nuc.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

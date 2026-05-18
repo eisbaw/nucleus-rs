@@ -70,6 +70,101 @@ fn links_01_elementwise_add_naive() {
 }
 
 #[test]
+fn links_02_split_add_naive() {
+    // TASK-0021: smoke-test schedule — single worker, no transfers.
+    link_example(
+        "02-split-add/prog.algo.nuc",
+        "02-split-add/schedules/naive.sched.nuc",
+    );
+}
+
+#[test]
+fn links_02_split_add_split() {
+    // TASK-0021: the load-bearing two-worker link. Verifies that the
+    // three `transfer` directives (a, b, c) satisfy the
+    // MissingCrossWorkerTransfer check for the cross-worker edges
+    // host -> w0 (inputs) and w0 -> host (output).
+    //
+    // If this test ever starts failing with MissingCrossWorkerTransfer,
+    // re-read split.sched.nuc: any missing `transfer` for a data
+    // symbol that crosses worker boundaries is a HARD compile error
+    // per PRD §6.3.4, and is what this test pins.
+    link_example(
+        "02-split-add/prog.algo.nuc",
+        "02-split-add/schedules/split.sched.nuc",
+    );
+}
+
+#[test]
+fn derived_data_for_split_add() {
+    // Spot-check that the link pass routes the data correctly:
+    // - `a`, `b` produced on host, consumed on w0.
+    // - `c` produced on w0, consumed on host.
+    let algo = algo_from_str(&read_example("02-split-add/prog.algo.nuc"));
+    let sched = sched_from_str(&read_example("02-split-add/schedules/split.sched.nuc"));
+    let linked = link(algo, sched).expect("split must link");
+
+    // Every algorithm kernel placed.
+    assert_eq!(linked.placements.len(), linked.algo.kernels.len());
+
+    // load_input / load_input_b / save_output on {host}; add on {w0}.
+    assert_eq!(linked.kernel_workers["load_input"].display(), "{host}");
+    assert_eq!(linked.kernel_workers["load_input_b"].display(), "{host}");
+    assert_eq!(linked.kernel_workers["save_output"].display(), "{host}");
+    assert_eq!(linked.kernel_workers["add"].display(), "{w0}");
+
+    // Data flow: a, b produced by host kernels, consumed by add on w0.
+    assert_eq!(linked.data_producers["a"].display(), "{host}");
+    assert_eq!(linked.data_producers["b"].display(), "{host}");
+    let a_cons: Vec<_> = linked.data_consumers["a"].iter().collect();
+    assert_eq!(a_cons.len(), 1);
+    assert_eq!(a_cons[0].display(), "{w0}");
+    let b_cons: Vec<_> = linked.data_consumers["b"].iter().collect();
+    assert_eq!(b_cons.len(), 1);
+    assert_eq!(b_cons[0].display(), "{w0}");
+
+    // c produced on w0, consumed by save_output on host.
+    assert_eq!(linked.data_producers["c"].display(), "{w0}");
+    let c_cons: Vec<_> = linked.data_consumers["c"].iter().collect();
+    assert_eq!(c_cons.len(), 1);
+    assert_eq!(c_cons[0].display(), "{host}");
+}
+
+#[test]
+fn split_add_missing_transfer_is_link_error() {
+    // The load-bearing negative case for the example: drop one of
+    // the transfer directives and the link MUST fail with
+    // MissingCrossWorkerTransfer. This pins the contract that
+    // split.sched.nuc's three transfers are not decoration — each is
+    // load-bearing.
+    let algo = algo_from_str(&read_example("02-split-add/prog.algo.nuc"));
+    // Inline a schedule identical to split.sched.nuc but with
+    // `transfer c : sync;` removed.
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host, w0 };
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on w0;
+    transfer a : sync;
+    transfer b : sync;
+    // transfer c : sync;   <-- deliberately removed
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("dropped transfer must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::MissingCrossWorkerTransfer { data, .. } if data == "c"
+        )),
+        "expected MissingCrossWorkerTransfer(c); got {errs:?}"
+    );
+}
+
+#[test]
 fn links_13_cnn_naive() {
     link_example(
         "13-cnn-inference/prog.algo.nuc",

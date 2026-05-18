@@ -1,0 +1,74 @@
+// Element-wise add (split) — same arithmetic as example 01, but the
+// driving example for the smallest cross-worker decomposition: host
+// loads the inputs, a compute worker performs the per-element add,
+// host writes the output.
+//
+// What this example demonstrates:
+//   - The algorithm/schedule split survives a real cross-worker edge:
+//     the same prog.algo.nuc compiles under a single-worker schedule
+//     (naive.sched.nuc — smoke test) and under a two-worker schedule
+//     (split.sched.nuc — host + w0, with declared transfers).
+//   - The first `transfer` directives in the example matrix: arrays
+//     `a`, `b` cross from `host` to `w0`; array `c` crosses back.
+//
+// What this example does NOT demonstrate:
+//   - Distributed placement of the add across multiple compute workers
+//     (a single `w0` runs the whole loop here). That's a later example.
+//   - Blocking, vectorising, async / buffered transfers, halo regions.
+//     Each gets its own example so the differential test can isolate
+//     what breaks.
+//
+// Numeric choice: i32. PRD §10.1 — integers are bit-deterministic by
+// language definition; reorderable floating-point reductions are not.
+// Consistent with example 01 and every later integer example
+// (reduction, prefix sum, histogram, sort) where determinism actually
+// bites. The element-wise add has no reduction, so f32 would have
+// worked without controversy — i32 wins on consistency.
+//
+// Dataflow shape (deliberately identical to example 01)
+// -----------------------------------------------------
+// Three top-level statements plus a for-loop:
+//
+//   a <-- load_input();        // produced on host (by schedule)
+//   b <-- load_input_b();      // produced on host (by schedule)
+//   for i : 0 .. N {
+//       c[i] <-- add(a[i], b[i]);   // consumed/produced on w0
+//   }
+//   save_output(c);            // consumed on host (by schedule)
+//
+// The algorithm itself has NO knowledge of `host` or `w0`. That is the
+// point of the algorithm/schedule split (PRD §2). Which kernel runs
+// where, and which data crosses workers, lives entirely in the
+// schedule.
+
+const N : usize = 256;     // 256 * 4 bytes per array = 1 KiB; matches example 01.
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1.
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+
+
+// Scalar add. Pure: reorderable, deduplicable, eliminable. Signature
+// is (i32, i32) -> i32 — explicitly scalar so the contract pass
+// (TASK-0012) matches it against `pub fn add(a: i32, b: i32) -> i32`
+// without needing aggregate machinery.
+kernel add : (i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; on the Rust side `Vec<i32>` (see kernels.rs
+// and the README's "Why Vec<i32>" section) sidesteps TASK-0103.
+kernel load_input  : ()       -> i32[N] effectful;
+kernel load_input_b : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+
+
+// Dataflow.
+a <-- load_input();
+b <-- load_input_b();
+
+for i : 0 .. N {
+    c[i] <-- add(a[i], b[i]);
+}
+
+save_output(c);

@@ -54,6 +54,82 @@ fn parses_01_elementwise_add_naive() {
 }
 
 #[test]
+fn parses_02_split_add_naive() {
+    // TASK-0021: smoke-test variant of example 02 — single worker,
+    // same shape as 01-elementwise-add/naive. Verifies the example
+    // file parses under the trivial single-worker schedule.
+    let src = read_example("02-split-add/schedules/naive.sched.nuc");
+    let ast = parse_sched(&src).expect("02-split-add/naive must parse");
+    assert_eq!(ast.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 0);
+    assert_eq!(ast.count_transfers(), 0);
+    assert_eq!(ast.count_checks(), 0);
+}
+
+#[test]
+fn parses_02_split_add_split() {
+    // TASK-0021: the load-bearing two-worker schedule. The first
+    // schedule in the example matrix to declare actual `transfer`
+    // directives. If counts here drift, look at split.sched.nuc and
+    // confirm both still-required transfers (a host->w0, b host->w0,
+    // c w0->host) are still listed.
+    let src = read_example("02-split-add/schedules/split.sched.nuc");
+    let ast = parse_sched(&src).expect("02-split-add/split must parse");
+    assert_eq!(ast.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 0);
+    assert_eq!(
+        ast.count_transfers(),
+        3,
+        "three transfers — a, b host->w0; c w0->host"
+    );
+    assert_eq!(ast.count_checks(), 0);
+
+    // Spot-check: all three transfers carry exactly `[Sync]`.
+    let transfers: Vec<_> = ast
+        .directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Transfer(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    let names: std::collections::BTreeSet<&str> =
+        transfers.iter().map(|t| t.data.as_str()).collect();
+    assert_eq!(
+        names,
+        ["a", "b", "c"].iter().copied().collect(),
+        "expected transfers a, b, c"
+    );
+    for t in &transfers {
+        assert_eq!(
+            t.options,
+            vec![TransferOption::Sync],
+            "transfer {} should be sync-only",
+            t.data
+        );
+    }
+
+    // Spot-check: `add` is placed on the single worker `w0` (Simple
+    // form: PlaceTarget::One), not a worker set.
+    let add = ast
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::Place(p) if p.kernel == "add" => Some(p),
+            _ => None,
+        })
+        .expect("add place");
+    match &add.target {
+        PlaceTarget::One(w) => assert_eq!(w, "w0", "add should be on w0"),
+        other => panic!("expected single-worker target for add, got {:?}", other),
+    }
+}
+
+#[test]
 fn parses_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ast = parse_sched(&src).expect("05-stencil/naive must parse");
