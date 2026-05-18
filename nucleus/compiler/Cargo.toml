@@ -41,19 +41,32 @@ syn = { version = "=2.0.117", default-features = false, features = ["full", "par
 # path doesn't accidentally pick up a different version.
 quote = { version = "=1.0.40", default-features = false }
 
-# Serde derives for the EventList contract (PRD §8.3, TASK-0015).
-# Gated behind the `serde` feature, which is on by default: events
-# are the inter-stage wire format between the schedule pass and the
-# backends, plus the format of golden-test fixtures. Opt-out exists
-# for size-constrained builds that don't need (de)serialisation.
-# Minor versions pinned for reproducibility.
-serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"], optional = true }
+# Serde derives. Used in two places:
+# - The EventList contract (PRD §8.3, TASK-0015) — events are the
+#   inter-stage wire format and the format of golden-test fixtures.
+# - The capability matrix parser (TASK-0019) — capabilities.toml
+#   deserialises into a typed struct via serde::Deserialize.
+# Non-optional because capability parsing is part of the core pipeline
+# from M1 onward (PRD §7.4, TASK-0118). The earlier optional gate has
+# been removed; "size-constrained build without serde" is no longer a
+# supported configuration.
+serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"] }
+
+# TOML parser for backends' `capabilities.toml` sibling files
+# (TASK-0019, PRD §7.4). 0.7.8 is the most recent release that builds
+# under the MSRV pinned in flake.nix (1.83); newer toml depends on
+# indexmap that requires edition2024. Pinned exact for reproducibility.
+toml = { version = "=0.7.8", default-features = false, features = ["parse", "display"] }
 
 [features]
+# `serde` was previously optional (a build knob for size-constrained
+# downstream consumers). It is now always pulled in because the
+# capability matrix parser depends on it. The feature name is kept
+# so that `#[cfg(feature = "serde")]` gates inside the crate (event
+# module, ACFG transfer policy types) continue to compile unchanged.
+# Always-on; not user-toggleable in practice.
 default = ["serde"]
-# Enable serde derives on the public Event/IterTile/* types. See
-# crate::event module docs for the rationale.
-serde = ["dep:serde"]
+serde = []
 
 [dev-dependencies]
 # JSON round-trip tests for the Event types. Same minor-version pin
