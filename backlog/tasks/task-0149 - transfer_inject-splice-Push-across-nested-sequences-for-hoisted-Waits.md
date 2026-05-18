@@ -4,9 +4,12 @@ title: 'transfer_inject: splice Push across nested sequences for hoisted Waits'
 status: To Do
 assignee: []
 created_date: '2026-05-18 05:44'
+updated_date: '2026-05-18 07:22'
 labels:
-  - followup
+  - M2
   - compiler
+  - bug
+  - critical-path
 dependencies: []
 ---
 
