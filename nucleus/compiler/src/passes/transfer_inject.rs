@@ -225,19 +225,28 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // outside it — the dual case, e.g. `c` produced inside `for i` and
     // read by `save_output` after the loop).
     //
-    // Scope: gated on "no block transform active". `block=N` per-tile
-    // transfers are sliced sub-regions, not loop-invariant whole
-    // symbols; the existing TASK-0143 HoistSink owns that path and the
-    // matching per-tile Push is TASK-0149/TASK-0150 follow-up territory
-    // (precise index-based invariance). Running these passes there
-    // would wrongly collapse per-tile halo transfers into one. The
-    // non-blocked path is the M2 acceptance case (example 02-split,
-    // deadlock.rs / boundedness e2e).
-    let new_root = if inner_block_iter_vars.is_empty() {
-        let (hoisted, _escaped_at_root) = hoist_invariant_waits(new_root, &[]);
-        splice_pushes_global(hoisted)
-    } else {
-        new_root
+    // Scope: PER-SUBTREE (TASK-0151). `block=N` per-tile transfers are
+    // sliced sub-regions, not loop-invariant whole symbols; the
+    // existing TASK-0143 HoistSink owns that path and the matching
+    // per-tile Push is TASK-0149/TASK-0150 follow-up territory
+    // (precise index-based invariance). Running Pass A/B inside a
+    // block-governed Repeat nest would wrongly collapse per-tile halo
+    // transfers into one. So Pass A treats any Repeat whose subtree
+    // contains a `block`-inner loop as OPAQUE (no hoist across it),
+    // and Pass B excludes Waits living inside such a nest — while
+    // still finalising every non-blocked cross-scope transfer
+    // elsewhere in the same program. This is strictly more precise
+    // than the previous whole-program gate (which did nothing if any
+    // block loop existed anywhere): a program mixing a block=N loop
+    // with an unrelated non-blocked cross-worker `for` no longer
+    // silently re-deadlocks on the non-blocked part. When
+    // `inner_block_iter_vars` is empty, `contains_block_inner` is
+    // always false, so behaviour is identical to the non-blocked
+    // M2-acceptance path (example 02-split).
+    let new_root = {
+        let (hoisted, _escaped_at_root) =
+            hoist_invariant_waits(new_root, &[], &inner_block_iter_vars);
+        splice_pushes_global(hoisted, &inner_block_iter_vars)
     };
 
     ACFG {
@@ -743,9 +752,26 @@ fn produced_data_set(node: &ACFGNode, acc: &mut BTreeSet<DataId>) {
     }
 }
 
+/// True if `node`'s subtree contains a `block`-inner Repeat (its own
+/// iter-var, or any descendant Repeat's, is in `block_inner`). Such a
+/// Repeat nest is owned by the TASK-0143 HoistSink / TASK-0149 per-tile
+/// path; the whole-symbol passes treat it as opaque (TASK-0151).
+fn contains_block_inner(node: &ACFGNode, block_inner: &BTreeSet<IterVar>) -> bool {
+    match node {
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => false,
+        ACFGNode::Repeat {
+            iter_var, body, ..
+        } => block_inner.contains(iter_var) || contains_block_inner(body, block_inner),
+        ACFGNode::Sequence(children) => children
+            .iter()
+            .any(|c| contains_block_inner(c, block_inner)),
+    }
+}
+
 fn hoist_invariant_waits(
     node: ACFGNode,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
+    block_inner: &BTreeSet<IterVar>,
 ) -> (ACFGNode, Vec<XferPlaceholder>) {
     match node {
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => (leaf, Vec::new()),
@@ -753,6 +779,14 @@ fn hoist_invariant_waits(
         // builder, but if it does we cannot decide invariance without
         // its sibling context — leave it in place.
         leaf @ ACFGNode::Xfer(_) => (leaf, Vec::new()),
+        // Block-governed Repeat nest: opaque to whole-symbol hoisting
+        // (TASK-0151). The TASK-0143 HoistSink already positioned its
+        // per-tile Waits during `inject_in_node`; lifting them further
+        // would collapse per-tile sub-region transfers into one. Leave
+        // it untouched; nothing escapes.
+        node @ ACFGNode::Repeat { .. } if contains_block_inner(&node, block_inner) => {
+            (node, Vec::new())
+        }
         ACFGNode::Repeat {
             iter_var,
             range,
@@ -760,7 +794,7 @@ fn hoist_invariant_waits(
         } => {
             let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
-            let (body2, escaped) = hoist_invariant_waits(*body, &nested);
+            let (body2, escaped) = hoist_invariant_waits(*body, &nested, block_inner);
 
             let mut produced = BTreeSet::new();
             produced_data_set(&body2, &mut produced);
@@ -817,7 +851,8 @@ fn hoist_invariant_waits(
                         slots.push((Slot::Wait(x), Vec::new()));
                     }
                     other => {
-                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile);
+                        let (c2, esc) =
+                            hoist_invariant_waits(other, enclosing_tile, block_inner);
                         slots.push((Slot::Node(c2), esc));
                     }
                 }
@@ -1059,25 +1094,38 @@ fn collect_push_seqs(
     }
 }
 
-fn collect_waits(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
+/// Collect Waits eligible for whole-symbol Push finalisation. Waits
+/// inside a block-governed Repeat nest are excluded (TASK-0151): their
+/// per-tile Push is TASK-0149's job, not this pass's.
+fn collect_waits(
+    node: &ACFGNode,
+    block_inner: &BTreeSet<IterVar>,
+    out: &mut Vec<XferPlaceholder>,
+) {
     match node {
         ACFGNode::Xfer(x) if x.role == XferRole::Wait => out.push(x.clone()),
         ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
-        ACFGNode::Repeat { body, .. } => collect_waits(body, out),
+        ACFGNode::Repeat { body, .. } => {
+            if contains_block_inner(node, block_inner) {
+                // Opaque block nest — TASK-0149 owns its Pushes.
+                return;
+            }
+            collect_waits(body, block_inner, out);
+        }
         ACFGNode::Sequence(children) => {
             for c in children {
-                collect_waits(c, out);
+                collect_waits(c, block_inner, out);
             }
         }
     }
 }
 
-fn splice_pushes_global(mut root: ACFGNode) -> ACFGNode {
+fn splice_pushes_global(mut root: ACFGNode, block_inner: &BTreeSet<IterVar>) -> ACFGNode {
     let mut have_seqs: BTreeSet<u64> = BTreeSet::new();
     collect_push_seqs(&root, &mut have_seqs);
 
     let mut waits: Vec<XferPlaceholder> = Vec::new();
-    collect_waits(&root, &mut waits);
+    collect_waits(&root, block_inner, &mut waits);
 
     for w in waits {
         // Idempotence keyed on `seq` ALONE — deliberately not on

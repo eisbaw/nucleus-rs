@@ -732,6 +732,104 @@ fn example_02_shape_pairs_every_wait_with_a_push() {
 }
 
 #[test]
+fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
+    // TASK-0151: the cross-scope finaliser is PER-SUBTREE, not a
+    // whole-program switch. A program containing BOTH a block-governed
+    // Repeat nest (transfer of `d`) AND an unrelated non-blocked `for`
+    // loop with a loop-invariant cross-worker read (transfer of `e`)
+    // must still fully pair `e`. The block nest stays opaque (its
+    // per-tile Push is TASK-0149's job) and must NOT be collapsed.
+    //
+    //   Sequence(top)
+    //     load_d on host                       (writes d)
+    //     load_e on host                       (writes e)
+    //     Repeat(tile j)                        outer tile (NOT block-inner)
+    //       Repeat(inner k, BLOCK-INNER)
+    //         consume_d on w0 reads d           (writes f)
+    //     Repeat(plain i)                       plain non-block loop
+    //       consume_e on w0 reads e             (writes g)
+    let load_d = op(&[0], 100, vec![], Some(0)); // host: d
+    let load_e = op(&[0], 101, vec![], Some(1)); // host: e
+    let consume_d = op(&[1], 102, vec![0], Some(2)); // w0: f <- d
+    let consume_e = op(&[1], 103, vec![1], Some(3)); // w0: g <- e
+
+    let inner_block = ACFGNode::Repeat {
+        iter_var: IterVar(3),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consume_d])),
+    };
+    let tile_loop = ACFGNode::Repeat {
+        iter_var: IterVar(2),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+    };
+    let plain_loop = ACFGNode::Repeat {
+        iter_var: IterVar(4),
+        range: 0..4,
+        body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+    };
+    let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("e".into(), DataId(1));
+    name_data.insert("f".into(), DataId(2));
+    name_data.insert("g".into(), DataId(3));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(3)); // only the inner k loop
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+    let linked = synthetic_linked_ir(
+        &[("d", &["host"]), ("e", &["host"])],
+        "transfer d : sync;\n    transfer e : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+    let xs = result.root.collect_xfers();
+
+    // The non-block transfer `e` (DataId 1) is fully paired: one Wait
+    // and a matching Push sharing its seq.
+    let e_wait = xs
+        .iter()
+        .find(|x| x.role == XferRole::Wait && x.data == DataId(1))
+        .expect("e must have a Wait");
+    let e_push = xs
+        .iter()
+        .find(|x| x.role == XferRole::Push && x.data == DataId(1));
+    assert!(
+        e_push.is_some(),
+        "non-block transfer e must get a Push even though a block nest coexists"
+    );
+    assert_eq!(
+        e_push.unwrap().seq,
+        e_wait.seq,
+        "e Push/Wait must be a matched pair"
+    );
+
+    // The block-governed transfer `d` (DataId 0) is left to TASK-0149:
+    // Pass B must NOT have collapsed/finalised it (no whole-symbol
+    // Push spliced for d). It still has its HoistSink-placed Wait.
+    assert!(
+        xs.iter().any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
+        "d's block-path Wait must still be present"
+    );
+    assert!(
+        !xs.iter().any(|x| x.role == XferRole::Push && x.data == DataId(0)),
+        "Pass B must NOT splice a whole-symbol Push for the block-governed d \
+         (that is TASK-0149's per-tile job)"
+    );
+}
+
+#[test]
 fn whole_symbol_finalisation_is_structurally_idempotent() {
     // AC#3: re-running inject_transfers yields a structurally
     // identical tree. This exercises the ungated Pass A + Pass B
