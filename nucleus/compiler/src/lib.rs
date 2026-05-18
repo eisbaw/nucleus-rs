@@ -12,9 +12,11 @@
 pub mod algo;
 pub mod contract;
 pub mod error;
+pub mod event;
 pub mod link;
 pub mod sched;
 
 pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
+pub use event::{DataId, Event, IterTile, IterVar, KernelId, Region, SeqTag, SyncKind, WorkerId};
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};
