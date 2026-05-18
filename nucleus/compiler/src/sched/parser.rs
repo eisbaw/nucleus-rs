@@ -181,7 +181,11 @@ fn int_lit() -> impl Parser<char, u64, Error = Simple<char>> + Clone {
 /// `StringChar`).
 fn string_lit() -> impl Parser<char, String, Error = Simple<char>> + Clone {
     just('"')
-        .ignore_then(filter(|c: &char| *c != '"' && *c != '\n').repeated().collect::<String>())
+        .ignore_then(
+            filter(|c: &char| *c != '"' && *c != '\n')
+                .repeated()
+                .collect::<String>(),
+        )
         .then_ignore(just('"'))
 }
 
@@ -215,11 +219,12 @@ fn time_lit() -> impl Parser<char, TimeLit, Error = Simple<char>> + Clone {
     );
 
     int_lit().then(unit).try_map(|(value, unit), span| {
-        let nanos = value
-            .checked_mul(unit.nanos_per_unit())
-            .ok_or_else(|| {
-                Simple::custom(span, format!("time literal {}{:?} overflows u64 ns", value, unit))
-            })?;
+        let nanos = value.checked_mul(unit.nanos_per_unit()).ok_or_else(|| {
+            Simple::custom(
+                span,
+                format!("time literal {}{:?} overflows u64 ns", value, unit),
+            )
+        })?;
         Ok(TimeLit {
             nanos,
             original_unit: unit,
@@ -243,14 +248,15 @@ fn size_lit() -> impl Parser<char, u64, Error = Simple<char>> + Clone {
         none_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").rewind(),
     );
 
-    int_lit()
-        .then(unit.or_not())
-        .try_map(|(value, mul), span| {
-            let mul = mul.unwrap_or(1);
-            value.checked_mul(mul).ok_or_else(|| {
-                Simple::custom(span, format!("size literal {}*{} overflows u64", value, mul))
-            })
+    int_lit().then(unit.or_not()).try_map(|(value, mul), span| {
+        let mul = mul.unwrap_or(1);
+        value.checked_mul(mul).ok_or_else(|| {
+            Simple::custom(
+                span,
+                format!("size literal {}*{} overflows u64", value, mul),
+            )
         })
+    })
 }
 
 // --------------------------------------------------------------------
@@ -353,11 +359,7 @@ fn memory_region_decl() -> impl Parser<char, MemoryRegionDecl, Error = Simple<ch
     let accessible_field = pad(keyword("accessible_by"))
         .ignore_then(pad(just('=')))
         .ignore_then(pad(just('{')))
-        .ignore_then(
-            pad(ident())
-                .separated_by(pad(just(',')))
-                .allow_trailing(),
-        )
+        .ignore_then(pad(ident()).separated_by(pad(just(','))).allow_trailing())
         .then_ignore(pad(just('}')))
         .then_ignore(pad(just(';')))
         .map(RField::AccessibleBy);
@@ -517,11 +519,7 @@ fn loop_directive() -> impl Parser<char, LoopDirective, Error = Simple<char>> + 
     pad(keyword("loop"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
-        .then(
-            loop_option()
-                .separated_by(pad(just(',')))
-                .at_least(1),
-        )
+        .then(loop_option().separated_by(pad(just(','))).at_least(1))
         .then_ignore(pad(just(';')))
         .map(|(var, options)| LoopDirective { var, options })
 }
@@ -557,11 +555,7 @@ fn transfer_directive() -> impl Parser<char, TransferDirective, Error = Simple<c
     pad(keyword("transfer"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
-        .then(
-            transfer_option()
-                .separated_by(pad(just(',')))
-                .at_least(1),
-        )
+        .then(transfer_option().separated_by(pad(just(','))).at_least(1))
         .then_ignore(pad(just(';')))
         .map(|(data, options)| TransferDirective { data, options })
 }
@@ -599,11 +593,7 @@ fn check_directive() -> impl Parser<char, CheckDirective, Error = Simple<char>> 
         .ignore_then(pad(keyword("loop")))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
-        .then(
-            check_assert()
-                .separated_by(pad(just(',')))
-                .at_least(1),
-        )
+        .then(check_assert().separated_by(pad(just(','))).at_least(1))
         .then_ignore(pad(just(';')))
         .map(|(var, asserts)| CheckDirective { var, asserts })
 }

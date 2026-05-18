@@ -20,9 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ast::{
-    CheckAssert, Directive, LoopOption, PlaceTarget, SchedAst, TransferOption,
-};
+use super::ast::{CheckAssert, Directive, LoopOption, PlaceTarget, SchedAst, TransferOption};
 use super::ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
     ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,
@@ -176,9 +174,7 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     for d in &ast.directives {
         match d {
             // Already handled in pass 1.
-            Directive::WorkerClass(_)
-            | Directive::MemoryRegion(_)
-            | Directive::Workers(_) => {}
+            Directive::WorkerClass(_) | Directive::MemoryRegion(_) | Directive::Workers(_) => {}
 
             Directive::Place(p) => lower_place(p, &mut ir)?,
             Directive::PlaceData(pd) => lower_place_data(pd, &mut ir)?,
@@ -195,10 +191,7 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 // Per-directive lowering
 // --------------------------------------------------------------------
 
-fn lower_place(
-    p: &super::ast::PlaceDirective,
-    ir: &mut SchedIR,
-) -> Result<(), SchedLowerError> {
+fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
     if ir.places.contains_key(&p.kernel) {
         return Err(SchedLowerError::DuplicatePlace {
             kernel: p.kernel.clone(),
@@ -261,14 +254,9 @@ fn lower_place_data(
     Ok(())
 }
 
-fn lower_loop(
-    l: &super::ast::LoopDirective,
-    ir: &mut SchedIR,
-) -> Result<(), SchedLowerError> {
+fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
     if ir.loops.contains_key(&l.var) {
-        return Err(SchedLowerError::DuplicateLoop {
-            var: l.var.clone(),
-        });
+        return Err(SchedLowerError::DuplicateLoop { var: l.var.clone() });
     }
     let mut options = Vec::with_capacity(l.options.len());
     for opt in &l.options {
@@ -284,10 +272,7 @@ fn lower_loop(
     Ok(())
 }
 
-fn lower_loop_option(
-    var: &str,
-    opt: &LoopOption,
-) -> Result<ResolvedLoopOption, SchedLowerError> {
+fn lower_loop_option(var: &str, opt: &LoopOption) -> Result<ResolvedLoopOption, SchedLowerError> {
     // Numeric options share the same "strictly positive" rule. The
     // small helper keeps the variant list short and obvious.
     let positive = |n: u64, keyword: &str| -> Result<u64, SchedLowerError> {
@@ -353,14 +338,9 @@ fn lower_transfer_option(
     })
 }
 
-fn lower_check(
-    c: &super::ast::CheckDirective,
-    ir: &mut SchedIR,
-) -> Result<(), SchedLowerError> {
+fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
     if ir.checks.contains_key(&c.var) {
-        return Err(SchedLowerError::DuplicateCheck {
-            var: c.var.clone(),
-        });
+        return Err(SchedLowerError::DuplicateCheck { var: c.var.clone() });
     }
     let asserts = c
         .asserts

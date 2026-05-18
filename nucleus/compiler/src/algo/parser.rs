@@ -46,8 +46,8 @@ use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
     Purity, ScalarType, Stmt, Type, UnaryOp,
 };
-pub use crate::error::{ParseError, ParseErrorKind};
 use crate::error::map_first_chumsky_error;
+pub use crate::error::{ParseError, ParseErrorKind};
 
 /// Internal: the tail of an identifier-led atom — either a call's
 /// argument list or zero-or-more index suffixes. Kept local because it
@@ -113,7 +113,10 @@ fn comment_or_ws() -> impl Parser<char, (), Error = Simple<char>> + Clone {
     let line_comment = just("//")
         .then(take_until(text::newline().or(end())))
         .ignored();
-    line_comment.or(one_of(" \t\r\n").ignored()).repeated().ignored()
+    line_comment
+        .or(one_of(" \t\r\n").ignored())
+        .repeated()
+        .ignored()
 }
 
 /// Helper: token followed by trailing whitespace/comments.
@@ -167,7 +170,9 @@ fn scalar_type() -> impl Parser<char, ScalarType, Error = Simple<char>> + Clone 
     // remains well-behaved.
     let kw = |s: &'static str, t: ScalarType| {
         just(s)
-            .then_ignore(none_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").rewind())
+            .then_ignore(
+                none_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").rewind(),
+            )
             .to(t)
     };
     choice((
@@ -204,11 +209,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
         // CallExpr cannot. We model that here with a single choice on
         // the tail.
         let call_tail = pad(just('('))
-            .ignore_then(
-                expr.clone()
-                    .separated_by(pad(just(',')))
-                    .allow_trailing(),
-            )
+            .ignore_then(expr.clone().separated_by(pad(just(','))).allow_trailing())
             .then_ignore(pad(just(')')))
             .map(IdentTail::Call);
 
@@ -286,9 +287,7 @@ fn data_decl_parser() -> impl Parser<char, DataDecl, Error = Simple<char>> + Clo
 
 /// `KernelDecl ::= 'kernel' Ident ':' KernelSig Purity ';'`.
 fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> + Clone {
-    let unit = pad(just('('))
-        .then(pad(just(')')))
-        .to(None::<Type>);
+    let unit = pad(just('(')).then(pad(just(')'))).to(None::<Type>);
     let typed_ret = data_type_parser().map(Some);
     let ret = choice((unit, typed_ret));
 

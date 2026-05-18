@@ -34,13 +34,13 @@ pub mod ir;
 pub mod lower;
 pub mod parser;
 
+pub use crate::error::{ParseError, ParseErrorKind};
 pub use ast::{
     CheckAssert, CheckDirective, Directive, LoopDirective, LoopOption, MemoryAtom,
     MemoryRegionDecl, MemorySpec, NotifyKind, PartitionKind, PlaceDataDirective, PlaceDirective,
     PlaceTarget, SchedAst, SimdSpec, TimeLit, TimeUnit, TransferDirective, TransferOption,
     ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
-pub use crate::error::{ParseError, ParseErrorKind};
 pub use ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
     ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,

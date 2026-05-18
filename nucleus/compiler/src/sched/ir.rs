@@ -60,9 +60,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ast::{
-    MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, ViolationKind,
-};
+use super::ast::{MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, ViolationKind};
 
 /// Synthetic class name used for simple-form worker entries
 /// (`workers = { host, w0 }` — no explicit class per entry).
@@ -380,7 +378,10 @@ impl std::fmt::Display for SchedLowerError {
                 )
             }
             SchedLowerError::DuplicateLoop { var } => {
-                write!(f, "loop variable `{var}` has more than one `loop` directive")
+                write!(
+                    f,
+                    "loop variable `{var}` has more than one `loop` directive"
+                )
             }
             SchedLowerError::DuplicateTransfer { data } => {
                 write!(

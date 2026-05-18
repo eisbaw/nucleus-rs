@@ -14,9 +14,8 @@
 //! parse-failed source here.
 
 use compiler::sched::{
-    lower_sched, parse_sched, NotifyKind, PartitionKind, ResolvedLoopOption,
-    ResolvedPlaceTarget, ResolvedTransferOption, SchedIR, SchedLowerError, ViolationKind,
-    DEFAULT_WORKER_CLASS,
+    lower_sched, parse_sched, NotifyKind, PartitionKind, ResolvedLoopOption, ResolvedPlaceTarget,
+    ResolvedTransferOption, SchedIR, SchedLowerError, ViolationKind, DEFAULT_WORKER_CLASS,
 };
 
 /// Reads a source file at a workspace-relative path. Panics on IO
@@ -326,10 +325,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate place must fail");
-    assert_eq!(
-        err,
-        SchedLowerError::DuplicatePlace { kernel: "k".into() }
-    );
+    assert_eq!(err, SchedLowerError::DuplicatePlace { kernel: "k".into() });
 }
 
 #[test]
@@ -389,7 +385,12 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate check must fail");
-    assert_eq!(err, SchedLowerError::DuplicateCheck { var: "frame".into() });
+    assert_eq!(
+        err,
+        SchedLowerError::DuplicateCheck {
+            var: "frame".into()
+        }
+    );
 }
 
 #[test]

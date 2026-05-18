@@ -72,10 +72,7 @@ pub fn offset_to_line_col(src: &str, offset: usize) -> (usize, usize) {
 /// resolve its span to `(line, column)`, classify as
 /// `Unexpected`/`UnexpectedEof`, and keep chumsky's default Display
 /// for the message. Lives here to avoid duplicating the helper.
-pub fn map_first_chumsky_error(
-    src: &str,
-    errors: Vec<chumsky::error::Simple<char>>,
-) -> ParseError {
+pub fn map_first_chumsky_error(src: &str, errors: Vec<chumsky::error::Simple<char>>) -> ParseError {
     let err = errors
         .into_iter()
         .next()
