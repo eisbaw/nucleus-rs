@@ -1018,7 +1018,84 @@ A milestone is not done until its CI matrix is green. Tier-1 cells
 are mandatory; tier-2/3 cells follow §10's compile-mandatory /
 run-best-effort discipline.
 
-## 12. Open questions / risks
+## 12. Tech stack
+
+Three tools, each doing one thing.
+
+### 12.1 Nix flake — reproducible dev shell
+
+One `flake.nix` at the repo root provides:
+
+- A pinned Rust toolchain (rustc + cargo + clippy + rustfmt).
+- `just`, the task runner (§12.3).
+- `rust-analyzer` for IDE integration.
+- Tier-specific tools added when their tier lands: an MPI
+  implementation at M7, Renode at M10.
+
+Principles:
+
+- No verbose `shellHook` echoes. Enter the shell silently.
+- MSRV is pinned in the flake, not in `Cargo.toml`. One pin, not two.
+- CI enters `nix develop` first; no system-wide tool dependencies.
+
+### 12.2 Cargo — build
+
+One Rust workspace. Each backend is its own crate plus a sibling
+`capabilities.toml`. The workspace `Cargo.toml` is the registry of
+which backends exist; there is no in-code plugin registry. Adding a
+backend means adding a crate, its capabilities file, and a workspace
+member entry — three concrete things, no hidden machinery.
+
+### 12.3 Just — task runner
+
+One `justfile` at the repo root, kept deliberately short. Every
+recipe has a one-line comment. Recipes do not bloat with
+example/schedule/backend-specific one-offs — the `e2e` harness is
+one entry point that runs the full matrix, parameterised by flags.
+
+Reference shape (starting set; recipes added only when load-bearing):
+
+```just
+# Build all crates in the workspace.
+build:
+    cargo build --workspace
+
+# Run unit tests.
+test:
+    cargo test --workspace
+
+# Fast type-check without codegen.
+check:
+    cargo check --workspace
+
+# Apply rustfmt.
+fmt:
+    cargo fmt --all
+
+# Lint. Warnings are errors.
+clippy:
+    cargo clippy --workspace -- -D warnings
+
+# Full end-to-end differential matrix.
+# Compiles every (example × required schedule × supporting backend),
+# runs the resulting binaries, diffs against reference.bin.
+e2e:
+    cargo run --release --bin nucleus-e2e
+
+# Remove build artefacts.
+clean:
+    cargo clean
+```
+
+What the justfile is **not**:
+
+- Not a place for `just run-stencil-on-pthreads-sync` style one-offs.
+  Such queries are flags on the `e2e` binary, not new recipes — the
+  matrix is data, not code.
+- Not a build-system orchestrator. It invokes cargo; it doesn't
+  reimplement it.
+
+## 13. Open questions / risks
 
 - **TCP backpressure vs. place capacity.** Application-level place
   capacity (`buffer=N`) must be matched by kernel-level socket buffer
@@ -1099,7 +1176,7 @@ run-best-effort discipline.
   assumes the compiler is optimising for their latency budget will
   be surprised when it isn't.
 
-## 13. What this is, what it isn't
+## 14. What this is, what it isn't
 
 **Is:** A pre-compiler for a platform-portable distributed Rust
 overlay where IO semantics, decomposition, and target are first-class
