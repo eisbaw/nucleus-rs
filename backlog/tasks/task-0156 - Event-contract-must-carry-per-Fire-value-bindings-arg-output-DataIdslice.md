@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 09:41'
-updated_date: '2026-05-18 14:07'
+updated_date: '2026-05-18 16:44'
 labels:
   - M2
   - compiler
@@ -57,6 +57,8 @@ AC#3 NOT CHECKED — honest scope boundary: AC#3 literally says "pthreads-sync C
 NOTE/regression caught+fixed: example 14 (hearing-aid) has a nested kernel call in arg position (denoise(mix2(mic_in[frame], bt_in[frame]))). First impl panicked in build_acfg; that was a regression (build_acfg previously admitted ex14). Fixed by representing it faithfully as ArgBinding::Nested — build_arg_bindings is now total; the nested-call rejection stays in the backend (pthreads-sync render_call_arg), not duplicated into ACFG. Also collapsed acfg::DataAccess into a type alias of event::DataSlice (single source of truth).
 
 Post-review hardening (mped-architect Q4.2, blocking before TASK-0124): petri_to_events::emit_operation used edges.first().map(...).unwrap_or_default() — a silent empty FireBinding that would defeat TASK-0156 (a backend would mis-codegen/fail far from cause). Replaced with a loud panic naming the kernel: build_acfg always emits exactly one edge per Operation, so a missing edge is a malformed ACFG, not a tolerable case. Verified green (test/e2e/determinism/clippy).
+
+TASK-0124 follow-up (this session): AC#3 ("pthreads-sync CAN REGENERATE bit-identical code from EventList alone") remains UNCHECKED and TASK-0156 stays In Progress. TASK-0124 investigation found that the backend switch is blocked NOT by the value-binding contract (which THIS task closed and proved via eventlist_alone_reconstructs_stencil_kernel_call) but by two further contract gaps: loop-nest structure is destroyed by acfg_to_events unrolling (filed TASK-0159) and data ResolvedType + const values are absent from the EventList/sidecar (filed TASK-0160). The VALUE half of "regenerate from EventList alone" is done & proven here; the literal AC#3 (backend actually switched, byte-identical) now depends on TASK-0159+0160 then TASK-0124. Leaving AC#3 unchecked is the honest status — the EventList carries enough VALUE info but not enough STRUCTURE/TYPE info for a full byte-identical backend switch yet.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
