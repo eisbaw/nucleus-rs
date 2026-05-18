@@ -113,9 +113,9 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ResolvedConst};
-use crate::event::{DataId, IterVar, KernelId, WorkerId};
+use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
-use crate::sched::ResolvedPlaceTarget;
+use crate::sched::{NotifyKind, ResolvedPlaceTarget};
 
 // --------------------------------------------------------------------
 // Types
@@ -196,11 +196,122 @@ pub struct SyncPlaceholder {
     pub participants: std::collections::BTreeSet<WorkerId>,
 }
 
-/// Xfer placeholder. The transfer-injection pass (TASK-0018)
-/// populates this. Same rationale as [`SyncPlaceholder`].
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Notification policy on a transfer. Mirrors the schedule's
+/// `notify=event|poll` directive (PRD §6.3.4). `Default` is the
+/// backend's choice when the schedule did not specify a notify mode;
+/// the codegen-time capability check (TASK-0019+) resolves it against
+/// the backend's `capabilities.toml`.
+///
+/// The variants intentionally do NOT re-use [`crate::sched::NotifyKind`]
+/// — we want a third "no preference" state for schedules that didn't
+/// state one. Adding `Default` to `NotifyKind` would change the
+/// schedule-IR meaning, which we keep distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct XferPlaceholder;
+pub enum NotifyMode {
+    /// Schedule made no `notify=` choice. Backend picks.
+    #[default]
+    Default,
+    /// Schedule asked for `notify=event` — wait/notify primitive.
+    Event,
+    /// Schedule asked for `notify=poll` — busy/yield polling.
+    Poll,
+}
+
+impl From<NotifyKind> for NotifyMode {
+    fn from(k: NotifyKind) -> Self {
+        match k {
+            NotifyKind::Event => NotifyMode::Event,
+            NotifyKind::Poll => NotifyMode::Poll,
+        }
+    }
+}
+
+/// Transfer policy resolved from the schedule's `transfer D : ...`
+/// directive. Carried verbatim on every [`XferPlaceholder`] for the
+/// associated data symbol; downstream passes (Petri net, codegen) read
+/// it to decide place capacities and backend lowering.
+///
+/// Semantics, per PRD §6.3.4:
+///
+/// - `synchronous = true` means producer blocks until consumer has
+///   received (`sync`). False means async — producer returns
+///   immediately, consumer waits at use (`async`).
+/// - `buffer` is the number of in-flight transfers permitted
+///   (`buffer=N`); `1` is the default ("no extra buffering").
+///   `>1` enables pipelining.
+/// - `notify` is the notification mode (event/poll/default).
+///
+/// Conflicts between `sync` and `async` in the schedule are not
+/// caught at this layer — the linker/lowering passes can deduplicate
+/// or reject those; TASK-0018 deliberately leaves capability checking
+/// to TASK-0019+ at codegen time when the backend is in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TransferPolicy {
+    /// True iff `sync`. False iff `async`. Default: `true` (sync).
+    pub synchronous: bool,
+    /// In-flight transfer capacity. Default: `1`. Always `>= 1`.
+    pub buffer: u64,
+    /// Notification mode chosen by the schedule.
+    pub notify: NotifyMode,
+}
+
+impl Default for TransferPolicy {
+    fn default() -> Self {
+        TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        }
+    }
+}
+
+/// Xfer placeholder. Populated by the transfer-injection pass
+/// (TASK-0018). One `XferPlaceholder` is the projection of *one
+/// endpoint* of a matched Push/Wait pair — the [`XferRole`] field
+/// tells you which endpoint this is. The matching `seq` and `data`
+/// link a `Push` on `src` to a `Wait` on `dst`.
+///
+/// Why a single struct with a `role` discriminator rather than two
+/// `ACFGNode` variants (`Push` / `Wait`): the type already carries
+/// `src`/`dst` redundantly; making the variant explicit would not add
+/// information and would double the match arms downstream. The roles
+/// match one-for-one with `Event::Push` / `Event::Wait` in PRD §8.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct XferPlaceholder {
+    /// Push (sender side) or Wait (receiver side) of the pair.
+    pub role: XferRole,
+    /// Source worker (producer side). Same on both endpoints of the
+    /// pair so the receiver knows where the data is coming from.
+    pub src: WorkerId,
+    /// Destination worker (consumer side). Same on both endpoints.
+    pub dst: WorkerId,
+    /// Data symbol being transferred.
+    pub data: DataId,
+    /// Iteration tile of the slice in transit. At M1 this is the
+    /// enclosing-loop tile of the consumer (per-point granularity).
+    /// Coalescing per-tile bulk transfers is a follow-up.
+    pub tile: IterTile,
+    /// Unique sequence number matching this Push to its Wait. Two
+    /// endpoints of the same pair share `seq`.
+    pub seq: SeqTag,
+    /// Transfer policy from the schedule directive.
+    pub policy: TransferPolicy,
+}
+
+/// Push (sender side) vs Wait (receiver side) — the endpoint kind of
+/// an [`XferPlaceholder`]. Mirrors `Event::Push` / `Event::Wait` in
+/// PRD §8.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum XferRole {
+    /// Sender side — produces and emits the data slice.
+    Push,
+    /// Receiver side — awaits and consumes the data slice.
+    Wait,
+}
 
 /// One node in the ACFG tree.
 ///

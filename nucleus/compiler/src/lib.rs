@@ -19,11 +19,12 @@ pub mod passes;
 pub mod sched;
 
 pub use acfg::{
-    build_acfg, ACFGNode, DataflowDag, DataflowEdge, Operation, SyncPlaceholder, XferPlaceholder,
-    ACFG,
+    build_acfg, ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, SyncPlaceholder,
+    TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
 pub use event::{DataId, Event, IterTile, IterVar, KernelId, Region, SeqTag, SyncKind, WorkerId};
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 pub use passes::sync_inject::inject_syncs;
+pub use passes::transfer_inject::inject_transfers;
