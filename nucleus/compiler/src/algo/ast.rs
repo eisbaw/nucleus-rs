@@ -18,7 +18,14 @@
 /// Scalar types per grammar §1, rule `ScalarType`. The set is closed
 /// (PRD §6.2.4: no user-defined scalars, no `()` here — unit is only a
 /// kernel return type, see [`KernelSig`]).
+///
+/// `serde` is derived (feature-gated, like the `event`/`contract`
+/// types) so the codegen-contract [`crate::sidecar::NameSidecar`]
+/// (TASK-0160) — which carries `ScalarType` per `DataId` for vec!
+/// element / slot typing — is committable/serialisable. This adds
+/// trait impls only under the `serde` feature; no behaviour change.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScalarType {
     Usize,
     Isize,

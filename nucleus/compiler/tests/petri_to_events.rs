@@ -953,3 +953,305 @@ fn e2e_example_01_naive_single_worker_no_transfers() {
         }
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0160 — the NameSidecar (+ EventList + name tables) ALONE
+// carries enough to: size the pre-init allocation `vec![<zero>; N]`,
+// pick the Rust element/slot type, and render a rolled loop's bound
+// in SOURCE form (e.g. `(16_i64 - 1_i64)`), WITHOUT walking the
+// AlgoIR. This proves the codegen contract is sufficient; it does
+// NOT switch the pthreads-sync backend (that is TASK-0124). Mirrors
+// TASK-0156's `eventlist_alone_reconstructs_stencil_kernel_call`
+// pattern: reconstruct from the contract, assert == the literal the
+// AlgoIR-walking backend emits today.
+// --------------------------------------------------------------------
+
+use compiler::sidecar::{build_sidecar, ConstValue, NameSidecar};
+
+/// Like `full_pipeline_acfg` but also returns the `LinkedIR`, which
+/// `build_sidecar` needs (it reads `linked.algo` for the unevaluated
+/// `for` bounds + consts that `build_acfg` folds away).
+fn full_pipeline_with_linked(algo_rel: &str, sched_rel: &str) -> (link::LinkedIR, ACFG) {
+    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
+        .expect("algo lower");
+    let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
+        .expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = build_acfg(&linked);
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    (linked, acfg)
+}
+
+/// The Rust element type for a scalar, exactly as the pthreads-sync
+/// backend's `rust_scalar_type` spells it. Reproduced here from the
+/// SIDECAR's `ScalarType` (NOT the AlgoIR) — this is the join a
+/// TASK-0124 backend performs.
+fn elem_type_from_sidecar(s: &compiler::algo::ScalarType) -> &'static str {
+    use compiler::algo::ScalarType::*;
+    match s {
+        Usize => "usize",
+        Isize => "isize",
+        U8 => "u8",
+        U16 => "u16",
+        U32 => "u32",
+        U64 => "u64",
+        I8 => "i8",
+        I16 => "i16",
+        I32 => "i32",
+        I64 => "i64",
+        F32 => "f32",
+        F64 => "f64",
+        Bool => "bool",
+    }
+}
+
+/// The Rust "zero" literal for a scalar, exactly as the backend's
+/// `rust_scalar_zero` spells it.
+fn zero_lit_from_sidecar(s: &compiler::algo::ScalarType) -> &'static str {
+    use compiler::algo::ScalarType::*;
+    match s {
+        F32 | F64 => "0.0",
+        Bool => "false",
+        _ => "0",
+    }
+}
+
+/// Render a loop-bound `IrExpr` into the SAME source string the
+/// pthreads-sync `render_const_expr` produces — but resolving const
+/// idents through the SIDECAR's const table, NOT `ctx.algo.consts`.
+/// This is exactly what a TASK-0124 EventList-only backend would do.
+fn render_bound_from_sidecar(
+    e: &compiler::algo::IrExpr,
+    consts: &BTreeMap<String, ConstValue>,
+) -> String {
+    use compiler::algo::{IrBinOp, IrExpr};
+    match e {
+        IrExpr::IntLit(v) => format!("{v}_i64"),
+        IrExpr::Ident(n) => match consts.get(n) {
+            Some(c) => format!("{}_i64", c.value),
+            // An outer loop var: render as-is (mirrors the backend).
+            None => n.clone(),
+        },
+        IrExpr::Neg(i) => format!("-({})", render_bound_from_sidecar(i, consts)),
+        IrExpr::BinOp(op, l, r) => {
+            let o = match op {
+                IrBinOp::Add => "+",
+                IrBinOp::Sub => "-",
+                IrBinOp::Mul => "*",
+                IrBinOp::Div => "/",
+                IrBinOp::Mod => "%",
+            };
+            format!(
+                "({} {o} {})",
+                render_bound_from_sidecar(l, consts),
+                render_bound_from_sidecar(r, consts)
+            )
+        }
+        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+            unreachable!("loop bounds are integer-only (PRD §6.2.3)")
+        }
+    }
+}
+
+#[test]
+fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
+    // For each example the backend pre-inits indexed-LHS data with
+    // `vec![<zero>; product(dims)]` and types it `Vec<elem>`. Prove
+    // the SIDECAR alone yields the exact length + element type the
+    // AlgoIR-walking backend computes today.
+    //
+    // (data symbol, expected vec! length, expected elem type)
+    let expectations: &[(&str, &str, &[(&str, usize, &str)])] = &[
+        (
+            "01-elementwise-add/prog.algo.nuc",
+            "01-elementwise-add/schedules/naive.sched.nuc",
+            &[("a", 256, "i32"), ("b", 256, "i32"), ("c", 256, "i32")],
+        ),
+        (
+            "02-split-add/prog.algo.nuc",
+            "02-split-add/schedules/split.sched.nuc",
+            &[("a", 256, "i32"), ("b", 256, "i32"), ("c", 256, "i32")],
+        ),
+        (
+            "03-reduction/prog.algo.nuc",
+            "03-reduction/schedules/naive.sched.nuc",
+            &[],
+        ),
+        (
+            "05-stencil/prog.algo.nuc",
+            "05-stencil/schedules/naive.sched.nuc",
+            // i32[H][W] = i32[16][16] -> product = 256.
+            &[("img_in", 256, "i32"), ("img_out", 256, "i32")],
+        ),
+        (
+            "07-matmul/prog.algo.nuc",
+            "07-matmul/schedules/naive.sched.nuc",
+            &[],
+        ),
+    ];
+
+    for (algo, sched, data_checks) in expectations {
+        let (linked, acfg) = full_pipeline_with_linked(algo, sched);
+        let sidecar = build_sidecar(&linked, &acfg);
+
+        // The name table the backend also receives (DataId -> name)
+        // — same join key as the EventList's DataSlice.data.
+        let did_of = |name: &str| *acfg.name_data.get(name).expect("data declared");
+
+        for (dname, want_len, want_elem) in *data_checks {
+            let did = did_of(dname);
+            // Length: from the sidecar's dims product. NO AlgoIR.
+            let got_len = sidecar
+                .alloc_len(did)
+                .expect("sidecar carries this DataId's type");
+            assert_eq!(
+                got_len, *want_len,
+                "{algo}: vec! length for `{dname}` from sidecar"
+            );
+            // Element type: from the sidecar's ScalarType. NO AlgoIR.
+            let ty = sidecar.data_type(did).expect("sidecar carries type");
+            assert_eq!(
+                elem_type_from_sidecar(&ty.scalar),
+                *want_elem,
+                "{algo}: element type for `{dname}` from sidecar"
+            );
+            // The full pre-init line a TASK-0124 backend emits,
+            // reconstructed from the sidecar ALONE, must equal what
+            // the AlgoIR-walking backend's `render_array_init`
+            // produces today.
+            let zero = zero_lit_from_sidecar(&ty.scalar);
+            let reconstructed = format!("vec![{zero}; {got_len}]");
+            assert_eq!(
+                reconstructed,
+                format!("vec![0; {want_len}]"),
+                "{algo}: reconstructed pre-init for `{dname}`"
+            );
+        }
+
+        // Determinism: a second sidecar build is byte-identical.
+        assert_eq!(
+            sidecar,
+            build_sidecar(&linked, &acfg),
+            "{algo}: build_sidecar must be deterministic"
+        );
+    }
+}
+
+#[test]
+fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
+    // The crux of AC#2. 05-stencil's `for y : 1 .. H-1` (H=16) is
+    // folded by build_acfg to a concrete `1..15` — the AlgoIR-walking
+    // backend instead emits `for y in (1_i64)..((16_i64 - 1_i64))`
+    // from the SOURCE bounds. Prove: from `Event::Loop`'s iter_var +
+    // the SIDECAR's loop_bounds + consts ALONE (no AlgoIR), a backend
+    // reconstructs that exact source-form bound.
+    let (linked, acfg) =
+        full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
+    let sidecar = build_sidecar(&linked, &acfg);
+    let events = acfg_to_events(&acfg);
+
+    // Find the OUTER stencil loop in the EventList (the `y` loop). It
+    // is the top-level Event::Loop in the single host worker's list.
+    let host = *acfg.name_workers.get("host").expect("host worker");
+    let list = events.get(&host).expect("host EventList");
+    let outer = list
+        .iter()
+        .find_map(|e| match e {
+            Event::Loop { iter_var, range, .. } => Some((*iter_var, range.clone())),
+            _ => None,
+        })
+        .expect("a top-level Event::Loop (the y loop) must exist");
+    let (iter_var, concrete_range) = outer;
+
+    // Sanity: the EventList alone only gives the FOLDED range.
+    assert_eq!(
+        concrete_range, 1..15,
+        "Event::Loop carries the concrete folded range (TASK-0159)"
+    );
+
+    // The sidecar pairs the SAME IterVar to the unevaluated source
+    // bounds. This is the join TASK-0124 performs.
+    let bound = sidecar
+        .loop_bounds
+        .get(&iter_var)
+        .expect("sidecar carries the symbolic bound for this loop var");
+
+    let lo_s = render_bound_from_sidecar(&bound.lo, &sidecar.consts);
+    let hi_s = render_bound_from_sidecar(&bound.hi, &sidecar.consts);
+    // Exactly the string pthreads-sync emits today (lib.rs ~538:
+    // `for {var} in ({lo_s})..({hi_s})`), but built from the
+    // CONTRACT, not the AlgoIR.
+    assert_eq!(lo_s, "1_i64", "lower bound source form from sidecar");
+    assert_eq!(
+        hi_s, "(16_i64 - 1_i64)",
+        "upper bound `H-1` (H=16) re-rendered in SOURCE form from \
+         sidecar.loop_bounds + sidecar.consts — NOT the folded 15"
+    );
+
+    // And the inner `x` loop (`1 .. W-1`, W=16) likewise. Collect
+    // every Event::Loop's iter_var recursively (flatten_all only
+    // yields non-Loop leaves, never the Loop nodes themselves).
+    fn collect_loop_vars(events: &[Event], out: &mut Vec<compiler::event::IterVar>) {
+        for e in events {
+            if let Event::Loop {
+                iter_var, body, ..
+            } = e
+            {
+                out.push(*iter_var);
+                collect_loop_vars(body, out);
+            }
+        }
+    }
+    let mut loop_vars = Vec::new();
+    collect_loop_vars(list, &mut loop_vars);
+    let inner = loop_vars
+        .into_iter()
+        .find(|iv| *iv != iter_var)
+        .expect("an inner Event::Loop (the x loop)");
+    let inner_bound = sidecar.loop_bounds.get(&inner).expect("inner bound");
+    assert_eq!(
+        render_bound_from_sidecar(&inner_bound.hi, &sidecar.consts),
+        "(16_i64 - 1_i64)",
+        "inner `W-1` (W=16) also re-renders to source form from sidecar"
+    );
+}
+
+#[test]
+fn sidecar_const_table_matches_resolved_consts() {
+    // The sidecar const table must carry every AlgoIR const verbatim
+    // (value + scalar type) so the backend never reaches for
+    // `algo.consts`.
+    let (linked, acfg) =
+        full_pipeline_with_linked("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc");
+    let sidecar = build_sidecar(&linked, &acfg);
+    assert_eq!(
+        sidecar.consts.get("N"),
+        Some(&ConstValue {
+            ty: compiler::algo::ScalarType::Usize,
+            value: 256,
+        }),
+        "const N=256:usize must reach the sidecar"
+    );
+    // Every AlgoIR const is present with the same value/type.
+    for (name, rc) in &linked.algo.consts {
+        let cv = sidecar.consts.get(name).expect("const in sidecar");
+        assert_eq!(cv.value, rc.value, "const `{name}` value");
+        assert_eq!(cv.ty, rc.ty, "const `{name}` scalar type");
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn sidecar_serde_roundtrip_is_byte_identical() {
+    // The sidecar is a committable codegen artifact (like the
+    // contract types) — JSON roundtrip must be lossless and stable.
+    let (linked, acfg) =
+        full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
+    let sidecar = build_sidecar(&linked, &acfg);
+    let json = serde_json::to_string(&sidecar).expect("serialize");
+    let back: NameSidecar = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(sidecar, back, "sidecar serde roundtrip must be lossless");
+    let json2 = serde_json::to_string(&back).expect("reserialize");
+    assert_eq!(json, json2, "serde wire form must be stable");
+}

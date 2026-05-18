@@ -3,10 +3,11 @@ id: TASK-0160
 title: >-
   Event/NameSidecar contract must carry data ResolvedType + const values for
   EventList-only codegen
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-18 16:43'
-updated_date: '2026-05-18 22:47'
+updated_date: '2026-05-18 22:57'
 labels:
   - M2
   - compiler
@@ -28,6 +29,18 @@ Blocks TASK-0124 AC#2 byte-identical. The pthreads-sync backend emits pre-init a
 - [ ] #3 Determinism + bit-identical e2e for 01/02/03/05/07 preserved
 - [ ] #4 Coupled with TASK-0159; together they unblock TASK-0124 AC#2 full switch
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. New module compiler/src/sidecar.rs: NameSidecar codegen-contract carrier (BTreeMap-backed, deterministic, serde-gated like contract/Event types). Carries: (a) data_types: BTreeMap<DataId, ResolvedType> (dims+ScalarType -> vec! length, element/slot type, scalar casts); (b) consts: BTreeMap<String, i64> (+ ScalarType) (const name->value, re-render bounds w/o AlgoIR); (c) loop_bounds: BTreeMap<IterVar, LoopBound{lo:IrExpr,hi:IrExpr}> -- the UNEVALUATED For lo/hi AST captured additively at build_acfg, keyed by the SAME IterVar that Event::Loop carries.
+2. build_sidecar(linked: &LinkedIR, acfg: &ACFG) -> NameSidecar: invert algo.data via acfg.name_data -> DataId->ResolvedType; copy algo.consts; walk linked.algo.stmts For nodes, map var via acfg.name_iter_vars -> IterVar, store (lo,hi) IrExpr clones. Pure, additive, reads LinkedIR+ACFG name maps only. eval_const fold UNTOUCHED; ACFGNode::Repeat.range stays concrete; acfg_to_petri/Net/boundedness/deadlock UNTOUCHED.
+3. Export NameSidecar/LoopBound/build_sidecar from lib.rs. Helper to render a ScalarType -> Rust elem type + zero-literal, and a render of a LoopBound expr into Rust source form using consts.
+4. SUFFICIENCY PROOF test (TASK-0156 style) in tests/petri_to_events.rs: for 01/02/03/05/07, from NameSidecar + EventList ALONE (no AlgoIR walk) reconstruct exact vec! length (product dims), Rust element/slot type, and for 05 the loop bound rendered in SOURCE form (16_i64 - 1_i64) via loop_bounds+consts paired with the Event::Loop iter_var. Plus sidecar unit tests (determinism, serde roundtrip, key pairing with Event::Loop).
+5. Docs: module doc explaining sidecar vs Event vs Net separation; explicit scope boundary TASK-0160 ends / TASK-0124 begins (no backend switch here).
+6. Gate before every commit: nix develop -c just test / e2e / determinism-check / determinism-check-negative / clippy -D warnings. e2e+determinism MUST be byte-identical (no codegen consumer). Commit per logical unit, no push, no AI credit.
+7. Forward-carry coherent rolled-loop+bound story to TASK-0124 notes; note TASK-0159 AC#2 satisfiability (do not check it myself).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

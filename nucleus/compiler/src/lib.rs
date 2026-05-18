@@ -19,6 +19,7 @@ pub mod link;
 pub mod passes;
 pub mod petri;
 pub mod sched;
+pub mod sidecar;
 
 pub use acfg::{
     build_acfg, ACFGNode, DataAccess, DataflowDag, DataflowEdge, NotifyMode, Operation,
@@ -45,4 +46,5 @@ pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
 pub use passes::sync_inject::inject_syncs;
 pub use passes::transfer_inject::inject_transfers;
+pub use sidecar::{build_sidecar, ConstValue, LoopBound, NameSidecar};
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};

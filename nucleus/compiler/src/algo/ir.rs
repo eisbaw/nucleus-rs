@@ -48,7 +48,14 @@ use super::ast::{Purity, ScalarType};
 ///
 /// Zero dimensions == scalar. Matches `ScalarType` + `dims=[]` in
 /// the AST.
+///
+/// `serde` is derived (feature-gated, like the `event`/`contract`
+/// types) so the codegen-contract [`crate::sidecar::NameSidecar`]
+/// (TASK-0160) can carry the per-`DataId` `ResolvedType` in a
+/// committable/serialisable table. Trait impls only under the
+/// `serde` feature; no behaviour change.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ResolvedType {
     pub scalar: ScalarType,
     pub dims: Vec<usize>,
@@ -65,7 +72,14 @@ impl ResolvedType {
 /// `i64` during lowering. We keep `i64` because the const evaluator
 /// is integer-arithmetic only; range-narrowing to the declared scalar
 /// type is a later concern.
+///
+/// `serde` is derived (feature-gated) so the codegen-contract
+/// [`crate::sidecar::NameSidecar`] (TASK-0160) can carry the const
+/// name→value table the backend uses to re-render loop bounds
+/// without the AlgoIR. Trait impls only under `serde`; no behaviour
+/// change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ResolvedConst {
     pub name: String,
     pub ty: ScalarType,
