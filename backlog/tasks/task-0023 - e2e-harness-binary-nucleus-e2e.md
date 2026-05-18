@@ -1,7 +1,7 @@
 ---
 id: TASK-0023
 title: e2e harness binary (nucleus-e2e)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-17 23:05'
 updated_date: '2026-05-18 03:20'
