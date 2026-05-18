@@ -136,6 +136,19 @@ pub struct NameSidecar {
     /// `Event::Loop` looks the symbolic bound up here instead of
     /// using the folded `range`.
     pub loop_bounds: BTreeMap<IterVar, LoopBound>,
+    // KNOWN GAP (TASK-0169): this sidecar carries DATA types
+    // (`data_types`) but NOT per-kernel param/return
+    // `ResolvedType`s. The pthreads-sync backend's `render_call_arg`
+    // still consults `algo.kernels[callee].params` to type scalar
+    // argument casts (iter-var i64 → usize-typed param). An
+    // EventList-only backend (TASK-0124) needs a
+    // `kernel_sigs: BTreeMap<KernelId, …>` table here to be fully
+    // AlgoIR-free. Deliberately NOT added in TASK-0160 (out of its
+    // ACs — those are data types / consts / loop bounds); filed as
+    // TASK-0169 with a dependency edge. For the e2e set
+    // 01/02/03/05/07 the only casts are iter-var index casts, so
+    // TASK-0124 can be byte-identical for those without TASK-0169
+    // (verify in TASK-0124).
 }
 
 /// A resolved const as the codegen contract needs it: its evaluated

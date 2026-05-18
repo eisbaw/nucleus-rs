@@ -5,13 +5,12 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 22:47'
+updated_date: '2026-05-18 23:06'
 labels:
   - M2
   - backend
 dependencies:
-  - TASK-0159
-  - TASK-0160
+  - TASK-0169
 ---
 
 ## Description
@@ -79,4 +78,25 @@ TRAILING PARTIAL TILE (block= / tiling): a non-divisible block decomposes to TWO
 EDGE CASES: (a) a worker that does nothing inside a loop gets NO Loop at all (not an empty-bodied one) — so absence of a Loop = that worker is idle in that scope. (b) A degenerate/empty range (e.g. 5..5) is still emitted as an Event::Loop with that empty range — emitting `for v in 5..5 {}` (zero iterations) is correct and faithful.
 
 LIMITATION you will hit for full AC#2 byte-identical: range is a CONCRETE Range<i64> (e.g. 1..15), the symbolic bound (H-1) is already folded by build_acfg and does NOT reach the EventList. Rendering `(16_i64 - 1_i64)` verbatim is blocked on TASK-0160; with TASK-0159 alone you can only render the concrete `1_i64..15_i64`. TASK-0124 full AC#2 needs BOTH TASK-0159 (loop structure, done) AND TASK-0160 (symbolic bound + ResolvedType/const sidecar).
+
+Forward-carried from TASK-0160 (commit 4a79d6e): the TYPE/CONST/SYMBOLIC-BOUND half is now landed. Both TASK-0124 AC#2 prerequisites exist: TASK-0159 (Event::Loop loop structure) + TASK-0160 (NameSidecar).
+
+EXACT SIDECAR SHAPE TASK-0124 CONSUMES:
+compiler::sidecar::NameSidecar { data_types: BTreeMap<DataId,ResolvedType>, consts: BTreeMap<String,ConstValue{ty:ScalarType,value:i64}>, loop_bounds: BTreeMap<IterVar,LoopBound{lo:IrExpr,hi:IrExpr}> }. Build it once after build_acfg via compiler::build_sidecar(&linked, &acfg) (it needs LinkedIR for the UNEVALUATED for-bounds + consts that build_acfg folds away). Keyed by the SAME DataId/IterVar the EventList carries (acfg.name_data / acfg.name_iter_vars) — direct join, no name round-trip.
+
+HOW THE BACKEND GETS EACH PIECE FROM EventList+NameSidecar (no AlgoIR):
+- vec! pre-init length: sidecar.alloc_len(did) = product(data_types[did].dims) (scalar dims==[] -> 1). Element/zero literal + slot type: data_types[did].scalar (ScalarType) -> same match arms as pthreads-sync rust_scalar_type/rust_scalar_zero (i32 -> Vec<i32>, Arc<Slot<Vec<i32>>>, "0"). did from Event::Alloc.data / DataSlice.data.
+- scalar-arg casts: same ScalarType from data_types (or the kernel param type — currently from AlgoIR; if a backend needs per-param scalar types beyond data, that is a SEPARATE small gap, see follow-up TASK-0161 below; for the e2e set 01/02/03/05/07 the casts in question are iter-var i64 -> usize index casts which do not need the sidecar).
+- rolled loop: walk Event::Loop { iter_var, range, body }. For the SOURCE-form bound do NOT use range (folded, e.g. 1..15) — look up sidecar.loop_bounds[iter_var] and render lo/hi with sidecar.consts: Ident resolved via consts -> `{value}_i64`, BinOp -> `({l} {op} {r})`, IntLit -> `{v}_i64`. That reproduces pthreads-sync render_const_expr EXACTLY: 05-stencil emits `for y in (1_i64)..((16_i64 - 1_i64))`. If a loop var has NO loop_bounds entry it is a block_transform-synthesised tile loop (no source form) -> use the concrete Event::Loop.range (correct: a synthesised tile loop has no source bound). Proven by tests/petri_to_events.rs::sidecar_renders_stencil_symbolic_loop_bound_in_source_form + sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples.
+
+WHAT REMAINS FOR TASK-0124 (the actual switch — NOT done here):
+1. Change pthreads-sync emit() signature to (per_worker_event_lists: BTreeMap<WorkerId,Vec<Event>>, name tables, NameSidecar, kernels_rs_path, out_dir) per AC#1.
+2. Replace render_main_rs AlgoIR walk with an EventList walk: recurse Event::Loop (emit `for {var} in ({lo})..({hi}) {{`), Event::Fire (reconstruct call from FireBinding + name tables, TASK-0156 pattern eventlist_alone_reconstructs_stencil_kernel_call), Event::Alloc/Push/Wait/Sync/Free. Pre-init: walk Event::Alloc (or the indexed-LHS set) -> vec! from sidecar.
+3. multi_worker.rs: same sidecar for Slot<Vec<i32>> typing; note multi_worker DELIBERATELY ignores ACFG Xfer and synthesises Push/Wait from LinkedIR data_producers/consumers (documented cross-scope imbalance) — TASK-0124 must decide whether the EventList Push/Wait pairing (post TASK-0136/0139 finaliser) now suffices to drop that LinkedIR dependency too.
+4. Verify byte-identical: the emit.rs unit test asserting the rolled `256_i64`/`(16_i64 - 1_i64)` bound must still pass; e2e 01/02/03/05/07 byte-identical; trailing-partial-tile (block=) = two sibling Event::Loops with DIFFERENT ranges (forward-carried from TASK-0142/0159) must emit BOTH verbatim.
+5. Map check: a worker idle in a loop scope gets NO Event::Loop (absence = idle); a degenerate range still emits a Loop with empty range.
+
+TASK-0124 AC#2 is now achievable byte-identically (no workaround / no AlgoIR smuggle). The value half (FireBinding) was TASK-0156; loop structure TASK-0159; types/consts/symbolic-bound TASK-0160. The switch is mechanical from here.
+
+CORRECTION to prior forward-carry note: the per-kernel-param-type follow-up was filed as TASK-0169 (not the placeholder "TASK-0161" mentioned inline above). TASK-0169 extends NameSidecar with per-KernelId param/return ResolvedType for render_call_arg scalar-arg casts. For e2e 01/02/03/05/07 the only casts are iter-var i64->usize INDEX casts (not kernel-param), so TASK-0124 may be byte-identical for those 5 WITHOUT TASK-0169 — but verify during TASK-0124 whether any trips render_call_arg param_ty before finalising dependency ordering. Added dep task-0124->task-0169.
 <!-- SECTION:NOTES:END -->
