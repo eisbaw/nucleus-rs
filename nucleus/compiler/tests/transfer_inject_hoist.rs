@@ -830,6 +830,145 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
 }
 
 #[test]
+fn block_nested_in_plain_loop_strands_the_invariant_wait() {
+    // PINNING TEST for the documented TASK-0151 over-approximation
+    // ("Block-entangled non-block transfers are stranded" in the
+    // module docs). `contains_block_inner` taints a Repeat as soon as
+    // its subtree CONTAINS a block-inner loop, so a non-block,
+    // genuinely loop-invariant cross-worker Wait that lives inside the
+    // SAME plain loop as a block nest is left unpaired (no whole-symbol
+    // Push) — it falls to TASK-0149. This asserts the CURRENT
+    // conservative behaviour on purpose: when TASK-0149/0150 makes the
+    // classification per-Wait, this test must visibly flip (d gets a
+    // Push) and should be updated then.
+    //
+    //   Sequence(top)
+    //     load_d on host                       (writes d=0)
+    //     load_e on host                       (writes e=1)
+    //     Repeat(plain i)                       contains a block nest
+    //       consume_d on w0 reads d            (writes f=2)  <- stranded
+    //       Repeat(tile j)
+    //         Repeat(inner k, BLOCK-INNER)
+    //           consume_e on w0 reads e        (writes g=3)
+    let load_d = op(&[0], 100, vec![], Some(0));
+    let load_e = op(&[0], 101, vec![], Some(1));
+    let consume_d = op(&[1], 102, vec![0], Some(2));
+    let consume_e = op(&[1], 103, vec![1], Some(3));
+
+    let inner_block = ACFGNode::Repeat {
+        iter_var: IterVar(3),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+    };
+    let tile_loop = ACFGNode::Repeat {
+        iter_var: IterVar(2),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+    };
+    let plain_loop = ACFGNode::Repeat {
+        iter_var: IterVar(5),
+        range: 0..4,
+        body: Box::new(ACFGNode::Sequence(vec![consume_d, tile_loop])),
+    };
+    let root = ACFGNode::Sequence(vec![load_d, load_e, plain_loop]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("e".into(), DataId(1));
+    name_data.insert("f".into(), DataId(2));
+    name_data.insert("g".into(), DataId(3));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(3));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+    let linked = synthetic_linked_ir(
+        &[("d", &["host"]), ("e", &["host"])],
+        "transfer d : sync;\n    transfer e : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+    let xs = result.root.collect_xfers();
+
+    // d's Wait exists but is STRANDED (no whole-symbol Push) because
+    // the enclosing plain loop is tainted by the block nest. Pinned
+    // limitation — see module docs.
+    assert!(
+        xs.iter().any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
+        "d's Wait should still be present (emitted, just not finalised)"
+    );
+    assert!(
+        !xs.iter().any(|x| x.role == XferRole::Push && x.data == DataId(0)),
+        "TASK-0151 over-approximation: d is block-entangled so Pass B does \
+         NOT pair it. If this flips, TASK-0149/0150 improved the gate — \
+         update this pinning test."
+    );
+}
+
+#[test]
+fn mixed_block_nonblock_tree_is_structurally_idempotent() {
+    // Finding 3 of the TASK-0151 review: idempotence must hold on the
+    // mixed block+nonblock tree, not only the pure non-block path.
+    let build = || {
+        let load_d = op(&[0], 100, vec![], Some(0));
+        let load_e = op(&[0], 101, vec![], Some(1));
+        let consume_d = op(&[1], 102, vec![0], Some(2));
+        let consume_e = op(&[1], 103, vec![1], Some(3));
+        let inner_block = ACFGNode::Repeat {
+            iter_var: IterVar(3),
+            range: 0..2,
+            body: Box::new(ACFGNode::Sequence(vec![consume_d])),
+        };
+        let tile_loop = ACFGNode::Repeat {
+            iter_var: IterVar(2),
+            range: 0..2,
+            body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+        };
+        let plain_loop = ACFGNode::Repeat {
+            iter_var: IterVar(4),
+            range: 0..4,
+            body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+        };
+        let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
+        let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+        name_data.insert("d".into(), DataId(0));
+        name_data.insert("e".into(), DataId(1));
+        name_data.insert("f".into(), DataId(2));
+        name_data.insert("g".into(), DataId(3));
+        let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+        name_workers.insert("host".into(), WorkerId(0));
+        name_workers.insert("w0".into(), WorkerId(1));
+        let mut ibiv: BTreeSet<IterVar> = BTreeSet::new();
+        ibiv.insert(IterVar(3));
+        ACFG {
+            root,
+            name_kernels: BTreeMap::new(),
+            name_data,
+            name_workers,
+            name_iter_vars: BTreeMap::new(),
+            inner_block_iter_vars: ibiv,
+        }
+    };
+    let linked = synthetic_linked_ir(
+        &[("d", &["host"]), ("e", &["host"])],
+        "transfer d : sync;\n    transfer e : sync;",
+    );
+    let once = inject_transfers(&linked, build());
+    let twice = inject_transfers(&linked, once.clone());
+    let thrice = inject_transfers(&linked, twice.clone());
+    assert_eq!(once, twice, "mixed tree: inject_transfers must be idempotent");
+    assert_eq!(twice, thrice, "mixed tree: idempotence stable on re-run");
+}
+
+#[test]
 fn whole_symbol_finalisation_is_structurally_idempotent() {
     // AC#3: re-running inject_transfers yields a structurally
     // identical tree. This exercises the ungated Pass A + Pass B

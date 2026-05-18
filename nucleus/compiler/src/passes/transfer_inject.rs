@@ -110,6 +110,28 @@
 //!   require re-plumbing AlgoIR indices through ACFG. Filed as a
 //!   follow-up if a future schedule wants opt-out granularity.
 //!
+//! - **Block-entangled non-block transfers are stranded (TASK-0151
+//!   over-approximation).** The cross-scope finaliser (Pass A / Pass
+//!   B) skips a Repeat subtree as soon as it *contains* a
+//!   `block`-inner loop (`contains_block_inner`), not just the
+//!   block-inner loop itself. So a genuinely loop-invariant,
+//!   non-block cross-worker Wait that lives **inside or under** a
+//!   Repeat that also encloses a block nest is NOT finalised: it
+//!   keeps no whole-symbol Push and will deadlock unless TASK-0149
+//!   (per-tile cross-scope Push) covers it. Only transfers that are
+//!   *structurally disjoint* from every block nest (e.g. a sibling
+//!   plain `for` loop — see
+//!   `mixed_block_and_nonblock_program_pairs_the_nonblock_transfer`)
+//!   are paired here. This is a deliberate conservative choice: it
+//!   never *collapses* a per-tile halo transfer (no 05/07-blocked
+//!   regression), but it *silently defers* an entangled non-block
+//!   transfer. No example schedule hits the entangled shape today
+//!   (single-`block=` programs put the block nest and any plain loop
+//!   as siblings). The precise per-Wait classification needs
+//!   TASK-0150 (index-based invariance); the deferral is owned by
+//!   TASK-0149. Pinned by
+//!   `block_nested_in_plain_loop_strands_the_invariant_wait`.
+//!
 //! - **Idempotence by structural skip.** Re-running the pass detects
 //!   that a Wait already precedes the consumer Operation (and a Push
 //!   already follows the producer Operation) by checking sibling
