@@ -30,6 +30,8 @@
 //!   algorithm parser.
 
 pub mod ast;
+pub mod ir;
+pub mod lower;
 pub mod parser;
 
 pub use ast::{
@@ -39,4 +41,11 @@ pub use ast::{
     ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
 pub use crate::error::{ParseError, ParseErrorKind};
+pub use ir::{
+    ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
+    ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,
+    ResolvedTransferDirective, ResolvedTransferOption, ResolvedWorker, ResolvedWorkerClass,
+    SchedIR, SchedLowerError, DEFAULT_WORKER_CLASS,
+};
+pub use lower::lower_sched;
 pub use parser::parse_sched;
