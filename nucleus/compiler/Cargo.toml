@@ -14,9 +14,9 @@ publish.workspace = true
 name = "compiler"
 path = "src/lib.rs"
 
-[[bin]]
-name = "nucleus"
-path = "src/main.rs"
+# The `nucleus` driver binary moved to `nucleus/driver/` at TASK-0020
+# so that backend crates can depend on `compiler` without circularity.
+# See `nucleus/driver/Cargo.toml` for the rationale.
 
 [dependencies]
 # Parser combinator library. See nucleus/compiler/src/algo/parser.rs for

@@ -1,0 +1,28 @@
+# `nucleus` driver binary. See TASK-0020 (the binary previously stubbed
+# in `compiler/src/main.rs` was promoted to its own crate so that
+# backend crates can depend on `compiler` without creating a circular
+# dependency between `compiler` and its registered backends).
+#
+# The crate is bin-only. It registers backends by linking them in as
+# dependencies and dispatching by name. Adding a new backend at M3+
+# (mp-tcp-bufsync, ...) means adding a `[dependencies]` line here plus
+# a `match` arm in main.rs. See PRD §12.2 — adding a backend "means
+# adding a crate, its capabilities file, and a workspace member entry
+# — three concrete things, no hidden machinery". The driver dispatch
+# is the fourth concrete thing; it stays in the binary so plugin
+# registration is not a runtime concern.
+
+[package]
+name = "nucleus"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nucleus"
+path = "src/main.rs"
+
+[dependencies]
+compiler = { path = "../compiler" }
+pthreads-sync = { path = "../backends/pthreads-sync" }

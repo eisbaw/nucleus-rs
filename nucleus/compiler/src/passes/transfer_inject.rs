@@ -401,10 +401,7 @@ fn inject_in_sequence(
 /// Splicing later items shifts indices, so we collect insertion
 /// requests first and then apply them in reverse order to keep the
 /// recorded indices valid.
-fn splice_pushes_for_waits(
-    out: &mut Vec<ACFGNode>,
-    local_producer_idx: &BTreeMap<DataId, usize>,
-) {
+fn splice_pushes_for_waits(out: &mut Vec<ACFGNode>, local_producer_idx: &BTreeMap<DataId, usize>) {
     // (insert_at, placeholder)
     let mut inserts: Vec<(usize, XferPlaceholder)> = Vec::new();
 
@@ -622,9 +619,7 @@ impl ACFGNode {
                 }
             }
             ACFGNode::Repeat { body, .. } => body.count_xfers_role(role),
-            ACFGNode::Sequence(children) => {
-                children.iter().map(|c| c.count_xfers_role(role)).sum()
-            }
+            ACFGNode::Sequence(children) => children.iter().map(|c| c.count_xfers_role(role)).sum(),
             ACFGNode::Operation(_) | ACFGNode::Sync(_) => 0,
         }
     }

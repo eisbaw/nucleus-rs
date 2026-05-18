@@ -1,0 +1,14 @@
+# capabilities.toml for the pthreads-sync backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1: tier-1 CPU backend, std::thread + std::sync::Condvar,
+# shared memory, sync only.
+
+name            = "pthreads-sync"
+tier            = 1
+transport       = "shared-memory"
+notify          = ["barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

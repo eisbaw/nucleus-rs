@@ -105,7 +105,11 @@ fn synthetic_linked_ir(
     }
 }
 
-fn synthetic_acfg(root: ACFGNode, name_data_pairs: &[(&str, u64)], name_workers_pairs: &[(&str, u64)]) -> ACFG {
+fn synthetic_acfg(
+    root: ACFGNode,
+    name_data_pairs: &[(&str, u64)],
+    name_workers_pairs: &[(&str, u64)],
+) -> ACFG {
     let name_data: BTreeMap<String, DataId> = name_data_pairs
         .iter()
         .map(|(n, i)| ((*n).to_string(), DataId(*i)))
@@ -134,14 +138,10 @@ fn two_worker_producer_consumer_yields_matched_push_wait() {
     // Expect: ONE Push after op_p, ONE Wait before op_c, both
     // carrying the same SeqTag, src=w0, dst=w1, data=0, sync policy.
     let root = ACFGNode::Sequence(vec![
-        op(&[0], 100, vec![], Some(0)),   // producer on w0
-        op(&[1], 101, vec![0], Some(1)),  // consumer on w1
+        op(&[0], 100, vec![], Some(0)),  // producer on w0
+        op(&[1], 101, vec![0], Some(1)), // consumer on w1
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("w0", 0), ("w1", 1)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
 
     let linked = synthetic_linked_ir(
         &acfg.name_data,
@@ -192,11 +192,7 @@ fn same_worker_producer_consumer_yields_no_transfers() {
         op(&[0], 100, vec![], Some(0)),
         op(&[0], 101, vec![0], Some(1)),
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("w0", 0)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0)]);
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
@@ -213,10 +209,10 @@ fn seq_tags_unique_per_pair() {
     // all six with distinct sequence values within {Push} and {Wait}
     // and the same seq within each matched pair.
     let root = ACFGNode::Sequence(vec![
-        op(&[0], 100, vec![], Some(0)),       // produces d0 on w0
-        op(&[1], 101, vec![0], Some(1)),      // reads d0 on w1; produces d1
-        op(&[2], 102, vec![1], Some(2)),      // reads d1 on w2; produces d2
-        op(&[0], 103, vec![2], None),         // reads d2 on w0
+        op(&[0], 100, vec![], Some(0)),  // produces d0 on w0
+        op(&[1], 101, vec![0], Some(1)), // reads d0 on w1; produces d1
+        op(&[2], 102, vec![1], Some(2)), // reads d1 on w2; produces d2
+        op(&[0], 103, vec![2], None),    // reads d2 on w0
     ]);
     let acfg = synthetic_acfg(
         root,
@@ -267,11 +263,7 @@ fn policy_after_inject(transfers_src: &str) -> TransferPolicy {
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![0], Some(1)),
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("w0", 0), ("w1", 1)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
@@ -352,11 +344,7 @@ fn idempotent_on_synthetic_two_worker_case() {
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![0], Some(1)),
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("w0", 0), ("w1", 1)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
@@ -486,8 +474,14 @@ fn structural_pairing_holds_for_synthetic_multi_edge() {
             "seq {:?} should appear on exactly one Push and one Wait",
             seq
         );
-        let push = group.iter().find(|x| x.role == XferRole::Push).expect("push present");
-        let wait = group.iter().find(|x| x.role == XferRole::Wait).expect("wait present");
+        let push = group
+            .iter()
+            .find(|x| x.role == XferRole::Push)
+            .expect("push present");
+        let wait = group
+            .iter()
+            .find(|x| x.role == XferRole::Wait)
+            .expect("wait present");
         assert_eq!(push.src, wait.src);
         assert_eq!(push.dst, wait.dst);
         assert_eq!(push.data, wait.data);

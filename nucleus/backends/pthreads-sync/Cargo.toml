@@ -1,0 +1,26 @@
+# pthreads-sync backend crate. See PRD §7.1, TASK-0020.
+#
+# Tier-1 CPU backend that emits std::thread + std::sync::Condvar Rust
+# from the post-injection ACFG plus LinkedIR. Sync only, shared memory.
+#
+# At M1 only the single-worker naive path is exercised end-to-end.
+# Multi-worker codegen is structurally accommodated (per PRD §7.1's
+# capability declaration) but not validated until later tasks land
+# example 2 (split add).
+
+[package]
+name = "pthreads-sync"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "pthreads_sync"
+path = "src/lib.rs"
+
+[dependencies]
+# Read the LinkedIR/ACFG types from the compiler crate. The backend
+# does not depend on any parser/lower internals; it reads the post-
+# link/post-inject IR only.
+compiler = { path = "../../compiler" }
