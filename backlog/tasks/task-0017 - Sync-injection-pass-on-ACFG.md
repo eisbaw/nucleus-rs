@@ -1,9 +1,10 @@
 ---
 id: TASK-0017
 title: Sync injection pass on ACFG
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-17 23:04'
+updated_date: '2026-05-18 01:27'
 labels:
   - M1
   - compiler

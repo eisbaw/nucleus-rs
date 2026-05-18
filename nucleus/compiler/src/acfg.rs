@@ -35,8 +35,11 @@
 //! - [`ACFGNode::Sequence`] — sequential composition of nodes inside
 //!   one scope. Used both at the program top-level and as the body of
 //!   a `Repeat` whose source had multiple statements.
-//! - [`ACFGNode::Sync`] — placeholder. Empty payload at M1; populated
-//!   by TASK-0017 once the sync-injection pass runs.
+//! - [`ACFGNode::Sync`] — barrier inserted by the sync-injection pass
+//!   (TASK-0017). Carries the `BTreeSet<WorkerId>` participants. Empty
+//!   in a freshly built ACFG (no `Sync` nodes are emitted by
+//!   `build_acfg`); the injection pass walks the tree and inserts
+//!   them where rules dictate.
 //! - [`ACFGNode::Xfer`] — placeholder. Empty payload at M1; populated
 //!   by TASK-0018.
 //!
@@ -173,13 +176,25 @@ pub struct DataflowEdge {
     pub data_out: Option<DataId>,
 }
 
-/// Sync placeholder. The sync-injection pass (TASK-0017) populates
-/// this. At M1 it carries no payload because the sync model is
-/// owned by that pass; keeping the variant in place now means
-/// downstream code can pattern-match on it without churn later.
+/// Sync placeholder. Populated by the sync-injection pass
+/// (TASK-0017). Carries the set of workers that must rendezvous at
+/// this barrier. PRD §8.3: a `Sync` event names participants and a
+/// [`crate::event::SyncKind`]; the sync-injection pass produces
+/// `SyncKind::Barrier` exclusively, so we omit `kind` here and let
+/// the later projection pass (ACFG -> per-worker EventList) attach
+/// the kind when it materialises [`crate::event::Event::Sync`].
+///
+/// A `SyncPlaceholder` with fewer than two participants is
+/// meaningless (a worker cannot barrier with itself); the injection
+/// pass elides such syncs rather than emitting them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SyncPlaceholder;
+pub struct SyncPlaceholder {
+    /// Workers that must arrive at this barrier before any proceed.
+    /// Stored in a [`std::collections::BTreeSet`] for deterministic
+    /// iteration order (matters for codegen determinism downstream).
+    pub participants: std::collections::BTreeSet<WorkerId>,
+}
 
 /// Xfer placeholder. The transfer-injection pass (TASK-0018)
 /// populates this. Same rationale as [`SyncPlaceholder`].
