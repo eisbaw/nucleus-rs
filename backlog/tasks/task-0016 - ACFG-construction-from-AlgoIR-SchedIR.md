@@ -4,7 +4,7 @@ title: 'ACFG construction from (AlgoIR, SchedIR)'
 status: Done
 assignee: []
 created_date: '2026-05-17 23:04'
-updated_date: '2026-05-18 01:24'
+updated_date: '2026-05-18 01:25'
 labels:
   - M1
   - compiler
@@ -31,6 +31,10 @@ Build the application control-flow graph that drives subsequent passes. Nodes: o
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+## Commit
+
+5dea1e69a0b7f7cd4c0b95e4360f566695a9217f — compiler(M1): ACFG construction from LinkedIR (TASK-0016)
+
 ## Design questions (recorded)
 
 1. **Tree vs graph.** Tree, per PRD §5 (back-edges implicit in Repeat
