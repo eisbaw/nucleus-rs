@@ -1,10 +1,10 @@
 ---
 id: TASK-0027
 title: Project Petri net to per-worker EventList
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-17 23:05'
-updated_date: '2026-05-18 03:50'
+updated_date: '2026-05-18 03:51'
 labels:
   - M2
   - compiler
