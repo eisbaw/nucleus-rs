@@ -456,9 +456,11 @@ impl Net {
     /// boxes; arcs are labelled with their weight (omitted when 1).
     /// Initial marking is shown in each place label.
     ///
-    /// Format matches the inspection-tool convention from PRD §8.5:
-    /// per-worker colouring is *not* applied here (that's a backend
-    /// concern); this is the raw structural rendering.
+    /// This is the raw structural rendering. Per-worker colouring is
+    /// the job of [`Net::serialize_to_dot_styled`], which the
+    /// `nucleus --emit-pn` driver flag uses (PRD §8.5). Kept separate
+    /// so internal analyses can dump a plain net without paying for
+    /// the subgraph/palette machinery.
     pub fn serialize_to_dot(&self) -> String {
         let mut s = String::new();
         writeln!(s, "digraph petri {{").unwrap();
@@ -502,4 +504,165 @@ impl Net {
         writeln!(s, "}}").unwrap();
         s
     }
+
+    /// Serialise to Graphviz DOT with per-worker colouring and an
+    /// optional title (PRD §8.5). Drives `nucleus --emit-pn`.
+    ///
+    /// Layout:
+    ///
+    /// - Each worker's transitions are grouped in a Graphviz
+    ///   `subgraph cluster_w<id>` and filled with a colour from
+    ///   [`WORKER_PALETTE`]. The cluster border carries the same
+    ///   colour so a viewer can identify the worker even when the
+    ///   transitions are scattered by the layout engine.
+    /// - Transitions without an owning worker (analysis-auxiliary
+    ///   firings) live at the top level, uncoloured.
+    /// - Places are uncoloured — they are shared infrastructure (PRD
+    ///   §8.2: "places are data slots, channels, or barriers"; they
+    ///   don't belong to a single worker).
+    /// - Initial marking is shown in each place label as
+    ///   `<initial>/<capacity>`; capacity `inf` for unbounded
+    ///   analysis nets.
+    /// - Arcs carry a weight label only when `weight > 1` (weight=1
+    ///   is the default; labelling every arc would just be noise).
+    ///
+    /// The optional `title` is rendered as a `graph[label=...]`
+    /// attribute. Useful for `<example>/<schedule>` annotation when
+    /// dumping many nets side by side.
+    ///
+    /// Palette is a small fixed list ([`WORKER_PALETTE`]); workers
+    /// beyond palette size wrap modulo. PRD §8.5 only requires
+    /// "distinct colour per worker" within a single net, and the
+    /// largest example (#14, hearing-aid) plans on 6 workers; 8
+    /// entries gives headroom without forcing a colour theory choice.
+    pub fn serialize_to_dot_styled(&self, title: Option<&str>) -> String {
+        let mut s = String::new();
+        writeln!(s, "digraph petri {{").unwrap();
+        writeln!(s, "  rankdir=LR;").unwrap();
+        writeln!(s, "  node [fontname=\"Helvetica\"];").unwrap();
+        if let Some(t) = title {
+            // DOT escapes: the label uses HTML-like escape for ".
+            writeln!(s, "  label=\"{}\";", escape_dot(t)).unwrap();
+            writeln!(s, "  labelloc=t;").unwrap();
+        }
+
+        // ---- Places: shared infrastructure, uncoloured. -------------
+        for p in &self.places {
+            let cap = match p.capacity {
+                Some(c) => format!("/{}", c.get()),
+                None => "/inf".to_string(),
+            };
+            writeln!(
+                s,
+                "  p{} [shape=circle, label=\"{}\\n{}{}\"];",
+                p.id.0,
+                escape_dot(&p.name),
+                p.initial_marking,
+                cap
+            )
+            .unwrap();
+        }
+
+        // ---- Transitions: grouped per-worker into clusters. ---------
+        // Collect a stable, deterministic list of worker ids (BTreeMap
+        // ordering by WorkerId.0) plus an "ownerless" bucket.
+        let mut by_worker: BTreeMap<WorkerId, Vec<&Transition>> = BTreeMap::new();
+        let mut ownerless: Vec<&Transition> = Vec::new();
+        for t in &self.transitions {
+            match &t.worker {
+                Some(w) => by_worker.entry(*w).or_default().push(t),
+                None => ownerless.push(t),
+            }
+        }
+
+        for (w, ts) in &by_worker {
+            let color = worker_color(*w);
+            writeln!(s, "  subgraph cluster_w{} {{", w.0).unwrap();
+            writeln!(s, "    label=\"worker {}\";", w.0).unwrap();
+            writeln!(s, "    color=\"{}\";", color).unwrap();
+            writeln!(s, "    style=filled;").unwrap();
+            writeln!(s, "    fillcolor=\"{}\";", color).unwrap();
+            // Transitions inside a cluster get a slightly stronger
+            // outline so they read against the cluster fill.
+            for t in ts {
+                writeln!(
+                    s,
+                    "    t{} [shape=box, style=filled, fillcolor=\"white\", label=\"{}\\nw{}\"];",
+                    t.id.0,
+                    escape_dot(&t.name),
+                    w.0
+                )
+                .unwrap();
+            }
+            writeln!(s, "  }}").unwrap();
+        }
+        for t in &ownerless {
+            writeln!(
+                s,
+                "  t{} [shape=box, label=\"{}\"];",
+                t.id.0,
+                escape_dot(&t.name)
+            )
+            .unwrap();
+        }
+
+        // ---- Arcs: same as plain serializer. ------------------------
+        for a in &self.arcs {
+            let (from, to) = match a.kind {
+                ArcKind::PtoT => (format!("p{}", a.place.0), format!("t{}", a.transition.0)),
+                ArcKind::TtoP => (format!("t{}", a.transition.0), format!("p{}", a.place.0)),
+            };
+            let label = if a.weight == 1 {
+                String::new()
+            } else {
+                format!(" [label=\"{}\"]", a.weight)
+            };
+            writeln!(s, "  {} -> {}{};", from, to, label).unwrap();
+        }
+        writeln!(s, "}}").unwrap();
+        s
+    }
+}
+
+/// Fixed colour palette for per-worker DOT subgraphs (PRD §8.5).
+///
+/// Eight entries: enough for the largest planned v2 example (#14,
+/// hearing-aid, 6 workers across 3 worker classes) with headroom.
+/// Workers beyond the palette wrap modulo — distinct-per-net
+/// is only a best-effort guarantee. Chosen as light pastel fills
+/// because the transition node labels are black text inside a
+/// `fillcolor="white"` inner box; the cluster fill sits behind.
+pub const WORKER_PALETTE: &[&str] = &[
+    "lightblue",
+    "lightgreen",
+    "lightyellow",
+    "lightpink",
+    "lightcoral",
+    "lightgrey",
+    "lavender",
+    "wheat",
+];
+
+/// Pick a colour for `worker` from [`WORKER_PALETTE`]. Deterministic;
+/// the same worker always lands on the same colour for a given build
+/// of nucleus. Wraps modulo palette length.
+fn worker_color(worker: WorkerId) -> &'static str {
+    WORKER_PALETTE[(worker.0 as usize) % WORKER_PALETTE.len()]
+}
+
+/// Minimal DOT string escape: backslash and double-quote. Newlines
+/// are left as `\n` since callers already pass `\\n` for in-label
+/// line breaks. Other control characters are not expected — kernel
+/// and place names come from the user's algorithm/schedule source
+/// which is plain ASCII identifiers plus a few separators.
+fn escape_dot(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out
 }

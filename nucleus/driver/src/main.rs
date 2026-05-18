@@ -15,13 +15,21 @@
 //!     --backend pthreads-sync \
 //!     --out OUT_DIR \
 //!     [--kernels PATH/kernels.rs] \
-//!     [--capabilities PATH/capabilities.toml]
+//!     [--capabilities PATH/capabilities.toml] \
+//!     [--emit-pn PATH/schedule.dot]
 //!
 //! When `--kernels` is omitted, the driver looks for `kernels.rs`
 //! next to the algorithm file. When `--capabilities` is omitted, it
 //! looks for `nucleus/backends/<backend>/capabilities.toml` walking
 //! up from the current working directory. Both defaults match how
 //! the e2e tests invoke the binary.
+//!
+//! `--emit-pn PATH` (PRD §8.5, TASK-0035) writes the global Petri net
+//! as a Graphviz DOT file. The pipeline still runs up through the
+//! transfer-injection pass to produce a net, but `--out` becomes
+//! optional in this mode — the user can ask for inspection without
+//! also triggering backend codegen. If both `--out` and `--emit-pn`
+//! are given, both outputs are produced.
 //!
 //! The driver only knows about the pthreads-sync backend at M1. New
 //! backends added via TASK-0036+ will register here.
@@ -31,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use compiler::{
-    apply_block_transforms, build_acfg, check_kernels_contract, check_schedule_compat,
+    acfg_to_net, apply_block_transforms, build_acfg, check_kernels_contract, check_schedule_compat,
     inject_syncs, inject_transfers, link, load_capabilities,
 };
 
@@ -59,8 +67,13 @@ fn print_help() {
         "nucleus — Nuc v2 pre-compiler\n\
          \n\
          USAGE:\n    \
-             nucleus build --algo FILE --sched FILE --backend NAME --out DIR \\\n    \
-                           [--kernels FILE] [--capabilities FILE]\n\
+             nucleus build --algo FILE --sched FILE --backend NAME \\\n    \
+                           [--out DIR] [--kernels FILE] [--capabilities FILE] \\\n    \
+                           [--emit-pn FILE]\n\
+         \n\
+         FLAGS:\n    \
+             --emit-pn FILE   Write the global Petri net to FILE as Graphviz DOT.\n    \
+                              Makes --out optional (inspection-only build).\n\
          \n\
          BACKENDS:\n    \
              pthreads-sync\n"
@@ -75,6 +88,7 @@ struct BuildArgs {
     out: Option<PathBuf>,
     kernels: Option<PathBuf>,
     capabilities: Option<PathBuf>,
+    emit_pn: Option<PathBuf>,
 }
 
 fn parse_build_args(argv: &[String]) -> Result<BuildArgs, String> {
@@ -111,6 +125,10 @@ fn parse_build_args(argv: &[String]) -> Result<BuildArgs, String> {
                 a.capabilities = Some(PathBuf::from(val()?));
                 i += 2;
             }
+            "--emit-pn" => {
+                a.emit_pn = Some(PathBuf::from(val()?));
+                i += 2;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -126,7 +144,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let algo_path = a.algo.ok_or("missing required --algo")?;
     let sched_path = a.sched.ok_or("missing required --sched")?;
     let backend = a.backend.ok_or("missing required --backend")?;
-    let out_dir = a.out.ok_or("missing required --out")?;
+    // --out is required for codegen, optional when --emit-pn alone is
+    // requested (inspection-only build, TASK-0035 / PRD §8.5).
+    let out_dir = match (&a.out, &a.emit_pn) {
+        (Some(o), _) => Some(o.clone()),
+        (None, Some(_)) => None,
+        (None, None) => {
+            return Err(
+                "missing required --out (or use --emit-pn for an inspection-only build)".into(),
+            );
+        }
+    };
+    let emit_pn = a.emit_pn.clone();
 
     let kernels_path = match a.kernels {
         Some(p) => p,
@@ -215,7 +244,35 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         return Err(s);
     }
 
-    // ---- Dispatch on backend ----
+    // ---- Optional Petri-net dump (TASK-0035, PRD §8.5) ----
+    //
+    // Independent of backend codegen: any backend choice still
+    // produces the same global net at this point in the pipeline.
+    // We emit *before* codegen so a codegen failure on an
+    // inspection-only build (no --out) doesn't suppress the DOT
+    // file the user actually asked for.
+    if let Some(pn_path) = &emit_pn {
+        let net = acfg_to_net(&acfg);
+        let title = format!(
+            "{} | {} | {}",
+            algo_path.display(),
+            sched_path.display(),
+            backend
+        );
+        let dot = net.serialize_to_dot_styled(Some(&title));
+        write_emit_pn(pn_path, &dot)?;
+        println!("emit_pn     = {}", pn_path.display());
+    }
+
+    // ---- Dispatch on backend (skipped for inspection-only builds) ----
+    let Some(out_dir) = out_dir else {
+        // --emit-pn without --out: net was written above; no codegen
+        // to run. Print a minimal summary so callers can still parse
+        // the success line.
+        println!("nucleus: ok");
+        return Ok(());
+    };
+
     match backend.as_str() {
         "pthreads-sync" => {
             let result = pthreads_sync::emit(&acfg, &linked, &kernels_path, &out_dir)
@@ -234,6 +291,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             "unknown backend `{other}`; only `pthreads-sync` is registered at M1"
         )),
     }
+}
+
+/// Write the rendered DOT string to `path`. Fails loudly with the
+/// underlying io error and the path (PRD design rule: fail-fast,
+/// contextual). If `path`'s parent directory does not exist we do
+/// NOT silently create it — that would mask a typo (`--emit-pn
+/// out/typo/x.dot` when the user meant `out/typoX/x.dot`). The
+/// caller chose the path; if the parent is missing we surface the
+/// raw filesystem error.
+fn write_emit_pn(path: &Path, dot: &str) -> Result<(), String> {
+    std::fs::write(path, dot)
+        .map_err(|e| format!("cannot write Petri-net DOT to {}: {e}", path.display()))
 }
 
 fn default_kernels_path(algo_path: &Path) -> PathBuf {
