@@ -225,19 +225,27 @@ fn emit_operation(op: &Operation, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
     // exactly one `DataflowEdge` (see `acfg::DataflowDag` docs); we
     // project its positional `args` and output access onto a
     // `FireBinding` so the EventList carries enough to reconstruct
-    // the kernel call WITHOUT walking the AlgoIR. An edge-less
-    // Operation (shouldn't occur from `build_acfg`, but defensive)
-    // yields an empty binding rather than panicking — the firing
-    // order is still correct, only the value payload is absent.
-    let bindings = op
-        .dataflow
-        .edges
-        .first()
-        .map(|e| FireBinding {
-            inputs: e.args.clone(),
-            output: e.data_out_access.clone(),
-        })
-        .unwrap_or_default();
+    // the kernel call WITHOUT walking the AlgoIR.
+    //
+    // An edge-less Operation must NOT silently yield an empty binding
+    // (review Q4.2): the whole point of TASK-0156 is that the
+    // EventList carries the value payload — an empty one would let a
+    // backend (TASK-0124) mis-codegen or fail far from the cause.
+    // `build_acfg` always emits exactly one edge per Operation, so a
+    // missing edge is a malformed ACFG / compiler bug; fail loud at
+    // the seam with context.
+    let edge = op.dataflow.edges.first().unwrap_or_else(|| {
+        panic!(
+            "petri_to_events: Operation for kernel {:?} has no DataflowEdge; \
+             build_acfg emits exactly one per Operation — malformed ACFG, \
+             not a tolerable empty binding (TASK-0156)",
+            op.kernel
+        )
+    });
+    let bindings = FireBinding {
+        inputs: edge.args.clone(),
+        output: edge.data_out_access.clone(),
+    };
 
     // Distributed placement: emit one Fire per participating worker.
     // See module docs ("Distributed placement") for the M2 trade.

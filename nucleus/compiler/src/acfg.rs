@@ -239,11 +239,25 @@ pub type DataAccess = DataSlice;
 /// passes that only want the data-symbol view (sync/transfer
 /// injection, the dataflow producer/consumer analysis).
 ///
-/// Invariant (asserted in `build_acfg`, not the type): the
-/// `data`/order/length of `data_in_access` matches `data_in`;
-/// `data_out_access.map(|a| a.data) == data_out`; and the `Data`
-/// variants of `args`, in order, project exactly to
-/// `data_in_access`.
+/// Invariant, enforced by [`DataflowEdge::debug_check`] (called at
+/// every construction site in `build_acfg` and by
+/// [`DataflowEdge::new`]; `debug_assert!`, so zero release cost):
+///
+/// 1. `data_in == data_in_access.iter().map(|a| a.data)` — same
+///    length, order, and duplicate structure;
+/// 2. `data_out_access.as_ref().map(|a| a.data) == data_out`.
+///
+/// `args` is the positional per-parameter binding (one entry per
+/// kernel argument, in source order). Its `Data` *leaves* — reached
+/// by recursing through `Nested` — line up with the `DataRef` leaves
+/// of the call, which is also how `data_in_access` is collected. It
+/// is deliberately NOT asserted equal to `data_in_access`: an
+/// argument that is arithmetic *on* data (e.g. `k(a + b)`) is carried
+/// as a single `Scalar` and not decomposed at this layer, whereas
+/// `data_in_access` still flattens the `a`/`b` reads inside it. The
+/// two views agree for the DataRef/nested-call argument shapes the v2
+/// examples use; the divergence on arithmetic-of-data args is a known
+/// modelling limitation owned by TASK-0158, not an invariant break.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DataflowEdge {
@@ -301,14 +315,43 @@ impl DataflowEdge {
             .cloned()
             .map(ArgBinding::Data)
             .collect();
-        DataflowEdge {
+        let edge = DataflowEdge {
             data_in,
             kernel,
             data_out,
             data_in_access,
             data_out_access,
             args,
-        }
+        };
+        edge.debug_check();
+        edge
+    }
+
+    /// `debug_assert!` the cross-field sync invariant documented on
+    /// the struct (TASK-0150 / review P1). Zero release cost. Called
+    /// by `new` and at every `build_acfg` construction site so a
+    /// future pass that mutates one field without its parallel is
+    /// caught loudly at the seam rather than mis-codegen'd far away.
+    pub fn debug_check(&self) {
+        debug_assert!(
+            self.data_in.len() == self.data_in_access.len()
+                && self
+                    .data_in
+                    .iter()
+                    .zip(&self.data_in_access)
+                    .all(|(d, a)| *d == a.data),
+            "DataflowEdge invariant: data_in must equal data_in_access \
+             projected (got data_in={:?}, data_in_access data={:?})",
+            self.data_in,
+            self.data_in_access.iter().map(|a| a.data).collect::<Vec<_>>(),
+        );
+        debug_assert!(
+            self.data_out_access.as_ref().map(|a| a.data) == self.data_out,
+            "DataflowEdge invariant: data_out_access.data must equal \
+             data_out (got data_out={:?}, data_out_access.data={:?})",
+            self.data_out,
+            self.data_out_access.as_ref().map(|a| a.data),
+        );
     }
 }
 
@@ -681,8 +724,14 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
 ///   consts (and, in principle, embedded data reads like `a[i]+1`)
 ///   ⇒ [`ArgBinding::Scalar`], carried verbatim as the [`IrExpr`].
 ///
-/// This is total — `build_acfg` never panics on a representable
-/// program. Faithfully representing a nested call (rather than
+/// This is total for **link-valid** IR: every argument shape maps to
+/// some `ArgBinding` variant without flattening or rejecting. It is
+/// NOT panic-free in the absolute — `bind_arg` `panic!`s on a
+/// `DataRef` to an undeclared symbol, which the lowering/link pass
+/// rejects upstream (`UnknownIdent`) so it cannot reach here for a
+/// link-valid program; the panic is a loud guard on that upstream
+/// invariant, not an expected path. Faithfully representing a nested
+/// call (rather than
 /// flattening or rejecting it here) keeps the EventList contract a
 /// mirror of the program; whether a given backend can lower a nested
 /// call in argument position is the *backend's* decision
@@ -746,19 +795,19 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                 data: d,
                 indices: lhs.indices.clone(),
             });
+            let edge = DataflowEdge {
+                data_in,
+                kernel: kernel_id,
+                data_out,
+                data_in_access,
+                data_out_access,
+                args: arg_bindings,
+            };
+            edge.debug_check();
             Some(ACFGNode::Operation(Operation {
                 kernel: kernel_id,
                 workers,
-                dataflow: DataflowDag {
-                    edges: vec![DataflowEdge {
-                        data_in,
-                        kernel: kernel_id,
-                        data_out,
-                        data_in_access,
-                        data_out_access,
-                        args: arg_bindings,
-                    }],
-                },
+                dataflow: DataflowDag { edges: vec![edge] },
             }))
         }
         // Identity copy or pure-expression RHS: skipped at M1.
@@ -776,19 +825,19 @@ fn build_effect(callee: &str, args: &[IrExpr], ctx: &BuildCtx<'_>) -> ACFGNode {
     let data_in_access = collect_dataref_access(args, ctx.name_data);
     let data_in = data_in_access.iter().map(|a| a.data).collect();
     let arg_bindings = build_arg_bindings(args, ctx.name_data);
+    let edge = DataflowEdge {
+        data_in,
+        kernel: kernel_id,
+        data_out: None,
+        data_in_access,
+        data_out_access: None,
+        args: arg_bindings,
+    };
+    edge.debug_check();
     ACFGNode::Operation(Operation {
         kernel: kernel_id,
         workers,
-        dataflow: DataflowDag {
-            edges: vec![DataflowEdge {
-                data_in,
-                kernel: kernel_id,
-                data_out: None,
-                data_in_access,
-                data_out_access: None,
-                args: arg_bindings,
-            }],
-        },
+        dataflow: DataflowDag { edges: vec![edge] },
     })
 }
 
