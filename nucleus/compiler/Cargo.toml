@@ -1,6 +1,6 @@
 # The `nucleus` pre-compiler binary. See PRD §1, §5, §12.2.
 #
-# At M0 this is a stub. Subsequent milestones will add parsing,
+# At M0 this is the parser foundation. Subsequent milestones will add
 # typechecking, ACFG/Petri-net lowering, and per-backend codegen.
 
 [package]
@@ -10,6 +10,22 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "compiler"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nucleus"
 path = "src/main.rs"
+
+[dependencies]
+# Parser combinator library. See nucleus/compiler/src/algo/parser.rs for
+# the choice rationale (TASK-0007 notes). Pinned minor for reproducibility.
+# spill-stack pulls `stacker` -> `psm` -> a build-dep on
+# `ar_archive_writer` which requires Cargo edition2024 (>1.83). Disable
+# spill-stack to keep us on the pinned MSRV. ahash is also off because
+# its transitive deps drift fast and we don't need its hashing speed
+# for a small DSL parser.
+chumsky = { version = "=0.9.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
