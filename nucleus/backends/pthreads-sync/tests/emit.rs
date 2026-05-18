@@ -156,22 +156,14 @@ fn distributed_placement_is_rejected() {
         kernel: KernelId(0),
         workers: wa,
         dataflow: DataflowDag {
-            edges: vec![DataflowEdge {
-                data_in: vec![],
-                kernel: KernelId(0),
-                data_out: Some(DataId(0)),
-            }],
+            edges: vec![DataflowEdge::new(vec![], KernelId(0), Some(DataId(0)))],
         },
     };
     let op_b = Operation {
         kernel: KernelId(1),
         workers: wb,
         dataflow: DataflowDag {
-            edges: vec![DataflowEdge {
-                data_in: vec![DataId(0)],
-                kernel: KernelId(1),
-                data_out: None,
-            }],
+            edges: vec![DataflowEdge::new(vec![DataId(0)], KernelId(1), None)],
         },
     };
 

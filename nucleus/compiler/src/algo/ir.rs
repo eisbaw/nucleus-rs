@@ -37,6 +37,9 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use super::ast::{Purity, ScalarType};
 
 /// A concrete data shape: scalar type + zero or more resolved
@@ -92,6 +95,7 @@ pub struct ResolvedKernel {
 /// expressions (not folded to numbers) because they typically depend
 /// on iteration variables.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IndexedRef {
     pub name: String,
     pub indices: Vec<IrExpr>,
@@ -102,6 +106,7 @@ pub struct IndexedRef {
 /// the lowering of an expression is mostly a copy; later passes may
 /// fold integer subtrees, but we don't speculate here.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum IrExpr {
     /// Integer literal. Stored as `i64`; range-narrowing happens later.
     IntLit(i64),
@@ -121,6 +126,7 @@ pub enum IrExpr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum IrBinOp {
     Add,
     Sub,

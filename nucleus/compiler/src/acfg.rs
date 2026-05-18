@@ -43,7 +43,7 @@
 //! - [`ACFGNode::Xfer`] — placeholder. Empty payload at M1; populated
 //!   by TASK-0018.
 //!
-//! ## DataflowDag (M1 simplification)
+//! ## DataflowDag (M1 simplification + TASK-0150 index plumbing)
 //!
 //! The PRD §8.2 and the 2013 thesis (§4.3.6.1 — equivalence by
 //! hashing) call for a rich per-block dataflow DAG. v2 M1 ships
@@ -54,6 +54,27 @@
 //! equivalence, common-subexpression elimination at the dataflow
 //! level) is filed as a follow-up (see task self-report and the
 //! existing `equivalence-by-hashing` notes in the repo).
+//!
+//! TASK-0150 enriches each [`DataflowEdge`] with the per-firing
+//! **index expressions** recovered from the AlgoIR — `data_in_access`
+//! (parallel to `data_in`) and `data_out_access` (parallel to
+//! `data_out`), each a [`DataAccess`] carrying the resolved
+//! [`DataId`] plus the verbatim [`IrExpr`] index list (e.g.
+//! `img_in[y-1][x+1]` ⇒ `indices = [y-1, x+1]`). This is *plumbing
+//! only*: this pass now records the access pattern; it does not yet
+//! act on it. The two consumers are:
+//!
+//! - **Per-Fire value bindings (TASK-0156).** The Event contract
+//!   needs to know, per firing, which `(DataId, slice)` feeds each
+//!   kernel parameter and which it writes.
+//! - **Precise per-tile halo synthesis (TASK-0158, coupled to
+//!   TASK-0117 distributed placement).** `transfer_inject` today
+//!   hoists whole-symbol transfers by *structural* loop-invariance;
+//!   the index expressions enable tightening that to actual
+//!   per-tile halo strips. That tightening is **not** done here —
+//!   it only matters once data is partitioned across workers
+//!   (TASK-0117), so it is filed rather than half-implemented. See
+//!   `transfer_inject` module docs ("Honest limitations").
 //!
 //! ## Worker assignment for distributed placements
 //!
@@ -156,24 +177,119 @@ pub struct DataflowDag {
     pub edges: Vec<DataflowEdge>,
 }
 
+/// A single indexed access to a data symbol inside a firing — the
+/// ACFG-level projection of an AlgoIR [`IndexedRef`] (PRD §6.2.3).
+///
+/// `data` is the resolved [`DataId`]. `indices` carries the per-axis
+/// index expressions verbatim from the AlgoIR (e.g. for
+/// `img_in[y-1][x+1]` it holds `[y-1, x+1]` as [`IrExpr`]s, in
+/// outer-to-inner dimension order). A scalar / whole-array read has
+/// an empty `indices` vector.
+///
+/// We carry the AlgoIR [`IrExpr`] tree directly rather than
+/// re-encoding it into a second ACFG-local expression type:
+///
+/// 1. **Single source of truth.** The index grammar lives once, in
+///    `algo::ir`. A parallel ACFG copy would be a second thing to
+///    keep in lockstep (PRD principle: minimise duplicated state).
+/// 2. The expressions are inert data at this layer — no pass folds
+///    or evaluates them yet; they only need to survive to the
+///    consumer (TASK-0156 / the deferred halo-synthesis follow-up).
+///
+/// Why this lives alongside the bare [`DataflowEdge::data_in`] /
+/// [`DataflowEdge::data_out`] rather than replacing them: every
+/// existing pass (`sync_inject`, `transfer_inject`, the pthreads-sync
+/// backend's ACFG walk, `block_transform`) consumes the bare
+/// `Vec<DataId>` shape. Replacing it would churn all of them for no
+/// behavioural gain in this task (TASK-0150 is *plumbing*; the
+/// precise per-tile consumer is deferred — see module docs and
+/// `transfer_inject` honest-limitations). Additive keeps the diff
+/// surgical and the determinism/e2e proof clean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DataAccess {
+    /// The data symbol read or written.
+    pub data: DataId,
+    /// Per-axis index expressions, outer dimension first. Empty for a
+    /// scalar or whole-array (un-indexed) reference.
+    pub indices: Vec<IrExpr>,
+}
+
 /// One `(inputs, kernel, output)` entry inside a [`DataflowDag`].
 ///
 /// `data_in` is the unique set of data symbols read by the firing,
 /// in the order they appear in the call's argument list. Duplicates
 /// are kept — a kernel may read the same `data` twice at different
 /// indices (e.g. a stencil kernel reads `img[y-1][x]` and
-/// `img[y+1][x]` of the same array). Index expressions are not
-/// recorded here at M1; the access pattern is recovered (later) from
-/// the source IR.
+/// `img[y+1][x]` of the same array).
+///
+/// `data_in_access` is the **index-carrying** parallel of `data_in`:
+/// one [`DataAccess`] per read, in the same argument order, with the
+/// per-firing index expressions recovered from the AlgoIR
+/// (TASK-0150). It is a strict super-set of the information in
+/// `data_in` (same `DataId`s, same order, same duplicates) plus the
+/// indices. `data_in` is retained for the passes that only need the
+/// bare symbol set; new consumers (per-Fire value bindings —
+/// TASK-0156; precise per-tile halo synthesis — deferred follow-up)
+/// read `data_in_access`.
 ///
 /// `data_out` is `None` for effect statements (the kernel returns
 /// `()`) and `Some` for dataflow statements (`d <-- kernel(...)`).
+/// `data_out_access` mirrors it with the LHS index expressions
+/// (e.g. the `[y][x]` of `img_out[y][x] <-- blur3(...)`).
+///
+/// Invariant (asserted in `build_acfg`, not the type): the
+/// `data`/order/length of `data_in_access` matches `data_in`, and
+/// `data_out_access.map(|a| a.data) == data_out`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DataflowEdge {
     pub data_in: Vec<DataId>,
     pub kernel: KernelId,
     pub data_out: Option<DataId>,
+    /// Index-carrying parallel of `data_in` (TASK-0150). Same length,
+    /// order, and duplicate structure as `data_in`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub data_in_access: Vec<DataAccess>,
+    /// Index-carrying parallel of `data_out` (TASK-0150). `None` iff
+    /// `data_out` is `None`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub data_out_access: Option<DataAccess>,
+}
+
+impl DataflowEdge {
+    /// Build an edge from the bare symbol lists, deriving
+    /// index-less [`DataAccess`] entries (empty `indices`).
+    ///
+    /// This is the constructor for callers that do **not** model
+    /// per-firing index expressions — principally synthetic test
+    /// fixtures and any pass that fabricates an edge structurally
+    /// (e.g. `block_transform`'s test helpers). `build_acfg` does
+    /// NOT use this: it has the AlgoIR and populates real indices
+    /// directly (TASK-0150). Keeping one constructor here means a
+    /// test never has to hand-write the parallel access vectors and
+    /// risk them drifting out of sync with `data_in`/`data_out` —
+    /// the derivation is done once, in one place.
+    pub fn new(data_in: Vec<DataId>, kernel: KernelId, data_out: Option<DataId>) -> Self {
+        let data_in_access = data_in
+            .iter()
+            .map(|d| DataAccess {
+                data: *d,
+                indices: Vec::new(),
+            })
+            .collect();
+        let data_out_access = data_out.map(|d| DataAccess {
+            data: d,
+            indices: Vec::new(),
+        });
+        DataflowEdge {
+            data_in,
+            kernel,
+            data_out,
+            data_in_access,
+            data_out_access,
+        }
+    }
 }
 
 /// Sync placeholder. Populated by the sync-injection pass
@@ -539,13 +655,20 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                 .copied()
                 .expect("kernel id assigned during pre-pass; link guarantees existence");
             let workers = resolve_worker_set(callee, ctx);
-            let data_in = collect_dataref_names(args, ctx.name_data);
+            let data_in_access = collect_dataref_access(args, ctx.name_data);
+            let data_in = data_in_access.iter().map(|a| a.data).collect();
             let data_out = ctx.name_data.get(&lhs.name).copied();
             // `data_out` is None only if the LHS isn't a declared
             // data symbol; the lowering pass rejects that (AlgoIR
             // LowerError::AssignmentTargetNotData), so it's safe to
             // expect.
             let data_out = Some(data_out.expect("dataflow LHS must be a declared data symbol"));
+            // TASK-0150: capture the LHS index expressions verbatim
+            // (e.g. the `[y][x]` of `img_out[y][x] <-- blur3(...)`).
+            let data_out_access = data_out.map(|d| DataAccess {
+                data: d,
+                indices: lhs.indices.clone(),
+            });
             Some(ACFGNode::Operation(Operation {
                 kernel: kernel_id,
                 workers,
@@ -554,6 +677,8 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                         data_in,
                         kernel: kernel_id,
                         data_out,
+                        data_in_access,
+                        data_out_access,
                     }],
                 },
             }))
@@ -570,7 +695,8 @@ fn build_effect(callee: &str, args: &[IrExpr], ctx: &BuildCtx<'_>) -> ACFGNode {
         .copied()
         .expect("kernel id assigned during pre-pass");
     let workers = resolve_worker_set(callee, ctx);
-    let data_in = collect_dataref_names(args, ctx.name_data);
+    let data_in_access = collect_dataref_access(args, ctx.name_data);
+    let data_in = data_in_access.iter().map(|a| a.data).collect();
     ACFGNode::Operation(Operation {
         kernel: kernel_id,
         workers,
@@ -579,6 +705,8 @@ fn build_effect(callee: &str, args: &[IrExpr], ctx: &BuildCtx<'_>) -> ACFGNode {
                 data_in,
                 kernel: kernel_id,
                 data_out: None,
+                data_in_access,
+                data_out_access: None,
             }],
         },
     })
@@ -614,43 +742,59 @@ fn resolve_worker_set(
         .collect()
 }
 
-/// Recursively walk an argument list and pull out every `DataRef`'s
-/// data name as a [`DataId`], in argument order. Duplicates kept
-/// (see [`DataflowEdge::data_in`] doc).
+/// Recursively walk an argument list and pull out every `DataRef`
+/// as a [`DataAccess`] (resolved [`DataId`] + verbatim index
+/// [`IrExpr`]s), in argument order. Duplicates kept (see
+/// [`DataflowEdge::data_in`] doc) — a stencil firing reads e.g.
+/// `img[y-1][x]` and `img[y+1][x]` of the same array; both appear,
+/// in order, with their distinct index lists (TASK-0150).
+///
+/// The traversal order is identical to the pre-TASK-0150
+/// `collect_dataref_names` (depth-first, argument order, recursing
+/// into nested calls/neg/binop), so a caller that maps this to just
+/// the `DataId`s gets exactly the old `data_in` vector. That is the
+/// single-source-of-truth contract: `data_in` is *derived* from
+/// `data_in_access`, never built independently.
 ///
 /// Index expressions inside a `DataRef` are NOT recursed into for
 /// further DataRefs — the algorithm grammar disallows data
 /// references in indices (indices are integer expressions over
-/// consts and iter vars). Walking would be a no-op; we skip it for
-/// brevity.
-fn collect_dataref_names(args: &[IrExpr], name_data: &BTreeMap<String, DataId>) -> Vec<DataId> {
+/// consts and iter vars). Walking would be a no-op; we keep the
+/// index list verbatim instead.
+fn collect_dataref_access(
+    args: &[IrExpr],
+    name_data: &BTreeMap<String, DataId>,
+) -> Vec<DataAccess> {
     let mut out = Vec::new();
     for a in args {
-        collect_dataref_names_expr(a, name_data, &mut out);
+        collect_dataref_access_expr(a, name_data, &mut out);
     }
     out
 }
 
-fn collect_dataref_names_expr(
+fn collect_dataref_access_expr(
     e: &IrExpr,
     name_data: &BTreeMap<String, DataId>,
-    out: &mut Vec<DataId>,
+    out: &mut Vec<DataAccess>,
 ) {
     match e {
-        IrExpr::DataRef(IndexedRef { name, .. }) => {
+        IrExpr::DataRef(IndexedRef { name, indices }) => {
             if let Some(id) = name_data.get(name) {
-                out.push(*id);
+                out.push(DataAccess {
+                    data: *id,
+                    indices: indices.clone(),
+                });
             }
         }
         IrExpr::Call { args, .. } => {
             for a in args {
-                collect_dataref_names_expr(a, name_data, out);
+                collect_dataref_access_expr(a, name_data, out);
             }
         }
-        IrExpr::Neg(inner) => collect_dataref_names_expr(inner, name_data, out),
+        IrExpr::Neg(inner) => collect_dataref_access_expr(inner, name_data, out),
         IrExpr::BinOp(_, l, r) => {
-            collect_dataref_names_expr(l, name_data, out);
-            collect_dataref_names_expr(r, name_data, out);
+            collect_dataref_access_expr(l, name_data, out);
+            collect_dataref_access_expr(r, name_data, out);
         }
         IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
     }

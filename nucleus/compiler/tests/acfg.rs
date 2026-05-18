@@ -35,7 +35,7 @@
 //!   test path here.
 
 use compiler::acfg::{build_acfg, ACFGNode};
-use compiler::algo::{lower_algo, parse_algo};
+use compiler::algo::{lower_algo, parse_algo, IrBinOp, IrExpr};
 use compiler::link;
 use compiler::sched::{lower_sched, parse_sched};
 
@@ -307,6 +307,191 @@ fn visit_operations(node: &ACFGNode, f: &mut impl FnMut(&compiler::acfg::Operati
             }
         }
         ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0150 — per-firing index expressions on DataflowEdge.
+// --------------------------------------------------------------------
+
+/// `ident - intlit` shaped IrExpr, the common stencil offset form.
+fn ident_minus(name: &str, k: i64) -> IrExpr {
+    IrExpr::BinOp(
+        IrBinOp::Sub,
+        Box::new(IrExpr::Ident(name.to_string())),
+        Box::new(IrExpr::IntLit(k)),
+    )
+}
+
+/// `ident + intlit`.
+fn ident_plus(name: &str, k: i64) -> IrExpr {
+    IrExpr::BinOp(
+        IrBinOp::Add,
+        Box::new(IrExpr::Ident(name.to_string())),
+        Box::new(IrExpr::IntLit(k)),
+    )
+}
+
+/// The 3x3 stencil `blur3` firing must record all nine `img_in`
+/// reads, in argument order, each with its own two-axis index
+/// expression list — including the duplicate symbol (`img_in`
+/// appears nine times). The LHS `img_out[y][x]` write must be
+/// captured in `data_out_access`.
+#[test]
+fn dataflow_edge_carries_stencil_index_expressions() {
+    let linked = linked_from_paths(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked);
+
+    let mut found_blur = false;
+    visit_operations(&acfg.root, &mut |op| {
+        let edge = op
+            .dataflow
+            .edges
+            .first()
+            .expect("operation has at least one edge");
+        // The blur3 firing is the one with nine inputs.
+        if edge.data_in.len() != 9 {
+            // single-assignment invariant: data_in mirrors access.
+            assert_eq!(
+                edge.data_in.len(),
+                edge.data_in_access.len(),
+                "data_in and data_in_access must be the same length"
+            );
+            for (id, acc) in edge.data_in.iter().zip(&edge.data_in_access) {
+                assert_eq!(*id, acc.data, "data_in[i] must match data_in_access[i]");
+            }
+            // data_out_access mirrors data_out.
+            assert_eq!(
+                edge.data_out,
+                edge.data_out_access.as_ref().map(|a| a.data),
+                "data_out_access.data must mirror data_out"
+            );
+            return;
+        }
+        found_blur = true;
+
+        // All nine reads name the same DataId (img_in) and the
+        // symbol-only view (data_in) is exactly that DataId nine
+        // times — proves data_in is derived from the access list.
+        let img_in = edge.data_in[0];
+        assert!(
+            edge.data_in.iter().all(|d| *d == img_in),
+            "all nine stencil reads are img_in"
+        );
+        assert_eq!(edge.data_in_access.len(), 9);
+        assert!(
+            edge.data_in_access.iter().all(|a| a.data == img_in),
+            "access list agrees on the symbol"
+        );
+
+        // Argument order is preserved: the source reads, in order,
+        //   img_in[y-1][x-1], img_in[y-1][x], img_in[y-1][x+1],
+        //   img_in[y  ][x-1], img_in[y  ][x], img_in[y  ][x+1],
+        //   img_in[y+1][x-1], img_in[y+1][x], img_in[y+1][x+1]
+        let y = "y";
+        let x = "x";
+        let expect: Vec<Vec<IrExpr>> = vec![
+            vec![ident_minus(y, 1), ident_minus(x, 1)],
+            vec![ident_minus(y, 1), IrExpr::Ident(x.into())],
+            vec![ident_minus(y, 1), ident_plus(x, 1)],
+            vec![IrExpr::Ident(y.into()), ident_minus(x, 1)],
+            vec![IrExpr::Ident(y.into()), IrExpr::Ident(x.into())],
+            vec![IrExpr::Ident(y.into()), ident_plus(x, 1)],
+            vec![ident_plus(y, 1), ident_minus(x, 1)],
+            vec![ident_plus(y, 1), IrExpr::Ident(x.into())],
+            vec![ident_plus(y, 1), ident_plus(x, 1)],
+        ];
+        let got: Vec<Vec<IrExpr>> = edge
+            .data_in_access
+            .iter()
+            .map(|a| a.indices.clone())
+            .collect();
+        assert_eq!(
+            got, expect,
+            "stencil index expressions must survive verbatim, in argument order, \
+             with duplicates kept"
+        );
+
+        // Output write: img_out[y][x].
+        let out = edge
+            .data_out_access
+            .as_ref()
+            .expect("dataflow statement has an output access");
+        assert_eq!(Some(out.data), edge.data_out);
+        assert_eq!(
+            out.indices,
+            vec![IrExpr::Ident(y.into()), IrExpr::Ident(x.into())],
+            "LHS index expressions captured"
+        );
+    });
+    assert!(found_blur, "expected to see the nine-input blur3 firing");
+}
+
+/// An effect statement (`save_image(img_out)`) reads a whole array
+/// with no indices; the access must still be recorded, with an
+/// empty `indices` list and `data_out_access == None`.
+#[test]
+fn effect_statement_records_whole_array_read_with_no_indices() {
+    let linked = linked_from_paths(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked);
+
+    // The save_image firing: one input, no output. (load_image has
+    // zero inputs and an output; blur3 has nine inputs.)
+    let mut saw_save = false;
+    visit_operations(&acfg.root, &mut |op| {
+        let edge = op.dataflow.edges.first().expect("edge");
+        if edge.data_in.len() == 1 && edge.data_out.is_none() {
+            saw_save = true;
+            assert_eq!(edge.data_in_access.len(), 1);
+            assert_eq!(edge.data_in[0], edge.data_in_access[0].data);
+            assert!(
+                edge.data_in_access[0].indices.is_empty(),
+                "whole-array read carries no index expressions"
+            );
+            assert!(edge.data_out_access.is_none());
+        }
+    });
+    assert!(saw_save, "expected to see the save_image effect firing");
+}
+
+/// Global structural invariant across every example/schedule used in
+/// the bit-identical e2e set: `data_in`/`data_in_access` stay aligned
+/// and `data_out_access` mirrors `data_out`. This pins the
+/// single-source-of-truth contract (data_in derived from access).
+#[test]
+fn access_lists_mirror_bare_lists_for_all_e2e_examples() {
+    for (algo, sched) in [
+        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
+        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
+        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
+        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
+        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+    ] {
+        let linked = linked_from_paths(algo, sched);
+        let acfg = build_acfg(&linked);
+        visit_operations(&acfg.root, &mut |op| {
+            for edge in &op.dataflow.edges {
+                assert_eq!(
+                    edge.data_in.len(),
+                    edge.data_in_access.len(),
+                    "{algo}: data_in / data_in_access length mismatch"
+                );
+                for (id, acc) in edge.data_in.iter().zip(&edge.data_in_access) {
+                    assert_eq!(*id, acc.data, "{algo}: per-index symbol mismatch");
+                }
+                assert_eq!(
+                    edge.data_out,
+                    edge.data_out_access.as_ref().map(|a| a.data),
+                    "{algo}: data_out / data_out_access mismatch"
+                );
+            }
+        });
     }
 }
 

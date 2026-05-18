@@ -62,11 +62,11 @@ fn op(workers: &[u64], kernel: u64, data_in: Vec<u64>, data_out: Option<u64>) ->
         kernel: kid,
         workers: ws(workers),
         dataflow: DataflowDag {
-            edges: vec![DataflowEdge {
-                data_in: data_in.into_iter().map(DataId).collect(),
-                kernel: kid,
-                data_out: data_out.map(DataId),
-            }],
+            edges: vec![DataflowEdge::new(
+                data_in.into_iter().map(DataId).collect(),
+                kid,
+                data_out.map(DataId),
+            )],
         },
     })
 }

@@ -319,11 +319,11 @@ fn smoke_synthetic_acfg_is_buildable() {
         kernel: KernelId(0),
         workers,
         dataflow: DataflowDag {
-            edges: vec![DataflowEdge {
-                data_in: vec![DataId(0)],
-                kernel: KernelId(0),
-                data_out: Some(DataId(1)),
-            }],
+            edges: vec![DataflowEdge::new(
+                vec![DataId(0)],
+                KernelId(0),
+                Some(DataId(1)),
+            )],
         },
     });
     let body = ACFGNode::Sequence(vec![op]);

@@ -104,11 +104,20 @@
 //!   The hoist is loop-invariance-by-structure, not by index
 //!   analysis: any data that crosses a worker boundary and isn't
 //!   produced inside the intra-tile body is treated as invariant
-//!   w.r.t. the intra-tile iteration. The ACFG layer doesn't carry
-//!   per-firing index expressions today (`DataflowEdge::data_in` is
-//!   a `Vec<DataId>`, see `acfg.rs`), so a precise check would
-//!   require re-plumbing AlgoIR indices through ACFG. Filed as a
-//!   follow-up if a future schedule wants opt-out granularity.
+//!   w.r.t. the intra-tile iteration. As of TASK-0150 the ACFG
+//!   layer *does* now carry per-firing index expressions
+//!   (`DataflowEdge::data_in_access` / `data_out_access`, see
+//!   `acfg.rs`) — the data needed for a precise per-tile / halo-band
+//!   check is present. This pass deliberately does **not** consume
+//!   it yet: the precise check only changes behaviour once data is
+//!   *partitioned* across workers (TASK-0117 distributed
+//!   placement), and synthesising halo strips on top of the
+//!   structural hoist is its own substantial pass. So TASK-0150
+//!   plumbs the data and stops; the consumer is TASK-0158 (filed),
+//!   coupled to TASK-0117. Until then the structural hoist remains
+//!   the behaviour — conservatively safe (it can only over-transfer
+//!   a full tile where a halo strip would suffice, never
+//!   under-synchronise).
 //!
 //! - **Block-entangled non-block transfers are stranded (TASK-0151
 //!   over-approximation).** The cross-scope finaliser (Pass A / Pass

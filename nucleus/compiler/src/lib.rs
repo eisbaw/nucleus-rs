@@ -21,8 +21,8 @@ pub mod petri;
 pub mod sched;
 
 pub use acfg::{
-    build_acfg, ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, SyncPlaceholder,
-    TransferPolicy, XferPlaceholder, XferRole, ACFG,
+    build_acfg, ACFGNode, DataAccess, DataflowDag, DataflowEdge, NotifyMode, Operation,
+    SyncPlaceholder, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 pub use capabilities::{
     check_schedule_compat, load_capabilities, CapError, CapMismatch, Capabilities,
