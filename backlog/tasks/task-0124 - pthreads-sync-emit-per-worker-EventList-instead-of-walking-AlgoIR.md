@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 23:26'
+updated_date: '2026-05-18 23:38'
 labels:
   - M2
   - backend
@@ -117,4 +117,10 @@ STILL-OPEN LANDMINES folded earlier (carry into TASK-0124 implementation):
 - sufficiency-test render-fn drift: the test helpers (render_int_expr_mirror, render_bound_from_sidecar, elem_type_from_sidecar, zero_lit_from_sidecar) HAND-MIRROR pthreads-sync render_int_expr/render_const_expr/rust_scalar_type/rust_scalar_zero. They will silently drift if the backend's spelling changes. When TASK-0124 switches the backend to the sidecar, REPLACE these mirrors with the real backend functions (or assert against real codegen output) to remove the drift risk.
 
 ORCHESTRATOR-FOLDED from TASK-0169 review gate (both GO): (5) RESOLVED the open ordering question — NONE of 01/02/03/05/07 trips render_call_arg param_ty scalar-cast path (DataRef args never consult param_ty; only Scalar args into scalar params do; code-provable at lib.rs:619-646 + machine-asserted by sidecar_kernel_sigs_match_algoir_for_all_e2e_examples). So TASK-0124 is byte-identical for the 5 WITHOUT runtime-needing kernel_sigs, AND the contract is now FULLY AlgoIR-free (last gap closed by TASK-0169). (6) The same-name-loop collect_loop_bounds panic is now a first-class task TASK-0170 (dep edge added: task-0124 -> task-0170) — TASK-0124 must not let the EventList path reach that bare panic. (7) Finding #1 (replace hand-mirrored render_int_expr/elem_type/zero_lit/render_bound helpers in tests with the REAL backend fns when emit() is EventList-based) stands — the mirror-drift goes live the moment TASK-0124 consumes the sidecar.
+
+[forward-carried from TASK-0170]
+- The build_sidecar same-name-loop bound-conflict PANIC is now a TYPED error. The EventList-only path you build here is panic-SAFE: build_sidecar can only return a clean SidecarError, never abort.
+- build_sidecar SIGNATURE CHANGED: pub fn build_sidecar(linked: &LinkedIR, acfg: &compiler::acfg::ACFG) -> Result<NameSidecar, compiler::sidecar::SidecarError>. When you wire build_sidecar into the driver/backend, propagate the Err via the existing String-error channel exactly like apply_block_transforms: `.map_err(|e| format!("sidecar error: {e}"))?` (driver prints `nucleus: error: ...`). SidecarError impls Display + std::error::Error; re-exported as compiler::SidecarError / compiler::sidecar::SidecarError.
+- Reachability finding: a same-name-different-bounds loop pair (e.g. `for i:0..N {..} for i:0..M {..}`, distinct data so single-assignment holds) is a VALID program that reaches this error. ACFG::name_iter_vars assigns one IterVar per NAME so both loops collapse onto one Event::Loop.iter_var / one loop_bounds entry. Until TASK-0171 lands, such programs are a typed compile error (cannot be codegenned) — do NOT attempt to special-case it in the backend; surface the error.
+- Option-c deep fix (distinct IterVar identity so these COMPILE) = TASK-0171 (depends on TASK-0170).
 <!-- SECTION:NOTES:END -->
