@@ -1,0 +1,3 @@
+// Negative contract fixture: declared 2-ary, implemented 3-ary.
+
+kernel add : (f32, f32) -> f32   pure;

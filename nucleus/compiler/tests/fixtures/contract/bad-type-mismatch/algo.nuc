@@ -1,0 +1,4 @@
+// Negative contract fixture: declared f32 parameter, implemented
+// f64. Single TypeMismatch on parameter #1.
+
+kernel add : (f32, f32) -> f32   pure;

@@ -28,4 +28,17 @@ path = "src/main.rs"
 # for a small DSL parser.
 chumsky = { version = "=0.9.3", default-features = false, features = ["std"] }
 
+# Rust source parser. Used by `crate::contract` to extract `pub fn`
+# signatures from a user's adjacent kernels.rs and match them against
+# the algorithm's declared kernels (TASK-0012). `full` enables item
+# parsing (incl. `fn`, attributes, generics — we don't use generics
+# but the feature set is one knob). Minor version pinned for
+# reproducibility; major 2 has been stable since 2023.
+syn = { version = "=2.0.117", default-features = false, features = ["full", "parsing", "printing"] }
+
+# `quote::ToTokens` for syn::Type -> String rendering. Same author as
+# syn; pulled in transitively but listed explicitly so the rendering
+# path doesn't accidentally pick up a different version.
+quote = { version = "=1.0.40", default-features = false }
+
 [dev-dependencies]

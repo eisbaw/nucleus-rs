@@ -1,0 +1,4 @@
+// Negative contract fixture: the algorithm side is well-formed,
+// but kernels.rs has a Rust-level error that rustc rejects.
+
+kernel add : (f32, f32) -> f32   pure;

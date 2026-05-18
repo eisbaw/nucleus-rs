@@ -10,9 +10,11 @@
 //! private until a caller needs them.
 
 pub mod algo;
+pub mod contract;
 pub mod error;
 pub mod link;
 pub mod sched;
 
+pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};

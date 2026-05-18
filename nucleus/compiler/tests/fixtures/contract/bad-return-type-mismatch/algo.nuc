@@ -1,0 +1,4 @@
+// Negative contract fixture: parameters match, return type
+// mismatches (declared f32, implemented f64).
+
+kernel norm : (f32, f32) -> f32   pure;

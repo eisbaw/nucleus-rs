@@ -1,0 +1,4 @@
+// Negative contract fixture: `add` exists with the right signature
+// but lacks the `pub` modifier.
+
+kernel add : (f32, f32) -> f32   pure;

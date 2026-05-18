@@ -1,0 +1,5 @@
+// Negative contract fixture: `mul` is declared but absent from
+// kernels.rs.
+
+kernel add : (f32, f32) -> f32   pure;
+kernel mul : (f32, f32) -> f32   pure;
