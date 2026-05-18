@@ -53,6 +53,31 @@ determinism-check:
 determinism-check-negative:
     cd nucleus && if NUC_NONDET_TEST=1 cargo run --release --bin nucleus-e2e -- --check-determinism; then echo "FAIL: determinism check did NOT detect injected nondeterminism"; exit 1; else echo "OK: determinism check correctly bit on injected nondeterminism"; fi
 
+# Aggregate verification gate. Single source of truth shared by CI
+# (.github/workflows/ci.yml) and local developers: "what CI does" ==
+# "what you can run here". Runs the full tier-1 gate in dependency
+# order. just aborts a recipe on the first line whose command exits
+# non-zero, so this is fail-fast with no silent continuation.
+#
+# Order rationale: cheapest/most-localised failures first (check →
+# clippy → test) before the slower integration gates (e2e →
+# determinism), so a broken build surfaces in seconds not minutes.
+#
+# NOTE (TASK-0162): the `clippy` step below intentionally calls the
+# `clippy` recipe as the justfile defines it TODAY (workspace, not
+# --all-targets). TASK-0162 will tighten that recipe to
+# `--all-targets` after the pre-existing test-lint debt is paid; when
+# it does, this aggregate inherits the stricter gate for free because
+# it delegates rather than re-implements. Do not inline a different
+# clippy invocation here.
+ci:
+    just check
+    just clippy
+    just test
+    just e2e
+    just determinism-check
+    just determinism-check-negative
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean
