@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 16:43'
-updated_date: '2026-05-18 23:06'
+updated_date: '2026-05-18 23:11'
 labels:
   - M2
   - compiler
@@ -62,6 +62,8 @@ GATE (actual, this session): just test all groups 0 failed (1 pre-existing ignor
 GOTCHAS: (1) flatten_all yields only non-Loop leaves, never Loop nodes — the inner-loop discovery in the bound test needed a dedicated recursive collect_loop_vars. (2) ScalarType/ResolvedType/ResolvedConst had NO serde derives (only IrExpr did); had to add them gated — additive, safe. (3) Same-named loop vars share ONE IterVar (PRD §6.2.3 one namespace) -> one loop_bounds entry; build_sidecar keeps first occurrence and PANICS loud if a later same-named loop has different bounds (a shared IterVar genuinely cannot represent both; no e2e example hits this — recorded as known limitation, not silently overwritten).
 
 SCOPE BOUNDARY: TASK-0160 makes the contract SUFFICIENT and proves it. It does NOT switch pthreads-sync off the AlgoIR walk — that is TASK-0124 (the emit() signature change + AlgoIR removal).
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO ("Done is defensible"), both read-only. Numbers RE-RUN by reviewers: just test 349 passed/0 failed/1 ignored (petri_to_events 19/0; 4 sidecar_* sufficiency tests pass); just e2e UNCHANGED 10/8/0/2/required-fail 0; determinism-check 8/0 byte-identical; determinism-check-negative bites 2/2 non-flaky; clippy clean. DE-RISK INVARIANT PROVEN: git diff over acfg.rs/acfg_to_petri.rs/backends = 0 lines (symbolic bound captured additively, eval_const fold/Repeat.range/Net/boundedness/deadlock untouched). Architect: sidecar = derived-view (single-source-of-truth OK, not divergent copy), AC#2 proof real & non-circular (render_bound_from_sidecar faithfully clones render_const_expr, only consts source swapped, asserts (16_i64 - 1_i64) from sidecar alone), shared-IterVar panic correct + consistent with acfg precedent, AC#4+TASK-0169 honest deferral (not AC-gaming; correct dep edges), Done correct (asymmetry vs TASK-0159 In-Progress is principled). 4 findings, none blocking, all forward-carried to TASK-0124. TASK-0160 Done is honest: all 4 ACs met + independently verified + both reviews GO.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

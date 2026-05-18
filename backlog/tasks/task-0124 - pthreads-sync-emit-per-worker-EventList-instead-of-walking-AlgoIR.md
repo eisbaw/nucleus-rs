@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 23:06'
+updated_date: '2026-05-18 23:11'
 labels:
   - M2
   - backend
@@ -99,4 +99,6 @@ WHAT REMAINS FOR TASK-0124 (the actual switch — NOT done here):
 TASK-0124 AC#2 is now achievable byte-identically (no workaround / no AlgoIR smuggle). The value half (FireBinding) was TASK-0156; loop structure TASK-0159; types/consts/symbolic-bound TASK-0160. The switch is mechanical from here.
 
 CORRECTION to prior forward-carry note: the per-kernel-param-type follow-up was filed as TASK-0169 (not the placeholder "TASK-0161" mentioned inline above). TASK-0169 extends NameSidecar with per-KernelId param/return ResolvedType for render_call_arg scalar-arg casts. For e2e 01/02/03/05/07 the only casts are iter-var i64->usize INDEX casts (not kernel-param), so TASK-0124 may be byte-identical for those 5 WITHOUT TASK-0169 — but verify during TASK-0124 whether any trips render_call_arg param_ty before finalising dependency ordering. Added dep task-0124->task-0169.
+
+ORCHESTRATOR-FOLDED review findings from the TASK-0160 gate (act on these when implementing the backend switch): (1) The "01/02/03/05/07 byte-identical WITHOUT TASK-0169" claim is sound reasoning but STATICALLY UNPROVEN — render_call_arg applies a param_ty cast only for scalar-arith args (IntLit|Ident|Neg|BinOp) into a scalar param; DataRef element reads never consult param_ty. Verify per-kernel for the 5 examples whether any trips that path; if any does, TASK-0169 is a hard prerequisite, else it can follow. Do NOT treat byte-identical-without-0169 as established. (2) LANDMINE: build_sidecar HARD-PANICS if two same-named loops have different bounds (shared IterVar cannot represent both). No current example hits it but it is a compiler-runtime panic; add an explicit guard/AC before the EventList codegen path goes live (also relevant to TASK-0167). (3) DRIFT RISK: TASK-0160 sufficiency test re-implements render_const_expr/rust_scalar_* (they need RenderCtx); when emit() becomes EventList-based, switch the backend to consume the sidecar via the REAL render functions so the byte-match cannot silently drift. (4) Sidecar has no production consumer until you land — it is a proven honest-placeholder; closing TASK-0124 is what makes it live.
 <!-- SECTION:NOTES:END -->
