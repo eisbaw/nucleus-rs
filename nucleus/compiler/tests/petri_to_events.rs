@@ -325,7 +325,7 @@ fn repeat_preserves_structure_in_event_list() {
 }
 
 #[test]
-fn repeat_empty_range_emits_no_loop() {
+fn repeat_empty_range_emits_loop_with_empty_range() {
     // An empty/inverted source range yields zero replays. The body
     // projects once into the scratch map; since the body IS non-empty
     // here we DO emit a Loop, carrying the (empty) range verbatim so a

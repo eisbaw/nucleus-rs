@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 16:42'
-updated_date: '2026-05-18 22:39'
+updated_date: '2026-05-18 22:53'
 labels:
   - M2
   - compiler
@@ -25,10 +25,10 @@ Blocks TASK-0124 AC#2 byte-identical. acfg_to_events UNROLLS every ACFGNode::Rep
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Event projection preserves loop-nest structure (no blanket unroll) OR an equivalent sidecar carries iter-var name + symbolic loop bound expr so a backend can re-emit the rolled for-loop verbatim
+- [x] #1 Event projection preserves loop-nest structure (no blanket unroll) OR an equivalent sidecar carries iter-var name + symbolic loop bound expr so a backend can re-emit the rolled for-loop verbatim
 - [ ] #2 Symbolic/const loop bound expression (e.g. H-1 unevaluated) survives to the contract; backend can render (16_i64 - 1_i64) without AlgoIR
-- [ ] #3 Determinism + bit-identical e2e for 01/02/03/05/07 preserved; acfg_to_petri / boundedness / deadlock passes still correct (they consume the unrolled order today)
-- [ ] #4 petri_to_events + acfg_to_petri module docs updated to reflect the new contract; the stale M2 'we unroll' note corrected
+- [x] #3 Determinism + bit-identical e2e for 01/02/03/05/07 preserved; acfg_to_petri / boundedness / deadlock passes still correct (they consume the unrolled order today)
+- [x] #4 petri_to_events + acfg_to_petri module docs updated to reflect the new contract; the stale M2 'we unroll' note corrected
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,4 +47,34 @@ Blocks TASK-0124 AC#2 byte-identical. acfg_to_events UNROLLS every ACFGNode::Rep
 
 <!-- SECTION:NOTES:BEGIN -->
 Forward-carried from TASK-0142: CONFIRMED how loop structure currently survives to the backend. The pthreads-sync single-worker path (backends/pthreads-sync/src/lib.rs render_main_rs, ~lines 25-33 and 78-81) does NOT use the ACFG loop structure at all — it walks LinkedIR::algo SOURCE IrStmt directly and emits `for VAR in lo..hi` from the source loop. Consequence for this task: block_transform/tiling (and any other ACFG-level loop rewrite) is STRUCTURALLY INVISIBLE in the single-worker emitted code today; it only shapes the ACFG consumed by acfg_to_petri/petri_to_events/boundedness/deadlock. Also: acfg_to_petri/petri_to_events UNROLL every Repeat by range.end-range.start (static i64 bounds) — the Petri/Event path has NO rolled-loop representation; loop nest + iter-var-name + symbolic bounds are LOST before events. So EventList-only codegen genuinely needs the new rolled-Repeat event contract this task proposes; it cannot recover loop structure from the current Event stream or from acfg_to_petri output. TASK-0142 deliberately kept the tiling as static-range Repeat decomposition (full nest + trailing partial tile) precisely to avoid a dynamic Repeat bound rippling into these unroll-by-length consumers — a rolled-Repeat event contract here must decide how it represents a partial/trailing tile (a tile whose inner trip count differs from the others).
+
+TASK-0159 implemented (commit ee309ff). Option (a): added Event::Loop { iter_var, range: Range<i64>, body: Vec<Event> } to event.rs, mirroring ACFGNode::Repeat. petri_to_events::walk now projects a Repeat body ONCE into a scratch per-worker BTreeMap and wraps each worker slice in one Event::Loop; nested Repeat recurses to nested Loop. acfg_to_petri UNTOUCHED (analysis Net still unrolls — boundedness/deadlock/determinism decoupled by design).
+
+GATE (actual): just test 33 ok-groups / 0 failed. e2e total 10 pass 8 fail 0 skip 2 required-fail 0 (byte-identical — confirmed no non-test EventList codegen consumer; driver/pthreads-sync walk AlgoIR). determinism-check 10/8/0/2 byte-identical. determinism-check-negative correctly bites. clippy --workspace -D warnings clean.
+
+AC#1 MET (no blanket unroll). AC#3 MET (determinism + bit-identical e2e; analyses untouched). AC#4 MET (petri_to_events + acfg_to_petri module docs corrected).
+
+AC#2 NOT MET — honestly deferred. ACFGNode::Repeat.range is a concrete Range<i64>; build_acfg eval_const folds H-1 -> 15 (panics on non-const) at acfg.rs ~694-697, BEFORE the ACFG layer this pass reads. The symbolic expr does not exist here; carrying it requires not-folding at lowering = TASK-0160 (types/consts; its AC#2 explicitly owns "pre-resolved loop-bound info reaches the contract"). Added dep task-0159->task-0160. Concrete range IS carried verbatim so a backend re-emits for v in lo..hi exactly with the const bound.
+
+GOTCHAS / decisions: (1) Event needed a manual recursive Hash (Range not Hash + Vec<Event> recursion) — mirrors IterTile/FireBinding. (2) A worker contributing nothing to a loop body gets NO Loop (not an empty-bodied one) — matches old unroll observable behaviour for silent workers; tested. (3) A degenerate range (5..5) STILL emits a Loop carrying the empty range (faithful to source for; backend yields zero replays) — this DIFFERS from old behaviour which emitted zero events and lost the loop. (4) Trailing partial tile = TWO SIBLING Event::Loops with different ranges (falls out of mirroring Sequence/Repeat; NOT one parameterised loop) — pinned by blocked_stencil_trailing_partial_tile_is_two_sibling_loops. (5) e2e binding-reconstruction + Push/Wait-pairing tests had to recurse into Loop bodies (flat top-level walk now only sees the Loop wrapper) — flipped, coverage kept.
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO (both read-only). Numbers RE-RUN by reviewers this cycle: just test 345 passed/0 failed/1 ignored (compiler 33/0; flipped repeat_preserves_structure_in_event_list + new Loop/blocked-stencil/empty-range/idle-worker tests all pass); just e2e UNCHANGED total 10/pass 8/fail 0/skip 2/required-fail 0 (no codegen consumer of EventList -> cannot regress, confirmed); determinism-check 8/0 byte-identical; determinism-check-negative bites 2/2 non-flaky; clippy clean; acfg_to_petri.rs change confirmed DOC-ONLY (Net/unroll path untouched -> AC#3 satisfied by non-modification); new path determinism verified. Architect: Event::Loop design sound, manual recursive Hash correct+consistent with IterTile/FireBinding precedent (Eq/Hash agree), Net/EventList decoupling sound and triple-documented against re-unification, AC#2 deferral honest (genuine eval_const fold at acfg.rs ~694; not AC-gaming), forward-carry to TASK-0124/0160 accurate+actionable. ORCHESTRATOR HARDENING (4 architect doc-nits fixed in-thread, commit pending): event.rs Sync/Hash rationale destaled; event.rs wire-format doc now shows Loop shape; petri_to_events.rs line-77 stale "unrolled" clause corrected; test repeat_empty_range_emits_no_loop renamed -> repeat_empty_range_emits_loop_with_empty_range (it asserts a Loop IS emitted). Re-verified: event 33/0, petri_to_events 15/0, clippy clean. AC#1/#3/#4 met+verified; AC#2 honestly unchecked (dep task-0160); status In Progress — correct.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Structure-preserving EventList loop nest (commit ee309ff). 3 of 4 ACs met; AC#2 honestly deferred to TASK-0160 (dependency added) — task stays In Progress.
+
+WHAT CHANGED
+- event.rs: new Event::Loop { iter_var: IterVar, range: Range<i64>, body: Vec<Event> } (option (a)), mirrors ACFGNode::Repeat one-for-one. Event gets a manual recursive Hash (Range<i64> not Hash + Vec<Event> recursion; mirrors IterTile/FireBinding). Event::loop_over constructor.
+- petri_to_events.rs: Repeat arm no longer unrolls — projects body once into a scratch per-worker BTreeMap, wraps each worker slice in one Event::Loop; nested Repeat -> nested Loop. Deterministic (BTreeMap WorkerId order). Module docs corrected.
+- acfg_to_petri.rs: module doc corrected — analysis Net STILL unrolls (deliberate, decoupled); the stale "matches what EventList needs" claim removed. No code change to the Net path.
+- tests: repeat_unrolls_in_event_list flipped to repeat_preserves_structure_in_event_list (+ empty-range, silent-worker, blocked-stencil sibling-loop tests); e2e binding/Push-Wait tests recurse into Loop bodies; 4 event.rs Loop unit tests.
+
+USER IMPACT: the EventList is now a faithful rolled-loop codegen contract — unblocks the loop-structure half of TASK-0124. Trailing partial tile = two sibling Event::Loops with different ranges (forward-carried from TASK-0142).
+
+GATE (actual): just test 33/0; e2e 10 pass 8 fail 0 skip 2 byte-identical; determinism-check 10/8/0/2 byte-identical; determinism-check-negative bites; clippy -D warnings clean.
+
+HONEST LIMITATION (AC#2): loop bound is a CONCRETE Range<i64>; build_acfg folds H-1 -> 15 before this layer (acfg.rs ~694-697). Symbolic bound requires TASK-0160 (not-fold at lowering / const sidecar). Dep task-0159->task-0160 filed; AC#2 unchecked; status remains In Progress until TASK-0160 lands and TASK-0124 can re-render (16_i64 - 1_i64).
+<!-- SECTION:FINAL_SUMMARY:END -->

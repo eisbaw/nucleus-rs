@@ -73,11 +73,15 @@
 //!   re-emit the rolled `for` loop verbatim; flattening to N copies
 //!   destroys the loop variable, the bound and the for-structure.
 //! - `ACFGNode::Operation(op)` — emit `Event::Fire { kernel, tile:
-//!   empty, bindings }` on every worker in `op.workers`. The tile is
-//!   empty because the unrolled Repeat does *not* preserve a
-//!   per-iteration coordinate at M2 (`acfg_to_petri` discards the
-//!   iter-coord too; see its module docs for the same trade). Filed
-//!   as a follow-up. `bindings` (TASK-0156) is the per-firing value
+//!   empty, bindings }` on every worker in `op.workers`. The per-Fire
+//!   tile is empty because the enclosing `Event::Loop` already names
+//!   the iteration coordinate (`iter_var` + `range`); duplicating it
+//!   on every `Fire` would be redundant. (Contrast: the analysis Net
+//!   in `acfg_to_petri` unrolls and discards the iter-coord entirely
+//!   — that path is unchanged; see its module docs and the
+//!   Net-vs-EventList note below.) Filed as a follow-up if a backend
+//!   ever needs the coordinate on the `Fire` itself. `bindings`
+//!   (TASK-0156) is the per-firing value
 //!   binding projected from the Operation's single `DataflowEdge`:
 //!   the positional `args` (per kernel parameter) and the output
 //!   `(DataId, slice)`. This is what lets a backend compute the

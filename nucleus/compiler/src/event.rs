@@ -70,12 +70,14 @@
 //!   axis is the outer loop), so reordering would lose information.
 //!
 //! - **`Sync` uses `BTreeSet<WorkerId>`** for `participants`. The PRD
-//!   types it as `Set<WorkerId>`; concretely we want a `Set` that:
-//!   - Has stable iteration order (for deterministic codegen and
-//!     stable hashes across runs).
-//!   - Implements `Hash` (so `Event: Hash`).
-//!
-//!   `HashSet` fails both. `BTreeSet<WorkerId>` satisfies both.
+//!   types it as `Set<WorkerId>`; concretely we want a `Set` with
+//!   stable iteration order, for deterministic codegen and run-stable
+//!   hashing/serialisation. `HashSet`'s nondeterministic iteration
+//!   fails that; `BTreeSet<WorkerId>` satisfies it. (`Event`'s `Hash`
+//!   is hand-written since TASK-0159 — see "Why `Hash` is
+//!   hand-written" below; the participant set must still be
+//!   order-stable so that hand-written `Hash` and the serialised form
+//!   are identical across runs.)
 //!
 //! - **Serde support is gated behind the default-on `serde` feature.**
 //!   The contract is the inter-stage wire format (schedule pass ->
@@ -410,8 +412,10 @@ impl std::hash::Hash for FireBinding {
 /// the actual emission; this module just defines the type).
 ///
 /// Wire format (with `serde` feature on): externally tagged JSON by
-/// default — `{"Fire": {"kernel": 0, "tile": {...}, "bindings":
-/// {...}}}`. Backends and golden tests can rely on this shape.
+/// default — e.g. `{"Fire": {"kernel": 0, "tile": {...}, "bindings":
+/// {...}}}` and `{"Loop": {"iter_var": 0, "range": {"start": 0,
+/// "end": 4}, "body": [ ... ]}}` (nested `Event`s; TASK-0159).
+/// Backends and golden tests can rely on this shape.
 ///
 /// ## Why `Hash` is hand-written (not derived) — TASK-0159
 ///

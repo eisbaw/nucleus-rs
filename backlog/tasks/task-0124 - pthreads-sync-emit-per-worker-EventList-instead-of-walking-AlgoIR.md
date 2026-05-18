@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 22:00'
+updated_date: '2026-05-18 22:47'
 labels:
   - M2
   - backend
@@ -71,4 +71,12 @@ Deliberately did NOT introduce a NameSidecar + dual signature while still walkin
 Filed precise blockers: TASK-0159 (Event contract must carry loop-nest structure / stop blanket unroll) and TASK-0160 (NameSidecar must carry per-DataId ResolvedType + const values). TASK-0124 needs BOTH landed first, THEN the emit() switch is mechanical (the value half is already proven by TASK-0156). Added deps task-0159, task-0160. No code committed (none written); backlog-only changes.
 
 Forward-carried from TASK-0142: the reason this migration is non-trivial — render_main_rs currently emits loops by walking LinkedIR::algo source IrStmt directly (lib.rs ~25-33,78-81), NOT the ACFG/Event stream. acfg_to_petri/petri_to_events unroll Repeat by range length, so the Event stream has no rolled-loop / iter-var / symbolic-bound info (depends on TASK-0159/0160). When EventList-only codegen lands, block=N tiling (TASK-0142) will need to become visible in emitted code: today 05-stencil/blocked passes only because single-worker codegen ignores the tiled ACFG and the result is schedule-independent. A correct EventList path must emit the (tile-loop, intra-tile-loop) nest INCLUDING the trailing partial tile (static Sequence[full-nest, partial-tile] shape produced by block_transform) — verify the per-worker EventList projection preserves that structure rather than re-flattening it.
+
+Forward-carried from TASK-0159 (commit ee309ff): the per-worker EventList is now STRUCTURE-PRESERVING for loops. A loop projects to Event::Loop { iter_var: IterVar, range: Range<i64>, body: Vec<Event> } (mirrors ACFGNode::Repeat), NOT N flat unrolled Fires. To emit a rolled `for` you walk Event::Loop and emit `for <iter_var> in range.start..range.end { <body> }` — Fires/Push/Wait/Sync inside the loop are NESTED in body, recurse into them. A nested loop is a nested Event::Loop.
+
+TRAILING PARTIAL TILE (block= / tiling): a non-divisible block decomposes to TWO SIBLING Event::Loops with DIFFERENT ranges in the same worker list (full-tile loop + shorter trailing-partial-tile loop), NOT one parameterised loop. Emit each sibling loop verbatim in order; do not try to merge them.
+
+EDGE CASES: (a) a worker that does nothing inside a loop gets NO Loop at all (not an empty-bodied one) — so absence of a Loop = that worker is idle in that scope. (b) A degenerate/empty range (e.g. 5..5) is still emitted as an Event::Loop with that empty range — emitting `for v in 5..5 {}` (zero iterations) is correct and faithful.
+
+LIMITATION you will hit for full AC#2 byte-identical: range is a CONCRETE Range<i64> (e.g. 1..15), the symbolic bound (H-1) is already folded by build_acfg and does NOT reach the EventList. Rendering `(16_i64 - 1_i64)` verbatim is blocked on TASK-0160; with TASK-0159 alone you can only render the concrete `1_i64..15_i64`. TASK-0124 full AC#2 needs BOTH TASK-0159 (loop structure, done) AND TASK-0160 (symbolic bound + ResolvedType/const sidecar).
 <!-- SECTION:NOTES:END -->
