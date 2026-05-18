@@ -120,12 +120,7 @@ pub enum BlockTransformError {
 impl std::fmt::Display for BlockTransformError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BlockTransformError::NotDivisible {
-                var,
-                lo,
-                hi,
-                block,
-            } => write!(
+            BlockTransformError::NotDivisible { var, lo, hi, block } => write!(
                 f,
                 "loop `{var}` has range {lo}..{hi} (length {len}) which is not evenly \
                  divisible by `block={block}`; trailing-remainder tiles are not yet supported \
@@ -160,10 +155,7 @@ impl std::error::Error for BlockTransformError {}
 /// against its target loop's bounds, and only then walks the tree.
 /// Failing loud at the validation stage gives the user a single
 /// actionable diagnostic instead of a half-rewritten IR.
-pub fn apply_block_transforms(
-    linked: &LinkedIR,
-    acfg: ACFG,
-) -> Result<ACFG, BlockTransformError> {
+pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, BlockTransformError> {
     // ---- 1. Collect every `block=N` directive from the schedule. ----
     //
     // `linked.sched.loops` is a BTreeMap<var_name, ResolvedLoopDirective>
@@ -200,9 +192,7 @@ pub fn apply_block_transforms(
     for (var, n) in &block_by_var {
         let iter_var = match acfg.name_iter_vars.get(var) {
             Some(v) => *v,
-            None => {
-                return Err(BlockTransformError::UnknownLoopVar { var: var.clone() })
-            }
+            None => return Err(BlockTransformError::UnknownLoopVar { var: var.clone() }),
         };
         match find_loop_range_by_id(&acfg.root, iter_var) {
             Some((lo, hi)) => {
@@ -261,10 +251,7 @@ pub fn apply_block_transforms(
 
     let mut tile_var_for: BTreeMap<IterVar, (String, IterVar, u64)> = BTreeMap::new();
     for (var, n) in &block_by_var {
-        let inner_id = name_iter_vars
-            .get(var)
-            .copied()
-            .expect("validated above");
+        let inner_id = name_iter_vars.get(var).copied().expect("validated above");
         let tile_name = format!("{var}__tile");
         if name_iter_vars.contains_key(&tile_name) {
             panic!(
@@ -295,7 +282,6 @@ pub fn apply_block_transforms(
         inner_block_iter_vars,
     })
 }
-
 
 // --------------------------------------------------------------------
 // Internal helpers

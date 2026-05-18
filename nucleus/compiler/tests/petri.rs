@@ -8,8 +8,8 @@
 
 use std::num::NonZeroU32;
 
-use compiler::petri::{ArcKind, FireError, Net};
 use compiler::event::WorkerId;
+use compiler::petri::{ArcKind, FireError, Net};
 
 fn cap(n: u32) -> Option<NonZeroU32> {
     Some(NonZeroU32::new(n).expect("test capacity must be > 0"))
@@ -64,7 +64,9 @@ fn producer_consumer_buffer_fifo_count() {
 
     // A third consume must fail — no tokens to consume.
     match net.fire(consumer) {
-        Err(FireError::NotEnabled { place, have, need, .. }) => {
+        Err(FireError::NotEnabled {
+            place, have, need, ..
+        }) => {
             assert_eq!(place, buffer);
             assert_eq!(have, 0);
             assert_eq!(need, 1);
@@ -110,7 +112,9 @@ fn not_enabled_when_input_short() {
     net.add_arc(ArcKind::PtoT, p, t, 3);
 
     match net.fire(t) {
-        Err(FireError::NotEnabled { have, need, place, .. }) => {
+        Err(FireError::NotEnabled {
+            have, need, place, ..
+        }) => {
             assert_eq!(have, 1);
             assert_eq!(need, 3);
             assert_eq!(place, p);
@@ -137,12 +141,21 @@ fn enabled_transitions_filters_by_capacity_and_availability() {
 
     let enabled = net.enabled_transitions(&net.current_marking);
     assert!(enabled.contains(&drain), "drain should be enabled");
-    assert!(!enabled.contains(&fill), "fill should be disabled by capacity");
+    assert!(
+        !enabled.contains(&fill),
+        "fill should be disabled by capacity"
+    );
 
     net.fire(drain).expect("drain fires");
     let enabled = net.enabled_transitions(&net.current_marking);
-    assert!(enabled.contains(&fill), "fill enabled after drain frees space");
-    assert!(!enabled.contains(&drain), "drain disabled after consuming token");
+    assert!(
+        enabled.contains(&fill),
+        "fill enabled after drain frees space"
+    );
+    assert!(
+        !enabled.contains(&drain),
+        "drain disabled after consuming token"
+    );
 }
 
 #[test]
@@ -173,12 +186,24 @@ fn dot_output_mentions_node_names() {
 
     // Spot-check: names, the digraph keyword, and the weighted-arc
     // label (weight=2). The exact pixel layout is Graphviz's problem.
-    assert!(dot.starts_with("digraph petri"), "should be a digraph: got {}", dot);
+    assert!(
+        dot.starts_with("digraph petri"),
+        "should be a digraph: got {}",
+        dot
+    );
     assert!(dot.contains("buffer"), "missing place name in {}", dot);
     assert!(dot.contains("producer"), "missing producer name in {}", dot);
     assert!(dot.contains("consumer"), "missing consumer name in {}", dot);
-    assert!(dot.contains("w7"), "missing worker tag for producer in {}", dot);
-    assert!(dot.contains("label=\"2\""), "weight=2 arc should be labelled in {}", dot);
+    assert!(
+        dot.contains("w7"),
+        "missing worker tag for producer in {}",
+        dot
+    );
+    assert!(
+        dot.contains("label=\"2\""),
+        "weight=2 arc should be labelled in {}",
+        dot
+    );
 }
 
 #[test]

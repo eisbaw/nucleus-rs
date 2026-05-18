@@ -297,8 +297,17 @@ impl Net {
     /// Add a weighted arc. Panics (fail fast) if `weight == 0`, or if
     /// either endpoint id is out of range — both are programming
     /// errors, not runtime conditions.
-    pub fn add_arc(&mut self, kind: ArcKind, place: PlaceId, transition: TransitionId, weight: u32) {
-        assert!(weight > 0, "arc weight must be > 0 (zero weight is always a bug)");
+    pub fn add_arc(
+        &mut self,
+        kind: ArcKind,
+        place: PlaceId,
+        transition: TransitionId,
+        weight: u32,
+    ) {
+        assert!(
+            weight > 0,
+            "arc weight must be > 0 (zero weight is always a bug)"
+        );
         assert!(
             (place.0 as usize) < self.places.len(),
             "add_arc: place id {:?} out of range (have {} places)",
@@ -337,7 +346,11 @@ impl Net {
         // 1. Check enabled: every PtoT arc's source has enough tokens.
         //    Multiple arcs from the same place sum their weights.
         let mut needs: BTreeMap<PlaceId, u32> = BTreeMap::new();
-        for a in self.arcs.iter().filter(|a| a.transition == t && a.kind == ArcKind::PtoT) {
+        for a in self
+            .arcs
+            .iter()
+            .filter(|a| a.transition == t && a.kind == ArcKind::PtoT)
+        {
             *needs.entry(a.place).or_insert(0) = needs
                 .get(&a.place)
                 .copied()
@@ -364,7 +377,11 @@ impl Net {
         //    itself) is checked at its post-firing count, not at a
         //    transient peak.
         let mut produces: BTreeMap<PlaceId, u32> = BTreeMap::new();
-        for a in self.arcs.iter().filter(|a| a.transition == t && a.kind == ArcKind::TtoP) {
+        for a in self
+            .arcs
+            .iter()
+            .filter(|a| a.transition == t && a.kind == ArcKind::TtoP)
+        {
             *produces.entry(a.place).or_insert(0) = produces
                 .get(&a.place)
                 .copied()
@@ -373,8 +390,7 @@ impl Net {
                 .expect("arc-weight sum overflowed u32");
         }
         // Union of touched places.
-        let mut touched: Vec<PlaceId> =
-            needs.keys().chain(produces.keys()).copied().collect();
+        let mut touched: Vec<PlaceId> = needs.keys().chain(produces.keys()).copied().collect();
         touched.sort();
         touched.dedup();
         for place in &touched {
@@ -421,7 +437,11 @@ impl Net {
         let mut out = Vec::new();
         for t in &self.transitions {
             let mut needs: BTreeMap<PlaceId, u32> = BTreeMap::new();
-            for a in self.arcs.iter().filter(|a| a.transition == t.id && a.kind == ArcKind::PtoT) {
+            for a in self
+                .arcs
+                .iter()
+                .filter(|a| a.transition == t.id && a.kind == ArcKind::PtoT)
+            {
                 *needs.entry(a.place).or_insert(0) += a.weight;
             }
             let enabled = needs.iter().all(|(p, n)| marking.get(*p) >= *n);
@@ -430,7 +450,11 @@ impl Net {
             let mut would_overflow = false;
             if enabled {
                 let mut produces: BTreeMap<PlaceId, u32> = BTreeMap::new();
-                for a in self.arcs.iter().filter(|a| a.transition == t.id && a.kind == ArcKind::TtoP) {
+                for a in self
+                    .arcs
+                    .iter()
+                    .filter(|a| a.transition == t.id && a.kind == ArcKind::TtoP)
+                {
                     *produces.entry(a.place).or_insert(0) += a.weight;
                 }
                 for (place, prod) in &produces {
@@ -482,12 +506,7 @@ impl Net {
                 Some(w) => format!("\\nw{}", w.0),
                 None => String::new(),
             };
-            writeln!(
-                s,
-                "  t{} [shape=box, label=\"{}{}\"];",
-                t.id.0, t.name, w
-            )
-            .unwrap();
+            writeln!(s, "  t{} [shape=box, label=\"{}{}\"];", t.id.0, t.name, w).unwrap();
         }
         for a in &self.arcs {
             let (from, to) = match a.kind {

@@ -71,8 +71,8 @@ fn synthetic_one_loop(h: i64, with_block: Option<u64>) -> (LinkedIR, ACFG) {
     // We piggy-back on example 01's algorithm to avoid hand-rolling
     // an AlgoIR — it has an `i` loop over `0..256`. We just rebind
     // the schedule.
-    let algo_ast = parse_algo(&read_example("01-elementwise-add/prog.algo.nuc"))
-        .expect("algo parse");
+    let algo_ast =
+        parse_algo(&read_example("01-elementwise-add/prog.algo.nuc")).expect("algo parse");
     let algo = lower_algo(&algo_ast).expect("algo lower");
     let sched_ast = parse_sched(&read_example(
         "01-elementwise-add/schedules/naive.sched.nuc",
@@ -179,7 +179,11 @@ fn block_rewrites_to_outer_tile_and_inner() {
     }
 
     // Operation count is preserved (block transform doesn't drop ops).
-    assert_eq!(acfg.operation_count(), 4, "load, load_b, add(in loop), save");
+    assert_eq!(
+        acfg.operation_count(),
+        4,
+        "load, load_b, add(in loop), save"
+    );
 }
 
 #[test]
@@ -239,12 +243,9 @@ fn examples_01_02_03_unchanged_by_block_transform() {
 fn block_rejects_non_divisible_range() {
     // example 01's loop is 0..256; block=100 doesn't divide evenly.
     let (linked, acfg) = synthetic_one_loop(256, Some(100));
-    let err = apply_block_transforms(&linked, acfg)
-        .expect_err("100 doesn't divide 256 -> reject");
+    let err = apply_block_transforms(&linked, acfg).expect_err("100 doesn't divide 256 -> reject");
     match err {
-        BlockTransformError::NotDivisible {
-            var, lo, hi, block,
-        } => {
+        BlockTransformError::NotDivisible { var, lo, hi, block } => {
             assert_eq!(var, "i");
             assert_eq!(lo, 0);
             assert_eq!(hi, 256);
@@ -260,8 +261,10 @@ fn block_rejects_unknown_loop_var() {
     // for a variable that doesn't exist in the algorithm.
     let algo_ast = parse_algo(&read_example("01-elementwise-add/prog.algo.nuc")).unwrap();
     let algo = lower_algo(&algo_ast).unwrap();
-    let sched_ast =
-        parse_sched(&read_example("01-elementwise-add/schedules/naive.sched.nuc")).unwrap();
+    let sched_ast = parse_sched(&read_example(
+        "01-elementwise-add/schedules/naive.sched.nuc",
+    ))
+    .unwrap();
     let mut sched = lower_sched(&sched_ast).unwrap();
     sched.loops.insert(
         "no_such_var".to_string(),
@@ -278,8 +281,7 @@ fn block_rejects_unknown_loop_var() {
     let link_result = link(algo, sched);
     if let Ok(linked) = link_result {
         let acfg = compiler::build_acfg(&linked);
-        let err = apply_block_transforms(&linked, acfg)
-            .expect_err("unknown loop var -> reject");
+        let err = apply_block_transforms(&linked, acfg).expect_err("unknown loop var -> reject");
         match err {
             BlockTransformError::UnknownLoopVar { var } => {
                 assert_eq!(var, "no_such_var");

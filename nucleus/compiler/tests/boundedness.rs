@@ -174,8 +174,8 @@ fn back_to_back_produce_into_cap1_buffer_is_rejected() {
     net.add_arc(ArcKind::TtoP, ctl_p2, produce1, 1);
     net.add_arc(ArcKind::TtoP, buf, produce1, 1);
 
-    let err = check_bounded(&net, &[produce0, produce1])
-        .expect_err("back-to-back produce overflows");
+    let err =
+        check_bounded(&net, &[produce0, produce1]).expect_err("back-to-back produce overflows");
     match err {
         BoundednessError::CapacityExceeded {
             place_name,
@@ -238,10 +238,9 @@ fn e2e_example_02_split_never_overflows_capacity() {
              place '{}' would reach {} (cap {}), via transition '{}'",
             place_name, would_be, capacity, transition_name
         ),
-        Err(BoundednessError::UnknownTransition(t)) => panic!(
-            "derive_firing_order produced unknown transition {:?}",
-            t
-        ),
+        Err(BoundednessError::UnknownTransition(t)) => {
+            panic!("derive_firing_order produced unknown transition {:?}", t)
+        }
     }
 }
 
@@ -284,7 +283,10 @@ fn check_bounded_is_deterministic() {
     );
     let order_a = derive_firing_order(&net);
     let order_b = derive_firing_order(&net);
-    assert_eq!(order_a, order_b, "derive_firing_order must be deterministic");
+    assert_eq!(
+        order_a, order_b,
+        "derive_firing_order must be deterministic"
+    );
 
     let r1 = check_bounded(&net, &order_a);
     let r2 = check_bounded(&net, &order_a);
@@ -358,4 +360,3 @@ fn illegal_firing_order_surfaced_as_invalid() {
         other => panic!("expected InvalidFiringOrder, got {:?}", other),
     }
 }
-

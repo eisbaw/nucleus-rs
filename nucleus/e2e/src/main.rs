@@ -1142,8 +1142,8 @@ fn enumerate_files(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir)
-            .map_err(|e| format!("read_dir `{}`: {e}", dir.display()))?;
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("read_dir `{}`: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("readdir error: {e}"))?;
             let path = entry.path();
@@ -1305,9 +1305,7 @@ fn print_determinism_summary(results: &[DetCellResult]) {
         .iter()
         .filter(|r| matches!(r.status, DetCellStatus::Skipped { .. }))
         .count();
-    println!(
-        "  total: {total}   pass: {passed}   fail: {failed}   skipped: {skipped}"
-    );
+    println!("  total: {total}   pass: {passed}   fail: {failed}   skipped: {skipped}");
     println!("  (* = required cell; any FAIL is a hard failure regardless of required-bit)");
     println!();
 }
@@ -1686,10 +1684,8 @@ mod tests {
         // determinism diff relies on this so two trees rooted at
         // different absolute paths compare equal when their contents
         // are byte-identical.
-        let tmp = std::env::temp_dir().join(format!(
-            "nucleus-e2e-enumerate-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("nucleus-e2e-enumerate-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("src")).expect("mk src");
         fs::write(tmp.join("Cargo.toml"), b"[package]").expect("write cargo");
@@ -1751,10 +1747,7 @@ mod tests {
         let r = check_cell_determinism(&paths, &pc);
         match r.status {
             DetCellStatus::Skipped { reason } => {
-                assert!(
-                    reason.contains("capabilities.toml"),
-                    "reason was: {reason}"
-                );
+                assert!(reason.contains("capabilities.toml"), "reason was: {reason}");
             }
             other => panic!("expected SKIPPED, got {other:?}"),
         }

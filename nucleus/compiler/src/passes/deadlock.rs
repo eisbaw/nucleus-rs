@@ -225,10 +225,7 @@ impl std::error::Error for DeadlockError {}
 /// (BTreeMap-backed, see `petri.rs`), so for the same `(net,
 /// firing_order)` this function returns the same `Result` every
 /// call, including the same `marking_before` snapshot.
-pub fn check_deadlock_free(
-    net: &Net,
-    firing_order: &[TransitionId],
-) -> Result<(), DeadlockError> {
+pub fn check_deadlock_free(net: &Net, firing_order: &[TransitionId]) -> Result<(), DeadlockError> {
     // Work on a clone — callers don't observe state mutation.
     let mut sim = net.clone();
     sim.reset_to_initial();

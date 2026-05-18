@@ -96,10 +96,7 @@ fn op(workers: &[u64], kernel: u64, data_in: Vec<u64>, data_out: Option<u64>) ->
     })
 }
 
-fn synthetic_linked_ir(
-    producers: &[(&str, &[&str])],
-    transfers_src: &str,
-) -> LinkedIR {
+fn synthetic_linked_ir(producers: &[(&str, &[&str])], transfers_src: &str) -> LinkedIR {
     let mut data_producers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
     for (data_name, worker_names) in producers {
         let entity = WorkerEntity(worker_names.iter().map(|s| (*s).to_string()).collect());
@@ -276,15 +273,23 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
 }
 
 // --------------------------------------------------------------------
-// Non-block loop: no hoist — Waits stay inside the loop body
+// Non-block loop: whole-symbol hoist (TASK-0136 / TASK-0139)
 // --------------------------------------------------------------------
 
 #[test]
-fn no_block_marker_means_no_hoist() {
-    // Same shape as above but the inner Repeat is NOT marked as
-    // block-inner. The Wait should stay inside the inner Repeat's
-    // body (one Wait per iteration of the inner loop -- but
-    // structurally just one Wait node, the same as before TASK-0143).
+fn loop_invariant_wait_hoists_out_of_plain_loops() {
+    // Same shape as the block-inner test but NEITHER Repeat is marked
+    // block-inner. The consumed datum `d` is produced by the
+    // top-level producer and is NOT written inside either loop, so it
+    // is loop-invariant: a whole-symbol transfer that must cross the
+    // worker boundary ONCE, not once per (outer x inner) iteration.
+    //
+    // Before TASK-0136/0139 the Wait stayed trapped inside the inner
+    // loop body with no matching Push at all — the net deadlocked
+    // (acfg_to_petri unrolls the body, so N consumers raced one
+    // absent producer). The fix (Pass A whole-symbol hoist + Pass B
+    // global Push finaliser) lifts the single Wait to the top-level
+    // sequence and splices the matching Push after the producer.
     let producer = op(&[0], 100, vec![], Some(0));
     let consumer = op(&[1], 101, vec![0], Some(1));
 
@@ -315,26 +320,42 @@ fn no_block_marker_means_no_hoist() {
         name_data,
         name_workers,
         name_iter_vars: BTreeMap::new(),
-        // NOT marked: inner_block_iter_vars stays empty.
+        // NOT marked: inner_block_iter_vars stays empty -> the
+        // non-blocked whole-symbol hoist path applies.
         inner_block_iter_vars: BTreeSet::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
     let result = inject_transfers(&linked, acfg);
 
-    assert_eq!(result.wait_count(), 1, "one Wait (no hoist needed)");
-    let (_, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
-    // Without the block-inner marker, the Wait remains inside the
-    // intra-tile body sequence -- this is the pre-TASK-0143 baseline.
+    // Still exactly one Wait and one Push (whole-symbol: one crossing
+    // for the loop-invariant datum, not one per iteration).
+    assert_eq!(result.wait_count(), 1, "one whole-symbol Wait");
+    assert_eq!(result.push_count(), 1, "one matching whole-symbol Push");
+
+    let (top, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
+    // The Wait is hoisted clear out of BOTH loops to the top-level
+    // sequence (its producer lives there).
+    assert_eq!(
+        xfers_directly_in_seq(top, XferRole::Wait),
+        1,
+        "loop-invariant Wait hoisted to the top-level sequence"
+    );
     assert_eq!(
         xfers_directly_in_seq(intra_tile_seq, XferRole::Wait),
-        1,
-        "Wait stays in inner body when inner_block_iter_vars is empty"
+        0,
+        "no Wait left inside the inner loop body"
     );
     assert_eq!(
         xfers_directly_in_seq(per_tile_seq, XferRole::Wait),
         0,
-        "no hoisted Waits at per-tile level"
+        "no Wait left at the outer loop body either"
+    );
+    // The Push sits at the top level too (right after the producer).
+    assert_eq!(
+        xfers_directly_in_seq(top, XferRole::Push),
+        1,
+        "matching Push spliced after the top-level producer"
     );
 }
 
@@ -573,18 +594,16 @@ fn block_transform_marks_inner_iter_var() {
         .unwrap()
         .parent()
         .unwrap();
-    let algo_src = std::fs::read_to_string(
-        repo_root.join("nuc-nucleus/examples/02-split-add/prog.algo.nuc"),
-    )
-    .expect("read algo");
+    let algo_src =
+        std::fs::read_to_string(repo_root.join("nuc-nucleus/examples/02-split-add/prog.algo.nuc"))
+            .expect("read algo");
     let sched_src = std::fs::read_to_string(
         repo_root.join("nuc-nucleus/examples/02-split-add/schedules/split.sched.nuc"),
     )
     .expect("read sched");
 
     let algo = lower_algo(&parse_algo(&algo_src).expect("parse")).expect("lower");
-    let mut sched: SchedIR =
-        lower_sched(&parse_sched(&sched_src).expect("parse")).expect("lower");
+    let mut sched: SchedIR = lower_sched(&parse_sched(&sched_src).expect("parse")).expect("lower");
     // 256 / 128 = 2 -> divisibility check passes.
     sched.loops.insert(
         "i".to_string(),
@@ -595,10 +614,7 @@ fn block_transform_marks_inner_iter_var() {
     );
     let linked: LinkedIR = link::link(algo, sched).expect("link");
     let acfg = build_acfg(&linked);
-    let i_id = *acfg
-        .name_iter_vars
-        .get("i")
-        .expect("i iter var present");
+    let i_id = *acfg.name_iter_vars.get("i").expect("i iter var present");
     let after = apply_block_transforms(&linked, acfg).expect("block-transform OK");
     assert!(
         after.inner_block_iter_vars.contains(&i_id),
@@ -621,4 +637,118 @@ fn block_transform_marks_inner_iter_var() {
 #[allow(dead_code)]
 fn _silence_xfer_placeholder() -> Option<XferPlaceholder> {
     None
+}
+
+// --------------------------------------------------------------------
+// TASK-0136 / TASK-0139: whole-symbol cross-scope finalisation on the
+// real (ungated, non-block) path — structural idempotence + the
+// example-02 shape end to end on a synthetic ACFG.
+// --------------------------------------------------------------------
+
+/// Build the example-02-split shape synthetically:
+///
+/// ```text
+/// Sequence(top)
+///   Operation(load_a  on host)            // writes a
+///   Operation(load_b  on host)            // writes b
+///   Repeat(i in 0..4)
+///     Sequence
+///       Operation(add on w0, reads a,b)   // writes c
+///   Operation(save on host, reads c)
+/// ```
+///
+/// `inner_block_iter_vars` is empty, so Pass A (whole-symbol Wait
+/// hoist) and Pass B (global Push finaliser) actually run — this is
+/// the path the gated synthetic hoist tests above never exercise.
+fn example_02_shape() -> (ACFG, LinkedIR) {
+    let load_a = op(&[0], 100, vec![], Some(0)); // host: a
+    let load_b = op(&[0], 101, vec![], Some(1)); // host: b
+    let add = op(&[1], 102, vec![0, 1], Some(2)); // w0: c <- add(a,b)
+    let save = op(&[0], 103, vec![2], None); // host: save(c)
+
+    let loop_i = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(ACFGNode::Sequence(vec![add])),
+    };
+    let root = ACFGNode::Sequence(vec![load_a, load_b, loop_i, save]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("a".into(), DataId(0));
+    name_data.insert("b".into(), DataId(1));
+    name_data.insert("c".into(), DataId(2));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars: BTreeSet::new(),
+    };
+    let linked = synthetic_linked_ir(
+        &[("a", &["host"]), ("b", &["host"]), ("c", &["w0"])],
+        "transfer a : sync;\n    transfer b : sync;\n    transfer c : sync;",
+    );
+    (acfg, linked)
+}
+
+#[test]
+fn example_02_shape_pairs_every_wait_with_a_push() {
+    let (acfg, linked) = example_02_shape();
+    let result = inject_transfers(&linked, acfg);
+
+    // a, b (loop-invariant inputs) cross once; c (loop output read
+    // after the loop) crosses once. Three matched whole-symbol pairs.
+    assert_eq!(result.wait_count(), 3, "one Wait per crossing symbol");
+    assert_eq!(result.push_count(), 3, "every Wait has a matching Push");
+
+    // Every Push shares its seq with exactly one Wait (matched pair).
+    let xs = result.root.collect_xfers();
+    for x in xs.iter().filter(|x| x.role == XferRole::Push) {
+        let mates = xs
+            .iter()
+            .filter(|y| {
+                y.role == XferRole::Wait
+                    && y.seq == x.seq
+                    && y.src == x.src
+                    && y.dst == x.dst
+                    && y.data == x.data
+            })
+            .count();
+        assert_eq!(mates, 1, "Push seq {:?} must have exactly one Wait peer", x.seq);
+    }
+
+    // a, b Waits are hoisted clear out of the loop to the top-level
+    // sequence; no Wait remains inside the Repeat body.
+    let top_waits = xfers_directly_in_seq(&result.root, XferRole::Wait);
+    assert!(
+        top_waits >= 2,
+        "loop-invariant a,b Waits hoisted to top (got {top_waits})"
+    );
+}
+
+#[test]
+fn whole_symbol_finalisation_is_structurally_idempotent() {
+    // AC#3: re-running inject_transfers yields a structurally
+    // identical tree. This exercises the ungated Pass A + Pass B
+    // recursive paths on re-entry (Repeat present, block markers
+    // empty) — the case the existing flat / block-gated idempotence
+    // tests do NOT cover.
+    let (acfg, linked) = example_02_shape();
+    let once = inject_transfers(&linked, acfg);
+    let twice = inject_transfers(&linked, once.clone());
+    let thrice = inject_transfers(&linked, twice.clone());
+
+    assert_eq!(
+        once, twice,
+        "inject_transfers must be idempotent on the whole-symbol path"
+    );
+    assert_eq!(
+        twice, thrice,
+        "idempotence must be stable across further re-runs"
+    );
 }

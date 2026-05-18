@@ -166,10 +166,7 @@ impl std::error::Error for BoundednessError {}
 /// report the *first* problem rather than enumerating all of them,
 /// which keeps the error surface small and matches the "fail fast and
 /// verbosely" rule.
-pub fn check_bounded(
-    net: &Net,
-    firing_order: &[TransitionId],
-) -> Result<(), BoundednessError> {
+pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), BoundednessError> {
     // Work on a clone so callers don't observe state mutation.
     let mut sim = net.clone();
     sim.reset_to_initial();

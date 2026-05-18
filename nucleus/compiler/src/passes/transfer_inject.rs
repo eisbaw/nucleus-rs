@@ -209,6 +209,37 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
 
     let new_root = inject_in_node(root, &ctx, &mut state);
 
+    // Cross-scope finalisation (TASK-0136 / TASK-0139). The single-
+    // pass `inject_in_sequence` above only rendezvouses a Push with a
+    // Wait when both live in the *same* sequence. When the consumer is
+    // inside a plain `for` loop and the producer is in the enclosing
+    // sequence (example 02-split: `load_input` on host at top level,
+    // `add` on w0 inside `for i`), the Wait is trapped inside the
+    // Repeat body and never gets a Push — the net deadlocks.
+    //
+    // The correct model is *whole-symbol* transfer: a datum that is
+    // loop-invariant w.r.t. a Repeat crosses the worker boundary once,
+    // not once per iteration. Pass A hoists such Waits out of the loop
+    // body; Pass B places the matching Push (after the producer, or
+    // after the producer's enclosing loop when the consumer sits
+    // outside it — the dual case, e.g. `c` produced inside `for i` and
+    // read by `save_output` after the loop).
+    //
+    // Scope: gated on "no block transform active". `block=N` per-tile
+    // transfers are sliced sub-regions, not loop-invariant whole
+    // symbols; the existing TASK-0143 HoistSink owns that path and the
+    // matching per-tile Push is TASK-0149/TASK-0150 follow-up territory
+    // (precise index-based invariance). Running these passes there
+    // would wrongly collapse per-tile halo transfers into one. The
+    // non-blocked path is the M2 acceptance case (example 02-split,
+    // deadlock.rs / boundedness e2e).
+    let new_root = if inner_block_iter_vars.is_empty() {
+        let (hoisted, _escaped_at_root) = hoist_invariant_waits(new_root, &[]);
+        splice_pushes_global(hoisted)
+    } else {
+        new_root
+    };
+
     ACFG {
         root: new_root,
         name_kernels,
@@ -439,13 +470,8 @@ fn inject_in_sequence(
             // Repeat will land so we can place hoisted Waits
             // immediately before it; then move the sink's contents
             // into `hoisted_waits_to_place` for the post-walk drain.
-            let rewritten = inject_in_node_with_tile(
-                child,
-                ctx,
-                state,
-                enclosing_tile,
-                Some(&mut local_sink),
-            );
+            let rewritten =
+                inject_in_node_with_tile(child, ctx, state, enclosing_tile, Some(&mut local_sink));
             let slot = out.len();
             // Drain local_sink between block-inner siblings.
             for w in std::mem::take(&mut local_sink.waits) {
@@ -540,8 +566,7 @@ fn inject_in_sequence(
             by_slot.entry(s).or_default().push(w);
         }
         // Iterate in *reverse* slot order. Iter rev on BTreeMap.
-        let mut shifts: Vec<(usize, Vec<XferPlaceholder>)> =
-            by_slot.into_iter().collect();
+        let mut shifts: Vec<(usize, Vec<XferPlaceholder>)> = by_slot.into_iter().collect();
         shifts.sort_by_key(|(s, _)| *s);
         for (slot, waits) in shifts.into_iter().rev() {
             // Insert each Wait at `slot`, in reverse so the first
@@ -555,15 +580,17 @@ fn inject_in_sequence(
                 // the entire sequence (not just `out[slot]`) because
                 // the previously-hoisted Wait may sit at a slot that
                 // shifted as siblings were rewritten.
-                let already_present = out.iter().any(|n| matches!(
-                    n,
-                    ACFGNode::Xfer(existing)
-                        if existing.role == XferRole::Wait
-                            && existing.src == w.src
-                            && existing.dst == w.dst
-                            && existing.data == w.data
-                            && existing.tile == w.tile
-                ));
+                let already_present = out.iter().any(|n| {
+                    matches!(
+                        n,
+                        ACFGNode::Xfer(existing)
+                            if existing.role == XferRole::Wait
+                                && existing.src == w.src
+                                && existing.dst == w.dst
+                                && existing.data == w.data
+                                && existing.tile == w.tile
+                    )
+                });
                 if already_present {
                     continue;
                 }
@@ -609,8 +636,7 @@ fn inject_in_sequence(
         for node in out.into_iter() {
             match node {
                 ACFGNode::Xfer(x)
-                    if x.role == XferRole::Wait
-                        && !local_producer_idx.contains_key(&x.data) =>
+                    if x.role == XferRole::Wait && !local_producer_idx.contains_key(&x.data) =>
                 {
                     sink.waits.push(x);
                 }
@@ -678,6 +704,447 @@ fn splice_pushes_for_waits(out: &mut Vec<ACFGNode>, local_producer_idx: &BTreeMa
         }
         out.insert(insert_at, ACFGNode::Xfer(push));
     }
+}
+
+// --------------------------------------------------------------------
+// Pass A — hoist loop-invariant Waits out of plain Repeat bodies
+// --------------------------------------------------------------------
+//
+// TASK-0136 / TASK-0139. `inject_in_sequence` emits a Wait immediately
+// before the consumer Operation. When the consumer sits inside a
+// `for` loop but the data it reads is produced *outside* the loop
+// (loop-invariant by structure: the data symbol is not written by any
+// Operation inside the loop body), the Wait should fire once before
+// the loop, not once per iteration. The Petri lowering unrolls Repeat
+// bodies (`acfg_to_petri::walk`), so a per-iteration Wait against a
+// single whole-symbol Push deadlocks at iteration 2 (one token, N
+// consumers). Hoisting the Wait out of the body fixes this and matches
+// what a real backend does (transfer the whole symbol once).
+//
+// Returns the rewritten node plus the Waits that escaped past the top
+// of `node` and must be placed (or further hoisted) by the caller.
+
+/// Collect every data symbol written by some Operation anywhere in the
+/// subtree rooted at `node`.
+fn produced_data_set(node: &ACFGNode, acc: &mut BTreeSet<DataId>) {
+    match node {
+        ACFGNode::Operation(op) => {
+            if let Some(d) = output_data(op) {
+                acc.insert(d);
+            }
+        }
+        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+        ACFGNode::Repeat { body, .. } => produced_data_set(body, acc),
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                produced_data_set(c, acc);
+            }
+        }
+    }
+}
+
+fn hoist_invariant_waits(
+    node: ACFGNode,
+    enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
+) -> (ACFGNode, Vec<XferPlaceholder>) {
+    match node {
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => (leaf, Vec::new()),
+        // A bare Wait/Xfer outside a Sequence shouldn't occur from the
+        // builder, but if it does we cannot decide invariance without
+        // its sibling context — leave it in place.
+        leaf @ ACFGNode::Xfer(_) => (leaf, Vec::new()),
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+        } => {
+            let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
+            nested.push((iter_var, range.clone()));
+            let (body2, escaped) = hoist_invariant_waits(*body, &nested);
+
+            let mut produced = BTreeSet::new();
+            produced_data_set(&body2, &mut produced);
+
+            // A Wait that escaped the body but whose data IS produced
+            // inside this loop is NOT loop-invariant w.r.t. this
+            // Repeat: it belongs inside, as a per-iteration rendezvous.
+            // Re-inject it at the front of the body. Otherwise it keeps
+            // bubbling up.
+            let mut stay: Vec<XferPlaceholder> = Vec::new();
+            let mut bubble: Vec<XferPlaceholder> = Vec::new();
+            for w in escaped {
+                if produced.contains(&w.data) {
+                    stay.push(w);
+                } else {
+                    bubble.push(w);
+                }
+            }
+
+            let body3 = if stay.is_empty() {
+                body2
+            } else {
+                let mut children: Vec<ACFGNode> = stay.into_iter().map(ACFGNode::Xfer).collect();
+                match body2 {
+                    ACFGNode::Sequence(cs) => children.extend(cs),
+                    other => children.push(other),
+                }
+                ACFGNode::Sequence(children)
+            };
+
+            (
+                ACFGNode::Repeat {
+                    iter_var,
+                    range,
+                    body: Box::new(body3),
+                },
+                bubble,
+            )
+        }
+        ACFGNode::Sequence(children) => {
+            // Recurse non-Wait children; hold direct Wait Xfers aside
+            // so we can decide per-Wait whether it stays here (its data
+            // is produced in this sequence: an intra-scope rendezvous)
+            // or bubbles up (loop-invariant, escape the enclosing
+            // Repeat).
+            enum Slot {
+                Node(ACFGNode),
+                Wait(XferPlaceholder),
+            }
+            let mut slots: Vec<(Slot, Vec<XferPlaceholder>)> = Vec::new();
+            for child in children {
+                match child {
+                    ACFGNode::Xfer(x) if x.role == XferRole::Wait => {
+                        slots.push((Slot::Wait(x), Vec::new()));
+                    }
+                    other => {
+                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile);
+                        slots.push((Slot::Node(c2), esc));
+                    }
+                }
+            }
+
+            // Data produced anywhere in this sequence (post-recursion).
+            let mut produced = BTreeSet::new();
+            for (slot, _) in &slots {
+                if let Slot::Node(n) = slot {
+                    produced_data_set(n, &mut produced);
+                }
+            }
+
+            let mut out: Vec<ACFGNode> = Vec::new();
+            let mut escaped_up: Vec<XferPlaceholder> = Vec::new();
+
+            let place_or_bubble =
+                |w: XferPlaceholder,
+                 out: &mut Vec<ACFGNode>,
+                 escaped_up: &mut Vec<XferPlaceholder>| {
+                    if produced.contains(&w.data) {
+                        // Lands here: rewrite tile to this sequence's
+                        // enclosing-tile granularity and dedup against
+                        // an already-placed equivalent Wait (keeps the
+                        // pass idempotent on re-run — the regenerated
+                        // Wait carries a fresh seq, but the structural
+                        // (src,dst,data) key is stable, so we keep the
+                        // first and drop the duplicate).
+                        let mut w = w;
+                        w.tile = IterTile::new(enclosing_tile.to_vec());
+                        let dup = out.iter().any(|n| {
+                            matches!(n, ACFGNode::Xfer(x)
+                                if x.role == XferRole::Wait
+                                    && x.src == w.src
+                                    && x.dst == w.dst
+                                    && x.data == w.data)
+                        });
+                        if !dup {
+                            out.push(ACFGNode::Xfer(w));
+                        }
+                    } else {
+                        escaped_up.push(w);
+                    }
+                };
+
+            for (slot, esc) in slots {
+                // Escaped Waits from this child (a Repeat) are placed
+                // immediately *before* the child.
+                for w in esc {
+                    place_or_bubble(w, &mut out, &mut escaped_up);
+                }
+                match slot {
+                    Slot::Node(n) => out.push(n),
+                    Slot::Wait(x) => {
+                        if produced.contains(&x.data) {
+                            // Intra-scope rendezvous: producer is a
+                            // sibling here. Keep the Wait where it is.
+                            out.push(ACFGNode::Xfer(x));
+                        } else {
+                            // Loop-invariant w.r.t. the Repeat that
+                            // encloses this sequence: hoist it out.
+                            escaped_up.push(x);
+                        }
+                    }
+                }
+            }
+
+            (ACFGNode::Sequence(out), escaped_up)
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// Pass B — global Push finaliser (cross-scope)
+// --------------------------------------------------------------------
+//
+// After Pass A every Wait is positioned. Each Wait still needs a
+// matching Push after its producer. `splice_pushes_for_waits` already
+// did this for in-sequence pairs during the single-pass walk; this
+// pass finalises the cross-scope ones it could not see, idempotently
+// (keyed on the unique `seq`, with a structural (src,dst,data) guard).
+//
+// Whole-symbol placement rule, given producer P of D and the Wait W:
+//
+//   * If P sits inside one or more Repeats that W is NOT inside, the
+//     Push goes immediately after the *outermost* such Repeat (D is a
+//     loop output, available once the loop completes — the dual of
+//     Pass A's loop-input hoist). Example 02: `c` produced by `add`
+//     inside `for i`, read by `save_output` after the loop.
+//
+//   * Otherwise the Push goes immediately after P itself (same scope,
+//     or P and W co-resident in the same loop = per-iteration
+//     rendezvous).
+
+/// Outer→inner list of Repeat iter-vars enclosing the (unique,
+/// single-assignment) producer Operation of `data`.
+fn producer_repeat_path(
+    node: &ACFGNode,
+    data: DataId,
+    path: &mut Vec<IterVar>,
+    found: &mut Option<Vec<IterVar>>,
+) {
+    if found.is_some() {
+        return;
+    }
+    match node {
+        ACFGNode::Operation(op) => {
+            if output_data(op) == Some(data) {
+                *found = Some(path.clone());
+            }
+        }
+        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            path.push(*iter_var);
+            producer_repeat_path(body, data, path, found);
+            path.pop();
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                producer_repeat_path(c, data, path, found);
+            }
+        }
+    }
+}
+
+/// Outer→inner list of Repeat iter-vars enclosing the Wait carrying
+/// `seq`.
+fn wait_repeat_path(
+    node: &ACFGNode,
+    seq: SeqTag,
+    path: &mut Vec<IterVar>,
+    found: &mut Option<Vec<IterVar>>,
+) {
+    if found.is_some() {
+        return;
+    }
+    match node {
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Xfer(x) => {
+            if x.role == XferRole::Wait && x.seq == seq {
+                *found = Some(path.clone());
+            }
+        }
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            path.push(*iter_var);
+            wait_repeat_path(body, seq, path, found);
+            path.pop();
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                wait_repeat_path(c, seq, path, found);
+            }
+        }
+    }
+}
+
+fn subtree_produces(node: &ACFGNode, data: DataId) -> bool {
+    let mut s = BTreeSet::new();
+    produced_data_set(node, &mut s);
+    s.contains(&data)
+}
+
+/// Insert `push` immediately after the (unique) producer Operation of
+/// `push.data` wherever it directly resides.
+fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> ACFGNode {
+    match node {
+        ACFGNode::Sequence(children) => {
+            let mut out = Vec::with_capacity(children.len() + 1);
+            for c in children {
+                let is_producer = matches!(&c, ACFGNode::Operation(op)
+                    if output_data(op) == Some(push.data));
+                let c = splice_after_producer(c, push);
+                out.push(c);
+                if is_producer {
+                    out.push(ACFGNode::Xfer(push.clone()));
+                }
+            }
+            ACFGNode::Sequence(out)
+        }
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(splice_after_producer(*body, push)),
+        },
+        leaf => leaf,
+    }
+}
+
+/// Insert `push` immediately after the Repeat whose iter-var is
+/// `cut_iv` and which (transitively) produces `push.data`.
+fn splice_after_repeat(node: ACFGNode, cut_iv: IterVar, push: &XferPlaceholder) -> ACFGNode {
+    match node {
+        ACFGNode::Sequence(children) => {
+            let mut out = Vec::with_capacity(children.len() + 1);
+            for c in children {
+                let is_cut = matches!(&c, ACFGNode::Repeat { iter_var, .. }
+                    if *iter_var == cut_iv && subtree_produces(&c, push.data));
+                if is_cut {
+                    out.push(c);
+                    out.push(ACFGNode::Xfer(push.clone()));
+                } else {
+                    out.push(splice_after_repeat(c, cut_iv, push));
+                }
+            }
+            ACFGNode::Sequence(out)
+        }
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(splice_after_repeat(*body, cut_iv, push)),
+        },
+        leaf => leaf,
+    }
+}
+
+fn collect_push_seqs(
+    node: &ACFGNode,
+    seqs: &mut BTreeSet<u64>,
+) {
+    match node {
+        ACFGNode::Xfer(x) if x.role == XferRole::Push => {
+            seqs.insert(x.seq.0);
+        }
+        ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Repeat { body, .. } => collect_push_seqs(body, seqs),
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_push_seqs(c, seqs);
+            }
+        }
+    }
+}
+
+fn collect_waits(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
+    match node {
+        ACFGNode::Xfer(x) if x.role == XferRole::Wait => out.push(x.clone()),
+        ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Repeat { body, .. } => collect_waits(body, out),
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_waits(c, out);
+            }
+        }
+    }
+}
+
+fn splice_pushes_global(mut root: ACFGNode) -> ACFGNode {
+    let mut have_seqs: BTreeSet<u64> = BTreeSet::new();
+    collect_push_seqs(&root, &mut have_seqs);
+
+    let mut waits: Vec<XferPlaceholder> = Vec::new();
+    collect_waits(&root, &mut waits);
+
+    for w in waits {
+        // Idempotence keyed on `seq` ALONE — deliberately not on
+        // (src,dst,data). `seq` is unique per Push/Wait pair (global
+        // monotonic counter, see the SeqTag note in `inject_transfers`),
+        // so "a Push with this seq exists" is the exact "this transfer
+        // is already paired" predicate.
+        //
+        // We must NOT also skip on (src,dst,data): single-assignment
+        // data can have *several* cross-worker consumers on the same
+        // dst worker (e.g. `d` produced on host, read by two distinct
+        // Operations on w0). Each consumer gets its own Wait with its
+        // own seq and its own seq-keyed buffer place in the Petri
+        // lowering; suppressing the second because (host,w0,d) was
+        // already seen would leave its buffer place unfilled and
+        // deadlock that consumer. Idempotence on re-run is still
+        // guaranteed because Pass A collapses the regenerated
+        // fresh-seq duplicate Wait against the surviving original
+        // (by (src,dst,data) at the destination sequence) BEFORE this
+        // pass runs, so only the original seq reaches here and its
+        // Push is already in `have_seqs`.
+        if have_seqs.contains(&w.seq.0) {
+            continue;
+        }
+
+        // Locate producer and its loop nesting vs the Wait's.
+        let mut pp = None;
+        producer_repeat_path(&root, w.data, &mut Vec::new(), &mut pp);
+        let producer_path = match pp {
+            Some(p) => p,
+            // No producer Operation for this data (e.g. a synthetic
+            // partial ACFG in a unit test). Nothing to pair; leave the
+            // Wait — downstream analysis will report the gap honestly.
+            None => continue,
+        };
+        let mut wp = None;
+        wait_repeat_path(&root, w.seq, &mut Vec::new(), &mut wp);
+        let wait_path = wp.unwrap_or_default();
+
+        let push = XferPlaceholder {
+            role: XferRole::Push,
+            src: w.src,
+            dst: w.dst,
+            data: w.data,
+            tile: w.tile.clone(),
+            seq: w.seq,
+            policy: w.policy,
+        };
+
+        // The cut: outermost Repeat enclosing the producer that does
+        // NOT also enclose the Wait. If present, the producer is a
+        // loop output the consumer reads after the loop -> Push goes
+        // after that Repeat. Otherwise Push goes right after producer.
+        let cut = producer_path
+            .iter()
+            .find(|iv| !wait_path.contains(iv))
+            .copied();
+
+        root = match cut {
+            Some(cut_iv) => splice_after_repeat(root, cut_iv, &push),
+            None => splice_after_producer(root, &push),
+        };
+
+        have_seqs.insert(w.seq.0);
+    }
+
+    root
 }
 
 // --------------------------------------------------------------------

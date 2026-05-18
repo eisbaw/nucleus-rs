@@ -435,25 +435,17 @@ fn e2e_example_02_split_one_eventlist_per_declared_worker() {
         );
     }
 
-    // Every Push on some worker, if any, has a matching Wait on the
+    // Every Push on some worker has a matching Wait on the
     // corresponding destination worker carrying the same seq + data.
     //
-    // We do NOT assert pushes.is_empty() here: the upstream
-    // `transfer_inject` pass currently does not splice Pushes across
-    // Sequence/Repeat scope boundaries (`splice_pushes_for_waits`
-    // operates inside one sequence only). For example 02 the
+    // TASK-0136 / TASK-0139: `transfer_inject` now splices Pushes
+    // across Sequence/Repeat scope boundaries (Pass A whole-symbol
+    // hoist + Pass B global Push finaliser). For example 02 the
     // producer `load_input` lives at the top-level sequence while the
-    // consumer `add` lives inside a `for` loop — the resulting ACFG
-    // therefore contains Wait nodes but no matching Push nodes. The
-    // pthreads-sync backend works because it consumes the ACFG
-    // directly with its own shared-memory shortcut; the EventList
-    // contract is what surfaces the gap.
-    //
-    // Filed as a follow-up: TASK-0027 self-report calls out the
-    // missing-Push limitation; the fix belongs in transfer_inject
-    // (cross-scope push splicing), not in the projection pass under
-    // test. Until then we assert the *positive* property: every Push
-    // that IS emitted has a matching Wait on its declared dst.
+    // consumer `add` lives inside a `for` loop; the cross-scope
+    // finaliser pairs them. We therefore now assert the *strong*
+    // property: at least one Push is present, and every Push has a
+    // matching Wait on its declared dst.
     let mut pushes: Vec<(WorkerId, &Event)> = Vec::new();
     let mut waits: Vec<(WorkerId, &Event)> = Vec::new();
     for (wid, list) in &events {
@@ -469,6 +461,13 @@ fn e2e_example_02_split_one_eventlist_per_declared_worker() {
     assert!(
         !waits.is_empty(),
         "split schedule consumer should produce at least one Wait"
+    );
+    // TASK-0136 AC#2: Pushes must now be present (producer side of
+    // the split — the cross-scope finaliser pairs every Wait).
+    assert!(
+        !pushes.is_empty(),
+        "split schedule must produce at least one Push after \
+         TASK-0136/0139 cross-scope finalisation"
     );
     for (push_owner, push) in &pushes {
         let (push_dst, push_data, push_seq) = match push {

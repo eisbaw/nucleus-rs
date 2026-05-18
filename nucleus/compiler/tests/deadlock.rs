@@ -186,63 +186,41 @@ fn consume_before_produce_stalls_at_position_zero() {
 }
 
 // --------------------------------------------------------------------
-// End-to-end: example 02 under split schedule (the known-bug case)
+// End-to-end: example 02 under split schedule (deadlock-free)
 // --------------------------------------------------------------------
 
-/// Example 02 under the `split` schedule currently exposes a known
-/// upstream bug (TASK-0136 / TASK-0139): `transfer_inject` does not
-/// splice a matching `Push` for every `Wait` it inserts. The net
-/// therefore contains `wait_seq*` transitions whose input buffer
-/// place is never produced into, and replaying the derived firing
-/// order stalls at the first such Wait.
+/// Example 02 under the `split` schedule must be deadlock-free.
 ///
-/// This test is the deadlock pass paying its keep: it pinpoints a
-/// real schedule-lowering bug rather than a synthetic counter-example.
-/// When TASK-0136/0139 lands and `transfer_inject` is fixed, this
-/// test will start failing — at which point we update the assertion
-/// to expect `Ok(())` and close the loop.
+/// History: this was the acceptance signal for TASK-0136 / TASK-0139.
+/// Before the fix, `transfer_inject` left cross-scope Waits without a
+/// matching Push (the `add` consumer sits inside `for i` while
+/// `load_input` produces on host at the top level), so the net
+/// contained `wait_seq*` transitions whose buffer place was never
+/// produced into and the derived firing order stalled at the first
+/// such Wait.
+///
+/// The whole-symbol hoist (Pass A) + global Push finaliser (Pass B)
+/// in `transfer_inject` now pair every Wait with a Push at the right
+/// scope: `a`/`b` (loop-invariant inputs) get one Wait before the
+/// loop and one Push after their producer; `c` (loop output read by
+/// `save_output` after the loop) gets one Push after the loop and one
+/// Wait before the consumer. The net replays to completion.
+///
+/// This test is the deadlock pass paying its keep: it pinpoints (and
+/// now guards the fix for) a real schedule-lowering bug rather than a
+/// synthetic counter-example.
 #[test]
-fn e2e_example_02_split_currently_deadlocks_on_wait_without_push() {
+fn e2e_example_02_split_is_deadlock_free() {
     let net = pipeline_to_net(
         "02-split-add/prog.algo.nuc",
         "02-split-add/schedules/split.sched.nuc",
     );
     let order = derive_firing_order(&net);
-    let err = check_deadlock_free(&net, &order).expect_err(
-        "example 02 split currently deadlocks per TASK-0136/0139; \
-         if this expect_err fires, transfer_inject was fixed — \
-         flip this test to expect Ok(())",
+    check_deadlock_free(&net, &order).expect(
+        "example 02 split must be deadlock-free after TASK-0136/0139 \
+         (whole-symbol Push/Wait pairing); a stall here is a \
+         regression in transfer_inject's cross-scope finalisation",
     );
-    match err {
-        DeadlockError::Stalled {
-            transition_name,
-            place_name,
-            have,
-            need,
-            ..
-        } => {
-            // The stalled transition must be a Wait (transfer_inject
-            // names them `wait_seq<N>` by convention). The deficit
-            // must be on a buffer place that no Push ever produces
-            // into.
-            assert!(
-                transition_name.starts_with("wait"),
-                "stall should be on a wait transition; got '{}'",
-                transition_name
-            );
-            assert_eq!(
-                have, 0,
-                "deficit place '{}' should hold zero tokens at stall \
-                 (no matching Push fired)",
-                place_name
-            );
-            assert!(need >= 1);
-        }
-        other => panic!(
-            "expected Stalled on a wait_* transition, got {:?}",
-            other
-        ),
-    }
 }
 
 // --------------------------------------------------------------------
@@ -259,8 +237,7 @@ fn e2e_example_01_naive_is_deadlock_free() {
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
     let order = derive_firing_order(&net);
-    check_deadlock_free(&net, &order)
-        .expect("example 01 naive must be deadlock-free");
+    check_deadlock_free(&net, &order).expect("example 01 naive must be deadlock-free");
 }
 
 #[test]
@@ -272,8 +249,7 @@ fn e2e_example_02_naive_is_deadlock_free() {
         "02-split-add/schedules/naive.sched.nuc",
     );
     let order = derive_firing_order(&net);
-    check_deadlock_free(&net, &order)
-        .expect("example 02 naive must be deadlock-free");
+    check_deadlock_free(&net, &order).expect("example 02 naive must be deadlock-free");
 }
 
 // --------------------------------------------------------------------
@@ -298,11 +274,24 @@ fn check_deadlock_free_is_deterministic_on_stall() {
     // Same stall replayed twice yields the same error payload —
     // including the marking_before snapshot (BTreeMap-backed,
     // deterministic iteration).
-    let net = pipeline_to_net(
-        "02-split-add/prog.algo.nuc",
-        "02-split-add/schedules/split.sched.nuc",
-    );
-    let order = derive_firing_order(&net);
+    //
+    // Fixture note: example 02-split used to be the stall fixture
+    // here (it deadlocked on the missing-Push bug, TASK-0136/0139).
+    // That bug is fixed — example 02-split is now deadlock-free (see
+    // `e2e_example_02_split_is_deadlock_free`). To keep testing the
+    // *deterministic stall payload* property we use the synthetic
+    // unmatched-Wait shape: one `wait_seq0` consuming from a `buf`
+    // that no Push ever fills.
+    let mut net = Net::new();
+    let buf = net.add_place("buf_seq0", cap(1), 0);
+    let ctl = net.add_place("ctl_w_0", cap(1), 1);
+    let ctl_next = net.add_place("ctl_w_1", cap(1), 0);
+    let wait = net.add_transition("wait_seq0", None);
+    net.add_arc(ArcKind::PtoT, ctl, wait, 1);
+    net.add_arc(ArcKind::PtoT, buf, wait, 1);
+    net.add_arc(ArcKind::TtoP, ctl_next, wait, 1);
+
+    let order = [wait];
     let a = check_deadlock_free(&net, &order);
     let b = check_deadlock_free(&net, &order);
     assert_eq!(a, b, "stall payload must be deterministic across runs");

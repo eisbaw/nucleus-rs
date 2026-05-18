@@ -140,11 +140,7 @@ fn single_worker_single_op_yields_one_transition() {
 
     // Start place has initial_marking = 1; second place starts at 0.
     let initial = &net.initial_marking;
-    let mut marked: Vec<u32> = net
-        .places
-        .iter()
-        .map(|p| initial.get(p.id))
-        .collect();
+    let mut marked: Vec<u32> = net.places.iter().map(|p| initial.get(p.id)).collect();
     marked.sort();
     assert_eq!(marked, vec![0, 1], "exactly one start token across places");
 }
@@ -195,8 +191,16 @@ fn two_worker_xfer_pair_yields_intermediate_place_and_two_transitions() {
     assert_eq!(net.transitions.len(), 4);
 
     // Two of them owned by each worker.
-    assert_eq!(transitions_owned_by(&net, WorkerId(0)), 2, "w0 owns op + push");
-    assert_eq!(transitions_owned_by(&net, WorkerId(1)), 2, "w1 owns wait + op");
+    assert_eq!(
+        transitions_owned_by(&net, WorkerId(0)),
+        2,
+        "w0 owns op + push"
+    );
+    assert_eq!(
+        transitions_owned_by(&net, WorkerId(1)),
+        2,
+        "w1 owns wait + op"
+    );
 
     // Places: 1 start per worker = 2; one "after" per transition for
     // its threading worker = 4 (op_p produces ctl_w0_1; push produces
@@ -305,7 +309,11 @@ fn repeat_unrolls_body() {
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
     let net = acfg_to_net(&acfg);
 
-    assert_eq!(net.transitions.len(), 3, "Repeat range length 3 -> 3 firings");
+    assert_eq!(
+        net.transitions.len(),
+        3,
+        "Repeat range length 3 -> 3 firings"
+    );
     assert_eq!(transitions_owned_by(&net, WorkerId(0)), 3);
 }
 

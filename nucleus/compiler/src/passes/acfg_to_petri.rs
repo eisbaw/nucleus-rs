@@ -350,7 +350,13 @@ impl<'a> NetBuilder<'a> {
             .acfg
             .name_data
             .iter()
-            .find_map(|(n, id)| if *id == x.data { Some(n.as_str()) } else { None })
+            .find_map(|(n, id)| {
+                if *id == x.data {
+                    Some(n.as_str())
+                } else {
+                    None
+                }
+            })
             .unwrap_or("?");
         let name = format!("buf_{data_name}_seq{}", x.seq.0);
 
@@ -394,4 +400,3 @@ impl<'a> NetBuilder<'a> {
         self.worker_current.insert(wid, next_pid);
     }
 }
-

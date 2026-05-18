@@ -132,8 +132,14 @@ fn emit_pn_writes_a_dot_file_with_expected_structure() {
     let dot = std::fs::read_to_string(&dot_path).expect("read emitted dot");
     // Structural shape only — see module docs for why we don't
     // snapshot the bytes.
-    assert!(dot.starts_with("digraph petri"), "missing digraph header in:\n{dot}");
-    assert!(dot.contains("subgraph cluster_w"), "missing per-worker cluster in:\n{dot}");
+    assert!(
+        dot.starts_with("digraph petri"),
+        "missing digraph header in:\n{dot}"
+    );
+    assert!(
+        dot.contains("subgraph cluster_w"),
+        "missing per-worker cluster in:\n{dot}"
+    );
     // The styled serialiser always picks a palette colour from
     // `compiler::petri::WORKER_PALETTE`. The first entry is
     // `lightblue`; example 01 has a single worker which the lowering
@@ -188,7 +194,11 @@ fn emit_pn_alone_skips_codegen_but_still_writes_dot() {
         result.status.success(),
         "inspection-only build failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(dot_path.exists(), "DOT file missing at {}", dot_path.display());
+    assert!(
+        dot_path.exists(),
+        "DOT file missing at {}",
+        dot_path.display()
+    );
 
     // No codegen ran: the `project_dir =` / `main_rs =` summary
     // lines that the pthreads-sync backend prints must be absent.
