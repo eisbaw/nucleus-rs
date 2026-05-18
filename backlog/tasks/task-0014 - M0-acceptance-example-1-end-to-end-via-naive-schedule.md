@@ -4,8 +4,9 @@ title: 'M0 acceptance: example 1 end-to-end via naive schedule'
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:03'
+updated_date: '2026-05-18 01:08'
 labels:
-  - M0
+  - M1
   - validation
 dependencies: []
 ---

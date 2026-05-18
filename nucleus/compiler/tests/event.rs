@@ -25,10 +25,7 @@ use compiler::event::{
 // --------------------------------------------------------------------
 
 fn tile_y32_64_x0_256() -> IterTile {
-    IterTile::new(vec![
-        (IterVar(0), 32..64),
-        (IterVar(1), 0..256),
-    ])
+    IterTile::new(vec![(IterVar(0), 32..64), (IterVar(1), 0..256)])
 }
 
 fn sample_fire() -> Event {
@@ -127,7 +124,13 @@ fn alloc_constructor_smoke() {
 #[test]
 fn push_constructor_smoke() {
     let e = sample_push();
-    if let Event::Push { dst, data, tile, seq } = e {
+    if let Event::Push {
+        dst,
+        data,
+        tile,
+        seq,
+    } = e
+    {
         assert_eq!(dst, WorkerId(1));
         assert_eq!(data, DataId(3));
         assert_eq!(seq, SeqTag(5));
@@ -140,7 +143,13 @@ fn push_constructor_smoke() {
 #[test]
 fn wait_constructor_smoke() {
     let e = sample_wait();
-    if let Event::Wait { src, data, tile, seq } = e {
+    if let Event::Wait {
+        src,
+        data,
+        tile,
+        seq,
+    } = e
+    {
         assert_eq!(src, WorkerId(0));
         assert_eq!(data, DataId(3));
         assert_eq!(seq, SeqTag(5));
@@ -259,14 +268,8 @@ fn different_variants_compare_unequal() {
 
 #[test]
 fn itertile_same_bounds_same_order_compare_equal() {
-    let a = IterTile::new(vec![
-        (IterVar(0), 0..16),
-        (IterVar(1), 0..32),
-    ]);
-    let b = IterTile::new(vec![
-        (IterVar(0), 0..16),
-        (IterVar(1), 0..32),
-    ]);
+    let a = IterTile::new(vec![(IterVar(0), 0..16), (IterVar(1), 0..32)]);
+    let b = IterTile::new(vec![(IterVar(0), 0..16), (IterVar(1), 0..32)]);
     assert_eq!(a, b);
 }
 
@@ -275,14 +278,8 @@ fn itertile_reordered_bounds_compare_unequal() {
     // The iteration-nest order is semantically meaningful (outer vs
     // inner loop). Reordering breaks equality on purpose; see module
     // docs.
-    let a = IterTile::new(vec![
-        (IterVar(0), 0..16),
-        (IterVar(1), 0..32),
-    ]);
-    let b = IterTile::new(vec![
-        (IterVar(1), 0..32),
-        (IterVar(0), 0..16),
-    ]);
+    let a = IterTile::new(vec![(IterVar(0), 0..16), (IterVar(1), 0..32)]);
+    let b = IterTile::new(vec![(IterVar(1), 0..32), (IterVar(0), 0..16)]);
     assert_ne!(a, b);
 }
 
@@ -306,8 +303,14 @@ fn sync_participants_order_irrelevant_for_equality() {
     p2.insert(WorkerId(1));
     p2.insert(WorkerId(2));
 
-    let a = Event::Sync { participants: p1, kind: SyncKind::Barrier };
-    let b = Event::Sync { participants: p2, kind: SyncKind::Barrier };
+    let a = Event::Sync {
+        participants: p1,
+        kind: SyncKind::Barrier,
+    };
+    let b = Event::Sync {
+        participants: p2,
+        kind: SyncKind::Barrier,
+    };
     assert_eq!(a, b);
 }
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-0018
 title: Transfer injection pass on ACFG
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-17 23:04'
 updated_date: '2026-05-18 01:45'
