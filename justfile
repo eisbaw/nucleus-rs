@@ -37,6 +37,12 @@ clippy:
 e2e:
     cd nucleus && cargo run --release --bin nucleus-e2e
 
+# Verify PRD §1 / §10.1: same source + same backend = byte-identical
+# emitted code. Builds every cell twice and diffs the generated files.
+# TASK-0033.
+determinism-check:
+    cd nucleus && cargo run --release --bin nucleus-e2e -- --check-determinism
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

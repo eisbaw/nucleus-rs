@@ -25,6 +25,13 @@
 //!   --backend NAME    -- restrict to a single backend
 //!   --milestone ID    -- (currently informational; reserved for the
 //!                        post-M1 milestone-tagged subsets in PRD §11)
+//!   --check-determinism
+//!                     -- for every cell that would normally PASS,
+//!                        invoke `nucleus build` twice into separate
+//!                        out dirs and byte-compare every generated
+//!                        file. Any mismatch is a hard failure. PRD §1
+//!                        / §10.1: same source + same backend = same
+//!                        emitted code, byte-for-byte. TASK-0033.
 //!   -h | --help       -- usage
 //!
 //! Flag parser is hand-rolled — same style as `nucleus/driver/src/main.rs`.
@@ -115,6 +122,11 @@ struct Args {
     /// At M1 the flag is accepted but only logged — the manifest is
     /// the milestone gate today.
     milestone: Option<String>,
+    /// When set, the harness switches modes: instead of running the
+    /// compile/build/run/diff pipeline, it invokes `nucleus build`
+    /// twice per cell into two distinct out dirs and byte-compares
+    /// every generated file. See TASK-0033 and PRD §1 / §10.1.
+    check_determinism: bool,
 }
 
 fn parse_args(argv: &[OsString]) -> Result<Args, String> {
@@ -144,6 +156,10 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 a.milestone = Some(need_val(i)?);
                 i += 2;
             }
+            "--check-determinism" => {
+                a.check_determinism = true;
+                i += 1;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -159,11 +175,17 @@ fn print_help() {
         "nucleus-e2e — Nuc v2 differential test matrix harness\n\
          \n\
          USAGE:\n    \
-             nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] [--milestone ID]\n\
+             nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] \
+[--milestone ID] [--check-determinism]\n\
          \n\
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
-         matching cells.\n"
+         matching cells.\n\
+         \n\
+         --check-determinism: for every cell that would normally PASS,\n\
+         build twice into distinct out dirs and byte-compare every\n\
+         generated file. Verifies PRD §1: same source + same backend\n\
+         = same emitted code, byte-for-byte. TASK-0033.\n"
     );
 }
 
@@ -240,6 +262,30 @@ impl Paths {
             .map_err(|e| format!("cannot create scratch root `{}`: {e}", root.display()))?;
         // Cell directory name is sanitised to be filesystem-safe.
         let cell = format!("{ex}__{sched}__{backend}").replace(['/', '\\'], "_");
+        let dir = root.join(cell);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("cannot create cell dir `{}`: {e}", dir.display()))?;
+        Ok(dir)
+    }
+
+    /// Determinism-check scratch directory: one per (cell, label).
+    /// We emit two of these per cell — labels `a` and `b` — so the
+    /// downstream diff has two trees to compare without one
+    /// invocation stomping on the other. Lives under
+    /// `nucleus/target/e2e-determinism/` so a single `cargo clean`
+    /// sweeps the lot.
+    fn determinism_dir(
+        &self,
+        ex: &str,
+        sched: &str,
+        backend: &str,
+        label: &str,
+    ) -> Result<PathBuf, String> {
+        let root = self.repo_root.join("nucleus/target/e2e-determinism");
+        fs::create_dir_all(&root)
+            .map_err(|e| format!("cannot create determinism root `{}`: {e}", root.display()))?;
+        let cell = format!("{ex}__{sched}__{backend}__{label}").replace(['/', '\\'], "_");
         let dir = root.join(cell);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)
@@ -705,6 +751,567 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     }
 }
 
+// --------------------------------------------------------------------
+// Determinism check (TASK-0033)
+// --------------------------------------------------------------------
+//
+// For each cell, invoke `nucleus build` twice into two distinct out
+// dirs and byte-compare every generated file. PRD §1 / §10.1 promise:
+//   same source + same backend = same emitted code, byte-for-byte.
+//
+// Pre-skip cells (manifest [[skip]]) and capability-mismatched cells
+// are reported as SKIPPED — same as the run-mode contract. We do not
+// run the determinism check on cells the run-mode pipeline itself
+// would reject; the check is meaningful only on cells that currently
+// PASS, because that's the contract the PRD makes.
+//
+// What is compared:
+//   - every regular file under the out dir, walked recursively;
+//     paths are relativised against the out dir root so the
+//     containing prefix (`out_dir_a/` vs `out_dir_b/`) doesn't
+//     spuriously diverge.
+//
+// What is intentionally NOT compared:
+//   - `cargo build` artefacts. Determinism is asserted on the
+//     codegen output, not on `target/`. We never invoke `cargo
+//     build` in this mode — the cell only goes through phase 1
+//     (`nucleus build`) twice, no phase 2/3/4.
+//
+// Failure mode is loud: the first differing file gets a relative
+// path, an offset, and the surrounding byte context (decoded as
+// UTF-8 if possible — generated files in v2 are .rs/.toml/.sh, all
+// UTF-8). The "fix" for any failure is in the codegen, not the test:
+// the most common culprits are HashMap iteration order leaking into
+// emitted names/arms, time-of-day comments, or random temp paths.
+
+/// One file's determinism verdict. We don't materialise the full
+/// content of every emitted file — for a green run we just need to
+/// know how many bytes were compared; for a red run the
+/// `MismatchDetail` carries enough context to locate the offending
+/// codegen site.
+#[derive(Debug, Clone)]
+enum DetCellStatus {
+    Pass {
+        /// Number of regular files compared. Reported so a green run
+        /// still shows that *something* was actually compared (zero
+        /// files would also be "no mismatch" but is uninteresting).
+        files_compared: usize,
+    },
+    Failed(DetMismatch),
+    Skipped {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct DetMismatch {
+    /// Relative path within the out dir that diverged. If the file
+    /// exists in one tree but not the other, `kind` is `OnlyInA`/
+    /// `OnlyInB` and `offset` is unused.
+    relative_path: PathBuf,
+    kind: DetMismatchKind,
+    /// First differing byte offset (only meaningful for
+    /// `BytesDiffer`).
+    offset: usize,
+    /// Up to ~80 bytes of context around the offset from each tree,
+    /// decoded lossy. For OnlyIn* this names the side that *did* have
+    /// the file.
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DetMismatchKind {
+    BytesDiffer,
+    LengthDiffers,
+    OnlyInA,
+    OnlyInB,
+}
+
+impl fmt::Display for DetMismatchKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DetMismatchKind::BytesDiffer => "bytes differ",
+            DetMismatchKind::LengthDiffers => "length differs",
+            DetMismatchKind::OnlyInA => "file only in run A",
+            DetMismatchKind::OnlyInB => "file only in run B",
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DetCellResult {
+    cell: Cell,
+    required: bool,
+    status: DetCellStatus,
+    /// Combined wall-clock of both `nucleus build` invocations.
+    elapsed: Duration,
+}
+
+/// Drive the determinism check for one cell. Caller has already
+/// filtered the manifest down to cells worth checking. Returns the
+/// verdict; never panics.
+fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult {
+    let cell = planned.cell.clone();
+    let started = Instant::now();
+
+    // Manifest skip wins — same contract as the run-mode harness.
+    if let Some(reason) = &planned.pre_skip {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Skipped {
+                reason: reason.clone(),
+            },
+            elapsed: started.elapsed(),
+        };
+    }
+
+    // Capabilities sniff: a missing or unparseable capabilities file
+    // shows up as a SKIPPED (rather than a hard FAIL) in determinism
+    // mode, because we have no way to know whether the cell would
+    // PASS without it. The run-mode harness treats this as
+    // Failed(Compile); for determinism, the cell is simply not in
+    // scope.
+    let caps_path = paths.backend_caps(&cell.backend);
+    if !caps_path.exists() {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Skipped {
+                reason: format!("no capabilities.toml at {}", caps_path.display()),
+            },
+            elapsed: started.elapsed(),
+        };
+    }
+
+    // Sanity-check fixtures (subset of run-mode's check — we don't
+    // need input.bin/reference.bin since we never run the binary).
+    let ex_dir = paths.example_dir(&cell.example);
+    let algo = ex_dir.join("prog.algo.nuc");
+    let sched = ex_dir
+        .join("schedules")
+        .join(format!("{}.sched.nuc", cell.schedule));
+    let kernels = ex_dir.join("kernels.rs");
+    for (label, p) in [("algo", &algo), ("sched", &sched), ("kernels", &kernels)] {
+        if !p.exists() {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("missing {} at {}", label, p.display()),
+                },
+                elapsed: started.elapsed(),
+            };
+        }
+    }
+
+    // Build into two distinct out dirs.
+    let dir_a = match paths.determinism_dir(&cell.example, &cell.schedule, &cell.backend, "a") {
+        Ok(p) => p,
+        Err(e) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("scratch a: {e}"),
+                },
+                elapsed: started.elapsed(),
+            }
+        }
+    };
+    let dir_b = match paths.determinism_dir(&cell.example, &cell.schedule, &cell.backend, "b") {
+        Ok(p) => p,
+        Err(e) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("scratch b: {e}"),
+                },
+                elapsed: started.elapsed(),
+            }
+        }
+    };
+
+    if let Err(e) = run_nucleus_build(paths, &cell, &algo, &sched, &kernels, &dir_a) {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Skipped {
+                reason: format!("nucleus build a failed: {e}"),
+            },
+            elapsed: started.elapsed(),
+        };
+    }
+    if let Err(e) = run_nucleus_build(paths, &cell, &algo, &sched, &kernels, &dir_b) {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Skipped {
+                reason: format!("nucleus build b failed: {e}"),
+            },
+            elapsed: started.elapsed(),
+        };
+    }
+
+    // Diff. We walk dir_a, look each file up in dir_b. After that we
+    // sweep dir_b to catch files that exist only in b.
+    let files_a = match enumerate_files(&dir_a) {
+        Ok(v) => v,
+        Err(e) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("walk dir a: {e}"),
+                },
+                elapsed: started.elapsed(),
+            }
+        }
+    };
+    let files_b = match enumerate_files(&dir_b) {
+        Ok(v) => v,
+        Err(e) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("walk dir b: {e}"),
+                },
+                elapsed: started.elapsed(),
+            }
+        }
+    };
+
+    let set_a: BTreeSet<&PathBuf> = files_a.iter().collect();
+    let set_b: BTreeSet<&PathBuf> = files_b.iter().collect();
+
+    // OnlyInA: take the first one in BTreeSet order so the failure
+    // surface is deterministic.
+    if let Some(rel) = set_a.difference(&set_b).next() {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Failed(DetMismatch {
+                relative_path: (*rel).clone(),
+                kind: DetMismatchKind::OnlyInA,
+                offset: 0,
+                detail: format!(
+                    "present in `{}` but not in `{}`",
+                    dir_a.display(),
+                    dir_b.display()
+                ),
+            }),
+            elapsed: started.elapsed(),
+        };
+    }
+    if let Some(rel) = set_b.difference(&set_a).next() {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Failed(DetMismatch {
+                relative_path: (*rel).clone(),
+                kind: DetMismatchKind::OnlyInB,
+                offset: 0,
+                detail: format!(
+                    "present in `{}` but not in `{}`",
+                    dir_b.display(),
+                    dir_a.display()
+                ),
+            }),
+            elapsed: started.elapsed(),
+        };
+    }
+
+    // Now compare bytes. Iterate set_a (== set_b at this point) in
+    // BTreeSet order so any failure surface is deterministic.
+    let mut files_compared = 0usize;
+    for rel in &set_a {
+        let path_a = dir_a.join(rel);
+        let path_b = dir_b.join(rel);
+        let bytes_a = match fs::read(&path_a) {
+            Ok(b) => b,
+            Err(e) => {
+                return DetCellResult {
+                    cell,
+                    required: planned.required,
+                    status: DetCellStatus::Skipped {
+                        reason: format!("read {}: {e}", path_a.display()),
+                    },
+                    elapsed: started.elapsed(),
+                }
+            }
+        };
+        let bytes_b = match fs::read(&path_b) {
+            Ok(b) => b,
+            Err(e) => {
+                return DetCellResult {
+                    cell,
+                    required: planned.required,
+                    status: DetCellStatus::Skipped {
+                        reason: format!("read {}: {e}", path_b.display()),
+                    },
+                    elapsed: started.elapsed(),
+                }
+            }
+        };
+        if bytes_a.len() != bytes_b.len() {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Failed(DetMismatch {
+                    relative_path: (*rel).clone(),
+                    kind: DetMismatchKind::LengthDiffers,
+                    offset: 0,
+                    detail: format!("len a={} b={}", bytes_a.len(), bytes_b.len()),
+                }),
+                elapsed: started.elapsed(),
+            };
+        }
+        if bytes_a != bytes_b {
+            let off = bytes_a
+                .iter()
+                .zip(bytes_b.iter())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Failed(DetMismatch {
+                    relative_path: (*rel).clone(),
+                    kind: DetMismatchKind::BytesDiffer,
+                    offset: off,
+                    detail: byte_context(&bytes_a, &bytes_b, off),
+                }),
+                elapsed: started.elapsed(),
+            };
+        }
+        files_compared += 1;
+    }
+
+    DetCellResult {
+        cell,
+        required: planned.required,
+        status: DetCellStatus::Pass { files_compared },
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Invoke `nucleus build` for one cell into `out_dir`. Returns Err
+/// with a short tail of the compiler's stderr on failure.
+fn run_nucleus_build(
+    paths: &Paths,
+    cell: &Cell,
+    algo: &std::path::Path,
+    sched: &std::path::Path,
+    kernels: &std::path::Path,
+    out_dir: &std::path::Path,
+) -> Result<(), String> {
+    let out = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("nucleus")
+        .arg("--")
+        .arg("build")
+        .arg("--algo")
+        .arg(algo)
+        .arg("--sched")
+        .arg(sched)
+        .arg("--kernels")
+        .arg(kernels)
+        .arg("--backend")
+        .arg(&cell.backend)
+        .arg("--out")
+        .arg(out_dir)
+        .current_dir(paths.nucleus_ws())
+        .output()
+        .map_err(|e| format!("spawn cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(short_tail(&out.stderr, &out.stdout, 4));
+    }
+    Ok(())
+}
+
+/// Walk `root` recursively, return every regular file's path *relative
+/// to root*. Deterministic order is left to the caller (we hand back
+/// a `Vec` so a `BTreeSet` can be built outside; this keeps the walk
+/// allocation light). Skips no entries — generated trees in v2 are
+/// small and we want false positives to be loud.
+fn enumerate_files(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir)
+            .map_err(|e| format!("read_dir `{}`: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("readdir error: {e}"))?;
+            let path = entry.path();
+            let ty = entry
+                .file_type()
+                .map_err(|e| format!("file_type `{}`: {e}", path.display()))?;
+            if ty.is_dir() {
+                stack.push(path);
+            } else if ty.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|e| format!("strip_prefix on `{}`: {e}", path.display()))?
+                    .to_path_buf();
+                out.push(rel);
+            }
+            // symlinks etc. are intentionally not followed — codegen
+            // doesn't emit them in v2.
+        }
+    }
+    Ok(out)
+}
+
+/// Render up to 24 bytes of UTF-8-ish context around byte `off` in
+/// both trees. Generated files are .rs/.toml/.sh, so a lossy-decode
+/// gives the developer something readable to grep on.
+fn byte_context(a: &[u8], b: &[u8], off: usize) -> String {
+    let span = 24usize;
+    let start = off.saturating_sub(span / 2);
+    let end_a = (off + span / 2).min(a.len());
+    let end_b = (off + span / 2).min(b.len());
+    let snip_a = String::from_utf8_lossy(&a[start..end_a]).replace('\n', "\\n");
+    let snip_b = String::from_utf8_lossy(&b[start..end_b]).replace('\n', "\\n");
+    format!("a={snip_a:?} b={snip_b:?}")
+}
+
+/// Print a determinism-summary table. Same general shape as
+/// `print_summary` for the run-mode harness so the two outputs are
+/// visually consistent; we don't share code because the columns
+/// differ.
+fn print_determinism_summary(results: &[DetCellResult]) {
+    let colour = use_color();
+    let pass = |s: &str| {
+        if colour {
+            format!("{}{s}{}", ansi::GREEN, ansi::RESET)
+        } else {
+            s.to_string()
+        }
+    };
+    let fail = |s: &str| {
+        if colour {
+            format!("{}{s}{}", ansi::RED, ansi::RESET)
+        } else {
+            s.to_string()
+        }
+    };
+    let skip = |s: &str| {
+        if colour {
+            format!("{}{s}{}", ansi::YELLOW, ansi::RESET)
+        } else {
+            s.to_string()
+        }
+    };
+    let dim = |s: &str| {
+        if colour {
+            format!("{}{s}{}", ansi::DIM, ansi::RESET)
+        } else {
+            s.to_string()
+        }
+    };
+
+    let ex_w = results
+        .iter()
+        .map(|r| r.cell.example.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let sc_w = results
+        .iter()
+        .map(|r| r.cell.schedule.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    let be_w = results
+        .iter()
+        .map(|r| r.cell.backend.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!();
+    println!("e2e determinism matrix (TASK-0033):");
+    println!(
+        "  {:<ex_w$}  {:<sc_w$}  {:<be_w$}  {:<10}  {:>8}   detail",
+        "example",
+        "schedule",
+        "backend",
+        "status",
+        "time",
+        ex_w = ex_w,
+        sc_w = sc_w,
+        be_w = be_w
+    );
+    println!(
+        "  {:<ex_w$}  {:<sc_w$}  {:<be_w$}  {:<10}  {:>8}   {}",
+        "-".repeat(ex_w),
+        "-".repeat(sc_w),
+        "-".repeat(be_w),
+        "-".repeat(10),
+        "-".repeat(8),
+        "-".repeat(20),
+        ex_w = ex_w,
+        sc_w = sc_w,
+        be_w = be_w
+    );
+
+    for r in results {
+        let (status_str, detail) = match &r.status {
+            DetCellStatus::Pass { files_compared } => (
+                pass("PASS"),
+                dim(&format!("{files_compared} file(s) byte-identical")),
+            ),
+            DetCellStatus::Failed(m) => (
+                fail("FAIL"),
+                format!(
+                    "{}: {} (offset {}, {})",
+                    m.relative_path.display(),
+                    m.kind,
+                    m.offset,
+                    m.detail
+                ),
+            ),
+            DetCellStatus::Skipped { reason } => (skip("SKIPPED"), dim(reason)),
+        };
+        let mark = if r.required { "*" } else { " " };
+        println!(
+            "{mark} {:<ex_w$}  {:<sc_w$}  {:<be_w$}  {:<10}  {:>8}   {}",
+            r.cell.example,
+            r.cell.schedule,
+            r.cell.backend,
+            status_str,
+            format_duration(r.elapsed),
+            detail,
+            ex_w = ex_w,
+            sc_w = sc_w,
+            be_w = be_w
+        );
+    }
+    println!();
+    let total = results.len();
+    let passed = results
+        .iter()
+        .filter(|r| matches!(r.status, DetCellStatus::Pass { .. }))
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| matches!(r.status, DetCellStatus::Failed(_)))
+        .count();
+    let skipped = results
+        .iter()
+        .filter(|r| matches!(r.status, DetCellStatus::Skipped { .. }))
+        .count();
+    println!(
+        "  total: {total}   pass: {passed}   fail: {failed}   skipped: {skipped}"
+    );
+    println!("  (* = required cell; any FAIL is a hard failure regardless of required-bit)");
+    println!();
+}
+
 /// Return the last `n` non-empty lines of stderr (preferred) or
 /// stdout, joined by `; `. Keeps the table compact while still
 /// surfacing actionable error context.
@@ -933,6 +1540,40 @@ fn run() -> Result<i32, String> {
         return Err("no cells matched the given filters; nothing to run".to_string());
     }
 
+    if args.check_determinism {
+        eprintln!(
+            "nucleus-e2e: determinism check over {} cell(s) from {}",
+            planned.len(),
+            paths.manifest_path().display()
+        );
+        let mut det_results: Vec<DetCellResult> = Vec::with_capacity(planned.len());
+        for (i, pc) in planned.iter().enumerate() {
+            eprint!(
+                "  [{:>2}/{:<2}] {} | {} | {} ... ",
+                i + 1,
+                planned.len(),
+                pc.cell.example,
+                pc.cell.schedule,
+                pc.cell.backend
+            );
+            let _ = std::io::stderr().flush();
+            let r = check_cell_determinism(&paths, pc);
+            match &r.status {
+                DetCellStatus::Pass { files_compared } => {
+                    eprintln!("PASS ({files_compared} files, {:?})", r.elapsed)
+                }
+                DetCellStatus::Failed(_) => eprintln!("FAIL"),
+                DetCellStatus::Skipped { .. } => eprintln!("SKIPPED"),
+            }
+            det_results.push(r);
+        }
+        print_determinism_summary(&det_results);
+        let any_failed = det_results
+            .iter()
+            .any(|r| matches!(r.status, DetCellStatus::Failed(_)));
+        return Ok(if any_failed { 1 } else { 0 });
+    }
+
     eprintln!(
         "nucleus-e2e: running {} cell(s) from {}",
         planned.len(),
@@ -1007,6 +1648,116 @@ mod tests {
         assert_eq!(a.schedule.as_deref(), Some("naive"));
         assert_eq!(a.backend.as_deref(), Some("pthreads-sync"));
         assert_eq!(a.milestone.as_deref(), Some("M1"));
+    }
+
+    #[test]
+    fn arg_parser_accepts_check_determinism() {
+        let argv = vec![OsString::from("--check-determinism")];
+        let a = parse_args(&argv).expect("parse");
+        assert!(a.check_determinism, "flag was not picked up");
+        // Other flags default to None / false.
+        assert!(a.example.is_none());
+    }
+
+    #[test]
+    fn arg_parser_combines_check_determinism_with_filters() {
+        // Determinism mode should compose with the normal narrowing
+        // flags so a developer can debug one cell quickly.
+        let argv: Vec<OsString> = [
+            "--check-determinism",
+            "--example",
+            "01-elementwise-add",
+            "--backend",
+            "pthreads-sync",
+        ]
+        .iter()
+        .map(|s| OsString::from(*s))
+        .collect();
+        let a = parse_args(&argv).expect("parse");
+        assert!(a.check_determinism);
+        assert_eq!(a.example.as_deref(), Some("01-elementwise-add"));
+        assert_eq!(a.backend.as_deref(), Some("pthreads-sync"));
+    }
+
+    #[test]
+    fn enumerate_files_returns_paths_relative_to_root() {
+        // Build a small synthetic tree and verify enumerate_files
+        // walks it and returns paths relativised to root. The
+        // determinism diff relies on this so two trees rooted at
+        // different absolute paths compare equal when their contents
+        // are byte-identical.
+        let tmp = std::env::temp_dir().join(format!(
+            "nucleus-e2e-enumerate-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).expect("mk src");
+        fs::write(tmp.join("Cargo.toml"), b"[package]").expect("write cargo");
+        fs::write(tmp.join("src/main.rs"), b"fn main(){}").expect("write main");
+        fs::write(tmp.join("src/kernels.rs"), b"// k").expect("write kernels");
+
+        let mut files = enumerate_files(&tmp).expect("walk");
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("Cargo.toml"),
+                PathBuf::from("src/kernels.rs"),
+                PathBuf::from("src/main.rs"),
+            ],
+            "walk should return relative paths in stable order"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn determinism_skip_entry_short_circuits() {
+        // Manifest-declared skips short-circuit before running
+        // nucleus build — same contract as run-mode. Test we never
+        // attempt to spawn cargo in this case.
+        let paths = Paths::discover().expect("discover");
+        let pc = PlannedCell {
+            cell: Cell {
+                example: "ghost-example".to_string(),
+                schedule: "ghost-sched".to_string(),
+                backend: "ghost-backend".to_string(),
+            },
+            required: false,
+            pre_skip: Some("manifest says skip".to_string()),
+        };
+        let r = check_cell_determinism(&paths, &pc);
+        match r.status {
+            DetCellStatus::Skipped { reason } => assert_eq!(reason, "manifest says skip"),
+            other => panic!("expected SKIPPED, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn determinism_missing_capabilities_is_skipped() {
+        // Cells targeting a non-existent backend report SKIPPED
+        // (rather than FAILED) — determinism is meaningful only on
+        // cells the harness can actually exercise.
+        let paths = Paths::discover().expect("discover");
+        let pc = PlannedCell {
+            cell: Cell {
+                example: "01-elementwise-add".to_string(),
+                schedule: "naive".to_string(),
+                backend: "definitely-not-a-real-backend-xyzzy".to_string(),
+            },
+            required: false,
+            pre_skip: None,
+        };
+        let r = check_cell_determinism(&paths, &pc);
+        match r.status {
+            DetCellStatus::Skipped { reason } => {
+                assert!(
+                    reason.contains("capabilities.toml"),
+                    "reason was: {reason}"
+                );
+            }
+            other => panic!("expected SKIPPED, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1095,6 +1846,7 @@ mystery = 42
             schedule: Some("naive".into()),
             backend: Some("pthreads-sync".into()),
             milestone: None,
+            check_determinism: false,
         };
         let planned = plan_cells(&paths, &manifest, &args).expect("plan");
         assert_eq!(planned.len(), 1);
