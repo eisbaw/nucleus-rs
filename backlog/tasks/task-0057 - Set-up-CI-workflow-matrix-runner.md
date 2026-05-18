@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:10'
-updated_date: '2026-05-18 22:16'
+updated_date: '2026-05-18 22:17'
 labels:
   - infra
   - tooling
@@ -21,13 +21,13 @@ Set up CI (likely GitHub Actions or self-hosted GitLab CI) that runs 'just check
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 .github/workflows/ (or .gitlab-ci.yml) runs jobs: check, clippy, test, e2e — all inside 'nix develop' or a Nix-shell wrapper.
+- [x] #1 .github/workflows/ (or .gitlab-ci.yml) runs jobs: check, clippy, test, e2e — all inside 'nix develop' or a Nix-shell wrapper.
 - [ ] #2 CI exits non-zero on any failure; merges blocked on green.
-- [ ] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
+- [x] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
 - [ ] #4 Test: a deliberate clippy warning fails CI.
 - [ ] #5 Test: an e2e cell failure shows up clearly in the workflow output.
-- [ ] #6 Implementation notes record design questions (e.g. self-hosted runner vs GitHub-hosted; cost; cache strategy for Nix and Cargo).
-- [ ] #7 Implementation notes record honest limitations (e.g. no tier-3 Renode CI until M10; tier-2 MPI CI lands at M7).
+- [x] #6 Implementation notes record design questions (e.g. self-hosted runner vs GitHub-hosted; cost; cache strategy for Nix and Cargo).
+- [x] #7 Implementation notes record honest limitations (e.g. no tier-3 Renode CI until M10; tier-2 MPI CI lands at M7).
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -69,4 +69,31 @@ This repo has NO git remote and no runner; the workflow cannot be triggered or o
 - Branch protection / "merges blocked on green" (AC#2 second half) CANNOT be configured from the repo — it is a GitHub repo-settings action a maintainer must take (mark the `gate` jobs as required status checks). Workflow exits non-zero on failure (verified locally); the merge-block is org/settings, not code. Filed as the maintainer-action portion of AC#2; recorded as a limitation, not silently claimed.
 - No tier-2 MPI CI until M7; no tier-3 Renode CI until M10 (PRD §11). Placeholders disabled, follow-ups TASK-0164 (M7 MPI CI) / TASK-0165 (M10 Renode CI) referenced in ci.yml comments — note: those task ids are placeholders cited in-comment; create when M7/M10 are scheduled.
 - Found + filed TASK-0163: e2e harness silently ignores an unknown schedule in a [[required]] entry instead of FAILing — a real CI blind spot (a stale/typo required cell vanishes). Forward-carried.
+
+## AC status (honest)
+- AC#1 CHECKED: verified locally, all gate steps run via `nix develop -c just ci`.
+- AC#2 NOT checked: workflow non-zero-on-failure is verified locally (clippy demo exit 101, e2e demo exit 1), BUT "merges blocked on green" requires GitHub branch-protection settings (no remote here) — maintainer action TASK-0166. Left unchecked until the merge-block half is real.
+- AC#3 CHECKED: milestone-keyed matrix (M0..M6 tier-1); tier-2/3 disabled placeholders w/ TASK-0164/0165.
+- AC#4 NOT checked: gate LOGIC demonstrated locally (deliberate clippy warning -> `just ci` exit 101 at clippy step, reverted). Real GitHub Actions run UNVERIFIED (no remote/runner). Left unchecked per honesty requirement.
+- AC#5 NOT checked: gate LOGIC demonstrated locally (e2e cell failure -> `just e2e` exit 1, clear "FAIL/diff" + required-fail:1 output, reverted). Real workflow-output UNVERIFIED (no remote/runner). Left unchecked per honesty requirement.
+- AC#6 CHECKED: design questions recorded above.
+- AC#7 CHECKED: limitations recorded above.
+
+TASK-0057 left In Progress (NOT Done): AC#2/#4/#5 cannot be honestly closed without a real runner + branch-protection. Local gate logic is complete and green; the gap is purely "no remote to observe a real CI run".
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CI verification gate landed (logic complete; real-runner verification pending a remote).
+
+What changed:
+- justfile: `just ci` aggregate recipe (check/clippy/test/e2e/determinism-check/determinism-check-negative, fail-fast, all in nix shell). Single source of truth shared with CI.
+- .github/workflows/ci.yml: GitHub Actions; every job = `nix develop -c just ci`; milestone-keyed matrix (M0..M6 tier-1 active; M7 MPI / M10 Renode disabled placeholders -> TASK-0164/0165); Nix + Cargo caches; non-zero job fails workflow.
+
+Verified locally (commands actually run): clean `nix develop -c just ci` EXIT=0, test 0 failed, e2e 8/0/2 required-fail 0, determinism 8/0, negative arm bites. AC#4 (deliberate clippy warning -> exit 101) and AC#5 (corrupted reference.bin -> e2e exit 1, clear FAIL/diff) demonstrated then reverted (empty git diff, re-verified green).
+
+Honest limitations: no git remote/runner -> the workflow YAML wiring is UNVERIFIED on a real GitHub Actions run; AC#4/#5 verified at gate-logic level only. "Merges blocked on green" (AC#2) is a maintainer branch-protection settings action -> TASK-0166. Found+filed TASK-0163 (e2e harness silently ignores unknown schedule in [[required]] — CI blind spot).
+
+Status: In Progress (not Done) — AC#2/#4/#5 honestly cannot close without a real runner.
+<!-- SECTION:FINAL_SUMMARY:END -->
