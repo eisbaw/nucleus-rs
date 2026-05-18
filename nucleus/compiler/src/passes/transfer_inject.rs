@@ -813,6 +813,20 @@ fn contains_block_inner(node: &ACFGNode, block_inner: &BTreeSet<IterVar>) -> boo
     }
 }
 
+/// Number of Operations in the subtree that write `data`. Used only
+/// by a debug-assert guarding the single-assignment invariant
+/// (TASK-0153); not on the release hot path.
+fn count_producers(node: &ACFGNode, data: DataId) -> usize {
+    match node {
+        ACFGNode::Operation(op) => usize::from(output_data(op) == Some(data)),
+        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => 0,
+        ACFGNode::Repeat { body, .. } => count_producers(body, data),
+        ACFGNode::Sequence(children) => {
+            children.iter().map(|c| count_producers(c, data)).sum()
+        }
+    }
+}
+
 fn hoist_invariant_waits(
     node: ACFGNode,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
@@ -1232,6 +1246,22 @@ fn splice_pushes_global(
                 );
             }
         };
+
+        // Single-assignment invariant (PRD §6.2.1, TASK-0153):
+        // `producer_repeat_path` takes the FIRST Operation in walk
+        // order that writes `w.data`. That is only well-defined if
+        // there is exactly one. v2 data is single-assignment, so two
+        // writers would be a front-end/lowering bug that would
+        // mis-place the Push silently. Assert it in debug builds; no
+        // release-build cost.
+        debug_assert_eq!(
+            count_producers(&root, w.data),
+            1,
+            "single-assignment violated: data id {:?} has multiple producing \
+             Operations; producer_repeat_path would mis-place the Push",
+            w.data
+        );
+
         let mut wp = None;
         wait_repeat_path(&root, w.seq, &mut Vec::new(), &mut wp);
         let wait_path = wp.unwrap_or_default();
