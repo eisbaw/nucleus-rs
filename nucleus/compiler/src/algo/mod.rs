@@ -21,10 +21,17 @@
 //!   per-node spans is a follow-up task — see TASK-0007 self-report.
 
 pub mod ast;
+pub mod ir;
+pub mod lower;
 pub mod parser;
 
 pub use ast::{
     AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig, Purity,
     ScalarType, Stmt, Type, UnaryOp,
 };
+pub use ir::{
+    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, ResolvedConst, ResolvedData,
+    ResolvedKernel, ResolvedType,
+};
+pub use lower::lower_algo;
 pub use parser::{parse_algo, ParseError};
