@@ -47,40 +47,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A SINGLE honest tier-1 gate job. There is deliberately NO
+  # milestone matrix: today every milestone M0–M6 would run the
+  # byte-identical `just ci` gate (the e2e harness's `--milestone`
+  # flag is accepted-but-ignored and nuc-nucleus/e2e-matrix.toml has
+  # no milestone dimension — verified in nucleus/e2e/src/main.rs).
+  # A 7-cell fan-out keyed on a value that changes no behaviour would
+  # be cosmetic config burning 7x CI minutes while pretending to be a
+  # data dimension — rejected (mped-architect review of TASK-0057;
+  # the original cycle wrongly checked AC#3 on this decorative
+  # matrix). Genuine per-milestone parameterisation requires wiring
+  # `--milestone` through `just ci` -> the e2e harness AND adding a
+  # milestone key to e2e-matrix.toml so the required set actually
+  # differs per milestone: that real work is TASK-0167. Until it
+  # lands, AC#3 is honestly UNMET, not faked with scaffolding.
+  #
+  # Future tiers (deliberately disabled, not stubbed): tier-2 MPI CI
+  # is TASK-0164 (lands with M7), tier-3 Renode is TASK-0165 (M10).
+  # The backends/runtimes do not exist yet; enabling a row now would
+  # be a job that fails or fakes success — both forbidden. When
+  # enabled they must run a tier-appropriate recipe
+  # (compile-mandatory / run-best-effort per PRD §10.2/§10.3), NOT
+  # `just ci`.
   gate:
-    name: tier-1 gate (${{ matrix.milestone }})
+    name: tier-1 gate
     runs-on: ubuntu-latest
-    strategy:
-      # fail-fast off: we want to see every milestone's result, not
-      # abort the whole matrix on the first red cell.
-      fail-fast: false
-      matrix:
-        # AC#3: parameterised by milestone. M0–M6 are CPU tier-1 and
-        # all run the identical `just ci` gate today (the gate's
-        # required set is milestone-gated inside the e2e harness via
-        # nuc-nucleus/e2e-matrix.toml, not here). Listing them
-        # explicitly documents which milestones the gate covers and
-        # lets a maintainer pin a milestone branch to its row as a
-        # required check.
-        milestone: [M0, M1, M2, M3, M4, M5, M6]
-        tier: [tier-1]
-        # NOTE (future tiers — deliberately disabled, not stubbed):
-        #
-        #   include:
-        #     - milestone: M7      # tier-2 MPI blocking (PRD §11)
-        #       tier: tier-2
-        #     - milestone: M10     # tier-3 first Renode shim (PRD §11)
-        #       tier: tier-3
-        #
-        # These are commented out because the backends/runtimes do
-        # not exist yet (no `mpi-blocking` crate, no Renode harness).
-        # Enabling them now would mean a job that either fails or
-        # fakes success — both forbidden. Re-enable per:
-        #   - tier-2 MPI CI  -> TASK-0164 (lands with M7)
-        #   - tier-3 Renode  -> TASK-0165 (lands with M10)
-        # When enabled, those rows must run a tier-appropriate recipe
-        # (compile-mandatory / run-best-effort per PRD §10.2/§10.3),
-        # NOT `just ci`.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,5 +111,5 @@ jobs:
       # step (just is fail-fast), which fails the job and the
       # workflow (AC#2). Covers AC#1 (check/clippy/test/e2e) plus the
       # reproducibility gates.
-      - name: just ci (${{ matrix.milestone }} / ${{ matrix.tier }})
+      - name: just ci (tier-1 full gate)
         run: nix develop -c just ci

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:10'
-updated_date: '2026-05-18 22:17'
+updated_date: '2026-05-18 22:23'
 labels:
   - infra
   - tooling
@@ -23,7 +23,7 @@ Set up CI (likely GitHub Actions or self-hosted GitLab CI) that runs 'just check
 <!-- AC:BEGIN -->
 - [x] #1 .github/workflows/ (or .gitlab-ci.yml) runs jobs: check, clippy, test, e2e — all inside 'nix develop' or a Nix-shell wrapper.
 - [ ] #2 CI exits non-zero on any failure; merges blocked on green.
-- [x] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
+- [ ] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
 - [ ] #4 Test: a deliberate clippy warning fails CI.
 - [ ] #5 Test: an e2e cell failure shows up clearly in the workflow output.
 - [x] #6 Implementation notes record design questions (e.g. self-hosted runner vs GitHub-hosted; cost; cache strategy for Nix and Cargo).
@@ -80,6 +80,8 @@ This repo has NO git remote and no runner; the workflow cannot be triggered or o
 - AC#7 CHECKED: limitations recorded above.
 
 TASK-0057 left In Progress (NOT Done): AC#2/#4/#5 cannot be honestly closed without a real runner + branch-protection. Local gate logic is complete and green; the gap is purely "no remote to observe a real CI run".
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph). qa-test-runner GO: re-ran nix develop -c just ci -> exit 0; test 0 failed; e2e total 10/pass 8/fail 0/skip 2/required-fail 0; determinism-check 8/0 byte-identical; determinism-check-negative bites (verified 2x, non-flaky); ci.yml valid YAML; just ci fail-fast confirmed; no AI credit; clean tree. mped-architect NO-GO for Done with 2 findings, hardened in-thread by orchestrator: (1) AC#3 was AC-GAMED — the milestone matrix was cosmetic (7 identical jobs; harness --milestone accepted-but-ignored; e2e-matrix.toml has no milestone key). Collapsed ci.yml to a single honest tier-1 gate job (removes 7x CI cost + the dishonest decoration); AC#3 UNCHECKED; genuine milestone wiring filed as TASK-0167 (dep 0057). (2) TASK-0163 (e2e silently drops unknown [[required]] schedule) raised to HIGH — it gates trust in the very gate CI relies on. ci.yml re-validated (js-yaml OK) post-collapse. TASK-0057 stays In Progress: AC#2/#4/#5 runner-pending (honest), AC#3 honestly unmet pending TASK-0167.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
