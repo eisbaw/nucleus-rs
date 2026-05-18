@@ -36,5 +36,6 @@ pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 // crate root to avoid shadowing `std::sync::Arc` for downstream code;
 // reach for it via `compiler::petri::Arc` when you actually need it.
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};
+pub use passes::acfg_to_petri::acfg_to_net;
 pub use passes::sync_inject::inject_syncs;
 pub use passes::transfer_inject::inject_transfers;

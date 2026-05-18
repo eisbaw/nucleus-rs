@@ -14,5 +14,6 @@
 //! [`transfer_inject::inject_transfers`]) so they compose with
 //! function-composition rules and tests can pipe them in any order.
 
+pub mod acfg_to_petri;
 pub mod sync_inject;
 pub mod transfer_inject;
