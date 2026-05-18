@@ -1,22 +1,10 @@
 //! End-to-end test for example 02-split-add, split schedule,
-//! pthreads-sync backend (TASK-0021 target).
+//! pthreads-sync backend (TASK-0021 target, TASK-0122 enabled).
 //!
-//! STATUS: blocked on TASK-0122 (multi-worker pthreads-sync codegen).
-//! The current pthreads-sync backend (TASK-0020) returns
-//! `EmitError::UnsupportedFeature("multi-worker codegen not
-//! implemented at M1 ...")` for any schedule that names more than one
-//! worker. Until TASK-0122 lands, this test is `#[ignore]`'d.
-//!
-//! When TASK-0122 lands, remove the `#[ignore]` attribute. No
-//! other change to the test should be necessary; the example's
-//! files (algo, sched, kernels.rs, reference.bin) are already in
-//! place.
-//!
-//! TODO: TASK-0122 multi-worker pthreads-sync codegen
-//!
-//! What this test is meant to verify (once enabled):
+//! Verifies the full pipeline:
 //!   nucleus build  ->  cargo build  ->  binary run  ->  diff vs reference.bin
-//! with bit-identical output (PRD §10.1).
+//! with bit-identical output (PRD §10.1). This is the load-bearing
+//! acceptance assertion for multi-worker pthreads-sync codegen.
 
 use std::env;
 use std::fs;
@@ -47,12 +35,7 @@ fn scratch_dir(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "TASK-0122 multi-worker pthreads-sync codegen pending"]
 fn split_pthreads_sync_bit_identical() {
-    // When TASK-0122 lands and this is un-ignored, the body below
-    // documents the eventual target. Mirrors e2e_example_01.rs
-    // exactly except for the schedule path (split.sched.nuc) and
-    // the example directory.
     let ex = example_dir();
     let algo = ex.join("prog.algo.nuc");
     let sched = ex.join("schedules/split.sched.nuc");

@@ -13,13 +13,19 @@
 //! reference.bin) lives at `nucleus/compiler/tests/e2e_example_01.rs`
 //! to keep this crate's test load light.
 //!
-//! Honest limitation: synthetic two-worker tests are NOT here yet
-//! because multi-worker codegen isn't implemented at M1 — `emit`
-//! correctly rejects with `EmitError::UnsupportedFeature`. A
-//! synthetic test that *asserts* the rejection lives below
-//! (`multi_worker_is_rejected`). The PRD-listed AC #5 case — a
-//! two-worker pingpong producing compilable Rust — is filed as a
-//! follow-up (see TASK-0020 self-report).
+//! Multi-worker codegen (TASK-0122) is now in place. A synthetic
+//! two-worker pingpong test lives in `tests/multi_worker.rs`. The
+//! load-bearing end-to-end test (example 02 split.sched.nuc against
+//! `reference.bin`) lives at
+//! `nucleus/compiler/tests/e2e_example_02.rs`.
+//!
+//! At this layer (the unit-test surface of the backend) we keep:
+//! - The single-worker happy-path tests below (example 01 × naive).
+//! - A small synthetic test that proves a two-worker ACFG produces
+//!   compilable Rust without a runtime check (the runtime is in the
+//!   multi_worker.rs harness).
+//! - A test that rejects an unsupported distributed placement
+//!   (`place k on {w0,w1,...}`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,24 +134,27 @@ fn kernels_rs_is_copied_verbatim() {
 }
 
 #[test]
-fn multi_worker_is_rejected() {
-    // Construct a synthetic ACFG that references two distinct workers.
-    // We don't go through the full parse pipeline because the
-    // existing example 01's naive schedule only declares one worker —
-    // the rejection logic lives in `emit`'s worker collection, which
-    // we can prove via direct ACFG construction.
+fn distributed_placement_is_rejected() {
+    // Construct a synthetic LinkedIR where a kernel is placed on
+    // *two* workers — the multi-worker codegen rejects this because
+    // iteration-space partitioning (TASK-0117) isn't implemented.
+    // We pass through `emit` so the rejection path is the real one
+    // (validate_placements in multi_worker.rs).
+    use compiler::link::WorkerEntity;
+    use compiler::sched::{ResolvedPlaceTarget, ResolvedPlacement};
     use compiler::{ACFGNode, DataflowDag, DataflowEdge, Operation, ACFG};
     use compiler::{DataId, KernelId, WorkerId};
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut workers_a: BTreeSet<WorkerId> = BTreeSet::new();
-    workers_a.insert(WorkerId(0));
-    let mut workers_b: BTreeSet<WorkerId> = BTreeSet::new();
-    workers_b.insert(WorkerId(1));
-
+    // Two distinct workers referenced by Operations so the
+    // "single-worker fast path" is bypassed.
+    let mut wa: BTreeSet<WorkerId> = BTreeSet::new();
+    wa.insert(WorkerId(0));
+    let mut wb: BTreeSet<WorkerId> = BTreeSet::new();
+    wb.insert(WorkerId(1));
     let op_a = Operation {
         kernel: KernelId(0),
-        workers: workers_a,
+        workers: wa,
         dataflow: DataflowDag {
             edges: vec![DataflowEdge {
                 data_in: vec![],
@@ -156,7 +165,7 @@ fn multi_worker_is_rejected() {
     };
     let op_b = Operation {
         kernel: KernelId(1),
-        workers: workers_b,
+        workers: wb,
         dataflow: DataflowDag {
             edges: vec![DataflowEdge {
                 data_in: vec![DataId(0)],
@@ -166,34 +175,58 @@ fn multi_worker_is_rejected() {
         },
     };
 
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("w0".into(), WorkerId(0));
+    name_workers.insert("w1".into(), WorkerId(1));
+
     let acfg = ACFG {
         root: ACFGNode::Sequence(vec![ACFGNode::Operation(op_a), ACFGNode::Operation(op_b)]),
         name_kernels: BTreeMap::new(),
         name_data: BTreeMap::new(),
-        name_workers: BTreeMap::new(),
+        name_workers,
         name_iter_vars: BTreeMap::new(),
     };
 
-    // The LinkedIR doesn't matter for the rejection path — `emit`
-    // counts workers before touching it. Build a minimal stub.
+    // LinkedIR with a distributed placement: kernel `dist` on
+    // {w0, w1}. multi_worker::validate_placements should reject.
+    let mut placements: BTreeMap<String, ResolvedPlacement> = BTreeMap::new();
+    placements.insert(
+        "dist".into(),
+        ResolvedPlacement {
+            kernel: "dist".into(),
+            target: ResolvedPlaceTarget::Many(vec!["w0".into(), "w1".into()]),
+        },
+    );
+    let mut kernel_workers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
+    kernel_workers.insert(
+        "dist".into(),
+        WorkerEntity({
+            let mut s = BTreeSet::new();
+            s.insert("w0".into());
+            s.insert("w1".into());
+            s
+        }),
+    );
+
     let linked = compiler::link::LinkedIR {
         algo: compiler::algo::AlgoIR::default(),
         sched: compiler::sched::SchedIR::default(),
-        placements: BTreeMap::new(),
-        kernel_workers: BTreeMap::new(),
+        placements,
+        kernel_workers,
         data_producers: BTreeMap::new(),
         data_consumers: BTreeMap::new(),
     };
 
-    let out = scratch_dir("multi_worker_is_rejected");
-    // kernels.rs path doesn't exist; we never get that far if the
-    // multi-worker rejection fires first.
-    let kernels = out.join("nonexistent-kernels.rs");
+    let out = scratch_dir("distributed_placement_is_rejected");
+    // kernels.rs needs to exist so we don't trip the read-kernels
+    // step before reaching multi-worker validation.
+    let kernels = out.join("kernels.rs");
+    fs::write(&kernels, "// stub\n").unwrap();
     let err = emit(&acfg, &linked, &kernels, &out).unwrap_err();
     match err {
         pthreads_sync::EmitError::UnsupportedFeature(msg) => {
             assert!(
-                msg.contains("multi-worker"),
+                msg.contains("distributed placement") || msg.contains("placed on"),
                 "unexpected UnsupportedFeature message: {msg}"
             );
         }

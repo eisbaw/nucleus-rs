@@ -102,6 +102,8 @@ use compiler::link::LinkedIR;
 use compiler::sched::ResolvedPlaceTarget;
 use compiler::ACFG;
 
+mod multi_worker;
+
 // --------------------------------------------------------------------
 // Public surface
 // --------------------------------------------------------------------
@@ -182,20 +184,16 @@ pub fn emit(
     kernels_rs_path: &Path,
     out_dir: &Path,
 ) -> Result<EmitResult, EmitError> {
-    // ---- M1: enforce single-worker. ----
+    // ---- Pick a code path: single-worker vs multi-worker. ----
     //
     // The ACFG's name_workers covers every worker the schedule
-    // declared (including any unused entries). We instead count the
-    // unique workers that actually own at least one Operation: a
-    // schedule may declare workers it doesn't use. If more than one
-    // distinct worker is referenced by an Operation, bail.
+    // declared (including any unused entries). We count the unique
+    // workers that actually own at least one Operation: a schedule
+    // may declare workers it doesn't use. With one used worker we
+    // take the naive (M1) path; with two or more, the multi-worker
+    // codegen (TASK-0122) emits thread spawns + Slot channels +
+    // barriers.
     let used_workers = collect_used_workers(acfg);
-    if used_workers.len() > 1 {
-        return Err(EmitError::UnsupportedFeature(format!(
-            "multi-worker codegen not implemented at M1 (schedule uses {} workers; expected 1)",
-            used_workers.len()
-        )));
-    }
 
     // ---- Read user kernels.rs ----
     let kernels_src =
@@ -224,7 +222,11 @@ pub fn emit(
     write_file(&kernels_rs, &kernels_src)?;
 
     // ---- Render main.rs ----
-    let main_rs_src = render_main_rs(&linked.algo)?;
+    let main_rs_src = if used_workers.len() <= 1 {
+        render_main_rs(&linked.algo)?
+    } else {
+        multi_worker::render_main_rs_multi(acfg, linked)?
+    };
     write_file(&main_rs, &main_rs_src)?;
 
     // ---- Render run.sh ----
