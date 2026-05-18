@@ -4,7 +4,7 @@ title: Kernel-as-Rust-function contract verification
 status: Done
 assignee: []
 created_date: '2026-05-17 23:03'
-updated_date: '2026-05-18 00:53'
+updated_date: '2026-05-18 00:54'
 labels:
   - M0
   - compiler
@@ -152,7 +152,7 @@ In 'nix develop':
 
 ## Commit
 
-(filled in after commit)
+a67e8ab compiler(M0): kernel-as-Rust-function contract verification (TASK-0012)
 
 ## Follow-up tasks filed
 
