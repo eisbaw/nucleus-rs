@@ -1,39 +1,68 @@
-// 3x3 box blur.
+// 3x3 box blur stencil.
 //
-// Reads an image, applies a 3x3 averaging stencil, writes the result.
-// This file says WHAT to compute. It says nothing about workers, blocking,
-// vectorisation, buffer sizes, or IO semantics — those belong in a schedule.
+// Reads a small i32 image, applies a 3x3 averaging stencil, writes
+// the result. This file says WHAT to compute. It says nothing about
+// workers, blocking, vectorisation, buffer sizes, or IO semantics —
+// those belong in a schedule.
+//
+// This is the v2 surface (PRD §6.2.2): kernel signatures live here,
+// bodies are plain Rust in the adjacent kernels.rs. The legacy
+// `where pure {{ ${out} = ... }}` substitution syntax (2013 v1) is
+// retired — see docs/grammar-algo.md §4.3 and TASK-0078.
+//
+// What this example stresses (PRD §9 row 5):
+//   - Halo regions: each output pixel reads a 3x3 window of inputs.
+//     The compiler infers the halo from the access pattern (offsets
+//     of -1, 0, +1 in both dimensions on `img_in`); halo is NOT part
+//     of the schedule surface.
+//   - Blocking: a `block=` directive on `y` in the schedule produces
+//     a tile-loop, intra-tile-loop nest (TASK-0030 lands the rewrite).
+//   - Reuse (future): a sliding-window across `x` can recycle 2 of 3
+//     reads — slated for a `reuse` loop option, not yet wired
+//     end-to-end.
+//
+// Numeric choice: i32. PRD §10.1 — bit-identical tier-1 differential
+// testing wants deterministic numerics. Integer arithmetic is
+// deterministic by language definition; reorderable floating-point
+// reductions are not. A 3x3 average is a sum-then-divide reduction —
+// floating-point would order-of-summation matter under reordering.
+// Integer division loses precision relative to a true average but
+// is bit-deterministic across schedules and backends.
 
-const H : usize = 600;
-const W : usize = 800;
+const H : usize = 16;       // image height; 16 * 16 * 4 = 1024 bytes
+const W : usize = 16;       // image width
 
-data img_in  : f32[H][W];
-data img_out : f32[H][W];
-
-
-// Side-effecting kernels: read/write the filesystem. Ordering with respect
-// to other kernels in the same BB is preserved; bodies are never duplicated.
-kernel load_image() -> out  where !effectful {{
-    ${out} = nuc_rt::read_f32_image("input.bin", H, W);
-}};
-
-kernel save_image(img)  where !effectful {{
-    nuc_rt::write_f32_image("output.bin", &${img});
-}};
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1;
+// the dataflow writes each interior img_out[y][x] exactly once.
+data img_in  : i32[H][W];
+data img_out : i32[H][W];
 
 
-// Pure compute kernel: reorderable, deduplicable, eliminable. The compiler
-// may move it across workers as the schedule directs.
-kernel blur3(a, b, c, d, e, f, g, h, i) -> out  where pure {{
-    ${out} = (${a} + ${b} + ${c}
-           +  ${d} + ${e} + ${f}
-           +  ${g} + ${h} + ${i}) * (1.0 / 9.0);
-}};
+// Pure compute kernel: reorderable, deduplicable, eliminable. The
+// scalar nine-argument signature matches the access pattern below
+// without involving aggregate-type machinery. (Aggregate kernel
+// signatures still surface TypeMismatch in the contract pass — see
+// the README §"Contract-check limitation".)
+kernel blur3 : (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved within a basic block,
+// never duplicated. Aggregate-typed in Nuc; on the Rust side use
+// `Vec<i32>` (see kernels.rs and the README's "Why Vec<i32>" section,
+// which sidesteps TASK-0103).
+kernel load_image : ()         -> i32[H][W] effectful;
+kernel save_image : (i32[H][W]) -> ()        effectful;
 
 
-// Dataflow. The for-loop iteration variables (y, x) are the handles a
-// schedule will reference. The kernel's access pattern on img_in is what
-// the compiler reads to infer halo regions when distributing.
+// Dataflow. The for-loop iteration variables (y, x) are the handles
+// a schedule will reference. The kernel's nine-neighbour access on
+// img_in is what the compiler reads to infer halo regions when a
+// schedule distributes the work.
+//
+// Boundary handling: this loop walks y in 1..H-1 and x in 1..W-1 —
+// the outermost ring of pixels is NOT written and stays at its
+// single-assignment default (0). See the README §"Boundary handling"
+// for the rationale (skip-with-zero, not clamp-or-mirror) and the
+// limitations it carries.
 
 img_in <-- load_image();
 

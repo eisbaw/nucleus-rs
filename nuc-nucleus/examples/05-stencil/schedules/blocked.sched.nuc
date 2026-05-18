@@ -1,0 +1,71 @@
+// Blocked schedule: one worker, outer-loop tiling via `block=`.
+//
+// Same placement as the naive schedule (single `host` worker, all
+// three kernels on it) — the only difference is the `loop y :
+// block=4;` directive, which tiles the outer y-axis into chunks of
+// 4 rows. The compiler rewrites
+//
+//     for y in 1..H-1 { ... }
+//
+// into
+//
+//     for y__tile in 0..((H-1-1)/4) {
+//         for y in 0..4 { ... }
+//     }
+//
+// at the ACFG level (TASK-0030's `apply_block_transforms` pass) and
+// the inner-loop iteration tile carries that 4-row chunk size for
+// downstream passes.
+//
+// Why block=4 (and not block=8, block=16, block=2)
+// ------------------------------------------------
+// The stencil walks y over `1..H-1`, i.e. 1..15 with H=16 — a range
+// of length 14, NOT a multiple of 4. The block-transform pass
+// requires the loop range to be evenly divisible by N (TASK-0030
+// AC #4, fails with `BlockTransformError::NotDivisible` otherwise).
+// Trailing-remainder support is filed as TASK-0142.
+//
+// Range 14 is divisible by 1, 2, 7, 14 — none of those make for a
+// useful tile size demonstration. Range 14 is NOT divisible by 4.
+//
+// Resolution: we BLOCK the FULL row range `0..H` (which is 16, evenly
+// divisible by 4) and let the algorithm's `1..H-1` bound stay in the
+// loop body. Concretely the algorithm has only ONE y-loop variable,
+// and block= currently keys by name. As of this commit (TASK-0031),
+// the schedule asks for `block=4` on `y`; the inner-loop range that
+// reaches the block-transform pass IS `1..H-1` = `1..15`, length 14,
+// NOT divisible by 4 — so the block transform will REJECT this
+// schedule with `BlockTransformError::NotDivisible`.
+//
+// This is intentional: the schedule is provided so the structural
+// pinning tests (parser, sched_lower, link) have a `blocked` cell
+// to exercise. End-to-end compilation/run is gated on TASK-0142 (or
+// on changing the algorithm to loop `0..H`, which would require
+// adding boundary checks to the kernel — out of TASK-0031's scope).
+//
+// Why this is OK: the project-level e2e test for the `blocked` cell
+// stays `#[ignore]`'d with a TASK-0142 / TASK-0143 reference (see
+// `nucleus/compiler/tests/e2e_example_05.rs`). The naive cell
+// carries the correctness gate. When TASK-0142 (remainder tiles) and
+// TASK-0143 (per-tile transfer hoisting) land, this schedule flips
+// from `ignore` to active.
+//
+// Worker placement: still single `host`. PRD §6.3.3: block= is
+// orthogonal to worker placement. A multi-worker variant would also
+// add a `partition=` directive on the same loop — that's the
+// distributed schedule's job, not the blocked one.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on host;
+
+    // Tile the outer y-axis into 4-row chunks. The compiler infers
+    // the inner-loop range (intra-tile) and rewrites the ACFG into
+    // a (tile-loop, intra-tile-loop) nest (TASK-0030).
+    loop y : block=4;
+
+    // No transfer directives — single worker, no cross-worker edges.
+}

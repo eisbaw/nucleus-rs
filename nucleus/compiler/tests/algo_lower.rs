@@ -9,9 +9,9 @@
 //! Negative cases: each `LowerError` variant we want to defend is
 //! exercised by a hand-written invalid input.
 //!
-//! 05-stencil is intentionally NOT exercised here: it does not parse
-//! (TASK-0078 known-failing). We don't paper over that by attempting
-//! to lower nonsense.
+//! 05-stencil was historically a known-failing parse (legacy 2013-style
+//! kernel syntax). TASK-0078 / TASK-0031 rewrote it into v2 form;
+//! `lowers_example_05_stencil` below pins that it lowers cleanly.
 
 use compiler::algo::{
     lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, ResolvedType, ScalarType,
@@ -160,6 +160,57 @@ fn lowers_example_03_reduction() {
 
     // The outer for-loop body has a single inner for-loop, whose
     // body has a single dataflow statement (the accumulate fold).
+    if let IrStmt::For { ref body, .. } = ir.stmts[1] {
+        assert_eq!(body.len(), 1, "outer-for body should have 1 stmt");
+        match &body[0] {
+            IrStmt::For { body: inner, .. } => {
+                assert_eq!(inner.len(), 1, "inner-for body should have 1 stmt");
+                assert!(matches!(inner[0], IrStmt::Dataflow { .. }));
+            }
+            other => panic!("expected nested for-loop; got {:?}", other),
+        }
+    } else {
+        panic!("stmts[1] must be the outer For");
+    }
+}
+
+#[test]
+fn lowers_example_05_stencil() {
+    // TASK-0031: 3x3 stencil. H=W=16, two flat images, three kernels
+    // (blur3 pure, load_image / save_image effectful).
+    let src = read_example("05-stencil/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("05-stencil must parse");
+    let ir = lower_algo(&ast).expect("05-stencil must lower");
+
+    assert_eq!(ir.consts.len(), 2, "expected 2 const decls (H, W)");
+    assert_eq!(ir.data.len(), 2, "expected 2 data decls (img_in, img_out)");
+    assert_eq!(ir.kernels.len(), 3, "expected 3 kernel decls");
+
+    assert_eq!(ir.consts["H"].value, 16);
+    assert_eq!(ir.consts["W"].value, 16);
+
+    // Both images are i32[16][16].
+    let img_in = &ir.data["img_in"].ty;
+    assert_eq!(
+        img_in,
+        &ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![16, 16],
+        }
+    );
+    let img_out = &ir.data["img_out"].ty;
+    assert_eq!(img_out.scalar, ScalarType::I32);
+    assert_eq!(img_out.dims, vec![16, 16]);
+
+    // Top-level statements: load_image dataflow, outer-for, save_image
+    // effect -> 3.
+    assert_eq!(ir.stmts.len(), 3);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::For { .. }));
+    assert!(matches!(ir.stmts[2], IrStmt::Effect { .. }));
+
+    // The outer for-loop body holds exactly one inner for-loop, whose
+    // body has exactly one dataflow statement (the blur3 call).
     if let IrStmt::For { ref body, .. } = ir.stmts[1] {
         assert_eq!(body.len(), 1, "outer-for body should have 1 stmt");
         match &body[0] {

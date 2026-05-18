@@ -26,10 +26,10 @@
 # Task ref: TASK-0023.
 
 # Examples that have an `input.bin`, `reference.bin`, and `kernels.rs`
-# and thus can be driven end-to-end. Examples without these (05, 13,
-# 14 at the time of writing) are not yet in the matrix; adding them
+# and thus can be driven end-to-end. Examples without these (13, 14
+# at the time of writing) are not yet in the matrix; adding them
 # means landing their reference implementation and fixtures first.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "05-stencil"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -63,6 +63,11 @@ example  = "03-reduction"
 schedule = "naive"
 backend  = "pthreads-sync"
 
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "pthreads-sync"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -74,3 +79,15 @@ example  = "03-reduction"
 schedule = "distributed"
 backend  = "pthreads-sync"
 reason   = "TASK-0117 + TASK-0126: distributed placement + per-tile transfer codegen not yet implemented"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "pthreads-sync"
+reason   = "TASK-0142 + TASK-0143: trailing-remainder tiles + per-tile transfer hoisting not yet implemented"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "pthreads-sync"
+reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"

@@ -7,10 +7,10 @@
 //! - Negative tests: hand-written invalid sources must return an `Err`
 //!   with the expected `ParseErrorKind`.
 //!
-//! Known-failing example: `05-stencil/prog.algo.nuc` uses the legacy
-//! `where pure {{ ... }}` syntax (PRD §6.2.2 deprecates it). The
-//! parser MUST reject it — this is asserted as a negative test rather
-//! than skipped. See TASK-0078 for the rewrite.
+//! `05-stencil/prog.algo.nuc` historically used the legacy 2013-style
+//! `where pure {{ ... }}` substitution syntax — TASK-0078 rewrote it
+//! into the v2 form (signature-only kernels, bodies in `kernels.rs`).
+//! It now parses; see `parses_example_05_stencil` below.
 //!
 //! Stable across edits: we assert *counts*, not exact AST trees. If
 //! the example files grow or shrink, update the counts here.
@@ -316,22 +316,72 @@ fn parses_example_14_hearing_aid() {
     assert_eq!(rf_transmit.purity, Purity::Effectful);
 }
 
-/// `05-stencil/prog.algo.nuc` uses the retired 2013-style
-/// `kernel foo(a,b) -> out where pure {{ ... }};` syntax. The v2
-/// grammar (PRD §6.2.2) requires kernel bodies to live in Rust source,
-/// not inlined with `{{ ... }}` substitution. The parser MUST reject
-/// this file. The rewrite is tracked by TASK-0078.
+/// `05-stencil/prog.algo.nuc` was historically the legacy 2013-style
+/// `kernel foo(a,b) -> out where pure {{ ... }};` syntax. TASK-0078 /
+/// TASK-0031 rewrote it into the v2 form (signature-only kernels,
+/// bodies in adjacent `kernels.rs`). This test pins that the v2
+/// surface now parses cleanly. The "legacy syntax rejected" guarantee
+/// stays alive via the `negative_legacy_inline_kernel_body` test
+/// below, which uses a distilled fragment so the rejection invariant
+/// no longer depends on this example file's contents.
 #[test]
-fn rejects_legacy_05_stencil() {
+fn parses_example_05_stencil() {
     let src = read_example("05-stencil/prog.algo.nuc");
-    let err = parse_algo(&src).expect_err(
-        "05-stencil uses the legacy `where pure {{...}}` syntax and must be rejected. \
-         TODO: TASK-0078 rewrites the example into v2 form.",
+    let ast = parse_algo(&src).expect("05-stencil must parse");
+
+    // 2 consts (H, W), 2 data (img_in, img_out), 3 kernels
+    // (blur3, load_image, save_image).
+    assert_eq!(ast.count_consts(), 2, "expected 2 const decls");
+    assert_eq!(ast.count_data(), 2, "expected 2 data decls");
+    assert_eq!(ast.count_kernels(), 3, "expected 3 kernel decls");
+
+    // Top-level statements: `img_in <-- load_image();`, the outer
+    // `for y` loop, `save_image(img_out);` -> 3.
+    assert_eq!(ast.count_stmts(), 3, "expected 3 top-level statements");
+
+    // Spot-check the kernel purities.
+    let kernels: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Kernel(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let by_name = |name: &str| {
+        kernels
+            .iter()
+            .find(|k| k.name == name)
+            .unwrap_or_else(|| panic!("missing kernel {}", name))
+    };
+    let blur3 = by_name("blur3");
+    assert_eq!(blur3.purity, Purity::Pure);
+    assert_eq!(blur3.sig.params.len(), 9, "blur3 takes nine scalars");
+    assert!(blur3.sig.ret.is_some(), "blur3 returns a scalar");
+
+    assert_eq!(by_name("load_image").purity, Purity::Effectful);
+    assert_eq!(by_name("save_image").purity, Purity::Effectful);
+    assert!(
+        by_name("save_image").sig.ret.is_none(),
+        "save_image returns ()"
     );
-    // We don't pin the exact kind here because the input mismatch can
-    // surface in several places; just assert that a position is set.
-    assert!(err.line >= 1);
-    assert!(err.column >= 1);
+
+    // The outer for-loop body holds exactly one statement (the inner
+    // `for x` loop).
+    let outer_body = ast
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stmt(Stmt::For { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("expected a top-level for-loop");
+    assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
+    let inner_body = match &outer_body[0] {
+        Stmt::For { body, .. } => body,
+        other => panic!("expected inner for-loop; got {:?}", other),
+    };
+    assert_eq!(inner_body.len(), 1, "inner-for body should have 1 stmt");
 }
 
 // --------------------------------------------------------------------

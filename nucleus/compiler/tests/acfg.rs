@@ -14,9 +14,15 @@
 //!   `crate::acfg` docs) must produce identical IDs across runs.
 //!
 //! Excluded examples mirror `tests/link.rs`:
-//! - `05-stencil/*` (TASK-0078: algorithm fails to parse).
 //! - `14-hearing-aid/embedded_multimcu.sched.nuc` (TASK-0079: parse
 //!   failure).
+//!
+//! 05-stencil was historically a parse failure (legacy 2013 syntax);
+//! TASK-0078 / TASK-0031 rewrote it into v2 form. Adding a dedicated
+//! ACFG smoke test for example 05 is filed as a low-priority
+//! follow-up — the link-test pinning (links_05_stencil_*) already
+//! covers the upstream pipeline and the e2e cell covers the
+//! downstream pipeline end-to-end.
 //!
 //! What this file does NOT cover (filed as follow-ups in the task
 //! self-report):

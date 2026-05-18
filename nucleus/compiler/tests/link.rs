@@ -3,13 +3,13 @@
 //! Test strategy mirrors `algo_lower.rs` / `sched_lower.rs`:
 //!
 //! - Positive: every existing (algorithm, schedule) pair that currently
-//!   parses and lowers cleanly must also link cleanly. The matrix is
-//!   13-cnn-inference × {naive, batch_parallel, pipeline_parallel}
+//!   parses and lowers cleanly must also link cleanly. The matrix
+//!   includes 05-stencil × {naive, blocked, distributed},
+//!   13-cnn-inference × {naive, batch_parallel, pipeline_parallel},
 //!   and 14-hearing-aid × {naive}.
 //!   `14-hearing-aid/embedded_multimcu.sched.nuc` is excluded because
 //!   TASK-0079 has it failing parse, so there is no AST to lower or
-//!   link. `05-stencil/*` is excluded because TASK-0078 has its
-//!   algorithm failing parse for the same reason.
+//!   link.
 //!
 //! - Negative: at least one hand-written invalid (algorithm, schedule)
 //!   pair per [`LinkError`] variant. Inline sources for terseness; the
@@ -184,6 +184,42 @@ fn links_03_reduction_distributed() {
     link_example(
         "03-reduction/prog.algo.nuc",
         "03-reduction/schedules/distributed.sched.nuc",
+    );
+}
+
+#[test]
+fn links_05_stencil_naive() {
+    // TASK-0031: 3x3 stencil naive schedule — single worker, every
+    // kernel on host. No transfers, no loop directives.
+    link_example(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+}
+
+#[test]
+fn links_05_stencil_blocked() {
+    // TASK-0031: blocked schedule — same placement as naive plus a
+    // `loop y : block=4;` directive. Link should succeed; the
+    // block-transform pass (TASK-0030) and emit run later in the
+    // pipeline (and that's where the divisibility check bites for
+    // the blocked cell — see e2e_example_05.rs::blocked_*).
+    link_example(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/blocked.sched.nuc",
+    );
+}
+
+#[test]
+fn links_05_stencil_distributed() {
+    // TASK-0031: distributed schedule — four compute workers, two
+    // loop directives, two transfer directives. Link must pin that
+    // the transfers cover the cross-worker dataflow (`img_in`
+    // host -> {w0..w3}; `img_out` {w0..w3} -> host); the e2e gate is
+    // blocked on TASK-0117 + halo synthesis follow-ups.
+    link_example(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/distributed.sched.nuc",
     );
 }
 

@@ -420,6 +420,83 @@ fn example_03_reduction_contract_passes_scalars_loud_on_load_input() {
 }
 
 // --------------------------------------------------------------------
+// Example 05-stencil: same scalar-only contract-pass limitation as
+// examples 01 / 02 / 03 (TASK-0031). The scalar nine-input `blur3`
+// PASSES; the two aggregate-typed I/O kernels (`load_image` returns
+// `i32[H][W]`, `save_image` takes `i32[H][W]`) surface the loud
+// `TypeMismatch` until aggregate matching lands (TASK-0103 / TASK-0012
+// follow-ups).
+//
+// This test pins the *current* observable behaviour. If a new
+// silently-accepted aggregate match appears, that's a regression in
+// loudness, not progress.
+// --------------------------------------------------------------------
+
+#[test]
+fn example_05_stencil_contract_passes_for_blur3_and_loud_on_aggregates() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let example_dir = repo_root.join("nuc-nucleus/examples/05-stencil");
+    let algo_src = std::fs::read_to_string(example_dir.join("prog.algo.nuc"))
+        .expect("example 05 prog.algo.nuc must be readable");
+    let ast = parse_algo(&algo_src).expect("example 05 must parse");
+    let ir = lower_algo(&ast).expect("example 05 must lower");
+
+    let kernels_rs = example_dir.join("kernels.rs");
+    let errs = check_kernels_contract(&ir, &kernels_rs)
+        .expect_err("aggregate kernels currently produce TypeMismatch");
+
+    // Loud failure mode: every error is a TypeMismatch on one of the
+    // two aggregate I/O kernels. No KernelNotFound, MissingPub,
+    // ArityMismatch, RustCheckFailed, file-IO variants.
+    for e in &errs {
+        match e {
+            ContractError::TypeMismatch { kernel, .. } => {
+                assert!(
+                    matches!(kernel.as_str(), "load_image" | "save_image"),
+                    "unexpected TypeMismatch on `{kernel}`: scalar `blur3` must pass; got {errs:?}"
+                );
+            }
+            other => panic!(
+                "unexpected ContractError variant on example 05: {other:?}; \
+                 only TypeMismatch on the two aggregate I/O kernels is expected. \
+                 Did rustc reject kernels.rs? Did the parser fail on the algo?"
+            ),
+        }
+    }
+
+    // Both aggregate I/O kernels must have surfaced.
+    let aggregates: std::collections::BTreeSet<&str> = errs
+        .iter()
+        .filter_map(|e| match e {
+            ContractError::TypeMismatch { kernel, .. } => Some(kernel.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        aggregates.contains("load_image"),
+        "expected TypeMismatch on load_image; got {errs:?}"
+    );
+    assert!(
+        aggregates.contains("save_image"),
+        "expected TypeMismatch on save_image; got {errs:?}"
+    );
+
+    // Scalar `blur3` MUST NOT appear in the errors — it has a clean
+    // nine-i32-args -> i32 signature on both sides.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| matches!(e, ContractError::TypeMismatch { kernel, .. } if kernel == "blur3")),
+        "scalar `blur3` must pass; got {errs:?}"
+    );
+}
+
+// --------------------------------------------------------------------
 // File-level negative: missing file
 // --------------------------------------------------------------------
 
