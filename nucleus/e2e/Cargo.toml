@@ -1,8 +1,12 @@
 # The end-to-end differential test harness. See PRD §10, §12.3.
 #
-# At M0 this is a stub. It will eventually drive the full
-# (example x schedule x backend) matrix and diff outputs against
-# the per-example reference.bin.
+# Drives the (example × schedule × backend) matrix declared by
+# `nuc-nucleus/e2e-matrix.toml`. For each cell it invokes the
+# `nucleus` driver, builds the resulting Cargo project, runs the
+# generated binary against `input.bin`, and diffs the produced
+# `output.bin` against `reference.bin` (PRD §10.1 — bit-identity).
+#
+# TASK-0023.
 
 [package]
 name = "e2e"
@@ -14,3 +18,15 @@ publish.workspace = true
 [[bin]]
 name = "nucleus-e2e"
 path = "src/main.rs"
+
+[dependencies]
+# Serde derives for the matrix manifest (`e2e-matrix.toml`) and the
+# backend `capabilities.toml` files. Pinned to the same versions the
+# compiler crate uses — keeps cargo's dep resolver from pulling in
+# two different versions and bloating build times.
+serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"] }
+
+# TOML parser for the matrix manifest and capabilities files. Pinned
+# to the version compatible with the MSRV declared in flake.nix — see
+# `nucleus/compiler/Cargo.toml` for the version-rationale comment.
+toml = { version = "=0.7.8", default-features = false, features = ["parse"] }

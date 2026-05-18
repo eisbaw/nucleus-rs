@@ -1,0 +1,76 @@
+# Nucleus v2 — end-to-end differential test matrix.
+#
+# Top-level manifest consumed by the `nucleus-e2e` harness. Declares
+# which examples are runnable, which schedules each example *requires*
+# at the current milestone, and which (example, schedule, backend)
+# triples are known to be unsupported so the harness reports them as
+# SKIPPED rather than FAILED.
+#
+# Rationale for a single top-level manifest rather than per-example
+# sidecars: the matrix is small (one screen), and the harness already
+# needs to walk every example to discover schedules — keeping the
+# manifest co-located keeps reviewing the matrix a single-file
+# operation. If the matrix grows past one screen, split into sidecars.
+#
+# Sources of truth:
+# - `examples/NN-name/schedules/*.sched.nuc` is the source-of-truth for
+#   which schedule *files* exist.
+# - `nucleus/backends/*/capabilities.toml` is the source-of-truth for
+#   which backends *exist* and what they support.
+# - This file declares which schedule × backend cells are *expected*
+#   to pass at the current milestone. The harness reports any cell not
+#   in this file as informational only; only cells listed under
+#   `[[required]]` count toward the exit status.
+#
+# PRD refs: §9 (examples), §10 (validation), §12.3 (justfile).
+# Task ref: TASK-0023.
+
+# Examples that have an `input.bin`, `reference.bin`, and `kernels.rs`
+# and thus can be driven end-to-end. Examples without these (05, 13,
+# 14 at the time of writing) are not yet in the matrix; adding them
+# means landing their reference implementation and fixtures first.
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction"]
+
+# Backends to evaluate. The harness will read each backend's
+# `capabilities.toml` to learn what it supports; this list is just the
+# enumeration of which backend crates to consider.
+backends = ["pthreads-sync"]
+
+# Required cells — every entry here MUST pass for `just e2e` to exit 0.
+# Status reported as PASS or FAIL. Anything not listed runs as
+# informational (status PASS, but absent from the required set).
+#
+# At M1 the required matrix is the trio that drove TASK-0020 / 0021 /
+# 0022.
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "pthreads-sync"
+
+# Cells known to fail at the current milestone. The harness reports
+# them as SKIPPED with the cited reason — counted toward the
+# "informational" tally only. Once the underlying gap is closed
+# (TASK-0117 + TASK-0126 here), the corresponding entry moves to
+# `[[required]]` and this skip is deleted.
+
+[[skip]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "pthreads-sync"
+reason   = "TASK-0117 + TASK-0126: distributed placement + per-tile transfer codegen not yet implemented"

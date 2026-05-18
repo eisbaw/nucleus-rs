@@ -50,6 +50,10 @@ dependencies = [
 [[package]]
 name = "e2e"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "equivalent"
