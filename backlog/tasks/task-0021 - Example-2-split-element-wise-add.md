@@ -4,6 +4,7 @@ title: 'Example 2: split element-wise add'
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:04'
+updated_date: '2026-05-18 02:17'
 labels:
   - M1
   - examples
@@ -28,3 +29,9 @@ Two-worker version of example 1: host loads input, worker w0 processes, host wri
 - [ ] #7 Implementation notes record design questions (e.g. one-shot transfer vs streamed; v2 picks one-shot at this stage).
 - [ ] #8 Implementation notes record honest limitations (no blocking yet; whole input transferred once).
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+(prior close was an error — confused task ID with capabilities.toml. The pthreads-sync capabilities.toml was a TASK-0020 deliverable, not TASK-0021. TASK-0021 remains: implement examples/02-split-add/ with two workers.)
+<!-- SECTION:NOTES:END -->
