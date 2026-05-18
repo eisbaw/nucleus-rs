@@ -30,7 +30,10 @@ pub use capabilities::{
 };
 pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
-pub use event::{DataId, Event, IterTile, IterVar, KernelId, Region, SeqTag, SyncKind, WorkerId};
+pub use event::{
+    ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, Region, SeqTag,
+    SyncKind, WorkerId,
+};
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 // Petri-net IR (PRD §8). `Arc` is intentionally NOT re-exported at the
 // crate root to avoid shadowing `std::sync::Arc` for downstream code;

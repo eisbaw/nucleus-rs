@@ -17,7 +17,8 @@
 use std::collections::{BTreeSet, HashSet};
 
 use compiler::event::{
-    DataId, Event, IterTile, IterVar, KernelId, Region, SeqTag, SyncKind, WorkerId,
+    ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, Region, SeqTag,
+    SyncKind, WorkerId,
 };
 
 // --------------------------------------------------------------------
@@ -29,10 +30,7 @@ fn tile_y32_64_x0_256() -> IterTile {
 }
 
 fn sample_fire() -> Event {
-    Event::Fire {
-        kernel: KernelId(7),
-        tile: tile_y32_64_x0_256(),
-    }
+    Event::fire_bare(KernelId(7), tile_y32_64_x0_256())
 }
 
 fn sample_alloc() -> Event {
@@ -86,7 +84,7 @@ fn sample_free() -> Event {
 #[test]
 fn fire_constructor_smoke() {
     let e = sample_fire();
-    if let Event::Fire { kernel, tile } = e {
+    if let Event::Fire { kernel, tile, .. } = e {
         assert_eq!(kernel, KernelId(7));
         assert_eq!(tile.rank(), 2);
         assert!(!tile.is_empty());
@@ -97,10 +95,7 @@ fn fire_constructor_smoke() {
 
 #[test]
 fn fire_with_empty_tile_for_non_iterated_firing() {
-    let e = Event::Fire {
-        kernel: KernelId(0),
-        tile: IterTile::empty(),
-    };
+    let e = Event::fire_bare(KernelId(0), IterTile::empty());
     if let Event::Fire { tile, .. } = e {
         assert!(tile.is_empty());
         assert_eq!(tile.rank(), 0);
@@ -231,10 +226,7 @@ fn serde_roundtrip_free() {
 
 #[test]
 fn serde_roundtrip_empty_tile() {
-    let e = Event::Fire {
-        kernel: KernelId(99),
-        tile: IterTile::empty(),
-    };
+    let e = Event::fire_bare(KernelId(99), IterTile::empty());
     assert_eq!(roundtrip(&e), e);
 }
 
@@ -249,14 +241,8 @@ fn equal_fires_compare_equal() {
 
 #[test]
 fn different_kernel_id_compares_unequal() {
-    let a = Event::Fire {
-        kernel: KernelId(1),
-        tile: IterTile::empty(),
-    };
-    let b = Event::Fire {
-        kernel: KernelId(2),
-        tile: IterTile::empty(),
-    };
+    let a = Event::fire_bare(KernelId(1), IterTile::empty());
+    let b = Event::fire_bare(KernelId(2), IterTile::empty());
     assert_ne!(a, b);
 }
 
@@ -370,4 +356,108 @@ fn fire_json_contains_expected_top_level_tag() {
     let s = serde_json::to_string(&e).expect("serialise");
     // Externally-tagged by default: {"Fire":{...}}.
     assert!(s.starts_with("{\"Fire\""), "unexpected serialisation: {s}");
+}
+
+// --------------------------------------------------------------------
+// TASK-0156 — Fire carries ordered per-parameter value bindings.
+// --------------------------------------------------------------------
+
+fn slice(data: u64, indices: Vec<compiler::algo::IrExpr>) -> DataSlice {
+    DataSlice {
+        data: DataId(data),
+        indices,
+    }
+}
+
+#[test]
+fn fire_binding_preserves_input_order_and_output() {
+    use compiler::algo::IrExpr;
+    // blur3-like: inputs are data slices in argument order; the
+    // output is a distinct (data, slice). Order must be preserved
+    // exactly (parameter order is load-bearing for codegen).
+    let inputs = vec![
+        ArgBinding::Data(slice(0, vec![IrExpr::Ident("a".into())])),
+        ArgBinding::Scalar(IrExpr::IntLit(7)),
+        ArgBinding::Data(slice(1, vec![IrExpr::Ident("b".into())])),
+    ];
+    let output = Some(slice(2, vec![IrExpr::Ident("c".into())]));
+    let binding = FireBinding {
+        inputs: inputs.clone(),
+        output: output.clone(),
+    };
+    let e = Event::fire(KernelId(3), IterTile::empty(), binding);
+
+    let Event::Fire {
+        kernel,
+        tile,
+        bindings,
+    } = &e
+    else {
+        panic!("expected Fire");
+    };
+    assert_eq!(*kernel, KernelId(3));
+    assert!(tile.is_empty());
+    // Exact order preserved.
+    assert_eq!(bindings.inputs, inputs);
+    assert_eq!(bindings.output, output);
+    assert!(!bindings.is_empty());
+}
+
+#[test]
+fn fire_bare_has_empty_binding() {
+    let e = Event::fire_bare(KernelId(0), IterTile::empty());
+    let Event::Fire { bindings, .. } = &e else {
+        panic!("expected Fire");
+    };
+    assert!(bindings.is_empty());
+    assert_eq!(*bindings, FireBinding::none());
+}
+
+#[test]
+fn serde_roundtrip_fire_with_binding() {
+    use compiler::algo::{IrBinOp, IrExpr};
+    // A stencil-shaped binding with a compound index expression
+    // exercises the IrExpr serde path on Event.
+    let y_minus_1 = IrExpr::BinOp(
+        IrBinOp::Sub,
+        Box::new(IrExpr::Ident("y".into())),
+        Box::new(IrExpr::IntLit(1)),
+    );
+    let binding = FireBinding {
+        inputs: vec![ArgBinding::Data(slice(
+            0,
+            vec![y_minus_1, IrExpr::Ident("x".into())],
+        ))],
+        output: Some(slice(1, vec![IrExpr::Ident("y".into())])),
+    };
+    let e = Event::fire(KernelId(9), IterTile::empty(), binding);
+    assert_eq!(roundtrip(&e), e, "binding must survive serde round-trip");
+}
+
+#[test]
+fn fire_with_distinct_bindings_are_unequal_and_hashable() {
+    use compiler::algo::IrExpr;
+    let a = Event::fire(
+        KernelId(1),
+        IterTile::empty(),
+        FireBinding {
+            inputs: vec![ArgBinding::Data(slice(0, vec![]))],
+            output: None,
+        },
+    );
+    let b = Event::fire(
+        KernelId(1),
+        IterTile::empty(),
+        FireBinding {
+            inputs: vec![ArgBinding::Scalar(IrExpr::IntLit(0))],
+            output: None,
+        },
+    );
+    // Same kernel + tile but different bindings ⇒ distinct events.
+    assert_ne!(a, b);
+    // Event: Hash still holds (FireBinding has a manual Hash).
+    let mut set: HashSet<Event> = HashSet::new();
+    set.insert(a);
+    set.insert(b);
+    assert_eq!(set.len(), 2);
 }

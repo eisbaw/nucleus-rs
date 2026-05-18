@@ -106,6 +106,8 @@ use std::ops::Range;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::algo::IrExpr;
+
 // --------------------------------------------------------------------
 // Opaque identifier newtypes
 // --------------------------------------------------------------------
@@ -240,6 +242,164 @@ pub enum SyncKind {
 }
 
 // --------------------------------------------------------------------
+// Per-Fire value bindings (TASK-0156)
+// --------------------------------------------------------------------
+
+/// One indexed access to a data symbol — `D[idx0][idx1]…` (or bare
+/// `D` for a scalar / whole-array reference, `indices` empty).
+///
+/// `indices` carries the AlgoIR [`IrExpr`] index expressions
+/// verbatim, outer dimension first (e.g. `img_in[y-1][x+1]` ⇒
+/// `[y-1, x+1]`). We reuse the AlgoIR expression type rather than
+/// inventing a third index grammar: it is the single source of truth
+/// for what an index *is*, it is inert data at this layer (no pass
+/// evaluates it here), and TASK-0150 already gave it serde derives.
+///
+/// This is the same shape as `acfg::DataAccess`; `acfg` re-exports
+/// *this* type (see `acfg.rs`) so the ACFG and the Event contract
+/// share one definition instead of two that must be kept in lockstep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DataSlice {
+    /// The data symbol read or written.
+    pub data: DataId,
+    /// Per-axis index expressions, outer dimension first. Empty for a
+    /// scalar or whole-array (un-indexed) reference.
+    pub indices: Vec<IrExpr>,
+}
+
+/// One positional kernel argument of a [`Event::Fire`].
+///
+/// PRD §6.2.3: a kernel argument is one of
+///
+/// - an indexed (or whole-array) read of a data symbol — `a[i]`,
+///   `img_in[y-1][x]`, bare aggregate `img_out` ⇒ [`ArgBinding::Data`];
+/// - a scalar arithmetic expression over iteration vars / consts (no
+///   data reference inside) ⇒ [`ArgBinding::Scalar`];
+/// - a **nested kernel call** whose own arguments recurse the same
+///   shape — `denoise(mix2(mic_in[frame], bt_in[frame]))`
+///   (example 14) ⇒ [`ArgBinding::Nested`].
+///
+/// The nested-call form is faithfully represented here even though
+/// the tier-1 backends (pthreads-sync `render_call_arg`) currently
+/// *reject* it: the EventList contract must mirror what the program
+/// *is*, and the decision "this backend can't lower a nested call in
+/// argument position" belongs to the backend, not to ACFG/Event
+/// construction. Earlier passes (`build_acfg`) previously accepted
+/// example 14 into an ACFG (its `data_in` recursed into the nested
+/// call); the binding must not regress that by panicking. Whether a
+/// future backend lowers nested calls is its own concern.
+///
+/// The variant order mirrors how a backend lowers the argument:
+/// `Data` ⇒ index into the symbol's backing store; `Scalar` ⇒ emit
+/// the integer expression directly; `Nested` ⇒ (if supported) emit
+/// the inner call, recursively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ArgBinding {
+    /// An indexed (or whole-array) read of a data symbol.
+    Data(DataSlice),
+    /// A scalar arithmetic expression over iteration vars / consts
+    /// (no data reference inside). Carried verbatim as an
+    /// [`IrExpr`].
+    Scalar(IrExpr),
+    /// A nested kernel call in argument position. `callee` is the
+    /// textual kernel name (same representation as `IrExpr::Call`);
+    /// `args` are its arguments, bound by the same rules,
+    /// recursively.
+    Nested {
+        callee: String,
+        args: Vec<ArgBinding>,
+    },
+}
+
+/// The per-firing value binding attached to a [`Event::Fire`]: which
+/// `(DataId, slice)` / scalar expression feeds each kernel parameter,
+/// in parameter order, and which `(DataId, slice)` the firing writes.
+///
+/// This is the payload that lets a backend compute the *value* of a
+/// firing from the `EventList` alone (TASK-0156 / unblocks
+/// TASK-0124). Before this, `Event::Fire` carried only `kernel` +
+/// `tile`, so a backend had to walk the AlgoIR to know what to feed
+/// the kernel and where to store the result.
+///
+/// `output` is `None` for effect statements (kernel returns `()`),
+/// `Some` for dataflow statements (`d <-- k(...)`). For a top-level
+/// non-iterated firing the slices' index lists are whatever the
+/// source wrote (often empty / whole-array).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct FireBinding {
+    /// One entry per kernel parameter, in declared parameter order.
+    pub inputs: Vec<ArgBinding>,
+    /// The `(DataId, slice)` the firing writes, or `None` for an
+    /// effect firing.
+    pub output: Option<DataSlice>,
+}
+
+impl FireBinding {
+    /// The empty binding: no inputs, no output. Used by synthetic
+    /// callers / tests that do not model values, and by the
+    /// `Event::fire_bare` convenience.
+    pub fn none() -> Self {
+        FireBinding {
+            inputs: Vec::new(),
+            output: None,
+        }
+    }
+
+    /// True iff this binding carries no value information at all.
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty() && self.output.is_none()
+    }
+}
+
+// Manual Hash for the binding types. `IrExpr` deliberately does not
+// implement `Hash` (it mirrors the AST, which doesn't), and `Event`
+// must stay `Hash` (it goes into `HashSet` in tests / dedup paths).
+// We hash the structural skeleton; collisions across structurally
+// distinct expressions are acceptable for a `Hash` impl (equality is
+// still exact via the derived `PartialEq`).
+impl std::hash::Hash for DataSlice {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+        self.indices.len().hash(state);
+    }
+}
+
+impl std::hash::Hash for ArgBinding {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ArgBinding::Data(d) => {
+                0u8.hash(state);
+                d.hash(state);
+            }
+            ArgBinding::Scalar(_) => {
+                1u8.hash(state);
+            }
+            ArgBinding::Nested { callee, args } => {
+                2u8.hash(state);
+                callee.hash(state);
+                args.len().hash(state);
+                for a in args {
+                    a.hash(state);
+                }
+            }
+        }
+    }
+}
+
+impl std::hash::Hash for FireBinding {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.inputs.len().hash(state);
+        for a in &self.inputs {
+            a.hash(state);
+        }
+        self.output.hash(state);
+    }
+}
+
+// --------------------------------------------------------------------
 // Event
 // --------------------------------------------------------------------
 
@@ -249,14 +409,23 @@ pub enum SyncKind {
 /// the actual emission; this module just defines the type).
 ///
 /// Wire format (with `serde` feature on): externally tagged JSON by
-/// default — `{"Fire": {"kernel": 0, "tile": {...}}}`. Backends and
-/// golden tests can rely on this shape.
+/// default — `{"Fire": {"kernel": 0, "tile": {...}, "bindings":
+/// {...}}}`. Backends and golden tests can rely on this shape.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Event {
-    /// Execute kernel `kernel` over iteration coordinates `tile`.
-    /// `tile` is empty for top-level (non-iterated) firings.
-    Fire { kernel: KernelId, tile: IterTile },
+    /// Execute kernel `kernel` over iteration coordinates `tile`,
+    /// with the per-firing value binding `bindings` (TASK-0156):
+    /// the ordered `(DataId, slice)` / scalar inputs feeding each
+    /// kernel parameter and the `(DataId, slice)` it writes. `tile`
+    /// is empty for top-level (non-iterated) firings;
+    /// `bindings.is_empty()` for synthetic firings that do not model
+    /// values (see [`Event::fire_bare`]).
+    Fire {
+        kernel: KernelId,
+        tile: IterTile,
+        bindings: FireBinding,
+    },
 
     /// Reserve backing storage for `data` over the iteration slice
     /// `tile` in memory region `region`. The backend interprets
@@ -295,4 +464,28 @@ pub enum Event {
     /// Release backing storage for `(data, tile)`. The region was
     /// fixed by the matching `Alloc`; the backend looks it up.
     Free { data: DataId, tile: IterTile },
+}
+
+impl Event {
+    /// Construct a `Fire` with an explicit value binding.
+    pub fn fire(kernel: KernelId, tile: IterTile, bindings: FireBinding) -> Self {
+        Event::Fire {
+            kernel,
+            tile,
+            bindings,
+        }
+    }
+
+    /// Construct a `Fire` with **no** value binding
+    /// (`FireBinding::none()`). For synthetic callers / tests that
+    /// only care about firing order, not the values computed. The
+    /// real projection pass (`petri_to_events`) uses [`Event::fire`]
+    /// with the binding recovered from the ACFG.
+    pub fn fire_bare(kernel: KernelId, tile: IterTile) -> Self {
+        Event::Fire {
+            kernel,
+            tile,
+            bindings: FireBinding::none(),
+        }
+    }
 }

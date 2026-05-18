@@ -134,7 +134,7 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ResolvedConst};
-use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
+use crate::event::{ArgBinding, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{NotifyKind, ResolvedPlaceTarget};
 
@@ -180,40 +180,29 @@ pub struct DataflowDag {
 /// A single indexed access to a data symbol inside a firing — the
 /// ACFG-level projection of an AlgoIR [`IndexedRef`] (PRD §6.2.3).
 ///
-/// `data` is the resolved [`DataId`]. `indices` carries the per-axis
-/// index expressions verbatim from the AlgoIR (e.g. for
-/// `img_in[y-1][x+1]` it holds `[y-1, x+1]` as [`IrExpr`]s, in
-/// outer-to-inner dimension order). A scalar / whole-array read has
-/// an empty `indices` vector.
+/// **This is an alias of [`crate::event::DataSlice`]** — the same
+/// struct the presentation-layer Event contract uses (TASK-0156).
+/// TASK-0150 originally introduced a separate `acfg::DataAccess`;
+/// TASK-0156 needed structurally the *same* thing on `Event::Fire`,
+/// so the two were collapsed into one definition (single source of
+/// truth — PRD principle: never duplicate state). The name
+/// `DataAccess` is kept as the ACFG-facing alias so existing
+/// TASK-0150 call sites and the public re-export do not churn.
 ///
-/// We carry the AlgoIR [`IrExpr`] tree directly rather than
-/// re-encoding it into a second ACFG-local expression type:
+/// `data` is the resolved [`DataId`]; `indices` carries the per-axis
+/// AlgoIR [`IrExpr`] index expressions verbatim (e.g.
+/// `img_in[y-1][x+1]` ⇒ `[y-1, x+1]`, outer dimension first). A
+/// scalar / whole-array read has an empty `indices`.
 ///
-/// 1. **Single source of truth.** The index grammar lives once, in
-///    `algo::ir`. A parallel ACFG copy would be a second thing to
-///    keep in lockstep (PRD principle: minimise duplicated state).
-/// 2. The expressions are inert data at this layer — no pass folds
-///    or evaluates them yet; they only need to survive to the
-///    consumer (TASK-0156 / the deferred halo-synthesis follow-up).
+/// The AlgoIR [`IrExpr`] tree is carried directly rather than
+/// re-encoded: the index grammar lives once, in `algo::ir`; the
+/// expressions are inert data at this layer (no pass folds them).
 ///
-/// Why this lives alongside the bare [`DataflowEdge::data_in`] /
-/// [`DataflowEdge::data_out`] rather than replacing them: every
-/// existing pass (`sync_inject`, `transfer_inject`, the pthreads-sync
-/// backend's ACFG walk, `block_transform`) consumes the bare
-/// `Vec<DataId>` shape. Replacing it would churn all of them for no
-/// behavioural gain in this task (TASK-0150 is *plumbing*; the
-/// precise per-tile consumer is deferred — see module docs and
-/// `transfer_inject` honest-limitations). Additive keeps the diff
-/// surgical and the determinism/e2e proof clean.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DataAccess {
-    /// The data symbol read or written.
-    pub data: DataId,
-    /// Per-axis index expressions, outer dimension first. Empty for a
-    /// scalar or whole-array (un-indexed) reference.
-    pub indices: Vec<IrExpr>,
-}
+/// `DataAccess` lives *alongside* the bare [`DataflowEdge::data_in`]
+/// / [`DataflowEdge::data_out`], not replacing them: `sync_inject`,
+/// `transfer_inject`, the pthreads-sync ACFG walk, and
+/// `block_transform` all still consume the bare `Vec<DataId>` shape.
+pub type DataAccess = DataSlice;
 
 /// One `(inputs, kernel, output)` entry inside a [`DataflowDag`].
 ///
@@ -238,9 +227,23 @@ pub struct DataAccess {
 /// `data_out_access` mirrors it with the LHS index expressions
 /// (e.g. the `[y][x]` of `img_out[y][x] <-- blur3(...)`).
 ///
+/// `args` (TASK-0156) is the **positional, per-kernel-parameter**
+/// binding: one [`ArgBinding`] per kernel argument, in declared
+/// argument order, capturing *every* argument — an indexed data read
+/// (`a[i]`, `img_in[y-1][x]`, bare aggregate `img_out`) *or* a scalar
+/// arithmetic expression over iter vars / consts. This is a strict
+/// super-set of `data_in_access` (which keeps only the data-read
+/// args, recursively flattened): `args` is what a backend needs to
+/// reconstruct the *kernel call* from the EventList alone, parameter
+/// by parameter. `data_in` / `data_in_access` are kept for the
+/// passes that only want the data-symbol view (sync/transfer
+/// injection, the dataflow producer/consumer analysis).
+///
 /// Invariant (asserted in `build_acfg`, not the type): the
-/// `data`/order/length of `data_in_access` matches `data_in`, and
-/// `data_out_access.map(|a| a.data) == data_out`.
+/// `data`/order/length of `data_in_access` matches `data_in`;
+/// `data_out_access.map(|a| a.data) == data_out`; and the `Data`
+/// variants of `args`, in order, project exactly to
+/// `data_in_access`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DataflowEdge {
@@ -255,6 +258,11 @@ pub struct DataflowEdge {
     /// `data_out` is `None`.
     #[cfg_attr(feature = "serde", serde(default))]
     pub data_out_access: Option<DataAccess>,
+    /// Positional per-parameter argument binding (TASK-0156). One
+    /// entry per kernel argument, in argument order, data reads
+    /// *and* scalar expressions alike.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub args: Vec<ArgBinding>,
 }
 
 impl DataflowEdge {
@@ -271,7 +279,7 @@ impl DataflowEdge {
     /// risk them drifting out of sync with `data_in`/`data_out` —
     /// the derivation is done once, in one place.
     pub fn new(data_in: Vec<DataId>, kernel: KernelId, data_out: Option<DataId>) -> Self {
-        let data_in_access = data_in
+        let data_in_access: Vec<DataAccess> = data_in
             .iter()
             .map(|d| DataAccess {
                 data: *d,
@@ -282,12 +290,24 @@ impl DataflowEdge {
             data: d,
             indices: Vec::new(),
         });
+        // For a synthetic edge built from bare ids, the positional
+        // per-parameter binding is exactly the data reads (no scalar
+        // args modelled — these callers don't carry index/scalar
+        // info). Derived from `data_in_access` so the
+        // single-source-of-truth invariant (args' Data variants
+        // project to data_in_access) holds even for test fixtures.
+        let args = data_in_access
+            .iter()
+            .cloned()
+            .map(ArgBinding::Data)
+            .collect();
         DataflowEdge {
             data_in,
             kernel,
             data_out,
             data_in_access,
             data_out_access,
+            args,
         }
     }
 }
@@ -646,6 +666,62 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
     }
 }
 
+/// Map each *top-level* kernel argument to an [`ArgBinding`], in
+/// argument order — the positional per-parameter binding (TASK-0156).
+///
+/// Classification is by the argument's **top-level** shape, mirroring
+/// what a backend pattern-matches on:
+///
+/// - `DataRef` (`a[i]`, `img_in[y-1][x]`, bare aggregate `img_out`)
+///   ⇒ [`ArgBinding::Data`];
+/// - `Call` (a nested kernel call, e.g.
+///   `denoise(mix2(mic_in[frame], bt_in[frame]))` in example 14)
+///   ⇒ [`ArgBinding::Nested`], recursing on its arguments;
+/// - anything else — an integer/scalar expression over iter vars,
+///   consts (and, in principle, embedded data reads like `a[i]+1`)
+///   ⇒ [`ArgBinding::Scalar`], carried verbatim as the [`IrExpr`].
+///
+/// This is total — `build_acfg` never panics on a representable
+/// program. Faithfully representing a nested call (rather than
+/// flattening or rejecting it here) keeps the EventList contract a
+/// mirror of the program; whether a given backend can lower a nested
+/// call in argument position is the *backend's* decision
+/// (pthreads-sync's `render_call_arg` currently rejects it — that
+/// rejection stays where it is, not duplicated into ACFG
+/// construction). The pre-TASK-0150 code already admitted example 14
+/// into an ACFG (its `data_in` recursed into the nested call); the
+/// binding preserves that, it does not regress it.
+fn build_arg_bindings(args: &[IrExpr], name_data: &BTreeMap<String, DataId>) -> Vec<ArgBinding> {
+    args.iter()
+        .map(|a| bind_arg(a, name_data))
+        .collect()
+}
+
+/// Bind one argument expression. See [`build_arg_bindings`].
+fn bind_arg(a: &IrExpr, name_data: &BTreeMap<String, DataId>) -> ArgBinding {
+    match a {
+        IrExpr::DataRef(IndexedRef { name, indices }) => {
+            // A DataRef whose symbol isn't a declared data symbol is
+            // a lowering-pass invariant violation (it would have been
+            // rejected as UnknownIdent); expect with context.
+            let data = *name_data.get(name).unwrap_or_else(|| {
+                panic!("kernel argument references `{name}`, not a declared data symbol")
+            });
+            ArgBinding::Data(DataSlice {
+                data,
+                indices: indices.clone(),
+            })
+        }
+        IrExpr::Call { callee, args } => ArgBinding::Nested {
+            callee: callee.clone(),
+            args: args.iter().map(|x| bind_arg(x, name_data)).collect(),
+        },
+        // Integer / scalar expression (IntLit, Ident, Neg, BinOp).
+        // Carried verbatim — inert data at this layer.
+        scalar => ArgBinding::Scalar(scalar.clone()),
+    }
+}
+
 fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
     match rhs {
         IrExpr::Call { callee, args } => {
@@ -657,6 +733,7 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
             let workers = resolve_worker_set(callee, ctx);
             let data_in_access = collect_dataref_access(args, ctx.name_data);
             let data_in = data_in_access.iter().map(|a| a.data).collect();
+            let arg_bindings = build_arg_bindings(args, ctx.name_data);
             let data_out = ctx.name_data.get(&lhs.name).copied();
             // `data_out` is None only if the LHS isn't a declared
             // data symbol; the lowering pass rejects that (AlgoIR
@@ -679,6 +756,7 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                         data_out,
                         data_in_access,
                         data_out_access,
+                        args: arg_bindings,
                     }],
                 },
             }))
@@ -697,6 +775,7 @@ fn build_effect(callee: &str, args: &[IrExpr], ctx: &BuildCtx<'_>) -> ACFGNode {
     let workers = resolve_worker_set(callee, ctx);
     let data_in_access = collect_dataref_access(args, ctx.name_data);
     let data_in = data_in_access.iter().map(|a| a.data).collect();
+    let arg_bindings = build_arg_bindings(args, ctx.name_data);
     ACFGNode::Operation(Operation {
         kernel: kernel_id,
         workers,
@@ -707,6 +786,7 @@ fn build_effect(callee: &str, args: &[IrExpr], ctx: &BuildCtx<'_>) -> ACFGNode {
                 data_out: None,
                 data_in_access,
                 data_out_access: None,
+                args: arg_bindings,
             }],
         },
     })

@@ -68,10 +68,16 @@
 //!   "statically determined firing order"; we unroll rather than
 //!   emit one event with a multi-iteration tile).
 //! - `ACFGNode::Operation(op)` — emit `Event::Fire { kernel, tile:
-//!   empty }` on every worker in `op.workers`. The tile is empty
-//!   because the unrolled Repeat does *not* preserve a per-iteration
-//!   coordinate at M2 (`acfg_to_petri` discards the iter-coord too;
-//!   see its module docs for the same trade). Filed as a follow-up.
+//!   empty, bindings }` on every worker in `op.workers`. The tile is
+//!   empty because the unrolled Repeat does *not* preserve a
+//!   per-iteration coordinate at M2 (`acfg_to_petri` discards the
+//!   iter-coord too; see its module docs for the same trade). Filed
+//!   as a follow-up. `bindings` (TASK-0156) is the per-firing value
+//!   binding projected from the Operation's single `DataflowEdge`:
+//!   the positional `args` (per kernel parameter) and the output
+//!   `(DataId, slice)`. This is what lets a backend compute the
+//!   firing's *value* from the EventList alone (unblocks TASK-0124);
+//!   before TASK-0156 a `Fire` carried only `kernel` + `tile`.
 //! - `ACFGNode::Sync(s)` — emit `Event::Sync { participants:
 //!   s.participants.clone(), kind: SyncKind::Barrier }` on every
 //!   participating worker.
@@ -150,7 +156,7 @@
 use std::collections::BTreeMap;
 
 use crate::acfg::{ACFGNode, Operation, SyncPlaceholder, XferPlaceholder, XferRole, ACFG};
-use crate::event::{Event, IterTile, SyncKind, WorkerId};
+use crate::event::{Event, FireBinding, IterTile, SyncKind, WorkerId};
 use crate::petri::Net;
 
 // --------------------------------------------------------------------
@@ -215,11 +221,32 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
 }
 
 fn emit_operation(op: &Operation, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
+    // Per-firing value binding (TASK-0156). At M1/M2 a firing has
+    // exactly one `DataflowEdge` (see `acfg::DataflowDag` docs); we
+    // project its positional `args` and output access onto a
+    // `FireBinding` so the EventList carries enough to reconstruct
+    // the kernel call WITHOUT walking the AlgoIR. An edge-less
+    // Operation (shouldn't occur from `build_acfg`, but defensive)
+    // yields an empty binding rather than panicking — the firing
+    // order is still correct, only the value payload is absent.
+    let bindings = op
+        .dataflow
+        .edges
+        .first()
+        .map(|e| FireBinding {
+            inputs: e.args.clone(),
+            output: e.data_out_access.clone(),
+        })
+        .unwrap_or_default();
+
     // Distributed placement: emit one Fire per participating worker.
     // See module docs ("Distributed placement") for the M2 trade.
+    // The binding is cloned per worker so each EventList stays
+    // self-contained (a backend reads one event, no sidecar join).
     let event = Event::Fire {
         kernel: op.kernel,
         tile: IterTile::empty(),
+        bindings,
     };
     for wid in &op.workers {
         out.entry(*wid).or_default().push(event.clone());

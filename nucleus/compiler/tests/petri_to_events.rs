@@ -18,8 +18,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use compiler::acfg::{
-    ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, SyncPlaceholder, TransferPolicy,
-    XferPlaceholder, XferRole, ACFG,
+    build_acfg, ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, SyncPlaceholder,
+    TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 use compiler::algo::{lower_algo, parse_algo};
 use compiler::event::{DataId, Event, IterTile, KernelId, SeqTag, SyncKind, WorkerId};
@@ -92,7 +92,7 @@ fn single_worker_single_op_emits_one_fire() {
     let list = events.get(&WorkerId(0)).expect("w0 has a list");
     assert_eq!(list.len(), 1);
     match &list[0] {
-        Event::Fire { kernel, tile } => {
+        Event::Fire { kernel, tile, .. } => {
             assert_eq!(*kernel, KernelId(100));
             assert!(tile.is_empty(), "M2: tile empty for unrolled ops");
         }
@@ -329,6 +329,209 @@ fn petri_wrapper_agrees_with_acfg_entry_point() {
 // --------------------------------------------------------------------
 // Determinism on a mixed synthetic case
 // --------------------------------------------------------------------
+
+// --------------------------------------------------------------------
+// TASK-0156 AC#3 — the EventList ALONE carries enough to reconstruct
+// the per-firing value binding (the kernel call), WITHOUT walking the
+// AlgoIR. This proves the contract; it does NOT switch the
+// pthreads-sync backend over (that is TASK-0124). We demonstrate
+// "enough information" by reconstructing the binding from the
+// EventList and checking it against an independent AlgoIR walk.
+// --------------------------------------------------------------------
+
+/// Run the full front pipeline and return the post-injection ACFG.
+/// Reuses the file-scoped `read_example` defined later in this file.
+fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
+    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
+        .expect("algo lower");
+    let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
+        .expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = build_acfg(&linked);
+    let acfg = inject_syncs(acfg);
+    inject_transfers(&linked, acfg)
+}
+
+/// Render a (DataId, indices) slice the way a backend would read it
+/// from the EventList: `name[idx0][idx1]…`, using ONLY the name
+/// table (DataId -> name) and the index IrExprs carried on the
+/// event. No AlgoIR statement walk.
+fn render_slice_from_event(
+    s: &compiler::DataSlice,
+    id_to_name: &BTreeMap<DataId, String>,
+) -> String {
+    let name = id_to_name.get(&s.data).expect("data id in name table");
+    if s.indices.is_empty() {
+        name.clone()
+    } else {
+        let idx: Vec<String> = s.indices.iter().map(render_ir_expr).collect();
+        format!("{name}[{}]", idx.join("]["))
+    }
+}
+
+fn render_ir_expr(e: &compiler::algo::IrExpr) -> String {
+    use compiler::algo::{IrBinOp, IrExpr};
+    match e {
+        IrExpr::IntLit(v) => format!("{v}"),
+        IrExpr::Ident(n) => n.clone(),
+        IrExpr::Neg(i) => format!("-({})", render_ir_expr(i)),
+        IrExpr::BinOp(op, l, r) => {
+            let o = match op {
+                IrBinOp::Add => "+",
+                IrBinOp::Sub => "-",
+                IrBinOp::Mul => "*",
+                IrBinOp::Div => "/",
+                IrBinOp::Mod => "%",
+            };
+            format!("({} {o} {})", render_ir_expr(l), render_ir_expr(r))
+        }
+        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+            unreachable!("index expressions are integer-only (PRD §6.2.3)")
+        }
+    }
+}
+
+/// Reconstruct the `kernel(args...) -> out` call string for a Fire,
+/// reading ONLY the Event's FireBinding + the DataId/KernelId name
+/// tables. This is exactly the information a backend consuming the
+/// EventList alone would have.
+fn reconstruct_call_from_event(
+    ev: &Event,
+    kid_to_name: &BTreeMap<KernelId, String>,
+    did_to_name: &BTreeMap<DataId, String>,
+) -> String {
+    use compiler::ArgBinding;
+    let (kernel, bindings) = match ev {
+        Event::Fire {
+            kernel, bindings, ..
+        } => (kernel, bindings),
+        other => panic!("expected Fire, got {other:?}"),
+    };
+    let kname = kid_to_name.get(kernel).expect("kernel id in name table");
+    fn render_arg(
+        a: &ArgBinding,
+        did_to_name: &BTreeMap<DataId, String>,
+    ) -> String {
+        match a {
+            ArgBinding::Data(s) => render_slice_from_event(s, did_to_name),
+            ArgBinding::Scalar(e) => render_ir_expr(e),
+            ArgBinding::Nested { callee, args } => {
+                let inner: Vec<String> =
+                    args.iter().map(|x| render_arg(x, did_to_name)).collect();
+                format!("{callee}({})", inner.join(", "))
+            }
+        }
+    }
+    let args: Vec<String> = bindings
+        .inputs
+        .iter()
+        .map(|a| render_arg(a, did_to_name))
+        .collect();
+    let call = format!("{kname}({})", args.join(", "));
+    match &bindings.output {
+        Some(o) => format!("{} <-- {call}", render_slice_from_event(o, did_to_name)),
+        None => call,
+    }
+}
+
+#[test]
+fn eventlist_alone_reconstructs_stencil_kernel_call() {
+    let acfg = full_pipeline_acfg(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+
+    // Invert the ACFG name tables (the backend gets these alongside
+    // the EventList — they are part of the schedule pass output, not
+    // the AlgoIR).
+    let did_to_name: BTreeMap<DataId, String> = acfg
+        .name_data
+        .iter()
+        .map(|(n, id)| (*id, n.clone()))
+        .collect();
+    let kid_to_name: BTreeMap<KernelId, String> = acfg
+        .name_kernels
+        .iter()
+        .map(|(n, id)| (*id, n.clone()))
+        .collect();
+
+    let events = acfg_to_events(&acfg);
+
+    // Find a blur3 firing (the one whose binding has 9 inputs).
+    let blur3_id = *acfg.name_kernels.get("blur3").expect("blur3 declared");
+    let mut reconstructed = None;
+    for evs in events.values() {
+        for ev in evs {
+            if let Event::Fire {
+                kernel, bindings, ..
+            } = ev
+            {
+                if *kernel == blur3_id && bindings.inputs.len() == 9 {
+                    reconstructed =
+                        Some(reconstruct_call_from_event(ev, &kid_to_name, &did_to_name));
+                    break;
+                }
+            }
+        }
+        if reconstructed.is_some() {
+            break;
+        }
+    }
+
+    let got = reconstructed.expect("a blur3 Fire with 9 input bindings must exist");
+
+    // The expected string is the literal source call (PRD §6.2.3
+    // snippet for example 05). If the EventList carries enough, the
+    // reconstruction — built WITHOUT touching AlgoIR statements —
+    // equals this.
+    let expect = "img_out[y][x] <-- blur3(\
+img_in[(y - 1)][(x - 1)], img_in[(y - 1)][x], img_in[(y - 1)][(x + 1)], \
+img_in[y][(x - 1)], img_in[y][x], img_in[y][(x + 1)], \
+img_in[(y + 1)][(x - 1)], img_in[(y + 1)][x], img_in[(y + 1)][(x + 1)])";
+    assert_eq!(
+        got, expect,
+        "EventList FireBinding must reconstruct the stencil call verbatim"
+    );
+}
+
+#[test]
+fn eventlist_carries_bindings_for_all_e2e_examples() {
+    // Every Fire in every e2e example must carry a binding whose
+    // input arity is plausible and whose output presence matches the
+    // dataflow-vs-effect distinction (effect firings -> no output).
+    for (algo, sched) in [
+        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
+        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
+        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
+        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
+        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+    ] {
+        let acfg = full_pipeline_acfg(algo, sched);
+        let events = acfg_to_events(&acfg);
+        let mut saw_fire = false;
+        for evs in events.values() {
+            for ev in evs {
+                if let Event::Fire { bindings, .. } = ev {
+                    saw_fire = true;
+                    // Each input is either a data slice or a scalar;
+                    // a zero-arg loader has zero inputs and an
+                    // output; that is allowed. The contract we pin:
+                    // the binding is *present* (not the default
+                    // empty) for any firing that reads or writes
+                    // data.
+                    let has_value = !bindings.inputs.is_empty()
+                        || bindings.output.is_some();
+                    assert!(
+                        has_value,
+                        "{algo}: a Fire carried an empty binding — \
+                         EventList would not be self-sufficient"
+                    );
+                }
+            }
+        }
+        assert!(saw_fire, "{algo}: expected at least one Fire");
+    }
+}
 
 #[test]
 fn determinism_two_projections_of_same_acfg_match() {
