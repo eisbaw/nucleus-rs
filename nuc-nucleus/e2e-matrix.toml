@@ -29,7 +29,7 @@
 # and thus can be driven end-to-end. Examples without these (13, 14
 # at the time of writing) are not yet in the matrix; adding them
 # means landing their reference implementation and fixtures first.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "05-stencil"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "05-stencil", "07-matmul"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -68,6 +68,11 @@ example  = "05-stencil"
 schedule = "naive"
 backend  = "pthreads-sync"
 
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "pthreads-sync"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -91,3 +96,9 @@ example  = "05-stencil"
 schedule = "distributed"
 backend  = "pthreads-sync"
 reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "pthreads-sync"
+reason   = "TASK-0143: per-tile transfer hoisting not yet implemented (block= structurally rewrites the iteration tree but Push/Wait still fires per-iteration)"

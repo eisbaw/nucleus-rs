@@ -226,6 +226,65 @@ fn lowers_example_05_stencil() {
 }
 
 #[test]
+fn lowers_example_07_matmul() {
+    // TASK-0032: blocked matmul. N=16, three flat NxN matrices, four
+    // kernels (madd pure; load_a/load_b/save_c effectful). Triple-
+    // nested loop with reduction on the innermost axis.
+    let src = read_example("07-matmul/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("07-matmul must parse");
+    let ir = lower_algo(&ast).expect("07-matmul must lower");
+
+    assert_eq!(ir.consts.len(), 1, "expected 1 const decl (N)");
+    assert_eq!(ir.data.len(), 3, "expected 3 data decls (a, b, c)");
+    assert_eq!(ir.kernels.len(), 4, "expected 4 kernel decls");
+
+    assert_eq!(ir.consts["N"].value, 16);
+
+    for name in ["a", "b", "c"] {
+        let ty = &ir.data[name].ty;
+        assert_eq!(
+            ty,
+            &ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![16, 16],
+            },
+            "data `{}` should be i32[16][16]",
+            name
+        );
+    }
+
+    // Top-level statements: load_a dataflow, load_b dataflow,
+    // outer-for, save_c effect -> 4.
+    assert_eq!(ir.stmts.len(), 4);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[2], IrStmt::For { .. }));
+    assert!(matches!(ir.stmts[3], IrStmt::Effect { .. }));
+
+    // Drill into the three-deep loop nest. for i / for j / for k,
+    // each body holding exactly one statement, the innermost being
+    // the madd dataflow.
+    if let IrStmt::For { ref body, .. } = ir.stmts[2] {
+        assert_eq!(body.len(), 1, "outer-for body should have 1 stmt");
+        match &body[0] {
+            IrStmt::For { body: mid, .. } => {
+                assert_eq!(mid.len(), 1, "middle-for body should have 1 stmt");
+                match &mid[0] {
+                    IrStmt::For { body: inner, .. } => {
+                        assert_eq!(inner.len(), 1, "inner-for body should have 1 stmt");
+                        assert!(matches!(inner[0], IrStmt::Dataflow { .. }));
+                    }
+                    other => panic!("expected inner for-loop; got {:?}", other),
+                }
+            }
+            other => panic!("expected middle for-loop; got {:?}", other),
+        }
+    } else {
+        panic!("stmts[2] must be the outer For");
+    }
+}
+
+#[test]
 fn lowers_example_13_cnn_inference() {
     let src = read_example("13-cnn-inference/prog.algo.nuc");
     let ast = parse_algo(&src).expect("13-cnn-inference must parse");

@@ -224,6 +224,32 @@ fn links_05_stencil_distributed() {
 }
 
 #[test]
+fn links_07_matmul_naive() {
+    // TASK-0032: matmul naive schedule — single worker, four
+    // kernels (madd + load_a + load_b + save_c) all on host. No
+    // transfers, no loop directives.
+    link_example(
+        "07-matmul/prog.algo.nuc",
+        "07-matmul/schedules/naive.sched.nuc",
+    );
+}
+
+#[test]
+fn links_07_matmul_blocked() {
+    // TASK-0032: blocked schedule — same placement as naive plus
+    // two `block=8` directives on `i` and `j`. Link should succeed;
+    // the block-transform pass and emit run later in the pipeline.
+    // N=16, block=8 divides cleanly so the divisibility check
+    // passes (unlike example 05's deliberately-mismatched block=4
+    // on range 14). E2e gate is TASK-0143 (per-tile transfer
+    // hoisting) — see e2e_example_07.rs::blocked_*.
+    link_example(
+        "07-matmul/prog.algo.nuc",
+        "07-matmul/schedules/blocked.sched.nuc",
+    );
+}
+
+#[test]
 fn links_13_cnn_naive() {
     link_example(
         "13-cnn-inference/prog.algo.nuc",

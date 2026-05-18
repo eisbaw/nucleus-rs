@@ -1,9 +1,10 @@
 ---
 id: TASK-0032
 title: 'Example 7: blocked matrix multiply — algorithm + naive + blocked + reference'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-17 23:06'
+updated_date: '2026-05-18 04:45'
 labels:
   - M2
   - examples

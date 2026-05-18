@@ -1,0 +1,90 @@
+// Blocked integer matrix multiply: C = A x B.
+//
+// PRD §9 row 7. Two NxN i32 input matrices A and B; output NxN i32
+// matrix C with C[i][j] = sum_k A[i][k] * B[k][j].
+//
+// This is the v2 surface (PRD §6.2.2): kernel signatures live here,
+// bodies are plain Rust in the adjacent kernels.rs.
+//
+// What this example stresses (PRD §9 row 7):
+//   - 2D blocking: schedules can stack `block=` on BOTH `i` and `j`
+//     (per PRD §6.3.3). Schedules/blocked.sched.nuc exercises that.
+//   - All-to-all communication when distributed: every worker
+//     computing a tile of C needs at least one full row of A and one
+//     full column of B. Not exercised in M2 (single worker only) but
+//     the algorithm shape is the load-bearing setup for a future
+//     distributed schedule.
+//
+// Numeric choice: i32. PRD §10.1 — bit-identical tier-1 differential
+// testing wants deterministic numerics. Integer arithmetic is
+// deterministic by language definition. Float multiply-accumulate
+// reorders into different results; integer wrapping_add+wrapping_mul
+// does not.
+//
+// Matrix size: N=16. 16*16*4 = 1024 bytes per matrix, 2048 bytes for
+// (A, B) input.bin, 1024 bytes for reference.bin. Well under the
+// 10 KB inspect-by-hand cap from docs/reference-impl-policy.md §1.
+// 16x16 is also large enough that 2D blocking has something to do
+// (block=8 -> 2x2 tile grid), but small enough that CI stays fast.
+//
+// Accumulator semantics — single-assignment + reduction loop
+// ----------------------------------------------------------
+// The dataflow line `c[i][j] <-- madd(c[i][j], a[i][k], b[k][j])`
+// inside the innermost `for k` loop writes c[i][j] N times across
+// the k-iterations. This is the SAME accumulator pattern example 3
+// (reduction) uses for `partials[w] <-- accumulate(partials[w],
+// a[w][i])`. PRD §6.2.1 single-assignment is on the data SYMBOL
+// (one dataflow statement assigns `c`), not on every iteration of
+// the enclosing loops. The codegen pre-initialises `c` to zero (the
+// additive identity for sum-of-products) so the k-fold is
+// well-defined. This is approach (a) from the task brief; we picked
+// it because the compiler already accepts the pattern (example 3
+// proves it end-to-end). Approach (b) — an explicit 3D temporary
+// `partial[i][j][k]` — would either need a separate combine pass
+// (more language surface) or stage one more N^3 allocation.
+
+const N : usize = 16;       // matrix dimension; A, B, C are i32[N][N]
+
+
+// Whole-program input/output arrays. `a` and `b` are whole-array
+// assigned by load_a / load_b (so NOT pre-init'd; the loader
+// returns the full vector). `c` is indexed-assigned only inside the
+// triple loop, so the pre-init pass allocates `vec![0i32; N*N]`
+// before the loops run — this is the zero from which the
+// k-accumulator starts.
+data a : i32[N][N];
+data b : i32[N][N];
+data c : i32[N][N];
+
+
+// Pure compute kernel: scalar 3-argument multiply-accumulate.
+//   madd(acc, x, y) = acc + x * y
+// Scalar i32 signature so the contract pass (TASK-0012, scalar-only
+// matching at M1) PASSES on this kernel — the I/O kernels below
+// still surface TypeMismatch on aggregates (same shape as example
+// 05's load_image / save_image).
+kernel madd   : (i32, i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved within a basic block,
+// never duplicated. Aggregate-typed in Nuc; on the Rust side use
+// `Vec<i32>` (see kernels.rs and the README's "Why Vec<i32>"
+// section, which sidesteps TASK-0103).
+kernel load_a : ()         -> i32[N][N] effectful;
+kernel load_b : ()         -> i32[N][N] effectful;
+kernel save_c : (i32[N][N]) -> ()       effectful;
+
+
+// Dataflow. The three iteration variables (i, j, k) are the handles
+// a schedule will reference. The compiler reads madd's access on c,
+// a, b to plan transfers when a schedule distributes the work.
+
+a <-- load_a();
+b <-- load_b();
+
+for i : 0 .. N {
+for j : 0 .. N {
+for k : 0 .. N {
+    c[i][j] <-- madd(c[i][j], a[i][k], b[k][j]);
+}}}
+
+save_c(c);

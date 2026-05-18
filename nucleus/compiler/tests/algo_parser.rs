@@ -384,6 +384,70 @@ fn parses_example_05_stencil() {
     assert_eq!(inner_body.len(), 1, "inner-for body should have 1 stmt");
 }
 
+/// `07-matmul/prog.algo.nuc` (TASK-0032). Triple-nested loop with a
+/// reduction on the innermost axis; the LHS `c[i][j]` appears on the
+/// RHS of the same dataflow statement. Counts: 1 const (N), 3 data
+/// (a, b, c), 4 kernels (madd, load_a, load_b, save_c), 4 top-level
+/// statements (two load dataflows, the outer for-i, the save_c
+/// effect).
+#[test]
+fn parses_example_07_matmul() {
+    let src = read_example("07-matmul/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("07-matmul must parse");
+
+    assert_eq!(ast.count_consts(), 1, "expected 1 const decl (N)");
+    assert_eq!(ast.count_data(), 3, "expected 3 data decls (a, b, c)");
+    assert_eq!(ast.count_kernels(), 4, "expected 4 kernel decls");
+    assert_eq!(ast.count_stmts(), 4, "expected 4 top-level statements");
+
+    let kernels: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Kernel(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let by_name = |name: &str| {
+        kernels
+            .iter()
+            .find(|k| k.name == name)
+            .unwrap_or_else(|| panic!("missing kernel {}", name))
+    };
+    let madd = by_name("madd");
+    assert_eq!(madd.purity, Purity::Pure);
+    assert_eq!(madd.sig.params.len(), 3, "madd takes three scalars");
+    assert!(madd.sig.ret.is_some(), "madd returns a scalar");
+
+    assert_eq!(by_name("load_a").purity, Purity::Effectful);
+    assert_eq!(by_name("load_b").purity, Purity::Effectful);
+    assert_eq!(by_name("save_c").purity, Purity::Effectful);
+    assert!(by_name("save_c").sig.ret.is_none(), "save_c returns ()");
+
+    // The outer for-i body holds exactly one statement (the inner
+    // for-j loop), whose body holds one statement (the for-k loop),
+    // whose body holds one statement (the madd dataflow).
+    let outer_body = ast
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stmt(Stmt::For { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("expected a top-level for-loop");
+    assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
+    let middle_body = match &outer_body[0] {
+        Stmt::For { body, .. } => body,
+        other => panic!("expected middle for-loop; got {:?}", other),
+    };
+    assert_eq!(middle_body.len(), 1, "middle-for body should have 1 stmt");
+    let inner_body = match &middle_body[0] {
+        Stmt::For { body, .. } => body,
+        other => panic!("expected inner for-loop; got {:?}", other),
+    };
+    assert_eq!(inner_body.len(), 1, "inner-for body should have 1 stmt");
+}
+
 // --------------------------------------------------------------------
 // Negative tests
 // --------------------------------------------------------------------

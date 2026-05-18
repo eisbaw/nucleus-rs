@@ -229,6 +229,44 @@ fn lowers_05_stencil_distributed() {
 }
 
 #[test]
+fn lowers_07_matmul_naive() {
+    // TASK-0032: smoke-test schedule. Single host worker, four
+    // placements, no loops/transfers/checks.
+    let src = read_example("07-matmul/schedules/naive.sched.nuc");
+    let ir = lower_str(&src).expect("07-matmul/naive must lower");
+
+    assert_eq!(ir.workers.len(), 1);
+    assert_eq!(ir.workers["host"].class, DEFAULT_WORKER_CLASS);
+    assert_eq!(ir.places.len(), 4);
+    assert!(ir.transfers.is_empty());
+    assert!(ir.loops.is_empty());
+    assert!(ir.checks.is_empty());
+}
+
+#[test]
+fn lowers_07_matmul_blocked() {
+    // TASK-0032: 2D blocking — `loop i : block=8; loop j : block=8`.
+    // Two loop directives, no transfers, single worker.
+    let src = read_example("07-matmul/schedules/blocked.sched.nuc");
+    let ir = lower_str(&src).expect("07-matmul/blocked must lower");
+
+    assert_eq!(ir.workers.len(), 1);
+    assert_eq!(ir.places.len(), 4);
+    assert_eq!(ir.loops.len(), 2);
+    assert!(ir.transfers.is_empty());
+
+    for var in ["i", "j"] {
+        let l = &ir.loops[var];
+        assert_eq!(
+            l.options,
+            vec![ResolvedLoopOption::Block(8)],
+            "loop `{}` must carry exactly block=8",
+            var
+        );
+    }
+}
+
+#[test]
 fn lowers_13_cnn_naive() {
     let src = read_example("13-cnn-inference/schedules/naive.sched.nuc");
     let ir = lower_str(&src).expect("13-cnn/naive must lower");

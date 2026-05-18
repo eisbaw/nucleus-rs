@@ -497,6 +497,81 @@ fn example_05_stencil_contract_passes_for_blur3_and_loud_on_aggregates() {
 }
 
 // --------------------------------------------------------------------
+// Example 07-matmul: same scalar-only contract-pass limitation as
+// examples 01 / 02 / 03 / 05 (TASK-0032). The scalar three-input
+// `madd` PASSES; the three aggregate-typed I/O kernels (`load_a`
+// and `load_b` return `i32[N][N]`; `save_c` takes `i32[N][N]`)
+// surface the loud `TypeMismatch` until aggregate matching lands
+// (TASK-0103 / TASK-0012 follow-ups).
+//
+// This test pins the *current* observable behaviour. If a new
+// silently-accepted aggregate match appears, that's a regression in
+// loudness, not progress.
+// --------------------------------------------------------------------
+
+#[test]
+fn example_07_matmul_contract_passes_for_madd_and_loud_on_aggregates() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let example_dir = repo_root.join("nuc-nucleus/examples/07-matmul");
+    let algo_src = std::fs::read_to_string(example_dir.join("prog.algo.nuc"))
+        .expect("example 07 prog.algo.nuc must be readable");
+    let ast = parse_algo(&algo_src).expect("example 07 must parse");
+    let ir = lower_algo(&ast).expect("example 07 must lower");
+
+    let kernels_rs = example_dir.join("kernels.rs");
+    let errs = check_kernels_contract(&ir, &kernels_rs)
+        .expect_err("aggregate kernels currently produce TypeMismatch");
+
+    // Loud failure mode: every error is a TypeMismatch on one of the
+    // three aggregate I/O kernels. No KernelNotFound, MissingPub,
+    // ArityMismatch, RustCheckFailed, file-IO variants.
+    for e in &errs {
+        match e {
+            ContractError::TypeMismatch { kernel, .. } => {
+                assert!(
+                    matches!(kernel.as_str(), "load_a" | "load_b" | "save_c"),
+                    "unexpected TypeMismatch on `{kernel}`: scalar `madd` must pass; got {errs:?}"
+                );
+            }
+            other => panic!(
+                "unexpected ContractError variant on example 07: {other:?}; \
+                 only TypeMismatch on the three aggregate I/O kernels is expected. \
+                 Did rustc reject kernels.rs? Did the parser fail on the algo?"
+            ),
+        }
+    }
+
+    // All three aggregate I/O kernels must have surfaced.
+    let aggregates: std::collections::BTreeSet<&str> = errs
+        .iter()
+        .filter_map(|e| match e {
+            ContractError::TypeMismatch { kernel, .. } => Some(kernel.as_str()),
+            _ => None,
+        })
+        .collect();
+    for name in ["load_a", "load_b", "save_c"] {
+        assert!(
+            aggregates.contains(name),
+            "expected TypeMismatch on {name}; got {errs:?}"
+        );
+    }
+
+    // Scalar `madd` MUST NOT appear in the errors — it has a clean
+    // three-i32-args -> i32 signature on both sides.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| matches!(e, ContractError::TypeMismatch { kernel, .. } if kernel == "madd")),
+        "scalar `madd` must pass; got {errs:?}"
+    );
+}
+
+// --------------------------------------------------------------------
 // File-level negative: missing file
 // --------------------------------------------------------------------
 

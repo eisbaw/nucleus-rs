@@ -195,6 +195,48 @@ fn acfg_example_14_naive() {
     assert_eq!(acfg.max_repeat_depth(), 1);
 }
 
+#[test]
+fn acfg_example_7_naive() {
+    // TASK-0032: matmul, naive schedule. Top level:
+    //   a <-- load_a();
+    //   b <-- load_b();
+    //   for i { for j { for k { c[i][j] <-- madd(...); } } }
+    //   save_c(c);
+    // -> 2 top-level Operations + 1-in-triple-loop + 1 = 4 Operations
+    // total, 3 Repeats, max depth 3.
+    let linked = linked_from_paths(
+        "07-matmul/prog.algo.nuc",
+        "07-matmul/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked);
+
+    assert!(
+        matches!(acfg.root, ACFGNode::Sequence(_)),
+        "top-level must be Sequence, got {:?}",
+        acfg.root
+    );
+
+    assert_eq!(
+        acfg.operation_count(),
+        4,
+        "ops = load_a + load_b + madd(in innermost loop) + save_c"
+    );
+    assert_eq!(acfg.repeat_count(), 3, "three nested for-loops");
+    assert_eq!(acfg.max_repeat_depth(), 3, "i / j / k nested");
+
+    assert!(acfg.name_kernels.contains_key("madd"));
+    assert!(acfg.name_kernels.contains_key("load_a"));
+    assert!(acfg.name_kernels.contains_key("load_b"));
+    assert!(acfg.name_kernels.contains_key("save_c"));
+    for v in ["i", "j", "k"] {
+        assert!(
+            acfg.name_iter_vars.contains_key(v),
+            "missing iter var `{}`",
+            v
+        );
+    }
+}
+
 // --------------------------------------------------------------------
 // Determinism: rebuilding the ACFG yields the same value
 // --------------------------------------------------------------------

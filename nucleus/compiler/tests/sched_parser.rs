@@ -244,6 +244,48 @@ fn parses_05_stencil_distributed() {
 }
 
 #[test]
+fn parses_07_matmul_naive() {
+    // TASK-0032: smoke-test schedule for example 07 — single worker
+    // (host), four placements (load_a, load_b, save_c, madd). No
+    // loops, no transfers, no checks.
+    let src = read_example("07-matmul/schedules/naive.sched.nuc");
+    let ast = parse_sched(&src).expect("07-matmul/naive must parse");
+    assert_eq!(ast.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 0);
+    assert_eq!(ast.count_transfers(), 0);
+    assert_eq!(ast.count_checks(), 0);
+}
+
+#[test]
+fn parses_07_matmul_blocked() {
+    // TASK-0032: blocked schedule — 2D tiling via two `block=`
+    // directives on `i` and `j` (PRD §6.3.3 stacked block=). Single
+    // worker; no transfers.
+    let src = read_example("07-matmul/schedules/blocked.sched.nuc");
+    let ast = parse_sched(&src).expect("07-matmul/blocked must parse");
+    assert_eq!(ast.count_workers(), 1);
+    assert_eq!(ast.count_places(), 4);
+    assert_eq!(ast.count_loops(), 2);
+    assert_eq!(ast.count_transfers(), 0);
+
+    // Both loops must carry exactly `block=8`.
+    for var in ["i", "j"] {
+        let l = ast
+            .directives
+            .iter()
+            .find_map(|d| match d {
+                Directive::Loop(l) if l.var == var => Some(l),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing loop directive on `{}`", var));
+        assert_eq!(l.options.len(), 1);
+        assert!(l.options.contains(&LoopOption::Block(8)));
+    }
+}
+
+#[test]
 fn parses_13_cnn_naive() {
     let src = read_example("13-cnn-inference/schedules/naive.sched.nuc");
     let ast = parse_sched(&src).expect("13-cnn/naive must parse");

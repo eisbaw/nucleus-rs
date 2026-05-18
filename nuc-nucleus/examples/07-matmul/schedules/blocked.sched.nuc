@@ -1,0 +1,62 @@
+// Blocked schedule: one worker, 2D outer-loop tiling via stacked
+// `block=` directives on `i` and `j`.
+//
+// Same placement as the naive schedule (single `host` worker, all
+// four kernels on it) — the only difference is the pair of `loop _
+// : block=8;` directives, which tile the two outer axes into 8-wide
+// chunks. Per PRD §6.3.3 `block=` is orthogonal to distribution; a
+// single-worker schedule with `block=` exercises ONLY the tiling
+// transform (TASK-0030's `apply_block_transforms`).
+//
+// What this stresses
+// ------------------
+// The 2D-blocking story for example 07 (PRD §9 row 7). The
+// block-transform pass independently rewrites each named loop into a
+// (tile-loop, intra-tile-loop) nest; stacking it on two loops gives
+// a 4-level nest (i__tile, i, j__tile, j) wrapping the original `k`
+// loop. The structural pinning tests (parser, sched_lower, link)
+// cover this; full e2e is gated on follow-ups (see below).
+//
+// Why block=8 and N=16
+// --------------------
+// N=16 is the matrix dimension (PRD §10.1, fast CI). 16 is evenly
+// divisible by 8 — so the block-transform pass's divisibility check
+// (`BlockTransformError::NotDivisible`, TASK-0030 AC #4) is
+// satisfied for both axes. That keeps the schedule *structurally*
+// correct today and limits the open follow-ups to per-tile transfer
+// hoisting (TASK-0143) rather than the broader remainder-tile
+// support (TASK-0142).
+//
+// Why e2e is still ignored
+// ------------------------
+// The blocked cell is `#[ignore]`'d on the e2e gate with a TODO
+// reference to TASK-0142 / TASK-0143. The naive schedule carries
+// the correctness gate; the blocked schedule exists for parser /
+// sched_lower / link pinning and as the foundation for the future
+// distributed schedule. When TASK-0143 lands (Push/Wait hoisted to
+// the tile boundary), this schedule's e2e cell flips from `ignore`
+// to active.
+//
+// Worker placement: still single `host`. PRD §6.3.3: block= is
+// orthogonal to worker placement. A multi-worker variant would add
+// `partition=blocks2d` on top — that's a future distributed
+// schedule's job, not the blocked one.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+    place madd   on host;
+
+    // Tile the outer i and j axes into 8x8 blocks. Each `block=`
+    // directive is independent — TASK-0030 keys by loop variable
+    // name. The inner k loop is NOT tiled here (a future schedule
+    // could add `loop k : block=8;` for cache locality, but that's
+    // orthogonal to the i/j tiling).
+    loop i : block=8;
+    loop j : block=8;
+
+    // No transfer directives — single worker, no cross-worker edges.
+}
