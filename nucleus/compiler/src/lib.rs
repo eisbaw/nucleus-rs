@@ -9,6 +9,7 @@
 //! `sched`, and the shared `error` types. Internal modules stay
 //! private until a caller needs them.
 
+pub mod acfg;
 pub mod algo;
 pub mod contract;
 pub mod error;
@@ -16,6 +17,7 @@ pub mod event;
 pub mod link;
 pub mod sched;
 
+pub use acfg::{build_acfg, ACFGNode, DataflowDag, DataflowEdge, Operation, ACFG};
 pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
 pub use event::{DataId, Event, IterTile, IterVar, KernelId, Region, SeqTag, SyncKind, WorkerId};
