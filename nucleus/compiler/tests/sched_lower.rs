@@ -119,6 +119,60 @@ fn lowers_02_split_add_split() {
 }
 
 #[test]
+fn lowers_03_reduction_naive() {
+    // TASK-0022: smoke-test schedule.
+    let src = read_example("03-reduction/schedules/naive.sched.nuc");
+    let ir = lower_str(&src).expect("03-reduction/naive must lower");
+
+    assert_eq!(ir.workers.len(), 1);
+    assert_eq!(ir.workers["host"].class, DEFAULT_WORKER_CLASS);
+    assert_eq!(ir.places.len(), 4);
+    assert!(ir.transfers.is_empty());
+    assert!(ir.loops.is_empty());
+    assert!(ir.checks.is_empty());
+}
+
+#[test]
+fn lowers_03_reduction_distributed() {
+    // TASK-0022: stretch schedule lowers cleanly even though the
+    // backend's emit currently rejects distributed placement.
+    let src = read_example("03-reduction/schedules/distributed.sched.nuc");
+    let ir = lower_str(&src).expect("03-reduction/distributed must lower");
+
+    assert_eq!(ir.workers.len(), 5);
+    assert_eq!(ir.places.len(), 4);
+    assert_eq!(ir.loops.len(), 1);
+    assert_eq!(ir.transfers.len(), 2);
+
+    // The distributed place targets four compute workers.
+    match &ir.places["accumulate"].target {
+        ResolvedPlaceTarget::Many(v) => assert_eq!(v.len(), 4),
+        other => panic!("expected Many target for accumulate, got {:?}", other),
+    }
+
+    // loop w : partition=workers
+    let loop_w = &ir.loops["w"];
+    assert_eq!(
+        loop_w.options,
+        vec![ResolvedLoopOption::Partition(PartitionKind::Workers)]
+    );
+
+    // Both transfers sync-only.
+    for name in ["a", "partials"] {
+        let t = ir
+            .transfers
+            .get(name)
+            .unwrap_or_else(|| panic!("missing transfer {}", name));
+        assert_eq!(
+            t.options,
+            vec![ResolvedTransferOption::Sync],
+            "transfer {} should be sync-only",
+            name
+        );
+    }
+}
+
+#[test]
 fn lowers_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ir = lower_str(&src).expect("05-stencil/naive must lower");

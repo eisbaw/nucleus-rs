@@ -111,6 +111,70 @@ fn lowers_example_02_split_add() {
 }
 
 #[test]
+fn lowers_example_03_reduction() {
+    // TASK-0022: 03-reduction lowers cleanly.
+    let src = read_example("03-reduction/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("03-reduction must parse");
+    let ir = lower_algo(&ast).expect("03-reduction must lower");
+
+    assert_eq!(ir.consts.len(), 3);
+    assert_eq!(ir.data.len(), 5);
+    assert_eq!(ir.kernels.len(), 4);
+
+    // Const evaluation: PARTITION_SIZE = N / NUM_WORKERS = 64.
+    assert_eq!(ir.consts["N"].value, 256);
+    assert_eq!(ir.consts["NUM_WORKERS"].value, 4);
+    assert_eq!(ir.consts["PARTITION_SIZE"].value, 64);
+
+    // `a : i32[NUM_WORKERS][PARTITION_SIZE]` -> dims [4, 64].
+    let a = &ir.data["a"].ty;
+    assert_eq!(
+        a,
+        &ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![4, 64],
+        }
+    );
+    // `partials : i32[NUM_WORKERS]` -> [4].
+    let partials = &ir.data["partials"].ty;
+    assert_eq!(partials.scalar, ScalarType::I32);
+    assert_eq!(partials.dims, vec![4]);
+    // `result : i32` (scalar) -> dims [].
+    let result = &ir.data["result"].ty;
+    assert_eq!(result.scalar, ScalarType::I32);
+    assert!(result.dims.is_empty(), "result must be scalar");
+    // `half1 : i32` (scalar).
+    let half1 = &ir.data["half1"].ty;
+    assert!(half1.dims.is_empty());
+
+    // Top-level statements: load_input dataflow, outer-for, three
+    // tree-combine dataflows (half1, half2, result), save_output
+    // effect -> 6.
+    assert_eq!(ir.stmts.len(), 6);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::For { .. }));
+    assert!(matches!(ir.stmts[2], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[3], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[4], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[5], IrStmt::Effect { .. }));
+
+    // The outer for-loop body has a single inner for-loop, whose
+    // body has a single dataflow statement (the accumulate fold).
+    if let IrStmt::For { ref body, .. } = ir.stmts[1] {
+        assert_eq!(body.len(), 1, "outer-for body should have 1 stmt");
+        match &body[0] {
+            IrStmt::For { body: inner, .. } => {
+                assert_eq!(inner.len(), 1, "inner-for body should have 1 stmt");
+                assert!(matches!(inner[0], IrStmt::Dataflow { .. }));
+            }
+            other => panic!("expected nested for-loop; got {:?}", other),
+        }
+    } else {
+        panic!("stmts[1] must be the outer For");
+    }
+}
+
+#[test]
 fn lowers_example_13_cnn_inference() {
     let src = read_example("13-cnn-inference/prog.algo.nuc");
     let ast = parse_algo(&src).expect("13-cnn-inference must parse");

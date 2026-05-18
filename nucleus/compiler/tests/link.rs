@@ -165,6 +165,29 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn links_03_reduction_naive() {
+    // TASK-0022: naive schedule — single worker, no transfers.
+    link_example(
+        "03-reduction/prog.algo.nuc",
+        "03-reduction/schedules/naive.sched.nuc",
+    );
+}
+
+#[test]
+fn links_03_reduction_distributed() {
+    // TASK-0022: the stretch schedule lifts cleanly through link —
+    // every algorithm kernel placed, every cross-worker data symbol
+    // (a, partials) has a `transfer` directive, no unknown loops.
+    // Emit currently rejects distributed placement (TASK-0117 +
+    // TASK-0126); the e2e test stays `#[ignore]`'d. This link test
+    // pins that the upstream pipeline is wired correctly.
+    link_example(
+        "03-reduction/prog.algo.nuc",
+        "03-reduction/schedules/distributed.sched.nuc",
+    );
+}
+
+#[test]
 fn links_13_cnn_naive() {
     link_example(
         "13-cnn-inference/prog.algo.nuc",

@@ -1,0 +1,103 @@
+// Reduction (sum) — the smallest example with an accumulating pattern.
+//
+// Sum over an i32 input array of length N (laid out as
+// NUM_WORKERS x PARTITION_SIZE so the partition axis is exposed at the
+// algorithm level). Expressed as a two-phase reduction:
+//   Phase 1 (per-partition accumulate): each of NUM_WORKERS rows is
+//   folded into `partials[w]` with `accumulate(acc, x)`.
+//   Phase 2 (tree combine): pairwise `combine(a, b)` reduces the four
+//   partials into a single scalar `result`.
+//
+// What this example demonstrates:
+//   - Accumulating pattern in the algorithm sublanguage. The LHS
+//     `partials[w]` appears on the RHS of the SAME dataflow statement;
+//     the single-assignment rule (PRD §6.2.1) is on the data symbol
+//     (one statement assigns `partials`), not on every iteration of
+//     the enclosing loops. The codegen pre-initialises `partials` to
+//     zero (the algebraic identity for sum), so the inner-loop fold
+//     is well-defined.
+//   - The two-phase shape that schedules can later distribute: the
+//     outer `for w` loop is the obvious partition axis. The naive
+//     schedule places everything on `host` and runs sequentially;
+//     a distributed schedule (out of M1 scope, see README) would
+//     place `accumulate` on `{w0..w3}` and partition `w`.
+//   - Tree reduction at the algorithm level expressed by binding two
+//     intermediate scalars (`half1`, `half2`) before the final
+//     `combine`. With NUM_WORKERS=4 the tree has depth 2, which is the
+//     smallest non-trivial shape and reads cleanly without a fold.
+//   - 2D shape `a : i32[NUM_WORKERS][PARTITION_SIZE]` so the inner
+//     reference `a[w][i]` uses only iteration variables in its index
+//     expressions. (The codegen's flat-index renderer resolves the
+//     row-major stride at compile time from the data's shape; only
+//     `render_const_expr` resolves consts to literals — so referring
+//     to a const inside a flat index expression would leak an
+//     undefined identifier into the generated Rust. Using shape-driven
+//     indexing sidesteps that.)
+//
+// What this example does NOT demonstrate:
+//   - Distributed placement of `accumulate` across compute workers
+//     end-to-end. TASK-0122 only ships whole-symbol transfers; per-
+//     partition transfers of `a` belong to TASK-0126 / future work.
+//     The `distributed.sched.nuc` is shipped as a STRETCH — it parses,
+//     lowers, and links, but the e2e gate is `#[ignore]`'d.
+//   - Float reductions. PRD §10.1 demands bit-identity; floating-point
+//     sum order is not deterministic across reorderings. Integer only.
+//   - Min/max reductions. They are also associative under their
+//     identities (INT_MIN / INT_MAX), but they need that identity
+//     materialised at the algorithm level. v2 has no "init=" clause;
+//     sum's identity is 0 which is the default for i32 in the
+//     pre-init pass — so sum is what fits cleanly today. Min/max would
+//     need either explicit init kernels or a language change.
+//
+// Numeric choice: i32 with `wrapping_add` in `accumulate`. PRD §10.1
+// invariant: integer arithmetic is bit-deterministic. `wrapping_add`
+// documents overflow semantics explicitly — the committed input stays
+// inside the i32 range, but the choice is defensive.
+
+const N             : usize = 256;               // total input length
+const NUM_WORKERS   : usize = 4;                 // partition count
+const PARTITION_SIZE: usize = N / NUM_WORKERS;   // 64 per partition
+
+// Input array, per-worker partials, two tree-reduction intermediates,
+// and the final scalar result. Each `data` symbol is assigned by
+// exactly one dataflow statement (PRD §6.2.1).
+data a        : i32[NUM_WORKERS][PARTITION_SIZE];
+data partials : i32[NUM_WORKERS];
+data half1    : i32;
+data half2    : i32;
+data result   : i32;
+
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()         -> i32[NUM_WORKERS][PARTITION_SIZE] effectful;
+kernel save_output : (i32)      -> ()                               effectful;
+
+// Reduction step kernels — pure, reorderable, deduplicable.
+// `accumulate(acc, x)` is the per-element fold step for phase 1.
+// `combine(a, b)` is the binary tree-reduction step for phase 2.
+// Both are scalar (i32, i32) -> i32 so the contract pass (TASK-0012,
+// scalar-only at M1) accepts them directly.
+kernel accumulate  : (i32, i32) -> i32    pure;
+kernel combine     : (i32, i32) -> i32    pure;
+
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+a <-- load_input();
+
+// Phase 1 — per-partition accumulation. `partials` is pre-initialised
+// to zero by the codegen (the additive identity for sum); each
+// (w, i) iteration folds one input element into `partials[w]`.
+for w : 0 .. NUM_WORKERS {
+    for i : 0 .. PARTITION_SIZE {
+        partials[w] <-- accumulate(partials[w], a[w][i]);
+    }
+}
+
+// Phase 2 — tree combine of partials into a scalar result. Depth=2
+// for NUM_WORKERS=4; explicit and audit-friendly. Each intermediate
+// scalar is single-assigned.
+half1  <-- combine(partials[0], partials[1]);
+half2  <-- combine(partials[2], partials[3]);
+result <-- combine(half1, half2);
+
+save_output(result);

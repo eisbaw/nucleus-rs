@@ -130,6 +130,70 @@ fn parses_02_split_add_split() {
 }
 
 #[test]
+fn parses_03_reduction_naive() {
+    // TASK-0022: smoke-test schedule for example 03 — single worker
+    // (host), four placements (load_input, save_output, accumulate,
+    // combine). No loops, no transfers, no checks.
+    let src = read_example("03-reduction/schedules/naive.sched.nuc");
+    let ast = parse_sched(&src).expect("03-reduction/naive must parse");
+    assert_eq!(ast.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 0);
+    assert_eq!(ast.count_transfers(), 0);
+    assert_eq!(ast.count_checks(), 0);
+}
+
+#[test]
+fn parses_03_reduction_distributed() {
+    // TASK-0022: the stretch distributed schedule for example 03.
+    // Parses cleanly even though emit currently rejects distributed
+    // placement (TASK-0117/TASK-0126). Five workers (host + w0..w3),
+    // four placements, one loop directive (partition=blocks), two
+    // transfers (a, partials), no checks.
+    let src = read_example("03-reduction/schedules/distributed.sched.nuc");
+    let ast = parse_sched(&src).expect("03-reduction/distributed must parse");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 1, "loop w : partition=blocks");
+    assert_eq!(ast.count_transfers(), 2, "transfer a, transfer partials");
+    assert_eq!(ast.count_checks(), 0);
+
+    // Spot-check: accumulate is on a 4-worker set, the rest are
+    // single-worker (host).
+    let acc = ast
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::Place(p) if p.kernel == "accumulate" => Some(p),
+            _ => None,
+        })
+        .expect("accumulate place");
+    match &acc.target {
+        PlaceTarget::Many(v) => assert_eq!(v.len(), 4, "accumulate distributed over 4 workers"),
+        other => panic!("expected Many target for accumulate, got {:?}", other),
+    }
+
+    // Both transfers should be sync-only.
+    let transfers: Vec<_> = ast
+        .directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Transfer(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    for t in &transfers {
+        assert_eq!(
+            t.options,
+            vec![TransferOption::Sync],
+            "transfer {} should be sync-only",
+            t.data
+        );
+    }
+}
+
+#[test]
 fn parses_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ast = parse_sched(&src).expect("05-stencil/naive must parse");

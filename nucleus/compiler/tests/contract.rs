@@ -349,6 +349,77 @@ fn example_02_split_add_contract_passes_for_add_and_loud_on_aggregates() {
 }
 
 // --------------------------------------------------------------------
+// Example 03-reduction: same scalar-only contract-pass limitation as
+// examples 01 / 02 (TASK-0022). Three of the four kernels are scalar
+// and PASS (`accumulate`, `combine`, `save_output`); only `load_input`
+// is aggregate-typed (`() -> i32[NUM_WORKERS][PARTITION_SIZE]`) and
+// surfaces the loud `TypeMismatch` until aggregate matching lands
+// (TASK-0103 / TASK-0012 follow-ups).
+//
+// The test pins the *current* observable behaviour: PASS on the
+// three scalar kernels, TypeMismatch only on `load_input`. If a new
+// silently-accepted aggregate match appears, that's a regression in
+// loudness, not progress.
+// --------------------------------------------------------------------
+
+#[test]
+fn example_03_reduction_contract_passes_scalars_loud_on_load_input() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let example_dir = repo_root.join("nuc-nucleus/examples/03-reduction");
+    let algo_src = std::fs::read_to_string(example_dir.join("prog.algo.nuc"))
+        .expect("example 03 prog.algo.nuc must be readable");
+    let ast = parse_algo(&algo_src).expect("example 03 must parse");
+    let ir = lower_algo(&ast).expect("example 03 must lower");
+
+    let kernels_rs = example_dir.join("kernels.rs");
+    let errs = check_kernels_contract(&ir, &kernels_rs)
+        .expect_err("aggregate `load_input` currently produces TypeMismatch");
+
+    // Loud failure mode: every error is a TypeMismatch on
+    // `load_input`. No KernelNotFound, MissingPub, ArityMismatch,
+    // RustCheckFailed, file-IO variants.
+    for e in &errs {
+        match e {
+            ContractError::TypeMismatch { kernel, .. } => {
+                assert_eq!(
+                    kernel, "load_input",
+                    "unexpected TypeMismatch on `{kernel}`: scalar kernels must pass; got {errs:?}"
+                );
+            }
+            other => panic!(
+                "unexpected ContractError variant on example 03: {other:?}; \
+                 only TypeMismatch on `load_input` is expected. \
+                 Did rustc reject kernels.rs? Did the parser fail on the algo?"
+            ),
+        }
+    }
+
+    // load_input must have surfaced.
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            ContractError::TypeMismatch { kernel, .. } if kernel == "load_input"
+        )),
+        "expected TypeMismatch on load_input; got {errs:?}"
+    );
+
+    // All three scalar kernels MUST NOT appear.
+    for k in ["accumulate", "combine", "save_output"] {
+        assert!(
+            !errs
+                .iter()
+                .any(|e| matches!(e, ContractError::TypeMismatch { kernel, .. } if kernel == k)),
+            "scalar `{k}` must pass; got {errs:?}"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
 // File-level negative: missing file
 // --------------------------------------------------------------------
 

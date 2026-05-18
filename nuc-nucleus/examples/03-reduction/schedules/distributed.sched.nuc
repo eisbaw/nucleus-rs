@@ -1,0 +1,53 @@
+// Distributed schedule for example 03-reduction — STRETCH.
+//
+// Status at TASK-0022: this schedule parses, lowers, and links — but
+// the e2e gate is expected to fail because TASK-0122 only emits
+// whole-symbol transfers, not per-partition slices. The distributed
+// placement `place accumulate on { w0, w1, w2, w3 }` triggers the
+// pthreads-sync backend's `UnsupportedFeature` rejection
+// (`distributed_placement_is_rejected` test in the backend). Filed
+// as a follow-up; when iteration-space partitioning lands
+// (TASK-0117) AND per-tile transfer codegen lands (TASK-0126), this
+// schedule can drive end-to-end.
+//
+// The shape this aims at:
+//   host    — owns I/O (load_input / save_output) and the phase-2
+//             tree combine (cheap, sequential).
+//   w0..w3  — each compute worker owns one partition of `a` and
+//             produces its `partials[w]`. The compiler partitions
+//             the outer `w` loop across the four workers.
+//
+// Cross-worker edges this schedule declares:
+//   a        host -> { w0..w3 }   (host loads, workers consume)
+//   partials { w0..w3 } -> host   (workers produce, host combines)
+//
+// All `sync` (the pthreads-sync backend's only transfer mode).
+// `partition=workers` is the partition policy for the outer loop —
+// each worker owns a contiguous `PARTITION_SIZE`-wide slice
+// (`rows` and `blocks2d` are the alternatives in v2's grammar; both
+// imply a 2D iteration nest with a row/block structure, neither
+// matches a 1D partition-axis loop). The 2D shape
+// `a : i32[NUM_WORKERS][PARTITION_SIZE]` already exposes the
+// partition as the outer axis; `partition=workers` on `loop w`
+// names the policy explicitly.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O on host.
+    place load_input  on host;
+    place save_output on host;
+
+    // Phase 1 — distributed across compute workers.
+    place accumulate on { w0, w1, w2, w3 };
+
+    // Phase 2 — cheap, sequential, on host.
+    place combine on host;
+
+    // Outer loop is the partition axis; one slice per compute worker.
+    loop w : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer a        : sync;
+    transfer partials : sync;
+}

@@ -157,6 +157,70 @@ fn parses_example_02_split_add() {
 }
 
 #[test]
+fn parses_example_03_reduction() {
+    // TASK-0022: reduction example. The algorithm declares N,
+    // NUM_WORKERS, PARTITION_SIZE (3 consts), 5 data (a, partials,
+    // half1, half2, result), 4 kernels (load_input, save_output,
+    // accumulate, combine).
+    //
+    // Top-level statements: `a <-- load_input();`, the phase-1
+    // outer `for w` loop, then three phase-2 dataflow statements
+    // (half1, half2, result), then `save_output(result);`. Total = 6.
+    //
+    // The phase-1 outer for-loop holds exactly one statement (the
+    // inner `for i` loop). The inner for-loop holds exactly one
+    // statement (the `partials[w] <-- accumulate(...)` dataflow).
+    let src = read_example("03-reduction/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("03-reduction must parse");
+
+    assert_eq!(ast.count_consts(), 3, "expected 3 const decls");
+    assert_eq!(ast.count_data(), 5, "expected 5 data decls");
+    assert_eq!(ast.count_kernels(), 4, "expected 4 kernel decls");
+    assert_eq!(ast.count_stmts(), 6, "expected 6 top-level statements");
+
+    // Spot-check kernel purities.
+    let kernels: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Kernel(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let by_name = |name: &str| {
+        kernels
+            .iter()
+            .find(|k| k.name == name)
+            .unwrap_or_else(|| panic!("missing kernel {}", name))
+    };
+    assert_eq!(by_name("accumulate").purity, Purity::Pure);
+    assert_eq!(by_name("combine").purity, Purity::Pure);
+    assert_eq!(by_name("load_input").purity, Purity::Effectful);
+    assert_eq!(by_name("save_output").purity, Purity::Effectful);
+
+    // Both step kernels are binary scalar.
+    assert_eq!(by_name("accumulate").sig.params.len(), 2);
+    assert_eq!(by_name("combine").sig.params.len(), 2);
+    assert!(by_name("save_output").sig.ret.is_none());
+
+    // The outer for-loop body has exactly one nested for-loop.
+    let outer_body = ast
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stmt(Stmt::For { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("expected a top-level for-loop");
+    assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
+    let inner_body = match &outer_body[0] {
+        Stmt::For { body, .. } => body,
+        other => panic!("expected inner for-loop; got {:?}", other),
+    };
+    assert_eq!(inner_body.len(), 1, "inner-for body should have 1 stmt");
+}
+
+#[test]
 fn parses_example_13_cnn_inference() {
     let src = read_example("13-cnn-inference/prog.algo.nuc");
     let ast = parse_algo(&src).expect("13-cnn-inference must parse");

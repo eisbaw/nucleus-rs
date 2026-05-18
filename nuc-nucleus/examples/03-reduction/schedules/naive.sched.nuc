@@ -1,0 +1,31 @@
+// Naive schedule for example 03-reduction.
+//
+// Single worker `host`, every kernel placed there. Smoke test for the
+// algorithm/schedule split end-to-end against this algorithm file.
+// If `03-reduction/prog.algo.nuc` parses, lowers, links, and emits
+// reference-matching bytes under this schedule + pthreads-sync, the
+// two-phase reduction shape is sound at M1.
+//
+// No `transfer` directives: with everything on one worker no data
+// crosses worker boundaries. PRD §6.3.4 only requires `transfer` for
+// cross-worker edges. The link pass enforces that.
+//
+// No loop transforms: no `block=`, no `vectorize=`, no `partition=`.
+// The point of the smoke test is "the algorithm runs sequentially
+// and produces the reference"; the distributed schedule (see
+// schedules/distributed.sched.nuc) is where the partition-axis
+// schedule actually flexes — and is shipped as a stretch because
+// per-partition transfers are not yet on the codegen path
+// (TASK-0126).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place accumulate  on host;
+    place combine     on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}
