@@ -3,11 +3,11 @@ id: TASK-0160
 title: >-
   Event/NameSidecar contract must carry data ResolvedType + const values for
   EventList-only codegen
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 16:43'
-updated_date: '2026-05-18 23:04'
+updated_date: '2026-05-18 23:06'
 labels:
   - M2
   - compiler
