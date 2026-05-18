@@ -192,6 +192,14 @@ pub struct NameSidecar {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct KernelSig {
+    // DIVERGENCE HAZARD (TASK-0169 review): this is a structural
+    // *copy* of two `ResolvedKernel` fields, not a projection of the
+    // type itself (deliberate — embedding `ResolvedKernel` would drag
+    // `Purity`/serde in). If `ResolvedKernel` ever grows another
+    // codegen-relevant field (e.g. a variadic/ABI tag), mirror it
+    // here AND in `build_sidecar`'s kernel-sig section, or the
+    // EventList-only backend (TASK-0124) will silently diverge with
+    // no compile error.
     /// Positional parameter types, in declaration order. The i-th
     /// entry types the i-th `Event::Fire` argument; `is_scalar()`
     /// drives the `(expr) as usize` scalar-arg cast vs the

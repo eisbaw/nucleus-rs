@@ -5,12 +5,12 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 23:11'
+updated_date: '2026-05-18 23:26'
 labels:
   - M2
   - backend
 dependencies:
-  - TASK-0169
+  - TASK-0170
 ---
 
 ## Description
@@ -101,4 +101,20 @@ TASK-0124 AC#2 is now achievable byte-identically (no workaround / no AlgoIR smu
 CORRECTION to prior forward-carry note: the per-kernel-param-type follow-up was filed as TASK-0169 (not the placeholder "TASK-0161" mentioned inline above). TASK-0169 extends NameSidecar with per-KernelId param/return ResolvedType for render_call_arg scalar-arg casts. For e2e 01/02/03/05/07 the only casts are iter-var i64->usize INDEX casts (not kernel-param), so TASK-0124 may be byte-identical for those 5 WITHOUT TASK-0169 — but verify during TASK-0124 whether any trips render_call_arg param_ty before finalising dependency ordering. Added dep task-0124->task-0169.
 
 ORCHESTRATOR-FOLDED review findings from the TASK-0160 gate (act on these when implementing the backend switch): (1) The "01/02/03/05/07 byte-identical WITHOUT TASK-0169" claim is sound reasoning but STATICALLY UNPROVEN — render_call_arg applies a param_ty cast only for scalar-arith args (IntLit|Ident|Neg|BinOp) into a scalar param; DataRef element reads never consult param_ty. Verify per-kernel for the 5 examples whether any trips that path; if any does, TASK-0169 is a hard prerequisite, else it can follow. Do NOT treat byte-identical-without-0169 as established. (2) LANDMINE: build_sidecar HARD-PANICS if two same-named loops have different bounds (shared IterVar cannot represent both). No current example hits it but it is a compiler-runtime panic; add an explicit guard/AC before the EventList codegen path goes live (also relevant to TASK-0167). (3) DRIFT RISK: TASK-0160 sufficiency test re-implements render_const_expr/rust_scalar_* (they need RenderCtx); when emit() becomes EventList-based, switch the backend to consume the sidecar via the REAL render functions so the byte-match cannot silently drift. (4) Sidecar has no production consumer until you land — it is a proven honest-placeholder; closing TASK-0124 is what makes it live.
+
+[forward-carried from TASK-0169 — RESOLVES the open ordering question the architect flagged]
+
+TASK-0169 landed (commit e929d63): NameSidecar now carries kernel_sigs: BTreeMap<KernelId, KernelSig{params:Vec<ResolvedType>, ret:Option<ResolvedType>}>, keyed by the same KernelId Event::Fire carries. With it the (EventList + name tables + NameSidecar) contract is FULLY AlgoIR-free for pthreads-sync codegen — the last known gap (render_call_arg's ctx.algo.kernels read) is closed.
+
+RESOLVED FINDING: NONE of the e2e set 01/02/03/05/07 trips render_call_arg's param_ty scalar-cast path. Every kernel call argument in those 5 is an ArgBinding::Data element/whole-array read (add(a[i],b[i]); accumulate(partials[w],a[w][i]); blur3(img_in[y-1][x],...); madd(c[i][j],a[i][k],b[k][j]); combine(partials[0],partials[1])). render_call_arg's `param_ty.is_scalar()` cast branch is reachable ONLY from the IrExpr::IntLit|Ident|Neg|BinOp arm (ArgBinding::Scalar), never the DataRef arm — so for the 5 e2e examples no kernel-param scalar cast is emitted. The cast actually emitted in the e2e set is the iter-var i64->usize INDEX cast (render_flat_index), which is unrelated to kernel_sigs.
+
+CONSEQUENCE for TASK-0124 ordering: the AlgoIR->EventList switch is byte-identical for 01/02/03/05/07 WITHOUT TASK-0124 needing to consult kernel_sigs at runtime — but the contract is only fully AlgoIR-free WITH TASK-0169 present. TASK-0124 is therefore a clean MECHANICAL switch (no behaviour-bearing reconstruction needed for the 5; just route render_call_arg's param_ty via NameSidecar.kernel_sig(Event::Fire.kernel).params instead of ctx.algo.kernels[callee].params for the general case so the path is AlgoIR-free for programs that DO hit it).
+
+LIMITATION (honest): the kernel-param scalar-cast path is proven AlgoIR-free only by a SYNTHETIC test (sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk: dilate:(i32[256],usize)->i32 + Scalar arg `i+1` -> `((i + 1)) as usize` from kernel_sigs alone), NOT by an e2e integration run, because no e2e example exercises it. If TASK-0124 adds/uses an example with a Scalar-arg-to-scalar-param call, it must add an e2e cell — and note the double-paren faithful output `((expr)) as T` (render_int_expr parenthesises a BinOp, the cast wraps again).
+
+STILL-OPEN LANDMINES folded earlier (carry into TASK-0124 implementation):
+- same-name-loop panic: collect_loop_bounds in sidecar.rs PANICS if two loops share a var name with DIFFERENT bounds (a shared IterVar cannot represent both). No e2e example hits it; TASK-0124 must not introduce one without addressing this.
+- sufficiency-test render-fn drift: the test helpers (render_int_expr_mirror, render_bound_from_sidecar, elem_type_from_sidecar, zero_lit_from_sidecar) HAND-MIRROR pthreads-sync render_int_expr/render_const_expr/rust_scalar_type/rust_scalar_zero. They will silently drift if the backend's spelling changes. When TASK-0124 switches the backend to the sidecar, REPLACE these mirrors with the real backend functions (or assert against real codegen output) to remove the drift risk.
+
+ORCHESTRATOR-FOLDED from TASK-0169 review gate (both GO): (5) RESOLVED the open ordering question — NONE of 01/02/03/05/07 trips render_call_arg param_ty scalar-cast path (DataRef args never consult param_ty; only Scalar args into scalar params do; code-provable at lib.rs:619-646 + machine-asserted by sidecar_kernel_sigs_match_algoir_for_all_e2e_examples). So TASK-0124 is byte-identical for the 5 WITHOUT runtime-needing kernel_sigs, AND the contract is now FULLY AlgoIR-free (last gap closed by TASK-0169). (6) The same-name-loop collect_loop_bounds panic is now a first-class task TASK-0170 (dep edge added: task-0124 -> task-0170) — TASK-0124 must not let the EventList path reach that bare panic. (7) Finding #1 (replace hand-mirrored render_int_expr/elem_type/zero_lit/render_bound helpers in tests with the REAL backend fns when emit() is EventList-based) stands — the mirror-drift goes live the moment TASK-0124 consumes the sidecar.
 <!-- SECTION:NOTES:END -->

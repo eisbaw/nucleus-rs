@@ -3,11 +3,11 @@ id: TASK-0169
 title: >-
   NameSidecar must carry per-KernelId param/return ResolvedType for
   EventList-only scalar-arg casts
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 23:05'
-updated_date: '2026-05-18 23:20'
+updated_date: '2026-05-18 23:26'
 labels:
   - M2
   - compiler
@@ -24,10 +24,10 @@ Blocks TASK-0124 full byte-identical. TASK-0160 landed NameSidecar with data_typ
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 NameSidecar carries per-KernelId param + return ResolvedType, keyed by the KernelId Event::Fire carries, deterministically (BTreeMap)
-- [ ] #2 build_sidecar populates it from linked.algo.kernels via acfg.name_kernels (same pattern as data_types); eval_const/Net/Repeat.range untouched
-- [ ] #3 Sufficiency test (TASK-0156 style): a scalar-arg cast call is reconstructed from NameSidecar+EventList alone, no AlgoIR kernels walk
-- [ ] #4 Determinism + bit-identical e2e 01/02/03/05/07 preserved (no sidecar codegen consumer yet)
+- [x] #1 NameSidecar carries per-KernelId param + return ResolvedType, keyed by the KernelId Event::Fire carries, deterministically (BTreeMap)
+- [x] #2 build_sidecar populates it from linked.algo.kernels via acfg.name_kernels (same pattern as data_types); eval_const/Net/Repeat.range untouched
+- [x] #3 Sufficiency test (TASK-0156 style): a scalar-arg cast call is reconstructed from NameSidecar+EventList alone, no AlgoIR kernels walk
+- [x] #4 Determinism + bit-identical e2e 01/02/03/05/07 preserved (no sidecar codegen consumer yet)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -57,4 +57,27 @@ CONSEQUENCE: TASK-0124 is byte-identical for those 5 WITHOUT runtime-depending o
 AC#3 sufficiency proof uses a SYNTHETIC kernel (dilate:(i32[256],usize)->i32) + synthetic Scalar arg `i+1`, reproducing render_call_arg's exact output `((i + 1)) as usize` (double parens: render_int_expr parenthesises the BinOp, the cast wraps again — faithful to the real backend, asserted byte-for-byte) from kernel_sigs ALONE, no AlgoIR constructed at all.
 
 GATE (nix develop): just test all groups 0 failed; just e2e 10/8/0/2 byte-identical UNCHANGED; determinism-check 8/0 byte-identical; determinism-check-negative correctly bit; clippy --workspace -D warnings clean.
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO ("Done correctly scoped"), both read-only. Numbers RE-RUN by reviewers: just test all 0 failed (petri_to_events 21/0; both new sidecar tests pass); just e2e UNCHANGED 10/8/0/2/required-fail 0; determinism-check 8/0 byte-identical; determinism-check-negative bites 2/2 non-flaky; clippy clean; de-risk invariant PROVEN (git diff over acfg/passes/backends/algo EMPTY — additive only). Architect: KernelSig dedicated-struct is the right MPED trade (avoids Purity/serde drag; derived-on-demand from AlgoIR each build, no runtime divergence), the resolved finding is CODE-PROVABLE (render_call_arg cast branch unreachable from DataRef arm; lib.rs:619-646) so TASK-0124 byte-identical-for-5 is not on sand, AC#3 non-circular & byte-faithful today, honesty strong, no AC-gaming. ORCHESTRATOR HARDENING: finding#3 fixed in-thread (KernelSig divergence-hazard doc; re-verified petri_to_events 21/0 + clippy clean); finding#2 ENCODED as TASK-0170 (collect_loop_bounds panic guard; dep edges task-0170->task-0160, task-0124->task-0170); finding#1 already forward-carried to TASK-0124. TASK-0169 Done is honest: all 4 ACs met + independently verified + both reviews GO.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added per-KernelId kernel signatures to the codegen-contract NameSidecar, closing the last AlgoIR read in pthreads-sync codegen.
+
+What changed:
+- sidecar.rs: NameSidecar.kernel_sigs: BTreeMap<KernelId, KernelSig{params: Vec<ResolvedType>, ret: Option<ResolvedType>}>, replacing the KNOWN GAP (TASK-0169) comment block. build_sidecar section (d) inverts acfg.name_kernels and copies linked.algo.kernels[name].{params,ret} — same pattern + fail-loud-on-desync as data_types (a). KernelSig is a dedicated struct (ConstValue/ResolvedConst precedent), reusing ResolvedType's TASK-0160 feature-gated serde, adding ZERO new AlgoIR derives. Module/struct docs updated so the fully-AlgoIR-free claim is accurate; kernel_sig() accessor + KernelSig exported.
+- lib.rs: export KernelSig.
+- tests/petri_to_events.rs: sidecar_kernel_sigs_match_algoir_for_all_e2e_examples (params/ret == AlgoIR for all 5 + determinism + the resolved-finding assertion) and sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk (synthetic scalar-param kernel proves `((i + 1)) as usize` from kernel_sigs ALONE, no AlgoIR).
+
+Why: an EventList-only backend (TASK-0124) needs the callee param types to reproduce render_call_arg's scalar-cast/dispatch decision; Event::Fire carried values (TASK-0156) but not signatures, and NameSidecar (TASK-0160) carried only DATA types.
+
+User impact: none yet (no codegen consumer); strictly additive metadata, e2e/determinism byte-identical by construction.
+
+Resolved finding: NO e2e example (01/02/03/05/07) trips render_call_arg's param_ty scalar-cast path — all call args are ArgBinding::Data reads. TASK-0124 is byte-identical for those 5 without runtime-depending on kernel_sigs; the contract is fully AlgoIR-free WITH it. TASK-0124 is a clean mechanical switch.
+
+Tests: just test all groups 0 failed; just e2e 10/8/0/2 byte-identical UNCHANGED; determinism-check 8/0; determinism-check-negative bit; clippy -D warnings clean. Commit e929d63.
+
+Limitations/risks: no e2e example exercises the kernel-param scalar-cast at runtime, so that path of TASK-0124 is proven only by a synthetic test, not an integration run. Recorded as a forward-carried note on TASK-0124.
+<!-- SECTION:FINAL_SUMMARY:END -->
