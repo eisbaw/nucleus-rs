@@ -17,38 +17,28 @@
 // the inner-loop iteration tile carries that 4-row chunk size for
 // downstream passes.
 //
-// Why block=4 (and not block=8, block=16, block=2)
-// ------------------------------------------------
+// Why block=4 (a deliberate non-divisible range)
+// -----------------------------------------------
 // The stencil walks y over `1..H-1`, i.e. 1..15 with H=16 — a range
-// of length 14, NOT a multiple of 4. The block-transform pass
-// requires the loop range to be evenly divisible by N (TASK-0030
-// AC #4, fails with `BlockTransformError::NotDivisible` otherwise).
-// Trailing-remainder support is filed as TASK-0142.
+// of length 14, NOT a multiple of 4. This is chosen on purpose: it
+// exercises trailing-remainder tiles. Since TASK-0142, the
+// block-transform pass rewrites `block=4` on a length-14 range into
+// a static `Sequence[ full-tile nest (3 tiles of 4), trailing
+// partial tile (1 tile of 2) ]` — it no longer rejects with
+// `BlockTransformError::NotDivisible` (that error is retired). The
+// decomposition is iteration-count/order faithful for the
+// Petri/boundedness/deadlock consumers, which unroll by static
+// range length.
 //
-// Range 14 is divisible by 1, 2, 7, 14 — none of those make for a
-// useful tile size demonstration. Range 14 is NOT divisible by 4.
-//
-// Resolution: we BLOCK the FULL row range `0..H` (which is 16, evenly
-// divisible by 4) and let the algorithm's `1..H-1` bound stay in the
-// loop body. Concretely the algorithm has only ONE y-loop variable,
-// and block= currently keys by name. As of this commit (TASK-0031),
-// the schedule asks for `block=4` on `y`; the inner-loop range that
-// reaches the block-transform pass IS `1..H-1` = `1..15`, length 14,
-// NOT divisible by 4 — so the block transform will REJECT this
-// schedule with `BlockTransformError::NotDivisible`.
-//
-// This is intentional: the schedule is provided so the structural
-// pinning tests (parser, sched_lower, link) have a `blocked` cell
-// to exercise. End-to-end compilation/run is gated on TASK-0142 (or
-// on changing the algorithm to loop `0..H`, which would require
-// adding boundary checks to the kernel — out of TASK-0031's scope).
-//
-// Why this is OK: the project-level e2e test for the `blocked` cell
-// stays `#[ignore]`'d with a TASK-0142 / TASK-0143 reference (see
-// `nucleus/compiler/tests/e2e_example_05.rs`). The naive cell
-// carries the correctness gate. When TASK-0142 (remainder tiles) and
-// TASK-0143 (per-tile transfer hoisting) land, this schedule flips
-// from `ignore` to active.
+// End-to-end status: this `blocked` cell is ACTIVE (not ignored) in
+// both the `nucleus/e2e` matrix (a required cell) and the in-crate
+// `nucleus/compiler/tests/e2e_example_05.rs`. It compiles, builds,
+// runs, and is bit-identical to `reference.bin`. Honest scope:
+// 05-stencil is single-`host`, so the backend emits from the
+// algorithm source (not the block-transformed ACFG) — this cell
+// pins the no-reject / no-panic / bit-identical property; the
+// tiling *structure* is pinned by the `block_transform` unit and
+// integration tests.
 //
 // Worker placement: still single `host`. PRD §6.3.3: block= is
 // orthogonal to worker placement. A multi-worker variant would also

@@ -5,15 +5,19 @@
 //!   nucleus build  ->  cargo build  ->  binary run  ->  diff vs reference.bin
 //! with bit-identical output (PRD §10.1).
 //!
-//! The blocked schedule is shipped but `#[ignore]`'d at the e2e level:
-//! the block-transform pass (TASK-0030) rewrites the iteration tree
-//! correctly, and per-tile Push/Wait hoisting (TASK-0143) is now in
-//! place, but the schedule asks for `block=4` on `y` whose effective
-//! range `1..H-1` (= `1..15`, length 14) is NOT evenly divisible by
-//! 4. `apply_block_transforms` therefore fails with
-//! `BlockTransformError::NotDivisible`, which gates this cell on
-//! trailing-remainder tile support (TASK-0142). When TASK-0142
-//! lands, this `#[ignore]` flips to active.
+//! The blocked schedule is also covered (active, not `#[ignore]`'d):
+//! TASK-0142 landed trailing-remainder tile support, so `block=4` on
+//! `y`'s effective range `1..H-1` (= `1..15`, length 14 = 3 full
+//! tiles of 4 + a partial tile of 2) is rewritten as a static
+//! `Sequence[full-tile nest, trailing partial tile]` rather than
+//! rejected with `BlockTransformError::NotDivisible`. NOTE (honest
+//! scope): 05-stencil is a single-`host` schedule, so the backend
+//! emits from `LinkedIR::algo` source, not the block-transformed
+//! ACFG. This cell therefore guards the *compile-doesn't-reject +
+//! passes-don't-panic + bit-identical result* property; the numeric
+//! correctness of the tiling decomposition is asserted by the
+//! `block_transform` unit / integration tests, not by this e2e diff.
+//! See TASK-0142 notes and the index-reconstruction follow-up.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -148,16 +152,15 @@ fn naive_pthreads_sync_bit_identical() {
     );
 }
 
-/// Blocked schedule e2e: gated on TASK-0142 (trailing-remainder
-/// tile support). TASK-0143 (per-tile transfer hoisting) has
-/// landed; the only remaining blocker is `block=4` on a range of
-/// length 14, which `apply_block_transforms` rejects as
-/// `NotDivisible` until trailing-tile remainder handling is added.
-/// The schedule structurally exercises the block-transform pass via
-/// the parser / sched_lower / link pinning tests; the e2e cell
-/// flips from `ignore` to active when TASK-0142 lands.
+/// Blocked schedule e2e (active since TASK-0142). `block=4` on `y`'s
+/// length-14 range is now rewritten to a static full-tile nest plus
+/// a trailing partial tile, so the pipeline compiles, builds, runs,
+/// and produces bit-identical output vs `reference.bin` (the result
+/// is schedule-independent for this single-`host` example). Tiling
+/// *structure* correctness is pinned by the `block_transform` tests;
+/// this cell pins the end-to-end no-reject / no-panic / bit-identical
+/// property.
 #[test]
-#[ignore = "TODO TASK-0142: trailing-remainder tiles (block=4 on length-14 range) not yet supported; TASK-0143 hoisting has landed"]
 fn blocked_pthreads_sync_bit_identical() {
     run_example_05(
         "schedules/blocked.sched.nuc",
