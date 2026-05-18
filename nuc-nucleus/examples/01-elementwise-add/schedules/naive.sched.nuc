@@ -1,0 +1,17 @@
+// Naive schedule: single worker, no decomposition.
+//
+// Smoke test for the algorithm/schedule split. Every kernel runs on
+// one worker (`host`); no cross-worker dataflow means no `transfer`
+// directives. The result must be bit-identical to reference.bin.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

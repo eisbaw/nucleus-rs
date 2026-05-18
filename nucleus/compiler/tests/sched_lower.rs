@@ -48,6 +48,21 @@ fn lower_str(src: &str) -> Result<SchedIR, SchedLowerError> {
 // has it failing parse, so there's no AST to lower.
 
 #[test]
+fn lowers_01_elementwise_add_naive() {
+    // TASK-0013: lowers cleanly. Single worker, 4 placements, no
+    // loops, no transfers, no checks.
+    let src = read_example("01-elementwise-add/schedules/naive.sched.nuc");
+    let ir = lower_str(&src).expect("01-elementwise-add/naive must lower");
+
+    assert_eq!(ir.workers.len(), 1);
+    assert_eq!(ir.workers["host"].class, DEFAULT_WORKER_CLASS);
+    assert_eq!(ir.places.len(), 4);
+    assert!(ir.transfers.is_empty());
+    assert!(ir.loops.is_empty());
+    assert!(ir.checks.is_empty());
+}
+
+#[test]
 fn lowers_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ir = lower_str(&src).expect("05-stencil/naive must lower");

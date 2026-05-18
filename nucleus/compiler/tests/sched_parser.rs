@@ -40,6 +40,20 @@ fn read_example(relpath: &str) -> String {
 // --------------------------------------------------------------------
 
 #[test]
+fn parses_01_elementwise_add_naive() {
+    // TASK-0013: smallest schedule. One worker (host), four
+    // `place` directives, no loops, no transfers.
+    let src = read_example("01-elementwise-add/schedules/naive.sched.nuc");
+    let ast = parse_sched(&src).expect("01-elementwise-add/naive must parse");
+    assert_eq!(ast.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast.count_workers(), 1, "one workers decl");
+    assert_eq!(ast.count_places(), 4, "four place directives");
+    assert_eq!(ast.count_loops(), 0);
+    assert_eq!(ast.count_transfers(), 0);
+    assert_eq!(ast.count_checks(), 0);
+}
+
+#[test]
 fn parses_05_stencil_naive() {
     let src = read_example("05-stencil/schedules/naive.sched.nuc");
     let ast = parse_sched(&src).expect("05-stencil/naive must parse");

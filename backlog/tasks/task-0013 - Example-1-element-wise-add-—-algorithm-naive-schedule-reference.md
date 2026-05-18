@@ -1,9 +1,10 @@
 ---
 id: TASK-0013
 title: 'Example 1: element-wise add — algorithm + naive schedule + reference'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-17 23:03'
+updated_date: '2026-05-18 00:58'
 labels:
   - M0
   - examples

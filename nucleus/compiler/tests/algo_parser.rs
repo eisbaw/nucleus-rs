@@ -35,6 +35,67 @@ fn read_example(relpath: &str) -> String {
 }
 
 #[test]
+fn parses_example_01_elementwise_add() {
+    // TASK-0013: the first concrete end-to-end example. Smallest
+    // possible algorithm — one scalar kernel, two effectful I/O
+    // kernels, one for-loop. If this fails the example file drifted
+    // out of grammar; see TASK-0013 implementation notes for the
+    // intended shape.
+    let src = read_example("01-elementwise-add/prog.algo.nuc");
+    let ast = parse_algo(&src).expect("01-elementwise-add must parse");
+
+    // 1 const (N), 3 data (a, b, c), 4 kernels (add, load_input,
+    // load_input_b, save_output).
+    assert_eq!(ast.count_consts(), 1, "expected 1 const decl");
+    assert_eq!(ast.count_data(), 3, "expected 3 data decls");
+    assert_eq!(ast.count_kernels(), 4, "expected 4 kernel decls");
+
+    // Top-level statements: `a <-- load_input();`,
+    // `b <-- load_input_b();`, `for i : 0..N { ... }`,
+    // `save_output(c);` -> 4.
+    assert_eq!(ast.count_stmts(), 4, "expected 4 top-level statements");
+
+    // The for-loop body holds a single dataflow statement.
+    let for_body = ast
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stmt(Stmt::For { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("expected a for-loop at top level");
+    assert_eq!(for_body.len(), 1, "for body should have 1 statement");
+
+    // Spot-check purities and that `add` is the scalar kernel.
+    let kernels: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Kernel(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let by_name = |name: &str| {
+        kernels
+            .iter()
+            .find(|k| k.name == name)
+            .unwrap_or_else(|| panic!("missing kernel {}", name))
+    };
+    let add = by_name("add");
+    assert_eq!(add.purity, Purity::Pure);
+    assert_eq!(add.sig.params.len(), 2, "add takes two scalars");
+    assert!(add.sig.ret.is_some(), "add returns a scalar");
+
+    assert_eq!(by_name("load_input").purity, Purity::Effectful);
+    assert_eq!(by_name("load_input_b").purity, Purity::Effectful);
+    assert_eq!(by_name("save_output").purity, Purity::Effectful);
+    assert!(
+        by_name("save_output").sig.ret.is_none(),
+        "save_output returns ()"
+    );
+}
+
+#[test]
 fn parses_example_13_cnn_inference() {
     let src = read_example("13-cnn-inference/prog.algo.nuc");
     let ast = parse_algo(&src).expect("13-cnn-inference must parse");

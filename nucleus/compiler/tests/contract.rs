@@ -171,6 +171,100 @@ fn bad_rust_check_failed_produces_rust_check_failed() {
 }
 
 // --------------------------------------------------------------------
+// Example 01-elementwise-add: documents the current scalar-only
+// limitation of the contract pass against a real example's
+// kernels.rs (TASK-0013).
+//
+// The kernels.rs uses `Vec<i32>` for I/O kernels declared in Nuc as
+// `i32[N]` (aggregate). The contract pass is scalar-only at this
+// point and emits `TypeMismatch` for those aggregate slots with a
+// message about aggregates not yet being supported — loud failure,
+// not silent acceptance. The scalar `add` kernel passes.
+//
+// This test pins the *current* observable contract pass behaviour
+// for the example. When aggregate matching lands (TASK-0103 picks
+// the convention, TASK-0012 follow-ups implement matching), this
+// test should flip to assert `Ok(())`. The example file itself
+// should not need to change.
+// --------------------------------------------------------------------
+
+#[test]
+fn example_01_elementwise_add_contract_passes_for_add_and_loud_on_aggregates() {
+    // Re-use the parser machinery; don't depend on the fixture dir
+    // helper (the example lives outside `tests/fixtures/`).
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let example_dir = repo_root.join("nuc-nucleus/examples/01-elementwise-add");
+    let algo_src = std::fs::read_to_string(example_dir.join("prog.algo.nuc"))
+        .expect("example 01 prog.algo.nuc must be readable");
+    let ast = parse_algo(&algo_src).expect("example 01 must parse");
+    let ir = lower_algo(&ast).expect("example 01 must lower");
+
+    let kernels_rs = example_dir.join("kernels.rs");
+    let errs = check_kernels_contract(&ir, &kernels_rs)
+        .expect_err("aggregate kernels currently produce TypeMismatch");
+
+    // Loud failure mode: every error is a TypeMismatch on an
+    // aggregate-typed kernel (load_input, load_input_b, save_output).
+    // None of: KernelNotFound, MissingPub, ArityMismatch,
+    // RustCheckFailed, KernelsFileUnreadable, KernelsFileUnparseable.
+    for e in &errs {
+        match e {
+            ContractError::TypeMismatch { kernel, .. } => {
+                assert!(
+                    matches!(
+                        kernel.as_str(),
+                        "load_input" | "load_input_b" | "save_output"
+                    ),
+                    "unexpected TypeMismatch on `{kernel}`: scalar `add` must pass; got {errs:?}"
+                );
+            }
+            other => panic!(
+                "unexpected ContractError variant on example 01: {other:?}; \
+                 only TypeMismatch on the three aggregate I/O kernels is expected. \
+                 Did rustc reject kernels.rs? Did the parser fail on the algo?"
+            ),
+        }
+    }
+
+    // Must have caught all three aggregate I/O kernels; otherwise
+    // the matcher started silently accepting `Vec<i32>` for some of
+    // them — that would be a regression in loudness, not progress.
+    let aggregates: std::collections::BTreeSet<&str> = errs
+        .iter()
+        .filter_map(|e| match e {
+            ContractError::TypeMismatch { kernel, .. } => Some(kernel.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        aggregates.contains("load_input"),
+        "expected TypeMismatch on load_input; got {errs:?}"
+    );
+    assert!(
+        aggregates.contains("load_input_b"),
+        "expected TypeMismatch on load_input_b; got {errs:?}"
+    );
+    assert!(
+        aggregates.contains("save_output"),
+        "expected TypeMismatch on save_output; got {errs:?}"
+    );
+
+    // Scalar `add` MUST NOT appear in the errors — it has a clean
+    // (i32, i32) -> i32 signature on both sides.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| matches!(e, ContractError::TypeMismatch { kernel, .. } if kernel == "add")),
+        "scalar `add` must pass; got {errs:?}"
+    );
+}
+
+// --------------------------------------------------------------------
 // File-level negative: missing file
 // --------------------------------------------------------------------
 

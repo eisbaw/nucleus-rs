@@ -61,6 +61,15 @@ fn link_example(algo_rel: &str, sched_rel: &str) {
 }
 
 #[test]
+fn links_01_elementwise_add_naive() {
+    // TASK-0013: end-to-end link of the smallest example.
+    link_example(
+        "01-elementwise-add/prog.algo.nuc",
+        "01-elementwise-add/schedules/naive.sched.nuc",
+    );
+}
+
+#[test]
 fn links_13_cnn_naive() {
     link_example(
         "13-cnn-inference/prog.algo.nuc",

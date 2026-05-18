@@ -1,0 +1,55 @@
+// Element-wise add — the smallest possible end-to-end example.
+//
+// Two input arrays a, b of equal length; output c[i] = a[i] + b[i].
+//
+// What this example demonstrates:
+//   - Dataflow surface: load -> per-index kernel firing -> save.
+//   - Scalar kernel: `add` operates on one element at a time.
+//   - The naive schedule (everything on one worker) — smoke test for
+//     the algorithm/schedule split end-to-end without any cross-worker
+//     concerns. Cross-worker variants are example 2 (split add).
+//
+// What this example does NOT demonstrate:
+//   - Multi-worker placement, transfers, blocking, vectorising. Those
+//     surfaces are exercised by later examples.
+//
+// Numeric choice: i32. PRD §10.1 leans toward integer arithmetic for
+// the bit-identical differential test — integer ops are deterministic
+// by language definition; reorderable floating-point reductions are
+// not. Even though this example performs no reduction, staying
+// integer-typed keeps the tier-1 invariant simple and consistent with
+// later examples (sum, prefix-sum, histogram) where determinism
+// actually bites.
+
+const N : usize = 256;     // array length; 256 * 4 bytes per array = 1 KiB
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1;
+// the dataflow assigns each c[i] exactly once.
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+
+
+// Scalar add. Pure: reorderable, deduplicable, eliminable.
+// Signature is (i32, i32) -> i32 — explicitly scalar so the contract
+// pass (TASK-0012) can match it against `pub fn add(a: i32, b: i32)
+// -> i32` in kernels.rs without involving aggregate type machinery.
+kernel add : (i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; on the Rust side they use `Vec<i32>` (see
+// kernels.rs and README §"Why Vec<i32> and not [i32; N]?").
+kernel load_input  : ()       -> i32[N] effectful;
+kernel load_input_b : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+
+
+// Dataflow: load both inputs, fire `add` per element, save the result.
+a <-- load_input();
+b <-- load_input_b();
+
+for i : 0 .. N {
+    c[i] <-- add(a[i], b[i]);
+}
+
+save_output(c);
