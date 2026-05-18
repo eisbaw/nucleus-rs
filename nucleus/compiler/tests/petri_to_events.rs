@@ -244,14 +244,53 @@ fn sync_barrier_emitted_on_every_participant() {
 }
 
 // --------------------------------------------------------------------
-// Synthetic case 4: Repeat unrolls
+// Synthetic case 4: Repeat preserves loop-nest structure (TASK-0159)
+//
+// This test previously asserted the OLD unroll behaviour
+// (`repeat_unrolls_in_event_list`: range 0..3 -> 3 flat Fires). That
+// behaviour was the bug TASK-0159 fixes: a backend consuming only the
+// EventList could not recover the rolled `for`. Flipped (coverage
+// kept, assumption corrected — same pattern as the TASK-0142 stale
+// test fixes) to assert structure preservation.
 // --------------------------------------------------------------------
 
+/// Recursively collect every `Event::Fire` in a worker's list,
+/// descending into `Event::Loop` bodies. The structure-preserving
+/// projection nests loop bodies, so any test that wants "all Fires
+/// regardless of nesting" must recurse rather than iterate the flat
+/// top level (which now only sees top-level events + the `Loop`s).
+fn flatten_fires(events: &[Event]) -> Vec<&Event> {
+    let mut out = Vec::new();
+    for ev in events {
+        match ev {
+            Event::Fire { .. } => out.push(ev),
+            Event::Loop { body, .. } => out.extend(flatten_fires(body)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Recursively collect EVERY leaf event (Fire/Push/Wait/Sync/…),
+/// descending into `Event::Loop` bodies but NOT yielding the `Loop`
+/// wrapper itself. For tests that reason about Push/Wait pairing or
+/// "no Push/Wait at all" regardless of loop nesting (TASK-0159).
+fn flatten_all(events: &[Event]) -> Vec<&Event> {
+    let mut out = Vec::new();
+    for ev in events {
+        match ev {
+            Event::Loop { body, .. } => out.extend(flatten_all(body)),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 #[test]
-fn repeat_unrolls_in_event_list() {
+fn repeat_preserves_structure_in_event_list() {
     let body = ACFGNode::Sequence(vec![op_node(&[0], 100, vec![], Some(0))]);
     let root = ACFGNode::Sequence(vec![ACFGNode::Repeat {
-        iter_var: compiler::event::IterVar(0),
+        iter_var: compiler::event::IterVar(7),
         range: 0..3,
         body: Box::new(body),
     }]);
@@ -259,14 +298,41 @@ fn repeat_unrolls_in_event_list() {
 
     let events = acfg_to_events(&acfg);
     let w0 = events.get(&WorkerId(0)).unwrap();
-    assert_eq!(w0.len(), 3, "range 0..3 -> 3 fires");
-    for ev in w0 {
-        assert!(matches!(ev, Event::Fire { kernel, .. } if *kernel == KernelId(100)));
+
+    // NOT 3 flat Fires: exactly one rolled Loop carrying the nest.
+    assert_eq!(w0.len(), 1, "range 0..3 -> one rolled Loop, not 3 Fires");
+    match &w0[0] {
+        Event::Loop {
+            iter_var,
+            range,
+            body,
+        } => {
+            assert_eq!(*iter_var, compiler::event::IterVar(7), "iter-var carried");
+            assert_eq!(*range, 0..3, "concrete loop bound carried verbatim");
+            assert_eq!(body.len(), 1, "loop body projected once, not unrolled");
+            assert!(
+                matches!(&body[0], Event::Fire { kernel, .. } if *kernel == KernelId(100)),
+                "body holds the enclosed Fire, got {:?}",
+                body[0]
+            );
+        }
+        other => panic!("expected one Event::Loop, got {:?}", other),
     }
+
+    // The Fire is still reachable via recursion (helper sanity).
+    let fires = flatten_fires(w0);
+    assert_eq!(fires.len(), 1);
 }
 
 #[test]
-fn repeat_empty_range_emits_no_events() {
+fn repeat_empty_range_emits_no_loop() {
+    // An empty/inverted source range yields zero replays. The body
+    // projects once into the scratch map; since the body IS non-empty
+    // here we DO emit a Loop, carrying the (empty) range verbatim so a
+    // backend re-emits `for v in 5..5 {}` exactly (zero iterations).
+    // This is faithful to the source `for` — the projection does not
+    // silently drop a degenerate loop. (Contrast the OLD behaviour
+    // which emitted zero events; that lost the loop entirely.)
     let body = ACFGNode::Sequence(vec![op_node(&[0], 100, vec![], Some(0))]);
     let root = ACFGNode::Sequence(vec![ACFGNode::Repeat {
         iter_var: compiler::event::IterVar(0),
@@ -276,7 +342,41 @@ fn repeat_empty_range_emits_no_events() {
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
 
     let events = acfg_to_events(&acfg);
-    assert_eq!(events.get(&WorkerId(0)).unwrap().len(), 0);
+    let w0 = events.get(&WorkerId(0)).unwrap();
+    assert_eq!(w0.len(), 1, "degenerate-range Loop is still carried");
+    match &w0[0] {
+        Event::Loop { range, body, .. } => {
+            assert_eq!(*range, 5..5, "empty range carried verbatim (zero replays)");
+            assert_eq!(body.len(), 1, "body still projected once");
+        }
+        other => panic!("expected Event::Loop, got {:?}", other),
+    }
+    // Zero Fires would actually execute (range is empty), but the
+    // structure survives — the recursion still finds the body Fire.
+    assert_eq!(flatten_fires(w0).len(), 1);
+}
+
+#[test]
+fn repeat_worker_with_empty_body_gets_no_loop() {
+    // w1 is declared but does nothing inside the loop body. The old
+    // unroll added nothing for it; structure preservation must NOT
+    // add an empty-bodied Loop either (a backend wants "w1 does
+    // nothing here", not "w1 spins an empty loop").
+    let body = ACFGNode::Sequence(vec![op_node(&[0], 100, vec![], Some(0))]);
+    let root = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: compiler::event::IterVar(0),
+        range: 0..4,
+        body: Box::new(body),
+    }]);
+    let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
+
+    let events = acfg_to_events(&acfg);
+    assert_eq!(events.get(&WorkerId(0)).unwrap().len(), 1, "w0 gets the Loop");
+    assert_eq!(
+        events.get(&WorkerId(1)).unwrap().len(),
+        0,
+        "w1 contributes nothing -> no empty Loop"
+    );
 }
 
 // --------------------------------------------------------------------
@@ -460,8 +560,13 @@ fn eventlist_alone_reconstructs_stencil_kernel_call() {
     // Find a blur3 firing (the one whose binding has 9 inputs).
     let blur3_id = *acfg.name_kernels.get("blur3").expect("blur3 declared");
     let mut reconstructed = None;
+    // The stencil loop nest is now structure-preserving: the blur3
+    // Fire lives INSIDE one or more `Event::Loop` bodies, not at the
+    // top level. Recurse so this test still proves the EventList alone
+    // carries the binding (TASK-0156 contract, unchanged) under the
+    // new loop-nesting (TASK-0159).
     for evs in events.values() {
-        for ev in evs {
+        for ev in flatten_fires(evs) {
             if let Event::Fire {
                 kernel, bindings, ..
             } = ev
@@ -494,6 +599,114 @@ img_in[(y + 1)][(x - 1)], img_in[(y + 1)][x], img_in[(y + 1)][(x + 1)])";
     );
 }
 
+// --------------------------------------------------------------------
+// TASK-0159 + forward-carried from TASK-0142: the trailing PARTIAL
+// tile must project as TWO SIBLING `Event::Loop`s with DIFFERENT
+// ranges, NOT one parameterised loop and NOT a flattened unroll.
+//
+// 05-stencil walks y over 1..15 (length 14). `block=4` is a
+// deliberately non-divisible block, so `apply_block_transforms`
+// rewrites it (TASK-0142) into a
+//   Sequence[ full-tile nest (3 tiles of 4 -> the body covers
+//             the first 12 rows), trailing partial tile (1 tile of
+//             2 rows) ]
+// of static-range Repeats with DIFFERENT inner trip counts. Because
+// the EventList projection mirrors `Repeat`/`Sequence` structurally,
+// that falls out as two sibling `Event::Loop`s in `host`'s list.
+// --------------------------------------------------------------------
+
+/// Like [`full_pipeline_acfg`] but with the block-transform pass in
+/// the chain (driver order: build -> block -> sync -> xfer). The
+/// plain `full_pipeline_acfg` skips it, which is why the existing
+/// reconstruction test uses the *naive* (un-blocked) schedule.
+fn blocked_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
+    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
+        .expect("algo lower");
+    let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
+        .expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = build_acfg(&linked);
+    let acfg = compiler::apply_block_transforms(&linked, acfg)
+        .expect("block transform (non-divisible block=4 must NOT reject post-TASK-0142)");
+    let acfg = inject_syncs(acfg);
+    inject_transfers(&linked, acfg)
+}
+
+/// Collect, in order, every top-level (and Sequence-nested but NOT
+/// Loop-nested) `Event::Loop` in a worker's list. We stop at the
+/// first `Loop` level: the tile loops are the outer siblings; their
+/// intra-tile loop is *inside* the body and is found by recursing
+/// separately.
+fn top_level_loops(events: &[Event]) -> Vec<&Event> {
+    events
+        .iter()
+        .filter(|e| matches!(e, Event::Loop { .. }))
+        .collect()
+}
+
+#[test]
+fn blocked_stencil_trailing_partial_tile_is_two_sibling_loops() {
+    let acfg = blocked_pipeline_acfg(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/blocked.sched.nuc",
+    );
+    let events = acfg_to_events(&acfg);
+
+    // 05-stencil/blocked is single `host`.
+    let host = *acfg.name_workers.get("host").expect("host worker declared");
+    let list = events.get(&host).expect("host EventList");
+
+    // No blanket unroll: the loop nest survives. Find the tile-level
+    // loops (the outer siblings). There must be at least TWO with
+    // DIFFERENT ranges — the full-tile nest and the trailing partial
+    // tile. (There may be unrelated sibling Loops from other kernels;
+    // we assert the *partial-tile* property holds among them.)
+    let tile_loops = top_level_loops(list);
+    assert!(
+        tile_loops.len() >= 2,
+        "expected the full-tile + trailing-partial-tile sibling Loops, \
+         got {} top-level Loop(s): {:#?}",
+        tile_loops.len(),
+        tile_loops
+    );
+
+    // Collect the distinct ranges of the sibling tile loops.
+    let mut ranges: Vec<std::ops::Range<i64>> = tile_loops
+        .iter()
+        .map(|e| match e {
+            Event::Loop { range, .. } => range.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    ranges.sort_by_key(|r| (r.start, r.end));
+    ranges.dedup();
+
+    // The two tiles have DIFFERENT trip counts (full=4 rows, trailing
+    // partial=2 rows). That MUST surface as at least two distinct
+    // sibling ranges — proving the projection did NOT collapse them
+    // into one parameterised loop and did NOT unroll.
+    assert!(
+        ranges.len() >= 2,
+        "trailing partial tile must be a SIBLING Loop with a DIFFERENT \
+         range, not merged into one loop; distinct sibling ranges: {ranges:?}"
+    );
+
+    // Determinism: a second projection is byte-identical.
+    let again = acfg_to_events(&acfg);
+    assert_eq!(events, again, "blocked projection must be deterministic");
+
+    // The blur3 Fire is still reconstructible from the EventList alone
+    // even nested two loops deep (binding contract survives blocking).
+    let blur3 = *acfg.name_kernels.get("blur3").expect("blur3 declared");
+    let any_blur3 = flatten_fires(list)
+        .into_iter()
+        .any(|e| matches!(e, Event::Fire { kernel, .. } if *kernel == blur3));
+    assert!(
+        any_blur3,
+        "blur3 Fire must survive (nested) inside the tile loop bodies"
+    );
+}
+
 #[test]
 fn eventlist_carries_bindings_for_all_e2e_examples() {
     // Every Fire in every e2e example must carry a binding whose
@@ -510,7 +723,10 @@ fn eventlist_carries_bindings_for_all_e2e_examples() {
         let events = acfg_to_events(&acfg);
         let mut saw_fire = false;
         for evs in events.values() {
-            for ev in evs {
+            // Recurse into Loop bodies (TASK-0159): iterated Fires now
+            // nest inside `Event::Loop`, so a flat top-level walk would
+            // miss them and falsely "see no Fire".
+            for ev in flatten_fires(evs) {
                 if let Event::Fire { bindings, .. } = ev {
                     saw_fire = true;
                     // Each input is either a data slice or a scalar;
@@ -649,10 +865,13 @@ fn e2e_example_02_split_one_eventlist_per_declared_worker() {
     // finaliser pairs them. We therefore now assert the *strong*
     // property: at least one Push is present, and every Push has a
     // matching Wait on its declared dst.
+    // Recurse into Loop bodies: the consumer `add` lives inside a
+    // `for`, so its Wait (and any spliced Push) now nests in an
+    // `Event::Loop` (TASK-0159). A flat walk would miss them.
     let mut pushes: Vec<(WorkerId, &Event)> = Vec::new();
     let mut waits: Vec<(WorkerId, &Event)> = Vec::new();
     for (wid, list) in &events {
-        for ev in list {
+        for ev in flatten_all(list) {
             match ev {
                 Event::Push { .. } => pushes.push((*wid, ev)),
                 Event::Wait { .. } => waits.push((*wid, ev)),
@@ -723,7 +942,9 @@ fn e2e_example_01_naive_single_worker_no_transfers() {
     );
     assert_eq!(names.len(), events.len());
     for list in events.values() {
-        for ev in list {
+        // Recurse into Loop bodies (TASK-0159): a stray Push/Wait
+        // inside the elementwise loop must still be caught.
+        for ev in flatten_all(list) {
             assert!(
                 !matches!(ev, Event::Push { .. } | Event::Wait { .. }),
                 "single-worker schedule must produce no Push/Wait events; got {:?}",

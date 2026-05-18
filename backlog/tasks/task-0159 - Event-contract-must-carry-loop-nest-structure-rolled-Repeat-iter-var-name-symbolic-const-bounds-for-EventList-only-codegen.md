@@ -3,16 +3,18 @@ id: TASK-0159
 title: >-
   Event contract must carry loop-nest structure (rolled Repeat: iter-var name +
   symbolic/const bounds) for EventList-only codegen
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-18 16:42'
-updated_date: '2026-05-18 22:00'
+updated_date: '2026-05-18 22:39'
 labels:
   - M2
   - compiler
   - backend
   - blocker
-dependencies: []
+dependencies:
+  - TASK-0160
 ---
 
 ## Description
@@ -28,6 +30,18 @@ Blocks TASK-0124 AC#2 byte-identical. acfg_to_events UNROLLS every ACFGNode::Rep
 - [ ] #3 Determinism + bit-identical e2e for 01/02/03/05/07 preserved; acfg_to_petri / boundedness / deadlock passes still correct (they consume the unrolled order today)
 - [ ] #4 petri_to_events + acfg_to_petri module docs updated to reflect the new contract; the stale M2 'we unroll' note corrected
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add Event::Loop { iter_var: IterVar, range: Range<i64>, body: Vec<Event> } variant to event.rs (option (a)). Manual Hash hashing iter_var + range.start/end + recursing body (mirror IterTile/FireBinding precedent; Range<i64> & IterVar are Hash). serde-gated like siblings. Doc the variant: structure-preserving, mirrors ACFGNode::Repeat; trailing-partial-tile = two SIBLING Loops with different ranges (NOT one parameterised loop), falls out of mirroring Sequence/Repeat.
+2. petri_to_events.rs walk(): replace the Repeat unroll arm with structure preservation. Build the loop body by walking into a SCRATCH per-worker map, then wrap each worker's produced body slice in one Event::Loop and append to that worker's real list. Keep saturating/degenerate-range semantics in the carried Range (no firing-count math). Empty body for a worker => still emit Loop (carries structure) — decide & document.
+3. Update petri_to_events.rs + acfg_to_petri.rs module docs (AC#4): correct the stale "we unroll the EventList" note; state Net unrolls (analysis: boundedness/deadlock, acfg_to_petri UNTOUCHED) vs EventList preserves structure (codegen contract). DO NOT touch acfg_to_petri unroll.
+4. Flip tests/petri_to_events.rs: repeat_unrolls_in_event_list -> repeat_preserves_structure_in_event_list (assert one Event::Loop with range 0..3 wrapping the Fire, NOT 3 flat Fires). repeat_empty_range -> assert a Loop with empty range still emitted (or documented choice). Add a flatten/recurse helper; update eventlist_alone_reconstructs_stencil_kernel_call, eventlist_carries_bindings_for_all_e2e_examples, e2e_example_02_* , e2e_example_01_* to recurse into Loop bodies (flip stale flat-iteration assumption, keep coverage). Add a 05-stencil/blocked.sched.nuc test asserting the trailing-partial-tile = sibling Loops with different ranges shape (TASK-0142 forward-carried).
+5. event.rs unit tests: Loop order preserved, nested Loop recursion, serde roundtrip, Hash distinct-structure inequality.
+6. AC#2: ACFGNode::Repeat.range is concrete Range<i64> (H-1 folded to const at acfg.rs ~695 BEFORE the ACFG). Symbolic bound does not exist at this layer. Carry the concrete range. AC#2 genuinely blocked on TASK-0160 (types/consts no-fold). Add dep task-0159->task-0160, leave AC#2 UNCHECKED with honest note. Do NOT fake.
+7. Gate before every commit: nix develop -c just test / e2e / determinism-check / determinism-check-negative / clippy -D warnings. e2e+determinism MUST be byte-identical (no EventList codegen consumer). Commit per logical unit, no push, no AI credit.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

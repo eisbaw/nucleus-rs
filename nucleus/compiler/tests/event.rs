@@ -461,3 +461,64 @@ fn fire_with_distinct_bindings_are_unequal_and_hashable() {
     set.insert(b);
     assert_eq!(set.len(), 2);
 }
+
+// --------------------------------------------------------------------
+// Event::Loop — structure-preserving rolled loop (TASK-0159)
+// --------------------------------------------------------------------
+
+#[test]
+fn loop_constructor_carries_iter_var_range_and_body() {
+    let body = vec![sample_fire(), sample_push()];
+    let e = Event::loop_over(IterVar(3), 1..15, body.clone());
+    match &e {
+        Event::Loop {
+            iter_var,
+            range,
+            body: b,
+        } => {
+            assert_eq!(*iter_var, IterVar(3));
+            assert_eq!(*range, 1..15, "concrete bound carried verbatim");
+            assert_eq!(*b, body, "body order preserved, not flattened");
+        }
+        other => panic!("expected Event::Loop, got {other:?}"),
+    }
+}
+
+#[test]
+fn loop_serde_roundtrip_including_nested_loop() {
+    // A nested loop (Repeat-inside-Repeat projects to Loop-inside-Loop).
+    let inner = Event::loop_over(IterVar(1), 0..8, vec![sample_fire()]);
+    let outer = Event::loop_over(IterVar(0), 0..4, vec![inner, sample_sync()]);
+    assert_eq!(roundtrip(&outer), outer, "Loop survives serde verbatim");
+}
+
+#[test]
+fn loop_distinct_structure_is_unequal_and_hashable() {
+    // Same iter-var + same body, different range ⇒ distinct events.
+    let a = Event::loop_over(IterVar(0), 0..16, vec![sample_fire()]);
+    let b = Event::loop_over(IterVar(0), 0..15, vec![sample_fire()]);
+    assert_ne!(a, b, "different bound ⇒ different loop");
+
+    // Same range, different body ⇒ distinct.
+    let c = Event::loop_over(IterVar(0), 0..16, vec![sample_push()]);
+    assert_ne!(a, c, "different body ⇒ different loop");
+
+    // Event: Hash still holds with the recursive manual Hash.
+    let mut set: HashSet<Event> = HashSet::new();
+    set.insert(a.clone());
+    set.insert(b);
+    set.insert(c);
+    set.insert(a); // duplicate of the first insert
+    assert_eq!(set.len(), 3, "three structurally distinct loops");
+}
+
+#[test]
+fn equal_loops_hash_the_same() {
+    let a = Event::loop_over(IterVar(2), 5..9, vec![sample_fire(), sample_free()]);
+    let b = Event::loop_over(IterVar(2), 5..9, vec![sample_fire(), sample_free()]);
+    assert_eq!(a, b);
+    let mut set: HashSet<Event> = HashSet::new();
+    set.insert(a);
+    set.insert(b);
+    assert_eq!(set.len(), 1, "equal loops must hash the same");
+}

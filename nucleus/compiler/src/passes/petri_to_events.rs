@@ -63,10 +63,15 @@
 //! Concretely the walker visits the ACFG depth-first in source order:
 //!
 //! - `ACFGNode::Sequence(children)` — visit each child left-to-right.
-//! - `ACFGNode::Repeat { range, body }` — unroll: visit `body` once
-//!   per iteration in `range`. Matches `acfg_to_petri` (PRD §8 says
-//!   "statically determined firing order"; we unroll rather than
-//!   emit one event with a multi-iteration tile).
+//! - `ACFGNode::Repeat { iter_var, range, body }` —
+//!   **structure-preserving** (TASK-0159): project `body` once into a
+//!   scratch per-worker map and wrap each worker's slice in a single
+//!   [`crate::event::Event::Loop`] carrying `iter_var` + `range`. We
+//!   do NOT unroll the EventList. (The analysis Net produced by
+//!   `acfg_to_petri` *does* still unroll — see the contrast note
+//!   below.) A backend consuming only the EventList must be able to
+//!   re-emit the rolled `for` loop verbatim; flattening to N copies
+//!   destroys the loop variable, the bound and the for-structure.
 //! - `ACFGNode::Operation(op)` — emit `Event::Fire { kernel, tile:
 //!   empty, bindings }` on every worker in `op.workers`. The tile is
 //!   empty because the unrolled Repeat does *not* preserve a
@@ -89,7 +94,9 @@
 //! Two runs of `acfg_to_events` over the same ACFG produce
 //! byte-identical `EventList`s: the walker is deterministic, the
 //! `BTreeMap<WorkerId, Vec<Event>>` keys iterate in `WorkerId`
-//! numeric order, and the ACFG's `name_workers` is a `BTreeMap` so
+//! numeric order (including the per-`Repeat` scratch map whose
+//! `Event::Loop`s are appended in `WorkerId` order), and the ACFG's
+//! `name_workers` is a `BTreeMap` so
 //! the seeded worker set is itself sorted.
 //!
 //! ## What this pass deliberately does NOT do at M2
@@ -104,13 +111,29 @@
 //!   here would be guessing at semantics no consumer relies on.
 //!   Filed as a follow-up.
 //!
-//! - **Iteration tile per-iteration is empty.** A `Repeat` with
-//!   range `0..N` emits N copies of each enclosed `Fire`, all with
-//!   `tile: IterTile::empty()`. The lowering pass `acfg_to_petri`
-//!   makes the same trade — it unrolls without retaining the
-//!   per-firing iter-coord. Once tile-carrying is added there (it's
-//!   the bigger change), this pass will read it through. Filed as
-//!   a follow-up.
+//! - **Iteration tile per-iteration is empty.** Each enclosed `Fire`
+//!   still carries `tile: IterTile::empty()`. Structure preservation
+//!   (TASK-0159) keeps the loop *nest* (`Event::Loop` carries
+//!   `iter_var` + `range`), so a backend re-derives the per-iteration
+//!   coordinate from the loop it is replaying; the per-`Fire` tile
+//!   stays empty rather than duplicating the coordinate the enclosing
+//!   `Loop` already names. (Contrast: the analysis Net in
+//!   `acfg_to_petri` still unrolls and likewise discards the
+//!   iter-coord — that path is unchanged because boundedness /
+//!   deadlock consume the unrolled firing order.) Filed as a
+//!   follow-up if a backend ever needs the coordinate on the `Fire`
+//!   itself.
+//!
+//! ### Net (analysis) unrolls vs EventList (codegen) preserves
+//!
+//! `acfg_to_petri::acfg_to_net` (boundedness / deadlock /
+//! determinism analyses) and this projection are SEPARATE walks of
+//! the same ACFG. The analyses consume the *unrolled* Net firing
+//! order, so `acfg_to_petri` deliberately still unrolls `Repeat` and
+//! is **not** touched by TASK-0159. This projection is the codegen
+//! contract and is structure-preserving. The two are decoupled by
+//! design; do not "unify" them by unrolling here or by rolling
+//! there.
 //!
 //! - **Distributed placement (`place k on { w0, w1, w2 }`).** The
 //!   `acfg_to_petri` pass currently treats the worker set as one
@@ -206,15 +229,52 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
                 walk(c, out);
             }
         }
-        ACFGNode::Repeat { range, body, .. } => {
-            // Unroll. Match `acfg_to_petri`'s saturating arithmetic so
-            // malformed empty / inverted ranges produce zero firings
-            // rather than panicking. PRD §8.6's static-bounded-loops
-            // restriction means real schedules always have a sensible
-            // range.
-            let count = range.end.saturating_sub(range.start).max(0) as u64;
-            for _ in 0..count {
-                walk(body, out);
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+        } => {
+            // STRUCTURE-PRESERVING (TASK-0159). The analysis Net
+            // (`acfg_to_petri`) still unrolls — boundedness / deadlock
+            // consume the unrolled order and are deliberately left
+            // alone. The EventList is the *codegen* contract: a backend
+            // consuming only the EventList (TASK-0124) must be able to
+            // re-emit the rolled `for` loop verbatim, so we project the
+            // `Repeat` to one `Event::Loop` per worker that carries the
+            // loop nest instead of flattening it.
+            //
+            // We project the body ONCE into a scratch per-worker map
+            // (one iteration), then wrap each worker's produced slice
+            // in a single `Event::Loop` and append it to that worker's
+            // real list. A nested `Repeat` recurses naturally, so a
+            // nested loop projects to a nested `Loop`.
+            //
+            // The `range` is carried verbatim — including degenerate
+            // empty / inverted ranges. We do NOT do the old
+            // `saturating_sub` firing-count math: the backend replays
+            // the body `range.len()` times, and an empty/inverted range
+            // simply yields zero replays. Carrying the raw range keeps
+            // the contract faithful to the source `for` bounds (a
+            // backend re-emits `for v in lo..hi` exactly).
+            //
+            // A worker that contributes NOTHING to the body gets no
+            // `Loop` at all (not an empty-bodied one): the old unroll
+            // likewise added nothing for such a worker, and a backend
+            // wants "this worker does nothing in this scope", not "this
+            // worker spins an empty loop".
+            let mut scratch: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+            walk(body, &mut scratch);
+            // Deterministic: `scratch` is a BTreeMap, iterated in
+            // WorkerId order.
+            for (wid, body_events) in scratch {
+                if body_events.is_empty() {
+                    continue;
+                }
+                out.entry(wid).or_default().push(Event::Loop {
+                    iter_var: *iter_var,
+                    range: range.clone(),
+                    body: body_events,
+                });
             }
         }
     }

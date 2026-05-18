@@ -101,6 +101,7 @@
 //!   events, not the type module.
 
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 #[cfg(feature = "serde")]
@@ -411,7 +412,18 @@ impl std::hash::Hash for FireBinding {
 /// Wire format (with `serde` feature on): externally tagged JSON by
 /// default — `{"Fire": {"kernel": 0, "tile": {...}, "bindings":
 /// {...}}}`. Backends and golden tests can rely on this shape.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// ## Why `Hash` is hand-written (not derived) — TASK-0159
+///
+/// The `Loop` variant (added by TASK-0159) carries `range:
+/// Range<i64>`, and `std::ops::Range` deliberately does *not*
+/// implement `Hash` (same long-standing std decision that made
+/// [`IterTile`] / [`FireBinding`] hand-roll their `Hash`). `Event`
+/// must stay `Hash` (it goes into `HashSet` in tests / dedup paths),
+/// so the whole enum gets a manual `Hash` that hashes the structural
+/// skeleton and recurses through a `Loop` body. Equality stays exact
+/// via the derived `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Event {
     /// Execute kernel `kernel` over iteration coordinates `tile`,
@@ -464,6 +476,144 @@ pub enum Event {
     /// Release backing storage for `(data, tile)`. The region was
     /// fixed by the matching `Alloc`; the backend looks it up.
     Free { data: DataId, tile: IterTile },
+
+    /// A rolled loop: execute `body` once per value of `iter_var` in
+    /// the half-open `range`, in order (TASK-0159).
+    ///
+    /// ## Why this exists — structure-preserving projection
+    ///
+    /// The EventList projection used to *unroll* every
+    /// [`crate::acfg::ACFGNode::Repeat`] into `range.len()` flat copies
+    /// of the enclosed events (matching the analysis Net, which still
+    /// unrolls — see `acfg_to_petri`). A backend that consumes ONLY the
+    /// EventList (TASK-0124) then cannot tell "a `for y in 1..15` over
+    /// one Fire" from "15 unrelated Fires": the loop variable name, the
+    /// bound, and the for-structure are gone. It cannot re-emit a
+    /// rolled loop, so it cannot be byte-identical to the AlgoIR-walking
+    /// backend. `Event::Loop` is the loop-structure analogue of what
+    /// TASK-0156 did for value bindings: the projection now carries the
+    /// loop nest verbatim so the contract is self-sufficient.
+    ///
+    /// `body: Vec<Event>` is the per-worker projection of the
+    /// `Repeat`'s body sub-tree, recursively (a nested `Repeat`
+    /// projects to a nested `Loop`). It mirrors
+    /// [`crate::acfg::ACFGNode::Repeat`] one-for-one; the structure is
+    /// not flattened.
+    ///
+    /// ## Trailing partial tile (forward-carried from TASK-0142)
+    ///
+    /// `block_transform`/tiling decomposes a strip-mined loop into a
+    /// `Sequence[ full-tile nest, trailing partial tile ]` of
+    /// *static-range* `Repeat`s with **different inner trip counts**
+    /// (the last tile is shorter when the extent is not a multiple of
+    /// the block). Because this variant mirrors `Repeat`/`Sequence`
+    /// structurally rather than parameterising one loop, that shape
+    /// falls out naturally as **two sibling `Event::Loop`s with
+    /// different `range`s** in the worker's event list — NOT one loop
+    /// with a computed bound. A backend re-emits each sibling loop
+    /// verbatim. This is the deliberate representation; do not collapse
+    /// the siblings.
+    ///
+    /// ## Bound representation (AC#2 limitation — TASK-0160)
+    ///
+    /// `range` is a concrete [`Range<i64>`]. The symbolic loop-bound
+    /// expression (e.g. `H - 1` un-evaluated) does NOT survive to here:
+    /// `build_acfg` folds every loop bound to an `i64` constant when it
+    /// constructs `ACFGNode::Repeat` (it panics on a non-const bound),
+    /// so the un-evaluated expression no longer exists at the ACFG
+    /// layer this projection reads. Carrying the symbolic form requires
+    /// the lowering pass to stop folding — that is TASK-0160's
+    /// (types/consts) territory, and TASK-0159 declares a dependency on
+    /// it. A backend re-emits the loop with the concrete bound today;
+    /// rendering `(16_i64 - 1_i64)` verbatim is unblocked only once
+    /// TASK-0160 lands.
+    Loop {
+        iter_var: IterVar,
+        range: Range<i64>,
+        body: Vec<Event>,
+    },
+}
+
+// Manual `Hash` for `Event` (see the enum's doc comment for why it is
+// not derived: `Range<i64>` is not `Hash`). We hash a 1-byte
+// discriminant tag plus the `Hash`-able fields, recursing through a
+// `Loop` body. Fields that are not `Hash` (the `Range` in `Loop`) are
+// hashed component-wise, exactly as [`IterTile`] does. Collisions
+// across structurally distinct events are acceptable for a `Hash`
+// impl; equality remains exact via the derived `PartialEq`.
+impl Hash for Event {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Event::Fire {
+                kernel,
+                tile,
+                bindings,
+            } => {
+                0u8.hash(state);
+                kernel.hash(state);
+                tile.hash(state);
+                bindings.hash(state);
+            }
+            Event::Alloc { data, tile, region } => {
+                1u8.hash(state);
+                data.hash(state);
+                tile.hash(state);
+                region.hash(state);
+            }
+            Event::Push {
+                dst,
+                data,
+                tile,
+                seq,
+            } => {
+                2u8.hash(state);
+                dst.hash(state);
+                data.hash(state);
+                tile.hash(state);
+                seq.hash(state);
+            }
+            Event::Wait {
+                src,
+                data,
+                tile,
+                seq,
+            } => {
+                3u8.hash(state);
+                src.hash(state);
+                data.hash(state);
+                tile.hash(state);
+                seq.hash(state);
+            }
+            Event::Sync { participants, kind } => {
+                4u8.hash(state);
+                participants.hash(state);
+                kind.hash(state);
+            }
+            Event::Free { data, tile } => {
+                5u8.hash(state);
+                data.hash(state);
+                tile.hash(state);
+            }
+            Event::Loop {
+                iter_var,
+                range,
+                body,
+            } => {
+                6u8.hash(state);
+                iter_var.hash(state);
+                // `Range<i64>` is not `Hash`; hash the endpoints
+                // component-wise (mirrors `IterTile`).
+                range.start.hash(state);
+                range.end.hash(state);
+                // Recurse the body; length first so a prefix can't
+                // collide with a different-length body.
+                body.len().hash(state);
+                for ev in body {
+                    ev.hash(state);
+                }
+            }
+        }
+    }
 }
 
 impl Event {
@@ -486,6 +636,18 @@ impl Event {
             kernel,
             tile,
             bindings: FireBinding::none(),
+        }
+    }
+
+    /// Construct a rolled [`Event::Loop`] (TASK-0159). `body` is the
+    /// already-projected per-worker event sequence for one iteration
+    /// of the loop body; the backend replays it once per value of
+    /// `iter_var` in `range`.
+    pub fn loop_over(iter_var: IterVar, range: Range<i64>, body: Vec<Event>) -> Self {
+        Event::Loop {
+            iter_var,
+            range,
+            body,
         }
     }
 }

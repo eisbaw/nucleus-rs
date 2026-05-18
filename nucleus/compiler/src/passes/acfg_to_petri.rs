@@ -46,12 +46,25 @@
 //!    the per-iteration tile in the firing trace; downstream analyses
 //!    that want to reason per-iteration become awkward.
 //!
-//! v2 M2 picks (1). It is the smaller code change, lines up cleanly
-//! with the per-worker control-place chain, and matches what the
-//! `EventList` projection (TASK-0027) needs: one event per iteration.
-//! Filed as a follow-up to reconsider once boundedness/deadlock
-//! analyses are in and we have a feel for how N scales in real
-//! examples.
+//! v2 M2 picks (1) **for the analysis Net**. It is the smaller code
+//! change, lines up cleanly with the per-worker control-place chain,
+//! and the boundedness / deadlock / determinism analyses
+//! (TASK-0028/0029) consume the unrolled firing order directly.
+//!
+//! NOTE (TASK-0159): this is the **analysis** path and it still
+//! unrolls. The separate **EventList codegen** projection
+//! (`petri_to_events`) NO LONGER unrolls — it preserves the loop
+//! nest as `Event::Loop` so a backend that consumes only the
+//! EventList can re-emit the rolled `for` verbatim. The two walks of
+//! the ACFG are intentionally decoupled: the Net stays unrolled
+//! (analyses depend on it), the EventList stays rolled (codegen
+//! contract). Do not unify them. The earlier claim here that
+//! unrolling "matches what the EventList projection needs" was the
+//! pre-TASK-0159 trade and is no longer true.
+//!
+//! Filed as a follow-up to reconsider the Net encoding once
+//! boundedness/deadlock analyses are in and we have a feel for how N
+//! scales in real examples.
 //!
 //! ### Buffer place capacity
 //!
