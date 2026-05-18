@@ -1,10 +1,10 @@
 ---
 id: TASK-0021
 title: 'Example 2: split element-wise add'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-17 23:04'
-updated_date: '2026-05-18 02:28'
+updated_date: '2026-05-18 02:29'
 labels:
   - M1
   - examples
