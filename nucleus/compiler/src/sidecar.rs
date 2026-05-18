@@ -1,5 +1,6 @@
-//! Codegen-contract sidecar: per-`DataId` types, const values, and
-//! symbolic loop bounds for **EventList-only** backends (TASK-0160).
+//! Codegen-contract sidecar: per-`DataId` types, const values,
+//! symbolic loop bounds (TASK-0160), and per-`KernelId` signatures
+//! (TASK-0169) for **EventList-only** backends.
 //!
 //! ## Why this exists
 //!
@@ -39,6 +40,24 @@
 //!    keyed by the *same* [`IterVar`] that `Event::Loop` carries, so
 //!    a backend pairs them up and renders the bound verbatim.
 //!
+//! 4. **Per-`KernelId` signature** — the declared param/return
+//!    [`ResolvedType`]s of every kernel (TASK-0169). The
+//!    pthreads-sync backend's `render_call_arg` decides a scalar
+//!    argument cast — an iter-var-derived scalar expression fed to a
+//!    scalar kernel param renders as `(expr) as usize` — by reading
+//!    `algo.kernels[callee].params[i]` and testing
+//!    `ResolvedType::is_scalar`. `Event::Fire` carries the
+//!    [`KernelId`] and the argument *values* (`FireBinding`,
+//!    TASK-0156) but not the callee's declared param types. Without
+//!    this table an EventList-only backend (TASK-0124) cannot
+//!    reproduce that cast/dispatch decision. The table is keyed by
+//!    the *same* [`KernelId`] `Event::Fire` carries, so a backend
+//!    joins `Event::Fire.kernel` -> [`kernel_sigs`](NameSidecar::kernel_sigs)
+//!    with no name round-trip — exactly the `name_data` ->
+//!    `data_types` join, mirrored for kernels. With this in place the
+//!    `(EventList, name tables, NameSidecar)` contract is **fully
+//!    AlgoIR-free** for pthreads-sync codegen (the last known gap).
+//!
 //! ## What this sidecar deliberately does NOT do
 //!
 //! - It does **not** stop `eval_const` folding and it does **not**
@@ -60,7 +79,7 @@
 //! ## Determinism
 //!
 //! Every table is a [`BTreeMap`] keyed by an opaque id ([`DataId`] /
-//! [`IterVar`]) or a `String` (const name). Iteration is sorted;
+//! [`IterVar`] / [`KernelId`]) or a `String` (const name). Iteration is sorted;
 //! [`build_sidecar`] is a pure function of `(LinkedIR, ACFG name
 //! tables)`. The same inputs yield a byte-identical sidecar, and the
 //! serde wire form (feature-gated, like `event`/`contract`) is
@@ -72,7 +91,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{IrExpr, ResolvedType, ScalarType};
-use crate::event::{DataId, IterVar};
+use crate::event::{DataId, IterVar, KernelId};
 use crate::link::LinkedIR;
 
 /// The unevaluated source bounds of a `for` loop, captured before
@@ -109,7 +128,15 @@ pub struct LoopBound {
 ///   [`consts`](Self::consts);
 /// - re-emit a rolled `for v in lo..hi` with the *source-form* bound
 ///   from [`loop_bounds`](Self::loop_bounds), paired to
-///   `Event::Loop { iter_var, .. }` by the shared [`IterVar`].
+///   `Event::Loop { iter_var, .. }` by the shared [`IterVar`];
+/// - decide a scalar-argument cast (`(expr) as usize`) / whole-array
+///   vs scalar dispatch for a kernel call from
+///   [`kernel_sigs`](Self::kernel_sigs), paired to `Event::Fire {
+///   kernel, .. }` by the shared [`KernelId`] — the last fact the
+///   pthreads-sync backend still reads from `algo.kernels`.
+///
+/// With [`kernel_sigs`](Self::kernel_sigs) in place this contract is
+/// **fully AlgoIR-free** for pthreads-sync codegen.
 ///
 /// All maps are deterministic ([`BTreeMap`]); see the module docs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -136,19 +163,43 @@ pub struct NameSidecar {
     /// `Event::Loop` looks the symbolic bound up here instead of
     /// using the folded `range`.
     pub loop_bounds: BTreeMap<IterVar, LoopBound>,
-    // KNOWN GAP (TASK-0169): this sidecar carries DATA types
-    // (`data_types`) but NOT per-kernel param/return
-    // `ResolvedType`s. The pthreads-sync backend's `render_call_arg`
-    // still consults `algo.kernels[callee].params` to type scalar
-    // argument casts (iter-var i64 → usize-typed param). An
-    // EventList-only backend (TASK-0124) needs a
-    // `kernel_sigs: BTreeMap<KernelId, …>` table here to be fully
-    // AlgoIR-free. Deliberately NOT added in TASK-0160 (out of its
-    // ACs — those are data types / consts / loop bounds); filed as
-    // TASK-0169 with a dependency edge. For the e2e set
-    // 01/02/03/05/07 the only casts are iter-var index casts, so
-    // TASK-0124 can be byte-identical for those without TASK-0169
-    // (verify in TASK-0124).
+
+    /// Per kernel: its declared param + return [`ResolvedType`]s
+    /// (TASK-0169). The key is the *same* [`KernelId`] that
+    /// `Event::Fire { kernel, .. }` carries and that
+    /// `ACFG::name_kernels` maps names to. A backend rendering a
+    /// `Fire`'s argument list joins `Event::Fire.kernel` here,
+    /// indexes `params[i]` for the i-th argument, and applies the
+    /// scalar-cast / aggregate-dispatch rule
+    /// (`KernelSig::params[i].is_scalar()`) exactly as the
+    /// AlgoIR-walking `render_call_arg` does against
+    /// `algo.kernels[callee].params[i]` today — without the AlgoIR.
+    /// This is the last `algo.kernels` read pthreads-sync codegen
+    /// has; with this table the contract is fully AlgoIR-free.
+    pub kernel_sigs: BTreeMap<KernelId, KernelSig>,
+}
+
+/// A resolved kernel signature as the codegen contract needs it: the
+/// positional parameter [`ResolvedType`]s and the optional return
+/// type. Mirrors the fields of [`crate::algo::ResolvedKernel`] the
+/// backend actually consumes for argument rendering (the `name` is
+/// resolved via the `name_kernels` table; `purity` is irrelevant to
+/// codegen). Kept as a dedicated struct — rather than embedding
+/// `ResolvedKernel` — so the serde surface stays minimal (it reuses
+/// the feature-gated [`ResolvedType`] derive from TASK-0160 and adds
+/// none to the AlgoIR), exactly the [`ConstValue`] / `ResolvedConst`
+/// precedent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct KernelSig {
+    /// Positional parameter types, in declaration order. The i-th
+    /// entry types the i-th `Event::Fire` argument; `is_scalar()`
+    /// drives the `(expr) as usize` scalar-arg cast vs the
+    /// whole-array dispatch in `render_call_arg`.
+    pub params: Vec<ResolvedType>,
+    /// Return type: `None` for a unit (`()`) return, `Some(t)` for a
+    /// typed return.
+    pub ret: Option<ResolvedType>,
 }
 
 /// A resolved const as the codegen contract needs it: its evaluated
@@ -185,14 +236,22 @@ impl NameSidecar {
     pub fn data_type(&self, data: DataId) -> Option<&ResolvedType> {
         self.data_types.get(&data)
     }
+
+    /// The [`KernelSig`] of `kernel`, or `None` if absent (caller
+    /// passed a [`KernelId`] from a different ACFG — a programming
+    /// error worth surfacing, not defaulting). Join key is the same
+    /// [`KernelId`] `Event::Fire { kernel, .. }` carries.
+    pub fn kernel_sig(&self, kernel: KernelId) -> Option<&KernelSig> {
+        self.kernel_sigs.get(&kernel)
+    }
 }
 
 /// Build the codegen-contract sidecar from a linked program and the
 /// ACFG name tables it produced.
 ///
-/// Pure and additive: it reads `linked.algo` (consts, data, source
-/// `for` statements) and the `acfg`'s deterministic name maps, and
-/// builds three `BTreeMap`s. It does **not** mutate the ACFG, touch
+/// Pure and additive: it reads `linked.algo` (consts, data, kernels,
+/// source `for` statements) and the `acfg`'s deterministic name maps,
+/// and builds four `BTreeMap`s. It does **not** mutate the ACFG, touch
 /// `eval_const`, or change `ACFGNode::Repeat`. Call it once after
 /// `build_acfg` (the name tables it keys against are fixed there;
 /// `block_transform` only *adds* synthetic tile iter-vars, which
@@ -203,10 +262,12 @@ impl NameSidecar {
 /// ### Keying invariant
 ///
 /// `data_types` is keyed by the *same* [`DataId`] `build_acfg`
-/// assigned (`acfg.name_data`), and `loop_bounds` by the same
-/// [`IterVar`] (`acfg.name_iter_vars`). This is what lets a backend
-/// join the sidecar to `Event::Alloc.data` / `DataSlice.data` and
-/// `Event::Loop.iter_var` with no name round-trip.
+/// assigned (`acfg.name_data`), `loop_bounds` by the same
+/// [`IterVar`] (`acfg.name_iter_vars`), and `kernel_sigs` by the
+/// same [`KernelId`] (`acfg.name_kernels`). This is what lets a
+/// backend join the sidecar to `Event::Alloc.data` /
+/// `DataSlice.data`, `Event::Loop.iter_var`, and `Event::Fire.kernel`
+/// with no name round-trip.
 pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar {
     // (a) Per-DataId ResolvedType. Invert via the ACFG's name_data
     //     so the key is the canonical DataId the EventList uses, not
@@ -255,10 +316,39 @@ pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar
     let mut loop_bounds: BTreeMap<IterVar, LoopBound> = BTreeMap::new();
     collect_loop_bounds(&linked.algo.stmts, &acfg.name_iter_vars, &mut loop_bounds);
 
+    // (d) Per-KernelId signature. Invert acfg.name_kernels so the key
+    //     is the canonical KernelId Event::Fire carries — exactly the
+    //     name_data -> data_types inversion in (a), mirrored for
+    //     kernels. We copy only params + ret (the codegen-relevant
+    //     fields of ResolvedKernel); `purity` is irrelevant to
+    //     argument rendering and `name` is the map's resolution key.
+    let mut kernel_sigs: BTreeMap<KernelId, KernelSig> = BTreeMap::new();
+    for (name, kid) in &acfg.name_kernels {
+        // Every name in acfg.name_kernels was enumerated FROM
+        // linked.algo.kernels (build_acfg), so the lookup is total. A
+        // miss is a compiler-internal invariant break, not user
+        // input — fail loud with context rather than silently drop a
+        // kernel the backend will then fail to type-cast args for.
+        let rk = linked.algo.kernels.get(name).unwrap_or_else(|| {
+            panic!(
+                "sidecar: kernel `{name}` is in ACFG name_kernels but \
+                 not in linked.algo.kernels — name<->id table desync"
+            )
+        });
+        kernel_sigs.insert(
+            *kid,
+            KernelSig {
+                params: rk.params.clone(),
+                ret: rk.ret.clone(),
+            },
+        );
+    }
+
     NameSidecar {
         data_types,
         consts,
         loop_bounds,
+        kernel_sigs,
     }
 }
 

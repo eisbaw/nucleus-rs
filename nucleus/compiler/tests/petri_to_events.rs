@@ -1255,3 +1255,250 @@ fn sidecar_serde_roundtrip_is_byte_identical() {
     let json2 = serde_json::to_string(&back).expect("reserialize");
     assert_eq!(json, json2, "serde wire form must be stable");
 }
+
+// --------------------------------------------------------------------
+// TASK-0169 — the NameSidecar's `kernel_sigs` table (+ Event::Fire's
+// `kernel` KernelId + `bindings`) ALONE carries enough to reproduce
+// pthreads-sync `render_call_arg`'s scalar-argument cast decision
+// (`(expr) as usize` when the kernel param is scalar), WITHOUT
+// walking `ctx.algo.kernels`. This closes the last AlgoIR read in
+// pthreads-sync codegen — the contract is now fully AlgoIR-free.
+//
+// RESOLVED FINDING (forward-carried to TASK-0124): NONE of the e2e
+// set 01/02/03/05/07 feeds an `ArgBinding::Scalar` (iter-var/const
+// arithmetic) to a scalar kernel param — every kernel argument in
+// those 5 is an `ArgBinding::Data` element/whole-array read. So
+// `render_call_arg`'s `param_ty.is_scalar()` *cast* branch is reached
+// only from the `IrExpr::IntLit|Ident|Neg|BinOp` arm, which the e2e
+// set never hits with a scalar param. The two assertions below prove
+// (a) that finding holds across all 5, and (b) that the cast is
+// nevertheless faithfully reconstructible from `kernel_sigs` alone
+// via a synthetic scalar-param kernel + a synthetic `Scalar` arg.
+// --------------------------------------------------------------------
+
+use compiler::sidecar::KernelSig;
+use compiler::ArgBinding;
+
+/// Faithful reproduction of pthreads-sync `render_int_expr`
+/// (lib.rs ~708): how a *scalar* (`ArgBinding::Scalar`) argument's
+/// integer expression is spelled before the cast is applied.
+fn render_int_expr_mirror(e: &compiler::algo::IrExpr) -> String {
+    use compiler::algo::{IrBinOp, IrExpr};
+    match e {
+        IrExpr::IntLit(v) => format!("{v}"),
+        IrExpr::Ident(n) => n.clone(),
+        IrExpr::Neg(i) => format!("-({})", render_int_expr_mirror(i)),
+        IrExpr::BinOp(op, l, r) => {
+            let o = match op {
+                IrBinOp::Add => "+",
+                IrBinOp::Sub => "-",
+                IrBinOp::Mul => "*",
+                IrBinOp::Div => "/",
+                IrBinOp::Mod => "%",
+            };
+            format!(
+                "({} {o} {})",
+                render_int_expr_mirror(l),
+                render_int_expr_mirror(r)
+            )
+        }
+        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+            unreachable!("a Scalar ArgBinding never contains a DataRef/Call")
+        }
+    }
+}
+
+/// Reproduce pthreads-sync `render_call_arg` for ONE scalar
+/// (`ArgBinding::Scalar`) argument, sourcing the parameter type from
+/// the SIDECAR's `kernel_sigs[kid].params[i]` joined via the same
+/// `KernelId` `Event::Fire` carries — NEVER `ctx.algo.kernels`. This
+/// is exactly the join a TASK-0124 EventList-only backend performs.
+fn render_scalar_arg_from_sidecar(
+    arg_expr: &compiler::algo::IrExpr,
+    param_ty: Option<&compiler::algo::ResolvedType>,
+) -> String {
+    let rendered = render_int_expr_mirror(arg_expr);
+    // The exact branch from lib.rs render_call_arg (~636-642):
+    if let Some(pty) = param_ty {
+        if pty.is_scalar() {
+            return format!("({rendered}) as {}", elem_type_from_sidecar(&pty.scalar));
+        }
+    }
+    rendered
+}
+
+#[test]
+fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
+    // `kernel_sigs` must carry every AlgoIR kernel's params + ret
+    // verbatim, keyed by the SAME KernelId Event::Fire carries
+    // (acfg.name_kernels), so a backend never reaches for
+    // `algo.kernels`. Also records the RESOLVED FINDING: across the
+    // e2e set, no Fire feeds a Scalar arg to a scalar param.
+    let examples: &[(&str, &str)] = &[
+        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
+        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
+        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
+        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
+        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+    ];
+
+    for (algo, sched) in examples {
+        let (linked, acfg) = full_pipeline_with_linked(algo, sched);
+        let sidecar = build_sidecar(&linked, &acfg);
+
+        // Every AlgoIR kernel reachable via the canonical KernelId
+        // must be in kernel_sigs with identical params + ret.
+        for (name, kid) in &acfg.name_kernels {
+            let rk = linked
+                .algo
+                .kernels
+                .get(name)
+                .expect("kernel declared in AlgoIR");
+            let sig = sidecar
+                .kernel_sig(*kid)
+                .unwrap_or_else(|| panic!("{algo}: kernel `{name}` missing from kernel_sigs"));
+            assert_eq!(
+                sig.params, rk.params,
+                "{algo}: `{name}` params must match AlgoIR verbatim"
+            );
+            assert_eq!(
+                sig.ret, rk.ret,
+                "{algo}: `{name}` ret must match AlgoIR verbatim"
+            );
+        }
+
+        // RESOLVED FINDING: walk every Event::Fire's bindings; assert
+        // no Scalar arg lands on a scalar param in this example. This
+        // is what makes TASK-0124 byte-identical for these 5 WITHOUT
+        // depending on kernel_sigs at runtime — yet the contract is
+        // only fully AlgoIR-free WITH it (proved by the next test).
+        fn walk(events: &[Event], sidecar: &NameSidecar, algo: &str) {
+            for e in events {
+                match e {
+                    Event::Fire {
+                        kernel, bindings, ..
+                    } => {
+                        if let Some(sig) = sidecar.kernel_sig(*kernel) {
+                            for (i, ab) in bindings.inputs.iter().enumerate() {
+                                if let ArgBinding::Scalar(_) = ab {
+                                    let is_scalar_param = sig
+                                        .params
+                                        .get(i)
+                                        .map(|p| p.is_scalar())
+                                        .unwrap_or(false);
+                                    assert!(
+                                        !is_scalar_param,
+                                        "{algo}: UNEXPECTED Scalar arg #{i} fed to a \
+                                         scalar param — the e2e set was believed to \
+                                         have NO such call. Update the TASK-0169 / \
+                                         TASK-0124 finding."
+                                    );
+                                }
+                            }
+                        }
+                        // FireBinding.inputs is flat (Nested args are
+                        // rejected by pthreads-sync render_call_arg
+                        // anyway), so no recursion into Nested needed.
+                    }
+                    Event::Loop { body, .. } => walk(body, sidecar, algo),
+                    _ => {}
+                }
+            }
+        }
+        let events = acfg_to_events(&acfg);
+        for list in events.values() {
+            walk(list, &sidecar, algo);
+        }
+
+        // Determinism: second build byte-identical (covers kernel_sigs).
+        assert_eq!(
+            sidecar,
+            build_sidecar(&linked, &acfg),
+            "{algo}: build_sidecar (incl. kernel_sigs) must be deterministic"
+        );
+    }
+}
+
+#[test]
+fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
+    // The crux of AC#3. Since (resolved finding above) no e2e example
+    // feeds a Scalar arg to a scalar param, we prove the cast is
+    // reconstructible from `kernel_sigs` ALONE with a SYNTHETIC
+    // scalar-param kernel signature + a SYNTHETIC `Scalar` arg —
+    // mirroring exactly what TASK-0124's EventList-only backend will
+    // do for a program that DOES (e.g. a future `shift(x, n)` kernel
+    // called `shift(buf[i], i + 1)`).
+    use compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+
+    // Synthetic kernel: `dilate : (i32[256], usize) -> i32` — arg #0
+    // is a whole-array param (NOT scalar -> no cast), arg #1 is a
+    // scalar `usize` param (scalar -> cast). Built as a KernelSig
+    // exactly as build_sidecar copies it out of a ResolvedKernel.
+    let kid = KernelId(99);
+    let mut kernel_sigs: BTreeMap<KernelId, KernelSig> = BTreeMap::new();
+    kernel_sigs.insert(
+        kid,
+        KernelSig {
+            params: vec![
+                ResolvedType {
+                    scalar: ScalarType::I32,
+                    dims: vec![256],
+                }, // aggregate param: is_scalar() == false
+                ResolvedType {
+                    scalar: ScalarType::Usize,
+                    dims: vec![],
+                }, // scalar param: is_scalar() == true
+            ],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+        },
+    );
+    let sidecar = NameSidecar {
+        kernel_sigs,
+        ..Default::default()
+    };
+
+    // The Fire carries the KernelId; the backend joins it to the
+    // sidecar with NO AlgoIR. (We do not even construct an AlgoIR.)
+    let sig = sidecar
+        .kernel_sig(kid)
+        .expect("kernel_sigs join via Event::Fire.kernel KernelId");
+
+    // Arg #1: scalar expression `i + 1` (an iter-var-derived value) —
+    // the shape `render_call_arg` casts. Reconstruct purely from the
+    // sidecar's param type.
+    let scalar_arg = IrExpr::BinOp(
+        IrBinOp::Add,
+        Box::new(IrExpr::Ident("i".into())),
+        Box::new(IrExpr::IntLit(1)),
+    );
+    let rendered_scalar = render_scalar_arg_from_sidecar(&scalar_arg, sig.params.get(1));
+    // Exactly what pthreads-sync emits today: render_int_expr already
+    // parenthesises a BinOp (`(i + 1)`), then render_call_arg's cast
+    // wraps the whole thing again (`(<rendered>) as usize`) — hence
+    // the double parens. We assert the REAL backend string, not a
+    // tidied one (the contract must reproduce it byte-for-byte).
+    assert_eq!(
+        rendered_scalar, "((i + 1)) as usize",
+        "scalar arg fed to a `usize` param must cast — reconstructed \
+         from NameSidecar.kernel_sigs ALONE, no ctx.algo.kernels walk"
+    );
+
+    // Arg #0's param is aggregate (i32[256]) — render_call_arg's
+    // DataRef arm emits the bare name and NEVER the scalar-cast
+    // branch. A scalar expr against that aggregate param #0 must NOT
+    // cast — proving the dispatch decision is param-type-driven, read
+    // from the sidecar alone.
+    assert!(
+        !sig.params[0].is_scalar(),
+        "arg #0's param is aggregate (i32[256]) — no scalar cast"
+    );
+    let no_cast = render_scalar_arg_from_sidecar(&IrExpr::IntLit(7), sig.params.first());
+    assert_eq!(
+        no_cast, "7",
+        "scalar expr against an aggregate param is NOT cast — the \
+         dispatch decision is driven by kernel_sigs param type alone"
+    );
+}
