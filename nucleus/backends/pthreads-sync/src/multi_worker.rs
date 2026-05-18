@@ -440,31 +440,56 @@ impl<'a> Plan<'a> {
         // that is what makes `just determinism-check` green (PRD §1 /
         // §10.1: same source + backend = byte-identical output).
         //
-        // TASK-0145: when the `NUC_NONDET_TEST` env var is set we copy
-        // the entries into a `HashMap` and iterate THAT. std's HashMap
-        // uses a per-process random seed, so the order varies run to
-        // run — two `nucleus build` invocations emit byte-different
-        // `main.rs`, and `just determinism-check-negative` then reports
-        // a non-zero exit pointing at the offending file. This proves
-        // the byte-identical check actually bites (TASK-0033 AC#4's
-        // negative arm).
+        // Slots are ALWAYS emitted in sorted (BTreeMap) order — the
+        // deterministic default that makes `just determinism-check`
+        // green (PRD §1/§10.1).
         //
-        // A RUNTIME env gate, not a `#[cfg(feature)]`: the harness
-        // drives codegen by spawning `cargo run --bin nucleus` *inside*
-        // its own `cargo run`, and a nested `cargo --features` does not
-        // reliably rebuild the driver against a shared target cache —
-        // the compile-time gate was flaky (sometimes didn't bite). An
-        // env var propagated via `Command::env` is deterministic and
-        // has zero footprint in any normal build (the var is never set
-        // outside this one recipe). Off by default.
-        let slot_iter: Vec<(&DataId, &SlotId)> = if std::env::var_os("NUC_NONDET_TEST").is_some() {
-            std::collections::HashMap::<&DataId, &SlotId>::from_iter(self.slot_ids.iter())
-                .into_iter()
-                .collect()
-        } else {
-            self.slot_ids.iter().collect()
-        };
-        for (data_id, slot_id) in slot_iter {
+        // TASK-0145 negative arm: the determinism harness builds every
+        // cell TWICE with identical configuration and byte-compares.
+        // To prove the check actually bites we need those two builds
+        // to differ — but any *deterministic* perturbation gated on an
+        // env var is applied identically to BOTH builds (both inherit
+        // the var), so they stay byte-identical to each other and the
+        // check still passes. A per-PROCESS-unique token is the only
+        // thing that reliably makes the two separate build processes
+        // differ, on EVERY cell, with no dependence on slot count or
+        // hash-seed entropy (an earlier cut iterated a 3-element
+        // HashMap and was ~19% flaky; review measured it).
+        //
+        // So under `NUC_NONDET_TEST=1` we emit one extra comment line
+        // carrying this process's id + launch nanos. Two `nucleus
+        // build` invocations are two processes → two different nonces
+        // → guaranteed byte difference → `determinism-check` fails →
+        // `determinism-check-negative` succeeds, every time.
+        //
+        // Runtime env gate (not `#[cfg(feature)]`: a nested
+        // `cargo --features` inside the harness's own `cargo run` does
+        // not reliably rebuild against the shared target cache). Gated
+        // on the exact value "1" so an accidental empty export cannot
+        // arm it; prints a LOUD stderr banner when armed so a
+        // non-reproducible build can never happen silently. Internal
+        // test scaffolding only — never set it in a real build.
+        // Relocating it out of production codegen is TASK-0157.
+        if std::env::var("NUC_NONDET_TEST").as_deref() == Ok("1") {
+            eprintln!(
+                "nucleus: WARNING: NUC_NONDET_TEST=1 — injecting a \
+                 per-process nonce into generated code ON PURPOSE to test \
+                 the determinism check. This build is NOT reproducible. \
+                 Never set this in a real build (TASK-0145)."
+            );
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            writeln!(
+                out,
+                "    // NUC_NONDET_TEST nonce: pid={} nanos={nanos}",
+                std::process::id()
+            )
+            .ok();
+        }
+
+        for (data_id, slot_id) in &self.slot_ids {
             let name = self.data_name.get(data_id).expect("data id has name");
             let ty = self
                 .linked
