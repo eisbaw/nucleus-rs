@@ -185,6 +185,7 @@ fn distributed_placement_is_rejected() {
         name_data: BTreeMap::new(),
         name_workers,
         name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars: Default::default(),
     };
 
     // LinkedIR with a distributed placement: kernel `dist` on

@@ -77,13 +77,38 @@
 //!   replicate the pair across the named workers per the partition
 //!   policy.
 //!
-//! - **Per-point granularity.** When the consumer is inside a `for`,
-//!   we currently fire one Push/Wait per *iteration* (per Operation
-//!   visit). The producer for an `outer <-- load_input()` placed on
-//!   `host` therefore gets *one* Push for every consuming iteration
-//!   that crosses worker, even though a real backend would aggregate
-//!   into one bulk send. The IterTile we record is the consumer
-//!   Operation's enclosing-loop tile. Tile-coalescing is a follow-up.
+//! - **Per-point granularity outside `block=`.** When the consumer
+//!   is inside a non-blocked `for`, we still fire one Push/Wait per
+//!   *iteration* (per Operation visit). The producer for an
+//!   `outer <-- load_input()` placed on `host` therefore gets *one*
+//!   Push for every consuming iteration that crosses worker, even
+//!   though a real backend would aggregate into one bulk send. The
+//!   IterTile we record is the consumer Operation's enclosing-loop
+//!   tile. General tile-coalescing across non-`block=` loops remains
+//!   a follow-up.
+//!
+//! - **Per-tile hoist for `block=N`.** When the consumer sits inside
+//!   a `block`-inner intra-tile Repeat (marked by
+//!   [`ACFG::inner_block_iter_vars`] from
+//!   [`crate::passes::block_transform`]), any Wait whose data was
+//!   NOT produced in the same intra-tile sequence is hoisted up
+//!   through every enclosing `block`-inner Repeat to the nearest
+//!   per-tile body sequence and emitted there. The matching Push is
+//!   spliced after the producer Operation at *the level the
+//!   producer lives at* — same scoping rule the pass has used since
+//!   M1. The hoisted Wait's `IterTile` is rewritten to the
+//!   destination sequence's enclosing tile so the per-tile semantic
+//!   (PRD §6.3.3, "transfers happen per tile") shows up on the
+//!   placeholder. TASK-0143.
+//!
+//!   The hoist is loop-invariance-by-structure, not by index
+//!   analysis: any data that crosses a worker boundary and isn't
+//!   produced inside the intra-tile body is treated as invariant
+//!   w.r.t. the intra-tile iteration. The ACFG layer doesn't carry
+//!   per-firing index expressions today (`DataflowEdge::data_in` is
+//!   a `Vec<DataId>`, see `acfg.rs`), so a precise check would
+//!   require re-plumbing AlgoIR indices through ACFG. Filed as a
+//!   follow-up if a future schedule wants opt-out granularity.
 //!
 //! - **Idempotence by structural skip.** Re-running the pass detects
 //!   that a Wait already precedes the consumer Operation (and a Push
@@ -134,6 +159,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_data,
         name_workers,
         name_iter_vars,
+        inner_block_iter_vars,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -165,6 +191,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     let ctx = InjectCtx {
         producers_by_data: &producers_by_data,
         policies_by_data: &policies_by_data,
+        inner_block_iter_vars: &inner_block_iter_vars,
     };
 
     // Counter state for SeqTag generation. A single monotonic counter
@@ -188,6 +215,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_data,
         name_workers,
         name_iter_vars,
+        inner_block_iter_vars,
     }
 }
 
@@ -201,6 +229,10 @@ struct InjectCtx<'a> {
     producers_by_data: &'a BTreeMap<DataId, BTreeSet<WorkerId>>,
     /// Transfer policy for each data symbol that the schedule named.
     policies_by_data: &'a BTreeMap<DataId, TransferPolicy>,
+    /// Iter-var IDs that the block-transform pass marked as inner
+    /// (intra-tile) loops. Push/Wait pairs emitted inside one of
+    /// these get hoisted to the enclosing per-tile body — TASK-0143.
+    inner_block_iter_vars: &'a BTreeSet<IterVar>,
 }
 
 /// Mutable state threaded through the walk.
@@ -231,7 +263,7 @@ impl State {
 fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut State) -> ACFGNode {
     match node {
         ACFGNode::Sequence(children) => {
-            ACFGNode::Sequence(inject_in_sequence(children, ctx, state, &[]))
+            ACFGNode::Sequence(inject_in_sequence(children, ctx, state, &[], None))
         }
         ACFGNode::Repeat {
             iter_var,
@@ -243,7 +275,7 @@ fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut State) -> ACF
             // local stack; the helper `inject_in_node_with_tile` does
             // the bookkeeping.
             let outer_tile = vec![(iter_var, range.clone())];
-            let new_body = inject_in_node_with_tile(*body, ctx, state, &outer_tile);
+            let new_body = inject_in_node_with_tile(*body, ctx, state, &outer_tile, None);
             ACFGNode::Repeat {
                 iter_var,
                 range,
@@ -269,16 +301,28 @@ fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut State) -> ACF
 /// passed in. Used inside `Repeat` bodies so that any
 /// `XferPlaceholder` created carries the iteration tile of the
 /// enclosing loop(s).
+///
+/// The optional `hoist_sink` is set when this node sits *inside* a
+/// `block`-inner intra-tile loop; instead of emitting Waits in-line
+/// at the consumer Operation and Pushes after the producer
+/// Operation, the walker forwards them to the sink so the
+/// enclosing per-tile body sequence can place them around the inner
+/// `Repeat`. TASK-0143.
 fn inject_in_node_with_tile(
     node: ACFGNode,
     ctx: &InjectCtx<'_>,
     state: &mut State,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
+    hoist_sink: Option<&mut HoistSink>,
 ) -> ACFGNode {
     match node {
-        ACFGNode::Sequence(children) => {
-            ACFGNode::Sequence(inject_in_sequence(children, ctx, state, enclosing_tile))
-        }
+        ACFGNode::Sequence(children) => ACFGNode::Sequence(inject_in_sequence(
+            children,
+            ctx,
+            state,
+            enclosing_tile,
+            hoist_sink,
+        )),
         ACFGNode::Repeat {
             iter_var,
             range,
@@ -286,7 +330,17 @@ fn inject_in_node_with_tile(
         } => {
             let mut nested = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
-            let new_body = inject_in_node_with_tile(*body, ctx, state, &nested);
+            // Forward whatever sink we received into the body. The
+            // decision of WHERE a sink originates and WHERE it
+            // drains lives entirely in `inject_in_sequence` (which
+            // creates one when it encounters a `block`-inner Repeat
+            // child and parent_sink is None). Repeats themselves
+            // are transparent: they neither create sinks nor drop
+            // them, regardless of whether the current Repeat is
+            // block-inner or not. This is what lets a 2D-blocked
+            // schedule hoist through the (outer-j, inner-i) layers
+            // all the way up to the outer-i tile body. TASK-0143.
+            let new_body = inject_in_node_with_tile(*body, ctx, state, &nested, hoist_sink);
             ACFGNode::Repeat {
                 iter_var,
                 range,
@@ -300,6 +354,24 @@ fn inject_in_node_with_tile(
             leaf
         }
     }
+}
+
+/// Per-tile hoist sink: collected Wait placeholders that the inner
+/// block-loop body would have emitted, plus a record of producer
+/// indices observed at the parent (per-tile) sequence so the matching
+/// Push can be spliced after the right Operation.
+///
+/// One sink instance is created by `inject_in_sequence` whenever it
+/// is about to recurse into a `block`-inner `Repeat` child; the sink
+/// is then drained back into the parent sequence's `out` vector and
+/// the parent's local-producer index map, around the inner Repeat
+/// node.
+#[derive(Default)]
+struct HoistSink {
+    /// Waits generated inside the inner block-loop, to be placed in
+    /// the parent (per-tile body) sequence *before* the inner
+    /// `Repeat` node. Idempotence dedup happens at drain time.
+    waits: Vec<XferPlaceholder>,
 }
 
 /// Walk a sequence of children, injecting Wait placeholders before
@@ -319,6 +391,13 @@ fn inject_in_sequence(
     ctx: &InjectCtx<'_>,
     state: &mut State,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
+    // If non-None, this sequence sits *inside* a `block`-inner
+    // intra-tile loop chain: any non-locally-produced Wait we
+    // would emit gets diverted into the sink instead of staying
+    // here, so the eventual destination sequence (the nearest
+    // ancestor whose `parent_sink` was None) places the Wait at
+    // per-tile granularity.
+    mut parent_sink: Option<&mut HoistSink>,
 ) -> Vec<ACFGNode> {
     let mut out: Vec<ACFGNode> = Vec::with_capacity(children.len());
 
@@ -329,13 +408,62 @@ fn inject_in_sequence(
     // matters semantically.
     let mut local_producer_idx: BTreeMap<DataId, usize> = BTreeMap::new();
 
+    // Buffer of (insert-before-index-in-out, Wait) for Xfers hoisted
+    // out of an inner block-loop sibling that THIS sequence is the
+    // destination for. Only populated when `parent_sink` is None at
+    // the point we encounter a block-inner Repeat child. Drained into
+    // `out` at the end of the walk.
+    let mut hoisted_waits_to_place: Vec<(usize, XferPlaceholder)> = Vec::new();
+    // Local sink (one per block-inner child we are draining for).
+    // Held outside the loop so its lifetime spans the loop.
+    let mut local_sink: HoistSink = HoistSink::default();
+    let parent_sink_is_some = parent_sink.is_some();
+
     for child in children {
-        // Recurse into the child first so any nested Repeats /
-        // Sequences inject their own Xfer/Wait pairs. Wait/Push
-        // injection for the *current* sequence happens around the
-        // returned child (which may now be a rewritten Repeat
-        // containing its own injections).
-        let child = inject_in_node_with_tile(child, ctx, state, enclosing_tile);
+        // Peek at the child's shape before the recursion.
+        let child_is_block_inner_repeat = matches!(
+            &child,
+            ACFGNode::Repeat { iter_var, .. }
+                if ctx.inner_block_iter_vars.contains(iter_var)
+        );
+
+        let child = if child_is_block_inner_repeat && parent_sink_is_some {
+            // We're not the destination; forward hoisted Waits
+            // through to our parent's sink. `as_deref_mut` reborrows
+            // for the duration of the recursion.
+            let sink_ref: &mut HoistSink = parent_sink.as_deref_mut().expect("checked");
+            inject_in_node_with_tile(child, ctx, state, enclosing_tile, Some(sink_ref))
+        } else if child_is_block_inner_repeat {
+            // We are the per-tile destination. Pass our `local_sink`
+            // to the recursion; record the slot where the rewritten
+            // Repeat will land so we can place hoisted Waits
+            // immediately before it; then move the sink's contents
+            // into `hoisted_waits_to_place` for the post-walk drain.
+            let rewritten = inject_in_node_with_tile(
+                child,
+                ctx,
+                state,
+                enclosing_tile,
+                Some(&mut local_sink),
+            );
+            let slot = out.len();
+            // Drain local_sink between block-inner siblings.
+            for w in std::mem::take(&mut local_sink.waits) {
+                hoisted_waits_to_place.push((slot, w));
+            }
+            rewritten
+        } else if parent_sink_is_some {
+            // Non-block-inner child inside an inner-block context:
+            // propagate parent_sink so Waits emitted further down
+            // can still hoist past this scope.
+            let sink_ref: &mut HoistSink = parent_sink.as_deref_mut().expect("checked");
+            inject_in_node_with_tile(child, ctx, state, enclosing_tile, Some(sink_ref))
+        } else {
+            // Plain non-block-inner child outside any inner-block
+            // context: recurse with no sink. Standard pre-TASK-0143
+            // path.
+            inject_in_node_with_tile(child, ctx, state, enclosing_tile, None)
+        };
 
         match &child {
             ACFGNode::Operation(op) => {
@@ -380,16 +508,117 @@ fn inject_in_sequence(
         }
     }
 
-    // Second pass: for every Wait we emitted, walk back and splice a
-    // matching Push immediately after the producer Operation (which
-    // is in `out` because the producer's Operation appeared earlier
-    // in the same sequence) — *unless* the producer is in a different
-    // scope (outer sequence, sibling sequence). In that case the
+    // Drain hoisted Waits: insert each (slot, Wait) into `out` so
+    // the Wait sits immediately before the inner Repeat. Inserting
+    // shifts later indices, so we process by descending slot. For a
+    // given slot, multiple Waits keep their relative order — same
+    // semantics as the in-line emission path.
+    //
+    // Before placement, rewrite each hoisted Wait's `IterTile` to
+    // match THIS sequence's enclosing tile. The consumer's Wait was
+    // built deeper in the nest and carries axes for every loop
+    // between the consumer and the original block-inner; once
+    // hoisted to the per-tile destination, only the axes enclosing
+    // this destination should remain. Replacing the tile wholesale
+    // is simpler than tracking which axes were crossed during the
+    // hoist forward, and matches the PRD §6.3.3 "transfers happen
+    // per tile" semantic: the Wait fires at this sequence's
+    // enclosing-tile granularity.
+    for (_, w) in hoisted_waits_to_place.iter_mut() {
+        w.tile = IterTile::new(enclosing_tile.to_vec());
+    }
+    if !hoisted_waits_to_place.is_empty() {
+        // Stable sort by slot ascending so later (larger-slot)
+        // inserts can be applied first without invalidating earlier
+        // slots' positions.
+        hoisted_waits_to_place.sort_by_key(|(s, _)| *s);
+        // Group by slot, then for each group insert in reverse slot
+        // order. Within a group, preserve original order by
+        // inserting in reverse.
+        let mut by_slot: BTreeMap<usize, Vec<XferPlaceholder>> = BTreeMap::new();
+        for (s, w) in hoisted_waits_to_place {
+            by_slot.entry(s).or_default().push(w);
+        }
+        // Iterate in *reverse* slot order. Iter rev on BTreeMap.
+        let mut shifts: Vec<(usize, Vec<XferPlaceholder>)> =
+            by_slot.into_iter().collect();
+        shifts.sort_by_key(|(s, _)| *s);
+        for (slot, waits) in shifts.into_iter().rev() {
+            // Insert each Wait at `slot`, in reverse so the first
+            // listed Wait ends up first in `out`.
+            for w in waits.into_iter().rev() {
+                // Idempotence: skip if `out` already contains an
+                // identical Wait *anywhere*. Re-running the pass on
+                // a hoisted ACFG re-derives the same Wait from the
+                // consumer Op; without this dedup we would emit a
+                // second copy at the same slot. We check against
+                // the entire sequence (not just `out[slot]`) because
+                // the previously-hoisted Wait may sit at a slot that
+                // shifted as siblings were rewritten.
+                let already_present = out.iter().any(|n| matches!(
+                    n,
+                    ACFGNode::Xfer(existing)
+                        if existing.role == XferRole::Wait
+                            && existing.src == w.src
+                            && existing.dst == w.dst
+                            && existing.data == w.data
+                            && existing.tile == w.tile
+                ));
+                if already_present {
+                    continue;
+                }
+                out.insert(slot, ACFGNode::Xfer(w));
+            }
+        }
+        // Recompute `local_producer_idx` -- insertions shifted some
+        // recorded indices. Cheap to walk `out` once.
+        local_producer_idx.clear();
+        for (i, n) in out.iter().enumerate() {
+            if let ACFGNode::Operation(op) = n {
+                if let Some(data_out) = output_data(op) {
+                    local_producer_idx.insert(data_out, i);
+                }
+            }
+        }
+    }
+
+    // Second pass: for every Wait we emitted (in-line *or* hoisted)
+    // in this sequence, walk back and splice a matching Push
+    // immediately after the producer Operation (which is in `out`
+    // because the producer's Operation appeared earlier in the same
+    // sequence) — *unless* the producer is in a different scope
+    // (outer sequence, sibling sequence). In that case the
     // outer-scope walker handles it. We detect "different scope" by
     // checking `local_producer_idx`: if the Wait names a data symbol
     // not in `local_producer_idx`, the producer is not in this
     // sequence and we leave the Push to the caller.
     splice_pushes_for_waits(&mut out, &local_producer_idx);
+
+    // If this sequence is *itself* sitting inside a block-inner
+    // Repeat chain (i.e. our caller passed a `parent_sink`), forward
+    // any Waits we just placed up to the parent so they land at the
+    // eventual destination's per-tile granularity. We only forward
+    // Waits whose producer was NOT in this sequence — in-sequence
+    // Push/Wait pairs already form a complete intra-tile rendezvous
+    // and need not propagate further.
+    //
+    // Tile rewrite happens at the destination (see the drain block
+    // above); here we simply hand the Wait off unchanged.
+    if let Some(sink) = parent_sink {
+        let mut kept: Vec<ACFGNode> = Vec::with_capacity(out.len());
+        for node in out.into_iter() {
+            match node {
+                ACFGNode::Xfer(x)
+                    if x.role == XferRole::Wait
+                        && !local_producer_idx.contains_key(&x.data) =>
+                {
+                    sink.waits.push(x);
+                }
+                other => kept.push(other),
+            }
+        }
+        out = kept;
+    }
 
     out
 }

@@ -106,7 +106,7 @@
 //!   from unplaced kernels, because `link` would have rejected the
 //!   program before reaching this pass.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 #[cfg(feature = "serde")]
@@ -364,6 +364,21 @@ pub struct ACFG {
     /// variables share one namespace per the algorithm (PRD §6.2.3);
     /// distinct loop vars get distinct IDs.
     pub name_iter_vars: BTreeMap<String, IterVar>,
+    /// IDs of `Repeat::iter_var`s that are *inner* (intra-tile) loops
+    /// synthesised by [`crate::passes::block_transform`]. The
+    /// transfer-injection pass consults this set to hoist Push/Wait
+    /// placeholders out of intra-tile loops up to per-tile
+    /// granularity (TASK-0143). Empty for ACFGs built directly from
+    /// [`build_acfg`] (i.e. before block-transform has run) and for
+    /// programs whose schedule carries no `block=` directive.
+    ///
+    /// Why a sidecar set instead of a flag on [`ACFGNode::Repeat`]:
+    /// keeping the variant payload stable means every existing
+    /// pattern match on `Repeat { iter_var, range, body }` keeps
+    /// compiling unchanged. The cost is a small lookup at the
+    /// hoisting site, which is hot only for blocked schedules.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub inner_block_iter_vars: BTreeSet<IterVar>,
 }
 
 // --------------------------------------------------------------------
@@ -443,6 +458,7 @@ pub fn build_acfg(linked: &LinkedIR) -> ACFG {
         name_data,
         name_workers,
         name_iter_vars,
+        inner_block_iter_vars: BTreeSet::new(),
     }
 }
 

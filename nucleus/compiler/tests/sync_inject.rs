@@ -78,6 +78,7 @@ fn empty_acfg(root: ACFGNode) -> ACFG {
         name_data: Default::default(),
         name_workers: Default::default(),
         name_iter_vars: Default::default(),
+        inner_block_iter_vars: Default::default(),
     }
 }
 

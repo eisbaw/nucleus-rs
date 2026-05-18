@@ -5,12 +5,14 @@
 //!   nucleus build  ->  cargo build  ->  binary run  ->  diff vs reference.bin
 //! with bit-identical output (PRD §10.1).
 //!
-//! The blocked schedule is shipped but `#[ignore]`'d at the e2e level:
-//! the block-transform pass (TASK-0030) rewrites the iteration tree
-//! correctly (N=16, block=8 divides cleanly on both i and j), but
-//! per-tile transfer hoisting (TASK-0143) is the open follow-up that
-//! gates correctness for this cell. See TASK-0030's implementation
-//! notes for the gap analysis.
+//! With TASK-0143 (per-tile Push/Wait hoisting) landed and the
+//! block-transform pass (TASK-0030) producing the correct
+//! (i__tile, i, j__tile, j, k) nest at N=16 with block=8 on both
+//! outer axes, the blocked cell now produces a bit-identical
+//! output and is no longer `#[ignore]`'d. The schedule has a single
+//! `host` worker, so the hoisting is a no-op at this cell but the
+//! generated code still has to come out byte-for-byte the same as
+//! the naive schedule's reference — which it does.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,17 +147,15 @@ fn naive_pthreads_sync_bit_identical() {
     );
 }
 
-/// Blocked schedule e2e: gated on TASK-0143 (per-tile transfer
-/// hoisting). N=16, block=8 on both i and j — the block-transform
-/// pass accepts both rewrites cleanly (TASK-0030 divisibility check
-/// satisfied). The cell stays `#[ignore]`'d because example 7 under
-/// a blocked schedule should hoist Push/Wait to the tile boundary
-/// rather than fire per-iteration; that hoisting is TASK-0143. The
-/// schedule structurally exercises the block-transform pass via the
-/// parser / sched_lower / link pinning tests; full e2e flips on
-/// when TASK-0143 lands.
+/// Blocked schedule e2e. N=16, block=8 on both i and j: the
+/// block-transform pass accepts both rewrites cleanly (TASK-0030
+/// divisibility check satisfied) and TASK-0143's per-tile Push/Wait
+/// hoisting is now in place. With a single-`host` schedule there
+/// are no cross-worker transfers to hoist, so the hoisting pass is
+/// a structural identity here; the test still pins that the
+/// blocked-schedule pipeline produces byte-identical output to the
+/// naive cell's reference.
 #[test]
-#[ignore = "TODO TASK-0143: per-tile transfer hoisting not yet implemented"]
 fn blocked_pthreads_sync_bit_identical() {
     run_example_07(
         "schedules/blocked.sched.nuc",

@@ -1,0 +1,624 @@
+//! Integration tests for per-tile Push/Wait hoisting in the
+//! transfer-injection pass (TASK-0143).
+//!
+//! Background
+//! ----------
+//! PRD §6.3.3 says `block=N` -- "transfers happen per tile". The
+//! block-transform pass (TASK-0030) rewrites a `for VAR : LO..HI`
+//! into a two-level `(VAR__tile, VAR)` nest, but the transfer-
+//! injection pass at TASK-0018 emits one Push/Wait pair per
+//! intra-tile iteration -- N times more than necessary for the
+//! pattern PRD §8 describes.
+//!
+//! This file pins the contract that transfer-injection now hoists
+//! Push/Wait pairs out of the inner intra-tile loop body up to the
+//! enclosing per-tile body sequence, so each transfer fires once
+//! per tile.
+//!
+//! Strategy
+//! --------
+//! Build a synthetic ACFG matching the post-block-transform shape:
+//!
+//! ```text
+//! Sequence(top)
+//!   Operation(producer on host)        // produces D
+//!   Repeat(y__tile in 0..4)
+//!     Sequence(per-tile body)
+//!       Repeat(y in 0..4, block_inner)
+//!         Sequence(intra-tile body)
+//!           Operation(consumer on w0)  // reads D
+//! ```
+//!
+//! After `inject_transfers`, the Wait should be in the per-tile body
+//! sequence (immediately before the inner Repeat), NOT inside the
+//! inner Repeat's body sequence. The matching Push lands in the
+//! top-level sequence after the producer Operation. Total Push/Wait
+//! pairs: one (one Push at top level, one Wait at per-tile granularity)
+//! -- NOT one per intra-tile iteration.
+//!
+//! Honest limitations the tests acknowledge
+//! ---------------------------------------
+//! - The hoist is structural, not access-pattern-aware: every
+//!   non-locally-produced Wait inside a block-inner intra-tile loop
+//!   hoists. A schedule that wanted intra-tile-granularity Push/Wait
+//!   (e.g. to pipeline) would have to opt out of `block=`. PRD §6.3.3
+//!   does not currently offer such an opt-out; if a real example
+//!   demands it, the hoist needs an off-switch.
+//! - 2D blocking strips trailing inner-block axes from the hoisted
+//!   tile, but only contiguous trailing axes. Interleaved
+//!   block/non-block axes are not supported (no example exercises
+//!   that today).
+//! - These tests do NOT pin the matching Push location for hoisted
+//!   Waits whose producer lives further up than the immediate parent
+//!   of the inner Repeat -- the existing transfer-injection pass
+//!   only splices Pushes within the same sequence as the Wait. The
+//!   hoist gets us one level up; a Push at the top level for a Wait
+//!   in the per-tile body still requires the global-Push pass that
+//!   the original transfer_inject docs flagged as a follow-up.
+//!
+//! What this file does NOT cover
+//! ----------------------------
+//! - Real example 05/07 byte-for-byte assertions; the e2e files cover
+//!   those.
+//! - Mixed `block=` and `vectorize=` or `unroll=`; those transforms
+//!   don't exist yet.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use compiler::acfg::{
+    ACFGNode, DataflowDag, DataflowEdge, Operation, XferPlaceholder, XferRole, ACFG,
+};
+use compiler::event::{DataId, IterVar, KernelId, WorkerId};
+use compiler::link::{LinkedIR, WorkerEntity};
+use compiler::passes::transfer_inject::inject_transfers;
+use compiler::sched::{lower_sched, parse_sched};
+
+// --------------------------------------------------------------------
+// Synthetic helpers
+// --------------------------------------------------------------------
+
+fn ws(ids: &[u64]) -> BTreeSet<WorkerId> {
+    ids.iter().copied().map(WorkerId).collect()
+}
+
+fn op(workers: &[u64], kernel: u64, data_in: Vec<u64>, data_out: Option<u64>) -> ACFGNode {
+    let kid = KernelId(kernel);
+    ACFGNode::Operation(Operation {
+        kernel: kid,
+        workers: ws(workers),
+        dataflow: DataflowDag {
+            edges: vec![DataflowEdge {
+                data_in: data_in.into_iter().map(DataId).collect(),
+                kernel: kid,
+                data_out: data_out.map(DataId),
+            }],
+        },
+    })
+}
+
+fn synthetic_linked_ir(
+    producers: &[(&str, &[&str])],
+    transfers_src: &str,
+) -> LinkedIR {
+    let mut data_producers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
+    for (data_name, worker_names) in producers {
+        let entity = WorkerEntity(worker_names.iter().map(|s| (*s).to_string()).collect());
+        data_producers.insert((*data_name).to_string(), entity);
+    }
+
+    let sched_src = format!(
+        r#"schedule for "../prog.algo.nuc" {{
+    workers = {{ host }};
+    {transfers_src}
+}}"#
+    );
+    let sched_ast = parse_sched(&sched_src).expect("synthetic sched parses");
+    let sched = lower_sched(&sched_ast).expect("synthetic sched lowers");
+
+    LinkedIR {
+        algo: Default::default(),
+        sched,
+        placements: Default::default(),
+        kernel_workers: Default::default(),
+        data_producers,
+        data_consumers: Default::default(),
+    }
+}
+
+/// Helper: count how many `Xfer` placeholders with the given role
+/// occur directly as children of the given `ACFGNode::Sequence`. Does
+/// NOT recurse into sub-Repeat / sub-Sequence bodies.
+fn xfers_directly_in_seq(node: &ACFGNode, role: XferRole) -> usize {
+    match node {
+        ACFGNode::Sequence(children) => children
+            .iter()
+            .filter(|c| matches!(c, ACFGNode::Xfer(x) if x.role == role))
+            .count(),
+        _ => 0,
+    }
+}
+
+/// Helper: drill into the shape
+/// `Sequence(top) -> Repeat(outer) -> Sequence(per-tile) -> Repeat(inner) -> Sequence(intra-tile)`
+/// and return references to (top_seq, per_tile_seq, intra_tile_seq).
+fn split_blocked_shape(root: &ACFGNode) -> (&ACFGNode, &ACFGNode, &ACFGNode) {
+    let top = root;
+    let outer_repeat = match root {
+        ACFGNode::Sequence(children) => children
+            .iter()
+            .find(|c| matches!(c, ACFGNode::Repeat { .. }))
+            .expect("top sequence has an outer Repeat"),
+        _ => panic!("root not Sequence"),
+    };
+    let per_tile = match outer_repeat {
+        ACFGNode::Repeat { body, .. } => &**body,
+        _ => panic!("outer not Repeat"),
+    };
+    let inner_repeat = match per_tile {
+        ACFGNode::Sequence(children) => children
+            .iter()
+            .find(|c| matches!(c, ACFGNode::Repeat { .. }))
+            .expect("per-tile seq has inner Repeat"),
+        _ => panic!("per-tile not Sequence"),
+    };
+    let intra_tile = match inner_repeat {
+        ACFGNode::Repeat { body, .. } => &**body,
+        _ => panic!("inner not Repeat"),
+    };
+    (top, per_tile, intra_tile)
+}
+
+// --------------------------------------------------------------------
+// Hoist test: Wait moves out of intra-tile loop body to per-tile body
+// --------------------------------------------------------------------
+
+#[test]
+fn wait_hoists_out_of_block_inner_intra_tile_loop() {
+    // Build by hand a post-block-transform ACFG:
+    //   Sequence(top)
+    //     producer on host (writes d)
+    //     Repeat(y__tile=1 in 0..4)
+    //       Sequence(per-tile body)
+    //         Repeat(y=0 in 0..4, block_inner)
+    //           Sequence(intra-tile body)
+    //             consumer on w0 (reads d)
+    let producer = op(&[0], 100, vec![], Some(0)); // host writes d
+    let consumer = op(&[1], 101, vec![0], Some(1)); // w0 reads d
+
+    let intra_tile_body = ACFGNode::Sequence(vec![consumer]);
+    let inner_repeat = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(intra_tile_body),
+    };
+    let per_tile_body = ACFGNode::Sequence(vec![inner_repeat]);
+    let outer_repeat = ACFGNode::Repeat {
+        iter_var: IterVar(1),
+        range: 0..4,
+        body: Box::new(per_tile_body),
+    };
+    let root = ACFGNode::Sequence(vec![producer, outer_repeat]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("c".into(), DataId(1));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    // Critical: mark IterVar(0) (the inner intra-tile loop) so
+    // transfer_inject hoists its Push/Wait. This is the marker the
+    // block_transform pass installs in real ACFGs (TASK-0143).
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(0));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let result = inject_transfers(&linked, acfg);
+
+    // ---- Assertion 1: exactly one Wait globally.
+    // Before hoisting we would have seen one Wait per intra-tile
+    // iteration (one Wait inside the inner Repeat body). Hoisting
+    // collapses that to one Wait at per-tile granularity.
+    //
+    // Push count is NOT asserted: the existing transfer-injection
+    // pass only splices Pushes when the producer Op lives in the
+    // same Sequence as the Wait (see transfer_inject.rs
+    // `splice_pushes_for_waits`). With the consumer hoisted out of
+    // the inner body and the producer at top level, the Push is left
+    // un-spliced -- which matches the pre-TASK-0143 baseline for any
+    // example where producer and consumer sit in different
+    // sequences (e.g. example 02). Filed as a separate follow-up
+    // (cross-sequence Push splicing); the pthreads-sync codegen
+    // doesn't consume Push placeholders today.
+    assert_eq!(
+        result.wait_count(),
+        1,
+        "exactly one Wait (hoisted out of intra-tile body)"
+    );
+
+    // ---- Assertion 2: the Wait is in the per-tile body sequence,
+    // NOT in the intra-tile body sequence.
+    let (_top_seq, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
+    assert_eq!(
+        xfers_directly_in_seq(intra_tile_seq, XferRole::Wait),
+        0,
+        "no Waits remain inside the intra-tile (inner) sequence"
+    );
+    assert_eq!(
+        xfers_directly_in_seq(per_tile_seq, XferRole::Wait),
+        1,
+        "exactly one Wait in the per-tile (outer-tile body) sequence"
+    );
+
+    // ---- Assertion 3: the hoisted Wait's tile does NOT mention the
+    // inner intra-tile iter var (IterVar(0)). It may still mention
+    // the outer tile var (IterVar(1)).
+    let xfers = result.root.collect_xfers();
+    let wait = xfers
+        .iter()
+        .find(|x| x.role == XferRole::Wait)
+        .expect("one Wait");
+    for (iv, _) in &wait.tile.bounds {
+        assert_ne!(
+            *iv,
+            IterVar(0),
+            "hoisted Wait tile must not name the block-inner iter var"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
+// Non-block loop: no hoist — Waits stay inside the loop body
+// --------------------------------------------------------------------
+
+#[test]
+fn no_block_marker_means_no_hoist() {
+    // Same shape as above but the inner Repeat is NOT marked as
+    // block-inner. The Wait should stay inside the inner Repeat's
+    // body (one Wait per iteration of the inner loop -- but
+    // structurally just one Wait node, the same as before TASK-0143).
+    let producer = op(&[0], 100, vec![], Some(0));
+    let consumer = op(&[1], 101, vec![0], Some(1));
+
+    let intra_body = ACFGNode::Sequence(vec![consumer]);
+    let inner = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(intra_body),
+    };
+    let outer_body = ACFGNode::Sequence(vec![inner]);
+    let outer = ACFGNode::Repeat {
+        iter_var: IterVar(1),
+        range: 0..4,
+        body: Box::new(outer_body),
+    };
+    let root = ACFGNode::Sequence(vec![producer, outer]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("c".into(), DataId(1));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        // NOT marked: inner_block_iter_vars stays empty.
+        inner_block_iter_vars: BTreeSet::new(),
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.wait_count(), 1, "one Wait (no hoist needed)");
+    let (_, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
+    // Without the block-inner marker, the Wait remains inside the
+    // intra-tile body sequence -- this is the pre-TASK-0143 baseline.
+    assert_eq!(
+        xfers_directly_in_seq(intra_tile_seq, XferRole::Wait),
+        1,
+        "Wait stays in inner body when inner_block_iter_vars is empty"
+    );
+    assert_eq!(
+        xfers_directly_in_seq(per_tile_seq, XferRole::Wait),
+        0,
+        "no hoisted Waits at per-tile level"
+    );
+}
+
+// --------------------------------------------------------------------
+// Idempotence: re-running the pass on a hoisted ACFG is a no-op
+// --------------------------------------------------------------------
+
+#[test]
+fn hoisting_is_idempotent() {
+    let producer = op(&[0], 100, vec![], Some(0));
+    let consumer = op(&[1], 101, vec![0], Some(1));
+    let intra_body = ACFGNode::Sequence(vec![consumer]);
+    let inner = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(intra_body),
+    };
+    let outer_body = ACFGNode::Sequence(vec![inner]);
+    let outer = ACFGNode::Repeat {
+        iter_var: IterVar(1),
+        range: 0..4,
+        body: Box::new(outer_body),
+    };
+    let root = ACFGNode::Sequence(vec![producer, outer]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("c".into(), DataId(1));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(0));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let once = inject_transfers(&linked, acfg);
+    let push1 = once.push_count();
+    let wait1 = once.wait_count();
+    let twice = inject_transfers(&linked, once);
+    assert_eq!(twice.push_count(), push1, "Push count stable on re-run");
+    assert_eq!(twice.wait_count(), wait1, "Wait count stable on re-run");
+}
+
+// --------------------------------------------------------------------
+// 2D blocking: nested block-inner loops still hoist
+// --------------------------------------------------------------------
+
+#[test]
+fn nested_block_inner_hoists_to_outermost_per_tile() {
+    // Shape modelling example 07's blocked schedule but with a
+    // cross-worker dataflow added so transfers actually fire:
+    //
+    //   Sequence(top)
+    //     producer on host (writes d)
+    //     Repeat(i__tile)
+    //       Sequence(per-i-tile body)
+    //         Repeat(i, block_inner)
+    //           Sequence(intra-i-tile body)
+    //             Repeat(j__tile)
+    //               Sequence(per-j-tile body)
+    //                 Repeat(j, block_inner)
+    //                   Sequence(intra-j-tile body)
+    //                     consumer on w0 (reads d)
+    //
+    // The Wait should hoist out of BOTH block-inner loops to the
+    // per-i-tile body OR higher. We assert it is no longer inside
+    // the intra-j-tile or intra-i-tile bodies.
+    let producer = op(&[0], 100, vec![], Some(0));
+    let consumer = op(&[1], 101, vec![0], Some(1));
+
+    let intra_j = ACFGNode::Sequence(vec![consumer]);
+    let inner_j = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(intra_j),
+    };
+    let per_j_tile = ACFGNode::Sequence(vec![inner_j]);
+    let outer_j = ACFGNode::Repeat {
+        iter_var: IterVar(2),
+        range: 0..4,
+        body: Box::new(per_j_tile),
+    };
+    let intra_i = ACFGNode::Sequence(vec![outer_j]);
+    let inner_i = ACFGNode::Repeat {
+        iter_var: IterVar(1),
+        range: 0..4,
+        body: Box::new(intra_i),
+    };
+    let per_i_tile = ACFGNode::Sequence(vec![inner_i]);
+    let outer_i = ACFGNode::Repeat {
+        iter_var: IterVar(3),
+        range: 0..4,
+        body: Box::new(per_i_tile),
+    };
+    let root = ACFGNode::Sequence(vec![producer, outer_i]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("c".into(), DataId(1));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(0)); // inner j
+    inner_block_iter_vars.insert(IterVar(1)); // inner i
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let result = inject_transfers(&linked, acfg);
+
+    // Single Wait globally (per-i-tile granularity). Push count is
+    // not asserted -- see the cross-sequence note in the simple
+    // hoist test above.
+    assert_eq!(
+        result.wait_count(),
+        1,
+        "one Wait at per-tile granularity for 2D blocking"
+    );
+
+    // The hoisted Wait's tile must not name either inner-block iter
+    // var.
+    let xfers = result.root.collect_xfers();
+    let wait = xfers
+        .iter()
+        .find(|x| x.role == XferRole::Wait)
+        .expect("one Wait");
+    for (iv, _) in &wait.tile.bounds {
+        assert_ne!(*iv, IterVar(0), "Wait tile must not name inner j");
+        assert_ne!(*iv, IterVar(1), "Wait tile must not name inner i");
+    }
+}
+
+// --------------------------------------------------------------------
+// Same-sequence Push/Wait: no hoist (in-sequence rendezvous)
+// --------------------------------------------------------------------
+
+#[test]
+fn in_intra_tile_producer_consumer_is_not_hoisted() {
+    // Both producer and consumer are inside the intra-tile body.
+    // The Wait's data IS produced locally, so the hoist forwarding
+    // rule (which only forwards Waits whose producer is NOT in the
+    // current sequence) leaves the Wait in the inner body. This
+    // pins the loop-invariance proxy: locally-produced data isn't
+    // loop-invariant w.r.t. the inner loop.
+    let producer = op(&[0], 100, vec![], Some(0)); // host writes d
+    let consumer = op(&[1], 101, vec![0], None); // w0 reads d
+    let intra = ACFGNode::Sequence(vec![producer, consumer]);
+    let inner = ACFGNode::Repeat {
+        iter_var: IterVar(0),
+        range: 0..4,
+        body: Box::new(intra),
+    };
+    let outer_body = ACFGNode::Sequence(vec![inner]);
+    let outer = ACFGNode::Repeat {
+        iter_var: IterVar(1),
+        range: 0..4,
+        body: Box::new(outer_body),
+    };
+    let root = ACFGNode::Sequence(vec![outer]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(0));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let result = inject_transfers(&linked, acfg);
+
+    // The Wait stays in the intra-tile body because the producer is
+    // also there.
+    let (_, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
+    assert_eq!(
+        xfers_directly_in_seq(intra_tile_seq, XferRole::Wait),
+        1,
+        "Wait stays inside inner body when its producer is co-resident"
+    );
+    assert_eq!(
+        xfers_directly_in_seq(per_tile_seq, XferRole::Wait),
+        0,
+        "no hoist when producer is in the same intra-tile sequence"
+    );
+}
+
+// --------------------------------------------------------------------
+// block_transform pipeline: real end-to-end on example 02 with a
+// synthetic `block=` directive on `i`
+// --------------------------------------------------------------------
+
+#[test]
+fn block_transform_marks_inner_iter_var() {
+    // Pipe example 02-split-add through link -> build_acfg ->
+    // apply_block_transforms with a `block=128` directive on `i`
+    // and assert the inner iter var is recorded in
+    // `inner_block_iter_vars`. This pins block_transform's contract
+    // with transfer_inject -- the marker must be set or the hoist
+    // never fires.
+    use compiler::algo::{lower_algo, parse_algo};
+    use compiler::link;
+    use compiler::sched::{
+        lower_sched, parse_sched, ResolvedLoopDirective, ResolvedLoopOption, SchedIR,
+    };
+    use compiler::{apply_block_transforms, build_acfg};
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let algo_src = std::fs::read_to_string(
+        repo_root.join("nuc-nucleus/examples/02-split-add/prog.algo.nuc"),
+    )
+    .expect("read algo");
+    let sched_src = std::fs::read_to_string(
+        repo_root.join("nuc-nucleus/examples/02-split-add/schedules/split.sched.nuc"),
+    )
+    .expect("read sched");
+
+    let algo = lower_algo(&parse_algo(&algo_src).expect("parse")).expect("lower");
+    let mut sched: SchedIR =
+        lower_sched(&parse_sched(&sched_src).expect("parse")).expect("lower");
+    // 256 / 128 = 2 -> divisibility check passes.
+    sched.loops.insert(
+        "i".to_string(),
+        ResolvedLoopDirective {
+            var: "i".to_string(),
+            options: vec![ResolvedLoopOption::Block(128)],
+        },
+    );
+    let linked: LinkedIR = link::link(algo, sched).expect("link");
+    let acfg = build_acfg(&linked);
+    let i_id = *acfg
+        .name_iter_vars
+        .get("i")
+        .expect("i iter var present");
+    let after = apply_block_transforms(&linked, acfg).expect("block-transform OK");
+    assert!(
+        after.inner_block_iter_vars.contains(&i_id),
+        "block_transform must mark the (inner) i iter var as block-inner"
+    );
+
+    // And after running transfer_inject, the marker should round-trip
+    // unchanged (it is part of the ACFG state, not consumed).
+    let after = inject_transfers(&linked, after);
+    assert!(
+        after.inner_block_iter_vars.contains(&i_id),
+        "transfer_inject must forward the inner_block_iter_vars marker"
+    );
+}
+
+// Silence unused-import warnings: XferPlaceholder is currently only
+// referenced inside the test bodies via the field accesses, which
+// rustc tracks through the type system. Explicit `use` keeps the
+// file's dependency list visible for human review.
+#[allow(dead_code)]
+fn _silence_xfer_placeholder() -> Option<XferPlaceholder> {
+    None
+}

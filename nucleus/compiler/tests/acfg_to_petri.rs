@@ -81,6 +81,7 @@ fn synthetic_acfg(
         name_data,
         name_workers,
         name_iter_vars: Default::default(),
+        inner_block_iter_vars: Default::default(),
     }
 }
 

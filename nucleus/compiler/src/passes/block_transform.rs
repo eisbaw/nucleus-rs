@@ -249,6 +249,7 @@ pub fn apply_block_transforms(
         name_data,
         name_workers,
         mut name_iter_vars,
+        mut inner_block_iter_vars,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -274,6 +275,10 @@ pub fn apply_block_transforms(
         let tile_id = IterVar(next_id);
         next_id += 1;
         name_iter_vars.insert(tile_name.clone(), tile_id);
+        // Mark the (reused) inner-loop iter var so transfer_inject
+        // (TASK-0143) can hoist Push/Wait placeholders out of the
+        // intra-tile body up to per-tile granularity.
+        inner_block_iter_vars.insert(inner_id);
         tile_var_for.insert(inner_id, (tile_name, tile_id, *n));
     }
 
@@ -287,8 +292,10 @@ pub fn apply_block_transforms(
         name_data,
         name_workers,
         name_iter_vars,
+        inner_block_iter_vars,
     })
 }
+
 
 // --------------------------------------------------------------------
 // Internal helpers

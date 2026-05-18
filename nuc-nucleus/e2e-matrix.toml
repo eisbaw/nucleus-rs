@@ -73,6 +73,16 @@ example  = "07-matmul"
 schedule = "naive"
 backend  = "pthreads-sync"
 
+# TASK-0143 (per-tile Push/Wait hoisting) has landed and example 07
+# blocked is a single-`host` schedule, so the hoisting is a structural
+# no-op here; the cell still pins that block-transform + transfer-
+# inject produces a byte-identical pipeline for a stacked
+# `block=8` schedule.
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "pthreads-sync"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -89,7 +99,7 @@ reason   = "TASK-0117 + TASK-0126: distributed placement + per-tile transfer cod
 example  = "05-stencil"
 schedule = "blocked"
 backend  = "pthreads-sync"
-reason   = "TASK-0142 + TASK-0143: trailing-remainder tiles + per-tile transfer hoisting not yet implemented"
+reason   = "TASK-0142: trailing-remainder tiles not yet supported (block=4 on length-14 range fails apply_block_transforms divisibility check); TASK-0143 hoisting has landed"
 
 [[skip]]
 example  = "05-stencil"
@@ -97,8 +107,3 @@ schedule = "distributed"
 backend  = "pthreads-sync"
 reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"
 
-[[skip]]
-example  = "07-matmul"
-schedule = "blocked"
-backend  = "pthreads-sync"
-reason   = "TASK-0143: per-tile transfer hoisting not yet implemented (block= structurally rewrites the iteration tree but Push/Wait still fires per-iteration)"

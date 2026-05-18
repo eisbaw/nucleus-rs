@@ -7,9 +7,13 @@
 //!
 //! The blocked schedule is shipped but `#[ignore]`'d at the e2e level:
 //! the block-transform pass (TASK-0030) rewrites the iteration tree
-//! correctly, but per-tile transfer hoisting (TASK-0143) and
-//! trailing-remainder tile support (TASK-0142) are open follow-ups.
-//! See TASK-0030's implementation notes for the gap analysis.
+//! correctly, and per-tile Push/Wait hoisting (TASK-0143) is now in
+//! place, but the schedule asks for `block=4` on `y` whose effective
+//! range `1..H-1` (= `1..15`, length 14) is NOT evenly divisible by
+//! 4. `apply_block_transforms` therefore fails with
+//! `BlockTransformError::NotDivisible`, which gates this cell on
+//! trailing-remainder tile support (TASK-0142). When TASK-0142
+//! lands, this `#[ignore]` flips to active.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -144,14 +148,16 @@ fn naive_pthreads_sync_bit_identical() {
     );
 }
 
-/// Blocked schedule e2e: gated on TASK-0142 (trailing-remainder tile
-/// support) and TASK-0143 (per-tile transfer hoisting). The
-/// schedule structurally exercises the block-transform pass via the
-/// parser / sched_lower / link pinning tests; full e2e flips on
-/// when the follow-ups land. See TASK-0030's implementation notes
-/// for the gap analysis.
+/// Blocked schedule e2e: gated on TASK-0142 (trailing-remainder
+/// tile support). TASK-0143 (per-tile transfer hoisting) has
+/// landed; the only remaining blocker is `block=4` on a range of
+/// length 14, which `apply_block_transforms` rejects as
+/// `NotDivisible` until trailing-tile remainder handling is added.
+/// The schedule structurally exercises the block-transform pass via
+/// the parser / sched_lower / link pinning tests; the e2e cell
+/// flips from `ignore` to active when TASK-0142 lands.
 #[test]
-#[ignore = "TODO TASK-0142 + TASK-0143: trailing-remainder tiles + per-tile transfer hoisting not yet implemented"]
+#[ignore = "TODO TASK-0142: trailing-remainder tiles (block=4 on length-14 range) not yet supported; TASK-0143 hoisting has landed"]
 fn blocked_pthreads_sync_bit_identical() {
     run_example_05(
         "schedules/blocked.sched.nuc",
