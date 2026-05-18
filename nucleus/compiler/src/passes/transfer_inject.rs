@@ -1219,9 +1219,24 @@ fn splice_pushes_global(
         producer_repeat_path(&root, w.data, &mut Vec::new(), &mut pp);
         let producer_path = match pp {
             Some(p) => p,
-            // Invariant violation, not a tolerable partial input
-            // (TASK-0152). A cross-worker Wait only exists because
-            // `build_waits_for_op` found this symbol in
+            // DEFENSE-IN-DEPTH behind the root-boundary check in
+            // `inject_transfers` (the `escaped_at_root` panic). That
+            // check should catch every producerless cross-worker Wait
+            // BEFORE this pass runs: a Wait with no producing scope
+            // bubbles out of Pass A's hoist and is rejected there.
+            // This branch is therefore *expected* unreachable in
+            // practice — but it is NOT proven unreachable: the two
+            // guards key off different structures (Pass A's
+            // whole-symbol-hoist root residue vs a per-`w.data`
+            // producer walk of the post-hoist tree), and a future
+            // hoist/block-transform change could let a Wait reach here
+            // unpaired. Keep it as a loud `panic!` (not `unreachable!`,
+            // which would assert a proof we do not have; not
+            // `continue`, which would resurrect the silent-drop bug).
+            // TASK-0152.
+            //
+            // Invariant rationale: a cross-worker Wait only exists
+            // because `build_waits_for_op` found this symbol in
             // `producers_by_data` (mirrors `linked.data_producers`);
             // therefore a producing Operation MUST exist somewhere in
             // the ACFG (`build_acfg` places the producing kernel).
