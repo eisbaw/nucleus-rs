@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 23:26'
-updated_date: '2026-05-18 23:38'
+updated_date: '2026-05-18 23:43'
 labels:
   - M2
   - compiler
@@ -59,6 +59,8 @@ GATE (nix develop): just test 0 failed (33 ok groups incl. 2 new tests); just e2
 Known limitation: cargo clippy --all-targets trips a PRE-EXISTING clippy::empty_line_after_doc_comments in nucleus/e2e/src (commented-out doc, prior commit 5195ea9, NOT touched by this task); the gate-spec command (no --all-targets) is clean.
 Commits: d8bb7ce (fix+tests), c0571ec (backlog).
 Follow-up filed: TASK-0171 (option c, deep distinct-IterVar identity) with dep edge task-0170 -> task-0171, referenced in SidecarError + collect_loop_bounds doc comments.
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO, both read-only. Numbers RE-RUN by reviewers: just test 0 failed (petri_to_events 23/0; both new tests pass; ~9 build_sidecar callers updated, signature change compiles clean); just e2e UNCHANGED 10/8/0/2/required-fail 0; determinism-check 8/0 byte-identical; determinism-check-negative bites 2/2 non-flaky; clippy --workspace -D warnings clean; de-risk invariant HELD (git diff over acfg/passes/backends EMPTY). Architect: reachability finding is CODE-GROUNDED not artifact (acfg collect_iter_var_names dedupes names->1 IterVar; lower.rs single-assignment keys on data name so distinct arrays sidestep DoubleAssignment — the witness is the minimal honest repro), option(a) typed error correct + (c) deferred right, SidecarError faithfully mirrors BlockTransformError, retained name<->id desync panic correctly classified UNREACHABLE-by-construction (structurally identical recursion to collect_iter_var_names) so NOT a new landmine, AC#3 honest, blast radius contained, Done correct, no AC-gaming. ACCURACY CORRECTION (qa-test-runner): the prior note attributed the pre-existing nucleus/e2e empty_line_after_doc_comments --all-targets lint to commit 5195ea9; git blame shows it is commit 946159f6 (the other pre-existing --all-targets clusters: petri_to_events very-complex-type from 4a79d6e/TASK-0160, acfg_to_petri len-zero from 57112be7). All predate this cycle and are out of the --workspace gate; conclusion (pre-existing, not this cycle) stands — correcting only the commit citation for tracker accuracy. TASK-0170 Done is honest: all 3 ACs met + independently verified + both reviews GO.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
