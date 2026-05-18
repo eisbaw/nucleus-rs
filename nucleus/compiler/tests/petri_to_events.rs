@@ -1093,7 +1093,7 @@ fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
 
     for (algo, sched, data_checks) in expectations {
         let (linked, acfg) = full_pipeline_with_linked(algo, sched);
-        let sidecar = build_sidecar(&linked, &acfg);
+        let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
 
         // The name table the backend also receives (DataId -> name)
         // — same join key as the EventList's DataSlice.data.
@@ -1132,7 +1132,7 @@ fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
         // Determinism: a second sidecar build is byte-identical.
         assert_eq!(
             sidecar,
-            build_sidecar(&linked, &acfg),
+            build_sidecar(&linked, &acfg).expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
             "{algo}: build_sidecar must be deterministic"
         );
     }
@@ -1148,7 +1148,7 @@ fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
     // reconstructs that exact source-form bound.
     let (linked, acfg) =
         full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     let events = acfg_to_events(&acfg);
 
     // Find the OUTER stencil loop in the EventList (the `y` loop). It
@@ -1224,7 +1224,7 @@ fn sidecar_const_table_matches_resolved_consts() {
     // `algo.consts`.
     let (linked, acfg) =
         full_pipeline_with_linked("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     assert_eq!(
         sidecar.consts.get("N"),
         Some(&ConstValue {
@@ -1248,7 +1248,7 @@ fn sidecar_serde_roundtrip_is_byte_identical() {
     // contract types) — JSON roundtrip must be lossless and stable.
     let (linked, acfg) =
         full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     let json = serde_json::to_string(&sidecar).expect("serialize");
     let back: NameSidecar = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(sidecar, back, "sidecar serde roundtrip must be lossless");
@@ -1344,7 +1344,7 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
 
     for (algo, sched) in examples {
         let (linked, acfg) = full_pipeline_with_linked(algo, sched);
-        let sidecar = build_sidecar(&linked, &acfg);
+        let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
 
         // Every AlgoIR kernel reachable via the canonical KernelId
         // must be in kernel_sigs with identical params + ret.
@@ -1413,7 +1413,7 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
         // Determinism: second build byte-identical (covers kernel_sigs).
         assert_eq!(
             sidecar,
-            build_sidecar(&linked, &acfg),
+            build_sidecar(&linked, &acfg).expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
             "{algo}: build_sidecar (incl. kernel_sigs) must be deterministic"
         );
     }
@@ -1501,4 +1501,147 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
         "scalar expr against an aggregate param is NOT cast — the \
          dispatch decision is driven by kernel_sigs param type alone"
     );
+}
+
+// --------------------------------------------------------------------
+// TASK-0170: same-name-loop differing-bounds is a TYPED error, never a
+// bare panic, on VALID Nuc input.
+//
+// Reachability finding (recorded in TASK-0170): two sequential sibling
+// loops reusing one variable name with DIFFERENT bounds, writing
+// DISTINCT data arrays so single-assignment holds, is accepted by
+// parse_algo + lower_algo + link + build_acfg. `ACFG::name_iter_vars`
+// then collapses both onto ONE `IterVar`, so `build_sidecar` cannot
+// represent two bound pairs. This pins that it returns
+// `SidecarError::SameNameLoopBoundConflict` (clean, driver-surfacable)
+// rather than `panic!`-ing — which is exactly what makes the
+// TASK-0124 EventList-only path panic-safe (AC#3). The proper
+// distinct-identity fix that would let this COMPILE is TASK-0171; when
+// that lands, the negative test below flips to expect success.
+// --------------------------------------------------------------------
+
+/// Lower an inline algo + an inline single-`host` schedule and link
+/// them, returning the `(LinkedIR, ACFG)` `build_sidecar` consumes.
+/// Inline (not a fixture file) so the witness program lives next to
+/// the assertion that depends on it.
+fn linked_acfg_from_src(algo_src: &str, sched_src: &str) -> (link::LinkedIR, ACFG) {
+    let algo = lower_algo(&parse_algo(algo_src).expect("algo parse")).expect("algo lower");
+    let sched = lower_sched(&parse_sched(sched_src).expect("sched parse")).expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = build_acfg(&linked);
+    (linked, acfg)
+}
+
+const SAME_NAME_SCHED: &str = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+
+#[test]
+fn sidecar_same_name_loop_differing_bounds_is_typed_error_not_panic() {
+    // Two sibling `for i` loops, bounds 0..N vs 0..M (N != M), each
+    // writing a DISTINCT array (single-assignment holds). This is a
+    // valid Nuc program (parse/lower/link/build_acfg all accept it).
+    let algo = r#"
+const N : usize = 8;
+const M : usize = 4;
+
+data a : i32[N];
+data c : i32[N];
+data d : i32[N];
+
+kernel load_input  : ()       -> i32[N] effectful;
+kernel id          : (i32)    -> i32    pure;
+kernel save_output : (i32[N])  -> ()     effectful;
+
+a <-- load_input();
+
+for i : 0 .. N { c[i] <-- id(a[i]); }
+for i : 0 .. M { d[i] <-- id(a[i]); }
+
+save_output(c);
+save_output(d);
+"#;
+
+    let (linked, acfg) = linked_acfg_from_src(algo, SAME_NAME_SCHED);
+
+    // The reachability invariant this test pins: ONE IterVar for the
+    // reused name `i` (if this ever changes — e.g. TASK-0171 lands —
+    // this assertion fails first, signalling the contract moved).
+    assert_eq!(
+        acfg.name_iter_vars.len(),
+        1,
+        "precondition: reused loop name `i` collapses to one IterVar \
+         (the TASK-0170 root cause); if this changed see TASK-0171"
+    );
+
+    match build_sidecar(&linked, &acfg) {
+        Err(compiler::sidecar::SidecarError::SameNameLoopBoundConflict {
+            var,
+            first,
+            second,
+        }) => {
+            assert_eq!(var, "i");
+            // First occurrence (0..N) kept; second (0..M) is the
+            // conflicting one — verbatim source exprs, fail-fast +
+            // verbose.
+            assert_eq!(first.lo, compiler::algo::IrExpr::IntLit(0));
+            assert_eq!(first.hi, compiler::algo::IrExpr::Ident("N".into()));
+            assert_eq!(second.lo, compiler::algo::IrExpr::IntLit(0));
+            assert_eq!(second.hi, compiler::algo::IrExpr::Ident("M".into()));
+            // The Display string carries the actionable diagnostic.
+            let msg = compiler::sidecar::SidecarError::SameNameLoopBoundConflict {
+                var,
+                first,
+                second,
+            }
+            .to_string();
+            assert!(msg.contains("loop variable `i`"), "msg: {msg}");
+            assert!(msg.contains("DIFFERENT bounds"), "msg: {msg}");
+        }
+        Ok(_) => panic!(
+            "build_sidecar must reject same-name-differing-bounds with \
+             a typed error, not silently succeed (would drop one \
+             loop's bounds for the TASK-0124 EventList backend)"
+        ),
+    }
+}
+
+#[test]
+fn sidecar_same_name_loop_identical_bounds_is_idempotent_ok() {
+    // Same reused name `i`, but IDENTICAL bounds (0..N both): the
+    // shared IterVar CAN represent this, so it must succeed (not a
+    // false positive) — pins the idempotent branch.
+    let algo = r#"
+const N : usize = 8;
+
+data a : i32[N];
+data c : i32[N];
+data d : i32[N];
+
+kernel load_input  : ()       -> i32[N] effectful;
+kernel id          : (i32)    -> i32    pure;
+kernel save_output : (i32[N])  -> ()     effectful;
+
+a <-- load_input();
+
+for i : 0 .. N { c[i] <-- id(a[i]); }
+for i : 0 .. N { d[i] <-- id(a[i]); }
+
+save_output(c);
+save_output(d);
+"#;
+
+    let (linked, acfg) = linked_acfg_from_src(algo, SAME_NAME_SCHED);
+    let sidecar = build_sidecar(&linked, &acfg)
+        .expect("identical bounds: shared IterVar represents both, must be Ok");
+    // One IterVar -> exactly one loop_bounds entry, the shared 0..N.
+    assert_eq!(sidecar.loop_bounds.len(), 1);
+    let lb = sidecar.loop_bounds.values().next().unwrap();
+    assert_eq!(lb.lo, compiler::algo::IrExpr::IntLit(0));
+    assert_eq!(lb.hi, compiler::algo::IrExpr::Ident("N".into()));
 }

@@ -223,6 +223,74 @@ pub struct ConstValue {
     pub value: i64,
 }
 
+/// A typed error from [`build_sidecar`].
+///
+/// ## Why this is an error, not a `panic!` (TASK-0170)
+///
+/// `build_sidecar` is *not* a "cannot happen for link-valid IR"
+/// internal-invariant guard like the `name<->id desync` `unwrap_or_else`
+/// panics elsewhere in this file (those genuinely cannot fire — the
+/// names were enumerated *from* the same `linked.algo` maps a moment
+/// earlier). [`SameNameLoopBoundConflict`](Self::SameNameLoopBoundConflict)
+/// is *reachable from a valid Nuc program*: two sequential sibling
+/// loops reusing one variable name with different bounds — e.g.
+/// `for i : 0..N { c[i] <-- f(...) }  for i : 0..M { d[i] <-- f(...) }`
+/// (distinct data so single-assignment holds) — parse, lower, link,
+/// and `build_acfg` *accept it* (lowering only rejects a loop var
+/// shadowing a declared const/data/kernel; PRD §6.2.3 lets loop
+/// variables share one namespace and shadow at their loop). But
+/// `ACFG::name_iter_vars` assigns *one* [`IterVar`] per *name*
+/// (`acfg.rs` enumerates the unique loop-var names), so both loops
+/// collapse onto one `Event::Loop.iter_var` / one `loop_bounds`
+/// entry and the shared key cannot represent two different bounds.
+///
+/// Per fail-fast discipline this is surfaced as a clean typed error
+/// (driver prints `nucleus: error: ...`), not a process-aborting
+/// `panic!`, exactly like
+/// [`crate::passes::block_transform::BlockTransformError`]. The
+/// *proper* long-term fix — giving such loops distinct `IterVar`
+/// identity so the program *compiles* — is the deeper ACFG/Event
+/// redesign tracked as **TASK-0171** (depends on this task), out of
+/// TASK-0170's scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarError {
+    /// Two loops in the program share a variable `name` (hence one
+    /// [`IterVar`]) but declare *different* source bounds. A shared
+    /// `Event::Loop.iter_var` / `loop_bounds` entry cannot represent
+    /// both, so an EventList-only backend (TASK-0124) would otherwise
+    /// silently lose one loop's bounds. Carries the offending name and
+    /// both bound pairs verbatim so the diagnostic is actionable
+    /// without re-reading the source.
+    SameNameLoopBoundConflict {
+        /// The reused loop-variable name (e.g. `i`).
+        var: String,
+        /// The bounds kept from the first occurrence in source order.
+        first: LoopBound,
+        /// The conflicting bounds of a later same-named loop.
+        second: LoopBound,
+    },
+}
+
+impl std::fmt::Display for SidecarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SidecarError::SameNameLoopBoundConflict { var, first, second } => write!(
+                f,
+                "loop variable `{var}` is reused by two loops with \
+                 DIFFERENT bounds ({:?}..{:?} vs {:?}..{:?}); loop \
+                 variables share one namespace (PRD §6.2.3) so both \
+                 loops map to a single iteration-variable identity, \
+                 which cannot carry two distinct bound pairs. Rename \
+                 one loop's variable, or give them matching bounds. \
+                 (Distinct-identity support for this case is TASK-0171.)",
+                first.lo, first.hi, second.lo, second.hi
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SidecarError {}
+
 impl NameSidecar {
     /// Number of elements a backend must allocate for `data`
     /// (`vec![<zero>; N]`): the product of its dimensions, or `1`
@@ -276,7 +344,20 @@ impl NameSidecar {
 /// backend join the sidecar to `Event::Alloc.data` /
 /// `DataSlice.data`, `Event::Loop.iter_var`, and `Event::Fire.kernel`
 /// with no name round-trip.
-pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar {
+///
+/// ### Errors
+///
+/// Returns [`SidecarError::SameNameLoopBoundConflict`] if the program
+/// has two loops that reuse one variable name with *different* bounds
+/// (a valid-Nuc input that the shared-`IterVar` model cannot
+/// represent; TASK-0170). This is a clean typed error, never a
+/// `panic!` — the EventList-only backend (TASK-0124) must surface it
+/// via the driver, not abort. The internal name<->id desync guards
+/// remain `panic!`s: those are unreachable for link-valid IR.
+pub fn build_sidecar(
+    linked: &LinkedIR,
+    acfg: &crate::acfg::ACFG,
+) -> Result<NameSidecar, SidecarError> {
     // (a) Per-DataId ResolvedType. Invert via the ACFG's name_data
     //     so the key is the canonical DataId the EventList uses, not
     //     an ad-hoc re-enumeration (single source of truth for
@@ -322,7 +403,7 @@ pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar
     //     destroys at acfg.rs ~694-697 — captured here in parallel,
     //     WITHOUT stopping the fold.
     let mut loop_bounds: BTreeMap<IterVar, LoopBound> = BTreeMap::new();
-    collect_loop_bounds(&linked.algo.stmts, &acfg.name_iter_vars, &mut loop_bounds);
+    collect_loop_bounds(&linked.algo.stmts, &acfg.name_iter_vars, &mut loop_bounds)?;
 
     // (d) Per-KernelId signature. Invert acfg.name_kernels so the key
     //     is the canonical KernelId Event::Fire carries — exactly the
@@ -352,12 +433,12 @@ pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar
         );
     }
 
-    NameSidecar {
+    Ok(NameSidecar {
         data_types,
         consts,
         loop_bounds,
         kernel_sigs,
-    }
+    })
 }
 
 /// Recursively collect each `for` loop's unevaluated `(lo, hi)`,
@@ -368,18 +449,32 @@ pub fn build_sidecar(linked: &LinkedIR, acfg: &crate::acfg::ACFG) -> NameSidecar
 /// If two loops in the same program share a variable name they share
 /// one [`IterVar`] (per `ACFG::name_iter_vars` — loop vars are one
 /// namespace, PRD §6.2.3) and therefore one `loop_bounds` entry. We
-/// keep the FIRST occurrence in source order and assert the bounds
-/// agree if a later same-named loop differs, rather than silently
-/// overwriting — a same-named loop with *different* bounds would be
-/// an ambiguity the EventList's shared `iter_var` also cannot
-/// represent, so surfacing it here (loud, with context) is the
-/// honest behaviour. No e2e example exercises this; recorded as a
-/// known limitation (see TASK-0160 notes / follow-up).
+/// keep the FIRST occurrence in source order; a later same-named loop
+/// with *identical* bounds is idempotent (no-op). A later same-named
+/// loop with *different* bounds is an ambiguity the shared `IterVar`
+/// (and `Event::Loop.iter_var`) cannot represent — TASK-0170 proved
+/// this is reachable from a VALID Nuc program (two sequential sibling
+/// loops `for i : 0..N`, `for i : 0..M`, writing distinct data so
+/// single-assignment holds; lowering only rejects shadowing a
+/// *declared* const/data/kernel). Returning a typed
+/// [`SidecarError::SameNameLoopBoundConflict`] (fail fast AND
+/// verbose: the loop var + both bound exprs) is the honest behaviour
+/// — never a `panic!` on valid input. AC#3 (TASK-0170): the
+/// EventList-only backend (TASK-0124) consuming this can therefore
+/// only ever see a clean driver-surfaced error here, never a process
+/// abort. Distinct-identity support so such programs *compile* is the
+/// deeper redesign tracked as TASK-0171 (depends on TASK-0170).
+///
+/// (The `name_iter_vars` lookup below is still an `expect`: every
+/// loop var was enumerated *into* `name_iter_vars` by `build_acfg`
+/// from these same statements, so a miss is a compiler-internal
+/// invariant break, not user input — unreachable for link-valid IR,
+/// like the other name<->id desync guards in this file.)
 fn collect_loop_bounds(
     stmts: &[crate::algo::IrStmt],
     name_iter_vars: &BTreeMap<String, IterVar>,
     out: &mut BTreeMap<IterVar, LoopBound>,
-) {
+) -> Result<(), SidecarError> {
     use crate::algo::IrStmt;
     for s in stmts {
         if let IrStmt::For { var, lo, hi, body } = s {
@@ -398,16 +493,16 @@ fn collect_loop_bounds(
                     out.insert(iv, bound);
                 }
                 Some(existing) if *existing != bound => {
-                    panic!(
-                        "sidecar: loop var `{var}` reused with DIFFERENT \
-                         bounds ({existing:?} vs {bound:?}); a shared \
-                         IterVar cannot represent both. Known limitation \
-                         (TASK-0160) — no e2e example hits this."
-                    );
+                    return Err(SidecarError::SameNameLoopBoundConflict {
+                        var: var.clone(),
+                        first: existing.clone(),
+                        second: bound,
+                    });
                 }
                 Some(_) => { /* same name, same bounds: idempotent */ }
             }
-            collect_loop_bounds(body, name_iter_vars, out);
+            collect_loop_bounds(body, name_iter_vars, out)?;
         }
     }
+    Ok(())
 }
