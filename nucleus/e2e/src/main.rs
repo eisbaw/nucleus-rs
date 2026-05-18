@@ -440,6 +440,86 @@ struct PlannedCell {
     pre_skip: Option<String>,
 }
 
+/// Return `true` iff `cell` passes the active CLI narrowing flags.
+/// Mirrors the per-axis `if want != ... { continue }` filters inside
+/// `plan_cells` so the coverage check below scopes itself to exactly
+/// the cells a given invocation is responsible for.
+fn cell_matches_filters(cell: &Cell, args: &Args) -> bool {
+    if let Some(want) = &args.example {
+        if want != &cell.example {
+            return false;
+        }
+    }
+    if let Some(want) = &args.schedule {
+        if want != &cell.schedule {
+            return false;
+        }
+    }
+    if let Some(want) = &args.backend {
+        if want != &cell.backend {
+            return false;
+        }
+    }
+    true
+}
+
+/// Coverage guard for the `[[required]]` matrix (TASK-0163).
+///
+/// `plan_cells` only ever emits cells for schedule *files* it
+/// discovered on disk (`<example>/schedules/<name>.sched.nuc`). A
+/// `[[required]]` triple whose schedule does not match any discovered
+/// file is therefore never planned, never executed, and so never
+/// FAILs — it silently vanishes. A one-character typo in a required
+/// schedule name (or a stale required entry after a schedule rename)
+/// would delete a gating cell with a fully GREEN `just e2e` / CI.
+/// That is a false-negative in the falsifier the whole project + CI
+/// trusts, the exact class `determinism-check-negative` exists to
+/// prevent but previously unguarded for the required matrix.
+///
+/// This function returns every required triple that is NOT accounted
+/// for. A required triple is *accounted for* iff it is either:
+///   - present in the planned set (it will execute, and a real
+///     FAIL/PASS verdict gates the exit code as before), OR
+///   - present in the manifest's `[[skip]]` table (the exit contract
+///     explicitly permits a required cell to not execute when it is
+///     a declared skip — see the module-level "Exit status" doc).
+///
+/// Only the active CLI filter scope is checked: a narrowed run such
+/// as `just e2e --example 01-elementwise-add` is not responsible for
+/// the 07-matmul required cells and must not be failed for their
+/// absence. The bare `just e2e` (no filters) checks the full set.
+///
+/// Returned gaps are de-duplicated and sorted so the error surface is
+/// deterministic regardless of manifest ordering.
+fn required_coverage_gaps(manifest: &Manifest, planned: &[PlannedCell], args: &Args) -> Vec<Cell> {
+    let planned_set: BTreeSet<&Cell> = planned.iter().map(|p| &p.cell).collect();
+    let skip_set: BTreeSet<Cell> = manifest
+        .skip
+        .iter()
+        .map(|s| Cell {
+            example: s.example.clone(),
+            schedule: s.schedule.clone(),
+            backend: s.backend.clone(),
+        })
+        .collect();
+
+    let mut gaps: BTreeSet<Cell> = BTreeSet::new();
+    for req in &manifest.required {
+        if !cell_matches_filters(req, args) {
+            // Out of scope for this (possibly narrowed) invocation.
+            continue;
+        }
+        if planned_set.contains(req) {
+            continue; // Will execute; its verdict gates the exit.
+        }
+        if skip_set.contains(req) {
+            continue; // Declared skip — exempt by the exit contract.
+        }
+        gaps.insert(req.clone());
+    }
+    gaps.into_iter().collect()
+}
+
 // --------------------------------------------------------------------
 // Cell execution
 // --------------------------------------------------------------------
@@ -1538,6 +1618,35 @@ fn run() -> Result<i32, String> {
         return Err("no cells matched the given filters; nothing to run".to_string());
     }
 
+    // TASK-0163: a `[[required]]` triple whose schedule does not match
+    // any discovered `*.sched.nuc` file is never planned and so never
+    // FAILs — it silently vanishes, turning a one-char manifest typo
+    // into a deleted gating cell with green CI. Hard-fail here, naming
+    // every unaccounted-for required triple, BEFORE we spend minutes
+    // building cells. Declared `[[skip]]` triples and out-of-filter-
+    // scope triples are exempt (see `required_coverage_gaps`). This
+    // gate runs in both run-mode and determinism-mode because both
+    // trust the required matrix.
+    let gaps = required_coverage_gaps(&manifest, &planned, &args);
+    if !gaps.is_empty() {
+        let listed = gaps
+            .iter()
+            .map(|c| format!("(example={}, schedule={}, backend={})", c.example, c.schedule, c.backend))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "{} required matrix cell(s) in {} were not matched to any \
+             discovered schedule and are not declared `[[skip]]`: {}. \
+             A `[[required]]` schedule must name an existing \
+             `examples/<example>/schedules/<schedule>.sched.nuc` file \
+             (check for a typo or a stale entry after a rename), or be \
+             moved to `[[skip]]` with a reason.",
+            gaps.len(),
+            paths.manifest_path().display(),
+            listed
+        ));
+    }
+
     if args.check_determinism {
         eprintln!(
             "nucleus-e2e: determinism check over {} cell(s) from {}",
@@ -1852,6 +1961,151 @@ mystery = 42
     /// status with the manifest's reason, *without* invoking cargo.
     /// Drives run_cell directly with a manifest-synthesised skip;
     /// validates we bail out before touching the filesystem.
+    // ----------------------------------------------------------------
+    // TASK-0163: required-matrix coverage guard. These pin the "prove
+    // the falsifier works" property in the spirit of
+    // `determinism-check-negative`: a required cell that silently
+    // vanishes (typo / stale schedule) MUST become a hard error.
+    // ----------------------------------------------------------------
+
+    fn cell(ex: &str, sc: &str, be: &str) -> Cell {
+        Cell {
+            example: ex.to_string(),
+            schedule: sc.to_string(),
+            backend: be.to_string(),
+        }
+    }
+
+    fn planned(ex: &str, sc: &str, be: &str) -> PlannedCell {
+        PlannedCell {
+            cell: cell(ex, sc, be),
+            required: true,
+            pre_skip: None,
+        }
+    }
+
+    /// The core bite: a `[[required]]` triple whose schedule does not
+    /// match any planned (discovered) cell, and is not in `[[skip]]`,
+    /// is reported as a coverage gap with the exact triple named. This
+    /// is the regression for the silent-vanish bug — before the fix
+    /// this triple would simply never run and `just e2e` stayed green.
+    #[test]
+    fn typo_in_required_schedule_is_a_coverage_gap() {
+        let manifest = Manifest {
+            runnable_examples: vec!["01-elementwise-add".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            // `naiv` is a one-char typo of the real `naive` schedule.
+            required: vec![cell("01-elementwise-add", "naiv", "pthreads-sync")],
+            skip: vec![],
+        };
+        // Planner only ever discovers the real `naive` file.
+        let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        assert_eq!(gaps.len(), 1, "typo'd required must surface as a gap");
+        assert_eq!(gaps[0], cell("01-elementwise-add", "naiv", "pthreads-sync"));
+    }
+
+    /// A required triple that is ALSO listed in `[[skip]]` is exempt —
+    /// the exit contract permits a required cell to not execute when
+    /// it is a declared skip. Getting this wrong would falsely fail
+    /// legitimately-skipped cells (carried-context gotcha).
+    #[test]
+    fn required_also_in_skip_is_not_a_gap() {
+        let manifest = Manifest {
+            runnable_examples: vec!["03-reduction".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![cell("03-reduction", "distributed", "pthreads-sync")],
+            skip: vec![SkipEntry {
+                example: "03-reduction".to_string(),
+                schedule: "distributed".to_string(),
+                backend: "pthreads-sync".to_string(),
+                reason: "not yet implemented".to_string(),
+            }],
+        };
+        // Skipped cell is never planned (run_cell would short-circuit
+        // even if it were) — the point is the coverage guard must not
+        // treat the absence as a gap.
+        let plan: Vec<PlannedCell> = vec![];
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        assert!(gaps.is_empty(), "skip-declared required must be exempt, got {gaps:?}");
+    }
+
+    /// A required triple that IS planned (will execute) is accounted
+    /// for — its real PASS/FAIL verdict gates the exit as before. No
+    /// gap, no behaviour change for the happy path.
+    #[test]
+    fn planned_required_is_not_a_gap() {
+        let manifest = Manifest {
+            runnable_examples: vec!["01-elementwise-add".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![cell("01-elementwise-add", "naive", "pthreads-sync")],
+            skip: vec![],
+        };
+        let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        assert!(gaps.is_empty(), "planned required must not be a gap, got {gaps:?}");
+    }
+
+    /// CLI narrowing must scope the coverage check: `--example 01`
+    /// is not responsible for the 07-matmul required cell, so its
+    /// absence from the (narrowed) plan must NOT be flagged. Without
+    /// this, every `just e2e --example X` would falsely fail.
+    #[test]
+    fn cli_filter_scopes_coverage_check() {
+        let manifest = Manifest {
+            runnable_examples: vec!["01-elementwise-add".to_string(), "07-matmul".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![
+                cell("01-elementwise-add", "naive", "pthreads-sync"),
+                cell("07-matmul", "naive", "pthreads-sync"),
+            ],
+            skip: vec![],
+        };
+        // Narrowed run: only the 01 cell is planned.
+        let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+        let args = Args {
+            example: Some("01-elementwise-add".into()),
+            ..Args::default()
+        };
+        let gaps = required_coverage_gaps(&manifest, &plan, &args);
+        assert!(
+            gaps.is_empty(),
+            "out-of-filter-scope required cells must not be gaps, got {gaps:?}"
+        );
+
+        // But a typo *within* the filtered example IS still caught.
+        let manifest_typo = Manifest {
+            required: vec![
+                cell("01-elementwise-add", "naiv", "pthreads-sync"),
+                cell("07-matmul", "naive", "pthreads-sync"),
+            ],
+            ..manifest
+        };
+        let plan2 = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+        let gaps2 = required_coverage_gaps(&manifest_typo, &plan2, &args);
+        assert_eq!(gaps2, vec![cell("01-elementwise-add", "naiv", "pthreads-sync")]);
+    }
+
+    /// The shipped `e2e-matrix.toml` against the real discovered
+    /// schedules must have ZERO coverage gaps. This pins today's
+    /// behaviour: the fix adds a new failure path but must not change
+    /// the current 8/0/2 outcome. If a future manifest edit introduces
+    /// a typo'd or stale required entry, THIS test (and `just e2e`)
+    /// goes red — the durable guard.
+    #[test]
+    fn real_manifest_has_no_coverage_gaps() {
+        let paths = Paths::discover().expect("discover repo root");
+        let src = fs::read_to_string(paths.manifest_path()).expect("read manifest");
+        let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
+        let args = Args::default();
+        let plan = plan_cells(&paths, &manifest, &args).expect("plan");
+        let gaps = required_coverage_gaps(&manifest, &plan, &args);
+        assert!(
+            gaps.is_empty(),
+            "shipped e2e-matrix.toml has unmatched required cells: {gaps:?}"
+        );
+    }
+
     #[test]
     fn skip_entry_short_circuits_run() {
         let paths = Paths::discover().expect("discover");

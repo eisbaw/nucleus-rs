@@ -3,10 +3,11 @@ id: TASK-0163
 title: >-
   e2e harness: unknown schedule in [[required]] silently ignored, not a CI
   failure
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-18 22:15'
-updated_date: '2026-05-18 22:23'
+updated_date: '2026-05-18 22:28'
 labels:
   - infra
   - tooling
@@ -23,13 +24,34 @@ Found during TASK-0057 CI work. Adding a [[required]] entry to nuc-nucleus/e2e-m
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Harness exits non-zero if any [[required]] matrix entry is not matched to an executed cell
-- [ ] #2 Error message names the unmatched required triple
-- [ ] #3 e2e-matrix.toml typo of a required schedule is caught by just e2e
+- [x] #1 Harness exits non-zero if any [[required]] matrix entry is not matched to an executed cell
+- [x] #2 Error message names the unmatched required triple
+- [x] #3 e2e-matrix.toml typo of a required schedule is caught by just e2e
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add a coverage check after plan_cells(): for every [[required]] triple that passes the active CLI filters, assert it is either present in the planned set OR present in [[skip]]. Unmatched (not planned AND not skipped) -> hard non-zero exit naming the exact (example, schedule, backend) triple.
+2. Implement as a pure function required_coverage_gaps(manifest, planned, args) -> Vec<Cell> so it is unit-testable without cargo/filesystem. Wire it into run() before execution; error path returns Err naming all gaps.
+3. Respect [[skip]] exemption: a required triple also in [[skip]] is SATISFIED. Respect CLI filters so narrowed runs (--example/--schedule/--backend) do not falsely fail.
+4. Regression tests: (a) typo'd required schedule -> gap reported with triple named; (b) required also in skip -> no gap; (c) current real manifest -> zero gaps (pins 8/0/2 unchanged); (d) CLI filter narrows coverage scope.
+5. Gate: nix develop -c just test / e2e / determinism-check / determinism-check-negative / clippy. Commit (no push).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Raised to HIGH (mped-architect review of TASK-0057, P2): the entire project + CI gate trusts the e2e harness `required-fail: 0` line. If a [[required]] cell with a typo/stale schedule silently vanishes instead of failing, a required cell can be deleted by a one-char typo with GREEN CI — a false-negative in the falsifier itself, the exact class determinism-check-negative exists to prevent but unguarded for the required matrix. Foundational, not deferrable. Should be treated as gating trust in TASK-0057 / TASK-0167. Forward-carried into TASK-0167 (genuine milestone matrix must not reintroduce this).
+
+Implemented required-matrix coverage guard in nucleus/e2e/src/main.rs.
+
+- New pure fn required_coverage_gaps(manifest, planned, args) -> Vec<Cell>: a [[required]] triple is a GAP iff it is neither in the planned set NOR in [[skip]], evaluated only within the active CLI filter scope (cell_matches_filters mirrors plan_cells filters).
+- Wired into run() right after plan_cells/is_empty, BEFORE any cell builds, for BOTH run-mode and determinism-mode (both trust the required matrix). Returns Err naming every unaccounted triple as (example=, schedule=, backend=).
+- Skip exemption honoured: required-also-in-skip is SATISFIED (carried-context gotcha) -> current 8/0/2 unchanged, the two informational distributed skips are not required so unaffected.
+- 5 regression tests added (e2e crate unittests 13 -> 18, all green): typo->gap+triple-named, required-in-skip->no-gap, planned->no-gap, CLI-filter scoping (out-of-scope exempt but in-scope typo still caught), real shipped manifest->zero gaps (durable pin).
+
+Gate (nix develop -c): clippy --workspace -D warnings clean; just test 0 failed (incl 5 new); just e2e total 10/pass 8/fail 0/skipped 2/required-fail 0 (UNCHANGED); just determinism-check 8/0 byte-identical; just determinism-check-negative correctly bites.
+
+Proof it bites: transiently typo'd first required schedule naive->naiv in real manifest; just e2e exited 1 with error naming (example=01-elementwise-add, schedule=naiv, backend=pthreads-sync); manifest reverted, git diff/status clean. Durable guard is the unit test, not the manifest mutation.
 <!-- SECTION:NOTES:END -->
