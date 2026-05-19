@@ -15,7 +15,37 @@
 //! Stable across edits: we assert *counts*, not exact AST trees. If
 //! the example files grow or shrink, update the counts here.
 
-use compiler::algo::{parse_algo, Item, ParseError, Purity, ScalarType, Stmt};
+use compiler::algo::{parse_algo, AlgoAst, Item, KernelDecl, ParseError, Purity, ScalarType, Stmt};
+use compiler::algo::span::Spanned;
+
+/// The body of the first top-level `for` loop. Spans (TASK-0082) mean
+/// items/statements are `Spanned<_>`; this projects through `.node` so
+/// the structural assertions below stay readable. (`Spanned`'s
+/// equality forwards to the node, so structural comparisons are
+/// unaffected by source position — see `span.rs`.)
+fn first_for_body(ast: &AlgoAst) -> &[Spanned<Stmt>] {
+    ast.items
+        .iter()
+        .find_map(|i| match &i.node {
+            Item::Stmt(s) => match &s.node {
+                Stmt::For { body, .. } => Some(body.as_slice()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected a for-loop at top level")
+}
+
+/// All kernel declarations, in source order.
+fn kernels(ast: &AlgoAst) -> Vec<&KernelDecl> {
+    ast.items
+        .iter()
+        .filter_map(|i| match &i.node {
+            Item::Kernel(k) => Some(k),
+            _ => None,
+        })
+        .collect()
+}
 
 /// Reads a source file at a workspace-relative path. Panics on IO
 /// failure — these tests are environment-dependent by design, and
@@ -56,29 +86,15 @@ fn parses_example_01_elementwise_add() {
     assert_eq!(ast.count_stmts(), 4, "expected 4 top-level statements");
 
     // The for-loop body holds a single dataflow statement.
-    let for_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a for-loop at top level");
+    let for_body = first_for_body(&ast);
     assert_eq!(for_body.len(), 1, "for body should have 1 statement");
 
     // Spot-check purities and that `add` is the scalar kernel.
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     let add = by_name("add");
@@ -121,29 +137,15 @@ fn parses_example_02_split_add() {
     assert_eq!(ast.count_stmts(), 4, "expected 4 top-level statements");
 
     // The for-loop body holds a single dataflow statement.
-    let for_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a for-loop at top level");
+    let for_body = first_for_body(&ast);
     assert_eq!(for_body.len(), 1, "for body should have 1 statement");
 
     // Spot-check purities.
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     let add = by_name("add");
@@ -179,18 +181,11 @@ fn parses_example_03_reduction() {
     assert_eq!(ast.count_stmts(), 6, "expected 6 top-level statements");
 
     // Spot-check kernel purities.
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     assert_eq!(by_name("accumulate").purity, Purity::Pure);
@@ -204,16 +199,9 @@ fn parses_example_03_reduction() {
     assert!(by_name("save_output").sig.ret.is_none());
 
     // The outer for-loop body has exactly one nested for-loop.
-    let outer_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a top-level for-loop");
+    let outer_body = first_for_body(&ast);
     assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
-    let inner_body = match &outer_body[0] {
+    let inner_body = match &outer_body[0].node {
         Stmt::For { body, .. } => body,
         other => panic!("expected inner for-loop; got {:?}", other),
     };
@@ -236,18 +224,11 @@ fn parses_example_13_cnn_inference() {
     assert_eq!(ast.count_stmts(), 3, "expected 3 top-level statements");
 
     // Spot-check kernel purities.
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     assert_eq!(by_name("load_input").purity, Purity::Effectful);
@@ -256,14 +237,7 @@ fn parses_example_13_cnn_inference() {
     assert_eq!(by_name("classifier").purity, Purity::Pure);
 
     // The for-loop body should contain 3 dataflow statements.
-    let for_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a for-loop at top level");
+    let for_body = first_for_body(&ast);
     assert_eq!(for_body.len(), 3, "for body should have 3 statements");
 }
 
@@ -280,22 +254,15 @@ fn parses_example_14_hearing_aid() {
 
     // Inside the loop body we expect 6 statements (2 captures, 2
     // outbound, 2 inbound).
-    let for_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a for-loop at top level");
+    let for_body = first_for_body(&ast);
     assert_eq!(for_body.len(), 6, "for body should have 6 statements");
 
     // mix2 has 2 params -> assert structurally.
     let mix2 = ast
         .items
         .iter()
-        .find_map(|i| match i {
-            Item::Kernel(k) if k.name == "mix2" => Some(k),
+        .find_map(|i| match &i.node {
+            Item::Kernel(k) if k.name.node == "mix2" => Some(k),
             _ => None,
         })
         .expect("missing mix2 kernel");
@@ -307,8 +274,8 @@ fn parses_example_14_hearing_aid() {
     let rf_transmit = ast
         .items
         .iter()
-        .find_map(|i| match i {
-            Item::Kernel(k) if k.name == "rf_transmit" => Some(k),
+        .find_map(|i| match &i.node {
+            Item::Kernel(k) if k.name.node == "rf_transmit" => Some(k),
             _ => None,
         })
         .expect("missing rf_transmit kernel");
@@ -340,18 +307,11 @@ fn parses_example_05_stencil() {
     assert_eq!(ast.count_stmts(), 3, "expected 3 top-level statements");
 
     // Spot-check the kernel purities.
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     let blur3 = by_name("blur3");
@@ -368,16 +328,9 @@ fn parses_example_05_stencil() {
 
     // The outer for-loop body holds exactly one statement (the inner
     // `for x` loop).
-    let outer_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a top-level for-loop");
+    let outer_body = first_for_body(&ast);
     assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
-    let inner_body = match &outer_body[0] {
+    let inner_body = match &outer_body[0].node {
         Stmt::For { body, .. } => body,
         other => panic!("expected inner for-loop; got {:?}", other),
     };
@@ -400,18 +353,11 @@ fn parses_example_07_matmul() {
     assert_eq!(ast.count_kernels(), 4, "expected 4 kernel decls");
     assert_eq!(ast.count_stmts(), 4, "expected 4 top-level statements");
 
-    let kernels: Vec<_> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Kernel(k) => Some(k),
-            _ => None,
-        })
-        .collect();
+    let kernels = kernels(&ast);
     let by_name = |name: &str| {
-        kernels
+        *kernels
             .iter()
-            .find(|k| k.name == name)
+            .find(|k| k.name.node == name)
             .unwrap_or_else(|| panic!("missing kernel {}", name))
     };
     let madd = by_name("madd");
@@ -427,21 +373,14 @@ fn parses_example_07_matmul() {
     // The outer for-i body holds exactly one statement (the inner
     // for-j loop), whose body holds one statement (the for-k loop),
     // whose body holds one statement (the madd dataflow).
-    let outer_body = ast
-        .items
-        .iter()
-        .find_map(|i| match i {
-            Item::Stmt(Stmt::For { body, .. }) => Some(body),
-            _ => None,
-        })
-        .expect("expected a top-level for-loop");
+    let outer_body = first_for_body(&ast);
     assert_eq!(outer_body.len(), 1, "outer-for body should have 1 stmt");
-    let middle_body = match &outer_body[0] {
+    let middle_body = match &outer_body[0].node {
         Stmt::For { body, .. } => body,
         other => panic!("expected middle for-loop; got {:?}", other),
     };
     assert_eq!(middle_body.len(), 1, "middle-for body should have 1 stmt");
-    let inner_body = match &middle_body[0] {
+    let inner_body = match &middle_body[0].node {
         Stmt::For { body, .. } => body,
         other => panic!("expected inner for-loop; got {:?}", other),
     };
@@ -524,7 +463,7 @@ const H : usize = 8;
 data x : f32[H/2];
 ";
     let ast = parse_algo(src).expect("must parse");
-    let d = match &ast.items[1] {
+    let d = match &ast.items[1].node {
         Item::Data(d) => d,
         _ => panic!("expected DataDecl"),
     };
@@ -544,4 +483,132 @@ fn parser_error_carries_line_and_column() {
 
 fn expect_err(src: &str) -> ParseError {
     parse_algo(src).expect_err("expected parse error")
+}
+
+// --------------------------------------------------------------------
+// Span population (TASK-0082, AC#3)
+// --------------------------------------------------------------------
+
+/// Spans are populated and point at the exact source substring each
+/// wrapped node was parsed from. We recover `&src[node.span]` and
+/// compare it byte-for-byte against the expected slice, and validate
+/// the start offset's `(line, column)` via the shared
+/// `error::offset_to_line_col` helper (the same helper `ParseError`
+/// uses), so a future diagnostic prints the right coordinates.
+///
+/// This is evidence, not just an assertion: the test reconstructs the
+/// original token text from the span alone.
+#[test]
+fn spans_point_at_correct_source_substring() {
+    use compiler::error::offset_to_line_col;
+
+    // Carefully laid-out source so offsets are predictable. Line 1 is
+    // the const decl; line 2 declares data; line 3 is the for-loop
+    // whose body (line 4) is a dataflow statement.
+    let src = "\
+const N : usize = 4;
+data x : f32[N];
+for i : 0 .. N {
+    x[i] <-- inc(i);
+}
+";
+    let ast = parse_algo(src).expect("must parse");
+
+    // --- Item 0: the whole const declaration ---
+    let item0 = &ast.items[0];
+    assert_eq!(
+        &src[item0.span.clone()],
+        "const N : usize = 4;",
+        "item 0 span must cover the entire const declaration"
+    );
+    assert_eq!(offset_to_line_col(src, item0.span.start), (1, 1));
+
+    // The const's *name* identifier carries its own tight span: just
+    // `N`, at line 1 column 7 (1-based) — what an "undeclared/duplicate
+    // `N`" diagnostic would underline.
+    let cn = match &item0.node {
+        Item::Const(c) => &c.name,
+        other => panic!("expected const; got {other:?}"),
+    };
+    assert_eq!(&src[cn.span.clone()], "N");
+    assert_eq!(offset_to_line_col(src, cn.span.start), (1, 7));
+
+    // The const's value expression `4` (single-token expr span).
+    let cv = match &item0.node {
+        Item::Const(c) => &c.value,
+        _ => unreachable!(),
+    };
+    assert_eq!(&src[cv.span.clone()], "4");
+    assert_eq!(offset_to_line_col(src, cv.span.start), (1, 19));
+
+    // --- Item 1: data decl; its shape-dim expression `N` ---
+    let data_dim = match &ast.items[1].node {
+        Item::Data(d) => &d.ty.dims[0],
+        other => panic!("expected data; got {other:?}"),
+    };
+    assert_eq!(&src[data_dim.span.clone()], "N");
+    // `f32[N]` — the `N` is on line 2. Column: `data x : f32[` is 13
+    // chars, so `N` is column 14.
+    assert_eq!(offset_to_line_col(src, data_dim.span.start), (2, 14));
+
+    // --- Item 2: the for-loop statement ---
+    let item2 = &ast.items[2];
+    // The item span covers the whole loop, including the closing `}`.
+    assert_eq!(
+        &src[item2.span.clone()],
+        "for i : 0 .. N {\n    x[i] <-- inc(i);\n}"
+    );
+    assert_eq!(offset_to_line_col(src, item2.span.start), (3, 1));
+
+    let for_stmt = match &item2.node {
+        Item::Stmt(s) => s,
+        other => panic!("expected stmt item; got {other:?}"),
+    };
+    let (var, body) = match &for_stmt.node {
+        Stmt::For { var, body, .. } => (var, body),
+        other => panic!("expected for; got {other:?}"),
+    };
+    // The loop variable `i` token.
+    assert_eq!(&src[var.span.clone()], "i");
+    assert_eq!(offset_to_line_col(src, var.span.start), (3, 5));
+
+    // --- Body statement: the dataflow `x[i] <-- inc(i);` ---
+    let body0 = &body[0];
+    assert_eq!(&src[body0.span.clone()], "x[i] <-- inc(i);");
+    assert_eq!(offset_to_line_col(src, body0.span.start), (4, 5));
+
+    // Drill into the RHS call `inc(i)` and its callee identifier.
+    let (lhs, rhs) = match &body0.node {
+        Stmt::Dataflow { lhs, rhs } => (lhs, rhs),
+        other => panic!("expected dataflow; got {other:?}"),
+    };
+    // LHS base identifier `x`.
+    assert_eq!(&src[lhs.name.span.clone()], "x");
+    assert_eq!(offset_to_line_col(src, lhs.name.span.start), (4, 5));
+    // RHS expression `inc(i)`.
+    assert_eq!(&src[rhs.span.clone()], "inc(i)");
+    let call = match &rhs.node {
+        compiler::algo::Expr::Call(c) => c,
+        other => panic!("expected call rhs; got {other:?}"),
+    };
+    // Callee identifier `inc` — column 14 on line 4: `    x[i] <-- `
+    // is 13 chars (4 spaces, `x[i]`, space, `<--`, space).
+    assert_eq!(&src[call.callee.span.clone()], "inc");
+    assert_eq!(offset_to_line_col(src, call.callee.span.start), (4, 14));
+    // The single argument `i` (an LValue-shaped bare ident — its span
+    // is the identifier token).
+    assert_eq!(&src[call.args[0].span.clone()], "i");
+
+    // Spanned equality must IGNORE the span (AC#2): two structurally
+    // identical idents from different source positions compare equal.
+    let a = Spanned::new("z".to_string(), 0..1);
+    let b = Spanned::new("z".to_string(), 99..100);
+    assert_eq!(a, b, "Spanned PartialEq must exclude the span");
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut ha = DefaultHasher::new();
+    let mut hb = DefaultHasher::new();
+    a.hash(&mut ha);
+    b.hash(&mut hb);
+    assert_eq!(ha.finish(), hb.finish(), "Spanned Hash must exclude span");
 }

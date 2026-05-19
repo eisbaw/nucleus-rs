@@ -34,8 +34,12 @@
 //!   a follow-up task.
 //! - Minimal error recovery — the parser bails on the first syntactic
 //!   failure rather than skipping to the next plausible statement.
-//! - AST nodes do not carry spans yet; only `ParseError` does. Adding
-//!   per-node spans is a follow-up task.
+//! - AST nodes carry per-node byte-range spans (TASK-0082): every
+//!   wrapped node is built with `.map_with_span(Spanned::new)`, so a
+//!   node's span is the `start..end` of exactly the source text it was
+//!   parsed from (leading `pad`/comment whitespace is consumed by the
+//!   *following* token, matching `ParseError`'s offset convention).
+//!   Lowering still ignores spans (TASK-0090 wires them in).
 //! - Semantic constraints (single-assignment, kernel-purity-vs-effect-
 //!   statement, forward references) are deliberately NOT enforced here
 //!   — they belong to TASK-0009 (AlgoIR lowering).
@@ -44,8 +48,9 @@ use chumsky::prelude::*;
 
 use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
-    Purity, ScalarType, Stmt, Type, UnaryOp,
+    Purity, ScalarType, SpExpr, SpIdent, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
+use super::span::Spanned;
 use crate::error::map_first_chumsky_error;
 pub use crate::error::{ParseError, ParseErrorKind};
 
@@ -53,8 +58,8 @@ pub use crate::error::{ParseError, ParseErrorKind};
 /// argument list or zero-or-more index suffixes. Kept local because it
 /// has no meaning outside the expression parser.
 enum IdentTail {
-    Call(Vec<Expr>),
-    Indices(Vec<Expr>),
+    Call(Vec<SpExpr>),
+    Indices(Vec<SpExpr>),
 }
 
 /// Parse a `*.algo.nuc` source string into an [`AlgoAst`].
@@ -101,7 +106,7 @@ const KEYWORDS: &[&str] = &[
 ///
 /// Wrapped in a function so callers don't depend on chumsky's exact
 /// return type.
-fn program_parser() -> impl Parser<char, Vec<Item>, Error = Simple<char>> {
+fn program_parser() -> impl Parser<char, Vec<SpItem>, Error = Simple<char>> {
     item_parser()
         .padded_by(comment_or_ws())
         .repeated()
@@ -119,6 +124,24 @@ fn comment_or_ws() -> impl Parser<char, (), Error = Simple<char>> + Clone {
         .ignored()
 }
 
+/// Helper: capture a node's span on the bare token **before** the
+/// trailing whitespace/comment padding is consumed, so the span is the
+/// tight extent of the source text the node was parsed from (no
+/// trailing layout). Leading layout is already consumed by the
+/// *previous* token's pad, matching `ParseError`'s offset convention.
+///
+/// This is the span-correctness primitive (TASK-0082): `pad(p)` alone
+/// would, if `.map_with_span`-wrapped on the outside, fold the trailing
+/// whitespace into the span — wrong for a diagnostic that underlines a
+/// token. `padded_spanned(p)` wraps with the span fixed first, then
+/// eats trailing layout.
+fn padded_spanned<P, T>(p: P) -> impl Parser<char, Spanned<T>, Error = Simple<char>> + Clone
+where
+    P: Parser<char, T, Error = Simple<char>> + Clone,
+{
+    p.map_with_span(Spanned::new).then_ignore(comment_or_ws())
+}
+
 /// Helper: token followed by trailing whitespace/comments.
 fn pad<P, T>(p: P) -> impl Parser<char, T, Error = Simple<char>> + Clone
 where
@@ -127,8 +150,11 @@ where
     p.then_ignore(comment_or_ws())
 }
 
-/// Identifier matcher. Rejects keywords.
-fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
+/// Identifier matcher. Rejects keywords. Yields a [`SpIdent`] whose
+/// span is exactly the identifier token's byte range (no surrounding
+/// whitespace — `pad` consumes trailing space *after* this combinator),
+/// so an "undeclared / duplicate `X`" diagnostic underlines just `X`.
+fn ident() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
     let start = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_');
     let cont = filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_');
     start
@@ -144,6 +170,7 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
                 Ok(s)
             }
         })
+        .map_with_span(Spanned::new)
 }
 
 /// Integer literal — decimal only (grammar §1).
@@ -194,11 +221,21 @@ fn scalar_type() -> impl Parser<char, ScalarType, Error = Simple<char>> + Clone 
 
 /// Expression parser — covers `IndexExpr` and `ConstExpr` (grammar §1
 /// merges them at parse time).
-fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
-    recursive(|expr| {
-        // Atom: int | ident-or-call | parenthesised expr
-        let int_atom = pad(int_lit()).map(Expr::IntLit);
+fn expr_parser() -> impl Parser<char, SpExpr, Error = Simple<char>> + Clone {
+    // Recurses on `SpExpr`; every alternative ends in
+    // `.map_with_span(Spanned::new)` so the span of a composed node is
+    // the byte range covering the whole sub-expression (operator and
+    // both operands for a binary, the `-` and operand for a unary,
+    // etc.). Atoms span just their token; the parenthesised form spans
+    // the inner expression (the parens are structural).
+    recursive(|expr: chumsky::recursive::Recursive<char, SpExpr, Simple<char>>| {
+        // Atom: int | ident-or-call | parenthesised expr. The int
+        // span is the digits only (trailing layout excluded).
+        let int_atom = padded_spanned(int_lit().map(Expr::IntLit));
 
+        // The parenthesised expression keeps the *inner* expression's
+        // span (already populated); the surrounding parens carry no
+        // independent diagnostic meaning.
         let paren = pad(just('('))
             .ignore_then(expr.clone())
             .then_ignore(pad(just(')')));
@@ -208,33 +245,66 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
         // these mutually exclusive: only an LValue can be indexed, a
         // CallExpr cannot. We model that here with a single choice on
         // the tail.
-        let call_tail = pad(just('('))
+        // Each tail also reports the byte offset just past its closing
+        // delimiter so the composed atom span ends tightly at `)` /
+        // `]` (or at the identifier itself for a bare ident), never
+        // including trailing layout.
+        let call_tail = just('(')
+            .ignore_then(comment_or_ws())
             .ignore_then(expr.clone().separated_by(pad(just(','))).allow_trailing())
-            .then_ignore(pad(just(')')))
-            .map(IdentTail::Call);
+            .then(just(')').map_with_span(|_, s: std::ops::Range<usize>| s.end))
+            .then_ignore(comment_or_ws())
+            .map(|(args, end)| (IdentTail::Call(args), Some(end)));
 
-        let index_tail = pad(just('['))
+        let index_tail = just('[')
+            .ignore_then(comment_or_ws())
             .ignore_then(expr.clone())
-            .then_ignore(pad(just(']')))
+            .then(just(']').map_with_span(|_, s: std::ops::Range<usize>| s.end))
+            .then_ignore(comment_or_ws())
             .repeated()
-            .map(IdentTail::Indices);
+            .map(|pairs| {
+                let end = pairs.last().map(|(_, e)| *e);
+                let indices = pairs.into_iter().map(|(i, _)| i).collect();
+                (IdentTail::Indices(indices), end)
+            });
 
+        // `name` is already a tightly-spanned `SpIdent`. Behaviour
+        // preserved exactly from before spans: `index_tail` is
+        // `.repeated()` so it always succeeds (possibly empty) — a
+        // bare identifier still lowers as
+        // `Expr::LValue(IndexedLValue{ indices: [] })`, NOT
+        // `Expr::Ident`, so lowering's existing bare-ident handling
+        // (lower.rs `Expr::LValue` empty-indices arms) is unchanged.
+        // The atom span is `name.start .. (close-delim end | name end)`
+        // — tight, no trailing layout.
         let ident_or_call = pad(ident())
             .then(call_tail.or(index_tail))
-            .map(|(name, tail)| match tail {
-                IdentTail::Call(args) => Expr::Call(Call { callee: name, args }),
-                IdentTail::Indices(indices) => Expr::LValue(IndexedLValue { name, indices }),
+            .map(|(name, (tail, tail_end))| {
+                let span = name.span.start..tail_end.unwrap_or(name.span.end);
+                let node = match tail {
+                    IdentTail::Call(args) => Expr::Call(Call { callee: name, args }),
+                    IdentTail::Indices(indices) => {
+                        Expr::LValue(IndexedLValue { name, indices })
+                    }
+                };
+                Spanned::new(node, span)
             });
 
         let atom = choice((int_atom, paren, ident_or_call));
 
-        // Unary `-`.
+        // Unary `-`. `foldr` wraps right-to-left; each added `-`
+        // re-spans to cover that `-` plus everything to its right.
         let unary = pad(just('-'))
+            .map_with_span(|_, span: std::ops::Range<usize>| span)
             .repeated()
             .then(atom)
-            .foldr(|_, rhs| Expr::Unary(UnaryOp::Neg, Box::new(rhs)));
+            .foldr(|minus_span, rhs: SpExpr| {
+                let span = minus_span.start..rhs.span.end;
+                Spanned::new(Expr::Unary(UnaryOp::Neg, Box::new(rhs)), span)
+            });
 
-        // Multiplicative.
+        // Multiplicative. `foldl` re-spans each composed binary to
+        // cover lhs.start..rhs.end.
         let mul_op = choice((
             pad(just('*')).to(BinOp::Mul),
             pad(just('/')).to(BinOp::Div),
@@ -243,13 +313,19 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
         let mul = unary
             .clone()
             .then(mul_op.then(unary).repeated())
-            .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
+            .foldl(|lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
+                let span = lhs.span.start..rhs.span.end;
+                Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
+            });
 
         // Additive.
         let add_op = choice((pad(just('+')).to(BinOp::Add), pad(just('-')).to(BinOp::Sub)));
         mul.clone()
             .then(add_op.then(mul).repeated())
-            .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+            .foldl(|lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
+                let span = lhs.span.start..rhs.span.end;
+                Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
+            })
     })
 }
 
@@ -271,7 +347,7 @@ fn const_decl_parser() -> impl Parser<char, ConstDecl, Error = Simple<char>> + C
         .then(pad(scalar_type()))
         .then_ignore(pad(just('=')))
         .then(expr_parser())
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|((name, ty), value)| ConstDecl { name, ty, value })
 }
 
@@ -281,7 +357,7 @@ fn data_decl_parser() -> impl Parser<char, DataDecl, Error = Simple<char>> + Clo
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
         .then(data_type_parser())
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(name, ty)| DataDecl { name, ty })
 }
 
@@ -312,7 +388,7 @@ fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> +
         .then_ignore(pad(just(':')))
         .then(sig)
         .then(purity)
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|((name, sig), purity)| KernelDecl { name, sig, purity })
 }
 
@@ -342,15 +418,21 @@ fn lvalue_parser() -> impl Parser<char, IndexedLValue, Error = Simple<char>> + C
 }
 
 /// Statements (dataflow / effect / for).
-fn stmt_parser() -> impl Parser<char, Stmt, Error = Simple<char>> + Clone {
-    recursive(|stmt| {
+fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
+    recursive(|stmt: chumsky::recursive::Recursive<char, SpStmt, Simple<char>>| {
         // Dataflow vs effect both start with an ident. We disambiguate
         // by trying dataflow (which needs `<--` after the LValue) and
         // falling back to a bare call statement.
+        // Each alternative ends at its *bare* terminator (`;` / `}`)
+        // — NOT `pad(just(..))` — so the `.map_with_span` below fixes
+        // the statement span tight at the terminator; trailing layout
+        // is consumed afterwards (`then_ignore(comment_or_ws())`),
+        // outside the span. Without this the span would swallow the
+        // newline after `;`, mislocating a statement-level diagnostic.
         let dataflow = lvalue_parser()
             .then_ignore(pad(just('<')).then(pad(just('-'))).then(pad(just('-'))))
             .then(expr_parser())
-            .then_ignore(pad(just(';')))
+            .then_ignore(just(';'))
             .map(|(lhs, rhs)| Stmt::Dataflow { lhs, rhs });
 
         // Bare call statement: ident '(' args ')' ';'
@@ -364,7 +446,7 @@ fn stmt_parser() -> impl Parser<char, Stmt, Error = Simple<char>> + Clone {
                     .map(|a| a.unwrap_or_default()),
             )
             .then_ignore(pad(just(')')))
-            .then_ignore(pad(just(';')))
+            .then_ignore(just(';'))
             .map(|(callee, args)| Stmt::Effect(Call { callee, args }));
 
         let for_stmt = pad(keyword("for"))
@@ -375,21 +457,46 @@ fn stmt_parser() -> impl Parser<char, Stmt, Error = Simple<char>> + Clone {
             .then(expr_parser())
             .then_ignore(pad(just('{')))
             .then(stmt.clone().repeated())
-            .then_ignore(pad(just('}')))
+            .then_ignore(just('}'))
             .map(|(((var, lo), hi), body)| Stmt::For { var, lo, hi, body });
 
         // Order: `for_stmt` first (distinct keyword), then dataflow
-        // (uses `<--`), then bare-call as fallback.
+        // (uses `<--`), then bare-call as fallback. Span fixed at the
+        // bare terminator, then trailing layout consumed off-span.
         choice((for_stmt, dataflow, bare_call))
+            .map_with_span(Spanned::new)
+            .then_ignore(comment_or_ws())
     })
 }
 
 /// Top-level item.
-fn item_parser() -> impl Parser<char, Item, Error = Simple<char>> + Clone {
+fn item_parser() -> impl Parser<char, SpItem, Error = Simple<char>> + Clone {
+    // `stmt_parser` already yields a `SpStmt`; unwrap its node into
+    // `Item::Stmt` and re-span at the item level (same source range —
+    // a top-level statement *is* its item). The decl arms span the
+    // whole declaration.
+    // Decl parsers end at the bare `;` (no trailing pad), so
+    // `.map_with_span` fixes the item span tight at the terminator;
+    // trailing layout is then consumed off-span. `stmt_parser` already
+    // yields a tightly-spanned `SpStmt` (and ate its own trailing
+    // layout); a top-level statement *is* its item, so the item span
+    // is exactly the statement span.
     choice((
-        const_decl_parser().map(Item::Const),
-        data_decl_parser().map(Item::Data),
-        kernel_decl_parser().map(Item::Kernel),
-        stmt_parser().map(Item::Stmt),
+        const_decl_parser()
+            .map(Item::Const)
+            .map_with_span(Spanned::new)
+            .then_ignore(comment_or_ws()),
+        data_decl_parser()
+            .map(Item::Data)
+            .map_with_span(Spanned::new)
+            .then_ignore(comment_or_ws()),
+        kernel_decl_parser()
+            .map(Item::Kernel)
+            .map_with_span(Spanned::new)
+            .then_ignore(comment_or_ws()),
+        stmt_parser().map(|s| {
+            let span = s.span.clone();
+            Spanned::new(Item::Stmt(s), span)
+        }),
     ))
 }
