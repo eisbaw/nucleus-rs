@@ -1006,3 +1006,194 @@ y <-- f(x);
     assert_eq!(ir.kernels.len(), 2);
     assert_eq!(ir.stmts.len(), 2);
 }
+
+// --------------------------------------------------------------------
+// TASK-0089: kernel-purity vs statement-form enforcement.
+//
+// Grammar §2 note 5 — the ONLY direction the formal grammar specifies:
+// a bare-call statement (`EffectStmt`) must reference an `effectful`
+// kernel. A bare-call to a `pure` kernel discards the return value
+// (the only thing a pure kernel produces) and is meaningless.
+//
+// The OTHER direction (DataflowStmt RHS must be pure) is intentionally
+// NOT enforced — every shipped example (01..07, 13, 14) puts an
+// effectful load/capture kernel on the RHS of `<--` (see TASK-0201 for
+// the spec decision on whether to reverse that). The positive test
+// `pure_dataflow_with_effectful_rhs_load_lowers` below pins that
+// load-bearing pattern so a future strict-bidirectional reinterpretation
+// can't silently regress every example.
+// --------------------------------------------------------------------
+
+/// Positive: a pure kernel call on the RHS of `<--` (the textbook case)
+/// lowers cleanly. Smoke check that the new check does not over-fire.
+#[test]
+fn pure_dataflow_with_pure_rhs_lowers() {
+    let src = "\
+const N : usize = 4;
+data a : i32[N];
+data b : i32[N];
+kernel load_a : () -> i32[N] effectful;
+kernel id_arr : (i32[N]) -> i32[N] pure;
+a <-- load_a();
+b <-- id_arr(a);
+";
+    let ir = lower_str(src).expect("pure RHS in dataflow must lower");
+    assert_eq!(ir.stmts.len(), 2);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::Dataflow { .. }));
+}
+
+/// Positive: an effectful kernel as a bare-call statement lowers
+/// cleanly. The other half of the no-over-fire check.
+#[test]
+fn effect_stmt_calling_effectful_lowers() {
+    let src = "\
+const N : usize = 4;
+data x : i32[N];
+kernel load  : ()       -> i32[N] effectful;
+kernel store : (i32[N]) -> ()     effectful;
+x <-- load();
+store(x);
+";
+    let ir = lower_str(src).expect("effectful effect-stmt must lower");
+    assert_eq!(ir.stmts.len(), 2);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+    assert!(matches!(ir.stmts[1], IrStmt::Effect { .. }));
+}
+
+/// Positive — load-bearing: the universal `data <-- effectful_load();`
+/// pattern present in EVERY shipped example (01..07, 13, 14) must keep
+/// lowering. If a future change ever turns DataflowStmt-RHS-must-be-pure
+/// on, THIS test is the first thing to fail, surfacing the regression
+/// at the unit level before the example-level lowers_example_* tests do.
+/// See TASK-0089 onboarding notes and TASK-0201 for the spec context.
+#[test]
+fn pure_dataflow_with_effectful_rhs_load_lowers() {
+    let src = "\
+const N : usize = 4;
+data a : i32[N];
+kernel load_input : () -> i32[N] effectful;
+a <-- load_input();
+";
+    let ir = lower_str(src).expect("the universal `data <-- effectful_load();` pattern must lower");
+    assert_eq!(ir.stmts.len(), 1);
+    assert!(matches!(ir.stmts[0], IrStmt::Dataflow { .. }));
+}
+
+/// Negative: an `EffectStmt` calls a `pure` kernel — grammar §2 note 5
+/// violation. Reports [`LowerErrorKind::EffectCalleeNotEffectful`] at
+/// the callee's identifier span.
+#[test]
+fn effect_stmt_calling_pure_kernel_is_error() {
+    let src = "\
+const N : usize = 4;
+data x : i32[N];
+kernel load_input : () -> i32[N] effectful;
+kernel add_one   : (i32[N]) -> i32[N] pure;
+x <-- load_input();
+add_one(x);
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::EffectCalleeNotEffectful { callee },
+            ..
+        }) => assert_eq!(callee, "add_one"),
+        other => panic!("expected EffectCalleeNotEffectful; got {other:?}"),
+    }
+}
+
+/// Negative + located: the new variant carries the callee's identifier
+/// span so the driver renders `... at L:C` correctly. Pin the exact
+/// `(line, column)` recomputed from the source string (same pattern as
+/// `located_errors_carry_correct_line_col`).
+#[test]
+fn located_effect_purity_error_has_correct_line_col() {
+    let src = "data x : i32[4];\nkernel pure_k : () -> i32[4] pure;\nx <-- pure_k();\npure_k();\n";
+    // The error is on the bare-call line 4 at the `pure_k` identifier.
+    let err = lower_str(src)
+        .expect_err("bare-call to pure kernel must error")
+        .first()
+        .clone();
+    assert!(
+        matches!(err.kind, LowerErrorKind::EffectCalleeNotEffectful { ref callee } if callee == "pure_k"),
+        "got {err:?}"
+    );
+    // The two `pure_k(` occurrences appear at lines 3 (in dataflow RHS,
+    // legal) and 4 (in effect-stmt, the violation). The error must
+    // point at the line-4 occurrence.
+    let last_pure_k = src.rfind("pure_k").expect("`pure_k` in source");
+    let expected = offset_to_line_col(src, last_pure_k);
+    assert_eq!(expected, (4, 1), "sanity: bare-call `pure_k` is at line 4 col 1");
+    let span = err.span.clone().expect("EffectCalleeNotEffectful carries a span");
+    assert_eq!(
+        offset_to_line_col(src, span.start),
+        expected,
+        "EffectCalleeNotEffectful must point at the bare-call callee"
+    );
+    // Driver-facing rendering carries the located form.
+    assert!(
+        err.display_with_src(src).contains("at 4:1"),
+        "rendered diagnostic must carry `at 4:1`; got `{}`",
+        err.display_with_src(src)
+    );
+}
+
+/// Multi-violation: two independent purity violations in one program
+/// are each reported at their own site (TASK-0092 multi-error
+/// infrastructure — collected, not bailed). Pins the per-site nature
+/// of the check (this is NOT a cascade-class defect).
+#[test]
+fn multiple_effect_purity_violations_each_reported() {
+    let src = "\
+const N : usize = 4;
+data x : i32[N];
+data y : i32[N];
+kernel load_x  : ()        -> i32[N] effectful;
+kernel pure_a  : (i32[N])  -> i32[N] pure;
+kernel pure_b  : (i32[N])  -> i32[N] pure;
+x <-- load_x();
+y <-- pure_a(x);
+pure_a(x);
+pure_b(y);
+";
+    let errs = lower_str(src).expect_err("two pure-bare-calls must each error");
+    let kinds: Vec<&LowerErrorKind> = errs.errors().iter().map(|e| &e.kind).collect();
+    assert_eq!(
+        kinds.len(),
+        2,
+        "expected exactly two independent purity violations, got {} (kinds = {kinds:?})",
+        kinds.len()
+    );
+    // Order: source order — first `pure_a();`, then `pure_b();`.
+    match kinds[0] {
+        LowerErrorKind::EffectCalleeNotEffectful { callee } => assert_eq!(callee, "pure_a"),
+        other => panic!("first error: expected EffectCalleeNotEffectful(pure_a); got {other:?}"),
+    }
+    match kinds[1] {
+        LowerErrorKind::EffectCalleeNotEffectful { callee } => assert_eq!(callee, "pure_b"),
+        other => panic!("second error: expected EffectCalleeNotEffectful(pure_b); got {other:?}"),
+    }
+    // Each error carries its own callee span; they are distinct
+    // positions in the source.
+    let spans: Vec<_> = errs.errors().iter().filter_map(|e| e.span.clone()).collect();
+    assert_eq!(spans.len(), 2, "both errors must carry spans");
+    assert_ne!(spans[0], spans[1], "the two violation spans must differ");
+}
+
+/// Cascade discipline: a bare-call to an UNKNOWN kernel (never declared)
+/// remains an [`LowerErrorKind::UnknownIdent`] — the purity check
+/// naturally short-circuits when the kernel is not in `ir.kernels`, so
+/// there is no double-emit. This pins the "no new cascade-suppression
+/// rule needed" property documented on `Stmt::Effect` in lower.rs.
+#[test]
+fn effect_stmt_to_unknown_kernel_stays_unknown_ident() {
+    let src = "ghost();\n";
+    let err = lower_str(src)
+        .expect_err("bare-call to undeclared kernel must error")
+        .first()
+        .clone();
+    match err.kind {
+        LowerErrorKind::UnknownIdent(n) => assert_eq!(n, "ghost"),
+        other => panic!("expected UnknownIdent; got {other:?}"),
+    }
+}

@@ -24,10 +24,24 @@
 //! - Resolve which kernel a `Call` actually refers to (the IR keeps
 //!   the textual name; binding to a [`KernelDecl`] is straightforward
 //!   but we don't store the back-reference yet).
-//! - Validate kernel-purity vs the statement form (effect-statement
-//!   bodies must call effectful kernels, dataflow-statement RHS must
-//!   be pure). The information is preserved on [`KernelDecl::purity`];
-//!   the check belongs to a later pass.
+//!
+//! Kernel-purity vs statement-form enforcement (TASK-0089) lives in
+//! [`crate::algo::lower::lower_stmt`]: an `EffectStmt` (bare-call
+//! statement) callee MUST be an [`super::ast::Purity::Effectful`]
+//! kernel — the grammar §2 note 5 rule, the only direction the formal
+//! grammar specifies. A bare-call to a [`super::ast::Purity::Pure`]
+//! kernel emits [`LowerErrorKind::EffectCalleeNotEffectful`] at the
+//! callee's identifier span.
+//!
+//! The OTHER direction — whether a `DataflowStmt` RHS Call must
+//! reference a pure kernel — is **intentionally not enforced**. The
+//! grammar §2 note 5 is unidirectional and every shipped example
+//! (01..07, 13, 14) puts an effectful load/capture kernel on the RHS
+//! of `<--` (`a <-- load_input();`, `mic_in[frame] <-- fe_capture();`).
+//! Whether PRD §6.2.2 row 77's wording ("where pure mandatory; where
+//! !effectful opt-in") was meant bidirectional is filed as TASK-0201
+//! for a spec decision; until then this pass enforces only the
+//! grammar-supported direction.
 //!
 //! Design choice — separate IR types vs annotated AST: separate.
 //! Rationale: invariants differ (declarations bucketed, shapes
@@ -267,6 +281,15 @@ pub enum LowerErrorKind {
     /// confusion. Flagged conservatively; relax if a real example
     /// needs it.
     IterVarShadowsDecl { var: String, shadows: String },
+    /// An `EffectStmt` (bare-call statement) names a kernel declared
+    /// `pure`. Grammar §2 note 5: bare-call statements are only valid
+    /// when the called kernel is `effectful` (a pure call with the
+    /// value discarded is meaningless — pure kernels are reorderable,
+    /// deduplicable, eliminable, so calling one purely for its
+    /// side-effect is a contradiction). TASK-0089. The OTHER direction
+    /// (DataflowStmt RHS Call must be pure) is intentionally NOT
+    /// enforced — see [`crate::algo::ir`] module docs and TASK-0201.
+    EffectCalleeNotEffectful { callee: String },
 }
 
 impl std::fmt::Display for LowerErrorKind {
@@ -328,6 +351,10 @@ impl std::fmt::Display for LowerErrorKind {
             LowerErrorKind::IterVarShadowsDecl { var, shadows } => write!(
                 f,
                 "iteration variable `{var}` shadows a declaration `{shadows}`"
+            ),
+            LowerErrorKind::EffectCalleeNotEffectful { callee } => write!(
+                f,
+                "effect-statement callee `{callee}` references a pure kernel; expected effectful (grammar §2 note 5)"
             ),
         }
     }

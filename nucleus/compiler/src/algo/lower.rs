@@ -49,8 +49,8 @@ use core::ops::Range;
 use std::collections::{BTreeMap, HashSet};
 
 use super::ast::{
-    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, SpExpr, SpStmt,
-    Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, Purity, SpExpr,
+    SpStmt, Stmt, Type, UnaryOp,
 };
 use super::ir::{
     AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
@@ -775,12 +775,31 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
         }
         Stmt::Effect(call) => {
             // Bare-call statement. The callee must be a declared
-            // kernel; we don't enforce purity here (that's a later
-            // pass), only that the name exists.
+            // kernel AND must be declared `effectful` — grammar §2
+            // note 5: a bare-call statement to a `pure` kernel is
+            // meaningless (pure kernels are reorderable, deduplicable,
+            // eliminable, so calling one purely for its side-effect is
+            // a contradiction). TASK-0089.
+            //
+            // Cascade discipline: if the callee isn't in `ir.kernels`
+            // (UnknownIdent), the purity check naturally short-circuits
+            // — there's no resolved kernel whose purity to inspect.
+            // The existing `is_cascade_of_failed_decl` UnknownIdent
+            // suppression then collapses the error to the root
+            // declaration failure if the kernel was poisoned. No new
+            // cascade-suppression rule is needed.
             let callee = &call.callee.node;
-            if !ir.kernels.contains_key(callee) {
+            let Some(resolved) = ir.kernels.get(callee) else {
                 return Err(LowerError::at(
                     LowerErrorKind::UnknownIdent(callee.clone()),
+                    call.callee.span.clone(),
+                ));
+            };
+            if resolved.purity == Purity::Pure {
+                return Err(LowerError::at(
+                    LowerErrorKind::EffectCalleeNotEffectful {
+                        callee: callee.clone(),
+                    },
                     call.callee.span.clone(),
                 ));
             }
