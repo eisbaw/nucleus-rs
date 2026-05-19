@@ -13,6 +13,39 @@ use std::net::TcpStream;
 /// Header: 8-byte LE length + 8-byte LE seq tag, then `length` bytes.
 const HEADER_LEN: usize = 16;
 
+/// Decide whether the kernel-granted socket buffer is large enough,
+/// returning the EXACT clear-error string (naming the OS cap) when it
+/// is not. Pure and side-effect-free: no syscalls, no env, no I/O —
+/// the entire fail-loud DECISION distilled so it can be unit-tested
+/// deterministically without a kernel cap (TASK-0174 AC: prove the
+/// "clear error naming net.core.wmem_max/rmem_max" behaviour).
+///
+/// Linux internally DOUBLES the SO_SNDBUF/SO_RCVBUF request for
+/// bookkeeping overhead, so the effective payload capacity is
+/// `effective_got / 2`. We require that effective capacity to be
+/// `>= want`; otherwise the OS-level cap clamped it below the
+/// schedule's per-channel requirement and we must abort rather than
+/// proceed under-sized.
+///
+/// `opt` is the socket option number (SO_SNDBUF=7 / SO_RCVBUF=8),
+/// echoed into the message so the failing direction is identifiable.
+///
+/// Returns `Ok(())` if `effective_got / 2 >= want`, else `Err(msg)`
+/// where `msg` is the verbatim panic text `apply_sock_buf` raises.
+pub fn check_effective_sock_buf(want: i32, effective_got: i32, opt: i32) -> Result<(), String> {
+    if (effective_got / 2) < want {
+        return Err(format!(
+            "wire: socket buffer too small: requested NUC_SO_BUF={want} \
+             but the OS granted only {} effective bytes (opt={opt}); the \
+             OS-level cap (net.core.wmem_max / rmem_max) is below the \
+             schedule's per-channel requirement. Raise the cap or reduce \
+             the transfer size.",
+            effective_got / 2
+        ));
+    }
+    Ok(())
+}
+
 /// Apply the run.sh-computed socket send/recv buffer size (TASK-0038
 /// AC#2: "each binary calls setsockopt"). Size comes from the env var
 /// `NUC_SO_BUF` that run.sh exports (derived from the schedule's
@@ -23,10 +56,11 @@ const HEADER_LEN: usize = 16;
 /// Best-effort by design: the kernel clamps the request to
 /// `net.core.{wmem,rmem}_max`. If the OS cap is *below* the requested
 /// size the kernel silently gives less; we then *read it back* and,
-/// if it is smaller than required, FAIL LOUD (panic naming the cap)
-/// rather than proceed with an under-sized buffer — exactly the
-/// clear-error behaviour TASK-0038 AC#5 asks for. On non-Unix this is
-/// a no-op (the supported transport target is Unix loopback).
+/// via [`check_effective_sock_buf`] (the pure decision), if it is
+/// smaller than required we FAIL LOUD (panic naming the cap) rather
+/// than proceed with an under-sized buffer — exactly the clear-error
+/// behaviour TASK-0038 AC#5 asks for. On non-Unix this is a no-op
+/// (the supported transport target is Unix loopback).
 #[cfg(unix)]
 pub fn apply_sock_buf(sock: &TcpStream) {
     use std::os::unix::io::AsRawFd;
@@ -97,15 +131,14 @@ pub fn apply_sock_buf(sock: &TcpStream) {
                 &mut len as *mut u32,
             )
         };
-        if grc == 0 && (got / 2) < want {
-            panic!(
-                "wire: socket buffer too small: requested NUC_SO_BUF={want} \
-                 but the OS granted only {} effective bytes (opt={opt}); the \
-                 OS-level cap (net.core.wmem_max / rmem_max) is below the \
-                 schedule's per-channel requirement. Raise the cap or reduce \
-                 the transfer size.",
-                got / 2
-            );
+        if grc == 0 {
+            // Pure decision factored out so the fail-loud LOGIC is
+            // unit-testable without a kernel cap (TASK-0174). Behaviour
+            // is byte-identical: still panics here, with the exact same
+            // message the pure function returns on Err.
+            if let Err(msg) = check_effective_sock_buf(want, got, opt) {
+                panic!("{msg}");
+            }
         }
     }
 }

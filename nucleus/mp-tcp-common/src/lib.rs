@@ -137,6 +137,68 @@ mod tests {
         );
     }
 
+    // ---- TASK-0174 (A): the SO_*BUF fail-loud DECISION, proven -----
+    // ---- deterministically without a kernel cap. These pin the ----
+    // ---- exact clear-error behaviour TASK-0038 AC#5 asks for: an ---
+    // ---- OS cap below the schedule requirement => a CLEAR error ----
+    // ---- naming net.core.wmem_max/rmem_max. apply_sock_buf still ---
+    // ---- panics with this exact string (refactor is behaviour- ----
+    // ---- identical); see check_effective_sock_buf docs. ------------
+
+    const SO_SNDBUF: i32 = 7;
+    const SO_RCVBUF: i32 = 8;
+
+    /// Enough buffer (effective got/2 >= want) => Ok, no error.
+    #[test]
+    fn sock_buf_check_ok_when_kernel_grants_enough() {
+        // Kernel doubled the 64 KiB request to 128 KiB; effective
+        // capacity = 65536 >= 65536 want. Boundary: exactly equal.
+        assert_eq!(check_effective_sock_buf(65536, 131072, SO_SNDBUF), Ok(()));
+        // Comfortably above.
+        assert_eq!(check_effective_sock_buf(4096, 262144, SO_RCVBUF), Ok(()));
+    }
+
+    /// OS cap clamped the buffer below the schedule requirement =>
+    /// Err with the CLEAR message naming the OS cap, the requested
+    /// size, the granted effective size, and the failing option.
+    #[test]
+    fn sock_buf_check_fails_loud_naming_os_cap_when_clamped() {
+        // Schedule needs 1 MiB; a lowered net.core.wmem_max clamps the
+        // kernel to ~4096 total => 2048 effective. Must reject.
+        let err = check_effective_sock_buf(1_048_576, 4096, SO_SNDBUF)
+            .expect_err("a clamped-below-requirement buffer MUST be rejected");
+        // The error must NAME the OS cap by its exact sysctl key so a
+        // user knows precisely what to raise.
+        assert!(
+            err.contains("net.core.wmem_max") && err.contains("rmem_max"),
+            "clear error must name the OS cap (net.core.wmem_max / rmem_max); got: {err:?}"
+        );
+        // It must report the requested and the effective-granted size
+        // so the gap is diagnosable without rerunning.
+        assert!(
+            err.contains("NUC_SO_BUF=1048576") && err.contains("2048 effective bytes"),
+            "error must report requested + granted sizes; got: {err:?}"
+        );
+        assert!(
+            err.contains("socket buffer too small") && err.contains("opt=7"),
+            "error must identify the failing socket option; got: {err:?}"
+        );
+    }
+
+    /// The got/2 doubling boundary is exact: one byte of effective
+    /// shortfall (odd value rounding down) still rejects, proving the
+    /// Linux-doubling subtlety is handled, not approximated.
+    #[test]
+    fn sock_buf_check_boundary_is_exact_on_the_doubling() {
+        // want=2049; got=4096 => got/2 = 2048 < 2049 => reject.
+        assert!(check_effective_sock_buf(2049, 4096, SO_RCVBUF).is_err());
+        // want=2048; got=4096 => got/2 = 2048 >= 2048 => ok.
+        assert_eq!(check_effective_sock_buf(2048, 4096, SO_RCVBUF), Ok(()));
+        // Odd got rounds DOWN (integer div): got=4097 => got/2 = 2048.
+        assert_eq!(check_effective_sock_buf(2048, 4097, SO_RCVBUF), Ok(()));
+        assert!(check_effective_sock_buf(2049, 4097, SO_RCVBUF).is_err());
+    }
+
     /// Two-party barrier over one duplex stream completes from both
     /// sides without deadlock.
     #[test]

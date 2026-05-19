@@ -82,6 +82,25 @@ determinism-check-negative:
 xbackend-check-negative:
     cd nucleus && if NUC_XBACKEND_NEGATIVE=1 cargo run --release --bin nucleus-e2e; then echo "FAIL: cross-backend differential did NOT detect injected mp-tcp corruption"; exit 1; else echo "OK: cross-backend differential correctly bit on injected mp-tcp corruption"; fi
 
+# TASK-0174 (B) / TASK-0038 AC#5: the REAL end-to-end reproduction of
+# "an OS cap below the schedule requirement makes run.sh fail LOUD".
+# Tries `unshare -Urn` + in-netns `sysctl -w net.core.wmem_max=4096`,
+# then runs a generated mp-tcp-bufsync run.sh under that lowered cap
+# and asserts it exits non-zero with the wire::apply_sock_buf clear
+# error naming the OS cap. HONEST-SKIP: net.core.wmem_max is
+# init_user_ns-owned (NOT per-netns namespaced), so the sandbox's
+# user+net namespace cannot lower it — the script then SKIPs with a
+# precise reason (exit 0, informational) rather than fake AC#5. It
+# RUNS the genuine reproduction wherever the sysctl write is permitted
+# (host root / privileged container / userns-sysctl-enabled CI). The
+# fail-loud DECISION itself is proven deterministically and
+# unconditionally by the mp-tcp-common pure-logic unit tests
+# (check_effective_sock_buf) that `just test` runs — this recipe is
+# the end-to-end arm. NOT wired into `just ci` because it skips in the
+# sandbox; run it on a privileged host/CI to genuinely close AC#5.
+sockbuf-cap-check:
+    bash nuc-nucleus/sockbuf-cap-check.sh
+
 # Aggregate verification gate. Single source of truth shared by CI
 # (.github/workflows/ci.yml) and local developers: "what CI does" ==
 # "what you can run here". Runs the full tier-1 gate in dependency
