@@ -454,7 +454,7 @@ fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
     inject_transfers(&linked, acfg)
 }
@@ -632,7 +632,7 @@ fn blocked_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = compiler::apply_block_transforms(&linked, acfg)
         .expect("block transform (non-divisible block=4 must NOT reject post-TASK-0142)");
     let acfg = inject_syncs(acfg);
@@ -824,7 +824,7 @@ fn pipeline_to_events(
     let sched_ast = parse_sched(&read_example(sched_rel)).expect("sched parse");
     let sched = lower_sched(&sched_ast).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
-    let acfg = compiler::acfg::build_acfg(&linked);
+    let acfg = compiler::acfg::build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     let name_workers = acfg.name_workers.clone();
@@ -985,7 +985,7 @@ fn full_pipeline_with_linked(algo_rel: &str, sched_rel: &str) -> (link::LinkedIR
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     (linked, acfg)
@@ -1548,7 +1548,7 @@ fn linked_acfg_from_src(algo_src: &str, sched_src: &str) -> (link::LinkedIR, ACF
     let algo = lower_algo(&parse_algo(algo_src).expect("algo parse")).expect("algo lower");
     let sched = lower_sched(&parse_sched(sched_src).expect("sched parse")).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     (linked, acfg)
 }
 

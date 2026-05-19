@@ -411,7 +411,7 @@ fn example_1_naive_has_no_transfers() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let result = inject_transfers(&linked, acfg);
     assert_eq!(result.xfer_count(), 0);
 }
@@ -423,7 +423,7 @@ fn example_13_naive_has_no_transfers() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let result = inject_transfers(&linked, acfg);
     assert_eq!(result.xfer_count(), 0);
 }
@@ -434,7 +434,7 @@ fn example_14_naive_has_no_transfers() {
         "14-hearing-aid/prog.algo.nuc",
         "14-hearing-aid/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let result = inject_transfers(&linked, acfg);
     assert_eq!(result.xfer_count(), 0);
 }
@@ -498,7 +498,7 @@ fn inject_transfers_preserves_name_tables() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    let before = build_acfg(&linked);
+    let before = build_acfg(&linked).expect("build_acfg");
     let after = inject_transfers(&linked, before.clone());
     assert_eq!(before.name_kernels, after.name_kernels);
     assert_eq!(before.name_data, after.name_data);
@@ -523,7 +523,7 @@ fn inject_transfers_preserves_operation_count_on_real_examples() {
         ),
     ] {
         let linked = linked_from_paths(algo, sched);
-        let before = build_acfg(&linked);
+        let before = build_acfg(&linked).expect("build_acfg");
         let after = inject_transfers(&linked, before.clone());
         assert_eq!(
             before.operation_count(),

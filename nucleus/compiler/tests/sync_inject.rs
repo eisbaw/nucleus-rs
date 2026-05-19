@@ -363,7 +363,7 @@ fn linked_from_paths(algo_rel: &str, sched_rel: &str) -> compiler::LinkedIR {
 
 fn acfg_with_syncs(algo_rel: &str, sched_rel: &str) -> ACFG {
     let linked = linked_from_paths(algo_rel, sched_rel);
-    inject_syncs(build_acfg(&linked))
+    inject_syncs(build_acfg(&linked).expect("build_acfg"))
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn inject_syncs_preserves_name_tables_on_real_examples() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/batch_parallel.sched.nuc",
     );
-    let before = build_acfg(&linked);
+    let before = build_acfg(&linked).expect("build_acfg");
     let after = inject_syncs(before.clone());
     assert_eq!(before.name_kernels, after.name_kernels);
     assert_eq!(before.name_data, after.name_data);
@@ -514,7 +514,7 @@ fn inject_syncs_preserves_operation_count_on_real_examples() {
         ),
     ] {
         let linked = linked_from_paths(algo, sched);
-        let before = build_acfg(&linked);
+        let before = build_acfg(&linked).expect("build_acfg");
         let after = inject_syncs(before.clone());
         assert_eq!(
             before.operation_count(),

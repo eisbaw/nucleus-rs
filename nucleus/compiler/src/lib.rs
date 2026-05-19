@@ -22,8 +22,8 @@ pub mod sched;
 pub mod sidecar;
 
 pub use acfg::{
-    build_acfg, ACFGNode, DataAccess, DataflowDag, DataflowEdge, NotifyMode, Operation,
-    SyncPlaceholder, TransferPolicy, XferPlaceholder, XferRole, ACFG,
+    build_acfg, ACFGNode, BuildAcfgError, DataAccess, DataflowDag, DataflowEdge, LoopBoundEnd,
+    NotifyMode, Operation, SyncPlaceholder, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 pub use capabilities::{
     check_schedule_compat, load_capabilities, CapError, CapMismatch, Capabilities,

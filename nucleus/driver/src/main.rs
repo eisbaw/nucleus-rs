@@ -221,7 +221,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // sync/transfer injection passes (TASK-0030). For schedules with
     // no `block=` directives (examples 01-03 at M2), this pass is a
     // pure identity and the downstream ACFG is bit-identical.
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).map_err(|e| format!("acfg build error: {e}"))?;
     let acfg =
         apply_block_transforms(&linked, acfg).map_err(|e| format!("block-transform error: {e}"))?;
     let acfg = inject_syncs(acfg);

@@ -585,6 +585,93 @@ pub struct ACFG {
 }
 
 // --------------------------------------------------------------------
+// Errors
+// --------------------------------------------------------------------
+
+/// Which end of a `for` loop's range failed to evaluate to a constant.
+///
+/// Carried in [`BuildAcfgError::NonConstLoopBound`] so the diagnostic
+/// can name the offending bound precisely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopBoundEnd {
+    /// The lower bound (`for v : LO .. hi`).
+    Lower,
+    /// The upper bound (`for v : lo .. HI`).
+    Upper,
+}
+
+impl std::fmt::Display for LoopBoundEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopBoundEnd::Lower => write!(f, "lower"),
+            LoopBoundEnd::Upper => write!(f, "upper"),
+        }
+    }
+}
+
+/// Errors produced by [`build_acfg`].
+///
+/// Each variant carries enough context to produce a user-facing
+/// diagnostic without the caller needing to thread additional state —
+/// the same contract as
+/// [`crate::passes::block_transform::BlockTransformError`] and
+/// [`crate::sidecar::SidecarError`].
+///
+/// This enum exists for the *diagnosable user-input* failure only. The
+/// other `panic!`s reachable from [`build_acfg`] (a kernel with no
+/// placement, an undeclared bound symbol, a worker not in the name
+/// table) are genuine link-pass invariant violations — `link` rejects
+/// such programs first — so they stay `panic!`s, not variants here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildAcfgError {
+    /// A `for` loop bound is not a compile-time `i64` constant.
+    ///
+    /// The algorithm grammar admits any in-scope identifier in a loop
+    /// bound (a `const` *or* an enclosing iteration variable — see
+    /// `algo::lower::lower_index_expr`), so a *triangular* loop like
+    /// `for j : 0 .. i { ... }` lowers and links cleanly but cannot be
+    /// folded to a concrete `Range<i64>` here (PRD §6.2 loop bounds are
+    /// const expressions; `eval_const` only resolves declared consts).
+    /// That is **diagnosable user input**, not a compiler invariant, so
+    /// it is a typed error surfaced cleanly by the driver rather than a
+    /// Rust panic. Carries the loop variable, which end failed, and the
+    /// offending expression verbatim so the diagnostic is actionable
+    /// without re-reading the source.
+    ///
+    /// A first-class fix (an iter-var-dependent / clamped loop form) is
+    /// future language work tracked alongside the in-array-scan
+    /// limitation; see PRD §6.2.5.
+    NonConstLoopBound {
+        /// The loop variable whose bound is non-const (e.g. `j`).
+        var: String,
+        /// Which end of the range failed (`lower` or `upper`).
+        end: LoopBoundEnd,
+        /// The offending bound expression, verbatim from the IR.
+        expr: IrExpr,
+    },
+}
+
+impl std::fmt::Display for BuildAcfgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildAcfgError::NonConstLoopBound { var, end, expr } => write!(
+                f,
+                "loop `{var}` has a non-constant {end} bound `{expr:?}`; \
+                 loop bounds must evaluate to a compile-time `i64` \
+                 constant (PRD §6.2 — only declared `const`s resolve, \
+                 not iteration variables, so triangular / \
+                 iter-var-dependent bounds like `for j : 0 .. i` are \
+                 not expressible in v2). Use a constant bound, or move \
+                 the data-dependent extent into a kernel. (First-class \
+                 support is future language work — see PRD §6.2.5.)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BuildAcfgError {}
+
+// --------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------
 
@@ -595,12 +682,13 @@ pub struct ACFG {
 /// every kernel has a placement (PRD §6.3.2) — so a panic here is a
 /// linker-pass invariant violation, not a user-facing error.
 ///
-/// Panics if a loop bound cannot be evaluated to an `i64` constant.
-/// This is also a tighter invariant than the algorithm IR currently
-/// enforces; if a real example trips it, we tighten the lowering
-/// pass to reject non-const bounds rather than carry the failure
-/// here. Filed as a follow-up.
-pub fn build_acfg(linked: &LinkedIR) -> ACFG {
+/// Returns [`BuildAcfgError::NonConstLoopBound`] if a `for` loop bound
+/// cannot be evaluated to an `i64` constant. This is *reachable* from
+/// valid (parse/lower/link-accepted) source — a triangular loop such
+/// as `for j : 0 .. i` — so it is a typed diagnostic the driver
+/// surfaces cleanly, not a panic (TASK-0179; same precedent as
+/// `BlockTransformError` / `SidecarError`).
+pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
     // -------- Build the deterministic name-to-ID mapping. --------
     //
     // BTreeMap<String, _> iteration is sorted, so collecting into
@@ -652,17 +740,17 @@ pub fn build_acfg(linked: &LinkedIR) -> ACFG {
         name_iter_vars: &name_iter_vars,
     };
 
-    let root_nodes = build_seq(&linked.algo.stmts, &ctx);
+    let root_nodes = build_seq(&linked.algo.stmts, &ctx)?;
     let root = ACFGNode::Sequence(root_nodes);
 
-    ACFG {
+    Ok(ACFG {
         root,
         name_kernels,
         name_data,
         name_workers,
         name_iter_vars,
         inner_block_iter_vars: BTreeSet::new(),
-    }
+    })
 }
 
 // --------------------------------------------------------------------
@@ -695,36 +783,50 @@ fn collect_iter_var_names(stmts: &[IrStmt], out: &mut std::collections::BTreeSet
 ///    see module docs)
 /// - `Effect` -> `Operation`
 /// - `For` -> `Repeat`
-fn build_seq(stmts: &[IrStmt], ctx: &BuildCtx<'_>) -> Vec<ACFGNode> {
+fn build_seq(stmts: &[IrStmt], ctx: &BuildCtx<'_>) -> Result<Vec<ACFGNode>, BuildAcfgError> {
     let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {
-        if let Some(node) = build_stmt(s, ctx) {
+        if let Some(node) = build_stmt(s, ctx)? {
             out.push(node);
         }
     }
-    out
+    Ok(out)
 }
 
-fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
+fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, BuildAcfgError> {
     match stmt {
-        IrStmt::Dataflow { lhs, rhs } => build_dataflow(lhs, rhs, ctx),
-        IrStmt::Effect { callee, args } => Some(build_effect(callee, args, ctx)),
+        IrStmt::Dataflow { lhs, rhs } => Ok(build_dataflow(lhs, rhs, ctx)),
+        IrStmt::Effect { callee, args } => Ok(Some(build_effect(callee, args, ctx))),
         IrStmt::For { var, lo, hi, body } => {
             let iter_var = ctx
                 .name_iter_vars
                 .get(var)
                 .copied()
                 .expect("iter var collected during pre-pass");
-            let lo_v = eval_const(lo, &ctx.algo.consts)
-                .unwrap_or_else(|| panic!("loop lower bound of `{var}` is not a const i64"));
-            let hi_v = eval_const(hi, &ctx.algo.consts)
-                .unwrap_or_else(|| panic!("loop upper bound of `{var}` is not a const i64"));
-            let body_nodes = build_seq(body, ctx);
+            // A non-const loop bound is *diagnosable user input*: the
+            // algorithm grammar admits an enclosing iter var in a bound
+            // (`for j : 0 .. i`), which lowers/links fine but cannot be
+            // folded here. Typed error, not a panic (TASK-0179).
+            let lo_v = eval_const(lo, &ctx.algo.consts).ok_or_else(|| {
+                BuildAcfgError::NonConstLoopBound {
+                    var: var.clone(),
+                    end: LoopBoundEnd::Lower,
+                    expr: lo.clone(),
+                }
+            })?;
+            let hi_v = eval_const(hi, &ctx.algo.consts).ok_or_else(|| {
+                BuildAcfgError::NonConstLoopBound {
+                    var: var.clone(),
+                    end: LoopBoundEnd::Upper,
+                    expr: hi.clone(),
+                }
+            })?;
+            let body_nodes = build_seq(body, ctx)?;
             // A `Repeat` body is a single ACFGNode. If the body has
             // one statement we still wrap in Sequence for uniform
             // top-level shape downstream; cheap and consistent.
             let body_node = ACFGNode::Sequence(body_nodes);
-            Some(ACFGNode::Repeat {
+            Ok(Some(ACFGNode::Repeat {
                 iter_var,
                 range: lo_v..hi_v,
                 body: Box::new(body_node),
@@ -732,7 +834,7 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
                 // it iterates its real range. `block_transform` may
                 // later replace it with a tagged inner nest.
                 block_tag: None,
-            })
+            }))
         }
     }
 }

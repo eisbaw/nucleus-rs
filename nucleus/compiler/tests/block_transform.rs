@@ -92,7 +92,7 @@ fn synthetic_one_loop(h: i64, with_block: Option<u64>) -> (LinkedIR, ACFG) {
         );
     }
     let linked = link(algo, sched).expect("link must succeed");
-    let acfg = compiler::build_acfg(&linked);
+    let acfg = compiler::build_acfg(&linked).expect("build_acfg");
 
     // The synthetic example always uses the example-01 algo, so the
     // `h` parameter is informational only. We assert the loop bound
@@ -255,7 +255,7 @@ fn examples_01_02_03_unchanged_by_block_transform() {
     ];
     for (algo, sched) in cases {
         let linked = linked_from_paths(algo, sched);
-        let acfg = compiler::build_acfg(&linked);
+        let acfg = compiler::build_acfg(&linked).expect("build_acfg");
         let before = acfg.clone();
         let after =
             apply_block_transforms(&linked, acfg).expect("identity for examples without block=");
@@ -415,7 +415,7 @@ fn block_rejects_unknown_loop_var() {
     // "doesn't reach the block-transform pass" path.
     let link_result = link(algo, sched);
     if let Ok(linked) = link_result {
-        let acfg = compiler::build_acfg(&linked);
+        let acfg = compiler::build_acfg(&linked).expect("build_acfg");
         let err = apply_block_transforms(&linked, acfg).expect_err("unknown loop var -> reject");
         match err {
             BlockTransformError::UnknownLoopVar { var } => {

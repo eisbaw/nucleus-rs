@@ -107,7 +107,7 @@ fn link_example_01_naive() -> (compiler::link::LinkedIR, compiler::ACFG, PathBuf
     let algo_ir = lower_algo(&algo_ast).unwrap();
     let sched_ir = lower_sched(&sched_ast).unwrap();
     let linked = link(algo_ir, sched_ir).unwrap();
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     (linked, acfg, ex.join("kernels.rs"))
@@ -125,7 +125,7 @@ fn link_example(ex_rel: &str, sched_rel: &str) -> (compiler::link::LinkedIR, com
     let algo_ir = lower_algo(&parse_algo(&algo_src).unwrap()).unwrap();
     let sched_ir = lower_sched(&parse_sched(&sched_src).unwrap()).unwrap();
     let linked = link(algo_ir, sched_ir).unwrap();
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = compiler::apply_block_transforms(&linked, acfg).unwrap();
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);

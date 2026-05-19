@@ -157,7 +157,7 @@ fn two_worker_pingpong_compiles_and_runs() {
     let algo_ir = lower_algo(&algo_ast).expect("algo lower");
     let sched_ir = lower_sched(&sched_ast).expect("sched lower");
     let linked = link(algo_ir, sched_ir).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

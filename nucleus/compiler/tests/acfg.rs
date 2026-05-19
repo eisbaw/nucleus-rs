@@ -76,7 +76,7 @@ fn acfg_example_1_naive() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     // Top-level shape is a Sequence.
     assert!(
@@ -110,7 +110,7 @@ fn acfg_example_13_naive() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     assert_eq!(acfg.operation_count(), 5);
     assert_eq!(acfg.repeat_count(), 1);
@@ -127,7 +127,7 @@ fn acfg_example_13_batch_parallel() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/batch_parallel.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     assert_eq!(acfg.operation_count(), 5);
     assert_eq!(acfg.repeat_count(), 1);
@@ -161,7 +161,7 @@ fn acfg_example_13_pipeline_parallel() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     assert_eq!(acfg.operation_count(), 5);
     assert_eq!(acfg.repeat_count(), 1);
@@ -188,7 +188,7 @@ fn acfg_example_14_naive() {
         "14-hearing-aid/prog.algo.nuc",
         "14-hearing-aid/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     assert_eq!(acfg.operation_count(), 6);
     assert_eq!(acfg.repeat_count(), 1);
@@ -208,7 +208,7 @@ fn acfg_example_7_naive() {
         "07-matmul/prog.algo.nuc",
         "07-matmul/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     assert!(
         matches!(acfg.root, ACFGNode::Sequence(_)),
@@ -247,8 +247,8 @@ fn acfg_is_deterministic_example_1() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    let a = build_acfg(&linked);
-    let b = build_acfg(&linked);
+    let a = build_acfg(&linked).expect("build_acfg");
+    let b = build_acfg(&linked).expect("build_acfg");
     assert_eq!(a, b, "ACFG construction must be deterministic");
 }
 
@@ -258,8 +258,8 @@ fn acfg_is_deterministic_example_13_batch_parallel() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/batch_parallel.sched.nuc",
     );
-    let a = build_acfg(&linked);
-    let b = build_acfg(&linked);
+    let a = build_acfg(&linked).expect("build_acfg");
+    let b = build_acfg(&linked).expect("build_acfg");
     assert_eq!(a, b, "ACFG construction must be deterministic");
 }
 
@@ -274,7 +274,7 @@ fn acfg_loop_range_resolved_to_consts() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let mut ranges: Vec<std::ops::Range<i64>> = Vec::new();
     collect_ranges(&acfg.root, &mut ranges);
     assert_eq!(ranges, vec![0..256]);
@@ -287,7 +287,7 @@ fn acfg_loop_range_resolved_for_cnn() {
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let mut ranges = Vec::new();
     collect_ranges(&acfg.root, &mut ranges);
     assert_eq!(ranges, vec![0..16]);
@@ -343,7 +343,7 @@ fn dataflow_edge_carries_stencil_index_expressions() {
         "05-stencil/prog.algo.nuc",
         "05-stencil/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     let mut found_blur = false;
     visit_operations(&acfg.root, &mut |op| {
@@ -439,7 +439,7 @@ fn effect_statement_records_whole_array_read_with_no_indices() {
         "05-stencil/prog.algo.nuc",
         "05-stencil/schedules/naive.sched.nuc",
     );
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
 
     // The save_image firing: one input, no output. (load_image has
     // zero inputs and an output; blur3 has nine inputs.)
@@ -474,7 +474,7 @@ fn access_lists_mirror_bare_lists_for_all_e2e_examples() {
         ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
     ] {
         let linked = linked_from_paths(algo, sched);
-        let acfg = build_acfg(&linked);
+        let acfg = build_acfg(&linked).expect("build_acfg");
         visit_operations(&acfg.root, &mut |op| {
             for edge in &op.dataflow.edges {
                 assert_eq!(
@@ -508,4 +508,94 @@ fn collect_ranges(node: &ACFGNode, out: &mut Vec<std::ops::Range<i64>>) {
         }
         ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
     }
+}
+
+// --------------------------------------------------------------------
+// Negative: a non-const loop bound is a TYPED error, not a panic
+// (TASK-0179). Mirrors TASK-0170's
+// `sidecar_same_name_loop_differing_bounds_is_typed_error_not_panic`:
+// pin the recurring "panic! on representable user input" defect class
+// shut at this site.
+//
+// The witness is a *triangular* loop `for j : 0 .. i { ... }`. The
+// algorithm grammar admits an enclosing iteration variable in a loop
+// bound (`algo::lower::lower_index_expr` -> `resolve_ident` resolves
+// in-scope iter vars), so this program parses, lowers AND links
+// cleanly — it is valid, representable user input. `build_acfg`'s
+// `eval_const` only resolves declared `const`s, so the bound `i`
+// cannot be folded to a concrete `Range<i64>`. Before TASK-0179 that
+// `panic!`ed; it must now return `BuildAcfgError::NonConstLoopBound`,
+// which the driver surfaces as a clean diagnostic.
+// --------------------------------------------------------------------
+
+fn linked_from_inline_src(algo_src: &str, sched_src: &str) -> compiler::LinkedIR {
+    let algo = lower_algo(&parse_algo(algo_src).expect("algo parse")).expect("algo lower");
+    let sched = lower_sched(&parse_sched(sched_src).expect("sched parse")).expect("sched lower");
+    link(algo, sched).expect("link must succeed")
+}
+
+#[test]
+fn build_acfg_non_const_loop_bound_is_typed_error_not_panic() {
+    use compiler::acfg::{BuildAcfgError, LoopBoundEnd};
+
+    // A triangular nested loop: the inner bound `i` is the *outer*
+    // loop variable, not a declared const. Single-assignment holds
+    // (one write per data symbol), so this is accepted end-to-end by
+    // parse/lower/link — exactly the "representable, otherwise-valid
+    // input" the recurring-defect-class memo flags.
+    let algo = r#"
+const N : usize = 8;
+
+data a : i32[N];
+data b : i32[N];
+
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+
+a <-- load_input();
+
+for i : 0 .. N {
+    for j : 0 .. i {
+        b[j] <-- id(a[j]);
+    }
+}
+
+save_output(b);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+
+    let linked = linked_from_inline_src(algo, sched);
+
+    // The contract: a typed error, NOT a panic (this call would
+    // `panic!` before TASK-0179).
+    let err = build_acfg(&linked).expect_err("non-const loop bound must be a typed error");
+
+    match &err {
+        BuildAcfgError::NonConstLoopBound { var, end, expr } => {
+            // The offending loop is the inner `j`, whose upper bound
+            // is the non-const expression `i`.
+            assert_eq!(var, "j", "offending loop variable");
+            assert_eq!(*end, LoopBoundEnd::Upper, "upper bound `i` is non-const");
+            assert_eq!(
+                *expr,
+                IrExpr::Ident("i".into()),
+                "offending expr is the enclosing iter var `i`, carried verbatim"
+            );
+        }
+    }
+
+    // The Display string carries an actionable, source-free
+    // diagnostic (fail-fast AND verbose).
+    let msg = err.to_string();
+    assert!(msg.contains("loop `j`"), "msg: {msg}");
+    assert!(msg.contains("non-constant"), "msg: {msg}");
+    assert!(msg.contains("compile-time"), "msg: {msg}");
 }

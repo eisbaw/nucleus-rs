@@ -625,7 +625,7 @@ fn block_transform_marks_inner_iter_var() {
         },
     );
     let linked: LinkedIR = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked);
+    let acfg = build_acfg(&linked).expect("build_acfg");
     let i_id = *acfg.name_iter_vars.get("i").expect("i iter var present");
     let after = apply_block_transforms(&linked, acfg).expect("block-transform OK");
     assert!(
