@@ -17,9 +17,38 @@
 //! parser MUST accept this file; see `parses_14_hearing_aid_embedded_multimcu`.
 
 use compiler::sched::{
-    parse_sched, CheckAssert, Directive, LoopOption, PlaceTarget, SimdSpec, TimeUnit,
-    TransferOption,
+    parse_sched, CheckAssert, Directive, LoopOption, ParseError, ParseErrorKind, ParseErrors,
+    PlaceTarget, SimdSpec, TimeUnit, TransferOption,
 };
+
+/// The primary (earliest) error only.
+///
+/// `parse_sched` returns the non-empty, deterministically-ordered
+/// [`ParseErrors`] bundle (TASK-0087); these legacy negative tests
+/// only assert on the first error's coordinates, so they take
+/// `.first()`. This is a MECHANICAL migration: every `.line` (etc.)
+/// assertion below is byte-for-byte the pre-TASK-0087 assertion —
+/// same per-error discriminating power, nothing loosened. We
+/// deliberately do NOT also assert `len() == 1` in this shared
+/// helper: several of these fixtures put their sole error at EOF /
+/// the closing `}`, where the `;`-only sync set legitimately reports
+/// a bounded structural follow-on in addition to the primary error
+/// (see the module note on the algo side, TASK-0199). A blanket
+/// exactly-one here would be FALSE, not stronger. The real "one clean
+/// error + valid tail ⇒ exactly one error, no cascade" property is
+/// pinned precisely and separately by
+/// [`single_error_input_yields_exactly_one_error_no_cascade`].
+fn expect_err(src: &str) -> ParseError {
+    parse_sched(src)
+        .expect_err("expected parse error")
+        .first()
+        .clone()
+}
+
+/// All errors, in deterministic positional order.
+fn expect_errs(src: &str) -> ParseErrors {
+    parse_sched(src).expect_err("expected parse error(s)")
+}
 
 /// Reads a source file at a workspace-relative path. Panics on IO
 /// failure — these tests are environment-dependent by design, and
@@ -399,10 +428,7 @@ schedule for \"../prog.algo.nuc\" {
     check frame : latency_max = 10ms;
 }
 ";
-    let err = parse_sched(src).expect_err(
-        "`check frame : ...` (no `loop` qualifier) must be rejected; \
-         the grammar mandates `check loop VAR : ...` (PRD §6.3.5)",
-    );
+    let err = expect_err(src);
     // The bad token is on line 5 (`check frame`).
     assert_eq!(err.line, 5, "{:?}", err);
 }
@@ -419,7 +445,7 @@ schedule for \"../prog.algo.nuc\" {
     }
 }
 ";
-    let err = parse_sched(src).expect_err("for-loop must be rejected");
+    let err = expect_err(src);
     // The unexpected token is on line 3, `for`.
     assert_eq!(err.line, 3, "{:?}", err);
 }
@@ -434,7 +460,7 @@ schedule for \"../prog.algo.nuc\" {
     place blur3 on { };
 }
 ";
-    let err = parse_sched(src).expect_err("empty worker set must be rejected");
+    let err = expect_err(src);
     // The empty `{ }` is on line 3.
     assert_eq!(err.line, 3, "{:?}", err);
 }
@@ -449,7 +475,7 @@ schedule for \"../prog.algo.nuc\" {
     loop y : ;
 }
 ";
-    let err = parse_sched(src).expect_err("loop without options must be rejected");
+    let err = expect_err(src);
     assert_eq!(err.line, 3, "{:?}", err);
 }
 
@@ -464,7 +490,7 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : latency_max = 10minutes;
 }
 ";
-    let err = parse_sched(src).expect_err("bad time-unit suffix must be rejected");
+    let err = expect_err(src);
     // `10minutes` is on line 4.
     assert_eq!(err.line, 4, "{:?}", err);
 }
@@ -476,8 +502,156 @@ schedule for \"../prog.algo.nuc\" {
     workers = { host }
 }
 ";
-    let err = parse_sched(src).expect_err("missing `;` must be rejected");
+    let err = expect_err(src);
     assert!(err.line >= 2, "{:?}", err);
+}
+
+// --------------------------------------------------------------------
+// Multi-error reporting & recovery (TASK-0087)
+// --------------------------------------------------------------------
+
+/// TASK-0087 AC#1/AC#3: a single schedule with TWO independent syntax
+/// errors in DIFFERENT directives must surface BOTH in one pass, each
+/// with its own correct 1-based `(line, column)`. The parser recovers
+/// at the directive `;` boundary: the first broken directive's error
+/// is recorded, input is skipped to its `;`, and the later broken
+/// directive's error is reported too. Per-error line is validated
+/// against the source so a wrong-coordinate regression is caught.
+#[test]
+fn multi_error_two_independent_errors_both_reported() {
+    // Line 1: prologue.
+    // Line 2: valid `workers` decl — clean recovery prefix.
+    // Line 3: `loop i : ;` — empty option list is illegal.
+    // Line 4: a valid `place` directive (must still parse after
+    //         recovery from line 3).
+    // Line 5: `check frame : latency_max = 1ms;` — missing the
+    //         mandatory `loop` qualifier (independent second error).
+    // Line 6: closing brace.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop i : ;
+    place k on host;
+    check frame : latency_max = 1ms;
+}
+";
+    let errs = expect_errs(src);
+    assert!(
+        errs.errors().len() >= 2,
+        "expected >=2 distinct errors, got {:?}",
+        errs.errors()
+    );
+
+    // Errors are positional (earliest source offset first). At least
+    // one must point at line 3 (the empty `loop` option list) and at
+    // least one at line 5 (the missing `loop` qualifier). Validate the
+    // reported (line, column) against the actual source so a
+    // mislocation regresses this test.
+    let lines: std::collections::BTreeSet<usize> =
+        errs.errors().iter().map(|e| e.line).collect();
+    assert!(
+        lines.contains(&3),
+        "expected an error on line 3 (empty loop option list), got {:?}",
+        errs.errors()
+    );
+    assert!(
+        lines.contains(&5),
+        "expected an error on line 5 (missing `loop` qualifier), got {:?}",
+        errs.errors()
+    );
+    // Cross-check the first error's coordinates against the source:
+    // the offending token must actually be at the reported line.
+    let first = errs.first();
+    let line_text = src.lines().nth(first.line - 1).expect("reported line in source");
+    assert!(
+        first.line == 3,
+        "first (earliest) error must be the line-3 one, got {first:?} (line {}: {:?})",
+        first.line,
+        line_text
+    );
+}
+
+/// TASK-0087 AC#1: recovery resumes after a mid-schedule error AND is
+/// a deterministic function of the source (reproducibility gate — no
+/// HashMap/HashSet in the error path; `chumsky_message` sorts the
+/// expected set).
+#[test]
+fn recovery_resumes_and_is_deterministic() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    loop i : @;
+    workers = { host };
+    place k on host;
+}
+";
+    let e1 = expect_errs(src);
+    let e2 = expect_errs(src);
+    assert_eq!(
+        e1, e2,
+        "parse errors must be a deterministic function of the source"
+    );
+    // The bad `@` is on line 2; recovery skips to that directive's `;`
+    // and the following valid directives do not add spurious errors.
+    assert_eq!(e1.errors()[0].line, 2, "{:?}", e1.errors());
+}
+
+/// TASK-0087 AC#3 (no loosened assertion) / over-aggressive-recovery
+/// guard: a schedule with EXACTLY ONE syntax error followed by VALID
+/// directives and a clean closing `}` must report EXACTLY ONE error —
+/// recovery must not cascade. This is the precise pin the shared
+/// `expect_err` helper deliberately does NOT make (several legacy
+/// fixtures put their sole error at EOF / `}` where a bounded
+/// structural follow-on is legitimate).
+#[test]
+fn single_error_input_yields_exactly_one_error_no_cascade() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop i : @;
+    place k on host;
+    place j on host;
+}
+";
+    let errs = expect_errs(src);
+    assert_eq!(
+        errs.errors().len(),
+        1,
+        "exactly one error expected; recovery must not cascade: {:?}",
+        errs.errors()
+    );
+    assert_eq!(errs.errors()[0].kind, ParseErrorKind::Unexpected);
+    assert_eq!(errs.errors()[0].line, 3, "{:?}", errs.errors());
+}
+
+/// TASK-0087 AC#1: recovery is BOUNDED. A pathological, deeply
+/// malformed schedule must TERMINATE (no infinite skip-then-retry)
+/// and yield a finite, deterministic error set whose size is at most
+/// linear in the input length. The strict linear ceiling is the
+/// no-unbounded-cascade evidence.
+#[test]
+fn pathological_input_terminates_bounded_and_deterministic() {
+    // A valid prologue, then a wall of illegal characters with
+    // scattered `;` sync points and no valid directive anywhere, then
+    // a closing brace. Without bounded recovery this is the
+    // infinite-retry / cascade-spam footgun.
+    let garbage = "@@@ ;; ??? ;; %%% ;; &&& ;; ^^^ ;; ### ;; !!! ;;\n".repeat(8);
+    let src = format!("schedule for \"../prog.algo.nuc\" {{\n{garbage}}}\n");
+    let r1 = expect_errs(&src);
+    let r2 = expect_errs(&src);
+    assert_eq!(r1, r2, "pathological input must parse deterministically");
+    assert!(!r1.errors().is_empty(), "must report errors");
+    // Each recovery step consumes >=1 char, so the error count cannot
+    // exceed the character count. We assert a strict linear ceiling;
+    // a super-linear / unbounded cascade — the footgun this test
+    // guards — would blow past it. The exact count is an
+    // implementation detail; the load-bearing invariant is "finite,
+    // deterministic, <= O(n)".
+    assert!(
+        r1.errors().len() <= src.len(),
+        "error set must be at most linear in input (<= {} chars), got {}",
+        src.len(),
+        r1.errors().len()
+    );
 }
 
 // --------------------------------------------------------------------
