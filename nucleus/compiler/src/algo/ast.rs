@@ -7,7 +7,7 @@
 //! [`Expr`]).
 //!
 //! Per-node source spans ARE tracked (TASK-0082): the diagnosable
-//! nodes are wrapped in [`Spanned<T>`][crate::algo::span::Spanned],
+//! nodes are wrapped in [`Spanned<T>`][crate::span::Spanned],
 //! which carries the byte [`core::ops::Range`] the node was parsed
 //! from. See `span.rs` for the exact granularity and rationale (which
 //! nodes are wrapped and why the leaves are not). `parse_algo`
@@ -20,7 +20,7 @@
 //! ASTs still compare structurally regardless of source position. The
 //! AST holds no interned IDs or other identity-bearing state.
 
-use super::span::Spanned;
+use crate::span::Spanned;
 
 /// An identifier as written in source, plus the byte range of the
 /// identifier token. Diagnostics that name an identifier ("undeclared

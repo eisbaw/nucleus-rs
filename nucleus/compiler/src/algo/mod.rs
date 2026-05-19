@@ -18,21 +18,30 @@
 //! - Type-check expressions or kernel signatures (TASK-0009).
 //! - Enforce single-assignment (TASK-0009).
 //!
-//! Per-node source spans ARE tracked, via [`span::Spanned`] (TASK-0082);
-//! `parse_algo` populates byte ranges. Lowering still ignores them —
-//! threading spans into `LowerError` is TASK-0090.
+//! Per-node source spans ARE tracked, via [`Spanned`][crate::span::Spanned]
+//! (TASK-0082); `parse_algo` populates byte ranges. Lowering still
+//! ignores them — threading spans into `LowerError` is TASK-0090.
 
 pub mod ast;
 pub mod ir;
 pub mod lower;
 pub mod parser;
-pub mod span;
+
+/// Back-compat path alias. The span wrapper was promoted to the
+/// shared [`crate::span`] module (TASK-0086) so the schedule AST can
+/// reuse the one implementation of the load-bearing
+/// "PartialEq-ignores-span" semantics. Keeping `algo::span` as a
+/// re-export means the move is non-breaking for existing callers /
+/// tests that import `compiler::algo::span::Spanned`.
+pub mod span {
+    pub use crate::span::Spanned;
+}
 
 pub use ast::{
     AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig, Purity,
     ScalarType, Stmt, Type, UnaryOp,
 };
-pub use span::Spanned;
+pub use crate::span::Spanned;
 pub use ir::{
     AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, ResolvedConst,
     ResolvedData, ResolvedKernel, ResolvedType,

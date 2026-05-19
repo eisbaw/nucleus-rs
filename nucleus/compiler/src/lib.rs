@@ -20,6 +20,12 @@ pub mod passes;
 pub mod petri;
 pub mod sched;
 pub mod sidecar;
+// Per-node source-span wrapper shared by the algorithm AST (TASK-0082)
+// and the schedule AST (TASK-0086). Promoted from the former
+// algo-local `algo::span` so both sub-language ASTs build on one
+// implementation of the load-bearing "PartialEq ignores span"
+// semantics — see `span.rs` for the share-vs-duplicate rationale.
+pub mod span;
 // Zero-dep, NUC_TRACE-gated diagnostics facility. The `nuc_trace!`
 // macro is `#[macro_export]`ed at the crate root; this module holds
 // its sink + the decision rationale (TASK-0154).

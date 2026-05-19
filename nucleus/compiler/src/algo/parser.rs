@@ -50,7 +50,7 @@ use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
     Purity, ScalarType, SpExpr, SpIdent, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
-use super::span::Spanned;
+use crate::span::Spanned;
 use crate::error::map_first_chumsky_error;
 pub use crate::error::{ParseError, ParseErrorKind};
 

@@ -348,7 +348,7 @@ impl std::fmt::Display for LowerErrorKind {
 /// no source string; the driver (which holds the source) converts via
 /// [`crate::error::offset_to_line_col`] at display time, exactly as
 /// [`crate::error::ParseError`] is surfaced. This keeps one span
-/// representation end-to-end (matching [`crate::algo::span::Spanned`])
+/// representation end-to-end (matching [`crate::span::Spanned`])
 /// and lowering source-text-free.
 ///
 /// # `span` is `Option` (honest-partial per variant — TASK-0090)
@@ -368,7 +368,7 @@ impl std::fmt::Display for LowerErrorKind {
 /// [`PartialEq`] / [`Eq`] are **hand-written to forward to `kind`
 /// only**; `span` is deliberately EXCLUDED from value identity. This
 /// is the same decision, for the same reason, as
-/// [`crate::algo::span::Spanned`] (TASK-0082): the source position is
+/// [`crate::span::Spanned`] (TASK-0082): the source position is
 /// informational-for-humans, not part of *which semantic error this
 /// is*. Excluding it keeps every existing `LowerErrorKind`-asserting
 /// negative test valid (they assert the semantic kind + payload, never
@@ -389,7 +389,7 @@ pub struct LowerError {
 impl LowerError {
     /// A lowering error with no source position (the multi-site
     /// `ConstCycle` — see type docs). Prefer [`LowerError::at`] whenever
-    /// a single offending [`crate::algo::span::Spanned`] is in scope.
+    /// a single offending [`crate::span::Spanned`] is in scope.
     pub fn new(kind: LowerErrorKind) -> Self {
         Self { kind, span: None }
     }

@@ -1,17 +1,42 @@
-//! Per-node source-span wrapper for the algorithm AST (TASK-0082).
+//! Per-node source-span wrapper, shared by the algorithm AST
+//! (TASK-0082) and the schedule AST (TASK-0086).
 //!
 //! # Why this exists
 //!
 //! Diagnostics that point at user source ("undeclared `foo` at
 //! line 7, column 3", "duplicate kernel `k`", a malformed expression)
 //! need every diagnosable AST node to remember the byte range of the
-//! source text it was parsed from. [`crate::algo::ParseError`] already
+//! source text it was parsed from. [`crate::error::ParseError`] already
 //! carries a position, but only for the *first* syntactic failure;
 //! semantic passes (lowering, link) have no position to attach to a
 //! node they reject. This wrapper is the substrate those passes build
-//! on. Using the wrapped span in `LowerError` is TASK-0090; this task
-//! only adds and *populates* the substrate — lowering still ignores
-//! spans (proven by the determinism gate staying byte-identical).
+//! on. Using the wrapped span in the algorithm `LowerError` is
+//! TASK-0090 (done); the schedule analog (`SchedLowerError`) is
+//! TASK-0196. TASK-0082 / TASK-0086 only add and *populate* the
+//! substrate — lowering still ignores spans (proven by the
+//! determinism gate staying byte-identical).
+//!
+//! # Share-vs-duplicate decision (TASK-0086 AC#4 — promoted, shared)
+//!
+//! This wrapper originally lived at `algo::span` (algorithm-local).
+//! TASK-0086 needed the *same* wrapper for the schedule AST. It was
+//! **promoted** to this shared crate module (`crate::span::Spanned`)
+//! rather than duplicated into a `sched`-local copy. Rationale: the
+//! equality semantics below (span EXCLUDED from `PartialEq`/`Eq`/
+//! `Hash`/`Debug`) are load-bearing for *every* AST-equality test in
+//! both sub-languages; two independent copies could silently drift
+//! (one gains a derived `Hash`, the other does not) and that drift
+//! would be a correctness bug invisible until a structural test
+//! mysteriously broke. One implementation = one place to get the
+//! semantics right, one place to audit. The cost was purely
+//! mechanical: the algorithm AST/parser/lowering/tests re-point their
+//! import path (`algo::span::Spanned` → `crate::span::Spanned`); the
+//! algorithm side keeps the `algo::span` *path* working via a
+//! re-export so the move is non-breaking, and its behaviour is
+//! unchanged (only the path moved — proven by the algorithm parser /
+//! lowering tests staying green unchanged). Duplication was rejected
+//! as the weak default: there is no sub-language-specific behaviour
+//! here to justify divergent copies.
 //!
 //! # Span representation
 //!
@@ -29,13 +54,27 @@
 //! **manually implemented to forward to `self.node` only**; the span
 //! is deliberately EXCLUDED. This is not a stylistic choice: the
 //! existing AST-equality / structural tests (`tests/algo_parser.rs`,
-//! and any future expected-AST literal) compare *parsed* trees against
-//! *hand-built* expected trees. A hand-built tree cannot know byte
-//! offsets, so if equality included the span every such test would
-//! break. Excluding the span keeps two structurally-identical programs
-//! equal regardless of where in the source they were written.
-//! `#[derive(PartialEq)]` would (wrongly) include the span — hence the
-//! hand-written impls below.
+//! `tests/sched_parser.rs`, and any future expected-AST literal)
+//! compare *parsed* trees against *hand-built* expected trees. A
+//! hand-built tree cannot know byte offsets, so if equality included
+//! the span every such test would break. Excluding the span keeps two
+//! structurally-identical programs equal regardless of where in the
+//! source they were written. `#[derive(PartialEq)]` would (wrongly)
+//! include the span — hence the hand-written impls below.
+//!
+//! Caveat (honest, learned from the TASK-0090 review which caught an
+//! over-claiming doc): this whole-node `PartialEq` makes
+//! `assert_eq!(parsed_ast, expected_ast)` span-insensitive. It does
+//! NOT add a cross-type `PartialEq<str>`: a *field-projection* test
+//! that compares a `Spanned<String>` field directly to a `&str`
+//! (e.g. `decl.name == "foo"`) still needs to project through
+//! `.node` (or `*`/`Deref`). The algorithm tests (TASK-0082) and the
+//! schedule tests (TASK-0086) both add that mechanical `.node`
+//! projection where they compare an identifier field to a literal;
+//! the assertion *strength* is unchanged (same value compared), only
+//! the access path is. "Existing tests pass unchanged" means
+//! whole-AST structural equality is unaffected, not that zero test
+//! characters change.
 //!
 //! # Granularity (the deliberate, bounded set)
 //!
@@ -67,6 +106,44 @@
 //! combinator for sites no error references. This set is the minimum
 //! that lets a future error point precisely at an undeclared/duplicate
 //! identifier, a bad expression, or a malformed declaration/statement.
+//!
+//! # Granularity — schedule AST (TASK-0086, same judgement applied)
+//!
+//! The schedule AST (`crate::sched::ast`) wraps the analog set, sized
+//! to exactly the diagnostics `SchedLowerError` already produces and
+//! the located ones TASK-0196 will produce (it points at duplicate /
+//! undeclared workers, classes, regions, kernels, loop vars, etc.):
+//!
+//! - `Directive` (every entry of `SchedAst.directives`, via
+//!   `SpDirective = Spanned<Directive>`) — a directive rejected as a
+//!   whole (e.g. a duplicate `workers` decl, a `place` whose target
+//!   is undeclared) points at the directive.
+//! - The identifier / name `String` fields a `SchedLowerError`
+//!   names, via `SpName = Spanned<String>`: `WorkerClassDecl.name`,
+//!   `MemoryRegionDecl.name`, `WorkerEntry.name`, `WorkerEntry.class`,
+//!   `PlaceDirective.kernel`, the worker name(s) inside
+//!   `PlaceTarget::One` / `PlaceTarget::Many`, `PlaceDataDirective`'s
+//!   `data` and `region`, `LoopDirective.var`,
+//!   `TransferDirective.data`, `CheckDirective.var`, and each
+//!   `accessible_by` name in `MemoryRegionDecl.accessible_by`. These
+//!   are precisely the strings the existing duplicate-/undeclared-X
+//!   `SchedLowerError` variants carry, so TASK-0196 can underline the
+//!   offending token itself.
+//!
+//! Deliberately NOT wrapped, mirroring the algorithm judgement:
+//! `LoopOption`, `TransferOption`, `CheckAssert`, `PartitionKind`,
+//! `NotifyKind`, `ViolationKind`, `SimdSpec`, `MemoryAtom`,
+//! `MemorySpec`, `TimeLit` and the normalised `u64`/`bool` literals.
+//! None is ever independently diagnosed by name/position: a bad loop
+//! option (`block=0`) is reported against the *loop variable*
+//! (`ZeroLoopOption { var, option }` — the `var` `SpName` carries the
+//! span); a conflicting transfer mode against the *transfer data*
+//! name. The option enums are `Copy`/structural leaves the way
+//! `BinOp`/`ScalarType` are on the algorithm side; wrapping them
+//! would bloat every parser combinator for sites no `SchedLowerError`
+//! variant references. This set is the minimum that lets every
+//! current and TASK-0196 schedule diagnostic point at a precise
+//! token.
 
 use core::ops::{Deref, DerefMut, Range};
 
@@ -168,9 +245,9 @@ impl<T: Clone> Clone for Spanned<T> {
 
 // Serde: transparent over the node so that, if a wrapped type ever
 // becomes serde-derived (none are today — the serialised codegen
-// contract uses IR types, not the algo AST), the span is simply not
-// part of the wire form, consistent with it not being part of value
-// identity. Feature-gated identically to the rest of the crate
+// contract uses IR types, not either sub-language AST), the span is
+// simply not part of the wire form, consistent with it not being part
+// of value identity. Feature-gated identically to the rest of the crate
 // (`serde` is on by default; see compiler/Cargo.toml). No behaviour
 // change: adds trait impls only under the feature.
 #[cfg(feature = "serde")]
