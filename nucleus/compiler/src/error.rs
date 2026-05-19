@@ -185,8 +185,12 @@ fn chumsky_message(err: &chumsky::error::Simple<char>) -> String {
         None => "found end of input".to_string(),
     };
 
-    // Sort the expected set for determinism. `None` (= "end of
-    // input") sorts last via a stable key.
+    // Sort the rendered expected strings for a deterministic message
+    // order (chumsky 0.9's `Simple::expected()` is HashSet-backed, so
+    // its native iteration order is non-deterministic). The sort key is
+    // the rendered string itself; `None` renders as "end of input" and
+    // takes whatever lexicographic position that string has — its exact
+    // position is irrelevant, only that the order is total + stable.
     let mut expected: Vec<String> = err
         .expected()
         .map(|opt| match opt {
