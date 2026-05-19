@@ -4,7 +4,7 @@ title: Relocate the cross-backend-negative wire injection out of production code
 status: To Do
 assignee: []
 created_date: '2026-05-19 02:55'
-updated_date: '2026-05-19 05:46'
+updated_date: '2026-05-19 06:00'
 labels:
   - M3
   - backend
@@ -48,4 +48,16 @@ TASK-0187 relocated/hardened the SIBLING NUC_NONDET_TEST perturbation harness-si
 5. Env-gate not cfg!/feature (nested cargo --features does not reliably rebuild against the shared target cache — still holds). Keep loud banner + exact-"1" value gate + anchor-drift detection.
 
 Forward-carried from TASK-0187 review gate: TASK-0188 will add an explicit machine-checkable corrupted-cell-count assertion to xbackend-check-negative (justfile:85) so its safety invariant does not rest solely on exit-code inversion. When implementing the harness-side relocation here, coordinate with / depend on TASK-0188 so the xbackend negative seam uses the explicit-signal pattern, not just the inverting recipe.
+
+## Forward-carried from TASK-0188 (commit 6c703c1) — INHERIT THE EXPLICIT-SIGNAL CONTRACT (supersedes prior carries on the recipe seam)
+
+TASK-0188 hardened BOTH negative gates so the "falsifier actually touched something" safety invariant no longer rests SOLELY on the exit-code inversion. When you relocate maybe_corrupt_wire harness-side, you MUST preserve the post-0188 contract, not just the pre-0188 zero-corruption guard:
+
+1. **The explicit machine-checkable stdout line is now part of the recipe contract.** The e2e run() path prints `NUC_XBACKEND_CORRUPTED_DETECTED=<n>` on STDOUT, ONLY when NUC_XBACKEND_NEGATIVE=1, where n = required mp-tcp-bufsync cells Failed at Phase::Diff (corruption present AND differential detected it — NOT any unrelated required-fail). justfile:85 captures combined harness output to a temp file (cargo exit status still drives the `if`), then asserts the line is present AND n>=1 IN ADDITION to the exit-code inversion. Your relocation MUST keep emitting this exact line with the same key and the same precise definition; do not regress to exit-code-only. If you change WHERE corruption is applied (harness-side post-process), the detection count is still "required mp-tcp-bufsync cell diverged from reference.bin at Diff" — recompute it from results, keep the conjuncts.
+
+2. **Stream + capture mechanism (reuse verbatim).** Signal on stdout via println! (semantically a RESULT line; loud diagnostics stay on stderr). Recipe pattern: `out=$(mktemp); trap rm; { if NUC_XBACKEND_NEGATIVE=1 cargo run ... >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE ... | cut -d= -f2); [ -z "$n" ]||[ "$n" -lt 1 ] => loud FAIL exit 1; else exit-code inversion.` The `>"$out" 2>&1` keeps cargo's status (not tee/grep's) driving the `if`. Absent-signal AND zero-count are BOTH loud FAILs independent of exit code.
+
+3. **Keep gating strict.** The line must NOT appear under bare `just e2e` (verified post-0188: e2e standalone stays exactly total 30 / pass 26 / fail 0 / skipped 4 / required-fail 0, zero signal lines). A harness-side relocation must keep this no-op-when-unset property.
+
+4. **Prior carries (zero-corruption guard, recipe-inversion gotcha, layout-agnostic perturb) still apply** — TASK-0188 ADDS the explicit-signal backstop on top; it does not replace them. Net: a future recipe refactor dropping the inversion fails LOUD via the count assertion instead of silently re-neutering the falsifier. Model both via the e2e test `explicit_count_signal_makes_negative_recipes_fail_loud_independent_of_exit_code` (extend it if you move the seam).
 <!-- SECTION:NOTES:END -->
