@@ -1,11 +1,11 @@
 ---
 id: TASK-0178
 title: Prove the cross-backend differential gate bites (M3 negative arm)
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:05'
-updated_date: '2026-05-19 02:55'
+updated_date: '2026-05-19 03:06'
 labels:
   - M3
   - validation
@@ -50,6 +50,8 @@ Proof the cross-backend differential genuinely bites (gate on): 02-split-add/spl
 Gate numbers: just test 0 failed; bare just e2e UNCHANGED 28/24/0/skip4/required-fail0 (mp-tcp split PASS gate-off); xbackend-check-negative OK 3/3 non-flaky (deterministic, no RNG/PID/clock); determinism-check byte-identical 24/0; determinism-check-negative still bites; clippy -D warnings clean; just ci exit 0 green end-to-end incl. the new arm.
 
 Seam debt filed as TASK-0183 (parallel to TASK-0157) with code-comment pointer.
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO ("proves the STRONG form"), both read-only. Numbers RE-RUN by reviewers: just test 372/0/1; bare just e2e 28/24/0/skip4/required-fail0 UNCHANGED (gate-off zero behaviour change); just xbackend-check-negative OK x3 verbatim-identical non-flaky (harness 28/pass23/fail1/skip4/required-fail1, first byte differs offset 1023); determinism byte-identical + determinism-check-negative still bites x2; clippy clean; just ci exit 0 incl the new arm; no AI credit; tree clean. THREE-WAY ASYMMETRY PROOF (the strong form): under NUC_XBACKEND_NEGATIVE=1, pthreads-sync 02-split/split PASS + single-process mp-tcp 02-split/naive PASS (shared renderer, no wire) + multi-process mp-tcp 02-split/split FAIL vs the SINGLE committed backend-independent reference.bin oracle => genuine cross-backend differential biting, NOT a global break (the single-proc mp-tcp PASS is the control ruling that out). Architect: injection structurally mp-tcp-EXCLUSIVE (pthreads emits/links no wire; single-proc mp-tcp #[path]-includes no wire; only multi-proc links the corrupted enc_vec); strictly deterministic by construction (fixed replacen, no RNG/PID/clock — got TASK-0145s hard-won lesson right first try); correctly does NOT contaminate --check-determinism; anchor-guard panic is a legitimate fail-loud test-scaffold integrity guard (not the panic-not-diagnostic class); TASK-0145 discipline faithfully mirrored (value-gate=="1", off-default, loud banner); TASK-0183 honest seam-debt deferral (parallels TASK-0157, code-linked); all 3 ACs met; correctly did NOT self-check TASK-0041 AC#5. ORCHESTRATOR HARDENING: fixed the one cosmetic docstring imprecision (architect: "last byte of every encoded array payload" -> "single trailing byte of each encoded vec payload, not per-element" — the recurring comment-slightly-misstates-code class; inert, cargo check clean). TASK-0178 Done is HONEST: all 3 ACs met + independently verified + both reviews GO.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

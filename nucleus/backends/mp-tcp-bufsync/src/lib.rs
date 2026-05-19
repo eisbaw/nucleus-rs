@@ -1117,8 +1117,9 @@ fn collect_pre_init_sets(
 /// — the TCP wire protocol that is **mp-tcp-EXCLUSIVE** (copied
 /// verbatim into every generated multi-process project; pthreads-sync
 /// never emits or links it). The perturbation rewrites `enc_vec` so
-/// the LAST byte of every encoded array payload is incremented
-/// (wrapping). A multi-process mp-tcp cell (e.g. 02-split-add/split,
+/// the single trailing byte of each encoded vec payload (the last
+/// byte of the whole `enc_vec` output, not one per element) is
+/// incremented (wrapping). A multi-process mp-tcp cell (e.g. 02-split-add/split,
 /// which ships array data worker→worker over the wire) then decodes
 /// wrong values and its `output.bin` diverges from the committed
 /// hand-written `reference.bin` oracle → required-fail>0 on that
