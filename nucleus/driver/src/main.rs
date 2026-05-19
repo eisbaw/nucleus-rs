@@ -211,12 +211,29 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         s
     })?;
 
-    let algo_ir = compiler::algo::lower_algo(&algo_ast)
-        // `display_with_src` resolves the error's stored byte offset to
-        // `line:col` against the algorithm source (TASK-0090); the
-        // driver holds the source, lowering does not. Mirrors how
-        // `ParseError` is surfaced.
-        .map_err(|e| format!("algorithm lower error: {}", e.display_with_src(&algo_src)))?;
+    // `lower_algo` accumulates ALL genuinely-independent lowering
+    // violations in one pass and returns them as `LowerErrors`
+    // (TASK-0092) — it does NOT abort on the first, and it suppresses
+    // cascade errors (a reference to a declaration that itself failed).
+    // Surface every one — each carries its own byte span, resolved
+    // here to `line:col` via `display_with_src` against the algorithm
+    // source (TASK-0090; the driver holds the source, lowering does
+    // not) — using the same header + one-line-per-error shape the
+    // `parse_algo` / link / contract paths use, so a user fixing a
+    // semantically broken program sees every error at once rather than
+    // one recompile per error.
+    let algo_ir = compiler::algo::lower_algo(&algo_ast).map_err(|errs| {
+        let mut s = format!(
+            "algorithm lower error(s) in {} ({}):",
+            algo_path.display(),
+            errs.errors().len()
+        );
+        for e in errs.errors() {
+            s.push_str("\n  - ");
+            s.push_str(&e.display_with_src(&algo_src));
+        }
+        s
+    })?;
     let sched_ir = compiler::sched::lower_sched(&sched_ast)
         // `display_with_src` resolves the error's stored byte offset to
         // `line:col` against the schedule source (TASK-0196, mirroring

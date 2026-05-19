@@ -446,3 +446,103 @@ impl std::fmt::Display for LowerError {
 }
 
 impl std::error::Error for LowerError {}
+
+/// A non-empty, deterministically-ordered bundle of [`LowerError`]s —
+/// the multi-error result of one [`lower_algo`](super::lower::lower_algo)
+/// pass (TASK-0092).
+///
+/// # Why a new owner and NOT `crate::error::ParseErrors`
+///
+/// `ParseErrors` is the *parser* layer's owner ([`ParseError`], not
+/// [`LowerError`]); they are different types at a different pipeline
+/// stage. The SURFACING pattern (non-empty owner, `.errors()`,
+/// driver iterates one located line per error) is the proven template
+/// from TASK-0080/0081, but the type is layer-specific — reusing
+/// `ParseErrors` would conflate the two layers' error vocabularies.
+///
+/// # Non-empty invariant (load-bearing)
+///
+/// A `LowerErrors` is constructed *only* when lowering actually
+/// failed, so the inner `Vec` is never empty. The single constructor
+/// [`LowerErrors::from_nonempty`] is the sole entry point and
+/// `debug_assert!`s this; [`LowerErrors::first`] therefore never has
+/// an empty slice to handle. Construction is private to the crate so
+/// no external caller can forge an empty bundle.
+///
+/// # Ordering / determinism (PRD §10.1)
+///
+/// The vector is in **source / declaration order** — lowering walks
+/// `AlgoAst::items` in order and pushes each error as it is found.
+/// There is NO `HashMap`/`HashSet` iteration on the error-collection
+/// path (the cascade-suppression bookkeeping is a `BTreeMap`), so the
+/// emitted error sequence is a pure deterministic function of the
+/// input. Two builds of the same broken program emit byte-identical
+/// diagnostics.
+///
+/// # Equality
+///
+/// Derived `PartialEq`/`Eq` — element-wise over [`LowerError`], whose
+/// own equality forwards to `kind` (span excluded; same rationale as
+/// [`crate::span::Spanned`]). So bundle equality compares the ordered
+/// sequence of *semantic kinds*, not byte offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowerErrors(Vec<LowerError>);
+
+impl LowerErrors {
+    /// Construct from a non-empty `Vec<LowerError>`. The sole
+    /// constructor; crate-private so the non-empty invariant cannot be
+    /// violated from outside lowering. `debug_assert!`s non-emptiness
+    /// (a caller handing an empty vec is a lowering-pass bug, not a
+    /// user-input condition — decision-0003: invariant violation, so
+    /// `debug_assert!`, not a typed error).
+    pub(crate) fn from_nonempty(errors: Vec<LowerError>) -> Self {
+        debug_assert!(
+            !errors.is_empty(),
+            "LowerErrors is constructed only on a non-empty failure set \
+             (lowering-pass invariant); an empty vec here is a compiler bug"
+        );
+        Self(errors)
+    }
+
+    /// The first (source-order-earliest) error. Equivalent to the
+    /// single error the pre-multi-error pass would have `?`-returned,
+    /// so negative tests that previously asserted *the* error migrate
+    /// by calling `.first()` with the SAME discriminating match — no
+    /// loss of assertion strength.
+    pub fn first(&self) -> &LowerError {
+        self.0
+            .first()
+            .expect("LowerErrors is constructed non-empty (invariant)")
+    }
+
+    /// All errors in source order. The driver iterates this to surface
+    /// every violation in one compile cycle.
+    pub fn errors(&self) -> &[LowerError] {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for LowerErrors {
+    type Target = [LowerError];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// One error per line, each via the span-free [`LowerError`] `Display`
+/// (the located form is the driver's `display_with_src`, which holds
+/// the source). This is the fallback for a caller that just `{}`s the
+/// whole bundle.
+impl std::fmt::Display for LowerErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{e}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LowerErrors {}

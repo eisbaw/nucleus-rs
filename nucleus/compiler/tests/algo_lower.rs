@@ -14,7 +14,8 @@
 //! `lowers_example_05_stencil` below pins that it lowers cleanly.
 
 use compiler::algo::{
-    lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, LowerErrorKind, ResolvedType, ScalarType,
+    lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, LowerErrorKind, LowerErrors, ResolvedType,
+    ScalarType,
 };
 use compiler::error::offset_to_line_col;
 
@@ -32,7 +33,7 @@ fn read_example(relpath: &str) -> String {
         .unwrap_or_else(|e| panic!("failed to read {}: {}", full.display(), e))
 }
 
-fn lower_str(src: &str) -> Result<AlgoIR, LowerError> {
+fn lower_str(src: &str) -> Result<AlgoIR, LowerErrors> {
     let ast = parse_algo(src).expect("source must parse for this test");
     lower_algo(&ast)
 }
@@ -384,7 +385,12 @@ fn duplicate_kernel_name_is_error() {
 kernel k : () -> () effectful;
 kernel k : () -> () effectful;
 ";
-    match lower_str(src) {
+    // Multi-error migration (TASK-0092): `lower_str` now yields
+    // `LowerErrors`. `.first()` is the source-order-earliest error —
+    // exactly the single error the pre-multi-error `?`-bail pass would
+    // have returned — so the discriminating match below is unchanged
+    // and assertion strength is preserved (no blanket `len()` assert).
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::DuplicateKernel(n),
             ..
@@ -400,7 +406,7 @@ const N : usize = 4;
 data x : f32[N];
 data x : f32[N];
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::DuplicateData(n),
             ..
@@ -415,7 +421,7 @@ fn duplicate_const_name_is_error() {
 const N : usize = 4;
 const N : usize = 8;
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::DuplicateConst(n),
             ..
@@ -432,7 +438,10 @@ fn const_and_data_share_namespace() {
 const N : usize = 4;
 data N : f32[4];
 ";
-    let err = lower_str(src).expect_err("must error");
+    // `.first().clone()` = the source-order-earliest error, owned —
+    // exactly the single error the pre-multi-error pass returned
+    // (TASK-0092 migration; assertion strength preserved).
+    let err = lower_str(src).expect_err("must error").first().clone();
     // The variant is DuplicateData (the second declaration); the
     // important thing is the collision is detected.
     assert!(
@@ -453,7 +462,7 @@ kernel f   : (f32[N]) -> f32[N] pure;
 x <-- src();
 x <-- f(y);
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::DoubleAssignment { data, .. },
             ..
@@ -478,7 +487,7 @@ data probe : f32[H];
 kernel g : (f32) -> f32 pure;
 probe[y] <-- g(probe[0]);
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::IterVarOutOfScope(n),
             ..
@@ -497,7 +506,7 @@ fn const_divide_by_zero_is_error() {
 const Z : usize = 0;
 const Q : usize = 10 / Z;
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::ConstDivByZero { in_const },
             ..
@@ -513,7 +522,7 @@ fn const_forward_reference_is_error() {
 const M : usize = N;
 const N : usize = 4;
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind:
                 LowerErrorKind::ConstRefersToNonConst {
@@ -536,7 +545,7 @@ fn non_positive_shape_dim_is_error() {
 const N : usize = 4;
 data x : f32[N - 4];
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::NonPositiveDim { decl, value },
             ..
@@ -554,7 +563,7 @@ fn unknown_kernel_in_dataflow_rhs_is_error() {
 data x : f32[1];
 x <-- nope();
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::UnknownIdent(n),
             ..
@@ -573,7 +582,7 @@ const N : usize = 4;
 kernel f : () -> f32 effectful;
 N <-- f();
 ";
-    match lower_str(src) {
+    match lower_str(src).map_err(|e| e.first().clone()) {
         Err(LowerError {
             kind: LowerErrorKind::AssignmentTargetNotData(n),
             ..
@@ -612,7 +621,10 @@ fn located_errors_carry_correct_line_col() {
     // *second* (duplicate) `N`, on line 2.
     {
         let src = "const N : usize = 4;\nconst N : usize = 8;\n";
-        let err = lower_str(src).expect_err("duplicate const must error");
+        let err = lower_str(src)
+            .expect_err("duplicate const must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, LowerErrorKind::DuplicateConst(ref n) if n == "N"),
             "got {err:?}"
@@ -637,7 +649,10 @@ fn located_errors_carry_correct_line_col() {
     // undeclared callee `nope` on line 2.
     {
         let src = "data x : f32[1];\nx <-- nope();\n";
-        let err = lower_str(src).expect_err("unknown ident must error");
+        let err = lower_str(src)
+            .expect_err("unknown ident must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, LowerErrorKind::UnknownIdent(ref n) if n == "nope"),
             "got {err:?}"
@@ -666,7 +681,10 @@ kernel src : () -> f32[N] effectful;\n\
 kernel f   : (f32[N]) -> f32[N] pure;\n\
 x <-- src();\n\
 x <-- f(y);\n";
-        let err = lower_str(src).expect_err("double assignment must error");
+        let err = lower_str(src)
+            .expect_err("double assignment must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, LowerErrorKind::DoubleAssignment { ref data, .. } if data == "x"),
             "got {err:?}"
@@ -699,7 +717,10 @@ fn multi_site_variants_are_position_less() {
     // A const self-cycle: `ConstCycle` spans several decls, no single
     // primary node.
     let src = "const A : usize = A;\n";
-    let err = lower_str(src).expect_err("self-referential const must error");
+    let err = lower_str(src)
+        .expect_err("self-referential const must error")
+        .first()
+        .clone();
     assert!(
         matches!(err.kind, LowerErrorKind::ConstCycle(_)),
         "got {err:?}"
@@ -734,7 +755,10 @@ for j : 0 .. f() {
     x[j] <-- f();
 }
 ";
-    let err = lower_str(src).expect_err("kernel call as loop bound must error");
+    let err = lower_str(src)
+        .expect_err("kernel call as loop bound must error")
+        .first()
+        .clone();
 
     // Semantic kind: the SYNTHETIC-label variant (note the decl is the
     // synthetic placeholder, not a real declaration name).
@@ -777,4 +801,208 @@ for j : 0 .. f() {
         expected,
         "synthetic NonIntegerShapeExpr must point at the loop-bound call `f()`"
     );
+}
+
+// --------------------------------------------------------------------
+// TASK-0092: multi-error accumulation + cascade discipline.
+//
+// The project's #1 recurring defect (memory
+// `feedback-comment-doc-lie-recurring`) is mis-stating the emitted
+// error COUNT — measured at ONE input shape and pinned by a
+// single-shape fixture that masks the real (mis)behaviour. These tests
+// are deliberately SIZE-PARAMETRISED over BOTH dimensions:
+//
+//   - M independent bad declarations  → EXACTLY M errors.
+//   - 1 failed const with N dependents → EXACTLY 1 error (no N-cascade).
+//
+// A single-shape fixture is itself the masking defect; iterating M and
+// N is the regression that closes that class.
+// --------------------------------------------------------------------
+
+/// Dimension M — independence. `M` mutually-independent bad const
+/// declarations (`const Bad{i} : usize = 1 / 0;`, each an isolated
+/// `ConstDivByZero` referencing nothing) must produce EXACTLY M errors,
+/// each located at its own declaration. Iterated over several M so a
+/// fixed-M fixture cannot mask an off-by-one or a collapse.
+#[test]
+fn m_independent_bad_decls_yield_exactly_m_errors() {
+    for m in [1usize, 2, 3, 5, 8] {
+        // Each line: `const Bad{i} : usize = 1 / 0;` — div-by-zero is
+        // independent (no identifier reference), so none is a cascade
+        // of another. One source line per decl ⇒ error i is on line
+        // i+1, column 1 (the `const` keyword).
+        let mut src = String::new();
+        for i in 0..m {
+            src.push_str(&format!("const Bad{i} : usize = 1 / 0;\n"));
+        }
+        let errs = lower_str(&src)
+            .expect_err("every Bad{i} is an independent div-by-zero");
+
+        assert_eq!(
+            errs.errors().len(),
+            m,
+            "M={m} independent bad decls must yield EXACTLY M errors, \
+             got {} — source:\n{src}",
+            errs.errors().len()
+        );
+
+        // Each error is the right kind, in source order, located at
+        // its own declaration line (col 1 = the `const` keyword).
+        for (i, e) in errs.errors().iter().enumerate() {
+            match &e.kind {
+                LowerErrorKind::ConstDivByZero { in_const } => {
+                    assert_eq!(
+                        in_const,
+                        &format!("Bad{i}"),
+                        "errors must be in source/declaration order"
+                    );
+                }
+                other => panic!("error {i}: expected ConstDivByZero, got {other:?}"),
+            }
+            let span = e
+                .span
+                .clone()
+                .expect("ConstDivByZero is a located single-node variant");
+            // Validate against the SOURCE (project discipline: never a
+            // guessed constant). The i-th `1 / 0` is the offending
+            // expression of the i-th decl; its line must be i+1 (one
+            // decl per line) and its offset must match the located
+            // span — proving each error points at its OWN decl, not a
+            // shared/collapsed position.
+            let nth_div = src
+                .match_indices("1 / 0")
+                .nth(i)
+                .expect("one `1 / 0` per declaration")
+                .0;
+            let expected = offset_to_line_col(&src, nth_div);
+            assert_eq!(
+                expected.0,
+                i + 1,
+                "sanity: decl {i}'s `1 / 0` is on line {}",
+                i + 1
+            );
+            assert_eq!(
+                offset_to_line_col(&src, span.start),
+                expected,
+                "error {i} must be located at its own declaration's \
+                 `1 / 0` expression"
+            );
+        }
+    }
+}
+
+/// Dimension N — cascade suppression. ONE failed `const N` followed by
+/// N `data` declarations that each reference `N` in their shape must
+/// produce EXACTLY 1 error (the root `ConstDivByZero` for `N`) — NOT
+/// `1 + N`. The N `ShapeRefersToNonConst` errors are pure cascade of
+/// the already-reported root and are suppressed. Iterated over several
+/// N so a fixed-N fixture cannot mask a linear `1+N` cascade (the exact
+/// shape that recurred on the scheduler side).
+#[test]
+fn one_failed_const_with_n_dependents_yields_exactly_one_error() {
+    for n in [1usize, 2, 5, 8] {
+        // `const N` fails (div-by-zero). Each `data d{i} : f32[N]`
+        // would, in isolation, raise ShapeRefersToNonConst{N} because
+        // the failed `N` is absent from the symbol table — but `N` is
+        // POISONED, so every such secondary error is a cascade of the
+        // one root failure and must be suppressed.
+        let mut src = String::from("const N : usize = 1 / 0;\n");
+        for i in 0..n {
+            src.push_str(&format!("data d{i} : f32[N];\n"));
+        }
+        let errs = lower_str(&src)
+            .expect_err("the failed const N must produce its root error");
+
+        assert_eq!(
+            errs.errors().len(),
+            1,
+            "1 failed const with N={n} dependents must yield EXACTLY 1 \
+             error (no {n}-cascade), got {} — source:\n{src}",
+            errs.errors().len()
+        );
+        match &errs.errors()[0].kind {
+            LowerErrorKind::ConstDivByZero { in_const } => assert_eq!(in_const, "N"),
+            other => panic!("the sole error must be the root ConstDivByZero(N), got {other:?}"),
+        }
+    }
+}
+
+/// The two dimensions COMBINED — the discriminating case that proves
+/// suppression is targeted, not a blanket "only ever one error". One
+/// failed `const N` with N dependents (all suppressed) PLUS M
+/// genuinely-independent bad consts must yield EXACTLY `1 + M` errors:
+/// the root, then each independent — the cascade collapses to its root
+/// while every independent violation still surfaces. Undercount
+/// (suppressing the independents) and overcount (emitting the cascade)
+/// are both caught here, across varying N and M.
+#[test]
+fn cascade_suppressed_while_independents_still_surface() {
+    for n in [1usize, 2, 5] {
+        for m in [1usize, 2, 3] {
+            let mut src = String::from("const N : usize = 1 / 0;\n");
+            for i in 0..n {
+                src.push_str(&format!("data d{i} : f32[N];\n"));
+            }
+            for j in 0..m {
+                src.push_str(&format!("const Indep{j} : usize = 2 / 0;\n"));
+            }
+            let errs = lower_str(&src).expect_err("root + M independents must error");
+
+            assert_eq!(
+                errs.errors().len(),
+                1 + m,
+                "N={n} suppressed dependents + M={m} independents must \
+                 yield EXACTLY 1+M={} errors, got {} — source:\n{src}",
+                1 + m,
+                errs.errors().len()
+            );
+            // First error: the root failed const N (source order).
+            assert!(
+                matches!(
+                    &errs.errors()[0].kind,
+                    LowerErrorKind::ConstDivByZero { in_const } if in_const == "N"
+                ),
+                "first error must be the root ConstDivByZero(N), got {:?}",
+                errs.errors()[0].kind
+            );
+            // Remaining M: each independent bad const, in source order;
+            // none is a suppressed dependent and none is the root.
+            for (j, e) in errs.errors()[1..].iter().enumerate() {
+                assert!(
+                    matches!(
+                        &e.kind,
+                        LowerErrorKind::ConstDivByZero { in_const }
+                            if in_const == &format!("Indep{j}")
+                    ),
+                    "independent error {j} must be ConstDivByZero(Indep{j}) \
+                     in source order, got {:?}",
+                    e.kind
+                );
+            }
+        }
+    }
+}
+
+/// Zero behaviour change for VALID input (AC#5): a well-formed program
+/// that lowered before still lowers to `Ok(AlgoIR)` — multi-error
+/// accumulation must never turn a valid program into an error set. The
+/// determinism gate proves byte-identical codegen separately; this is
+/// the unit-level guard that `Accum` returns `None` (→ `Ok`) when no
+/// error is recorded.
+#[test]
+fn valid_program_still_lowers_under_multi_error() {
+    let src = "\
+const N : usize = 4;
+data x : f32[N];
+data y : f32[N];
+kernel src : () -> f32[N] effectful;
+kernel f   : (f32[N]) -> f32[N] pure;
+x <-- src();
+y <-- f(x);
+";
+    let ir = lower_str(src).expect("a valid program must still lower to Ok(AlgoIR)");
+    assert_eq!(ir.consts["N"].value, 4);
+    assert_eq!(ir.data.len(), 2);
+    assert_eq!(ir.kernels.len(), 2);
+    assert_eq!(ir.stmts.len(), 2);
 }

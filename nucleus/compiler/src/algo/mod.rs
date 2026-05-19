@@ -48,8 +48,8 @@ pub use ast::{
 };
 pub use crate::span::Spanned;
 pub use ir::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, ResolvedConst,
-    ResolvedData, ResolvedKernel, ResolvedType,
+    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
+    ResolvedConst, ResolvedData, ResolvedKernel, ResolvedType,
 };
 pub use lower::lower_algo;
 pub use parser::{parse_algo, ParseError, ParseErrorKind, ParseErrors};

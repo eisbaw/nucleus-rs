@@ -32,6 +32,18 @@
 //! Iteration-variable scoping is strictly lexical: a `for y` introduces
 //! `y` for the body only; exit pops it. An out-of-scope reference is
 //! an error.
+//!
+//! # Multi-error reporting (TASK-0092)
+//!
+//! Lowering does NOT stop at the first violation: it accumulates every
+//! genuinely-independent [`LowerError`] across the whole pass and
+//! returns them together as [`LowerErrors`]. Crucially it does *not*
+//! emit *cascade* errors — secondary failures that exist only because
+//! an earlier declaration failed (e.g. a shape referencing a `const`
+//! that itself failed to evaluate). The exact independent-vs-cascade
+//! rule, the symbol-table cascade boundary, and the measured counting
+//! contract are documented on [`lower_algo`]. Read that before
+//! touching the accumulation or the `Accum` bookkeeping.
 
 use core::ops::Range;
 use std::collections::{BTreeMap, HashSet};
@@ -41,45 +53,212 @@ use super::ast::{
     Stmt, Type, UnaryOp,
 };
 use super::ir::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, ResolvedConst,
-    ResolvedData, ResolvedKernel, ResolvedType,
+    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
+    ResolvedConst, ResolvedData, ResolvedKernel, ResolvedType,
 };
 
 /// Lower a parsed [`AlgoAst`] into a validated [`AlgoIR`].
 ///
-/// Errors are returned on the first violation encountered. Multi-error
-/// reporting is a follow-up (parallels the parser's single-error
-/// limitation).
-pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerError> {
+/// # Multi-error reporting (TASK-0092)
+///
+/// Lowering does **not** abort on the first violation. It walks
+/// `ast.items` in source order and *accumulates* every
+/// genuinely-independent [`LowerError`], returning them all in one
+/// [`LowerErrors`] bundle so a user sees every violation in one
+/// compile cycle rather than recompiling once per error. The `Ok`
+/// type is unchanged (`AlgoIR`): a program that lowers produces the
+/// exact same IR as before — zero behaviour change for valid input
+/// (the determinism gate proves this byte-for-byte).
+///
+/// # Independent-vs-cascade discipline (AC#2 / AC#3 — the heart)
+///
+/// The recurring project defect is mis-stating the emitted error
+/// *count*: emitting spurious *cascade* errors (one root failure
+/// inflating into N), or conversely suppressing genuinely-independent
+/// ones (undercount). The rule applied here, and the boundary that
+/// makes it sound:
+///
+/// **The symbol table IS the cascade boundary.** A declaration that
+/// fails to lower is *not* inserted into `ir.consts` / `ir.data` /
+/// `ir.kernels`. Every downstream reference resolves against those
+/// tables, so a reference to a *failed* declaration would otherwise
+/// produce a *second* error (`ShapeRefersToNonConst`,
+/// `ConstRefersToNonConst`, `UnknownIdent`, `AssignmentTargetNotData`)
+/// that is **not an independent violation** — it is purely a
+/// consequence of the already-reported root failure. We therefore
+/// track [`Accum::failed_decls`]: the names of declarations that were
+/// *declared but failed to evaluate*. A reference error whose
+/// referenced identifier is in `failed_decls` is **suppressed** (the
+/// user already has the root diagnostic for that name).
+///
+/// What is and is NOT recorded as a poisoned name (the precise line):
+///
+/// - A const / data / kernel whose body fails to evaluate (bad shape
+///   expr, div-by-zero, overflow, cycle, …) → its name IS poisoned:
+///   the symbol does not exist for dependents, so every dependent's
+///   error is a pure cascade and is suppressed.
+/// - A **duplicate** declaration is NOT poisoned: the *first*
+///   declaration of that name is valid and present in the table, so
+///   the name still resolves; the duplicate is itself the one
+///   independent error. Dependents of the name keep working — there is
+///   no cascade to suppress, and suppressing here would be undercount.
+/// - A name that is in neither the symbol table nor `failed_decls` is
+///   a genuinely-never-declared identifier: that IS an independent
+///   error and is reported (suppressing it would be undercount).
+///
+/// Net counting contract, MEASURED varying input size and pinned by a
+/// size-parametrised fixture (`algo_lower.rs`): **M** genuinely-
+/// independent bad declarations → exactly **M** errors; **1** failed
+/// declaration with **N** dependents → exactly **1** error (not
+/// `1 + N`), for any N.
+///
+/// # Determinism (PRD §10.1)
+///
+/// Errors are pushed in source order; `failed_decls` is a `BTreeMap`;
+/// there is no `HashMap`/`HashSet` iteration on the error path. The
+/// emitted sequence is a pure deterministic function of the input.
+///
+/// Spans populated on the AST (TASK-0082) are threaded into each
+/// [`LowerError`] on the `Err` path only (TASK-0090). The success
+/// path reads no span, so the determinism gate stays byte-identical
+/// (positions populate only for errors).
+pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerErrors> {
     let mut ir = AlgoIR::default();
-
-    // Top-level pass: declarations and statements in source order.
-    // We process each item in order so a reference into an earlier
-    // const / data / kernel resolves; references to later ones fail
-    // (declarations-before-use, in line with the existing grammar
-    // doc note that "semantic passes enforce declarations-before-use").
     let mut top_scope = Scope::new_top_level();
+    let mut acc = Accum::default();
 
-    // Spans populated on the AST (TASK-0082) are now threaded into
-    // `LowerError` on the `Err` path only (TASK-0090): each diagnosable
-    // error carries the byte range of the offending `Spanned` so the
-    // driver can render `line:col`. The success path is unchanged — no
-    // span is read for a program that lowers — so the determinism gate
-    // stays byte-identical (positions populate only when we return
-    // `Err`).
+    // Top-level pass: declarations and statements in source order. A
+    // reference into an earlier const / data / kernel resolves;
+    // references to later ones fail (declarations-before-use). Each
+    // item is lowered independently; a failure records an error and
+    // continues so downstream *independent* violations still surface.
     for item in &ast.items {
         match &item.node {
-            Item::Const(c) => lower_const(c, &mut ir)?,
-            Item::Data(d) => lower_data(d, &mut ir)?,
-            Item::Kernel(k) => lower_kernel(k, &mut ir)?,
-            Item::Stmt(s) => {
-                let lowered = lower_stmt(s, &ir, &mut top_scope)?;
-                ir.stmts.push(lowered);
+            Item::Const(c) => {
+                if let Err(e) = lower_const(c, &mut ir) {
+                    acc.record_decl_failure(&c.name.node, e);
+                }
             }
+            Item::Data(d) => {
+                if let Err(e) = lower_data(d, &mut ir) {
+                    acc.record_decl_failure(&d.name.node, e);
+                }
+            }
+            Item::Kernel(k) => {
+                if let Err(e) = lower_kernel(k, &mut ir) {
+                    acc.record_decl_failure(&k.name.node, e);
+                }
+            }
+            Item::Stmt(s) => match lower_stmt(s, &ir, &mut top_scope) {
+                Ok(lowered) => ir.stmts.push(lowered),
+                // A statement error referencing a poisoned name is a
+                // cascade of an already-reported declaration failure;
+                // suppress it. A statement that itself violates a rule
+                // (double-assignment, never-declared name, …) is
+                // independent and reported.
+                Err(e) => acc.record_stmt_error(e),
+            },
         }
     }
 
-    Ok(ir)
+    match acc.into_errors() {
+        Some(errors) => Err(LowerErrors::from_nonempty(errors)),
+        None => Ok(ir),
+    }
+}
+
+/// Error accumulator with cascade-suppression bookkeeping.
+///
+/// `errors` is the source-ordered collected set. `failed_decls` is the
+/// poisoned-name set (see [`lower_algo`] docs): a `BTreeMap` (NOT a
+/// hash set) so the error path has no nondeterministic iteration —
+/// though in fact we only ever *look up* by name, never iterate, the
+/// ordered map keeps the intent unambiguous and the path
+/// hash-iteration-free.
+#[derive(Default)]
+struct Accum {
+    errors: Vec<LowerError>,
+    failed_decls: BTreeMap<String, ()>,
+}
+
+impl Accum {
+    /// A declaration (`const` / `data` / `kernel`) failed to lower.
+    ///
+    /// Three cases, in priority order:
+    ///
+    /// 1. The declaration's own failure is itself a *cascade* of an
+    ///    already-poisoned name (e.g. `data x : f32[N]` where `const
+    ///    N` failed → `ShapeRefersToNonConst` naming the failed `N`).
+    ///    This is NOT an independent violation: suppress the error,
+    ///    and do **not** poison this declaration's name. (Poisoning
+    ///    `x` here would compound the cascade — every independent
+    ///    dependent of `x` would then also be wrongly suppressed:
+    ///    the undercount side of the defect, applied transitively.)
+    /// 2. A duplicate-name collision: record the error but do NOT
+    ///    poison — the *first* (valid) declaration is still in the
+    ///    symbol table, so the name resolves for dependents; there is
+    ///    no cascade to suppress.
+    /// 3. A genuine independent evaluation failure (bad shape expr,
+    ///    div-by-zero, overflow, cycle, …): record the error AND
+    ///    poison the name so its dependents' resulting reference
+    ///    errors are recognised as cascade and suppressed.
+    fn record_decl_failure(&mut self, name: &str, e: LowerError) {
+        // Case 1: a declaration that failed only because it references
+        // an already-failed declaration is a cascade, not independent.
+        if self.is_cascade_of_failed_decl(&e) {
+            return;
+        }
+        let is_duplicate = matches!(
+            e.kind,
+            LowerErrorKind::DuplicateConst(_)
+                | LowerErrorKind::DuplicateData(_)
+                | LowerErrorKind::DuplicateKernel(_)
+        );
+        if !is_duplicate {
+            self.failed_decls.insert(name.to_string(), ());
+        }
+        self.errors.push(e);
+    }
+
+    /// A statement failed to lower. If the error is a reference to a
+    /// name that a *failed* declaration poisoned, it is a pure cascade
+    /// of that already-reported root failure → suppress. Otherwise it
+    /// is an independent violation → record.
+    fn record_stmt_error(&mut self, e: LowerError) {
+        if self.is_cascade_of_failed_decl(&e) {
+            return;
+        }
+        self.errors.push(e);
+    }
+
+    /// True iff `e` is a reference-resolution error naming an
+    /// identifier that a failed declaration poisoned. These are the
+    /// only error kinds that can be a *secondary consequence* of a
+    /// declaration that failed to evaluate (a reference that would
+    /// have resolved had the declaration succeeded). Every other kind
+    /// is an independent property of the statement itself.
+    fn is_cascade_of_failed_decl(&self, e: &LowerError) -> bool {
+        let referenced = match &e.kind {
+            LowerErrorKind::UnknownIdent(n)
+            | LowerErrorKind::AssignmentTargetNotData(n) => n.as_str(),
+            LowerErrorKind::ConstRefersToNonConst { unknown_ident, .. }
+            | LowerErrorKind::ShapeRefersToNonConst { unknown_ident, .. } => {
+                unknown_ident.as_str()
+            }
+            _ => return false,
+        };
+        self.failed_decls.contains_key(referenced)
+    }
+
+    /// Consume into the collected error set, or `None` if lowering
+    /// succeeded (no errors).
+    fn into_errors(self) -> Option<Vec<LowerError>> {
+        if self.errors.is_empty() {
+            None
+        } else {
+            Some(self.errors)
+        }
+    }
 }
 
 // --------------------------------------------------------------------
