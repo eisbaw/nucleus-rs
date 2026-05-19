@@ -1,11 +1,11 @@
 ---
 id: TASK-0151
 title: 'transfer_inject: cross-scope finalisation gate is whole-program coarse'
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-18 08:32'
-updated_date: '2026-05-18 09:27'
+updated_date: '2026-05-19 04:27'
 labels:
   - M2
   - compiler
@@ -23,7 +23,7 @@ Pass A/B (TASK-0136) are gated on inner_block_iter_vars.is_empty() — a whole-P
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Gate decision is per-Repeat-subtree, not whole-program
-- [ ] #2 Skipped-finalisation branch logs a traceable debug message naming the deferred symbol/seq
+- [x] #2 Skipped-finalisation branch logs a traceable debug message naming the deferred symbol/seq
 - [x] #3 Test: mixed block + non-block program still pairs the non-block cross-scope transfer
 <!-- AC:END -->
 
@@ -36,3 +36,9 @@ AC#2 (traceable debug message) NOT done and deliberately not faked: the compiler
 
 Review follow-up (mped-architect Findings 2+3, non-negotiable honesty gap): documented the "block-entangled non-block transfers are stranded" over-approximation in transfer_inject module docs (Honest limitations), and pinned it with block_nested_in_plain_loop_strands_the_invariant_wait (asserts current conservative behaviour; flips when TASK-0149/0150 makes classification per-Wait). Added mixed_block_nonblock_tree_is_structurally_idempotent locking idempotence on the mixed tree. QA GO (333 tests, 7/7 e2e, clippy clean).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+AC#2 closed via TASK-0154 (commit 36a27c2): the two block-governed skip sites (Pass A hoist_invariant_waits opaque-Repeat arm, Pass B collect_waits exclusion) now emit a NUC_TRACE-gated traceable line naming the deferred data symbol + seq, worded as a TASK-0149/0150 per-tile deferral. Zero-dep nuc_trace! facility (backlog/decisions/decision-0001); silent by default — determinism-check byte-identical, e2e 30/26/0/4 unchanged. Pinned by block_deferral_is_traceable_under_nuc_trace + deferral_trace_is_silent_by_default. Module doc corrected from "silently defers/invisible" to "traceable, not invisible". All 3 ACs now checked; gate green (just ci exit 0).
+<!-- SECTION:FINAL_SUMMARY:END -->
