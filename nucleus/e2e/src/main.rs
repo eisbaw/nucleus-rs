@@ -389,9 +389,63 @@ fn print_help() {
 ///       examples/<NN-name>/...
 struct Paths {
     repo_root: PathBuf,
+    /// Per-harness-invocation run id (TASK-0182). Computed exactly ONCE
+    /// per process in `discover` and inserted as a path segment into
+    /// every mutable scratch root, so two concurrent/rapid `just e2e`
+    /// processes never share a `remove_dir_all`-able tree (the old
+    /// shared-tree cwd race: a still-cwd-d `Command` in proc A while
+    /// proc B removes the deterministically-named cell dir → observed
+    /// `getcwd: cannot access parent directories` +
+    /// `ld.bfd: cannot open output file …/nuc_generated`).
+    ///
+    /// `pid` makes it unique across concurrent processes; the nanos
+    /// nonce makes it unique across rapid SEQUENTIAL invocations on
+    /// systems where the OS recycles PIDs fast enough that two
+    /// back-to-back runs could collide. Within ONE process the value
+    /// is fixed, so a cell's path is STABLE and UNIQUE for the whole
+    /// run — critical for determinism mode, whose `a`/`b` trees for a
+    /// given cell must land under the same run root to be comparable.
+    ///
+    /// Chosen over an flock-based lock deliberately: a lock would
+    /// SERIALISE concurrent harness runs (and, worse, block the future
+    /// parallel-cell executor — TASK-0023.01 — whose whole point is
+    /// concurrency). Run-id isolation is lock-free, needs no cleanup
+    /// of lock files, and makes concurrency safe by construction
+    /// rather than by mutual exclusion.
+    run_id: String,
 }
 
 impl Paths {
+    /// Compute the process-wide run id. Pure function of pid + a
+    /// wall-clock nanos nonce; called once from `discover`.
+    ///
+    /// Test-only seam (TASK-0182, gate-only — mirrors the
+    /// `NUC_NONDET_TEST` / `NUC_XBACKEND_NEGATIVE` discipline): when
+    /// `NUC_E2E_FORCE_SHARED_RUN_ID` is set to a non-empty value, that
+    /// exact string is used as the run id INSTEAD of `pid+nanos`. This
+    /// deliberately RE-CREATES the pre-fix shared-tree condition (all
+    /// concurrent invocations collide on one mutable path) so the
+    /// concurrency stress test can prove it genuinely BITES the old
+    /// failure mode. It is never set by any justfile recipe or CI
+    /// path, so bare `just e2e` / `determinism-check` are byte-for-byte
+    /// unaffected (the env read is a strict no-op when unset).
+    fn compute_run_id() -> String {
+        if let Some(forced) = std::env::var_os("NUC_E2E_FORCE_SHARED_RUN_ID") {
+            if !forced.is_empty() {
+                return forced.to_string_lossy().into_owned();
+            }
+        }
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            // Clock-before-epoch is implausible here; fall back to 0
+            // rather than panicking — the pid alone still isolates
+            // concurrent processes.
+            .unwrap_or(0);
+        format!("run-{pid}-{nanos}")
+    }
+
     fn discover() -> Result<Self, String> {
         // CARGO_MANIFEST_DIR is set when the binary is invoked via
         // `cargo run`; in that case it points to this crate. We walk
@@ -407,7 +461,10 @@ impl Paths {
             if start.join("nucleus").join("Cargo.toml").exists()
                 && start.join("nuc-nucleus").join("PRD.md").exists()
             {
-                return Ok(Paths { repo_root: start });
+                return Ok(Paths {
+                    repo_root: start,
+                    run_id: Self::compute_run_id(),
+                });
             }
             if !start.pop() {
                 return Err(
@@ -437,11 +494,33 @@ impl Paths {
             .join("capabilities.toml")
     }
 
-    /// Per-cell scratch directory under `nucleus/target/`. `cargo
-    /// clean` sweeps it. Removed and recreated on each invocation so
-    /// stale artefacts cannot mask a regression.
+    /// The per-RUN run-mode scratch root:
+    /// `nucleus/target/e2e-matrix/<run-id>`. Every cell of THIS
+    /// invocation lives under here; a different concurrent/rapid
+    /// invocation gets a different `<run-id>` and so a disjoint tree
+    /// (TASK-0182 — eliminates the shared-tree cwd race). Stays under
+    /// `nucleus/target/` so `cargo clean` still sweeps it.
+    fn run_scratch_root(&self) -> PathBuf {
+        self.repo_root
+            .join("nucleus/target/e2e-matrix")
+            .join(&self.run_id)
+    }
+
+    /// The per-RUN determinism scratch root:
+    /// `nucleus/target/e2e-determinism/<run-id>`.
+    fn run_determinism_root(&self) -> PathBuf {
+        self.repo_root
+            .join("nucleus/target/e2e-determinism")
+            .join(&self.run_id)
+    }
+
+    /// Per-cell scratch directory under this run's root. `cargo clean`
+    /// sweeps it. Removed and recreated so stale artefacts cannot mask
+    /// a regression — and, since the parent segment is the per-run
+    /// `<run-id>`, that `remove_dir_all` can only ever touch THIS
+    /// process's own tree, never a sibling run still cwd-d into it.
     fn scratch_dir(&self, ex: &str, sched: &str, backend: &str) -> Result<PathBuf, String> {
-        let root = self.repo_root.join("nucleus/target/e2e-matrix");
+        let root = self.run_scratch_root();
         fs::create_dir_all(&root)
             .map_err(|e| format!("cannot create scratch root `{}`: {e}", root.display()))?;
         // Cell directory name is sanitised to be filesystem-safe.
@@ -459,6 +538,10 @@ impl Paths {
     /// invocation stomping on the other. Lives under
     /// `nucleus/target/e2e-determinism/` so a single `cargo clean`
     /// sweeps the lot.
+    /// Determinism trees land under the per-run
+    /// `e2e-determinism/<run-id>/` so the `a` and `b` builds of a
+    /// given cell — which MUST be byte-comparable — share one run
+    /// root, while a concurrent run is fully disjoint (TASK-0182).
     fn determinism_dir(
         &self,
         ex: &str,
@@ -466,7 +549,7 @@ impl Paths {
         backend: &str,
         label: &str,
     ) -> Result<PathBuf, String> {
-        let root = self.repo_root.join("nucleus/target/e2e-determinism");
+        let root = self.run_determinism_root();
         fs::create_dir_all(&root)
             .map_err(|e| format!("cannot create determinism root `{}`: {e}", root.display()))?;
         let cell = format!("{ex}__{sched}__{backend}__{label}").replace(['/', '\\'], "_");
@@ -475,6 +558,50 @@ impl Paths {
         fs::create_dir_all(&dir)
             .map_err(|e| format!("cannot create cell dir `{}`: {e}", dir.display()))?;
         Ok(dir)
+    }
+
+    /// End-of-run disposition of this invocation's per-run scratch
+    /// roots (TASK-0182 cruft bound).
+    ///
+    /// * `success == true`: the run completed cleanly — remove both
+    ///   per-run roots so `nucleus/target/e2e-{matrix,determinism}/`
+    ///   does not grow without bound across repeated runs. Only the
+    ///   `<run-id>` subtree is removed; a CONCURRENT run's sibling
+    ///   `<run-id>` is untouched (that is the whole point of the
+    ///   per-run segment), and the shared parent dir is left in place.
+    /// * `success == false`: keep the trees for debuggability and
+    ///   print their absolute paths so a developer can inspect the
+    ///   failed build. They remain under `nucleus/target/`, so a
+    ///   later `cargo clean` (or the next successful run, which only
+    ///   removes its OWN run-id) still bounds them — but a long series
+    ///   of failures will accumulate `<run-id>` dirs; that is the
+    ///   accepted debuggability trade-off, documented here so it is a
+    ///   choice, not an oversight.
+    ///
+    /// Only roots that actually exist are acted on (a determinism-only
+    /// or run-only invocation never created the other), and a removal
+    /// error is reported loudly (never silently swallowed) but does
+    /// not itself fail the run.
+    fn finalize_run_scratch(&self, success: bool) {
+        for root in [self.run_scratch_root(), self.run_determinism_root()] {
+            if !root.exists() {
+                continue;
+            }
+            if success {
+                if let Err(e) = fs::remove_dir_all(&root) {
+                    eprintln!(
+                        "nucleus-e2e: WARNING: could not clean per-run scratch \
+                         `{}`: {e} (cruft will be swept by `cargo clean`)",
+                        root.display()
+                    );
+                }
+            } else {
+                eprintln!(
+                    "nucleus-e2e: retained per-run scratch for debugging: {}",
+                    root.display()
+                );
+            }
+        }
     }
 }
 
@@ -2164,11 +2291,34 @@ fn format_duration(d: Duration) -> String {
 // Entry point
 // --------------------------------------------------------------------
 
+/// Thin wrapper that owns the per-run scratch lifecycle (TASK-0182).
+///
+/// `Paths` (and with it the process-wide `run_id`) is discovered HERE,
+/// once, and threaded into `run_inner`. Whatever `run_inner` returns —
+/// a code, or an error — we deterministically finalize this run's
+/// per-run scratch roots through the SINGLE point below, so every exit
+/// path (normal pass, required-fail, the negative-gate forced-clean
+/// `Ok(0)`s, or a hard `Err`) gets a consistent cleanup/retain
+/// decision. A clean exit 0 removes the per-run trees; anything else
+/// (non-zero code OR error) retains them and prints their paths.
 fn run() -> Result<i32, String> {
     let argv: Vec<OsString> = env::args_os().skip(1).collect();
     let args = parse_args(&argv)?;
 
     let paths = Paths::discover()?;
+    let outcome = run_inner(&paths, args);
+    // Treat ONLY a clean `Ok(0)` as success: a non-zero code means
+    // real cell failures (keep the tree to debug them); the
+    // negative-gate forced-clean `Ok(0)` arms return before any cell
+    // builds under most layouts, but if they did build, retaining is
+    // still the safer (debuggable) choice — they are abnormal runs by
+    // construction. An `Err` is an infra failure: retain + report.
+    let success = matches!(outcome, Ok(0));
+    paths.finalize_run_scratch(success);
+    outcome
+}
+
+fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     let manifest_src = fs::read_to_string(paths.manifest_path()).map_err(|e| {
         format!(
             "cannot read manifest at {}: {e}",
@@ -2189,7 +2339,7 @@ fn run() -> Result<i32, String> {
         );
     }
 
-    let planned = plan_cells(&paths, &manifest, &args)?;
+    let planned = plan_cells(paths, &manifest, &args)?;
     if planned.is_empty() {
         return Err("no cells matched the given filters; nothing to run".to_string());
     }
@@ -2240,7 +2390,7 @@ fn run() -> Result<i32, String> {
                 pc.cell.backend
             );
             let _ = std::io::stderr().flush();
-            let r = check_cell_determinism(&paths, pc);
+            let r = check_cell_determinism(paths, pc);
             match &r.status {
                 DetCellStatus::Pass { files_compared } => {
                     eprintln!("PASS ({files_compared} files, {:?})", r.elapsed)
@@ -2368,7 +2518,7 @@ fn run() -> Result<i32, String> {
             pc.cell.backend
         );
         let _ = std::io::stderr().flush();
-        let r = run_cell(&paths, pc);
+        let r = run_cell(paths, pc);
         match &r.status {
             Status::Pass => eprintln!("PASS ({:?})", r.timings.total()),
             Status::Failed { phase, .. } => eprintln!("FAIL/{phase}"),
