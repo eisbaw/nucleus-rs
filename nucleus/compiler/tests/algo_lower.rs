@@ -14,8 +14,9 @@
 //! `lowers_example_05_stencil` below pins that it lowers cleanly.
 
 use compiler::algo::{
-    lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, ResolvedType, ScalarType,
+    lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, LowerErrorKind, ResolvedType, ScalarType,
 };
+use compiler::error::offset_to_line_col;
 
 /// Reads a source file at a workspace-relative path. Panics on IO
 /// failure — these tests are environment-dependent by design.
@@ -384,7 +385,10 @@ kernel k : () -> () effectful;
 kernel k : () -> () effectful;
 ";
     match lower_str(src) {
-        Err(LowerError::DuplicateKernel(n)) => assert_eq!(n, "k"),
+        Err(LowerError {
+            kind: LowerErrorKind::DuplicateKernel(n),
+            ..
+        }) => assert_eq!(n, "k"),
         other => panic!("expected DuplicateKernel; got {other:?}"),
     }
 }
@@ -397,7 +401,10 @@ data x : f32[N];
 data x : f32[N];
 ";
     match lower_str(src) {
-        Err(LowerError::DuplicateData(n)) => assert_eq!(n, "x"),
+        Err(LowerError {
+            kind: LowerErrorKind::DuplicateData(n),
+            ..
+        }) => assert_eq!(n, "x"),
         other => panic!("expected DuplicateData; got {other:?}"),
     }
 }
@@ -409,7 +416,10 @@ const N : usize = 4;
 const N : usize = 8;
 ";
     match lower_str(src) {
-        Err(LowerError::DuplicateConst(n)) => assert_eq!(n, "N"),
+        Err(LowerError {
+            kind: LowerErrorKind::DuplicateConst(n),
+            ..
+        }) => assert_eq!(n, "N"),
         other => panic!("expected DuplicateConst; got {other:?}"),
     }
 }
@@ -426,7 +436,7 @@ data N : f32[4];
     // The variant is DuplicateData (the second declaration); the
     // important thing is the collision is detected.
     assert!(
-        matches!(err, LowerError::DuplicateData(ref n) if n == "N"),
+        matches!(err.kind, LowerErrorKind::DuplicateData(ref n) if n == "N"),
         "expected DuplicateData(N); got {err:?}"
     );
 }
@@ -444,7 +454,10 @@ x <-- src();
 x <-- f(y);
 ";
     match lower_str(src) {
-        Err(LowerError::DoubleAssignment { data, .. }) => assert_eq!(data, "x"),
+        Err(LowerError {
+            kind: LowerErrorKind::DoubleAssignment { data, .. },
+            ..
+        }) => assert_eq!(data, "x"),
         other => panic!("expected DoubleAssignment; got {other:?}"),
     }
 }
@@ -466,7 +479,10 @@ kernel g : (f32) -> f32 pure;
 probe[y] <-- g(probe[0]);
 ";
     match lower_str(src) {
-        Err(LowerError::IterVarOutOfScope(n)) => assert_eq!(n, "y"),
+        Err(LowerError {
+            kind: LowerErrorKind::IterVarOutOfScope(n),
+            ..
+        }) => assert_eq!(n, "y"),
         other => panic!("expected IterVarOutOfScope; got {other:?}"),
     }
 }
@@ -482,7 +498,10 @@ const Z : usize = 0;
 const Q : usize = 10 / Z;
 ";
     match lower_str(src) {
-        Err(LowerError::ConstDivByZero { in_const }) => assert_eq!(in_const, "Q"),
+        Err(LowerError {
+            kind: LowerErrorKind::ConstDivByZero { in_const },
+            ..
+        }) => assert_eq!(in_const, "Q"),
         other => panic!("expected ConstDivByZero; got {other:?}"),
     }
 }
@@ -495,9 +514,13 @@ const M : usize = N;
 const N : usize = 4;
 ";
     match lower_str(src) {
-        Err(LowerError::ConstRefersToNonConst {
-            in_const,
-            unknown_ident,
+        Err(LowerError {
+            kind:
+                LowerErrorKind::ConstRefersToNonConst {
+                    in_const,
+                    unknown_ident,
+                },
+            ..
         }) => {
             assert_eq!(in_const, "M");
             assert_eq!(unknown_ident, "N");
@@ -514,7 +537,10 @@ const N : usize = 4;
 data x : f32[N - 4];
 ";
     match lower_str(src) {
-        Err(LowerError::NonPositiveDim { decl, value }) => {
+        Err(LowerError {
+            kind: LowerErrorKind::NonPositiveDim { decl, value },
+            ..
+        }) => {
             assert_eq!(decl, "x");
             assert_eq!(value, 0);
         }
@@ -529,7 +555,10 @@ data x : f32[1];
 x <-- nope();
 ";
     match lower_str(src) {
-        Err(LowerError::UnknownIdent(n)) => assert_eq!(n, "nope"),
+        Err(LowerError {
+            kind: LowerErrorKind::UnknownIdent(n),
+            ..
+        }) => assert_eq!(n, "nope"),
         other => panic!("expected UnknownIdent; got {other:?}"),
     }
 }
@@ -545,7 +574,139 @@ kernel f : () -> f32 effectful;
 N <-- f();
 ";
     match lower_str(src) {
-        Err(LowerError::AssignmentTargetNotData(n)) => assert_eq!(n, "N"),
+        Err(LowerError {
+            kind: LowerErrorKind::AssignmentTargetNotData(n),
+            ..
+        }) => assert_eq!(n, "N"),
         other => panic!("expected AssignmentTargetNotData; got {other:?}"),
     }
+}
+
+// --------------------------------------------------------------------
+// TASK-0090: located lowering diagnostics — the error carries the byte
+// span of the offending node, which resolves to the CORRECT line:col.
+// --------------------------------------------------------------------
+
+/// Resolve a lowered error's stored byte span to a 1-based
+/// `(line, column)` against `src`, the same way the driver does
+/// (`LowerError::display_with_src`). Panics if the variant is
+/// position-less — every case asserted below is a single-offending-node
+/// variant that MUST carry a span (AC#1), so a `None` here is a real
+/// regression, not test noise.
+fn err_line_col(src: &str, err: &LowerError) -> (usize, usize) {
+    let span = err
+        .span
+        .clone()
+        .unwrap_or_else(|| panic!("expected a located error, got position-less: {err:?}"));
+    offset_to_line_col(src, span.start)
+}
+
+/// AC#3: representative bad programs assert the EXACT line:col, each
+/// independently validated against the crafted source — the expected
+/// `(line, col)` is recomputed by finding the offending token in the
+/// source string and feeding that offset through `offset_to_line_col`,
+/// so the test pins the real source position, not a guessed constant.
+#[test]
+fn located_errors_carry_correct_line_col() {
+    // Case 1: duplicate const. The diagnostic must point at the
+    // *second* (duplicate) `N`, on line 2.
+    {
+        let src = "const N : usize = 4;\nconst N : usize = 8;\n";
+        let err = lower_str(src).expect_err("duplicate const must error");
+        assert!(
+            matches!(err.kind, LowerErrorKind::DuplicateConst(ref n) if n == "N"),
+            "got {err:?}"
+        );
+        // The duplicate `N` is the second occurrence of "N " ("N :").
+        let second_n = src.match_indices("N :").nth(1).expect("two `N :`").0;
+        let expected = offset_to_line_col(src, second_n);
+        assert_eq!(expected, (2, 7), "sanity: duplicate `N` is at line 2 col 7");
+        assert_eq!(
+            err_line_col(src, &err),
+            expected,
+            "DuplicateConst must point at the duplicate declaration's identifier"
+        );
+        // And the driver-facing rendering carries it.
+        assert_eq!(
+            err.display_with_src(src),
+            "duplicate const `N` at 2:7"
+        );
+    }
+
+    // Case 2: unknown identifier in a kernel-call RHS. Points at the
+    // undeclared callee `nope` on line 2.
+    {
+        let src = "data x : f32[1];\nx <-- nope();\n";
+        let err = lower_str(src).expect_err("unknown ident must error");
+        assert!(
+            matches!(err.kind, LowerErrorKind::UnknownIdent(ref n) if n == "nope"),
+            "got {err:?}"
+        );
+        let nope_at = src.find("nope").expect("`nope` in source");
+        let expected = offset_to_line_col(src, nope_at);
+        assert_eq!(expected, (2, 7), "sanity: `nope` is at line 2 col 7");
+        assert_eq!(
+            err_line_col(src, &err),
+            expected,
+            "UnknownIdent must point at the undeclared reference"
+        );
+        assert_eq!(
+            err.display_with_src(src),
+            "unknown identifier `nope` at 2:7"
+        );
+    }
+
+    // Case 3: double assignment. Points at the LHS of the *second*
+    // (violating) dataflow statement, on line 7.
+    {
+        let src = "const N : usize = 4;\n\
+data x : f32[N];\n\
+data y : f32[N];\n\
+kernel src : () -> f32[N] effectful;\n\
+kernel f   : (f32[N]) -> f32[N] pure;\n\
+x <-- src();\n\
+x <-- f(y);\n";
+        let err = lower_str(src).expect_err("double assignment must error");
+        assert!(
+            matches!(err.kind, LowerErrorKind::DoubleAssignment { ref data, .. } if data == "x"),
+            "got {err:?}"
+        );
+        // The violating LHS is the `x` at the start of line 7 (the
+        // second `x <-- `).
+        let second_assign = src.match_indices("x <-- ").nth(1).expect("two `x <-- `").0;
+        let expected = offset_to_line_col(src, second_assign);
+        assert_eq!(expected, (7, 1), "sanity: re-assignment `x` is at line 7 col 1");
+        assert_eq!(
+            err_line_col(src, &err),
+            expected,
+            "DoubleAssignment must point at the re-assignment's LHS"
+        );
+        assert_eq!(
+            err.display_with_src(src),
+            "data `x` is assigned twice in the same scope (<top-level>); single-assignment violated at 7:1"
+        );
+    }
+}
+
+/// The two genuinely position-less variants stay position-less on
+/// purpose (honest-partial per variant — see `LowerError` docs). This
+/// pins that decision so a future change that silently attaches a
+/// (likely wrong) span to them is caught.
+#[test]
+fn multi_site_variants_are_position_less() {
+    // A const self-cycle: `ConstCycle` spans several decls, no single
+    // primary node.
+    let src = "const A : usize = A;\n";
+    let err = lower_str(src).expect_err("self-referential const must error");
+    assert!(
+        matches!(err.kind, LowerErrorKind::ConstCycle(_)),
+        "got {err:?}"
+    );
+    assert!(
+        err.span.is_none(),
+        "ConstCycle is documented position-less; got {:?}",
+        err.span
+    );
+    // Display falls back to the kind alone — no fabricated location.
+    assert_eq!(err.display_with_src(src), err.kind.to_string());
 }

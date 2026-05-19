@@ -14,7 +14,7 @@
 //!   most one dataflow statement per scope (PRD §6.2.1).
 //! - Enforces lexical scoping of iteration variables: a `for y`
 //!   variable is only visible inside its body. Referring to `y`
-//!   outside is a [`LowerError::IterVarOutOfScope`].
+//!   outside is a [`LowerErrorKind::IterVarOutOfScope`].
 //!
 //! What this IR explicitly does NOT do (deferred to later passes):
 //!
@@ -35,6 +35,7 @@
 //! would force downstream passes to keep handling 'shape may or may
 //! not be resolved' cases. A clean type boundary is cheaper.
 
+use core::ops::Range;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "serde")]
@@ -187,15 +188,18 @@ pub struct AlgoIR {
     pub stmts: Vec<IrStmt>,
 }
 
-/// Errors produced by the lowering pass.
+/// The semantic-violation *kind* produced by the lowering pass.
 ///
-/// Each variant names a single semantic violation. The position
-/// information from the AST is not yet available (parser AST nodes
-/// don't carry spans — TASK-0007 follow-up); when spans land, these
-/// variants gain `(line, column)` fields without further surface
-/// change.
+/// Each variant names a single semantic violation and carries the
+/// payload a diagnostic message needs (the offending name, the owning
+/// declaration, etc.). The *source position* of the violation is NOT
+/// here — it is carried separately on [`LowerError`] so that adding
+/// positions did not change any variant's payload shape (TASK-0090).
+/// Equality / hashing / Display of a located error forward to this
+/// kind; see [`LowerError`] for why position is excluded from value
+/// identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LowerError {
+pub enum LowerErrorKind {
     /// Two `const` declarations share a name.
     DuplicateConst(String),
     /// Two `data` declarations share a name.
@@ -265,65 +269,178 @@ pub enum LowerError {
     IterVarShadowsDecl { var: String, shadows: String },
 }
 
-impl std::fmt::Display for LowerError {
+impl std::fmt::Display for LowerErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LowerError::DuplicateConst(n) => write!(f, "duplicate const `{n}`"),
-            LowerError::DuplicateData(n) => write!(f, "duplicate data `{n}`"),
-            LowerError::DuplicateKernel(n) => write!(f, "duplicate kernel `{n}`"),
-            LowerError::DoubleAssignment { data, scope } => write!(
+            LowerErrorKind::DuplicateConst(n) => write!(f, "duplicate const `{n}`"),
+            LowerErrorKind::DuplicateData(n) => write!(f, "duplicate data `{n}`"),
+            LowerErrorKind::DuplicateKernel(n) => write!(f, "duplicate kernel `{n}`"),
+            LowerErrorKind::DoubleAssignment { data, scope } => write!(
                 f,
                 "data `{data}` is assigned twice in the same scope ({scope}); single-assignment violated"
             ),
-            LowerError::UnknownIdent(n) => write!(f, "unknown identifier `{n}`"),
-            LowerError::IterVarOutOfScope(n) => write!(
+            LowerErrorKind::UnknownIdent(n) => write!(f, "unknown identifier `{n}`"),
+            LowerErrorKind::IterVarOutOfScope(n) => write!(
                 f,
                 "iteration variable `{n}` is referenced outside its loop body"
             ),
-            LowerError::AssignmentTargetNotData(n) => {
+            LowerErrorKind::AssignmentTargetNotData(n) => {
                 write!(f, "assignment target `{n}` is not a declared `data` symbol")
             }
-            LowerError::ConstRefersToNonConst {
+            LowerErrorKind::ConstRefersToNonConst {
                 in_const,
                 unknown_ident,
             } => write!(
                 f,
                 "const `{in_const}` refers to `{unknown_ident}`, which is not a declared const"
             ),
-            LowerError::ConstCycle(path) => write!(f, "const reference cycle: {}", path.join(" -> ")),
-            LowerError::NonIntegerConstExpr { in_const, reason } => {
+            LowerErrorKind::ConstCycle(path) => {
+                write!(f, "const reference cycle: {}", path.join(" -> "))
+            }
+            LowerErrorKind::NonIntegerConstExpr { in_const, reason } => {
                 write!(f, "const `{in_const}` has a non-integer expression: {reason}")
             }
-            LowerError::ConstOverflow { in_const, op } => {
+            LowerErrorKind::ConstOverflow { in_const, op } => {
                 write!(f, "integer overflow in const `{in_const}` during `{op}`")
             }
-            LowerError::ConstDivByZero { in_const } => {
+            LowerErrorKind::ConstDivByZero { in_const } => {
                 write!(f, "divide-by-zero in const `{in_const}`")
             }
-            LowerError::NonPositiveDim { decl, value } => {
+            LowerErrorKind::NonPositiveDim { decl, value } => {
                 write!(f, "shape dimension in `{decl}` evaluated to {value}; must be positive")
             }
-            LowerError::ShapeRefersToNonConst {
+            LowerErrorKind::ShapeRefersToNonConst {
                 decl,
                 unknown_ident,
             } => write!(
                 f,
                 "shape of `{decl}` refers to `{unknown_ident}`, which is not a declared const"
             ),
-            LowerError::NonIntegerShapeExpr { decl, reason } => {
+            LowerErrorKind::NonIntegerShapeExpr { decl, reason } => {
                 write!(f, "shape of `{decl}` has a non-integer expression: {reason}")
             }
-            LowerError::ShapeOverflow { decl, op } => {
+            LowerErrorKind::ShapeOverflow { decl, op } => {
                 write!(f, "integer overflow in shape of `{decl}` during `{op}`")
             }
-            LowerError::ShapeDivByZero { decl } => {
+            LowerErrorKind::ShapeDivByZero { decl } => {
                 write!(f, "divide-by-zero in shape of `{decl}`")
             }
-            LowerError::IterVarShadowsDecl { var, shadows } => write!(
+            LowerErrorKind::IterVarShadowsDecl { var, shadows } => write!(
                 f,
                 "iteration variable `{var}` shadows a declaration `{shadows}`"
             ),
         }
+    }
+}
+
+/// A lowering error: a [`LowerErrorKind`] plus, where a single
+/// offending source node exists, the byte [`Range`] it was parsed
+/// from (TASK-0090).
+///
+/// # Why a struct wrapping a kind (not `(line, column)` fields per
+/// variant)
+///
+/// Putting a position on a *wrapper* instead of widening every variant
+/// means no variant's payload shape changed: the existing negative
+/// tests still pattern-match `LowerErrorKind::X(payload)` with the same
+/// payload, only through `err.kind`. The byte range — not `(line,
+/// column)` — is stored because lowering takes `&AlgoAst` only and has
+/// no source string; the driver (which holds the source) converts via
+/// [`crate::error::offset_to_line_col`] at display time, exactly as
+/// [`crate::error::ParseError`] is surfaced. This keeps one span
+/// representation end-to-end (matching [`crate::algo::span::Spanned`])
+/// and lowering source-text-free.
+///
+/// # `span` is `Option` (honest-partial per variant — TASK-0090)
+///
+/// Most variants have one obviously-offending node and carry its span.
+/// A few genuinely do not: [`LowerErrorKind::ConstCycle`] spans several
+/// declarations (no single primary node), and the
+/// `<index/loop-bound expression>` synthetic
+/// [`LowerErrorKind::NonIntegerShapeExpr`] is reported against a
+/// pseudo-decl, not a real source span. Those are left `None` rather
+/// than fabricating a misleading location: a documented missing
+/// position is honest; a wrong one is not.
+///
+/// # Equality semantics (load-bearing — AC#4, mirrors `Spanned`)
+///
+/// [`PartialEq`] / [`Eq`] are **hand-written to forward to `kind`
+/// only**; `span` is deliberately EXCLUDED from value identity. This
+/// is the same decision, for the same reason, as
+/// [`crate::algo::span::Spanned`] (TASK-0082): the source position is
+/// informational-for-humans, not part of *which semantic error this
+/// is*. Excluding it keeps every existing `LowerErrorKind`-asserting
+/// negative test valid (they assert the semantic kind + payload, never
+/// the byte offset); a dedicated test asserts the position separately.
+/// `#[derive(PartialEq)]` would (wrongly) fold the span into equality.
+#[derive(Debug, Clone)]
+pub struct LowerError {
+    /// The semantic violation.
+    pub kind: LowerErrorKind,
+    /// Byte range into the original source, when a single offending
+    /// node exists. `None` for genuinely multi-site / synthetic
+    /// variants (see type docs). Feed `span.start` to
+    /// [`crate::error::offset_to_line_col`] for a 1-based
+    /// `(line, column)`.
+    pub span: Option<Range<usize>>,
+}
+
+impl LowerError {
+    /// A lowering error with no source position (multi-site or
+    /// synthetic — see type docs). Prefer [`LowerError::at`] whenever a
+    /// single offending [`crate::algo::span::Spanned`] is in scope.
+    pub fn new(kind: LowerErrorKind) -> Self {
+        Self { kind, span: None }
+    }
+
+    /// A lowering error located at `span` — the byte range of the
+    /// offending source node (`spanned.span`). This is the path AC#1
+    /// requires for every diagnosable variant that has a single
+    /// offending node.
+    pub fn at(kind: LowerErrorKind, span: Range<usize>) -> Self {
+        Self {
+            kind,
+            span: Some(span),
+        }
+    }
+
+    /// Render the error with a source location resolved against `src`.
+    ///
+    /// This is the driver-facing surface (AC#2): the driver holds the
+    /// algorithm source, so it — not lowering — turns the stored byte
+    /// offset into a `line:column`. Mirrors how
+    /// [`crate::error::ParseError`] is surfaced. When the variant has
+    /// no position (see type docs), the message is the kind alone, with
+    /// no fabricated location.
+    pub fn display_with_src(&self, src: &str) -> String {
+        match &self.span {
+            Some(span) => {
+                let offset = span.start.min(src.len());
+                let (line, col) = crate::error::offset_to_line_col(src, offset);
+                format!("{} at {line}:{col}", self.kind)
+            }
+            None => self.kind.to_string(),
+        }
+    }
+}
+
+// Hand-written: forward to `kind`, EXCLUDE `span` from identity
+// (AC#4, same rationale as `Spanned`). Deriving would fold the span in
+// and break every existing `LowerErrorKind`-asserting negative test.
+impl PartialEq for LowerError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for LowerError {}
+
+// Span-free Display: library callers / tests without source text get
+// the semantic message unchanged from before TASK-0090. The located
+// form is `display_with_src` (driver-side).
+impl std::fmt::Display for LowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
     }
 }
 

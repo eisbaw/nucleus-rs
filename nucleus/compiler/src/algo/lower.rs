@@ -33,6 +33,7 @@
 //! `y` for the body only; exit pops it. An out-of-scope reference is
 //! an error.
 
+use core::ops::Range;
 use std::collections::{BTreeMap, HashSet};
 
 use super::ast::{
@@ -40,8 +41,8 @@ use super::ast::{
     Stmt, Type, UnaryOp,
 };
 use super::ir::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, ResolvedConst, ResolvedData,
-    ResolvedKernel, ResolvedType,
+    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, ResolvedConst,
+    ResolvedData, ResolvedKernel, ResolvedType,
 };
 
 /// Lower a parsed [`AlgoAst`] into a validated [`AlgoIR`].
@@ -59,11 +60,13 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerError> {
     // doc note that "semantic passes enforce declarations-before-use").
     let mut top_scope = Scope::new_top_level();
 
-    // Spans are populated on the AST (TASK-0082) but lowering does not
-    // consult them — `LowerError` stays span-free until TASK-0090
-    // wires positions in. We unwrap each `Spanned` to its `.node` and
-    // proceed exactly as before; behaviour is unchanged (the
-    // determinism gate proves this byte-identical).
+    // Spans populated on the AST (TASK-0082) are now threaded into
+    // `LowerError` on the `Err` path only (TASK-0090): each diagnosable
+    // error carries the byte range of the offending `Spanned` so the
+    // driver can render `line:col`. The success path is unchanged — no
+    // span is read for a program that lowers — so the determinism gate
+    // stays byte-identical (positions populate only when we return
+    // `Err`).
     for item in &ast.items {
         match &item.node {
             Item::Const(c) => lower_const(c, &mut ir)?,
@@ -84,17 +87,23 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerError> {
 // --------------------------------------------------------------------
 
 fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
-    // `c.name` is a `Spanned<String>`; lowering uses only the textual
-    // name (`.node`). The span is available for TASK-0090 but unused
-    // here — keeps `LowerError` span-free this task.
+    // `c.name` is a `Spanned<String>`; the textual name drives the
+    // semantic check and `c.name.span` locates the diagnostic at the
+    // duplicate declaration's identifier token (TASK-0090).
     let name = &c.name.node;
     if ir.consts.contains_key(name) {
-        return Err(LowerError::DuplicateConst(name.clone()));
+        return Err(LowerError::at(
+            LowerErrorKind::DuplicateConst(name.clone()),
+            c.name.span.clone(),
+        ));
     }
     // Other namespaces (data, kernel) may not collide either —
     // identifiers share one global symbol table at the algorithm level.
     if ir.data.contains_key(name) || ir.kernels.contains_key(name) {
-        return Err(LowerError::DuplicateConst(name.clone()));
+        return Err(LowerError::at(
+            LowerErrorKind::DuplicateConst(name.clone()),
+            c.name.span.clone(),
+        ));
     }
 
     // Evaluate the value expression. The visitor stack starts with
@@ -119,7 +128,10 @@ fn lower_data(d: &DataDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
         || ir.consts.contains_key(name)
         || ir.kernels.contains_key(name)
     {
-        return Err(LowerError::DuplicateData(name.clone()));
+        return Err(LowerError::at(
+            LowerErrorKind::DuplicateData(name.clone()),
+            d.name.span.clone(),
+        ));
     }
     let ty = resolve_type(&d.ty, name, ir)?;
     ir.data.insert(
@@ -138,7 +150,10 @@ fn lower_kernel(k: &KernelDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
         || ir.consts.contains_key(name)
         || ir.data.contains_key(name)
     {
-        return Err(LowerError::DuplicateKernel(name.clone()));
+        return Err(LowerError::at(
+            LowerErrorKind::DuplicateKernel(name.clone()),
+            k.name.span.clone(),
+        ));
     }
     let params = k
         .sig
@@ -170,15 +185,19 @@ fn lower_kernel(k: &KernelDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
 fn resolve_type(t: &Type, decl_name: &str, ir: &AlgoIR) -> Result<ResolvedType, LowerError> {
     let mut dims = Vec::with_capacity(t.dims.len());
     for dim_expr in &t.dims {
-        // `dim_expr` is a `Spanned<Expr>`; the evaluator matches on
-        // `.node` and ignores the span (TASK-0090 owns span-aware
-        // shape diagnostics).
+        // `dim_expr` is a `Spanned<Expr>`; a non-positive / malformed
+        // dimension is located at the dimension expression itself
+        // (TASK-0090). `eval_shape_expr` attaches finer spans for
+        // sub-expression failures.
         let v = eval_shape_expr(dim_expr, decl_name, ir)?;
         if v <= 0 {
-            return Err(LowerError::NonPositiveDim {
-                decl: decl_name.to_string(),
-                value: v,
-            });
+            return Err(LowerError::at(
+                LowerErrorKind::NonPositiveDim {
+                    decl: decl_name.to_string(),
+                    value: v,
+                },
+                dim_expr.span.clone(),
+            ));
         }
         // Cast to usize: we just proved v > 0.
         dims.push(v as usize);
@@ -213,45 +232,64 @@ fn eval_const_expr(
     ir: &AlgoIR,
     visiting: &mut Vec<String>,
 ) -> Result<i64, LowerError> {
-    // Span carried but unused (TASK-0090). Match the inner node.
+    // The error is located at the offending sub-expression
+    // (`expr.span`); identifier failures pass the identifier's own
+    // span down so an undeclared-const points at the reference itself
+    // (TASK-0090).
     match &expr.node {
         Expr::IntLit(n) => Ok(*n),
         Expr::Unary(UnaryOp::Neg, inner) => {
             let v = eval_const_expr(inner, in_const, ir, visiting)?;
-            v.checked_neg().ok_or_else(|| LowerError::ConstOverflow {
-                in_const: in_const.to_string(),
-                op: "negate".into(),
+            v.checked_neg().ok_or_else(|| {
+                LowerError::at(
+                    LowerErrorKind::ConstOverflow {
+                        in_const: in_const.to_string(),
+                        op: "negate".into(),
+                    },
+                    expr.span.clone(),
+                )
             })
         }
         Expr::Binary(op, lhs, rhs) => {
             let l = eval_const_expr(lhs, in_const, ir, visiting)?;
             let r = eval_const_expr(rhs, in_const, ir, visiting)?;
-            checked_binop(*op, l, r).map_err(|e| match e {
-                BinopErr::Overflow(s) => LowerError::ConstOverflow {
-                    in_const: in_const.to_string(),
-                    op: s,
-                },
-                BinopErr::DivByZero => LowerError::ConstDivByZero {
-                    in_const: in_const.to_string(),
-                },
+            checked_binop(*op, l, r).map_err(|e| {
+                let kind = match e {
+                    BinopErr::Overflow(s) => LowerErrorKind::ConstOverflow {
+                        in_const: in_const.to_string(),
+                        op: s,
+                    },
+                    BinopErr::DivByZero => LowerErrorKind::ConstDivByZero {
+                        in_const: in_const.to_string(),
+                    },
+                };
+                LowerError::at(kind, expr.span.clone())
             })
         }
-        Expr::Ident(name) => eval_const_ident(name, in_const, ir, visiting),
-        Expr::Call(_) => Err(LowerError::NonIntegerConstExpr {
-            in_const: in_const.to_string(),
-            reason: "kernel calls are not allowed in const expressions".into(),
-        }),
+        Expr::Ident(name) => {
+            eval_const_ident(&name.node, name.span.clone(), in_const, ir, visiting)
+        }
+        Expr::Call(_) => Err(LowerError::at(
+            LowerErrorKind::NonIntegerConstExpr {
+                in_const: in_const.to_string(),
+                reason: "kernel calls are not allowed in const expressions".into(),
+            },
+            expr.span.clone(),
+        )),
         Expr::LValue(lv) => {
             // The parser models a bare identifier as `LValue` with an
             // empty index list (see `parser.rs::ident_or_call`); only
             // *indexed* lvalues are data references proper.
             if lv.indices.is_empty() {
-                eval_const_ident(&lv.name, in_const, ir, visiting)
+                eval_const_ident(&lv.name.node, lv.name.span.clone(), in_const, ir, visiting)
             } else {
-                Err(LowerError::NonIntegerConstExpr {
-                    in_const: in_const.to_string(),
-                    reason: "data references are not allowed in const expressions".into(),
-                })
+                Err(LowerError::at(
+                    LowerErrorKind::NonIntegerConstExpr {
+                        in_const: in_const.to_string(),
+                        reason: "data references are not allowed in const expressions".into(),
+                    },
+                    expr.span.clone(),
+                ))
             }
         }
     }
@@ -259,6 +297,7 @@ fn eval_const_expr(
 
 fn eval_const_ident(
     name: &str,
+    name_span: Range<usize>,
     in_const: &str,
     ir: &AlgoIR,
     visiting: &mut Vec<String>,
@@ -266,13 +305,20 @@ fn eval_const_ident(
     if visiting.iter().any(|n| n == name) {
         let mut path = visiting.clone();
         path.push(name.to_string());
-        return Err(LowerError::ConstCycle(path));
+        // ConstCycle spans several declarations — there is no single
+        // primary source node, so it is deliberately position-less
+        // rather than carrying a misleading one (TASK-0090; see
+        // `LowerError` type docs, honest-partial per variant).
+        return Err(LowerError::new(LowerErrorKind::ConstCycle(path)));
     }
     let Some(c) = ir.consts.get(name) else {
-        return Err(LowerError::ConstRefersToNonConst {
-            in_const: in_const.to_string(),
-            unknown_ident: name.to_string(),
-        });
+        return Err(LowerError::at(
+            LowerErrorKind::ConstRefersToNonConst {
+                in_const: in_const.to_string(),
+                unknown_ident: name.to_string(),
+            },
+            name_span,
+        ));
     };
     visiting.push(name.to_string());
     let v = c.value;
@@ -283,53 +329,77 @@ fn eval_const_ident(
 /// Evaluate a shape dimension expression. Same constructs as a const
 /// expression, with errors tagged for the owning declaration.
 fn eval_shape_expr(expr: &SpExpr, decl: &str, ir: &AlgoIR) -> Result<i64, LowerError> {
-    // Span carried but unused this task (TASK-0090).
+    // Errors are located at the offending shape sub-expression
+    // (`expr.span`); an undeclared const in a dimension points at the
+    // identifier reference (TASK-0090).
     match &expr.node {
         Expr::IntLit(n) => Ok(*n),
         Expr::Unary(UnaryOp::Neg, inner) => {
             let v = eval_shape_expr(inner, decl, ir)?;
-            v.checked_neg().ok_or_else(|| LowerError::ShapeOverflow {
-                decl: decl.to_string(),
-                op: "negate".into(),
+            v.checked_neg().ok_or_else(|| {
+                LowerError::at(
+                    LowerErrorKind::ShapeOverflow {
+                        decl: decl.to_string(),
+                        op: "negate".into(),
+                    },
+                    expr.span.clone(),
+                )
             })
         }
         Expr::Binary(op, lhs, rhs) => {
             let l = eval_shape_expr(lhs, decl, ir)?;
             let r = eval_shape_expr(rhs, decl, ir)?;
-            checked_binop(*op, l, r).map_err(|e| match e {
-                BinopErr::Overflow(s) => LowerError::ShapeOverflow {
-                    decl: decl.to_string(),
-                    op: s,
-                },
-                BinopErr::DivByZero => LowerError::ShapeDivByZero {
-                    decl: decl.to_string(),
-                },
+            checked_binop(*op, l, r).map_err(|e| {
+                let kind = match e {
+                    BinopErr::Overflow(s) => LowerErrorKind::ShapeOverflow {
+                        decl: decl.to_string(),
+                        op: s,
+                    },
+                    BinopErr::DivByZero => LowerErrorKind::ShapeDivByZero {
+                        decl: decl.to_string(),
+                    },
+                };
+                LowerError::at(kind, expr.span.clone())
             })
         }
-        Expr::Ident(name) => eval_shape_ident(name, decl, ir),
-        Expr::Call(_) => Err(LowerError::NonIntegerShapeExpr {
-            decl: decl.to_string(),
-            reason: "kernel calls are not allowed in shape dimensions".into(),
-        }),
+        Expr::Ident(name) => eval_shape_ident(&name.node, name.span.clone(), decl, ir),
+        Expr::Call(_) => Err(LowerError::at(
+            LowerErrorKind::NonIntegerShapeExpr {
+                decl: decl.to_string(),
+                reason: "kernel calls are not allowed in shape dimensions".into(),
+            },
+            expr.span.clone(),
+        )),
         Expr::LValue(lv) => {
             if lv.indices.is_empty() {
-                eval_shape_ident(&lv.name, decl, ir)
+                eval_shape_ident(&lv.name.node, lv.name.span.clone(), decl, ir)
             } else {
-                Err(LowerError::NonIntegerShapeExpr {
-                    decl: decl.to_string(),
-                    reason: "data references are not allowed in shape dimensions".into(),
-                })
+                Err(LowerError::at(
+                    LowerErrorKind::NonIntegerShapeExpr {
+                        decl: decl.to_string(),
+                        reason: "data references are not allowed in shape dimensions".into(),
+                    },
+                    expr.span.clone(),
+                ))
             }
         }
     }
 }
 
-fn eval_shape_ident(name: &str, decl: &str, ir: &AlgoIR) -> Result<i64, LowerError> {
+fn eval_shape_ident(
+    name: &str,
+    name_span: Range<usize>,
+    decl: &str,
+    ir: &AlgoIR,
+) -> Result<i64, LowerError> {
     let Some(c) = ir.consts.get(name) else {
-        return Err(LowerError::ShapeRefersToNonConst {
-            decl: decl.to_string(),
-            unknown_ident: name.to_string(),
-        });
+        return Err(LowerError::at(
+            LowerErrorKind::ShapeRefersToNonConst {
+                decl: decl.to_string(),
+                unknown_ident: name.to_string(),
+            },
+            name_span,
+        ));
     };
     Ok(c.value)
 }
@@ -446,9 +516,9 @@ impl Scope {
 }
 
 fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, LowerError> {
-    // Spans populated on the AST (TASK-0082) but not consulted here;
-    // `LowerError` stays span-free until TASK-0090. We match the inner
-    // node and read identifiers via `.node`.
+    // Diagnosable statement errors are located at the offending
+    // identifier's span (TASK-0090): the LHS data symbol, the callee,
+    // or the loop variable.
     match &stmt.node {
         Stmt::Dataflow { lhs, rhs } => {
             let lhs_name = &lhs.name.node;
@@ -461,18 +531,28 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
                     || ir.consts.contains_key(lhs_name)
                     || ir.kernels.contains_key(lhs_name)
                 {
-                    return Err(LowerError::AssignmentTargetNotData(lhs_name.clone()));
+                    return Err(LowerError::at(
+                        LowerErrorKind::AssignmentTargetNotData(lhs_name.clone()),
+                        lhs.name.span.clone(),
+                    ));
                 }
-                return Err(LowerError::UnknownIdent(lhs_name.clone()));
+                return Err(LowerError::at(
+                    LowerErrorKind::UnknownIdent(lhs_name.clone()),
+                    lhs.name.span.clone(),
+                ));
             }
 
             // Single-assignment check. Record the assignment against
-            // the data symbol; reject a re-assignment.
+            // the data symbol; reject a re-assignment. Located at the
+            // *re-assignment* LHS (the statement that violates SSA).
             if let Some(prev_scope) = scope.assigned.get(lhs_name) {
-                return Err(LowerError::DoubleAssignment {
-                    data: lhs_name.clone(),
-                    scope: prev_scope.clone(),
-                });
+                return Err(LowerError::at(
+                    LowerErrorKind::DoubleAssignment {
+                        data: lhs_name.clone(),
+                        scope: prev_scope.clone(),
+                    },
+                    lhs.name.span.clone(),
+                ));
             }
             scope
                 .assigned
@@ -496,7 +576,10 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
             // pass), only that the name exists.
             let callee = &call.callee.node;
             if !ir.kernels.contains_key(callee) {
-                return Err(LowerError::UnknownIdent(callee.clone()));
+                return Err(LowerError::at(
+                    LowerErrorKind::UnknownIdent(callee.clone()),
+                    call.callee.span.clone(),
+                ));
             }
             let args = call
                 .args
@@ -509,6 +592,7 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
             })
         }
         Stmt::For { var, lo, hi, body } => {
+            let var_span = var.span.clone();
             let var = &var.node;
             // Loop bounds are evaluated in the *enclosing* scope; the
             // iteration variable is only visible inside the body.
@@ -522,10 +606,13 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
                 || ir.data.contains_key(var)
                 || ir.kernels.contains_key(var)
             {
-                return Err(LowerError::IterVarShadowsDecl {
-                    var: var.clone(),
-                    shadows: var.clone(),
-                });
+                return Err(LowerError::at(
+                    LowerErrorKind::IterVarShadowsDecl {
+                        var: var.clone(),
+                        shadows: var.clone(),
+                    },
+                    var_span,
+                ));
             }
             // Loop bounds are read-time expressions: they can refer to
             // consts and to any enclosing iteration variables.
@@ -571,7 +658,10 @@ fn lower_indices(
 /// For index/loop-bound positions, calls and data-refs are rejected
 /// (they would be runtime values, not iteration-space arithmetic).
 fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
-    // Span unused this task (TASK-0090 owns span-aware diagnostics).
+    // Errors are located at the offending sub-expression (`expr.span`);
+    // identifier failures pass the identifier's own span down so an
+    // out-of-scope / unknown reference points at the reference itself
+    // (TASK-0090).
     match &expr.node {
         Expr::IntLit(n) => Ok(IrExpr::IntLit(*n)),
         Expr::Unary(UnaryOp::Neg, inner) => {
@@ -582,22 +672,28 @@ fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr,
             Box::new(lower_index_expr(lhs, ir, scope)?),
             Box::new(lower_index_expr(rhs, ir, scope)?),
         )),
-        Expr::Ident(name) => resolve_ident(name, ir, scope),
-        Expr::Call(_) => Err(LowerError::NonIntegerShapeExpr {
-            decl: "<index/loop-bound expression>".into(),
-            reason: "kernel calls are not allowed here".to_string(),
-        }),
+        Expr::Ident(name) => resolve_ident(&name.node, name.span.clone(), ir, scope),
+        Expr::Call(_) => Err(LowerError::at(
+            LowerErrorKind::NonIntegerShapeExpr {
+                decl: "<index/loop-bound expression>".into(),
+                reason: "kernel calls are not allowed here".to_string(),
+            },
+            expr.span.clone(),
+        )),
         Expr::LValue(lv) => {
             // Bare identifier (parser models it as zero-indexed
             // lvalue). At an index/loop-bound position, an indexed
             // data reference is illegal.
             if lv.indices.is_empty() {
-                resolve_ident(&lv.name, ir, scope)
+                resolve_ident(&lv.name.node, lv.name.span.clone(), ir, scope)
             } else {
-                Err(LowerError::NonIntegerShapeExpr {
-                    decl: "<index/loop-bound expression>".into(),
-                    reason: "data references are not allowed here".to_string(),
-                })
+                Err(LowerError::at(
+                    LowerErrorKind::NonIntegerShapeExpr {
+                        decl: "<index/loop-bound expression>".into(),
+                        reason: "data references are not allowed here".to_string(),
+                    },
+                    expr.span.clone(),
+                ))
             }
         }
     }
@@ -607,7 +703,8 @@ fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr,
 /// the most permissive form: data refs and calls are legal, on top of
 /// everything `lower_index_expr` allows.
 fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
-    // Span unused this task (TASK-0090 owns span-aware diagnostics).
+    // Identifier / callee failures are located at the offending
+    // identifier's span (TASK-0090).
     match &expr.node {
         Expr::IntLit(n) => Ok(IrExpr::IntLit(*n)),
         Expr::Unary(UnaryOp::Neg, inner) => {
@@ -618,11 +715,14 @@ fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Low
             Box::new(lower_rvalue(lhs, ir, scope)?),
             Box::new(lower_rvalue(rhs, ir, scope)?),
         )),
-        Expr::Ident(name) => resolve_ident(name, ir, scope),
+        Expr::Ident(name) => resolve_ident(&name.node, name.span.clone(), ir, scope),
         Expr::Call(c) => {
             let callee = &c.callee.node;
             if !ir.kernels.contains_key(callee) {
-                return Err(LowerError::UnknownIdent(callee.clone()));
+                return Err(LowerError::at(
+                    LowerErrorKind::UnknownIdent(callee.clone()),
+                    c.callee.span.clone(),
+                ));
             }
             let args = c
                 .args
@@ -645,10 +745,13 @@ fn lower_data_ref(lv: &IndexedLValue, ir: &AlgoIR, scope: &Scope) -> Result<IrEx
     let lv_name = &lv.name.node;
     if lv.indices.is_empty() {
         // Bare ident reuse path.
-        return resolve_ident(lv_name, ir, scope);
+        return resolve_ident(lv_name, lv.name.span.clone(), ir, scope);
     }
     if !ir.data.contains_key(lv_name) {
-        return Err(LowerError::UnknownIdent(lv_name.clone()));
+        return Err(LowerError::at(
+            LowerErrorKind::UnknownIdent(lv_name.clone()),
+            lv.name.span.clone(),
+        ));
     }
     let indices = lv
         .indices
@@ -670,7 +773,17 @@ fn lower_data_ref(lv: &IndexedLValue, ir: &AlgoIR, scope: &Scope) -> Result<IrEx
 /// Iteration variables out of scope produce a dedicated error so the
 /// caller can distinguish "you misspelled" from "you used `y` after
 /// its loop ended".
-fn resolve_ident(name: &str, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
+///
+/// `name_span` is the byte range of the identifier *reference* (the
+/// caller's `Spanned<String>.span`), so an out-of-scope / unknown
+/// identifier diagnostic points at the use site, not the declaration
+/// (TASK-0090).
+fn resolve_ident(
+    name: &str,
+    name_span: Range<usize>,
+    ir: &AlgoIR,
+    scope: &Scope,
+) -> Result<IrExpr, LowerError> {
     if scope.iter_var_in_scope(name) {
         return Ok(IrExpr::Ident(name.to_string()));
     }
@@ -701,9 +814,15 @@ fn resolve_ident(name: &str, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Lower
     // this lowering pass, regardless of whether their frame is still
     // alive. Populated in `push_loop`.
     if scope.was_iter_var(name) {
-        return Err(LowerError::IterVarOutOfScope(name.to_string()));
+        return Err(LowerError::at(
+            LowerErrorKind::IterVarOutOfScope(name.to_string()),
+            name_span.clone(),
+        ));
     }
-    Err(LowerError::UnknownIdent(name.to_string()))
+    Err(LowerError::at(
+        LowerErrorKind::UnknownIdent(name.to_string()),
+        name_span,
+    ))
 }
 
 fn ast_binop_to_ir(op: BinOp) -> IrBinOp {

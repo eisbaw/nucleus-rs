@@ -34,8 +34,8 @@ pub use ast::{
 };
 pub use span::Spanned;
 pub use ir::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, ResolvedConst, ResolvedData,
-    ResolvedKernel, ResolvedType,
+    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, ResolvedConst,
+    ResolvedData, ResolvedKernel, ResolvedType,
 };
 pub use lower::lower_algo;
 pub use parser::{parse_algo, ParseError};

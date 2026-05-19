@@ -176,8 +176,12 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let sched_ast = compiler::sched::parse_sched(&sched_src)
         .map_err(|e| format!("schedule parse error in {}: {e}", sched_path.display()))?;
 
-    let algo_ir =
-        compiler::algo::lower_algo(&algo_ast).map_err(|e| format!("algorithm lower error: {e}"))?;
+    let algo_ir = compiler::algo::lower_algo(&algo_ast)
+        // `display_with_src` resolves the error's stored byte offset to
+        // `line:col` against the algorithm source (TASK-0090); the
+        // driver holds the source, lowering does not. Mirrors how
+        // `ParseError` is surfaced.
+        .map_err(|e| format!("algorithm lower error: {}", e.display_with_src(&algo_src)))?;
     let sched_ir = compiler::sched::lower_sched(&sched_ast)
         .map_err(|e| format!("schedule lower error: {e}"))?;
 
