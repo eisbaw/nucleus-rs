@@ -136,7 +136,7 @@ pub fn emit(
 
     // Shared modules every worker binary `#[path]`-includes.
     write_file(&kernels_rs, &kernels_src)?;
-    write_file(&wire_rs, mp_tcp_common::WIRE_RUNTIME_SRC)?;
+    write_file(&wire_rs, &maybe_corrupt_wire(mp_tcp_common::WIRE_RUNTIME_SRC))?;
 
     if used_workers.len() <= 1 {
         // Single process: reuse the SHARED single-worker renderer so
@@ -1104,6 +1104,82 @@ fn collect_pre_init_sets(
 // --------------------------------------------------------------------
 // File helpers
 // --------------------------------------------------------------------
+
+/// NUC_XBACKEND_NEGATIVE negative-arm gate (TASK-0178).
+///
+/// Mirrors the TASK-0145 `NUC_NONDET_TEST` discipline exactly:
+/// runtime env gate (not a cargo feature), value-gated on the exact
+/// string `"1"`, OFF by default, with a LOUD stderr banner so a
+/// deliberately-corrupted build is never silent.
+///
+/// Purpose: prove the cross-backend e2e differential actually BITES.
+/// When armed, this deterministically corrupts the emitted `wire.rs`
+/// — the TCP wire protocol that is **mp-tcp-EXCLUSIVE** (copied
+/// verbatim into every generated multi-process project; pthreads-sync
+/// never emits or links it). The perturbation rewrites `enc_vec` so
+/// the LAST byte of every encoded array payload is incremented
+/// (wrapping). A multi-process mp-tcp cell (e.g. 02-split-add/split,
+/// which ships array data worker→worker over the wire) then decodes
+/// wrong values and its `output.bin` diverges from the committed
+/// hand-written `reference.bin` oracle → required-fail>0 on that
+/// cell. pthreads-sync emits no wire at all, so its cells stay
+/// byte-identical to the same oracle. That asymmetry — mp-tcp ≠
+/// reference while pthreads-sync == reference — is precisely the
+/// *cross-backend* differential biting, not a global break.
+///
+/// Why NOT the shared single-worker renderer: `emit()` routes
+/// single-process cells through pthreads-sync's `pub`
+/// `render_single_worker_main` (the ONE arithmetic renderer). The
+/// `wire.rs` text touched here is reached ONLY on the multi-process
+/// path, so single-process / pthreads-sync output is provably
+/// unaffected. Perturbing the shared renderer would break BOTH
+/// backends and the recipe could not tell "differential caught a
+/// backend-specific bug" from "everything broken" — a weaker, wrong
+/// test.
+///
+/// Deterministic by construction: a fixed source rewrite (string
+/// replace), no PID/clock/RNG/hash-order entropy. Two emissions under
+/// the gate produce byte-identical corrupted `wire.rs`, so the
+/// negative recipe is non-flaky AND it does not perturb the
+/// determinism check (both `--check-determinism` builds get the
+/// identical corrupted source).
+///
+/// Seam debt: this test-scaffolding branch lives inline on the
+/// production wire.rs emission path (safe — gated/deterministic/loud/
+/// anchor-guarded — but not a clean seam). Relocating it to a
+/// `#[doc(hidden)]` hook or harness-side post-process is TASK-0183
+/// (parallel to TASK-0157 for the TASK-0145 NUC_NONDET_TEST seam).
+fn maybe_corrupt_wire(src: &str) -> String {
+    if std::env::var("NUC_XBACKEND_NEGATIVE").as_deref() != Ok("1") {
+        return src.to_string();
+    }
+    eprintln!(
+        "nucleus: WARNING: NUC_XBACKEND_NEGATIVE=1 — deliberately \
+         corrupting mp-tcp wire encode (enc_vec) ON PURPOSE to test \
+         the cross-backend differential. This build is NOT a real \
+         build and its mp-tcp output is intentionally wrong. Never \
+         set this in a real build (TASK-0178)."
+    );
+
+    // The single body line of `enc_vec` in wire_runtime.rs. We append
+    // a deterministic last-byte tweak after the buffer is filled.
+    // Anchored on the exact source text so a refactor of wire_runtime
+    // fails this replace loudly (panic below) rather than silently
+    // emitting a non-corrupted build that would make the negative
+    // recipe a false PASS.
+    const ANCHOR: &str = "    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}";
+    const CORRUPT: &str = "    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    if let Some(last) = out.last_mut() {\n        *last = last.wrapping_add(1); // NUC_XBACKEND_NEGATIVE deliberate corruption (TASK-0178)\n    }\n    out\n}";
+    if !src.contains(ANCHOR) {
+        panic!(
+            "NUC_XBACKEND_NEGATIVE: enc_vec anchor not found in \
+             wire_runtime.rs — the negative-arm injection point has \
+             drifted. Update the ANCHOR in maybe_corrupt_wire \
+             (TASK-0178) so the cross-backend negative test keeps \
+             biting; refusing to emit a silently-uncorrupted build."
+        );
+    }
+    src.replacen(ANCHOR, CORRUPT, 1)
+}
 
 fn write_file(path: &Path, contents: &str) -> Result<(), EmitError> {
     fs::write(path, contents).map_err(|e| EmitError::WriteFailed {

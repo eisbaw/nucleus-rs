@@ -66,6 +66,22 @@ determinism-check:
 determinism-check-negative:
     cd nucleus && if NUC_NONDET_TEST=1 cargo run --release --bin nucleus-e2e -- --check-determinism; then echo "FAIL: determinism check did NOT detect injected nondeterminism"; exit 1; else echo "OK: determinism check correctly bit on injected nondeterminism"; fi
 
+# Prove the CROSS-BACKEND e2e differential actually BITES (TASK-0178 /
+# TASK-0041 AC#5 negative arm). Runs the full e2e matrix with
+# NUC_XBACKEND_NEGATIVE=1, which deterministically corrupts the
+# mp-tcp-EXCLUSIVE wire encode (enc_vec, copied into generated
+# multi-process projects only — pthreads-sync emits no wire). A
+# multi-process mp-tcp cell (02-split-add/split) then diverges from
+# the hand-written reference.bin oracle while every pthreads-sync
+# cell stays byte-identical: the harness exits non-zero with
+# required-fail>0. SUCCEEDS iff the harness correctly FAILS — a green
+# `e2e` differential is only meaningful because this one is too.
+# Mirrors `determinism-check-negative`; deterministic (fixed source
+# rewrite, no RNG/PID/clock) so it is non-flaky. Gate OFF by default:
+# bare `e2e` is unchanged.
+xbackend-check-negative:
+    cd nucleus && if NUC_XBACKEND_NEGATIVE=1 cargo run --release --bin nucleus-e2e; then echo "FAIL: cross-backend differential did NOT detect injected mp-tcp corruption"; exit 1; else echo "OK: cross-backend differential correctly bit on injected mp-tcp corruption"; fi
+
 # Aggregate verification gate. Single source of truth shared by CI
 # (.github/workflows/ci.yml) and local developers: "what CI does" ==
 # "what you can run here". Runs the full tier-1 gate in dependency
@@ -90,6 +106,7 @@ ci:
     just e2e
     just determinism-check
     just determinism-check-negative
+    just xbackend-check-negative
 
 # Remove build artefacts.
 clean:
