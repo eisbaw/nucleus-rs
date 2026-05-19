@@ -1,0 +1,118 @@
+// 5x5 separable box filter — two-pass, intermediate buffer.
+//
+// A 5x5 box filter is separable: it factors into a horizontal 1x5
+// pass followed by a vertical 5x1 pass. Pass 1 reads the input and
+// writes a single-assignment intermediate `tmp`; Pass 2 reads `tmp`
+// and writes the output. The point of this example (PRD §9 row 6) is
+// the LIFETIME of that intermediate across two passes that share a
+// worker — `tmp` is produced by exactly one statement (Pass 1) and
+// consumed by exactly one statement (Pass 2), a clean
+// producer→consumer dependency.
+//
+// Why the taps are summed via a rectangular accumulator (not a
+// shifted index)
+// -------------------------------------------------------------------
+// A textbook separable filter writes `tmp[y][x] <-- hblur(in[y][x-2],
+// in[y][x-1], in[y][x], in[y][x+1], in[y][x+2])`. In Nuc v2 the
+// shifted index `in[y][x-2]` underflows `usize` at x=0,1 (generated
+// `in[y][(x-2) as usize]` → out-of-bounds), and v2 has NO conditionals
+// (PRD §6.2.4) to clamp the tap to the edge. This is the SAME class of
+// limitation that TASK-0039 hit and filed as TASK-0179.
+//
+// So, exactly as example 04-prefix-sum does, the boundary/clamp logic
+// lives in the hand-written Rust kernels, and the algorithm uses ONLY
+// the rectangular reduction-accumulator shape (proven bit-identical on
+// both tier-1 backends by examples 03 / 04): `tmp[y][x]` accumulates a
+// contribution from EVERY column `k` of row `y`, and the kernel
+// `hblur_acc` adds `in[y][k]` only when `k` is one of the five
+// clamp-to-edge taps of `x`. Same for the vertical pass over rows `m`.
+// Indices `k`, `m` and `x`, `y` are all in-range (0..W / 0..H) so no
+// index ever goes out of bounds.
+//
+// CLAMP boundary (AC#5). The 5 taps of position p are
+// p-2, p-1, p, p+1, p+2, each CLAMPED to [0, W-1] (resp. [0, H-1]).
+// An out-of-range tap is replaced by the nearest edge sample
+// (clamp-to-edge / "replicate"), NOT skipped and NOT zero-filled.
+// This differs deliberately from 05-stencil, which skips the boundary
+// ring (leaving it zero); doing CLAMP here exercises a different
+// boundary policy. The clamp is computed in the kernel because the
+// algorithm cannot express min/max or conditionals.
+//
+// Distinct loop-variable names per pass
+// -------------------------------------
+// Pass 1 and Pass 2 use DIFFERENT iteration-variable names
+// (`hy/hx/hk` vs `vy/vx/vm`). Reusing one name across two loops with
+// different bounds is rejected outright (TASK-0171); reusing a name
+// even with identical bounds is fragile under blocking (TASK-0180,
+// surfaced by 04-prefix-sum). Distinct names sidestep both.
+//
+// Numeric choice: i32 with `wrapping_add`. PRD §10.1: integer
+// arithmetic is bit-deterministic. This is a box SUM (not an average)
+// — we do NOT divide, to avoid baking a precision/rounding choice
+// into the fixture; the reference oracle sums the same way. Floats
+// are excluded (reorderable, non-deterministic).
+//
+// What this example does NOT demonstrate (honest limitations, AC#5):
+//   - Reuse-with-shift. A real separable filter slides a 5-wide
+//     window and recycles 4 of 5 taps between adjacent outputs. v2
+//     has no `reuse` loop option wired end-to-end; the rectangular
+//     accumulator recomputes all W (resp. H) contributions per output
+//     — O(W) / O(H) per pixel, not O(1). Correct, not optimal.
+//   - Normalisation. This is a box SUM, not a box average (no divide
+//     — see numeric note above).
+//   - Fast-memory placement of `tmp`. Whether the intermediate buffer
+//     should be hinted to live in fast memory is a SCHEDULE concern
+//     (`place_data`, PRD §6.3) deliberately NOT expressed here — the
+//     algorithm says only WHAT (see AC#4 / README).
+
+const H : usize = 16;       // image height; 16 * 16 * 4 = 1024 bytes
+const W : usize = 16;       // image width
+
+// Whole-program input, the single-assignment INTERMEDIATE, and the
+// output. Each `data` symbol is assigned by exactly one dataflow
+// statement (PRD §6.2.1); `tmp`'s producer is Pass 1, its sole
+// consumer is Pass 2.
+data in_arr : i32[H][W];
+data tmp    : i32[H][W];
+data out    : i32[H][W];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_image : ()          -> i32[H][W] effectful;
+kernel save_image : (i32[H][W]) -> ()         effectful;
+
+// Pure step kernels — reorderable, deduplicable. Scalar so the
+// contract pass (scalar-only at M1) accepts them directly.
+// `*_acc(acc, sample, pos, idx)`: fold `sample` into `acc` iff `idx`
+// is one of the five clamp-to-edge taps of `pos`.
+kernel hblur_acc : (i32, i32, i32, i32) -> i32 pure;
+kernel vblur_acc : (i32, i32, i32, i32) -> i32 pure;
+
+// Load the whole image on whoever owns I/O (the schedule decides).
+in_arr <-- load_image();
+
+// Pass 1 — horizontal 1x5 clamp blur into the intermediate `tmp`.
+// `tmp` pre-init 0 (additive identity). For each output (hy, hx) the
+// inner `hk` sweep visits every column; `hblur_acc` adds in_arr[hy][hk]
+// only for the five clamp-to-edge horizontal taps of hx.
+for hy : 0 .. H {
+    for hx : 0 .. W {
+        for hk : 0 .. W {
+            tmp[hy][hx] <-- hblur_acc(tmp[hy][hx], in_arr[hy][hk], hx, hk);
+        }
+    }
+}
+
+// Pass 2 — vertical 5x1 clamp blur of `tmp` into `out`. READS Pass
+// 1's `tmp` (the producer→consumer edge this example stresses). `out`
+// pre-init 0. For each output (vy, vx) the inner `vm` sweep visits
+// every row; `vblur_acc` adds tmp[vm][vx] only for the five
+// clamp-to-edge vertical taps of vy.
+for vy : 0 .. H {
+    for vx : 0 .. W {
+        for vm : 0 .. H {
+            out[vy][vx] <-- vblur_acc(out[vy][vx], tmp[vm][vx], vy, vm);
+        }
+    }
+}
+
+save_image(out);

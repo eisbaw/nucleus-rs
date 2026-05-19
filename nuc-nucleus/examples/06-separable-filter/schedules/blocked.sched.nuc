@@ -1,0 +1,63 @@
+// Blocked schedule: one worker, tiling the two pass outer-row axes.
+//
+// Same placement as the naive schedule (single `host`, all four
+// kernels). The only difference is two `block=` directives, one per
+// pass's distinct outer-row variable: `loop hy : block=4;` (Pass 1)
+// and `loop vy : block=4;` (Pass 2). Per PRD §6.3.3 `block=` is
+// orthogonal to worker placement; a single-worker blocked schedule
+// exercises ONLY the tiling transform (TASK-0030's
+// `apply_block_transforms`).
+//
+// Why block=4 — DELIBERATELY DIVISIBLE (TASK-0173 discipline)
+// -----------------------------------------------------------
+// H = 16; `block=4` divides 16 evenly (exactly 4 full tiles, NO
+// trailing remainder). This is a conscious choice: TASK-0173 records
+// that a non-divisible `block=` over a non-idempotent body needs
+// per-tile base-offset rebinding that is not yet implemented. We
+// stay divisible so no remainder tile is ever produced.
+//
+// Why one directive PER PASS with DISTINCT names (TASK-0180)
+// -----------------------------------------------------------
+// 04-prefix-sum surfaced TASK-0180: blocking a loop variable that is
+// REUSED across several passes trips the backend's
+// `divisible_inner_block_vars` count==1 guard, absolute-index
+// rebinding is skipped, and accumulators double-count. This example
+// avoids that by giving each pass its OWN outer-row variable
+// (`hy` vs `vy`), so each tiled inner loop occurs EXACTLY ONCE in
+// the EventList → the count==1 guard is satisfied → rebinding is
+// applied → no double-count. (Empirically verified: the e2e cell is
+// bit-identical to the naive schedule and to reference.bin on both
+// backends.)
+//
+// The tiled axis is independent per tile: `tmp[hy][..]` rows (Pass 1)
+// and `out[vy][..]` rows (Pass 2) are independent across the tiled
+// axis; the accumulation runs over the INNER `hk` / `vm` loops (not
+// tiled). Tiling the row axis evenly only reorders independent rows,
+// so the result is schedule-independent and bit-identical to naive.
+//
+// Honest scope (mirrors 05-stencil / 07-matmul blocked): single-
+// `host`, so this cell pins the *compile-doesn't-reject +
+// passes-don't-panic + bit-identical result* property; the tiling
+// decomposition's numeric correctness is pinned by the
+// `block_transform` unit / integration tests.
+//
+// A multi-worker variant would add `partition=rows` on the same
+// loops — a future distributed schedule's job, not the blocked one.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_image on host;
+    place save_image on host;
+    place hblur_acc  on host;
+    place vblur_acc  on host;
+
+    // Tile each pass's outer-row axis into 4-row chunks. H=16 is
+    // evenly divisible by 4 (no remainder tile — TASK-0173). The two
+    // variables are distinct (one per pass) so each tiled inner loop
+    // occurs exactly once in the EventList (TASK-0180).
+    loop hy : block=4;
+    loop vy : block=4;
+
+    // No transfer directives — single worker, no cross-worker edges.
+}

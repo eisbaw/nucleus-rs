@@ -29,7 +29,7 @@
 # and thus can be driven end-to-end. Examples without these (13, 14
 # at the time of writing) are not yet in the matrix; adding them
 # means landing their reference implementation and fixtures first.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "07-matmul"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -118,6 +118,39 @@ backend  = "pthreads-sync"
 # harmless. A non-divisible blocked *accumulator* would need per-tile
 # base-offset rebinding — tracked as TASK-0173; no required cell
 # exercises it.
+# Example 06 separable-filter: BOTH naive and blocked are required
+# differential cells on BOTH backends. naive and blocked are
+# byte-identical to the independent `reference.bin` (a different
+# control structure: explicit clamped tap loops vs the program's
+# rectangular masked accumulator). blocked is correct here — unlike
+# 04-prefix-sum/blocked — precisely because each pass uses a DISTINCT
+# tiled loop-variable name (`hy` / `vy`), so each tiled inner loop
+# occurs exactly once in the EventList and the backend's
+# `divisible_inner_block_vars` count==1 guard is satisfied (the
+# absolute-index rebinding IS applied). This cell is the positive
+# control for TASK-0180's diagnosis. Single-`host`, so under mp-tcp
+# these are single-process (shared single-worker renderer ⇒
+# arithmetic byte-identical to pthreads-sync).
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "mp-tcp-bufsync"
+
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"

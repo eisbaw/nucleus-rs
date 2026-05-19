@@ -1,0 +1,44 @@
+# Standalone reference implementation for example 06-separable-filter.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the compiler crate, on any backend crate, or on any
+# Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# This crate is BOTH the independent oracle AND the fixture
+# generator (subcommand `--gen-input`), so the example has NO python
+# regeneration step (the nix dev shell has no python3; a python
+# fixture step would be non-reproducible and break `just`).
+#
+# Regenerate `input.bin` then `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/06-separable-filter/reference/Cargo.toml -- \
+#     --gen-input nuc-nucleus/examples/06-separable-filter/input.bin
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/06-separable-filter/reference/Cargo.toml -- \
+#     --in  nuc-nucleus/examples/06-separable-filter/input.bin \
+#     --out nuc-nucleus/examples/06-separable-filter/reference.bin
+#
+# The crate is excluded from the parent workspace by being inside
+# `nuc-nucleus/`, which the `nucleus/` workspace does not include. An
+# explicit empty `[workspace]` table makes that intent defensive
+# against future workspace globs.
+
+[package]
+name        = "separable-filter-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference + fixture generator for nuc example 06-separable-filter."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "separable-filter-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"
