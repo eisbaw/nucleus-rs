@@ -529,6 +529,16 @@ struct CellResult {
     required: bool,
     status: Status,
     timings: Timings,
+    /// `true` iff `maybe_corrupt_wire_for_xbackend` actually rewrote
+    /// this cell's emitted `src/wire.rs` (only ever true under
+    /// `NUC_XBACKEND_NEGATIVE=1`, and only for mp-tcp-bufsync cells —
+    /// `wire.rs` is mp-tcp-EXCLUSIVE). Aggregated across the matrix to
+    /// enforce the TASK-0183 zero-corruption guard: under the negative
+    /// env gate the run must force a CLEAN exit (so the inverting
+    /// recipe FAILs loud) unless at least one tree was genuinely
+    /// corrupted — a uniform Skip/no-op must NOT be invertible to OK
+    /// (the TASK-0187 partial-silent-neuter lesson, mirrored).
+    corrupted: bool,
 }
 
 // --------------------------------------------------------------------
@@ -776,6 +786,13 @@ fn required_coverage_gaps(
 
 fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     let cell = planned.cell.clone();
+    // Set true only by the harness-side NUC_XBACKEND_NEGATIVE
+    // post-process below (TASK-0183), and only for an mp-tcp-bufsync
+    // cell whose emitted `src/wire.rs` was actually rewritten. Every
+    // early-return constructor before that point carries this still-
+    // `false` value, exactly as TASK-0187 threads `did_perturb`
+    // through `check_cell_determinism`.
+    let mut corrupted = false;
 
     // Manifest-declared skip wins before we touch the filesystem.
     if let Some(reason) = &planned.pre_skip {
@@ -786,6 +803,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 reason: reason.clone(),
             },
             timings: Timings::default(),
+            corrupted,
         };
     }
 
@@ -806,6 +824,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 reason: format!("no capabilities.toml at {}", caps_path.display()),
             },
             timings: Timings::default(),
+            corrupted,
         };
     }
     // Best-effort load; an unparseable capabilities file is a hard
@@ -821,6 +840,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("read {}: {e}", caps_path.display()),
                 },
                 timings: Timings::default(),
+                corrupted,
             }
         }
     };
@@ -835,6 +855,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("parse {}: {e}", caps_path.display()),
                 },
                 timings: Timings::default(),
+                corrupted,
             }
         }
     };
@@ -865,6 +886,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("missing {} at {}", label, p.display()),
                 },
                 timings: Timings::default(),
+                corrupted,
             };
         }
     }
@@ -880,6 +902,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: e,
                 },
                 timings: Timings::default(),
+                corrupted,
             }
         }
     };
@@ -919,6 +942,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("spawn cargo run: {e}"),
                 },
                 timings,
+                corrupted,
             }
         }
     };
@@ -931,7 +955,48 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 detail: short_tail(&compile.stderr, &compile.stdout, 4),
             },
             timings,
+            corrupted,
         };
+    }
+
+    // ---- NUC_XBACKEND_NEGATIVE post-emit corruption (TASK-0183). -------
+    //
+    // Relocated here from mp-tcp-bufsync `lib.rs` (TASK-0178's inline
+    // `maybe_corrupt_wire` on the production `wire.rs` emission path,
+    // deleted in TASK-0183). Mirrors the sibling NUC_NONDET_TEST seam
+    // (TASK-0157/0187): the e2e harness is the SOLE consumer of
+    // NUC_XBACKEND_NEGATIVE (only `just xbackend-check-negative` sets
+    // it), so production codegen needs no test hook at all — keeping
+    // mp-tcp-bufsync fully branch-free is the strongest AC#1.
+    //
+    // It runs AFTER `nucleus build` (the emitted tree exists) and
+    // BEFORE the `cargo build` below (the corruption must be compiled
+    // in). `wire.rs` is mp-tcp-EXCLUSIVE: pthreads-sync emits no wire
+    // at all, so `maybe_corrupt_wire_for_xbackend` is invoked ONLY for
+    // mp-tcp-bufsync cells — a pthreads cell legitimately has no
+    // wire.rs and must NOT Err. Under the gate, a missing wire.rs /
+    // drifted enc_vec anchor is a HARD failure (Failed(Compile)), NOT
+    // a silent skip, so the falsifier can never be silently neutered;
+    // the matrix-wide zero-corruption guard in `run()` then forces a
+    // CLEAN exit so the inverting recipe FAILs loud. Gate unset =>
+    // strict no-op (function does not read or touch the tree), so bare
+    // `just e2e` emits a byte-identical pristine `wire.rs`.
+    if cell.backend == "mp-tcp-bufsync" {
+        match maybe_corrupt_wire_for_xbackend(&scratch) {
+            Ok(did) => corrupted = did,
+            Err(e) => {
+                return CellResult {
+                    cell,
+                    required: planned.required,
+                    status: Status::Failed {
+                        phase: Phase::Compile,
+                        detail: format!("NUC_XBACKEND_NEGATIVE corruption: {e}"),
+                    },
+                    timings,
+                    corrupted,
+                };
+            }
+        }
     }
 
     // ---- Phase 2: cargo build the emitted project ----------------------
@@ -954,6 +1019,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("spawn cargo build: {e}"),
                 },
                 timings,
+                corrupted,
             }
         }
     };
@@ -966,6 +1032,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 detail: short_tail(&build.stderr, &build.stdout, 4),
             },
             timings,
+            corrupted,
         };
     }
 
@@ -996,6 +1063,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("expected `nuc-generated` at {}", exe.display()),
                 },
                 timings,
+                corrupted,
             };
         }
         Command::new(&exe)
@@ -1018,6 +1086,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail,
                 },
                 timings,
+                corrupted,
             };
         }
         Command::new("bash")
@@ -1041,6 +1110,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("spawn run artefact: {e}"),
                 },
                 timings,
+                corrupted,
             }
         }
     };
@@ -1053,6 +1123,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 detail: short_tail(&run.stderr, &run.stdout, 4),
             },
             timings,
+            corrupted,
         };
     }
 
@@ -1068,6 +1139,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("read {}: {e}", reference_bin.display()),
                 },
                 timings,
+                corrupted,
             }
         }
     };
@@ -1082,6 +1154,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                     detail: format!("read {}: {e}", output_bin.display()),
                 },
                 timings,
+                corrupted,
             }
         }
     };
@@ -1094,6 +1167,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 detail: format!("length {} != reference {}", actual.len(), expected.len()),
             },
             timings,
+            corrupted,
         };
     }
     if actual != expected {
@@ -1111,6 +1185,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 detail: format!("first byte differs at offset {mismatch_at}"),
             },
             timings,
+            corrupted,
         };
     }
 
@@ -1119,6 +1194,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         required: planned.required,
         status: Status::Pass,
         timings,
+        corrupted,
     }
 }
 
@@ -1585,6 +1661,94 @@ fn maybe_perturb_for_nondet_test(tree: &std::path::Path) -> Result<bool, String>
         std::process::id()
     ));
     fs::write(&cargo_toml, src).map_err(|e| format!("write {}: {e}", cargo_toml.display()))?;
+    Ok(true)
+}
+
+/// Negative-gate hook for `xbackend-check-negative` (TASK-0178,
+/// relocated harness-side in TASK-0183 from mp-tcp-bufsync `lib.rs`'s
+/// inline `maybe_corrupt_wire` — deleted there so production codegen
+/// carries no test-only branch). Sibling of
+/// `maybe_perturb_for_nondet_test`; identical discipline.
+///
+/// When `NUC_XBACKEND_NEGATIVE=1`, deterministically corrupt the
+/// emitted `src/wire.rs` in `tree` (an mp-tcp-bufsync project dir):
+/// rewrite `enc_vec` so the single trailing byte of each encoded vec
+/// payload is incremented (wrapping). `wire.rs` is the TCP wire
+/// protocol, **mp-tcp-EXCLUSIVE** — pthreads-sync emits no wire at
+/// all. A multi-process mp-tcp cell that ships array data
+/// worker→worker then decodes wrong values and its `output.bin`
+/// diverges from the committed hand-written `reference.bin` oracle,
+/// while pthreads-sync (same oracle) stays byte-identical. That
+/// asymmetry — mp-tcp ≠ reference, pthreads-sync == reference — is
+/// precisely the *cross-backend* differential biting, not a global
+/// break. Caller invokes this ONLY for `cell.backend ==
+/// "mp-tcp-bufsync"`, so a pthreads tree (no wire.rs) is never
+/// touched and never Errs.
+///
+/// Returns `Ok(true)` if the tree was actually corrupted, `Ok(false)`
+/// if the env gate was unset/other (a strict no-op — the function
+/// does not read or touch the tree, keeping bare `just e2e`'s emitted
+/// `wire.rs` byte-identical to `mp_tcp_common::WIRE_RUNTIME_SRC`),
+/// `Err` if the gate was set but `wire.rs` was missing OR the
+/// `enc_vec` anchor drifted. The caller maps `Err` to
+/// `Failed(Compile)` (a HARD, gate-visible failure — never a silent
+/// skip that neuters the falsifier); the matrix-wide zero-corruption
+/// guard in `run()` then forces a CLEAN exit so the inverting recipe
+/// FAILs loud (the TASK-0187 recipe-inversion lesson).
+///
+/// Deterministic by construction: a fixed source rewrite (string
+/// replace), no PID/clock/RNG/hash-order entropy. Env gate (not a
+/// cargo feature / `cfg!`): a nested `cargo --features` inside the
+/// harness's own `cargo run` does not reliably rebuild against the
+/// shared target cache; an env var is read at run time, no rebuild.
+/// Exact-`"1"` gate, loud stderr banner, anchor-drift hard-failure —
+/// all preserved verbatim from the deleted mp-tcp-bufsync site.
+fn maybe_corrupt_wire_for_xbackend(tree: &std::path::Path) -> Result<bool, String> {
+    if std::env::var("NUC_XBACKEND_NEGATIVE").as_deref() != Ok("1") {
+        return Ok(false);
+    }
+    eprintln!(
+        "nucleus-e2e: WARNING: NUC_XBACKEND_NEGATIVE=1 — deliberately \
+         corrupting mp-tcp wire encode (enc_vec) in an emitted tree ON \
+         PURPOSE to test the cross-backend differential. This run is \
+         NOT a real build and its mp-tcp output is intentionally wrong. \
+         Never set this in a real build (TASK-0178 / TASK-0183)."
+    );
+    let wire_rs = tree.join("src").join("wire.rs");
+    if !wire_rs.exists() {
+        return Err(format!(
+            "expected emitted `{}` not found — codegen layout drifted; \
+             mp-tcp-bufsync must emit src/wire.rs (TASK-0183); refusing \
+             to let a missing-file become a silently-uncorrupted build",
+            wire_rs.display()
+        ));
+    }
+    let src = fs::read_to_string(&wire_rs)
+        .map_err(|e| format!("read {}: {e}", wire_rs.display()))?;
+    // The single body line of `enc_vec` in wire_runtime.rs. We append
+    // a deterministic last-byte tweak after the buffer is filled.
+    // Anchored on the exact source text so a refactor of wire_runtime
+    // fails this replace LOUD (Err below -> Failed(Compile)) rather
+    // than silently emitting a non-corrupted build that would make the
+    // negative recipe a false PASS. (Was a `panic!` at the deleted
+    // mp-tcp-bufsync site; harness-side a typed Err is the gate-visible
+    // analogue — the caller turns it into Failed(Compile) and the
+    // zero-corruption guard makes the recipe FAIL loud.)
+    const ANCHOR: &str =
+        "    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}";
+    const CORRUPT: &str = "    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    if let Some(last) = out.last_mut() {\n        *last = last.wrapping_add(1); // NUC_XBACKEND_NEGATIVE deliberate corruption (TASK-0178 / TASK-0183)\n    }\n    out\n}";
+    if !src.contains(ANCHOR) {
+        return Err(format!(
+            "enc_vec anchor not found in `{}` — the negative-arm \
+             injection point has drifted. Update ANCHOR in \
+             maybe_corrupt_wire_for_xbackend (TASK-0183) so the \
+             cross-backend negative test keeps biting; refusing to \
+             emit a silently-uncorrupted build",
+            wire_rs.display()
+        ));
+    }
+    let corrupted = src.replacen(ANCHOR, CORRUPT, 1);
+    fs::write(&wire_rs, corrupted).map_err(|e| format!("write {}: {e}", wire_rs.display()))?;
     Ok(true)
 }
 
@@ -2215,38 +2379,53 @@ fn run() -> Result<i32, String> {
 
     print_summary(&results);
 
-    // TASK-0188 AC#2 — EXPLICIT MACHINE-CHECKABLE SIGNAL (xbackend).
+    // NUC_XBACKEND_NEGATIVE explicit-signal contract + zero-corruption
+    // guard. Two distinct, both gate-only, both on STDOUT:
     //
-    // Stable key (do not rename without updating justfile:85):
+    //   (A) NUC_XBACKEND_CORRUPTED_APPLIED=<n>  (TASK-0183)
+    //       n = mp-tcp-bufsync cells whose emitted src/wire.rs this
+    //       harness ACTUALLY rewrote (`CellResult.corrupted`). This is
+    //       the analogue of NUC_NONDET_PERTURBED_CELLS — it proves the
+    //       falsifier, now applied harness-side, actually touched
+    //       something. If zero -> loud FATAL + `return Ok(0)` so the
+    //       inverting recipe FAILs loud (the TASK-0187 lesson: a
+    //       no-op must NOT be invertible into a false OK; exiting
+    //       non-zero would let the recipe invert it).
     //
-    //     NUC_XBACKEND_CORRUPTED_DETECTED=<n>
+    //   (B) NUC_XBACKEND_CORRUPTED_DETECTED=<n>  (TASK-0188, preserved)
+    //       n = cells where the corruption was present AND the
+    //       cross-backend differential genuinely DETECTED it, defined
+    //       PRECISELY as required AND backend == "mp-tcp-bufsync" AND
+    //       Status::Failed { phase: Phase::Diff, .. }. Each conjunct
+    //       (so this CANNOT be satisfied by an unrelated required
+    //       failure, only by a genuine differential bite):
+    //         * backend == "mp-tcp-bufsync": the corruption
+    //           (now maybe_corrupt_wire_for_xbackend, harness-side,
+    //           applied to the emitted mp-tcp src/wire.rs) is
+    //           mp-tcp-EXCLUSIVE — pthreads-sync emits no wire, so a
+    //           pthreads required-fail is unrelated.
+    //         * Phase::Diff: the corruption manifests as output.bin
+    //           diverging from the hand-written reference.bin oracle.
+    //           A Compile/Build/Run failure is unrelated breakage,
+    //           NOT "the differential caught the corrupted wire".
+    //         * required: only required cells gate the exit code;
+    //           matching exit-code semantics keeps the signals
+    //           consistent.
+    //       Moving WHERE corruption is applied (codegen -> harness)
+    //       does not change this definition: it is still "a required
+    //       mp-tcp cell diverged from reference.bin at Diff", recomputed
+    //       from results, conjuncts intact (TASK-0188 carry).
     //
-    // `<n>` is the number of cells where the NUC_XBACKEND_NEGATIVE
-    // mp-tcp wire corruption was actually present AND the cross-backend
-    // differential genuinely detected it — defined PRECISELY as:
-    //
-    //   required AND backend == "mp-tcp-bufsync" AND
-    //   Status::Failed { phase: Phase::Diff, .. }
-    //
-    // Rationale for each conjunct (so this CANNOT be satisfied by an
-    // unrelated required failure, only by a genuine differential bite):
-    //   * backend == "mp-tcp-bufsync": the corruption (maybe_corrupt_wire,
-    //     mp-tcp-bufsync/src/lib.rs) is mp-tcp-EXCLUSIVE — pthreads-sync
-    //     emits no wire, so a pthreads required-fail is unrelated.
-    //   * Phase::Diff: the corruption manifests as output.bin diverging
-    //     from the hand-written reference.bin oracle. A Compile/Build/
-    //     Run failure is unrelated breakage, NOT "the differential
-    //     caught the corrupted wire".
-    //   * required: only required cells gate the exit code; matching
-    //     the exit-code semantics keeps the two signals consistent.
-    //
-    // Emitted on STDOUT, ONLY when NUC_XBACKEND_NEGATIVE=1, so bare
-    // `e2e` is byte-for-byte unaffected (no line, exit unchanged).
-    // justfile:85 asserts this line is present AND n>=1 IN ADDITION to
-    // the exit-code inversion, so the "the falsifier actually corrupted
-    // and was detected" safety invariant no longer rests on exit-code
-    // inversion alone (same hardening as AC#1 for the determinism gate).
+    // Both emitted on STDOUT (println!, semantically RESULT lines; the
+    // loud human diagnostics stay on stderr), ONLY when
+    // NUC_XBACKEND_NEGATIVE=1, so bare `just e2e` is byte-for-byte
+    // unaffected (no lines, exit unchanged — verified: e2e standalone
+    // stays 30/26/0/4/0, zero signal lines). justfile:85 captures
+    // combined output, asserts NUC_XBACKEND_CORRUPTED_DETECTED present
+    // AND n>=1 IN ADDITION to the exit-code inversion, so the safety
+    // invariant no longer rests on exit-code inversion alone.
     if std::env::var("NUC_XBACKEND_NEGATIVE").as_deref() == Ok("1") {
+        let corrupted_applied = results.iter().filter(|r| r.corrupted).count();
         let corrupted_detected = results
             .iter()
             .filter(|r| {
@@ -2261,7 +2440,40 @@ fn run() -> Result<i32, String> {
                     )
             })
             .count();
+
+        // Print BOTH unconditionally under the gate so the recipe can
+        // always find them (n==0 in the zero arm, n>=1 in the genuine
+        // bite). DETECTED is the justfile:85 contract line; APPLIED is
+        // the harness-side falsifier-bit backstop.
+        println!("NUC_XBACKEND_CORRUPTED_APPLIED={corrupted_applied}");
         println!("NUC_XBACKEND_CORRUPTED_DETECTED={corrupted_detected}");
+
+        if corrupted_applied == 0 {
+            eprintln!(
+                "nucleus-e2e: FATAL: NUC_XBACKEND_NEGATIVE=1 but ZERO \
+                 mp-tcp-bufsync cell(s) had their emitted src/wire.rs \
+                 actually corrupted — the cross-backend falsifier \
+                 touched nothing. Forcing a CLEAN exit so \
+                 `xbackend-check-negative` reports its loud FAIL (the \
+                 falsifier did NOT bite) instead of inverting a no-op \
+                 into a false OK (TASK-0183, mirroring TASK-0187 AC#2). \
+                 Likely codegen layout drift: mp-tcp-bufsync must emit \
+                 src/wire.rs with the enc_vec anchor."
+            );
+            // Exit 0 on purpose: the recipe inverts this into its
+            // "FAIL: did NOT detect" branch (exit 1). The explicit
+            // NUC_XBACKEND_CORRUPTED_APPLIED=0 / _DETECTED=0 lines above
+            // are the redundant machine-checkable backstop (TASK-0188):
+            // even if a refactor breaks the inversion, the recipe's
+            // count assertion still fails loud.
+            return Ok(0);
+        }
+        eprintln!(
+            "nucleus-e2e: NUC_XBACKEND_NEGATIVE=1 — {corrupted_applied} \
+             mp-tcp-bufsync cell(s) corrupted, {corrupted_detected} \
+             detected by the differential (negative-gate sanity: \
+             applied>=1 required)."
+        );
     }
 
     let required_failed = results
@@ -3224,5 +3436,191 @@ mystery = 42
             "the count backstop must hold the line even if the \
              exit-code inversion is broken by a future refactor"
         );
+
+        // --- TASK-0183: the SAME contract for the relocated xbackend
+        // wire falsifier. xbackend-check-negative (justfile:85) shares
+        // the exact recipe shape; the corruption is now applied
+        // harness-side (maybe_corrupt_wire_for_xbackend), and the
+        // matrix-wide guard prints NUC_XBACKEND_CORRUPTED_APPLIED /
+        // _DETECTED then forces a CLEAN exit when APPLIED==0 so a
+        // no-op cannot invert into a false OK. Same model, same key
+        // properties — independent of which seam applied the fault.
+        let xbackend_unrelated_fail_exit = 1;
+        assert!(
+            !recipe_says_ok(xbackend_unrelated_fail_exit, Some(0)),
+            "xbackend count=0 MUST FAIL even when an unrelated \
+             required-fail makes the raw exit non-zero (TASK-0183: the \
+             harness-side relocation must keep the TASK-0188 contract)"
+        );
+        assert!(
+            !recipe_says_ok(xbackend_unrelated_fail_exit, None),
+            "a MISSING xbackend signal MUST FAIL regardless of exit code"
+        );
+        assert!(
+            recipe_says_ok(1, Some(1)),
+            "the minimal genuine xbackend bite (>=1 cell corrupted AND \
+             detected, non-zero exit) must still let the recipe say OK"
+        );
+        // The zero-corruption guard forces exit 0; the count backstop
+        // must still FAIL even if a refactor treated exit 0 as OK.
+        assert!(
+            !recipe_says_ok(0, Some(0)),
+            "xbackend zero-corruption guard: forced clean exit + count=0 \
+             must still FAIL loud (TASK-0183 mirror of TASK-0187 AC#2)"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // TASK-0183 — harness-side relocated NUC_XBACKEND_NEGATIVE wire
+    // corruption (mirrors the TASK-0187 maybe_perturb_for_nondet_test
+    // trio). NUC_XBACKEND_NEGATIVE is process-global; reuse the same
+    // serialising fence as the nondet tests (a different var, but the
+    // same one-mutex discipline keeps env mutation from interleaving
+    // across the parallel test threads).
+    // ---------------------------------------------------------------
+
+    fn xbackend_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// A synthetic `wire.rs` containing the EXACT `enc_vec` anchor the
+    /// relocated falsifier rewrites (byte-for-byte the body in
+    /// `mp-tcp-common/src/wire_runtime.rs`). If wire_runtime drifts,
+    /// `maybe_corrupt_wire_for_xbackend`'s anchor check must Err loud —
+    /// `xbackend_corrupt_errs_when_anchor_drifted` exercises that.
+    const SAMPLE_WIRE_RS: &str = "pub fn enc_vec<T: Copy, const W: usize>(v: &[T], to_le: fn(T) -> [u8; W]) -> Vec<u8> {\n    let mut out = Vec::with_capacity(v.len() * W);\n    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}\n";
+
+    #[test]
+    fn xbackend_corrupt_rewrites_wire_rs_under_gate() {
+        // AC#2/#3: with the gate set and a present src/wire.rs holding
+        // the anchor, the function must actually rewrite it (>=1 byte
+        // changed) and inject the deliberate last-byte tweak. This is
+        // the harness-side analogue of the deleted mp-tcp-bufsync
+        // `maybe_corrupt_wire` — behaviour preserved.
+        let _guard = xbackend_env_lock();
+        let tree = nondet_tmp("xb-mutate");
+        let src_dir = tree.join("src");
+        fs::create_dir_all(&src_dir).expect("mk src");
+        let wire = src_dir.join("wire.rs");
+        fs::write(&wire, SAMPLE_WIRE_RS).expect("write wire.rs");
+
+        std::env::set_var("NUC_XBACKEND_NEGATIVE", "1");
+        let did = maybe_corrupt_wire_for_xbackend(&tree);
+        std::env::remove_var("NUC_XBACKEND_NEGATIVE");
+
+        assert_eq!(
+            did,
+            Ok(true),
+            "gate=1 with a present wire.rs holding the anchor must \
+             report a corruption"
+        );
+        let after = fs::read_to_string(&wire).expect("read after");
+        assert_ne!(SAMPLE_WIRE_RS, after, "wire.rs must have changed");
+        assert!(
+            after.contains("last.wrapping_add(1)")
+                && after.contains("NUC_XBACKEND_NEGATIVE deliberate corruption"),
+            "expected the deliberate last-byte tweak, got:\n{after}"
+        );
+        // The anchor must be gone (replaced exactly once).
+        assert!(
+            !after.contains("    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}"),
+            "the pristine enc_vec tail must have been rewritten"
+        );
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn xbackend_corrupt_is_strict_noop_when_env_unset() {
+        // AC#3 / behaviour-equivalence: bare `just e2e`. With the gate
+        // unset the function must not read or touch the tree and must
+        // report Ok(false) — this is what keeps the emitted wire.rs
+        // byte-identical to mp_tcp_common::WIRE_RUNTIME_SRC and bare
+        // e2e at 30/26/0/4/0 with zero signal lines.
+        let _guard = xbackend_env_lock();
+        let tree = nondet_tmp("xb-noop");
+        let src_dir = tree.join("src");
+        fs::create_dir_all(&src_dir).expect("mk src");
+        let wire = src_dir.join("wire.rs");
+        fs::write(&wire, SAMPLE_WIRE_RS).expect("write wire.rs");
+
+        std::env::remove_var("NUC_XBACKEND_NEGATIVE");
+        let did = maybe_corrupt_wire_for_xbackend(&tree);
+
+        assert_eq!(
+            did,
+            Ok(false),
+            "env unset must be a strict no-op (no corruption)"
+        );
+        let after = fs::read_to_string(&wire).expect("read after");
+        assert_eq!(
+            after, SAMPLE_WIRE_RS,
+            "env-unset path must leave wire.rs byte-identical \
+             (behaviour-equivalence with pristine codegen)"
+        );
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn xbackend_corrupt_errs_when_gate_set_but_wire_rs_missing() {
+        // The mp-tcp layout drifted so src/wire.rs is absent under the
+        // gate: a HARD Err (never a silent skip). The caller maps it to
+        // Failed(Compile) and the matrix-wide zero-corruption guard
+        // then forces the recipe to FAIL loud — the never-silently-
+        // neuter-the-falsifier invariant, harness-side.
+        let _guard = xbackend_env_lock();
+        let tree = nondet_tmp("xb-missing"); // no src/wire.rs
+
+        std::env::set_var("NUC_XBACKEND_NEGATIVE", "1");
+        let did = maybe_corrupt_wire_for_xbackend(&tree);
+        std::env::remove_var("NUC_XBACKEND_NEGATIVE");
+
+        match did {
+            Err(msg) => assert!(
+                msg.contains("wire.rs") && msg.contains("layout drifted"),
+                "error must name the missing wire.rs and layout drift, got: {msg}"
+            ),
+            Ok(v) => panic!("expected Err when wire.rs absent under gate, got Ok({v})"),
+        }
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn xbackend_corrupt_errs_when_anchor_drifted() {
+        // The enc_vec anchor moved/refactored: under the gate this MUST
+        // Err (not silently emit an uncorrupted build that would make
+        // xbackend-check-negative a false PASS) — the harness-side
+        // analogue of the deleted site's `panic!` anchor-drift guard.
+        let _guard = xbackend_env_lock();
+        let tree = nondet_tmp("xb-drift");
+        let src_dir = tree.join("src");
+        fs::create_dir_all(&src_dir).expect("mk src");
+        let wire = src_dir.join("wire.rs");
+        fs::write(&wire, "pub fn enc_vec() { /* refactored away */ }\n").expect("write wire.rs");
+
+        std::env::set_var("NUC_XBACKEND_NEGATIVE", "1");
+        let did = maybe_corrupt_wire_for_xbackend(&tree);
+        std::env::remove_var("NUC_XBACKEND_NEGATIVE");
+
+        match did {
+            Err(msg) => assert!(
+                msg.contains("anchor not found") && msg.contains("drifted"),
+                "anchor-drift error must be explicit, got: {msg}"
+            ),
+            Ok(v) => panic!("expected Err on anchor drift under gate, got Ok({v})"),
+        }
+        // wire.rs must be left UNwritten on the drift path (we Err
+        // before the fs::write), so the failure is observable, not a
+        // half-corrupted file.
+        let after = fs::read_to_string(&wire).expect("read after");
+        assert_eq!(
+            after, "pub fn enc_vec() { /* refactored away */ }\n",
+            "on anchor drift the function must Err WITHOUT writing"
+        );
+
+        let _ = fs::remove_dir_all(&tree);
     }
 }

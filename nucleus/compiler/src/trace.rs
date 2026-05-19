@@ -21,8 +21,10 @@
 //!   (`std::env::var(..).as_deref() == Ok("1")`, loud stderr banner;
 //!   harness-side post-emit perturbation, not on the codegen path —
 //!   relocated there in TASK-0157).
-//! - `NUC_XBACKEND_NEGATIVE` — `mp-tcp-bufsync/src/lib.rs:1154`
-//!   (same shape).
+//! - `NUC_XBACKEND_NEGATIVE` — `e2e/src/main.rs`
+//!   (`maybe_corrupt_wire_for_xbackend`) (same shape; harness-side
+//!   post-emit corruption of the mp-tcp `wire.rs`, not on the codegen
+//!   path — relocated there in TASK-0183, parallel to TASK-0157).
 //!
 //! A tiny in-house `nuc_trace!` macro, **silent unless `NUC_TRACE` is
 //! set**, writing to stderr, is the consistent choice — not a novel
