@@ -65,8 +65,17 @@ determinism-check:
 # differ. SUCCEEDS iff `--check-determinism` correctly FAILS (non-zero
 # exit, naming the offending file). A green `determinism-check` is
 # only meaningful because this one is too.
+# TASK-0188: the safety invariant ("the falsifier actually perturbed
+# >=1 tree") no longer rests SOLELY on the exit-code inversion below.
+# The harness also emits an explicit machine-checkable stdout line
+# `NUC_NONDET_PERTURBED_CELLS=<n>`; this recipe asserts that line is
+# present AND n>=1 IN ADDITION to the exit-code check. If a future
+# refactor drops the inversion, the count assertion still fails LOUD
+# instead of silently re-neutering the falsifier. Combined output is
+# captured to a temp file so the exit code still drives the `if`
+# (cargo's status, NOT tee/grep's), then echoed so it stays visible.
 determinism-check-negative:
-    cd nucleus && if NUC_NONDET_TEST=1 cargo run --release --bin nucleus-e2e -- --check-determinism; then echo "FAIL: determinism check did NOT detect injected nondeterminism"; exit 1; else echo "OK: determinism check correctly bit on injected nondeterminism"; fi
+    cd nucleus && out=$(mktemp) && trap 'rm -f "$out"' EXIT && { if NUC_NONDET_TEST=1 cargo run --release --bin nucleus-e2e -- --check-determinism >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE '^NUC_NONDET_PERTURBED_CELLS=[0-9]+' "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_NONDET_PERTURBED_CELLS signal MISSING — cannot prove the falsifier perturbed anything (TASK-0188; harness/recipe contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_NONDET_PERTURBED_CELLS=$n — the determinism falsifier perturbed NOTHING (TASK-0188)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: determinism check did NOT detect injected nondeterminism"; exit 1; else echo "OK: determinism check correctly bit on injected nondeterminism"; fi
 
 # Prove the CROSS-BACKEND e2e differential actually BITES (TASK-0178 /
 # TASK-0041 AC#5 negative arm). Runs the full e2e matrix with
@@ -81,8 +90,15 @@ determinism-check-negative:
 # Mirrors `determinism-check-negative`; deterministic (fixed source
 # rewrite, no RNG/PID/clock) so it is non-flaky. Gate OFF by default:
 # bare `e2e` is unchanged.
+# TASK-0188: mirrors determinism-check-negative's hardening. The
+# harness emits `NUC_XBACKEND_CORRUPTED_DETECTED=<n>` where n = required
+# mp-tcp-bufsync cells that Failed at the Diff phase (corruption present
+# AND the cross-backend differential genuinely detected it — NOT any
+# unrelated required-fail). This recipe asserts that line present AND
+# n>=1 IN ADDITION to the exit-code inversion, so a recipe refactor
+# dropping the inversion fails LOUD rather than silently re-neutering.
 xbackend-check-negative:
-    cd nucleus && if NUC_XBACKEND_NEGATIVE=1 cargo run --release --bin nucleus-e2e; then echo "FAIL: cross-backend differential did NOT detect injected mp-tcp corruption"; exit 1; else echo "OK: cross-backend differential correctly bit on injected mp-tcp corruption"; fi
+    cd nucleus && out=$(mktemp) && trap 'rm -f "$out"' EXIT && { if NUC_XBACKEND_NEGATIVE=1 cargo run --release --bin nucleus-e2e >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE '^NUC_XBACKEND_CORRUPTED_DETECTED=[0-9]+' "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_XBACKEND_CORRUPTED_DETECTED signal MISSING — cannot prove the differential detected injected corruption (TASK-0188; harness/recipe contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_XBACKEND_CORRUPTED_DETECTED=$n — the cross-backend differential detected NO injected mp-tcp corruption (TASK-0188)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: cross-backend differential did NOT detect injected mp-tcp corruption"; exit 1; else echo "OK: cross-backend differential correctly bit on injected mp-tcp corruption"; fi
 
 # TASK-0174 (B) / TASK-0038 AC#5: the REAL end-to-end reproduction of
 # "an OS cap below the schedule requirement makes run.sh fail LOUD".

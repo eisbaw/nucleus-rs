@@ -2126,6 +2126,35 @@ fn run() -> Result<i32, String> {
         // is byte-identical / unaffected.
         if std::env::var("NUC_NONDET_TEST").as_deref() == Ok("1") {
             let perturbed_cells = det_results.iter().filter(|r| r.perturbed).count();
+
+            // TASK-0188 AC#1 — EXPLICIT MACHINE-CHECKABLE SIGNAL.
+            //
+            // Stable key (do not rename without updating justfile:69):
+            //
+            //     NUC_NONDET_PERTURBED_CELLS=<n>
+            //
+            // Emitted on STDOUT (println!, not eprintln!) so it is a
+            // semantically-distinct, parseable RESULT line — the loud
+            // human-facing diagnostics stay on stderr. It is printed
+            // UNCONDITIONALLY under the gate (n==0 in the zero-perturb
+            // arm below, n>=1 in the genuine-bite arm) so the recipe
+            // can always find it and assert n>=1.
+            //
+            // WHY this matters: before TASK-0188 the "the falsifier
+            // actually perturbed >=1 tree" safety invariant was encoded
+            // SOLELY in this process' exit code, whose meaning is
+            // supplied entirely by the inverting `if HARNESS; then
+            // FAIL; else OK; fi` at justfile:69 (a different file). A
+            // recipe refactor dropping that inversion would silently
+            // re-neuter the falsifier. With this line, justfile:69 also
+            // asserts `NUC_NONDET_PERTURBED_CELLS >= 1`, so the safety
+            // invariant no longer rests on exit-code inversion alone.
+            //
+            // The line is gated on NUC_NONDET_TEST=1: it does NOT
+            // appear under bare `determinism-check`, so that path stays
+            // byte-identical / unaffected.
+            println!("NUC_NONDET_PERTURBED_CELLS={perturbed_cells}");
+
             if perturbed_cells == 0 {
                 eprintln!(
                     "nucleus-e2e: FATAL: NUC_NONDET_TEST=1 but ZERO of \
@@ -2140,7 +2169,11 @@ fn run() -> Result<i32, String> {
                 );
                 // Exit 0 on purpose: the recipe inverts this into its
                 // "FAIL: did NOT detect" branch (exit 1) — a loud,
-                // gate-visible failure, never a silent OK.
+                // gate-visible failure, never a silent OK. The
+                // explicit NUC_NONDET_PERTURBED_CELLS=0 line above is
+                // the redundant machine-checkable backstop (TASK-0188):
+                // even if a refactor breaks the inversion, the recipe's
+                // count assertion still fails loud.
                 return Ok(0);
             }
             eprintln!(
@@ -2181,6 +2214,55 @@ fn run() -> Result<i32, String> {
     }
 
     print_summary(&results);
+
+    // TASK-0188 AC#2 — EXPLICIT MACHINE-CHECKABLE SIGNAL (xbackend).
+    //
+    // Stable key (do not rename without updating justfile:85):
+    //
+    //     NUC_XBACKEND_CORRUPTED_DETECTED=<n>
+    //
+    // `<n>` is the number of cells where the NUC_XBACKEND_NEGATIVE
+    // mp-tcp wire corruption was actually present AND the cross-backend
+    // differential genuinely detected it — defined PRECISELY as:
+    //
+    //   required AND backend == "mp-tcp-bufsync" AND
+    //   Status::Failed { phase: Phase::Diff, .. }
+    //
+    // Rationale for each conjunct (so this CANNOT be satisfied by an
+    // unrelated required failure, only by a genuine differential bite):
+    //   * backend == "mp-tcp-bufsync": the corruption (maybe_corrupt_wire,
+    //     mp-tcp-bufsync/src/lib.rs) is mp-tcp-EXCLUSIVE — pthreads-sync
+    //     emits no wire, so a pthreads required-fail is unrelated.
+    //   * Phase::Diff: the corruption manifests as output.bin diverging
+    //     from the hand-written reference.bin oracle. A Compile/Build/
+    //     Run failure is unrelated breakage, NOT "the differential
+    //     caught the corrupted wire".
+    //   * required: only required cells gate the exit code; matching
+    //     the exit-code semantics keeps the two signals consistent.
+    //
+    // Emitted on STDOUT, ONLY when NUC_XBACKEND_NEGATIVE=1, so bare
+    // `e2e` is byte-for-byte unaffected (no line, exit unchanged).
+    // justfile:85 asserts this line is present AND n>=1 IN ADDITION to
+    // the exit-code inversion, so the "the falsifier actually corrupted
+    // and was detected" safety invariant no longer rests on exit-code
+    // inversion alone (same hardening as AC#1 for the determinism gate).
+    if std::env::var("NUC_XBACKEND_NEGATIVE").as_deref() == Ok("1") {
+        let corrupted_detected = results
+            .iter()
+            .filter(|r| {
+                r.required
+                    && r.cell.backend == "mp-tcp-bufsync"
+                    && matches!(
+                        r.status,
+                        Status::Failed {
+                            phase: Phase::Diff,
+                            ..
+                        }
+                    )
+            })
+            .count();
+        println!("NUC_XBACKEND_CORRUPTED_DETECTED={corrupted_detected}");
+    }
 
     let required_failed = results
         .iter()
@@ -3051,6 +3133,96 @@ mystery = 42
             harness_exit_code(false, &[false, false, false], true),
             1,
             "gate off must keep normal Failed-driven non-zero exit"
+        );
+    }
+
+    #[test]
+    fn explicit_count_signal_makes_negative_recipes_fail_loud_independent_of_exit_code() {
+        // TASK-0188 AC#3 — proven directly. Before TASK-0188 the
+        // safety invariant ("the falsifier actually touched something")
+        // rested SOLELY on the exit-code inversion in justfile:69/:85.
+        // We now ALSO emit an explicit machine-checkable stdout line
+        // (NUC_NONDET_PERTURBED_CELLS / NUC_XBACKEND_CORRUPTED_DETECTED)
+        // and the recipes assert it. This models the recipes' new DUAL
+        // verdict and proves: if the count signal says zero / is
+        // absent, the recipe FAILS LOUD even when the exit code ALONE
+        // would invert to a false OK.
+
+        /// Models the parsed `<n>` from the explicit stdout line.
+        /// `None` == the line was absent entirely (a broken
+        /// harness/recipe contract — also a hard FAIL).
+        type CountSignal = Option<usize>;
+
+        /// Faithful model of the post-TASK-0188 recipe verdict for
+        /// BOTH determinism-check-negative (justfile:69) and
+        /// xbackend-check-negative (justfile:85): they share the exact
+        /// same shape — capture combined output, then:
+        ///
+        /// 1. if the count line is absent -> FAIL.
+        /// 2. if the parsed count < 1 -> FAIL.
+        /// 3. else fall back to the exit-code inversion (harness exit 0
+        ///    -> FAIL "did NOT detect"; non-0 -> OK "correctly bit").
+        ///
+        /// Returns true == recipe prints OK, false == recipe FAILs.
+        fn recipe_says_ok(harness_exit: i32, count: CountSignal) -> bool {
+            match count {
+                None => false,                // signal missing -> FAIL
+                Some(n) if n < 1 => false,    // count says zero -> FAIL
+                Some(_) => harness_exit != 0, // else: exit-code inversion
+            }
+        }
+
+        // --- The headline TASK-0188 property -------------------------
+        // The exact false-confidence scenario the hardening kills:
+        // some UNRELATED cell Failed so the raw exit code is non-zero,
+        // which the OLD recipe (exit-code inversion ONLY) would invert
+        // into a false "OK: correctly bit". With the count signal at 0
+        // the new recipe MUST still print FAIL.
+        let unrelated_failure_exit = 1; // raw exit code alone -> "OK"
+        assert!(
+            !recipe_says_ok(unrelated_failure_exit, Some(0)),
+            "count=0 MUST make the recipe FAIL even when the exit code \
+             alone would invert to a false OK (the core TASK-0188 \
+             hardening; exit-code inversion is no longer sufficient)"
+        );
+
+        // Same property when the signal line is entirely ABSENT (e.g.
+        // a refactor removed the println! or renamed the key): a
+        // broken contract is a loud FAIL, never a silent pass.
+        assert!(
+            !recipe_says_ok(unrelated_failure_exit, None),
+            "a MISSING count signal MUST make the recipe FAIL even \
+             when the exit code alone would invert to OK"
+        );
+
+        // Belt-and-braces: even if BOTH the exit code says clean AND
+        // the count is zero, still FAIL (no path to a false OK).
+        assert!(!recipe_says_ok(0, Some(0)));
+        assert!(!recipe_says_ok(0, None));
+
+        // --- The genuine-bite path still prints OK -------------------
+        // >=1 perturbation/corruption detected AND the harness exited
+        // non-zero (real divergence): the ONLY path that may say OK.
+        assert!(
+            recipe_says_ok(1, Some(26)),
+            "a genuine bite (count>=1 AND non-zero exit) must still \
+             let the recipe print OK"
+        );
+        assert!(
+            recipe_says_ok(1, Some(1)),
+            "the minimal genuine bite (exactly one cell) must say OK"
+        );
+
+        // --- Defence-in-depth interplay with the AC#2 zero-perturb
+        // guard (TASK-0187): under the gate, zero perturbations force a
+        // CLEAN harness exit (0). The OLD single-signal model relied on
+        // that clean exit + inversion. Now even if a refactor broke
+        // the inversion (treated exit 0 as OK), count=0 still FAILs.
+        let forced_clean_exit_on_zero_perturb = 0;
+        assert!(
+            !recipe_says_ok(forced_clean_exit_on_zero_perturb, Some(0)),
+            "the count backstop must hold the line even if the \
+             exit-code inversion is broken by a future refactor"
         );
     }
 }
