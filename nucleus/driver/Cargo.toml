@@ -26,3 +26,4 @@ path = "src/main.rs"
 [dependencies]
 compiler = { path = "../compiler" }
 pthreads-sync = { path = "../backends/pthreads-sync" }
+mp-tcp-bufsync = { path = "../backends/mp-tcp-bufsync" }

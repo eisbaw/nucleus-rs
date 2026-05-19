@@ -100,10 +100,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "mp-tcp-bufsync"
+version = "0.0.0"
+dependencies = [
+ "compiler",
+ "mp-tcp-common",
+ "pthreads-sync",
+]
+
+[[package]]
+name = "mp-tcp-common"
+version = "0.0.0"
+
+[[package]]
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
  "compiler",
+ "mp-tcp-bufsync",
  "pthreads-sync",
 ]
 

@@ -984,7 +984,16 @@ pub(crate) fn rust_scalar_type(t: &ScalarType) -> &'static str {
 // the single private implementations above.
 
 /// `RenderCtx` re-exported under a crate-visible name for
-/// `multi_worker`.
+/// `multi_worker` AND for sibling EventList-consuming backends
+/// (`mp-tcp-bufsync`, TASK-0036). Exposing this `pub` (was
+/// `pub(crate)`) is deliberate: it is the *single shared
+/// implementation* of expression / index / kernel-call / loop-bound
+/// rendering. The drift risk TASK-0124 flagged ("two divergent
+/// copies of the renderers") is structurally prevented by having the
+/// second backend call THESE shims rather than re-mirror them. The
+/// single-worker emitter ([`render_main_rs`]) is also `pub` for the
+/// same reason: a multi-process backend running a 0/1-worker schedule
+/// emits a byte-identical single process.
 ///
 /// Multi-worker schedules in the tier-1 set carry no `block=`
 /// directive (02-split), so absolute-index rebinding is inactive
@@ -994,14 +1003,14 @@ pub(crate) fn rust_scalar_type(t: &ScalarType) -> &'static str {
 /// would thread the same rebinding the single-worker path uses —
 /// the renderers are already shared so there is one implementation,
 /// no drift.)
-pub(crate) struct RenderCtxPub<'a> {
+pub struct RenderCtxPub<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
     empty_inner: BTreeSet<IterVar>,
 }
 
 impl<'a> RenderCtxPub<'a> {
-    pub(crate) fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
+    pub fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
         RenderCtxPub {
             names,
             sidecar,
@@ -1019,7 +1028,7 @@ impl<'a> RenderCtxPub<'a> {
     }
 }
 
-pub(crate) fn render_fire_args_pub(
+pub fn render_fire_args_pub(
     kernel: KernelId,
     inputs: &[ArgBinding],
     ctx: &RenderCtxPub<'_>,
@@ -1027,18 +1036,62 @@ pub(crate) fn render_fire_args_pub(
     render_fire_args(kernel, inputs, &ctx.inner())
 }
 
-pub(crate) fn render_flat_index_pub(
+pub fn render_flat_index_pub(
     s: &DataSlice,
     ctx: &RenderCtxPub<'_>,
 ) -> Result<String, EmitError> {
     render_flat_index(s, &ctx.inner())
 }
 
-pub(crate) fn render_const_expr_pub(
+pub fn render_const_expr_pub(
     e: &IrExpr,
     ctx: &RenderCtxPub<'_>,
 ) -> Result<String, EmitError> {
     render_const_expr(e, &ctx.inner())
+}
+
+/// Render a single worker's straight-line `main.rs` body — the SAME
+/// renderer the single-process pthreads-sync path uses. A
+/// multi-process backend whose schedule has 0/1 used workers emits
+/// exactly one process; reusing this keeps that process's code
+/// byte-identical to pthreads-sync's, so the differential on
+/// single-worker examples is real, not coincidental. Public for
+/// `mp-tcp-bufsync` (TASK-0036).
+pub fn render_single_worker_main(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+) -> Result<String, EmitError> {
+    render_main_rs(events, names, sidecar)
+}
+
+/// `vec![<zero>; product(dims)]` (array) or the scalar zero literal,
+/// sized + typed entirely from the sidecar `ResolvedType`. Shared so
+/// the mp-tcp pre-init allocation matches pthreads-sync exactly.
+pub fn render_array_init_for(ty: &ResolvedType) -> String {
+    if ty.is_scalar() {
+        rust_scalar_zero(&ty.scalar).to_string()
+    } else {
+        let total: usize = ty.dims.iter().copied().product();
+        let zero = rust_scalar_zero(&ty.scalar);
+        format!("vec![{zero}; {total}]")
+    }
+}
+
+/// Rust surface type for a `ResolvedType`: scalars natural, arrays
+/// flatten to `Vec<T>`. Shared with mp-tcp so slot/buffer typing
+/// cannot drift from pthreads-sync.
+pub fn rust_type_of(ty: &ResolvedType) -> String {
+    if ty.is_scalar() {
+        rust_scalar_type(&ty.scalar).to_string()
+    } else {
+        format!("Vec<{}>", rust_scalar_type(&ty.scalar))
+    }
+}
+
+/// Public spelling of the Rust scalar type (was `pub(crate)`).
+pub fn rust_scalar_type_pub(t: &ScalarType) -> &'static str {
+    rust_scalar_type(t)
 }
 
 // (No `render_int_expr_pub`: `multi_worker` renders args/indices via

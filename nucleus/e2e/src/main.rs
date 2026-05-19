@@ -99,15 +99,36 @@ struct SkipEntry {
     reason: String,
 }
 
-/// Subset of a backend's `capabilities.toml`. The harness only sniffs
-/// that the file *parses as TOML* — the compiler's
-/// `load_capabilities` is the authoritative schema validator and the
-/// driver invokes it on every compile. Keeping this struct empty
-/// makes the schema's source-of-truth split obvious: the harness
-/// merely confirms the file is reachable + lexically valid.
+/// Subset of a backend's `capabilities.toml`. The harness sniffs that
+/// the file *parses as TOML* — the compiler's `load_capabilities` is
+/// the authoritative schema validator and the driver invokes it on
+/// every compile — PLUS the one field that changes how the *harness*
+/// itself runs the artefact: `transport`. A `shared-memory` backend
+/// emits one `nuc-generated` binary; a `tcp` (or other multi-process)
+/// backend emits N per-worker binaries + a `run.sh` launcher
+/// (TASK-0036). The harness must launch the right thing. This is the
+/// minimal field set: anything the *driver* validates stays out.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-struct CapabilitiesSniff {}
+struct CapabilitiesSniff {
+    /// `shared-memory` (default — single binary) vs `tcp`/etc.
+    /// (multi-process — run via `run.sh`). Absent ⇒ treated as
+    /// single-binary, preserving the pre-TASK-0036 behaviour exactly.
+    transport: Option<String>,
+}
+
+impl CapabilitiesSniff {
+    /// True when the emitted artefact is a single `nuc-generated`
+    /// binary the harness can exec directly. `shared-memory` (or an
+    /// absent/unknown transport, conservatively) ⇒ single binary.
+    /// Anything else ⇒ multi-process, launched via `run.sh`.
+    fn is_single_binary(&self) -> bool {
+        matches!(
+            self.transport.as_deref(),
+            None | Some("shared-memory")
+        )
+    }
+}
 
 // --------------------------------------------------------------------
 // CLI args
@@ -574,7 +595,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
             }
         }
     };
-    let _caps: CapabilitiesSniff = match toml::from_str(&caps_src) {
+    let caps: CapabilitiesSniff = match toml::from_str(&caps_src) {
         Ok(c) => c,
         Err(e) => {
             return CellResult {
@@ -719,25 +740,66 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         };
     }
 
-    // ---- Phase 3: run the generated binary -----------------------------
-    let exe = scratch.join("target/release/nuc-generated");
-    if !exe.exists() {
-        return CellResult {
-            cell,
-            required: planned.required,
-            status: Status::Failed {
-                phase: Phase::Build,
-                detail: format!("expected `nuc-generated` at {}", exe.display()),
-            },
-            timings,
-        };
-    }
+    // ---- Phase 3: run the generated artefact ---------------------------
+    //
+    // Single-binary backend (pthreads-sync, `transport=shared-memory`):
+    // exec `target/release/nuc-generated` directly — unchanged from
+    // the pre-TASK-0036 path, so backend #1 cannot regress here.
+    //
+    // Multi-process backend (mp-tcp-bufsync, `transport=tcp`): there
+    // is no single `nuc-generated`; the emitted `run.sh` is the entry
+    // point — it launches one OS process per worker, wires the
+    // loopback ports, waits, and exits non-zero if any worker fails
+    // (TASK-0038). The harness invokes `run.sh INPUT OUTPUT` and
+    // diffs `output.bin` exactly as for the single-binary case, so
+    // the cross-backend differential is a real apples-to-apples
+    // comparison (same reference oracle, same diff).
     let output_bin = scratch.join("output.bin");
     let t2 = Instant::now();
-    let run = Command::new(&exe)
-        .env("NUC_INPUT_PATH", &input_bin)
-        .env("NUC_OUTPUT_PATH", &output_bin)
-        .output();
+    let run = if caps.is_single_binary() {
+        let exe = scratch.join("target/release/nuc-generated");
+        if !exe.exists() {
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Build,
+                    detail: format!("expected `nuc-generated` at {}", exe.display()),
+                },
+                timings,
+            };
+        }
+        Command::new(&exe)
+            .env("NUC_INPUT_PATH", &input_bin)
+            .env("NUC_OUTPUT_PATH", &output_bin)
+            .output()
+    } else {
+        let run_sh = scratch.join("run.sh");
+        if !run_sh.exists() {
+            let detail = format!(
+                "multi-process backend `{}` emitted no run.sh at {}",
+                cell.backend,
+                run_sh.display()
+            );
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Build,
+                    detail,
+                },
+                timings,
+            };
+        }
+        Command::new("bash")
+            .arg(&run_sh)
+            .arg(&input_bin)
+            .arg(&output_bin)
+            .current_dir(&scratch)
+            .env("NUC_INPUT_PATH", &input_bin)
+            .env("NUC_OUTPUT_PATH", &output_bin)
+            .output()
+    };
     timings.run = Some(t2.elapsed());
     let run = match run {
         Ok(o) => o,
@@ -747,7 +809,7 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 required: planned.required,
                 status: Status::Failed {
                     phase: Phase::Run,
-                    detail: format!("spawn {}: {e}", exe.display()),
+                    detail: format!("spawn run artefact: {e}"),
                 },
                 timings,
             }

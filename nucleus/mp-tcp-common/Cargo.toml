@@ -1,0 +1,23 @@
+# mp-tcp-common: TCP wire protocol v0 for the mp-tcp-* backends.
+# See docs/wire-protocol-v0.md (TASK-0037).
+#
+# Two roles in one crate, deliberately:
+#   1. A compiled+tested library (`wire` module) so the round-trip
+#      unit test (TASK-0037 AC#4) exercises the protocol directly.
+#   2. The single source of the runtime text that mp-tcp-* backends
+#      copy verbatim into generated projects (`WIRE_RUNTIME_SRC`).
+# The library `wire` module is literally `include!`-d from the same
+# file the backend emits, so "what is tested" == "what is generated".
+
+[package]
+name = "mp-tcp-common"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mp_tcp_common"
+path = "src/lib.rs"
+
+[dependencies]

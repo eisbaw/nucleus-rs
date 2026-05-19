@@ -13,7 +13,9 @@ members = [
     "compiler",
     "driver",
     "e2e",
+    "mp-tcp-common",
     "backends/pthreads-sync",
+    "backends/mp-tcp-bufsync",
 ]
 
 [workspace.package]

@@ -34,7 +34,7 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "05-s
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
 # enumeration of which backend crates to consider.
-backends = ["pthreads-sync"]
+backends = ["pthreads-sync", "mp-tcp-bufsync"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -102,6 +102,76 @@ example  = "05-stencil"
 schedule = "blocked"
 backend  = "pthreads-sync"
 
+# ---- mp-tcp-bufsync: the SECOND tier-1 backend (TASK-0036). --------
+#
+# This is the project's headline: the SAME (algorithm, schedule) must
+# produce a BIT-IDENTICAL output.bin under both pthreads-sync (shared
+# memory threads) AND mp-tcp-bufsync (OS processes over TCP loopback).
+# Each cell below is differentially green ONLY because the matching
+# pthreads-sync cell above passes against the SAME hand-written
+# reference.bin oracle — the diff is real, not coincidental (the two
+# backends share ONE expression/index/call renderer; only the
+# transport differs).
+#
+# 02-split-add/split is the LOAD-BEARING case: host + w0 run as TWO
+# separate OS processes, exchanging a/b/c over loopback TCP and
+# barriering over a separate control connection. That cross-backend
+# multi-process differential is the falsifiability keystone.
+
+# Single-process under mp-tcp (0/1 used workers ⇒ one binary whose
+# body is the SHARED single-worker renderer ⇒ byte-identical
+# arithmetic to pthreads-sync's single process).
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+# The load-bearing multi-process differential: host + w0 as two OS
+# processes over TCP loopback, byte-identical to the pthreads-sync
+# 02-split/split cell and to the reference oracle.
+[[required]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "mp-tcp-bufsync"
+
+# The remaining single-`host` examples/schedules. Under mp-tcp these
+# are single-process (the shared single-worker renderer ⇒ arithmetic
+# byte-identical to pthreads-sync's single process) — verified PASS
+# against the same reference.bin oracle as the pthreads-sync cells
+# above, so they are differentially green under BOTH backends and
+# pinned here to prevent a silent regression of either backend.
+# (03-reduction/naive is already pinned in the single-process block
+# above; not repeated here.)
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "mp-tcp-bufsync"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -119,4 +189,31 @@ example  = "05-stencil"
 schedule = "distributed"
 backend  = "pthreads-sync"
 reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"
+
+# Same two distributed gaps under the second backend. mp-tcp-bufsync
+# inherits the IDENTICAL upstream limitations as pthreads-sync (these
+# are front-pass / contract gaps, NOT transport-specific):
+#   - 03-reduction/distributed: the 5-worker reduction injects a
+#     NON-uniform barrier (host joins only some). Event::Sync carries
+#     no stable cross-worker identity (TASK-0172), so the pre-order
+#     -index recovery cannot byte-identically lower it — the backend
+#     fails LOUD (EmitError::ContractGap) rather than emit a wrong
+#     barrier graph. This is the fail-loud contract working, not a
+#     regression; it is skipped here exactly as for pthreads-sync.
+#   - 05-stencil/distributed: requests async + buffer=2 + notify=event,
+#     none of which a sync tier-1 backend supports; the capability
+#     check rejects it (correct) before codegen.
+# Both move to [[required]] for mp-tcp-bufsync only when TASK-0117 /
+# TASK-0172 land — same trigger as the pthreads-sync skips above.
+[[skip]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0117 + TASK-0172: distributed placement + non-uniform-barrier identity (fail-loud ContractGap, inherited from the EventList contract; not transport-specific)"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions; also async/buffer=2/notify=event exceed the sync tier-1 capability surface (same as pthreads-sync)"
 

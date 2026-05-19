@@ -1,0 +1,23 @@
+# capabilities.toml for the mp-tcp-bufsync backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1: tier-1 backend, workers are OS PROCESSES, transport is
+# std::net::TcpStream over loopback, sync = blocking recv, buffered.
+#
+# Same SCHEDULE-visible capability surface as pthreads-sync (sync
+# only, no buffer>1, barrier+blocking notify) so the IDENTICAL
+# schedule (e.g. 02-split/split.sched.nuc) compiles under BOTH
+# backends — that identity is exactly what makes the cross-backend
+# differential meaningful. `transport = "tcp"` is the only material
+# difference; the capability-compat check does not bind transport to
+# a schedule directive (docs/capabilities-toml.md), it is documentary
+# + drives the harness's multi-process run path.
+
+name            = "mp-tcp-bufsync"
+tier            = 1
+transport       = "tcp"
+notify          = ["barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

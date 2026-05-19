@@ -1,0 +1,43 @@
+# mp-tcp-bufsync backend crate. See PRD §7.1, TASK-0036.
+#
+# Tier-1 backend: workers are OS PROCESSES, transport is
+# std::net::TcpStream over loopback, sync = blocking recv, buffered.
+# The SECOND tier-1 backend — its job is to make the project's core
+# thesis falsifiable: same (algorithm, schedule) -> bit-identical
+# output.bin on TWO independent backends (pthreads-sync is #1).
+#
+# AlgoIR/LinkedIR/ACFG-free, exactly like pthreads-sync: it consumes
+# only the per-worker EventList (compiler::event), the NameSidecar
+# (compiler::sidecar) + the inert IrExpr grammar those carry.
+#
+# Drift control (TASK-0124 carried caveat): expression / index /
+# kernel-call / single-worker rendering is NOT re-implemented here —
+# it calls pthreads-sync's `pub` shared renderers, so there is ONE
+# implementation. Only the multi-PROCESS transport (TCP framing,
+# barrier-over-TCP, per-worker binaries, run.sh) is mp-tcp-specific.
+
+[package]
+name = "mp-tcp-bufsync"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mp_tcp_bufsync"
+path = "src/lib.rs"
+
+[dependencies]
+compiler = { path = "../../compiler" }
+# Shared codegen (single source of truth for expression/index/call
+# rendering + single-worker emitter) — prevents renderer drift.
+pthreads-sync = { path = "../pthreads-sync" }
+# Wire protocol v0 source text, copied verbatim into generated
+# projects (single source of truth with the protocol's own tests).
+mp-tcp-common = { path = "../../mp-tcp-common" }
+
+[dev-dependencies]
+# The pingpong differential test (AC#5) drives the full pipeline and
+# byte-compares mp-tcp-bufsync vs pthreads-sync on identical inputs.
+# `compiler` is already a normal dependency; `pthreads-sync` is too
+# (shared renderers) but the test also calls its `emit` directly.

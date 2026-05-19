@@ -31,8 +31,11 @@
 //! also triggering backend codegen. If both `--out` and `--emit-pn`
 //! are given, both outputs are produced.
 //!
-//! The driver only knows about the pthreads-sync backend at M1. New
-//! backends added via TASK-0036+ will register here.
+//! Registered backends: `pthreads-sync` (M1, shared-memory threads)
+//! and `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
+//! TASK-0036). Both consume the identical EventList contract; the
+//! cross-backend differential (same source -> bit-identical
+//! output.bin under both) is the M3 headline.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -77,7 +80,8 @@ fn print_help() {
                               Makes --out optional (inspection-only build).\n\
          \n\
          BACKENDS:\n    \
-             pthreads-sync\n"
+             pthreads-sync   shared-memory threads (tier 1)\n    \
+             mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n"
     );
 }
 
@@ -274,46 +278,47 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         return Ok(());
     };
 
+    // Project the post-pass ACFG to the per-worker EventList contract
+    // and build the codegen sidecar. EVERY EventList-consuming
+    // backend takes exactly these + the reverse name tables — no
+    // ACFG / LinkedIR (TASK-0124 AC#1/AC#2, carried to TASK-0036).
+    //
+    // build_sidecar can return a typed SidecarError (same-name loops
+    // with different bounds — TASK-0170); surface it via the String
+    // error channel exactly like apply_block_transforms above. The
+    // EventList path is panic-safe (never aborts the process).
+    let per_worker = acfg_to_events(&acfg);
+    let sidecar = build_sidecar(&linked, &acfg).map_err(|e| format!("sidecar error: {e}"))?;
+    // Reverse name tables: invert acfg.name_* (name -> id) to
+    // (id -> name) — the join key the EventList / sidecar use. Built
+    // ONCE; both tier-1 backends share the identical tables (the
+    // cross-backend differential requires identical inputs).
+    let names = pthreads_sync::NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg
+            .name_kernels
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        worker: acfg
+            .name_workers
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        iter_var: acfg
+            .name_iter_vars
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        // The inner intra-tile loop iter-vars block_transform
+        // produced (it reuses the source loop's IterVar on the inner
+        // loop and iterates 0..N — the backend must rebind the
+        // absolute index; TASK-0124).
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+
     match backend.as_str() {
         "pthreads-sync" => {
-            // Project the post-pass ACFG to the per-worker EventList
-            // contract and build the codegen sidecar. The backend
-            // consumes ONLY these + the reverse name tables — no
-            // ACFG / LinkedIR (TASK-0124 AC#1/AC#2).
-            //
-            // build_sidecar can return a typed SidecarError
-            // (same-name loops with different bounds — TASK-0170);
-            // surface it via the String error channel exactly like
-            // apply_block_transforms above. The EventList path is
-            // panic-safe (never aborts the process).
-            let per_worker = acfg_to_events(&acfg);
-            let sidecar =
-                build_sidecar(&linked, &acfg).map_err(|e| format!("sidecar error: {e}"))?;
-            // Reverse name tables: invert acfg.name_* (name -> id) to
-            // (id -> name) — the join key the EventList / sidecar use.
-            let names = pthreads_sync::NameTables {
-                data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-                kernel: acfg
-                    .name_kernels
-                    .iter()
-                    .map(|(n, i)| (*i, n.clone()))
-                    .collect(),
-                worker: acfg
-                    .name_workers
-                    .iter()
-                    .map(|(n, i)| (*i, n.clone()))
-                    .collect(),
-                iter_var: acfg
-                    .name_iter_vars
-                    .iter()
-                    .map(|(n, i)| (*i, n.clone()))
-                    .collect(),
-                // The inner intra-tile loop iter-vars block_transform
-                // produced (it reuses the source loop's IterVar on
-                // the inner loop and iterates 0..N — the backend must
-                // rebind the absolute index; TASK-0124).
-                inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-            };
             let result =
                 pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
                     .map_err(|e| format!("pthreads-sync codegen error: {e}"))?;
@@ -327,8 +332,29 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // Second tier-1 backend (TASK-0036/0037/0038): multi-process
+        // over TCP loopback. Same contract; the only difference is
+        // the transport. `run_sh` is the always-present entry point
+        // (single-process AND multi-process) — the e2e harness keys
+        // its multi-process run path off the backend's
+        // `transport = "tcp"` capability + this run.sh.
+        "mp-tcp-bufsync" => {
+            let result =
+                mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("mp-tcp-bufsync codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            for (i, b) in result.worker_bins.iter().enumerate() {
+                println!("worker_bin{i} = {}", b.display());
+            }
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("wire_rs     = {}", result.wire_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
-            "unknown backend `{other}`; only `pthreads-sync` is registered at M1"
+            "unknown backend `{other}`; registered: `pthreads-sync`, `mp-tcp-bufsync`"
         )),
     }
 }
