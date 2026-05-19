@@ -77,17 +77,54 @@ struct Manifest {
     runnable_examples: Vec<String>,
     backends: Vec<String>,
     #[serde(default)]
-    required: Vec<Cell>,
+    required: Vec<RequiredEntry>,
     #[serde(default)]
     skip: Vec<SkipEntry>,
 }
 
+/// The (example, schedule, backend) identity triple. This is the
+/// matrix coordinate the harness matches discovered cells against and
+/// uses as a `BTreeSet` key. `milestone` is deliberately NOT a field
+/// here: a cell discovered on disk has no milestone, and milestone is
+/// metadata of a `[[required]]`/`[[skip]]` *declaration*, not part of
+/// a cell's identity. Keeping the identity triple separate from the
+/// declaration metadata is what lets `required_coverage_gaps` match a
+/// required declaration to a planned cell by triple alone.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 struct Cell {
     example: String,
     schedule: String,
     backend: String,
+}
+
+/// A `[[required]]` declaration: the identity triple PLUS the
+/// milestone at which this cell became (or will become) a mandatory
+/// gating cell. `milestone` is parsed and validated into a
+/// [`Milestone`] at manifest-load time so a typo'd milestone tag
+/// fails LOUD (typed error) rather than silently mis-bucketing a
+/// gating cell — see `Manifest::load` / `Milestone::parse`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequiredEntry {
+    example: String,
+    schedule: String,
+    backend: String,
+    /// Milestone tag, e.g. "M1"/"M2"/"M3". The scheme (documented in
+    /// the manifest header) is "the milestone whose acceptance task
+    /// owns this cell" per PRD §11.
+    milestone: String,
+}
+
+impl RequiredEntry {
+    /// The identity triple this declaration refers to.
+    fn cell(&self) -> Cell {
+        Cell {
+            example: self.example.clone(),
+            schedule: self.schedule.clone(),
+            backend: self.backend.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +134,118 @@ struct SkipEntry {
     schedule: String,
     backend: String,
     reason: String,
+    /// Milestone tag for the cell this skip exempts. A `[[skip]]`
+    /// carries a milestone so that, when a milestone subset is run,
+    /// the coverage guard scopes skips to the same milestone band as
+    /// the required cells it exempts (a skip for an M3-only cell must
+    /// not exempt anything under `--milestone M1`).
+    milestone: String,
+}
+
+impl SkipEntry {
+    fn cell(&self) -> Cell {
+        Cell {
+            example: self.example.clone(),
+            schedule: self.schedule.clone(),
+            backend: self.backend.clone(),
+        }
+    }
+}
+
+/// A tier-1 milestone (PRD §11). Parsed from the `milestone` string
+/// on every `[[required]]`/`[[skip]]` entry and from the
+/// `--milestone` CLI flag. Ordering is the cumulative-gate ordering:
+/// `M1 < M2 < M3`, so `--milestone M3` runs the M1 ∪ M2 ∪ M3 cells.
+///
+/// New milestones are added here as the project advances; an
+/// unrecognised tag is a typed error (never a panic, never a silent
+/// default) — a mis-typed milestone must not silently delete a cell
+/// from a gating subset, which is the TASK-0163 failure class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Milestone(u8);
+
+impl Milestone {
+    /// Parse "M<k>" (k = 0..=6 for tier-1; the manifest only uses
+    /// M1..M3 today, but the parser accepts the full tier-1 range so
+    /// adding an M4+ cell does not require a code change here). Any
+    /// other shape is a typed error.
+    fn parse(s: &str) -> Result<Milestone, String> {
+        let rest = s.strip_prefix('M').ok_or_else(|| {
+            format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)")
+        })?;
+        let k: u8 = rest.parse().map_err(|_| {
+            format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)")
+        })?;
+        if k > 6 {
+            return Err(format!(
+                "milestone `{s}` is out of the tier-1 range M0..M6 (PRD §11)"
+            ));
+        }
+        Ok(Milestone(k))
+    }
+}
+
+impl fmt::Display for Milestone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "M{}", self.0)
+    }
+}
+
+/// The cumulative milestone-gate predicate, the SINGLE definition of
+/// "is this milestone-tagged cell in scope for this run". Used in
+/// BOTH `plan_cells` (deciding required/skip status) and
+/// `required_coverage_gaps` (deciding coverage obligation) so the two
+/// can never drift — the TASK-0163 lockstep invariant. `None` gate
+/// (no `--milestone`) ⇒ everything is in scope (full matrix,
+/// unchanged behaviour). Cumulative: `entry <= gate`.
+fn milestone_in_gate(entry: Milestone, gate: Option<Milestone>) -> bool {
+    match gate {
+        None => true,
+        Some(g) => entry <= g,
+    }
+}
+
+impl Manifest {
+    /// Parse + validate every `[[required]]` entry's milestone tag,
+    /// returning a `Cell -> Milestone` map. A typo'd milestone tag is
+    /// a typed error here (fail loud at load), never a silent
+    /// mis-bucket — mis-bucketing would let `--milestone M1`
+    /// silently drop a cell that was really M1, the TASK-0163
+    /// silent-vanish class generalised to the milestone axis.
+    fn required_milestones(
+        &self,
+    ) -> Result<std::collections::BTreeMap<Cell, Milestone>, String> {
+        let mut map = std::collections::BTreeMap::new();
+        for r in &self.required {
+            let m = Milestone::parse(&r.milestone).map_err(|e| {
+                format!(
+                    "[[required]] (example={}, schedule={}, backend={}): {e}",
+                    r.example, r.schedule, r.backend
+                )
+            })?;
+            map.insert(r.cell(), m);
+        }
+        Ok(map)
+    }
+
+    /// Parse + validate every `[[skip]]` entry, returning a
+    /// `Cell -> (reason, Milestone)` map. Same fail-loud contract as
+    /// `required_milestones`.
+    fn skip_table(
+        &self,
+    ) -> Result<std::collections::BTreeMap<Cell, (String, Milestone)>, String> {
+        let mut map = std::collections::BTreeMap::new();
+        for s in &self.skip {
+            let m = Milestone::parse(&s.milestone).map_err(|e| {
+                format!(
+                    "[[skip]] (example={}, schedule={}, backend={}): {e}",
+                    s.example, s.schedule, s.backend
+                )
+            })?;
+            map.insert(s.cell(), (s.reason.clone(), m));
+        }
+        Ok(map)
+    }
 }
 
 /// Subset of a backend's `capabilities.toml`. The harness sniffs that
@@ -139,10 +288,14 @@ struct Args {
     example: Option<String>,
     schedule: Option<String>,
     backend: Option<String>,
-    /// Reserved for the post-M1 milestone-tagged subsets in PRD §11.
-    /// At M1 the flag is accepted but only logged — the manifest is
-    /// the milestone gate today.
-    milestone: Option<String>,
+    /// Milestone gate (PRD §11). When set, the required/skip matrix
+    /// is narrowed to cells tagged at or before this milestone — the
+    /// gate is CUMULATIVE: `--milestone M3` runs the M1 ∪ M2 ∪ M3
+    /// required cells (a regression gate should never drop an
+    /// earlier-milestone cell). Absent ⇒ the full matrix (unchanged
+    /// behaviour). Validated to a [`Milestone`] at parse time so a
+    /// bad value fails LOUD before any work.
+    milestone: Option<Milestone>,
     /// When set, the harness switches modes: instead of running the
     /// compile/build/run/diff pipeline, it invokes `nucleus build`
     /// twice per cell into two distinct out dirs and byte-compares
@@ -174,7 +327,8 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 i += 2;
             }
             "--milestone" => {
-                a.milestone = Some(need_val(i)?);
+                let raw = need_val(i)?;
+                a.milestone = Some(Milestone::parse(&raw)?);
                 i += 2;
             }
             "--check-determinism" => {
@@ -202,6 +356,14 @@ fn print_help() {
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
          matching cells.\n\
+         \n\
+         --milestone M<k>: CUMULATIVE milestone gate (PRD §11). Runs\n\
+         only the required/skip cells tagged at or before M<k>, so\n\
+         `--milestone M3` runs the M1 ∪ M2 ∪ M3 required set (an\n\
+         earlier milestone's cells are never dropped from a regression\n\
+         gate). No flag = the full matrix. The TASK-0163 required-\n\
+         coverage guard is scoped to the SAME milestone band, so a\n\
+         typo'd/stale required cell still hard-fails inside its tier.\n\
          \n\
          --check-determinism: for every cell that would normally PASS,\n\
          build twice into distinct out dirs and byte-compare every\n\
@@ -381,18 +543,16 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
     // `schedules/` directory. The schedule name is the file stem
     // without `.sched`.
     let mut planned: Vec<PlannedCell> = Vec::new();
-    let required_set: BTreeSet<Cell> = manifest.required.iter().cloned().collect();
-    let mut skip_map: std::collections::BTreeMap<Cell, String> = std::collections::BTreeMap::new();
-    for s in &manifest.skip {
-        skip_map.insert(
-            Cell {
-                example: s.example.clone(),
-                schedule: s.schedule.clone(),
-                backend: s.backend.clone(),
-            },
-            s.reason.clone(),
-        );
-    }
+
+    // Required/skip declarations carry a milestone tag. The active
+    // `--milestone` gate is CUMULATIVE: a cell counts iff its tag is
+    // at or before the requested milestone. A required cell whose
+    // milestone is OUTSIDE the gate is not flagged required for this
+    // run (it must not gate the exit, and the TASK-0163 coverage
+    // guard scopes itself with the SAME predicate so it is not a
+    // coverage obligation either — see `required_coverage_gaps`).
+    let required_map = manifest.required_milestones()?;
+    let skip_map = manifest.skip_table()?;
 
     for ex in &manifest.runnable_examples {
         if let Some(want) = &args.example {
@@ -442,8 +602,37 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                     schedule: sched.clone(),
                     backend: backend.clone(),
                 };
-                let required = required_set.contains(&cell);
-                let pre_skip = skip_map.get(&cell).cloned();
+                let req_m = required_map.get(&cell).copied();
+                let skip_m = skip_map.get(&cell);
+
+                // Milestone gate semantics:
+                //  - No `--milestone`  : unchanged — every discovered
+                //    cell is planned (required / skip / informational).
+                //  - `--milestone M<k>`: run a TIGHT tier. Only the
+                //    in-band required cells and in-band declared skips
+                //    are planned; out-of-band cells and purely
+                //    informational cells are NOT executed (a milestone
+                //    job should run exactly its tier, no noise, all
+                //    pass ⇒ exit 0). This is AC#1's "subset the
+                //    required set by milestone".
+                let in_band_required =
+                    req_m.is_some_and(|m| milestone_in_gate(m, args.milestone));
+                let in_band_skip = skip_m
+                    .is_some_and(|(_, m)| milestone_in_gate(*m, args.milestone));
+
+                if args.milestone.is_some() && !in_band_required && !in_band_skip {
+                    // Out of this milestone tier — do not plan it.
+                    continue;
+                }
+
+                // `required` is the in-band-required flag. A skip is
+                // honoured only within its milestone band; pairing the
+                // two predicates keeps the TASK-0163 coverage guard in
+                // lockstep with what actually executes.
+                let required = in_band_required;
+                let pre_skip = skip_m.and_then(|(reason, m)| {
+                    milestone_in_gate(*m, args.milestone).then(|| reason.clone())
+                });
                 planned.push(PlannedCell {
                     cell,
                     required,
@@ -461,10 +650,19 @@ struct PlannedCell {
     pre_skip: Option<String>,
 }
 
-/// Return `true` iff `cell` passes the active CLI narrowing flags.
-/// Mirrors the per-axis `if want != ... { continue }` filters inside
-/// `plan_cells` so the coverage check below scopes itself to exactly
-/// the cells a given invocation is responsible for.
+/// Return `true` iff `cell` passes the active CLI narrowing flags
+/// (`--example`/`--schedule`/`--backend`). Mirrors the per-axis
+/// `if want != ... { continue }` filters inside `plan_cells` so the
+/// coverage check below scopes itself to exactly the cells a given
+/// invocation is responsible for.
+///
+/// NOTE: the `--milestone` axis is intentionally NOT folded in here —
+/// a discovered `Cell` carries no milestone (milestone is metadata of
+/// a `[[required]]`/`[[skip]]` declaration). The milestone gate is
+/// applied by the caller via `milestone_in_gate` against the
+/// declaration's tag, in lockstep with `plan_cells` (which does the
+/// same). Folding a non-existent cell milestone in here would be the
+/// drift TASK-0163 warns about.
 fn cell_matches_filters(cell: &Cell, args: &Args) -> bool {
     if let Some(want) = &args.example {
         if want != &cell.example {
@@ -510,35 +708,65 @@ fn cell_matches_filters(cell: &Cell, args: &Args) -> bool {
 /// the 07-matmul required cells and must not be failed for their
 /// absence. The bare `just e2e` (no filters) checks the full set.
 ///
+/// `--milestone` is a NARROWING AXIS handled here IN LOCKSTEP with
+/// `plan_cells`: a required cell whose milestone tag is OUTSIDE the
+/// cumulative gate (`milestone_in_gate`) is not a coverage obligation
+/// for this run (it was not flagged required either), and a `[[skip]]`
+/// only exempts within its own milestone band. The lockstep is the
+/// load-bearing TASK-0163 invariant: if `plan_cells` narrowed by
+/// milestone but this guard did not (or vice-versa), a typo'd/stale
+/// M3-tagged required cell run under `--milestone M3` would silently
+/// vanish — the exact blind spot TASK-0163 closed, reopened per
+/// milestone subset. The shared `milestone_in_gate` predicate makes
+/// the two physically the same rule.
+///
 /// Returned gaps are de-duplicated and sorted so the error surface is
 /// deterministic regardless of manifest ordering.
-fn required_coverage_gaps(manifest: &Manifest, planned: &[PlannedCell], args: &Args) -> Vec<Cell> {
+fn required_coverage_gaps(
+    manifest: &Manifest,
+    planned: &[PlannedCell],
+    args: &Args,
+) -> Result<Vec<Cell>, String> {
     let planned_set: BTreeSet<&Cell> = planned.iter().map(|p| &p.cell).collect();
-    let skip_set: BTreeSet<Cell> = manifest
-        .skip
+
+    // Skips that are in milestone-band for THIS run. A skip for an
+    // M3-only cell must not exempt anything under `--milestone M1` —
+    // mirror plan_cells' skip gating exactly.
+    let skip_table = manifest.skip_table()?;
+    let in_band_skips: BTreeSet<Cell> = skip_table
         .iter()
-        .map(|s| Cell {
-            example: s.example.clone(),
-            schedule: s.schedule.clone(),
-            backend: s.backend.clone(),
-        })
+        .filter(|(_, (_, m))| milestone_in_gate(*m, args.milestone))
+        .map(|(c, _)| c.clone())
         .collect();
 
     let mut gaps: BTreeSet<Cell> = BTreeSet::new();
     for req in &manifest.required {
-        if !cell_matches_filters(req, args) {
-            // Out of scope for this (possibly narrowed) invocation.
+        let cell = req.cell();
+        let m = Milestone::parse(&req.milestone).map_err(|e| {
+            format!(
+                "[[required]] (example={}, schedule={}, backend={}): {e}",
+                req.example, req.schedule, req.backend
+            )
+        })?;
+        if !cell_matches_filters(&cell, args) {
+            // Out of example/schedule/backend scope.
             continue;
         }
-        if planned_set.contains(req) {
+        if !milestone_in_gate(m, args.milestone) {
+            // Out of the cumulative milestone band — NOT a gating
+            // cell this run (plan_cells did not flag it required
+            // either). Lockstep with plan_cells.
+            continue;
+        }
+        if planned_set.contains(&cell) {
             continue; // Will execute; its verdict gates the exit.
         }
-        if skip_set.contains(req) {
-            continue; // Declared skip — exempt by the exit contract.
+        if in_band_skips.contains(&cell) {
+            continue; // Declared skip in-band — exempt by the contract.
         }
-        gaps.insert(req.clone());
+        gaps.insert(cell);
     }
-    gaps.into_iter().collect()
+    Ok(gaps.into_iter().collect())
 }
 
 // --------------------------------------------------------------------
@@ -1666,12 +1894,13 @@ fn run() -> Result<i32, String> {
         toml::from_str(&manifest_src).map_err(|e| format!("manifest parse error: {e}"))?;
 
     if let Some(m) = &args.milestone {
-        // Reserved for PRD §11's milestone-tagged matrix subsets.
-        // Today we accept and announce; the manifest is still the
-        // source of truth.
+        // PRD §11 milestone gate, now genuine (TASK-0167): the
+        // required/skip matrix is narrowed CUMULATIVELY to cells
+        // tagged at or before this milestone. Announced so a CI log
+        // unambiguously records which tier ran.
         eprintln!(
-            "nucleus-e2e: --milestone={m} accepted but ignored at M1 \
-             (manifest gates required cells)"
+            "nucleus-e2e: milestone gate {m} (cumulative — runs M1..{m} \
+             required cells)"
         );
     }
 
@@ -1689,7 +1918,7 @@ fn run() -> Result<i32, String> {
     // scope triples are exempt (see `required_coverage_gaps`). This
     // gate runs in both run-mode and determinism-mode because both
     // trust the required matrix.
-    let gaps = required_coverage_gaps(&manifest, &planned, &args);
+    let gaps = required_coverage_gaps(&manifest, &planned, &args)?;
     if !gaps.is_empty() {
         let listed = gaps
             .iter()
@@ -1816,7 +2045,7 @@ mod tests {
         assert_eq!(a.example.as_deref(), Some("01-elementwise-add"));
         assert_eq!(a.schedule.as_deref(), Some("naive"));
         assert_eq!(a.backend.as_deref(), Some("pthreads-sync"));
-        assert_eq!(a.milestone.as_deref(), Some("M1"));
+        assert_eq!(a.milestone, Some(Milestone(1)));
     }
 
     #[test]
@@ -1998,10 +2227,11 @@ mystery = 42
         let manifest = Manifest {
             runnable_examples: vec!["01-elementwise-add".to_string()],
             backends: vec!["pthreads-sync".to_string()],
-            required: vec![Cell {
+            required: vec![RequiredEntry {
                 example: "01-elementwise-add".to_string(),
                 schedule: "naive".to_string(),
                 backend: "pthreads-sync".to_string(),
+                milestone: "M1".to_string(),
             }],
             skip: vec![],
         };
@@ -2046,6 +2276,28 @@ mystery = 42
         }
     }
 
+    /// A `[[required]]` declaration tagged at milestone `ms`
+    /// (e.g. "M1"). Most coverage-guard tests do not exercise the
+    /// milestone axis, so they use "M1" (in-band for every gate).
+    fn req(ex: &str, sc: &str, be: &str, ms: &str) -> RequiredEntry {
+        RequiredEntry {
+            example: ex.to_string(),
+            schedule: sc.to_string(),
+            backend: be.to_string(),
+            milestone: ms.to_string(),
+        }
+    }
+
+    fn skip_e(ex: &str, sc: &str, be: &str, reason: &str, ms: &str) -> SkipEntry {
+        SkipEntry {
+            example: ex.to_string(),
+            schedule: sc.to_string(),
+            backend: be.to_string(),
+            reason: reason.to_string(),
+            milestone: ms.to_string(),
+        }
+    }
+
     /// The core bite: a `[[required]]` triple whose schedule does not
     /// match any planned (discovered) cell, and is not in `[[skip]]`,
     /// is reported as a coverage gap with the exact triple named. This
@@ -2057,12 +2309,12 @@ mystery = 42
             runnable_examples: vec!["01-elementwise-add".to_string()],
             backends: vec!["pthreads-sync".to_string()],
             // `naiv` is a one-char typo of the real `naive` schedule.
-            required: vec![cell("01-elementwise-add", "naiv", "pthreads-sync")],
+            required: vec![req("01-elementwise-add", "naiv", "pthreads-sync", "M1")],
             skip: vec![],
         };
         // Planner only ever discovers the real `naive` file.
         let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
-        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
         assert_eq!(gaps.len(), 1, "typo'd required must surface as a gap");
         assert_eq!(gaps[0], cell("01-elementwise-add", "naiv", "pthreads-sync"));
     }
@@ -2076,19 +2328,20 @@ mystery = 42
         let manifest = Manifest {
             runnable_examples: vec!["03-reduction".to_string()],
             backends: vec!["pthreads-sync".to_string()],
-            required: vec![cell("03-reduction", "distributed", "pthreads-sync")],
-            skip: vec![SkipEntry {
-                example: "03-reduction".to_string(),
-                schedule: "distributed".to_string(),
-                backend: "pthreads-sync".to_string(),
-                reason: "not yet implemented".to_string(),
-            }],
+            required: vec![req("03-reduction", "distributed", "pthreads-sync", "M1")],
+            skip: vec![skip_e(
+                "03-reduction",
+                "distributed",
+                "pthreads-sync",
+                "not yet implemented",
+                "M1",
+            )],
         };
         // Skipped cell is never planned (run_cell would short-circuit
         // even if it were) — the point is the coverage guard must not
         // treat the absence as a gap.
         let plan: Vec<PlannedCell> = vec![];
-        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
         assert!(gaps.is_empty(), "skip-declared required must be exempt, got {gaps:?}");
     }
 
@@ -2100,11 +2353,11 @@ mystery = 42
         let manifest = Manifest {
             runnable_examples: vec!["01-elementwise-add".to_string()],
             backends: vec!["pthreads-sync".to_string()],
-            required: vec![cell("01-elementwise-add", "naive", "pthreads-sync")],
+            required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
             skip: vec![],
         };
         let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
-        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default());
+        let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
         assert!(gaps.is_empty(), "planned required must not be a gap, got {gaps:?}");
     }
 
@@ -2118,8 +2371,8 @@ mystery = 42
             runnable_examples: vec!["01-elementwise-add".to_string(), "07-matmul".to_string()],
             backends: vec!["pthreads-sync".to_string()],
             required: vec![
-                cell("01-elementwise-add", "naive", "pthreads-sync"),
-                cell("07-matmul", "naive", "pthreads-sync"),
+                req("01-elementwise-add", "naive", "pthreads-sync", "M1"),
+                req("07-matmul", "naive", "pthreads-sync", "M1"),
             ],
             skip: vec![],
         };
@@ -2129,7 +2382,7 @@ mystery = 42
             example: Some("01-elementwise-add".into()),
             ..Args::default()
         };
-        let gaps = required_coverage_gaps(&manifest, &plan, &args);
+        let gaps = required_coverage_gaps(&manifest, &plan, &args).expect("ok");
         assert!(
             gaps.is_empty(),
             "out-of-filter-scope required cells must not be gaps, got {gaps:?}"
@@ -2138,13 +2391,13 @@ mystery = 42
         // But a typo *within* the filtered example IS still caught.
         let manifest_typo = Manifest {
             required: vec![
-                cell("01-elementwise-add", "naiv", "pthreads-sync"),
-                cell("07-matmul", "naive", "pthreads-sync"),
+                req("01-elementwise-add", "naiv", "pthreads-sync", "M1"),
+                req("07-matmul", "naive", "pthreads-sync", "M1"),
             ],
             ..manifest
         };
         let plan2 = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
-        let gaps2 = required_coverage_gaps(&manifest_typo, &plan2, &args);
+        let gaps2 = required_coverage_gaps(&manifest_typo, &plan2, &args).expect("ok");
         assert_eq!(gaps2, vec![cell("01-elementwise-add", "naiv", "pthreads-sync")]);
     }
 
@@ -2161,10 +2414,230 @@ mystery = 42
         let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
         let args = Args::default();
         let plan = plan_cells(&paths, &manifest, &args).expect("plan");
-        let gaps = required_coverage_gaps(&manifest, &plan, &args);
+        let gaps = required_coverage_gaps(&manifest, &plan, &args).expect("ok");
         assert!(
             gaps.is_empty(),
             "shipped e2e-matrix.toml has unmatched required cells: {gaps:?}"
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0167: genuine `--milestone` parameterisation. The milestone
+    // gate is a NEW narrowing axis; these pin (a) the cumulative
+    // subsetting, (b) the typed-error on a bad milestone, and (c) —
+    // the load-bearing one — that the TASK-0163 coverage guard is kept
+    // in LOCKSTEP, i.e. a typo'd/stale milestone-tagged required cell
+    // run under its `--milestone` still hard-fails with the triple
+    // named (the silent-vanish blind spot must NOT reopen per subset).
+    // ----------------------------------------------------------------
+
+    /// `Milestone::parse` accepts the documented `M<k>` shape and
+    /// rejects everything else with a typed error (never a panic,
+    /// never a silent default — a mis-typed milestone must not
+    /// silently mis-bucket / delete a gating cell).
+    #[test]
+    fn milestone_parse_accepts_valid_rejects_garbage() {
+        assert_eq!(Milestone::parse("M1").unwrap(), Milestone(1));
+        assert_eq!(Milestone::parse("M3").unwrap(), Milestone(3));
+        assert_eq!(Milestone::parse("M0").unwrap(), Milestone(0));
+        for bad in ["m1", "M", "3", "MX", "M-1", "M99", "", "M1.0", "milestone1"] {
+            assert!(
+                Milestone::parse(bad).is_err(),
+                "`{bad}` must be a typed error, not silently accepted"
+            );
+        }
+    }
+
+    /// `--milestone` is parsed and validated at CLI parse time: a bad
+    /// value fails LOUD before any work, not accepted-and-ignored.
+    #[test]
+    fn arg_parser_rejects_bad_milestone() {
+        let argv = vec![OsString::from("--milestone"), OsString::from("M9")];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("tier-1 range"), "got: {err}");
+        let argv2 = vec![OsString::from("--milestone"), OsString::from("banana")];
+        assert!(parse_args(&argv2).is_err());
+    }
+
+    /// Cumulative subsetting: a milestone-tagged required matrix run
+    /// under `--milestone M2` keeps M1 ∪ M2 cells and drops M3 ones;
+    /// `--milestone M3` keeps everything; no flag keeps everything.
+    /// This is AC#1's "required-set is subset by milestone".
+    #[test]
+    fn milestone_gate_is_cumulative_over_required_flagging() {
+        let paths = Paths::discover().expect("discover");
+        let manifest = Manifest {
+            runnable_examples: vec!["01-elementwise-add".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M3")],
+            skip: vec![],
+        };
+        // No gate: the single discovered cell is flagged required.
+        let p_full = plan_cells(&paths, &manifest, &Args::default()).expect("plan");
+        assert!(p_full.iter().any(|c| c.required));
+
+        // --milestone M1: the only required cell is M3-tagged ⇒ it is
+        // OUTSIDE the cumulative band ⇒ not flagged required (it still
+        // runs as informational, but does not gate the exit).
+        let m1 = Args {
+            milestone: Some(Milestone(1)),
+            ..Args::default()
+        };
+        let p_m1 = plan_cells(&paths, &manifest, &m1).expect("plan");
+        assert!(
+            !p_m1.iter().any(|c| c.required),
+            "M3 cell must NOT be required under --milestone M1"
+        );
+
+        // --milestone M3: in-band ⇒ required again.
+        let m3 = Args {
+            milestone: Some(Milestone(3)),
+            ..Args::default()
+        };
+        let p_m3 = plan_cells(&paths, &manifest, &m3).expect("plan");
+        assert!(
+            p_m3.iter().any(|c| c.required),
+            "M3 cell must be required under --milestone M3 (cumulative)"
+        );
+    }
+
+    /// THE LOCKSTEP REGRESSION (mirrors
+    /// `typo_in_required_schedule_is_a_coverage_gap` but on the
+    /// milestone axis). An M3-tagged `[[required]]` whose schedule is
+    /// typo'd, run with `--milestone M3`, MUST still surface as a
+    /// coverage gap with the exact triple named. If `plan_cells`
+    /// narrowed by milestone but the guard did not (or the guard's
+    /// milestone predicate diverged from plan_cells'), this cell would
+    /// silently vanish from the M3 subset — the precise TASK-0163
+    /// blind spot, reopened per milestone. This test fails if the two
+    /// ever drift.
+    #[test]
+    fn typo_in_milestone_tagged_required_is_a_gap_under_that_milestone() {
+        let manifest = Manifest {
+            runnable_examples: vec!["06-separable-filter".to_string()],
+            backends: vec!["mp-tcp-bufsync".to_string()],
+            // `naiv` is a one-char typo; this cell is tagged M3.
+            required: vec![req("06-separable-filter", "naiv", "mp-tcp-bufsync", "M3")],
+            skip: vec![],
+        };
+        // Planner only ever discovers the real `naive` file.
+        let plan = vec![planned("06-separable-filter", "naive", "mp-tcp-bufsync")];
+        // Run scoped to exactly this cell's milestone.
+        let args = Args {
+            milestone: Some(Milestone(3)),
+            ..Args::default()
+        };
+        let gaps = required_coverage_gaps(&manifest, &plan, &args).expect("ok");
+        assert_eq!(
+            gaps,
+            vec![cell("06-separable-filter", "naiv", "mp-tcp-bufsync")],
+            "an M3 typo'd required cell run under --milestone M3 must \
+             still be a hard coverage gap (TASK-0163 lockstep)"
+        );
+
+        // And the dual: under --milestone M1 the SAME M3 cell is
+        // out-of-band ⇒ NOT this run's obligation ⇒ no false gap
+        // (exactly mirrors plan_cells not flagging it required).
+        let m1 = Args {
+            milestone: Some(Milestone(1)),
+            ..Args::default()
+        };
+        let gaps_m1 = required_coverage_gaps(&manifest, &[], &m1).expect("ok");
+        assert!(
+            gaps_m1.is_empty(),
+            "an M3 cell is not an M1 run's coverage obligation, got {gaps_m1:?}"
+        );
+    }
+
+    /// An out-of-band `[[skip]]` must not exempt anything: a skip
+    /// tagged M3 does not silence an M1-tagged required of the same
+    /// triple under `--milestone M1`. (Defends the skip-band scoping
+    /// added in lockstep with plan_cells.)
+    #[test]
+    fn out_of_band_skip_does_not_exempt_in_band_required() {
+        let manifest = Manifest {
+            runnable_examples: vec!["03-reduction".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![req("03-reduction", "ghost", "pthreads-sync", "M1")],
+            // Skip is tagged M3 — out of band for an M1 run.
+            skip: vec![skip_e(
+                "03-reduction",
+                "ghost",
+                "pthreads-sync",
+                "blocked elsewhere",
+                "M3",
+            )],
+        };
+        let m1 = Args {
+            milestone: Some(Milestone(1)),
+            ..Args::default()
+        };
+        // `ghost` schedule is never discovered ⇒ never planned.
+        let gaps = required_coverage_gaps(&manifest, &[], &m1).expect("ok");
+        assert_eq!(
+            gaps,
+            vec![cell("03-reduction", "ghost", "pthreads-sync")],
+            "an out-of-band skip must NOT exempt an in-band required"
+        );
+    }
+
+    /// The shipped manifest must have ZERO coverage gaps at EVERY
+    /// milestone tier (no flag, M1, M2, M3) — the durable per-tier
+    /// guard. A future manifest edit that typo's or strands a
+    /// milestone-tagged required cell turns the relevant tier (and its
+    /// CI job) red.
+    #[test]
+    fn real_manifest_has_no_coverage_gaps_at_every_milestone() {
+        let paths = Paths::discover().expect("discover repo root");
+        let src = fs::read_to_string(paths.manifest_path()).expect("read manifest");
+        let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
+        for gate in [None, Some(Milestone(1)), Some(Milestone(2)), Some(Milestone(3))] {
+            let args = Args {
+                milestone: gate,
+                ..Args::default()
+            };
+            let plan = plan_cells(&paths, &manifest, &args).expect("plan");
+            let gaps = required_coverage_gaps(&manifest, &plan, &args).expect("ok");
+            assert!(
+                gaps.is_empty(),
+                "shipped e2e-matrix.toml has unmatched required cells at \
+                 milestone {gate:?}: {gaps:?}"
+            );
+        }
+    }
+
+    /// The required set genuinely DIFFERS per milestone (the whole
+    /// point of AC#3 — the CI jobs must not be identical). Pins the
+    /// cumulative monotone: |M1| < |M2| < |M3| == |full|, and M1 ⊆ M2
+    /// ⊆ M3 by construction of the gate.
+    #[test]
+    fn required_counts_strictly_grow_per_milestone() {
+        let paths = Paths::discover().expect("discover repo root");
+        let src = fs::read_to_string(paths.manifest_path()).expect("read manifest");
+        let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
+        let count = |gate: Option<Milestone>| -> usize {
+            let args = Args {
+                milestone: gate,
+                ..Args::default()
+            };
+            plan_cells(&paths, &manifest, &args)
+                .expect("plan")
+                .iter()
+                .filter(|c| c.required)
+                .count()
+        };
+        let m1 = count(Some(Milestone(1)));
+        let m2 = count(Some(Milestone(2)));
+        let m3 = count(Some(Milestone(3)));
+        let full = count(None);
+        assert!(
+            m1 < m2 && m2 < m3,
+            "milestone subsets must strictly grow: M1={m1} M2={m2} M3={m3}"
+        );
+        assert_eq!(
+            m3, full,
+            "M3 is the current top tier ⇒ its required set == the full set \
+             (M1={m1} M2={m2} M3={m3} full={full})"
         );
     }
 
