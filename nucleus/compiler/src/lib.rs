@@ -40,7 +40,7 @@ pub use capabilities::{
     NotifyMode as CapNotifyMode, Transport,
 };
 pub use contract::{check_kernels_contract, ContractError};
-pub use error::{ParseError, ParseErrorKind};
+pub use error::{ParseError, ParseErrorKind, ParseErrors};
 pub use event::{
     ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, Region, SeqTag,
     SyncKind, SyncTag, WorkerId,

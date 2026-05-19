@@ -9,7 +9,12 @@
 //! - [`parse_algo`]: parse a source string into [`AlgoAst`].
 //! - AST node types ([`AlgoAst`], [`Item`], [`ConstDecl`], [`DataDecl`],
 //!   [`KernelDecl`], [`Stmt`], [`Expr`], [`Type`], [`Purity`], etc.).
-//! - [`ParseError`]: failures carry `(line, column)` from the input.
+//! - [`ParseError`]: a single failure carrying `(line, column)` from
+//!   the input.
+//! - [`ParseErrors`]: the non-empty, deterministically-ordered bundle
+//!   `parse_algo` returns — the parser recovers at statement/item
+//!   boundaries and reports every error in one pass (TASK-0080 /
+//!   TASK-0081).
 //!
 //! What this module does NOT do (deliberately — see PRD §6.2 and the
 //! grammar doc §3):
@@ -47,4 +52,4 @@ pub use ir::{
     ResolvedData, ResolvedKernel, ResolvedType,
 };
 pub use lower::lower_algo;
-pub use parser::{parse_algo, ParseError};
+pub use parser::{parse_algo, ParseError, ParseErrorKind, ParseErrors};

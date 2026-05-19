@@ -11,7 +11,10 @@
 //!   `.pest` / `.lalrpop` file (single source of truth, no codegen step).
 //! - First-class span / position tracking on errors.
 //! - Pure Rust dependency, builds offline, no proc-macro.
-//! - Mature error-recovery primitives (we use minimal recovery for now).
+//! - Mature error-recovery primitives — we recover at the
+//!   statement/item boundary (the `;` terminator) so one syntactic
+//!   failure does not hide the rest of the program's errors
+//!   (TASK-0081); see [`parse_algo`].
 //!
 //! Rejected alternatives:
 //! - `lalrpop`: external grammar file + build script (codegen step);
@@ -28,12 +31,31 @@
 //!   error machinery is exactly what we need; rebuilding it adds bug
 //!   surface for no readability win.
 //!
-//! # Known limitations (mirrored in `algo/mod.rs` and TASK-0007 notes)
+//! # Error reporting & recovery (TASK-0080 / TASK-0081)
 //!
-//! - Only the first parse error is reported. Multi-error reporting is
-//!   a follow-up task.
-//! - Minimal error recovery — the parser bails on the first syntactic
-//!   failure rather than skipping to the next plausible statement.
+//! `parse_algo` reports **every** parse error in a single pass, not
+//! just the first. On a syntactic failure inside one top-level item
+//! the parser recovers by skipping to (and past) the next `;`
+//! statement/declaration terminator and resuming item parsing, so
+//! later valid items are still parsed and later errors still
+//! reported. Recovery is **bounded** (each recovery step consumes at
+//! least one input character or stops at end-of-input — no
+//! infinite-retry) and **deterministic** (chumsky's positional error
+//! order is preserved; exact-duplicate diagnostics are collapsed by
+//! an order-preserving scan, no hashing — see
+//! [`crate::error::map_all_chumsky_errors`]). The errors are bundled
+//! into a non-empty [`ParseErrors`]; valid input is wholly unaffected
+//! (same AST, byte-identical downstream codegen).
+//!
+//! # Known limitations
+//!
+//! - Recovery sync token is `;` only. A malformed `for { ... }` whose
+//!   body contains `;`s recovers at the first inner `;`, which can
+//!   over-report inside that loop; this is acceptable for a research
+//!   compiler (the invariant that matters — boundedness and
+//!   determinism — holds) and is not a correctness issue for valid
+//!   input. A keyword-anchored sync set is a possible future
+//!   refinement (TASK-0199).
 //! - AST nodes carry per-node byte-range spans (TASK-0082): every
 //!   wrapped node is built with `.map_with_span(Spanned::new)`, so a
 //!   node's span is the `start..end` of exactly the source text it was
@@ -51,8 +73,8 @@ use super::ast::{
     Purity, ScalarType, SpExpr, SpIdent, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
 use crate::span::Spanned;
-use crate::error::map_first_chumsky_error;
-pub use crate::error::{ParseError, ParseErrorKind};
+use crate::error::map_all_chumsky_errors;
+pub use crate::error::{ParseError, ParseErrorKind, ParseErrors};
 
 /// Internal: the tail of an identifier-led atom — either a call's
 /// argument list or zero-or-more index suffixes. Kept local because it
@@ -64,13 +86,37 @@ enum IdentTail {
 
 /// Parse a `*.algo.nuc` source string into an [`AlgoAst`].
 ///
-/// Errors carry `(line, column)` (1-based) of the first failure. The
-/// parser does not recover; multiple-error reporting is a follow-up.
-pub fn parse_algo(src: &str) -> Result<AlgoAst, ParseError> {
+/// On success returns the [`AlgoAst`] exactly as before recovery was
+/// added — valid input is wholly unaffected (same AST → byte-identical
+/// downstream codegen; this is load-bearing and gated by
+/// `determinism-check`).
+///
+/// On failure returns a non-empty [`ParseErrors`]: the parser recovers
+/// at the `;` statement/item boundary so one syntactic error does not
+/// hide the rest, and every error (each with its own correct
+/// 1-based `(line, column)`) is reported in one pass. Recovery is
+/// bounded and deterministic — see the module docs and
+/// [`crate::error::map_all_chumsky_errors`].
+///
+/// We use chumsky's `parse_recovery`, which yields
+/// `(Option<partial AST>, errors)`. We deliberately discard any
+/// partial AST on failure: downstream passes require a structurally
+/// complete program, and surfacing a half-recovered tree would only
+/// produce confusing secondary errors. The contract is "valid → AST,
+/// invalid → all parse errors", nothing in between.
+pub fn parse_algo(src: &str) -> Result<AlgoAst, ParseErrors> {
     let parser = program_parser();
-    match parser.parse(src) {
-        Ok(items) => Ok(AlgoAst { items }),
-        Err(errors) => Err(map_first_chumsky_error(src, errors)),
+    let (out, errors) = parser.parse_recovery(src);
+    if errors.is_empty() {
+        // chumsky guarantees: empty error list ⇒ parse fully
+        // succeeded ⇒ `out` is `Some`. This `expect` is an
+        // earlier-guaranteed library invariant, not diagnosable user
+        // input (decision-0003): a missing AST with no errors would be
+        // a chumsky contract violation, not a user mistake.
+        let items = out.expect("chumsky: empty error list implies a complete parse");
+        Ok(AlgoAst { items })
+    } else {
+        Err(map_all_chumsky_errors(src, errors))
     }
 }
 
@@ -106,10 +152,53 @@ const KEYWORDS: &[&str] = &[
 ///
 /// Wrapped in a function so callers don't depend on chumsky's exact
 /// return type.
+///
+/// # Error recovery (TASK-0081)
+///
+/// The per-item parser is lifted to `Option<SpItem>` (`Some` on a
+/// clean parse) and given
+/// `recover_with(skip_until([';'], |_| None).consume_end())`. On a
+/// syntactic failure anywhere inside one top-level item, chumsky:
+///   1. records the error (collected by `parse_recovery`),
+///   2. skips input characters until it finds a `;` — the universal
+///      statement / declaration terminator (`const`/`data`/`kernel`/
+///      dataflow/bare-call all end in `;`),
+///   3. **consumes** that `;` (`consume_end`) so the next iteration
+///      starts at the following item, not re-failing on the same `;`,
+///   4. recovers this element to the value `None`.
+///
+/// The `None` recovery value is the load-bearing difference from
+/// `skip_then_retry_until` (chumsky 0.9): because the failed element
+/// yields a value, the outer `.repeated()` *continues* to the next
+/// item and can fail-and-recover again, so **every** broken item
+/// contributes its own error — that is what makes multi-error
+/// reporting actually work in chumsky 0.9 (`skip_then_retry_until`
+/// surfaces only the single first error per recovery site and stops
+/// the repetition once no further item parses). The `None`s are
+/// stripped by `flatten`; on the failure path the partial AST is
+/// discarded by `parse_algo` anyway, so no synthetic/placeholder node
+/// ever reaches a caller and the `Item` AST shape is unchanged
+/// (TASK-0082 substrate untouched).
+///
+/// Boundedness: each `skip_until` recovery consumes ≥1 character or
+/// reaches end-of-input, where chumsky's strategy terminates (the
+/// `Err(_) if stream.save() > pre_state` / `Err(...)` arms in
+/// `SkipUntil::recover`) — no infinite retry, and `.repeated()` makes
+/// finite progress every iteration. Determinism: the sync set is a
+/// single fixed concrete token, chumsky's error list is positional,
+/// and the message is rebuilt with a sorted expected-set
+/// ([`crate::error`]) — no hashing / iteration-order dependence on the
+/// whole path.
+///
+/// Sync token is `;` only — see the module-doc "Known limitations"
+/// note on `for { … }` over-reporting (acceptable; TASK-0199).
 fn program_parser() -> impl Parser<char, Vec<SpItem>, Error = Simple<char>> {
     item_parser()
+        .map(Some)
         .padded_by(comment_or_ws())
+        .recover_with(skip_until([';'], |_| None).consume_end())
         .repeated()
+        .flatten()
         .then_ignore(end())
 }
 

@@ -171,8 +171,26 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let algo_src = read_file(&algo_path)?;
     let sched_src = read_file(&sched_path)?;
 
-    let algo_ast = compiler::algo::parse_algo(&algo_src)
-        .map_err(|e| format!("algorithm parse error in {}: {e}", algo_path.display()))?;
+    // `parse_algo` recovers at statement/item boundaries and returns
+    // ALL parse errors in one pass (TASK-0080 / TASK-0081). Surface
+    // every one — each already carries its own correct 1-based
+    // `line:col` — using the same header + one-line-per-error shape
+    // the link / contract paths use, so a user fixing a syntactically
+    // broken program sees every error at once rather than one
+    // recompile per error. (TASK-0092 lowering multi-error will reuse
+    // this surfacing template.)
+    let algo_ast = compiler::algo::parse_algo(&algo_src).map_err(|errs| {
+        let mut s = format!(
+            "algorithm parse error(s) in {} ({}):",
+            algo_path.display(),
+            errs.errors().len()
+        );
+        for e in errs.errors() {
+            s.push_str("\n  - ");
+            s.push_str(&e.to_string());
+        }
+        s
+    })?;
     let sched_ast = compiler::sched::parse_sched(&sched_src)
         .map_err(|e| format!("schedule parse error in {}: {e}", sched_path.display()))?;
 
