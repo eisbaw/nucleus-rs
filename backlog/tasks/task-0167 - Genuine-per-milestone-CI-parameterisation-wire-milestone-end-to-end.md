@@ -1,11 +1,11 @@
 ---
 id: TASK-0167
 title: Genuine per-milestone CI parameterisation (wire --milestone end to end)
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 22:23'
-updated_date: '2026-05-19 02:33'
+updated_date: '2026-05-19 02:34'
 labels:
   - infra
   - tooling
@@ -55,3 +55,28 @@ Implemented (TASK-0167):
 - justfile: e2e-milestone M recipe. ci.yml: genuine milestone matrix [M1,M2,M3] running just e2e-milestone (different sets) + unchanged full `gate` job. js-yaml valid.
 GATE: just test workspace 0 failed; bare just e2e 28/24/0/skip4/req-fail0 UNCHANGED; per-milestone 4/8/28 cells (genuinely differ); determinism-check 28/24/0/4 byte-identical; negative arm bites; clippy -D warnings clean.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Wired --milestone end to end so PRD §11 milestone-gating is genuine, not cosmetic.
+
+What changed:
+- nuc-nucleus/e2e-matrix.toml: per-cell `milestone` key on all 24 [[required]] + 4 [[skip]] entries; scheme documented in the header (PRD §11 "milestone whose acceptance task owns the cell": M1/M2/M3).
+- nucleus/e2e/src/main.rs: typed Milestone(u8) (parse rejects non-M<k>/>M6 with a typed error — never panic, never silent default; validated at manifest load AND --milestone parse); RequiredEntry/SkipEntry carry milestone while Cell stays the bare identity triple for set-matching; cumulative tight-tier gate.
+- justfile: `e2e-milestone M` recipe. .github/workflows/ci.yml: genuine milestone matrix [M1,M2,M3] each running `just e2e-milestone M<k>` (different required sets), plus the unchanged full-trust `gate` (just ci). js-yaml valid.
+
+Decisions:
+- CUMULATIVE (not exact): --milestone M3 = M1∪M2∪M3 — a regression gate must never drop an earlier tier. Documented in manifest header, --help, ci.yml.
+- Tight tier: --milestone narrows which cells EXECUTE (in-band required+skip only), so a tier job is exactly its tier (M1=4 cells all pass exit0; M2=8; M3=28).
+
+TASK-0163 lockstep (load-bearing): one shared milestone_in_gate() predicate drives BOTH plan_cells and required_coverage_gaps (coverage obligation + in-band skip exemption), so a typo'd/stale milestone-tagged required cell still hard-fails inside its tier. Proven end to end: a transient typo'd M1 required cell under --milestone M3 hard-failed naming the triple, then reverted clean. New regression test mirrors typo_in_required_schedule_is_a_coverage_gap on the milestone axis; +6 tests total (e2e crate 19→25, all green).
+
+Gate (nix develop -c, all green): just ci EXIT 0; workspace tests 0 failed; bare just e2e 28/24/0/skip4/required-fail0 UNCHANGED; per-milestone required cells 4/8/28 (genuinely differ — matrix is real); determinism-check 28/24/0/4 byte-identical; determinism-check-negative bites; clippy --workspace -D warnings clean; ci.yml valid YAML (js-yaml, jobs=gate,milestone, matrix=[M1,M2,M3]).
+
+Commits: 38f37e0 (harness+manifest), 4091172 (ci+justfile). No push (no remote). No AI credit.
+
+Forward-carry (orchestrator, do not self-check): TASK-0057 AC#3 now satisfiable (genuine milestone matrix exists); TASK-0041 AC#1 (`just e2e --milestone M3` exits 0 — verified) and AC#4 (CI runs the M3 tier every commit) now satisfiable.
+
+Limitations: no git remote/runner — the ci.yml milestone matrix is verified at gate-logic level (the exact `just e2e-milestone M<k>` commands run locally with the proven 4/8/28 split) but NOT observed on a real GitHub Actions runner (same standing limitation as TASK-0057). Skip milestone tags are all M3 (distributed cells are post-M3 work and not [[required]], so the tag only affects which run reports them SKIPPED — documented inline).
+<!-- SECTION:FINAL_SUMMARY:END -->
