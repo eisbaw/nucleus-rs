@@ -191,8 +191,25 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         }
         s
     })?;
-    let sched_ast = compiler::sched::parse_sched(&sched_src)
-        .map_err(|e| format!("schedule parse error in {}: {e}", sched_path.display()))?;
+    // `parse_sched` recovers at the directive `;` boundary and
+    // returns ALL parse errors in one pass (TASK-0087), mirroring the
+    // algorithm parser above. Surface every one — each already carries
+    // its own correct 1-based `line:col` — with the same header +
+    // one-line-per-error shape, so a user fixing a syntactically
+    // broken schedule sees every error at once rather than one
+    // recompile per error.
+    let sched_ast = compiler::sched::parse_sched(&sched_src).map_err(|errs| {
+        let mut s = format!(
+            "schedule parse error(s) in {} ({}):",
+            sched_path.display(),
+            errs.errors().len()
+        );
+        for e in errs.errors() {
+            s.push_str("\n  - ");
+            s.push_str(&e.to_string());
+        }
+        s
+    })?;
 
     let algo_ir = compiler::algo::lower_algo(&algo_ast)
         // `display_with_src` resolves the error's stored byte offset to

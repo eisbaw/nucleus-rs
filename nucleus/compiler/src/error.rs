@@ -11,24 +11,23 @@
 //! reach into `crate::error` directly. The aliasing is a stylistic
 //! choice; the underlying type is the same.
 //!
-//! The algorithm parser additionally returns the multi-error owner
-//! [`ParseErrors`] (a non-empty, deterministically-ordered
-//! `Vec<ParseError>`): it recovers at statement/item boundaries and
-//! reports every error in one pass (TASK-0080 / TASK-0081). The
-//! schedule parser still returns a single [`ParseError`] via
-//! [`map_first_chumsky_error`] (its multi-error recovery is the
-//! separate sibling TASK-0087); that helper is intentionally retained
-//! and shared.
+//! Both parsers return the multi-error owner [`ParseErrors`] (a
+//! non-empty, deterministically-ordered `Vec<ParseError>`): the
+//! algorithm parser recovers at statement/item boundaries
+//! (TASK-0080 / TASK-0081) and the schedule parser at the directive
+//! `;` boundary (TASK-0087), each reporting every error in one pass.
+//! The atomic per-error mapping ([`map_one_chumsky_error`]) and the
+//! deterministic message builder ([`chumsky_message`]) are shared by
+//! both via [`map_all_chumsky_errors`].
 
 /// A parse error with `(line, column)` source location.
 ///
-/// One element of a parse failure. The algorithm parser (TASK-0080 /
-/// TASK-0081) recovers at statement/item boundaries and returns *all*
-/// errors found in one pass, bundled in [`ParseErrors`]. The schedule
-/// parser still returns a single `ParseError` (multi-error recovery
-/// there is the separate sibling TASK-0087). The `kind` distinguishes
-/// the broad failure category so tests can match on a variant without
-/// scraping a message string.
+/// One element of a parse failure. Both the algorithm parser
+/// (TASK-0080 / TASK-0081) and the schedule parser (TASK-0087)
+/// recover at their respective `;` boundaries and return *all* errors
+/// found in one pass, bundled in [`ParseErrors`]. The `kind`
+/// distinguishes the broad failure category so tests can match on a
+/// variant without scraping a message string.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
     pub line: usize,
@@ -40,13 +39,14 @@ pub struct ParseError {
 /// A non-empty, ordered bundle of [`ParseError`]s from a single parse
 /// pass.
 ///
-/// Returned by the algorithm parser (`parse_algo`) so that one
+/// Returned by both `parse_algo` and `parse_sched` so that one
 /// syntactic failure does not hide the rest of the program's errors
-/// (TASK-0080 multi-error reporting + TASK-0081 error recovery — in
-/// chumsky these are one coherent change). The `Ok` type of
-/// `parse_algo` is *unchanged* (`AlgoAst`); only the `Err` type became
+/// (multi-error reporting + error recovery — in chumsky these are one
+/// coherent change; TASK-0080 / TASK-0081 for the algorithm parser,
+/// TASK-0087 for the schedule parser). The `Ok` type of each parser
+/// is *unchanged* (`AlgoAst` / `SchedAst`); only the `Err` type became
 /// this owner, so every success-path caller compiles untouched and
-/// only the parser's negative tests migrate.
+/// only the parsers' negative tests migrate.
 ///
 /// # Invariants
 ///
@@ -163,9 +163,9 @@ pub fn offset_to_line_col(src: &str, offset: usize) -> (usize, usize) {
 /// structured accessors with the expected set **sorted**, so the
 /// string is a pure deterministic function of the error.
 ///
-/// (This also fixes the same latent non-determinism on the schedule
-/// parser, which shares this helper via [`map_first_chumsky_error`] —
-/// the correct root-cause fix, not a parser-local workaround.)
+/// (Both parsers share this helper via [`map_all_chumsky_errors`], so
+/// this is the correct root-cause determinism fix, not a parser-local
+/// workaround.)
 fn chumsky_message(err: &chumsky::error::Simple<char>) -> String {
     use chumsky::error::SimpleReason;
 
@@ -210,9 +210,8 @@ fn chumsky_message(err: &chumsky::error::Simple<char>) -> String {
 
 /// Map a single chumsky `Simple<char>` to a [`ParseError`].
 ///
-/// The atomic mapping shared by both the single-error
-/// ([`map_first_chumsky_error`]) and multi-error
-/// ([`map_all_chumsky_errors`]) surfaces: resolve the error's span to
+/// The atomic per-error mapping used by [`map_all_chumsky_errors`]
+/// (both parsers' multi-error surface): resolve the error's span to
 /// `(line, column)`, classify as `Unexpected`/`UnexpectedEof`, and
 /// build a **deterministic** message (see [`chumsky_message`]). Pure
 /// function of `(src, err)` — no allocation-order or hash dependence.
@@ -238,26 +237,12 @@ fn map_one_chumsky_error(src: &str, err: &chumsky::error::Simple<char>) -> Parse
     }
 }
 
-/// Map a chumsky `Simple<char>` error list to a single [`ParseError`].
-///
-/// Takes the first error only. Retained for the **schedule** parser
-/// (`sched/parser.rs`), which does not yet recover (its multi-error
-/// reporting is the separate sibling TASK-0087). The algorithm parser
-/// uses [`map_all_chumsky_errors`] instead. Lives here to avoid
-/// duplicating the helper.
-pub fn map_first_chumsky_error(src: &str, errors: Vec<chumsky::error::Simple<char>>) -> ParseError {
-    let err = errors
-        .into_iter()
-        .next()
-        .expect("chumsky returns a non-empty error list on failure");
-    map_one_chumsky_error(src, &err)
-}
-
 /// Map *every* chumsky `Simple<char>` to a [`ParseError`], bundled in
 /// a non-empty, deterministically-ordered [`ParseErrors`].
 ///
-/// Used by the algorithm parser after `parse_recovery` (TASK-0080 /
-/// TASK-0081). chumsky already yields errors in positional order
+/// Used by both parsers after `parse_recovery` (algorithm:
+/// TASK-0080 / TASK-0081; schedule: TASK-0087). chumsky already
+/// yields errors in positional order
 /// (earliest source offset first); we preserve that and then
 /// **deduplicate by full value while keeping first-seen order**.
 ///

@@ -11,15 +11,28 @@
 //! and the same comment/whitespace helpers' shape, so a reader who
 //! understands one can read the other immediately.
 //!
-//! # Known limitations (TASK-0008 self-report)
+//! # Error reporting & recovery
 //!
-//! - Only the first parse error is reported (inherited from the
-//!   chumsky usage style). Multi-error reporting is a follow-up.
-//! - No error recovery — the parser bails on the first syntactic
-//!   failure rather than skipping to the next plausible directive.
-//! - AST nodes do not carry spans; only `ParseError` does. Adding
-//!   per-node spans is a follow-up task — semantic passes (TASK-0010,
-//!   TASK-0011) will want them for good diagnostics.
+//! The parser recovers at the directive boundary — the bare `;` that
+//! terminates every directive — and reports *every* syntax error in
+//! one pass (TASK-0087), mirroring the algorithm parser (TASK-0080 /
+//! TASK-0081). On a syntactic failure inside one directive it records
+//! the error, skips to the next `;`, consumes it, and resumes at the
+//! following directive, so a later valid directive still parses and a
+//! second independent error is still reported. `parse_sched` returns
+//! the non-empty, deterministically-ordered [`crate::error::ParseErrors`]
+//! bundle (the `Ok` type is unchanged: [`SchedAst`]). Recovery is
+//! bounded (each skip consumes ≥1 char or hits EOF — no infinite
+//! retry) and deterministic (single fixed `;` sync token, chumsky's
+//! positional error order, sorted expected-set message — no
+//! hash-iteration dependence; reproducibility gate, PRD §10.1).
+//!
+//! # Known limitations
+//!
+//! - AST nodes do not carry spans beyond [`SpDirective`] and the
+//!   `SpName` identifier fields; finer per-node spans are a follow-up
+//!   task — semantic passes (TASK-0010, TASK-0011) will want them for
+//!   good diagnostics.
 //! - Semantic checks are deliberately out of scope here:
 //!   - `place` references a kernel that exists in the algorithm
 //!     (TASK-0011).
@@ -42,18 +55,39 @@ use super::ast::{
     PlaceTarget, SchedAst, SimdSpec, SpDirective, SpName, TimeLit, TimeUnit, TransferDirective,
     TransferOption, ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
-use crate::error::{map_first_chumsky_error, ParseError};
+use crate::error::{map_all_chumsky_errors, ParseErrors};
 use crate::span::Spanned;
 
 /// Parse a `*.sched.nuc` source string into a [`SchedAst`].
 ///
-/// Errors carry `(line, column)` (1-based) of the first failure. The
-/// parser does not recover; multiple-error reporting is a follow-up.
-pub fn parse_sched(src: &str) -> Result<SchedAst, ParseError> {
+/// On failure returns the non-empty, deterministically-ordered
+/// [`ParseErrors`] bundle: the parser recovers at the directive `;`
+/// boundary so one syntactic error does not hide the rest, and every
+/// error (each with its own correct 1-based `(line, column)`) is
+/// reported in one pass (TASK-0087). The `Ok` type is unchanged
+/// ([`SchedAst`]) so success-path callers are untouched. Recovery is
+/// bounded and deterministic — see the module docs and
+/// [`crate::error::map_all_chumsky_errors`].
+///
+/// We use chumsky's `parse_recovery`, which yields
+/// `(Option<partial AST>, errors)`. Any partial AST is deliberately
+/// discarded on failure: downstream passes require a structurally
+/// complete schedule, and surfacing a half-recovered tree would only
+/// produce confusing secondary errors. The contract is "valid → AST,
+/// invalid → all parse errors", nothing in between.
+pub fn parse_sched(src: &str) -> Result<SchedAst, ParseErrors> {
     let parser = program_parser();
-    match parser.parse(src) {
-        Ok(ast) => Ok(ast),
-        Err(errors) => Err(map_first_chumsky_error(src, errors)),
+    let (out, errors) = parser.parse_recovery(src);
+    if errors.is_empty() {
+        // chumsky guarantees: an empty error list ⇒ the parse fully
+        // succeeded ⇒ `out` is `Some`. This `expect` is an
+        // earlier-guaranteed library invariant, not diagnosable user
+        // input (decision-0003): a missing AST with no errors would be
+        // a chumsky contract violation, not a user mistake.
+        let ast = out.expect("chumsky: empty error list implies a complete parse");
+        Ok(ast)
+    } else {
+        Err(map_all_chumsky_errors(src, errors))
     }
 }
 
@@ -672,13 +706,87 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 }
 
 /// `Program ::= 'schedule' 'for' StringLit '{' SchedItem* '}'`.
+///
+/// # Recovery at the directive boundary
+///
+/// Each directive is lifted to `Option<SpDirective>` and given
+/// `recover_with(skip_until([';'], |_| None).consume_end())`. On a
+/// syntactic failure anywhere inside one directive, chumsky:
+///   1. records the error (collected by `parse_recovery`),
+///   2. skips input characters until it finds a `;` — the universal
+///      directive terminator (every directive parser ends at its bare
+///      `;`, TASK-0086),
+///   3. **consumes** that `;` (`consume_end`) so the next iteration
+///      starts at the following directive, not re-failing on the same
+///      `;`,
+///   4. recovers this element to the value `None`.
+///
+/// The `None` recovery value is the load-bearing difference from
+/// `skip_then_retry_until` (chumsky 0.9): because the failed element
+/// still yields a value, the outer `.repeated()` *continues* to the
+/// next directive and can fail-and-recover again, so **every** broken
+/// directive contributes its own error — that is what makes
+/// multi-error reporting actually work in chumsky 0.9
+/// (`skip_then_retry_until` surfaces only the single first error per
+/// recovery site and stops the repetition once no further item
+/// parses). The `None`s are stripped by `flatten`; on the failure
+/// path the partial AST is discarded by `parse_sched` anyway, so no
+/// synthetic/placeholder directive ever reaches a caller and the
+/// `SpDirective` span-tightness invariant (TASK-0086) is untouched —
+/// recovered directives never enter the AST, and a *successfully*
+/// parsed directive is still wrapped by `padded_spanned` exactly as
+/// before, so its span is unchanged.
+///
+/// Boundedness: each `skip_until` recovery consumes ≥1 character or
+/// reaches end-of-input, where chumsky's strategy terminates — no
+/// infinite retry, and `.repeated()` makes finite progress every
+/// iteration. Determinism: the sync set is a single fixed concrete
+/// token, chumsky's error list is positional, and the message is
+/// rebuilt with a sorted expected-set ([`crate::error`]) — no
+/// hashing / iteration-order dependence on the whole path.
+///
+/// # Sched-specific deviation from the algorithm template
+///
+/// The algorithm grammar is `Item*` to EOF — its `.repeated()`
+/// terminates naturally at end-of-input (where `skip_until` makes no
+/// progress and *fails*, cleanly stopping the repetition). The
+/// schedule grammar is `'{' Directive* '}'`: the directive list is
+/// brace-delimited. Without a guard, after the last directive
+/// `.repeated()` attempts one more directive at the `}`, that attempt
+/// fails, and `skip_until([';'])` then skips *past the closing brace*
+/// to EOF looking for a `;` — swallowing the `}` and breaking every
+/// valid schedule. We therefore guard each repetition element with a
+/// non-consuming `}` / EOF check (`just('}').rewind()` failing is the
+/// loop's natural terminator): a directive (and its recovery) is only
+/// attempted when the next non-layout token is *not* the closing
+/// brace. At `}` the guard fails WITHOUT consuming and WITHOUT
+/// recovery, so `.repeated()` stops exactly as the algo loop does at
+/// EOF, leaving the `}` for the block's own `pad(just('}'))`. The
+/// first character of every directive keyword is a letter
+/// (`check`/`loop`/`memory_region`/`place`/`place_data`/`transfer`/
+/// `workers`/`worker_class`), never `}`, so the guard never rejects a
+/// real (even broken) directive — recovery still fires for any
+/// directive that *starts* but fails to parse.
 fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
+    // Repetition element: leading layout, then a non-consuming check
+    // that we are NOT at the closing `}` (the loop terminator), then
+    // the directive with `;`-boundary recovery. Lifting to
+    // `Option<_>` + `|_| None` recovery is the load-bearing chumsky
+    // 0.9 multi-error idiom (see the doc above).
+    let directive_or_recover = comment_or_ws()
+        .ignore_then(just('}').not().rewind())
+        .ignore_then(
+            directive_parser()
+                .map(Some)
+                .recover_with(skip_until([';'], |_| None).consume_end()),
+        );
+
     comment_or_ws()
         .ignore_then(pad(keyword("schedule")))
         .ignore_then(pad(keyword("for")))
         .ignore_then(pad(string_lit()))
         .then_ignore(pad(just('{')))
-        .then(directive_parser().padded_by(comment_or_ws()).repeated())
+        .then(directive_or_recover.repeated().flatten())
         .then_ignore(pad(just('}')))
         .then_ignore(comment_or_ws())
         .then_ignore(end())
