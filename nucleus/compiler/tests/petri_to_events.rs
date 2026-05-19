@@ -219,6 +219,7 @@ fn sync_barrier_emitted_on_every_participant() {
         op_node(&[0], 100, vec![], Some(0)),
         ACFGNode::Sync(SyncPlaceholder {
             participants: participants.clone(),
+            ..Default::default()
         }),
         op_node(&[1], 101, vec![], None),
     ]);
@@ -235,6 +236,7 @@ fn sync_barrier_emitted_on_every_participant() {
         Event::Sync {
             participants: ps,
             kind,
+            ..
         } => {
             assert_eq!(*ps, participants);
             assert_eq!(*kind, SyncKind::Barrier);
@@ -797,7 +799,10 @@ fn determinism_two_projections_of_same_acfg_match() {
             body: Box::new(body),
             block_tag: None,
         },
-        ACFGNode::Sync(SyncPlaceholder { participants }),
+        ACFGNode::Sync(SyncPlaceholder {
+            participants,
+            ..Default::default()
+        }),
         op_node(&[1], 101, vec![0], None),
     ]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);

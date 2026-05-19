@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use compiler::event::{
     ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, Region, SeqTag,
-    SyncKind, WorkerId,
+    SyncKind, SyncTag, WorkerId,
 };
 
 // --------------------------------------------------------------------
@@ -67,6 +67,7 @@ fn sample_sync() -> Event {
     Event::Sync {
         participants: p,
         kind: SyncKind::Barrier,
+        sync: SyncTag(7),
     }
 }
 
@@ -157,12 +158,19 @@ fn wait_constructor_smoke() {
 #[test]
 fn sync_constructor_smoke() {
     let e = sample_sync();
-    if let Event::Sync { participants, kind } = e {
+    if let Event::Sync {
+        participants,
+        kind,
+        sync,
+    } = e
+    {
         assert_eq!(participants.len(), 3);
         assert!(participants.contains(&WorkerId(0)));
         assert!(participants.contains(&WorkerId(1)));
         assert!(participants.contains(&WorkerId(2)));
         assert_eq!(kind, SyncKind::Barrier);
+        // TASK-0172: Sync carries a stable cross-worker barrier id.
+        assert_eq!(sync, SyncTag(7));
     } else {
         panic!("expected Sync");
     }
@@ -292,10 +300,12 @@ fn sync_participants_order_irrelevant_for_equality() {
     let a = Event::Sync {
         participants: p1,
         kind: SyncKind::Barrier,
+        sync: SyncTag(0),
     };
     let b = Event::Sync {
         participants: p2,
         kind: SyncKind::Barrier,
+        sync: SyncTag(0),
     };
     assert_eq!(a, b);
 }

@@ -88,8 +88,13 @@
 //!   firing's *value* from the EventList alone (unblocks TASK-0124);
 //!   before TASK-0156 a `Fire` carried only `kernel` + `tile`.
 //! - `ACFGNode::Sync(s)` — emit `Event::Sync { participants:
-//!   s.participants.clone(), kind: SyncKind::Barrier }` on every
-//!   participating worker.
+//!   s.participants.clone(), kind: SyncKind::Barrier, sync: s.sync }`
+//!   on every participating worker. `s.sync` (the stable
+//!   cross-worker barrier identity, TASK-0172) is copied verbatim
+//!   into each participant's list — the `Sync` analogue of how
+//!   `seq` is copied onto both endpoints of a Push/Wait pair — so
+//!   disjoint per-worker `EventList`s agree on barrier identity with
+//!   no global ACFG walk.
 //! - `ACFGNode::Xfer { role: Push, src, dst, data, tile, seq, .. }`
 //!   — emit `Event::Push { dst, data, tile, seq }` on `src`.
 //! - `ACFGNode::Xfer { role: Wait, src, dst, data, tile, seq, .. }`
@@ -342,6 +347,12 @@ fn emit_sync(s: &SyncPlaceholder, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
         let ev = Event::Sync {
             participants: s.participants.clone(),
             kind: SyncKind::Barrier,
+            // Stable cross-worker barrier identity (TASK-0172):
+            // copied verbatim into EVERY participant's list, so all
+            // participants of this barrier carry the same `SyncTag`
+            // (the cross-worker join key). Mirrors `seq: x.seq` on
+            // Push/Wait in `emit_xfer`.
+            sync: s.sync,
         };
         out.entry(*wid).or_default().push(ev);
     }

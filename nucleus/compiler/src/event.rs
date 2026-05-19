@@ -79,6 +79,16 @@
 //!   order-stable so that hand-written `Hash` and the serialised form
 //!   are identical across runs.)
 //!
+//! - **`Sync` carries a stable cross-worker `sync: SyncTag`**
+//!   (TASK-0172) — the `Sync` analogue of `seq` on `Push`/`Wait`.
+//!   Every participant of one barrier records the same `SyncTag`, so
+//!   disjoint per-worker `EventList`s identify the barrier without a
+//!   global ACFG walk. This replaced the backend pre-order-Sync-index
+//!   heuristic that was correct only for *uniform* barriers; with the
+//!   carried tag, partial / non-uniform barriers lower correctly.
+//!   The tag is included in the hand-written `Hash` (it is part of
+//!   event identity for dedup/golden paths).
+//!
 //! - **Serde support is gated behind the default-on `serde` feature.**
 //!   The contract is the inter-stage wire format (schedule pass ->
 //!   backend codegen, plus golden-test fixtures). Default-on so the
@@ -150,6 +160,39 @@ pub struct IterVar(pub u64);
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SeqTag(pub u64);
+
+/// Stable cross-worker barrier identity on a [`Event::Sync`] — the
+/// `Sync` analogue of [`SeqTag`] on `Push`/`Wait` (TASK-0172).
+///
+/// Every participant of one barrier records an `Event::Sync` carrying
+/// the **same** `SyncTag`; two `Event::Sync`s carry the same tag if
+/// and only if they are the same barrier. This is the cross-worker
+/// join key that lets disjoint per-worker `EventList`s agree on
+/// barrier identity *without* a global ACFG walk — a partial /
+/// non-uniform barrier (participant sets that differ between barriers)
+/// is then lowered correctly because identity no longer relies on
+/// every participant seeing the same prefix of barriers.
+///
+/// A distinct newtype (not a reused [`SeqTag`]) because barriers and
+/// data transfers are different identity domains: sharing the space
+/// would let a barrier alias a transfer in any `seq`-keyed code path
+/// and erases a type-level distinction the compiler should keep.
+///
+/// Assigned by the sync-injection pass (the analogue of where
+/// [`crate::acfg::XferPlaceholder::seq`] is assigned — the site where
+/// the *global* barrier structure is visible), monotonically in a
+/// deterministic pre-order walk, then threaded verbatim through
+/// `petri_to_events` into `Event::Sync`.
+// `Default` (⇒ `SyncTag(0)`) is derived only so `SyncPlaceholder`
+// (which derives `Default` for test/builder ergonomics) keeps that
+// derive. The default value is never semantically meaningful: every
+// real `SyncPlaceholder` gets its tag overwritten by
+// `sync_inject::assign_sync_tags`. (`SeqTag` is *not* `Default`
+// because `XferPlaceholder` does not derive `Default`.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct SyncTag(pub u64);
 
 /// Opaque backend-interpreted memory region handle. The compiler
 /// assigns this index when lowering `place_data D in MEMORY_REGION`;
@@ -532,9 +575,19 @@ pub enum Event {
 
     /// Control-only synchronisation across `participants`. No data
     /// crosses; progress waits for every participant to arrive.
+    ///
+    /// `sync` is the stable cross-worker barrier identity (TASK-0172):
+    /// every participant of one barrier carries the *same* [`SyncTag`],
+    /// so disjoint per-worker `EventList`s agree on which barrier this
+    /// is without a global ACFG walk. This is the `Sync` analogue of
+    /// `seq` on `Push`/`Wait`; it makes partial / non-uniform barriers
+    /// (participant sets that differ between barriers) lowerable, since
+    /// barrier identity no longer depends on a per-worker pre-order
+    /// index that only coincides for uniform barriers.
     Sync {
         participants: BTreeSet<WorkerId>,
         kind: SyncKind,
+        sync: SyncTag,
     },
 
     /// Release backing storage for `(data, tile)`. The region was
@@ -658,10 +711,15 @@ impl Hash for Event {
                 tile.hash(state);
                 seq.hash(state);
             }
-            Event::Sync { participants, kind } => {
+            Event::Sync {
+                participants,
+                kind,
+                sync,
+            } => {
                 4u8.hash(state);
                 participants.hash(state);
                 kind.hash(state);
+                sync.hash(state);
             }
             Event::Free { data, tile } => {
                 5u8.hash(state);

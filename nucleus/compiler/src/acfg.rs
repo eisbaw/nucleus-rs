@@ -135,7 +135,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ResolvedConst};
 use crate::event::{
-    ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, WorkerId,
+    ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, SyncTag,
+    WorkerId,
 };
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{NotifyKind, ResolvedPlaceTarget};
@@ -368,6 +369,16 @@ impl DataflowEdge {
 /// A `SyncPlaceholder` with fewer than two participants is
 /// meaningless (a worker cannot barrier with itself); the injection
 /// pass elides such syncs rather than emitting them.
+///
+/// `sync` is the stable cross-worker barrier identity (TASK-0172),
+/// the `Sync` analogue of [`XferPlaceholder::seq`]. It is assigned by
+/// the sync-injection pass — the site where the *global* barrier
+/// structure is visible — monotonically in a deterministic pre-order
+/// walk, and threaded verbatim through `petri_to_events` into
+/// [`crate::event::Event::Sync`]. One barrier is one `SyncPlaceholder`
+/// projected (cloned) into every participant's `EventList`, so all
+/// participants carry the same tag; that is what lets disjoint
+/// per-worker lists agree on barrier identity without a global walk.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SyncPlaceholder {
@@ -375,6 +386,10 @@ pub struct SyncPlaceholder {
     /// Stored in a [`std::collections::BTreeSet`] for deterministic
     /// iteration order (matters for codegen determinism downstream).
     pub participants: std::collections::BTreeSet<WorkerId>,
+    /// Stable cross-worker barrier identity. Same value for every
+    /// participant of this barrier; distinct between distinct
+    /// barriers. Assigned by `inject_syncs`.
+    pub sync: SyncTag,
 }
 
 /// Notification policy on a transfer. Mirrors the schedule's

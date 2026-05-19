@@ -253,7 +253,10 @@ fn sync_barrier_spans_all_participants() {
     participants.insert(WorkerId(1));
     let root = ACFGNode::Sequence(vec![
         op_node(&[0], 100, vec![], Some(0)),
-        ACFGNode::Sync(SyncPlaceholder { participants }),
+        ACFGNode::Sync(SyncPlaceholder {
+            participants,
+            ..Default::default()
+        }),
         op_node(&[1], 101, vec![], None),
     ]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
@@ -432,7 +435,10 @@ fn determinism_two_lowerings_of_same_acfg_match() {
             body: Box::new(body),
             block_tag: None,
         },
-        ACFGNode::Sync(SyncPlaceholder { participants }),
+        ACFGNode::Sync(SyncPlaceholder {
+            participants,
+            ..Default::default()
+        }),
         op_node(&[1], 101, vec![0], None),
     ]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);

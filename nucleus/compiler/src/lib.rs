@@ -43,7 +43,7 @@ pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind};
 pub use event::{
     ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, Region, SeqTag,
-    SyncKind, WorkerId,
+    SyncKind, SyncTag, WorkerId,
 };
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 // Petri-net IR (PRD §8). `Arc` is intentionally NOT re-exported at the

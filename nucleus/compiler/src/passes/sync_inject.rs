@@ -65,7 +65,7 @@
 use std::collections::BTreeSet;
 
 use crate::acfg::{ACFGNode, SyncPlaceholder, ACFG};
-use crate::event::WorkerId;
+use crate::event::{SyncTag, WorkerId};
 
 // --------------------------------------------------------------------
 // Entry point
@@ -89,7 +89,34 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
 
     // `prior_writes` for the outer-most call is empty: there is no
     // statement before the program root.
-    let new_root = inject_in_node(root, &BTreeSet::new());
+    let mut new_root = inject_in_node(root, &BTreeSet::new());
+
+    // Assign the stable cross-worker barrier identity (TASK-0172).
+    //
+    // This is the `Sync` analogue of how `transfer_inject` assigns
+    // `XferPlaceholder::seq`: a monotonic counter handed out where the
+    // *global* barrier structure is visible (here: the whole injected
+    // ACFG). We do it as a deterministic **pre-order** walk of the
+    // FINAL tree rather than during injection because the injection
+    // walk creates Syncs out of final-tree order (it recurses children
+    // before inserting a Sequence-boundary Sync, and `insert(0, ..)`s
+    // the Repeat-entry Sync). Pre-order of the final tree is exactly
+    // the order `petri_to_events::walk` visits `ACFGNode::Sync`, and
+    // hence the order each participant encounters the barrier in its
+    // projected `EventList`. For a *uniform*-barrier program (every
+    // Sync has the same participant set — the tier-1 shape, e.g.
+    // example 02-split's three `{host,w0}` barriers) this yields the
+    // same 0,1,2,… numbering the old backend pre-order-index heuristic
+    // produced, so generated code stays byte-identical. The tag is
+    // assigned ONCE per barrier node and then projected (cloned) into
+    // every participant's list by `petri_to_events::emit_sync`, so all
+    // participants of one barrier carry the same `SyncTag` — the
+    // cross-worker join key, with no global walk required of any
+    // backend. The walk is over `Vec` children + `BTreeSet`
+    // participants only (no `HashMap`/`HashSet` iteration), so the
+    // assignment is reproducible: same program ⇒ same tags.
+    let mut next_sync: u64 = 0;
+    assign_sync_tags(&mut new_root, &mut next_sync);
 
     ACFG {
         root: new_root,
@@ -152,6 +179,36 @@ fn inject_in_node(node: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNode
     }
 }
 
+/// Assign each [`ACFGNode::Sync`]'s stable [`SyncTag`] in a
+/// deterministic **pre-order** walk of the final injected tree.
+///
+/// `next` is the monotonic counter (mirrors
+/// `transfer_inject::State::fresh_seq`). Pre-order — visit the node,
+/// then recurse children left-to-right, descending into `Repeat`
+/// bodies — matches the order `petri_to_events::walk` materialises
+/// `Event::Sync`, so each participant's projected `EventList` sees
+/// barrier tags in ascending order and, for uniform-barrier programs,
+/// in the same 0,1,2,… sequence the old per-worker pre-order-index
+/// heuristic produced (keeps generated code byte-identical there).
+///
+/// Iteration is over `Vec` children only, so the assignment is fully
+/// deterministic: the same ACFG always yields the same tags.
+fn assign_sync_tags(node: &mut ACFGNode, next: &mut u64) {
+    match node {
+        ACFGNode::Sync(s) => {
+            s.sync = SyncTag(*next);
+            *next += 1;
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                assign_sync_tags(c, next);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => assign_sync_tags(body, next),
+        ACFGNode::Operation(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
 /// Apply the Sequence boundary rule across the children of a
 /// Sequence, then recurse into each child (with the correct
 /// `prior_writes` argument).
@@ -186,7 +243,14 @@ fn inject_in_sequence(children: Vec<ACFGNode>) -> Vec<ACFGNode> {
                 if !w1.is_empty() && !w2.is_empty() && w1 != w2 {
                     let participants: BTreeSet<WorkerId> = w1.union(&w2).copied().collect();
                     if participants.len() >= 2 {
-                        out.push(ACFGNode::Sync(SyncPlaceholder { participants }));
+                        // `sync` is a placeholder here; the real stable
+                        // tag is assigned by `assign_sync_tags` in a
+                        // deterministic pre-order pass over the final
+                        // tree (creation order ≠ final-tree order).
+                        out.push(ACFGNode::Sync(SyncPlaceholder {
+                            participants,
+                            sync: SyncTag(0),
+                        }));
                     }
                 }
             }
@@ -231,7 +295,15 @@ fn wrap_repeat_body(body: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNo
             let participants: BTreeSet<WorkerId> =
                 prior_writes.union(&body_workers).copied().collect();
             if participants.len() >= 2 {
-                seq.insert(0, ACFGNode::Sync(SyncPlaceholder { participants }));
+                // Placeholder tag; real tag assigned by
+                // `assign_sync_tags` (final-tree pre-order).
+                seq.insert(
+                    0,
+                    ACFGNode::Sync(SyncPlaceholder {
+                        participants,
+                        sync: SyncTag(0),
+                    }),
+                );
             }
         }
     }
@@ -244,6 +316,8 @@ fn wrap_repeat_body(body: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNo
         // all writing workers in the body.
         seq.push(ACFGNode::Sync(SyncPlaceholder {
             participants: inner_writers,
+            // Placeholder tag; real tag assigned by `assign_sync_tags`.
+            sync: SyncTag(0),
         }));
     }
 
