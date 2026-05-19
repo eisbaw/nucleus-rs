@@ -983,6 +983,77 @@ fn cascade_suppressed_while_independents_still_surface() {
     }
 }
 
+/// Transitive depth — cascade-decls are transitively poisoned
+/// (TASK-0092 transitive-poison fix, the 5th-recurrence remediation).
+///
+/// Shape: one failed root `const N : usize = 1 / 0;` (the upstream
+/// poison root), then **K** cascade-data-decls `data dk_i : f32[N];`
+/// (each fails ShapeRefersToNonConst{N} and is itself a cascade), then
+/// for each cascade-decl **L** statements `dump(dk_i);` that would,
+/// absent the fix, each emit `UnknownIdent(dk_i)` (the data decl was
+/// suppressed and is absent from `ir.data`, and the cascade rule would
+/// miss them because the previous design left `dk_i` out of
+/// `failed_decls`).
+///
+/// Expected count: EXACTLY 1 error for every (K, L) combination — the
+/// root `ConstDivByZero { in_const: "N" }`. Without the transitive
+/// poison, this test measures `1 + K*L` (PROBE 5 / PROBE 14 territory:
+/// (K=1, L=2) → 3 errors observed; (K=1, L=1) for-body → 2 errors
+/// observed — the now-fixed overcount).
+///
+/// Both dimensions iterated over ≥3 values; a single-shape fixture is
+/// itself the masking defect that bit TASK-0080/0081/0087 and the
+/// prior TASK-0092 cycles, and the discipline this cycle is to
+/// genuinely parameterise both.
+#[test]
+fn transitive_cascade_collapses_for_any_k_l() {
+    for k in [1usize, 2, 3, 5] {
+        for l in [1usize, 2, 3] {
+            // Root poison: `const N` divides by zero.
+            let mut src = String::from("const N : usize = 1 / 0;\n");
+            // Sink kernel used by the L bare-call dependants — declared
+            // so the call doesn't fail on `UnknownIdent(dump)`. The
+            // cascade in question is the ARGUMENT, not the callee.
+            src.push_str("kernel dump : (f32[N]) -> () effectful;\n");
+            // K cascade-data-decls that depend on the poisoned N.
+            for i in 0..k {
+                src.push_str(&format!("data dk{i} : f32[N];\n"));
+            }
+            // L bare-call statements per cascade-decl, each reading
+            // `dki` — would emit `UnknownIdent(dki)` per-statement
+            // without the transitive poison.
+            for i in 0..k {
+                for _ in 0..l {
+                    src.push_str(&format!("dump(dk{i});\n"));
+                }
+            }
+
+            let errs = lower_str(&src).expect_err("the root failed const must error");
+            assert_eq!(
+                errs.errors().len(),
+                1,
+                "K={k} cascade-decls × L={l} statements must collapse to \
+                 EXACTLY 1 error (the root ConstDivByZero{{N}}), got {} — \
+                 source:\n{src}",
+                errs.errors().len()
+            );
+            match &errs.errors()[0].kind {
+                LowerErrorKind::ConstDivByZero { in_const } => {
+                    assert_eq!(
+                        in_const, "N",
+                        "the sole surviving error must be the root \
+                         ConstDivByZero(N) for (K={k}, L={l})"
+                    );
+                }
+                other => panic!(
+                    "(K={k}, L={l}): the sole error must be the root \
+                     ConstDivByZero(N), got {other:?}"
+                ),
+            }
+        }
+    }
+}
+
 /// Zero behaviour change for VALID input (AC#5): a well-formed program
 /// that lowered before still lowers to `Ok(AlgoIR)` — multi-error
 /// accumulation must never turn a valid program into an error set. The

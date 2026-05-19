@@ -106,11 +106,19 @@ use super::ir::{
 ///   a genuinely-never-declared identifier: that IS an independent
 ///   error and is reported (suppressing it would be undercount).
 ///
-/// Net counting contract, MEASURED varying input size and pinned by a
-/// size-parametrised fixture (`algo_lower.rs`): **M** genuinely-
-/// independent bad declarations → exactly **M** errors; **1** failed
-/// declaration with **N** dependents → exactly **1** error (not
-/// `1 + N`), for any N.
+/// Net counting contract, MEASURED varying input size and pinned by
+/// size-parametrised fixtures (`algo_lower.rs`):
+///
+/// - **M** genuinely-independent bad declarations → exactly **M**
+///   errors.
+/// - **1** failed declaration with **N** depth-1 dependents → exactly
+///   **1** error (not `1 + N`), for any N.
+/// - **Transitively** (TASK-0092 transitive-poison fix): **1** failed
+///   declaration with **K** cascade-decls each used by **L**
+///   statements → exactly **1** error (not `1 + K + K*L`), for any
+///   K, L. Cascade-decls have no independent meaning and are
+///   transitively poisoned (see [`Accum::record_decl_failure`] case
+///   1).
 ///
 /// # Determinism (PRD §10.1)
 ///
@@ -190,32 +198,26 @@ impl Accum {
     ///    already-poisoned name (e.g. `data x : f32[N]` where `const
     ///    N` failed → `ShapeRefersToNonConst` naming the failed `N`).
     ///    This is NOT an independent violation: suppress the error,
-    ///    and do **not** (currently) poison this declaration's name.
+    ///    AND **transitively poison this declaration's own name** so
+    ///    every downstream reference to it (statements, further
+    ///    decls) is also recognised as a cascade of the same root and
+    ///    suppressed.
     ///
-    ///    KNOWN DEFECT (TASK-0092 review-gate, mped-architect ×5
-    ///    recurring cascade class — see notes on TASK-0092 and the
-    ///    `feedback-comment-doc-lie-recurring` memory): the original
-    ///    rationale ("Poisoning `x` here would compound the cascade
-    ///    into x's independent dependents") is WRONG. A name that
-    ///    never successfully declared has no *independent* dependents
-    ///    — every downstream reference to it is by definition a
-    ///    cascade of the upstream root. By NOT poisoning `x` here,
-    ///    downstream statements that reference `x` emit
-    ///    `UnknownIdent("x")` (not in the suppression set for `x`
-    ///    because `x` is not in `failed_decls`), leaking as
-    ///    **transitive overcount** (PROBE 5: 1 poisoned const + 1
-    ///    data using it + 2 statements using the data → MEASURED 3
-    ///    errors, expected 1). The depth=1 case (cascade-decls with
-    ///    no statement dependents) IS handled correctly — that is
-    ///    what the parametrised fixture covers and what makes
-    ///    multi-error reporting a net improvement for the common
-    ///    case. The one-line fix is to insert `name` into
-    ///    `failed_decls` here too (case-1 path); this propagates
-    ///    poison transitively and the depth>1 case then collapses to
-    ///    the root error. Tracked for a fresh-context remediation
-    ///    cycle alongside a K×L transitive-depth parametrised fixture
-    ///    (currently the fixture is depth=1 only — same masking class
-    ///    that bit TASK-0080/0081/0087).
+    ///    Soundness of the transitive poison: a name that *never*
+    ///    successfully declared has no *independent* meaning — there
+    ///    is no value, shape, or kernel signature behind it. Every
+    ///    downstream reference is, by definition, a transitive
+    ///    cascade of the upstream root that was already reported.
+    ///    Inserting `name` into [`failed_decls`] here makes the
+    ///    existing cascade-suppression rule
+    ///    ([`Accum::is_cascade_of_failed_decl`]) cover those
+    ///    transitive references too. Without it, downstream uses
+    ///    would emit `UnknownIdent(name)` (or
+    ///    `AssignmentTargetNotData(name)` / a fresh
+    ///    `ShapeRefersToNonConst { unknown_ident: name }`), and since
+    ///    `name` wasn't in `failed_decls` the suppression rule would
+    ///    miss them — the classic transitive overcount that bit this
+    ///    task at its 5th cascade-class recurrence.
     /// 2. A duplicate-name collision: record the error but do NOT
     ///    poison — the *first* (valid) declaration is still in the
     ///    symbol table, so the name resolves for dependents; there is
@@ -227,7 +229,11 @@ impl Accum {
     fn record_decl_failure(&mut self, name: &str, e: LowerError) {
         // Case 1: a declaration that failed only because it references
         // an already-failed declaration is a cascade, not independent.
+        // Suppress the error AND transitively poison this decl's name
+        // so its own downstream references are also recognised as a
+        // cascade of the same root (TASK-0092 transitive-poison fix).
         if self.is_cascade_of_failed_decl(&e) {
+            self.failed_decls.insert(name.to_string(), ());
             return;
         }
         let is_duplicate = matches!(
