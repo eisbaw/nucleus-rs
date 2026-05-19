@@ -237,6 +237,7 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             // STRUCTURE-PRESERVING (TASK-0159). The analysis Net
             // (`acfg_to_petri`) still unrolls — boundedness / deadlock
@@ -274,10 +275,17 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
                 if body_events.is_empty() {
                     continue;
                 }
+                // Thread the per-occurrence strip-mine rebinding tag
+                // (TASK-0180) verbatim onto the projected loop. It is
+                // `None` for source / tile loops and `Some` only for a
+                // `block_transform`-produced inner loop; the backend
+                // rebinds the loop variable from this tag ALONE (no
+                // global EventList occurrence count).
                 out.entry(wid).or_default().push(Event::Loop {
                     iter_var: *iter_var,
                     range: range.clone(),
                     body: body_events,
+                    block_tag: *block_tag,
                 });
             }
         }

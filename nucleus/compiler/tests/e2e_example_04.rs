@@ -8,16 +8,18 @@
 //! algorithm from the program's three-pass block decomposition), so
 //! a byte match is a real cross-witness, not a tautology.
 //!
-//! The `blocked` schedule is shipped but its e2e test is `#[ignore]`'d
-//! (NOT silently passing): `loop b : block=2` is evenly divisible,
-//! but `b` is the loop variable of all three accumulator passes, and
-//! the backend's `divisible_inner_block_vars` count==1 guard (meant
-//! for the non-divisible two-nest case, TASK-0173) excludes a
-//! reused-name var, so absolute-index rebinding is skipped and the
-//! per-block accumulators double-count (output is 2x the reference on
-//! both backends). Tracked as TASK-0180. The schedule still parses,
-//! lowers, links, and builds — the gate is purely on the (wrong) run
-//! result, which is exactly why this stays ignored rather than faked.
+//! The `blocked` schedule (`loop b : block=2`, evenly divisible,
+//! `b` reused across all three accumulator passes) is now an ACTIVE
+//! bit-identical cell too (TASK-0180 LANDED). Pre-TASK-0180 the
+//! backend's program-global `divisible_inner_block_vars` `counts==1`
+//! guard excluded a reused-name var, rebinding was skipped, and the
+//! per-block accumulators double-counted (output 2x reference on both
+//! backends) — so the test was honestly `#[ignore]`'d, never faked.
+//! TASK-0180 replaced that heuristic with a per-occurrence
+//! `Event::Loop.block_tag` emitted by `block_transform`, so each of
+//! the three reused-`b` strip-mined inner loops rebinds
+//! `LO + tile*N + inner` independently and the blocked output is now
+//! byte-identical to the same independent reference oracle.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -152,15 +154,17 @@ fn naive_pthreads_sync_bit_identical() {
     );
 }
 
-/// Blocked schedule e2e: blocked on TASK-0180. `loop b : block=2`
+/// Blocked schedule e2e (TASK-0180, now ACTIVE). `loop b : block=2`
 /// (evenly divisible, NB=4) over a loop variable reused across all
-/// three accumulator passes hits the `divisible_inner_block_vars`
-/// count==1 guard, so absolute-index rebinding is skipped and the
-/// accumulators double-count. The schedule parses/lowers/links/builds;
-/// only the run result is wrong, so this stays `#[ignore]`'d rather
-/// than asserting an incorrect value. Lift when TASK-0180 lands.
+/// three accumulator passes. Pre-TASK-0180 this hit the
+/// `divisible_inner_block_vars` `counts==1` guard, rebinding was
+/// skipped and the accumulators double-counted (output 2x reference).
+/// TASK-0180 replaced that program-global occurrence heuristic with a
+/// per-occurrence `Event::Loop.block_tag` emitted by `block_transform`,
+/// so each of the three reused-`b` passes now rebinds independently.
+/// This blocked cell must be byte-identical to the std-only reference
+/// oracle, exactly like the naive cell.
 #[test]
-#[ignore = "TODO TASK-0180: block= on a loop var reused across passes skips absolute-index rebinding ⇒ accumulator double-count"]
 fn blocked_pthreads_sync_bit_identical() {
     run_example_04(
         "schedules/blocked.sched.nuc",

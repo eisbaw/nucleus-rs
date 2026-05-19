@@ -87,6 +87,7 @@ fn repeat(body: Vec<ACFGNode>) -> ACFGNode {
         iter_var: IterVar(0),
         range: Range { start: 0, end: 1 },
         body: Box::new(ACFGNode::Sequence(body)),
+        block_tag: None,
     }
 }
 

@@ -475,10 +475,14 @@ fn loop_constructor_carries_iter_var_range_and_body() {
             iter_var,
             range,
             body: b,
+            block_tag,
         } => {
             assert_eq!(*iter_var, IterVar(3));
             assert_eq!(*range, 1..15, "concrete bound carried verbatim");
             assert_eq!(*b, body, "body order preserved, not flattened");
+            // `loop_over` is the untagged constructor (source loops);
+            // strip-mined inner loops use `loop_over_tagged`.
+            assert_eq!(*block_tag, None, "loop_over yields no block_tag");
         }
         other => panic!("expected Event::Loop, got {other:?}"),
     }

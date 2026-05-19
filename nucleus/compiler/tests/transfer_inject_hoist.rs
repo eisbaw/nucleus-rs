@@ -187,12 +187,14 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(intra_tile_body),
+        block_tag: None,
     };
     let per_tile_body = ACFGNode::Sequence(vec![inner_repeat]);
     let outer_repeat = ACFGNode::Repeat {
         iter_var: IterVar(1),
         range: 0..4,
         body: Box::new(per_tile_body),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer_repeat]);
 
@@ -298,12 +300,14 @@ fn loop_invariant_wait_hoists_out_of_plain_loops() {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(intra_body),
+        block_tag: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(1),
         range: 0..4,
         body: Box::new(outer_body),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer]);
 
@@ -372,12 +376,14 @@ fn hoisting_is_idempotent() {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(intra_body),
+        block_tag: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(1),
         range: 0..4,
         body: Box::new(outer_body),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer]);
 
@@ -440,24 +446,28 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(intra_j),
+        block_tag: None,
     };
     let per_j_tile = ACFGNode::Sequence(vec![inner_j]);
     let outer_j = ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..4,
         body: Box::new(per_j_tile),
+        block_tag: None,
     };
     let intra_i = ACFGNode::Sequence(vec![outer_j]);
     let inner_i = ACFGNode::Repeat {
         iter_var: IterVar(1),
         range: 0..4,
         body: Box::new(intra_i),
+        block_tag: None,
     };
     let per_i_tile = ACFGNode::Sequence(vec![inner_i]);
     let outer_i = ACFGNode::Repeat {
         iter_var: IterVar(3),
         range: 0..4,
         body: Box::new(per_i_tile),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer_i]);
 
@@ -524,12 +534,14 @@ fn in_intra_tile_producer_consumer_is_not_hoisted() {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(intra),
+        block_tag: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(1),
         range: 0..4,
         body: Box::new(outer_body),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![outer]);
 
@@ -670,6 +682,7 @@ fn example_02_shape() -> (ACFG, LinkedIR) {
         iter_var: IterVar(0),
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![add])),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![load_a, load_b, loop_i, save]);
 
@@ -761,16 +774,19 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
         iter_var: IterVar(3),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consume_d])),
+        block_tag: None,
     };
     let tile_loop = ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+        block_tag: None,
     };
     let plain_loop = ACFGNode::Repeat {
         iter_var: IterVar(4),
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
 
@@ -902,16 +918,19 @@ fn block_nested_in_plain_loop_strands_the_invariant_wait() {
         iter_var: IterVar(3),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+        block_tag: None,
     };
     let tile_loop = ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+        block_tag: None,
     };
     let plain_loop = ACFGNode::Repeat {
         iter_var: IterVar(5),
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![consume_d, tile_loop])),
+        block_tag: None,
     };
     let root = ACFGNode::Sequence(vec![load_d, load_e, plain_loop]);
 
@@ -971,16 +990,27 @@ fn mixed_block_nonblock_tree_is_structurally_idempotent() {
             iter_var: IterVar(3),
             range: 0..2,
             body: Box::new(ACFGNode::Sequence(vec![consume_d])),
+            // Strip-mined inner loop: faithfully tagged as
+            // block_transform would (full nest, N=2). The hoist pass
+            // keys off `inner_block_iter_vars`, not the tag, so this
+            // is inert here — but kept accurate (TASK-0180).
+            block_tag: Some(compiler::event::BlockTag {
+                block_n: 2,
+                num_full: 1,
+                is_partial: false,
+            }),
         };
         let tile_loop = ACFGNode::Repeat {
             iter_var: IterVar(2),
             range: 0..2,
             body: Box::new(ACFGNode::Sequence(vec![inner_block])),
+            block_tag: None,
         };
         let plain_loop = ACFGNode::Repeat {
             iter_var: IterVar(4),
             range: 0..4,
             body: Box::new(ACFGNode::Sequence(vec![consume_e])),
+            block_tag: None,
         };
         let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
         let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();

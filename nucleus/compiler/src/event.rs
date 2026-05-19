@@ -340,6 +340,66 @@ pub struct FireBinding {
     pub output: Option<DataSlice>,
 }
 
+/// Per-occurrence strip-mine rebinding tag (TASK-0180).
+///
+/// ## Why this exists — per-OCCURRENCE, not per-IterVar
+///
+/// `block_transform` strip-mines `for VAR : LO..HI block=N` into a
+/// `(tile-loop, inner-loop)` nest and **reuses `VAR`'s [`IterVar`]**
+/// on the inner loop. Codegen must therefore expand the inner loop
+/// variable to its *absolute* source value at every body use site
+/// (`LO + tile*N + inner` for a full/divisible nest;
+/// `LO + num_full*N + inner` for the trailing partial tile).
+///
+/// The pre-TASK-0180 backend re-derived "is this a rebindable inner
+/// loop" from a program-**global** `Event::Loop` occurrence count
+/// (`divisible_inner_block_vars`, `counts==1`). That conflates three
+/// cases that share one reused `IterVar`:
+///
+/// 1. a divisible single-nest (`count==1` — correctly rebound);
+/// 2. a non-divisible full+partial sibling pair (`count==2`, same
+///    var, different ranges — TASK-0173);
+/// 3. a loop-var **name** legitimately reused across N independent
+///    evenly-divisible passes (`count==N` — *wrongly excluded*, so an
+///    accumulator runs `tiles*range` instead of `range` and is
+///    exactly N×/2× wrong; this is the 04-prefix-sum/blocked bug).
+///
+/// A per-`IterVar` sidecar map (or the `inner_block_iter_vars`
+/// `BTreeSet<IterVar>`) **cannot** distinguish these — they all key on
+/// the *same reused id*. The distinction is per-loop-**occurrence**, so
+/// (mirroring the [`FireBinding`] / TASK-0156 precedent: per-event
+/// facts go ON the event, per-program facts in the sidecar) the tag
+/// is an additive field on the [`Event::Loop`] node itself, originated
+/// by `block_transform` (the only site that knows `N`/`num_full`/the
+/// full-vs-partial split). The backend rebinds **purely** from this
+/// per-occurrence tag — no global count, no heuristic.
+///
+/// `LO` (the source lower bound) is *not* carried here: it is the
+/// same for every reused occurrence and already lives in
+/// `NameSidecar::loop_bounds` keyed by the (reused) `IterVar` —
+/// re-deriving it here would duplicate a single source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct BlockTag {
+    /// The block width `N` (`block=N`). For a full/divisible nest the
+    /// inner loop's trip count *is* `N`; for the trailing partial tile
+    /// it is the remainder (`< N`) but the absolute-index stride is
+    /// still `N`.
+    pub block_n: i64,
+    /// Number of whole tiles of width `N` that precede the trailing
+    /// partial tile (`(HI-LO) / N`). For the partial tile this is the
+    /// constant tile-offset (`LO + num_full*N + inner`); for the full
+    /// nest it equals the tile loop's iteration count and is unused in
+    /// the rebinding formula (the tile var supplies the offset).
+    pub num_full: i64,
+    /// `false` for the full/divisible nest (rebind
+    /// `LO + tile*N + inner`, `tile` = enclosing tile-loop var);
+    /// `true` for the trailing partial tile (rebind
+    /// `LO + num_full*N + inner` — its own tile loop is `0..1` so
+    /// `tile*N` would be `0`, the wrong base).
+    pub is_partial: bool,
+}
+
 impl FireBinding {
     /// The empty binding: no inputs, no output. Used by synthetic
     /// callers / tests that do not model values, and by the
@@ -535,6 +595,16 @@ pub enum Event {
         iter_var: IterVar,
         range: Range<i64>,
         body: Vec<Event>,
+        /// `Some` iff this loop is a strip-mined *inner* loop produced
+        /// by `block_transform`; carries the per-occurrence
+        /// absolute-index rebinding facts (TASK-0180). `None` for every
+        /// source loop and every synthesised tile loop — those need no
+        /// rebinding (the source loop iterates its real range; the tile
+        /// loop's variable never appears in a body index). serde-default
+        /// so the wire form stays backward-compatible (an old payload
+        /// with no `block_tag` deserialises as `None`).
+        #[cfg_attr(feature = "serde", serde(default))]
+        block_tag: Option<BlockTag>,
     },
 }
 
@@ -602,6 +672,7 @@ impl Hash for Event {
                 iter_var,
                 range,
                 body,
+                block_tag,
             } => {
                 6u8.hash(state);
                 iter_var.hash(state);
@@ -609,6 +680,10 @@ impl Hash for Event {
                 // component-wise (mirrors `IterTile`).
                 range.start.hash(state);
                 range.end.hash(state);
+                // `BlockTag` is `Hash`-derivable; hash it so two
+                // structurally distinct strip-mine occurrences (full
+                // vs partial) don't collide in `HashSet` dedup paths.
+                block_tag.hash(state);
                 // Recurse the body; length first so a prefix can't
                 // collide with a different-length body.
                 body.len().hash(state);
@@ -652,6 +727,26 @@ impl Event {
             iter_var,
             range,
             body,
+            block_tag: None,
+        }
+    }
+
+    /// Construct a strip-mined inner [`Event::Loop`] carrying its
+    /// per-occurrence [`BlockTag`] (TASK-0180). Used by the projection
+    /// (`petri_to_events`) when it walks an `ACFGNode::Repeat` that
+    /// `block_transform` tagged as a strip-mined inner loop; the
+    /// backend rebinds the loop variable from this tag alone.
+    pub fn loop_over_tagged(
+        iter_var: IterVar,
+        range: Range<i64>,
+        body: Vec<Event>,
+        block_tag: BlockTag,
+    ) -> Self {
+        Event::Loop {
+            iter_var,
+            range,
+            body,
+            block_tag: Some(block_tag),
         }
     }
 }

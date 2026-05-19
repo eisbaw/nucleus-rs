@@ -645,12 +645,32 @@ impl<'a> Plan<'a> {
                     iter_var,
                     range,
                     body,
+                    block_tag,
                 } => {
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(
                             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
                         ))
                     })?;
+                    // A strip-mine `block_tag` in this MULTI-process
+                    // renderer means a blocked multi-worker schedule.
+                    // Per-occurrence absolute-index rebinding (TASK-0180)
+                    // is implemented only on the shared single-worker
+                    // path (which a 0/1-worker schedule — incl. all
+                    // tier-1 blocked schedules 04/05/06/07 — already
+                    // routes through). No tier-1 schedule blocks a
+                    // multi-worker loop; fail LOUD rather than silently
+                    // emit the un-rebound loop (accumulator
+                    // double-count, the exact TASK-0180 defect class).
+                    if block_tag.is_some() {
+                        return Err(EmitError::ContractGap(format!(
+                            "Event::Loop for iter var `{var}` carries a strip-mine \
+                             block_tag inside a MULTI-process schedule; per-occurrence \
+                             rebinding is single-worker-path only (TASK-0180). No \
+                             tier-1 schedule blocks a multi-worker loop; refusing to \
+                             emit un-rebound. Tracked as TASK-0181."
+                        )));
+                    }
                     // SHARED bound renderer (source-form via sidecar,
                     // else concrete folded range) — identical to
                     // pthreads-sync multi-worker.

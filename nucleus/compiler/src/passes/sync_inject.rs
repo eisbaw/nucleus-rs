@@ -120,6 +120,7 @@ fn inject_in_node(node: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNode
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             // 1) Recurse into the body first so any inner Sequence
             //    rules and any nested Repeat rules are applied before
@@ -140,6 +141,10 @@ fn inject_in_node(node: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNode
                 iter_var,
                 range,
                 body: Box::new(wrapped),
+                // sync_inject only injects barriers into the body; the
+                // strip-mine rebinding tag is structural and survives
+                // verbatim (TASK-0180).
+                block_tag,
             }
         }
         // Leaves: nothing to inject inside.

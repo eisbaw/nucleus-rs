@@ -105,7 +105,7 @@
 use std::collections::BTreeMap;
 
 use crate::acfg::{ACFGNode, ACFG};
-use crate::event::IterVar;
+use crate::event::{BlockTag, IterVar};
 use crate::link::LinkedIR;
 use crate::sched::ResolvedLoopOption;
 
@@ -315,6 +315,7 @@ fn find_loop_range_by_id(node: &ACFGNode, target: IterVar) -> Option<(i64, i64)>
             iter_var,
             range,
             body,
+            ..
         } => {
             if *iter_var == target {
                 Some((range.start, range.end))
@@ -355,16 +356,27 @@ fn tile_nest(
     inner_id: IterVar,
     inner_len: i64,
     body: &ACFGNode,
+    inner_tag: BlockTag,
 ) -> ACFGNode {
+    // The inner (intra-tile) loop reuses the SOURCE iter var id and
+    // iterates `0..inner_len` (NOT `LO..LO+N`). Codegen must rebind it
+    // to the absolute source value; `inner_tag` carries exactly the
+    // per-occurrence facts to do so (TASK-0180) — full vs partial,
+    // block width `N`, and `num_full` for the partial base offset.
     let inner = ACFGNode::Repeat {
         iter_var: inner_id,
         range: 0..inner_len,
         body: Box::new(body.clone()),
+        block_tag: Some(inner_tag),
     };
+    // The synthesised tile loop's variable never appears in a body
+    // index (block_transform only renames the source loop into a
+    // tile/inner pair); it needs no rebinding tag.
     ACFGNode::Repeat {
         iter_var: tile_id,
         range: outer_range,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
+        block_tag: None,
     }
 }
 
@@ -386,6 +398,7 @@ fn rewrite_node(
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             let new_body = rewrite_node(*body, tile_var_for);
             match tile_var_for.get(&iter_var) {
@@ -402,6 +415,11 @@ fn rewrite_node(
                             iter_var,
                             range,
                             body: Box::new(new_body),
+                            // Degenerate loop passed through unchanged:
+                            // preserve whatever tag it already carried
+                            // (it has none unless a future nested-block
+                            // pass re-enters; never invent one here).
+                            block_tag,
                         };
                     }
                     let num_full = len / n_i64; // whole tiles of width N
@@ -430,12 +448,38 @@ fn rewrite_node(
                     // untiled loop, so `acfg_to_petri` /
                     // `petri_to_events` / boundedness / deadlock /
                     // determinism are unaffected by construction.
+                    // Per-occurrence rebinding facts (TASK-0180). The
+                    // full nest rebinds `LO + tile*N + inner` (its tile
+                    // loop runs `0..num_full`); the trailing partial
+                    // tile rebinds `LO + num_full*N + inner` (its tile
+                    // loop is `0..1`, so `tile*N` would wrongly be 0).
+                    // Both carry the SAME block width `N` (the absolute
+                    // stride) and `num_full`; `is_partial` selects the
+                    // base. The backend reads ONLY these — no global
+                    // EventList occurrence count (the root-cause fix:
+                    // a loop-var name reused across N divisible passes
+                    // now rebinds each occurrence instead of being
+                    // dropped by the old `counts==1` guard).
+                    let full_tag = BlockTag {
+                        block_n: n_i64,
+                        num_full,
+                        is_partial: false,
+                    };
+                    let partial_tag = BlockTag {
+                        block_n: n_i64,
+                        num_full,
+                        is_partial: true,
+                    };
                     let mut tiles: Vec<ACFGNode> = Vec::with_capacity(2);
                     if num_full > 0 {
-                        tiles.push(tile_nest(*tile_id, 0..num_full, iter_var, n_i64, &new_body));
+                        tiles.push(tile_nest(
+                            *tile_id, 0..num_full, iter_var, n_i64, &new_body, full_tag,
+                        ));
                     }
                     if rem != 0 {
-                        tiles.push(tile_nest(*tile_id, 0..1, iter_var, rem, &new_body));
+                        tiles.push(tile_nest(
+                            *tile_id, 0..1, iter_var, rem, &new_body, partial_tag,
+                        ));
                     }
 
                     match tiles.len() {
@@ -453,6 +497,9 @@ fn rewrite_node(
                     iter_var,
                     range,
                     body: Box::new(new_body),
+                    // Not a block= target: passes through with its
+                    // existing tag (none for a source loop).
+                    block_tag,
                 },
             }
         }
@@ -499,6 +546,7 @@ mod tests {
             iter_var: IterVar(7),
             range: 0..32,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
         };
         let outer = ACFGNode::Sequence(vec![op(), inner]);
         assert_eq!(find_loop_range_by_id(&outer, IterVar(7)), Some((0, 32)));
@@ -512,6 +560,7 @@ mod tests {
             iter_var: IterVar(0),
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
         };
         let out = rewrite_node(n.clone(), &tile_map);
         assert_eq!(out, n);
@@ -525,6 +574,7 @@ mod tests {
             iter_var: IterVar(0),
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
         };
         let out = rewrite_node(n, &tile_map);
         match out {
@@ -532,9 +582,13 @@ mod tests {
                 iter_var: outer,
                 range: outer_range,
                 body,
+                block_tag: outer_tag,
             } => {
                 assert_eq!(outer, IterVar(5));
                 assert_eq!(outer_range, 0..4); // 16 / 4 = 4 tiles
+                // The synthesised TILE loop carries no rebinding tag —
+                // its variable never indexes the body (TASK-0180).
+                assert_eq!(outer_tag, None, "tile loop must NOT be tagged");
                 match *body {
                     ACFGNode::Sequence(seq) => {
                         assert_eq!(seq.len(), 1);
@@ -542,10 +596,26 @@ mod tests {
                             ACFGNode::Repeat {
                                 iter_var: inner,
                                 range: inner_range,
+                                block_tag: inner_tag,
                                 ..
                             } => {
                                 assert_eq!(*inner, IterVar(0));
                                 assert_eq!(*inner_range, 0..4); // chunk size
+                                // The strip-mined INNER loop is tagged
+                                // per-occurrence: divisible single nest
+                                // => full (not partial), N=4, num_full=4
+                                // (16/4). This is exactly what the
+                                // backend rebinds `LO + tile*N + inner`
+                                // from (TASK-0180 AC#1).
+                                assert_eq!(
+                                    *inner_tag,
+                                    Some(BlockTag {
+                                        block_n: 4,
+                                        num_full: 4,
+                                        is_partial: false,
+                                    }),
+                                    "divisible inner loop must carry full-nest BlockTag"
+                                );
                             }
                             other => panic!("inner not Repeat: {other:?}"),
                         }
@@ -570,6 +640,7 @@ mod tests {
             iter_var: IterVar(0),
             range: 1..15,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
         };
         let out = rewrite_node(n, &tile_map);
 
@@ -579,17 +650,26 @@ mod tests {
         };
         assert_eq!(seq.len(), 2, "full-tile nest + trailing partial tile");
 
-        // Helper: assert a nest has outer (tile_id, outer_range) and
-        // inner (IterVar(0), 0..inner_len).
-        let check_nest = |node: &ACFGNode, outer_range: std::ops::Range<i64>, inner_len: i64| {
+        // Helper: assert a nest has outer (tile_id, outer_range), no
+        // tag on the tile loop, and an inner (IterVar(0), 0..inner_len)
+        // carrying exactly `expect_tag` (TASK-0180 / TASK-0173: the
+        // non-divisible full and partial nests get DISTINCT
+        // per-occurrence tags so the backend rebinds each correctly —
+        // `LO+tile*N+inner` vs `LO+num_full*N+inner`).
+        let check_nest = |node: &ACFGNode,
+                          outer_range: std::ops::Range<i64>,
+                          inner_len: i64,
+                          expect_tag: BlockTag| {
             match node {
                 ACFGNode::Repeat {
                     iter_var: outer,
                     range,
                     body,
+                    block_tag: outer_tag,
                 } => {
                     assert_eq!(*outer, IterVar(5), "outer is the tile var");
                     assert_eq!(*range, outer_range);
+                    assert_eq!(*outer_tag, None, "tile loop must NOT be tagged");
                     match &**body {
                         ACFGNode::Sequence(inner_seq) => {
                             assert_eq!(inner_seq.len(), 1);
@@ -597,10 +677,16 @@ mod tests {
                                 ACFGNode::Repeat {
                                     iter_var: inner,
                                     range: ir,
+                                    block_tag: inner_tag,
                                     ..
                                 } => {
                                     assert_eq!(*inner, IterVar(0), "inner keeps source var");
                                     assert_eq!(*ir, 0..inner_len);
+                                    assert_eq!(
+                                        *inner_tag,
+                                        Some(expect_tag),
+                                        "inner loop's per-occurrence BlockTag"
+                                    );
                                 }
                                 o => panic!("inner not Repeat: {o:?}"),
                             }
@@ -612,10 +698,32 @@ mod tests {
             }
         };
 
-        // Full tiles: 3 tiles of width 4.
-        check_nest(&seq[0], 0..3, 4);
-        // Trailing partial tile: a single (0..1) tile of width rem=2.
-        check_nest(&seq[1], 0..1, 2);
+        // length 14, block=4 -> num_full=3, rem=2. Both nests carry
+        // block_n=4 and num_full=3; only `is_partial` differs (it
+        // selects the rebinding base in the backend).
+        // Full tiles: 3 tiles of width 4 -> full-nest tag.
+        check_nest(
+            &seq[0],
+            0..3,
+            4,
+            BlockTag {
+                block_n: 4,
+                num_full: 3,
+                is_partial: false,
+            },
+        );
+        // Trailing partial tile: a single (0..1) tile of width rem=2
+        // -> partial tag (rebinds `LO + num_full*N + inner`).
+        check_nest(
+            &seq[1],
+            0..1,
+            2,
+            BlockTag {
+                block_n: 4,
+                num_full: 3,
+                is_partial: true,
+            },
+        );
     }
 
     /// TASK-0142 AC#2 verbatim: `block=64` on `0..100` produces an
@@ -629,6 +737,7 @@ mod tests {
             iter_var: IterVar(0),
             range: 0..100,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
         };
         let out = rewrite_node(n, &tile_map);
         let seq = match out {

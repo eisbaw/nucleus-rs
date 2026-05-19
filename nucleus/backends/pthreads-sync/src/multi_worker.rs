@@ -506,12 +506,33 @@ impl<'a> Plan<'a> {
                     iter_var,
                     range,
                     body,
+                    block_tag,
                 } => {
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(
                             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
                         ))
                     })?;
+                    // A `block_tag` here means a strip-mined inner loop
+                    // in a *multi*-worker schedule. That needs the same
+                    // per-occurrence absolute-index rebinding the
+                    // single-worker path does; this multi-worker
+                    // renderer does NOT yet thread it. No tier-1
+                    // schedule is a blocked multi-worker schedule, so
+                    // this is unreachable today — but fail LOUD with
+                    // context (typed error, never silently emit the
+                    // un-rebound loop, which would double-count an
+                    // accumulator exactly like the TASK-0180 bug).
+                    if block_tag.is_some() {
+                        return Err(EmitError::ContractGap(format!(
+                            "Event::Loop for iter var `{var}` carries a strip-mine \
+                             block_tag inside a MULTI-worker schedule; per-occurrence \
+                             absolute-index rebinding is implemented only on the \
+                             shared single-worker path (TASK-0180). No tier-1 schedule \
+                             blocks a multi-worker loop; refusing to emit un-rebound \
+                             (would double-count). Tracked as TASK-0181."
+                        )));
+                    }
                     let (lo, hi) = match self.sidecar.loop_bounds.get(iter_var) {
                         Some(b) => (
                             render_const_expr_pub(&b.lo, ctx)?,

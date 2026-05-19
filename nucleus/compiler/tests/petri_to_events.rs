@@ -293,6 +293,7 @@ fn repeat_preserves_structure_in_event_list() {
         iter_var: compiler::event::IterVar(7),
         range: 0..3,
         body: Box::new(body),
+        block_tag: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
 
@@ -306,9 +307,13 @@ fn repeat_preserves_structure_in_event_list() {
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             assert_eq!(*iter_var, compiler::event::IterVar(7), "iter-var carried");
             assert_eq!(*range, 0..3, "concrete loop bound carried verbatim");
+            // A plain source loop (no block= directive) is NOT
+            // strip-mined, so it carries no rebinding tag (TASK-0180).
+            assert_eq!(*block_tag, None, "source loop must be untagged");
             assert_eq!(body.len(), 1, "loop body projected once, not unrolled");
             assert!(
                 matches!(&body[0], Event::Fire { kernel, .. } if *kernel == KernelId(100)),
@@ -338,6 +343,7 @@ fn repeat_empty_range_emits_loop_with_empty_range() {
         iter_var: compiler::event::IterVar(0),
         range: 5..5,
         body: Box::new(body),
+        block_tag: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
 
@@ -367,6 +373,7 @@ fn repeat_worker_with_empty_body_gets_no_loop() {
         iter_var: compiler::event::IterVar(0),
         range: 0..4,
         body: Box::new(body),
+        block_tag: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
 
@@ -780,6 +787,7 @@ fn determinism_two_projections_of_same_acfg_match() {
             iter_var: compiler::event::IterVar(0),
             range: 0..2,
             body: Box::new(body),
+            block_tag: None,
         },
         ACFGNode::Sync(SyncPlaceholder { participants }),
         op_node(&[1], 101, vec![0], None),

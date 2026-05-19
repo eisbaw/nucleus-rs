@@ -363,6 +363,7 @@ fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut State) -> ACF
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             // Build the enclosing-tile contribution from this Repeat.
             // We re-walk the body with the contribution pushed onto a
@@ -374,6 +375,10 @@ fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut State) -> ACF
                 iter_var,
                 range,
                 body: Box::new(new_body),
+                // transfer_inject only injects Push/Wait/Xfer into the
+                // body; the strip-mine rebinding tag is structural and
+                // survives verbatim (TASK-0180).
+                block_tag,
             }
         }
         // Leaves: nothing to inject inside.
@@ -421,6 +426,7 @@ fn inject_in_node_with_tile(
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             let mut nested = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
@@ -439,6 +445,9 @@ fn inject_in_node_with_tile(
                 iter_var,
                 range,
                 body: Box::new(new_body),
+                // Transparent reconstruction — preserve the strip-mine
+                // rebinding tag verbatim (TASK-0180).
+                block_tag,
             }
         }
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_)) => {
@@ -857,6 +866,7 @@ fn hoist_invariant_waits(
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
@@ -896,6 +906,10 @@ fn hoist_invariant_waits(
                     iter_var,
                     range,
                     body: Box::new(body3),
+                    // Wait-hoisting only reshuffles the body; the
+                    // strip-mine rebinding tag is preserved verbatim
+                    // (TASK-0180).
+                    block_tag,
                 },
                 bubble,
             )
@@ -1101,10 +1115,12 @@ fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> ACFGNode {
             iter_var,
             range,
             body,
+            block_tag,
         } => ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(splice_after_producer(*body, push)),
+            block_tag,
         },
         leaf => leaf,
     }
@@ -1132,10 +1148,12 @@ fn splice_after_repeat(node: ACFGNode, cut_iv: IterVar, push: &XferPlaceholder) 
             iter_var,
             range,
             body,
+            block_tag,
         } => ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(splice_after_repeat(*body, cut_iv, push)),
+            block_tag,
         },
         leaf => leaf,
     }

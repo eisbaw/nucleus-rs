@@ -134,7 +134,9 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ResolvedConst};
-use crate::event::{ArgBinding, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, WorkerId};
+use crate::event::{
+    ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, WorkerId,
+};
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{NotifyKind, ResolvedPlaceTarget};
 
@@ -508,6 +510,28 @@ pub enum ACFGNode {
         iter_var: IterVar,
         range: Range<i64>,
         body: Box<ACFGNode>,
+        /// `Some` iff this `Repeat` is a strip-mined *inner* loop
+        /// produced by [`crate::passes::block_transform`]; carries the
+        /// per-occurrence absolute-index rebinding facts threaded onto
+        /// the projected [`crate::event::Event::Loop`] (TASK-0180).
+        /// `None` for every source loop (built by [`build_acfg`]) and
+        /// for every synthesised *tile* loop — neither needs
+        /// rebinding. serde-default so an old wire payload (no field)
+        /// deserialises as `None`.
+        ///
+        /// Why a payload field and not another per-`IterVar` sidecar
+        /// set like [`ACFG::inner_block_iter_vars`]: the rebinding fact
+        /// is per-loop-**occurrence**, and `block_transform` reuses ONE
+        /// `IterVar` across every strip-mined pass / across the
+        /// full+partial split. A per-`IterVar` map (`BTreeSet<IterVar>`
+        /// or `BTreeMap<IterVar, _>`) structurally collapses those
+        /// occurrences onto one key — exactly the conflation that
+        /// caused the 04-prefix-sum/blocked double-count (TASK-0180).
+        /// The per-occurrence node is the only carrier that can
+        /// distinguish them, so the field lives here despite the
+        /// (mechanical) destructuring churn.
+        #[cfg_attr(feature = "serde", serde(default))]
+        block_tag: Option<BlockTag>,
     },
     /// Sequential composition of nodes inside one scope.
     Sequence(Vec<ACFGNode>),
@@ -704,6 +728,10 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
                 iter_var,
                 range: lo_v..hi_v,
                 body: Box::new(body_node),
+                // A source loop needs no absolute-index rebinding —
+                // it iterates its real range. `block_transform` may
+                // later replace it with a tagged inner nest.
+                block_tag: None,
             })
         }
     }

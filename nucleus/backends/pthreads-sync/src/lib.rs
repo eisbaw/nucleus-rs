@@ -413,17 +413,13 @@ fn render_main_rs(
         writeln!(out).ok();
     }
 
-    // Which inner-block iter vars are the simple evenly-divisible
-    // case (exactly ONE Event::Loop node carries them — no
-    // trailing-partial-tile sibling). Only these get absolute-index
-    // rebinding; see `NameTables::inner_block_iter_vars` /
-    // TASK-0173.
-    let divisible_inner = divisible_inner_block_vars(events, &names.inner_block_iter_vars);
-
+    // Absolute-index rebinding is now decided PER-OCCURRENCE from
+    // each `Event::Loop.block_tag` (TASK-0180), not from a
+    // program-global occurrence count — so there is no longer a
+    // pre-walk to classify inner-block vars here.
     let ctx = RenderCtx {
         names,
         sidecar,
-        divisible_inner: &divisible_inner,
         abs_subst: BTreeMap::new(),
     };
     render_events(events, &mut out, 1, &ctx)?;
@@ -435,9 +431,6 @@ fn render_main_rs(
 struct RenderCtx<'a> {
     names: &'a NameTables,
     sidecar: &'a NameSidecar,
-    /// Inner-block iter vars eligible for absolute-index rebinding
-    /// (evenly-divisible single-nest case only).
-    divisible_inner: &'a BTreeSet<IterVar>,
     /// Active absolute-index substitutions: an inner-block loop
     /// variable name -> the `(LO + tile*N + inner)` Rust expression
     /// it must expand to at every *body* use site. Empty for every
@@ -447,34 +440,15 @@ struct RenderCtx<'a> {
     abs_subst: BTreeMap<String, String>,
 }
 
-/// Inner-block iter vars that occur in exactly ONE `Event::Loop`
-/// node across the whole list (the evenly-divisible case). A
-/// non-divisible inner var appears in TWO sibling `Event::Loop`s
-/// (full-tile nest + trailing-partial-tile nest) with different
-/// ranges — those are intentionally NOT rebindable here (TASK-0173).
-fn divisible_inner_block_vars(
-    events: &[Event],
-    inner_block: &BTreeSet<IterVar>,
-) -> BTreeSet<IterVar> {
-    let mut counts: BTreeMap<IterVar, usize> = BTreeMap::new();
-    fn walk(events: &[Event], counts: &mut BTreeMap<IterVar, usize>) {
-        for e in events {
-            if let Event::Loop {
-                iter_var, body, ..
-            } = e
-            {
-                *counts.entry(*iter_var).or_insert(0) += 1;
-                walk(body, counts);
-            }
-        }
-    }
-    walk(events, &mut counts);
-    inner_block
-        .iter()
-        .copied()
-        .filter(|iv| counts.get(iv).copied().unwrap_or(0) == 1)
-        .collect()
-}
+// `divisible_inner_block_vars` (the program-global `counts==1`
+// occurrence heuristic) was DELETED in TASK-0180. It conflated a
+// divisible single-nest, a non-divisible full+partial sibling pair,
+// and a loop-var name reused across N evenly-divisible passes — all
+// of which share ONE reused IterVar — so it silently skipped
+// absolute-index rebinding for the reused-name case (the
+// 04-prefix-sum/blocked accumulator double-count). Rebinding is now
+// decided per-occurrence from `Event::Loop.block_tag`; see the
+// `Event::Loop` arm of `render_event`.
 
 /// Find every data symbol written *only* via an indexed `Fire`
 /// output (`D[i] <-- k(...)`) — never a whole-array output. Those
@@ -644,6 +618,7 @@ fn render_event(
             iter_var,
             range,
             body,
+            block_tag,
         } => {
             let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -651,33 +626,42 @@ fn render_event(
                 ))
             })?;
 
-            // Absolute-index rebinding (TASK-0124): a strip-mined
-            // inner-block loop in the divisible single-nest case must
-            // expand its loop variable to `LO + tile*N + inner` at
-            // every body use site (block_transform defers this; see
-            // NameTables::inner_block_iter_vars / TASK-0173). The
-            // inner loop is emitted over its concrete `0..N`
-            // `Event::Loop.range`; the rebinding goes into a child
-            // RenderCtx's `abs_subst`.
-            if ctx.divisible_inner.contains(iter_var) {
-                let tile_iv = enclosing.ok_or_else(|| {
-                    EmitError::ContractGap(format!(
-                        "strip-mined inner loop {iter_var:?} has no enclosing \
-                         tile loop — block_transform always wraps it; \
-                         malformed EventList"
-                    ))
-                })?;
-                let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
-                    EmitError::ContractGap(format!(
-                        "tile iter var {tile_iv:?} has no name in NameTables"
-                    ))
-                })?;
-                // N = the inner loop's concrete trip count (full
-                // block width, since this is the divisible nest).
-                let n = range.end - range.start;
-                // LO = the ORIGINAL source lower bound (the inner
-                // loop's source `for VAR : LO..HI`). It still lives
-                // in the sidecar keyed by this (reused) IterVar.
+            // Absolute-index rebinding (TASK-0180, root-cause fix).
+            //
+            // A strip-mined inner-block loop reuses the SOURCE iter
+            // var and iterates `0..inner_len` (NOT `LO..HI`), so its
+            // loop variable must be expanded to the ABSOLUTE source
+            // value at every body use site. Whether — and HOW — to
+            // rebind is now read PER-OCCURRENCE from
+            // `Event::Loop.block_tag` (set by `block_transform`, the
+            // only site that knows `N`/`num_full`/the full-vs-partial
+            // split), NOT from a program-global EventList occurrence
+            // count. The old `divisible_inner_block_vars` (`counts==1`)
+            // heuristic conflated three cases sharing one reused
+            // IterVar and silently dropped a loop-var name reused
+            // across N evenly-divisible passes (04-prefix-sum/blocked
+            // accumulator double-count). The tag is per-occurrence so
+            // each of the N passes — and the full vs trailing-partial
+            // tile — rebinds independently and correctly.
+            //
+            //   * full / divisible nest (`is_partial == false`):
+            //         abs = LO + tile*N + inner
+            //     where `tile` is the enclosing tile-loop variable
+            //     (its iteration count is `num_full`).
+            //   * trailing partial tile (`is_partial == true`):
+            //         abs = LO + num_full*N + inner
+            //     its own tile loop is `0..1`, so `tile*N` would be 0
+            //     (the wrong base) — the constant `num_full*N` offset
+            //     is used instead. This also gives TASK-0173 exactly
+            //     its AC#1 (per-tile-nest base offset / partial marker
+            //     / N + num_full); non-divisible accumulators are now
+            //     rebound correctly too.
+            //
+            // `LO` (source lower bound) is the same for every reused
+            // occurrence and lives in `sidecar.loop_bounds` keyed by
+            // the (reused) IterVar — single source of truth, not
+            // duplicated into the tag.
+            if let Some(tag) = block_tag {
                 let lo_src = ctx
                     .sidecar
                     .loop_bounds
@@ -685,14 +669,36 @@ fn render_event(
                     .map(|b| render_const_expr(&b.lo, ctx))
                     .transpose()?
                     .unwrap_or_else(|| "0_i64".to_string());
-                // Absolute value of the source iteration variable.
-                let abs = format!("({lo_src} + ({tile_name} * {n}_i64) + {var})");
+                let n = tag.block_n;
+                let abs = if tag.is_partial {
+                    // Constant base: the partial tile's own tile loop
+                    // is `0..1`, so a `tile*N` term is always 0.
+                    format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+                } else {
+                    // Variable base from the enclosing tile loop. A
+                    // tagged full nest ALWAYS has an enclosing tile
+                    // loop (block_transform emits `tile -> seq ->
+                    // inner`); a missing one is a malformed EventList —
+                    // fail loud with context (typed error, not panic).
+                    let tile_iv = enclosing.ok_or_else(|| {
+                        EmitError::ContractGap(format!(
+                            "strip-mined full-tile inner loop {iter_var:?} (block_tag \
+                             is_partial=false) has no enclosing tile loop — \
+                             block_transform always wraps it; malformed EventList"
+                        ))
+                    })?;
+                    let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
+                        EmitError::ContractGap(format!(
+                            "tile iter var {tile_iv:?} has no name in NameTables"
+                        ))
+                    })?;
+                    format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+                };
                 let mut child_subst = ctx.abs_subst.clone();
                 child_subst.insert(var.clone(), abs);
                 let child = RenderCtx {
                     names: ctx.names,
                     sidecar: ctx.sidecar,
-                    divisible_inner: ctx.divisible_inner,
                     abs_subst: child_subst,
                 };
                 // Loop header uses the concrete folded range
@@ -995,34 +1001,33 @@ pub(crate) fn rust_scalar_type(t: &ScalarType) -> &'static str {
 /// same reason: a multi-process backend running a 0/1-worker schedule
 /// emits a byte-identical single process.
 ///
-/// Multi-worker schedules in the tier-1 set carry no `block=`
-/// directive (02-split), so absolute-index rebinding is inactive
-/// here: `divisible_inner` is empty and `abs_subst` is empty, which
-/// makes the shared renderers behave exactly as the pre-TASK-0124
-/// code. (When a blocked *multi*-worker schedule lands, this shim
-/// would thread the same rebinding the single-worker path uses —
-/// the renderers are already shared so there is one implementation,
-/// no drift.)
+/// These pub shims (`render_fire_args_pub` / `render_flat_index_pub`
+/// / `render_const_expr_pub`) render expressions / indices / bounds
+/// with an EMPTY `abs_subst`: they are used by `multi_worker` /
+/// `mp-tcp-bufsync` only for the worker-loop scaffolding (slot types,
+/// barrier-free bound rendering) where no strip-mine rebinding is in
+/// scope. The single-worker `render_single_worker_main` path (which
+/// BOTH backends use for a 0/1-worker schedule — see
+/// `mp-tcp-bufsync::emit`) does the per-occurrence `Event::Loop`
+/// rebinding from `block_tag` via the full `RenderCtx`, so a blocked
+/// single-host schedule (04/05/06/07) is correct on both backends
+/// through that shared path. A blocked *multi*-worker schedule would
+/// thread the same tag-driven rebinding (the renderers are shared —
+/// one implementation, no drift); none exists in the tier-1 set.
 pub struct RenderCtxPub<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
-    empty_inner: BTreeSet<IterVar>,
 }
 
 impl<'a> RenderCtxPub<'a> {
     pub fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
-        RenderCtxPub {
-            names,
-            sidecar,
-            empty_inner: BTreeSet::new(),
-        }
+        RenderCtxPub { names, sidecar }
     }
 
     fn inner(&self) -> RenderCtx<'_> {
         RenderCtx {
             names: self.names,
             sidecar: self.sidecar,
-            divisible_inner: &self.empty_inner,
             abs_subst: BTreeMap::new(),
         }
     }

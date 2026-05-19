@@ -182,6 +182,7 @@ fn block_rewrites_to_outer_tile_and_inner() {
         iter_var: outer_var,
         range: outer_range,
         body,
+        ..
     } = outer
     {
         assert_eq!(*outer_var, tile_id);
@@ -301,6 +302,7 @@ fn block_non_divisible_emits_trailing_partial_tile() {
             iter_var: ov,
             range: or,
             body,
+            ..
         } = node
         {
             assert_eq!(*ov, tile_id);
@@ -464,6 +466,7 @@ fn smoke_synthetic_acfg_is_buildable() {
         iter_var: IterVar(0),
         range: 0..8,
         body: Box::new(body),
+        block_tag: None,
     };
     assert_eq!(repeat.count_repeats(), 1);
 

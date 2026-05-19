@@ -106,18 +106,30 @@ backend  = "pthreads-sync"
 
 # TASK-0142 (trailing-remainder tiles) has landed. 05-stencil/blocked
 # walks `for y : 1..15` (length 14) with `loop y : block=4` — NOT
-# divisible by 4. `apply_block_transforms` now rewrites this into the
+# divisible by 4. `apply_block_transforms` rewrites this into the
 # full-tile nest (3 tiles of 4) plus one trailing partial tile (width
-# 2) using only static-range Repeat/Sequence nodes. Post-TASK-0124
-# the backend consumes the per-worker EventList and emits the TILED
-# nest (NOT the untiled source loop the old AlgoIR backend emitted).
-# 05-stencil/blocked is runtime-correct vs the schedule-independent
-# reference because `blur3` is idempotent (writes
-# img_out[y][x] = f(img_in), never reads its own output), so the
-# trailing partial tile's recomputation of interior pixels is
-# harmless. A non-divisible blocked *accumulator* would need per-tile
-# base-offset rebinding — tracked as TASK-0173; no required cell
-# exercises it.
+# 2) using only static-range Repeat/Sequence nodes.
+#
+# TASK-0180 (per-occurrence strip-mine rebinding) has now landed and
+# CHANGED this cell's codegen for the better: the strip-mined inner
+# `y` is rebound per-occurrence from `Event::Loop.block_tag` — the
+# full nest emits `y -> 1 + y__tile*4 + y` (absolute y in 1..13) and
+# the trailing partial tile emits `y -> 1 + 3*4 + y` (the CONSTANT
+# `num_full*N` base, absolute y in 13..15). Pre-TASK-0180 the old
+# program-global `divisible_inner_block_vars` `counts==1` guard saw
+# TWO sibling loops over the reused `y` (full + partial), excluded it,
+# and emitted the inner loop over the FULL source range `1..15` inside
+# BOTH tile loops — 05/blocked was runtime-correct ONLY because
+# `blur3` is idempotent (writes img_out = f(img_in), never reads its
+# own output) so the gross over-recomputation was harmless. It is now
+# STRUCTURALLY correct (proper absolute indices), no longer reliant on
+# idempotence, and still byte-identical to the schedule-independent
+# reference (verified 3x). This is exactly TASK-0173's AC#1/AC#2
+# (the contract carries N + num_full + a partial marker; pthreads-sync
+# rebinds full = LO+tile*N+inner and partial = LO+num_full*N+inner) —
+# now implemented and EXERCISED by this cell. TASK-0173's remaining
+# AC#3 (a dedicated synthetic non-divisible *accumulator* differential
+# test) is forward-carried, not self-checked here.
 # Example 06 separable-filter: BOTH naive and blocked are required
 # differential cells on BOTH backends. naive and blocked are
 # byte-identical to the independent `reference.bin` (a different
@@ -233,27 +245,25 @@ backend  = "mp-tcp-bufsync"
 # `[[required]]` and this skip is deleted.
 
 # 04-prefix-sum/blocked: `loop b : block=2` over NB=4 is EVENLY
-# divisible (no remainder), but `b` is the loop variable of all
-# THREE accumulator passes. The backend's `divisible_inner_block_vars`
-# only rebinds an inner-block var whose loop appears exactly once in
-# the EventList (a guard meant for the non-divisible two-nest case,
-# TASK-0173); a name reused across passes trips count>1, rebinding is
-# skipped, the inner loop runs its full source range under the tile
-# loop, and every per-block accumulator is double-counted (output is
-# exactly 2x the reference on BOTH backends). Tracked precisely as
-# TASK-0180. Skipped — NOT faked as required (TASK-0039 AC#3 honesty).
-# Moves to [[required]] for both backends when TASK-0180 lands.
-[[skip]]
+# divisible (no remainder), and `b` is the loop variable of all THREE
+# accumulator passes. TASK-0180 (LANDED) replaced the backend's
+# program-global `divisible_inner_block_vars` `counts==1` guard with a
+# PER-OCCURRENCE `Event::Loop.block_tag` emitted by `block_transform`,
+# so each of the three reused-`b` strip-mined inner loops rebinds
+# `LO + tile*N + inner` independently. The blocked cell is now
+# byte-identical to the std-only independent reference oracle on BOTH
+# backends (single-host => both route the shared single-worker
+# renderer that does the tag-driven rebinding). Was [[skip]] (honest
+# 2x-reference double-count) pre-TASK-0180; promoted to [[required]].
+[[required]]
 example  = "04-prefix-sum"
 schedule = "blocked"
 backend  = "pthreads-sync"
-reason   = "TASK-0180: block= on a loop var (`b`) reused across 3 accumulator passes skips absolute-index rebinding (divisible_inner_block_vars count==1 guard) ⇒ accumulators double-count; output 2x reference. Honest skip, not a faked required cell."
 
-[[skip]]
+[[required]]
 example  = "04-prefix-sum"
 schedule = "blocked"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0180: same accumulator double-count as the pthreads-sync 04/blocked skip — this is a backend/block-transform gap (not transport-specific); single-host mp-tcp inherits the identical wrong arithmetic."
 
 [[skip]]
 example  = "03-reduction"
