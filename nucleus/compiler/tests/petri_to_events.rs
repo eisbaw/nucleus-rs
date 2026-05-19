@@ -30,6 +30,14 @@ use compiler::passes::sync_inject::inject_syncs;
 use compiler::passes::transfer_inject::inject_transfers;
 use compiler::sched::{lower_sched, parse_sched};
 
+// One per-data expectation: (data symbol, expected vec! length,
+// expected element type). Aliased to keep the table type below within
+// clippy::type_complexity (TASK-0186).
+type DataCheck = (&'static str, usize, &'static str);
+// One row of the sidecar-sizing expectations table:
+// (algo path, schedule path, per-data checks).
+type SidecarExpectation = (&'static str, &'static str, &'static [DataCheck]);
+
 // --------------------------------------------------------------------
 // Synthetic-ACFG helpers (copied from tests/acfg_to_petri.rs so the
 // two test files stay independent of each other).
@@ -1082,7 +1090,7 @@ fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
     // AlgoIR-walking backend computes today.
     //
     // (data symbol, expected vec! length, expected elem type)
-    let expectations: &[(&str, &str, &[(&str, usize, &str)])] = &[
+    let expectations: &[SidecarExpectation] = &[
         (
             "01-elementwise-add/prog.algo.nuc",
             "01-elementwise-add/schedules/naive.sched.nuc",

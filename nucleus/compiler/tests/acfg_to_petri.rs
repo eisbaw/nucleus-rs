@@ -481,7 +481,7 @@ fn e2e_example_01_naive() {
         "01-elementwise-add/prog.algo.nuc",
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
-    assert!(net.transitions.len() > 0, "non-empty program");
+    assert!(!net.transitions.is_empty(), "non-empty program");
     assert!(all_places_bounded(&net), "every place bounded");
     assert!(all_transitions_connected(&net));
     let buf_count = net
@@ -501,7 +501,7 @@ fn e2e_example_02_split() {
         "02-split-add/prog.algo.nuc",
         "02-split-add/schedules/split.sched.nuc",
     );
-    assert!(net.transitions.len() > 0);
+    assert!(!net.transitions.is_empty());
     assert!(all_places_bounded(&net));
     assert!(all_transitions_connected(&net));
     let buf_count = net
@@ -524,7 +524,7 @@ fn e2e_example_02_naive() {
         "02-split-add/prog.algo.nuc",
         "02-split-add/schedules/naive.sched.nuc",
     );
-    assert!(net.transitions.len() > 0);
+    assert!(!net.transitions.is_empty());
     assert!(all_places_bounded(&net));
     let buf_count = net
         .places
@@ -541,7 +541,7 @@ fn e2e_example_03_naive() {
         "03-reduction/prog.algo.nuc",
         "03-reduction/schedules/naive.sched.nuc",
     );
-    assert!(net.transitions.len() > 0);
+    assert!(!net.transitions.is_empty());
     assert!(all_places_bounded(&net));
     assert!(all_transitions_connected(&net));
 }

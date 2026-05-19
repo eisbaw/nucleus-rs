@@ -2250,10 +2250,10 @@ mystery = 42
         assert_eq!(planned[0].cell.schedule, "naive");
     }
 
-    /// Skip-entry plumbing: a [[skip]] entry produces a SKIPPED
-    /// status with the manifest's reason, *without* invoking cargo.
-    /// Drives run_cell directly with a manifest-synthesised skip;
-    /// validates we bail out before touching the filesystem.
+    // Skip-entry plumbing: a [[skip]] entry produces a SKIPPED
+    // status with the manifest's reason, *without* invoking cargo.
+    // Drives run_cell directly with a manifest-synthesised skip;
+    // validates we bail out before touching the filesystem.
     // ----------------------------------------------------------------
     // TASK-0163: required-matrix coverage guard. These pin the "prove
     // the falsifier works" property in the spirit of
