@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 00:53'
+updated_date: '2026-05-19 04:13'
 labels:
   - M3
   - backend
@@ -48,4 +48,6 @@ AC#7 honest limitations recorded: no per-channel buffer granularity — v2 uses 
 AC#5 (forced-low net.core.wmem_max in a container produces a clear error): the fail-loud read-back-and-panic code path IS implemented (wire::apply_sock_buf: Linux internally doubles SO_*BUF; we require effective got/2 >= requested else panic naming the cap). BUT I did not execute it inside an actual container with a lowered sysctl, so I am NOT checking AC#5 honestly — the code is present and unit-reasoned but the container scenario is unverified. Filed as a follow-up.
 
 AC status: #1,#2,#3,#4,#6,#7 met and verified (run.sh emitted + launches per-worker processes + SO_*BUF env-sized + non-zero-naming-failed-worker + e2e/pingpong drive it; design Qs + limitations recorded above). AC#5 NOT checked — the lowered-net.core.wmem_max container scenario is implemented (fail-loud read-back) but unverified end-to-end; deferred to TASK-0174 (dependency edge on TASK-0036/0038). Task stays In Progress until TASK-0174 verifies AC#5.
+
+Forward-carried from TASK-0174: AC#5 (clear error under a lowered net.core.wmem_max) cannot close in the dev sandbox — net.core.wmem_max is init_user_ns-owned, not per-netns, so unshare -Urn + CAP_NET_ADMIN cannot lower it. The fail-loud DECISION is now proven deterministically (pure check_effective_sock_buf + 3 unit tests, mp-tcp-common) and a genuine end-to-end netns harness is shipped & ready (just sockbuf-cap-check). Genuine AC#5 closure is now a first-class node: TASK-0185 (run the ready harness on a privileged host/CI where net.core.wmem_max is writable). TASK-0038 -> Done is gated on TASK-0185, which in turn flips TASK-0036 -> Done.
 <!-- SECTION:NOTES:END -->

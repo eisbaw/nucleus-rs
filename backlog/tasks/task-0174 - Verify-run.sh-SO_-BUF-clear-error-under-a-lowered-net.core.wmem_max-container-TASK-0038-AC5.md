@@ -7,11 +7,10 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-19 00:52'
-updated_date: '2026-05-19 04:03'
+updated_date: '2026-05-19 04:13'
 labels: []
 dependencies:
-  - TASK-0036
-  - TASK-0038
+  - TASK-0185
 ---
 
 ## Description
@@ -49,6 +48,11 @@ PROBE RESULT (verbatim): \`unshare -Urn\` WORKS (uid maps to root-in-userns, fre
 GATE (nix develop): just test 0 failed (mp-tcp-common 10/10 incl. 3 new); just e2e UNCHANGED total 30/pass 26/fail 0/skipped 4/required-fail 0 (all mp-tcp multi-process cells incl 02-split/split PASS — refactor behaviour-identical); just determinism-check 30/26/0/4 byte-identical; determinism-check-negative + xbackend-check-negative still bite; clippy --workspace -D warnings clean; just ci exit 0.
 
 GOTCHA for future: the determinism FAIL line seen inside \`just ci\` is the EXPECTED determinism-check-negative arm (NUC_NONDET_TEST=1 injects a pid/nanos nonce into pthreads-sync src/main.rs ON PURPOSE); the recipe then correctly reports OK. Not a regression.
+
+phase3-ralph review gate (both reviewers GO):
+- qa-test-runner: test 10/10 (mp-tcp-common 7->10, 3 new pure-logic tests pass), e2e 30/26/0/4 required-fail 0 (all mp-tcp cells incl 02-split-add/split unregressed), determinism byte-identical x2 + both negative arms bite, clippy clean, just ci exit 0, sockbuf-cap-check honestly SKIPs with readback proof (NS_SYSCTL_EPERM readback=4194304) not fake-pass.
+- mped-architect: refactor source-identical + empirically behaviour-preserving (single-sourced panic msg, char-identical); comments/docs honest (real root cause stated: net.core.wmem_max init_user_ns-owned not per-netns); honest-partial is correct (no better in-sandbox path; LD_PRELOAD/integration-shim would be strictly worse than the pure-logic test).
+Graph-hygiene finding applied: filed TASK-0185 (privileged-host run of the ready harness, TASK-0166-style standalone env-blocked node) and added dep edge TASK-0174 -> TASK-0185. TASK-0174 stays In Progress; AC#1/2/3 remain unchecked until TASK-0185 runs the harness on a writable-wmem_max host.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
