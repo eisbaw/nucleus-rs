@@ -36,7 +36,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::ast::{
-    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, SpExpr, SpStmt,
+    Stmt, Type, UnaryOp,
 };
 use super::ir::{
     AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, ResolvedConst, ResolvedData,
@@ -58,8 +59,13 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerError> {
     // doc note that "semantic passes enforce declarations-before-use").
     let mut top_scope = Scope::new_top_level();
 
+    // Spans are populated on the AST (TASK-0082) but lowering does not
+    // consult them — `LowerError` stays span-free until TASK-0090
+    // wires positions in. We unwrap each `Spanned` to its `.node` and
+    // proceed exactly as before; behaviour is unchanged (the
+    // determinism gate proves this byte-identical).
     for item in &ast.items {
-        match item {
+        match &item.node {
             Item::Const(c) => lower_const(c, &mut ir)?,
             Item::Data(d) => lower_data(d, &mut ir)?,
             Item::Kernel(k) => lower_kernel(k, &mut ir)?,
@@ -78,24 +84,28 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerError> {
 // --------------------------------------------------------------------
 
 fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
-    if ir.consts.contains_key(&c.name) {
-        return Err(LowerError::DuplicateConst(c.name.clone()));
+    // `c.name` is a `Spanned<String>`; lowering uses only the textual
+    // name (`.node`). The span is available for TASK-0090 but unused
+    // here — keeps `LowerError` span-free this task.
+    let name = &c.name.node;
+    if ir.consts.contains_key(name) {
+        return Err(LowerError::DuplicateConst(name.clone()));
     }
     // Other namespaces (data, kernel) may not collide either —
     // identifiers share one global symbol table at the algorithm level.
-    if ir.data.contains_key(&c.name) || ir.kernels.contains_key(&c.name) {
-        return Err(LowerError::DuplicateConst(c.name.clone()));
+    if ir.data.contains_key(name) || ir.kernels.contains_key(name) {
+        return Err(LowerError::DuplicateConst(name.clone()));
     }
 
     // Evaluate the value expression. The visitor stack starts with
     // this name so any self-reference is caught as a cycle.
-    let mut visiting: Vec<String> = vec![c.name.clone()];
-    let value = eval_const_expr(&c.value, &c.name, ir, &mut visiting)?;
+    let mut visiting: Vec<String> = vec![name.clone()];
+    let value = eval_const_expr(&c.value, name, ir, &mut visiting)?;
 
     ir.consts.insert(
-        c.name.clone(),
+        name.clone(),
         ResolvedConst {
-            name: c.name.clone(),
+            name: name.clone(),
             ty: c.ty.clone(),
             value,
         },
@@ -104,17 +114,18 @@ fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
 }
 
 fn lower_data(d: &DataDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
-    if ir.data.contains_key(&d.name)
-        || ir.consts.contains_key(&d.name)
-        || ir.kernels.contains_key(&d.name)
+    let name = &d.name.node;
+    if ir.data.contains_key(name)
+        || ir.consts.contains_key(name)
+        || ir.kernels.contains_key(name)
     {
-        return Err(LowerError::DuplicateData(d.name.clone()));
+        return Err(LowerError::DuplicateData(name.clone()));
     }
-    let ty = resolve_type(&d.ty, &d.name, ir)?;
+    let ty = resolve_type(&d.ty, name, ir)?;
     ir.data.insert(
-        d.name.clone(),
+        name.clone(),
         ResolvedData {
-            name: d.name.clone(),
+            name: name.clone(),
             ty,
         },
     );
@@ -122,28 +133,29 @@ fn lower_data(d: &DataDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
 }
 
 fn lower_kernel(k: &KernelDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
-    if ir.kernels.contains_key(&k.name)
-        || ir.consts.contains_key(&k.name)
-        || ir.data.contains_key(&k.name)
+    let name = &k.name.node;
+    if ir.kernels.contains_key(name)
+        || ir.consts.contains_key(name)
+        || ir.data.contains_key(name)
     {
-        return Err(LowerError::DuplicateKernel(k.name.clone()));
+        return Err(LowerError::DuplicateKernel(name.clone()));
     }
     let params = k
         .sig
         .params
         .iter()
-        .map(|t| resolve_type(t, &k.name, ir))
+        .map(|t| resolve_type(t, name, ir))
         .collect::<Result<Vec<_>, _>>()?;
     let ret = k
         .sig
         .ret
         .as_ref()
-        .map(|t| resolve_type(t, &k.name, ir))
+        .map(|t| resolve_type(t, name, ir))
         .transpose()?;
     ir.kernels.insert(
-        k.name.clone(),
+        name.clone(),
         ResolvedKernel {
-            name: k.name.clone(),
+            name: name.clone(),
             params,
             ret,
             purity: k.purity,
@@ -158,6 +170,9 @@ fn lower_kernel(k: &KernelDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
 fn resolve_type(t: &Type, decl_name: &str, ir: &AlgoIR) -> Result<ResolvedType, LowerError> {
     let mut dims = Vec::with_capacity(t.dims.len());
     for dim_expr in &t.dims {
+        // `dim_expr` is a `Spanned<Expr>`; the evaluator matches on
+        // `.node` and ignores the span (TASK-0090 owns span-aware
+        // shape diagnostics).
         let v = eval_shape_expr(dim_expr, decl_name, ir)?;
         if v <= 0 {
             return Err(LowerError::NonPositiveDim {
@@ -193,12 +208,13 @@ fn resolve_type(t: &Type, decl_name: &str, ir: &AlgoIR) -> Result<ResolvedType, 
 /// reference), but we keep the check so a future relaxation of the
 /// order rule doesn't introduce a silent infinite loop.
 fn eval_const_expr(
-    expr: &Expr,
+    expr: &SpExpr,
     in_const: &str,
     ir: &AlgoIR,
     visiting: &mut Vec<String>,
 ) -> Result<i64, LowerError> {
-    match expr {
+    // Span carried but unused (TASK-0090). Match the inner node.
+    match &expr.node {
         Expr::IntLit(n) => Ok(*n),
         Expr::Unary(UnaryOp::Neg, inner) => {
             let v = eval_const_expr(inner, in_const, ir, visiting)?;
@@ -266,8 +282,9 @@ fn eval_const_ident(
 
 /// Evaluate a shape dimension expression. Same constructs as a const
 /// expression, with errors tagged for the owning declaration.
-fn eval_shape_expr(expr: &Expr, decl: &str, ir: &AlgoIR) -> Result<i64, LowerError> {
-    match expr {
+fn eval_shape_expr(expr: &SpExpr, decl: &str, ir: &AlgoIR) -> Result<i64, LowerError> {
+    // Span carried but unused this task (TASK-0090).
+    match &expr.node {
         Expr::IntLit(n) => Ok(*n),
         Expr::Unary(UnaryOp::Neg, inner) => {
             let v = eval_shape_expr(inner, decl, ir)?;
@@ -428,34 +445,38 @@ impl Scope {
     }
 }
 
-fn lower_stmt(stmt: &Stmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, LowerError> {
-    match stmt {
+fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, LowerError> {
+    // Spans populated on the AST (TASK-0082) but not consulted here;
+    // `LowerError` stays span-free until TASK-0090. We match the inner
+    // node and read identifiers via `.node`.
+    match &stmt.node {
         Stmt::Dataflow { lhs, rhs } => {
+            let lhs_name = &lhs.name.node;
             // The LHS must be a declared data symbol.
-            if !ir.data.contains_key(&lhs.name) {
+            if !ir.data.contains_key(lhs_name) {
                 // Distinguish "iter var on LHS" from "totally unknown"
                 // for a clearer message: iteration variables and
                 // consts are not assignable.
-                if scope.iter_var_in_scope(&lhs.name)
-                    || ir.consts.contains_key(&lhs.name)
-                    || ir.kernels.contains_key(&lhs.name)
+                if scope.iter_var_in_scope(lhs_name)
+                    || ir.consts.contains_key(lhs_name)
+                    || ir.kernels.contains_key(lhs_name)
                 {
-                    return Err(LowerError::AssignmentTargetNotData(lhs.name.clone()));
+                    return Err(LowerError::AssignmentTargetNotData(lhs_name.clone()));
                 }
-                return Err(LowerError::UnknownIdent(lhs.name.clone()));
+                return Err(LowerError::UnknownIdent(lhs_name.clone()));
             }
 
             // Single-assignment check. Record the assignment against
             // the data symbol; reject a re-assignment.
-            if let Some(prev_scope) = scope.assigned.get(&lhs.name) {
+            if let Some(prev_scope) = scope.assigned.get(lhs_name) {
                 return Err(LowerError::DoubleAssignment {
-                    data: lhs.name.clone(),
+                    data: lhs_name.clone(),
                     scope: prev_scope.clone(),
                 });
             }
             scope
                 .assigned
-                .insert(lhs.name.clone(), scope.current_description().to_string());
+                .insert(lhs_name.clone(), scope.current_description().to_string());
 
             // Lower indices (must be valid expressions in the current
             // scope: iter vars + consts).
@@ -463,7 +484,7 @@ fn lower_stmt(stmt: &Stmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, Low
             let rhs_ir = lower_rvalue(rhs, ir, scope)?;
             Ok(IrStmt::Dataflow {
                 lhs: IndexedRef {
-                    name: lhs.name.clone(),
+                    name: lhs_name.clone(),
                     indices,
                 },
                 rhs: rhs_ir,
@@ -473,8 +494,9 @@ fn lower_stmt(stmt: &Stmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, Low
             // Bare-call statement. The callee must be a declared
             // kernel; we don't enforce purity here (that's a later
             // pass), only that the name exists.
-            if !ir.kernels.contains_key(&call.callee) {
-                return Err(LowerError::UnknownIdent(call.callee.clone()));
+            let callee = &call.callee.node;
+            if !ir.kernels.contains_key(callee) {
+                return Err(LowerError::UnknownIdent(callee.clone()));
             }
             let args = call
                 .args
@@ -482,11 +504,12 @@ fn lower_stmt(stmt: &Stmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, Low
                 .map(|a| lower_rvalue(a, ir, scope))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(IrStmt::Effect {
-                callee: call.callee.clone(),
+                callee: callee.clone(),
                 args,
             })
         }
         Stmt::For { var, lo, hi, body } => {
+            let var = &var.node;
             // Loop bounds are evaluated in the *enclosing* scope; the
             // iteration variable is only visible inside the body.
             //
@@ -529,7 +552,11 @@ fn lower_stmt(stmt: &Stmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, Low
     }
 }
 
-fn lower_indices(indices: &[Expr], ir: &AlgoIR, scope: &Scope) -> Result<Vec<IrExpr>, LowerError> {
+fn lower_indices(
+    indices: &[SpExpr],
+    ir: &AlgoIR,
+    scope: &Scope,
+) -> Result<Vec<IrExpr>, LowerError> {
     indices
         .iter()
         .map(|e| lower_index_expr(e, ir, scope))
@@ -543,8 +570,9 @@ fn lower_indices(indices: &[Expr], ir: &AlgoIR, scope: &Scope) -> Result<Vec<IrE
 ///
 /// For index/loop-bound positions, calls and data-refs are rejected
 /// (they would be runtime values, not iteration-space arithmetic).
-fn lower_index_expr(expr: &Expr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
-    match expr {
+fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
+    // Span unused this task (TASK-0090 owns span-aware diagnostics).
+    match &expr.node {
         Expr::IntLit(n) => Ok(IrExpr::IntLit(*n)),
         Expr::Unary(UnaryOp::Neg, inner) => {
             Ok(IrExpr::Neg(Box::new(lower_index_expr(inner, ir, scope)?)))
@@ -578,8 +606,9 @@ fn lower_index_expr(expr: &Expr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, L
 /// Lower an expression appearing as an RHS / kernel argument. This is
 /// the most permissive form: data refs and calls are legal, on top of
 /// everything `lower_index_expr` allows.
-fn lower_rvalue(expr: &Expr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
-    match expr {
+fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
+    // Span unused this task (TASK-0090 owns span-aware diagnostics).
+    match &expr.node {
         Expr::IntLit(n) => Ok(IrExpr::IntLit(*n)),
         Expr::Unary(UnaryOp::Neg, inner) => {
             Ok(IrExpr::Neg(Box::new(lower_rvalue(inner, ir, scope)?)))
@@ -591,8 +620,9 @@ fn lower_rvalue(expr: &Expr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Lower
         )),
         Expr::Ident(name) => resolve_ident(name, ir, scope),
         Expr::Call(c) => {
-            if !ir.kernels.contains_key(&c.callee) {
-                return Err(LowerError::UnknownIdent(c.callee.clone()));
+            let callee = &c.callee.node;
+            if !ir.kernels.contains_key(callee) {
+                return Err(LowerError::UnknownIdent(callee.clone()));
             }
             let args = c
                 .args
@@ -600,7 +630,7 @@ fn lower_rvalue(expr: &Expr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Lower
                 .map(|a| lower_rvalue(a, ir, scope))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(IrExpr::Call {
-                callee: c.callee.clone(),
+                callee: callee.clone(),
                 args,
             })
         }
@@ -612,12 +642,13 @@ fn lower_data_ref(lv: &IndexedLValue, ir: &AlgoIR, scope: &Scope) -> Result<IrEx
     // If indices are present, the base must be a data symbol. If no
     // indices, it could be a bare data reference (whole array copy)
     // or a scalar use of a const / iter var.
+    let lv_name = &lv.name.node;
     if lv.indices.is_empty() {
         // Bare ident reuse path.
-        return resolve_ident(&lv.name, ir, scope);
+        return resolve_ident(lv_name, ir, scope);
     }
-    if !ir.data.contains_key(&lv.name) {
-        return Err(LowerError::UnknownIdent(lv.name.clone()));
+    if !ir.data.contains_key(lv_name) {
+        return Err(LowerError::UnknownIdent(lv_name.clone()));
     }
     let indices = lv
         .indices
@@ -625,7 +656,7 @@ fn lower_data_ref(lv: &IndexedLValue, ir: &AlgoIR, scope: &Scope) -> Result<IrEx
         .map(|e| lower_index_expr(e, ir, scope))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(IrExpr::DataRef(IndexedRef {
-        name: lv.name.clone(),
+        name: lv_name.clone(),
         indices,
     }))
 }

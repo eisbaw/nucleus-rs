@@ -6,14 +6,39 @@
 //! `IndexExpr` and `ConstExpr` share the same shape, so both are
 //! [`Expr`]).
 //!
-//! Spans (line/column) are not tracked on AST nodes in this iteration.
-//! Only [`crate::algo::ParseError`] carries position. This is a known
-//! limitation; downstream passes (TASK-0009, TASK-0011) will want span
-//! info for good diagnostics. Filed as follow-up.
+//! Per-node source spans ARE tracked (TASK-0082): the diagnosable
+//! nodes are wrapped in [`Spanned<T>`][crate::algo::span::Spanned],
+//! which carries the byte [`core::ops::Range`] the node was parsed
+//! from. See `span.rs` for the exact granularity and rationale (which
+//! nodes are wrapped and why the leaves are not). `parse_algo`
+//! populates the ranges; lowering still ignores them (TASK-0090 wires
+//! them into `LowerError`).
 //!
-//! Equality semantics: `PartialEq` is derived to make tests cheap. Two
-//! ASTs compare structurally; this is fine because the AST holds no
-//! interned IDs or other identity-bearing state.
+//! Equality semantics: the inner-node `#[derive(PartialEq)]`s below
+//! still make tests cheap, and `Spanned<T>`'s *manual* `PartialEq`
+//! forwards to the node only (span EXCLUDED — see `span.rs`), so two
+//! ASTs still compare structurally regardless of source position. The
+//! AST holds no interned IDs or other identity-bearing state.
+
+use super::span::Spanned;
+
+/// An identifier as written in source, plus the byte range of the
+/// identifier token. Diagnostics that name an identifier ("undeclared
+/// `foo`", "duplicate kernel `k`") underline `span`; the `String`
+/// compares/hashes structurally (span excluded — see `span.rs`).
+pub type SpIdent = Spanned<String>;
+
+/// An expression plus its source span. Used at every recursive
+/// expression position so a future type / scope error can point at the
+/// offending sub-expression (TASK-0090).
+pub type SpExpr = Spanned<Expr>;
+
+/// A statement plus its source span (top level and every nested
+/// `for`-body statement).
+pub type SpStmt = Spanned<Stmt>;
+
+/// A top-level item plus its source span.
+pub type SpItem = Spanned<Item>;
 
 /// Scalar types per grammar §1, rule `ScalarType`. The set is closed
 /// (PRD §6.2.4: no user-defined scalars, no `()` here — unit is only a
@@ -51,7 +76,7 @@ pub enum ScalarType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Type {
     pub scalar: ScalarType,
-    pub dims: Vec<Expr>,
+    pub dims: Vec<SpExpr>,
 }
 
 /// Kernel purity (grammar §1, rule `Purity`; PRD §6.2.2 #5).
@@ -68,22 +93,22 @@ pub enum Purity {
 /// `const NAME : SCALAR = EXPR ;`
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstDecl {
-    pub name: String,
+    pub name: SpIdent,
     pub ty: ScalarType,
-    pub value: Expr,
+    pub value: SpExpr,
 }
 
 /// `data NAME : TYPE ;`
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataDecl {
-    pub name: String,
+    pub name: SpIdent,
     pub ty: Type,
 }
 
 /// `kernel NAME : SIG PURITY ;`
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelDecl {
-    pub name: String,
+    pub name: SpIdent,
     pub sig: KernelSig,
     pub purity: Purity,
 }
@@ -104,8 +129,8 @@ pub struct KernelSig {
 /// a `LValue`-shaped RValue (bare data reference; grammar §1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexedLValue {
-    pub name: String,
-    pub indices: Vec<Expr>,
+    pub name: SpIdent,
+    pub indices: Vec<SpExpr>,
 }
 
 /// Expressions cover both `IndexExpr` and `ConstExpr` (grammar §1).
@@ -117,13 +142,15 @@ pub enum Expr {
     /// overflow detection is a `ConstExpr` evaluation concern (grammar
     /// §2 note 3).
     IntLit(i64),
-    /// Bare identifier reference (a const name or loop variable).
-    Ident(String),
+    /// Bare identifier reference (a const name or loop variable). The
+    /// identifier carries its own span so an "undeclared `x`" error
+    /// can underline the reference itself.
+    Ident(SpIdent),
     /// Unary `-EXPR`. Grammar `UnaryExpr ::= ('-')? Atom`.
-    Unary(UnaryOp, Box<Expr>),
+    Unary(UnaryOp, Box<SpExpr>),
     /// Binary arithmetic: `+ - * / %` with standard precedence
     /// (grammar §1 `AddExpr`, `MulExpr`).
-    Binary(BinOp, Box<Expr>, Box<Expr>),
+    Binary(BinOp, Box<SpExpr>, Box<SpExpr>),
     /// A call expression used as an RValue (grammar `RValue ::=
     /// CallExpr | LValue`).
     Call(Call),
@@ -148,8 +175,8 @@ pub enum BinOp {
 /// `IDENT '(' (RValue (',' RValue)*)? ')'` (grammar `CallExpr`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
-    pub callee: String,
-    pub args: Vec<Expr>,
+    pub callee: SpIdent,
+    pub args: Vec<SpExpr>,
 }
 
 /// Statements that appear inside a `for` body and at the top level
@@ -158,16 +185,16 @@ pub struct Call {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `LVALUE <-- RVALUE ;`
-    Dataflow { lhs: IndexedLValue, rhs: Expr },
+    Dataflow { lhs: IndexedLValue, rhs: SpExpr },
     /// `CALL ;` — bare effectful call as a statement (grammar
     /// `EffectStmt`). Purity check happens later (grammar §2 note 5).
     Effect(Call),
     /// `for IDENT : EXPR .. EXPR { Stmt* }`
     For {
-        var: String,
-        lo: Expr,
-        hi: Expr,
-        body: Vec<Stmt>,
+        var: SpIdent,
+        lo: SpExpr,
+        hi: SpExpr,
+        body: Vec<SpStmt>,
     },
 }
 
@@ -179,13 +206,17 @@ pub enum Item {
     Const(ConstDecl),
     Data(DataDecl),
     Kernel(KernelDecl),
-    Stmt(Stmt),
+    /// A top-level statement. Held as a [`SpStmt`] so every statement
+    /// — top-level and nested `for`-body alike — is uniformly spanned;
+    /// the enclosing [`SpItem`] additionally spans the whole item
+    /// (same byte range as the statement for a bare top-level stmt).
+    Stmt(SpStmt),
 }
 
 /// Root AST node: a `Program ::= TopItem*`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AlgoAst {
-    pub items: Vec<Item>,
+    pub items: Vec<SpItem>,
 }
 
 impl AlgoAst {
@@ -194,28 +225,28 @@ impl AlgoAst {
     pub fn count_consts(&self) -> usize {
         self.items
             .iter()
-            .filter(|i| matches!(i, Item::Const(_)))
+            .filter(|i| matches!(i.node, Item::Const(_)))
             .count()
     }
 
     pub fn count_data(&self) -> usize {
         self.items
             .iter()
-            .filter(|i| matches!(i, Item::Data(_)))
+            .filter(|i| matches!(i.node, Item::Data(_)))
             .count()
     }
 
     pub fn count_kernels(&self) -> usize {
         self.items
             .iter()
-            .filter(|i| matches!(i, Item::Kernel(_)))
+            .filter(|i| matches!(i.node, Item::Kernel(_)))
             .count()
     }
 
     pub fn count_stmts(&self) -> usize {
         self.items
             .iter()
-            .filter(|i| matches!(i, Item::Stmt(_)))
+            .filter(|i| matches!(i.node, Item::Stmt(_)))
             .count()
     }
 }

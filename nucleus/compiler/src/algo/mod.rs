@@ -17,18 +17,22 @@
 //!   semantic-pass concern (TASK-0009).
 //! - Type-check expressions or kernel signatures (TASK-0009).
 //! - Enforce single-assignment (TASK-0009).
-//! - Track AST node spans beyond the top-level error position. Adding
-//!   per-node spans is a follow-up task — see TASK-0007 self-report.
+//!
+//! Per-node source spans ARE tracked, via [`span::Spanned`] (TASK-0082);
+//! `parse_algo` populates byte ranges. Lowering still ignores them —
+//! threading spans into `LowerError` is TASK-0090.
 
 pub mod ast;
 pub mod ir;
 pub mod lower;
 pub mod parser;
+pub mod span;
 
 pub use ast::{
     AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig, Purity,
     ScalarType, Stmt, Type, UnaryOp,
 };
+pub use span::Spanned;
 pub use ir::{
     AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, ResolvedConst, ResolvedData,
     ResolvedKernel, ResolvedType,
