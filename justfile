@@ -33,9 +33,22 @@ fmt:
 clippy:
     cd nucleus && cargo clippy --workspace -- -D warnings
 
-# Full end-to-end differential matrix (stub binary at M0; real matrix lands at M1+).
+# Full end-to-end differential matrix (every required cell, all
+# milestones). This is the gate `just ci` runs and is UNCHANGED by
+# the milestone work: bare `just e2e` = the full matrix.
 e2e:
     cd nucleus && cargo run --release --bin nucleus-e2e
+
+# Per-milestone tier of the e2e matrix (TASK-0167). CUMULATIVE: `just
+# e2e-milestone M3` runs the M1 ∪ M2 ∪ M3 required cells; `M1` runs
+# only the M1 tier. A PR targeting a milestone branch runs that
+# milestone's tier via this recipe (see .github/workflows/ci.yml
+# matrix). Single source of truth: CI calls `nix develop -c just
+# e2e-milestone M<k>`, identical to what a developer runs here. The
+# anti-bloat rule (no example/schedule-specific recipes) is respected
+# — milestone is a first-class gate dimension (PRD §11), not a one-off.
+e2e-milestone M:
+    cd nucleus && cargo run --release --bin nucleus-e2e -- --milestone {{M}}
 
 # Verify PRD §1 / §10.1: same source + same backend = byte-identical
 # emitted code. Builds every cell twice and diffs the generated files.

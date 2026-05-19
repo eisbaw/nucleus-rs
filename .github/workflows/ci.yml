@@ -13,12 +13,25 @@
 # DETECTS injected nondeterminism, so a green determinism-check is
 # only trustworthy because the negative arm is also green.
 #
-# Milestone matrix (AC#3): `tier` is parameterised by milestone. At
-# M0–M6 the only active tier is tier-1 (the `just ci` gate). Tier-2
-# (MPI, M7+) and tier-3 (Renode, M9+) rows are declared but disabled
-# until those backends and runtimes exist — see the commented matrix
-# entries and TASK follow-ups below. Disabled rows are honest
-# placeholders, NOT silently-passing stubs.
+# Milestone matrix (TASK-0167, AC#3/#4 — GENUINE, not cosmetic). The
+# `milestone` job below is a real matrix: each entry runs
+# `just e2e-milestone M<k>`, which the e2e harness narrows to the
+# CUMULATIVE required set tagged at or before M<k> (see
+# nuc-nucleus/e2e-matrix.toml per-cell `milestone` key). The jobs run
+# DIFFERENT required sets — at the time of writing 4 (M1) / 8 (M2) /
+# 28 (M3) cells — so this is a data dimension that changes behaviour,
+# not the 7-identical-jobs decoration the architect rejected in the
+# original TASK-0057 cycle (commit 6d7fcf7 collapsed that). The
+# separate `gate` job remains the single full-trust tier-1 gate
+# (`just ci`); the milestone matrix is the per-tier early-signal /
+# milestone-branch gate. Both delegate to the justfile (CI == local).
+#
+# PR-to-milestone-branch (AC#4): a PR targeting `milestone/M<k>` runs
+# that tier — the `milestone` job's matrix covers M1..M3 on every PR
+# and push, so a milestone branch's PR is gated by (at least) its
+# tier; `just e2e-milestone M<k>` is the exact command to reproduce a
+# given tier locally. Tier-2/3 (MPI M7+, Renode M9+) remain disabled
+# placeholders below — backends/runtimes do not exist yet.
 #
 # Limitations recorded in TASK-0057 notes (AC#6/#7): runner choice
 # (GitHub-hosted vs self-hosted) and Nix/Cargo cache strategy/cost;
@@ -47,23 +60,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # A SINGLE honest tier-1 gate job. There is deliberately NO
-  # milestone matrix: today every milestone M0–M6 would run the
-  # byte-identical `just ci` gate (the e2e harness's `--milestone`
-  # flag is accepted-but-ignored and nuc-nucleus/e2e-matrix.toml has
-  # no milestone dimension — verified in nucleus/e2e/src/main.rs).
-  # A 7-cell fan-out keyed on a value that changes no behaviour would
-  # be cosmetic config burning 7x CI minutes while pretending to be a
-  # data dimension — rejected (mped-architect review of TASK-0057;
-  # the original cycle wrongly checked AC#3 on this decorative
-  # matrix). Genuine per-milestone parameterisation requires wiring
-  # `--milestone` through `just ci` -> the e2e harness AND adding a
-  # milestone key to e2e-matrix.toml so the required set actually
-  # differs per milestone: that real work is TASK-0167. Until it
-  # lands, AC#3 is honestly UNMET, not faked with scaffolding.
+  # The single full-trust tier-1 gate: the entire `just ci` aggregate
+  # (check/clippy/test/e2e/determinism). This is the byte-for-byte
+  # "what a developer runs locally" gate and is the authoritative
+  # merge-blocking check. It runs the FULL e2e matrix (bare `just
+  # e2e`), unaffected by the milestone work.
   #
   # Future tiers (deliberately disabled, not stubbed): tier-2 MPI CI
-  # is TASK-0164 (lands with M7), tier-3 Renode is TASK-0165 (M10).
+  # is TASK-0164 (lands with M7), tier-3 Renode is TASK-0165 (M9+).
   # The backends/runtimes do not exist yet; enabling a row now would
   # be a job that fails or fakes success — both forbidden. When
   # enabled they must run a tier-appropriate recipe
@@ -113,3 +117,52 @@ jobs:
       # reproducibility gates.
       - name: just ci (tier-1 full gate)
         run: nix develop -c just ci
+
+  # GENUINE per-milestone matrix (TASK-0167 AC#3/#4). Each entry runs
+  # `just e2e-milestone M<k>`, which the harness narrows to the
+  # CUMULATIVE required set for that tier — the jobs run DIFFERENT
+  # required sets (M1 ⊂ M2 ⊂ M3; today 4 / 8 / 28 cells), so this is
+  # a real data dimension, NOT the 7-identical-jobs decoration the
+  # architect rejected. fail-fast:false so every tier reports even if
+  # an earlier tier fails (a per-tier signal is the point). Delegates
+  # to the justfile, so CI == local: reproduce any tier with
+  # `nix develop -c just e2e-milestone M<k>`.
+  milestone:
+    name: e2e tier ${{ matrix.milestone }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        milestone: [M1, M2, M3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nucleus/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # The per-tier required set. A PR to a milestone branch is gated
+      # by (at minimum) its tier; this command reproduces it locally
+      # verbatim. Exits non-zero on any required-cell failure or a
+      # TASK-0163 coverage gap WITHIN that tier (the coverage guard is
+      # scoped by the SAME cumulative predicate, so a typo'd/stale
+      # milestone-tagged required cell still hard-fails its tier).
+      - name: just e2e-milestone ${{ matrix.milestone }}
+        run: nix develop -c just e2e-milestone ${{ matrix.milestone }}
