@@ -1,10 +1,11 @@
 ---
 id: TASK-0183
 title: Relocate the cross-backend-negative wire injection out of production codegen
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped'
 created_date: '2026-05-19 02:55'
-updated_date: '2026-05-19 06:00'
+updated_date: '2026-05-19 06:51'
 labels:
   - M3
   - backend
@@ -21,10 +22,22 @@ mped-architect-style seam concern, parallel to TASK-0157 (which tracks the same 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mp-tcp-bufsync production codegen path contains no test-only corruption branch
-- [ ] #2 xbackend-check-negative still bites 100% (>=3 consecutive runs, non-flaky)
-- [ ] #3 Loud-banner + value-gate + anchor-drift-panic safety properties preserved
+- [x] #1 mp-tcp-bufsync production codegen path contains no test-only corruption branch
+- [x] #2 xbackend-check-negative still bites 100% (>=3 consecutive runs, non-flaky)
+- [x] #3 Loud-banner + value-gate + anchor-drift-panic safety properties preserved
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Delete maybe_corrupt_wire from mp-tcp-bufsync/src/lib.rs entirely (fn ~1153-1183 + stale doc ~1108-1152); change call site :139 to write pristine WIRE_RUNTIME_SRC. Rewrite the now-stale doc comment so nothing lies about injection location.
+2. Add maybe_corrupt_wire_for_xbackend(tree) harness-side in e2e/src/main.rs mirroring maybe_perturb_for_nondet_test: exact-1 gate, loud stderr banner, ANCHOR/CORRUPT consts, replacen on emitted src/wire.rs. mp-tcp-EXCLUSIVE: only invoked for mp-tcp-bufsync cells; missing wire.rs / anchor-drift => Err (hard, gate-visible, not silent skip).
+3. Thread a corrupted: bool through CellResult; call corruption in run_cell AFTER nucleus build, BEFORE cargo build, for mp-tcp-bufsync cells only.
+4. Add matrix-wide zero-corruption guard in run() under NUC_XBACKEND_NEGATIVE=1: print NUC_XBACKEND_CORRUPTED_APPLIED=<n>; if 0 applied => loud FATAL eprintln + return Ok(0) so inverting recipe fires FAIL. Keep TASK-0188 NUC_XBACKEND_CORRUPTED_DETECTED=<n> (results-derived, unchanged definition).
+5. Update trace.rs comment to point at new harness location.
+6. Add e2e tests mirroring TASK-0187: corruption mutates synthetic wire.rs (>=1); strict no-op when env unset; Err when gate set but wire.rs missing; extend explicit_count_signal test for the xbackend applied signal.
+7. Gate: xbackend-check-negative x5 verbatim; e2e 30/26/0/4/0 + signal absent unset; determinism-check byte-identical x2; determinism-check-negative x5; test/clippy/ci; grep-prove + behaviour-equivalence (pristine wire.rs byte-identical to WIRE_RUNTIME_SRC).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -60,4 +73,59 @@ TASK-0188 hardened BOTH negative gates so the "falsifier actually touched someth
 3. **Keep gating strict.** The line must NOT appear under bare `just e2e` (verified post-0188: e2e standalone stays exactly total 30 / pass 26 / fail 0 / skipped 4 / required-fail 0, zero signal lines). A harness-side relocation must keep this no-op-when-unset property.
 
 4. **Prior carries (zero-corruption guard, recipe-inversion gotcha, layout-agnostic perturb) still apply** — TASK-0188 ADDS the explicit-signal backstop on top; it does not replace them. Net: a future recipe refactor dropping the inversion fails LOUD via the count assertion instead of silently re-neutering the falsifier. Model both via the e2e test `explicit_count_signal_makes_negative_recipes_fail_loud_independent_of_exit_code` (extend it if you move the seam).
+
+## TASK-0183 implementation evidence (commit c48b7d3)
+
+### AC#1 — production codegen corruption-branch-free
+- Deleted maybe_corrupt_wire fn + its 45-line stale doc from mp-tcp-bufsync/src/lib.rs; call site :139 now writes pristine mp_tcp_common::WIRE_RUNTIME_SRC.
+- grep-proof: only matches in mp-tcp-bufsync/src are COMMENTS (relocation notes, lines 142-147/1118-1133) + unrelated emitted NUC_TCP_PORT_* runtime strings (lines 500/532). No maybe_corrupt_wire, no wrapping_add, no executed std::env::var("NUC_XBACKEND_NEGATIVE").
+- Behaviour-equivalence PROVEN: a normal `nucleus build` for 02-split-add/split mp-tcp emits src/wire.rs byte-identical to wire_runtime.rs (WIRE_RUNTIME_SRC is include_str! of it): 11925 bytes, equal=True, corruption present=False.
+
+### AC#2 — xbackend-check-negative bites 100% (>=5 consecutive, non-flaky)
+Ran 5/5 consecutive, all identical:
+  RUN 1: APPLIED=13 DETECTED=1 -> "OK: cross-backend differential correctly bit on injected mp-tcp corruption" exit 0
+  RUN 2: APPLIED=13 DETECTED=1 -> OK exit 0
+  RUN 3: APPLIED=13 DETECTED=1 -> OK exit 0
+  RUN 4: APPLIED=13 DETECTED=1 -> OK exit 0
+  RUN 5: APPLIED=13 DETECTED=1 -> OK exit 0
+DETECTED=1 == the pre-relocation TASK-0188 baseline (only 02-split-add/split ships array data over the wire; scalar protocols unaffected by the enc_vec last-byte tweak) — IDENTICAL behaviour.
+
+### AC#3 — safety preserved (harness-side)
+- Exact-"1" gate, loud stderr WARNING banner, anchor-drift hard-failure all moved verbatim to maybe_corrupt_wire_for_xbackend. panic! -> typed Err (caller maps to Failed(Compile); zero-corruption guard forces CLEAN exit so the inverting recipe FAILs loud — never a silent neuter). Env-gate not cfg!/feature (unchanged reasoning).
+- 4 new e2e tests green: xbackend_corrupt_rewrites_wire_rs_under_gate / _is_strict_noop_when_env_unset / _errs_when_gate_set_but_wire_rs_missing / _errs_when_anchor_drifted. Extended explicit_count_signal_makes_negative_recipes_fail_loud_independent_of_exit_code for the xbackend APPLIED/DETECTED contract.
+
+### Full gate (all green, inside nix develop)
+- just e2e standalone: total 30 / pass 26 / fail 0 / skipped 4 / required-fail 0; NUC_XBACKEND_CORRUPTED grep -c = 0 (signal absent when gate unset — strict no-op).
+- just determinism-check: 30/26/0/4 byte-identical x2, exit 0 (pristine wire.rs preserves determinism).
+- just determinism-check-negative: 5/5 NUC_NONDET_PERTURBED_CELLS=26 + OK (sibling seam unaffected).
+- cargo test -p e2e: 34 passed 0 failed. just test workspace: 388 passed 0 failed.
+- clippy --workspace --all-targets -- -D warnings: clean. just ci: exit 0.
+
+### Gotchas / feed-forward (subagents are stateless)
+- DETECTION signal kept correct with corruption now harness-side: NUC_XBACKEND_CORRUPTED_DETECTED is still recomputed from results (required && mp-tcp-bufsync && Failed{Diff}), conjuncts intact — moving WHERE corruption is applied does not change "a required mp-tcp cell diverged from reference.bin at Diff".
+- wire.rs is mp-tcp-EXCLUSIVE: maybe_corrupt_wire_for_xbackend is invoked ONLY for cell.backend=="mp-tcp-bufsync"; a pthreads cell legitimately has no wire.rs and is never touched / never Errs.
+- Zero-corruption guard DIRECTION: under the gate, APPLIED==0 => loud FATAL eprintln + return Ok(0) (CLEAN), because xbackend-check-negative INVERTS exit code; exiting non-zero would invert a no-op into a false OK (the TASK-0187 backwards-first lesson, not repeated).
+- Anchor-drift now harness-side: panic! became a typed Err -> Failed(Compile) -> zero-corruption guard -> recipe FAILs loud. Gate-visible, never silent.
+- justfile xbackend-check-negative UNCHANGED (its TASK-0188 capture+dual-assert already consumes the stdout DETECTED line; APPLIED added as an extra backstop, no recipe edit needed).
+- The "no test-fault-injection in production codegen" production-readiness theme (TASK-0157/0187/0188/0183) is now COMPLETE: both negative seams (NUC_NONDET_TEST, NUC_XBACKEND_NEGATIVE) are harness-side, provably-biting, explicit-signal-backed, never-silently-neuterable. No new follow-up/forward-carry needed — the relocation surfaced no gap.
+
+ORCHESTRATOR review-gate close (phase3-ralph): both reviewers GO, no blocking findings, no follow-up needed. qa-test-runner: xbackend-check-negative 5/5 (APPLIED=13 DETECTED=1 + verbatim OK); e2e 30/26/0/4/0 + both signals absent unset; determinism byte-identical x2 + determinism-negative 5/5 unaffected; emitted wire.rs BYTE-IDENTICAL to pristine wire_runtime.rs (SHA256 e4b2c972..., 11925 bytes) on a normal build; codegen grep-proven branch-free; cargo test workspace 388/0 (e2e 34, +4 new); clippy --all-targets clean; ci exit 0; corrupted-flag threading trustworthy (single let mut + shorthand, no misset constructor). mped-architect: AC#1 branch-free+behaviour-equivalent by code-path proof; TASK-0188 DETECTED contract preserved EXACTLY (key+conjuncts+gate-only+stdout) + new APPLIED backstop sound; zero-corruption guard correct CLEAN-Ok(0) direction; pthreads correctly never Err for lacking wire.rs (no false gate failure); panic->Err anchor-drift downgrade LOST NO safety (more gate-visible); comments honest; Done honest with independently-reproduced 5/5. BOTH independently verified the no-test-injection-in-production-codegen theme (TASK-0157/0187/0188/0183) is genuinely COMPLETE: both negative seams harness-side, provably-biting, explicit-signal-backed, never-silently-neuterable. TASK-0183 Done stands.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Relocated the NUC_XBACKEND_NEGATIVE cross-backend wire-corruption falsifier entirely out of mp-tcp-bufsync production codegen and harness-side into nucleus-e2e, behaviour-identical, preserving the TASK-0188 explicit-signal contract. Final of the test-injection-relocation thread (TASK-0157/0187/0188/0183) — the "no test-fault-injection in production codegen" production-readiness theme is now complete: both negative seams are harness-side, provably-biting, explicit-signal-backed, never-silently-neuterable.
+
+Changes:
+- mp-tcp-bufsync/src/lib.rs: deleted maybe_corrupt_wire + its 45-line stale doc; wire.rs now emitted byte-identical to mp_tcp_common::WIRE_RUNTIME_SRC; zero env read on any codegen path. Stale doc replaced with an accurate relocation note (comment-honesty).
+- e2e/src/main.rs: added maybe_corrupt_wire_for_xbackend (sibling of maybe_perturb_for_nondet_test) — exact-"1" gate, loud banner, ANCHOR/CORRUPT replacen, anchor-drift/missing-wire => typed Err. Called in run_cell post-nucleus-build / pre-cargo-build for mp-tcp-bufsync cells ONLY (wire.rs is mp-tcp-exclusive). Threaded CellResult.corrupted through all 19 constructors. Added matrix-wide zero-corruption guard + NUC_XBACKEND_CORRUPTED_APPLIED stdout signal; preserved NUC_XBACKEND_CORRUPTED_DETECTED (TASK-0188) verbatim, recomputed from results. 4 new tests + extended the explicit-count-signal test.
+- compiler/src/trace.rs: updated the env-var inventory comment to the new harness location.
+- justfile UNCHANGED (its dual-assert already consumes the DETECTED stdout line).
+
+User impact: production codegen carries no test-only branch; normal builds emit pristine wire.rs (proven byte-identical, determinism preserved). Falsifier behaviour unchanged: xbackend-check-negative still bites 100%.
+
+Tests/gate (all green, nix develop): xbackend-check-negative 5/5 APPLIED=13 DETECTED=1 + verbatim OK; e2e standalone 30/26/0/4/0 with signal absent (grep -c 0); determinism-check 30/26/0/4 byte-identical x2; determinism-check-negative 5/5 NUC_NONDET_PERTURBED_CELLS=26 + OK; cargo test -p e2e 34/0; just test 388/0; clippy --workspace --all-targets -D warnings clean; just ci exit 0; grep-proof + behaviour-equivalence (11925-byte pristine wire.rs).
+
+Risks/follow-ups: none — the relocation surfaced no gap; no new forward-carry. Commit c48b7d3 (code only; task .md CLI-managed/unstaged).
+<!-- SECTION:FINAL_SUMMARY:END -->
