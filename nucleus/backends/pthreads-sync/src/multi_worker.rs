@@ -273,36 +273,15 @@ impl<'a> Plan<'a> {
         .ok();
         writeln!(out, "fn main() {{").ok();
 
-        // ---- NUC_NONDET_TEST per-process nonce (TASK-0145). ----
-        //
-        // Preserved verbatim from the pre-TASK-0124 implementation:
-        // the determinism-check-negative gate relies on this. Two
-        // `nucleus build` processes get two nonces -> guaranteed byte
-        // difference -> determinism-check fails -> -negative succeeds.
-        // Runtime env gate (not cfg!): a nested cargo --features in
-        // the harness's own cargo run does not reliably rebuild
-        // against the shared target cache. Gated on exact "1"; LOUD
-        // stderr banner so a non-reproducible build is never silent.
-        // Internal test scaffolding only; relocating it out of
-        // production codegen is TASK-0157.
-        if std::env::var("NUC_NONDET_TEST").as_deref() == Ok("1") {
-            eprintln!(
-                "nucleus: WARNING: NUC_NONDET_TEST=1 — injecting a \
-                 per-process nonce into generated code ON PURPOSE to test \
-                 the determinism check. This build is NOT reproducible. \
-                 Never set this in a real build (TASK-0145)."
-            );
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            writeln!(
-                out,
-                "    // NUC_NONDET_TEST nonce: pid={} nanos={nanos}",
-                std::process::id()
-            )
-            .ok();
-        }
+        // NOTE: this production codegen path is intentionally free of
+        // any test-only nondeterminism branch. The determinism-check
+        // -negative gate's perturbation (formerly an inline
+        // NUC_NONDET_TEST per-process nonce here, TASK-0145) was
+        // relocated harness-side in TASK-0157: the e2e determinism
+        // harness post-processes ONE of its two emitted trees when
+        // NUC_NONDET_TEST=1. See nucleus/e2e/src/main.rs
+        // `maybe_perturb_for_nondet_test`. Do NOT reintroduce an env
+        // read or self-corruption branch on the codegen critical path.
 
         // ---- Allocate slots (sorted DataId order). ----
         for (data_id, slot_id) in &self.slot_ids {

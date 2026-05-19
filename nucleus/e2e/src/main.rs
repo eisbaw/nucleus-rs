@@ -1325,6 +1325,39 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
         };
     }
 
+    // ---- NUC_NONDET_TEST negative-gate perturbation (TASK-0157). ----
+    //
+    // Relocated here from pthreads-sync `multi_worker.rs` (TASK-0145's
+    // inline per-process nonce). Rationale: the e2e determinism harness
+    // is the SOLE consumer of NUC_NONDET_TEST (only the justfile
+    // `determinism-check-negative` recipe sets it), so production
+    // codegen needs no test hook at all — keeping it fully branch-free
+    // is the strongest form of AC#1. The old branch made two `nucleus
+    // build` *processes* differ via a per-process nonce; the harness
+    // already builds twice (dir_a / dir_b), so the clean analogue is to
+    // perturb exactly ONE tree post-emit. dir_a is left pristine, dir_b
+    // gets a per-process nonce appended -> the trees diverge -> the
+    // diff below reports Failed -> `--check-determinism` exits non-zero
+    // -> `determinism-check-negative` correctly says "OK ... bit".
+    //
+    // Runtime env gate (not a cargo feature / `cfg!`): unchanged
+    // reasoning from the relocated site — a nested `cargo --features`
+    // inside the harness's own `cargo run` does not reliably rebuild
+    // against the shared target cache; an env var is read at run time
+    // and needs no rebuild. Gated on the exact string "1"; a loud
+    // stderr banner so a non-reproducible run is never silent. The bare
+    // `determinism-check` path (env unset) does not touch either tree.
+    if let Err(e) = maybe_perturb_for_nondet_test(&dir_b) {
+        return DetCellResult {
+            cell,
+            required: planned.required,
+            status: DetCellStatus::Skipped {
+                reason: format!("NUC_NONDET_TEST perturbation: {e}"),
+            },
+            elapsed: started.elapsed(),
+        };
+    }
+
     // Diff. We walk dir_a, look each file up in dir_b. After that we
     // sweep dir_b to catch files that exist only in b.
     let files_a = match enumerate_files(&dir_a) {
@@ -1466,6 +1499,48 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
         status: DetCellStatus::Pass { files_compared },
         elapsed: started.elapsed(),
     }
+}
+
+/// Negative-gate hook for `determinism-check-negative` (TASK-0157,
+/// relocated from TASK-0145's inline `multi_worker.rs` branch).
+///
+/// When `NUC_NONDET_TEST=1`, append a per-process nonce comment to the
+/// emitted `src/main.rs` in `tree` (the *b* build only — `a` is left
+/// pristine), so the two determinism trees diverge and the diff bites.
+/// Behaviour is byte-equivalent to the old inline injection: same
+/// `// NUC_NONDET_TEST nonce: pid=… nanos=…` line, same exact-`"1"`
+/// gate, same loud stderr banner. Unset / any other value is a no-op
+/// and the function does not read or touch the trees.
+fn maybe_perturb_for_nondet_test(tree: &std::path::Path) -> Result<(), String> {
+    if std::env::var("NUC_NONDET_TEST").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    eprintln!(
+        "nucleus-e2e: WARNING: NUC_NONDET_TEST=1 — injecting a \
+         per-process nonce into ONE emitted determinism tree ON PURPOSE \
+         to test the determinism check. This run is NOT reproducible. \
+         Never set this in a real build (TASK-0145 / TASK-0157)."
+    );
+    let main_rs = tree.join("src").join("main.rs");
+    if !main_rs.exists() {
+        return Err(format!(
+            "expected emitted `{}` not found — codegen layout drifted; \
+             update maybe_perturb_for_nondet_test (TASK-0157)",
+            main_rs.display()
+        ));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut src =
+        fs::read_to_string(&main_rs).map_err(|e| format!("read {}: {e}", main_rs.display()))?;
+    src.push_str(&format!(
+        "\n// NUC_NONDET_TEST nonce: pid={} nanos={nanos}\n",
+        std::process::id()
+    ));
+    fs::write(&main_rs, src).map_err(|e| format!("write {}: {e}", main_rs.display()))?;
+    Ok(())
 }
 
 /// Invoke `nucleus build` for one cell into `out_dir`. Returns Err

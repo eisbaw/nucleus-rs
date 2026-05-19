@@ -17,8 +17,10 @@
 //! Instead this mirrors the discipline the codebase **already**
 //! standardised on for behaviour switches:
 //!
-//! - `NUC_NONDET_TEST` — `pthreads-sync/src/multi_worker.rs:288`
-//!   (`std::env::var(..).as_deref() == Ok("1")`, loud stderr banner).
+//! - `NUC_NONDET_TEST` — `e2e/src/main.rs` (`maybe_perturb_for_nondet_test`)
+//!   (`std::env::var(..).as_deref() == Ok("1")`, loud stderr banner;
+//!   harness-side post-emit perturbation, not on the codegen path —
+//!   relocated there in TASK-0157).
 //! - `NUC_XBACKEND_NEGATIVE` — `mp-tcp-bufsync/src/lib.rs:1154`
 //!   (same shape).
 //!
