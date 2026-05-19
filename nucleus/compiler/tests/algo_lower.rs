@@ -688,10 +688,12 @@ x <-- f(y);\n";
     }
 }
 
-/// The two genuinely position-less variants stay position-less on
-/// purpose (honest-partial per variant — see `LowerError` docs). This
-/// pins that decision so a future change that silently attaches a
-/// (likely wrong) span to them is caught.
+/// `ConstCycle` — the SOLE genuinely position-less variant — stays
+/// position-less on purpose (honest-partial — see `LowerError` docs).
+/// This pins that decision so a future change that silently attaches a
+/// (likely wrong) span to it is caught. (The synthetic
+/// `NonIntegerShapeExpr` is NOT position-less; pinning its located-ness
+/// is the separate TASK-0195 coverage gap.)
 #[test]
 fn multi_site_variants_are_position_less() {
     // A const self-cycle: `ConstCycle` spans several decls, no single

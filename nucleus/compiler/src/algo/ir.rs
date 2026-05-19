@@ -354,13 +354,14 @@ impl std::fmt::Display for LowerErrorKind {
 /// # `span` is `Option` (honest-partial per variant — TASK-0090)
 ///
 /// Most variants have one obviously-offending node and carry its span.
-/// A few genuinely do not: [`LowerErrorKind::ConstCycle`] spans several
-/// declarations (no single primary node), and the
-/// `<index/loop-bound expression>` synthetic
-/// [`LowerErrorKind::NonIntegerShapeExpr`] is reported against a
-/// pseudo-decl, not a real source span. Those are left `None` rather
-/// than fabricating a misleading location: a documented missing
-/// position is honest; a wrong one is not.
+/// Exactly one genuinely does not: [`LowerErrorKind::ConstCycle`] spans
+/// several declarations (no single primary node) and is the SOLE
+/// position-less variant (`span: None`) — a documented missing position
+/// is honest; a fabricated one is not. NOTE: the synthetic
+/// `<index/loop-bound expression>` [`LowerErrorKind::NonIntegerShapeExpr`]
+/// DOES carry a real span — only its `decl` *label* string is synthetic;
+/// the offending expression it points at is a genuine source node, so
+/// its real `expr.span` is used (it is NOT `None`).
 ///
 /// # Equality semantics (load-bearing — AC#4, mirrors `Spanned`)
 ///
@@ -378,17 +379,17 @@ pub struct LowerError {
     /// The semantic violation.
     pub kind: LowerErrorKind,
     /// Byte range into the original source, when a single offending
-    /// node exists. `None` for genuinely multi-site / synthetic
-    /// variants (see type docs). Feed `span.start` to
+    /// node exists. `None` only for the genuinely multi-site
+    /// `ConstCycle` (see type docs). Feed `span.start` to
     /// [`crate::error::offset_to_line_col`] for a 1-based
     /// `(line, column)`.
     pub span: Option<Range<usize>>,
 }
 
 impl LowerError {
-    /// A lowering error with no source position (multi-site or
-    /// synthetic — see type docs). Prefer [`LowerError::at`] whenever a
-    /// single offending [`crate::algo::span::Spanned`] is in scope.
+    /// A lowering error with no source position (the multi-site
+    /// `ConstCycle` — see type docs). Prefer [`LowerError::at`] whenever
+    /// a single offending [`crate::algo::span::Spanned`] is in scope.
     pub fn new(kind: LowerErrorKind) -> Self {
         Self { kind, span: None }
     }
