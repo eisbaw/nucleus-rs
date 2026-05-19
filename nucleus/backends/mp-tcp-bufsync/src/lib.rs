@@ -44,17 +44,23 @@
 //!
 //! Barriers are host-mediated: every barrier in the tier-1 set is
 //! `{host, w0}` (2-party); the general N-party barrier is a star
-//! through host. A barrier whose participant set excludes `host`
-//! cannot be lowered on the one-stream-per-pair topology — that is a
-//! typed [`EmitError::ContractGap`] (honest limitation, not a wrong
-//! binary; see TASK-0036 notes / filed follow-up).
+//! through host. Barrier identity is the contract-carried
+//! [`compiler::event::SyncTag`] on `Event::Sync` (TASK-0172): host
+//! and every worker key the wire `barrier_cross` token by that tag,
+//! which is the same value for every participant by construction —
+//! so partial / non-uniform barriers (participant sets that differ
+//! between barriers) lower correctly, not just uniform ones. The old
+//! per-worker pre-order-index recovery and its non-uniform
+//! [`EmitError::ContractGap`] are removed (TASK-0172). A barrier whose
+//! participant set excludes `host` still cannot be lowered on the
+//! one-stream-per-pair topology — that is a SEPARATE, genuine
+//! transport limitation and stays a typed [`EmitError::ContractGap`]
+//! (honest limitation, not a wrong binary; worker-to-worker mesh is
+//! TASK-0175). For a uniform-barrier program the tags are `0,1,2,…`
+//! in pre-order, so generated code stays byte-identical.
 //!
 //! ## Inherited caveats (identical to pthreads-sync; fail-loud)
 //!
-//! - `Event::Sync` carries no stable cross-worker barrier id —
-//!   recovered by per-worker pre-order Sync index, valid only for
-//!   UNIFORM barriers, [`EmitError::ContractGap`] otherwise
-//!   (TASK-0172).
 //! - `block_transform` defers absolute-index rebinding to codegen;
 //!   the divisible case is handled via the shared single-worker
 //!   renderer, non-divisible is TASK-0173. No required mp-tcp cell
@@ -66,7 +72,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use compiler::event::{DataId, Event, WorkerId};
+use compiler::event::{DataId, Event, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
 // Shared codegen — the SINGLE implementation of expression/index/
@@ -342,38 +348,31 @@ impl<'a> Plan<'a> {
         let xfer_ids: BTreeMap<DataId, XferId> =
             xfer_data.iter().enumerate().map(|(i, d)| (*d, i)).collect();
 
-        // Barrier identity by per-worker pre-order Sync index, with
-        // the SAME uniform-barrier validation pthreads-sync performs
-        // (TASK-0172). A non-uniform barrier is a typed ContractGap,
-        // never a silently mismatched barrier graph.
-        let mut barrier_participants: BTreeMap<usize, BTreeSet<WorkerId>> = BTreeMap::new();
+        // Barrier identity by the contract-carried `SyncTag`
+        // (TASK-0172). Each Event::Sync names its own barrier; the
+        // projection clones the same participant set into every
+        // participant's list, so the first sighting of a tag fixes its
+        // participants. No pre-order-index heuristic and no
+        // uniform-barrier validation: distinct tags are independent
+        // barriers, so a partial/non-uniform barrier lowers correctly.
+        let mut barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>> = BTreeMap::new();
         for w in &used_workers {
-            let mut idx = 0usize;
-            collect_barriers_preorder(&per_worker[w], &mut idx, &mut |bid, parts| {
-                match barrier_participants.get(&bid) {
-                    None => {
-                        barrier_participants.insert(bid, parts.clone());
-                        Ok(())
-                    }
-                    Some(existing) if existing == parts => Ok(()),
-                    Some(existing) => Err(EmitError::ContractGap(format!(
-                        "barrier #{bid} has inconsistent participant sets across \
-                         workers ({existing:?} vs {parts:?}); Event::Sync carries \
-                         no stable cross-worker identity and the pre-order-index \
-                         recovery only holds for uniform barriers (TASK-0172). \
-                         mp-tcp-bufsync will not byte-identically lower a \
-                         partial-barrier schedule."
-                    ))),
-                }
-            })?;
+            collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
+                barrier_participants
+                    .entry(tag)
+                    .or_insert_with(|| parts.clone());
+            });
         }
 
-        // Topology constraint: one stream per (host, worker) pair, so
-        // every barrier must include host as the mediating hub. True
-        // for the tier-1 set (02-split: {host,w0}). Fail loud
-        // otherwise — an honest limitation, not a wrong binary.
-        for (bid, parts) in &barrier_participants {
+        // Topology constraint (UNRELATED to TASK-0172): one stream per
+        // (host, worker) pair, so every barrier must include host as
+        // the mediating hub. True for the tier-1 set (02-split:
+        // {host,w0}). A host-excluding barrier needs a worker-to-worker
+        // mesh — a genuine transport limitation (TASK-0175), not a
+        // partial-barrier rejection. Fail loud, never a wrong binary.
+        for (tag, parts) in &barrier_participants {
             if !parts.contains(&host_worker) {
+                let bid = tag.0;
                 return Err(EmitError::ContractGap(format!(
                     "barrier #{bid} participants {parts:?} exclude the host \
                      worker; mp-tcp-bufsync's one-connection-per-(host,worker) \
@@ -580,15 +579,7 @@ impl<'a> Plan<'a> {
         }
 
         let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_events(
-            &self.per_worker[&worker],
-            &mut out,
-            1,
-            worker,
-            is_host,
-            &ctx,
-            &mut 0,
-        )?;
+        self.render_events(&self.per_worker[&worker], &mut out, 1, worker, is_host, &ctx)?;
 
         writeln!(out, "}}").ok();
         Ok(out)
@@ -604,7 +595,6 @@ impl<'a> Plan<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_events(
         &self,
         events: &[Event],
@@ -613,7 +603,6 @@ impl<'a> Plan<'a> {
         worker: WorkerId,
         is_host: bool,
         ctx: &RenderCtxPub<'_>,
-        sync_idx: &mut usize,
     ) -> Result<(), EmitError> {
         let pad = "    ".repeat(indent);
         for e in events {
@@ -695,12 +684,20 @@ impl<'a> Plan<'a> {
                         ),
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    self.render_events(body, out, indent + 1, worker, is_host, ctx, sync_idx)?;
+                    self.render_events(body, out, indent + 1, worker, is_host, ctx)?;
                     writeln!(out, "{pad}}}").ok();
                 }
-                Event::Sync { participants, .. } => {
-                    let bid = *sync_idx;
-                    *sync_idx += 1;
+                Event::Sync {
+                    participants, sync, ..
+                } => {
+                    // Barrier identity is the contract-carried SyncTag
+                    // (TASK-0172). It is the wire `barrier_cross`
+                    // token, so host and worker must agree on it:
+                    // every participant of this barrier carries the
+                    // SAME tag by construction, so they do — including
+                    // for partial/non-uniform barriers where the old
+                    // per-worker pre-order index would have diverged.
+                    let bid = sync.0;
                     // Host-mediated star barrier. Host crosses with
                     // every non-host participant (deterministic
                     // WorkerId order); a non-host worker crosses with
@@ -1063,26 +1060,24 @@ fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
     }
 }
 
-fn collect_barriers_preorder<F>(
-    events: &[Event],
-    idx: &mut usize,
-    f: &mut F,
-) -> Result<(), EmitError>
+/// Sync visitor: invoke `f(sync_tag, participants)` for each
+/// `Event::Sync`, descending into Loop bodies. Barrier identity is
+/// the contract-carried [`SyncTag`] (TASK-0172) — no running index,
+/// no fallibility (every tag is an independent barrier; nothing to
+/// validate / reject here any more).
+fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
 where
-    F: FnMut(usize, &BTreeSet<WorkerId>) -> Result<(), EmitError>,
+    F: FnMut(SyncTag, &BTreeSet<WorkerId>),
 {
     for e in events {
         match e {
-            Event::Sync { participants, .. } => {
-                let bid = *idx;
-                *idx += 1;
-                f(bid, participants)?;
-            }
-            Event::Loop { body, .. } => collect_barriers_preorder(body, idx, f)?,
+            Event::Sync {
+                participants, sync, ..
+            } => f(*sync, participants),
+            Event::Loop { body, .. } => collect_barriers_by_tag(body, f),
             _ => {}
         }
     }
-    Ok(())
 }
 
 fn collect_pre_init_sets(
