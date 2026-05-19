@@ -299,6 +299,14 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                 SchedLowerErrorKind::UnknownWorkerClass {
                     worker: worker.clone(),
                     class: class.clone(),
+                    // TASK-0198: closest declared `worker_class`.
+                    // `ir.worker_classes` is a `BTreeMap`, so its
+                    // key iteration is deterministic; `suggest`
+                    // additionally sorts — no hash-order in the path.
+                    suggestion: crate::error::suggest(
+                        class,
+                        ir.worker_classes.keys().map(String::as_str),
+                    ),
                 },
                 span.clone(),
             ));
@@ -310,9 +318,11 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // but for `accessible_by` every legal target — a `worker_class`
     // or a worker name — is declared in this same schedule, so the
     // resolution is purely schedule-internal and is done here in
-    // lowering (not deferred to the linker). Scope: a plain
-    // "undeclared name" typed error. Did-you-mean fuzzy suggestions
-    // are deliberately out of scope — that is TASK-0096.
+    // lowering (not deferred to the linker). Scope: an "undeclared
+    // name" typed error, now carrying a deterministic did-you-mean
+    // suggestion (TASK-0198, the schedule sibling of the link-step
+    // TASK-0096) computed against the union of declared `worker_class`
+    // and worker names — see the `UnknownAccessibleByName` arm below.
     // Runs after the synthetic default class is injected and all
     // workers are collected, so a name referring to a simple-form
     // worker or the default class resolves correctly.
@@ -337,6 +347,23 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                 SchedLowerErrorKind::UnknownAccessibleByName {
                     region: region.clone(),
                     name: name.clone(),
+                    // TASK-0198: candidate set is the DETERMINISTIC
+                    // union of declared `worker_class` names and
+                    // worker names — exactly this variant's own
+                    // validity rule (a name is legal iff it is a
+                    // declared class OR a declared worker). Both
+                    // `ir.worker_classes` and `ir.workers` are
+                    // `BTreeMap`s, so chaining their key iterators is
+                    // deterministic; `suggest` sorts the merged set
+                    // again — no `HashMap`/`HashSet` anywhere in the
+                    // selection path (reproducibility gate).
+                    suggestion: crate::error::suggest(
+                        name,
+                        ir.worker_classes
+                            .keys()
+                            .chain(ir.workers.keys())
+                            .map(String::as_str),
+                    ),
                 },
                 span.clone(),
             ));
@@ -441,6 +468,13 @@ fn check_worker_declared(
             SchedLowerErrorKind::UnknownPlaceWorker {
                 kernel: kernel.to_string(),
                 worker: worker.node.clone(),
+                // TASK-0198: closest declared worker name.
+                // `ir.workers` is a `BTreeMap` → deterministic key
+                // order; `suggest` also sorts — no hash-order.
+                suggestion: crate::error::suggest(
+                    &worker.node,
+                    ir.workers.keys().map(String::as_str),
+                ),
             },
             worker.span.clone(),
         ));
@@ -473,6 +507,13 @@ fn lower_place_data(
             SchedLowerErrorKind::UnknownMemoryRegion {
                 data: data.clone(),
                 region: region.clone(),
+                // TASK-0198: closest declared `memory_region` name.
+                // `ir.memory_regions` is a `BTreeMap` → deterministic
+                // key order; `suggest` also sorts — no hash-order.
+                suggestion: crate::error::suggest(
+                    region,
+                    ir.memory_regions.keys().map(String::as_str),
+                ),
             },
             pd.region.span.clone(),
         ));

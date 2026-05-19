@@ -337,21 +337,67 @@ pub enum SchedLowerErrorKind {
     DuplicateCheck { var: String },
 
     // ----- Reference resolution -----
+    //
+    // # The four unknown-name variants carry a did-you-mean suggestion
+    //
+    // `UnknownWorkerClass` / `UnknownMemoryRegion` /
+    // `UnknownPlaceWorker` / `UnknownAccessibleByName` each carry a
+    // `suggestion: Option<String>`: the closest declared schedule-side
+    // symbol within a bounded edit distance (or `None`), computed by
+    // [`crate::error::suggest`] against the in-hand symbol table for
+    // that variant (TASK-0198, the schedule-side sibling of the
+    // link-step TASK-0096). The field lives on these *kind* variants —
+    // NOT on the [`SchedLowerError`] wrapper — deliberately: a
+    // suggestion is a deterministic pure function of `(offending name,
+    // in-hand table)`, so it is part of *which semantic error this is*
+    // and belongs in the derived-`PartialEq` kind identity (so the
+    // negative tests assert it as part of the expected value). The
+    // wrapper's hand-written `PartialEq` continues to exclude ONLY
+    // `span` (the TASK-0196 positional-noise contract) — see
+    // [`SchedLowerError`]. The remaining `Duplicate*` /
+    // option-validation variants are unaffected: there is no single
+    // offending *unknown* name to fuzzy-match (the named entity exists
+    // — it is duplicated/zero/conflicting), so only these four gain
+    // the field, exactly as the link-step kept `UnplacedKernel` /
+    // `MissingCrossWorkerTransfer` plain.
     /// A worker entry names a class that has no `worker_class` decl.
-    UnknownWorkerClass { worker: String, class: String },
+    /// `suggestion` is the closest declared `worker_class` name within
+    /// the edit-distance bound, else `None`.
+    UnknownWorkerClass {
+        worker: String,
+        class: String,
+        suggestion: Option<String>,
+    },
     /// A `place_data D in R` names a region with no `memory_region`
-    /// decl.
-    UnknownMemoryRegion { data: String, region: String },
+    /// decl. `suggestion` is the closest declared `memory_region`
+    /// name within the bound, else `None`.
+    UnknownMemoryRegion {
+        data: String,
+        region: String,
+        suggestion: Option<String>,
+    },
     /// A `place K on W` names a worker with no `workers` entry.
-    /// Carries the kernel for diagnostic context.
-    UnknownPlaceWorker { kernel: String, worker: String },
+    /// Carries the kernel for diagnostic context. `suggestion` is the
+    /// closest declared worker name within the bound, else `None`.
+    UnknownPlaceWorker {
+        kernel: String,
+        worker: String,
+        suggestion: Option<String>,
+    },
     /// A name in `memory_region R { accessible_by = { ... } }` is
     /// neither a declared `worker_class` nor a declared worker.
     /// Resolution is schedule-internal (TASK-0095) — not deferred to
     /// the linker — because every legal target is declared in the
     /// same schedule. `region` is the owning memory region; `name`
-    /// is the offending identifier as written.
-    UnknownAccessibleByName { region: String, name: String },
+    /// is the offending identifier as written. `suggestion` is the
+    /// closest symbol within the bound across the *union* of declared
+    /// `worker_class` and worker names (matching this variant's own
+    /// validity rule), else `None`.
+    UnknownAccessibleByName {
+        region: String,
+        name: String,
+        suggestion: Option<String>,
+    },
 
     // ----- Duplicate / conflicting placement targets -----
     /// `place K on { w0, w0 }` — the same worker named twice in one
@@ -401,6 +447,21 @@ pub enum SchedLowerErrorKind {
     MissingWorkersDecl,
 }
 
+/// Append ` -- did you mean `X`?` when a suggestion exists; emit
+/// nothing when `None` (the message is byte-identical to the
+/// pre-TASK-0198 form in that case — the zero-behaviour-change-for-
+/// the-no-suggestion-path guarantee). Mirrors the link-step
+/// `write_suggestion` (TASK-0096) verbatim.
+fn write_suggestion(
+    f: &mut std::fmt::Formatter<'_>,
+    suggestion: &Option<String>,
+) -> std::fmt::Result {
+    match suggestion {
+        Some(s) => write!(f, " -- did you mean `{s}`?"),
+        None => Ok(()),
+    }
+}
+
 impl std::fmt::Display for SchedLowerErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -438,23 +499,51 @@ impl std::fmt::Display for SchedLowerErrorKind {
                     "loop variable `{var}` has more than one `check loop` directive"
                 )
             }
-            SchedLowerErrorKind::UnknownWorkerClass { worker, class } => write!(
-                f,
-                "worker `{worker}` references undeclared `worker_class` `{class}`"
-            ),
-            SchedLowerErrorKind::UnknownMemoryRegion { data, region } => write!(
-                f,
-                "`place_data {data} in {region}` references undeclared `memory_region` `{region}`"
-            ),
-            SchedLowerErrorKind::UnknownPlaceWorker { kernel, worker } => write!(
-                f,
-                "`place {kernel} on {worker}` references undeclared worker `{worker}`"
-            ),
-            SchedLowerErrorKind::UnknownAccessibleByName { region, name } => write!(
-                f,
-                "`memory_region {region}` `accessible_by` lists `{name}`, \
-                 which is not a declared `worker_class` or worker"
-            ),
+            SchedLowerErrorKind::UnknownWorkerClass {
+                worker,
+                class,
+                suggestion,
+            } => {
+                write!(
+                    f,
+                    "worker `{worker}` references undeclared `worker_class` `{class}`"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            SchedLowerErrorKind::UnknownMemoryRegion {
+                data,
+                region,
+                suggestion,
+            } => {
+                write!(
+                    f,
+                    "`place_data {data} in {region}` references undeclared `memory_region` `{region}`"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            SchedLowerErrorKind::UnknownPlaceWorker {
+                kernel,
+                worker,
+                suggestion,
+            } => {
+                write!(
+                    f,
+                    "`place {kernel} on {worker}` references undeclared worker `{worker}`"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            SchedLowerErrorKind::UnknownAccessibleByName {
+                region,
+                name,
+                suggestion,
+            } => {
+                write!(
+                    f,
+                    "`memory_region {region}` `accessible_by` lists `{name}`, \
+                     which is not a declared `worker_class` or worker"
+                )?;
+                write_suggestion(f, suggestion)
+            }
             SchedLowerErrorKind::DuplicatePlaceWorker { kernel, worker } => write!(
                 f,
                 "`place {kernel}` lists worker `{worker}` more than once \

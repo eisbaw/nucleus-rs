@@ -428,11 +428,18 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("unknown worker_class must fail");
+    // TASK-0198: the only declared class is the synthetic
+    // `__default` (no user `worker_class` decl); `missing_class`
+    // (len 13) vs `__default` is far above the bound
+    // max(1, 13/3) = 4 → no suggestion. Whole-`.kind` assert_eq!
+    // strength preserved; the suggestion field is asserted as part
+    // of the expected value (AC#2).
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownWorkerClass {
             worker: "fe".into(),
             class: "missing_class".into(),
+            suggestion: None,
         }
     );
 }
@@ -460,11 +467,16 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("unknown memory_region must fail");
+    // TASK-0198: no `memory_region` declared at all → empty
+    // candidate set → no suggestion. assert_eq! on the whole `.kind`
+    // preserves the exact-variant+payload strength and adds the
+    // suggestion field to the asserted value (AC#2).
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownMemoryRegion {
             data: "foo".into(),
             region: "nowhere".into(),
+            suggestion: None,
         }
     );
 }
@@ -638,11 +650,15 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("unknown worker must fail");
+    // TASK-0198: `bogus` vs the sole declared worker `host` is far
+    // above the bound max(1, 5/3) = 1 → no suggestion. Whole-`.kind`
+    // assert_eq! strength preserved; suggestion asserted (AC#2).
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownPlaceWorker {
             kernel: "k".into(),
-            worker: "bogus".into()
+            worker: "bogus".into(),
+            suggestion: None,
         }
     );
 }
@@ -657,11 +673,15 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("unknown worker in set must fail");
+    // TASK-0198: `bogus` vs declared workers {host, w0} — both far
+    // above bound max(1, 5/3) = 1 → no suggestion. Strength
+    // preserved; suggestion asserted (AC#2).
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownPlaceWorker {
             kernel: "k".into(),
-            worker: "bogus".into()
+            worker: "bogus".into(),
+            suggestion: None,
         }
     );
 }
@@ -815,11 +835,19 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("undeclared accessible_by name must fail");
+    // TASK-0198: candidate union is {`__default` (synthetic class),
+    // `host` (the declared worker)}. `ghost` → `host` is exactly one
+    // deletion (distance 1), within bound max(1, 5/3) = 1 → the hint
+    // is `host`. Whole-`.kind` assert_eq! strength preserved; the
+    // computed suggestion is asserted as part of the expected value
+    // (AC#2 — this migrated case is the positive half for this
+    // variant).
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownAccessibleByName {
             region: "R".into(),
             name: "ghost".into(),
+            suggestion: Some("host".into()),
         }
     );
 }
@@ -836,6 +864,194 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let ir = lower_str(src).expect("declared accessible_by names must lower");
     assert!(ir.memory_regions.contains_key("R"));
+}
+
+// --------------------------------------------------------------------
+// TASK-0198: deterministic did-you-mean suggestions for the four
+// unknown-name SchedLowerError variants (sched sibling of TASK-0096).
+// Each variant gets a typo-class positive case (Some(closest)) and an
+// unrelated-name negative case (None). The helper itself is unit-
+// tested in `compiler::error::fuzzy_tests` — these pin only the
+// SchedLowerError wiring and per-variant candidate set.
+// --------------------------------------------------------------------
+
+#[test]
+fn negative_unknown_worker_class_with_suggestion() {
+    // `core` is declared; the worker entry typos it as `cor`.
+    // distance(cor, core) = 1 (one insertion); bound max(1, 3/3) = 1
+    // → Some("core"). (`__default` is the only other candidate and
+    // is far away.)
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class core { simd = none; };
+    workers = { fe : cor };
+}
+";
+    let err = lower_str(src).expect_err("typo'd worker_class must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownWorkerClass {
+            worker: "fe".into(),
+            class: "cor".into(),
+            suggestion: Some("core".into()),
+        }
+    );
+    // Display surfaces the hint.
+    assert!(
+        err.to_string().contains("did you mean `core`?"),
+        "Display must carry the hint, got: {err}"
+    );
+}
+
+#[test]
+fn negative_unknown_worker_class_unrelated_no_suggestion() {
+    // `zzzzzzzz` vs declared {core, __default} — far above the bound
+    // → None (the "don't suggest nonsense" half).
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class core { simd = none; };
+    workers = { fe : zzzzzzzz };
+}
+";
+    let err = lower_str(src).expect_err("unrelated worker_class must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownWorkerClass {
+            worker: "fe".into(),
+            class: "zzzzzzzz".into(),
+            suggestion: None,
+        }
+    );
+}
+
+#[test]
+fn negative_unknown_memory_region_with_suggestion() {
+    // `sram` declared; `place_data` typos it as `sra`.
+    // distance(sra, sram) = 1; bound max(1, 3/3) = 1 → Some("sram").
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    memory_region sram { size = 32KB; };
+    workers = { host };
+    place_data d in sra;
+}
+";
+    let err = lower_str(src).expect_err("typo'd memory_region must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownMemoryRegion {
+            data: "d".into(),
+            region: "sra".into(),
+            suggestion: Some("sram".into()),
+        }
+    );
+    assert!(
+        err.to_string().contains("did you mean `sram`?"),
+        "Display must carry the hint, got: {err}"
+    );
+}
+
+#[test]
+fn negative_unknown_memory_region_unrelated_no_suggestion() {
+    // `zzzzzzzz` vs declared {sram} — far above bound → None.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    memory_region sram { size = 32KB; };
+    workers = { host };
+    place_data d in zzzzzzzz;
+}
+";
+    let err = lower_str(src).expect_err("unrelated memory_region must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownMemoryRegion {
+            data: "d".into(),
+            region: "zzzzzzzz".into(),
+            suggestion: None,
+        }
+    );
+}
+
+#[test]
+fn negative_unknown_place_worker_with_suggestion() {
+    // `host` declared; `place k on hostt` typos it.
+    // distance(hostt, host) = 1; bound max(1, 5/3) = 1 → Some("host").
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on hostt;
+}
+";
+    let err = lower_str(src).expect_err("typo'd place worker must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownPlaceWorker {
+            kernel: "k".into(),
+            worker: "hostt".into(),
+            suggestion: Some("host".into()),
+        }
+    );
+    assert!(
+        err.to_string().contains("did you mean `host`?"),
+        "Display must carry the hint, got: {err}"
+    );
+}
+
+#[test]
+fn negative_unknown_accessible_by_unrelated_no_suggestion() {
+    // The None half for UnknownAccessibleByName (the migrated
+    // `negative_undeclared_accessible_by_name` covers the Some half).
+    // `zzzzzzzz` vs the union {__default, host} — far above bound
+    // → None.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    memory_region R { size = 1KB; accessible_by = { zzzzzzzz }; };
+}
+";
+    let err = lower_str(src).expect_err("unrelated accessible_by must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnknownAccessibleByName {
+            region: "R".into(),
+            name: "zzzzzzzz".into(),
+            suggestion: None,
+        }
+    );
+}
+
+#[test]
+fn suggestion_is_deterministic_across_repeated_lowering() {
+    // Determinism guarantee (reproducibility gate / TASK-0145
+    // lineage): the same (offending name, schedule) lowers to the
+    // byte-identical suggestion every time — the candidate tables are
+    // `BTreeMap`s and `suggest` sorts + uses a strict-< tie-break, so
+    // no hash-iteration order can leak in. Two equal-distance
+    // candidates (`hosta`/`hostb`) force the lexicographic tie-break;
+    // it must pick `hosta` every run.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { hostb, hosta };
+    place k on host;
+}
+";
+    let first = lower_str(src).expect_err("must fail");
+    for _ in 0..16 {
+        let again = lower_str(src).expect_err("must fail");
+        assert_eq!(
+            first.kind, again.kind,
+            "suggestion must be deterministic across runs"
+        );
+    }
+    // `host` is distance 1 from BOTH `hosta` and `hostb`; the
+    // lexicographically-first (`hosta`) wins, deterministically.
+    assert_eq!(
+        first.kind,
+        SchedLowerErrorKind::UnknownPlaceWorker {
+            kernel: "k".into(),
+            worker: "host".into(),
+            suggestion: Some("hosta".into()),
+        }
+    );
 }
 
 // --------------------------------------------------------------------
@@ -931,10 +1147,23 @@ schedule for \"../p.algo.nuc\" {
         assert!(
             matches!(
                 err.kind,
-                SchedLowerErrorKind::UnknownPlaceWorker { ref kernel, ref worker }
+                SchedLowerErrorKind::UnknownPlaceWorker { ref kernel, ref worker, .. }
                     if kernel == "k" && worker == "bogus"
             ),
             "got {err:?}"
+        );
+        // TASK-0198: this span-locating test keeps its full
+        // variant+payload discriminating power (the `matches!` above,
+        // `..` only admits the new field) AND additionally pins the
+        // suggestion: `bogus` vs the sole worker `host` is above the
+        // bound max(1, 5/3) = 1 → None (strengthened, not weakened).
+        assert!(
+            matches!(
+                err.kind,
+                SchedLowerErrorKind::UnknownPlaceWorker { ref suggestion, .. }
+                    if suggestion.is_none()
+            ),
+            "expected no suggestion for `bogus`, got {err:?}"
         );
         let bogus_at = src.find("bogus").expect("`bogus` in source");
         let expected = offset_to_line_col(src, bogus_at);
@@ -963,10 +1192,22 @@ schedule for \"../p.algo.nuc\" {
         assert!(
             matches!(
                 err.kind,
-                SchedLowerErrorKind::UnknownAccessibleByName { ref region, ref name }
+                SchedLowerErrorKind::UnknownAccessibleByName { ref region, ref name, .. }
                     if region == "R" && name == "ghost"
             ),
             "got {err:?}"
+        );
+        // TASK-0198: candidate union {`__default`, `host`}; `ghost`
+        // → `host` is one deletion (distance 1 ≤ bound 1) → the hint
+        // is `host`. Span discriminating power preserved (matches!
+        // above), suggestion additionally pinned (strengthened).
+        assert!(
+            matches!(
+                err.kind,
+                SchedLowerErrorKind::UnknownAccessibleByName { ref suggestion, .. }
+                    if suggestion.as_deref() == Some("host")
+            ),
+            "expected suggestion `host` for `ghost`, got {err:?}"
         );
         let ghost_at = src.find("ghost").expect("`ghost` in source");
         let expected = offset_to_line_col(src, ghost_at);
@@ -976,10 +1217,15 @@ schedule for \"../p.algo.nuc\" {
             expected,
             "UnknownAccessibleByName must point at the offending name token"
         );
+        // TASK-0198: the located display now also carries the
+        // did-you-mean hint (the suggestion is `Some("host")`); the
+        // ` at L:C` suffix is unchanged (span handling untouched —
+        // TASK-0196 contract intact).
         assert_eq!(
             err.display_with_src(src),
             "`memory_region R` `accessible_by` lists `ghost`, \
-             which is not a declared `worker_class` or worker at 3:53"
+             which is not a declared `worker_class` or worker \
+             -- did you mean `host`? at 3:53"
         );
     }
 
