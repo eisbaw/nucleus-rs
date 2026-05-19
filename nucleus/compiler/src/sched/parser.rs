@@ -781,28 +781,36 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 ///   follow-on.
 ///
 /// - **Single error INSIDE a brace-delimited body** —
-///   `worker_class IDENT { field; field; };` or
-///   `memory_region IDENT { field; field; };`, whose *fields are
-///   themselves inner-`;`-terminated*: UP TO **+2** bounded
-///   deterministic follow-ons (3 errors total): the genuine primary,
-///   then the `;`-only recovery consumes the inner field `;` and
-///   **desyncs onto the next (even valid) field** (inner-field
-///   cascade), then trips the **structural `}`** that closes the
-///   brace body. This is the *exact sched analog of the algorithm
-///   `for { ... }`-body nested-`;` shape* — sched HAS this shape; it
-///   is NOT "max one". (An earlier TASK-0087 disclosure and commit
-///   `0c935a5`'s message wrongly claimed sched had no such case and a
-///   max follow-on of ONE — that was an undercount, the same class
-///   TASK-0199 already had to correct on the algo side from
-///   "one"→"two"; corrected here. Pinned by
-///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_bounded_follow_ons_*`.)
+///   `worker_class IDENT { field; field; ... };` or
+///   `memory_region IDENT { field; field; ... };`, whose *fields are
+///   themselves inner-`;`-terminated*: this is a genuine recovery
+///   DEFECT — a **LINEAR CASCADE that scales with brace-body size**.
+///   Measured (real `parse_sched`, deterministic): total errors =
+///   **n + 2**, where `n` is the number of valid fields *after* the
+///   erroneous one — the genuine primary, then `;`-only recovery
+///   consumes each inner field `;` and **desyncs onto every
+///   subsequent field, one follow-on per field** (n=0→2, n=1→3,
+///   n=2→4, n=3→5, n=5→7, n=8→10), then the structural `}`. An error
+///   in the *doubly-nested* `accessible_by = { id, id };` set
+///   independently exceeds this. This IS a cascade and it DOES scale
+///   with source size — the sched analog of the algorithm
+///   `for { ... }`-body nested-`;` shape.
 ///
-/// In both shapes the primary error is always first and always
-/// correct, the count does NOT scale with program size, and it is a
-/// deterministic function of the source. This is acceptable for a
-/// research compiler, NOT a cascade. The refinement (anchor the sync
-/// set on directive-/field-start keywords so the brace-body case
-/// collapses to the primary only) is TASK-0199 (algo + sched).
+///   HONEST TRAIL: earlier TASK-0087 disclosures, commit
+///   `0c935a5`'s message, AND the first "+2 bounded / not a cascade"
+///   correction were all WRONG undercounts (the recurring undercount
+///   class — caught 3× by the review gate on this task). The true
+///   measured `n+2` behaviour and its fix live in **TASK-0199**
+///   (keyword/field-anchored sync set). The
+///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_*`
+///   fixtures pin only the `n=1` instance and are to be parametrised
+///   over `n` by TASK-0199.
+///
+/// The flat-directive case is correct (exactly 1) and is the common
+/// path; the brace-body `n+2` cascade is a known, honestly-disclosed
+/// recovery limitation of `;`-only recovery, deferred to TASK-0199,
+/// which collapses it to the primary error. Until then a malformed
+/// schedule directive *body* over-reports linearly in its field count.
 fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
     // Repetition element: leading layout, then a non-consuming check
     // that we are NOT at the closing `}` (the loop terminator), then
