@@ -20,7 +20,10 @@ name = "pthreads_sync"
 path = "src/lib.rs"
 
 [dependencies]
-# Read the LinkedIR/ACFG types from the compiler crate. The backend
-# does not depend on any parser/lower internals; it reads the post-
-# link/post-inject IR only.
+# Post-TASK-0124 the backend is AlgoIR/LinkedIR/ACFG-free: it consumes
+# only the per-worker EventList (compiler::event), the NameSidecar
+# (compiler::sidecar), and the inert expr-grammar/scalar types
+# (compiler::algo::{IrExpr,IrBinOp,ResolvedType,ScalarType}) that
+# those contract types themselves carry. The dep remains for those
+# modules only — no parser/lower/link/acfg internals.
 compiler = { path = "../../compiler" }

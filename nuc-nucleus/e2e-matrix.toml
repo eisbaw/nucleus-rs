@@ -87,10 +87,16 @@ backend  = "pthreads-sync"
 # walks `for y : 1..15` (length 14) with `loop y : block=4` — NOT
 # divisible by 4. `apply_block_transforms` now rewrites this into the
 # full-tile nest (3 tiles of 4) plus one trailing partial tile (width
-# 2) using only static-range Repeat/Sequence nodes. The schedule is
-# single-`host` (no cross-worker transfers), and the single-worker
-# backend emits code from the source algorithm, so the result is
-# byte-identical to the schedule-independent reference.
+# 2) using only static-range Repeat/Sequence nodes. Post-TASK-0124
+# the backend consumes the per-worker EventList and emits the TILED
+# nest (NOT the untiled source loop the old AlgoIR backend emitted).
+# 05-stencil/blocked is runtime-correct vs the schedule-independent
+# reference because `blur3` is idempotent (writes
+# img_out[y][x] = f(img_in), never reads its own output), so the
+# trailing partial tile's recomputation of interior pixels is
+# harmless. A non-divisible blocked *accumulator* would need per-tile
+# base-offset rebinding — tracked as TASK-0173; no required cell
+# exercises it.
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"

@@ -27,15 +27,15 @@
 // hoisting (TASK-0143) rather than the broader remainder-tile
 // support (TASK-0142).
 //
-// Why e2e is still ignored
-// ------------------------
-// The blocked cell is `#[ignore]`'d on the e2e gate with a TODO
-// reference to TASK-0142 / TASK-0143. The naive schedule carries
-// the correctness gate; the blocked schedule exists for parser /
-// sched_lower / link pinning and as the foundation for the future
-// distributed schedule. When TASK-0143 lands (Push/Wait hoisted to
-// the tile boundary), this schedule's e2e cell flips from `ignore`
-// to active.
+// E2E status: ACTIVE and required
+// -------------------------------
+// TASK-0142/0143 landed and 07-matmul/blocked is now a [[required]]
+// e2e cell (see nuc-nucleus/e2e-matrix.toml). Post-TASK-0124 the
+// backend consumes the per-worker EventList and emits the tiled
+// nest; this is the evenly-divisible block= case (absolute-index
+// rebinding handled), verified runtime-correct against the
+// schedule-independent hand-written reference. (Non-divisible
+// blocked accumulators are TASK-0173 — not exercised here.)
 //
 // Worker placement: still single `host`. PRD §6.3.3: block= is
 // orthogonal to worker placement. A multi-worker variant would add

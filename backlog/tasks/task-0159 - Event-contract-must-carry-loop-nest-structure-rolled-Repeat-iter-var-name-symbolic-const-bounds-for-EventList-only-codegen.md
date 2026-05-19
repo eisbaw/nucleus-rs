@@ -3,11 +3,11 @@ id: TASK-0159
 title: >-
   Event contract must carry loop-nest structure (rolled Repeat: iter-var name +
   symbolic/const bounds) for EventList-only codegen
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 16:42'
-updated_date: '2026-05-18 23:05'
+updated_date: '2026-05-19 00:25'
 labels:
   - M2
   - compiler
@@ -26,7 +26,7 @@ Blocks TASK-0124 AC#2 byte-identical. acfg_to_events UNROLLS every ACFGNode::Rep
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Event projection preserves loop-nest structure (no blanket unroll) OR an equivalent sidecar carries iter-var name + symbolic loop bound expr so a backend can re-emit the rolled for-loop verbatim
-- [ ] #2 Symbolic/const loop bound expression (e.g. H-1 unevaluated) survives to the contract; backend can render (16_i64 - 1_i64) without AlgoIR
+- [x] #2 Symbolic/const loop bound expression (e.g. H-1 unevaluated) survives to the contract; backend can render (16_i64 - 1_i64) without AlgoIR
 - [x] #3 Determinism + bit-identical e2e for 01/02/03/05/07 preserved; acfg_to_petri / boundedness / deadlock passes still correct (they consume the unrolled order today)
 - [x] #4 petri_to_events + acfg_to_petri module docs updated to reflect the new contract; the stale M2 'we unroll' note corrected
 <!-- AC:END -->
@@ -63,6 +63,8 @@ ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO (
 Forward-carried from TASK-0160 (commit 4a79d6e): TASK-0159 AC#2 (symbolic/const loop bound survives to the contract; backend can render (16_i64 - 1_i64) without AlgoIR) is now SATISFIABLE. TASK-0160 landed the NameSidecar with loop_bounds: BTreeMap<IterVar,LoopBound{lo,hi:IrExpr}> keyed by the SAME IterVar Event::Loop carries — the unevaluated `for y:1..H-1` bounds are captured additively at the build_acfg boundary (eval_const fold UNTOUCHED; ACFGNode::Repeat.range stays concrete; Net/boundedness/deadlock untouched). Proven by tests/petri_to_events.rs::sidecar_renders_stencil_symbolic_loop_bound_in_source_form: from Event::Loop.iter_var + sidecar.loop_bounds + sidecar.consts ALONE a backend reconstructs `(1_i64)..((16_i64 - 1_i64))` exactly (== pthreads-sync render_const_expr output).
 
 NOTE the design chose a SIDECAR rather than an optional symbolic field on Event::Loop (consistent with the prefer-sidecar steer: bounds are per-program schedule metadata like name_data, Event::Loop stays lean and still carries the concrete range for the analysis-aligned consumers). So TASK-0159 Event::Loop itself is unchanged; AC#2 is met by the COMBINATION Event::Loop.iter_var (TASK-0159) + sidecar.loop_bounds (TASK-0160). I (TASK-0160 implementer) am deliberately NOT checking TASK-0159 AC#2 — the TASK-0159 owner should verify against this and decide.
+
+ORCHESTRATOR RECONCILIATION (post TASK-0160 + TASK-0124): AC#2 ("symbolic/const loop-bound expr survives; backend renders (16_i64 - 1_i64) without AlgoIR") is now GENUINELY MET — TASK-0160 captured the unevaluated bound in NameSidecar.loop_bounds; TASK-0124 consumes it and renders the source-form bound (emit.rs golden test asserts the (16_i64 - 1_i64) / 256_i64 spelling and passes; qa-test-runner re-verified in the TASK-0124 gate). Verified by the TASK-0160 + TASK-0124 review gates, not self-cert. Closing TASK-0159 Done.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
