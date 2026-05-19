@@ -1,15 +1,16 @@
 ---
 id: TASK-0036
 title: 'mp-tcp-bufsync backend crate (second backend, tier 1)'
-status: Done
+status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 00:54'
+updated_date: '2026-05-19 01:02'
 labels:
   - M3
   - backend
-dependencies: []
+dependencies:
+  - TASK-0038
 ---
 
 ## Description
@@ -70,6 +71,8 @@ GATE (inside nix develop): just test = 0 failed (incl. mp-tcp-common 7, pingpong
 Differentially green under BOTH pthreads-sync AND mp-tcp-bufsync (same reference.bin oracle): 01-elementwise-add/naive, 02-split-add/naive, 02-split-add/SPLIT (the load-bearing host+w0 two-OS-process differential), 03-reduction/naive, 05-stencil/naive, 05-stencil/blocked, 07-matmul/naive, 07-matmul/blocked.
 
 [forward-carried from TASK-0036] For TASK-0041 (M3 cross-backend acceptance gate, orchestrator-driven): the e2e harness is now transport-aware (CapabilitiesSniff.transport: shared-memory => single binary, else => run.sh). The differential is REAL and pinned in e2e-matrix.toml as required cells under BOTH backends. The 4 distributed cells are [[skip]] for BOTH backends (TASK-0117/0172, not transport-specific). For further mp-tcp-* backends: reuse mp-tcp-common (wire v0) and the pthreads-sync pub shared renderers; the STAR topology + two-channel (data/ctrl) split is the proven pattern; non-uniform-barrier and worker-to-worker are the known fail-loud edges (TASK-0172/0175).
+
+ORCHESTRATOR HONESTY CORRECTION (phase3-ralph review gate, mped-architect 🔴 MUST-FIX): TASK-0036 was set Done by the implementer, but its AC#2 ("plus a run.sh") and AC#5 (pingpong drives run.sh end-to-end) are exercised by run.sh whose deliverable is TASK-0038, which is honestly In Progress (its AC#5 — SO_*BUF clear-error in a lowered-wmem_max container — deferred to TASK-0174). A Done task transitively resting on an In-Progress deliverable violates the project DoD. Per phase3-ralph honest-failure discipline this is corrected, NOT re-gamed: TASK-0036 -> In Progress with an explicit Dependencies: TASK-0038 edge. All of TASK-0036s OWN ACs are functionally MET and independently verified by the review gate (run.sh works; the differential is real); only the transitive TASK-0038 container-socket-buffer edge remains. TASK-0036 flips to Done when TASK-0038 closes (TASK-0174). ORCHESTRATOR-VERIFIED gate numbers (qa-test-runner re-ran, not transcribed): just e2e 5x VERBATIM IDENTICAL total 20/pass 16/fail 0/skip 4/required-fail 0 (02-split-add/split under mp-tcp-bufsync PASS all 5, zero flakiness); pingpong 3/3; wire 7/7; pthreads-sync 8 pairs UNCHANGED; determinism both backends byte-identical; negative bites x2; clippy clean; AlgoIR-free verified by grep; differential REAL — 02-split/split mp-tcp output.bin SHA256 == hand-written reference.bin (independent third oracle), harness genuinely runs run.sh launching N OS processes. mped-architect: differential genuine (not circular) — transport+projection independently re-derived in mp-tcp Plan; shared renderer means shared-ARITHMETIC bugs caught only by reference.bin oracle (honestly disclosed in the e2e-matrix comment, not overclaimed); single-stream-deadlock root-cause + two-channel(DATA/CTRL) fix sound; TASK-0172/0175 real typed-ContractGap fail-loud (verified in code); port-picker TOCTOU bounded + fail-loud (not silent-wrong).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
