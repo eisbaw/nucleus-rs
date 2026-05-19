@@ -39,10 +39,11 @@ use chumsky::prelude::*;
 use super::ast::{
     CheckAssert, CheckDirective, Directive, LoopDirective, LoopOption, MemoryAtom,
     MemoryRegionDecl, MemorySpec, NotifyKind, PartitionKind, PlaceDataDirective, PlaceDirective,
-    PlaceTarget, SchedAst, SimdSpec, TimeLit, TimeUnit, TransferDirective, TransferOption,
-    ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
+    PlaceTarget, SchedAst, SimdSpec, SpDirective, SpName, TimeLit, TimeUnit, TransferDirective,
+    TransferOption, ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
 use crate::error::{map_first_chumsky_error, ParseError};
+use crate::span::Spanned;
 
 /// Parse a `*.sched.nuc` source string into a [`SchedAst`].
 ///
@@ -136,6 +137,25 @@ where
     p.then_ignore(comment_or_ws())
 }
 
+/// Helper: capture a node's span on the bare token **before** the
+/// trailing whitespace/comment padding is consumed, so the span is the
+/// tight extent of the source text the node was parsed from (no
+/// trailing layout). Leading layout is already consumed by the
+/// *previous* token's pad, matching `ParseError`'s offset convention.
+///
+/// This is the span-correctness primitive (TASK-0086), mirroring the
+/// algorithm parser's `padded_spanned`: `pad(p)` alone would, if
+/// `.map_with_span`-wrapped on the outside, fold the trailing
+/// whitespace into the span — wrong for a diagnostic that underlines a
+/// token / directive. `padded_spanned(p)` wraps with the span fixed
+/// first, then eats trailing layout off-span.
+fn padded_spanned<P, T>(p: P) -> impl Parser<char, Spanned<T>, Error = Simple<char>> + Clone
+where
+    P: Parser<char, T, Error = Simple<char>> + Clone,
+{
+    p.map_with_span(Spanned::new).then_ignore(comment_or_ws())
+}
+
 /// A reserved-word matcher that ensures the keyword is not the prefix
 /// of a longer identifier (e.g. `loop_var` does not start `loop`).
 fn keyword(kw: &'static str) -> impl Parser<char, (), Error = Simple<char>> + Clone {
@@ -146,8 +166,12 @@ fn keyword(kw: &'static str) -> impl Parser<char, (), Error = Simple<char>> + Cl
         .ignored()
 }
 
-/// Identifier matcher. Rejects keywords.
-fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
+/// Identifier matcher. Rejects keywords. Yields an [`SpName`] whose
+/// span is exactly the identifier token's byte range (no surrounding
+/// whitespace — callers wrap this in `pad`, which consumes trailing
+/// space *after* this combinator), so a "duplicate / undeclared `X`"
+/// diagnostic underlines just `X` (TASK-0086 / TASK-0196).
+fn ident() -> impl Parser<char, SpName, Error = Simple<char>> + Clone {
     let start = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_');
     let cont = filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_');
     start
@@ -163,6 +187,7 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
                 Ok(s)
             }
         })
+        .map_with_span(Spanned::new)
 }
 
 /// Decimal integer literal. Grammar §1: `IntLit ::= '0'..'9'+`.
@@ -267,8 +292,11 @@ fn size_lit() -> impl Parser<char, u64, Error = Simple<char>> + Clone {
 fn simd_spec() -> impl Parser<char, SimdSpec, Error = Simple<char>> + Clone {
     let none_ = keyword("none").to(SimdSpec::None);
     // Note: `ident` rejects keywords, including `none`. So the `none_`
-    // alternative must run first.
-    choice((none_, ident().map(SimdSpec::Named)))
+    // alternative must run first. The SIMD name is backend-interpreted
+    // and never independently diagnosed by `SchedLowerError`, so we
+    // keep it a bare `String` (see `crate::span` granularity docs) and
+    // drop the identifier span here.
+    choice((none_, ident().map(|sp| SimdSpec::Named(sp.node))))
 }
 
 /// `MemoryAtom ::= 'shared' | Ident ('[' SizeLit ']')?`.
@@ -282,8 +310,11 @@ fn memory_atom() -> impl Parser<char, MemoryAtom, Error = Simple<char>> + Clone 
                 .then_ignore(pad(just(']')))
                 .or_not(),
         )
+        // The memory-atom name is never independently name-resolved by
+        // `SchedLowerError`, so it stays a bare `String` (see
+        // `crate::span` granularity docs); drop the identifier span.
         .map(|(name, size)| MemoryAtom::Named {
-            name,
+            name: name.node,
             size_bytes: size,
         });
     choice((shared, named))
@@ -318,12 +349,16 @@ fn worker_class_decl() -> impl Parser<char, WorkerClassDecl, Error = Simple<char
 
     let field = choice((simd_field, memory_field));
 
+    // Ends at the *bare* `;` (no trailing `pad`) so the
+    // `padded_spanned` wrap in `directive_parser` fixes the directive
+    // span tight at the terminator; trailing layout is consumed
+    // off-span. Mirrors the algorithm parser's decl arms (TASK-0086).
     pad(keyword("worker_class"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just('{')))
         .then(field.repeated())
         .then_ignore(pad(just('}')))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(name, fields)| {
             let mut decl = WorkerClassDecl {
                 name,
@@ -346,7 +381,9 @@ fn worker_class_decl() -> impl Parser<char, WorkerClassDecl, Error = Simple<char
 fn memory_region_decl() -> impl Parser<char, MemoryRegionDecl, Error = Simple<char>> + Clone {
     enum RField {
         Size(u64),
-        AccessibleBy(Vec<String>),
+        // `accessible_by` names are `SpName` so an undeclared-name
+        // error (TASK-0196) can underline the offending token.
+        AccessibleBy(Vec<SpName>),
         PerWorker(bool),
     }
 
@@ -372,12 +409,13 @@ fn memory_region_decl() -> impl Parser<char, MemoryRegionDecl, Error = Simple<ch
 
     let field = choice((size_field, accessible_field, per_worker_field));
 
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("memory_region"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just('{')))
         .then(field.repeated())
         .then_ignore(pad(just('}')))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(name, fields)| {
             let mut decl = MemoryRegionDecl {
                 name,
@@ -436,10 +474,11 @@ fn workers_decl() -> impl Parser<char, WorkersDecl, Error = Simple<char>> + Clon
 
     let set = choice((nonempty_set, empty_set));
 
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("workers"))
         .ignore_then(pad(just('=')))
         .ignore_then(set)
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|entries| WorkersDecl { entries })
 }
 
@@ -464,21 +503,23 @@ fn place_directive() -> impl Parser<char, PlaceDirective, Error = Simple<char>> 
     let one = pad(ident()).map(PlaceTarget::One);
     let target = choice((many, one));
 
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("place"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(keyword("on")))
         .then(target)
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(kernel, target)| PlaceDirective { kernel, target })
 }
 
 /// `place_data IDENT in IDENT;`.
 fn place_data_directive() -> impl Parser<char, PlaceDataDirective, Error = Simple<char>> + Clone {
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("place_data"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(keyword("in")))
         .then(pad(ident()))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(data, region)| PlaceDataDirective { data, region })
 }
 
@@ -516,11 +557,12 @@ fn loop_option() -> impl Parser<char, LoopOption, Error = Simple<char>> + Clone 
 
 /// `loop IDENT : LoopOpt (, LoopOpt)*;`.
 fn loop_directive() -> impl Parser<char, LoopDirective, Error = Simple<char>> + Clone {
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("loop"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
         .then(loop_option().separated_by(pad(just(','))).at_least(1))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(var, options)| LoopDirective { var, options })
 }
 
@@ -552,11 +594,12 @@ fn transfer_option() -> impl Parser<char, TransferOption, Error = Simple<char>> 
 
 /// `transfer IDENT : XferOpt (, XferOpt)*;`.
 fn transfer_directive() -> impl Parser<char, TransferDirective, Error = Simple<char>> + Clone {
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("transfer"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
         .then(transfer_option().separated_by(pad(just(','))).at_least(1))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(data, options)| TransferDirective { data, options })
 }
 
@@ -591,12 +634,13 @@ fn check_assert() -> impl Parser<char, CheckAssert, Error = Simple<char>> + Clon
 /// without a grammar break (TASK-0079 chose this over relaxing
 /// `loop` to optional). All example schedules conform.
 fn check_directive() -> impl Parser<char, CheckDirective, Error = Simple<char>> + Clone {
+    // Bare `;` terminator — see `worker_class_decl` (TASK-0086).
     pad(keyword("check"))
         .ignore_then(pad(keyword("loop")))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
         .then(check_assert().separated_by(pad(just(','))).at_least(1))
-        .then_ignore(pad(just(';')))
+        .then_ignore(just(';'))
         .map(|(var, asserts)| CheckDirective { var, asserts })
 }
 
@@ -604,8 +648,17 @@ fn check_directive() -> impl Parser<char, CheckDirective, Error = Simple<char>> 
 // Top level
 // --------------------------------------------------------------------
 
-fn directive_parser() -> impl Parser<char, Directive, Error = Simple<char>> + Clone {
-    choice((
+/// Parse one schedule directive, wrapped in its tight source span.
+///
+/// Each inner directive parser ends at its *bare* `;` terminator (no
+/// trailing `pad`); `padded_spanned` then fixes the directive's
+/// [`SpDirective`] span at exactly `[keyword .. ';']` and consumes the
+/// trailing layout *off-span*. This mirrors the algorithm parser's
+/// `item_parser` (TASK-0086): a naive `pad(p).map_with_span` would
+/// swallow the newline after `;` into the directive span and
+/// mislocate a directive-level diagnostic (TASK-0196).
+fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + Clone {
+    let bare = choice((
         worker_class_decl().map(Directive::WorkerClass),
         memory_region_decl().map(Directive::MemoryRegion),
         workers_decl().map(Directive::Workers),
@@ -614,7 +667,8 @@ fn directive_parser() -> impl Parser<char, Directive, Error = Simple<char>> + Cl
         loop_directive().map(Directive::Loop),
         transfer_directive().map(Directive::Transfer),
         check_directive().map(Directive::Check),
-    ))
+    ));
+    padded_spanned(bare)
 }
 
 /// `Program ::= 'schedule' 'for' StringLit '{' SchedItem* '}'`.

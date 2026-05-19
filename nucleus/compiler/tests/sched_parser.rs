@@ -93,7 +93,7 @@ fn parses_02_split_add_split() {
     let transfers: Vec<_> = ast
         .directives
         .iter()
-        .filter_map(|d| match d {
+        .filter_map(|d| match &d.node {
             Directive::Transfer(t) => Some(t),
             _ => None,
         })
@@ -110,7 +110,7 @@ fn parses_02_split_add_split() {
             t.options,
             vec![TransferOption::Sync],
             "transfer {} should be sync-only",
-            t.data
+            t.data.node
         );
     }
 
@@ -119,13 +119,13 @@ fn parses_02_split_add_split() {
     let add = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Place(p) if p.kernel == "add" => Some(p),
+        .find_map(|d| match &d.node {
+            Directive::Place(p) if p.kernel.node == "add" => Some(p),
             _ => None,
         })
         .expect("add place");
     match &add.target {
-        PlaceTarget::One(w) => assert_eq!(w, "w0", "add should be on w0"),
+        PlaceTarget::One(w) => assert_eq!(w.node, "w0", "add should be on w0"),
         other => panic!("expected single-worker target for add, got {:?}", other),
     }
 }
@@ -165,8 +165,8 @@ fn parses_03_reduction_distributed() {
     let acc = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Place(p) if p.kernel == "accumulate" => Some(p),
+        .find_map(|d| match &d.node {
+            Directive::Place(p) if p.kernel.node == "accumulate" => Some(p),
             _ => None,
         })
         .expect("accumulate place");
@@ -179,7 +179,7 @@ fn parses_03_reduction_distributed() {
     let transfers: Vec<_> = ast
         .directives
         .iter()
-        .filter_map(|d| match d {
+        .filter_map(|d| match &d.node {
             Directive::Transfer(t) => Some(t),
             _ => None,
         })
@@ -189,7 +189,7 @@ fn parses_03_reduction_distributed() {
             t.options,
             vec![TransferOption::Sync],
             "transfer {} should be sync-only",
-            t.data
+            t.data.node
         );
     }
 }
@@ -219,8 +219,8 @@ fn parses_05_stencil_distributed() {
     let blur3 = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Place(p) if p.kernel == "blur3" => Some(p),
+        .find_map(|d| match &d.node {
+            Directive::Place(p) if p.kernel.node == "blur3" => Some(p),
             _ => None,
         })
         .expect("blur3 place");
@@ -233,8 +233,8 @@ fn parses_05_stencil_distributed() {
     let loop_x = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Loop(l) if l.var == "x" => Some(l),
+        .find_map(|d| match &d.node {
+            Directive::Loop(l) if l.var.node == "x" => Some(l),
             _ => None,
         })
         .expect("loop x");
@@ -276,8 +276,8 @@ fn parses_07_matmul_blocked() {
         let l = ast
             .directives
             .iter()
-            .find_map(|d| match d {
-                Directive::Loop(l) if l.var == var => Some(l),
+            .find_map(|d| match &d.node {
+                Directive::Loop(l) if l.var.node == var => Some(l),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing loop directive on `{}`", var));
@@ -315,8 +315,8 @@ fn parses_13_cnn_pipeline_parallel() {
     let loop_n = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Loop(l) if l.var == "n" => Some(l),
+        .find_map(|d| match &d.node {
+            Directive::Loop(l) if l.var.node == "n" => Some(l),
             _ => None,
         })
         .expect("loop n");
@@ -326,8 +326,8 @@ fn parses_13_cnn_pipeline_parallel() {
     let output_xfer = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::Transfer(t) if t.data == "output" => Some(t),
+        .find_map(|d| match &d.node {
+            Directive::Transfer(t) if t.data.node == "output" => Some(t),
             _ => None,
         })
         .expect("transfer output");
@@ -359,12 +359,12 @@ fn parses_14_hearing_aid_embedded_multimcu() {
     let check = ast
         .directives
         .iter()
-        .find_map(|d| match d {
+        .find_map(|d| match &d.node {
             Directive::Check(c) => Some(c),
             _ => None,
         })
         .expect("check directive");
-    assert_eq!(check.var, "frame");
+    assert_eq!(check.var.node, "frame");
     assert_eq!(check.asserts.len(), 1, "{:?}", check.asserts);
     match check.asserts[0] {
         // `latency_max = 10ms` -> 10_000_000 ns, unit retained.
@@ -502,7 +502,7 @@ schedule for \"../prog.algo.nuc\" {
     let checks: Vec<_> = ast
         .directives
         .iter()
-        .filter_map(|d| match d {
+        .filter_map(|d| match &d.node {
             Directive::Check(c) => Some(c),
             _ => None,
         })
@@ -512,7 +512,7 @@ schedule for \"../prog.algo.nuc\" {
     let lat = |var: &str| -> (u64, TimeUnit) {
         let c = checks
             .iter()
-            .find(|c| c.var == var)
+            .find(|c| c.var.node == var)
             .unwrap_or_else(|| panic!("missing check for {}", var));
         match c.asserts[0] {
             CheckAssert::LatencyMax(t) => (t.nanos, t.original_unit),
@@ -581,8 +581,8 @@ schedule for \"../prog.algo.nuc\" {
     let fe = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::WorkerClass(c) if c.name == "fe_core" => Some(c),
+        .find_map(|d| match &d.node {
+            Directive::WorkerClass(c) if c.name.node == "fe_core" => Some(c),
             _ => None,
         })
         .expect("fe_core");
@@ -591,10 +591,150 @@ schedule for \"../prog.algo.nuc\" {
     let dsp = ast
         .directives
         .iter()
-        .find_map(|d| match d {
-            Directive::WorkerClass(c) if c.name == "dsp_core" => Some(c),
+        .find_map(|d| match &d.node {
+            Directive::WorkerClass(c) if c.name.node == "dsp_core" => Some(c),
             _ => None,
         })
         .expect("dsp_core");
     assert_eq!(dsp.simd, Some(SimdSpec::Named("neon128".to_string())));
+}
+
+/// TASK-0086 AC#3: per-node spans point at the CORRECT source
+/// substring, validated against `error::offset_to_line_col`, and are
+/// TIGHT (no leading / trailing layout swallowed). This is the
+/// load-bearing proof that the `padded_spanned` primitive fixes the
+/// span at the bare token/terminator before trailing layout is eaten,
+/// and that `ident()`'s `map_with_span` captures just the identifier.
+///
+/// The source is laid out with one directive per line so byte offsets
+/// and (line, column) are predictable.
+#[test]
+fn spans_point_at_correct_source_substring() {
+    use compiler::error::offset_to_line_col;
+    use compiler::sched::{PlaceDataDirective, PlaceDirective, WorkerClassDecl};
+
+    // Line 1: `schedule for "p.algo.nuc" {`
+    // Line 2: `worker_class cc { simd = none; };`
+    // Line 3: `memory_region rgn { accessible_by = { cc, w0 }; };`
+    // Line 4: `workers = { w0 : cc };`
+    // Line 5: `place k on w0;`
+    // Line 6: `place_data d in rgn;`
+    // Line 7: `loop i : block=8;`
+    // Line 8: `}`
+    let src = "\
+schedule for \"p.algo.nuc\" {
+worker_class cc { simd = none; };
+memory_region rgn { accessible_by = { cc, w0 }; };
+workers = { w0 : cc };
+place k on w0;
+place_data d in rgn;
+loop i : block=8;
+}
+";
+    let ast = parse_sched(src).expect("must parse");
+
+    // Helper: a span must (a) slice out exactly `want`, (b) start at
+    // `(line, col)`, and (c) be TIGHT — the char immediately before
+    // `start` is not part of the token and the char at `end` is not
+    // whitespace that the span wrongly swallowed.
+    let check = |span: &std::ops::Range<usize>, want: &str, lc: (usize, usize)| {
+        assert_eq!(&src[span.clone()], want, "span must slice exactly `{want}`");
+        assert_eq!(
+            offset_to_line_col(src, span.start),
+            lc,
+            "span start line:col for `{want}`"
+        );
+        // Tightness: the span must not include a trailing space/newline
+        // (the classic `pad(p).map_with_span` bug). `want` itself has
+        // no surrounding whitespace, and the equality above already
+        // pins that, but assert the boundary char explicitly too.
+        assert!(
+            !src[span.clone()].starts_with(char::is_whitespace)
+                && !src[span.clone()].ends_with(char::is_whitespace),
+            "span for `{want}` must be tight (no leading/trailing layout)"
+        );
+    };
+
+    // --- Directive 0: the whole `worker_class` decl (SpDirective) ---
+    let d0 = &ast.directives[0];
+    check(&d0.span, "worker_class cc { simd = none; };", (2, 1));
+    let wc: &WorkerClassDecl = match &d0.node {
+        Directive::WorkerClass(c) => c,
+        other => panic!("expected worker_class; got {other:?}"),
+    };
+    // The class *name* identifier carries its own tight span: just
+    // `cc`, line 2 col 14 (`worker_class ` is 13 chars).
+    check(&wc.name.span, "cc", (2, 14));
+
+    // --- Directive 1: memory_region; its accessible_by names ---
+    let d1 = &ast.directives[1];
+    check(
+        &d1.span,
+        "memory_region rgn { accessible_by = { cc, w0 }; };",
+        (3, 1),
+    );
+    let region = match &d1.node {
+        Directive::MemoryRegion(r) => r,
+        other => panic!("expected memory_region; got {other:?}"),
+    };
+    check(&region.name.span, "rgn", (3, 15));
+    let acc = region
+        .accessible_by
+        .as_ref()
+        .expect("accessible_by present");
+    // `accessible_by = { cc, w0 }` — `cc` and `w0` each tightly
+    // spanned at their own columns on line 3.
+    check(&acc[0].span, "cc", (3, 39));
+    check(&acc[1].span, "w0", (3, 43));
+
+    // --- Directive 3: place k on w0 ---
+    let d3 = &ast.directives[3];
+    check(&d3.span, "place k on w0;", (5, 1));
+    let place: &PlaceDirective = match &d3.node {
+        Directive::Place(p) => p,
+        other => panic!("expected place; got {other:?}"),
+    };
+    check(&place.kernel.span, "k", (5, 7));
+    match &place.target {
+        PlaceTarget::One(w) => check(&w.span, "w0", (5, 12)),
+        other => panic!("expected One target; got {other:?}"),
+    }
+
+    // --- Directive 4: place_data d in rgn ---
+    let d4 = &ast.directives[4];
+    check(&d4.span, "place_data d in rgn;", (6, 1));
+    let pd: &PlaceDataDirective = match &d4.node {
+        Directive::PlaceData(pd) => pd,
+        other => panic!("expected place_data; got {other:?}"),
+    };
+    check(&pd.data.span, "d", (6, 12));
+    check(&pd.region.span, "rgn", (6, 17));
+
+    // --- Directive 5: loop i : block=8 — directive + var span ---
+    let d5 = &ast.directives[5];
+    check(&d5.span, "loop i : block=8;", (7, 1));
+    let lp = match &d5.node {
+        Directive::Loop(l) => l,
+        other => panic!("expected loop; got {other:?}"),
+    };
+    check(&lp.var.span, "i", (7, 6));
+
+    // Directive 2 is the `workers` decl; pin its entry-name span too
+    // (the typed form `w0 : cc`).
+    let d2 = &ast.directives[2];
+    check(&d2.span, "workers = { w0 : cc };", (4, 1));
+    let workers = match &d2.node {
+        Directive::Workers(w) => w,
+        other => panic!("expected workers; got {other:?}"),
+    };
+    check(&workers.entries[0].name.span, "w0", (4, 13));
+    check(
+        &workers.entries[0]
+            .class
+            .as_ref()
+            .expect("typed worker has class")
+            .span,
+        "cc",
+        (4, 18),
+    );
 }

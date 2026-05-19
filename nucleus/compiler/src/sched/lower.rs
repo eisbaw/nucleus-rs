@@ -58,16 +58,26 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // ambiguous (PRD §6.3.1 phrases the workers decl as singular).
     let mut workers_seen = false;
 
+    // NOTE (TASK-0086): the AST is now span-carrying — directives are
+    // `SpDirective` and identifier fields are `SpName`. Lowering still
+    // *ignores* spans entirely: every use below projects through
+    // `.node` (or `&**`) to the inner value, the IR + `SchedLowerError`
+    // keep their plain-`String` shapes, and behaviour is byte-identical
+    // (proven by the determinism gate). Threading the `.span` into a
+    // located `SchedLowerError` is the separate TASK-0196; this pass
+    // must NOT do it. `match &d.node` (not `match d`) because `Deref`
+    // does not apply to `match`, so a future span use cannot leak in
+    // by accident.
     for d in &ast.directives {
-        match d {
+        match &d.node {
             Directive::WorkerClass(c) => {
-                if ir.worker_classes.contains_key(&c.name) {
-                    return Err(SchedLowerError::DuplicateWorkerClass(c.name.clone()));
+                if ir.worker_classes.contains_key(&c.name.node) {
+                    return Err(SchedLowerError::DuplicateWorkerClass(c.name.node.clone()));
                 }
                 ir.worker_classes.insert(
-                    c.name.clone(),
+                    c.name.node.clone(),
                     ResolvedWorkerClass {
-                        name: c.name.clone(),
+                        name: c.name.node.clone(),
                         simd: c.simd.clone(),
                         memory: c.memory.clone(),
                         is_default: false,
@@ -75,15 +85,21 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                 );
             }
             Directive::MemoryRegion(r) => {
-                if ir.memory_regions.contains_key(&r.name) {
-                    return Err(SchedLowerError::DuplicateMemoryRegion(r.name.clone()));
+                if ir.memory_regions.contains_key(&r.name.node) {
+                    return Err(SchedLowerError::DuplicateMemoryRegion(r.name.node.clone()));
                 }
                 ir.memory_regions.insert(
-                    r.name.clone(),
+                    r.name.node.clone(),
                     ResolvedMemoryRegion {
-                        name: r.name.clone(),
+                        name: r.name.node.clone(),
                         size_bytes: r.size_bytes,
-                        accessible_by: r.accessible_by.clone(),
+                        // `accessible_by` is `Vec<SpName>`; the IR keeps
+                        // plain `Vec<String>`. Strip spans here (the
+                        // located variant is TASK-0196's job).
+                        accessible_by: r
+                            .accessible_by
+                            .as_ref()
+                            .map(|names| names.iter().map(|n| n.node.clone()).collect()),
                         per_worker: r.per_worker,
                     },
                 );
@@ -100,24 +116,27 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                 let mut seen_in_this_decl: BTreeMap<String, ()> = BTreeMap::new();
 
                 for entry in &w.entries {
-                    if seen_in_this_decl.insert(entry.name.clone(), ()).is_some() {
-                        return Err(SchedLowerError::DuplicateWorker(entry.name.clone()));
+                    if seen_in_this_decl
+                        .insert(entry.name.node.clone(), ())
+                        .is_some()
+                    {
+                        return Err(SchedLowerError::DuplicateWorker(entry.name.node.clone()));
                     }
-                    if ir.workers.contains_key(&entry.name) {
-                        return Err(SchedLowerError::DuplicateWorker(entry.name.clone()));
+                    if ir.workers.contains_key(&entry.name.node) {
+                        return Err(SchedLowerError::DuplicateWorker(entry.name.node.clone()));
                     }
 
                     let class = match &entry.class {
-                        Some(c) => c.clone(),
+                        Some(c) => c.node.clone(),
                         None => {
                             needs_default_class = true;
                             DEFAULT_WORKER_CLASS.to_string()
                         }
                     };
                     ir.workers.insert(
-                        entry.name.clone(),
+                        entry.name.node.clone(),
                         ResolvedWorker {
-                            name: entry.name.clone(),
+                            name: entry.name.node.clone(),
                             class,
                         },
                     );
@@ -200,7 +219,7 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // ----------------------------------------------------------------
 
     for d in &ast.directives {
-        match d {
+        match &d.node {
             // Already handled in pass 1.
             Directive::WorkerClass(_) | Directive::MemoryRegion(_) | Directive::Workers(_) => {}
 
@@ -220,15 +239,18 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 // --------------------------------------------------------------------
 
 fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    if ir.places.contains_key(&p.kernel) {
+    // `.node` everywhere: lowering ignores spans (TASK-0086); the
+    // located `SchedLowerError` is TASK-0196.
+    let kernel = &p.kernel.node;
+    if ir.places.contains_key(kernel) {
         return Err(SchedLowerError::DuplicatePlace {
-            kernel: p.kernel.clone(),
+            kernel: kernel.clone(),
         });
     }
     let target = match &p.target {
         PlaceTarget::One(w) => {
-            check_worker_declared(&p.kernel, w, ir)?;
-            ResolvedPlaceTarget::One(w.clone())
+            check_worker_declared(kernel, &w.node, ir)?;
+            ResolvedPlaceTarget::One(w.node.clone())
         }
         PlaceTarget::Many(ws) => {
             // TASK-0094: a worker named twice in one placement set
@@ -243,23 +265,24 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
             // repeated name is also undeclared.
             let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
             for w in ws {
+                // `w.as_str()` via `Deref` (Spanned<String> -> str).
                 if seen.insert(w.as_str(), ()).is_some() {
                     return Err(SchedLowerError::DuplicatePlaceWorker {
-                        kernel: p.kernel.clone(),
-                        worker: w.clone(),
+                        kernel: kernel.clone(),
+                        worker: w.node.clone(),
                     });
                 }
             }
             for w in ws {
-                check_worker_declared(&p.kernel, w, ir)?;
+                check_worker_declared(kernel, &w.node, ir)?;
             }
-            ResolvedPlaceTarget::Many(ws.clone())
+            ResolvedPlaceTarget::Many(ws.iter().map(|w| w.node.clone()).collect())
         }
     };
     ir.places.insert(
-        p.kernel.clone(),
+        kernel.clone(),
         ResolvedPlacement {
-            kernel: p.kernel.clone(),
+            kernel: kernel.clone(),
             target,
         },
     );
@@ -280,30 +303,35 @@ fn lower_place_data(
     pd: &super::ast::PlaceDataDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    if ir.place_data.contains_key(&pd.data) {
+    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    let data = &pd.data.node;
+    let region = &pd.region.node;
+    if ir.place_data.contains_key(data) {
         return Err(SchedLowerError::DuplicatePlaceData {
-            data: pd.data.clone(),
+            data: data.clone(),
         });
     }
-    if !ir.memory_regions.contains_key(&pd.region) {
+    if !ir.memory_regions.contains_key(region) {
         return Err(SchedLowerError::UnknownMemoryRegion {
-            data: pd.data.clone(),
-            region: pd.region.clone(),
+            data: data.clone(),
+            region: region.clone(),
         });
     }
     ir.place_data.insert(
-        pd.data.clone(),
+        data.clone(),
         ResolvedPlaceData {
-            data: pd.data.clone(),
-            region: pd.region.clone(),
+            data: data.clone(),
+            region: region.clone(),
         },
     );
     Ok(())
 }
 
 fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    if ir.loops.contains_key(&l.var) {
-        return Err(SchedLowerError::DuplicateLoop { var: l.var.clone() });
+    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    let var = &l.var.node;
+    if ir.loops.contains_key(var) {
+        return Err(SchedLowerError::DuplicateLoop { var: var.clone() });
     }
     // TASK-0093: the grammar treats the option list as an unordered
     // *set* (§2 note 7 / §5.1: `block=64, block=128` is a semantic
@@ -320,7 +348,7 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
             if let Some(kw) = loop_option_keyword(opt) {
                 if seen.insert(kw, ()).is_some() {
                     return Err(SchedLowerError::DuplicateLoopOption {
-                        var: l.var.clone(),
+                        var: var.clone(),
                         option: kw.to_string(),
                     });
                 }
@@ -329,12 +357,12 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
     }
     let mut options = Vec::with_capacity(l.options.len());
     for opt in &l.options {
-        options.push(lower_loop_option(&l.var, opt)?);
+        options.push(lower_loop_option(var, opt)?);
     }
     ir.loops.insert(
-        l.var.clone(),
+        var.clone(),
         ResolvedLoopDirective {
-            var: l.var.clone(),
+            var: var.clone(),
             options,
         },
     );
@@ -384,9 +412,11 @@ fn lower_transfer(
     t: &super::ast::TransferDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    if ir.transfers.contains_key(&t.data) {
+    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    let data = &t.data.node;
+    if ir.transfers.contains_key(data) {
         return Err(SchedLowerError::DuplicateTransfer {
-            data: t.data.clone(),
+            data: data.clone(),
         });
     }
     // TASK-0093: like loop options, the transfer option list is an
@@ -406,14 +436,14 @@ fn lower_transfer(
                     mode_flags += 1;
                     if mode_flags > 1 {
                         return Err(SchedLowerError::ConflictingTransferMode {
-                            data: t.data.clone(),
+                            data: data.clone(),
                         });
                     }
                 }
                 TransferOption::Buffer(_) => {
                     if seen.insert("buffer", ()).is_some() {
                         return Err(SchedLowerError::DuplicateTransferOption {
-                            data: t.data.clone(),
+                            data: data.clone(),
                             option: "buffer".to_string(),
                         });
                     }
@@ -421,7 +451,7 @@ fn lower_transfer(
                 TransferOption::Notify(_) => {
                     if seen.insert("notify", ()).is_some() {
                         return Err(SchedLowerError::DuplicateTransferOption {
-                            data: t.data.clone(),
+                            data: data.clone(),
                             option: "notify".to_string(),
                         });
                     }
@@ -431,12 +461,12 @@ fn lower_transfer(
     }
     let mut options = Vec::with_capacity(t.options.len());
     for opt in &t.options {
-        options.push(lower_transfer_option(&t.data, opt)?);
+        options.push(lower_transfer_option(data, opt)?);
     }
     ir.transfers.insert(
-        t.data.clone(),
+        data.clone(),
         ResolvedTransferDirective {
-            data: t.data.clone(),
+            data: data.clone(),
             options,
         },
     );
@@ -463,8 +493,10 @@ fn lower_transfer_option(
 }
 
 fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    if ir.checks.contains_key(&c.var) {
-        return Err(SchedLowerError::DuplicateCheck { var: c.var.clone() });
+    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    let var = &c.var.node;
+    if ir.checks.contains_key(var) {
+        return Err(SchedLowerError::DuplicateCheck { var: var.clone() });
     }
     let asserts = c
         .asserts
@@ -475,9 +507,9 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
         })
         .collect();
     ir.checks.insert(
-        c.var.clone(),
+        var.clone(),
         ResolvedCheckDirective {
-            var: c.var.clone(),
+            var: var.clone(),
             asserts,
         },
     );
