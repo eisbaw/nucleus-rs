@@ -1,0 +1,25 @@
+// Naive schedule: one worker, no decomposition.
+//
+// The smoke-test schedule. Every algorithm must produce correct
+// output under naive.sched.nuc on every backend before any other
+// schedule is allowed to claim correctness.
+//
+// Single `host`, every kernel placed there, no loop transforms, no
+// transfers. With everything on one worker no data crosses worker
+// boundaries (PRD §6.3.4); the link pass enforces that. The three
+// passes (block totals -> exclusive block offsets -> within-block
+// scan + offset) run sequentially on the one worker, exercising the
+// inter-pass read-after-write ordering this example targets.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place save_output   on host;
+    place accumulate    on host;
+    place exclusive_add on host;
+    place block_scan    on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

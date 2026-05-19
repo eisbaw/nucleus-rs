@@ -29,7 +29,7 @@
 # and thus can be driven end-to-end. Examples without these (13, 14
 # at the time of writing) are not yet in the matrix; adding them
 # means landing their reference implementation and fixtures first.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "05-stencil", "07-matmul"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "07-matmul"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -62,6 +62,27 @@ backend  = "pthreads-sync"
 example  = "03-reduction"
 schedule = "naive"
 backend  = "pthreads-sync"
+
+# Example 04 prefix-sum: only the NAIVE schedule is a required
+# differential cell. It is byte-identical to the hand-written
+# `reference.bin` (an independent straight-line running sum) on BOTH
+# tier-1 backends. The `blocked` schedule is shipped but SKIPPED
+# (see [[skip]] below): blocking a loop variable (`b`) that is reused
+# across all three accumulator passes hits a backend
+# absolute-index-rebinding gap (TASK-0180) that double-counts the
+# accumulators. Shipping it as required would be faking AC#3
+# (TASK-0039). Single-`host` so under mp-tcp it is single-process
+# (shared single-worker renderer ⇒ arithmetic byte-identical to
+# pthreads-sync).
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "pthreads-sync"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
 
 [[required]]
 example  = "05-stencil"
@@ -177,6 +198,29 @@ backend  = "mp-tcp-bufsync"
 # "informational" tally only. Once the underlying gap is closed
 # (TASK-0117 + TASK-0126 here), the corresponding entry moves to
 # `[[required]]` and this skip is deleted.
+
+# 04-prefix-sum/blocked: `loop b : block=2` over NB=4 is EVENLY
+# divisible (no remainder), but `b` is the loop variable of all
+# THREE accumulator passes. The backend's `divisible_inner_block_vars`
+# only rebinds an inner-block var whose loop appears exactly once in
+# the EventList (a guard meant for the non-divisible two-nest case,
+# TASK-0173); a name reused across passes trips count>1, rebinding is
+# skipped, the inner loop runs its full source range under the tile
+# loop, and every per-block accumulator is double-counted (output is
+# exactly 2x the reference on BOTH backends). Tracked precisely as
+# TASK-0180. Skipped — NOT faked as required (TASK-0039 AC#3 honesty).
+# Moves to [[required]] for both backends when TASK-0180 lands.
+[[skip]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "pthreads-sync"
+reason   = "TASK-0180: block= on a loop var (`b`) reused across 3 accumulator passes skips absolute-index rebinding (divisible_inner_block_vars count==1 guard) ⇒ accumulators double-count; output 2x reference. Honest skip, not a faked required cell."
+
+[[skip]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0180: same accumulator double-count as the pthreads-sync 04/blocked skip — this is a backend/block-transform gap (not transport-specific); single-host mp-tcp inherits the identical wrong arithmetic."
 
 [[skip]]
 example  = "03-reduction"

@@ -1,0 +1,63 @@
+// Blocked schedule: one worker, outer block-axis tiling via `block=`.
+//
+// Same placement as the naive schedule (single `host`, all five
+// kernels on it). The only difference is `loop b : block=2;`, which
+// tiles the block-iteration axis `b` into 2-wide chunks. Per PRD
+// §6.3.3 `block=` is orthogonal to worker placement; a single-worker
+// blocked schedule exercises ONLY the tiling transform (TASK-0030's
+// `apply_block_transforms`).
+//
+// Why block=2 — a DELIBERATELY DIVISIBLE choice (TASK-0173)
+// ---------------------------------------------------------
+// The loop variable `b` appears in all three passes (block totals,
+// exclusive block offsets, within-block scan). NB = 4. `block=2`
+// divides 4 evenly (exactly 2 full tiles of 2, NO trailing
+// remainder). This is a CONSCIOUS, DOCUMENTED choice:
+//
+//   A prefix sum is an ACCUMULATOR. TASK-0173 records that a
+//   NON-divisible `block=` over an accumulator would be WRONG —
+//   the trailing partial tile would need per-tile base-offset
+//   rebinding that is not yet implemented; an accumulator (unlike
+//   05-stencil's idempotent `blur3`) is NOT safe to recompute on a
+//   remainder tile. We therefore pick a divisor of NB so NO
+//   remainder tile is ever produced. The 05-stencil non-divisible
+//   case is safe ONLY because its kernel is idempotent; this
+//   example's per-block accumulators are not, so we stay divisible
+//   ON PURPOSE.
+//
+// Note the block axis `b` is NOT itself the accumulation axis: each
+// block's `block_sum[b]` / `block_off[b]` / `out[b][..]` slot is
+// independent of other blocks, and the accumulation runs over the
+// INNER `i` / `j` loops (which are not tiled here). Tiling `b`
+// evenly only reorders independent blocks, so the result is
+// schedule-independent and bit-identical to the naive schedule's.
+//
+// Honest scope (mirrors 05-stencil / 07-matmul blocked): this is a
+// single-`host` schedule, so the backend emits from the algorithm
+// source path; this cell pins the *compile-doesn't-reject +
+// passes-don't-panic + bit-identical result* property. The numeric
+// correctness of the tiling decomposition itself is pinned by the
+// `block_transform` unit / integration tests, not by this e2e diff.
+//
+// A multi-worker variant would add `partition=blocks` on the same
+// `b` loop — that is a future distributed schedule's job, not the
+// blocked one (cf. 03-reduction's distributed stretch).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place save_output   on host;
+    place accumulate    on host;
+    place exclusive_add on host;
+    place block_scan    on host;
+
+    // Tile the block axis `b` into 2-wide chunks. NB=4 is evenly
+    // divisible by 2 (no remainder tile — required for an
+    // accumulator, TASK-0173). TASK-0030 keys the transform by loop
+    // variable name, so every `for b : ...` in the three passes is
+    // tiled identically.
+    loop b : block=2;
+
+    // No transfer directives — single worker, no cross-worker edges.
+}

@@ -1,0 +1,131 @@
+// Prefix sum (inclusive scan) — three-pass, block-decomposed.
+//
+// Inclusive prefix sum over an i32 input array of length N, laid out
+// NB x BS (block count x block size) so the block axis is exposed at
+// the algorithm level. Output: out[k] = sum_{m=0..=k} in[m].
+//
+// Why three passes (and why NOT the textbook `out[i]=out[i-1]+in[i]`)
+// -------------------------------------------------------------------
+// The naive in-array carried recurrence is NOT expressible in Nuc v2.
+// Probed and confirmed (TASK-0039 notes, follow-up TASK-0179):
+//   - `out[i] <-- scan(out[i-1], in[i])` PANICS at i=0: the generated
+//     `out[(i-1) as usize]` underflows to out[usize::MAX] (OOB). v2
+//     has NO conditionals (PRD §6.2.4) to special-case the boundary,
+//     and single-assignment (which is keyed on the data SYMBOL, not
+//     the index) forbids splitting it as `out[0] <-- ...; for i:1..N
+//     { out[i] <-- scan(out[i-1], in[i]) }` — that is a
+//     DoubleAssignment on `out`.
+//   - Loop bounds must be compile-time const (the ACFG builder only
+//     `eval_const`s them); a triangular reformulation `for j : 0..i+1`
+//     is rejected.
+//
+// So the carry / boundary logic is pushed into the hand-written Rust
+// kernels (entirely legal — PRD §6.2.2: kernel bodies are arbitrary
+// Rust the host toolchain compiles unmodified), and the algorithm uses
+// ONLY the rectangular reduction-accumulator shape that example
+// 03-reduction already proves bit-identical on both tier-1 backends:
+// one dataflow statement per data symbol, the symbol read+written in
+// the SAME statement, codegen pre-initialises it to 0 (the additive
+// identity), constant loop bounds, no carried index.
+//
+// The three passes and their ordering dependency
+// -----------------------------------------------
+//   Pass 1  block_sum[b]  = sum of input block b.
+//   Pass 2  block_off[b]  = sum of all blocks strictly before b
+//                           (exclusive prefix of block_sum). Pass 2
+//                           READS Pass 1's output.
+//   Pass 3  out[b][i]      = (inclusive scan of in block b up to i)
+//                           + block_off[b]. Pass 3 READS Pass 2's
+//                           output.
+// The two read-after-write edges (P1->P2, P2->P3) between passes that
+// all share the single worker are exactly the ordering this example
+// is meant to stress (TASK-0039: "ordering between two passes that
+// share a worker").
+//
+// Each masked/segmented step lives in a kernel:
+//   - `accumulate(acc, x)`            : reduction fold (Pass 1).
+//   - `exclusive_add(acc, x, b, c)`   : add block_sum[c] iff c < b
+//                                       (Pass 2 exclusive prefix).
+//   - `block_scan(acc, x, boff, i, j)`: add in[b][j] iff j <= i
+//                                       (within-block inclusive scan)
+//                                       and add boff once (at j==0).
+// The kernels are scalar `(i32,...) -> i32`, accepted by the contract
+// pass directly (the I/O kernels' aggregate types still surface the
+// known TASK-0012 TypeMismatch — see README §"Contract-check").
+//
+// Numeric choice: i32 with `wrapping_add` everywhere. PRD §10.1:
+// integer arithmetic is bit-deterministic; the committed fixture
+// stays in-range, `wrapping_add` documents overflow intent. NO floats
+// (reorderable, non-deterministic).
+//
+// What this example does NOT demonstrate (honest limitations, AC#5):
+//   - A parallel scan TREE (Blelloch / Hillis-Steele). v2 has no
+//     prefix-scan built-in; this is the sequential-style block
+//     decomposition. The within-block scan is O(BS^2) (rectangular
+//     masked accumulate), the block-offset prefix O(NB^2). Fine for
+//     tier-1 sizes (N=256); not asymptotically optimal.
+//   - Distributing the blocks across workers. The block axis is a
+//     clean partition handle, but per-tile transfer codegen is future
+//     work (cf. 03-reduction's distributed stretch). The shipped
+//     schedules are single-`host`.
+//   - Expressing the carry at the algorithm level (see above /
+//     TASK-0179). The recurrence is in Rust kernels, not Nuc.
+
+const N  : usize = 256;            // total input length
+const NB : usize = 4;              // block count (the partition axis)
+const BS : usize = N / NB;         // 64 elements per block
+
+// Input (NB x BS row-major), per-block totals, per-block exclusive
+// offsets, and the output. Each `data` symbol is assigned by exactly
+// one dataflow statement (PRD §6.2.1).
+data in_arr    : i32[NB][BS];
+data block_sum : i32[NB];
+data block_off : i32[NB];
+data out       : i32[NB][BS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()             -> i32[NB][BS] effectful;
+kernel save_output : (i32[NB][BS])  -> ()           effectful;
+
+// Pure step kernels — reorderable, deduplicable. All scalar so the
+// contract pass (scalar-only at M1) accepts them directly.
+kernel accumulate    : (i32, i32)                -> i32  pure;
+kernel exclusive_add  : (i32, i32, i32, i32)      -> i32  pure;
+kernel block_scan    : (i32, i32, i32, i32, i32) -> i32  pure;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+in_arr <-- load_input();
+
+// Pass 1 — per-block totals. `block_sum` is pre-initialised to 0 by
+// the codegen (additive identity); each (b, i) folds one element.
+// This is exactly example 03's Phase-1 rectangular accumulator.
+for b : 0 .. NB {
+    for i : 0 .. BS {
+        block_sum[b] <-- accumulate(block_sum[b], in_arr[b][i]);
+    }
+}
+
+// Pass 2 — exclusive prefix of block_sum. Rectangular accumulator over
+// (b, c); the kernel adds block_sum[c] only when c < b, giving the
+// sum of all strictly-earlier blocks. `block_off` pre-init 0. READS
+// Pass 1's `block_sum`: the first inter-pass ordering edge.
+for b : 0 .. NB {
+    for c : 0 .. NB {
+        block_off[b] <-- exclusive_add(block_off[b], block_sum[c], b, c);
+    }
+}
+
+// Pass 3 — within-block inclusive scan + block offset. Rectangular
+// accumulator over (b, i, j); `block_scan` adds in_arr[b][j] only
+// when j <= i (inclusive prefix within the block) and adds the block
+// offset once (at j == 0). `out` pre-init 0. READS Pass 2's
+// `block_off`: the second inter-pass ordering edge.
+for b : 0 .. NB {
+    for i : 0 .. BS {
+        for j : 0 .. BS {
+            out[b][i] <-- block_scan(out[b][i], in_arr[b][j], block_off[b], i, j);
+        }
+    }
+}
+
+save_output(out);
