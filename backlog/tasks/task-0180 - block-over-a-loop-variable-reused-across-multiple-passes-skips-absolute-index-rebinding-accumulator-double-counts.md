@@ -3,11 +3,11 @@ id: TASK-0180
 title: >-
   block= over a loop variable reused across multiple passes skips absolute-index
   rebinding (accumulator double-counts)
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:18'
-updated_date: '2026-05-19 02:06'
+updated_date: '2026-05-19 02:08'
 labels:
   - M3
   - backend
@@ -25,12 +25,12 @@ Surfaced by TASK-0039 (example 04-prefix-sum, blocked schedule). divisible_inner
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList count)
-- [ ] #2 A blocked schedule over a loop var reused across >=2 passes (accumulator) is bit-identical to its naive schedule on both backends
-- [ ] #3 04-prefix-sum/blocked moves from [[skip]] to [[required]] for both backends; existing blocked cells (05,07) stay green
-- [ ] #4 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList occurrence count)
-- [ ] #5 A blocked schedule over a loop var reused across two or more passes (accumulator) is bit-identical to its naive schedule on both backends
-- [ ] #6 04-prefix-sum blocked moves from skip to required for both backends; existing blocked cells (05, 07) stay green; determinism stays green
+- [x] #1 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList count)
+- [x] #2 A blocked schedule over a loop var reused across >=2 passes (accumulator) is bit-identical to its naive schedule on both backends
+- [x] #3 04-prefix-sum/blocked moves from [[skip]] to [[required]] for both backends; existing blocked cells (05,07) stay green
+- [x] #4 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList occurrence count)
+- [x] #5 A blocked schedule over a loop var reused across two or more passes (accumulator) is bit-identical to its naive schedule on both backends
+- [x] #6 04-prefix-sum blocked moves from skip to required for both backends; existing blocked cells (05, 07) stay green; determinism stays green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,3 +54,28 @@ GATE (inside nix develop, all green): just test 365 pass / 0 fail / 1 ignored (t
 
 HONEST LIMITATION: qa-test-runner / mped-architect sub-agents could not be spawned in this environment (no agent Task tool); performed the equivalent verification + architect self-review manually (full gate x3 + codegen inspection proving the fix is real, not accidental).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced the program-global Event::Loop occurrence heuristic with a per-occurrence strip-mine rebinding tag, fixing the 04-prefix-sum/blocked accumulator double-count (2x reference on both backends) at the root.
+
+WHAT CHANGED
+- compiler/event.rs: new BlockTag{block_n,num_full,is_partial}; additive serde-default Option<BlockTag> on Event::Loop (manual Hash arm; loop_over_tagged ctor).
+- compiler/acfg.rs: additive serde-default Option<BlockTag> on ACFGNode::Repeat. sync_inject / transfer_inject preserve it through every reconstruction.
+- compiler/passes/block_transform.rs: tile_nest emits the full nest tag {is_partial:false} and the trailing partial tile tag {is_partial:true}; both carry N + num_full.
+- compiler/passes/petri_to_events.rs: threads Repeat.block_tag onto Event::Loop verbatim.
+- backends/pthreads-sync: DELETED divisible_inner_block_vars + RenderCtx.divisible_inner + RenderCtxPub.empty_inner. render_event rebinds per-occurrence from block_tag ALONE: full = LO+tile*N+inner (typed EmitError if no enclosing tile loop, never panic); partial = LO+num_full*N+inner. LO single-sourced from sidecar.loop_bounds.
+- backends multi_worker.rs / mp-tcp lib.rs: fail-loud typed ContractGap if a tagged loop reaches the (not-yet-threaded) multi-worker path; scoped as TASK-0181.
+- e2e_example_04 blocked test un-ignored; e2e-matrix 04/blocked skip->required x2 backends; stale 05-stencil idempotence comment corrected.
+
+WHY (tag-carrier decision): the conflated cases all share ONE reused IterVar, so the NameSidecar (per-IterVar) and the inner_block_iter_vars BTreeSet (per-IterVar) structurally cannot distinguish them — the carrier MUST be per-occurrence. Per the FireBinding/TASK-0156 precedent (per-event facts on the event), the tag lives on Event::Loop, originated by block_transform (the only site that knows N/num_full/partial). LO is not duplicated into the tag (single source of truth).
+
+USER IMPACT: a blocked schedule over an accumulator that reuses a loop-var name across passes is now correct. 04-prefix-sum/blocked is byte-identical to its independent std-only reference oracle on BOTH pthreads-sync and mp-tcp-bufsync.
+
+TASK-0173: this also IMPLEMENTS its AC#1/AC#2 (the contract now carries N+num_full+partial-marker; pthreads-sync rebinds full and trailing-partial correctly) and 05-stencil/blocked EXERCISES it — now structurally correct, no longer reliant on blur3 idempotence. Forward-carried (not self-checked); 0173 AC#3 (a dedicated synthetic non-divisible accumulator differential) remains open. TASK-0039 blocked AC is now satisfiable (forward-carried, not self-checked). TASK-0181 filed for the multi-worker render path (dep TASK-0180).
+
+TESTS (inside nix develop, all green, e2e 3x non-flaky): just test 365 pass / 0 fail / 1 ignored (the +1/-1 vs prior 364/2 is the now-active blocked test; remaining ignored = unrelated e2e_03 TASK-0117/0126). just e2e 28 total / 24 pass / 0 fail / 0 required-fail (was 22 pass; +2 = the 2 newly-required 04/blocked cells); 05/06/07-blocked unchanged-green. determinism-check byte-identical; determinism-check-negative bites. clippy --workspace -D warnings clean.
+
+LIMITATIONS: (1) multi-worker blocked rebinding deferred to TASK-0181 (fail-loud guard, no tier-1 schedule hits it). (2) qa-test-runner/mped-architect sub-agents could not be spawned in this environment; equivalent verification + architect self-review done manually (full gate x3 + codegen inspection proving the rebinding is real).
+<!-- SECTION:FINAL_SUMMARY:END -->

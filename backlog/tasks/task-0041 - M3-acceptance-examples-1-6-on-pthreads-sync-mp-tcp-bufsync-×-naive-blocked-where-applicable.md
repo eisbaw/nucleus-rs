@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 01:32'
+updated_date: '2026-05-19 02:08'
 labels:
   - M3
   - validation
@@ -44,4 +44,6 @@ Forward-carried from TASK-0039/TASK-0040: examples 04-prefix-sum and 06-separabl
 - 06-separable-filter/{naive,blocked}: byte-identical on BOTH backends (4 required cells). 06/blocked is the POSITIVE CONTROL confirming TASK-0180 (distinct per-pass loop-var names ⇒ rebinding applies ⇒ correct).
 - e2e matrix now 28 cells, 22 pass, 0 required-fail, determinism byte-identical (3x non-flaky).
 Open deps for the M3 capstone to track: TASK-0179 (in-array scan / acfg panic), TASK-0180 (blocked accumulator rebinding for reused loop-var names). TASK-0041 already depends on TASK-0039/0040.
+
+FORWARD-CARRY from TASK-0180 (landed, commit 3297066): per-occurrence strip-mine rebinding closed the last known blocked-schedule correctness gap. e2e matrix is now 28 total / 24 pass / 0 fail / 4 skip / 0 required-fail, 3x non-flaky, determinism byte-identical. 04-prefix-sum/blocked is now a [[required]] byte-identical differential on BOTH pthreads-sync and mp-tcp-bufsync (was an honest [[skip]] for the accumulator double-count); 05/06/07-blocked stay green and 05-stencil/blocked is now structurally correct (no longer idempotence-dependent). All examples 04-07 naive+blocked are required-green on both backends. Remaining matrix skips are distributed-placement cells (TASK-0117/0126/0172), not blocked-schedule correctness. Informational forward-carry; not self-checking this task's ACs.
 <!-- SECTION:NOTES:END -->

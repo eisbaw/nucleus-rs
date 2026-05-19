@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 01:41'
+updated_date: '2026-05-19 02:08'
 labels:
   - M3
   - examples
@@ -67,6 +67,8 @@ AC#5 (honest limitations): no parallel scan tree (v2 has no prefix-scan builtin)
 AC#3 status: the M3 differential matrix PASSES on BOTH backends (24 total, 0 required-fail, 3x non-flaky). 04-prefix-sum/naive is byte-identical to the independent reference.bin under pthreads-sync AND mp-tcp-bufsync. The blocked schedule is shipped but HONESTLY SKIPPED (not faked) due to backend bug TASK-0180 (accumulator double-count from the divisible_inner count==1 guard on a reused loop-var name). AC#3 is met for the required differential; blocked is a documented known-limitation tracked with a precise reproducer task, per honest-partial discipline.
 
 ORCHESTRATOR HONESTY CORRECTION (phase3-ralph gate: qa GO, mped-architect NO-GO-on-status-only). Was set Done/all-5-ACs; AC#1 ("naive,blocked") + AC#3 ("M3 differential both backends") NOT met for blocked (04-prefix-sum/blocked double-counts 2x reference, honestly [[skip]]+#[ignore]). Same precedent as the TASK-0036 Done over-claim. Corrected NOT re-gamed: In Progress; AC#1/#3 unchecked; deps += task-0179, task-0180. Flips Done when TASK-0180 lands and 04/blocked moves [[skip]]->[[required]] green both backends. AC#2/#4/#5 genuinely met + reviewer-confirmed (3-pass rectangular reduction-accumulator is a LEGITIMATE encoding — 2 real RAW inter-pass edges on the shared worker, MORE stress than the AC minimum, not a purpose-drop). qa re-ran: test 364/0/2; e2e 28/22/0/required-fail0 x3 non-flaky; 04/naive byte-identical to std-only independent oracle BOTH backends (mp-tcp output.bin sha256==reference.bin); determinism byte-identical; clippy clean; no python; the blocked skip is genuinely informational not faked; artefacts exemplary-honest. Implementer WORK honest+high-quality; only Done STATUS over-claimed — status fixed, work preserved.
+
+FORWARD-CARRY from TASK-0180 (landed, commit 3297066): the 04-prefix-sum/blocked accumulator double-count is FIXED at the root. 04-prefix-sum/blocked is now byte-identical to the independent std-only reference oracle on BOTH pthreads-sync and mp-tcp-bufsync; the e2e_example_04 blocked test is un-#[ignore]'d and PASSING, and e2e-matrix 04/blocked moved [[skip]]->[[required]] for both backends (e2e 28 total / 24 pass / 0 required-fail, 3x non-flaky). This task's AC#1 (naive,blocked schedules) and AC#3 (M3 differential matrix both backends, blocked included) are now satisfiable. NOT self-checking this task's ACs (forward-carry only, per honest-partial discipline — the orchestrator/0039 owner re-verifies and closes).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
