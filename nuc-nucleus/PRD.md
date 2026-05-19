@@ -561,7 +561,7 @@ Example:
 
 ```
 loop  frame : pipeline=3;
-check frame : latency_max = 10ms;
+check loop frame : latency_max = 10ms;
 ```
 
 The compiler injects measurement code at the loop iteration boundary
