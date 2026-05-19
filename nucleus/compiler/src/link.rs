@@ -39,8 +39,15 @@
 //!   not in the current examples; we treat them as "no kernel
 //!   involved, no producer worker recorded" and file a follow-up.
 //!
-//! - **No fuzzy-match suggestions for typos.** Errors carry the
-//!   offending name, not a "did you mean?". Filed as follow-up.
+//! - **Fuzzy-match "did you mean?" suggestions for typos.** The four
+//!   unknown-name errors (`UnknownKernel`/`UnknownData`/`UnknownLoop`/
+//!   `UnknownTransferData`) carry an `Option<String>` did-you-mean
+//!   suggestion: the closest algorithm-side symbol within a bounded
+//!   edit distance, computed via the zero-dep [`crate::error::suggest`]
+//!   helper against the in-hand symbol table for that variant
+//!   (kernels / data / loop vars). The suggestion is a deterministic
+//!   pure function of (offending name, table) — see [`LinkError`] and
+//!   the helper's docs for the threshold and tie-break (TASK-0096).
 //!
 //! What this pass explicitly DOES NOT do (deferred):
 //!
@@ -143,9 +150,39 @@ pub struct LinkedIR {
 ///
 /// Each variant names a single contract violation between the
 /// algorithm and schedule. As with [`crate::algo::ir::LowerError`] and
-/// [`crate::sched::ir::SchedLowerError`], positions are not tracked
-/// yet — when AST spans land (TASK-0086/0090), these variants gain
-/// position fields without surface change.
+/// [`crate::sched::ir::SchedLowerError`], byte positions are not
+/// tracked: the link step consumes span-free AlgoIR/SchedIR (spans are
+/// out of scope for TASK-0096; they would have to be threaded onto the
+/// IRs first).
+///
+/// # The four unknown-name variants carry a did-you-mean suggestion
+///
+/// `UnknownKernel`/`UnknownData`/`UnknownLoop`/`UnknownTransferData`
+/// are `{ name, suggestion }` structs: `suggestion` is the closest
+/// algorithm-side symbol within a bounded edit distance (or `None`),
+/// computed by [`crate::error::suggest`] against the in-hand table for
+/// that variant (TASK-0096). `UnplacedKernel` and
+/// `MissingCrossWorkerTransfer` are unaffected (no single offending
+/// *unknown* name to fuzzy-match — the named entities exist), so a
+/// per-variant struct widening is used rather than a `{kind,
+/// suggestion}` wrapper: only four of six variants gain the field, and
+/// the wrapper TASK-0090 used for `LowerError` was justified by a
+/// *uniform* span on every variant, which is not the case here.
+///
+/// # Equality includes the suggestion (deliberately — diverges from `LowerError`)
+///
+/// `PartialEq`/`Eq` are **derived**, so the `suggestion` field IS part
+/// of value identity. This is the opposite choice from
+/// [`crate::algo::ir::LowerError`], which hand-excludes its `span`, and
+/// the divergence is intentional: a `span` is informational-for-humans
+/// and an artefact of *where* the source happened to sit, so two
+/// equal-meaning errors can differ in span. A `suggestion`, by
+/// contrast, is a deterministic pure function of `(offending name,
+/// in-hand symbol table)` — two `LinkError`s that are equal in name AND
+/// arose against the same table necessarily have an equal suggestion,
+/// so folding it into equality cannot spuriously split equal errors. It
+/// is part of *which diagnostic this is*, not noise. The negative tests
+/// therefore assert the suggestion as part of the expected value (AC#3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
     /// The algorithm declares a kernel that no `place` directive
@@ -154,18 +191,35 @@ pub enum LinkError {
     /// compile error."
     UnplacedKernel(String),
     /// The schedule has a `place K on ...` but the algorithm has no
-    /// `kernel K` declaration.
-    UnknownKernel(String),
+    /// `kernel K` declaration. `suggestion` is the closest declared
+    /// kernel name within the edit-distance bound, else `None`.
+    UnknownKernel {
+        name: String,
+        suggestion: Option<String>,
+    },
     /// The schedule has a `place_data D in ...` but the algorithm
-    /// has no `data D` declaration.
-    UnknownData(String),
+    /// has no `data D` declaration. `suggestion` is the closest
+    /// declared data symbol within the bound, else `None`.
+    UnknownData {
+        name: String,
+        suggestion: Option<String>,
+    },
     /// The schedule references a loop variable (via `loop VAR` or
     /// `check loop VAR`) that is not declared as the iteration
     /// variable of any `for VAR : ...` in the algorithm.
-    UnknownLoop(String),
+    /// `suggestion` is the closest algorithm loop variable within the
+    /// bound, else `None`.
+    UnknownLoop {
+        name: String,
+        suggestion: Option<String>,
+    },
     /// The schedule has a `transfer D : ...` but the algorithm has
-    /// no `data D` declaration.
-    UnknownTransferData(String),
+    /// no `data D` declaration. `suggestion` is the closest declared
+    /// data symbol within the bound, else `None`.
+    UnknownTransferData {
+        name: String,
+        suggestion: Option<String>,
+    },
     /// A data symbol flows from one worker entity to a different
     /// worker entity, but no `transfer` directive exists for it.
     /// PRD §6.3.4: "A `transfer` directive that would cross workers
@@ -177,6 +231,19 @@ pub enum LinkError {
     },
 }
 
+/// Append ` -- did you mean `X`?` when a suggestion exists; emit
+/// nothing when `None` (the message is byte-identical to the
+/// pre-TASK-0096 form in that case).
+fn write_suggestion(
+    f: &mut std::fmt::Formatter<'_>,
+    suggestion: &Option<String>,
+) -> std::fmt::Result {
+    match suggestion {
+        Some(s) => write!(f, " -- did you mean `{s}`?"),
+        None => Ok(()),
+    }
+}
+
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -184,22 +251,34 @@ impl std::fmt::Display for LinkError {
                 f,
                 "kernel `{name}` is declared in the algorithm but has no `place` directive in the schedule"
             ),
-            LinkError::UnknownKernel(name) => write!(
-                f,
-                "schedule places kernel `{name}` but no such kernel is declared in the algorithm"
-            ),
-            LinkError::UnknownData(name) => write!(
-                f,
-                "schedule references data symbol `{name}` in `place_data` but no such data is declared in the algorithm"
-            ),
-            LinkError::UnknownLoop(name) => write!(
-                f,
-                "schedule references loop variable `{name}` but no `for {name} : ...` exists in the algorithm"
-            ),
-            LinkError::UnknownTransferData(name) => write!(
-                f,
-                "schedule has `transfer {name}` but no such data is declared in the algorithm"
-            ),
+            LinkError::UnknownKernel { name, suggestion } => {
+                write!(
+                    f,
+                    "schedule places kernel `{name}` but no such kernel is declared in the algorithm"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            LinkError::UnknownData { name, suggestion } => {
+                write!(
+                    f,
+                    "schedule references data symbol `{name}` in `place_data` but no such data is declared in the algorithm"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            LinkError::UnknownLoop { name, suggestion } => {
+                write!(
+                    f,
+                    "schedule references loop variable `{name}` but no `for {name} : ...` exists in the algorithm"
+                )?;
+                write_suggestion(f, suggestion)
+            }
+            LinkError::UnknownTransferData { name, suggestion } => {
+                write!(
+                    f,
+                    "schedule has `transfer {name}` but no such data is declared in the algorithm"
+                )?;
+                write_suggestion(f, suggestion)
+            }
             LinkError::MissingCrossWorkerTransfer {
                 data,
                 producer_worker,
@@ -249,19 +328,37 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
 
     for placement in sched.places.values() {
         if !algo.kernels.contains_key(&placement.kernel) {
-            errors.push(LinkError::UnknownKernel(placement.kernel.clone()));
+            errors.push(LinkError::UnknownKernel {
+                name: placement.kernel.clone(),
+                suggestion: crate::error::suggest(
+                    &placement.kernel,
+                    algo.kernels.keys().map(String::as_str),
+                ),
+            });
         }
     }
 
     for pd in sched.place_data.values() {
         if !algo.data.contains_key(&pd.data) {
-            errors.push(LinkError::UnknownData(pd.data.clone()));
+            errors.push(LinkError::UnknownData {
+                name: pd.data.clone(),
+                suggestion: crate::error::suggest(
+                    &pd.data,
+                    algo.data.keys().map(String::as_str),
+                ),
+            });
         }
     }
 
     for tx in sched.transfers.values() {
         if !algo.data.contains_key(&tx.data) {
-            errors.push(LinkError::UnknownTransferData(tx.data.clone()));
+            errors.push(LinkError::UnknownTransferData {
+                name: tx.data.clone(),
+                suggestion: crate::error::suggest(
+                    &tx.data,
+                    algo.data.keys().map(String::as_str),
+                ),
+            });
         }
     }
 
@@ -270,14 +367,26 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
     let loop_vars = collect_loop_vars(&algo);
     for loop_dir in sched.loops.values() {
         if !loop_vars.contains(&loop_dir.var) {
-            errors.push(LinkError::UnknownLoop(loop_dir.var.clone()));
+            errors.push(LinkError::UnknownLoop {
+                name: loop_dir.var.clone(),
+                suggestion: crate::error::suggest(
+                    &loop_dir.var,
+                    loop_vars.iter().map(String::as_str),
+                ),
+            });
         }
     }
     for check in sched.checks.values() {
         if !loop_vars.contains(&check.var) {
             // Same diagnostic — the `check loop VAR` and `loop VAR`
             // both name the same algorithm-side variable.
-            errors.push(LinkError::UnknownLoop(check.var.clone()));
+            errors.push(LinkError::UnknownLoop {
+                name: check.var.clone(),
+                suggestion: crate::error::suggest(
+                    &check.var,
+                    loop_vars.iter().map(String::as_str),
+                ),
+            });
         }
     }
 

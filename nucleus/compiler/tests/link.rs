@@ -342,13 +342,63 @@ schedule for \"a.algo.nuc\" {
     // Must contain UnknownKernel(bar). Also UnplacedKernel(foo) is
     // expected (foo is declared but not placed) — that's a feature
     // of the multi-error one-pass policy, not a bug.
+    // TASK-0096: `bar` vs the sole declared kernel `foo` is distance 3
+    // (b→f, a→o, r→o), bound = max(1, 3/3) = 1 → NO suggestion. This
+    // pins the "don't suggest nonsense for an unrelated name" half.
     assert!(
-        errs.contains(&LinkError::UnknownKernel("bar".into())),
-        "want UnknownKernel(bar) in {errs:?}"
+        errs.contains(&LinkError::UnknownKernel {
+            name: "bar".into(),
+            suggestion: None,
+        }),
+        "want UnknownKernel{{bar, None}} in {errs:?}"
     );
     assert!(
         errs.contains(&LinkError::UnplacedKernel("foo".into())),
         "want UnplacedKernel(foo) in {errs:?}"
+    );
+}
+
+#[test]
+fn negative_unknown_kernel_with_suggestion() {
+    // TASK-0096: a typo-class unknown kernel name → Some(closest).
+    // `fooo` vs declared `foo` is distance 1 (one insertion); bound
+    // = max(1, 4/3) = 1 → suggested. `barbaz` is unrelated (distance
+    // far above bound) → no suggestion for it.
+    let algo = algo_from_str(
+        "\
+kernel foo : () -> () effectful;
+kernel barbaz : () -> () effectful;
+foo();
+barbaz();
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place fooo on host;
+    place barbaz on host;
+    place foo on host;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    assert!(
+        errs.contains(&LinkError::UnknownKernel {
+            name: "fooo".into(),
+            suggestion: Some("foo".into()),
+        }),
+        "want UnknownKernel{{fooo, Some(foo)}} in {errs:?}"
+    );
+    // Display surfaces the hint.
+    let rendered = errs
+        .iter()
+        .map(|e| e.to_string())
+        .find(|s| s.contains("fooo"))
+        .expect("an error mentioning fooo");
+    assert!(
+        rendered.contains("did you mean `foo`?"),
+        "Display must carry the hint, got: {rendered}"
     );
 }
 
@@ -395,7 +445,49 @@ schedule for \"a.algo.nuc\" {
 ",
     );
     let errs = link(algo, sched).expect_err("must fail");
-    assert_eq!(errs, vec![LinkError::UnknownData("ghost".into())]);
+    // No data declared at all → no candidate → suggestion None.
+    // assert_eq! on the whole Vec preserves the original strength
+    // (exactly one error, exact variant+payload) and adds the
+    // suggestion field to the asserted value (AC#3).
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownData {
+            name: "ghost".into(),
+            suggestion: None,
+        }]
+    );
+}
+
+#[test]
+fn negative_unknown_data_with_suggestion() {
+    // TASK-0096: typo'd `place_data` name → Some(closest data).
+    let algo = algo_from_str(
+        "\
+const N : usize = 4;
+data weights : f32[N];
+kernel k : () -> f32[N] pure;
+weights <-- k();
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    memory_region r { size = 4KB; };
+    workers = { host };
+    place k on host;
+    place_data weight in r;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    // `weight` vs `weights`: distance 1; bound = max(1, 6/3) = 2 → Some.
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownData {
+            name: "weight".into(),
+            suggestion: Some("weights".into()),
+        }]
+    );
 }
 
 #[test]
@@ -417,7 +509,14 @@ schedule for \"a.algo.nuc\" {
 ",
     );
     let errs = link(algo, sched).expect_err("must fail");
-    assert_eq!(errs, vec![LinkError::UnknownLoop("y".into())]);
+    // No `for` loop in the algorithm → no loop-var candidates → None.
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownLoop {
+            name: "y".into(),
+            suggestion: None,
+        }]
+    );
 }
 
 #[test]
@@ -440,7 +539,46 @@ schedule for \"a.algo.nuc\" {
 ",
     );
     let errs = link(algo, sched).expect_err("must fail");
-    assert_eq!(errs, vec![LinkError::UnknownLoop("n".into())]);
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownLoop {
+            name: "n".into(),
+            suggestion: None,
+        }]
+    );
+}
+
+#[test]
+fn negative_unknown_loop_with_suggestion() {
+    // TASK-0096: algorithm has a `for i : ...`; schedule names `j`.
+    // distance(j, i) = 1; bound = max(1, 1/3) = 1 → Some(i).
+    let algo = algo_from_str(
+        "\
+const N : usize = 8;
+data a : f32[N];
+kernel k : () -> f32 pure;
+for i : 0 .. N {
+    a[i] <-- k();
+}
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    loop j : block=4;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownLoop {
+            name: "j".into(),
+            suggestion: Some("i".into()),
+        }]
+    );
 }
 
 #[test]
@@ -461,7 +599,14 @@ schedule for \"a.algo.nuc\" {
 ",
     );
     let errs = link(algo, sched).expect_err("must fail");
-    assert_eq!(errs, vec![LinkError::UnknownTransferData("phantom".into())]);
+    // No data declared → no candidate → None.
+    assert_eq!(
+        errs,
+        vec![LinkError::UnknownTransferData {
+            name: "phantom".into(),
+            suggestion: None,
+        }]
+    );
 }
 
 #[test]
@@ -579,8 +724,15 @@ schedule for \"a.algo.nuc\" {
     // Expect UnplacedKernel(b), UnknownTransferData(phantom),
     // UnknownLoop(z) all reported together.
     assert!(errs.contains(&LinkError::UnplacedKernel("b".into())));
-    assert!(errs.contains(&LinkError::UnknownTransferData("phantom".into())));
-    assert!(errs.contains(&LinkError::UnknownLoop("z".into())));
+    // No data / no loop vars declared → both suggestions None.
+    assert!(errs.contains(&LinkError::UnknownTransferData {
+        name: "phantom".into(),
+        suggestion: None,
+    }));
+    assert!(errs.contains(&LinkError::UnknownLoop {
+        name: "z".into(),
+        suggestion: None,
+    }));
     assert!(
         errs.len() >= 3,
         "expected ≥3 errors in one pass, got {errs:?}"
