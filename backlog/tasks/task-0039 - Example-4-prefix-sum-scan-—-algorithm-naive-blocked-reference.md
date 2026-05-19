@@ -1,16 +1,18 @@
 ---
 id: TASK-0039
 title: 'Example 4: prefix sum (scan) — algorithm + naive + blocked + reference'
-status: Done
+status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 01:24'
+updated_date: '2026-05-19 01:41'
 labels:
   - M3
   - examples
   - validation
-dependencies: []
+dependencies:
+  - TASK-0179
+  - TASK-0180
 ---
 
 ## Description
@@ -21,9 +23,9 @@ Two-pass scan algorithm. Stresses ordering between two passes that share a worke
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 examples/04-prefix-sum/ has algo, schedules (naive, blocked), kernels.rs, reference/, input.bin, reference.bin.
+- [ ] #1 examples/04-prefix-sum/ has algo, schedules (naive, blocked), kernels.rs, reference/, input.bin, reference.bin.
 - [x] #2 Algorithm expressed as two sequential loops (upsweep, downsweep) or equivalent; integer-typed to stay deterministic.
-- [x] #3 Test: passes M3 differential matrix on both pthreads-sync and mp-tcp-bufsync.
+- [ ] #3 Test: passes M3 differential matrix on both pthreads-sync and mp-tcp-bufsync.
 - [x] #4 Implementation notes record design questions (e.g. how to encode the two-pass pattern without procedure abstraction in Nuc).
 - [x] #5 Implementation notes record honest limitations (parallel scan tree is not used here; this is sequential-style for simplicity, since v2 doesn't have prefix-scan as a built-in).
 <!-- AC:END -->
@@ -63,6 +65,8 @@ AC#4 (design questions): scan is NOT directly expressible in v2 — no boundary 
 AC#5 (honest limitations): no parallel scan tree (v2 has no prefix-scan builtin); within-block scan O(BS^2), block-offset O(NB^2); integer-only/wrapping_add; single-host only; blocked schedule is KNOWN-WRONG (accumulator double-count, TASK-0180) so shipped+skipped, NOT faked.
 
 AC#3 status: the M3 differential matrix PASSES on BOTH backends (24 total, 0 required-fail, 3x non-flaky). 04-prefix-sum/naive is byte-identical to the independent reference.bin under pthreads-sync AND mp-tcp-bufsync. The blocked schedule is shipped but HONESTLY SKIPPED (not faked) due to backend bug TASK-0180 (accumulator double-count from the divisible_inner count==1 guard on a reused loop-var name). AC#3 is met for the required differential; blocked is a documented known-limitation tracked with a precise reproducer task, per honest-partial discipline.
+
+ORCHESTRATOR HONESTY CORRECTION (phase3-ralph gate: qa GO, mped-architect NO-GO-on-status-only). Was set Done/all-5-ACs; AC#1 ("naive,blocked") + AC#3 ("M3 differential both backends") NOT met for blocked (04-prefix-sum/blocked double-counts 2x reference, honestly [[skip]]+#[ignore]). Same precedent as the TASK-0036 Done over-claim. Corrected NOT re-gamed: In Progress; AC#1/#3 unchecked; deps += task-0179, task-0180. Flips Done when TASK-0180 lands and 04/blocked moves [[skip]]->[[required]] green both backends. AC#2/#4/#5 genuinely met + reviewer-confirmed (3-pass rectangular reduction-accumulator is a LEGITIMATE encoding — 2 real RAW inter-pass edges on the shared worker, MORE stress than the AC minimum, not a purpose-drop). qa re-ran: test 364/0/2; e2e 28/22/0/required-fail0 x3 non-flaky; 04/naive byte-identical to std-only independent oracle BOTH backends (mp-tcp output.bin sha256==reference.bin); determinism byte-identical; clippy clean; no python; the blocked skip is genuinely informational not faked; artefacts exemplary-honest. Implementer WORK honest+high-quality; only Done STATUS over-claimed — status fixed, work preserved.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 01:32'
+updated_date: '2026-05-19 01:41'
 labels:
   - M3
   - examples
@@ -54,6 +54,8 @@ AC#2: tmp is single-assignment within scope (one statement Pass1 produces it, on
 AC#4 (design Q — fast memory for tmp): answered by DEFERRAL to schedule place_data (PRD 6.3); algorithm says only WHAT. Recorded as the deliberate algorithm/schedule split, not an omission.
 AC#5 (honest limitations): clamp-to-edge boundary only (no mirror/wrap); NO reuse-with-shift (rectangular accumulator recomputes all W/H taps per pixel, O(W)/O(H) not O(1)); box SUM not average (no divide, avoids rounding drift); integer-only wrapping_add.
 KEY CROSS-EXAMPLE FINDING: 06/blocked is a POSITIVE CONTROL for TASK-0180. By giving each pass a DISTINCT outer-row var (hy vs vy), each tiled inner loop occurs exactly once in the EventList, the divisible_inner count==1 guard is satisfied, absolute-index rebinding IS applied ((0+hy__tile*4+hy)), and blocked is bit-identical to naive/reference. This confirms TASK-0180 root cause = reused loop-var NAME, not blocking-an-accumulator per se. Also hit & noted TASK-0171: a reused loop-var name with DIFFERENT bounds is rejected outright (drove the distinct-name design).
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO (TASK-0040 Done correctly claimed, all 5 ACs genuinely met). qa re-ran: 06-separable-filter/{naive,blocked} x {pthreads-sync,mp-tcp-bufsync} = 4 cells byte-identical to the std-only independent reference oracle; just e2e 28/22/0/required-fail0 x3 verbatim-identical non-flaky; determinism byte-identical; negative bites; clippy clean. Architect: tmp is single-assignment producer->consumer across two passes (AC#2 verified in prog.algo.nuc); 06/blocked is the POSITIVE CONTROL isolating TASK-0180 root cause to the reused-loop-var-NAME (distinct hy/vy => divisible_inner_block_vars count==1 => rebinding applied => bit-identical) — sound controlled experiment; integer/box-sum/clamp-in-kernel correct per PRD §6.2.2/§10.1, not a dodge; 0179/0180/0171/0173 genuinely orthogonal. TASK-0040 Done is HONEST.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
