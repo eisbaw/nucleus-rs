@@ -7,9 +7,11 @@
 //!   includes 05-stencil × {naive, blocked, distributed},
 //!   13-cnn-inference × {naive, batch_parallel, pipeline_parallel},
 //!   and 14-hearing-aid × {naive}.
-//!   `14-hearing-aid/embedded_multimcu.sched.nuc` is excluded because
-//!   TASK-0079 has it failing parse, so there is no AST to lower or
-//!   link.
+//!   `14-hearing-aid/embedded_multimcu.sched.nuc` is excluded by
+//!   scope: it is a far-future M11 multi-MCU schedule, not part of
+//!   the M3 lower/link matrix. (It now parses cleanly — TASK-0079
+//!   reconciled its `check loop` form; covered by the parser test.
+//!   Bringing it into the lower/link matrix is follow-up TASK-0192.)
 //!
 //! - Negative: at least one hand-written invalid (algorithm, schedule)
 //!   pair per [`LinkError`] variant. Inline sources for terseness; the

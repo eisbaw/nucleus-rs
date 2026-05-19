@@ -303,9 +303,9 @@ transfers with buffering, and the `check` directive.
 | 64–71   | `place fe_capture on fe;` etc.                             | `PlaceStmt` with `PlaceTarget = Ident` |
 | 78      | `loop frame : pipeline=3;`                                 | `LoopStmt`, one `LoopOpt = 'pipeline' '=' IntLit` |
 | 84–90   | `transfer mic_in : async, buffer=2, notify=event;` (×4)    | `TransferStmt`, three `XferOpt`s each |
-| 105     | `check frame : latency_max = 10ms;`                        | `CheckStmt`, **note:** existing file omits the `loop` keyword that the grammar requires (see §4.3) |
+| 105     | `check loop frame : latency_max = 10ms;`                   | `CheckStmt`, `'check' 'loop' Ident ':' CheckAssertList ';'` — conformant (see §4.3) |
 
-### 4.3 KNOWN DIVERGENCE: `check` without `loop` keyword
+### 4.3 `check` directive: grammar, PRD, and examples are aligned
 
 The PRD (§6.3.5) specifies the `check` form as:
 
@@ -314,34 +314,25 @@ check loop VAR : assertion [ , assertion ]* ;
 ```
 
 (`loop` keyword between `check` and the variable name.) The grammar
-above mirrors the PRD.
+above mirrors the PRD, and
+`examples/14-hearing-aid/schedules/embedded_multimcu.sched.nuc` (line
+105) now writes the conformant `check loop frame : latency_max = 10ms;`.
+Grammar, PRD §6.3.5, and the examples are therefore in agreement on a
+single form: `check loop VAR : metric = value;`.
 
-`examples/14-hearing-aid/schedules/embedded_multimcu.sched.nuc` line 105
-writes:
+**Decision (TASK-0079): the example was fixed, the grammar was NOT
+relaxed.** The discarded alternative was to make `loop` optional after
+`check` (`'check' 'loop'? Ident ...`). That was rejected because the
+`loop`/`transfer` word after `check` is a *qualifier slot*: PRD §6.3.5
+anticipates future per-transfer checks (`buffer_max`) and other
+variants (`jitter_max`, `throughput_min`) that attach to a transfer,
+not a loop. Keeping the qualifier mandatory means a future
+`check transfer X : buffer_max = N;` is unambiguous against
+`check loop V : ...;` with no grammar break. Relaxing now would have
+spent that disambiguation budget for a one-character convenience.
 
-```nuc
-check frame : latency_max = 10ms;
-```
-
-— without the `loop` keyword. This file does **not** conform to the
-grammar as specified.
-
-Two possible resolutions:
-
-1. **Relax the grammar** to make `loop` optional after `check`:
-   `CheckStmt ::= 'check' 'loop'? Ident ':' CheckAssertList ';'` .
-   Cheap, matches the example, but introduces a small ambiguity if
-   future `check` targets are not loop variables (e.g. per-transfer
-   checks — PRD §6.3.5 mentions `buffer_max` as a future variant that
-   would naturally attach to a transfer).
-2. **Fix the example** to write `check loop frame : latency_max = 10ms;`
-   per PRD.
-
-This grammar tracks the PRD (option 2). The example is stale; follow-up
-filed to reconcile (see implementation notes on TASK-0006).
-
-The other six existing schedule files are fully covered. None use
-`check`, so the divergence is isolated to this one file.
+The other six existing schedule files do not use `check`, so this was
+the only `check` site in the example corpus.
 
 ## 5. Design questions
 
@@ -481,9 +472,11 @@ could canonicalise; the grammar does not.
    `check loop VAR : ...;`. PRD §6.3.5 anticipates future per-transfer
    checks (`buffer_max`) and end-to-end latency checks; neither has
    syntax in v2. Adding them is a grammar revision, not a relaxation.
-4. **One existing example (`embedded_multimcu`) does not conform.**
-   The `check` form omits the `loop` keyword the PRD specifies. See
-   §4.3 and the follow-up task.
+4. **All existing examples conform.** `embedded_multimcu` previously
+   omitted the `loop` keyword in its `check` directive; TASK-0079
+   reconciled it by fixing the example (not relaxing the grammar) to
+   preserve the `check`-qualifier slot for future per-transfer checks.
+   See §4.3.
 5. **`SizeLit` is integer-only.** No `1.5KB`, no `2.5MB`. Memory
    region sizes are byte counts; fractional binary multipliers are
    nonsense. Same for `TimeLit` — `10ms` not `10.5ms`. If a real

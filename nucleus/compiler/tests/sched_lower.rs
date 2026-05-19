@@ -9,9 +9,10 @@
 //!   variant we care to defend.
 //!
 //! `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` is excluded
-//! from the positive set because TASK-0079 has it failing parse; the
-//! parser test pins that, and there is no point trying to lower a
-//! parse-failed source here.
+//! from the positive set by scope (far-future M11 multi-MCU schedule,
+//! not the M3 lower matrix). It now parses cleanly — TASK-0079
+//! reconciled its `check loop` form, pinned by the parser test.
+//! Follow-up TASK-0192 tracks adding it to the lower matrix.
 
 use compiler::sched::{
     lower_sched, parse_sched, NotifyKind, PartitionKind, ResolvedLoopOption, ResolvedPlaceTarget,
@@ -44,8 +45,9 @@ fn lower_str(src: &str) -> Result<SchedIR, SchedLowerError> {
 // Positive: existing example schedules lower
 // --------------------------------------------------------------------
 //
-// 14-hearing-aid/embedded_multimcu.sched.nuc is omitted: TASK-0079
-// has it failing parse, so there's no AST to lower.
+// 14-hearing-aid/embedded_multimcu.sched.nuc is omitted by scope
+// (far-future M11 multi-MCU schedule). It parses cleanly post
+// TASK-0079; lower-matrix inclusion is follow-up TASK-0192.
 
 #[test]
 fn lowers_01_elementwise_add_naive() {

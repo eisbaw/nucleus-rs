@@ -585,9 +585,11 @@ fn check_assert() -> impl Parser<char, CheckAssert, Error = Simple<char>> + Clon
 
 /// `check loop IDENT : CheckAssert (, CheckAssert)*;`.
 ///
-/// The PRD-mandated form. The 14-hearing-aid example writes
-/// `check IDENT : ...` without the `loop` keyword — that file is
-/// known-failing here pending TASK-0079.
+/// The PRD-mandated form (PRD §6.3.5). The `loop` qualifier is
+/// mandatory, not optional: keeping the `check`-qualifier slot
+/// distinct reserves room for a future `check transfer X : ...;`
+/// without a grammar break (TASK-0079 chose this over relaxing
+/// `loop` to optional). All example schedules conform.
 fn check_directive() -> impl Parser<char, CheckDirective, Error = Simple<char>> + Clone {
     pad(keyword("check"))
         .ignore_then(pad(keyword("loop")))

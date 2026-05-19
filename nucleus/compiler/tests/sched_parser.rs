@@ -9,11 +9,12 @@
 //! - Time literal: separate positive test exercises `ns`/`us`/`ms`/`s`
 //!   and the chosen normalisation to nanoseconds.
 //!
-//! Known-failing example: `14-hearing-aid/schedules/embedded_multimcu.sched.nuc`
-//! writes `check frame : ...;` without the grammar-mandated `loop`
-//! keyword. The parser MUST reject it. TASK-0079 owns the
-//! reconciliation; once TASK-0079 lands (either grammar relaxation or
-//! example fix), the assertion here flips from `Err` to `Ok`.
+//! `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` now writes
+//! the grammar-conformant `check loop frame : ...;`. TASK-0079
+//! reconciled the example with the PRD/grammar (the example was fixed,
+//! the grammar was NOT relaxed — the `check`-qualifier slot is kept
+//! mandatory for future `check transfer X : buffer_max = N;`). The
+//! parser MUST accept this file; see `parses_14_hearing_aid_embedded_multimcu`.
 
 use compiler::sched::{
     parse_sched, CheckAssert, Directive, LoopOption, PlaceTarget, SimdSpec, TimeUnit,
@@ -341,28 +342,70 @@ fn parses_14_hearing_aid_naive() {
     assert_eq!(ast.count_transfers(), 0);
 }
 
-/// `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` writes
-/// `check frame : ...;` (without the grammar-mandated `loop` keyword).
-/// The grammar's PRD-faithful form is `check loop VAR : ...;`. Until
-/// TASK-0079 reconciles the example with the grammar, the parser
-/// rejects this file. When TASK-0079 lands, flip this assertion.
+/// `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` writes the
+/// grammar-conformant `check loop frame : latency_max = 10ms;` (line
+/// 105). TASK-0079 reconciled the example with the PRD §6.3.5 grammar
+/// by fixing the example (the grammar was NOT relaxed — the
+/// `check`-qualifier slot stays mandatory so a future
+/// `check transfer X : buffer_max = N;` is unambiguous). The parser
+/// MUST accept this file; this test is the AC#4 conformance evidence.
 #[test]
-fn known_failing_14_hearing_aid_embedded_multimcu_pending_task_0079() {
+fn parses_14_hearing_aid_embedded_multimcu() {
     let src = read_example("14-hearing-aid/schedules/embedded_multimcu.sched.nuc");
-    let err = parse_sched(&src).expect_err(
-        "embedded_multimcu uses `check frame : ...` without the `loop` keyword \
-         the grammar requires. TASK-0079 owns the reconciliation; flip this test \
-         once that lands.",
-    );
-    // The bad token is `check frame ...` at line 105 in the example.
-    // We don't pin the exact column because chumsky may report any
-    // alternative; just confirm a position is set.
-    assert!(err.line >= 1, "{:?}", err);
+    let ast = parse_sched(&src)
+        .expect("14-hearing-aid/embedded_multimcu must parse after TASK-0079");
+    // The example has exactly one `check` directive (`check loop frame`).
+    assert_eq!(ast.count_checks(), 1, "{:?}", ast);
+    let check = ast
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::Check(c) => Some(c),
+            _ => None,
+        })
+        .expect("check directive");
+    assert_eq!(check.var, "frame");
+    assert_eq!(check.asserts.len(), 1, "{:?}", check.asserts);
+    match check.asserts[0] {
+        // `latency_max = 10ms` -> 10_000_000 ns, unit retained.
+        CheckAssert::LatencyMax(t) => {
+            assert_eq!((t.nanos, t.original_unit), (10 * 1_000_000, TimeUnit::Ms));
+        }
+        ref other => panic!("expected LatencyMax, got {:?}", other),
+    }
 }
 
 // --------------------------------------------------------------------
 // Negative tests (>= 4)
 // --------------------------------------------------------------------
+
+/// TASK-0079 reconciliation evidence: the bare `check VAR : ...;` form
+/// (no `loop` qualifier) MUST be rejected. This pins the option-b
+/// decision — the grammar was NOT relaxed to make `loop` optional, so
+/// the `check`-qualifier slot stays unambiguous for a future
+/// `check transfer X : buffer_max = N;`. Sibling positive test:
+/// `parses_14_hearing_aid_embedded_multimcu`.
+#[test]
+fn negative_check_without_loop_qualifier_is_rejected() {
+    // Identical to the conformant form except the `loop` keyword is
+    // missing after `check`. `frame` is a real loop variable (line 4),
+    // so the rejection is purely about the missing qualifier, not an
+    // unknown variable.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    loop frame : pipeline=3;
+    check frame : latency_max = 10ms;
+}
+";
+    let err = parse_sched(src).expect_err(
+        "`check frame : ...` (no `loop` qualifier) must be rejected; \
+         the grammar mandates `check loop VAR : ...` (PRD §6.3.5)",
+    );
+    // The bad token is on line 5 (`check frame`).
+    assert_eq!(err.line, 5, "{:?}", err);
+}
 
 #[test]
 fn negative_for_loop_in_schedule_is_rejected() {

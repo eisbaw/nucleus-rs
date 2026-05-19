@@ -14,8 +14,10 @@
 //!   `crate::acfg` docs) must produce identical IDs across runs.
 //!
 //! Excluded examples mirror `tests/link.rs`:
-//! - `14-hearing-aid/embedded_multimcu.sched.nuc` (TASK-0079: parse
-//!   failure).
+//! - `14-hearing-aid/embedded_multimcu.sched.nuc` — excluded by scope
+//!   (far-future M11 multi-MCU schedule, not the M3 matrix). It now
+//!   parses cleanly (TASK-0079); follow-up TASK-0192 tracks bringing
+//!   it into the lower/link/ACFG matrix.
 //!
 //! 05-stencil was historically a parse failure (legacy 2013 syntax);
 //! TASK-0078 / TASK-0031 rewrote it into v2 form. Adding a dedicated

@@ -102,5 +102,5 @@ schedule for "../prog.algo.nuc" {
     // Default action is panic — loud failure during testing. For a
     // deployed product one would change to on_violation=log so an
     // occasional missed deadline doesn't brick the device.
-    check frame : latency_max = 10ms;
+    check loop frame : latency_max = 10ms;
 }
