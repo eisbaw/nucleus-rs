@@ -1,5 +1,14 @@
 //! Block-loop transformation — TASK-0030.
 //!
+//! Error convention (decision-0003): this pass is on the
+//! typed-`Result` side — it returns
+//! `Result<_, BlockTransformError>` (a `pub enum` whose variants
+//! carry diagnostic context) rather than `panic!`ing, so any failure
+//! is surfaced by the driver as a clean `nucleus: error:` line. (Its
+//! one live variant, `UnknownLoopVar`, is a fail-closed guard the
+//! linker normally pre-rejects; `NotDivisible` is retired per
+//! TASK-0142 — see those variants' docs.)
+//!
 //! Rewrites each `Repeat` whose loop variable carries a schedule
 //! `block=N` directive (PRD §6.3.3) into a two-level nest:
 //!

@@ -10,6 +10,12 @@
 //! See PRD §6.3.4 (transfer directives), §8.3 (Push/Wait/seq), and
 //! TASK-0018 for the contract this implements.
 //!
+//! Error convention (decision-0003): a cross-worker `Wait` that
+//! escapes the ACFG with no producing `Operation` is a cross-pass
+//! invariant violation `build_acfg` guarantees cannot occur for valid
+//! IR, so this pass `panic!`s with context (the invariant side); it
+//! never returns a user-facing error.
+//!
 //! ## Inputs and outputs
 //!
 //! Pure function:
