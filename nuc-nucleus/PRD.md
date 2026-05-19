@@ -334,6 +334,66 @@ compiler disambiguates by scope.
 If you find yourself wanting any of the above in the algorithm, that
 desire belongs in the schedule.
 
+#### 6.2.5 Recorded decision: in-array prefix scan is a kernel-level idiom for v2
+
+*Status: accepted (v2 / M3). Origin: TASK-0039 finding, TASK-0179.*
+
+A textbook in-array carried prefix scan
+(`out[i] <-- scan_add(out[i-1], in[i])`) is **not directly
+expressible** in the v2 algorithm sublanguage, and it deliberately
+stays that way for v2. Three sublanguage properties combine to make
+the carried form inexpressible (probed end-to-end in TASK-0039, not
+assumed):
+
+1. The shifted carry `out[i-1]` underflows `usize` at `i = 0`, and
+   there is **no conditional** to guard the boundary (§6.2.4).
+2. Single-assignment is keyed by data **symbol name**, so a
+   base-case + loop split (`out[0] <-- ...; for i : 1 .. N { ... }`
+   on the same `out`) is a double-assignment.
+3. Loop bounds must fold to a compile-time `i64` constant, so a
+   triangular / iter-var-dependent reformulation (`for j : 0 .. i`)
+   is rejected — now as a clean `BuildAcfgError::NonConstLoopBound`
+   diagnostic rather than a panic (TASK-0179).
+
+**Decision.** In-array prefix scan remains a **kernel-level idiom**
+for v2. The boundary/carry logic lives in the hand-written Rust
+kernel, over the rectangular reduction-accumulator pattern, exactly
+as the algorithm-vs-kernel split in §6.2.2 intends (kernels are
+arbitrary Rust; the algorithm sublanguage stays minimal and
+statically analyzable). `examples/04-prefix-sum` is the canonical
+realisation: a 3-pass rectangular reduction-accumulator (block
+totals → exclusive block offsets → within-block scan + offset) with
+the masking/boundary predicate in the Rust kernels. It is
+differentially green (byte-identical to an independent std-only
+reference oracle) on both `pthreads-sync` and `mp-tcp-bufsync`.
+
+**Rationale.** The kernel boundary is the *designed* escape hatch
+(§6.2.2): pushing data-dependent boundary logic there keeps the
+algorithm sublanguage free of conditionals (§6.2.4), single-valued
+per symbol (§6.2.3), and with const-only loop extents — the
+properties the Petri-net IR and the cross-backend differential rely
+on. Adding a scan/segmented-scan builtin, a clamp/saturating-index
+intrinsic, or a guarded-first-iteration form would each enlarge the
+sublanguage and its analysis surface for one access pattern that the
+kernel split already handles cleanly.
+
+**Explicitly future language work (not v2 / not M3).** A
+first-class boundary-free scan — a `scan`/`segmented-scan` builtin,
+a clamp/saturating-index intrinsic, a guarded-first-iteration form,
+or iter-var-dependent (triangular) loop bounds — is deferred. It is
+not required to prove the model (the tier-1 differential matrix is
+green without it) and is tracked as a language-evolution item, not a
+v2 deliverable.
+
+**Consequence for TASK-0179 AC#3** ("if supported, an example
+expresses prefix scan WITHOUT pushing the boundary into a kernel"):
+**not applicable under this decision.** v2 does *not* support a
+boundary-free form, so no such example is a v2 deliverable, and
+fabricating one would misrepresent the language. The canonical
+accepted-limitation pattern is `examples/04-prefix-sum` (kernel-level
+idiom). AC#3 becomes part of the deferred future-language-work item
+above, not a v2 obligation.
+
 ### 6.3 Schedule sublanguage
 
 A schedule binds an algorithm's kernels and loops to a worker topology

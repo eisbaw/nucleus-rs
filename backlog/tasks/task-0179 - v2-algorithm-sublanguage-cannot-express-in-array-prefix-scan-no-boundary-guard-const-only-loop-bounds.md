@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:13'
-updated_date: '2026-05-19 03:37'
+updated_date: '2026-05-19 03:38'
 labels:
   - M3
   - language
@@ -49,4 +49,8 @@ AC#1 DONE: build_acfg now returns Result<ACFG, BuildAcfgError>. New pub enum Bui
 AC#1 test: tests/acfg.rs build_acfg_non_const_loop_bound_is_typed_error_not_panic — inline triangular program, asserts expect_err + variant + var="j" + end=Upper + expr=Ident("i") + Display contents.
 GATE (nix develop, repo root): just test 40/40 binaries 0 failed; clippy -D warnings clean; just e2e UNCHANGED 30/26/0/4/0; determinism-check byte-identical 30/26/0; determinism-check-negative + xbackend-check-negative both correctly bite; just ci green.
 Kept-as-panic (genuine link-valid-IR invariants, NOT converted, verified link rejects first): bind_arg undeclared symbol, resolve_worker_set no-placement, worker-not-in-name-table.
+
+AC#2 DONE: convention discovered — no nuc-nucleus/decisions/ dir, no ADR; project records design-scope decisions as PRD notes (TASK-0170 precedent recorded inline). Recorded as PRD decision artifact: nuc-nucleus/PRD.md §6.2.5 "Recorded decision: in-array prefix scan is a kernel-level idiom for v2" (placed right after §6.2.4 What is intentionally not in the algorithm, the precise topical home). Content: status accepted (v2/M3); the 3 sublanguage properties (no-conditional boundary, single-assignment-by-symbol, const-only bounds) that make carried scan inexpressible; DECISION = kernel-level idiom for v2 with 04-prefix-sum as canonical differentially-green realisation; rationale (kernel boundary is the designed escape hatch per §6.2.2, keeps algo sublanguage minimal/analyzable per §6.2.3/§6.2.4 — the properties the Petri net + xbackend differential rely on); clamp/scan/segmented-scan/guarded-first-iter/triangular-bounds explicitly deferred future LANGUAGE work, not v2/M3.
+AC#3 N/A-UNDER-DECISION: AC#3 ("if supported, example without kernel boundary") is conditional on AC#2. Under the recorded kernel-level-idiom decision v2 does NOT support a boundary-free form, so no such example is a v2 deliverable — documented explicitly in the PRD §6.2.5 "Consequence for TASK-0179 AC#3" paragraph + here. NOT faked. 04-prefix-sum is the canonical accepted kernel-level idiom (differentially green both backends, per TASK-0039). AC#3 folded into the deferred future-language-work item.
+AUDIT RESULT: the other acfg.rs panic sites (bind_arg undeclared symbol ~887, kernel-id/data_out expects ~911/921, resolve_worker_set no-placement ~982, worker-not-in-name-table ~999) inspected + classified KEEP — genuine cannot-happen-for-link-valid-IR invariants (lowering rejects UnknownIdent/AssignmentTargetNotData; link enforces placement per PRD §6.3.2). No additional user-reachable panic found in build_acfg reachable paths. No follow-up task needed.
 <!-- SECTION:NOTES:END -->
