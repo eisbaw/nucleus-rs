@@ -29,9 +29,11 @@ check:
 fmt:
     cd nucleus && cargo fmt --all
 
-# Lint. Warnings are errors.
+# Lint. Warnings are errors. --all-targets so test/bin-target lint
+# rot is gate-visible and cannot silently re-accumulate behind a
+# green `just ci` (decision-0002, TASK-0186).
 clippy:
-    cd nucleus && cargo clippy --workspace -- -D warnings
+    cd nucleus && cargo clippy --workspace --all-targets -- -D warnings
 
 # Full end-to-end differential matrix (every required cell, all
 # milestones). This is the gate `just ci` runs and is UNCHANGED by
