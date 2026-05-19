@@ -26,30 +26,33 @@
 //! - Loop bounds: source form from `sidecar.loop_bounds` + consts.
 //! - Kernel calls: reconstructed from `FireBinding` + name tables.
 //!
-//! ## Barrier identity (HONEST LIMITATION — see TASK-0172)
+//! ## Barrier identity (contract-carried — TASK-0172)
 //!
 //! [`Event::Push`]/[`Event::Wait`] carry a stable cross-worker
-//! `seq` tag; [`Event::Sync`] does **not** carry any cross-worker
-//! barrier identity (only `participants` + `kind`). The previous
-//! implementation recovered barrier identity from a *global* ACFG
-//! tree walk (`walk_assign_sync_ids`); that global structure is
-//! deliberately absent from the disjoint per-worker EventLists.
+//! `seq` tag; [`Event::Sync`] now carries the analogous stable
+//! cross-worker `sync: SyncTag` (TASK-0172). Every participant of one
+//! barrier records an `Event::Sync` with the **same** `SyncTag`
+//! (assigned once per barrier by the sync-injection pass, where the
+//! global barrier structure is visible, and cloned into every
+//! participant's list by the projection). This backend keys barriers
+//! directly by that `SyncTag`: it collects the participant set per
+//! tag and emits one `bar_<tag>` per distinct tag.
 //!
-//! We therefore assign a barrier id by each worker's **pre-order
-//! Sync index** (the k-th `Sync` a worker encounters, descending
-//! into `Event::Loop` bodies, is barrier k). This is byte-identical
-//! to the old global-walk ids **iff every participant of every
-//! barrier sees the same prefix of barriers in the same order** —
-//! true for *uniform* barriers (every Sync has the same participant
-//! set), which is the shape `inject_syncs` produces for the tier-1
-//! examples (example 02-split: three `{host,w0}` barriers). We
-//! **validate** that invariant and fail loud
-//! ([`EmitError::ContractGap`]) if a non-uniform / partial-barrier
-//! schedule reaches this path — we do NOT silently emit a mismatched
-//! barrier graph. A proper stable [`Event::Sync`] identity (the Sync
-//! analogue of `seq`/`FireBinding`/`Event::Loop`) is filed as
-//! **TASK-0172**; until it lands, partial-barrier multi-worker
-//! schedules are a typed codegen error here, not a wrong binary.
+//! No global ACFG walk and no per-worker pre-order-index heuristic is
+//! needed — the disjoint per-worker EventLists agree on barrier
+//! identity by construction. Because identity no longer depends on
+//! every participant seeing the same prefix of barriers, a
+//! **partial / non-uniform barrier** (Syncs whose participant sets
+//! differ between barriers) lowers correctly: each `Sync` resolves to
+//! its own `SyncTag`-keyed barrier regardless of what other barriers
+//! a given worker does or does not take part in. The previous
+//! pre-order-index heuristic, its uniform-barrier validation, and the
+//! non-uniform [`EmitError::ContractGap`] are gone (TASK-0172) — they
+//! were a workaround for the absence of the now-present contract id.
+//! For a uniform-barrier program the `SyncTag`s are `0,1,2,…` in
+//! pre-order (deterministic assignment in `inject_syncs`), the same
+//! numbering the old heuristic produced, so generated code stays
+//! byte-identical (example 02-split: three `{host,w0}` barriers).
 //!
 //! ## Scope and limitations (unchanged)
 //!
@@ -74,7 +77,7 @@ use std::fmt::Write as _;
 // (one slot per cross-worker data symbol — the pre-TASK-0124
 // behaviour), so `SeqTag` is not consulted here; a future
 // per-(seq) slot split (multi-buffer transfers) would use it.
-use compiler::event::{DataId, Event, WorkerId};
+use compiler::event::{DataId, Event, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
 use crate::{render_const_expr_pub, rust_scalar_type, EmitError, NameTables, RenderCtxPub};
@@ -103,8 +106,10 @@ pub(crate) fn render_main_rs_multi(
 /// order the old `xfers.keys().enumerate()` produced, since
 /// `acfg.name_data` assigned DataIds in declaration order).
 type SlotId = usize;
-/// Stable identifier for one barrier.
-type BarrierId = usize;
+/// Stable identifier for one barrier — the contract-carried
+/// [`SyncTag`] (TASK-0172). Same value for every participant of the
+/// barrier; distinct between distinct barriers.
+type BarrierId = SyncTag;
 
 struct Plan<'a> {
     per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
@@ -117,13 +122,12 @@ struct Plan<'a> {
     /// Cross-worker data symbols (those that appear in a Push/Wait),
     /// sorted by DataId -> SlotId.
     slot_ids: BTreeMap<DataId, SlotId>,
-    /// Number of distinct barriers (max pre-order Sync index + 1
-    /// across used workers; validated uniform).
-    barrier_count: usize,
-    /// BarrierId -> participants. Recovered from the per-worker
-    /// `Event::Sync.participants` (every participant records the
-    /// barrier; we take the union, which equals the set since the
-    /// projection clones the same participant set into each).
+    /// `SyncTag` -> participants. Keyed directly by the contract
+    /// barrier identity (TASK-0172). The projection clones the same
+    /// participant set into every participant's `Event::Sync`, so
+    /// recording the set the first time a tag is seen is exact; no
+    /// uniform-barrier validation is needed (and a partial/non-uniform
+    /// barrier is fine — every tag is independent).
     barrier_participants: BTreeMap<BarrierId, BTreeSet<WorkerId>>,
 }
 
@@ -165,34 +169,20 @@ impl<'a> Plan<'a> {
         let slot_ids: BTreeMap<DataId, SlotId> =
             xfer_data.iter().enumerate().map(|(i, d)| (*d, i)).collect();
 
-        // Barrier identity by per-worker pre-order Sync index. Each
-        // worker's k-th Sync is barrier k. Validate that every
-        // worker agrees on the participant set per index (uniform
-        // barrier invariant — see module docs / TASK-0172).
+        // Barrier identity by the contract-carried `SyncTag`
+        // (TASK-0172). Each `Event::Sync` names its own barrier; the
+        // projection clones the same participant set into every
+        // participant's list, so the first sighting of a tag fixes its
+        // participants. No pre-order-index heuristic and no
+        // uniform-barrier validation: distinct tags are independent
+        // barriers, so a partial/non-uniform barrier lowers correctly.
         let mut barrier_participants: BTreeMap<BarrierId, BTreeSet<WorkerId>> = BTreeMap::new();
-        let mut barrier_count = 0usize;
         for w in &used_workers {
-            let evs = &per_worker[w];
-            let mut idx = 0usize;
-            collect_barriers_preorder(evs, &mut idx, &mut |bid, parts| {
-                barrier_count = barrier_count.max(bid + 1);
-                match barrier_participants.get(&bid) {
-                    None => {
-                        barrier_participants.insert(bid, parts.clone());
-                        Ok(())
-                    }
-                    Some(existing) if existing == parts => Ok(()),
-                    Some(existing) => Err(EmitError::ContractGap(format!(
-                        "barrier #{bid} has inconsistent participant sets across \
-                         workers ({existing:?} vs {parts:?}); Event::Sync carries \
-                         no stable cross-worker identity and the pre-order-index \
-                         recovery only holds for uniform barriers. This is a \
-                         partial-barrier schedule the EventList-only multi-worker \
-                         path cannot byte-identically lower yet — a stable \
-                         Event::Sync identity is TASK-0172."
-                    ))),
-                }
-            })?;
+            collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
+                barrier_participants
+                    .entry(tag)
+                    .or_insert_with(|| parts.clone());
+            });
         }
 
         Ok(Plan {
@@ -202,7 +192,6 @@ impl<'a> Plan<'a> {
             used_workers,
             host_worker,
             slot_ids,
-            barrier_count,
             barrier_participants,
         })
     }
@@ -300,13 +289,13 @@ impl<'a> Plan<'a> {
             .ok();
         }
 
-        // ---- Allocate barriers (id order). ----
-        for bid in 0..self.barrier_count {
-            let parts = self
-                .barrier_participants
-                .get(&bid)
-                .cloned()
-                .unwrap_or_default();
+        // ---- Allocate barriers (SyncTag order). ----
+        // Iterating the BTreeMap gives ascending SyncTag order, which
+        // for a uniform-barrier program is the same 0,1,2,… the old
+        // pre-order-index scheme produced (deterministic tag
+        // assignment in `inject_syncs`) — generated code byte-identical.
+        for (tag, parts) in &self.barrier_participants {
+            let bid = tag.0;
             let cnt = parts.len();
             let part_names: Vec<&str> = parts
                 .iter()
@@ -338,7 +327,8 @@ impl<'a> Plan<'a> {
                 )
                 .ok();
             }
-            for bid in &used_barriers {
+            for tag in &used_barriers {
+                let bid = tag.0;
                 writeln!(out, "    let {wname}_bar_{bid} = Arc::clone(&bar_{bid});").ok();
             }
             writeln!(out, "    let {wname}_handle = thread::spawn(move || {{").ok();
@@ -370,7 +360,8 @@ impl<'a> Plan<'a> {
         s.into_iter().collect()
     }
 
-    /// BarrierIds a worker participates in (sorted).
+    /// The barrier `SyncTag`s a worker participates in (ascending
+    /// tag order — `SyncTag: Ord`).
     fn barriers_used_by(&self, w: WorkerId) -> Vec<BarrierId> {
         let mut out: Vec<BarrierId> = self
             .barrier_participants
@@ -430,13 +421,13 @@ impl<'a> Plan<'a> {
         }
 
         let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_worker_events(evs, &mut out, base_indent, prefix, &ctx, &mut 0)?;
+        self.render_worker_events(evs, &mut out, base_indent, prefix, &ctx)?;
         Ok(out)
     }
 
-    /// Walk a worker's EventList. `sync_idx` is the running pre-order
-    /// Sync counter (barrier id source).
-    #[allow(clippy::too_many_arguments)]
+    /// Walk a worker's EventList. Barrier identity comes from each
+    /// `Event::Sync`'s contract-carried `SyncTag` (TASK-0172) — no
+    /// running pre-order counter is needed any more.
     fn render_worker_events(
         &self,
         events: &[Event],
@@ -444,7 +435,6 @@ impl<'a> Plan<'a> {
         indent: usize,
         prefix: &str,
         ctx: &RenderCtxPub<'_>,
-        sync_idx: &mut usize,
     ) -> Result<(), EmitError> {
         let pad = "    ".repeat(indent);
         for e in events {
@@ -523,12 +513,16 @@ impl<'a> Plan<'a> {
                         ),
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    self.render_worker_events(body, out, indent + 1, prefix, ctx, sync_idx)?;
+                    self.render_worker_events(body, out, indent + 1, prefix, ctx)?;
                     writeln!(out, "{pad}}}").ok();
                 }
-                Event::Sync { .. } => {
-                    let bid = *sync_idx;
-                    *sync_idx += 1;
+                Event::Sync { sync, .. } => {
+                    // Barrier identity is the contract-carried SyncTag
+                    // (TASK-0172): every participant of this barrier
+                    // carries the same tag, so all participants
+                    // .wait() on the same `bar_<tag>` with no
+                    // pre-order-index recovery.
+                    let bid = sync.0;
                     writeln!(out, "{pad}{prefix}bar_{bid}.wait();").ok();
                 }
                 Event::Push { data, dst, .. } => {
@@ -631,29 +625,24 @@ fn collect_worker_slots(
     }
 }
 
-/// Pre-order Sync visitor: invoke `f(barrier_id, participants)` for
-/// each Sync, descending into Loop bodies. The barrier id is the
-/// running pre-order index. Stops on the first `Err`.
-fn collect_barriers_preorder<F>(
-    events: &[Event],
-    idx: &mut usize,
-    f: &mut F,
-) -> Result<(), EmitError>
+/// Sync visitor: invoke `f(sync_tag, participants)` for each
+/// `Event::Sync`, descending into Loop bodies. Barrier identity is
+/// the contract-carried [`SyncTag`] (TASK-0172) — no running index,
+/// no fallibility (every tag is an independent barrier, so there is
+/// nothing to validate / reject here any more).
+fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
 where
-    F: FnMut(usize, &BTreeSet<WorkerId>) -> Result<(), EmitError>,
+    F: FnMut(SyncTag, &BTreeSet<WorkerId>),
 {
     for e in events {
         match e {
-            Event::Sync { participants, .. } => {
-                let bid = *idx;
-                *idx += 1;
-                f(bid, participants)?;
-            }
-            Event::Loop { body, .. } => collect_barriers_preorder(body, idx, f)?,
+            Event::Sync {
+                participants, sync, ..
+            } => f(*sync, participants),
+            Event::Loop { body, .. } => collect_barriers_by_tag(body, f),
             _ => {}
         }
     }
-    Ok(())
 }
 
 fn collect_pre_init_sets(

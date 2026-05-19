@@ -736,14 +736,20 @@ enum Event {
     Alloc  { data: DataId, tile: IterTile, region: Region },
     Push   { dst: WorkerId, data: DataId, tile: IterTile, seq: SeqTag },
     Wait   { src: WorkerId, data: DataId, tile: IterTile, seq: SeqTag },
-    Sync   { participants: Set<WorkerId>, kind: SyncKind },
+    Sync   { participants: Set<WorkerId>, kind: SyncKind, sync: SyncTag },
     Free   { data: DataId, tile: IterTile },
 }
 ```
 
 `seq` is a compile-time sequence number on each matched `Push`/`Wait`
 pair — the receive side knows which send goes with which receive
-without runtime matching machinery.
+without runtime matching machinery. `sync` is the analogous stable
+identity on `Sync`: every participant of one barrier carries the same
+`SyncTag`, so disjoint per-worker `EventList`s agree on barrier
+identity without a global walk — this is what lets a backend lower a
+partial / non-uniform barrier (participant sets that differ between
+barriers) correctly rather than recovering identity from a per-worker
+pre-order index that only coincides for uniform barriers.
 
 #### IterTile — iteration-space bounds of a datum
 
