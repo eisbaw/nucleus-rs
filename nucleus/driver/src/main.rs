@@ -39,8 +39,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use compiler::{
-    acfg_to_net, apply_block_transforms, build_acfg, check_kernels_contract, check_schedule_compat,
-    inject_syncs, inject_transfers, link, load_capabilities,
+    acfg_to_events, acfg_to_net, apply_block_transforms, build_acfg, build_sidecar,
+    check_kernels_contract, check_schedule_compat, inject_syncs, inject_transfers, link,
+    load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -275,8 +276,47 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
 
     match backend.as_str() {
         "pthreads-sync" => {
-            let result = pthreads_sync::emit(&acfg, &linked, &kernels_path, &out_dir)
-                .map_err(|e| format!("pthreads-sync codegen error: {e}"))?;
+            // Project the post-pass ACFG to the per-worker EventList
+            // contract and build the codegen sidecar. The backend
+            // consumes ONLY these + the reverse name tables — no
+            // ACFG / LinkedIR (TASK-0124 AC#1/AC#2).
+            //
+            // build_sidecar can return a typed SidecarError
+            // (same-name loops with different bounds — TASK-0170);
+            // surface it via the String error channel exactly like
+            // apply_block_transforms above. The EventList path is
+            // panic-safe (never aborts the process).
+            let per_worker = acfg_to_events(&acfg);
+            let sidecar =
+                build_sidecar(&linked, &acfg).map_err(|e| format!("sidecar error: {e}"))?;
+            // Reverse name tables: invert acfg.name_* (name -> id) to
+            // (id -> name) — the join key the EventList / sidecar use.
+            let names = pthreads_sync::NameTables {
+                data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+                kernel: acfg
+                    .name_kernels
+                    .iter()
+                    .map(|(n, i)| (*i, n.clone()))
+                    .collect(),
+                worker: acfg
+                    .name_workers
+                    .iter()
+                    .map(|(n, i)| (*i, n.clone()))
+                    .collect(),
+                iter_var: acfg
+                    .name_iter_vars
+                    .iter()
+                    .map(|(n, i)| (*i, n.clone()))
+                    .collect(),
+                // The inner intra-tile loop iter-vars block_transform
+                // produced (it reuses the source loop's IterVar on
+                // the inner loop and iterates 0..N — the backend must
+                // rebind the absolute index; TASK-0124).
+                inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+            };
+            let result =
+                pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("pthreads-sync codegen error: {e}"))?;
             // Print a deterministic, machine-parseable summary so the
             // e2e harness can pick up the run.sh path.
             println!("nucleus: ok");

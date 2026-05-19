@@ -1021,6 +1021,18 @@ fn zero_lit_from_sidecar(s: &compiler::algo::ScalarType) -> &'static str {
 /// pthreads-sync `render_const_expr` produces — but resolving const
 /// idents through the SIDECAR's const table, NOT `ctx.algo.consts`.
 /// This is exactly what a TASK-0124 EventList-only backend would do.
+///
+/// DRIFT NOTE (review finding (7), reconciled by TASK-0124): this is
+/// a HAND-MIRROR of `pthreads-sync::render_const_expr` (the
+/// `compiler` crate cannot depend on the backend, so it cannot call
+/// the real fn). Since TASK-0124 the backend ACTUALLY consumes the
+/// sidecar, so the real spelling is now pinned independently by
+/// `pthreads-sync/tests/emit.rs::
+/// golden_real_codegen_strings_pin_sidecar_consumption`, which
+/// asserts the exact emitted `for y in (1_i64)..((16_i64 - 1_i64))`
+/// / `vec![0; 256]` against REAL `emit()` output. If this mirror
+/// ever drifts from the backend, that golden test fails loudly — the
+/// mirror can no longer silently agree-while-both-wrong.
 fn render_bound_from_sidecar(
     e: &compiler::algo::IrExpr,
     consts: &BTreeMap<String, ConstValue>,

@@ -1,36 +1,40 @@
-//! pthreads-sync backend. PRD §7.1, TASK-0020.
+//! pthreads-sync backend. PRD §7.1, TASK-0020, TASK-0124.
 //!
-//! Tier-1 CPU backend that takes a post-injection ACFG plus the
-//! [`LinkedIR`] and emits a standalone Cargo project containing
-//! runnable Rust. M1 scope: single-worker ("naive schedule") only.
-//! Multi-worker codegen (`std::thread::spawn` + `std::sync::Condvar`)
-//! is structurally accommodated by the [`emit`] API and the file
-//! layout but not exercised end-to-end yet — TASK-0020 follow-ups
-//! cover it.
+//! Tier-1 CPU backend that consumes the **EventList contract**
+//! (PRD §7.4 / §8.3) — the per-worker [`Event`] projection of the
+//! ACFG plus the [`NameSidecar`] (TASK-0160/0169) and the ACFG
+//! name tables — and emits a standalone Cargo project containing
+//! runnable Rust. Single-worker ("naive schedule") uses the
+//! straight-line emitter; multi-worker uses `std::thread::spawn` +
+//! `std::sync::Barrier` + `Slot<T>` channels.
 //!
-//! ## Why the backend consumes [`LinkedIR`] in addition to the ACFG
+//! ## Why the backend now consumes the EventList, not AlgoIR (TASK-0124)
 //!
-//! The ACFG (TASK-0016 + sync/transfer injection) is the correct
-//! single source of truth for execution order and worker placement.
-//! But it deliberately drops a few things the codegen needs:
+//! The original M1 backend (TASK-0020) walked `LinkedIR::algo`
+//! statements directly because the ACFG stripped index expressions
+//! and the per-worker EventList did not yet carry loop structure or
+//! value bindings. Three contract extensions closed that gap:
 //!
-//! - Per-call argument shape (which kernel argument is a scalar
-//!   `a[i]` vs a whole-array `Vec<T>`). The ACFG's `DataflowEdge`
-//!   keeps only `data_in: Vec<DataId>` — no index expressions, no
-//!   nesting. PRD §6.2.2 kernels are real Rust functions whose
-//!   arguments are typed at the call site, so generating valid Rust
-//!   requires walking the original call expressions.
-//! - Loop iteration variable names as strings (we have `IterVar(u64)`
-//!   in the ACFG and the name<->id map on `ACFG`, but it is easier to
-//!   walk the source `IrStmt` tree directly and emit Rust `for i ...`
-//!   directly).
+//! - **TASK-0156** put the per-firing value binding ([`FireBinding`])
+//!   on [`Event::Fire`] — a backend reconstructs the exact kernel
+//!   call (callee, indexed args, output slice) from the event alone.
+//! - **TASK-0159** made the projection structure-preserving:
+//!   [`Event::Loop`] mirrors `ACFGNode::Repeat` (iter var + range +
+//!   nested body) instead of unrolling it, so a rolled `for` is
+//!   re-emittable.
+//! - **TASK-0160/0169** added the [`NameSidecar`]: per-`DataId`
+//!   [`ResolvedType`] (pre-init sizing + slot typing + scalar casts),
+//!   const values, the *unevaluated* symbolic loop bounds (so
+//!   `for y : 1 .. H-1` re-renders as `(1_i64)..((16_i64 - 1_i64))`
+//!   verbatim, not the folded `1..15`), and per-`KernelId`
+//!   signatures (scalar-arg cast decisions without `algo.kernels`).
 //!
-//! We therefore use the ACFG for invariants (every kernel has a
-//! worker, transfer/sync placeholders are in place) but walk the
-//! `LinkedIR::algo` IR statements for code emission. When example 2
-//! (split add) lands the codegen will switch to walking the per-worker
-//! projection of the ACFG; at M1 with a single worker, the two are
-//! identical.
+//! With `(EventList, name tables, NameSidecar)` the codegen path is
+//! **fully AlgoIR-/LinkedIR-free** (AC#2): this module imports
+//! neither `compiler::algo` nor `compiler::link` for code emission.
+//! `IrExpr` is used only as the inert index/scalar-expression grammar
+//! the EventList already carries (it is the single source of truth
+//! for "what an index is"; no pass evaluates it here).
 //!
 //! ## Generated artefact layout
 //!
@@ -45,68 +49,118 @@
 //!   run.sh             -- builds + runs the binary with input.bin -> output.bin
 //! ```
 //!
-//! `kernels.rs` is *copied* (not `include!`-ed) into the generated
-//! project. Trade-off:
-//! - Copy: cheap reproducibility; the generated project is fully
-//!   self-contained and can be moved out of the repo without breaking.
-//!   The cost is that two files now reflect the same source-of-truth;
-//!   if the user edits the original after codegen, the generated copy
-//!   is stale.
-//! - `include!`: lives at the original path; one source of truth, but
-//!   the generated project leaks a file dependency.
-//!
-//! Reproducibility wins. The expected workflow is "run codegen, then
-//! build". Editing kernels.rs is followed by re-running codegen.
+//! `kernels.rs` is *copied* (not `include!`-ed): the generated
+//! project is fully self-contained and movable. Trade-off: two files
+//! reflect one source-of-truth; the expected workflow is "run
+//! codegen, then build" — editing kernels.rs is followed by
+//! re-running codegen.
 //!
 //! ## Error handling
 //!
 //! Failures bubble up as [`EmitError`] variants with the offending
-//! path / reason attached. No silent fallbacks. The generated Rust
-//! itself uses the panic semantics of the user's kernel bodies
-//! (e.g. example 01's `save_output` panics on I/O failure).
+//! path / reason attached. No silent fallbacks. The
+//! [`EmitError::ContractGap`] variant is the fail-loud seam for "the
+//! EventList/sidecar did not carry something the backend needs"
+//! (e.g. a `DataId` with no sidecar type) — it must never be papered
+//! over with a default.
 //!
-//! ## Honest limitations at M1
+//! ## Honest limitations
 //!
-//! - **Single-worker only.** A schedule with more than one `place`-d
-//!   worker is rejected at emit time. Multi-worker codegen
-//!   (thread spawn + condvar) is filed as a follow-up.
-//! - **Aggregate I/O kernels.** The Rust signature is
-//!   `() -> Vec<T>` / `(Vec<T>) -> ()`. Codegen recognises this by
-//!   looking at the algorithm-declared signature being aggregate
-//!   (`T[N]` shape) — and emits whole-array binding/move calls
-//!   accordingly.
-//! - **No const propagation into generated code.** Loop bounds are
-//!   the ACFG's `Range<i64>` literals. If the algorithm wrote
-//!   `for i : 0 .. N` the value of `N` is baked into the bound,
-//!   which is acceptable but loses the symbolic name.
+//! - **Single-worker straight-line + multi-worker thread/barrier.**
+//!   Distributed placements (`place k on {w0,w1,w2}`) are still
+//!   rejected (TASK-0117). Async / `buffer>1` transfers rejected
+//!   (sync-only backend).
+//! - **Aggregate I/O kernels.** `() -> Vec<T>` / `(Vec<T>) -> ()`
+//!   recognised via the sidecar element type; whole-array
+//!   binding/move calls emitted accordingly.
 //! - **No error recovery in generated code.** A panic in any kernel
-//!   aborts the whole binary.
-//! - **No input.bin format negotiation.** The kernels handle I/O via
-//!   their own `NUC_INPUT_PATH`/`NUC_OUTPUT_PATH` env-var contract.
-//!   The generated `run.sh` sets those variables and assumes the
-//!   format matches what the user's kernels.rs reads.
-//! - **No identity-copy support** (`d <-- e` with a bare DataRef RHS).
-//!   The link / ACFG passes already note this hole; the backend
-//!   inherits it.
+//!   aborts the whole binary (`panic = "abort"`).
+//! - **No identity-copy support** (`d <-- e` with a bare DataRef
+//!   RHS). The contract carries this as a `Fire` with a kernel; a
+//!   non-`Call` dataflow shape never reaches a `Fire`, so this hole
+//!   is inherited from the front passes, not introduced here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use compiler::algo::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, Purity, ResolvedKernel, ResolvedType, ScalarType,
-};
-use compiler::link::LinkedIR;
-use compiler::sched::ResolvedPlaceTarget;
-use compiler::ACFG;
+// AlgoIR-free: the ONLY `compiler::algo` import is the inert
+// expression grammar the EventList itself carries (index / scalar
+// arg / const-bound expressions). No `AlgoIR`, no `LinkedIR`, no
+// `ResolvedKernel`, no statement walk. ResolvedType/ScalarType come
+// exclusively from the NameSidecar.
+use compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use compiler::event::{ArgBinding, DataId, DataSlice, Event, IterVar, KernelId, WorkerId};
+use compiler::sidecar::NameSidecar;
 
 mod multi_worker;
 
 // --------------------------------------------------------------------
 // Public surface
 // --------------------------------------------------------------------
+
+/// Reverse name tables travelling alongside the per-worker
+/// `EventList` + the [`NameSidecar`]. Each map is the inverse of the
+/// corresponding `ACFG::name_*` table (`name -> id` inverted to
+/// `id -> name`). The backend joins these against the opaque ids the
+/// `Event`s / sidecar carry — exactly the join the proven
+/// reconstruction tests in `compiler/tests/petri_to_events.rs`
+/// perform. The driver builds these from the post-pass ACFG; the
+/// backend never sees the ACFG itself.
+#[derive(Debug, Clone, Default)]
+pub struct NameTables {
+    /// `DataId -> data symbol name` (inverse of `acfg.name_data`).
+    pub data: BTreeMap<DataId, String>,
+    /// `KernelId -> kernel name` (inverse of `acfg.name_kernels`).
+    pub kernel: BTreeMap<KernelId, String>,
+    /// `WorkerId -> worker name` (inverse of `acfg.name_workers`).
+    pub worker: BTreeMap<WorkerId, String>,
+    /// `IterVar -> loop-variable name` (inverse of
+    /// `acfg.name_iter_vars`). A `block_transform`-synthesised tile
+    /// iter-var has an entry here too (it has a generated name) but
+    /// NO `NameSidecar::loop_bounds` entry — that absence is how the
+    /// backend tells "synthesised tile loop, use concrete range" from
+    /// "source loop, render symbolic bound".
+    pub iter_var: BTreeMap<IterVar, String>,
+    /// The set of *inner intra-tile* loop iter-vars produced by
+    /// `block_transform` (verbatim `acfg.inner_block_iter_vars`).
+    ///
+    /// `block_transform` rewrites `for VAR : LO..HI  block=N` into
+    /// `for VAR__tile : 0..ceil((HI-LO)/N) { for VAR : 0..N { body } }`
+    /// and **reuses VAR's original [`IterVar`] on the inner loop**.
+    /// Its module docs are explicit (line ~83): the inner loop
+    /// iterates `0..N`, NOT `LO..LO+N`, so **codegen** that wants the
+    /// absolute iteration value "must compute `LO + tile*N + inner`"
+    /// — block_transform deliberately defers that index rebinding to
+    /// the backend.
+    ///
+    /// The pre-TASK-0124 AlgoIR-walking backend never did this: it
+    /// walked the *source* `IrStmt` (which has no block transform at
+    /// all) and emitted the untiled loop, which is runtime-correct
+    /// only because it never tiled. The EventList faithfully carries
+    /// the tiled structure, so the EventList-only backend MUST do
+    /// the absolute-index rebinding block_transform defers, or an
+    /// accumulator kernel (07-matmul `madd`) double-counts.
+    ///
+    /// LIMITATION (filed as TASK-0173): the rebinding is applied only
+    /// for the **evenly-divisible** case (one tile nest per inner
+    /// var — e.g. 07-matmul `block=8`, N=16). The **non-divisible /
+    /// trailing-partial-tile** case (05-stencil `block=4`, range
+    /// length 14) decomposes into TWO sibling nests whose correct
+    /// absolute formulas differ (`LO + tile*N + inner` for the full
+    /// nest vs the constant base `LO + num_full*N + inner` for the
+    /// partial nest) — and the EventList/ACFG does NOT carry
+    /// `num_full` / a "this is the partial tile" marker, so a correct
+    /// general rebinding is a real contract extension, not a clean
+    /// backend-local change. For the non-divisible inner var the
+    /// backend keeps the source-form bound (current behaviour);
+    /// 05-stencil/blocked stays runtime-correct because `blur3` is
+    /// idempotent (re-writing `img_out[y][x]` with the same value).
+    /// See TASK-0173 for the proper fix.
+    pub inner_block_iter_vars: BTreeSet<IterVar>,
+}
 
 /// Paths to the files [`emit`] wrote, returned for callers that want
 /// to inspect or invoke them.
@@ -127,28 +181,28 @@ pub struct EmitResult {
 /// Errors that can stop a codegen run.
 #[derive(Debug)]
 pub enum EmitError {
-    /// Failed to read the user's `kernels.rs` (path bad, permissions,
-    /// nonexistent, ...).
+    /// Failed to read the user's `kernels.rs`.
     KernelsReadFailed { path: PathBuf, source: io::Error },
     /// Failed to create `out_dir` or any sub-directory.
     OutputCreateFailed { path: PathBuf, source: io::Error },
     /// Failed to write a generated file.
     WriteFailed { path: PathBuf, source: io::Error },
-    /// The post-injection ACFG asks for something this backend (M1)
-    /// cannot yet emit. Carries a human description of what.
+    /// The EventList asks for something this backend cannot emit
+    /// (nested call in argument position, identity-copy shape, …).
     UnsupportedFeature(String),
+    /// The `(EventList, NameSidecar, name tables)` contract did not
+    /// carry a fact the backend needs to emit valid code (a `DataId`
+    /// with no sidecar type, a `KernelId` with no name, …). This is
+    /// the fail-loud seam for a contract regression — NEVER paper
+    /// over it with a default (CLAUDE.md: no workarounds).
+    ContractGap(String),
 }
 
 impl std::fmt::Display for EmitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EmitError::KernelsReadFailed { path, source } => {
-                write!(
-                    f,
-                    "failed to read kernels.rs at {}: {}",
-                    path.display(),
-                    source
-                )
+                write!(f, "failed to read kernels.rs at {}: {}", path.display(), source)
             }
             EmitError::OutputCreateFailed { path, source } => write!(
                 f,
@@ -160,7 +214,13 @@ impl std::fmt::Display for EmitError {
                 write!(f, "failed to write {}: {}", path.display(), source)
             }
             EmitError::UnsupportedFeature(msg) => {
-                write!(f, "pthreads-sync (M1): unsupported feature: {msg}")
+                write!(f, "pthreads-sync: unsupported feature: {msg}")
+            }
+            EmitError::ContractGap(msg) => {
+                write!(
+                    f,
+                    "pthreads-sync: EventList/sidecar contract gap: {msg}"
+                )
             }
         }
     }
@@ -168,32 +228,32 @@ impl std::fmt::Display for EmitError {
 
 impl std::error::Error for EmitError {}
 
-/// Emit a runnable Cargo project for the given algorithm + schedule
-/// (already linked, ACFG already built with sync + transfer injection
-/// applied).
+/// Emit a runnable Cargo project from the per-worker EventList.
 ///
-/// `kernels_rs_path` is the path to the user's adjacent `kernels.rs`;
-/// the backend copies it verbatim into the generated project.
+/// AC#1 signature (TASK-0124): the backend consumes the per-worker
+/// [`Event`] lists, the [`NameTables`] (reverse `name_*`), and the
+/// [`NameSidecar`] — NOT `&ACFG` / `&LinkedIR`. `kernels_rs_path` is
+/// copied verbatim into the generated project.
 ///
-/// Returns paths to every emitted file on success. On failure, the
-/// state of `out_dir` is left as-is (no rollback at M1 — the user
-/// re-runs codegen).
+/// Single- vs multi-worker is chosen by counting workers whose
+/// EventList is non-empty: 0/1 → straight-line emitter, ≥2 →
+/// thread/barrier emitter. (`acfg_to_events` seeds every declared
+/// worker with an empty list, so an unused declared worker does not
+/// trip the multi-worker path — exactly the old `collect_used_workers`
+/// semantics, now read off the EventList.)
 pub fn emit(
-    acfg: &ACFG,
-    linked: &LinkedIR,
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    names: &NameTables,
+    sidecar: &NameSidecar,
     kernels_rs_path: &Path,
     out_dir: &Path,
 ) -> Result<EmitResult, EmitError> {
     // ---- Pick a code path: single-worker vs multi-worker. ----
-    //
-    // The ACFG's name_workers covers every worker the schedule
-    // declared (including any unused entries). We count the unique
-    // workers that actually own at least one Operation: a schedule
-    // may declare workers it doesn't use. With one used worker we
-    // take the naive (M1) path; with two or more, the multi-worker
-    // codegen (TASK-0122) emits thread spawns + Slot channels +
-    // barriers.
-    let used_workers = collect_used_workers(acfg);
+    let used_workers: Vec<WorkerId> = per_worker
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
 
     // ---- Read user kernels.rs ----
     let kernels_src =
@@ -215,25 +275,27 @@ pub fn emit(
     let run_sh = out_dir.join("run.sh");
 
     // ---- Render Cargo.toml ----
-    let cargo_toml_src = render_cargo_toml();
-    write_file(&cargo_toml, &cargo_toml_src)?;
+    write_file(&cargo_toml, &render_cargo_toml())?;
 
     // ---- Copy kernels.rs verbatim ----
     write_file(&kernels_rs, &kernels_src)?;
 
     // ---- Render main.rs ----
     let main_rs_src = if used_workers.len() <= 1 {
-        render_main_rs(&linked.algo)?
+        let events = used_workers
+            .first()
+            .and_then(|w| per_worker.get(w))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        render_main_rs(events, names, sidecar)?
     } else {
-        multi_worker::render_main_rs_multi(acfg, linked)?
+        multi_worker::render_main_rs_multi(per_worker, names, sidecar)?
     };
     write_file(&main_rs, &main_rs_src)?;
 
     // ---- Render run.sh ----
-    let run_sh_src = render_run_sh();
-    write_file(&run_sh, &run_sh_src)?;
-    // Best-effort: mark run.sh executable. Failure here is non-fatal
-    // — the user can `bash run.sh` instead, and the e2e test does so.
+    write_file(&run_sh, &render_run_sh())?;
+    // Best-effort: mark run.sh executable. Failure here is non-fatal.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -254,44 +316,10 @@ pub fn emit(
 }
 
 // --------------------------------------------------------------------
-// Worker analysis
-// --------------------------------------------------------------------
-
-/// Collect the union of all worker IDs that any `Operation` in the
-/// ACFG runs on. A schedule may declare workers that no kernel uses;
-/// those don't count.
-fn collect_used_workers(acfg: &ACFG) -> BTreeSet<compiler::WorkerId> {
-    let mut s: BTreeSet<compiler::WorkerId> = BTreeSet::new();
-    walk_workers(&acfg.root, &mut s);
-    s
-}
-
-fn walk_workers(node: &compiler::ACFGNode, out: &mut BTreeSet<compiler::WorkerId>) {
-    use compiler::ACFGNode;
-    match node {
-        ACFGNode::Operation(op) => {
-            for w in &op.workers {
-                out.insert(*w);
-            }
-        }
-        ACFGNode::Repeat { body, .. } => walk_workers(body, out),
-        ACFGNode::Sequence(children) => {
-            for c in children {
-                walk_workers(c, out);
-            }
-        }
-        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
-    }
-}
-
-// --------------------------------------------------------------------
-// File renderers
+// File renderers (unchanged from TASK-0020 — byte-stable)
 // --------------------------------------------------------------------
 
 fn render_cargo_toml() -> String {
-    // Standalone, no parent workspace, no third-party deps. Panic
-    // abort matches the reference implementation for tier-1
-    // determinism.
     String::from(
         "# Generated by the pthreads-sync backend. Do not edit; rerun \
          `nucleus build` to regenerate.\n\
@@ -314,14 +342,6 @@ fn render_cargo_toml() -> String {
 }
 
 fn render_run_sh() -> String {
-    // The script lives in the project root next to Cargo.toml. It
-    // builds the binary in release mode (panic=abort, no debug info
-    // for size) and runs it pointing NUC_INPUT_PATH and
-    // NUC_OUTPUT_PATH at the conventional sibling files.
-    //
-    // `set -euo pipefail` aborts on any error; matches the
-    // fail-loud rule from PRD §10 (a botched run shouldn't return
-    // success).
     String::from(
         "#!/usr/bin/env bash\n\
          # Generated by the pthreads-sync backend. Rerun `nucleus build` to regenerate.\n\
@@ -341,147 +361,196 @@ fn render_run_sh() -> String {
 }
 
 // --------------------------------------------------------------------
-// Algorithm -> main.rs codegen
+// EventList -> main.rs codegen (single-worker / straight-line)
 // --------------------------------------------------------------------
 
-fn render_main_rs(algo: &AlgoIR) -> Result<String, EmitError> {
-    // Emit a self-contained `main.rs` that walks the algorithm's
-    // statements in source order. Single-worker host, no transfers,
-    // no syncs (the post-injection ACFG of a naive schedule has no
-    // Sync/Xfer nodes), so the lowering is mechanical.
-    //
-    // Strategy:
-    // - For each data declaration we make a binding when it is first
-    //   assigned. There are two cases:
-    //   1. Whole-array assignment `D <-- aggregate_call()` — the call
-    //      returns a `Vec<T>`; we `let mut D = kernels::call();`.
-    //   2. Indexed assignment `D[i] <-- scalar_call(...)` — D must
-    //      already exist (the algorithm requires this; single-
-    //      assignment plus indexed-LHS implies a prior whole-array
-    //      `<--` or a default initialisation). At M1 we initialise
-    //      indexed-LHS data ahead-of-time with `vec![T::default(); N]`
-    //      sized by the algorithm-declared shape.
-    // - For effect statements `kernel(args)`: emit a call, passing
-    //   aggregate-typed args by move (which is OK because no
-    //   subsequent statement reads them — single-assignment
-    //   guarantees no aliasing). If a real example needs to read an
-    //   aggregate after passing it to an effect, the codegen tightens.
-    // - For-loops emit `for i in lo..hi`. Loop bounds are i64 in the
-    //   IR; we cast the iter-var to usize when used as an array
-    //   index.
-
+/// Render `main.rs` from a single worker's `EventList`.
+///
+/// Strategy (mirrors the old AlgoIR walk one-for-one so the output
+/// is byte-identical, but reads only the EventList + sidecar):
+///
+/// - **Pre-init**: every data symbol written *only* via an indexed
+///   `Fire` output (`D[i] <-- k(...)`) and never as a whole-array
+///   output gets `let mut D = vec![<zero>; product(dims)];` up front,
+///   sorted by name. Size + element type come from the sidecar.
+/// - **Fire**: reconstruct the call from [`FireBinding`] + name
+///   tables (exactly `eventlist_alone_reconstructs_stencil_kernel_call`).
+///   Whole-array output → `let mut D = kernels::k(args);`; indexed
+///   output → `D[idx] = kernels::k(args);`; no output → effect call.
+/// - **Loop**: `for {var} in ({lo})..({hi})`; the source-form bound
+///   is from `sidecar.loop_bounds[iter_var]` + `sidecar.consts`. A
+///   loop var with no `loop_bounds` entry is a synthesised tile loop
+///   → the concrete `Event::Loop.range` rendered `{n}_i64`.
+/// - **Sync**: a single-worker schedule's post-injection ACFG has no
+///   Sync/Push/Wait — but we handle them defensively (a lone worker
+///   should not have cross-worker events; surface a contract gap if
+///   it does rather than silently drop).
+fn render_main_rs(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+) -> Result<String, EmitError> {
     let mut out = String::new();
-    writeln!(
-        out,
-        "//! Generated by the pthreads-sync backend (TASK-0020, M1)."
-    )
-    .ok();
+    writeln!(out, "//! Generated by the pthreads-sync backend (TASK-0020, M1).").ok();
     writeln!(out, "//! Do not edit; rerun `nucleus build` to regenerate.").ok();
     writeln!(out).ok();
     writeln!(out, "// The user's kernel bodies live in kernels.rs.").ok();
     writeln!(out, "mod kernels;").ok();
     writeln!(out).ok();
-    // unused_mut: the codegen attaches `let mut` to every dataflow
-    // binding for safety (an indexed-LHS assignment, an effect-pass
-    // by move, etc. may follow). Some bindings end up never mutated;
-    // suppressing the warning is cleaner than threading mutation
-    // analysis through the renderer at M1.
-    //
-    // dead_code: kernels.rs may declare helper items that this
-    // particular algorithm/schedule never calls (e.g. example 01's
-    // `read_i32_le_slice` is hit indirectly through `load_input`).
-    // The user's source is the source of truth; we don't prune.
     writeln!(out, "#[allow(unused_mut, dead_code, unused_variables)]").ok();
     writeln!(out, "fn main() {{").ok();
 
-    // Pre-initialise every `data` symbol that the algorithm will
-    // assign via an indexed LHS (`D[i] <-- ...`). Whole-array binding
-    // (D <-- aggregate_call()) takes care of itself at the statement.
-    //
-    // We need this BEFORE walking the statements so that loop bodies
-    // (which use `D[i]` for some D never assigned whole-array) see a
-    // valid binding.
-    let pre_init = collect_pre_init_data(algo);
-    for (name, ty) in &pre_init {
-        let rs_init = render_array_init(ty);
+    // Pre-initialise every data symbol assigned via an indexed Fire
+    // output and never whole-array. Sorted by name (BTreeSet) so the
+    // output is deterministic — same order the old
+    // `collect_pre_init_data` produced.
+    let pre_init = collect_pre_init_data(events, names, sidecar)?;
+    for (name, did) in &pre_init {
+        let rs_init = render_array_init(*did, sidecar, name)?;
         writeln!(out, "    let mut {name} = {rs_init};").ok();
     }
     if !pre_init.is_empty() {
         writeln!(out).ok();
     }
 
-    let ctx = RenderCtx { algo };
-    render_stmts(&algo.stmts, &mut out, 1, &ctx)?;
+    // Which inner-block iter vars are the simple evenly-divisible
+    // case (exactly ONE Event::Loop node carries them — no
+    // trailing-partial-tile sibling). Only these get absolute-index
+    // rebinding; see `NameTables::inner_block_iter_vars` /
+    // TASK-0173.
+    let divisible_inner = divisible_inner_block_vars(events, &names.inner_block_iter_vars);
+
+    let ctx = RenderCtx {
+        names,
+        sidecar,
+        divisible_inner: &divisible_inner,
+        abs_subst: BTreeMap::new(),
+    };
+    render_events(events, &mut out, 1, &ctx)?;
 
     writeln!(out, "}}").ok();
     Ok(out)
 }
 
 struct RenderCtx<'a> {
-    algo: &'a AlgoIR,
+    names: &'a NameTables,
+    sidecar: &'a NameSidecar,
+    /// Inner-block iter vars eligible for absolute-index rebinding
+    /// (evenly-divisible single-nest case only).
+    divisible_inner: &'a BTreeSet<IterVar>,
+    /// Active absolute-index substitutions: an inner-block loop
+    /// variable name -> the `(LO + tile*N + inner)` Rust expression
+    /// it must expand to at every *body* use site. Empty for every
+    /// non-blocked program, so non-blocked codegen is byte-identical
+    /// to the pre-TASK-0124 backend (the map is consulted only by
+    /// `render_int_expr`/`render_const_expr` on an `Ident`).
+    abs_subst: BTreeMap<String, String>,
 }
 
-/// Find every `data` symbol that is assigned *only* via indexed
-/// dataflow (`D[i] <-- ...`) — never whole-array `D <-- aggregate()`.
-/// Those need an up-front allocation so the index assignment has
-/// somewhere to land.
-///
-/// Returns name -> resolved-shape pairs in lexicographic order so
-/// generated output is deterministic.
-fn collect_pre_init_data(algo: &AlgoIR) -> Vec<(String, ResolvedType)> {
-    let mut whole_array: BTreeSet<String> = BTreeSet::new();
-    let mut indexed: BTreeSet<String> = BTreeSet::new();
-    walk_assign_kinds(&algo.stmts, &mut whole_array, &mut indexed);
+/// Inner-block iter vars that occur in exactly ONE `Event::Loop`
+/// node across the whole list (the evenly-divisible case). A
+/// non-divisible inner var appears in TWO sibling `Event::Loop`s
+/// (full-tile nest + trailing-partial-tile nest) with different
+/// ranges — those are intentionally NOT rebindable here (TASK-0173).
+fn divisible_inner_block_vars(
+    events: &[Event],
+    inner_block: &BTreeSet<IterVar>,
+) -> BTreeSet<IterVar> {
+    let mut counts: BTreeMap<IterVar, usize> = BTreeMap::new();
+    fn walk(events: &[Event], counts: &mut BTreeMap<IterVar, usize>) {
+        for e in events {
+            if let Event::Loop {
+                iter_var, body, ..
+            } = e
+            {
+                *counts.entry(*iter_var).or_insert(0) += 1;
+                walk(body, counts);
+            }
+        }
+    }
+    walk(events, &mut counts);
+    inner_block
+        .iter()
+        .copied()
+        .filter(|iv| counts.get(iv).copied().unwrap_or(0) == 1)
+        .collect()
+}
 
-    let mut out: Vec<(String, ResolvedType)> = Vec::new();
-    for name in indexed.iter() {
-        if whole_array.contains(name) {
+/// Find every data symbol written *only* via an indexed `Fire`
+/// output (`D[i] <-- k(...)`) — never a whole-array output. Those
+/// need an up-front allocation. Returns `(name, DataId)` pairs in
+/// lexicographic name order (deterministic; matches the old
+/// `collect_pre_init_data` BTreeSet ordering).
+fn collect_pre_init_data(
+    events: &[Event],
+    names: &NameTables,
+    _sidecar: &NameSidecar,
+) -> Result<Vec<(String, DataId)>, EmitError> {
+    let mut whole_array: BTreeSet<DataId> = BTreeSet::new();
+    let mut indexed: BTreeSet<DataId> = BTreeSet::new();
+    walk_fire_outputs(events, &mut whole_array, &mut indexed);
+
+    // Order by NAME lexicographically (the old code keyed a
+    // BTreeSet<String>). Build (name, did) and sort by name.
+    let mut out: Vec<(String, DataId)> = Vec::new();
+    for did in &indexed {
+        if whole_array.contains(did) {
             continue;
         }
-        if let Some(d) = algo.data.get(name) {
-            out.push((name.clone(), d.ty.clone()));
-        }
+        let name = names.data.get(did).ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "data id {did:?} written by an indexed Fire has no name in NameTables"
+            ))
+        })?;
+        out.push((name.clone(), *did));
     }
-    out
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
 }
 
-fn walk_assign_kinds(
-    stmts: &[IrStmt],
-    whole_array: &mut BTreeSet<String>,
-    indexed: &mut BTreeSet<String>,
+fn walk_fire_outputs(
+    events: &[Event],
+    whole_array: &mut BTreeSet<DataId>,
+    indexed: &mut BTreeSet<DataId>,
 ) {
-    for s in stmts {
-        match s {
-            IrStmt::Dataflow { lhs, .. } => {
-                if lhs.indices.is_empty() {
-                    whole_array.insert(lhs.name.clone());
-                } else {
-                    indexed.insert(lhs.name.clone());
+    for e in events {
+        match e {
+            Event::Fire { bindings, .. } => {
+                if let Some(o) = &bindings.output {
+                    if o.indices.is_empty() {
+                        whole_array.insert(o.data);
+                    } else {
+                        indexed.insert(o.data);
+                    }
                 }
             }
-            IrStmt::Effect { .. } => {}
-            IrStmt::For { body, .. } => walk_assign_kinds(body, whole_array, indexed),
+            Event::Loop { body, .. } => walk_fire_outputs(body, whole_array, indexed),
+            // Sync / Push / Wait / Alloc / Free carry no Fire output.
+            _ => {}
         }
     }
 }
 
-/// Render `vec![T::default(); N1 * N2 * ...]` for an array type, or a
-/// scalar zero for a scalar type. M1: only 1D arrays are exercised by
-/// example 01. Higher rank gets flattened to a 1D Vec, which keeps
-/// the codegen simple and matches the `Vec<T>` convention in
-/// example 01's kernels.rs. If a future example wants `[[T; W]; H]`,
-/// the codegen needs to learn the multi-dim form (filed as a
-/// follow-up).
-fn render_array_init(ty: &ResolvedType) -> String {
+/// `vec![<zero>; product(dims)]` for an array, or the scalar zero
+/// literal for a scalar — sized + typed ENTIRELY from the sidecar
+/// (no AlgoIR). Mirrors the old `render_array_init`.
+fn render_array_init(
+    did: DataId,
+    sidecar: &NameSidecar,
+    name: &str,
+) -> Result<String, EmitError> {
+    let ty = sidecar.data_type(did).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "data `{name}` ({did:?}) has no ResolvedType in the NameSidecar \
+             (build_sidecar should carry every ACFG data symbol)"
+        ))
+    })?;
     if ty.is_scalar() {
-        // Scalar `data` is uncommon (effect outputs only) but we
-        // support it. Defaults are zero for numeric types and false
-        // for bool. The rust_scalar_zero helper returns a literal.
-        rust_scalar_zero(&ty.scalar).to_string()
+        Ok(rust_scalar_zero(&ty.scalar).to_string())
     } else {
         let total: usize = ty.dims.iter().copied().product();
         let zero = rust_scalar_zero(&ty.scalar);
-        format!("vec![{zero}; {total}]")
+        Ok(format!("vec![{zero}; {total}]"))
     }
 }
 
@@ -497,146 +566,232 @@ fn rust_scalar_zero(t: &ScalarType) -> &'static str {
 }
 
 // --------------------------------------------------------------------
-// Statement and expression rendering
+// Event rendering
 // --------------------------------------------------------------------
 
-fn render_stmts(
-    stmts: &[IrStmt],
+fn render_events(
+    events: &[Event],
     out: &mut String,
     indent: usize,
     ctx: &RenderCtx<'_>,
 ) -> Result<(), EmitError> {
-    for s in stmts {
-        render_stmt(s, out, indent, ctx)?;
+    render_events_in(events, out, indent, ctx, None)
+}
+
+/// `enclosing` is the iter-var of the immediately-enclosing
+/// `Event::Loop` (the tile loop, when the child is a strip-mined
+/// inner-block loop) — `None` at top level.
+fn render_events_in(
+    events: &[Event],
+    out: &mut String,
+    indent: usize,
+    ctx: &RenderCtx<'_>,
+    enclosing: Option<IterVar>,
+) -> Result<(), EmitError> {
+    for e in events {
+        render_event(e, out, indent, ctx, enclosing)?;
     }
     Ok(())
 }
 
-fn render_stmt(
-    stmt: &IrStmt,
+fn render_event(
+    event: &Event,
     out: &mut String,
     indent: usize,
     ctx: &RenderCtx<'_>,
+    enclosing: Option<IterVar>,
 ) -> Result<(), EmitError> {
     let pad = "    ".repeat(indent);
-    match stmt {
-        IrStmt::Dataflow { lhs, rhs } => {
-            render_dataflow(lhs, rhs, out, &pad, ctx)?;
-        }
-        IrStmt::Effect { callee, args } => {
-            // Effect statement: a kernel call discarded for its side
-            // effects. Render args with the same logic as a Call RHS;
-            // semicolon-terminate.
-            let rendered_args = render_call_args(callee, args, ctx)?;
-            writeln!(out, "{pad}kernels::{callee}({rendered_args});").ok();
-        }
-        IrStmt::For { var, lo, hi, body } => {
-            let lo_s = render_const_expr(lo, ctx)?;
-            let hi_s = render_const_expr(hi, ctx)?;
-            // Iteration variables are i64 to match IterTile's range
-            // element type. The body uses usize-casts where indexing.
-            writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
-            render_stmts(body, out, indent + 1, ctx)?;
-            writeln!(out, "{pad}}}").ok();
-        }
-    }
-    Ok(())
-}
-
-fn render_dataflow(
-    lhs: &IndexedRef,
-    rhs: &IrExpr,
-    out: &mut String,
-    pad: &str,
-    ctx: &RenderCtx<'_>,
-) -> Result<(), EmitError> {
-    match rhs {
-        IrExpr::Call { callee, args } => {
-            let rendered_args = render_call_args(callee, args, ctx)?;
-            if lhs.indices.is_empty() {
-                // Whole-array (or scalar) binding. New `let mut`.
-                // Reusing `let mut` is robust against later effect
-                // statements that need to read the binding.
-                writeln!(
-                    out,
-                    "{pad}let mut {} = kernels::{callee}({rendered_args});",
-                    lhs.name
-                )
-                .ok();
-            } else {
-                // Indexed assignment. The pre-init pass has ensured
-                // the data exists as `Vec<T>` (1D flat layout).
-                let idx = render_flat_index(lhs, ctx)?;
-                writeln!(
-                    out,
-                    "{pad}{}[{idx}] = kernels::{callee}({rendered_args});",
-                    lhs.name
-                )
-                .ok();
+    match event {
+        Event::Fire {
+            kernel, bindings, ..
+        } => {
+            let callee = ctx.names.kernel.get(kernel).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "kernel id {kernel:?} in a Fire has no name in NameTables"
+                ))
+            })?;
+            let rendered_args = render_fire_args(*kernel, &bindings.inputs, ctx)?;
+            match &bindings.output {
+                None => {
+                    // Effect statement.
+                    writeln!(out, "{pad}kernels::{callee}({rendered_args});").ok();
+                }
+                Some(o) if o.indices.is_empty() => {
+                    // Whole-array (or scalar) binding.
+                    let name = data_name(o.data, ctx)?;
+                    writeln!(
+                        out,
+                        "{pad}let mut {name} = kernels::{callee}({rendered_args});"
+                    )
+                    .ok();
+                }
+                Some(o) => {
+                    // Indexed assignment. Pre-init guaranteed the
+                    // data exists as a flat Vec<T>.
+                    let name = data_name(o.data, ctx)?;
+                    let idx = render_flat_index(o, ctx)?;
+                    writeln!(
+                        out,
+                        "{pad}{name}[{idx}] = kernels::{callee}({rendered_args});"
+                    )
+                    .ok();
+                }
             }
             Ok(())
         }
-        // Identity-copy (`d <-- e` with bare data ref) and other
-        // shapes: link / ACFG already note this hole.
-        other => Err(EmitError::UnsupportedFeature(format!(
-            "dataflow RHS shape not supported at M1: {other:?}"
-        ))),
+        Event::Loop {
+            iter_var,
+            range,
+            body,
+        } => {
+            let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "iter var {iter_var:?} in an Event::Loop has no name in NameTables"
+                ))
+            })?;
+
+            // Absolute-index rebinding (TASK-0124): a strip-mined
+            // inner-block loop in the divisible single-nest case must
+            // expand its loop variable to `LO + tile*N + inner` at
+            // every body use site (block_transform defers this; see
+            // NameTables::inner_block_iter_vars / TASK-0173). The
+            // inner loop is emitted over its concrete `0..N`
+            // `Event::Loop.range`; the rebinding goes into a child
+            // RenderCtx's `abs_subst`.
+            if ctx.divisible_inner.contains(iter_var) {
+                let tile_iv = enclosing.ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "strip-mined inner loop {iter_var:?} has no enclosing \
+                         tile loop — block_transform always wraps it; \
+                         malformed EventList"
+                    ))
+                })?;
+                let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "tile iter var {tile_iv:?} has no name in NameTables"
+                    ))
+                })?;
+                // N = the inner loop's concrete trip count (full
+                // block width, since this is the divisible nest).
+                let n = range.end - range.start;
+                // LO = the ORIGINAL source lower bound (the inner
+                // loop's source `for VAR : LO..HI`). It still lives
+                // in the sidecar keyed by this (reused) IterVar.
+                let lo_src = ctx
+                    .sidecar
+                    .loop_bounds
+                    .get(iter_var)
+                    .map(|b| render_const_expr(&b.lo, ctx))
+                    .transpose()?
+                    .unwrap_or_else(|| "0_i64".to_string());
+                // Absolute value of the source iteration variable.
+                let abs = format!("({lo_src} + ({tile_name} * {n}_i64) + {var})");
+                let mut child_subst = ctx.abs_subst.clone();
+                child_subst.insert(var.clone(), abs);
+                let child = RenderCtx {
+                    names: ctx.names,
+                    sidecar: ctx.sidecar,
+                    divisible_inner: ctx.divisible_inner,
+                    abs_subst: child_subst,
+                };
+                // Loop header uses the concrete folded range
+                // (`{start}_i64..{end}_i64`) — NOT the source-form
+                // bound, which would re-introduce the full range.
+                writeln!(
+                    out,
+                    "{pad}for {var} in ({}_i64)..({}_i64) {{",
+                    range.start, range.end
+                )
+                .ok();
+                render_events_in(body, out, indent + 1, &child, Some(*iter_var))?;
+                writeln!(out, "{pad}}}").ok();
+                return Ok(());
+            }
+
+            let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
+            writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
+            render_events_in(body, out, indent + 1, ctx, Some(*iter_var))?;
+            writeln!(out, "{pad}}}").ok();
+            Ok(())
+        }
+        // A single-worker schedule must not carry cross-worker
+        // events. Surfacing rather than silently dropping keeps the
+        // fail-loud contract (a lone worker with a Sync/Push/Wait is
+        // a projection bug worth seeing).
+        Event::Sync { .. } => Err(EmitError::ContractGap(
+            "Event::Sync in a single-worker EventList — the straight-line \
+             emitter expects no cross-worker synchronisation"
+                .to_string(),
+        )),
+        Event::Push { .. } | Event::Wait { .. } => Err(EmitError::ContractGap(
+            "Event::Push/Wait in a single-worker EventList — no cross-worker \
+             transfer is possible with one worker"
+                .to_string(),
+        )),
+        // Alloc/Free are not emitted by the current projection for
+        // tier-1 examples; a backend that needs explicit
+        // allocation lifetime would handle them here. Ignoring an
+        // Alloc/Free is faithful: storage is `Vec`-managed in the
+        // straight-line emitter (RAII), so an explicit region
+        // reservation has no Rust counterpart.
+        Event::Alloc { .. } | Event::Free { .. } => Ok(()),
     }
 }
 
-/// Render the argument list of a kernel call. Each argument has one
-/// of these forms:
-///
-/// - `D[i]` (scalar element read) -> `D[(i) as usize]`.
-/// - `D` bare (aggregate read) -> `D` if the kernel parameter is
-///   aggregate; passed by move per single-assignment.
-/// - Arithmetic on iter vars / consts: render directly (the result
-///   will be used as a scalar argument or as a flat index inside a
-///   nested DataRef).
-fn render_call_args(
-    callee: &str,
-    args: &[IrExpr],
+/// Resolve a `DataId` to its source name, failing loud on a gap.
+fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
+    ctx.names
+        .data
+        .get(&did)
+        .cloned()
+        .ok_or_else(|| EmitError::ContractGap(format!("data id {did:?} has no name in NameTables")))
+}
+
+/// Render a kernel call's argument list from its [`FireBinding`]
+/// inputs. `Data` → indexed/whole-array read; `Scalar` → integer
+/// expression with a param-type cast decided via the SIDECAR's
+/// kernel signature (TASK-0169, AlgoIR-free); `Nested` → rejected
+/// (tier-1 backends do not lower a nested call in argument position).
+fn render_fire_args(
+    kernel: KernelId,
+    inputs: &[ArgBinding],
     ctx: &RenderCtx<'_>,
 ) -> Result<String, EmitError> {
-    let kernel = ctx.algo.kernels.get(callee).ok_or_else(|| {
-        EmitError::UnsupportedFeature(format!(
-            "kernel `{callee}` not in AlgoIR (link should have caught)"
-        ))
-    })?;
-    let mut parts = Vec::with_capacity(args.len());
-    for (i, arg) in args.iter().enumerate() {
-        let param_ty = kernel.params.get(i);
-        parts.push(render_call_arg(arg, param_ty, ctx)?);
+    // Per-param types come from the sidecar's kernel signature, NOT
+    // `algo.kernels` (AC#2). Absent only if the contract regressed.
+    let sig = ctx.sidecar.kernel_sig(kernel);
+    let mut parts = Vec::with_capacity(inputs.len());
+    for (i, arg) in inputs.iter().enumerate() {
+        let param_ty = sig.and_then(|s| s.params.get(i));
+        parts.push(render_fire_arg(arg, param_ty, ctx)?);
     }
     Ok(parts.join(", "))
 }
 
-fn render_call_arg(
-    arg: &IrExpr,
+fn render_fire_arg(
+    arg: &ArgBinding,
     param_ty: Option<&ResolvedType>,
     ctx: &RenderCtx<'_>,
 ) -> Result<String, EmitError> {
     match arg {
-        IrExpr::DataRef(r) => {
-            if r.indices.is_empty() {
-                // Whole-array argument. If the param is scalar, this
-                // is a bug; we render the bare name and let rustc
-                // catch the type mismatch loudly.
-                Ok(r.name.clone())
+        ArgBinding::Data(s) => {
+            if s.indices.is_empty() {
+                // Whole-array argument (passed by move per
+                // single-assignment). If the param is scalar this is
+                // a program bug; emit the bare name and let rustc
+                // catch it loudly (same as the old backend).
+                data_name(s.data, ctx)
             } else {
-                // Element read. Flatten indices for a Vec<T> layout.
-                let idx = render_flat_index(r, ctx)?;
-                Ok(format!("{}[{idx}]", r.name))
+                let name = data_name(s.data, ctx)?;
+                let idx = render_flat_index(s, ctx)?;
+                Ok(format!("{name}[{idx}]"))
             }
         }
-        // For scalar value arguments, the IR may carry a scalar arith
-        // expression (an iter-var-derived literal). Render it as-is
-        // with type-coercion when feeding usize-typed parameters.
-        IrExpr::IntLit(_) | IrExpr::Ident(_) | IrExpr::Neg(_) | IrExpr::BinOp(_, _, _) => {
-            let rendered = render_int_expr(arg)?;
-            // If the kernel param is scalar and not `usize`, the
-            // value comes from iter vars (which we type as i64) — we
-            // need a cast.
+        ArgBinding::Scalar(e) => {
+            let rendered = render_int_expr(e, &ctx.abs_subst)?;
+            // Iter-var-derived scalars are typed i64; a scalar kernel
+            // param needs a cast. Param type from the sidecar.
             if let Some(pty) = param_ty {
                 if pty.is_scalar() {
                     return Ok(format!("({rendered}) as {}", rust_scalar_type(&pty.scalar)));
@@ -644,47 +799,48 @@ fn render_call_arg(
             }
             Ok(rendered)
         }
-        IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
+        ArgBinding::Nested { .. } => Err(EmitError::UnsupportedFeature(
             "nested kernel call inside an argument expression".to_string(),
         )),
     }
 }
 
-/// Render a flat (row-major) index expression for a 1D Vec<T>
-/// representation of an N-dimensional shape. For 1D shapes (which is
-/// all M1 exercises) the result is just the single index expression,
-/// cast to `usize`. For higher-rank, returns
-/// `(i0 * D1 * D2 + i1 * D2 + i2) as usize` etc. Each index is rendered
-/// as the underlying integer expression; the cast is applied to the
-/// whole sum.
-///
-/// We fall back gracefully on data that has no resolved shape: the
-/// index is rendered as-is with a `as usize` cast.
-fn render_flat_index(r: &IndexedRef, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
-    if r.indices.is_empty() {
+/// Render a flat (row-major) index for a 1D `Vec<T>` of an
+/// N-dimensional shape. 1D → `(i0) as usize`. Higher rank → strides
+/// from the sidecar's `dims` (NOT `algo.data`): `(i0*D1*D2 + i1*D2 +
+/// i2) as usize`. Mirrors the old `render_flat_index` exactly.
+fn render_flat_index(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
+    if s.indices.is_empty() {
         return Err(EmitError::UnsupportedFeature(
             "render_flat_index called on a non-indexed reference".to_string(),
         ));
     }
-    if r.indices.len() == 1 {
-        let i0 = render_int_expr(&r.indices[0])?;
+    if s.indices.len() == 1 {
+        let i0 = render_int_expr(&s.indices[0], &ctx.abs_subst)?;
         return Ok(format!("({i0}) as usize"));
     }
-    let shape = ctx.algo.data.get(&r.name).map(|d| d.ty.dims.clone());
-    let dims = match shape {
-        Some(d) if d.len() == r.indices.len() => d,
-        _ => {
-            return Err(EmitError::UnsupportedFeature(format!(
-                "data `{}` rank/shape mismatch with index list",
-                r.name
-            )));
-        }
-    };
+    let name = data_name(s.data, ctx)?;
+    let ty = ctx.sidecar.data_type(s.data).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "data `{name}` ({:?}) used with a {}-D index has no ResolvedType \
+             in the NameSidecar",
+            s.data,
+            s.indices.len()
+        ))
+    })?;
+    let dims = &ty.dims;
+    if dims.len() != s.indices.len() {
+        return Err(EmitError::UnsupportedFeature(format!(
+            "data `{name}` rank/shape mismatch with index list \
+             (sidecar dims={dims:?}, indices={})",
+            s.indices.len()
+        )));
+    }
     // Row-major: i0 * D1*D2*..*Dn + i1 * D2*..*Dn + ... + i_{n-1}.
-    let mut terms: Vec<String> = Vec::with_capacity(r.indices.len());
-    for (k, idx_expr) in r.indices.iter().enumerate() {
+    let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
+    for (k, idx_expr) in s.indices.iter().enumerate() {
         let stride: usize = dims[k + 1..].iter().copied().product();
-        let rendered = render_int_expr(idx_expr)?;
+        let rendered = render_int_expr(idx_expr, &ctx.abs_subst)?;
         if stride == 1 {
             terms.push(format!("({rendered})"));
         } else {
@@ -694,33 +850,24 @@ fn render_flat_index(r: &IndexedRef, ctx: &RenderCtx<'_>) -> Result<String, Emit
     Ok(format!("({}) as usize", terms.join(" + ")))
 }
 
-/// Render an integer-valued IR expression (no DataRef, no Call) as
-/// Rust. Identifiers are emitted verbatim (they refer to either
-/// const declarations — names mirrored as Rust `let` bindings in
-/// generated code, but at M1 we don't actually emit bindings for
-/// consts, instead we resolve the const value through
-/// [`AlgoIR::consts`] before reaching codegen) or iteration variables
-/// (which exist in the Rust scope by the same name).
-///
-/// At M1 we resolve consts here too: if the identifier is a declared
-/// const, substitute its value as a literal. This avoids needing to
-/// emit a `const NAME: ... = ...;` for every algorithm-level const.
-fn render_int_expr(e: &IrExpr) -> Result<String, EmitError> {
+/// Render an integer-valued index/scalar expression as Rust.
+/// Identifiers (iter vars) are emitted verbatim UNLESS they are an
+/// active absolute-index substitution (a strip-mined inner-block
+/// loop var → `(LO + tile*N + inner)`). The map is empty for every
+/// non-blocked program, so this is byte-identical to the old
+/// `render_int_expr` there.
+fn render_int_expr(e: &IrExpr, subst: &BTreeMap<String, String>) -> Result<String, EmitError> {
     match e {
         IrExpr::IntLit(v) => Ok(format!("{v}")),
-        IrExpr::Ident(n) => Ok(n.clone()),
-        IrExpr::Neg(inner) => Ok(format!("-({})", render_int_expr(inner)?)),
+        IrExpr::Ident(n) => Ok(match subst.get(n) {
+            Some(repl) => repl.clone(),
+            None => n.clone(),
+        }),
+        IrExpr::Neg(inner) => Ok(format!("-({})", render_int_expr(inner, subst)?)),
         IrExpr::BinOp(op, l, r) => {
-            let ls = render_int_expr(l)?;
-            let rs = render_int_expr(r)?;
-            let op_s = match op {
-                IrBinOp::Add => "+",
-                IrBinOp::Sub => "-",
-                IrBinOp::Mul => "*",
-                IrBinOp::Div => "/",
-                IrBinOp::Mod => "%",
-            };
-            Ok(format!("({ls} {op_s} {rs})"))
+            let ls = render_int_expr(l, subst)?;
+            let rs = render_int_expr(r, subst)?;
+            Ok(format!("({ls} {} {rs})", bin_op_str(op)))
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
             "data-ref / call inside an integer index expression".to_string(),
@@ -728,19 +875,58 @@ fn render_int_expr(e: &IrExpr) -> Result<String, EmitError> {
     }
 }
 
-/// Render a *constant* IR expression (loop bounds, etc.) as Rust.
-/// Resolves const identifiers to their literal values so the
-/// generated code does not depend on Nuc-side consts being mirrored
-/// into Rust.
+/// The `(lo, hi)` source strings for an `Event::Loop`.
+///
+/// If the iter var has a `sidecar.loop_bounds` entry it is a SOURCE
+/// `for` loop — render the *unevaluated* bound through
+/// `render_const_expr` + `sidecar.consts` so `for y : 1 .. H-1`
+/// (H=16) becomes `1_i64 .. (16_i64 - 1_i64)`, byte-identical to the
+/// old AlgoIR-walking backend.
+///
+/// If there is NO `loop_bounds` entry the loop is a
+/// `block_transform`-synthesised tile loop with no source form — use
+/// the concrete `Event::Loop.range`, rendered `{n}_i64` (matching the
+/// old backend, which rendered the ACFG `Repeat.range` literals for
+/// synthesised loops the same way).
+fn render_loop_bounds(
+    iter_var: IterVar,
+    range: &std::ops::Range<i64>,
+    ctx: &RenderCtx<'_>,
+) -> Result<(String, String), EmitError> {
+    match ctx.sidecar.loop_bounds.get(&iter_var) {
+        Some(b) => {
+            let lo = render_const_expr(&b.lo, ctx)?;
+            let hi = render_const_expr(&b.hi, ctx)?;
+            Ok((lo, hi))
+        }
+        None => {
+            // Synthesised tile loop: concrete folded range, same
+            // spelling as an integer literal const bound.
+            Ok((format!("{}_i64", range.start), format!("{}_i64", range.end)))
+        }
+    }
+}
+
+/// Render a *constant* loop-bound expression, resolving const idents
+/// to their value via the SIDECAR's const table (NOT `algo.consts`,
+/// AC#2). Mirrors the old `render_const_expr` spelling exactly:
+/// `IntLit(v)` → `{v}_i64`, a const ident → `{value}_i64`, an
+/// outer-loop iter var → bare name, `BinOp` → `({l} op {r})`.
 fn render_const_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
     match e {
         IrExpr::IntLit(v) => Ok(format!("{v}_i64")),
         IrExpr::Ident(n) => {
-            if let Some(c) = ctx.algo.consts.get(n) {
+            if let Some(c) = ctx.sidecar.consts.get(n) {
                 Ok(format!("{}_i64", c.value))
+            } else if let Some(repl) = ctx.abs_subst.get(n) {
+                // A rebound strip-mined outer iter var referenced in
+                // an inner loop bound: use its absolute expression.
+                // (Empty for every non-blocked program -> the old
+                // bare-name behaviour, byte-identical.)
+                Ok(repl.clone())
             } else {
-                // Could be an iteration variable of an outer loop;
-                // render as-is and rely on Rust to type-check.
+                // An outer loop's iter var: render as-is, rely on
+                // Rust to type-check (mirrors the old backend).
                 Ok(n.clone())
             }
         }
@@ -748,14 +934,7 @@ fn render_const_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitErro
         IrExpr::BinOp(op, l, r) => {
             let ls = render_const_expr(l, ctx)?;
             let rs = render_const_expr(r, ctx)?;
-            let op_s = match op {
-                IrBinOp::Add => "+",
-                IrBinOp::Sub => "-",
-                IrBinOp::Mul => "*",
-                IrBinOp::Div => "/",
-                IrBinOp::Mod => "%",
-            };
-            Ok(format!("({ls} {op_s} {rs})"))
+            Ok(format!("({ls} {} {rs})", bin_op_str(op)))
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
             "data-ref / call inside a const expression (loop bound)".to_string(),
@@ -763,9 +942,18 @@ fn render_const_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitErro
     }
 }
 
-/// Rust spelling of a Nuc `ScalarType`. Used for argument casts when
-/// passing iter-var-derived integers into kernel parameters.
-fn rust_scalar_type(t: &ScalarType) -> &'static str {
+fn bin_op_str(op: &IrBinOp) -> &'static str {
+    match op {
+        IrBinOp::Add => "+",
+        IrBinOp::Sub => "-",
+        IrBinOp::Mul => "*",
+        IrBinOp::Div => "/",
+        IrBinOp::Mod => "%",
+    }
+}
+
+/// Rust spelling of a Nuc `ScalarType`. Shared with multi_worker.
+pub(crate) fn rust_scalar_type(t: &ScalarType) -> &'static str {
     match t {
         ScalarType::Usize => "usize",
         ScalarType::Isize => "isize",
@@ -784,6 +972,81 @@ fn rust_scalar_type(t: &ScalarType) -> &'static str {
 }
 
 // --------------------------------------------------------------------
+// Crate-internal re-exports for the multi_worker module
+// --------------------------------------------------------------------
+//
+// The multi-worker emitter shares the EXACT same expression / call /
+// index / bound rendering as the single-worker emitter so the two
+// paths cannot drift (the byte-identical invariant must hold for both
+// 02-naive single-worker and 02-split multi-worker). Rather than
+// duplicate the renderers (the pre-TASK-0124 code had two divergent
+// copies), `multi_worker` calls these thin `pub(crate)` shims over
+// the single private implementations above.
+
+/// `RenderCtx` re-exported under a crate-visible name for
+/// `multi_worker`.
+///
+/// Multi-worker schedules in the tier-1 set carry no `block=`
+/// directive (02-split), so absolute-index rebinding is inactive
+/// here: `divisible_inner` is empty and `abs_subst` is empty, which
+/// makes the shared renderers behave exactly as the pre-TASK-0124
+/// code. (When a blocked *multi*-worker schedule lands, this shim
+/// would thread the same rebinding the single-worker path uses —
+/// the renderers are already shared so there is one implementation,
+/// no drift.)
+pub(crate) struct RenderCtxPub<'a> {
+    pub names: &'a NameTables,
+    pub sidecar: &'a NameSidecar,
+    empty_inner: BTreeSet<IterVar>,
+}
+
+impl<'a> RenderCtxPub<'a> {
+    pub(crate) fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
+        RenderCtxPub {
+            names,
+            sidecar,
+            empty_inner: BTreeSet::new(),
+        }
+    }
+
+    fn inner(&self) -> RenderCtx<'_> {
+        RenderCtx {
+            names: self.names,
+            sidecar: self.sidecar,
+            divisible_inner: &self.empty_inner,
+            abs_subst: BTreeMap::new(),
+        }
+    }
+}
+
+pub(crate) fn render_fire_args_pub(
+    kernel: KernelId,
+    inputs: &[ArgBinding],
+    ctx: &RenderCtxPub<'_>,
+) -> Result<String, EmitError> {
+    render_fire_args(kernel, inputs, &ctx.inner())
+}
+
+pub(crate) fn render_flat_index_pub(
+    s: &DataSlice,
+    ctx: &RenderCtxPub<'_>,
+) -> Result<String, EmitError> {
+    render_flat_index(s, &ctx.inner())
+}
+
+pub(crate) fn render_const_expr_pub(
+    e: &IrExpr,
+    ctx: &RenderCtxPub<'_>,
+) -> Result<String, EmitError> {
+    render_const_expr(e, &ctx.inner())
+}
+
+// (No `render_int_expr_pub`: `multi_worker` renders args/indices via
+// the higher-level `render_fire_args_pub` / `render_flat_index_pub`
+// shims, which call the shared `render_int_expr` internally — one
+// implementation, no second copy to drift.)
+
+// --------------------------------------------------------------------
 // File-write helper
 // --------------------------------------------------------------------
 
@@ -793,15 +1056,3 @@ fn write_file(path: &Path, contents: &str) -> Result<(), EmitError> {
         source: e,
     })
 }
-
-// --------------------------------------------------------------------
-// Unused-import suppression
-// --------------------------------------------------------------------
-//
-// `Purity` and `ResolvedKernel` are pulled in from compiler::algo so a
-// later expansion of the codegen (e.g. validating that effect-typed
-// statements call effectful kernels) can use them without re-editing
-// imports. Currently unused. Touch them so unused-import lint stays
-// silent. Cheap "intent preserving" use; remove these lines when a
-// real consumer lands.
-const _: fn(&Purity, &ResolvedKernel, &ResolvedPlaceTarget) = |_p, _k, _t| {};

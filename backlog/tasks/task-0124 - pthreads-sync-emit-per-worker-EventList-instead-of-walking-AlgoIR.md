@@ -1,11 +1,11 @@
 ---
 id: TASK-0124
 title: 'pthreads-sync: emit per-worker EventList instead of walking AlgoIR'
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 02:13'
-updated_date: '2026-05-18 23:38'
+updated_date: '2026-05-19 00:12'
 labels:
   - M2
   - backend
@@ -21,29 +21,22 @@ TASK-0020 codegen walks AlgoIR statements directly because the ACFG strips index
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 emit() signature changes to (per_worker_event_lists: BTreeMap<WorkerId, Vec<Event>>, kernels_rs_path, out_dir, sidecar_name_map).
-- [ ] #2 Codegen no longer references AlgoIR/LinkedIR; only Event-typed input.
-- [ ] #3 All existing tier-1 backends agree on this contract before M3 lands.
-- [ ] #4 Depends on TASK-0027.
+- [x] #1 emit() signature changes to (per_worker_event_lists: BTreeMap<WorkerId, Vec<Event>>, kernels_rs_path, out_dir, sidecar_name_map).
+- [x] #2 Codegen no longer references AlgoIR/LinkedIR; only Event-typed input.
+- [x] #3 All existing tier-1 backends agree on this contract before M3 lands.
+- [x] #4 Depends on TASK-0027.
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-INVESTIGATION COMPLETE — gap is LOOP STRUCTURE, not value bindings.
-
-Finding: acfg_to_events UNROLLS every ACFGNode::Repeat into N copies of Fire (proven by test repeat_unrolls_in_event_list; petri_to_events.rs module docs explicitly state this M2 trade). The current pthreads-sync backend emits ROLLED loops (verified: /tmp/nuc_master_05 main.rs line 12 `for y in (1_i64)..((16_i64-1_i64))`). An EventList-only walk would emit 196 unrolled blur3 statements for ex05 / 256 for ex01 -> NOT byte-identical to master, and emit.rs unit test asserts the rolled `256_i64` bound. TASK-0156 closed the VALUE gap (FireBinding); the REMAINING gap for byte-identical EventList-only codegen is that the Event contract discards loop nest structure (Repeat range + iter_var) and data types/const values needed for pre-init + slot typing.
-
-DECISION: Implement AC#1 (signature change to EventList + NameSidecar) and AC#2 (codegen consumes only Event-typed input) ONLY IF byte-identical is preservable. It is NOT under the current Event contract without either (a) re-rolling unrolled Fires (lossy/heuristic, fragile, smuggled loop inference) or (b) extending the Event contract to carry loop structure (out of TASK-0124 scope; that is a contract change like TASK-0156 was).
-
-PLAN:
-1. Build current master generated trees for 01/02/03/05/07 into /tmp (DONE for 01/02/05) as the byte-identical oracle.
-2. Confirm gap precisely: also inspect 03/07 + the data-type/const/loop-bound info the EventList lacks (types for vec![0;N] pre-init, ScalarType casts, symbolic loop bounds, const values). The EventList carries NONE of these.
-3. Honest determination: TASK-0124 AC#2 (codegen references ONLY Event + sidecar, no AlgoIR/LinkedIR) is NOT achievable byte-identically without a loop-structure + type/const extension to the Event/sidecar contract. Per the brief and CLAUDE.md (no workarounds, no fake success): do NOT smuggle AlgoIR back nor heuristically re-roll.
-4. File precise follow-up task(s) for the missing contract pieces (loop structure on Event or sidecar; data-type/const sidecar). Reference them in code + notes.
-5. Land what IS safely landable: introduce NameSidecar struct + change emit() signature to additionally accept per_worker EventList + sidecar WITHOUT removing the AlgoIR walk yet (so AC#1 infra lands, determinism/e2e/byte-identical preserved), with an honest in-code note that AC#2 full switch is blocked on the filed contract task. OR, if even the signature change cannot be done without faking AC#2, leave TASK-0124 In Progress with the precise blocker. Decide after step 2.
-6. Gates before any commit: just test, just e2e (7/0/3), just determinism-check (7/0/3), determinism-check-negative, clippy -D warnings. Preserve NUC_NONDET_TEST nonce.
-7. Update the stale BLOCKED note on TASK-0124; set TASK-0156 AC#3 status honestly.
+1. Build fresh master oracle: run full gate on clean HEAD, snapshot every generated main.rs/Cargo.toml/run.sh from nucleus/target/e2e-determinism into /tmp/oracle_0124.
+2. AC#1: change pthreads-sync emit() to (per_worker: BTreeMap<WorkerId,Vec<Event>>, name tables, NameSidecar, kernels_rs_path, out_dir). Driver builds acfg_to_events(&acfg)+build_sidecar(&linked,&acfg)? and passes.
+3. AC#2 single-worker: rewrite render_main_rs as an Event walk (Loop/Fire/Sync) using FireBinding+name tables+sidecar (reconstruct calls per eventlist_alone_reconstructs_stencil_kernel_call; loop bound source-form via sidecar.loop_bounds+consts; pre-init from sidecar.data_types over indexed Fire outputs). NO AlgoIR/LinkedIR in codegen path.
+4. multi_worker.rs: assess whether EventList Push/Wait now suffices to drop LinkedIR dep for byte-identical ex02. If yes, switch; if not, HONEST PARTIAL with filed blocker + precise note.
+5. Reconcile review finding (7): point sufficiency tests at REAL backend render fns.
+6. Verify byte-identical vs oracle for 01/02/03/05/07 (incl blocked). Full gate green before every commit. Preserve NUC_NONDET_TEST nonce.
+7. Honest final report + forward-carry to TASK-0036.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -123,4 +116,42 @@ ORCHESTRATOR-FOLDED from TASK-0169 review gate (both GO): (5) RESOLVED the open 
 - build_sidecar SIGNATURE CHANGED: pub fn build_sidecar(linked: &LinkedIR, acfg: &compiler::acfg::ACFG) -> Result<NameSidecar, compiler::sidecar::SidecarError>. When you wire build_sidecar into the driver/backend, propagate the Err via the existing String-error channel exactly like apply_block_transforms: `.map_err(|e| format!("sidecar error: {e}"))?` (driver prints `nucleus: error: ...`). SidecarError impls Display + std::error::Error; re-exported as compiler::SidecarError / compiler::sidecar::SidecarError.
 - Reachability finding: a same-name-different-bounds loop pair (e.g. `for i:0..N {..} for i:0..M {..}`, distinct data so single-assignment holds) is a VALID program that reaches this error. ACFG::name_iter_vars assigns one IterVar per NAME so both loops collapse onto one Event::Loop.iter_var / one loop_bounds entry. Until TASK-0171 lands, such programs are a typed compile error (cannot be codegenned) — do NOT attempt to special-case it in the backend; surface the error.
 - Option-c deep fix (distinct IterVar identity so these COMPILE) = TASK-0171 (depends on TASK-0170).
+
+IMPLEMENTED (the actual switch). emit() signature is now (per_worker: &BTreeMap<WorkerId,Vec<Event>>, names: &NameTables, sidecar: &NameSidecar, kernels_rs_path, out_dir) — &acfg/&linked DROPPED (AC#1). Driver builds acfg_to_events(&acfg)+build_sidecar(&linked,&acfg).map_err(|e|format!("sidecar error: {e}"))? + reverse NameTables (incl inner_block_iter_vars). Codegen path imports ONLY compiler::event + compiler::sidecar + the INERT IrExpr/IrBinOp/ResolvedType/ScalarType grammar the EventList itself carries — NO AlgoIR/LinkedIR/ACFG/algo.kernels/data_producers, single-worker AND multi_worker (AC#2 honest, grep-verified).
+
+Single-worker: render_main_rs walks Event::Loop/Fire/Sync. Pre-init from FireBinding indexed outputs sized via sidecar.data_types (sorted by name). Calls reconstructed from FireBinding+name tables (eventlist_alone_reconstructs_stencil_kernel_call pattern). Loop bound: source-form via sidecar.loop_bounds+consts; synthesised tile loop (no loop_bounds entry) -> concrete Event::Loop.range. render_call_arg param cast via sidecar.kernel_sig (TASK-0169), not algo.kernels.
+
+multi_worker: rewired to EventList. Slots from Push/Wait DataIds (sorted=old xfers order), type from sidecar.data_type. Barrier id = per-worker PRE-ORDER Sync index; VALIDATES uniform participants and fails loud (ContractGap) on partial-barrier (Event::Sync has no stable cross-worker id — filed TASK-0172). NUC_NONDET_TEST nonce preserved verbatim. Shared renderers via pub(crate) shims (one impl, no single/multi drift).
+
+KEY GOTCHA / latent bug TASK-0124 SURFACED: old AlgoIR backend emitted UNTILED code for 05/07 blocked (walked source IrStmt; block_transform only rewrites ACFG). The EventList faithfully carries the tiled nest, so the EventList backend MUST do the absolute-index rebinding block_transform DEFERS to codegen (its module doc line ~83: codegen computes LO+tile*N+inner). Without it 07-matmul madd (accumulator) double-counted -> e2e FAIL/diff. Implemented rebinding for the EVENLY-DIVISIBLE single-nest case (07 block=8 N=16): inner loop emitted over concrete 0..N, body var substituted (0_i64 + (tile*N_i64) + inner) via abs_subst threaded in RenderCtx (empty for every non-blocked program => byte-identical there). NON-DIVISIBLE/trailing-partial (05 block=4) NOT rebound (full vs partial nest need different bases LO+tile*N vs LO+num_full*N; EventList lacks num_full) -> filed TASK-0173; 05-blocked stays runtime-correct only because blur3 is idempotent (honest).
+
+Finding (7) reconciled: added pthreads-sync/tests/emit.rs::golden_real_codegen_strings_pin_sidecar_consumption pinning exact REAL emit() strings (05 symbolic bound, 07 rebinding); petri_to_events.rs mirror doc now points at it (compiler cannot dep on backend, so a backend golden test is the anti-drift anchor).
+
+GATES (nix develop): just test workspace 0 failed (incl emit.rs 256_i64 assertion green); just e2e total 10 pass 8 fail 0 skipped 2 required-fail 0; just determinism-check 8/0 byte-identical; just determinism-check-negative correctly bites; cargo clippy --workspace -- -D warnings (the required gate / just clippy) CLEAN. Per-example byte/runtime: 01 naive, 02 naive(single), 02 split(multi), 03 naive, 05 naive, 05 blocked, 07 naive, 07 blocked ALL e2e PASS + determinism byte-identical. (Pre-existing clippy --tests len-zero in untouched acfg_to_petri.rs is NOT mine — stash-verified; required gate excludes --tests.)
+
+OBSOLETE TEST removed: emit.rs::distributed_placement_is_rejected — it asserted a backend rejection that TASK-0124 deliberately moves out of the backend (no LinkedIR in emit() => AC#2); coverage now upstream/capability + e2e SKIP (TASK-0117). Documented in-file.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Switched the pthreads-sync tier-1 backend off the AlgoIR walk onto the EventList+NameSidecar contract — the keystone M2 backend switch.
+
+What changed:
+- emit() signature: (per_worker: &BTreeMap<WorkerId,Vec<Event>>, names: &NameTables, sidecar: &NameSidecar, kernels_rs_path, out_dir). &ACFG/&LinkedIR removed (AC#1). New NameTables (reverse name maps + inner_block_iter_vars) + EmitError::ContractGap fail-loud seam.
+- Single-worker render_main_rs rewritten as an Event walk: Loop/Fire/Sync, pre-init + types from sidecar, calls from FireBinding, source-form loop bounds from sidecar.loop_bounds+consts, scalar-arg casts from sidecar.kernel_sig. Zero AlgoIR/LinkedIR.
+- multi_worker rewritten onto the EventList: slots/types/barriers/push/wait all derived from Events+sidecar+name tables (no data_producers/consumers/algo.kernels). NUC_NONDET_TEST nonce preserved. Shared renderers with single-worker via pub(crate) shims (no drift).
+- Driver builds acfg_to_events + build_sidecar (Err surfaced via the String channel like apply_block_transforms) + reverse NameTables.
+- Absolute-index rebinding for the evenly-divisible block= case (block_transform defers LO+tile*N+inner to codegen; the old backend masked it by never tiling). Fixes 07-matmul/blocked which the EventList correctly tiles and which an accumulator would otherwise double-count.
+- Finding (7): added a backend golden test pinning real emit() strings so the compiler-side hand-mirrors cannot silently drift.
+
+AC status (all honestly met & verified): AC#1 signature changed; AC#2 codegen path is AlgoIR-/LinkedIR-free for BOTH single- and multi-worker (grep-verified; only the inert IrExpr grammar the EventList itself carries remains); AC#3 pthreads-sync is the sole tier-1 backend and now defines the contract (mp-tcp is TASK-0036, forward-carried); AC#4 TASK-0027 dependency satisfied.
+
+Gates: just test 0 failed, just e2e 10/8/0/2 required-fail 0, just determinism-check 8/0 byte-identical, just determinism-check-negative bites, just clippy clean. Every required cell (01/02-naive/02-split/03/05-naive/05-blocked/07-naive/07-blocked) PASSes e2e and is determinism-byte-identical.
+
+Honest limitations / filed blockers (both depend on TASK-0124):
+- TASK-0172: Event::Sync has no stable cross-worker barrier identity (unlike Push/Wait seq). Multi-worker uses a per-worker pre-order-Sync-index that is byte-identical only for UNIFORM barriers; partial-barrier schedules are a typed ContractGap error, not a wrong binary.
+- TASK-0173: non-divisible/trailing-partial-tile absolute-index rebinding (full vs partial nest need different bases; EventList lacks num_full). 05-stencil/blocked stays correct only via blur3 idempotence; a non-divisible blocked accumulator would be wrong until TASK-0173.
+
+Forward-carried to TASK-0036 (2nd backend consumes the SAME contract): the (per_worker EventList, NameTables, NameSidecar) tuple + EmitError::ContractGap fail-loud pattern + the divisible-only absolute-index rebinding caveat (TASK-0173) + the Event::Sync-identity caveat (TASK-0172) all apply to mp-tcp-bufsync verbatim.
+<!-- SECTION:FINAL_SUMMARY:END -->

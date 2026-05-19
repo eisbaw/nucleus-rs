@@ -27,11 +27,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use compiler::{
+    acfg_to_events,
     algo::{lower_algo, parse_algo},
-    build_acfg, inject_syncs, inject_transfers, link,
+    build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
     sched::{lower_sched, parse_sched},
 };
-use pthreads_sync::emit;
+use pthreads_sync::{emit, NameTables};
 
 fn repo_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -161,7 +162,31 @@ fn two_worker_pingpong_compiles_and_runs() {
     let acfg = inject_transfers(&linked, acfg);
 
     let out_dir = scratch.join("gen");
-    let result = emit(&acfg, &linked, &kernels_path, &out_dir).expect("emit succeeded");
+    // TASK-0124 contract path: project to per-worker EventList +
+    // build sidecar + reverse name tables, exactly as the driver.
+    let per_worker = acfg_to_events(&acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg
+            .name_kernels
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        worker: acfg
+            .name_workers
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        iter_var: acfg
+            .name_iter_vars
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+    let result =
+        emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir).expect("emit succeeded");
 
     // Verify the generated main.rs structurally mentions the
     // expected primitives.
