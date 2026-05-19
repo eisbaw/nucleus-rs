@@ -190,10 +190,32 @@ impl Accum {
     ///    already-poisoned name (e.g. `data x : f32[N]` where `const
     ///    N` failed → `ShapeRefersToNonConst` naming the failed `N`).
     ///    This is NOT an independent violation: suppress the error,
-    ///    and do **not** poison this declaration's name. (Poisoning
-    ///    `x` here would compound the cascade — every independent
-    ///    dependent of `x` would then also be wrongly suppressed:
-    ///    the undercount side of the defect, applied transitively.)
+    ///    and do **not** (currently) poison this declaration's name.
+    ///
+    ///    KNOWN DEFECT (TASK-0092 review-gate, mped-architect ×5
+    ///    recurring cascade class — see notes on TASK-0092 and the
+    ///    `feedback-comment-doc-lie-recurring` memory): the original
+    ///    rationale ("Poisoning `x` here would compound the cascade
+    ///    into x's independent dependents") is WRONG. A name that
+    ///    never successfully declared has no *independent* dependents
+    ///    — every downstream reference to it is by definition a
+    ///    cascade of the upstream root. By NOT poisoning `x` here,
+    ///    downstream statements that reference `x` emit
+    ///    `UnknownIdent("x")` (not in the suppression set for `x`
+    ///    because `x` is not in `failed_decls`), leaking as
+    ///    **transitive overcount** (PROBE 5: 1 poisoned const + 1
+    ///    data using it + 2 statements using the data → MEASURED 3
+    ///    errors, expected 1). The depth=1 case (cascade-decls with
+    ///    no statement dependents) IS handled correctly — that is
+    ///    what the parametrised fixture covers and what makes
+    ///    multi-error reporting a net improvement for the common
+    ///    case. The one-line fix is to insert `name` into
+    ///    `failed_decls` here too (case-1 path); this propagates
+    ///    poison transitively and the depth>1 case then collapses to
+    ///    the root error. Tracked for a fresh-context remediation
+    ///    cycle alongside a K×L transitive-depth parametrised fixture
+    ///    (currently the fixture is depth=1 only — same masking class
+    ///    that bit TASK-0080/0081/0087).
     /// 2. A duplicate-name collision: record the error but do NOT
     ///    poison — the *first* (valid) declaration is still in the
     ///    symbol table, so the name resolves for dependents; there is
