@@ -19,7 +19,8 @@
 # CUMULATIVE required set tagged at or before M<k> (see
 # nuc-nucleus/e2e-matrix.toml per-cell `milestone` key). The jobs run
 # DIFFERENT required sets — at the time of writing 4 (M1) / 8 (M2) /
-# 28 (M3) cells — so this is a data dimension that changes behaviour,
+# 24 (M3) REQUIRED cells (M3 executes 28 total = 24 pass + 4 skipped)
+# — so this is a data dimension that changes behaviour,
 # not the 7-identical-jobs decoration the architect rejected in the
 # original TASK-0057 cycle (commit 6d7fcf7 collapsed that). The
 # separate `gate` job remains the single full-trust tier-1 gate
@@ -121,7 +122,8 @@ jobs:
   # GENUINE per-milestone matrix (TASK-0167 AC#3/#4). Each entry runs
   # `just e2e-milestone M<k>`, which the harness narrows to the
   # CUMULATIVE required set for that tier — the jobs run DIFFERENT
-  # required sets (M1 ⊂ M2 ⊂ M3; today 4 / 8 / 28 cells), so this is
+  # required sets (M1 ⊂ M2 ⊂ M3; today 4 / 8 / 24 required cells; M3
+  # executes 28 total incl. 4 skipped), so this is
   # a real data dimension, NOT the 7-identical-jobs decoration the
   # architect rejected. fail-fast:false so every tier reports even if
   # an earlier tier fails (a per-tier signal is the point). Delegates

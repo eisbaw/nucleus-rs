@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 22:23'
-updated_date: '2026-05-19 02:34'
+updated_date: '2026-05-19 02:45'
 labels:
   - infra
   - tooling
@@ -54,6 +54,8 @@ Implemented (TASK-0167):
 - Tests: +6 (milestone parse, bad --milestone typed err, cumulative subsetting, THE lockstep regression mirroring typo_in_required_schedule_is_a_coverage_gap on the milestone axis, out-of-band-skip-does-not-exempt, per-tier zero-gaps, strictly-grow counts). e2e crate 25/0.
 - justfile: e2e-milestone M recipe. ci.yml: genuine milestone matrix [M1,M2,M3] running just e2e-milestone (different sets) + unchanged full `gate` job. js-yaml valid.
 GATE: just test workspace 0 failed; bare just e2e 28/24/0/skip4/req-fail0 UNCHANGED; per-milestone 4/8/28 cells (genuinely differ); determinism-check 28/24/0/4 byte-identical; negative arm bites; clippy -D warnings clean.
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO, both read-only. Numbers RE-RUN by reviewers (not transcribed): just test e2e-crate 25/0 (was 19, +6: typo_in_milestone_tagged_required_is_a_gap_under_that_milestone, out_of_band_skip_does_not_exempt_in_band_required, real_manifest_has_no_coverage_gaps_at_every_milestone, required_counts_strictly_grow_per_milestone, milestone_parse_*, arg_parser_rejects_bad_milestone) + the prior TASK-0163 tests still green; bare just e2e UNCHANGED 28/24/0/skip4/required-fail0; per-milestone GENUINELY DIFFERENT 4(M1)/8(M2)/24-required-28-executed(M3) all exit0; determinism byte-identical; negative bites x2; clippy clean; ci.yml valid YAML (jobs gate+milestone, matrix [M1,M2,M3]); no AI credit; tree clean. LOCKSTEP PROVEN: single milestone_in_gate() predicate is the SOLE scope comparator, consumed by both plan_cells AND required_coverage_gaps (architect traced both paths; qa reproduced — a transient typo on an M1-tagged [[required]] cell hard-failed under BOTH --milestone M1 AND M3 naming the exact triple, then reverted clean). Matrix GENUINELY non-cosmetic (the exact TASK-0057 defect fixed). Tag taxonomy real+documented (PRD §11 ownership; lopsided 4/4/16-required proves honest not reverse-fitted). Typed Milestone parse = typed error not panic-not-diagnostic. ORCHESTRATOR HARDENING (architect P2/P3, the recurring doc-misstates-a-number / stale-rustdoc class): corrected ci.yml comment "required 4/8/28" -> "4/8/24 required; M3 executes 28 incl 4 skip" (both occurrences); fixed main.rs:106 stale `Manifest::load` rustdoc -> required_milestones/skip_table. Verified inert (ci.yml YAML OK; cargo check --workspace Finished clean). Filed TASK-0182 (qa advisory: pre-existing flaky e2e build-dir/CWD race under rapid/concurrent runs — NOT a 0167 regression, encoded). TASK-0167 Done is HONEST: all 4 ACs met + independently verified (AC#4 gate-logic-verified; real-runner observation is the same standing limitation tracked under TASK-0057/0166).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

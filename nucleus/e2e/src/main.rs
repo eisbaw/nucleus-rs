@@ -103,7 +103,8 @@ struct Cell {
 /// gating cell. `milestone` is parsed and validated into a
 /// [`Milestone`] at manifest-load time so a typo'd milestone tag
 /// fails LOUD (typed error) rather than silently mis-bucketing a
-/// gating cell — see `Manifest::load` / `Milestone::parse`.
+/// gating cell — see `Manifest::required_milestones` / `skip_table`
+/// / `Milestone::parse`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequiredEntry {

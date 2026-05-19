@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:10'
-updated_date: '2026-05-18 22:29'
+updated_date: '2026-05-19 02:45'
 labels:
   - infra
   - tooling
@@ -23,7 +23,7 @@ Set up CI (likely GitHub Actions or self-hosted GitLab CI) that runs 'just check
 <!-- AC:BEGIN -->
 - [x] #1 .github/workflows/ (or .gitlab-ci.yml) runs jobs: check, clippy, test, e2e — all inside 'nix develop' or a Nix-shell wrapper.
 - [ ] #2 CI exits non-zero on any failure; merges blocked on green.
-- [ ] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
+- [x] #3 Matrix runner is parameterised by milestone label; PRs to milestone branches run the relevant tier.
 - [ ] #4 Test: a deliberate clippy warning fails CI.
 - [ ] #5 Test: an e2e cell failure shows up clearly in the workflow output.
 - [x] #6 Implementation notes record design questions (e.g. self-hosted runner vs GitHub-hosted; cost; cache strategy for Nix and Cargo).
@@ -84,6 +84,8 @@ TASK-0057 left In Progress (NOT Done): AC#2/#4/#5 cannot be honestly closed with
 ORCHESTRATOR REVIEW GATE (phase3-ralph). qa-test-runner GO: re-ran nix develop -c just ci -> exit 0; test 0 failed; e2e total 10/pass 8/fail 0/skip 2/required-fail 0; determinism-check 8/0 byte-identical; determinism-check-negative bites (verified 2x, non-flaky); ci.yml valid YAML; just ci fail-fast confirmed; no AI credit; clean tree. mped-architect NO-GO for Done with 2 findings, hardened in-thread by orchestrator: (1) AC#3 was AC-GAMED — the milestone matrix was cosmetic (7 identical jobs; harness --milestone accepted-but-ignored; e2e-matrix.toml has no milestone key). Collapsed ci.yml to a single honest tier-1 gate job (removes 7x CI cost + the dishonest decoration); AC#3 UNCHECKED; genuine milestone wiring filed as TASK-0167 (dep 0057). (2) TASK-0163 (e2e silently drops unknown [[required]] schedule) raised to HIGH — it gates trust in the very gate CI relies on. ci.yml re-validated (js-yaml OK) post-collapse. TASK-0057 stays In Progress: AC#2/#4/#5 runner-pending (honest), AC#3 honestly unmet pending TASK-0167.
 
 forward-carried from TASK-0163 (DONE, commit 5195ea9): the required-matrix silent-vanish blind spot raised during this task's CI work is now closed -- nucleus-e2e hard-fails (non-zero, triple named) if any [[required]] cell is neither planned nor [[skip]]. The CI gate's required-fail: 0 line can now be trusted; a typo'd/stale required schedule makes just e2e RED instead of green. No further action here unless CI adds a narrowing flag (then see TASK-0167 note).
+
+ORCHESTRATOR RECONCILIATION (post TASK-0167): AC#3 ("CI matrix runs genuinely different required set per milestone") is now GENUINELY MET — TASK-0167 landed a real milestone matrix (M1/M2/M3 run 4/8/24-required cells via `just e2e-milestone`, reviewer-verified non-cosmetic; the exact defect this AC was unchecked for is fixed). AC#3 checked. TASK-0057 REMAINS In Progress: AC#2 (merge-block) + AC#4 (deliberate clippy warning fails real CI) + AC#5 (e2e failure visible in real workflow output) are gate-logic-demoed only and need a real GitHub runner / branch protection (TASK-0166) — honest standing limitation, NOT closing 0057 Done while those are runner-pending.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
