@@ -14,9 +14,11 @@
 //! reconciled its `check loop` form, pinned by the parser test.
 //! Follow-up TASK-0192 tracks adding it to the lower matrix.
 
+use compiler::error::offset_to_line_col;
 use compiler::sched::{
     lower_sched, parse_sched, NotifyKind, PartitionKind, ResolvedLoopOption, ResolvedPlaceTarget,
-    ResolvedTransferOption, SchedIR, SchedLowerError, ViolationKind, DEFAULT_WORKER_CLASS,
+    ResolvedTransferOption, SchedIR, SchedLowerError, SchedLowerErrorKind, ViolationKind,
+    DEFAULT_WORKER_CLASS,
 };
 
 /// Reads a source file at a workspace-relative path. Panics on IO
@@ -391,7 +393,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("missing workers decl must fail");
-    assert_eq!(err, SchedLowerError::MissingWorkersDecl);
+    assert_eq!(err.kind, SchedLowerErrorKind::MissingWorkersDecl);
 }
 
 #[test]
@@ -403,7 +405,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("two workers decls must fail");
-    assert_eq!(err, SchedLowerError::DuplicateWorkersDecl);
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorkersDecl);
 }
 
 #[test]
@@ -414,7 +416,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate worker name must fail");
-    assert_eq!(err, SchedLowerError::DuplicateWorker("host".into()));
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorker("host".into()));
 }
 
 #[test]
@@ -427,8 +429,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("unknown worker_class must fail");
     assert_eq!(
-        err,
-        SchedLowerError::UnknownWorkerClass {
+        err.kind,
+        SchedLowerErrorKind::UnknownWorkerClass {
             worker: "fe".into(),
             class: "missing_class".into(),
         }
@@ -445,7 +447,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate worker_class must fail");
-    assert_eq!(err, SchedLowerError::DuplicateWorkerClass("core".into()));
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorkerClass("core".into()));
 }
 
 #[test]
@@ -459,8 +461,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("unknown memory_region must fail");
     assert_eq!(
-        err,
-        SchedLowerError::UnknownMemoryRegion {
+        err.kind,
+        SchedLowerErrorKind::UnknownMemoryRegion {
             data: "foo".into(),
             region: "nowhere".into(),
         }
@@ -477,7 +479,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate memory_region must fail");
-    assert_eq!(err, SchedLowerError::DuplicateMemoryRegion("sram".into()));
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateMemoryRegion("sram".into()));
 }
 
 #[test]
@@ -490,7 +492,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate place must fail");
-    assert_eq!(err, SchedLowerError::DuplicatePlace { kernel: "k".into() });
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicatePlace { kernel: "k".into() });
 }
 
 #[test]
@@ -506,8 +508,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate place_data must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicatePlaceData { data: "foo".into() }
+        err.kind,
+        SchedLowerErrorKind::DuplicatePlaceData { data: "foo".into() }
     );
 }
 
@@ -521,7 +523,7 @@ schedule for \"../prog.algo.nuc\" {
 }
 ";
     let err = lower_str(src).expect_err("duplicate loop must fail");
-    assert_eq!(err, SchedLowerError::DuplicateLoop { var: "y".into() });
+    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateLoop { var: "y".into() });
 }
 
 #[test]
@@ -535,8 +537,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate transfer must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicateTransfer { data: "img".into() }
+        err.kind,
+        SchedLowerErrorKind::DuplicateTransfer { data: "img".into() }
     );
 }
 
@@ -551,8 +553,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate check must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicateCheck {
+        err.kind,
+        SchedLowerErrorKind::DuplicateCheck {
             var: "frame".into()
         }
     );
@@ -568,8 +570,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("block=0 must fail");
     assert_eq!(
-        err,
-        SchedLowerError::ZeroLoopOption {
+        err.kind,
+        SchedLowerErrorKind::ZeroLoopOption {
             var: "y".into(),
             option: "block".into()
         }
@@ -586,8 +588,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("pipeline=0 must fail");
     assert_eq!(
-        err,
-        SchedLowerError::ZeroLoopOption {
+        err.kind,
+        SchedLowerErrorKind::ZeroLoopOption {
             var: "y".into(),
             option: "pipeline".into()
         }
@@ -604,8 +606,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("vectorize=0 must fail");
     assert_eq!(
-        err,
-        SchedLowerError::ZeroLoopOption {
+        err.kind,
+        SchedLowerErrorKind::ZeroLoopOption {
             var: "y".into(),
             option: "vectorize".into()
         }
@@ -622,8 +624,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("buffer=0 must fail");
     assert_eq!(
-        err,
-        SchedLowerError::ZeroBufferOption { data: "img".into() }
+        err.kind,
+        SchedLowerErrorKind::ZeroBufferOption { data: "img".into() }
     );
 }
 
@@ -637,8 +639,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("unknown worker must fail");
     assert_eq!(
-        err,
-        SchedLowerError::UnknownPlaceWorker {
+        err.kind,
+        SchedLowerErrorKind::UnknownPlaceWorker {
             kernel: "k".into(),
             worker: "bogus".into()
         }
@@ -656,8 +658,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("unknown worker in set must fail");
     assert_eq!(
-        err,
-        SchedLowerError::UnknownPlaceWorker {
+        err.kind,
+        SchedLowerErrorKind::UnknownPlaceWorker {
             kernel: "k".into(),
             worker: "bogus".into()
         }
@@ -678,8 +680,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("default-class collision must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string())
+        err.kind,
+        SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string())
     );
 }
 
@@ -698,8 +700,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate loop option must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicateLoopOption {
+        err.kind,
+        SchedLowerErrorKind::DuplicateLoopOption {
             var: "i".into(),
             option: "block".into(),
         }
@@ -717,8 +719,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("sync+async must fail");
     assert_eq!(
-        err,
-        SchedLowerError::ConflictingTransferMode { data: "x".into() }
+        err.kind,
+        SchedLowerErrorKind::ConflictingTransferMode { data: "x".into() }
     );
 }
 
@@ -732,8 +734,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate buffer option must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicateTransferOption {
+        err.kind,
+        SchedLowerErrorKind::DuplicateTransferOption {
             data: "x".into(),
             option: "buffer".into(),
         }
@@ -781,8 +783,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("duplicate place worker must fail");
     assert_eq!(
-        err,
-        SchedLowerError::DuplicatePlaceWorker {
+        err.kind,
+        SchedLowerErrorKind::DuplicatePlaceWorker {
             kernel: "k".into(),
             worker: "w0".into(),
         }
@@ -814,8 +816,8 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let err = lower_str(src).expect_err("undeclared accessible_by name must fail");
     assert_eq!(
-        err,
-        SchedLowerError::UnknownAccessibleByName {
+        err.kind,
+        SchedLowerErrorKind::UnknownAccessibleByName {
             region: "R".into(),
             name: "ghost".into(),
         }
@@ -849,4 +851,218 @@ schedule for \"my/path.algo.nuc\" {
 ";
     let ir = lower_str(src).expect("must lower");
     assert_eq!(ir.algo_path, "my/path.algo.nuc");
+}
+
+// --------------------------------------------------------------------
+// TASK-0196: located schedule-lowering diagnostics
+//
+// SchedLowerError now carries the byte span of the offending source
+// node. These tests pin the EXACT (line, column) — recomputed from the
+// crafted source by finding the offending token and feeding its offset
+// through `offset_to_line_col`, so the assertion tracks the real source
+// position, not a guessed constant — and the driver-facing
+// `display_with_src` rendering. A second test pins the genuinely
+// position-less set (honest-partial; the TASK-0090 doc-lie lesson:
+// docs/code/test must agree exactly).
+// --------------------------------------------------------------------
+
+/// Resolve a lowered error's stored byte span to a 1-based
+/// `(line, column)` against `src`, the way the driver does
+/// (`SchedLowerError::display_with_src`). Panics if the variant is
+/// position-less — every case asserted here is a single-offending-node
+/// variant that MUST carry a span (AC#2), so a `None` is a real
+/// regression, not test noise.
+fn sched_err_line_col(src: &str, err: &SchedLowerError) -> (usize, usize) {
+    let span = err
+        .span
+        .clone()
+        .unwrap_or_else(|| panic!("expected a located error, got position-less: {err:?}"));
+    offset_to_line_col(src, span.start)
+}
+
+#[test]
+fn located_sched_errors_carry_correct_line_col() {
+    // Case 1: duplicate `worker_class`. The diagnostic must point at
+    // the *second* (duplicate) `core` identifier, on line 3.
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    worker_class core { simd = none; };
+    worker_class core { simd = neon128; };
+    workers = { fe : core };
+}
+";
+        let err = lower_str(src).expect_err("duplicate worker_class must error");
+        assert!(
+            matches!(err.kind, SchedLowerErrorKind::DuplicateWorkerClass(ref n) if n == "core"),
+            "got {err:?}"
+        );
+        // The duplicate decl is the second `worker_class core`; its
+        // identifier `core` is the offending token.
+        let second_decl = src
+            .match_indices("worker_class core")
+            .nth(1)
+            .expect("two `worker_class core`")
+            .0;
+        let core_off = second_decl + "worker_class ".len();
+        let expected = offset_to_line_col(src, core_off);
+        assert_eq!(expected, (3, 18), "sanity: duplicate `core` at line 3 col 18");
+        assert_eq!(
+            sched_err_line_col(src, &err),
+            expected,
+            "DuplicateWorkerClass must point at the duplicate decl's identifier"
+        );
+        assert_eq!(
+            err.display_with_src(src),
+            "duplicate `worker_class` declaration `core` at 3:18"
+        );
+    }
+
+    // Case 2: `place` on an undeclared worker. Points at the worker
+    // token `bogus` on line 3.
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    workers = { host };
+    place k on bogus;
+}
+";
+        let err = lower_str(src).expect_err("unknown place worker must error");
+        assert!(
+            matches!(
+                err.kind,
+                SchedLowerErrorKind::UnknownPlaceWorker { ref kernel, ref worker }
+                    if kernel == "k" && worker == "bogus"
+            ),
+            "got {err:?}"
+        );
+        let bogus_at = src.find("bogus").expect("`bogus` in source");
+        let expected = offset_to_line_col(src, bogus_at);
+        assert_eq!(expected, (3, 16), "sanity: `bogus` at line 3 col 16");
+        assert_eq!(
+            sched_err_line_col(src, &err),
+            expected,
+            "UnknownPlaceWorker must point at the undeclared worker token"
+        );
+        assert_eq!(
+            err.display_with_src(src),
+            "`place k on bogus` references undeclared worker `bogus` at 3:16"
+        );
+    }
+
+    // Case 3: undeclared `accessible_by` name (the relocated (b)
+    // check). Points at the offending name `ghost` on line 3.
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    workers = { host };
+    memory_region R { size = 1KB; accessible_by = { ghost }; };
+}
+";
+        let err = lower_str(src).expect_err("undeclared accessible_by must error");
+        assert!(
+            matches!(
+                err.kind,
+                SchedLowerErrorKind::UnknownAccessibleByName { ref region, ref name }
+                    if region == "R" && name == "ghost"
+            ),
+            "got {err:?}"
+        );
+        let ghost_at = src.find("ghost").expect("`ghost` in source");
+        let expected = offset_to_line_col(src, ghost_at);
+        assert_eq!(expected, (3, 53), "sanity: `ghost` at line 3 col 53");
+        assert_eq!(
+            sched_err_line_col(src, &err),
+            expected,
+            "UnknownAccessibleByName must point at the offending name token"
+        );
+        assert_eq!(
+            err.display_with_src(src),
+            "`memory_region R` `accessible_by` lists `ghost`, \
+             which is not a declared `worker_class` or worker at 3:53"
+        );
+    }
+
+    // Case 4: duplicate worker name across the entry list. Points at
+    // the *second* `host` on line 2.
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    workers = { host, host };
+}
+";
+        let err = lower_str(src).expect_err("duplicate worker must error");
+        assert!(
+            matches!(err.kind, SchedLowerErrorKind::DuplicateWorker(ref n) if n == "host"),
+            "got {err:?}"
+        );
+        let second_host = src.match_indices("host").nth(1).expect("two `host`").0;
+        let expected = offset_to_line_col(src, second_host);
+        assert_eq!(expected, (2, 23), "sanity: 2nd `host` at line 2 col 23");
+        assert_eq!(
+            sched_err_line_col(src, &err),
+            expected,
+            "DuplicateWorker must point at the repeated entry's token"
+        );
+    }
+}
+
+/// The two genuinely position-less cases stay `span: None` on purpose
+/// (honest-partial — see `SchedLowerError` type docs). This pins that
+/// decision so a future change that silently attaches a (likely wrong)
+/// span is caught, and asserts the docs/code/test agree exactly (the
+/// TASK-0090 doc-lie lesson, applied).
+#[test]
+fn position_less_variants_have_no_span() {
+    // (1) MissingWorkersDecl — the error is the *absence* of a
+    // `workers = ...` directive; no source token to point at.
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    place k on host;
+}
+";
+        let err = lower_str(src).expect_err("missing workers decl must error");
+        assert!(
+            matches!(err.kind, SchedLowerErrorKind::MissingWorkersDecl),
+            "got {err:?}"
+        );
+        assert!(
+            err.span.is_none(),
+            "MissingWorkersDecl is documented position-less; got {:?}",
+            err.span
+        );
+        // Display falls back to the kind alone — no fabricated location.
+        assert_eq!(err.display_with_src(src), err.kind.to_string());
+    }
+
+    // (2) DuplicateWorkerClass raised from the SYNTHETIC default-class
+    // collision branch (a user class literally named the synthetic
+    // default). The collision is against a synthesised class with no
+    // source token, and that branch has no user-decl `Spanned` in
+    // scope — documented position-less. (The common
+    // `DuplicateWorkerClass` from two real decls IS located — see
+    // `located_sched_errors_carry_correct_line_col` case 1.)
+    {
+        let src = "\
+schedule for \"../p.algo.nuc\" {
+    worker_class __default { simd = none; };
+    workers = { host };
+}
+";
+        let err = lower_str(src).expect_err("default-class collision must error");
+        assert!(
+            matches!(
+                err.kind,
+                SchedLowerErrorKind::DuplicateWorkerClass(ref n) if n == DEFAULT_WORKER_CLASS
+            ),
+            "got {err:?}"
+        );
+        assert!(
+            err.span.is_none(),
+            "synthetic default-class collision is documented position-less; got {:?}",
+            err.span
+        );
+        assert_eq!(err.display_with_src(src), err.kind.to_string());
+    }
 }

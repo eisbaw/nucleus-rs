@@ -183,7 +183,12 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // `ParseError` is surfaced.
         .map_err(|e| format!("algorithm lower error: {}", e.display_with_src(&algo_src)))?;
     let sched_ir = compiler::sched::lower_sched(&sched_ast)
-        .map_err(|e| format!("schedule lower error: {e}"))?;
+        // `display_with_src` resolves the error's stored byte offset to
+        // `line:col` against the schedule source (TASK-0196, mirroring
+        // the algorithm-side TASK-0090 line above); the driver holds
+        // the source, lowering does not. Position-less variants render
+        // the message alone (no fabricated location).
+        .map_err(|e| format!("schedule lower error: {}", e.display_with_src(&sched_src)))?;
 
     // ---- Contract check (best-effort; aggregate kernels report
     //      TypeMismatch — see TASK-0012; we surface for visibility

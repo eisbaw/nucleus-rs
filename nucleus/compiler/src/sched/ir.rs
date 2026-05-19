@@ -58,6 +58,7 @@
 //! the AST in place would force every downstream pass to keep handling
 //! "is this resolved yet?" cases.
 
+use core::ops::Range;
 use std::collections::BTreeMap;
 
 use super::ast::{MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, ViolationKind};
@@ -300,15 +301,22 @@ pub struct SchedIR {
 // Errors
 // --------------------------------------------------------------------
 
-/// Errors produced by the schedule lowering pass.
+/// The semantic-violation *kind* produced by the schedule lowering
+/// pass.
 ///
-/// Each variant names a single semantic violation. As with
-/// [`crate::algo::ir::LowerError`], position information from the AST
-/// is not available yet (per-node spans are a TASK-0086 follow-up).
-/// Variants carry identifying names so the caller can format a
-/// human-meaningful message.
+/// Each variant names a single semantic violation and carries the
+/// payload a diagnostic message needs (the offending name, the owning
+/// directive, etc.). The *source position* of the violation is NOT
+/// here — it is carried separately on [`SchedLowerError`] so that
+/// adding positions did not change any variant's payload shape
+/// (TASK-0196, the schedule mirror of the algorithm-side TASK-0090).
+/// Equality / Display of a located error forward to this kind; see
+/// [`SchedLowerError`] for why position is excluded from value
+/// identity. This is the prior `SchedLowerError` enum verbatim — no
+/// variant or payload changed — so the existing `sched_lower` negative
+/// tests migrate mechanically.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SchedLowerError {
+pub enum SchedLowerErrorKind {
     // ----- Uniqueness -----
     /// Two `worker_class` decls share a name.
     DuplicateWorkerClass(String),
@@ -393,96 +401,235 @@ pub enum SchedLowerError {
     MissingWorkersDecl,
 }
 
-impl std::fmt::Display for SchedLowerError {
+impl std::fmt::Display for SchedLowerErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SchedLowerError::DuplicateWorkerClass(n) => {
+            SchedLowerErrorKind::DuplicateWorkerClass(n) => {
                 write!(f, "duplicate `worker_class` declaration `{n}`")
             }
-            SchedLowerError::DuplicateMemoryRegion(n) => {
+            SchedLowerErrorKind::DuplicateMemoryRegion(n) => {
                 write!(f, "duplicate `memory_region` declaration `{n}`")
             }
-            SchedLowerError::DuplicateWorker(n) => write!(f, "duplicate worker name `{n}`"),
-            SchedLowerError::DuplicatePlace { kernel } => {
+            SchedLowerErrorKind::DuplicateWorker(n) => write!(f, "duplicate worker name `{n}`"),
+            SchedLowerErrorKind::DuplicatePlace { kernel } => {
                 write!(f, "kernel `{kernel}` has more than one `place` directive")
             }
-            SchedLowerError::DuplicatePlaceData { data } => {
+            SchedLowerErrorKind::DuplicatePlaceData { data } => {
                 write!(
                     f,
                     "data symbol `{data}` has more than one `place_data` directive"
                 )
             }
-            SchedLowerError::DuplicateLoop { var } => {
+            SchedLowerErrorKind::DuplicateLoop { var } => {
                 write!(
                     f,
                     "loop variable `{var}` has more than one `loop` directive"
                 )
             }
-            SchedLowerError::DuplicateTransfer { data } => {
+            SchedLowerErrorKind::DuplicateTransfer { data } => {
                 write!(
                     f,
                     "data symbol `{data}` has more than one `transfer` directive"
                 )
             }
-            SchedLowerError::DuplicateCheck { var } => {
+            SchedLowerErrorKind::DuplicateCheck { var } => {
                 write!(
                     f,
                     "loop variable `{var}` has more than one `check loop` directive"
                 )
             }
-            SchedLowerError::UnknownWorkerClass { worker, class } => write!(
+            SchedLowerErrorKind::UnknownWorkerClass { worker, class } => write!(
                 f,
                 "worker `{worker}` references undeclared `worker_class` `{class}`"
             ),
-            SchedLowerError::UnknownMemoryRegion { data, region } => write!(
+            SchedLowerErrorKind::UnknownMemoryRegion { data, region } => write!(
                 f,
                 "`place_data {data} in {region}` references undeclared `memory_region` `{region}`"
             ),
-            SchedLowerError::UnknownPlaceWorker { kernel, worker } => write!(
+            SchedLowerErrorKind::UnknownPlaceWorker { kernel, worker } => write!(
                 f,
                 "`place {kernel} on {worker}` references undeclared worker `{worker}`"
             ),
-            SchedLowerError::UnknownAccessibleByName { region, name } => write!(
+            SchedLowerErrorKind::UnknownAccessibleByName { region, name } => write!(
                 f,
                 "`memory_region {region}` `accessible_by` lists `{name}`, \
                  which is not a declared `worker_class` or worker"
             ),
-            SchedLowerError::DuplicatePlaceWorker { kernel, worker } => write!(
+            SchedLowerErrorKind::DuplicatePlaceWorker { kernel, worker } => write!(
                 f,
                 "`place {kernel}` lists worker `{worker}` more than once \
                  in its placement set"
             ),
-            SchedLowerError::DuplicateLoopOption { var, option } => write!(
+            SchedLowerErrorKind::DuplicateLoopOption { var, option } => write!(
                 f,
                 "loop `{var}` has more than one `{option}` option; \
                  each option may appear at most once"
             ),
-            SchedLowerError::DuplicateTransferOption { data, option } => write!(
+            SchedLowerErrorKind::DuplicateTransferOption { data, option } => write!(
                 f,
                 "transfer `{data}` has more than one `{option}` option; \
                  each option may appear at most once"
             ),
-            SchedLowerError::ConflictingTransferMode { data } => write!(
+            SchedLowerErrorKind::ConflictingTransferMode { data } => write!(
                 f,
                 "transfer `{data}` is both `sync` and `async`; \
                  these options are mutually exclusive"
             ),
-            SchedLowerError::ZeroLoopOption { var, option } => write!(
+            SchedLowerErrorKind::ZeroLoopOption { var, option } => write!(
                 f,
                 "loop `{var}` has `{option}=0`; option requires a strictly positive value"
             ),
-            SchedLowerError::ZeroBufferOption { data } => write!(
+            SchedLowerErrorKind::ZeroBufferOption { data } => write!(
                 f,
                 "transfer `{data}` has `buffer=0`; `buffer` requires a strictly positive value"
             ),
-            SchedLowerError::DuplicateWorkersDecl => write!(
+            SchedLowerErrorKind::DuplicateWorkersDecl => write!(
                 f,
                 "more than one `workers = ...` directive in this schedule; at most one is allowed"
             ),
-            SchedLowerError::MissingWorkersDecl => {
+            SchedLowerErrorKind::MissingWorkersDecl => {
                 write!(f, "schedule is missing a `workers = ...` directive")
             }
         }
+    }
+}
+
+/// A schedule-lowering error: a [`SchedLowerErrorKind`] plus, where a
+/// single offending source node exists, the byte [`Range`] it was
+/// parsed from (TASK-0196 — the schedule mirror of the algorithm-side
+/// [`crate::algo::ir::LowerError`], TASK-0090).
+///
+/// # Why a struct wrapping a kind (not `(line, column)` fields per
+/// variant)
+///
+/// Putting a position on a *wrapper* instead of widening every variant
+/// means no variant's payload shape changed: the existing negative
+/// tests still pattern-match `SchedLowerErrorKind::X(payload)` with the
+/// same payload, only through `err.kind`. The byte range — not `(line,
+/// column)` — is stored because lowering takes `&SchedAst` only and has
+/// no source string; the driver (which holds the source) converts via
+/// [`crate::error::offset_to_line_col`] at display time, exactly as
+/// [`crate::error::ParseError`] and [`crate::algo::ir::LowerError`] are
+/// surfaced. This keeps one span representation end-to-end (matching
+/// [`crate::span::Spanned`]) and lowering source-text-free.
+///
+/// # `span` is `Option` (honest-partial per variant — TASK-0196)
+///
+/// Most variants have one obviously-offending source token and carry
+/// its span (the duplicated/undeclared identifier, the second
+/// `workers` directive, etc.). Exactly two variants are genuinely
+/// position-less and stay `span: None` — a documented missing position
+/// is honest; a fabricated one is not:
+///
+/// - [`SchedLowerErrorKind::MissingWorkersDecl`]: the error is the
+///   *absence* of a `workers = ...` directive. There is no source token
+///   to point at.
+/// - [`SchedLowerErrorKind::DuplicateWorkerClass`] **only when raised
+///   from the synthetic-default-class collision branch** (a user class
+///   literally named [`DEFAULT_WORKER_CLASS`] colliding with the
+///   compiler-injected one): the collision is between a real user decl
+///   and a *synthesised* class that has no source token, and the branch
+///   does not have the user decl's `Spanned` in scope (it iterates the
+///   post-collected class table). The far more common
+///   `DuplicateWorkerClass` from two real `worker_class` decls DOES
+///   carry the duplicate decl's `c.name.span`. (See `sched/lower.rs`;
+///   pinned by `position_less_variants_have_no_span`.)
+///
+/// Every other variant carries a real span. This doc is kept exactly in
+/// sync with the code (the TASK-0090 review caught a doc that
+/// overclaimed position-lessness — that lesson is applied here: the
+/// position-less set above is the precise, code-verified set, pinned by
+/// a test).
+///
+/// # Equality semantics (load-bearing — AC#1, mirrors `Spanned` /
+/// `LowerError`)
+///
+/// [`PartialEq`] / [`Eq`] are **hand-written to forward to `kind`
+/// only**; `span` is deliberately EXCLUDED from value identity. This
+/// is the same decision, for the same reason, as
+/// [`crate::span::Spanned`] (TASK-0082) and
+/// [`crate::algo::ir::LowerError`] (TASK-0090): the source position is
+/// informational-for-humans, not part of *which semantic error this
+/// is*. Excluding it keeps every existing `SchedLowerErrorKind`-
+/// asserting negative test valid (they assert the semantic kind +
+/// payload, never the byte offset). `#[derive(PartialEq)]` would
+/// (wrongly) fold the span into equality. No `Hash` is derived or
+/// implemented (mirrors `LowerError` — the type is not used as a map
+/// key; deriving `Hash` alongside a manual `PartialEq` is also the
+/// `derived_hash_with_manual_eq` clippy hazard).
+#[derive(Debug, Clone)]
+pub struct SchedLowerError {
+    /// The semantic violation.
+    pub kind: SchedLowerErrorKind,
+    /// Byte range into the original schedule source, when a single
+    /// offending node exists. `None` only for the two genuinely
+    /// position-less cases (see type docs). Feed `span.start` to
+    /// [`crate::error::offset_to_line_col`] for a 1-based
+    /// `(line, column)`.
+    pub span: Option<Range<usize>>,
+}
+
+impl SchedLowerError {
+    /// A schedule-lowering error with no source position (the two
+    /// genuinely position-less cases — see type docs). Prefer
+    /// [`SchedLowerError::at`] whenever a single offending
+    /// [`crate::span::Spanned`] is in scope.
+    pub fn new(kind: SchedLowerErrorKind) -> Self {
+        Self { kind, span: None }
+    }
+
+    /// A schedule-lowering error located at `span` — the byte range of
+    /// the offending source node (`spanned.span`). This is the path
+    /// AC#2 requires for every diagnosable variant that has a single
+    /// offending node.
+    pub fn at(kind: SchedLowerErrorKind, span: Range<usize>) -> Self {
+        Self {
+            kind,
+            span: Some(span),
+        }
+    }
+
+    /// Render the error with a source location resolved against `src`.
+    ///
+    /// This is the driver-facing surface (AC#2): the driver holds the
+    /// schedule source, so it — not lowering — turns the stored byte
+    /// offset into a `line:column`. Mirrors how
+    /// [`crate::error::ParseError`] and
+    /// [`crate::algo::ir::LowerError`] are surfaced. The offset is
+    /// clamped to `src.len()` (decision-0003) — and
+    /// [`crate::error::offset_to_line_col`] additionally clamps by
+    /// construction. When the variant has no position (see type docs),
+    /// the message is the kind alone, with no fabricated location.
+    pub fn display_with_src(&self, src: &str) -> String {
+        match &self.span {
+            Some(span) => {
+                let offset = span.start.min(src.len());
+                let (line, col) = crate::error::offset_to_line_col(src, offset);
+                format!("{} at {line}:{col}", self.kind)
+            }
+            None => self.kind.to_string(),
+        }
+    }
+}
+
+// Hand-written: forward to `kind`, EXCLUDE `span` from identity
+// (AC#1, same rationale as `Spanned` / `LowerError`). Deriving would
+// fold the span in and break every existing
+// `SchedLowerErrorKind`-asserting negative test.
+impl PartialEq for SchedLowerError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for SchedLowerError {}
+
+// Span-free Display: library callers / tests without source text get
+// the semantic message unchanged from before TASK-0196. The located
+// form is `display_with_src` (driver-side).
+impl std::fmt::Display for SchedLowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
     }
 }
 

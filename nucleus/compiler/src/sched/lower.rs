@@ -25,7 +25,7 @@ use super::ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
     ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,
     ResolvedTransferDirective, ResolvedTransferOption, ResolvedWorker, ResolvedWorkerClass,
-    SchedIR, SchedLowerError, DEFAULT_WORKER_CLASS,
+    SchedIR, SchedLowerError, SchedLowerErrorKind, DEFAULT_WORKER_CLASS,
 };
 
 /// Lower a parsed [`SchedAst`] into a validated [`SchedIR`].
@@ -58,21 +58,47 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // ambiguous (PRD §6.3.1 phrases the workers decl as singular).
     let mut workers_seen = false;
 
-    // NOTE (TASK-0086): the AST is now span-carrying — directives are
-    // `SpDirective` and identifier fields are `SpName`. Lowering still
-    // *ignores* spans entirely: every use below projects through
-    // `.node` (or `&**`) to the inner value, the IR + `SchedLowerError`
-    // keep their plain-`String` shapes, and behaviour is byte-identical
-    // (proven by the determinism gate). Threading the `.span` into a
-    // located `SchedLowerError` is the separate TASK-0196; this pass
-    // must NOT do it. `match &d.node` (not `match d`) because `Deref`
-    // does not apply to `match`, so a future span use cannot leak in
-    // by accident.
+    // (b) TASK-0196 side-tables: the `UnknownWorkerClass` and
+    // `UnknownAccessibleByName` checks must run AFTER pass 1 has
+    // collected every class/worker AND the synthetic default class is
+    // injected (a name may refer to a class declared later in source,
+    // or to the simple-form default). The old code iterated the
+    // post-strip `ir.workers` / `ir.memory_regions` (plain `String`,
+    // no span). To locate these diagnostics WITHOUT putting a span
+    // into the codegen-feeding SchedIR (decision: option (b) in
+    // TASK-0196 — keep SchedIR span-free, mirror the algo IR), we
+    // record the offending reference together with its source span
+    // here, at the AST-walk site where the `Spanned` is in scope, and
+    // validate from these tables once collection is complete. Order of
+    // first error is preserved: `worker_class_refs` is in worker-entry
+    // source order; `accessible_by_refs` is in directive then list
+    // order — and the post-collection validation iterates the same
+    // deterministic structures the old code did.
+    let mut worker_class_refs: Vec<(String, String, core::ops::Range<usize>)> = Vec::new();
+    // (region_name, accessible_by_name, span) per `accessible_by` entry.
+    let mut accessible_by_refs: Vec<(String, String, core::ops::Range<usize>)> = Vec::new();
+
+    // NOTE (TASK-0086 + TASK-0196): the AST is span-carrying —
+    // directives are `SpDirective` and identifier fields are `SpName`.
+    // The IR stays plain-`String` (SchedIR feeds codegen and must not
+    // change shape — determinism). The *value* of every check still
+    // comes from `.node`; what TASK-0196 adds is reading the offending
+    // node's `.span` (byte `Range`) at the err site and threading it
+    // into a located `SchedLowerError` via `SchedLowerError::at`. Spans
+    // populate ONLY on the `Err` path, so valid schedules lower
+    // byte-identically (proven by the determinism gate). `match
+    // &d.node` (not `match d`) because `Deref` does not apply to
+    // `match`, so the span cannot leak into a value position by
+    // accident.
     for d in &ast.directives {
         match &d.node {
             Directive::WorkerClass(c) => {
                 if ir.worker_classes.contains_key(&c.name.node) {
-                    return Err(SchedLowerError::DuplicateWorkerClass(c.name.node.clone()));
+                    // Located at the duplicate decl's identifier token.
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateWorkerClass(c.name.node.clone()),
+                        c.name.span.clone(),
+                    ));
                 }
                 ir.worker_classes.insert(
                     c.name.node.clone(),
@@ -86,7 +112,25 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             }
             Directive::MemoryRegion(r) => {
                 if ir.memory_regions.contains_key(&r.name.node) {
-                    return Err(SchedLowerError::DuplicateMemoryRegion(r.name.node.clone()));
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateMemoryRegion(r.name.node.clone()),
+                        r.name.span.clone(),
+                    ));
+                }
+                // (b) TASK-0196: record each `accessible_by` name WITH
+                // its source span before the span is stripped into the
+                // plain-`String` IR, so the post-collection
+                // `UnknownAccessibleByName` check can locate the
+                // offending name token without the SchedIR carrying a
+                // span. Recorded in (directive, list) source order.
+                if let Some(names) = &r.accessible_by {
+                    for n in names {
+                        accessible_by_refs.push((
+                            r.name.node.clone(),
+                            n.node.clone(),
+                            n.span.clone(),
+                        ));
+                    }
                 }
                 ir.memory_regions.insert(
                     r.name.node.clone(),
@@ -94,8 +138,10 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                         name: r.name.node.clone(),
                         size_bytes: r.size_bytes,
                         // `accessible_by` is `Vec<SpName>`; the IR keeps
-                        // plain `Vec<String>`. Strip spans here (the
-                        // located variant is TASK-0196's job).
+                        // plain `Vec<String>`. Strip spans here — the
+                        // located check uses `accessible_by_refs`
+                        // (TASK-0196 option (b): SchedIR stays
+                        // span-free, consistent with the algo IR).
                         accessible_by: r
                             .accessible_by
                             .as_ref()
@@ -106,7 +152,13 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             }
             Directive::Workers(w) => {
                 if workers_seen {
-                    return Err(SchedLowerError::DuplicateWorkersDecl);
+                    // The whole second `workers = ...` directive is the
+                    // offending node; point at the directive span (the
+                    // `SpDirective` wrapper `d`, TASK-0086).
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateWorkersDecl,
+                        d.span.clone(),
+                    ));
                 }
                 workers_seen = true;
 
@@ -120,10 +172,20 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                         .insert(entry.name.node.clone(), ())
                         .is_some()
                     {
-                        return Err(SchedLowerError::DuplicateWorker(entry.name.node.clone()));
+                        // Per-decl duplicate (`{ host, host }`): point
+                        // at the offending entry's identifier token.
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
+                            entry.name.span.clone(),
+                        ));
                     }
                     if ir.workers.contains_key(&entry.name.node) {
-                        return Err(SchedLowerError::DuplicateWorker(entry.name.node.clone()));
+                        // Cross-decl duplicate: same — point at this
+                        // (later) entry's identifier.
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
+                            entry.name.span.clone(),
+                        ));
                     }
 
                     let class = match &entry.class {
@@ -133,6 +195,30 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                             DEFAULT_WORKER_CLASS.to_string()
                         }
                     };
+                    // (b) TASK-0196: record the class reference WITH its
+                    // source span so the `UnknownWorkerClass` check can
+                    // be done here-style (after all classes are
+                    // collected + default injected) while still having
+                    // the offending `Spanned` in scope — instead of
+                    // iterating the post-strip span-free `ir.workers`.
+                    // This keeps SchedIR span-free (consistent with the
+                    // algo IR; no codegen-feeding shape change). The
+                    // span of the unresolved class is `entry.class.span`
+                    // when the class was written explicitly; for a
+                    // simple-form entry the class is the synthetic
+                    // default (which always resolves once injected, so
+                    // it never reaches the unknown-class error) — we
+                    // fall back to `entry.name.span` so the recorded
+                    // tuple is always located.
+                    let class_span = match &entry.class {
+                        Some(c) => c.span.clone(),
+                        None => entry.name.span.clone(),
+                    };
+                    worker_class_refs.push((
+                        entry.name.node.clone(),
+                        class.clone(),
+                        class_span,
+                    ));
                     ir.workers.insert(
                         entry.name.node.clone(),
                         ResolvedWorker {
@@ -148,7 +234,12 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     }
 
     if !workers_seen {
-        return Err(SchedLowerError::MissingWorkersDecl);
+        // Genuinely position-less (TASK-0196): the error is the
+        // *absence* of a `workers = ...` directive — there is no source
+        // token to underline. `span: None`, documented on
+        // `SchedLowerError` and pinned by
+        // `position_less_variants_have_no_span`.
+        return Err(SchedLowerError::new(SchedLowerErrorKind::MissingWorkersDecl));
     }
 
     // Synthesise the default class only after we know whether any
@@ -160,8 +251,21 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             // A user declared a class with the synthetic name. That's
             // a name collision we must surface; otherwise simple-form
             // entries would silently inherit the user's class.
-            return Err(SchedLowerError::DuplicateWorkerClass(
-                DEFAULT_WORKER_CLASS.to_string(),
+            //
+            // Genuinely position-less (TASK-0196): the collision is
+            // between a real user `worker_class __default` decl and the
+            // *synthesised* default class, which has no source token.
+            // This branch iterates the post-collected class table and
+            // does not have the user decl's `Spanned` in scope, so
+            // `span: None` — documented on `SchedLowerError` and pinned
+            // by `position_less_variants_have_no_span`. (The common
+            // `DuplicateWorkerClass` from two real decls IS located —
+            // see the pass-1 `WorkerClass` arm.) Re-deriving the user
+            // decl's span here is possible but would duplicate the
+            // pass-1 walk for a pathological corner; the honest `None`
+            // is the documented behaviour, not a TODO.
+            return Err(SchedLowerError::new(
+                SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string()),
             ));
         }
         ir.worker_classes.insert(
@@ -177,12 +281,27 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 
     // Validate every worker's class reference now that all classes
     // are collected.
-    for worker in ir.workers.values() {
-        if !ir.worker_classes.contains_key(&worker.class) {
-            return Err(SchedLowerError::UnknownWorkerClass {
-                worker: worker.name.clone(),
-                class: worker.class.clone(),
-            });
+    //
+    // (b) TASK-0196: validated from `worker_class_refs` (collected
+    // during the pass-1 worker walk, where the class `Spanned` is in
+    // scope) instead of iterating the post-strip span-free
+    // `ir.workers`. This is what makes `UnknownWorkerClass` located
+    // while keeping SchedIR span-free (consistent with the algo IR; no
+    // codegen-feeding shape change). First-error ordering is preserved
+    // bit-for-bit: the old code iterated `ir.workers.values()`, i.e.
+    // the `BTreeMap` in worker-name sorted order, so we sort
+    // `worker_class_refs` by worker name before validating — for any
+    // input the SAME worker is reported first as before.
+    worker_class_refs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (worker, class, span) in &worker_class_refs {
+        if !ir.worker_classes.contains_key(class) {
+            return Err(SchedLowerError::at(
+                SchedLowerErrorKind::UnknownWorkerClass {
+                    worker: worker.clone(),
+                    class: class.clone(),
+                },
+                span.clone(),
+            ));
         }
     }
 
@@ -196,21 +315,31 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // are deliberately out of scope — that is TASK-0096.
     // Runs after the synthetic default class is injected and all
     // workers are collected, so a name referring to a simple-form
-    // worker or the default class resolves correctly. Iteration is
-    // over the BTreeMap (deterministic order) so the first-error
-    // report is stable.
-    for region in ir.memory_regions.values() {
-        if let Some(names) = &region.accessible_by {
-            for name in names {
-                let declared = ir.worker_classes.contains_key(name)
-                    || ir.workers.contains_key(name);
-                if !declared {
-                    return Err(SchedLowerError::UnknownAccessibleByName {
-                        region: region.name.clone(),
-                        name: name.clone(),
-                    });
-                }
-            }
+    // worker or the default class resolves correctly.
+    //
+    // (b) TASK-0196: validated from `accessible_by_refs` (collected at
+    // the pass-1 `MemoryRegion` walk, where each name's `Spanned` is in
+    // scope) instead of iterating the post-strip span-free
+    // `ir.memory_regions`. Makes `UnknownAccessibleByName` located
+    // while keeping SchedIR span-free. First-error ordering preserved
+    // bit-for-bit: the old code iterated `ir.memory_regions.values()`
+    // (BTreeMap, region-name sorted) then each region's `accessible_by`
+    // in list order; region names are unique (dups rejected above), so
+    // a STABLE sort by region name reproduces exactly that order
+    // (recording was in directive-then-list order, so list order is
+    // intact within a region).
+    accessible_by_refs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (region, name, span) in &accessible_by_refs {
+        let declared =
+            ir.worker_classes.contains_key(name) || ir.workers.contains_key(name);
+        if !declared {
+            return Err(SchedLowerError::at(
+                SchedLowerErrorKind::UnknownAccessibleByName {
+                    region: region.clone(),
+                    name: name.clone(),
+                },
+                span.clone(),
+            ));
         }
     }
 
@@ -239,17 +368,23 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 // --------------------------------------------------------------------
 
 fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    // `.node` everywhere: lowering ignores spans (TASK-0086); the
-    // located `SchedLowerError` is TASK-0196.
+    // TASK-0196: the *value* of each check comes from `.node`; the
+    // located error reads the offending node's `.span`.
     let kernel = &p.kernel.node;
     if ir.places.contains_key(kernel) {
-        return Err(SchedLowerError::DuplicatePlace {
-            kernel: kernel.clone(),
-        });
+        // Duplicate `place` for this kernel: point at this directive's
+        // kernel identifier token.
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::DuplicatePlace {
+                kernel: kernel.clone(),
+            },
+            p.kernel.span.clone(),
+        ));
     }
     let target = match &p.target {
         PlaceTarget::One(w) => {
-            check_worker_declared(kernel, &w.node, ir)?;
+            // Undeclared worker -> point at the worker token (`w.span`).
+            check_worker_declared(kernel, w, ir)?;
             ResolvedPlaceTarget::One(w.node.clone())
         }
         PlaceTarget::Many(ws) => {
@@ -267,14 +402,18 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
             for w in ws {
                 // `w.as_str()` via `Deref` (Spanned<String> -> str).
                 if seen.insert(w.as_str(), ()).is_some() {
-                    return Err(SchedLowerError::DuplicatePlaceWorker {
-                        kernel: kernel.clone(),
-                        worker: w.node.clone(),
-                    });
+                    // Point at the *repeated* occurrence's token.
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicatePlaceWorker {
+                            kernel: kernel.clone(),
+                            worker: w.node.clone(),
+                        },
+                        w.span.clone(),
+                    ));
                 }
             }
             for w in ws {
-                check_worker_declared(kernel, &w.node, ir)?;
+                check_worker_declared(kernel, w, ir)?;
             }
             ResolvedPlaceTarget::Many(ws.iter().map(|w| w.node.clone()).collect())
         }
@@ -289,12 +428,22 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
     Ok(())
 }
 
-fn check_worker_declared(kernel: &str, worker: &str, ir: &SchedIR) -> Result<(), SchedLowerError> {
-    if !ir.workers.contains_key(worker) {
-        return Err(SchedLowerError::UnknownPlaceWorker {
-            kernel: kernel.to_string(),
-            worker: worker.to_string(),
-        });
+fn check_worker_declared(
+    kernel: &str,
+    worker: &super::ast::SpName,
+    ir: &SchedIR,
+) -> Result<(), SchedLowerError> {
+    // TASK-0196: takes the worker `SpName` (not `&str`) so the
+    // undeclared-worker diagnostic points at the worker token
+    // (`worker.span`). The semantic check is still on `worker.node`.
+    if !ir.workers.contains_key(&worker.node) {
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::UnknownPlaceWorker {
+                kernel: kernel.to_string(),
+                worker: worker.node.clone(),
+            },
+            worker.span.clone(),
+        ));
     }
     Ok(())
 }
@@ -303,19 +452,30 @@ fn lower_place_data(
     pd: &super::ast::PlaceDataDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    // TASK-0196: value from `.node`, location from the offending
+    // node's `.span`.
     let data = &pd.data.node;
     let region = &pd.region.node;
     if ir.place_data.contains_key(data) {
-        return Err(SchedLowerError::DuplicatePlaceData {
-            data: data.clone(),
-        });
+        // Duplicate `place_data` for this data symbol: point at the
+        // data token.
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::DuplicatePlaceData {
+                data: data.clone(),
+            },
+            pd.data.span.clone(),
+        ));
     }
     if !ir.memory_regions.contains_key(region) {
-        return Err(SchedLowerError::UnknownMemoryRegion {
-            data: data.clone(),
-            region: region.clone(),
-        });
+        // The undeclared thing is the *region* — point at the region
+        // token.
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::UnknownMemoryRegion {
+                data: data.clone(),
+                region: region.clone(),
+            },
+            pd.region.span.clone(),
+        ));
     }
     ir.place_data.insert(
         data.clone(),
@@ -328,10 +488,20 @@ fn lower_place_data(
 }
 
 fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    // TASK-0196: value from `.node`. Option-level errors
+    // (`DuplicateLoopOption`, `ZeroLoopOption`) are located at the
+    // owning loop variable's token (`l.var.span`): the option enums
+    // are deliberately NOT span-wrapped by TASK-0086 (its documented
+    // granularity — see `crate::span`), so the loop variable is the
+    // finest located node available. Widening to option-level spans
+    // would require extending TASK-0086 scope first; not done here.
     let var = &l.var.node;
+    let var_span = &l.var.span;
     if ir.loops.contains_key(var) {
-        return Err(SchedLowerError::DuplicateLoop { var: var.clone() });
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::DuplicateLoop { var: var.clone() },
+            var_span.clone(),
+        ));
     }
     // TASK-0093: the grammar treats the option list as an unordered
     // *set* (§2 note 7 / §5.1: `block=64, block=128` is a semantic
@@ -347,17 +517,20 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
         for opt in &l.options {
             if let Some(kw) = loop_option_keyword(opt) {
                 if seen.insert(kw, ()).is_some() {
-                    return Err(SchedLowerError::DuplicateLoopOption {
-                        var: var.clone(),
-                        option: kw.to_string(),
-                    });
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateLoopOption {
+                            var: var.clone(),
+                            option: kw.to_string(),
+                        },
+                        var_span.clone(),
+                    ));
                 }
             }
         }
     }
     let mut options = Vec::with_capacity(l.options.len());
     for opt in &l.options {
-        options.push(lower_loop_option(var, opt)?);
+        options.push(lower_loop_option(var, var_span, opt)?);
     }
     ir.loops.insert(
         var.clone(),
@@ -384,15 +557,25 @@ fn loop_option_keyword(opt: &LoopOption) -> Option<&'static str> {
     }
 }
 
-fn lower_loop_option(var: &str, opt: &LoopOption) -> Result<ResolvedLoopOption, SchedLowerError> {
+fn lower_loop_option(
+    var: &str,
+    var_span: &core::ops::Range<usize>,
+    opt: &LoopOption,
+) -> Result<ResolvedLoopOption, SchedLowerError> {
     // Numeric options share the same "strictly positive" rule. The
     // small helper keeps the variant list short and obvious.
+    // TASK-0196: `ZeroLoopOption` is located at the loop variable's
+    // token (`var_span`) — the option literal is not span-wrapped
+    // (TASK-0086 granularity; see `lower_loop`).
     let positive = |n: u64, keyword: &str| -> Result<u64, SchedLowerError> {
         if n == 0 {
-            Err(SchedLowerError::ZeroLoopOption {
-                var: var.to_string(),
-                option: keyword.to_string(),
-            })
+            Err(SchedLowerError::at(
+                SchedLowerErrorKind::ZeroLoopOption {
+                    var: var.to_string(),
+                    option: keyword.to_string(),
+                },
+                var_span.clone(),
+            ))
         } else {
             Ok(n)
         }
@@ -412,12 +595,19 @@ fn lower_transfer(
     t: &super::ast::TransferDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    // TASK-0196: value from `.node`. Like loop options, transfer
+    // option-level errors are located at the owning data symbol's
+    // token (`t.data.span`) — the option enums are not span-wrapped
+    // (TASK-0086 granularity; see `lower_loop`).
     let data = &t.data.node;
+    let data_span = &t.data.span;
     if ir.transfers.contains_key(data) {
-        return Err(SchedLowerError::DuplicateTransfer {
-            data: data.clone(),
-        });
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::DuplicateTransfer {
+                data: data.clone(),
+            },
+            data_span.clone(),
+        ));
     }
     // TASK-0093: like loop options, the transfer option list is an
     // unordered set. Two rules from the grammar §2 notes:
@@ -435,25 +625,34 @@ fn lower_transfer(
                 TransferOption::Sync | TransferOption::Async => {
                     mode_flags += 1;
                     if mode_flags > 1 {
-                        return Err(SchedLowerError::ConflictingTransferMode {
-                            data: data.clone(),
-                        });
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::ConflictingTransferMode {
+                                data: data.clone(),
+                            },
+                            data_span.clone(),
+                        ));
                     }
                 }
                 TransferOption::Buffer(_) => {
                     if seen.insert("buffer", ()).is_some() {
-                        return Err(SchedLowerError::DuplicateTransferOption {
-                            data: data.clone(),
-                            option: "buffer".to_string(),
-                        });
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateTransferOption {
+                                data: data.clone(),
+                                option: "buffer".to_string(),
+                            },
+                            data_span.clone(),
+                        ));
                     }
                 }
                 TransferOption::Notify(_) => {
                     if seen.insert("notify", ()).is_some() {
-                        return Err(SchedLowerError::DuplicateTransferOption {
-                            data: data.clone(),
-                            option: "notify".to_string(),
-                        });
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateTransferOption {
+                                data: data.clone(),
+                                option: "notify".to_string(),
+                            },
+                            data_span.clone(),
+                        ));
                     }
                 }
             }
@@ -461,7 +660,7 @@ fn lower_transfer(
     }
     let mut options = Vec::with_capacity(t.options.len());
     for opt in &t.options {
-        options.push(lower_transfer_option(data, opt)?);
+        options.push(lower_transfer_option(data, data_span, opt)?);
     }
     ir.transfers.insert(
         data.clone(),
@@ -475,6 +674,7 @@ fn lower_transfer(
 
 fn lower_transfer_option(
     data: &str,
+    data_span: &core::ops::Range<usize>,
     opt: &TransferOption,
 ) -> Result<ResolvedTransferOption, SchedLowerError> {
     Ok(match opt {
@@ -482,9 +682,14 @@ fn lower_transfer_option(
         TransferOption::Async => ResolvedTransferOption::Async,
         TransferOption::Buffer(n) => {
             if *n == 0 {
-                return Err(SchedLowerError::ZeroBufferOption {
-                    data: data.to_string(),
-                });
+                // TASK-0196: located at the data symbol's token; the
+                // `buffer=0` literal is not span-wrapped (TASK-0086).
+                return Err(SchedLowerError::at(
+                    SchedLowerErrorKind::ZeroBufferOption {
+                        data: data.to_string(),
+                    },
+                    data_span.clone(),
+                ));
             }
             ResolvedTransferOption::Buffer(*n)
         }
@@ -493,10 +698,13 @@ fn lower_transfer_option(
 }
 
 fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    // `.node`: lowering ignores spans (TASK-0086 / TASK-0196).
+    // TASK-0196: value from `.node`, location from `c.var.span`.
     let var = &c.var.node;
     if ir.checks.contains_key(var) {
-        return Err(SchedLowerError::DuplicateCheck { var: var.clone() });
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::DuplicateCheck { var: var.clone() },
+            c.var.span.clone(),
+        ));
     }
     let asserts = c
         .asserts
