@@ -420,11 +420,20 @@ pub enum SchedLowerErrorKind {
     /// once on one `transfer` directive (e.g. `buffer=1, buffer=2`).
     /// `data` is the transfer's data symbol; `option` is the keyword.
     DuplicateTransferOption { data: String, option: String },
-    /// `sync` and `async` both appear on one `transfer` directive
-    /// (e.g. `transfer x : sync, async`). Grammar §2 note 5 / §5.3:
-    /// they are mutually exclusive. `data` is the transfer's data
-    /// symbol. Also covers `sync, sync` / `async, async` (a repeated
-    /// transfer-mode flag is the same user error class).
+    /// The transfer-mode flag set on one `transfer` directive is not
+    /// exactly one of `sync` / `async`. Two distinct user errors share
+    /// this variant because they are the same error class — the
+    /// directive does not name exactly one transfer mode. The two
+    /// surface mistakes are (1) a mutual-exclusion conflict, both
+    /// `sync` AND `async` appear (e.g. `transfer x : sync, async`),
+    /// and (2) a repeated mode, the same flag appears twice (e.g.
+    /// `transfer x : sync, sync` / `async, async`).
+    /// Grammar §2 note 5 / §5.3: the option list is a *set* and the
+    /// transfer mode is exactly-one. `data` is the transfer's data
+    /// symbol. The Display is generalized so it is literally accurate
+    /// on BOTH paths (TASK-0193): it claims neither "both" (false on
+    /// the repeated-mode path) nor "repeated" (false on the conflict
+    /// path) but the union invariant true for both.
     ConflictingTransferMode { data: String },
 
     // ----- Option-value validation -----
@@ -561,8 +570,8 @@ impl std::fmt::Display for SchedLowerErrorKind {
             ),
             SchedLowerErrorKind::ConflictingTransferMode { data } => write!(
                 f,
-                "transfer `{data}` is both `sync` and `async`; \
-                 these options are mutually exclusive"
+                "transfer `{data}` must specify exactly one of `sync` or `async`; \
+                 they are mutually exclusive and neither may be repeated"
             ),
             SchedLowerErrorKind::ZeroLoopOption { var, option } => write!(
                 f,

@@ -420,6 +420,64 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn dup_worker_beats_unknown_class_pins_ref_recording_ordering() {
+    // TASK-0197: pin the dup-before-ref-recording invariant that the
+    // SchedLowerError Err-path first-error ordering depends on
+    // (TASK-0196 option (b) proved first-error ordering byte-equivalent
+    // ONLY because worker name uniqueness holds, which holds ONLY
+    // because `DuplicateWorker` early-returns in the pass-1 AST walk
+    // BEFORE any tuple is pushed into `worker_class_refs`
+    // (sched/lower.rs: dup guards at ~178/186, push at ~217), so the
+    // post-collection `UnknownWorkerClass` validation never runs once a
+    // duplicate is present).
+    //
+    // Multi-fault schedule (all entries typed-form so the worker list
+    // parses — typed and simple forms cannot mix in one `{ ... }`):
+    // the FIRST worker entry `fe : missing_class` references an
+    // undeclared class (would be `UnknownWorkerClass` if
+    // ref-recording/validation ran), and a LATER entry duplicates
+    // `host`. The documented behaviour is that `DuplicateWorker` fires
+    // first — the pass-1 walk early-returns on the duplicate before the
+    // post-collection unknown-class validation is ever reached.
+    //
+    // A regression test (not a debug_assert) is the right pin here:
+    // the property is a *control-flow ordering* between two passes, not
+    // a state predicate evaluable at a single program point — a
+    // meaningful runtime assertion cannot be phrased without
+    // re-encoding the very ordering it would guard. A refactor that
+    // moves ref-recording before the dup guards (or relocates
+    // dup-detection after it) would silently change which error the
+    // user sees first on a multi-fault schedule; the determinism gate
+    // cannot catch it (Err-path only). This test fails loudly instead.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class core { simd = none; };
+    workers = { fe : missing_class, host : core, host : core };
+}
+";
+    let err = lower_str(src).expect_err("multi-fault schedule must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateWorker("host".into()),
+        "DuplicateWorker must fire BEFORE UnknownWorkerClass: dup-detection \
+         early-returns before ref-recording/validation (the invariant \
+         TASK-0196's ordering-equivalence proof depends on)"
+    );
+    // Strength guard: explicitly assert it is NOT the unknown-class
+    // variant, so a refactor reordering the two passes cannot pass by
+    // coincidence (a loosened kind match would still bite here).
+    assert!(
+        !matches!(
+            err.kind,
+            SchedLowerErrorKind::UnknownWorkerClass { .. }
+        ),
+        "must NOT surface UnknownWorkerClass first on a dup+unknown-class \
+         schedule; got {:?}",
+        err.kind
+    );
+}
+
+#[test]
 fn negative_unknown_worker_class_reference() {
     // Typed worker entry names a class that has no `worker_class` decl.
     let src = "\
@@ -808,6 +866,48 @@ schedule for \"../prog.algo.nuc\" {
             kernel: "k".into(),
             worker: "w0".into(),
         }
+    );
+}
+
+#[test]
+fn negative_duplicate_place_worker_beats_undeclared() {
+    // TASK-0193: pin the documented dup-before-undeclared ordering.
+    // `place k on { ghost, ghost }` where `ghost` is NOT declared in
+    // `workers`. Both faults are present: the worker is repeated AND
+    // undeclared. The lowering pass runs the duplicate-scan loop
+    // (sched/ir.rs:409 / sched/lower.rs ~428) to completion BEFORE
+    // the undeclared-worker scan (sched/ir.rs:382 /
+    // `check_worker_declared`), so the user sees the specific
+    // `DuplicatePlaceWorker` message, not `UnknownPlaceWorker`. This
+    // ordering was code-correct-by-inspection but UNpinned
+    // (TASK-0093/0094 review); a refactor swapping the two scans would
+    // silently change which error a user sees first — this test bites.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on { ghost, ghost };
+}
+";
+    let err = lower_str(src).expect_err("dup+undeclared place worker must fail");
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicatePlaceWorker {
+            kernel: "k".into(),
+            worker: "ghost".into(),
+        },
+        "duplicate-worker detection must fire BEFORE undeclared-worker \
+         detection on a placement set that is both repeated and undeclared"
+    );
+    // Strength guard: explicitly assert it is NOT the undeclared
+    // variant, so a future change that loosens the kind match (or
+    // reorders the scans) cannot pass by coincidence.
+    assert!(
+        !matches!(
+            err.kind,
+            SchedLowerErrorKind::UnknownPlaceWorker { .. }
+        ),
+        "must NOT surface UnknownPlaceWorker first; got {:?}",
+        err.kind
     );
 }
 

@@ -193,10 +193,23 @@ parser accepts; later passes reject.
    declared in the same schedule) and is performed by the SchedIR
    lowering pass, not deferred to the linker (TASK-0095). An
    undeclared name is `SchedLowerError::UnknownAccessibleByName`.
-5. **`sync` and `async` are mutually exclusive in one `TransferStmt`.**
-   Both belong to `XferOpt` and the grammar allows them to appear in
-   the same list — a semantic pass rejects `transfer x : sync, async;`
-   with a hint that they conflict. See §5.3.
+5. **A `TransferStmt` must name exactly one transfer mode (`sync`
+   xor `async`).** Both belong to `XferOpt` and the grammar allows
+   them to appear (or repeat) in the same list; the SchedIR lowering
+   pass rejects every list that does not name exactly one mode. Two
+   distinct surface mistakes are caught by the *same* error
+   (`SchedLowerError::ConflictingTransferMode`) because they are the
+   same error class — the directive fails to specify exactly one
+   transfer mode:
+   - **mutual-exclusion conflict:** both modes appear, e.g.
+     `transfer x : sync, async;`;
+   - **repeated mode:** the same mode appears twice, e.g.
+     `transfer x : sync, sync;` or `transfer x : async, async;`.
+   The diagnostic is generalized ("must specify exactly one of
+   `sync` or `async`; they are mutually exclusive and neither may be
+   repeated") so it is literally accurate on BOTH paths — it does not
+   claim "both" (false for the repeated-mode path) nor "repeated"
+   (false for the conflict path). See §5.3.
 6. **`buffer=N` on a `sync` transfer.** Allowed by the grammar.
    Whether it is *useful* depends on the backend. Some backends
    (e.g. `pthreads-sync`) treat `sync` as zero-buffer regardless;
@@ -211,7 +224,12 @@ parser accepts; later passes reject.
    for transfers `buffer`, `notify`) may appear at most once. The
    bare flag `reuse` is idempotent — a repeated `reuse` is harmless
    redundancy, not the value conflict this note targets, so it is
-   *not* rejected. `sync`/`async` are handled by note 5. See §5.1.
+   *not* rejected. The transfer-mode flags `sync`/`async` are the one
+   exception to "a repeated bare flag is harmless": they are *not*
+   idempotent — a repeated `sync` (or `async`) IS rejected, by the
+   exactly-one-mode rule of note 5 (same `ConflictingTransferMode`
+   error as `sync, async`), not by this note's value-conflict rule.
+   See §5.1 and note 5.
 8. **`check` references a loop variable, not a `loop`-directive.**
    The schedule can have `check loop frame : latency_max = 10ms;`
    without ever issuing `loop frame : ...;`. The check applies to the
@@ -394,8 +412,11 @@ one statement and makes parsing harder for no readability gain.
 
 ### 5.3 Should `sync` + `async` in one `TransferStmt` be a parse error or a semantic error?
 
-The grammar allows both. A semantic pass rejects the combination with
-a clear message ("transfer cannot be both sync and async"). Rationale:
+The grammar allows both. A semantic pass rejects the combination
+with a clear message ("transfer `X` must specify exactly one of
+`sync` or `async`; they are mutually exclusive and neither may be
+repeated" — the same message also covers the repeated-mode path
+`sync, sync` / `async, async`; see note 5). Rationale:
 keeping the grammar option-list-flat means every option lives in one
 `XferOpt` alternative; pushing mutual exclusion into the grammar would
 require splitting into "sync-only options" vs "async-only options"

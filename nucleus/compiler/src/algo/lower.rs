@@ -266,9 +266,9 @@ fn eval_const_expr(
                 LowerError::at(kind, expr.span.clone())
             })
         }
-        Expr::Ident(name) => {
-            eval_const_ident(&name.node, name.span.clone(), in_const, ir, visiting)
-        }
+        // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
+        // bare identifier reaches the `Expr::LValue` empty-indices arm
+        // below, which calls `eval_const_ident` — the real path.
         Expr::Call(_) => Err(LowerError::at(
             LowerErrorKind::NonIntegerConstExpr {
                 in_const: in_const.to_string(),
@@ -362,7 +362,9 @@ fn eval_shape_expr(expr: &SpExpr, decl: &str, ir: &AlgoIR) -> Result<i64, LowerE
                 LowerError::at(kind, expr.span.clone())
             })
         }
-        Expr::Ident(name) => eval_shape_ident(&name.node, name.span.clone(), decl, ir),
+        // TASK-0194: `Expr::Ident` removed (parser-unreachable). The
+        // bare-identifier shape path is the `Expr::LValue`
+        // empty-indices arm below (`eval_shape_ident`).
         Expr::Call(_) => Err(LowerError::at(
             LowerErrorKind::NonIntegerShapeExpr {
                 decl: decl.to_string(),
@@ -672,7 +674,9 @@ fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr,
             Box::new(lower_index_expr(lhs, ir, scope)?),
             Box::new(lower_index_expr(rhs, ir, scope)?),
         )),
-        Expr::Ident(name) => resolve_ident(&name.node, name.span.clone(), ir, scope),
+        // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
+        // bare identifier in index/loop-bound position is the
+        // `Expr::LValue` empty-indices arm below (`resolve_ident`).
         Expr::Call(_) => Err(LowerError::at(
             LowerErrorKind::NonIntegerShapeExpr {
                 decl: "<index/loop-bound expression>".into(),
@@ -715,7 +719,9 @@ fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Low
             Box::new(lower_rvalue(lhs, ir, scope)?),
             Box::new(lower_rvalue(rhs, ir, scope)?),
         )),
-        Expr::Ident(name) => resolve_ident(&name.node, name.span.clone(), ir, scope),
+        // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
+        // bare identifier as an rvalue is the `Expr::LValue` arm
+        // below (`lower_data_ref` — whole-array copy / data ref).
         Expr::Call(c) => {
             let callee = &c.callee.node;
             if !ir.kernels.contains_key(callee) {

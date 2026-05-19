@@ -142,10 +142,16 @@ pub enum Expr {
     /// overflow detection is a `ConstExpr` evaluation concern (grammar
     /// §2 note 3).
     IntLit(i64),
-    /// Bare identifier reference (a const name or loop variable). The
-    /// identifier carries its own span so an "undeclared `x`" error
-    /// can underline the reference itself.
-    Ident(SpIdent),
+    // TASK-0194: the former `Ident(SpIdent)` variant was removed. The
+    // parser never constructs it: `parser.rs::ident_or_call` always
+    // routes a bare identifier through `index_tail` (`.repeated()`,
+    // possibly empty) producing `Expr::LValue(IndexedLValue{ indices:
+    // [] })`, never `Expr::Ident`. It was parser-unreachable
+    // dead-at-construction (predating TASK-0082, which only re-typed
+    // its payload). The real bare-identifier path is the
+    // empty-indices arm of `Expr::LValue` in `algo::lower`. Removing
+    // the variant and its (defensive, equally dead) lower.rs arms is
+    // a no-behaviour-change cleanup (proven by the determinism gate).
     /// Unary `-EXPR`. Grammar `UnaryExpr ::= ('-')? Atom`.
     Unary(UnaryOp, Box<SpExpr>),
     /// Binary arithmetic: `+ - * / %` with standard precedence

@@ -712,3 +712,69 @@ fn multi_site_variants_are_position_less() {
     // Display falls back to the kind alone — no fabricated location.
     assert_eq!(err.display_with_src(src), err.kind.to_string());
 }
+
+/// TASK-0195: the OTHER side of the located-vs-position-less boundary.
+/// The synthetic `<index/loop-bound expression>` `NonIntegerShapeExpr`
+/// (its `decl` *label* is synthetic, but the offending node is a
+/// genuine source expression) MUST carry a real `Some(span)` pointing
+/// at that expression — only `ConstCycle` is position-less
+/// (`multi_site_variants_are_position_less` pins that). Without this
+/// positive pin, a future change could silently flip the synthetic
+/// variant to `None` or a wrong span and no test would bite. Here a
+/// loop's upper bound is a kernel call (`f()`), illegal in a loop-bound
+/// position — the `Expr::Call` arm of `lower_index_expr` raises the
+/// synthetic variant located at the call's span.
+#[test]
+fn synthetic_non_integer_shape_expr_is_located() {
+    let src = "\
+const N : usize = 4;
+data x : f32[N];
+kernel f : () -> usize pure;
+for j : 0 .. f() {
+    x[j] <-- f();
+}
+";
+    let err = lower_str(src).expect_err("kernel call as loop bound must error");
+
+    // Semantic kind: the SYNTHETIC-label variant (note the decl is the
+    // synthetic placeholder, not a real declaration name).
+    match &err.kind {
+        LowerErrorKind::NonIntegerShapeExpr { decl, reason } => {
+            assert_eq!(
+                decl, "<index/loop-bound expression>",
+                "must be the synthetic-label NonIntegerShapeExpr (the path \
+                 whose located-ness this test pins)"
+            );
+            assert_eq!(reason, "kernel calls are not allowed here");
+        }
+        other => panic!("expected synthetic NonIntegerShapeExpr, got {other:?}"),
+    }
+
+    // AC#1: it is LOCATED — `Some(span)`, NOT `None`. A `None` here is
+    // a real regression (the doc in algo/ir.rs explicitly states this
+    // synthetic variant carries the real `expr.span`).
+    let span = err
+        .span
+        .clone()
+        .expect("synthetic NonIntegerShapeExpr MUST be located (Some(span)), got None");
+
+    // AC#1: the span points at the CORRECT offset. The offending node
+    // is the loop upper-bound call `f()` — the FIRST `f()` in source
+    // (the loop-bound one; the body's `f()` is never reached because
+    // the bound errors first). Validate via `offset_to_line_col`
+    // against the crafted source, not a guessed constant.
+    let bound_call_at = src.find("0 .. f()").map(|i| i + "0 .. ".len()).expect(
+        "loop-bound call `f()` present in crafted source",
+    );
+    let expected = offset_to_line_col(src, bound_call_at);
+    assert_eq!(
+        expected,
+        (4, 14),
+        "sanity: loop-bound `f()` is at line 4 col 14 in the crafted source"
+    );
+    assert_eq!(
+        offset_to_line_col(src, span.start),
+        expected,
+        "synthetic NonIntegerShapeExpr must point at the loop-bound call `f()`"
+    );
+}
