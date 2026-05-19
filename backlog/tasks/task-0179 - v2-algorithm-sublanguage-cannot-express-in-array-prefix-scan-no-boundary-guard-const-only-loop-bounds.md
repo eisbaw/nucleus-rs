@@ -3,11 +3,11 @@ id: TASK-0179
 title: >-
   v2 algorithm sublanguage cannot express in-array prefix scan (no boundary
   guard, const-only loop bounds)
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:13'
-updated_date: '2026-05-19 03:38'
+updated_date: '2026-05-19 03:41'
 labels:
   - M3
   - language
@@ -24,9 +24,9 @@ Surfaced by TASK-0039 (example 04 prefix-sum). Three concrete v2 limitations mak
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 acfg.rs non-const loop bound returns a LowerError (not panic!)
-- [ ] #2 Decision recorded (decision doc or PRD note) on whether in-array prefix scan gets language support or stays a kernel-level idiom
-- [ ] #3 If supported: an example expresses prefix scan WITHOUT pushing the boundary into a kernel
+- [x] #1 acfg.rs non-const loop bound returns a LowerError (not panic!)
+- [x] #2 Decision recorded (decision doc or PRD note) on whether in-array prefix scan gets language support or stays a kernel-level idiom
+- [x] #3 If supported: an example expresses prefix scan WITHOUT pushing the boundary into a kernel
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,3 +54,24 @@ AC#2 DONE: convention discovered — no nuc-nucleus/decisions/ dir, no ADR; proj
 AC#3 N/A-UNDER-DECISION: AC#3 ("if supported, example without kernel boundary") is conditional on AC#2. Under the recorded kernel-level-idiom decision v2 does NOT support a boundary-free form, so no such example is a v2 deliverable — documented explicitly in the PRD §6.2.5 "Consequence for TASK-0179 AC#3" paragraph + here. NOT faked. 04-prefix-sum is the canonical accepted kernel-level idiom (differentially green both backends, per TASK-0039). AC#3 folded into the deferred future-language-work item.
 AUDIT RESULT: the other acfg.rs panic sites (bind_arg undeclared symbol ~887, kernel-id/data_out expects ~911/921, resolve_worker_set no-placement ~982, worker-not-in-name-table ~999) inspected + classified KEEP — genuine cannot-happen-for-link-valid-IR invariants (lowering rejects UnknownIdent/AssignmentTargetNotData; link enforces placement per PRD §6.3.2). No additional user-reachable panic found in build_acfg reachable paths. No follow-up task needed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Converted the recurring panic-not-diagnostic in build_acfg into a typed error and recorded the in-array-scan language decision (TASK-0179, surfaced by TASK-0039).
+
+AC#1 (code fix) — build_acfg now returns Result<ACFG, BuildAcfgError>:
+- New pub enum BuildAcfgError (Debug/Clone/PartialEq/Eq, Display, impl std::error::Error) + pub enum LoopBoundEnd{Lower,Upper}, modelled byte-for-byte on the BlockTransformError/SidecarError precedent. Variant NonConstLoopBound{var:String, end:LoopBoundEnd, expr:IrExpr} with an actionable, source-free Display.
+- Both eval_const panics (lo & hi) replaced with Err(NonConstLoopBound); build_seq/build_stmt thread the Result. Exported from compiler lib. Driver maps it like its siblings ("acfg build error: {e}"). 38 test/bench callers mechanically -> .expect("build_acfg").
+- Reachability is REAL (verified, not assumed): algo::lower::lower_index_expr -> resolve_ident resolves in-scope iteration variables, so a triangular loop `for j : 0 .. i` parses/lowers/links cleanly; eval_const (consts-only) then returns None. This is diagnosable user input, not a link-valid-IR invariant.
+- Characterisation test (tests/acfg.rs build_acfg_non_const_loop_bound_is_typed_error_not_panic) mirrors TASK-0170: inline triangular program, asserts expect_err + variant + var="j" + end=Upper + expr=Ident("i") + Display. Pins the recurring class shut at this site.
+- KEPT-as-panic (audited + classified): bind_arg undeclared symbol, kernel-id/data_out expects, resolve_worker_set no-placement, worker-not-in-name-table — all genuine cannot-happen-for-link-valid-IR invariants (lowering rejects UnknownIdent/AssignmentTargetNotData; link enforces placement, PRD §6.3.2). No additional user-reachable panic found; no follow-up filed.
+
+AC#2 (decision) — recorded as PRD §6.2.5 (no decisions/ dir or ADR convention exists; project records design-scope decisions as PRD notes). "Recorded decision: in-array prefix scan is a kernel-level idiom for v2": the 3 sublanguage properties making carried scan inexpressible, the accepted v2/M3 decision (kernel-level idiom; 04-prefix-sum the canonical differentially-green realisation), rationale (kernel boundary = the designed §6.2.2 escape hatch; keeps the algo sublanguage minimal/analyzable per §6.2.3/§6.2.4), and clamp/scan/segmented-scan/guarded-first-iter/triangular-bounds explicitly deferred as future LANGUAGE work (not v2/M3).
+
+AC#3 — NOT-APPLICABLE under the AC#2 decision and documented as such (PRD §6.2.5 "Consequence for TASK-0179 AC#3" + task notes). v2 has no boundary-free form, so no such example is a v2 deliverable; fabricating one would misrepresent the language. 04-prefix-sum is the canonical accepted kernel-level idiom. NOT faked.
+
+Gate (nix develop, run before each commit): just test 0 failed (40 binaries; new BuildAcfgError test green); cargo clippy --workspace -D warnings clean; just e2e UNCHANGED 30 total / 26 pass / 0 fail / 4 skipped / 0 required-fail (zero behaviour change for valid programs); just determinism-check byte-identical 30/26/0; determinism-check-negative + xbackend-check-negative both correctly bite; just ci green end-to-end.
+
+Commits: 8cc1279 (compiler: typed BuildAcfgError), 45d836a (docs(PRD): kernel-level-idiom decision). No AI credit (verified). Limitations: the typed-error path is reachable only via triangular/iter-var-dependent bounds — no v2 example exercises it in e2e (correct: all valid programs still produce Ok); the negative test is the coverage.
+<!-- SECTION:FINAL_SUMMARY:END -->
