@@ -20,6 +20,10 @@ pub mod passes;
 pub mod petri;
 pub mod sched;
 pub mod sidecar;
+// Zero-dep, NUC_TRACE-gated diagnostics facility. The `nuc_trace!`
+// macro is `#[macro_export]`ed at the crate root; this module holds
+// its sink + the decision rationale (TASK-0154).
+pub mod trace;
 
 pub use acfg::{
     build_acfg, ACFGNode, BuildAcfgError, DataAccess, DataflowDag, DataflowEdge, LoopBoundEnd,

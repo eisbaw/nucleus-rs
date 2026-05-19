@@ -133,13 +133,19 @@
 //!   `mixed_block_and_nonblock_program_pairs_the_nonblock_transfer`)
 //!   are paired here. This is a deliberate conservative choice: it
 //!   never *collapses* a per-tile halo transfer (no 05/07-blocked
-//!   regression), but it *silently defers* an entangled non-block
-//!   transfer. No example schedule hits the entangled shape today
-//!   (single-`block=` programs put the block nest and any plain loop
-//!   as siblings). The precise per-Wait classification needs
-//!   TASK-0150 (index-based invariance); the deferral is owned by
-//!   TASK-0149. Pinned by
-//!   `block_nested_in_plain_loop_strands_the_invariant_wait`.
+//!   regression), but it *defers* an entangled non-block transfer.
+//!   The deferral is **traceable, not invisible**: each skipped
+//!   symbol/seq is reported via the `NUC_TRACE`-gated `nuc_trace!`
+//!   facility (TASK-0154, closes TASK-0151 AC#2) at both skip sites
+//!   (Pass A's opaque-Repeat arm and Pass B's `collect_waits`
+//!   exclusion). It is silent on the default path — setting
+//!   `NUC_TRACE=1` surfaces every deferred `(symbol, seq)`. No
+//!   example schedule hits the entangled shape today (single-`block=`
+//!   programs put the block nest and any plain loop as siblings). The
+//!   precise per-Wait classification needs TASK-0150 (index-based
+//!   invariance); the deferral is owned by TASK-0149. Pinned by
+//!   `block_nested_in_plain_loop_strands_the_invariant_wait`;
+//!   trace coverage by `block_deferral_is_traceable_under_nuc_trace`.
 //!
 //! - **Idempotence by structural skip.** Re-running the pass detects
 //!   that a Wait already precedes the consumer Operation (and a Push
@@ -276,7 +282,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // M2-acceptance path (example 02-split).
     let new_root = {
         let (hoisted, escaped_at_root) =
-            hoist_invariant_waits(new_root, &[], &inner_block_iter_vars);
+            hoist_invariant_waits(new_root, &[], &inner_block_iter_vars, &name_data);
         // A Wait that bubbled all the way out of the tree had no
         // producing scope anywhere (its data is produced by no
         // Operation in the whole ACFG). For a well-formed ACFG this
@@ -831,6 +837,69 @@ fn contains_block_inner(node: &ACFGNode, block_inner: &BTreeSet<IterVar>) -> boo
     }
 }
 
+/// Resolve a `DataId` back to its source symbol name for diagnostics.
+/// Mirrors the existing reverse-lookup idiom used by the TASK-0152
+/// escaped-Wait panic. `<unknown>` only if the id is absent from the
+/// name table (a malformed ACFG, not normal input).
+fn data_symbol(name_data: &BTreeMap<String, DataId>, id: DataId) -> &str {
+    name_data
+        .iter()
+        .find_map(|(n, d)| (*d == id).then_some(n.as_str()))
+        .unwrap_or("<unknown>")
+}
+
+/// Collect every Xfer placeholder (Push or Wait) inside an *opaque*
+/// block-governed subtree, so the cross-scope finaliser can name what
+/// it is deferring instead of skipping it invisibly (TASK-0154 /
+/// TASK-0151 AC#2). This walks the whole subtree (including nested
+/// Repeats) because the deferral applies to the entire opaque nest.
+fn collect_deferred_xfers(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
+    match node {
+        ACFGNode::Xfer(x) => out.push(x.clone()),
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Repeat { body, .. } => collect_deferred_xfers(body, out),
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_deferred_xfers(c, out);
+            }
+        }
+    }
+}
+
+/// Emit one `NUC_TRACE` line per Xfer placeholder left for the
+/// TASK-0149/0150 per-tile path by an opaque block-governed subtree.
+/// Silent unless `NUC_TRACE` is set (zero output on the default path —
+/// determinism/e2e safe). Worded as a deliberate deferral, not an
+/// error: the per-tile Push/Wait is owned by TASK-0149's per-tile
+/// finalisation, not a bug in this pass.
+fn trace_block_deferral(
+    pass: &str,
+    subtree: &ACFGNode,
+    name_data: &BTreeMap<String, DataId>,
+) {
+    // Cheap structural guard mirrors the macro guard: skip the walk
+    // entirely on the default (silent) path.
+    if !(crate::trace::trace_enabled() || crate::trace::test_sink_active()) {
+        return;
+    }
+    let mut xfers = Vec::new();
+    collect_deferred_xfers(subtree, &mut xfers);
+    for x in xfers {
+        crate::nuc_trace!(
+            "transfer_inject({pass}): cross-scope finalisation deferred for \
+             block-governed symbol `{}` (data {:?}, seq {:?}, {:?}, {:?} -> \
+             {:?}) — per-tile Push/Wait is owned by TASK-0149/0150, not \
+             skipped in error",
+            data_symbol(name_data, x.data),
+            x.data,
+            x.seq,
+            x.role,
+            x.src,
+            x.dst
+        );
+    }
+}
+
 /// Number of Operations in the subtree that write `data`. Used only
 /// by a debug-assert guarding the single-assignment invariant
 /// (TASK-0153); not on the release hot path.
@@ -847,6 +916,11 @@ fn hoist_invariant_waits(
     node: ACFGNode,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
     block_inner: &BTreeSet<IterVar>,
+    // Threaded purely for the deferral trace (TASK-0154): the skip
+    // decision is the only place that knows *what* is being deferred,
+    // so the trace is emitted at the decision site (fail/trace where
+    // the choice is made), not reconstructed elsewhere.
+    name_data: &BTreeMap<String, DataId>,
 ) -> (ACFGNode, Vec<XferPlaceholder>) {
     match node {
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => (leaf, Vec::new()),
@@ -858,8 +932,11 @@ fn hoist_invariant_waits(
         // (TASK-0151). The TASK-0143 HoistSink already positioned its
         // per-tile Waits during `inject_in_node`; lifting them further
         // would collapse per-tile sub-region transfers into one. Leave
-        // it untouched; nothing escapes.
+        // it untouched; nothing escapes. The deferral is *traceable*
+        // via NUC_TRACE (TASK-0154, closes TASK-0151 AC#2) — silent on
+        // the default path, so determinism/e2e output is unchanged.
         node @ ACFGNode::Repeat { .. } if contains_block_inner(&node, block_inner) => {
+            trace_block_deferral("hoist/PassA", &node, name_data);
             (node, Vec::new())
         }
         ACFGNode::Repeat {
@@ -870,7 +947,7 @@ fn hoist_invariant_waits(
         } => {
             let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
-            let (body2, escaped) = hoist_invariant_waits(*body, &nested, block_inner);
+            let (body2, escaped) = hoist_invariant_waits(*body, &nested, block_inner, name_data);
 
             let mut produced = BTreeSet::new();
             produced_data_set(&body2, &mut produced);
@@ -931,7 +1008,7 @@ fn hoist_invariant_waits(
                         slots.push((Slot::Wait(x), Vec::new()));
                     }
                     other => {
-                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile, block_inner);
+                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile, block_inner, name_data);
                         slots.push((Slot::Node(c2), esc));
                     }
                 }
@@ -1177,20 +1254,29 @@ fn collect_push_seqs(node: &ACFGNode, seqs: &mut BTreeSet<u64>) {
 /// Collect Waits eligible for whole-symbol Push finalisation. Waits
 /// inside a block-governed Repeat nest are excluded (TASK-0151): their
 /// per-tile Push is TASK-0149's job, not this pass's.
-fn collect_waits(node: &ACFGNode, block_inner: &BTreeSet<IterVar>, out: &mut Vec<XferPlaceholder>) {
+fn collect_waits(
+    node: &ACFGNode,
+    block_inner: &BTreeSet<IterVar>,
+    name_data: &BTreeMap<String, DataId>,
+    out: &mut Vec<XferPlaceholder>,
+) {
     match node {
         ACFGNode::Xfer(x) if x.role == XferRole::Wait => out.push(x.clone()),
         ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
         ACFGNode::Repeat { body, .. } => {
             if contains_block_inner(node, block_inner) {
-                // Opaque block nest — TASK-0149 owns its Pushes.
+                // Opaque block nest — TASK-0149 owns its Pushes. The
+                // exclusion is traceable via NUC_TRACE (TASK-0154,
+                // closes TASK-0151 AC#2): silent by default so the
+                // determinism/e2e snapshot is byte-unchanged.
+                trace_block_deferral("collect_waits/PassB", node, name_data);
                 return;
             }
-            collect_waits(body, block_inner, out);
+            collect_waits(body, block_inner, name_data, out);
         }
         ACFGNode::Sequence(children) => {
             for c in children {
-                collect_waits(c, block_inner, out);
+                collect_waits(c, block_inner, name_data, out);
             }
         }
     }
@@ -1205,7 +1291,7 @@ fn splice_pushes_global(
     collect_push_seqs(&root, &mut have_seqs);
 
     let mut waits: Vec<XferPlaceholder> = Vec::new();
-    collect_waits(&root, block_inner, &mut waits);
+    collect_waits(&root, block_inner, name_data, &mut waits);
 
     for w in waits {
         // Idempotence keyed on `seq` ALONE — deliberately not on
