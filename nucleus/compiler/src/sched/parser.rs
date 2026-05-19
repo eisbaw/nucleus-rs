@@ -767,6 +767,42 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 /// `workers`/`worker_class`), never `}`, so the guard never rejects a
 /// real (even broken) directive — recovery still fires for any
 /// directive that *starts* but fails to parse.
+///
+/// # Follow-on error count (measured — read before trusting "one")
+///
+/// The `;`-only sync set is coarse, exactly as on the algorithm side
+/// (TASK-0199). Two shapes, both bounded and deterministic, both
+/// measured via the real `parse_sched`:
+///
+/// - **Flat directive, one typo, valid tail, clean `}`** (e.g. a bad
+///   `loop`/`place`/`workers` directive): EXACTLY 1 error. The
+///   recovery consumes that directive's own `;`, the loop resumes,
+///   the valid tail absorbs it, the `}`-guard terminates cleanly. No
+///   follow-on.
+///
+/// - **Single error INSIDE a brace-delimited body** —
+///   `worker_class IDENT { field; field; };` or
+///   `memory_region IDENT { field; field; };`, whose *fields are
+///   themselves inner-`;`-terminated*: UP TO **+2** bounded
+///   deterministic follow-ons (3 errors total): the genuine primary,
+///   then the `;`-only recovery consumes the inner field `;` and
+///   **desyncs onto the next (even valid) field** (inner-field
+///   cascade), then trips the **structural `}`** that closes the
+///   brace body. This is the *exact sched analog of the algorithm
+///   `for { ... }`-body nested-`;` shape* — sched HAS this shape; it
+///   is NOT "max one". (An earlier TASK-0087 disclosure and commit
+///   `0c935a5`'s message wrongly claimed sched had no such case and a
+///   max follow-on of ONE — that was an undercount, the same class
+///   TASK-0199 already had to correct on the algo side from
+///   "one"→"two"; corrected here. Pinned by
+///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_bounded_follow_ons_*`.)
+///
+/// In both shapes the primary error is always first and always
+/// correct, the count does NOT scale with program size, and it is a
+/// deterministic function of the source. This is acceptable for a
+/// research compiler, NOT a cascade. The refinement (anchor the sync
+/// set on directive-/field-start keywords so the brace-body case
+/// collapses to the primary only) is TASK-0199 (algo + sched).
 fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
     // Repetition element: leading layout, then a non-consuming check
     // that we are NOT at the closing `}` (the loop terminator), then

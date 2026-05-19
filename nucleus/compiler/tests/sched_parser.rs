@@ -654,6 +654,131 @@ fn pathological_input_terminates_bounded_and_deterministic() {
     );
 }
 
+/// TASK-0087 review-gate correction: the SCHED analog of the algo
+/// `for{}`-body nested-`;` shape (TASK-0199). A single syntax error
+/// INSIDE a brace-delimited `worker_class { ... }` / `memory_region
+/// { ... }` body — whose fields are themselves inner-`;`-terminated —
+/// does NOT collapse to one error under the `;`-only sync set. The
+/// `;`-only recovery consumes the inner field `;`, then desyncs on
+/// the next field, and finally trips the structural brace that closes
+/// the body, so the genuine primary surfaces with TWO bounded,
+/// deterministic follow-ons (3 total: the primary, an inner-field
+/// cascade, and a structural close-brace). This is the exact shape
+/// the original TASK-0087 disclosure WRONGLY claimed did not exist on
+/// sched ("max follow-on is ONE / no algo `for{}`-body case"); it
+/// does. Measured via the real `parse_sched`. This fixture PINS that
+/// measured shape (exact count, per-error line:col, kind) so the
+/// bound cannot silently regress and so the recurring
+/// undercount-honesty class — which recurred here precisely because
+/// every other recovery fixture used only FLAT directives — is
+/// closed. When TASK-0199's keyword-anchored sync set lands, this
+/// shape must collapse to the primary only; this test (and TASK-0199
+/// AC#2) is the gate for that.
+#[test]
+fn nested_brace_body_error_surfaces_bounded_follow_ons_worker_class() {
+    // Line 1: prologue.
+    // Line 2: `worker_class cc {` — opens the brace body.
+    // Line 3: `simd = @;` — the genuine PRIMARY error (`@` after
+    //         `simd =`), inner-`;`-terminated field.
+    // Line 4: `memory = shared;` — a VALID field, but the `;`-only
+    //         recovery from line 3 desyncs onto it (inner-field
+    //         cascade follow-on).
+    // Line 5: `};` — the brace-body close; structural follow-on.
+    // Line 6: valid `workers` decl (recovery must still reach it).
+    // Line 7: valid `place`.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class cc {
+        simd = @;
+        memory = shared;
+    };
+    workers = { host };
+    place k on host;
+}
+";
+    let e1 = expect_errs(src);
+    let e2 = expect_errs(src);
+    assert_eq!(
+        e1, e2,
+        "nested-brace-body recovery must be a deterministic function of the source"
+    );
+    // Measured shape (real `parse_sched`, TASK-0087 correction probe):
+    // EXACTLY 3 = genuine primary (L3C16, the `@`) + inner-field
+    // cascade (L4C15, the `s` of `shared`) + structural `}` (L5C5).
+    // This is +2 bounded follow-ons — the sched analog of the algo
+    // `for{}` shape, NOT the falsely-disclosed "max ONE".
+    let es = e1.errors();
+    assert_eq!(
+        es.len(),
+        3,
+        "expected exactly 3 (primary + inner-field cascade + structural }}): {es:?}"
+    );
+    assert_eq!((es[0].line, es[0].column), (3, 16), "primary @ : {es:?}");
+    assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "{es:?}");
+    assert_eq!(
+        (es[1].line, es[1].column),
+        (4, 15),
+        "inner-field cascade (desync onto valid `memory` field): {es:?}"
+    );
+    assert_eq!(es[1].kind, ParseErrorKind::Unexpected, "{es:?}");
+    assert_eq!(
+        (es[2].line, es[2].column),
+        (5, 5),
+        "structural follow-on at the brace-body closing `}}`: {es:?}"
+    );
+    assert_eq!(es[2].kind, ParseErrorKind::Unexpected, "{es:?}");
+    // The genuine primary is always first and always correct — the
+    // follow-ons are bounded noise, never a scaling cascade.
+    assert_eq!(e1.first().line, 3, "primary must be earliest: {es:?}");
+}
+
+/// Companion to the `worker_class` fixture: the SAME nested-brace
+/// follow-on shape on a `memory_region { ... }` body, confirming it
+/// is a property of the inner-`;`-terminated brace body in general,
+/// not one directive. Same measured 3-error shape (primary +
+/// inner-field cascade + structural `}`).
+#[test]
+fn nested_brace_body_error_surfaces_bounded_follow_ons_memory_region() {
+    // Line 3: `size = @;` — genuine PRIMARY (`@` after `size =`).
+    // Line 4: `per_worker = true;` — valid field; recovery desyncs
+    //         onto it (inner-field cascade).
+    // Line 5: `};` — structural follow-on.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    memory_region r {
+        size = @;
+        per_worker = true;
+    };
+    workers = { host };
+    place k on host;
+}
+";
+    let e1 = expect_errs(src);
+    let e2 = expect_errs(src);
+    assert_eq!(e1, e2, "must be deterministic");
+    let es = e1.errors();
+    assert_eq!(
+        es.len(),
+        3,
+        "expected exactly 3 (primary + inner-field cascade + structural }}): {es:?}"
+    );
+    assert_eq!((es[0].line, es[0].column), (3, 16), "primary @ : {es:?}");
+    assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "{es:?}");
+    assert_eq!(
+        (es[1].line, es[1].column),
+        (4, 10),
+        "inner-field cascade (desync onto valid `per_worker` field): {es:?}"
+    );
+    assert_eq!(es[1].kind, ParseErrorKind::Unexpected, "{es:?}");
+    assert_eq!(
+        (es[2].line, es[2].column),
+        (5, 5),
+        "structural follow-on at the brace-body closing `}}`: {es:?}"
+    );
+    assert_eq!(es[2].kind, ParseErrorKind::Unexpected, "{es:?}");
+    assert_eq!(e1.first().line, 3, "primary must be earliest: {es:?}");
+}
+
 // --------------------------------------------------------------------
 // Time-literal handling
 // --------------------------------------------------------------------
@@ -912,3 +1037,4 @@ loop i : block=8;
         (4, 18),
     );
 }
+
