@@ -1,17 +1,16 @@
 ---
 id: TASK-0039
 title: 'Example 4: prefix sum (scan) — algorithm + naive + blocked + reference'
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 02:08'
+updated_date: '2026-05-19 02:17'
 labels:
   - M3
   - examples
   - validation
 dependencies:
-  - TASK-0179
   - TASK-0180
 ---
 
@@ -23,9 +22,9 @@ Two-pass scan algorithm. Stresses ordering between two passes that share a worke
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 examples/04-prefix-sum/ has algo, schedules (naive, blocked), kernels.rs, reference/, input.bin, reference.bin.
+- [x] #1 examples/04-prefix-sum/ has algo, schedules (naive, blocked), kernels.rs, reference/, input.bin, reference.bin.
 - [x] #2 Algorithm expressed as two sequential loops (upsweep, downsweep) or equivalent; integer-typed to stay deterministic.
-- [ ] #3 Test: passes M3 differential matrix on both pthreads-sync and mp-tcp-bufsync.
+- [x] #3 Test: passes M3 differential matrix on both pthreads-sync and mp-tcp-bufsync.
 - [x] #4 Implementation notes record design questions (e.g. how to encode the two-pass pattern without procedure abstraction in Nuc).
 - [x] #5 Implementation notes record honest limitations (parallel scan tree is not used here; this is sequential-style for simplicity, since v2 doesn't have prefix-scan as a built-in).
 <!-- AC:END -->
@@ -69,6 +68,8 @@ AC#3 status: the M3 differential matrix PASSES on BOTH backends (24 total, 0 req
 ORCHESTRATOR HONESTY CORRECTION (phase3-ralph gate: qa GO, mped-architect NO-GO-on-status-only). Was set Done/all-5-ACs; AC#1 ("naive,blocked") + AC#3 ("M3 differential both backends") NOT met for blocked (04-prefix-sum/blocked double-counts 2x reference, honestly [[skip]]+#[ignore]). Same precedent as the TASK-0036 Done over-claim. Corrected NOT re-gamed: In Progress; AC#1/#3 unchecked; deps += task-0179, task-0180. Flips Done when TASK-0180 lands and 04/blocked moves [[skip]]->[[required]] green both backends. AC#2/#4/#5 genuinely met + reviewer-confirmed (3-pass rectangular reduction-accumulator is a LEGITIMATE encoding — 2 real RAW inter-pass edges on the shared worker, MORE stress than the AC minimum, not a purpose-drop). qa re-ran: test 364/0/2; e2e 28/22/0/required-fail0 x3 non-flaky; 04/naive byte-identical to std-only independent oracle BOTH backends (mp-tcp output.bin sha256==reference.bin); determinism byte-identical; clippy clean; no python; the blocked skip is genuinely informational not faked; artefacts exemplary-honest. Implementer WORK honest+high-quality; only Done STATUS over-claimed — status fixed, work preserved.
 
 FORWARD-CARRY from TASK-0180 (landed, commit 3297066): the 04-prefix-sum/blocked accumulator double-count is FIXED at the root. 04-prefix-sum/blocked is now byte-identical to the independent std-only reference oracle on BOTH pthreads-sync and mp-tcp-bufsync; the e2e_example_04 blocked test is un-#[ignore]'d and PASSING, and e2e-matrix 04/blocked moved [[skip]]->[[required]] for both backends (e2e 28 total / 24 pass / 0 required-fail, 3x non-flaky). This task's AC#1 (naive,blocked schedules) and AC#3 (M3 differential matrix both backends, blocked included) are now satisfiable. NOT self-checking this task's ACs (forward-carry only, per honest-partial discipline — the orchestrator/0039 owner re-verifies and closes).
+
+ORCHESTRATOR RECONCILIATION → Done (post TASK-0180). The real blocker (04-prefix-sum/blocked double-counting → AC#1 "naive,blocked" + AC#3 "M3 differential both backends" failing) is RESOLVED: TASK-0180 (per-occurrence BlockTag rebinding) is Done and independently reviewer-verified — 04-prefix-sum/blocked is now [[required]] and byte-identical to the std-only reference oracle on BOTH pthreads-sync and mp-tcp-bufsync (qa re-ran e2e 28/24/0/required-fail0 x3 non-flaky; the e2e_example_04 blocked test is un-#[ignore]d and passing). AC#1/#3 now genuinely MET; AC#2/#4/#5 were already met+reviewer-confirmed (3-pass reduction-accumulator is a legitimate "equivalent" per AC#2; honest limitations recorded per AC#5). Removed the spurious task-0179 dependency I had over-added: TASK-0179 (ideal in-array scan inexpressibility + the acfg.rs:697 panic-not-diagnostic) is an INDEPENDENT language/diagnostic-quality finding, NOT a gate on 0039s acceptance — AC#2 explicitly accepts "or equivalent" and AC#5 explicitly accepts "v2 doesnt have prefix-scan built-in" as an honest limitation. Dep now task-0180 only (satisfied). All 5 ACs genuinely met + verified via the TASK-0180 review gate (not self-cert). TASK-0039 Done.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -12,12 +12,15 @@
 //! Both `naive` and `blocked` are ACTIVE (not `#[ignore]`'d). The
 //! `blocked` schedule tiles each pass's distinct outer-row variable
 //! (`hy`, `vy`) with `block=4` over H=16 (evenly divisible, no
-//! remainder). Because each tiled variable occurs EXACTLY ONCE in the
-//! EventList (distinct names per pass), the backend's
-//! `divisible_inner_block_vars` count==1 guard is satisfied and
-//! absolute-index rebinding is applied — so the per-pixel
-//! accumulators do NOT double-count (contrast 04-prefix-sum, whose
-//! reused loop-var name trips that guard, TASK-0180). Honest scope:
+//! remainder). Since TASK-0180 the backend rebinds the absolute
+//! index PER OCCURRENCE from each inner loop's own `Event::Loop`
+//! `BlockTag` (the old global `divisible_inner_block_vars` count==1
+//! heuristic was deleted) — so each tiled pass emits
+//! `LO + tile*N + inner` and the per-pixel accumulators do NOT
+//! double-count. (Contrast 04-prefix-sum: a loop-var name reused
+//! across 3 passes, which the deleted count heuristic mis-handled —
+//! the bug TASK-0180 fixed; both are now correct via per-occurrence
+//! tags.) Honest scope:
 //! single-`host`, so this cell pins the *compile-doesn't-reject +
 //! passes-don't-panic + bit-identical result* property; the tiling
 //! decomposition's numeric correctness is pinned by the

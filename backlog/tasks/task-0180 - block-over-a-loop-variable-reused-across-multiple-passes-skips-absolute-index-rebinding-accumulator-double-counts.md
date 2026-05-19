@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:18'
-updated_date: '2026-05-19 02:08'
+updated_date: '2026-05-19 02:17'
 labels:
   - M3
   - backend
@@ -28,9 +28,6 @@ Surfaced by TASK-0039 (example 04-prefix-sum, blocked schedule). divisible_inner
 - [x] #1 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList count)
 - [x] #2 A blocked schedule over a loop var reused across >=2 passes (accumulator) is bit-identical to its naive schedule on both backends
 - [x] #3 04-prefix-sum/blocked moves from [[skip]] to [[required]] for both backends; existing blocked cells (05,07) stay green
-- [x] #4 block_transform tags each strip-mined inner loop so the backend rebinds per-occurrence (not by global EventList occurrence count)
-- [x] #5 A blocked schedule over a loop var reused across two or more passes (accumulator) is bit-identical to its naive schedule on both backends
-- [x] #6 04-prefix-sum blocked moves from skip to required for both backends; existing blocked cells (05, 07) stay green; determinism stays green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -53,6 +50,8 @@ VERIFIED codegen: 04-prefix-sum/blocked now emits `(0_i64 + (b__tile * 2_i64) + 
 GATE (inside nix develop, all green): just test 365 pass / 0 fail / 1 ignored (the +1/-1 vs prior 364/2 = the now-active e2e_example_04 blocked test; remaining ignored = unrelated e2e_03 TASK-0117/0126 distributed). just e2e 28 total / 24 pass / 0 fail / 4 skip / 0 required-fail, 3x non-flaky, 04/blocked PASS both pthreads-sync AND mp-tcp-bufsync, 05/06/07-blocked unchanged-PASS (was 22 pass pre-fix; +2 = the 2 newly-required 04/blocked cells). determinism-check byte-identical 28/24/0; determinism-check-negative correctly bites. clippy --workspace -D warnings clean.
 
 HONEST LIMITATION: qa-test-runner / mped-architect sub-agents could not be spawned in this environment (no agent Task tool); performed the equivalent verification + architect self-review manually (full gate x3 + codegen inspection proving the fix is real, not accidental).
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO, both read-only. Numbers RE-RUN by reviewers (not transcribed): just test 365/0/1; just e2e 28/pass24/fail0/skip4/required-fail0 x3 verbatim non-flaky (04-prefix-sum/blocked PASS BOTH backends, now [[required]]; 05/06/07-blocked stay green); determinism byte-identical; negative bites x2; clippy clean. Fix proven REAL by codegen inspection: 04/blocked emits (0_i64 + (b__tile * 2_i64) + b) in all 3 reused-b passes (was raw b => 2x double-count); 05/blocked full nest 1+y__tile*4+y, partial nest 1+3*4+y. 05-stencil/blocked output.bin sha256 == reference.bin (behaviour unchanged though now structurally rebound, no longer blur3-idempotence-masked). Architect: BlockTag-on-Event::Loop is the MPED-correct root-cause fix (per-IterVar structures structurally cannot distinguish the 3 conflated cases — shared reused IterVar was the exact collision; FireBinding precedent; additive serde-default; Eq/Hash agree; deterministic; no Net-touch; LO single-sourced in sidecar); all 4 cases trace correct; deleted heuristic fully excised, no vestige, inner_block_iter_vars correctly kept (live transfer-hoist consumer). TASK-0173 AC#1/#2 genuinely IMPLEMENTED+exercised (05/blocked now structurally rebound) and HONESTLY forward-carried not self-closed; 0173 AC#3 (synthetic non-divisible accumulator differential) honest open residual. TASK-0181 (multi-worker blocked rebind) sound fail-loud partial — verified NO tier-1 multi-worker blocked schedule exists (only 05/distributed has block= and is [[skip]] upstream). ORCHESTRATOR HARDENING: collapsed the 3 duplicate ACs (#4/#5/#6 were verbatim restatements of #1/#2/#3 — removed, requirements preserved in #1-3); fixed the stale e2e_example_06.rs:14-20 comment (architect finding #1, the recurring comment-lies-about-code class — it still described the deleted divisible_inner_block_vars count==1 guard as live; now describes per-occurrence BlockTag; re-verified e2e_example_06 still passes). TASK-0180 Done is HONEST: all 3 distinct ACs met + independently verified + both reviews GO.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
