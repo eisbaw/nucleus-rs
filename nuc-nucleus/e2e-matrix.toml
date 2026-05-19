@@ -320,6 +320,35 @@ schedule = "blocked"
 backend  = "mp-tcp-bufsync"
 milestone = "M3"
 
+# 04-prefix-sum/blocked-nondiv: the TASK-0173 AC#3 proof. `loop j :
+# block=6` tiles Pass 3's within-block-scan ACCUMULATION axis `j`
+# (range 0..BS=64). 64 is NOT divisible by 6 (64 = 6*10 + 4), so
+# `apply_block_transforms` emits a full-tile nest (num_full=10 tiles
+# of 6) PLUS one trailing partial tile (width 4). `j` is a genuine
+# non-idempotent accumulator axis (out[b][i] is read+written each
+# step) and occurs EXACTLY ONCE (Pass 3 only), isolating the
+# non-divisible accumulator path with no reused-name confound — unlike
+# 05-stencil/blocked whose `blur3` is idempotent and so cannot by
+# itself prove the accumulator case. This cell is byte-identical to
+# the same hand-written backend-independent `reference.bin` oracle as
+# 04-prefix-sum/naive on BOTH backends: the non-divisible blocked
+# accumulator computes the SAME prefix sums as naive, proving
+# TASK-0180's per-occurrence partial-tile rebinding
+# (full: 0 + j__tile*6 + j; partial: 0 + 10*6 + j) correct over a
+# non-idempotent body. Single-`host`, so under mp-tcp single-process
+# (shared single-worker renderer ⇒ byte-identical to pthreads-sync).
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "pthreads-sync"
+milestone = "M3"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "mp-tcp-bufsync"
+milestone = "M3"
+
 # Skip `milestone` tag: the milestone band in which this informational
 # skip is *active*. The distributed schedule is M5 work (PRD §11) and
 # none of these triples is a `[[required]]`, so the skip exemption

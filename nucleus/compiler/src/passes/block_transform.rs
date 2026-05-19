@@ -778,4 +778,116 @@ mod tests {
         assert_eq!(inner(&seq[0]), 0..64, "inner of 64 for tile 0");
         assert_eq!(inner(&seq[1]), 0..36, "inner of 36 for tile 1");
     }
+
+    /// TASK-0173 AC#3 shape: the exact strip-mine emitted for
+    /// 04-prefix-sum/blocked-nondiv's `loop j : block=6` over Pass 3's
+    /// within-block-scan ACCUMULATION axis `for j : 0 .. BS` (BS=64).
+    ///
+    /// 64 is NOT divisible by 6 (64 = 6*10 + 4): `num_full = 10`,
+    /// `rem = 4`. This pins the per-occurrence `BlockTag`s the backend
+    /// rebinds from for a NON-IDEMPOTENT accumulator axis — the full
+    /// nest gets `is_partial=false` (backend emits abs
+    /// `LO + j__tile*6 + j`) and the trailing partial tile gets
+    /// `is_partial=true` (backend emits the CONSTANT base abs
+    /// `LO + num_full*6 + j` = `LO + 10*6 + j`). A wrong tag here
+    /// would make the non-divisible accumulator e2e cell diverge from
+    /// `reference.bin`; this is the structural companion to that e2e
+    /// differential proof.
+    #[test]
+    fn rewrite_node_prefix_sum_nondiv_j_block6() {
+        let mut tile_map: BTreeMap<IterVar, (String, IterVar, u64)> = BTreeMap::new();
+        tile_map.insert(IterVar(0), ("j__tile".to_string(), IterVar(7), 6));
+        // 04-prefix-sum Pass-3 `for j : 0 .. 64`, block=6.
+        let n = ACFGNode::Repeat {
+            iter_var: IterVar(0),
+            range: 0..64,
+            body: Box::new(ACFGNode::Sequence(vec![op()])),
+            block_tag: None,
+        };
+        let out = rewrite_node(n, &tile_map);
+
+        let seq = match out {
+            ACFGNode::Sequence(s) => s,
+            other => panic!("non-divisible must be a Sequence, got {other:?}"),
+        };
+        assert_eq!(
+            seq.len(),
+            2,
+            "block=6 over 0..64 -> full-tile nest + trailing partial tile"
+        );
+
+        // Reuse the same nest-shape contract as the 05-stencil shape
+        // test: outer is the tile var (untagged), inner keeps the
+        // source var and carries exactly the expected per-occurrence
+        // BlockTag.
+        let check_nest = |node: &ACFGNode,
+                          outer_range: std::ops::Range<i64>,
+                          inner_len: i64,
+                          expect_tag: BlockTag| {
+            match node {
+                ACFGNode::Repeat {
+                    iter_var: outer,
+                    range,
+                    body,
+                    block_tag: outer_tag,
+                } => {
+                    assert_eq!(*outer, IterVar(7), "outer is the tile var");
+                    assert_eq!(*range, outer_range);
+                    assert_eq!(*outer_tag, None, "tile loop must NOT be tagged");
+                    match &**body {
+                        ACFGNode::Sequence(inner_seq) => {
+                            assert_eq!(inner_seq.len(), 1);
+                            match &inner_seq[0] {
+                                ACFGNode::Repeat {
+                                    iter_var: inner,
+                                    range: ir,
+                                    block_tag: inner_tag,
+                                    ..
+                                } => {
+                                    assert_eq!(*inner, IterVar(0), "inner keeps source var");
+                                    assert_eq!(*ir, 0..inner_len);
+                                    assert_eq!(
+                                        *inner_tag,
+                                        Some(expect_tag),
+                                        "inner loop's per-occurrence BlockTag"
+                                    );
+                                }
+                                o => panic!("inner not Repeat: {o:?}"),
+                            }
+                        }
+                        o => panic!("nest body not Sequence: {o:?}"),
+                    }
+                }
+                o => panic!("nest not Repeat: {o:?}"),
+            }
+        };
+
+        // 64 / 6 = 10 full tiles of width 6 -> full-nest tag
+        // (backend: abs j = LO + j__tile*6 + j).
+        check_nest(
+            &seq[0],
+            0..10,
+            6,
+            BlockTag {
+                block_n: 6,
+                num_full: 10,
+                is_partial: false,
+            },
+        );
+        // 64 % 6 = 4: a single (0..1) trailing tile of width 4 ->
+        // partial tag. Backend rebinds the CONSTANT base
+        // abs j = LO + num_full*6 + j = LO + 10*6 + j (NOT
+        // tile*6 which would be 0 — the wrong base for an
+        // accumulator).
+        check_nest(
+            &seq[1],
+            0..1,
+            4,
+            BlockTag {
+                block_n: 6,
+                num_full: 10,
+                is_partial: true,
+            },
+        );
+    }
 }

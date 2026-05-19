@@ -1,0 +1,115 @@
+// Blocked NON-divisible schedule: one worker, tiling Pass 3's
+// within-block-scan ACCUMULATION axis `j` with a block size that
+// does NOT divide its range. This is the TASK-0173 AC#3 proof.
+//
+// Same placement as the naive schedule (single `host`, all five
+// kernels on it). The only difference is `loop j : block=6;`, which
+// tiles Pass 3's innermost `for j : 0 .. BS` loop. Per PRD §6.3.3
+// `block=` is orthogonal to worker placement; a single-worker blocked
+// schedule exercises ONLY the tiling transform (TASK-0030's
+// `apply_block_transforms`) plus the per-occurrence absolute-index
+// rebinding the backend reads from `Event::Loop.block_tag`
+// (TASK-0180).
+//
+// Why `loop j` and `block=6` — DELIBERATELY NON-DIVISIBLE
+// (this is the TASK-0173 AC#3 accumulator proof)
+// --------------------------------------------------------
+// This INVERTS the rationale documented in the sibling
+// `blocked.sched.nuc` (and in 06-separable-filter/blocked, which
+// stays DELIBERATELY DIVISIBLE on purpose). Those pick a divisor so
+// no remainder tile is ever produced. This schedule does the
+// opposite, on purpose, to close TASK-0173 AC#3:
+//
+//   "A synthetic non-divisible blocked schedule over an ACCUMULATOR
+//    kernel produces bit-identical output to its naive schedule."
+//
+// The variable `j` is Pass 3's innermost loop:
+//
+//     for b : 0 .. NB { for i : 0 .. BS { for j : 0 .. BS {
+//         out[b][i] <-- block_scan(out[b][i], in_arr[b][j],
+//                                  block_off[b], i, j);
+//     } } }
+//
+// Three properties make this the strongest possible AC#3 witness:
+//
+//   1. `j` is a GENUINE ACCUMULATOR axis, NOT idempotent. Each step
+//      reads `out[b][i]` and writes `out[b][i]` back — an additive
+//      fold over `j` (block_scan adds `in_arr[b][j]` iff `j <= i`,
+//      and the block offset once at `j == 0`). This is exactly the
+//      non-idempotent shape 05-stencil's `blur3` is NOT (blur3 writes
+//      `img_out = f(img_in)` and never reads its own output, so it
+//      survives gross re-recomputation by accident). If the absolute
+//      `j` rebinding were wrong on ANY tile, the `j <= i` / `j == 0`
+//      predicates would select the wrong input terms and the running
+//      sum would diverge — a wrong byte, not a silently-absorbed one.
+//
+//   2. `j` is the ACTUAL reduction axis being tiled (not an
+//      independent partition axis like `b` in the sibling schedule,
+//      where blocks are independent and tiling only reorders them).
+//      Tiling the reduction axis itself is the case most sensitive
+//      to a base-offset bug.
+//
+//   3. `j` occurs EXACTLY ONCE in the algorithm (only Pass 3). This
+//      isolates the non-divisible accumulator path cleanly: there is
+//      no reused-name interaction (the TASK-0180 reused-`b` /
+//      count==1 history) confounding the diagnosis — a failure here
+//      is unambiguously the non-divisible partial-tile rebinding.
+//
+// Non-divisibility arithmetic: BS = N / NB = 256 / 4 = 64, so
+// `for j : 0 .. BS` has length L = 64. `block=6` does NOT divide 64
+// (64 = 6*10 + 4): `apply_block_transforms` rewrites it into a
+// FULL-tile nest of `num_full = 10` tiles of width 6 PLUS one
+// trailing PARTIAL tile of width `rem = 4` (its tile loop is `0..1`).
+// num_full = 10 >= 2 and the remainder 4 is non-zero, so BOTH the
+// full-tile nest and the trailing-partial-tile nest are emitted —
+// exactly the two-sibling-nest path TASK-0180's per-occurrence
+// `block_tag` rebinding covers:
+//   - full-tile nest (is_partial = false):
+//         abs j = LO + j__tile*N + j   = 0 + j__tile*6 + j
+//   - trailing partial tile (is_partial = true):
+//         abs j = LO + num_full*N + j  = 0 + 10*6 + j   (= 60 + j)
+// The constant `num_full*N` (= 60) base is the whole point: the
+// partial tile's own tile loop is `0..1` so `tile*N` would be 0 (the
+// WRONG base, 0..4 instead of 60..64). The tag-driven rebinding
+// supplies the correct constant base.
+//
+// AC#3 proof obligation: this cell MUST be byte-identical to the
+// hand-written backend-independent `reference.bin` (an independent
+// straight-line running sum) on BOTH tier-1 backends — i.e. the
+// non-divisible blocked accumulator computes the SAME prefix sums as
+// the naive schedule. A green cell here is the AC#3 proof; a wrong
+// byte would be a REAL non-divisible-accumulator bug (a valuable
+// finding, NOT to be faked or silently skipped).
+//
+// Honest scope (mirrors 05-stencil / 07-matmul / the sibling
+// blocked): single-`host`, so the backend routes the shared
+// single-worker renderer; this cell pins the *compile-doesn't-reject
+// + passes-don't-panic + bit-identical result* property over a
+// non-divisible accumulator. The tiling decomposition's structural
+// numeric correctness is additionally pinned by the
+// `block_transform` unit tests. Under mp-tcp this is single-process
+// (0 used workers ⇒ the shared single-worker renderer ⇒ arithmetic
+// byte-identical to pthreads-sync).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place save_output   on host;
+    place accumulate    on host;
+    place exclusive_add on host;
+    place block_scan    on host;
+
+    // Tile Pass 3's within-block-scan ACCUMULATION axis `j` into
+    // 6-wide chunks. BS=64 is NOT evenly divisible by 6
+    // (64 = 6*10 + 4): exactly num_full=10 full tiles plus ONE
+    // trailing partial tile of width 4. This DELIBERATELY produces a
+    // remainder tile over a non-idempotent accumulator — the
+    // TASK-0173 AC#3 proof that TASK-0180's per-occurrence
+    // partial-tile rebinding (LO + num_full*N + inner) is correct.
+    // `j` occurs exactly once (Pass 3 only), so this isolates the
+    // non-divisible accumulator path with no reused-name confound.
+    loop j : block=6;
+
+    // No transfer directives — single worker, no cross-worker edges.
+}
