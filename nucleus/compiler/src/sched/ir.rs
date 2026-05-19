@@ -337,6 +337,41 @@ pub enum SchedLowerError {
     /// A `place K on W` names a worker with no `workers` entry.
     /// Carries the kernel for diagnostic context.
     UnknownPlaceWorker { kernel: String, worker: String },
+    /// A name in `memory_region R { accessible_by = { ... } }` is
+    /// neither a declared `worker_class` nor a declared worker.
+    /// Resolution is schedule-internal (TASK-0095) — not deferred to
+    /// the linker — because every legal target is declared in the
+    /// same schedule. `region` is the owning memory region; `name`
+    /// is the offending identifier as written.
+    UnknownAccessibleByName { region: String, name: String },
+
+    // ----- Duplicate / conflicting placement targets -----
+    /// `place K on { w0, w0 }` — the same worker named twice in one
+    /// placement set. Rejected as a hard error rather than silently
+    /// folded to a unique set (TASK-0094): a repeated worker in a
+    /// distributed placement is a user mistake, and a silent fold
+    /// would hide it (fail-fast; decision-0003). `kernel` is the
+    /// placed kernel; `worker` is the duplicated name.
+    DuplicatePlaceWorker { kernel: String, worker: String },
+
+    // ----- Duplicate / conflicting directive options -----
+    /// A value-bearing `loop` option keyword appears more than once
+    /// on one `loop` directive (e.g. `loop i : block=64, block=128`).
+    /// Grammar §2 note 7 / §5.1: option order is insignificant and
+    /// the option list is a *set*, so a repeated value-bearing key is
+    /// a semantic conflict the lowering rejects. `var` is the loop
+    /// variable; `option` is the duplicated keyword.
+    DuplicateLoopOption { var: String, option: String },
+    /// A value-bearing `transfer` option keyword appears more than
+    /// once on one `transfer` directive (e.g. `buffer=1, buffer=2`).
+    /// `data` is the transfer's data symbol; `option` is the keyword.
+    DuplicateTransferOption { data: String, option: String },
+    /// `sync` and `async` both appear on one `transfer` directive
+    /// (e.g. `transfer x : sync, async`). Grammar §2 note 5 / §5.3:
+    /// they are mutually exclusive. `data` is the transfer's data
+    /// symbol. Also covers `sync, sync` / `async, async` (a repeated
+    /// transfer-mode flag is the same user error class).
+    ConflictingTransferMode { data: String },
 
     // ----- Option-value validation -----
     /// `block=0`, `vectorize=0`, `unroll=0`, `pipeline=0` — strictly
@@ -406,6 +441,31 @@ impl std::fmt::Display for SchedLowerError {
             SchedLowerError::UnknownPlaceWorker { kernel, worker } => write!(
                 f,
                 "`place {kernel} on {worker}` references undeclared worker `{worker}`"
+            ),
+            SchedLowerError::UnknownAccessibleByName { region, name } => write!(
+                f,
+                "`memory_region {region}` `accessible_by` lists `{name}`, \
+                 which is not a declared `worker_class` or worker"
+            ),
+            SchedLowerError::DuplicatePlaceWorker { kernel, worker } => write!(
+                f,
+                "`place {kernel}` lists worker `{worker}` more than once \
+                 in its placement set"
+            ),
+            SchedLowerError::DuplicateLoopOption { var, option } => write!(
+                f,
+                "loop `{var}` has more than one `{option}` option; \
+                 each option may appear at most once"
+            ),
+            SchedLowerError::DuplicateTransferOption { data, option } => write!(
+                f,
+                "transfer `{data}` has more than one `{option}` option; \
+                 each option may appear at most once"
+            ),
+            SchedLowerError::ConflictingTransferMode { data } => write!(
+                f,
+                "transfer `{data}` is both `sync` and `async`; \
+                 these options are mutually exclusive"
             ),
             SchedLowerError::ZeroLoopOption { var, option } => write!(
                 f,

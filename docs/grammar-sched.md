@@ -187,6 +187,12 @@ parser accepts; later passes reject.
    as `worker_class fe_core { ... };` earlier in the same schedule;
    `place_data img_in in shared_sram;` requires `shared_sram` to be a
    declared `memory_region`. Forward references are rejected.
+   `memory_region R { accessible_by = { n1, n2 } }` requires every
+   `nK` to be a declared `worker_class` or worker name. This last
+   resolution is purely *schedule-internal* (every legal target is
+   declared in the same schedule) and is performed by the SchedIR
+   lowering pass, not deferred to the linker (TASK-0095). An
+   undeclared name is `SchedLowerError::UnknownAccessibleByName`.
 5. **`sync` and `async` are mutually exclusive in one `TransferStmt`.**
    Both belong to `XferOpt` and the grammar allows them to appear in
    the same list — a semantic pass rejects `transfer x : sync, async;`
@@ -199,8 +205,13 @@ parser accepts; later passes reject.
 7. **Loop option composition order is not significant.** `loop x :
    block=64, vectorize=8, reuse;` and `loop x : reuse, vectorize=8,
    block=64;` parse to the same set. Semantic conflicts (e.g.
-   `block=64, block=128` on the same loop) are rejected at link time.
-   See §5.1.
+   `block=64, block=128` on the same loop) are rejected by the
+   SchedIR lowering pass (TASK-0093): each value-bearing option
+   keyword (`block`, `vectorize`, `unroll`, `pipeline`, `partition`;
+   for transfers `buffer`, `notify`) may appear at most once. The
+   bare flag `reuse` is idempotent — a repeated `reuse` is harmless
+   redundancy, not the value conflict this note targets, so it is
+   *not* rejected. `sync`/`async` are handled by note 5. See §5.1.
 8. **`check` references a loop variable, not a `loop`-directive.**
    The schedule can have `check loop frame : latency_max = 10ms;`
    without ever issuing `loop frame : ...;`. The check applies to the
@@ -208,6 +219,15 @@ parser accepts; later passes reject.
 9. **String literal in `schedule for "..."` is a path relative to the
    schedule file.** All existing examples use `"../prog.algo.nuc"`.
    The parser stores the raw string; the build driver resolves it.
+10. **A placement set names each worker at most once.**
+    `place k on { w0, w0 }` is a *hard error*
+    (`SchedLowerError::DuplicatePlaceWorker`), not silently folded to
+    the unique set `{ w0 }` (TASK-0094). PRD §6.3.2 was silent on the
+    duplicate case; the rule chosen here is reject-as-error on the
+    fail-fast principle (decision-0003): a repeated worker in a
+    distributed placement is a user mistake, and a silent fold would
+    change the placement the user wrote without telling them. The
+    rejection is performed by the SchedIR lowering pass.
 
 ## 3. What this grammar does not cover
 

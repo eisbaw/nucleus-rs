@@ -167,6 +167,34 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
         }
     }
 
+    // TASK-0095: validate `memory_region R { accessible_by = { ... } }`.
+    // Grammar §2 note 4 phrases name resolution as "the linker's job",
+    // but for `accessible_by` every legal target — a `worker_class`
+    // or a worker name — is declared in this same schedule, so the
+    // resolution is purely schedule-internal and is done here in
+    // lowering (not deferred to the linker). Scope: a plain
+    // "undeclared name" typed error. Did-you-mean fuzzy suggestions
+    // are deliberately out of scope — that is TASK-0096.
+    // Runs after the synthetic default class is injected and all
+    // workers are collected, so a name referring to a simple-form
+    // worker or the default class resolves correctly. Iteration is
+    // over the BTreeMap (deterministic order) so the first-error
+    // report is stable.
+    for region in ir.memory_regions.values() {
+        if let Some(names) = &region.accessible_by {
+            for name in names {
+                let declared = ir.worker_classes.contains_key(name)
+                    || ir.workers.contains_key(name);
+                if !declared {
+                    return Err(SchedLowerError::UnknownAccessibleByName {
+                        region: region.name.clone(),
+                        name: name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------------------
     // Pass 2: lower place / place_data / loop / transfer / check.
     // ----------------------------------------------------------------
@@ -203,6 +231,25 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
             ResolvedPlaceTarget::One(w.clone())
         }
         PlaceTarget::Many(ws) => {
+            // TASK-0094: a worker named twice in one placement set
+            // (`place k on { w0, w0 }`) is rejected as a hard error,
+            // NOT silently folded to a unique set. Rationale: a
+            // repeated worker in a distributed placement is a user
+            // mistake; a silent fold would change the placement the
+            // user wrote without telling them (fail-fast;
+            // decision-0003 — user-diagnosable input -> typed Result).
+            // Checked before the undeclared-worker check so the
+            // duplicate gets its specific message even when the
+            // repeated name is also undeclared.
+            let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
+            for w in ws {
+                if seen.insert(w.as_str(), ()).is_some() {
+                    return Err(SchedLowerError::DuplicatePlaceWorker {
+                        kernel: p.kernel.clone(),
+                        worker: w.clone(),
+                    });
+                }
+            }
             for w in ws {
                 check_worker_declared(&p.kernel, w, ir)?;
             }
@@ -258,6 +305,28 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
     if ir.loops.contains_key(&l.var) {
         return Err(SchedLowerError::DuplicateLoop { var: l.var.clone() });
     }
+    // TASK-0093: the grammar treats the option list as an unordered
+    // *set* (§2 note 7 / §5.1: `block=64, block=128` is a semantic
+    // conflict rejected post-parse). Each value-bearing keyword may
+    // appear at most once. `reuse` is a bare idempotent flag — note 7
+    // only calls out *value* conflicts, so a repeated `reuse` is
+    // harmless redundancy, not an error; we deliberately do not flag
+    // it (interpretation recorded: note 7 is silent on bare-flag
+    // repetition, and folding an idempotent flag is not the
+    // value-ambiguity the note targets).
+    {
+        let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
+        for opt in &l.options {
+            if let Some(kw) = loop_option_keyword(opt) {
+                if seen.insert(kw, ()).is_some() {
+                    return Err(SchedLowerError::DuplicateLoopOption {
+                        var: l.var.clone(),
+                        option: kw.to_string(),
+                    });
+                }
+            }
+        }
+    }
     let mut options = Vec::with_capacity(l.options.len());
     for opt in &l.options {
         options.push(lower_loop_option(&l.var, opt)?);
@@ -270,6 +339,21 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
         },
     );
     Ok(())
+}
+
+/// The keyword for a value-bearing loop option, for at-most-once
+/// duplicate detection (TASK-0093). `reuse` returns `None`: it is a
+/// bare idempotent flag and a repeated `reuse` is not the value
+/// conflict grammar §2 note 7 targets.
+fn loop_option_keyword(opt: &LoopOption) -> Option<&'static str> {
+    match opt {
+        LoopOption::Block(_) => Some("block"),
+        LoopOption::Vectorize(_) => Some("vectorize"),
+        LoopOption::Unroll(_) => Some("unroll"),
+        LoopOption::Pipeline(_) => Some("pipeline"),
+        LoopOption::Partition(_) => Some("partition"),
+        LoopOption::Reuse => None,
+    }
 }
 
 fn lower_loop_option(var: &str, opt: &LoopOption) -> Result<ResolvedLoopOption, SchedLowerError> {
@@ -304,6 +388,46 @@ fn lower_transfer(
         return Err(SchedLowerError::DuplicateTransfer {
             data: t.data.clone(),
         });
+    }
+    // TASK-0093: like loop options, the transfer option list is an
+    // unordered set. Two rules from the grammar §2 notes:
+    //  - note 5 / §5.3: `sync` and `async` are mutually exclusive in
+    //    one `TransferStmt`. We also reject a repeated mode flag
+    //    (`sync, sync`) under the same variant — it is the same user
+    //    error class (a transfer has exactly one mode).
+    //  - note 7 (same set semantics as loops): `buffer` and `notify`
+    //    are value-bearing and may appear at most once.
+    {
+        let mut mode_flags = 0usize;
+        let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
+        for opt in &t.options {
+            match opt {
+                TransferOption::Sync | TransferOption::Async => {
+                    mode_flags += 1;
+                    if mode_flags > 1 {
+                        return Err(SchedLowerError::ConflictingTransferMode {
+                            data: t.data.clone(),
+                        });
+                    }
+                }
+                TransferOption::Buffer(_) => {
+                    if seen.insert("buffer", ()).is_some() {
+                        return Err(SchedLowerError::DuplicateTransferOption {
+                            data: t.data.clone(),
+                            option: "buffer".to_string(),
+                        });
+                    }
+                }
+                TransferOption::Notify(_) => {
+                    if seen.insert("notify", ()).is_some() {
+                        return Err(SchedLowerError::DuplicateTransferOption {
+                            data: t.data.clone(),
+                            option: "notify".to_string(),
+                        });
+                    }
+                }
+            }
+        }
     }
     let mut options = Vec::with_capacity(t.options.len());
     for opt in &t.options {

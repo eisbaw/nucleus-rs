@@ -684,6 +684,159 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 // --------------------------------------------------------------------
+// TASK-0093: duplicate / mutually-exclusive directive options
+// --------------------------------------------------------------------
+
+#[test]
+fn negative_duplicate_loop_option() {
+    // `block=64, block=128` on one loop: value-bearing key twice.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop i : block=64, block=128;
+}
+";
+    let err = lower_str(src).expect_err("duplicate loop option must fail");
+    assert_eq!(
+        err,
+        SchedLowerError::DuplicateLoopOption {
+            var: "i".into(),
+            option: "block".into(),
+        }
+    );
+}
+
+#[test]
+fn negative_mutually_exclusive_transfer_sync_async() {
+    // grammar §2 note 5 / §5.3: sync and async cannot coexist.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    transfer x : sync, async;
+}
+";
+    let err = lower_str(src).expect_err("sync+async must fail");
+    assert_eq!(
+        err,
+        SchedLowerError::ConflictingTransferMode { data: "x".into() }
+    );
+}
+
+#[test]
+fn negative_duplicate_transfer_buffer_option() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    transfer x : async, buffer=1, buffer=2;
+}
+";
+    let err = lower_str(src).expect_err("duplicate buffer option must fail");
+    assert_eq!(
+        err,
+        SchedLowerError::DuplicateTransferOption {
+            data: "x".into(),
+            option: "buffer".into(),
+        }
+    );
+}
+
+#[test]
+fn positive_reordered_distinct_loop_options_still_lower() {
+    // §2 note 7 / §5.1: order is insignificant; distinct options OK.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop x : reuse, vectorize=8, block=64;
+}
+";
+    let ir = lower_str(src).expect("distinct reordered options must lower");
+    assert_eq!(ir.loops.get("x").unwrap().options.len(), 3);
+}
+
+#[test]
+fn positive_repeated_reuse_flag_is_not_a_conflict() {
+    // `reuse` is a bare idempotent flag — repetition is harmless
+    // redundancy, not the value conflict note 7 targets.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop x : reuse, reuse;
+}
+";
+    lower_str(src).expect("repeated bare `reuse` must lower");
+}
+
+// --------------------------------------------------------------------
+// TASK-0094: duplicate worker in a placement set
+// --------------------------------------------------------------------
+
+#[test]
+fn negative_duplicate_place_worker() {
+    // `place k on { w0, w0 }` — hard error, not a silent fold.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { w0, w1 };
+    place k on { w0, w0 };
+}
+";
+    let err = lower_str(src).expect_err("duplicate place worker must fail");
+    assert_eq!(
+        err,
+        SchedLowerError::DuplicatePlaceWorker {
+            kernel: "k".into(),
+            worker: "w0".into(),
+        }
+    );
+}
+
+#[test]
+fn positive_distinct_place_set_still_lowers() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { w0, w1 };
+    place k on { w0, w1 };
+}
+";
+    lower_str(src).expect("distinct place set must lower");
+}
+
+// --------------------------------------------------------------------
+// TASK-0095: accessible_by names must resolve schedule-internally
+// --------------------------------------------------------------------
+
+#[test]
+fn negative_undeclared_accessible_by_name() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    memory_region R { size = 1KB; accessible_by = { ghost }; };
+}
+";
+    let err = lower_str(src).expect_err("undeclared accessible_by name must fail");
+    assert_eq!(
+        err,
+        SchedLowerError::UnknownAccessibleByName {
+            region: "R".into(),
+            name: "ghost".into(),
+        }
+    );
+}
+
+#[test]
+fn positive_accessible_by_resolves_class_and_worker_names() {
+    // A worker_class name and a worker name both resolve internally.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class core { simd = none; };
+    workers = { host : core, w0 : core };
+    memory_region R { size = 1KB; accessible_by = { core, host }; };
+}
+";
+    let ir = lower_str(src).expect("declared accessible_by names must lower");
+    assert!(ir.memory_regions.contains_key("R"));
+}
+
+// --------------------------------------------------------------------
 // Sanity: an algo_path round-trips
 // --------------------------------------------------------------------
 
