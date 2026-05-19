@@ -1216,6 +1216,13 @@ struct DetCellResult {
     status: DetCellStatus,
     /// Combined wall-clock of both `nucleus build` invocations.
     elapsed: Duration,
+    /// `true` iff `maybe_perturb_for_nondet_test` actually mutated this
+    /// cell's `dir_b` tree (only ever true under `NUC_NONDET_TEST=1`).
+    /// Aggregated across the matrix to enforce the TASK-0187 AC#2
+    /// invariant: under the negative env gate, the `--check-determinism`
+    /// run must exit non-zero unless at least one tree was genuinely
+    /// perturbed — a uniform `Skipped` must NOT be invertible to OK.
+    perturbed: bool,
 }
 
 /// Drive the determinism check for one cell. Caller has already
@@ -1234,6 +1241,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 reason: reason.clone(),
             },
             elapsed: started.elapsed(),
+            perturbed: false,
         };
     }
 
@@ -1252,6 +1260,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 reason: format!("no capabilities.toml at {}", caps_path.display()),
             },
             elapsed: started.elapsed(),
+            perturbed: false,
         };
     }
 
@@ -1272,6 +1281,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     reason: format!("missing {} at {}", label, p.display()),
                 },
                 elapsed: started.elapsed(),
+                perturbed: false,
             };
         }
     }
@@ -1287,6 +1297,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     reason: format!("scratch a: {e}"),
                 },
                 elapsed: started.elapsed(),
+                perturbed: false,
             }
         }
     };
@@ -1300,6 +1311,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     reason: format!("scratch b: {e}"),
                 },
                 elapsed: started.elapsed(),
+                perturbed: false,
             }
         }
     };
@@ -1312,6 +1324,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 reason: format!("nucleus build a failed: {e}"),
             },
             elapsed: started.elapsed(),
+            perturbed: false,
         };
     }
     if let Err(e) = run_nucleus_build(paths, &cell, &algo, &sched, &kernels, &dir_b) {
@@ -1322,6 +1335,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 reason: format!("nucleus build b failed: {e}"),
             },
             elapsed: started.elapsed(),
+            perturbed: false,
         };
     }
 
@@ -1347,16 +1361,20 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
     // and needs no rebuild. Gated on the exact string "1"; a loud
     // stderr banner so a non-reproducible run is never silent. The bare
     // `determinism-check` path (env unset) does not touch either tree.
-    if let Err(e) = maybe_perturb_for_nondet_test(&dir_b) {
-        return DetCellResult {
-            cell,
-            required: planned.required,
-            status: DetCellStatus::Skipped {
-                reason: format!("NUC_NONDET_TEST perturbation: {e}"),
-            },
-            elapsed: started.elapsed(),
-        };
-    }
+    let did_perturb = match maybe_perturb_for_nondet_test(&dir_b) {
+        Ok(p) => p,
+        Err(e) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped {
+                    reason: format!("NUC_NONDET_TEST perturbation: {e}"),
+                },
+                elapsed: started.elapsed(),
+                perturbed: false,
+            };
+        }
+    };
 
     // Diff. We walk dir_a, look each file up in dir_b. After that we
     // sweep dir_b to catch files that exist only in b.
@@ -1370,6 +1388,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     reason: format!("walk dir a: {e}"),
                 },
                 elapsed: started.elapsed(),
+                perturbed: did_perturb,
             }
         }
     };
@@ -1383,6 +1402,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     reason: format!("walk dir b: {e}"),
                 },
                 elapsed: started.elapsed(),
+                perturbed: did_perturb,
             }
         }
     };
@@ -1407,6 +1427,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 ),
             }),
             elapsed: started.elapsed(),
+            perturbed: did_perturb,
         };
     }
     if let Some(rel) = set_b.difference(&set_a).next() {
@@ -1424,6 +1445,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                 ),
             }),
             elapsed: started.elapsed(),
+            perturbed: did_perturb,
         };
     }
 
@@ -1443,6 +1465,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                         reason: format!("read {}: {e}", path_a.display()),
                     },
                     elapsed: started.elapsed(),
+                    perturbed: did_perturb,
                 }
             }
         };
@@ -1456,6 +1479,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                         reason: format!("read {}: {e}", path_b.display()),
                     },
                     elapsed: started.elapsed(),
+                    perturbed: did_perturb,
                 }
             }
         };
@@ -1470,6 +1494,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     detail: format!("len a={} b={}", bytes_a.len(), bytes_b.len()),
                 }),
                 elapsed: started.elapsed(),
+                perturbed: did_perturb,
             };
         }
         if bytes_a != bytes_b {
@@ -1488,6 +1513,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
                     detail: byte_context(&bytes_a, &bytes_b, off),
                 }),
                 elapsed: started.elapsed(),
+                perturbed: did_perturb,
             };
         }
         files_compared += 1;
@@ -1498,6 +1524,7 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
         required: planned.required,
         status: DetCellStatus::Pass { files_compared },
         elapsed: started.elapsed(),
+        perturbed: did_perturb,
     }
 }
 
@@ -1505,42 +1532,60 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
 /// relocated from TASK-0145's inline `multi_worker.rs` branch).
 ///
 /// When `NUC_NONDET_TEST=1`, append a per-process nonce comment to the
-/// emitted `src/main.rs` in `tree` (the *b* build only — `a` is left
+/// emitted `Cargo.toml` in `tree` (the *b* build only — `a` is left
 /// pristine), so the two determinism trees diverge and the diff bites.
-/// Behaviour is byte-equivalent to the old inline injection: same
-/// `// NUC_NONDET_TEST nonce: pid=… nanos=…` line, same exact-`"1"`
-/// gate, same loud stderr banner. Unset / any other value is a no-op
-/// and the function does not read or touch the trees.
-fn maybe_perturb_for_nondet_test(tree: &std::path::Path) -> Result<(), String> {
+///
+/// Returns `Ok(true)` if a tree was actually perturbed, `Ok(false)` if
+/// the env gate was unset/other (a strict no-op — the function does not
+/// read or touch the tree), `Err` if the gate was set but the target
+/// file was missing.
+///
+/// Why `Cargo.toml` and not `src/main.rs` (TASK-0187, fixing the
+/// TASK-0157 partial-silent-neuter): EVERY backend emits `Cargo.toml`
+/// at the project root (pthreads-sync lib.rs ~272, mp-tcp-bufsync
+/// lib.rs ~132). `src/main.rs` is pthreads-ONLY — mp-tcp-bufsync emits
+/// `src/bin/<worker>.rs` and no `main.rs`, so the old target silently
+/// `Skipped` all ~13 mp-tcp cells on every run. `Cargo.toml` is
+/// backend-layout-agnostic. The injected line is a `#` TOML COMMENT
+/// (NOT a Rust `//` comment): `# NUC_NONDET_TEST nonce: …` is valid,
+/// inert TOML, so any downstream `cargo` parse of a generated project
+/// is unaffected, while `enumerate_files` (which walks the emitted
+/// out-dir, Cargo.toml at its root) still diffs it and the negative
+/// gate bites. Same per-process nonce (pid+nanos), same exact-`"1"`
+/// gate, same loud stderr banner as the relocated TASK-0145/0157 site.
+fn maybe_perturb_for_nondet_test(tree: &std::path::Path) -> Result<bool, String> {
     if std::env::var("NUC_NONDET_TEST").as_deref() != Ok("1") {
-        return Ok(());
+        return Ok(false);
     }
     eprintln!(
         "nucleus-e2e: WARNING: NUC_NONDET_TEST=1 — injecting a \
          per-process nonce into ONE emitted determinism tree ON PURPOSE \
          to test the determinism check. This run is NOT reproducible. \
-         Never set this in a real build (TASK-0145 / TASK-0157)."
+         Never set this in a real build (TASK-0145 / TASK-0157 / \
+         TASK-0187)."
     );
-    let main_rs = tree.join("src").join("main.rs");
-    if !main_rs.exists() {
+    let cargo_toml = tree.join("Cargo.toml");
+    if !cargo_toml.exists() {
         return Err(format!(
             "expected emitted `{}` not found — codegen layout drifted; \
-             update maybe_perturb_for_nondet_test (TASK-0157)",
-            main_rs.display()
+             every backend must emit Cargo.toml (TASK-0187)",
+            cargo_toml.display()
         ));
     }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut src =
-        fs::read_to_string(&main_rs).map_err(|e| format!("read {}: {e}", main_rs.display()))?;
+    let mut src = fs::read_to_string(&cargo_toml)
+        .map_err(|e| format!("read {}: {e}", cargo_toml.display()))?;
+    // `#` comment: valid, inert TOML. A Rust `//` line here would make
+    // the generated Cargo.toml unparseable — do not change this.
     src.push_str(&format!(
-        "\n// NUC_NONDET_TEST nonce: pid={} nanos={nanos}\n",
+        "\n# NUC_NONDET_TEST nonce: pid={} nanos={nanos}\n",
         std::process::id()
     ));
-    fs::write(&main_rs, src).map_err(|e| format!("write {}: {e}", main_rs.display()))?;
-    Ok(())
+    fs::write(&cargo_toml, src).map_err(|e| format!("write {}: {e}", cargo_toml.display()))?;
+    Ok(true)
 }
 
 /// Invoke `nucleus build` for one cell into `out_dir`. Returns Err
@@ -2045,6 +2090,67 @@ fn run() -> Result<i32, String> {
         let any_failed = det_results
             .iter()
             .any(|r| matches!(r.status, DetCellStatus::Failed(_)));
+
+        // TASK-0187 AC#2 — zero-perturbation guard.
+        //
+        // Recipe semantics (`just determinism-check-negative`,
+        // justfile:69) — note the INVERSION:
+        //
+        //   if  <harness>; then echo "FAIL: did NOT detect"; exit 1
+        //   else                echo "OK: correctly bit"      (exit 0)
+        //
+        // i.e. the recipe says "OK, the falsifier bit" iff this process
+        // exits NON-zero, and "FAIL, it did NOT detect" iff this
+        // process exits ZERO. In the normal negative run perturbation
+        // succeeds, the trees diverge, cells `Failed`, `any_failed` is
+        // true, we exit non-zero -> recipe prints OK. Correct.
+        //
+        // The partial-silent-neuter (TASK-0157 / the old `src/main.rs`
+        // target absent for every mp-tcp cell): those cells `Skipped`,
+        // contributing nothing to `any_failed`. If NO cell perturbed
+        // AND yet some unrelated cell `Failed`, the recipe would STILL
+        // print OK off that unrelated failure while the falsifier
+        // touched nothing — a false-confidence green.
+        //
+        // The invariant we must guarantee: under the negative env gate,
+        // the recipe may print OK ONLY IF >=1 tree was actually
+        // mutated. We enforce it by making zero perturbations force a
+        // CLEAN (exit 0) result REGARDLESS of any incidental `Failed`,
+        // so the recipe's `then` branch fires and it prints its loud
+        // "FAIL: ... did NOT detect" and exits 1. (Exiting non-zero
+        // here would be WRONG — the recipe would invert it to OK.)
+        //
+        // When the gate is unset, `perturbed` is false for every cell
+        // by construction and this whole block is inert: bare
+        // `determinism-check` keeps its normal Failed-driven exit and
+        // is byte-identical / unaffected.
+        if std::env::var("NUC_NONDET_TEST").as_deref() == Ok("1") {
+            let perturbed_cells = det_results.iter().filter(|r| r.perturbed).count();
+            if perturbed_cells == 0 {
+                eprintln!(
+                    "nucleus-e2e: FATAL: NUC_NONDET_TEST=1 but ZERO of \
+                     {} cell(s) were actually perturbed — the \
+                     determinism falsifier touched nothing. Forcing a \
+                     CLEAN exit so `determinism-check-negative` reports \
+                     its loud FAIL (the falsifier did NOT bite) instead \
+                     of inverting a no-op into a false OK (TASK-0187 \
+                     AC#2). Likely codegen layout drift: every backend \
+                     must emit Cargo.toml.",
+                    det_results.len()
+                );
+                // Exit 0 on purpose: the recipe inverts this into its
+                // "FAIL: did NOT detect" branch (exit 1) — a loud,
+                // gate-visible failure, never a silent OK.
+                return Ok(0);
+            }
+            eprintln!(
+                "nucleus-e2e: NUC_NONDET_TEST=1 — {perturbed_cells} of \
+                 {} cell(s) were perturbed (negative-gate sanity: \
+                 >=1 required).",
+                det_results.len()
+            );
+        }
+
         return Ok(if any_failed { 1 } else { 0 });
     }
 
@@ -2738,5 +2844,213 @@ mystery = 42
         assert!(r.timings.compile.is_none());
         assert!(r.timings.build.is_none());
         assert!(r.timings.run.is_none());
+    }
+
+    // ---- TASK-0187: layout-agnostic perturbation + zero-perturb guard.
+    //
+    // `NUC_NONDET_TEST` is process-global; Rust runs `#[test]`s on
+    // parallel threads. Serialise the env-sensitive cases under one
+    // mutex so set_var/remove_var cannot interleave. These are the
+    // ONLY tests (and `maybe_perturb_for_nondet_test` the only code)
+    // that touch this var, so the mutex is a complete fence.
+    fn nondet_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // A poisoned lock just means a prior env test panicked; we
+        // still want a clean guard rather than cascading failures.
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn nondet_tmp(tag: &str) -> PathBuf {
+        let t = std::env::temp_dir().join(format!(
+            "nucleus-e2e-nondet-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(&t).expect("mk tmp tree");
+        t
+    }
+
+    const SAMPLE_CARGO_TOML: &str =
+        "[package]\nname = \"nuc-generated\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+
+    #[test]
+    fn perturb_mutates_cargo_toml_and_stays_valid_toml() {
+        // AC#1 / AC#3: with the env gate set, the function must
+        // actually mutate the tree's Cargo.toml (>=1 byte added) and
+        // the result must still be parseable TOML — a `#` comment, not
+        // a Rust `//` line. This is the file EVERY backend emits, so
+        // mp-tcp cells (which emit no src/main.rs) are no longer
+        // silently skipped.
+        let _guard = nondet_env_lock();
+        let tree = nondet_tmp("mutate");
+        let cargo = tree.join("Cargo.toml");
+        fs::write(&cargo, SAMPLE_CARGO_TOML).expect("write cargo");
+        let before = fs::read_to_string(&cargo).expect("read before");
+
+        std::env::set_var("NUC_NONDET_TEST", "1");
+        let perturbed = maybe_perturb_for_nondet_test(&tree);
+        std::env::remove_var("NUC_NONDET_TEST");
+
+        assert_eq!(
+            perturbed,
+            Ok(true),
+            "gate=1 with a present Cargo.toml must report a perturbation"
+        );
+        let after = fs::read_to_string(&cargo).expect("read after");
+        assert_ne!(before, after, "Cargo.toml content must have changed");
+        assert!(
+            after.len() > before.len(),
+            "perturbation must append bytes (got before={} after={})",
+            before.len(),
+            after.len()
+        );
+        assert!(
+            after.contains("# NUC_NONDET_TEST nonce: pid="),
+            "expected a `#` TOML comment nonce, got:\n{after}"
+        );
+        assert!(
+            !after.contains("// NUC_NONDET_TEST"),
+            "must NOT inject a Rust `//` line into TOML"
+        );
+        // The whole point of Cargo.toml-over-main.rs: the generated
+        // project's manifest must still parse so downstream `cargo`
+        // is unaffected.
+        let parsed: Result<toml::Table, _> = after.parse();
+        assert!(
+            parsed.is_ok(),
+            "perturbed Cargo.toml must remain valid TOML, parse error: {:?}",
+            parsed.err()
+        );
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn perturb_is_strict_noop_when_env_unset() {
+        // AC#3: the bare `determinism-check` path. With the gate
+        // unset the function must not read or touch the tree and must
+        // report `Ok(false)` (no perturbation) — this is what keeps
+        // `just determinism-check` byte-identical.
+        let _guard = nondet_env_lock();
+        let tree = nondet_tmp("noop");
+        let cargo = tree.join("Cargo.toml");
+        fs::write(&cargo, SAMPLE_CARGO_TOML).expect("write cargo");
+
+        // Ensure the var is genuinely unset for this case.
+        std::env::remove_var("NUC_NONDET_TEST");
+        let perturbed = maybe_perturb_for_nondet_test(&tree);
+
+        assert_eq!(
+            perturbed,
+            Ok(false),
+            "env unset must be a strict no-op (no perturbation)"
+        );
+        let after = fs::read_to_string(&cargo).expect("read after");
+        assert_eq!(
+            after, SAMPLE_CARGO_TOML,
+            "env-unset path must leave Cargo.toml byte-identical"
+        );
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn perturb_errs_when_gate_set_but_cargo_toml_missing() {
+        // AC#2 (per-cell arm): if the gate is set but the layout
+        // drifted so Cargo.toml is absent, the function returns Err.
+        // The harness maps that to a non-Pass and the matrix-wide
+        // zero-perturb guard (asserted below) then makes the run a
+        // hard fail rather than a recipe-inverted false OK.
+        let _guard = nondet_env_lock();
+        let tree = nondet_tmp("missing"); // empty: no Cargo.toml
+
+        std::env::set_var("NUC_NONDET_TEST", "1");
+        let perturbed = maybe_perturb_for_nondet_test(&tree);
+        std::env::remove_var("NUC_NONDET_TEST");
+
+        match perturbed {
+            Err(msg) => assert!(
+                msg.contains("Cargo.toml") && msg.contains("layout drifted"),
+                "error should name the missing Cargo.toml and layout drift, got: {msg}"
+            ),
+            Ok(v) => panic!("expected Err when Cargo.toml absent under gate, got Ok({v})"),
+        }
+
+        let _ = fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn zero_perturbation_guard_makes_negative_recipe_fail() {
+        // AC#2 (matrix arm), proven directly. The TRUE invariant is
+        // the *recipe verdict*, not the raw exit code, because the
+        // `determinism-check-negative` recipe INVERTS the exit code:
+        //
+        //   harness exit 0       -> recipe prints "FAIL: did NOT
+        //                            detect" and exits 1
+        //   harness exit non-0   -> recipe prints "OK: correctly bit"
+        //
+        // So to make a zero-perturbation run a loud gate FAIL we must
+        // exit the harness *cleanly* (0) under the gate; the recipe
+        // then fires its FAIL branch. This models that exact seam plus
+        // the recipe inversion against synthetic result sets. (The
+        // behavioural >=5-run live bite is the gate's job — this locks
+        // the *decision* so it can't silently regress.)
+
+        // Mirrors the AC#2 seam in main(): returns the harness process
+        // exit code.
+        fn harness_exit_code(gate_on: bool, perturbed: &[bool], any_failed: bool) -> i32 {
+            if gate_on && perturbed.iter().filter(|p| **p).count() == 0 {
+                // Force a CLEAN exit so the recipe's FAIL branch fires.
+                return 0;
+            }
+            if any_failed {
+                1
+            } else {
+                0
+            }
+        }
+        // Mirrors justfile:69: recipe verdict from harness exit code.
+        // true == "OK: correctly bit", false == "FAIL: did NOT detect".
+        fn recipe_says_ok(harness_exit: i32) -> bool {
+            harness_exit != 0
+        }
+
+        // Partial-silent-neuter: gate on, NOTHING perturbed, but some
+        // unrelated cell Failed (the exact false-confidence scenario).
+        // The harness must exit CLEAN so the recipe says FAIL.
+        let ex = harness_exit_code(true, &[false, false, false], true);
+        assert_eq!(ex, 0, "zero perturbations under gate must exit CLEAN");
+        assert!(
+            !recipe_says_ok(ex),
+            "zero perturbations under gate MUST make the recipe print \
+             FAIL (not invert a no-op into OK)"
+        );
+
+        // Genuine bite: gate on, >=1 cell perturbed, diff Failed ->
+        // harness exits non-zero -> recipe says OK. This is the only
+        // path that may print OK.
+        let ex = harness_exit_code(true, &[false, true, false], true);
+        assert_eq!(ex, 1, "genuine perturbation+diff must exit non-zero");
+        assert!(
+            recipe_says_ok(ex),
+            "a genuine >=1-perturbation bite must let the recipe print OK"
+        );
+
+        // Gate OFF (bare determinism-check): guard inert; exit driven
+        // purely by Failed cells, byte-identical path undisturbed.
+        assert_eq!(
+            harness_exit_code(false, &[false, false, false], false),
+            0,
+            "gate off, no failures -> clean exit (byte-identical path)"
+        );
+        assert_eq!(
+            harness_exit_code(false, &[false, false, false], true),
+            1,
+            "gate off must keep normal Failed-driven non-zero exit"
+        );
     }
 }
