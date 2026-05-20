@@ -800,11 +800,19 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 ///   `0c935a5`'s message, AND the first "+2 bounded / not a cascade"
 ///   correction were all WRONG undercounts (the recurring undercount
 ///   class — caught 3× by the review gate on this task). The true
-///   measured `n+2` behaviour and its fix live in **TASK-0199**
-///   (keyword/field-anchored sync set). The
-///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_*`
-///   fixtures pin only the `n=1` instance and are to be parametrised
-///   over `n` by TASK-0199.
+///   measured `n+2` behaviour is parametrically pinned over
+///   `n ∈ {0, 1, 2, 5}` by
+///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_n_plus_two_parametric_{worker_class,memory_region}`
+///   (TASK-0087 close-out cycle, applying the K×L parametric
+///   discipline that closed the analogous algorithm-lowering cascade
+///   class at TASK-0092 cycle-3). Its fix — collapsing the cascade
+///   to the primary error only — lives in **TASK-0199**
+///   (keyword/field-anchored sync set); once that lands, the
+///   parametric `== n + 2` assertion flips mechanically to `== 1`
+///   (TASK-0199 AC#7). The `n=1`-pinned fixtures
+///   (`nested_brace_body_error_surfaces_bounded_follow_ons_*`) are
+///   retained as detailed per-error-column witnesses for the n=1
+///   case alongside the parametric counts.
 ///
 /// The flat-directive case is correct (exactly 1) and is the common
 /// path; the brace-body `n+2` cascade is a known, honestly-disclosed

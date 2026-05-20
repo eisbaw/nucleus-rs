@@ -779,6 +779,201 @@ schedule for \"../prog.algo.nuc\" {
     assert_eq!(e1.first().line, 3, "primary must be earliest: {es:?}");
 }
 
+/// TASK-0087 close-out (cycle-3, parametric measurement discipline
+/// borrowed from TASK-0092 cycle-3 / `algo_lower::transitive_cascade_
+/// collapses_for_any_k_l`). The `n=1` siblings above pin a single
+/// brace-body shape. The masking-defect class that bit TASK-0080 /
+/// TASK-0081 / TASK-0087 (3×) was precisely that count/scaling
+/// disclosures were never measured PARAMETRICALLY over the dimension
+/// they claim to scale with — a single-shape fixture cannot tell n+2
+/// apart from n+1, n+3, or anything else. This test sweeps `n` (the
+/// number of valid inner-`;`-terminated fields AFTER the primary
+/// error) over `{0, 1, 2, 5}` and asserts the disclosed `n + 2`
+/// linear cascade holds EXACTLY for each `n`, deterministically
+/// across two runs. The primary error stays anchored at line 3,
+/// column 16 (the `@`) regardless of `n`. The structural `}` follow-on
+/// stays the LAST error and sits at column 5 of the line that holds
+/// the brace-body close. When TASK-0199's keyword-anchored sync set
+/// lands, this assertion flips from `== n + 2` to `== 1` (TASK-0199
+/// AC#7).
+///
+/// `worker_class` only has two distinct valid field kinds (`simd`,
+/// `memory`) but `field.repeated()` accepts duplicates (last-write-
+/// wins at parse time; duplicate detection is a downstream concern),
+/// so the parametric trailing-tail is built by repeating
+/// `memory = shared;`. Any field kind is fine — the cascade is a
+/// property of the recovery sync set, not the field choice.
+#[test]
+fn nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class() {
+    for n in [0usize, 1, 2, 5] {
+        // Lines:
+        //   1: `schedule for "../prog.algo.nuc" {`
+        //   2: `    worker_class cc {`
+        //   3: `        simd = @;`           (primary, @ at col 16)
+        //   4..3+n: `        memory = shared;` (n valid trailing fields)
+        //   4+n: `    };`                     (structural }, col 5)
+        //   5+n: `    workers = { host };`
+        //   6+n: `    place k on host;`
+        //   7+n: `}`
+        let mut src = String::from("schedule for \"../prog.algo.nuc\" {\n");
+        src.push_str("    worker_class cc {\n");
+        src.push_str("        simd = @;\n");
+        for _ in 0..n {
+            src.push_str("        memory = shared;\n");
+        }
+        src.push_str("    };\n");
+        src.push_str("    workers = { host };\n");
+        src.push_str("    place k on host;\n");
+        src.push_str("}\n");
+
+        let e1 = expect_errs(&src);
+        let e2 = expect_errs(&src);
+        assert_eq!(
+            e1, e2,
+            "n={n}: parametric nested-brace-body recovery must be deterministic"
+        );
+        let es = e1.errors();
+        let expected = n + 2;
+        assert_eq!(
+            es.len(),
+            expected,
+            "n={n}: expected exactly n + 2 = {expected} errors (primary + \
+             {n} inner-field cascade(s) + structural }}); got {} — source:\n{src}\n\
+             errors: {es:?}",
+            es.len()
+        );
+        // Primary at line 3 column 16 (the `@`), regardless of n.
+        assert_eq!(
+            (es[0].line, es[0].column),
+            (3, 16),
+            "n={n}: primary `@` must be at (L3, C16); got {es:?}"
+        );
+        assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "n={n}: {es:?}");
+        assert_eq!(
+            e1.first().line,
+            3,
+            "n={n}: primary must be earliest in deterministic order: {es:?}"
+        );
+        // Last error is the structural `}` follow-on at the brace-body
+        // close line (4 + n), column 5 (4 spaces of indent then `}`).
+        let close_line = 4 + n;
+        assert_eq!(
+            (es[expected - 1].line, es[expected - 1].column),
+            (close_line, 5),
+            "n={n}: structural `}}` follow-on must be at (L{close_line}, C5); got {es:?}"
+        );
+        assert_eq!(
+            es[expected - 1].kind,
+            ParseErrorKind::Unexpected,
+            "n={n}: structural follow-on kind: {es:?}"
+        );
+        // Each intermediate cascade error sits on one of the
+        // `memory = shared;` lines (lines 4..3+n) and is `Unexpected`.
+        // We don't pin the exact intra-line column past n=1 — that's a
+        // chumsky-implementation detail of how `memory_region` keyword
+        // prefix-matches and reports its rejection point — but the
+        // per-error line MUST be one of the inner-field lines, never
+        // outside the body. This kills any "off-by-one cascade
+        // overshoot" regression even though we don't over-pin the
+        // column.
+        for (i, e) in es.iter().enumerate().take(expected - 1).skip(1) {
+            let line_ok = (4..=3 + n).contains(&e.line);
+            assert!(
+                line_ok,
+                "n={n}: cascade error {i} must sit on a valid \
+                 inner-field line in [4, {}], got line {} — {es:?}",
+                3 + n,
+                e.line
+            );
+            assert_eq!(e.kind, ParseErrorKind::Unexpected, "n={n} i={i}: {es:?}");
+        }
+    }
+}
+
+/// `memory_region` counterpart to
+/// `nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class`.
+/// Same dimension swept (`n` valid trailing fields after the primary
+/// `size = @;`), same `n + 2` linear cascade asserted parametrically.
+/// `memory_region` has three valid field kinds (`size`,
+/// `accessible_by`, `per_worker`); we repeat `per_worker = true;` for
+/// the trailing tail — same rationale as the `worker_class` sibling
+/// (the cascade is a sync-set property, not a field-kind property).
+#[test]
+fn nested_brace_body_error_surfaces_n_plus_two_parametric_memory_region() {
+    for n in [0usize, 1, 2, 5] {
+        // Lines:
+        //   1: `schedule for "../prog.algo.nuc" {`
+        //   2: `    memory_region r {`
+        //   3: `        size = @;`            (primary, @ at col 16)
+        //   4..3+n: `        per_worker = true;` (n valid trailing fields)
+        //   4+n: `    };`                     (structural }, col 5)
+        //   5+n: `    workers = { host };`
+        //   6+n: `    place k on host;`
+        //   7+n: `}`
+        let mut src = String::from("schedule for \"../prog.algo.nuc\" {\n");
+        src.push_str("    memory_region r {\n");
+        src.push_str("        size = @;\n");
+        for _ in 0..n {
+            src.push_str("        per_worker = true;\n");
+        }
+        src.push_str("    };\n");
+        src.push_str("    workers = { host };\n");
+        src.push_str("    place k on host;\n");
+        src.push_str("}\n");
+
+        let e1 = expect_errs(&src);
+        let e2 = expect_errs(&src);
+        assert_eq!(
+            e1, e2,
+            "n={n}: parametric memory_region nested-brace-body recovery \
+             must be deterministic"
+        );
+        let es = e1.errors();
+        let expected = n + 2;
+        assert_eq!(
+            es.len(),
+            expected,
+            "n={n}: expected exactly n + 2 = {expected} errors (primary + \
+             {n} inner-field cascade(s) + structural }}); got {} — source:\n{src}\n\
+             errors: {es:?}",
+            es.len()
+        );
+        assert_eq!(
+            (es[0].line, es[0].column),
+            (3, 16),
+            "n={n}: primary `@` must be at (L3, C16); got {es:?}"
+        );
+        assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "n={n}: {es:?}");
+        assert_eq!(
+            e1.first().line,
+            3,
+            "n={n}: primary must be earliest in deterministic order: {es:?}"
+        );
+        let close_line = 4 + n;
+        assert_eq!(
+            (es[expected - 1].line, es[expected - 1].column),
+            (close_line, 5),
+            "n={n}: structural `}}` follow-on must be at (L{close_line}, C5); got {es:?}"
+        );
+        assert_eq!(
+            es[expected - 1].kind,
+            ParseErrorKind::Unexpected,
+            "n={n}: structural follow-on kind: {es:?}"
+        );
+        for (i, e) in es.iter().enumerate().take(expected - 1).skip(1) {
+            let line_ok = (4..=3 + n).contains(&e.line);
+            assert!(
+                line_ok,
+                "n={n}: cascade error {i} must sit on a valid \
+                 inner-field line in [4, {}], got line {} — {es:?}",
+                3 + n,
+                e.line
+            );
+            assert_eq!(e.kind, ParseErrorKind::Unexpected, "n={n} i={i}: {es:?}");
+        }
+    }
+}
+
 // --------------------------------------------------------------------
 // Time-literal handling
 // --------------------------------------------------------------------
