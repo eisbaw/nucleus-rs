@@ -74,7 +74,7 @@ by build and by running on the target where feasible.
 | Kernels as text fragments via `${1}` substitution | Kernels as real Rust functions with shape-typed signatures. |
 | Driving example didn't run end-to-end         | Test suite is the spec. No example = no feature.        |
 | Aliasing punted (split-binding unsound)       | Single-assignment arrays. No aliasing by construction.  |
-| Where-clauses could side-effect silently      | `where pure` mandatory; `where !effectful` opt-in.      |
+| Where-clauses could side-effect silently      | Kernels carry a mandatory `pure` / `effectful` annotation on the `KernelDecl`; bare-call statements must call `effectful` kernels (grammar §2 note 5, decision-0004). |
 | Data transfers inferred but not scheduled     | Transfers scheduled at compile time. Deadlock-free.     |
 | IO as API-level afterthought                  | IO semantics first-class in schedule (sync/async/buf/notify). |
 | Decomposition tangled into the source         | Algorithm and schedule are separate files.              |

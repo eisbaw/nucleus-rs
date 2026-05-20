@@ -1753,8 +1753,9 @@ y <-- f(x);
 //
 // The OTHER direction (DataflowStmt RHS must be pure) is intentionally
 // NOT enforced — every shipped example (01..07, 13, 14) puts an
-// effectful load/capture kernel on the RHS of `<--` (see TASK-0201 for
-// the spec decision on whether to reverse that). The positive test
+// effectful load/capture kernel on the RHS of `<--`. The spec decision
+// is recorded as `backlog/decisions/decision-0004` (grammar §2 note 5
+// is canonical, unidirectional). The positive test
 // `pure_dataflow_with_effectful_rhs_load_lowers` below pins that
 // load-bearing pattern so a future strict-bidirectional reinterpretation
 // can't silently regress every example.
@@ -1802,7 +1803,7 @@ store(x);
 /// lowering. If a future change ever turns DataflowStmt-RHS-must-be-pure
 /// on, THIS test is the first thing to fail, surfacing the regression
 /// at the unit level before the example-level lowers_example_* tests do.
-/// See TASK-0089 onboarding notes and TASK-0201 for the spec context.
+/// See TASK-0089 onboarding notes and decision-0004 for the spec context.
 #[test]
 fn pure_dataflow_with_effectful_rhs_load_lowers() {
     let src = "\

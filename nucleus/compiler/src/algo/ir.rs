@@ -38,10 +38,11 @@
 //! grammar §2 note 5 is unidirectional and every shipped example
 //! (01..07, 13, 14) puts an effectful load/capture kernel on the RHS
 //! of `<--` (`a <-- load_input();`, `mic_in[frame] <-- fe_capture();`).
-//! Whether PRD §6.2.2 row 77's wording ("where pure mandatory; where
-//! !effectful opt-in") was meant bidirectional is filed as TASK-0201
-//! for a spec decision; until then this pass enforces only the
-//! grammar-supported direction.
+//! This is the canonical v2 IO idiom: `effectful` kernels return a
+//! value AND advance an input source; the kernel-as-Rust-function
+//! contract (PRD §6.2.2) is the single mechanism. Recorded in
+//! `backlog/decisions/decision-0004` (PRD §2 line 77 was loose and has
+//! been tightened in the same commit; grammar §2 note 5 is canonical).
 //!
 //! Design choice — separate IR types vs annotated AST: separate.
 //! Rationale: invariants differ (declarations bucketed, shapes
@@ -288,7 +289,8 @@ pub enum LowerErrorKind {
     /// deduplicable, eliminable, so calling one purely for its
     /// side-effect is a contradiction). TASK-0089. The OTHER direction
     /// (DataflowStmt RHS Call must be pure) is intentionally NOT
-    /// enforced — see [`crate::algo::ir`] module docs and TASK-0201.
+    /// enforced — see [`crate::algo::ir`] module docs and
+    /// `backlog/decisions/decision-0004`.
     EffectCalleeNotEffectful { callee: String },
 }
 
