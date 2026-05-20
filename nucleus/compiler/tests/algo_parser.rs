@@ -915,4 +915,95 @@ fn for_body_error_surfaces_single_primary_after_keyword_sync() {
     }
 }
 
+/// TASK-0199 review-gate cycle-2 regression: a failing brace-bodied
+/// item (e.g. `for { … }` with a typo inside) followed by a VALID
+/// item at the top level must NOT swallow the valid item. The
+/// pre-cycle-2 brace-balanced recovery's `outer_atom.repeated()`
+/// greedily consumed safe chars across the brace-block boundary up
+/// to the next `;`, silently swallowing the subsequent `const OK : usize = 7;`
+/// from both the error set AND the AST. QA review (TASK-0199 gate)
+/// caught this via PROBE 6/6a; the fix splits the recovery into a
+/// `brace_block_item` arm (one brace block + optional `;`, then STOP)
+/// and a `flat_item` arm (safe chars + required `;` or end()).
+///
+/// Without the cycle-2 split, this test produces 2 errors
+/// (`Unexpected` at the `@` typo + `UnexpectedEof`), and the `const OK`
+/// is silently dropped from the AST. With the split, the `for { … }`
+/// recovery span stops at the closing `}`, and the subsequent
+/// `const OK : usize = 7;` parses cleanly as a separate top-level
+/// item — exactly 1 error (the `@` typo only).
+#[test]
+fn brace_bodied_item_recovery_does_not_swallow_subsequent_valid_item() {
+    let src = "\
+const N : usize = 5;
+data x : f32[N];
+kernel inc : (f32) -> f32 pure;
+for i : 0 .. N {
+    x[i] <-- @;
+}
+const OK : usize = 7;
+";
+    let e1 = expect_errs(src);
+    let e2 = expect_errs(src);
+    assert_eq!(
+        e1, e2,
+        "brace-bodied + valid-item recovery must be deterministic"
+    );
 
+    let es = e1.errors();
+    assert_eq!(
+        es.len(),
+        1,
+        "expected EXACTLY 1 error (the `@` typo); subsequent valid \
+         `const OK` must NOT be swallowed by the for-body recovery: {es:?}"
+    );
+    assert_eq!(
+        (es[0].line, es[0].column),
+        (5, 14),
+        "primary at the `@`: {es:?}"
+    );
+    assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "{es:?}");
+
+    // Crucially, the AST must contain `const OK` — the valid item
+    // survived the brace-bodied item's recovery. We can't directly
+    // inspect the AST here (parse_algo returns Err), but the
+    // 1-error count is the load-bearing assertion: a failing
+    // recovery that consumed `const OK` would have produced an
+    // `UnexpectedEof` (2 errors total) because the recovery span
+    // would terminate at the `;` after `7`.
+}
+
+/// TASK-0199 review-gate cycle-2 regression (sched analog): a
+/// failing brace-bodied directive followed by a VALID directive
+/// must NOT swallow the valid directive. The sched grammar bounds
+/// the over-consumption via the required trailing `;` after `}`,
+/// but we pin the symmetric property explicitly for cross-layer
+/// confidence.
+#[test]
+fn brace_bodied_directive_recovery_preserves_valid_directive_at_eof() {
+    // Algo-side analog: a failing flat item followed by a brace-
+    // bodied item at the very end of source. The flat-item recovery
+    // requires `;` OR end() as its terminator; the brace-bodied item
+    // immediately following must NOT be consumed as residue of the
+    // flat item's safe-char sequence.
+    let src = "\
+const N : usize = 5;
+data x : f32[?];
+for i : 0 .. N {
+    x[i] <-- x[i];
+}
+";
+    let e1 = expect_errs(src);
+    let e2 = expect_errs(src);
+    assert_eq!(e1, e2, "must be deterministic");
+
+    let es = e1.errors();
+    assert_eq!(
+        es.len(),
+        1,
+        "expected EXACTLY 1 error (the `?` in data shape); the \
+         subsequent valid for-loop must parse cleanly and not \
+         contribute follow-on errors: {es:?}"
+    );
+    assert_eq!(es[0].line, 2, "primary on line 2 (the `?`): {es:?}");
+}

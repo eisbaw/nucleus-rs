@@ -891,15 +891,31 @@ fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Cl
         .then_ignore(just('}'))
         .ignored();
     let outer_safe_char = none_of(['{', '}', ';']).ignored();
-    let outer_atom = choice((brace_block_outer, outer_safe_char));
 
     let lone_semicolon = just(';').ignored();
 
-    let normal = outer_atom
+    // Brace-bodied item case (TASK-0199 cycle-2 review-gate
+    // correction, mirrored from algo/parser.rs): consume exactly ONE
+    // brace block + an optional trailing `;`, then STOP. Sched
+    // directives technically REQUIRE the trailing `;` after the `}`
+    // (per the grammar), but we keep `or_not(';')` defensively to
+    // tolerate malformed sources missing it. Critically: no further
+    // outer atoms after the brace block — prevents over-consumption
+    // through the next directive (the algo-specific defect QA caught,
+    // mirrored here for symmetry even though sched grammar normally
+    // bounds it).
+    let brace_block_item = brace_block_outer.then_ignore(just(';').or_not()).ignored();
+
+    // Flat-directive case: one-or-more safe chars + REQUIRED `;` OR
+    // end-of-input. Mirrors the algo flat_item shape. The required
+    // terminator (not `or_not`) bounds the recovery span to the
+    // failing directive only; the `end()` alternate tolerates a
+    // malformed flat directive at the very end of the source.
+    let flat_item = outer_safe_char
         .clone()
-        .then(outer_atom.repeated())
-        .then_ignore(just(';').or_not())
+        .then(outer_safe_char.repeated())
+        .then_ignore(just(';').ignored().or(end()))
         .ignored();
 
-    choice((lone_semicolon, normal))
+    choice((lone_semicolon, brace_block_item, flat_item))
 }

@@ -337,7 +337,6 @@ fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Cl
         .then_ignore(just('}'))
         .ignored();
     let outer_safe_char = none_of(['{', '}', ';']).ignored();
-    let outer_atom = choice((brace_block_outer, outer_safe_char));
 
     // Degenerate case: the parser is sitting on a bare `;` (e.g. the
     // pathological-input fixture `@@@ ;; ??? ;;`). Consume just the
@@ -345,18 +344,37 @@ fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Cl
     // makes progress.
     let lone_semicolon = just(';').ignored();
 
-    // Normal case: at least one outer atom (so we always make ≥1 char
-    // of progress; chumsky's `Repeated::parse_inner` panics on
-    // zero-consumption success — see line 550-553 in chumsky 0.9.3's
-    // `combinator.rs`), then any number of further atoms, then an
-    // optional terminating `;`.
-    let normal = outer_atom
+    // Brace-bodied item case (TASK-0199 cycle-2 review-gate
+    // correction): a balanced `{ … }` block IS a complete item span by
+    // itself (e.g. an algo `for { … }` with no trailing `;`). Consume
+    // exactly ONE brace block + an optional trailing `;`, then STOP.
+    // Critically: do NOT allow further outer atoms after the brace
+    // block — that was the over-consumption defect QA caught (a
+    // failing `for { … }` followed by `const OK : usize = 7;` would
+    // greedily consume the OK const's text up to its `;`, silently
+    // swallowing it from both errors and the AST). The brace block
+    // alone is ≥2 chars (`{` + `}`), so progress is guaranteed.
+    let brace_block_item = brace_block_outer.then_ignore(just(';').or_not()).ignored();
+
+    // Flat-item case: one-or-more outer safe chars (NOT including `{`,
+    // `}`, `;`) terminated by EITHER `;` OR end-of-input. The `;` arm
+    // is the pre-TASK-0199 `skip_until([';'])` behavior for
+    // `;`-terminated items like a failing `const X = @;`. The
+    // `end()` arm tolerates a malformed item at the very end of the
+    // source (e.g. a single stray `?` with no following `;` — the
+    // `parser_error_carries_line_and_column` fixture). Critically:
+    // the terminator is REQUIRED (not `or_not`) so the safe-char
+    // sequence has a bounded extent — prevents the over-consumption
+    // QA Probe 6/6a defect (a failing `for { … }` followed by a valid
+    // `const OK : usize = 7;` would otherwise greedily consume the
+    // OK const's text up to its `;`, silently swallowing it).
+    let flat_item = outer_safe_char
         .clone()
-        .then(outer_atom.repeated())
-        .then_ignore(just(';').or_not())
+        .then(outer_safe_char.repeated())
+        .then_ignore(just(';').ignored().or(end()))
         .ignored();
 
-    choice((lone_semicolon, normal))
+    choice((lone_semicolon, brace_block_item, flat_item))
 }
 
 /// Whitespace + line comments. Grammar §1 lexical rules.
