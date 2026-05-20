@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-19 19:44'
-updated_date: '2026-05-20 04:59'
+updated_date: '2026-05-20 05:17'
 labels:
   - compiler
   - language
@@ -54,4 +54,10 @@ UPDATE (TASK-0087 close-out cycle): the parametric over-n measurement for the wo
 TASK-0199's responsibility going forward is the FIX (keyword/field-anchored sync set in sched/parser.rs + algo/parser.rs, see ACs #1, #6) and FLIPPING the two parametric assertions from == n + 2 to == 1 (AC#7). The fixture shape and per-n probe layout are now compatible — the assertion edit is mechanical when the fix lands.
 
 The n=1-pinned siblings nested_brace_body_error_surfaces_bounded_follow_ons_{worker_class,memory_region} are retained as detailed per-error-column witnesses (cascade column 15, structural-} column 5) for the n=1 case alongside the parametric counts. The algo for{}-body case is NOT yet parametrically pinned this cycle (carried as a separate follow-up — see new task).
+
+UPDATE (TASK-0087 review-gate cycle, 2026-05-20, mped-architect independent probes): the description text "the doubly-nested accessible_by = { id, id }; (inside a memory_region body) yields 4" is IMPRECISE — measured this cycle, the doubly-nested case is also n+2-SHAPED, where n is the number of valid sibling fields AFTER the doubly-nested erroneous field. Probe evidence: `accessible_by = { @, host };` followed by 1 trailing field → 3 errors (NOT 4); followed by 2 trailing fields → 4 errors. The original "yields 4" was a single-n point disclosed as if it were the count — exactly the masking-defect class the cascade-class methodology targets. The doubly-nested case is structurally the SAME n+2 cascade just one level deeper (the inner `{}` set contributes one structural close-token, the outer brace body contributes another, plus n inner-field cascades).
+
+ACTION when TASK-0199 lands: (a) the keyword/field-anchored sync set should collapse the doubly-nested case to the primary just like the singly-nested case (same mechanism); (b) the AC#7 parametric assertion can extend to a doubly-nested probe (asserting it also collapses to 1); (c) reword this task's description to remove the "yields 4" residue (replace with "yields n+2 where n counts valid sibling fields after the inner-set primary; measured n=1→3, n=2→4 — same cascade family as the singly-nested brace body"); (d) the TASK-0087 docstring at sched/parser.rs:793-795 ("independently exceeds this") is also imprecise — tighten to the now-known same-cascade-shape language at the same time.
+
+Additionally: the TASK-0087 fixture iterates n at first-field-error-position only. mped-architect probe this cycle confirms last-field-error-position ALSO follows n+2 — both directions empirically agree. TASK-0199's AC#7 parametric assertion can iterate over both error-positions (first-field AND last-field) to widen the post-fix structural-guard coverage. Not strictly required, but if cheap, do it.
 <!-- SECTION:NOTES:END -->
