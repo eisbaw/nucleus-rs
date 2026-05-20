@@ -5,13 +5,14 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:09'
-updated_date: '2026-05-20 20:13'
+updated_date: '2026-05-20 21:44'
 labels:
   - examples
   - M6
   - validation
 dependencies:
-  - TASK-0209
+  - TASK-0210
+  - TASK-0211
 ---
 
 ## Description
@@ -22,13 +23,13 @@ Complete example 13: kernels.rs implementing conv_block_1, conv_block_2, classif
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 examples/13-cnn-inference/kernels.rs implements all four pure kernels and the two effectful ones.
-- [ ] #2 Weights are deterministic — either baked into kernels.rs as const arrays or loaded from a committed binary.
-- [ ] #3 examples/13-cnn-inference/reference/ contains an independent reference impl.
+- [x] #1 examples/13-cnn-inference/kernels.rs implements all four pure kernels and the two effectful ones.
+- [x] #2 Weights are deterministic — either baked into kernels.rs as const arrays or loaded from a committed binary.
+- [x] #3 examples/13-cnn-inference/reference/ contains an independent reference impl.
 - [ ] #4 Required schedules: naive, batch_parallel, pipeline_parallel — all listed in README under M6 are present and reference-matching.
 - [ ] #5 Test: all three schedules × all tier-1 backends produce reference-matching output.
-- [ ] #6 Implementation notes record design questions (e.g. precision: f32 vs integer scaling for determinism; what fixed-input/fixed-weights mean for the differential test).
-- [ ] #7 Implementation notes record honest limitations (no training; small network; no quantisation).
+- [x] #6 Implementation notes record design questions (e.g. precision: f32 vs integer scaling for determinism; what fixed-input/fixed-weights mean for the differential test).
+- [x] #7 Implementation notes record honest limitations (no training; small network; no quantisation).
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -124,4 +125,106 @@ NEXT CYCLE PRECONDITION:
         reference/ with a stated reduction order (docs/reference-impl-
         policy.md §5 second bullet permits this).
   Will be decided when TASK-0053 resumes.
+
+Cycle-2 LANDED (post TASK-0209). Single commit on master.
+
+ACs status (honest):
+- [x] #1 kernels.rs implements all four pure (conv_block_1,
+      conv_block_2, classifier) + two effectful (load_input,
+      save_output) kernels.
+- [x] #2 Weights deterministic (integer formulae keyed by index in
+      BOTH kernels.rs and reference/src/main.rs); inputs from
+      committed input.bin.
+- [x] #3 reference/ is an independent std-only Rust crate per
+      docs/reference-impl-policy.md §2 (no nucleus deps, no shared
+      code with kernels.rs, [workspace] empty so it stays outside the
+      compiler workspace). Same algorithm, separate source; control
+      structure expressed differently (generic forward_conv_pool vs
+      two explicit conv1/conv2 bodies).
+- [ ] #4 NOT FULLY TICKED. Only `naive` is reference-matching this
+      cycle. `batch_parallel` blocked by TASK-0211 (new follow-up:
+      multi-worker transfer-distribution gap); `pipeline_parallel`
+      blocked by TASK-0210 (tier-2 async+buffer+event capability).
+      Per cycle-2 task brief, batch_parallel and pipeline_parallel
+      are deferred — they are NOT regressions, they are tracked
+      capability/codegen gaps with precise follow-ups filed.
+- [ ] #5 NOT FULLY TICKED. Naive cells on both tier-1 backends are
+      byte-identical to reference.bin (PASS in e2e-matrix.toml as
+      REQUIRED). batch_parallel and pipeline_parallel are SKIPPED
+      with task pointers in [[skip]] entries — informational, not
+      required-fail.
+- [x] #6 README §"Numeric type choice: i32" + §"Weights" + §"I/O
+      format" record the design questions (precision, weight
+      determinism, file layout, regeneration commands, classifier
+      modulus rationale). prog.algo.nuc comment header documents the
+      i32 choice with verbatim PRD §13 citation.
+- [x] #7 README §"Honest limitations" records: no training, tiny
+      network, no quantisation, no bias, no softmax, hand-crafted
+      weights, only naive differentially green this cycle.
+
+Numeric choice (verbatim PRD citation, §13 "Bit-identical output
+across backends"):
+  "Trivial for integer algorithms; non-trivial once floating-point
+   reductions enter (sum order matters). Either restrict examples to
+   integer/deterministic FP, or compare with epsilon. Leaning toward
+   integer-only for v2."
+This example follows that lean: prog.algo.nuc declares i32; kernels.rs
+and reference/ are i32 throughout; every reduction is a strict
+left-to-right for loop using i32::wrapping_mul / i32::wrapping_add.
+
+Verification gate (7-step, all green):
+1. just test                  : 469/0/2 (baseline maintained)
+2. cargo clippy               : clean -D warnings
+3. just e2e                   : 36 / 28 PASS / 0 FAIL / 8 SKIPPED /
+                                0 required-fail
+                                (pre-cycle 30/26/0/4/0 -> delta +6
+                                 cells / +2 PASS / +4 SKIP)
+4. just determinism-check (x2): byte-identical across both runs
+5. just determinism-check-negative : NUC_NONDET_PERTURBED_CELLS=28;
+                                     bites correctly
+6. just xbackend-check-negative    : NUC_XBACKEND_CORRUPTED_DETECTED=1;
+                                     bites correctly
+7. just ci                    : exit 0
+
+Per-cell matrix changes:
+- runnable_examples += "13-cnn-inference"
+- [[required]] 13-cnn-inference / naive / pthreads-sync (M3)
+- [[required]] 13-cnn-inference / naive / mp-tcp-bufsync (M3)
+- [[skip]]     13-cnn-inference / batch_parallel / pthreads-sync
+                                  (reason: TASK-0211 multi-worker
+                                  transfer-distribution gap)
+- [[skip]]     13-cnn-inference / batch_parallel / mp-tcp-bufsync
+                                  (reason: TASK-0175 + TASK-0211)
+- [[skip]]     13-cnn-inference / pipeline_parallel / pthreads-sync
+                                  (reason: TASK-0210 async+event)
+- [[skip]]     13-cnn-inference / pipeline_parallel / mp-tcp-bufsync
+                                  (reason: TASK-0210 async+event)
+
+Test fixups (algo type change ripple):
+- compiler/tests/algo_lower.rs::lowers_example_13_cnn_inference: feat1
+  ScalarType assertion F32 -> I32.
+- backends/pthreads-sync/tests/emit.rs::partial_index_lowers_to_sub_slice:
+  scratch stub kernels.rs now uses Vec<i32>. Substring assertions on
+  the emitted main.rs are unchanged.
+
+Follow-ups filed:
+- TASK-0211 (NEW): multi-worker transfer-distribution gap. Replaces the
+  cycle-1 placeholder. Has 5 ACs covering uniform-recv emission, e2e
+  build green, synthetic unit test, matrix promotion, and 01..07
+  no-regression.
+- TASK-0210 (PRE-EXISTING): pipeline_parallel tier-2 capability gap.
+
+Honest limits / not done this cycle:
+- batch_parallel / pipeline_parallel both deferred per cycle-2 brief
+  scope; precise reasons in the [[skip]] entries.
+- Cross-architecture i32 determinism is by Rust language definition;
+  not separately exercised here (no foreign-arch CI runner). i32
+  wrapping_mul/wrapping_add is bit-deterministic on any supported
+  target.
+- The "CNN" is a shape demo, not a real neural network. No
+  training, no quantisation, no calibration. Weights are deterministic
+  integer formulae chosen for uniqueness across classes and bounded
+  i32 accumulators, NOT for any classification accuracy.
+- Cargo.lock for the reference crate IS committed (matches the
+  convention of all other examples/01..07).
 <!-- SECTION:NOTES:END -->
