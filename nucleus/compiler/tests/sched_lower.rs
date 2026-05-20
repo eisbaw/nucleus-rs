@@ -1684,28 +1684,33 @@ schedule for \"../prog.algo.nuc\" {
     ));
 }
 
-/// Cascade-suppression infrastructure (the algo cycle-3 design
-/// transferred verbatim) is wired but has NO live trigger on today's
-/// sched-lowering variant set: every `worker_class` / `memory_region`
-/// / worker entry that survives its duplicate check is unconditionally
-/// inserted into the symbol table, so `Accum::failed_decls` stays
-/// empty in practice (no decl-level "evaluation failure" path
-/// exists). This test pins the honest-partial disclosure recorded in
-/// the [`SchedLowerErrors`] type docs and the [`lower_sched`] module
-/// doc.
+/// Cascade-suppression Path 1 (`failed_decls`-keyed name cascade —
+/// the algo cycle-3 design transferred verbatim) is wired but has NO
+/// live trigger on today's sched-lowering variant set: every
+/// `worker_class` / `memory_region` / worker entry that survives its
+/// duplicate check is unconditionally inserted into the symbol table,
+/// so `Accum::failed_decls` stays empty in practice (no decl-level
+/// "evaluation failure" path exists). This test pins the
+/// honest-partial disclosure recorded in the [`SchedLowerErrors`]
+/// type docs and the [`lower_sched`] module doc.
 ///
 /// Concretely: a `place_data foo in nowhere` (UnknownMemoryRegion) is
 /// reported as an INDEPENDENT error — there is no upstream cascade
 /// root for it (the user never declared a region that itself failed;
-/// they simply typed an unknown name). The cascade rule has nothing
-/// to suppress.
+/// they simply typed an unknown name). Path 1 has nothing to
+/// suppress.
 ///
-/// This test must be updated WHEN a sched construct gains a poison-
-/// source path (e.g. a memory_region body that evaluates an
-/// expression that can fail). Until then it stands as the
+/// NOTE: Path 2 (`workers_missing`-keyed UnknownPlaceWorker
+/// suppression) IS live today and is pinned by the parametric
+/// [`workers_missing_cascade_collapses_place_unknown_worker_for_any_n`]
+/// test below. The two paths are intentionally separate disclosures.
+///
+/// This test must be updated WHEN a sched construct gains a Path-1
+/// poison-source path (e.g. a memory_region body that evaluates an
+/// expression that can fail). Until then it stands as the Path-1
 /// disclosure pin.
 #[test]
-fn sched_cascade_suppression_has_no_live_trigger_today() {
+fn sched_failed_decls_cascade_path_has_no_live_trigger_today() {
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
@@ -1715,13 +1720,13 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let errs = lower_str(src).expect_err("two unknown-region refs must error");
     // BOTH UnknownMemoryRegion errors surface independently — there
-    // is no upstream cascade root in today's variant set, so the
-    // cascade-suppression rule has nothing to fire on.
+    // is no Path-1 upstream cascade root in today's variant set, so
+    // the failed_decls-keyed suppression has nothing to fire on.
     assert_eq!(
         errs.errors().len(),
         2,
-        "two independent UnknownMemoryRegion errors must BOTH surface; the \
-         cascade-suppression infrastructure is forward-looking, not active"
+        "two independent UnknownMemoryRegion errors must BOTH surface; Path 1 \
+         (failed_decls-keyed) cascade-suppression is forward-looking, not active"
     );
     assert!(matches!(
         errs.errors()[0].kind,
@@ -1731,4 +1736,112 @@ schedule for \"../prog.algo.nuc\" {
         errs.errors()[1].kind,
         SchedLowerErrorKind::UnknownMemoryRegion { ref region, .. } if region == "elsewhere"
     ));
+}
+
+/// Cascade-suppression Path 2 (`workers_missing`-keyed
+/// UnknownPlaceWorker suppression) — the ONE in-pass cascade trigger
+/// that FIRES today. When the schedule has no `workers = ...`
+/// directive, `ir.workers` stays empty by construction, and every
+/// subsequent `place X on W` necessarily fires `UnknownPlaceWorker{W}`
+/// as a pure cascade of the already-reported MissingWorkersDecl
+/// root. Path 2 suppresses those so the user sees the single ROOT
+/// diagnostic instead of N cascade lines.
+///
+/// PARAMETRIC over N in {1, 2, 3, 5} (the cycle-3 masking-defect-class
+/// discipline: a single-shape fixture would let the suppression
+/// silently regress to "first one only" or "all N leaked"). For every
+/// N: assert errors().len() == 1 AND the surviving error is the
+/// position-less MissingWorkersDecl root AND no UnknownPlaceWorker
+/// leaks. Determinism asserted across two runs per N.
+///
+/// Without the cycle-2 transitive-fix at lower.rs case-1
+/// (`workers_missing` flag + Path-2 branch in
+/// `is_cascade_of_failed_decl`), this fixture would FAIL with
+/// errors().len() == 1 + N (the leaked UnknownPlaceWorker per place).
+/// The K×L methodology from TASK-0092 cycle-3 / TASK-0087 cycle-4
+/// applied at the sched-lowering layer.
+#[test]
+fn workers_missing_cascade_collapses_place_unknown_worker_for_any_n() {
+    for n in [1usize, 2, 3, 5] {
+        let mut src = String::from("schedule for \"../prog.algo.nuc\" {\n");
+        // No `workers = ...` directive (the cascade root).
+        // N `place k_i on w_i` directives — each would emit
+        // `UnknownPlaceWorker{w_i}` as a pure cascade of
+        // MissingWorkersDecl absent Path-2 suppression.
+        for i in 0..n {
+            src.push_str(&format!("    place k{i} on w{i};\n"));
+        }
+        src.push_str("}\n");
+
+        let errs = lower_str(&src)
+            .expect_err("missing workers + N places must error");
+        // Determinism cross-check: re-lower the same source; the
+        // bundle must be byte-identical.
+        let errs2 = lower_str(&src)
+            .expect_err("missing workers + N places must error (run 2)");
+        assert_eq!(
+            errs, errs2,
+            "(N={n}): multi-error bundle must be deterministic"
+        );
+
+        assert_eq!(
+            errs.errors().len(),
+            1,
+            "(N={n}): expected EXACTLY 1 root error (MissingWorkersDecl); \
+             the N=`{n}` UnknownPlaceWorker cascades MUST be suppressed \
+             by the workers_missing Path-2 rule. Got {} — source:\n{src}",
+            errs.errors().len()
+        );
+        assert!(
+            matches!(errs.errors()[0].kind, SchedLowerErrorKind::MissingWorkersDecl),
+            "(N={n}): surviving error must be MissingWorkersDecl root, got {:?}",
+            errs.errors()[0].kind
+        );
+        // Explicit non-leak guard: no UnknownPlaceWorker survived.
+        let leaked_unknown_worker = errs.errors().iter().any(|e| {
+            matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. })
+        });
+        assert!(
+            !leaked_unknown_worker,
+            "(N={n}): no UnknownPlaceWorker may leak — every `place X on W` \
+             is a transitive cascade of the already-reported \
+             MissingWorkersDecl root: {:?}",
+            errs.errors()
+        );
+    }
+}
+
+/// Negative-control for Path 2: when `workers = ...` IS present but a
+/// `place k on W` references a worker name NOT in the symbol table,
+/// that is a GENUINE INDEPENDENT error (user typo, not a cascade of
+/// MissingWorkersDecl), and the Path-2 rule must NOT suppress it. This
+/// pins that the workers_missing suppression is narrow — it triggers
+/// ONLY when the workers decl itself is absent, never when the decl
+/// is present but a reference is wrong. Guards against over-
+/// suppression regression.
+#[test]
+fn workers_present_but_unknown_place_worker_surfaces_independently() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on no_such_worker_typo;
+}
+";
+    let errs = lower_str(src)
+        .expect_err("unknown-worker reference with workers-decl present must error");
+    assert_eq!(
+        errs.errors().len(),
+        1,
+        "expected exactly 1 independent UnknownPlaceWorker (no MissingWorkersDecl, \
+         no over-suppression by Path 2) — got {:?}",
+        errs.errors()
+    );
+    assert!(
+        matches!(
+            &errs.errors()[0].kind,
+            SchedLowerErrorKind::UnknownPlaceWorker { worker, .. } if worker == "no_such_worker_typo"
+        ),
+        "surviving error must be UnknownPlaceWorker{{no_such_worker_typo}}, got {:?}",
+        errs.errors()[0].kind
+    );
 }

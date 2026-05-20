@@ -28,14 +28,23 @@
 //! poisoned-name set, four reference-resolution variants
 //! (`UnknownWorkerClass`, `UnknownMemoryRegion`, `UnknownPlaceWorker`,
 //! `UnknownAccessibleByName`) recognised as cascade-candidates, and
-//! transitive-poison case-1 logic. The honest disclosure: no current
-//! sched-lowering declaration path actually fails-and-fails-to-insert
-//! (every decl that survives its duplicate check is unconditionally
-//! inserted into the symbol table), so `failed_decls` is empty in
-//! practice on today's variant set. The cascade-suppression rule is
-//! wired and tested for shape; it has no live trigger today and is
-//! forward-looking for the day a sched construct gains expression
-//! evaluation. See [`SchedLowerErrors`] type docs.
+//! transitive-poison case-1 logic.
+//!
+//! Today's cascade landscape has TWO paths (see [`Accum`] type docs):
+//!
+//! 1. `failed_decls`-keyed name cascade (the algo cycle-3 design,
+//!    transferred verbatim): NO live trigger today — every sched
+//!    decl that survives its Duplicate-* gate is unconditionally
+//!    inserted into the symbol table (there is no sched analog of
+//!    `const N = 1/0`), so `failed_decls` stays empty in practice.
+//!    Forward-looking infrastructure.
+//! 2. `workers_missing`-keyed UnknownPlaceWorker cascade: FIRES
+//!    today on the unique MissingWorkersDecl path. With no
+//!    `workers = ...` directive the workers symbol table is empty
+//!    by construction; every `place X on W` would emit
+//!    `UnknownPlaceWorker{W}` as a pure cascade of the
+//!    already-reported root. Suppressed so the user sees one root
+//!    diagnostic instead of N cascade lines.
 
 use std::collections::BTreeMap;
 
@@ -318,6 +327,16 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
         // Genuinely position-less (TASK-0196): the error is the
         // *absence* of a `workers = ...` directive — there is no
         // source token to underline.
+        //
+        // Set the `workers_missing` cascade flag (TASK-0200 honest
+        // disclosure): with no workers decl, `ir.workers` stays
+        // empty by construction, and every subsequent
+        // `place X on W` would fire `UnknownPlaceWorker{W}` as a
+        // pure cascade of THIS root. Those are suppressed by
+        // `Accum::is_cascade_of_failed_decl` so the user sees the
+        // single ROOT diagnostic (missing workers decl), not N
+        // cascade place-on-unknown-worker lines.
+        acc.workers_missing = true;
         acc.record_stmt_error(SchedLowerError::new(SchedLowerErrorKind::MissingWorkersDecl));
     }
 
@@ -454,19 +473,45 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
 /// ordered map keeps the intent unambiguous and the path
 /// hash-iteration-free.
 ///
-/// # Honest cascade landscape (TASK-0200)
+/// `workers_missing` is the ONE in-pass cascade trigger that fires
+/// today: if the schedule had NO `workers = ...` directive, then
+/// `ir.workers` is empty by construction and every downstream
+/// reference to any worker name (in `place X on W`, in
+/// `accessible_by`) is a pure cascade of [`SchedLowerErrorKind::MissingWorkersDecl`]
+/// — the user already has the root diagnostic. The flag is set
+/// alongside [`SchedLowerErrorKind::MissingWorkersDecl`]; downstream
+/// `UnknownPlaceWorker` and worker-targeting `UnknownAccessibleByName`
+/// errors are suppressed by [`Accum::is_cascade_of_failed_decl`].
 ///
-/// The cascade-suppression rule is wired faithfully matching the algo
-/// cycle-3 design (TASK-0092). It has no live trigger in today's
-/// sched-lowering variant set — every decl that survives its
-/// duplicate check is unconditionally inserted into the symbol table,
-/// so `failed_decls` is empty in practice. The infrastructure is
-/// forward-looking for the day a sched construct gains expression
-/// evaluation (or a future PRD change introduces poison-able decls).
+/// # Cascade landscape (TASK-0200, honest disclosure)
+///
+/// On today's variant set there are TWO suppression paths:
+///
+/// 1. `failed_decls`-keyed name suppression (the algo cycle-3 design
+///    transferred verbatim): wired faithfully but **has no live
+///    trigger** because no sched decl path actually
+///    fails-and-fails-to-insert beyond the Duplicate-* gate (which is
+///    non-poisoning by design — first decl wins). Forward-looking
+///    infrastructure for the day a sched construct gains expression
+///    evaluation.
+/// 2. `workers_missing`-keyed worker-reference suppression: **fires
+///    today** on the unique MissingWorkersDecl path — a schedule
+///    without a `workers = ...` directive triggers
+///    `MissingWorkersDecl` and then every subsequent
+///    `UnknownPlaceWorker` / worker-targeting `UnknownAccessibleByName`
+///    is by definition a cascade of that root (the workers symbol
+///    table is empty by construction).
 #[derive(Default)]
 struct Accum {
     errors: Vec<SchedLowerError>,
     failed_decls: BTreeMap<String, ()>,
+    /// `true` iff the schedule has no `workers = ...` directive (a
+    /// [`SchedLowerErrorKind::MissingWorkersDecl`] has been or will be
+    /// recorded). When set, every downstream worker-name reference is
+    /// a cascade of that root and is suppressed by
+    /// [`Accum::is_cascade_of_failed_decl`]. The single in-pass
+    /// cascade trigger that fires today (see type docs).
+    workers_missing: bool,
 }
 
 impl Accum {
@@ -551,12 +596,47 @@ impl Accum {
         self.errors.push(e);
     }
 
-    /// True iff `e` is a reference-resolution error naming an
-    /// identifier that a failed declaration poisoned. These are the
-    /// only error kinds that can be a *secondary consequence* of a
-    /// declaration that failed to evaluate. Every other kind is an
-    /// independent property of the directive itself.
+    /// True iff `e` is a reference-resolution error that is a
+    /// *secondary consequence* of an already-reported root failure.
+    /// Two paths:
+    ///
+    /// 1. The referenced identifier is in [`Self::failed_decls`] (the
+    ///    algo cycle-3 cascade-by-name rule, transferred verbatim).
+    ///    Today no sched decl path populates `failed_decls` so this
+    ///    branch is dormant — forward-looking infrastructure.
+    ///
+    /// 2. `self.workers_missing` is set AND the error is a
+    ///    [`SchedLowerErrorKind::UnknownPlaceWorker`] — the schedule
+    ///    forgot the `workers = ...` directive, the workers symbol
+    ///    table is empty by construction, and every
+    ///    `place X on W` necessarily fires `UnknownPlaceWorker{W}` as
+    ///    a pure cascade of the already-reported
+    ///    [`SchedLowerErrorKind::MissingWorkersDecl`] root.
+    ///    Suppressed.
+    ///
+    ///    [`SchedLowerErrorKind::UnknownAccessibleByName`] is NOT
+    ///    suppressed here because the referenced name could be a
+    ///    class OR a worker — only the worker-side miss is a cascade
+    ///    of MissingWorkersDecl; an unknown class is independent. We
+    ///    cannot distinguish from the error alone, and a conservative
+    ///    "report it" is the right honest-partial: the user gets one
+    ///    extra line per truly-ambiguous case but no real cascade
+    ///    leaks as an independent error.
+    ///
+    /// Every other error kind is an independent property of the
+    /// directive itself.
     fn is_cascade_of_failed_decl(&self, e: &SchedLowerError) -> bool {
+        // Path 2: MissingWorkersDecl-induced UnknownPlaceWorker
+        // cascade. The empty workers symbol table makes every
+        // `place X on W` an automatic UnknownPlaceWorker — pure
+        // cascade of the already-reported root.
+        if self.workers_missing
+            && matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. })
+        {
+            return true;
+        }
+        // Path 1: failed_decls-keyed name cascade (algo cycle-3
+        // design, forward-looking).
         let referenced = match &e.kind {
             SchedLowerErrorKind::UnknownWorkerClass { class, .. } => class.as_str(),
             SchedLowerErrorKind::UnknownMemoryRegion { region, .. } => region.as_str(),
