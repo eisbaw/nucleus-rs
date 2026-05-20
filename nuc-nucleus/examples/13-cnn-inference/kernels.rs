@@ -152,13 +152,28 @@ fn w2(oc: usize, ic: usize, ky: usize, kx: usize) -> i32 {
 /// Weight for the classifier. Range [-5, 5], indexed by
 /// `(class, flat_input_position)`.
 ///
-/// Modulus 11 (prime, >= N_CLASSES=10): with `% M < 10`, weights are
-/// class-periodic mod M (any polynomial f(c) mod M has period M), so
-/// some pair of classes within 0..9 emits identical weight vectors,
-/// collapsing 10 logits into <10 distinct values. M=11 is the
-/// smallest modulus that makes `(class * 131) % M` injective on
-/// 0..9 (131 coprime with 11). Range [-5, 5]; 784-tap dot product
-/// bounded by 784 * max(|feat2|) * 5, still well inside i32.
+/// Modulus 11 (prime): chosen for two properties that both held up
+/// under independent review. (1) Output range is `[-5, 5]` (the 11
+/// residues `0..10` minus 5), a SYMMETRIC integer range centred on
+/// zero — important so the 784-tap dot product has no systematic
+/// bias in either direction. M=10 would produce `[-5, 4]`, asymmetric
+/// by one. (2) Primality decouples weight-vector uniqueness from the
+/// choice of multipliers (131, 37) — for ANY non-zero multiplier
+/// pair, distinct (class, k) pairs map to distinct residues, so the
+/// per-class weight vectors are distinct as functions of `k`.
+///
+/// (Historical note, cycle-2 review-gate cycle-7 doc-lie correction:
+/// the prior justification "M=11 is the smallest M making
+/// `(class * 131) % M` injective on 0..9" was mathematically false.
+/// M=10 is also injective for `c*131` on c ∈ 0..9 because
+/// `131 % 10 = 1`, so `(c*131) % 10 = c` is the identity on that
+/// range. mped-architect independently verified via Python
+/// re-implementation and reproduced byte-identical `reference.bin`
+/// with M=10 as well as M=11. The actual reason for preferring M=11
+/// is the symmetric-range argument above, not injectivity.)
+///
+/// 784-tap dot product bounded by 784 * max(|feat2|) * 5, still well
+/// inside i32.
 fn w_cls(class: usize, k: usize) -> i32 {
     let mixed = class.wrapping_mul(131)
         .wrapping_add(k.wrapping_mul(37));

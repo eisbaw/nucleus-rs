@@ -117,11 +117,20 @@ algorithm, separate source). A bug in one is not duplicated in the
 other — the e2e differential against `reference.bin` is what catches
 divergence.
 
-The classifier modulus is `% 11` (not `% 5` like the conv layers)
-because with `% M < N_CLASSES = 10`, the linear `class * 131` term is
-periodic mod M and collapses pairs of classes onto identical weight
-rows. `M = 11` (coprime with 10, ≥ N_CLASSES) makes
-`(class * 131) mod 11` injective on `0..10`.
+The classifier modulus is `% 11` (not `% 5` like the conv layers).
+Two properties motivated the choice (cycle-7 review-gate corrected):
+**(1) symmetric output range** `[-5, 5]` — the 11 residues `0..10`
+minus 5, centred on zero — important so the 784-tap dot product has
+no systematic bias. `M = 10` would also produce distinct weight rows
+(since `131 % 10 = 1` makes `(c * 131) % 10 = c` the identity on
+`0..9`) but the range `[-5, 4]` is asymmetric by one. **(2) Primality
+of 11** decouples weight-row uniqueness from the choice of multipliers
+(131, 37) — for any non-zero multiplier pair, distinct `(class, k)`
+pairs map to distinct residues. (Historical note: the prior comment
+that `M = 11` was "the smallest M making `(class * 131) mod M`
+injective on `0..9`" was mathematically false; M=10 is also
+injective. The actual rationale is the symmetric-range argument
+above.)
 
 ## I/O format
 

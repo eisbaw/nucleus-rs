@@ -315,10 +315,13 @@ fn lowers_example_13_cnn_inference() {
             dims: vec![16, 8, 14, 14],
         }
     );
-    // feat2 : f32[B][C2][H/4][W/4] should resolve to [16, 16, 7, 7].
+    // feat2 : i32[B][C2][H/4][W/4] should resolve to [16, 16, 7, 7].
+    // (Example 13 was migrated from f32 to i32 in cycle-2 TASK-0053
+    // for deterministic cross-backend bit-identical output, per
+    // PRD §13 "Leaning toward integer-only for v2".)
     let feat2 = &ir.data["feat2"].ty;
     assert_eq!(feat2.dims, vec![16, 16, 7, 7]);
-    // output : f32[B][N_CLASSES] -> [16, 10].
+    // output : i32[B][N_CLASSES] -> [16, 10].
     assert_eq!(ir.data["output"].ty.dims, vec![16, 10]);
 
     // Statements: load_input dataflow, for-loop, save_output effect.

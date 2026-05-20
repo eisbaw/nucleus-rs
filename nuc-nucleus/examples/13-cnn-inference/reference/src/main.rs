@@ -259,10 +259,14 @@ fn weight_layer_2(oc: usize, ic: usize, ky: usize, kx: usize) -> i32 {
 
 /// Classifier weights. MUST match `w_cls` in kernels.rs.
 ///
-/// Modulus 11 (smallest M >= N_CLASSES=10 making `class*131 mod M`
-/// injective on 0..9). Smaller moduli fold weight rows together;
-/// M=10 would collide on class 0 and class 9 (both `0 mod 10`
-/// since 131*10 % 10 = 0). Range [-5, 5].
+/// Modulus 11 (prime): chosen for symmetric output range `[-5, 5]`
+/// (the 11 residues `0..10` minus 5, centred on zero — avoids
+/// systematic bias in the 784-tap dot product). M=10 would also
+/// produce distinct weight vectors per class (since `131 % 10 = 1`
+/// makes `(c*131) % 10 = c` the identity on `0..9`) but with the
+/// asymmetric range `[-5, 4]`. The primality of 11 also decouples
+/// weight-row uniqueness from the choice of multipliers (131, 37).
+/// See `kernels.rs::w_cls` for the matching detailed comment.
 fn weight_classifier(class: usize, k: usize) -> i32 {
     let mixed = class.wrapping_mul(131)
         .wrapping_add(k.wrapping_mul(37));
