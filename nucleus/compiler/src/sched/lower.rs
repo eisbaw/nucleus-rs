@@ -100,36 +100,49 @@ use super::ir::{
 ///   upstream root. Without this, depth>1 cascades would leak as
 ///   overcount (the 5th-recurrence defect TASK-0092 cycle-3 closed).
 ///
-/// # Cascade landscape today (honest-partial)
+/// # Cascade landscape today (honest-partial — TWO paths)
 ///
-/// The sched-lowering variant set is dominantly INDEPENDENT. Every
-/// `worker_class`/`memory_region`/`workers` decl that survives its
-/// duplicate check is unconditionally inserted into the symbol table
-/// — there is no sched analog of `const N = 1/0` (no arithmetic
-/// expression evaluation at this layer). So `failed_decls` is empty
-/// in practice on today's variant set; the cascade-suppression rule
-/// is forward-looking infrastructure for the day a sched construct
-/// gains expression evaluation. Per-variant classification:
+/// The sched-lowering variant set is dominantly INDEPENDENT. Path 1
+/// (`failed_decls`-keyed name cascade) has NO LIVE TRIGGER today:
+/// every `worker_class`/`memory_region`/`workers` decl that survives
+/// its duplicate check is unconditionally inserted into the symbol
+/// table — there is no sched analog of `const N = 1/0` (no
+/// arithmetic expression evaluation at this layer). So `failed_decls`
+/// is empty in practice on today's variant set; the Path-1
+/// suppression rule is forward-looking infrastructure for the day a
+/// sched construct gains expression evaluation.
 ///
-/// | Variant                                | Class       | Triggerable today |
-/// |----------------------------------------|-------------|-------------------|
-/// | `DuplicateWorkerClass`                 | Independent | yes               |
-/// | `DuplicateMemoryRegion`                | Independent | yes               |
-/// | `DuplicateWorker`                      | Independent | yes               |
-/// | `DuplicatePlace`                       | Independent | yes               |
-/// | `DuplicatePlaceData`                   | Independent | yes               |
-/// | `DuplicateLoop`                        | Independent | yes               |
-/// | `DuplicateTransfer`                    | Independent | yes               |
-/// | `DuplicateCheck`                       | Independent | yes               |
-/// | `DuplicateWorkersDecl` / `MissingWorkersDecl` | Independent | yes      |
-/// | `DuplicatePlaceWorker`                 | Independent | yes               |
-/// | `DuplicateLoopOption` / `DuplicateTransferOption` | Independent | yes  |
-/// | `ConflictingTransferMode`              | Independent | yes               |
-/// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               |
-/// | `UnknownWorkerClass`                   | Cascade-cand. | yes (no current poison source) |
-/// | `UnknownMemoryRegion`                  | Cascade-cand. | yes (no current poison source) |
-/// | `UnknownPlaceWorker`                   | Cascade-cand. | yes (no current poison source) |
-/// | `UnknownAccessibleByName`              | Cascade-cand. | yes (no current poison source) |
+/// Path 2 (`workers_missing`-keyed `UnknownPlaceWorker` suppression)
+/// FIRES TODAY: with no `workers = ...` directive, `ir.workers` stays
+/// empty by construction, and every subsequent `place X on W`
+/// necessarily fires `UnknownPlaceWorker{W}` as a pure cascade of
+/// the already-reported `MissingWorkersDecl` root. Suppressed.
+/// `UnknownAccessibleByName` is NOT suppressed at this path (the
+/// name could be a class OR a worker — see
+/// [`Accum::is_cascade_of_failed_decl`] for the soundness argument).
+///
+/// Per-variant classification:
+///
+/// | Variant                                | Class       | Triggerable today | Suppressed when |
+/// |----------------------------------------|-------------|-------------------|-----------------|
+/// | `DuplicateWorkerClass`                 | Independent | yes               | never (non-poisoning) |
+/// | `DuplicateMemoryRegion`                | Independent | yes               | never |
+/// | `DuplicateWorker`                      | Independent | yes               | never |
+/// | `DuplicatePlace`                       | Independent | yes               | never |
+/// | `DuplicatePlaceData`                   | Independent | yes               | never |
+/// | `DuplicateLoop`                        | Independent | yes               | never |
+/// | `DuplicateTransfer`                    | Independent | yes               | never |
+/// | `DuplicateCheck`                       | Independent | yes               | never |
+/// | `DuplicateWorkersDecl`                 | Independent | yes               | never |
+/// | `MissingWorkersDecl`                   | Independent ROOT + **Path-2 trigger** | yes | never |
+/// | `DuplicatePlaceWorker`                 | Independent | yes               | never |
+/// | `DuplicateLoopOption` / `DuplicateTransferOption` | Independent | yes | never |
+/// | `ConflictingTransferMode`              | Independent | yes               | never |
+/// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               | never |
+/// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
+/// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
+/// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
+/// | `UnknownAccessibleByName`              | Path-1 candidate; NOT Path-2 | yes (no current Path-1 source) | Path-1 if referenced name is in `failed_decls` (dormant today); explicitly NOT Path-2 |
 ///
 /// # Determinism (PRD §10.1)
 ///
@@ -476,12 +489,15 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
 /// `workers_missing` is the ONE in-pass cascade trigger that fires
 /// today: if the schedule had NO `workers = ...` directive, then
 /// `ir.workers` is empty by construction and every downstream
-/// reference to any worker name (in `place X on W`, in
-/// `accessible_by`) is a pure cascade of [`SchedLowerErrorKind::MissingWorkersDecl`]
-/// — the user already has the root diagnostic. The flag is set
-/// alongside [`SchedLowerErrorKind::MissingWorkersDecl`]; downstream
-/// `UnknownPlaceWorker` and worker-targeting `UnknownAccessibleByName`
-/// errors are suppressed by [`Accum::is_cascade_of_failed_decl`].
+/// `place X on W` is a pure cascade of
+/// [`SchedLowerErrorKind::MissingWorkersDecl`] — the user already has
+/// the root diagnostic. The flag is set alongside
+/// [`SchedLowerErrorKind::MissingWorkersDecl`]; downstream
+/// `UnknownPlaceWorker` errors are suppressed by
+/// [`Accum::is_cascade_of_failed_decl`]. **NARROW**:
+/// `UnknownAccessibleByName` is NOT suppressed at this path because
+/// the referenced name could be a class OR a worker — see the
+/// soundness argument in [`Accum::is_cascade_of_failed_decl`].
 ///
 /// # Cascade landscape (TASK-0200, honest disclosure)
 ///
@@ -494,23 +510,27 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
 ///    non-poisoning by design — first decl wins). Forward-looking
 ///    infrastructure for the day a sched construct gains expression
 ///    evaluation.
-/// 2. `workers_missing`-keyed worker-reference suppression: **fires
+/// 2. `workers_missing`-keyed `UnknownPlaceWorker` suppression: **fires
 ///    today** on the unique MissingWorkersDecl path — a schedule
 ///    without a `workers = ...` directive triggers
 ///    `MissingWorkersDecl` and then every subsequent
-///    `UnknownPlaceWorker` / worker-targeting `UnknownAccessibleByName`
-///    is by definition a cascade of that root (the workers symbol
-///    table is empty by construction).
+///    `UnknownPlaceWorker` is by definition a cascade of that root
+///    (the workers symbol table is empty by construction).
+///    `UnknownAccessibleByName` is NOT suppressed here (see the
+///    function-doc on `is_cascade_of_failed_decl` for why).
 #[derive(Default)]
 struct Accum {
     errors: Vec<SchedLowerError>,
     failed_decls: BTreeMap<String, ()>,
     /// `true` iff the schedule has no `workers = ...` directive (a
     /// [`SchedLowerErrorKind::MissingWorkersDecl`] has been or will be
-    /// recorded). When set, every downstream worker-name reference is
-    /// a cascade of that root and is suppressed by
-    /// [`Accum::is_cascade_of_failed_decl`]. The single in-pass
-    /// cascade trigger that fires today (see type docs).
+    /// recorded). When set, every downstream
+    /// [`SchedLowerErrorKind::UnknownPlaceWorker`] is a cascade of that
+    /// root and is suppressed by [`Accum::is_cascade_of_failed_decl`].
+    /// `UnknownAccessibleByName` is NOT suppressed here — its
+    /// referenced name could be a class OR a worker, and only the
+    /// worker-side miss is a cascade. The single in-pass cascade
+    /// trigger that fires today (see type docs).
     workers_missing: bool,
 }
 

@@ -771,24 +771,36 @@ impl std::error::Error for SchedLowerError {}
 /// # Cascade landscape disclosure (honest-partial — TASK-0200)
 ///
 /// The algorithm-side counting contract (cycle-3, transitive poison)
-/// applies *infrastructurally* here: the `Accum` in
-/// [`super::lower::lower_sched`] carries a `failed_decls`
-/// poisoned-name set and the four reference-resolution variants
-/// (`UnknownWorkerClass`, `UnknownMemoryRegion`, `UnknownPlaceWorker`,
-/// `UnknownAccessibleByName`) are the cascade-candidate kinds. In the
-/// current sched-lowering surface, however, NO declaration path
-/// actually fails-and-fails-to-insert: every `worker_class` /
-/// `memory_region` / worker entry that survives its duplicate check is
-/// unconditionally inserted into the symbol table (there is no
-/// arithmetic-expression evaluation at the sched layer the way the
-/// algorithm side has `const N = 1/0`). The cascade infrastructure is
-/// therefore wired faithfully — matching the algo cycle-3 design
-/// shape, including the transitive-poison case-1 logic — but the
-/// suppression rule has no live trigger in the current variant set.
-/// The infrastructure is forward-looking for the day a sched
-/// construct gains expression evaluation (or a future PRD change
-/// allows poison-able decls); the parametric independent-count
-/// fixture stays load-bearing for AC#3 today. See
+/// applies here with TWO suppression paths in the `Accum` of
+/// [`super::lower::lower_sched`]:
+///
+/// 1. **`failed_decls`-keyed name cascade** (algo cycle-3 design,
+///    transferred verbatim, including the transitive-poison case-1
+///    logic). The four reference-resolution variants
+///    (`UnknownWorkerClass`, `UnknownMemoryRegion`,
+///    `UnknownPlaceWorker`, `UnknownAccessibleByName`) are the
+///    cascade-candidate kinds at this path. **NO LIVE TRIGGER on
+///    today's variant set** — every `worker_class` / `memory_region` /
+///    worker entry that survives its duplicate check is
+///    unconditionally inserted into the symbol table (there is no
+///    arithmetic-expression evaluation at the sched layer the way
+///    the algorithm side has `const N = 1/0`). Forward-looking
+///    infrastructure.
+///
+/// 2. **`workers_missing`-keyed `UnknownPlaceWorker` suppression**.
+///    **FIRES TODAY** on the unique `MissingWorkersDecl` path: with
+///    no `workers = ...` directive, `ir.workers` stays empty by
+///    construction, and every subsequent `place X on W` necessarily
+///    fires `UnknownPlaceWorker{W}` as a pure cascade of the
+///    already-reported root. Suppressed so the user sees one root
+///    diagnostic instead of N cascade lines. **Narrow:**
+///    `UnknownAccessibleByName` is NOT suppressed at this path
+///    because the referenced name could be a class OR a worker;
+///    only the worker-side miss is a cascade of
+///    `MissingWorkersDecl`, and an unknown class is independent.
+///
+/// The parametric K×L independent-count fixture and the parametric
+/// over-N Path-2 fixture together pin AC#3. See
 /// [`super::lower::lower_sched`] for the per-variant classification
 /// and the soundness argument.
 ///
