@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 19:44'
-updated_date: '2026-05-20 19:15'
+updated_date: '2026-05-20 19:41'
 labels:
   - compiler
   - language
@@ -142,4 +142,51 @@ FOLLOW-UPS (NOT filed this cycle; surface for next-cycle triage):
 (b) Unclosed-brace recovery behaviour pin (would consume to EOF; document the bound).
 
 DONE: AC 1-8 met; gate fully green; doc sweep done across all carriers; honest disposition recorded.
+
+ORCHESTRATOR review-gate cycle-2 (post-0d53c1f, in-thread fix at 2590e70):
+
+REVIEWERS SPLIT:
+- qa-test-runner: NO-GO with one blocking finding. PROBE 6/6a showed an over-consumption defect: failing brace-bodied item (for { ... } with typo) + VALID item after (const OK) silently swallowed the OK const. The pre-cycle-2 normal arm 'outer_atom.then(outer_atom.repeated()).then_ignore(just(';').or_not())' was the root cause.
+- mped-architect: GO. Adversarial probes S8/S9 tested error+error (both sides fire recovery) and A1-A4 tested edge cases (typo BEFORE brace, typo AT close-}, unclosed, stray-;-after) — but did NOT probe the asymmetric error+valid case. Verdict came back GO because the probed shapes all worked.
+
+QA's finding was load-bearing and correct. The defect contradicted the load-bearing docstring claim 'leaving subsequent items intact'.
+
+Cycle-2 fix at commit 2590e70 (orchestrator in-thread):
+- Split the normal arm into two with disjoint atom shapes:
+  - brace_block_item: ONE brace block + optional ';', then STOP (no further atoms — this is the load-bearing change).
+  - flat_item: one-or-more safe chars + REQUIRED ';' OR end() (the end() arm tolerates malformed flat item at very end of source, preserving the parser_error_carries_line_and_column 1-char fixture).
+- Mirrored fix in both algo/parser.rs:340-374 and sched/parser.rs:889-916.
+- Added 2 new regression fixtures pinning the error+valid case:
+  - brace_bodied_item_recovery_does_not_swallow_subsequent_valid_item: failing for{} + valid const OK after → EXACTLY 1 error.
+  - brace_bodied_directive_recovery_preserves_valid_directive_at_eof: failing flat data decl + valid for-loop after → EXACTLY 1 error.
+
+In-thread gate (post-fix):
+- just test: 468/0/2 (was 466 + 2 new regression fixtures).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 30/26/0/4/0.
+- just determinism-check x2: byte-identical.
+- both canaries bite.
+- just ci: exit 0.
+
+CYCLE-9 LESSON (NEW): adversarial probes for parser-recovery shapes MUST explicitly cover the asymmetric error+valid case (subsequent CLEAN item after a failing item) as a distinct case from error+error (subsequent ERROR item). Error+error probes always pass because both sides fire recovery; the over-consumption defect only fires on error+valid. The arch review's GO was correct for the shapes it probed; the QA review's NO-GO was correct because it probed the missing case. Both were rigorous; the lesson is about the PROBE SET COVERAGE, not the reviewers' competence.
+
+Forward-carry to feedback-comment-doc-lie-recurring memory: when designing review-gate probes for recovery shapes, the error+valid case is a distinct dimension that must be explicitly enumerated. The orchestrator's brief should require BOTH error+valid AND error+error probes when reviewing parser-recovery work.
+
+CASCADE-CLASS METHODOLOGY-TRANSFER SCORECARD (now 5-for-5 with TWO cycle-2 review-gate qualifiers):
+- TASK-0092 cycle-3: AlgoIR lowering — 5x-recurrence closure. Clean.
+- TASK-0087 cycle-4: sched-parser n+2 measurement. Clean.
+- TASK-0200 cycles 1+2+review: sched-lowering Path-2 closure. Required cycle-2-review for comprehensive doc-lie sweep.
+- TASK-0204+TASK-0207 (review-sweep)+TASK-0206 (PRD misattribution sweep)+TASK-0205 (brief-premise correction).
+- TASK-0199 cycles 1+2+review: parser-layer brace-balanced recovery. Required cycle-2-review for the over-consumption split. The deepest cycle of the session, completes the cascade-class arc.
+
+The cascade-class defect family is now closed across:
+- AlgoIR lowering (TASK-0092 cycle-3).
+- Sched-lowering (TASK-0200 cycles 1+2).
+- Sched-parser n+2 measurement (TASK-0087 cycle-4).
+- Algo-parser constant-2 measurement (TASK-0207).
+- BOTH parsers' brace-balanced recovery FIX (TASK-0199 cycles 1+2).
+
+The post-fix mechanical-flip-to-1 plan from TASK-0087 cycle-4's parametric pin is now LANDED. The cycle-3 methodology has been 5-for-5 transferred across the parser+lowering+follow-up axes.
+
+TASK-0199 status: Done remains valid after cycle-2 fix (the cycle-1 implementation was substantively correct; cycle-2 corrected one specific over-consumption defect). All 8 ACs remain met.
 <!-- SECTION:NOTES:END -->
