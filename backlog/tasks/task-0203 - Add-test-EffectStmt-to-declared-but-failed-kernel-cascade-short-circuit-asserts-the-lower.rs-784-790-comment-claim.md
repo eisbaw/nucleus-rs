@@ -3,9 +3,11 @@ id: TASK-0203
 title: >-
   Add test: EffectStmt to declared-but-failed-kernel cascade short-circuit
   (asserts the lower.rs:784-790 comment claim)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-19 22:33'
+updated_date: '2026-05-20 05:21'
 labels:
   - compiler
   - diagnostics

@@ -793,7 +793,14 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
             // The existing `is_cascade_of_failed_decl` UnknownIdent
             // suppression then collapses the error to the root
             // declaration failure if the kernel was poisoned. No new
-            // cascade-suppression rule is needed.
+            // cascade-suppression rule is needed. Both branches are
+            // measured by integration tests:
+            // - never-declared kernel:
+            //   `effect_stmt_to_unknown_kernel_stays_unknown_ident`
+            // - declared-but-failed-body kernel (relies on the
+            //   TASK-0092 case-1 transitive-poison fix):
+            //   `effect_stmt_to_declared_but_failed_kernel_collapses_to_root`
+            //   (TASK-0203).
             let callee = &call.callee.node;
             let Some(resolved) = ir.kernels.get(callee) else {
                 return Err(LowerError::at(

@@ -1268,3 +1268,159 @@ fn effect_stmt_to_unknown_kernel_stays_unknown_ident() {
         other => panic!("expected UnknownIdent; got {other:?}"),
     }
 }
+
+/// Cascade discipline (TASK-0203, sibling of
+/// [`effect_stmt_to_unknown_kernel_stays_unknown_ident`]): the
+/// DECLARED-but-failed-body kernel path.
+///
+/// Pins the lower.rs `Stmt::Effect` comment claim that "if the kernel
+/// was declared but its body failed to lower, the existing
+/// `is_cascade_of_failed_decl` UnknownIdent suppression collapses the
+/// error to the root declaration failure". The other test
+/// `effect_stmt_to_unknown_kernel_stays_unknown_ident` covers the
+/// never-declared case; this one covers the declared-but-signature-
+/// failed case, which is the harder branch because it depends on the
+/// TASK-0092 case-1 *transitive* poison: `BAD_CONST` failing must
+/// transitively poison `bad_kernel` into `failed_decls`, otherwise the
+/// downstream `bad_kernel();` bare-call leaks an `UnknownIdent`
+/// cascade.
+///
+/// Discrimination strength:
+/// - If the case-1 transitive-poison fix (TASK-0092 cycle-3, commit
+///   79c654d) were reverted, the kernel name would NOT be in
+///   `failed_decls`, so the bare-call's `UnknownIdent("bad_kernel")`
+///   would NOT be suppressed and we'd see 2 errors (root +
+///   leaked-cascade) — this test would fail with the leaked-cascade
+///   error vector. The assertion is therefore the right discriminator
+///   for that mechanism, not a blanket `len > 0`.
+/// - The kernel is declared `pure` so that IF the implementation ever
+///   regressed to half-insert the kernel into `ir.kernels` despite the
+///   signature failure, the bare-call would spuriously raise
+///   `EffectCalleeNotEffectful` — the test pins that no such
+///   spurious purity-mismatch survives (AC#2 (c)).
+#[test]
+fn effect_stmt_to_declared_but_failed_kernel_collapses_to_root() {
+    // `BAD_CONST` fails (div-by-zero, the root). The kernel signature
+    // references the poisoned `BAD_CONST` in a dim expression, so its
+    // own lowering fails with `ShapeRefersToNonConst{BAD_CONST}`. Per
+    // the TASK-0092 case-1 transitive-poison fix, `bad_kernel` is
+    // ALSO inserted into `failed_decls` (the signature-failure-as-
+    // cascade case), so the downstream bare-call's
+    // `UnknownIdent("bad_kernel")` is recognised as a cascade of the
+    // root and suppressed. The kernel is declared `pure` to make the
+    // "no spurious EffectCalleeNotEffectful" assertion non-trivial:
+    // a regression that half-inserts the kernel anyway would surface
+    // here.
+    let src = "const BAD_CONST : usize = 1 / 0;\n\
+kernel bad_kernel : (i32[BAD_CONST]) -> () pure;\n\
+bad_kernel();\n";
+
+    let errs = lower_str(src)
+        .expect_err("the failed const must produce its root error");
+
+    // AC#1: EXACTLY one error survives — the root `ConstDivByZero`.
+    // The kernel decl's `ShapeRefersToNonConst` is a cascade
+    // (suppressed). The bare-call's `UnknownIdent` is a cascade
+    // (suppressed). The purity check naturally short-circuits because
+    // `bad_kernel` is not in `ir.kernels`. Total: 1.
+    assert_eq!(
+        errs.errors().len(),
+        1,
+        "declared-but-failed-kernel cascade must collapse to EXACTLY 1 \
+         error (the root `ConstDivByZero(BAD_CONST)`), got {} — kinds: \
+         {:?} — source:\n{src}",
+        errs.errors().len(),
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // AC#2 (b): the sole survivor is the root with the right kind.
+    let err = &errs.errors()[0];
+    match &err.kind {
+        LowerErrorKind::ConstDivByZero { in_const } => assert_eq!(
+            in_const, "BAD_CONST",
+            "the surviving error's `in_const` field must name the root \
+             failed const"
+        ),
+        other => panic!(
+            "the sole surviving error must be the root \
+             `ConstDivByZero(BAD_CONST)`, got {other:?}"
+        ),
+    }
+
+    // AC#1 + AC#2 (b): the line:col of the root error pins to the
+    // offending `1 / 0` expression on line 1. Recompute the expected
+    // `(line, col)` from the source so the test pins the real
+    // position, not a guessed constant — matching the idiom used by
+    // `cascade_independent_consts_each_carry_own_span` and
+    // `located_errors_carry_correct_line_col`.
+    let div_at = src.find("1 / 0").expect("`1 / 0` in source");
+    let expected = offset_to_line_col(src, div_at);
+    assert_eq!(
+        expected, (1, 27),
+        "sanity: the `1 / 0` of BAD_CONST is on line 1 col 27"
+    );
+    assert_eq!(
+        err_line_col(src, err),
+        expected,
+        "the root `ConstDivByZero` must point at the `1 / 0` \
+         expression in the BAD_CONST declaration"
+    );
+
+    // AC#2 (a): no `UnknownIdent("bad_kernel")` anywhere in the error
+    // vector. This is the discriminating assertion for the TASK-0092
+    // case-1 transitive-poison path: if it regressed, the bare-call
+    // would leak an `UnknownIdent("bad_kernel")` cascade here.
+    let leaked_unknown_ident = errs.errors().iter().any(|e| {
+        matches!(&e.kind, LowerErrorKind::UnknownIdent(n) if n == "bad_kernel")
+    });
+    assert!(
+        !leaked_unknown_ident,
+        "no `UnknownIdent(\"bad_kernel\")` may leak — the kernel name \
+         must be transitively poisoned into `failed_decls` by the \
+         signature-failure cascade (TASK-0092 case-1). Errors: {:?}",
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // AC#2 (c): no `EffectCalleeNotEffectful{bad_kernel}` spuriously
+    // emitted — the kernel never made it into `ir.kernels` (its
+    // signature lowering failed), so the purity check at lower.rs:804
+    // is unreachable for this callee. This pins the "purity check
+    // naturally short-circuits when kernel is not in `ir.kernels`"
+    // half of the comment claim.
+    let leaked_purity_mismatch = errs.errors().iter().any(|e| {
+        matches!(
+            &e.kind,
+            LowerErrorKind::EffectCalleeNotEffectful { callee } if callee == "bad_kernel"
+        )
+    });
+    assert!(
+        !leaked_purity_mismatch,
+        "no `EffectCalleeNotEffectful(bad_kernel)` may leak — the \
+         kernel was never inserted into `ir.kernels` (signature \
+         lowering failed), so the purity check must naturally short- \
+         circuit. Errors: {:?}",
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Belt-and-braces: also assert no leaked
+    // `ShapeRefersToNonConst{BAD_CONST}` (the kernel-decl's own
+    // cascade error) — this would mean case-1 suppression broke at
+    // the declaration level, not just the transitive-poison level.
+    // The pre-existing `one_failed_const_with_n_dependents_yields_
+    // exactly_one_error` already pins this for data-decls; here we
+    // pin it for kernel-decls.
+    let leaked_shape_cascade = errs.errors().iter().any(|e| {
+        matches!(
+            &e.kind,
+            LowerErrorKind::ShapeRefersToNonConst { unknown_ident, .. } if unknown_ident == "BAD_CONST"
+        )
+    });
+    assert!(
+        !leaked_shape_cascade,
+        "no `ShapeRefersToNonConst(BAD_CONST)` may leak — the kernel \
+         signature's reference to the poisoned `BAD_CONST` is a \
+         cascade of the root and must be suppressed (case-1). \
+         Errors: {:?}",
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+}
