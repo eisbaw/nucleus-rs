@@ -115,10 +115,20 @@ use super::ir::{
 ///   **1** error (not `1 + N`), for any N.
 /// - **Transitively** (TASK-0092 transitive-poison fix): **1** failed
 ///   declaration with **K** cascade-decls each used by **L**
-///   statements → exactly **1** error (not `1 + K + K*L`), for any
-///   K, L. Cascade-decls have no independent meaning and are
-///   transitively poisoned (see [`Accum::record_decl_failure`] case
-///   1).
+///   dependants (statements *or* downstream decls) → exactly **1**
+///   error (not `1 + K + K*L`), for any K, L. Cascade-decls have no
+///   independent meaning and are transitively poisoned (see
+///   [`Accum::record_decl_failure`] case 1). TASK-0204 broadened the
+///   pinning fixture (`transitive_cascade_collapses_for_any_k_l`)
+///   over a third dimension — cascade-kind ∈ {data-via-shape,
+///   kernel-via-signature-shape, const-via-other-const} — and a
+///   fourth — dependant trigger shape ∈ {bare-call-read,
+///   assignment-LHS, const-refers-to, shape-refers-to (depth>1)} —
+///   so all four cascade-suppressible LowerErrorKind variants
+///   (UnknownIdent / AssignmentTargetNotData / ConstRefersToNonConst
+///   / ShapeRefersToNonConst) are guarded by the named fixture, not
+///   only the data-via-shape × bare-call-read cell that the original
+///   K×L sweep covered.
 ///
 /// # Determinism (PRD §10.1)
 ///

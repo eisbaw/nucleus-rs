@@ -3,9 +3,11 @@ id: TASK-0204
 title: >-
   Broaden K×L cascade fixture to exercise all 4 cascade-error variants
   (named-fixture coverage gap)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-19 22:59'
+updated_date: '2026-05-20 16:45'
 labels:
   - compiler
   - diagnostics
@@ -31,3 +33,9 @@ TASK-0092 cycle-3 review (mped-architect + qa-test-runner both flagged independe
 - [ ] #3 If the broader fixture surfaces a NEW defect (an axis the transitive-poison fix does not actually cover), STOP and file a precise follow-up rather than papering over — the honest-stop discipline applies; the 5th-recurrence-closed claim must remain measurement-backed
 - [ ] #4 just test passes; just ci exit 0; clippy --workspace --all-targets clean; no behaviour change for valid input (e2e 30/26/0/4/0; det-check byte-identical x2)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Broaden the named K×L cascade fixture to be a 4-dimensional sweep: (cascade-kind in {data-via-shape, kernel-via-signature-shape, const-via-other-const}) × (cascade-error variant in {UnknownIdent, AssignmentTargetNotData, ConstRefersToNonConst, ShapeRefersToNonConst-at-depth>1}) × (K in {1,2,3,5} cascade-decls) × (L in {1,2,3} references-per-cascade-decl). For each combination: build the program, assert errors.len()==1, kind == root ConstDivByZero{N}, no leaked cascade-error variant of any of the 4 kinds. The existing named fixture transitive_cascade_collapses_for_any_k_l is the stylistic template (same assertion idiom, same parametric loop, but parameter-broadened). NOT papered over if a new defect surfaces — STOP and file precise follow-up.
+<!-- SECTION:PLAN:END -->

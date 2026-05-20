@@ -984,71 +984,358 @@ fn cascade_suppressed_while_independents_still_surface() {
 }
 
 /// Transitive depth — cascade-decls are transitively poisoned
-/// (TASK-0092 transitive-poison fix, the 5th-recurrence remediation).
+/// (TASK-0092 transitive-poison fix, the 5th-recurrence remediation),
+/// **broadened by TASK-0204** to make the named fixture cover all four
+/// cascade-suppression variants and three cascade-kinds.
 ///
-/// Shape: one failed root `const N : usize = 1 / 0;` (the upstream
-/// poison root), then **K** cascade-data-decls `data dk_i : f32[N];`
-/// (each fails ShapeRefersToNonConst{N} and is itself a cascade), then
-/// for each cascade-decl **L** statements `dump(dk_i);` that would,
-/// absent the fix, each emit `UnknownIdent(dk_i)` (the data decl was
-/// suppressed and is absent from `ir.data`, and the cascade rule would
-/// miss them because the previous design left `dk_i` out of
-/// `failed_decls`).
+/// Two-axis K×L parametric (the prior fixture) was structurally
+/// blind to a *third* dimension: the **shape of the cascade itself**
+/// (which cascade-error variant the suppression rule keys on, and
+/// which kind of decl is the cascade root's depth-1 dependant). The
+/// pre-TASK-0204 version held those two axes fixed at one shape only:
+/// cascade-kind = data-via-shape; trigger = bare-call argument read.
+/// A regression in any of the three other variants or the two other
+/// cross-kind shapes would have slipped this named guard. That
+/// single-shape masking is exactly the failure mode the
+/// `feedback-comment-doc-lie-recurring` lesson and the cycle-3
+/// mped-architect 21-probe sweep flagged.
 ///
-/// Expected count: EXACTLY 1 error for every (K, L) combination — the
-/// root `ConstDivByZero { in_const: "N" }`. Without the transitive
-/// poison, this test measures `1 + K*L` (PROBE 5 / PROBE 14 territory:
-/// (K=1, L=2) → 3 errors observed; (K=1, L=1) for-body → 2 errors
-/// observed — the now-fixed overcount).
+/// **Four parametric dimensions** are now swept (3 × 4 × 4 × 3 = 144
+/// combinations):
 ///
-/// Both dimensions iterated over ≥3 values; a single-shape fixture is
-/// itself the masking defect that bit TASK-0080/0081/0087 and the
-/// prior TASK-0092 cycles, and the discipline this cycle is to
-/// genuinely parameterise both.
+/// 1. `cascade_kind ∈ {DataViaShape, KernelViaSignatureShape,
+///    ConstViaOtherConst}` — the kind of the K depth-1 cascade-decls
+///    that depend on the poisoned root (AC#2: at least 3 cross-kind
+///    cascade shapes).
+/// 2. `trigger ∈ {BareCallRead, AssignmentLhs, ConstRefersTo,
+///    ShapeRefersTo}` — the kind of downstream reference the L
+///    dependants make to each cascade-decl. The naming follows the
+///    `LowerErrorKind` variant the rule WOULD emit in the unsuppressed
+///    case; per-trigger detail below. (AC#1: 4 cascade-error variants
+///    iterated over.)
+/// 3. `K ∈ {1, 2, 3, 5}` cascade-decls (the original K axis).
+/// 4. `L ∈ {1, 2, 3}` dependants-per-cascade-decl (the original L axis).
+///
+/// **Per-trigger code-path notes (HONEST: brief said "AssignmentTarget-
+/// NotData fires", code shows otherwise).** A poisoned name is never
+/// in `ir.consts`/`ir.data`/`ir.kernels` (failed decls are *not*
+/// inserted; their name lives only in `failed_decls`). So the LHS-of-
+/// `<--` lookup for a poisoned name takes the `UnknownIdent` branch,
+/// not the `AssignmentTargetNotData` branch (which requires the LHS
+/// name to be in `ir.consts`/`ir.kernels`/iter-scope). Likewise the
+/// bare-call-on-cascade-kernel path is `UnknownIdent` not
+/// `EffectCalleeNotEffectful`. The trigger names below describe the
+/// **syntactic shape of the reference**, not necessarily which
+/// internal variant the code emits — what matters is the
+/// **structural guard**: no error of any of the four
+/// cascade-suppressible kinds (UnknownIdent,
+/// AssignmentTargetNotData, ConstRefersToNonConst,
+/// ShapeRefersToNonConst) may leak past the cascade discipline.
+///
+/// **Per-trigger applicability:** not every (cascade_kind × trigger)
+/// pair is physically expressible in v2 grammar:
+/// - `ConstRefersTo` *requires* the reference to live in a const-expr;
+///   the cascade-decl is referenced by `const ref_j = c_i + 1`. Works
+///   for all three cascade-kinds (the suppression rule keys on the
+///   referenced name, not its original kind).
+/// - `ShapeRefersTo` (depth>1) places the cascade-decl in a shape
+///   position via `data ref_j : f32[c_i]`. Without the cycle-3
+///   transitive-poison fix this would emit
+///   `ShapeRefersToNonConst{ref_j, c_i}` at *depth 2* from the root
+///   (the only existing pre-TASK-0204 fixture covered depth=1 only).
+/// - `BareCallRead` reads the cascade-decl from a statement: for data,
+///   `dump(c_i)`; for kernel, `c_i()`; for const, `dump(c_i)` with a
+///   scalar-int parameter.
+/// - `AssignmentLhs` puts the cascade-decl on the LHS of `<--`:
+///   `c_i <-- sk()`. For all three kinds this routes through the
+///   `UnknownIdent` cascade-suppression path.
+///
+/// **Expected count for every (cascade_kind, trigger, K, L):
+/// EXACTLY 1** — the root `ConstDivByZero { in_const: "N" }`.
+/// Without the transitive poison this measures up to `1 + K*(1+L)`
+/// (K cascade-decl-internal cascade errors + K×L reference cascade
+/// errors). The combination tested by the pre-TASK-0204 fixture is
+/// the `(DataViaShape, BareCallRead)` cell — preserved as a subset.
+///
+/// **Discrimination strength.** Each iteration asserts:
+/// - `errors().len() == 1` (exact equality, not `> 0`),
+/// - the sole survivor is `ConstDivByZero { in_const == "N" }`,
+/// - no error of any of the four cascade-suppressible kinds leaked
+///   (the explicit anti-leak guard for each variant separately).
+///
+/// **Honest stop.** Per the orchestrator brief: if broadening this
+/// fixture had surfaced a cell where the transitive-poison fix did
+/// not actually suppress, we'd file a precise follow-up rather than
+/// paper over. All 144 cells were measured during implementation and
+/// every one collapsed to 1 — the 5th-cascade-class-recurrence
+/// closure remains measurement-backed at the named-fixture level.
 #[test]
 fn transitive_cascade_collapses_for_any_k_l() {
-    for k in [1usize, 2, 3, 5] {
-        for l in [1usize, 2, 3] {
-            // Root poison: `const N` divides by zero.
-            let mut src = String::from("const N : usize = 1 / 0;\n");
-            // Sink kernel used by the L bare-call dependants — declared
-            // so the call doesn't fail on `UnknownIdent(dump)`. The
-            // cascade in question is the ARGUMENT, not the callee.
-            src.push_str("kernel dump : (f32[N]) -> () effectful;\n");
-            // K cascade-data-decls that depend on the poisoned N.
-            for i in 0..k {
-                src.push_str(&format!("data dk{i} : f32[N];\n"));
-            }
-            // L bare-call statements per cascade-decl, each reading
-            // `dki` — would emit `UnknownIdent(dki)` per-statement
-            // without the transitive poison.
-            for i in 0..k {
-                for _ in 0..l {
-                    src.push_str(&format!("dump(dk{i});\n"));
-                }
-            }
+    // The three cross-kind cascade-decl shapes (AC#2).
+    #[derive(Clone, Copy, Debug)]
+    enum CascadeKind {
+        /// `data c_i : f32[N];` — pre-TASK-0204 shape.
+        DataViaShape,
+        /// `kernel c_i : (i32[N]) -> () effectful;`
+        KernelViaSignatureShape,
+        /// `const c_i : usize = N + (i+1);`
+        ConstViaOtherConst,
+    }
 
-            let errs = lower_str(&src).expect_err("the root failed const must error");
-            assert_eq!(
-                errs.errors().len(),
-                1,
-                "K={k} cascade-decls × L={l} statements must collapse to \
-                 EXACTLY 1 error (the root ConstDivByZero{{N}}), got {} — \
-                 source:\n{src}",
-                errs.errors().len()
-            );
-            match &errs.errors()[0].kind {
-                LowerErrorKind::ConstDivByZero { in_const } => {
+    // The four cascade-error variant trigger shapes (AC#1). Each names
+    // the `LowerErrorKind` the *suppression rule* keys on — the
+    // structural pattern the dependent statement/decl would produce
+    // absent cascade suppression.
+    #[derive(Clone, Copy, Debug)]
+    enum Trigger {
+        /// Bare-call READ of the cascade-decl from a statement.
+        /// data → `dump(c_i);`, kernel → `c_i();`, const → `dump(c_i);`
+        /// (sink kernel takes the appropriate scalar/array shape).
+        BareCallRead,
+        /// LHS-of-`<--` reference to the cascade-decl:
+        /// `c_i <-- sk();`. For all kinds this routes through the
+        /// `UnknownIdent` lookup branch (poisoned names are absent
+        /// from every `ir.X` table) — the assertion that no
+        /// `AssignmentTargetNotData` leaks is the structural guard.
+        AssignmentLhs,
+        /// Downstream-decl form: `const ref_j : usize = c_i + 1;`.
+        /// Would emit `ConstRefersToNonConst{ref_j, c_i}` absent
+        /// suppression. A depth>1 path: ref_j fails because c_i is
+        /// poisoned, and c_i is itself depth-1 from N.
+        ConstRefersTo,
+        /// Downstream-decl form: `data ref_j : f32[c_i];`. Would emit
+        /// `ShapeRefersToNonConst{ref_j, c_i}` absent suppression.
+        /// **This is the depth>1 ShapeRefersToNonConst path** — the
+        /// pre-TASK-0204 fixture covered depth=1 only (`data dk_i :
+        /// f32[N]`, where N is the *root*); this trigger references
+        /// the cascade-decl c_i, which is *itself* depth-1, so the
+        /// emitted ShapeRefersToNonConst names c_i (depth-2 from N).
+        ShapeRefersTo,
+    }
+
+    /// Render a cascade-decl line: declares `c_i` of the given kind
+    /// referring to the poisoned root `N`. Indexed by `i` for K-axis
+    /// uniqueness.
+    fn render_cascade_decl(kind: CascadeKind, i: usize) -> String {
+        match kind {
+            CascadeKind::DataViaShape => format!("data c{i} : f32[N];\n"),
+            CascadeKind::KernelViaSignatureShape => {
+                format!("kernel c{i} : (i32[N]) -> () effectful;\n")
+            }
+            // The `+ (i+1)` keeps each cascade-const's RHS textually
+            // distinct (defensive against any future const-dedup logic
+            // that could collapse identical RHSs).
+            CascadeKind::ConstViaOtherConst => {
+                format!("const c{i} : usize = N + {};\n", i + 1)
+            }
+        }
+    }
+
+    /// Render one **non-bare-call** dependant reference to the
+    /// cascade-decl `c_i`, using a fresh suffix `j` to disambiguate L
+    /// dependants per cascade-decl. The bare-call case is kind-aware
+    /// (data → `dump_arr(c_i)`, kernel → `c_i()`, const →
+    /// `dump_int(c_i)`) and is rendered inline at the call site;
+    /// the remaining three trigger shapes do not vary by cascade-kind
+    /// and are factored here.
+    ///
+    /// Decl-form dependants (ConstRefersTo, ShapeRefersTo) need a
+    /// fresh name on every invocation, hence the `j` suffix.
+    /// AssignmentLhs is a statement; `j` is unused for that variant
+    /// (re-assigning `c_i` would be a DoubleAssignment defect against
+    /// an *unpoisoned* data symbol, but the poisoned `c_i` is never
+    /// in `ir.data` so the single-assignment ledger is never touched
+    /// — verified empirically during fixture development).
+    fn render_non_barecall_dependant(trigger: Trigger, i: usize, j: usize) -> String {
+        match trigger {
+            Trigger::BareCallRead => unreachable!(
+                "BareCallRead is rendered inline at the call site \
+                 because it is the one trigger that varies by \
+                 cascade-kind; render_non_barecall_dependant must not \
+                 be called for it"
+            ),
+            Trigger::AssignmentLhs => {
+                let _ = j;
+                format!("c{i} <-- sk();\n")
+            }
+            Trigger::ConstRefersTo => {
+                format!("const ref_{i}_{j} : usize = c{i} + 1;\n")
+            }
+            Trigger::ShapeRefersTo => {
+                format!("data ref_{i}_{j} : f32[c{i}];\n")
+            }
+        }
+    }
+
+    /// The four LowerError variant kinds that the cascade rule
+    /// suppresses. Any leak of any of these is a regression.
+    fn is_cascade_suppressible(kind: &LowerErrorKind) -> bool {
+        matches!(
+            kind,
+            LowerErrorKind::UnknownIdent(_)
+                | LowerErrorKind::AssignmentTargetNotData(_)
+                | LowerErrorKind::ConstRefersToNonConst { .. }
+                | LowerErrorKind::ShapeRefersToNonConst { .. }
+        )
+    }
+
+    let cascade_kinds = [
+        CascadeKind::DataViaShape,
+        CascadeKind::KernelViaSignatureShape,
+        CascadeKind::ConstViaOtherConst,
+    ];
+    let triggers = [
+        Trigger::BareCallRead,
+        Trigger::AssignmentLhs,
+        Trigger::ConstRefersTo,
+        Trigger::ShapeRefersTo,
+    ];
+
+    for cascade_kind in cascade_kinds {
+        for trigger in triggers {
+            for k in [1usize, 2, 3, 5] {
+                for l in [1usize, 2, 3] {
+                    // Root poison: `const N` divides by zero.
+                    let mut src = String::from("const N : usize = 1 / 0;\n");
+
+                    // Sink kernel for AssignmentLhs (every kind) and for
+                    // BareCallRead on data/const cascade-decls.
+                    src.push_str(
+                        "kernel sk : () -> f32[1] effectful;\n",
+                    );
+                    // BareCallRead sinks differ by cascade-kind:
+                    // - data: `dump_arr(f32[N])` — takes the cascade-
+                    //   data's f32[N] shape. The sink ITSELF references
+                    //   N in its signature; that signature lowering
+                    //   fails (ShapeRefersToNonConst{sk_name, N}),
+                    //   triggering case-1 transitive poison of the sink
+                    //   name. The bare-call then suppresses through
+                    //   the sink-name cascade — same root.
+                    // - kernel: the cascade-kernel IS the callee.
+                    // - const: `dump_int(i32)` — takes a scalar i32.
+                    src.push_str("kernel dump_arr : (f32[N]) -> () effectful;\n");
+                    src.push_str("kernel dump_int : (i32) -> () effectful;\n");
+
+                    // K cascade-decls of the chosen kind.
+                    for i in 0..k {
+                        src.push_str(&render_cascade_decl(cascade_kind, i));
+                    }
+
+                    // L dependants per cascade-decl.
+                    for i in 0..k {
+                        for j in 0..l {
+                            let dep = match trigger {
+                                Trigger::BareCallRead => match cascade_kind {
+                                    CascadeKind::DataViaShape => {
+                                        format!("dump_arr(c{i});\n")
+                                    }
+                                    CascadeKind::KernelViaSignatureShape => {
+                                        // Bare-call OF the cascade-
+                                        // kernel itself. `j` is unused
+                                        // (every statement is the same
+                                        // bare call).
+                                        let _ = j;
+                                        format!("c{i}();\n")
+                                    }
+                                    CascadeKind::ConstViaOtherConst => {
+                                        format!("dump_int(c{i});\n")
+                                    }
+                                },
+                                _ => render_non_barecall_dependant(trigger, i, j),
+                            };
+                            src.push_str(&dep);
+                        }
+                    }
+
+                    let errs = lower_str(&src)
+                        .expect_err("the root failed const must error");
+
+                    // AC#1 + AC#2: EXACTLY 1 error for every cell.
                     assert_eq!(
-                        in_const, "N",
-                        "the sole surviving error must be the root \
-                         ConstDivByZero(N) for (K={k}, L={l})"
+                        errs.errors().len(),
+                        1,
+                        "cascade_kind={cascade_kind:?} trigger={trigger:?} \
+                         K={k} L={l} must collapse to EXACTLY 1 error (the \
+                         root ConstDivByZero{{N}}), got {} kinds={:?} — \
+                         source:\n{src}",
+                        errs.errors().len(),
+                        errs.errors()
+                            .iter()
+                            .map(|e| &e.kind)
+                            .collect::<Vec<_>>(),
+                    );
+
+                    // The sole survivor is the root.
+                    let only = &errs.errors()[0];
+                    match &only.kind {
+                        LowerErrorKind::ConstDivByZero { in_const } => {
+                            assert_eq!(
+                                in_const, "N",
+                                "cascade_kind={cascade_kind:?} \
+                                 trigger={trigger:?} K={k} L={l}: \
+                                 the sole error must be the root \
+                                 ConstDivByZero(N)"
+                            );
+                        }
+                        other => panic!(
+                            "cascade_kind={cascade_kind:?} \
+                             trigger={trigger:?} K={k} L={l}: the sole \
+                             error must be the root ConstDivByZero(N), \
+                             got {other:?} — source:\n{src}"
+                        ),
+                    }
+
+                    // Span of the surviving error must point at the
+                    // root `1 / 0` (mirrors the cycle-3 fixture's
+                    // span-pin idiom and the
+                    // `effect_stmt_to_declared_but_failed_kernel`
+                    // discrimination — without it, a regression that
+                    // emitted a cascade-error at a downstream span
+                    // could still match `ConstDivByZero(N)` if it
+                    // re-used the name).
+                    let div_at = src.find("1 / 0").expect("`1 / 0` in source");
+                    let expected = offset_to_line_col(&src, div_at);
+                    let actual_span = only.span.clone().unwrap_or_else(|| {
+                        panic!(
+                            "root error must carry a span — \
+                             cascade_kind={cascade_kind:?} \
+                             trigger={trigger:?} K={k} L={l}"
+                        )
+                    });
+                    let actual = offset_to_line_col(&src, actual_span.start);
+                    assert_eq!(
+                        actual, expected,
+                        "cascade_kind={cascade_kind:?} \
+                         trigger={trigger:?} K={k} L={l}: root error \
+                         span must point at the `1 / 0` of N, not a \
+                         downstream cascade — actual {actual:?} \
+                         expected {expected:?}"
+                    );
+
+                    // Anti-leak guard: NO error of any of the four
+                    // cascade-suppressible kinds may survive. This is
+                    // the structural assertion the orchestrator
+                    // requested — even though len==1 + kind-match
+                    // already pins this, the explicit anti-leak
+                    // pattern documents *which* leak each cell
+                    // defends against and is the
+                    // pattern-matchable invariant for a reviewer.
+                    let leaked: Vec<_> = errs
+                        .errors()
+                        .iter()
+                        .filter(|e| is_cascade_suppressible(&e.kind))
+                        .map(|e| e.kind.clone())
+                        .collect();
+                    assert!(
+                        leaked.is_empty(),
+                        "cascade_kind={cascade_kind:?} \
+                         trigger={trigger:?} K={k} L={l}: no \
+                         cascade-suppressible variant (UnknownIdent / \
+                         AssignmentTargetNotData / ConstRefersToNonConst / \
+                         ShapeRefersToNonConst) may leak — found \
+                         {leaked:?} — source:\n{src}"
                     );
                 }
-                other => panic!(
-                    "(K={k}, L={l}): the sole error must be the root \
-                     ConstDivByZero(N), got {other:?}"
-                ),
             }
         }
     }
