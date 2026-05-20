@@ -49,7 +49,7 @@ pub use ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
     ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,
     ResolvedTransferDirective, ResolvedTransferOption, ResolvedWorker, ResolvedWorkerClass,
-    SchedIR, SchedLowerError, SchedLowerErrorKind, DEFAULT_WORKER_CLASS,
+    SchedIR, SchedLowerError, SchedLowerErrorKind, SchedLowerErrors, DEFAULT_WORKER_CLASS,
 };
 pub use lower::lower_sched;
 pub use parser::parse_sched;

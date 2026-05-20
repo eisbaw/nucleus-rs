@@ -17,6 +17,25 @@
 //! appear after `place`). The grammar accepts any directive order
 //! (§2 note 2); separating declaration collection from reference
 //! validation is the cleanest way to honour that.
+//!
+//! # Multi-error reporting (TASK-0200)
+//!
+//! Lowering does NOT stop at the first violation: it accumulates every
+//! genuinely-independent [`SchedLowerError`] across the whole pass and
+//! returns them together as [`SchedLowerErrors`]. The cascade
+//! infrastructure mirrors the algorithm cycle-3 design (TASK-0092)
+//! verbatim — a [`failed_decls`](Accum::failed_decls) `BTreeMap`
+//! poisoned-name set, four reference-resolution variants
+//! (`UnknownWorkerClass`, `UnknownMemoryRegion`, `UnknownPlaceWorker`,
+//! `UnknownAccessibleByName`) recognised as cascade-candidates, and
+//! transitive-poison case-1 logic. The honest disclosure: no current
+//! sched-lowering declaration path actually fails-and-fails-to-insert
+//! (every decl that survives its duplicate check is unconditionally
+//! inserted into the symbol table), so `failed_decls` is empty in
+//! practice on today's variant set. The cascade-suppression rule is
+//! wired and tested for shape; it has no live trigger today and is
+//! forward-looking for the day a sched construct gains expression
+//! evaluation. See [`SchedLowerErrors`] type docs.
 
 use std::collections::BTreeMap;
 
@@ -25,27 +44,107 @@ use super::ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,
     ResolvedMemoryRegion, ResolvedPlaceData, ResolvedPlaceTarget, ResolvedPlacement,
     ResolvedTransferDirective, ResolvedTransferOption, ResolvedWorker, ResolvedWorkerClass,
-    SchedIR, SchedLowerError, SchedLowerErrorKind, DEFAULT_WORKER_CLASS,
+    SchedIR, SchedLowerError, SchedLowerErrorKind, SchedLowerErrors, DEFAULT_WORKER_CLASS,
 };
 
 /// Lower a parsed [`SchedAst`] into a validated [`SchedIR`].
 ///
-/// Returns the first violation encountered. Multi-error reporting
-/// follows the algorithm-side precedent (single-error only — see
-/// the algorithm lowering's known limitation).
-pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
+/// # Multi-error reporting (TASK-0200)
+///
+/// Lowering does **not** abort on the first violation. It walks
+/// `ast.directives` in source order and *accumulates* every
+/// genuinely-independent [`SchedLowerError`], returning them all in
+/// one [`SchedLowerErrors`] bundle so a user sees every violation in
+/// one compile cycle rather than recompiling once per error. The `Ok`
+/// type is unchanged ([`SchedIR`]): a schedule that lowers produces
+/// the exact same IR as before — zero behaviour change for valid
+/// input (the determinism gate proves this byte-for-byte).
+///
+/// # Independent-vs-cascade discipline (AC#3 — the cycle-3 transfer)
+///
+/// The algorithm-side TASK-0092 cycle-3 fix established the
+/// independence-vs-cascade discipline: emit every genuinely-
+/// independent violation, suppress *cascade* errors (a reference to a
+/// declaration that itself failed), and **transitively poison**
+/// cascade-decls so depth>1 chains collapse to their single root.
+/// That design transfers verbatim to schedule lowering:
+///
+/// - **Cascade boundary = symbol-table membership.** A declaration
+///   that fails to lower would (in the algo precedent) not be
+///   inserted into `ir.worker_classes` / `ir.memory_regions` /
+///   `ir.workers` etc., and its name would go into
+///   [`Accum::failed_decls`].
+/// - **Reference errors are suppressed when the referenced name is
+///   poisoned.** The four reference-resolution variants —
+///   [`SchedLowerErrorKind::UnknownWorkerClass`],
+///   [`SchedLowerErrorKind::UnknownMemoryRegion`],
+///   [`SchedLowerErrorKind::UnknownPlaceWorker`],
+///   [`SchedLowerErrorKind::UnknownAccessibleByName`] — are the
+///   cascade-candidate kinds; every other variant is independent.
+/// - **Duplicate-decl errors do NOT poison** (first decl is valid in
+///   the table; suppressing dependents here would be undercount).
+/// - **Transitive poison** ([`Accum::record_decl_failure`] case 1):
+///   a declaration that fails ONLY because it refers to an already-
+///   poisoned upstream is ITSELF inserted into `failed_decls`.
+///   Cascade-decls have no independent meaning; every downstream
+///   reference is by definition a transitive cascade of the same
+///   upstream root. Without this, depth>1 cascades would leak as
+///   overcount (the 5th-recurrence defect TASK-0092 cycle-3 closed).
+///
+/// # Cascade landscape today (honest-partial)
+///
+/// The sched-lowering variant set is dominantly INDEPENDENT. Every
+/// `worker_class`/`memory_region`/`workers` decl that survives its
+/// duplicate check is unconditionally inserted into the symbol table
+/// — there is no sched analog of `const N = 1/0` (no arithmetic
+/// expression evaluation at this layer). So `failed_decls` is empty
+/// in practice on today's variant set; the cascade-suppression rule
+/// is forward-looking infrastructure for the day a sched construct
+/// gains expression evaluation. Per-variant classification:
+///
+/// | Variant                                | Class       | Triggerable today |
+/// |----------------------------------------|-------------|-------------------|
+/// | `DuplicateWorkerClass`                 | Independent | yes               |
+/// | `DuplicateMemoryRegion`                | Independent | yes               |
+/// | `DuplicateWorker`                      | Independent | yes               |
+/// | `DuplicatePlace`                       | Independent | yes               |
+/// | `DuplicatePlaceData`                   | Independent | yes               |
+/// | `DuplicateLoop`                        | Independent | yes               |
+/// | `DuplicateTransfer`                    | Independent | yes               |
+/// | `DuplicateCheck`                       | Independent | yes               |
+/// | `DuplicateWorkersDecl` / `MissingWorkersDecl` | Independent | yes      |
+/// | `DuplicatePlaceWorker`                 | Independent | yes               |
+/// | `DuplicateLoopOption` / `DuplicateTransferOption` | Independent | yes  |
+/// | `ConflictingTransferMode`              | Independent | yes               |
+/// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               |
+/// | `UnknownWorkerClass`                   | Cascade-cand. | yes (no current poison source) |
+/// | `UnknownMemoryRegion`                  | Cascade-cand. | yes (no current poison source) |
+/// | `UnknownPlaceWorker`                   | Cascade-cand. | yes (no current poison source) |
+/// | `UnknownAccessibleByName`              | Cascade-cand. | yes (no current poison source) |
+///
+/// # Determinism (PRD §10.1)
+///
+/// Errors are pushed in source order; `failed_decls` is a `BTreeMap`;
+/// there is no `HashMap`/`HashSet` iteration on the error path. The
+/// emitted sequence is a pure deterministic function of the input.
+///
+/// Spans populated on the AST (TASK-0086) are threaded into each
+/// [`SchedLowerError`] on the `Err` path only (TASK-0196). The
+/// success path reads no span, so the determinism gate stays
+/// byte-identical (positions populate only for errors).
+pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
     let mut ir = SchedIR {
         algo_path: ast.algo_path.clone(),
         ..SchedIR::default()
     };
+    let mut acc = Accum::default();
 
     // ----------------------------------------------------------------
     // Pass 1: collect declarations (classes, regions, workers).
     //
     // Done as a dedicated pass so that the order-insensitive grammar
     // (§2 note 2) doesn't force callers to declare classes before
-    // `workers = ...` references them. The negative tests still pin
-    // failures to the right kind via [`SchedLowerError`].
+    // `workers = ...` references them.
     // ----------------------------------------------------------------
 
     // Track whether any worker entry used the simple (class-less)
@@ -61,44 +160,31 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
     // (b) TASK-0196 side-tables: the `UnknownWorkerClass` and
     // `UnknownAccessibleByName` checks must run AFTER pass 1 has
     // collected every class/worker AND the synthetic default class is
-    // injected (a name may refer to a class declared later in source,
-    // or to the simple-form default). The old code iterated the
-    // post-strip `ir.workers` / `ir.memory_regions` (plain `String`,
-    // no span). To locate these diagnostics WITHOUT putting a span
-    // into the codegen-feeding SchedIR (decision: option (b) in
-    // TASK-0196 — keep SchedIR span-free, mirror the algo IR), we
-    // record the offending reference together with its source span
-    // here, at the AST-walk site where the `Spanned` is in scope, and
-    // validate from these tables once collection is complete. Order of
-    // first error is preserved: `worker_class_refs` is in worker-entry
-    // source order; `accessible_by_refs` is in directive then list
-    // order — and the post-collection validation iterates the same
-    // deterministic structures the old code did.
+    // injected. We record the offending reference together with its
+    // source span here, at the AST-walk site where the `Spanned` is in
+    // scope, and validate from these tables once collection is
+    // complete. Order of first error is preserved: `worker_class_refs`
+    // is in worker-entry source order; `accessible_by_refs` is in
+    // directive then list order.
     let mut worker_class_refs: Vec<(String, String, core::ops::Range<usize>)> = Vec::new();
     // (region_name, accessible_by_name, span) per `accessible_by` entry.
     let mut accessible_by_refs: Vec<(String, String, core::ops::Range<usize>)> = Vec::new();
 
-    // NOTE (TASK-0086 + TASK-0196): the AST is span-carrying —
-    // directives are `SpDirective` and identifier fields are `SpName`.
-    // The IR stays plain-`String` (SchedIR feeds codegen and must not
-    // change shape — determinism). The *value* of every check still
-    // comes from `.node`; what TASK-0196 adds is reading the offending
-    // node's `.span` (byte `Range`) at the err site and threading it
-    // into a located `SchedLowerError` via `SchedLowerError::at`. Spans
-    // populate ONLY on the `Err` path, so valid schedules lower
-    // byte-identically (proven by the determinism gate). `match
-    // &d.node` (not `match d`) because `Deref` does not apply to
-    // `match`, so the span cannot leak into a value position by
-    // accident.
     for d in &ast.directives {
         match &d.node {
             Directive::WorkerClass(c) => {
                 if ir.worker_classes.contains_key(&c.name.node) {
-                    // Located at the duplicate decl's identifier token.
-                    return Err(SchedLowerError::at(
-                        SchedLowerErrorKind::DuplicateWorkerClass(c.name.node.clone()),
-                        c.name.span.clone(),
-                    ));
+                    // Duplicate — record (non-poisoning) and skip the
+                    // insert (first decl wins, mirrors the algo
+                    // precedent where Duplicate* does NOT poison).
+                    acc.record_decl_failure(
+                        &c.name.node,
+                        SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateWorkerClass(c.name.node.clone()),
+                            c.name.span.clone(),
+                        ),
+                    );
+                    continue;
                 }
                 ir.worker_classes.insert(
                     c.name.node.clone(),
@@ -112,17 +198,18 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             }
             Directive::MemoryRegion(r) => {
                 if ir.memory_regions.contains_key(&r.name.node) {
-                    return Err(SchedLowerError::at(
-                        SchedLowerErrorKind::DuplicateMemoryRegion(r.name.node.clone()),
-                        r.name.span.clone(),
-                    ));
+                    acc.record_decl_failure(
+                        &r.name.node,
+                        SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateMemoryRegion(r.name.node.clone()),
+                            r.name.span.clone(),
+                        ),
+                    );
+                    continue;
                 }
-                // (b) TASK-0196: record each `accessible_by` name WITH
-                // its source span before the span is stripped into the
-                // plain-`String` IR, so the post-collection
-                // `UnknownAccessibleByName` check can locate the
-                // offending name token without the SchedIR carrying a
-                // span. Recorded in (directive, list) source order.
+                // Record each `accessible_by` name WITH its source
+                // span before the span is stripped into the
+                // plain-`String` IR (TASK-0196 option (b)).
                 if let Some(names) = &r.accessible_by {
                     for n in names {
                         accessible_by_refs.push((
@@ -137,11 +224,6 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                     ResolvedMemoryRegion {
                         name: r.name.node.clone(),
                         size_bytes: r.size_bytes,
-                        // `accessible_by` is `Vec<SpName>`; the IR keeps
-                        // plain `Vec<String>`. Strip spans here — the
-                        // located check uses `accessible_by_refs`
-                        // (TASK-0196 option (b): SchedIR stays
-                        // span-free, consistent with the algo IR).
                         accessible_by: r
                             .accessible_by
                             .as_ref()
@@ -152,13 +234,16 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             }
             Directive::Workers(w) => {
                 if workers_seen {
-                    // The whole second `workers = ...` directive is the
-                    // offending node; point at the directive span (the
-                    // `SpDirective` wrapper `d`, TASK-0086).
-                    return Err(SchedLowerError::at(
+                    // Second (or later) `workers = ...` directive:
+                    // record the violation and skip ALL of this
+                    // duplicate decl's entries (first decl wins,
+                    // mirrors the original "second is invalid"
+                    // semantics — concatenation is ambiguous).
+                    acc.record_stmt_error(SchedLowerError::at(
                         SchedLowerErrorKind::DuplicateWorkersDecl,
                         d.span.clone(),
                     ));
+                    continue;
                 }
                 workers_seen = true;
 
@@ -172,20 +257,27 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                         .insert(entry.name.node.clone(), ())
                         .is_some()
                     {
-                        // Per-decl duplicate (`{ host, host }`): point
-                        // at the offending entry's identifier token.
-                        return Err(SchedLowerError::at(
-                            SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
-                            entry.name.span.clone(),
-                        ));
+                        // Per-decl duplicate (`{ host, host }`):
+                        // record (non-poisoning) and skip the entry.
+                        acc.record_decl_failure(
+                            &entry.name.node,
+                            SchedLowerError::at(
+                                SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
+                                entry.name.span.clone(),
+                            ),
+                        );
+                        continue;
                     }
                     if ir.workers.contains_key(&entry.name.node) {
-                        // Cross-decl duplicate: same — point at this
-                        // (later) entry's identifier.
-                        return Err(SchedLowerError::at(
-                            SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
-                            entry.name.span.clone(),
-                        ));
+                        // Cross-decl duplicate: same handling.
+                        acc.record_decl_failure(
+                            &entry.name.node,
+                            SchedLowerError::at(
+                                SchedLowerErrorKind::DuplicateWorker(entry.name.node.clone()),
+                                entry.name.span.clone(),
+                            ),
+                        );
+                        continue;
                     }
 
                     let class = match &entry.class {
@@ -195,21 +287,10 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
                             DEFAULT_WORKER_CLASS.to_string()
                         }
                     };
-                    // (b) TASK-0196: record the class reference WITH its
-                    // source span so the `UnknownWorkerClass` check can
-                    // be done here-style (after all classes are
-                    // collected + default injected) while still having
-                    // the offending `Spanned` in scope — instead of
-                    // iterating the post-strip span-free `ir.workers`.
-                    // This keeps SchedIR span-free (consistent with the
-                    // algo IR; no codegen-feeding shape change). The
-                    // span of the unresolved class is `entry.class.span`
-                    // when the class was written explicitly; for a
-                    // simple-form entry the class is the synthetic
-                    // default (which always resolves once injected, so
-                    // it never reaches the unknown-class error) — we
-                    // fall back to `entry.name.span` so the recorded
-                    // tuple is always located.
+                    // Record the class reference WITH its source span
+                    // so the `UnknownWorkerClass` check can be done
+                    // post-collection with the offending `Spanned` in
+                    // scope.
                     let class_span = match &entry.class {
                         Some(c) => c.span.clone(),
                         None => entry.name.span.clone(),
@@ -235,74 +316,50 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 
     if !workers_seen {
         // Genuinely position-less (TASK-0196): the error is the
-        // *absence* of a `workers = ...` directive — there is no source
-        // token to underline. `span: None`, documented on
-        // `SchedLowerError` and pinned by
-        // `position_less_variants_have_no_span`.
-        return Err(SchedLowerError::new(SchedLowerErrorKind::MissingWorkersDecl));
+        // *absence* of a `workers = ...` directive — there is no
+        // source token to underline.
+        acc.record_stmt_error(SchedLowerError::new(SchedLowerErrorKind::MissingWorkersDecl));
     }
 
     // Synthesise the default class only after we know whether any
     // simple-form entry exists. Collision with a user-declared class
-    // of the same name is caught by `DuplicateWorkerClass` — we keep
-    // the same loud-failure principle as the algorithm lowering.
+    // of the same name is caught by `DuplicateWorkerClass`.
     if needs_default_class {
         if ir.worker_classes.contains_key(DEFAULT_WORKER_CLASS) {
-            // A user declared a class with the synthetic name. That's
-            // a name collision we must surface; otherwise simple-form
-            // entries would silently inherit the user's class.
-            //
-            // Genuinely position-less (TASK-0196): the collision is
-            // between a real user `worker_class __default` decl and the
-            // *synthesised* default class, which has no source token.
-            // This branch iterates the post-collected class table and
-            // does not have the user decl's `Spanned` in scope, so
-            // `span: None` — documented on `SchedLowerError` and pinned
-            // by `position_less_variants_have_no_span`. (The common
-            // `DuplicateWorkerClass` from two real decls IS located —
-            // see the pass-1 `WorkerClass` arm.) Re-deriving the user
-            // decl's span here is possible but would duplicate the
-            // pass-1 walk for a pathological corner; the honest `None`
-            // is the documented behaviour, not a TODO.
-            return Err(SchedLowerError::new(
-                SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string()),
-            ));
+            // User declared a class with the synthetic name — record
+            // the collision (non-poisoning, position-less per the
+            // type docs). Do NOT insert the synthetic class (would
+            // overwrite); the user's class stays.
+            acc.record_decl_failure(
+                DEFAULT_WORKER_CLASS,
+                SchedLowerError::new(
+                    SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string()),
+                ),
+            );
+        } else {
+            ir.worker_classes.insert(
+                DEFAULT_WORKER_CLASS.to_string(),
+                ResolvedWorkerClass {
+                    name: DEFAULT_WORKER_CLASS.to_string(),
+                    simd: None,
+                    memory: None,
+                    is_default: true,
+                },
+            );
         }
-        ir.worker_classes.insert(
-            DEFAULT_WORKER_CLASS.to_string(),
-            ResolvedWorkerClass {
-                name: DEFAULT_WORKER_CLASS.to_string(),
-                simd: None,
-                memory: None,
-                is_default: true,
-            },
-        );
     }
 
     // Validate every worker's class reference now that all classes
-    // are collected.
-    //
-    // (b) TASK-0196: validated from `worker_class_refs` (collected
-    // during the pass-1 worker walk, where the class `Spanned` is in
-    // scope) instead of iterating the post-strip span-free
-    // `ir.workers`. This is what makes `UnknownWorkerClass` located
-    // while keeping SchedIR span-free (consistent with the algo IR; no
-    // codegen-feeding shape change). First-error ordering is preserved
-    // bit-for-bit: the old code iterated `ir.workers.values()`, i.e.
-    // the `BTreeMap` in worker-name sorted order, so we sort
-    // `worker_class_refs` by worker name before validating — for any
-    // input the SAME worker is reported first as before.
+    // are collected. First-error ordering is preserved bit-for-bit by
+    // sorting `worker_class_refs` by worker name — the old code
+    // iterated `ir.workers.values()` (BTreeMap, sorted).
     worker_class_refs.sort_by(|a, b| a.0.cmp(&b.0));
     for (worker, class, span) in &worker_class_refs {
         if !ir.worker_classes.contains_key(class) {
-            return Err(SchedLowerError::at(
+            acc.record_stmt_error(SchedLowerError::at(
                 SchedLowerErrorKind::UnknownWorkerClass {
                     worker: worker.clone(),
                     class: class.clone(),
-                    // TASK-0198: closest declared `worker_class`.
-                    // `ir.worker_classes` is a `BTreeMap`, so its
-                    // key iteration is deterministic; `suggest`
-                    // additionally sorts — no hash-order in the path.
                     suggestion: crate::error::suggest(
                         class,
                         ir.worker_classes.keys().map(String::as_str),
@@ -313,50 +370,17 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
         }
     }
 
-    // TASK-0095: validate `memory_region R { accessible_by = { ... } }`.
-    // Grammar §2 note 4 phrases name resolution as "the linker's job",
-    // but for `accessible_by` every legal target — a `worker_class`
-    // or a worker name — is declared in this same schedule, so the
-    // resolution is purely schedule-internal and is done here in
-    // lowering (not deferred to the linker). Scope: an "undeclared
-    // name" typed error, now carrying a deterministic did-you-mean
-    // suggestion (TASK-0198, the schedule sibling of the link-step
-    // TASK-0096) computed against the union of declared `worker_class`
-    // and worker names — see the `UnknownAccessibleByName` arm below.
-    // Runs after the synthetic default class is injected and all
-    // workers are collected, so a name referring to a simple-form
-    // worker or the default class resolves correctly.
-    //
-    // (b) TASK-0196: validated from `accessible_by_refs` (collected at
-    // the pass-1 `MemoryRegion` walk, where each name's `Spanned` is in
-    // scope) instead of iterating the post-strip span-free
-    // `ir.memory_regions`. Makes `UnknownAccessibleByName` located
-    // while keeping SchedIR span-free. First-error ordering preserved
-    // bit-for-bit: the old code iterated `ir.memory_regions.values()`
-    // (BTreeMap, region-name sorted) then each region's `accessible_by`
-    // in list order; region names are unique (dups rejected above), so
-    // a STABLE sort by region name reproduces exactly that order
-    // (recording was in directive-then-list order, so list order is
-    // intact within a region).
+    // Validate `memory_region R { accessible_by = { ... } }` against
+    // the union of declared `worker_class` and worker names.
     accessible_by_refs.sort_by(|a, b| a.0.cmp(&b.0));
     for (region, name, span) in &accessible_by_refs {
         let declared =
             ir.worker_classes.contains_key(name) || ir.workers.contains_key(name);
         if !declared {
-            return Err(SchedLowerError::at(
+            acc.record_stmt_error(SchedLowerError::at(
                 SchedLowerErrorKind::UnknownAccessibleByName {
                     region: region.clone(),
                     name: name.clone(),
-                    // TASK-0198: candidate set is the DETERMINISTIC
-                    // union of declared `worker_class` names and
-                    // worker names — exactly this variant's own
-                    // validity rule (a name is legal iff it is a
-                    // declared class OR a declared worker). Both
-                    // `ir.worker_classes` and `ir.workers` are
-                    // `BTreeMap`s, so chaining their key iterators is
-                    // deterministic; `suggest` sorts the merged set
-                    // again — no `HashMap`/`HashSet` anywhere in the
-                    // selection path (reproducibility gate).
                     suggestion: crate::error::suggest(
                         name,
                         ir.worker_classes
@@ -372,6 +396,14 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
 
     // ----------------------------------------------------------------
     // Pass 2: lower place / place_data / loop / transfer / check.
+    //
+    // Each per-directive function returns `Result<(), SchedLowerError>`
+    // (single error per directive — same granularity as the algo
+    // pass's "one error per item"). The caller catches each and
+    // routes through the appropriate Accum hook: place/place_data are
+    // decl-level (define a kernel/data placement that could in
+    // principle be referenced — though no current reference path
+    // exists), loop/transfer/check are statement-level.
     // ----------------------------------------------------------------
 
     for d in &ast.directives {
@@ -379,15 +411,171 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerError> {
             // Already handled in pass 1.
             Directive::WorkerClass(_) | Directive::MemoryRegion(_) | Directive::Workers(_) => {}
 
-            Directive::Place(p) => lower_place(p, &mut ir)?,
-            Directive::PlaceData(pd) => lower_place_data(pd, &mut ir)?,
-            Directive::Loop(l) => lower_loop(l, &mut ir)?,
-            Directive::Transfer(t) => lower_transfer(t, &mut ir)?,
-            Directive::Check(c) => lower_check(c, &mut ir)?,
+            Directive::Place(p) => {
+                if let Err(e) = lower_place(p, &mut ir) {
+                    acc.record_decl_failure(&p.kernel.node, e);
+                }
+            }
+            Directive::PlaceData(pd) => {
+                if let Err(e) = lower_place_data(pd, &mut ir) {
+                    acc.record_decl_failure(&pd.data.node, e);
+                }
+            }
+            Directive::Loop(l) => {
+                if let Err(e) = lower_loop(l, &mut ir) {
+                    acc.record_stmt_error(e);
+                }
+            }
+            Directive::Transfer(t) => {
+                if let Err(e) = lower_transfer(t, &mut ir) {
+                    acc.record_stmt_error(e);
+                }
+            }
+            Directive::Check(c) => {
+                if let Err(e) = lower_check(c, &mut ir) {
+                    acc.record_stmt_error(e);
+                }
+            }
         }
     }
 
-    Ok(ir)
+    match acc.into_errors() {
+        Some(errors) => Err(SchedLowerErrors::from_nonempty(errors)),
+        None => Ok(ir),
+    }
+}
+
+/// Error accumulator with cascade-suppression bookkeeping.
+///
+/// `errors` is the source-ordered collected set. `failed_decls` is the
+/// poisoned-name set (see [`lower_sched`] docs): a `BTreeMap` (NOT a
+/// hash set) so the error path has no nondeterministic iteration —
+/// though in fact we only ever *look up* by name, never iterate, the
+/// ordered map keeps the intent unambiguous and the path
+/// hash-iteration-free.
+///
+/// # Honest cascade landscape (TASK-0200)
+///
+/// The cascade-suppression rule is wired faithfully matching the algo
+/// cycle-3 design (TASK-0092). It has no live trigger in today's
+/// sched-lowering variant set — every decl that survives its
+/// duplicate check is unconditionally inserted into the symbol table,
+/// so `failed_decls` is empty in practice. The infrastructure is
+/// forward-looking for the day a sched construct gains expression
+/// evaluation (or a future PRD change introduces poison-able decls).
+#[derive(Default)]
+struct Accum {
+    errors: Vec<SchedLowerError>,
+    failed_decls: BTreeMap<String, ()>,
+}
+
+impl Accum {
+    /// A declaration (`worker_class` / `memory_region` / worker entry
+    /// / `place` / `place_data`) failed to lower.
+    ///
+    /// Three cases, in priority order — mirrors
+    /// [`crate::algo::lower`] `Accum::record_decl_failure`:
+    ///
+    /// 1. The declaration's own failure is itself a *cascade* of an
+    ///    already-poisoned name (a reference-resolution error naming
+    ///    a poisoned upstream — see
+    ///    [`Accum::is_cascade_of_failed_decl`]). Suppress the error,
+    ///    AND **transitively poison this declaration's own name** so
+    ///    every downstream reference to it (further decls,
+    ///    statements) is also recognised as a cascade of the same
+    ///    root and suppressed.
+    ///
+    ///    Soundness of the transitive poison: a name that *never*
+    ///    successfully declared has no *independent* meaning — there
+    ///    is no resolved class / region / worker / placement behind
+    ///    it. Every downstream reference is, by definition, a
+    ///    transitive cascade of the upstream root that was already
+    ///    reported. Inserting `name` into [`failed_decls`] here makes
+    ///    the existing cascade-suppression rule
+    ///    ([`Accum::is_cascade_of_failed_decl`]) cover those
+    ///    transitive references too. Without it, downstream uses
+    ///    would emit `Unknown*(name)` and, since `name` wasn't in
+    ///    `failed_decls`, the suppression rule would miss them — the
+    ///    classic transitive overcount that bit the algo-side cycle-3
+    ///    closer.
+    ///
+    ///    Today's sched-lowering surface has NO live trigger for case
+    ///    1 (no decl path fails-and-fails-to-insert beyond the
+    ///    Duplicate* gate, which is case 2). The branch is present
+    ///    so the design is identical to the algo precedent and
+    ///    forward-ready when a poison-source variant lands.
+    ///
+    /// 2. A duplicate-name collision: record the error but do NOT
+    ///    poison — the *first* (valid) declaration is still in the
+    ///    symbol table, so the name resolves for dependents; there is
+    ///    no cascade to suppress.
+    ///
+    /// 3. A genuine independent evaluation failure: record the error
+    ///    AND poison the name so its dependents' resulting reference
+    ///    errors are recognised as cascade and suppressed.
+    fn record_decl_failure(&mut self, name: &str, e: SchedLowerError) {
+        // Case 1: a declaration that failed only because it references
+        // an already-failed declaration is a cascade, not independent.
+        // Suppress the error AND transitively poison this decl's name
+        // so its own downstream references are also recognised as a
+        // cascade of the same root (TASK-0092 cycle-3 transitive-
+        // poison design, transferred verbatim by TASK-0200).
+        if self.is_cascade_of_failed_decl(&e) {
+            self.failed_decls.insert(name.to_string(), ());
+            return;
+        }
+        let is_duplicate = matches!(
+            e.kind,
+            SchedLowerErrorKind::DuplicateWorkerClass(_)
+                | SchedLowerErrorKind::DuplicateMemoryRegion(_)
+                | SchedLowerErrorKind::DuplicateWorker(_)
+                | SchedLowerErrorKind::DuplicatePlace { .. }
+                | SchedLowerErrorKind::DuplicatePlaceData { .. }
+        );
+        if !is_duplicate {
+            self.failed_decls.insert(name.to_string(), ());
+        }
+        self.errors.push(e);
+    }
+
+    /// A statement (a `loop` / `transfer` / `check` directive or a
+    /// post-collection reference validation) failed to lower. If the
+    /// error is a reference to a name that a *failed* declaration
+    /// poisoned, it is a pure cascade of that already-reported root
+    /// failure → suppress. Otherwise it is an independent violation
+    /// → record.
+    fn record_stmt_error(&mut self, e: SchedLowerError) {
+        if self.is_cascade_of_failed_decl(&e) {
+            return;
+        }
+        self.errors.push(e);
+    }
+
+    /// True iff `e` is a reference-resolution error naming an
+    /// identifier that a failed declaration poisoned. These are the
+    /// only error kinds that can be a *secondary consequence* of a
+    /// declaration that failed to evaluate. Every other kind is an
+    /// independent property of the directive itself.
+    fn is_cascade_of_failed_decl(&self, e: &SchedLowerError) -> bool {
+        let referenced = match &e.kind {
+            SchedLowerErrorKind::UnknownWorkerClass { class, .. } => class.as_str(),
+            SchedLowerErrorKind::UnknownMemoryRegion { region, .. } => region.as_str(),
+            SchedLowerErrorKind::UnknownPlaceWorker { worker, .. } => worker.as_str(),
+            SchedLowerErrorKind::UnknownAccessibleByName { name, .. } => name.as_str(),
+            _ => return false,
+        };
+        self.failed_decls.contains_key(referenced)
+    }
+
+    /// Consume into the collected error set, or `None` if lowering
+    /// succeeded (no errors).
+    fn into_errors(self) -> Option<Vec<SchedLowerError>> {
+        if self.errors.is_empty() {
+            None
+        } else {
+            Some(self.errors)
+        }
+    }
 }
 
 // --------------------------------------------------------------------
@@ -417,19 +605,10 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
         PlaceTarget::Many(ws) => {
             // TASK-0094: a worker named twice in one placement set
             // (`place k on { w0, w0 }`) is rejected as a hard error,
-            // NOT silently folded to a unique set. Rationale: a
-            // repeated worker in a distributed placement is a user
-            // mistake; a silent fold would change the placement the
-            // user wrote without telling them (fail-fast;
-            // decision-0003 — user-diagnosable input -> typed Result).
-            // Checked before the undeclared-worker check so the
-            // duplicate gets its specific message even when the
-            // repeated name is also undeclared.
+            // NOT silently folded to a unique set.
             let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
             for w in ws {
-                // `w.as_str()` via `Deref` (Spanned<String> -> str).
                 if seen.insert(w.as_str(), ()).is_some() {
-                    // Point at the *repeated* occurrence's token.
                     return Err(SchedLowerError::at(
                         SchedLowerErrorKind::DuplicatePlaceWorker {
                             kernel: kernel.clone(),
@@ -460,17 +639,11 @@ fn check_worker_declared(
     worker: &super::ast::SpName,
     ir: &SchedIR,
 ) -> Result<(), SchedLowerError> {
-    // TASK-0196: takes the worker `SpName` (not `&str`) so the
-    // undeclared-worker diagnostic points at the worker token
-    // (`worker.span`). The semantic check is still on `worker.node`.
     if !ir.workers.contains_key(&worker.node) {
         return Err(SchedLowerError::at(
             SchedLowerErrorKind::UnknownPlaceWorker {
                 kernel: kernel.to_string(),
                 worker: worker.node.clone(),
-                // TASK-0198: closest declared worker name.
-                // `ir.workers` is a `BTreeMap` → deterministic key
-                // order; `suggest` also sorts — no hash-order.
                 suggestion: crate::error::suggest(
                     &worker.node,
                     ir.workers.keys().map(String::as_str),
@@ -486,13 +659,9 @@ fn lower_place_data(
     pd: &super::ast::PlaceDataDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    // TASK-0196: value from `.node`, location from the offending
-    // node's `.span`.
     let data = &pd.data.node;
     let region = &pd.region.node;
     if ir.place_data.contains_key(data) {
-        // Duplicate `place_data` for this data symbol: point at the
-        // data token.
         return Err(SchedLowerError::at(
             SchedLowerErrorKind::DuplicatePlaceData {
                 data: data.clone(),
@@ -501,15 +670,10 @@ fn lower_place_data(
         ));
     }
     if !ir.memory_regions.contains_key(region) {
-        // The undeclared thing is the *region* — point at the region
-        // token.
         return Err(SchedLowerError::at(
             SchedLowerErrorKind::UnknownMemoryRegion {
                 data: data.clone(),
                 region: region.clone(),
-                // TASK-0198: closest declared `memory_region` name.
-                // `ir.memory_regions` is a `BTreeMap` → deterministic
-                // key order; `suggest` also sorts — no hash-order.
                 suggestion: crate::error::suggest(
                     region,
                     ir.memory_regions.keys().map(String::as_str),
@@ -529,13 +693,6 @@ fn lower_place_data(
 }
 
 fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    // TASK-0196: value from `.node`. Option-level errors
-    // (`DuplicateLoopOption`, `ZeroLoopOption`) are located at the
-    // owning loop variable's token (`l.var.span`): the option enums
-    // are deliberately NOT span-wrapped by TASK-0086 (its documented
-    // granularity — see `crate::span`), so the loop variable is the
-    // finest located node available. Widening to option-level spans
-    // would require extending TASK-0086 scope first; not done here.
     let var = &l.var.node;
     let var_span = &l.var.span;
     if ir.loops.contains_key(var) {
@@ -544,15 +701,6 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
             var_span.clone(),
         ));
     }
-    // TASK-0093: the grammar treats the option list as an unordered
-    // *set* (§2 note 7 / §5.1: `block=64, block=128` is a semantic
-    // conflict rejected post-parse). Each value-bearing keyword may
-    // appear at most once. `reuse` is a bare idempotent flag — note 7
-    // only calls out *value* conflicts, so a repeated `reuse` is
-    // harmless redundancy, not an error; we deliberately do not flag
-    // it (interpretation recorded: note 7 is silent on bare-flag
-    // repetition, and folding an idempotent flag is not the
-    // value-ambiguity the note targets).
     {
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
         for opt in &l.options {
@@ -603,11 +751,6 @@ fn lower_loop_option(
     var_span: &core::ops::Range<usize>,
     opt: &LoopOption,
 ) -> Result<ResolvedLoopOption, SchedLowerError> {
-    // Numeric options share the same "strictly positive" rule. The
-    // small helper keeps the variant list short and obvious.
-    // TASK-0196: `ZeroLoopOption` is located at the loop variable's
-    // token (`var_span`) — the option literal is not span-wrapped
-    // (TASK-0086 granularity; see `lower_loop`).
     let positive = |n: u64, keyword: &str| -> Result<u64, SchedLowerError> {
         if n == 0 {
             Err(SchedLowerError::at(
@@ -636,10 +779,6 @@ fn lower_transfer(
     t: &super::ast::TransferDirective,
     ir: &mut SchedIR,
 ) -> Result<(), SchedLowerError> {
-    // TASK-0196: value from `.node`. Like loop options, transfer
-    // option-level errors are located at the owning data symbol's
-    // token (`t.data.span`) — the option enums are not span-wrapped
-    // (TASK-0086 granularity; see `lower_loop`).
     let data = &t.data.node;
     let data_span = &t.data.span;
     if ir.transfers.contains_key(data) {
@@ -650,14 +789,6 @@ fn lower_transfer(
             data_span.clone(),
         ));
     }
-    // TASK-0093: like loop options, the transfer option list is an
-    // unordered set. Two rules from the grammar §2 notes:
-    //  - note 5 / §5.3: `sync` and `async` are mutually exclusive in
-    //    one `TransferStmt`. We also reject a repeated mode flag
-    //    (`sync, sync`) under the same variant — it is the same user
-    //    error class (a transfer has exactly one mode).
-    //  - note 7 (same set semantics as loops): `buffer` and `notify`
-    //    are value-bearing and may appear at most once.
     {
         let mut mode_flags = 0usize;
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
@@ -723,8 +854,6 @@ fn lower_transfer_option(
         TransferOption::Async => ResolvedTransferOption::Async,
         TransferOption::Buffer(n) => {
             if *n == 0 {
-                // TASK-0196: located at the data symbol's token; the
-                // `buffer=0` literal is not span-wrapped (TASK-0086).
                 return Err(SchedLowerError::at(
                     SchedLowerErrorKind::ZeroBufferOption {
                         data: data.to_string(),
@@ -739,7 +868,6 @@ fn lower_transfer_option(
 }
 
 fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), SchedLowerError> {
-    // TASK-0196: value from `.node`, location from `c.var.span`.
     let var = &c.var.node;
     if ir.checks.contains_key(var) {
         return Err(SchedLowerError::at(

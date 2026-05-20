@@ -234,13 +234,31 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         }
         s
     })?;
-    let sched_ir = compiler::sched::lower_sched(&sched_ast)
-        // `display_with_src` resolves the error's stored byte offset to
-        // `line:col` against the schedule source (TASK-0196, mirroring
-        // the algorithm-side TASK-0090 line above); the driver holds
-        // the source, lowering does not. Position-less variants render
-        // the message alone (no fabricated location).
-        .map_err(|e| format!("schedule lower error: {}", e.display_with_src(&sched_src)))?;
+    // `lower_sched` accumulates ALL genuinely-independent lowering
+    // violations in one pass and returns them as `SchedLowerErrors`
+    // (TASK-0200, the schedule sibling of the algorithm-side
+    // TASK-0092) — it does NOT abort on the first, and (when the
+    // cascade infrastructure has a live trigger) it suppresses cascade
+    // errors (a reference to a declaration that itself failed). Surface
+    // every one — each carries its own byte span, resolved here to
+    // `line:col` via `display_with_src` against the schedule source
+    // (TASK-0196; the driver holds the source, lowering does not) —
+    // using the same header + one-line-per-error shape the `parse_algo`
+    // / `parse_sched` / `lower_algo` / link / contract paths use, so a
+    // user fixing a semantically broken schedule sees every error at
+    // once rather than one recompile per error.
+    let sched_ir = compiler::sched::lower_sched(&sched_ast).map_err(|errs| {
+        let mut s = format!(
+            "schedule lower error(s) in {} ({}):",
+            sched_path.display(),
+            errs.errors().len()
+        );
+        for e in errs.errors() {
+            s.push_str("\n  - ");
+            s.push_str(&e.display_with_src(&sched_src));
+        }
+        s
+    })?;
 
     // ---- Contract check (best-effort; aggregate kernels report
     //      TypeMismatch — see TASK-0012; we surface for visibility

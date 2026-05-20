@@ -732,3 +732,131 @@ impl std::fmt::Display for SchedLowerError {
 }
 
 impl std::error::Error for SchedLowerError {}
+
+/// A non-empty, deterministically-ordered bundle of [`SchedLowerError`]s
+/// — the multi-error result of one [`lower_sched`](super::lower::lower_sched)
+/// pass (TASK-0200, the schedule analog of the algorithm-side TASK-0092
+/// [`crate::algo::ir::LowerErrors`]).
+///
+/// # Why a new owner and NOT a re-use
+///
+/// `ParseErrors` is the *parser* layer's owner ([`ParseError`], not
+/// [`SchedLowerError`]); [`crate::algo::ir::LowerErrors`] is the
+/// *algorithm* lowering layer's owner. They are different types at
+/// different pipeline stages. The SURFACING pattern (non-empty owner,
+/// `.errors()`, driver iterates one located line per error) is the
+/// proven template from TASK-0080/0081/0087/0092, but the type is
+/// layer-specific — reusing either would conflate the layers' error
+/// vocabularies.
+///
+/// # Non-empty invariant (load-bearing)
+///
+/// A `SchedLowerErrors` is constructed *only* when lowering actually
+/// failed, so the inner `Vec` is never empty. The single constructor
+/// [`SchedLowerErrors::from_nonempty`] is the sole entry point and
+/// `debug_assert!`s this; [`SchedLowerErrors::first`] therefore never
+/// has an empty slice to handle. Construction is `pub(crate)` so no
+/// external caller can forge an empty bundle.
+///
+/// # Ordering / determinism (PRD §10.1)
+///
+/// The vector is in **source / directive order** — lowering walks
+/// `SchedAst::directives` in order and pushes each error as it is
+/// found. There is NO `HashMap`/`HashSet` iteration on the
+/// error-collection path (the cascade-suppression bookkeeping is a
+/// `BTreeMap`), so the emitted error sequence is a pure deterministic
+/// function of the input. Two builds of the same broken schedule emit
+/// byte-identical diagnostics.
+///
+/// # Cascade landscape disclosure (honest-partial — TASK-0200)
+///
+/// The algorithm-side counting contract (cycle-3, transitive poison)
+/// applies *infrastructurally* here: the `Accum` in
+/// [`super::lower::lower_sched`] carries a `failed_decls`
+/// poisoned-name set and the four reference-resolution variants
+/// (`UnknownWorkerClass`, `UnknownMemoryRegion`, `UnknownPlaceWorker`,
+/// `UnknownAccessibleByName`) are the cascade-candidate kinds. In the
+/// current sched-lowering surface, however, NO declaration path
+/// actually fails-and-fails-to-insert: every `worker_class` /
+/// `memory_region` / worker entry that survives its duplicate check is
+/// unconditionally inserted into the symbol table (there is no
+/// arithmetic-expression evaluation at the sched layer the way the
+/// algorithm side has `const N = 1/0`). The cascade infrastructure is
+/// therefore wired faithfully — matching the algo cycle-3 design
+/// shape, including the transitive-poison case-1 logic — but the
+/// suppression rule has no live trigger in the current variant set.
+/// The infrastructure is forward-looking for the day a sched
+/// construct gains expression evaluation (or a future PRD change
+/// allows poison-able decls); the parametric independent-count
+/// fixture stays load-bearing for AC#3 today. See
+/// [`super::lower::lower_sched`] for the per-variant classification
+/// and the soundness argument.
+///
+/// # Equality
+///
+/// Derived `PartialEq`/`Eq` — element-wise over [`SchedLowerError`],
+/// whose own equality forwards to `kind` (span excluded; same
+/// rationale as [`crate::span::Spanned`]). So bundle equality
+/// compares the ordered sequence of *semantic kinds*, not byte
+/// offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedLowerErrors(Vec<SchedLowerError>);
+
+impl SchedLowerErrors {
+    /// Construct from a non-empty `Vec<SchedLowerError>`. The sole
+    /// constructor; crate-private so the non-empty invariant cannot be
+    /// violated from outside lowering. `debug_assert!`s non-emptiness
+    /// (a caller handing an empty vec is a lowering-pass bug, not a
+    /// user-input condition — decision-0003: invariant violation, so
+    /// `debug_assert!`, not a typed error).
+    pub(crate) fn from_nonempty(errors: Vec<SchedLowerError>) -> Self {
+        debug_assert!(
+            !errors.is_empty(),
+            "SchedLowerErrors is constructed only on a non-empty failure set \
+             (lowering-pass invariant); an empty vec here is a compiler bug"
+        );
+        Self(errors)
+    }
+
+    /// The first (source-order-earliest) error. Equivalent to the
+    /// single error the pre-multi-error pass would have `?`-returned,
+    /// so negative tests that previously asserted *the* error migrate
+    /// by calling `.first()` with the SAME discriminating match — no
+    /// loss of assertion strength.
+    pub fn first(&self) -> &SchedLowerError {
+        self.0
+            .first()
+            .expect("SchedLowerErrors is constructed non-empty (invariant)")
+    }
+
+    /// All errors in source order. The driver iterates this to surface
+    /// every violation in one compile cycle.
+    pub fn errors(&self) -> &[SchedLowerError] {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for SchedLowerErrors {
+    type Target = [SchedLowerError];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// One error per line, each via the span-free [`SchedLowerError`]
+/// `Display` (the located form is the driver's `display_with_src`,
+/// which holds the source). This is the fallback for a caller that
+/// just `{}`s the whole bundle.
+impl std::fmt::Display for SchedLowerErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{e}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SchedLowerErrors {}
