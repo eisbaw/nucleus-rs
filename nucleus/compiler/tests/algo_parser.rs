@@ -780,4 +780,143 @@ for i : 0 .. N {
     assert_eq!(ha.finish(), hb.finish(), "Spanned Hash must exclude span");
 }
 
+// --------------------------------------------------------------------
+// for{} body cascade — parametric over-n measurement (TASK-0207)
+// --------------------------------------------------------------------
+
+/// TASK-0207: parametric over-n measurement of the algo for{}-body
+/// recovery shape. This is the algo sibling of TASK-0087 cycle-4's
+/// sched parametric fixtures
+/// (`sched_parser.rs::nested_brace_body_error_surfaces_n_plus_two_parametric_{worker_class,memory_region}`).
+///
+/// **HONEST DISCREPANCY FROM SCHED** (this is the load-bearing finding
+/// of TASK-0207, surfaced to the recurring undercount-honesty class):
+/// the algo for{}-body case is **NOT** an `n+2` cascade. Measured
+/// empirically on `parse_algo` (deterministic across two runs at every
+/// probed `n`), the count is the **constant `2`** regardless of `n` —
+/// the primary error plus a single structural `Unexpected` follow-on
+/// pointing at the line *after* the for{}-body close-`}`, which is the
+/// first token the OUTER program-level `skip_until([';'])` recovery
+/// reaches without a leading `;` to consume.
+///
+/// **Root cause of the algo/sched divergence** (structural, not a bug
+/// in either):
+/// - **Sched** parses brace bodies (`worker_class IDENT { field;
+///   field; }`) with an INNER `;`-anchored
+///   `field.recover_with(skip_until(...)).repeated()`, so each valid
+///   inner-`;` after the primary fires its own field-level recovery
+///   error → `n` per-field cascade entries → `n + 2` total (primary +
+///   n inner-field cascades + structural close-`}` follow-on).
+/// - **Algo** parses for{}-body statements with a bare
+///   `stmt.clone().repeated()` (no inner recovery; see
+///   `algo/parser.rs::stmt_parser` for-arm). On the primary failure
+///   the entire `for_stmt` alternative bails to the OUTER program-
+///   level recovery, which `skip_until([';'])` straight through the
+///   whole body — eating *every* inner `;` (valid and invalid alike)
+///   — and stops at the bare body-close `}` (a non-item token), where
+///   it emits one structural `Unexpected`. The body's `n` valid
+///   trailing `;`s contribute **zero** per-field cascade entries
+///   because the algo grammar has no per-statement recovery layer at
+///   this depth.
+///
+/// **Implication for TASK-0199**: when the keyword-anchored sync set
+/// fix lands, both algo and sched will collapse to **`== 1`** (the
+/// primary alone). The mechanical edit in this fixture is the same as
+/// the sched siblings — replace `2` with `1` in the `expected` literal
+/// (one line). For TASK-0199 AC#7 the algo and sched fixtures now
+/// share the same flip-to-1 shape; the pre-fix counts diverge
+/// (`2` algo, `n + 2` sched) but the post-fix count is identical.
+///
+/// **Probed dimensions** (n = number of valid trailing for-body
+/// statements after the primary `@`-typo): `{0, 1, 2, 5}`, matching
+/// the sched sibling fixture exactly. Out-of-fixture probes in this
+/// cycle's measurement (`{3, 8, 12}`) also returned `len() == 2`,
+/// confirming the constant-2 plateau is not a small-n artefact and
+/// the masking-defect class (single-n fixture cannot tell constant-2
+/// apart from 2/2/3/4 or 2/3/4/5) is closed at the algo layer
+/// independently of the closure at the sched layer.
+///
+/// Primary error position pinned at line 5 column 14 (the `@`) for
+/// all probed `n` (line 5 is the first body line; `    x[i] <-- @;`
+/// — 4 spaces + `x[i] <-- ` = 13 chars, so `@` is column 14). The
+/// structural follow-on sits at line `6 + n` column 1 (the line of
+/// the body-close `}`; with the body-close on the line immediately
+/// after the last trailing valid `inc(i);`).
+#[test]
+fn for_body_error_surfaces_constant_two_parametric() {
+    for n in [0usize, 1, 2, 5] {
+        // Lines:
+        //   1: `const N : usize = 4;`
+        //   2: `data x : f32[N];`
+        //   3: `kernel inc : (f32) -> f32 pure;`
+        //   4: `for i : 0 .. N {`
+        //   5: `    x[i] <-- @;`              (PRIMARY, @ at col 14)
+        //   6..5+n: `    x[i] <-- inc(i);`    (n valid trailing stmts)
+        //   6+n: `}`                          (body-close, col 1 follow-on)
+        //   7+n: (EOF)
+        let mut src = String::from("const N : usize = 4;\n");
+        src.push_str("data x : f32[N];\n");
+        src.push_str("kernel inc : (f32) -> f32 pure;\n");
+        src.push_str("for i : 0 .. N {\n");
+        src.push_str("    x[i] <-- @;\n");
+        for _ in 0..n {
+            src.push_str("    x[i] <-- inc(i);\n");
+        }
+        src.push_str("}\n");
+
+        let e1 = expect_errs(&src);
+        let e2 = expect_errs(&src);
+        assert_eq!(
+            e1, e2,
+            "n={n}: parametric algo for{{}}-body recovery must be \
+             deterministic across two runs"
+        );
+        let es = e1.errors();
+
+        // CORE ASSERTION: constant 2 across all probed n (NOT n+2 —
+        // see test-level docstring for the structural why).
+        let expected = 2;
+        assert_eq!(
+            es.len(),
+            expected,
+            "n={n}: expected exactly 2 errors (primary + structural \
+             follow-on at body-close `}}`), got {} — algo for-body \
+             count is CONSTANT in n (unlike sched n+2). \
+             source:\n{src}\nerrors: {es:?}",
+            es.len()
+        );
+
+        // Primary at line 5 column 14 (the `@`), regardless of n.
+        assert_eq!(
+            (es[0].line, es[0].column),
+            (5, 14),
+            "n={n}: primary `@` must be at (L5, C14); got {es:?}"
+        );
+        assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "n={n}: {es:?}");
+        assert_eq!(
+            e1.first().line,
+            5,
+            "n={n}: primary must be earliest in deterministic order: {es:?}"
+        );
+
+        // Structural follow-on at line (6 + n), column 1 — the
+        // body-close `}` line (a non-item token the outer
+        // `skip_until([';'])` cannot consume past). This pins the
+        // OUTER-recovery sync exit point, which is what would shift
+        // if the recovery sync set changed.
+        let close_line = 6 + n;
+        assert_eq!(
+            (es[1].line, es[1].column),
+            (close_line, 1),
+            "n={n}: structural follow-on must be at (L{close_line}, C1) \
+             — the body-close `}}` line; got {es:?}"
+        );
+        assert_eq!(
+            es[1].kind,
+            ParseErrorKind::Unexpected,
+            "n={n}: structural follow-on kind: {es:?}"
+        );
+    }
+}
+
 

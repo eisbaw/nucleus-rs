@@ -793,8 +793,16 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 ///   n=2→4, n=3→5, n=5→7, n=8→10), then the structural `}`. An error
 ///   in the *doubly-nested* `accessible_by = { id, id };` set
 ///   independently exceeds this. This IS a cascade and it DOES scale
-///   with source size — the sched analog of the algorithm
-///   `for { ... }`-body nested-`;` shape.
+///   with source size — **STRUCTURALLY UNLIKE** the algorithm
+///   `for { … }` body, which is *also* `;`-only-recovered but uses a
+///   bare `stmt.clone().repeated()` with NO inner per-`;` recovery
+///   layer and therefore stays at the **constant `2`** errors
+///   regardless of body size (primary + structural close-`}` follow-
+///   on; see `algo/parser.rs` module-doc "Known limitations" and
+///   `tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`,
+///   TASK-0207). Both shapes share the *root-cause* sync-set design
+///   defect that TASK-0199 fixes, but their pre-fix error counts
+///   diverge — sched scales linearly in n, algo is flat at 2.
 ///
 ///   HONEST TRAIL: earlier TASK-0087 disclosures, commit
 ///   `0c935a5`'s message, AND the first "+2 bounded / not a cascade"

@@ -49,13 +49,32 @@
 //!
 //! # Known limitations
 //!
-//! - Recovery sync token is `;` only. A malformed `for { ... }` whose
-//!   body contains `;`s recovers at the first inner `;`, which can
-//!   over-report inside that loop; this is acceptable for a research
-//!   compiler (the invariant that matters — boundedness and
-//!   determinism — holds) and is not a correctness issue for valid
-//!   input. A keyword-anchored sync set is a possible future
-//!   refinement (TASK-0199).
+//! - Recovery sync token is `;` only. A malformed `for { … }` whose
+//!   body contains `;`-terminated statements causes the OUTER
+//!   program-level recovery to `skip_until([';'])` straight through
+//!   the entire body — consuming *every* inner `;` (valid and invalid
+//!   alike) and stopping at the bare body-close `}` (a non-item
+//!   token), where the parser emits a single structural `Unexpected`
+//!   follow-on. **Measured** (deterministic, parametric over the
+//!   number `n` of valid trailing for-body statements after a single
+//!   primary `@`-typo, `n ∈ {0,1,2,5}` and out-of-fixture
+//!   `{3,8,12}`): the total error count is the **constant `2`** —
+//!   primary + structural follow-on — INDEPENDENT of `n`. This is
+//!   strictly *better* than the sched sibling's `n+2` linear cascade
+//!   (`sched/parser.rs::nested_brace_body_error_surfaces_n_plus_two_*`)
+//!   because the algo for-body parser is a bare
+//!   `stmt.clone().repeated()` (no inner per-`;` recovery layer), so
+//!   the valid trailing `;`s after the primary contribute *zero*
+//!   per-field cascade entries — the OUTER recovery just chews
+//!   through them and emits the lone structural close-`}`
+//!   `Unexpected` once. Pinned parametrically by
+//!   `compiler/tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`
+//!   (TASK-0207). Boundedness and determinism — the invariants that
+//!   matter — both hold. A keyword-anchored sync set is a possible
+//!   future refinement (TASK-0199); when it lands, the algo count
+//!   collapses from `2` to `1` (primary only) — same mechanical edit
+//!   as the sched fixtures (replace the `expected = 2` literal with
+//!   `1`).
 //! - AST nodes carry per-node byte-range spans (TASK-0082): every
 //!   wrapped node is built with `.map_with_span(Spanned::new)`, so a
 //!   node's span is the `start..end` of exactly the source text it was
@@ -191,7 +210,13 @@ const KEYWORDS: &[&str] = &[
 /// whole path.
 ///
 /// Sync token is `;` only — see the module-doc "Known limitations"
-/// note on `for { … }` over-reporting (acceptable; TASK-0199).
+/// note on the algo `for { … }` body's measured **constant-2** error
+/// shape (primary + structural close-`}` follow-on, INDEPENDENT of
+/// the number of valid trailing body statements). This is the
+/// load-bearing structural difference from the sched `worker_class` /
+/// `memory_region` brace-body case, which scales as `n+2`. Pinned by
+/// `tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`
+/// (TASK-0207); TASK-0199 will collapse both to `1`.
 fn program_parser() -> impl Parser<char, Vec<SpItem>, Error = Simple<char>> {
     item_parser()
         .map(Some)

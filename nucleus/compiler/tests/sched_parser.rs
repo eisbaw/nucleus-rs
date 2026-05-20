@@ -654,8 +654,18 @@ fn pathological_input_terminates_bounded_and_deterministic() {
     );
 }
 
-/// TASK-0087 review-gate correction: the SCHED analog of the algo
-/// `for{}`-body nested-`;` shape (TASK-0199). A single syntax error
+/// TASK-0087 review-gate correction: the SCHED brace-body shape
+/// (`worker_class { … }` / `memory_region { … }`) whose `;`-only
+/// recovery defect lives at the **field** level. Both this and the
+/// algo `for { … }` body (TASK-0207) descend from the same
+/// `;`-only-sync-set root cause that TASK-0199 fixes, but they
+/// CASCADE DIFFERENTLY: sched has per-field inner recovery
+/// (`field.recover_with(skip_until(...))).repeated()`) so the count
+/// scales as `n + 2` in the field count; the algo for-body uses a
+/// bare `stmt.clone().repeated()` (no inner recovery) so its count
+/// is the **constant `2`** regardless of body size
+/// (`tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`).
+/// A single syntax error
 /// INSIDE a brace-delimited `worker_class { ... }` / `memory_region
 /// { ... }` body — whose fields are themselves inner-`;`-terminated —
 /// does NOT collapse to one error under the `;`-only sync set. The
