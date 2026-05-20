@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-19 19:44'
-updated_date: '2026-05-20 05:17'
+updated_date: '2026-05-20 17:21'
 labels:
   - compiler
   - language
@@ -60,4 +60,8 @@ UPDATE (TASK-0087 review-gate cycle, 2026-05-20, mped-architect independent prob
 ACTION when TASK-0199 lands: (a) the keyword/field-anchored sync set should collapse the doubly-nested case to the primary just like the singly-nested case (same mechanism); (b) the AC#7 parametric assertion can extend to a doubly-nested probe (asserting it also collapses to 1); (c) reword this task's description to remove the "yields 4" residue (replace with "yields n+2 where n counts valid sibling fields after the inner-set primary; measured n=1→3, n=2→4 — same cascade family as the singly-nested brace body"); (d) the TASK-0087 docstring at sched/parser.rs:793-795 ("independently exceeds this") is also imprecise — tighten to the now-known same-cascade-shape language at the same time.
 
 Additionally: the TASK-0087 fixture iterates n at first-field-error-position only. mped-architect probe this cycle confirms last-field-error-position ALSO follows n+2 — both directions empirically agree. TASK-0199's AC#7 parametric assertion can iterate over both error-positions (first-field AND last-field) to widen the post-fix structural-guard coverage. Not strictly required, but if cheap, do it.
+
+CROSS-LAYER MEASUREMENT (TASK-0207, commit 253e1b0): the algo for{}-body cascade is the CONSTANT 2 (NOT n+2). Measured deterministic at n in {0, 1, 2, 5} (fixture) and {3, 8, 12} (out-of-fixture probe): always exactly 2 errors — primary + structural close-} follow-on, INDEPENDENT of n. STRUCTURALLY DIVERGES from the sched worker_class/memory_region brace-body n+2 cascade. Root cause of the divergence (both descend from the same ;-only-sync-set root that this task fixes): sched bodies use field.recover_with(skip_until(...)).repeated() — one cascade entry per inner ;; algo for-body uses bare stmt.clone().repeated() — NO inner recovery layer, so the OUTER skip_until([
+
+(continuation, truncated above by shell glob; full text:) OUTER skip_until of single-semicolon chews through the whole body wholesale and emits the lone structural close-} once. Post-fix prediction unchanged for AC#7: both fixtures collapse to == 1 (one-line edit per fixture). Pre-fix counts diverge (2 algo, n+2 sched); post-fix counts identical. The original description text — algo side has the analogous for body case, corrected once from one to two, may itself scale similarly, re-measure — is now resolved: it does NOT scale similarly, it stays flat at 2. AC#7 still load-bearing; the algo parametric pin now lives at tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric.
 <!-- SECTION:NOTES:END -->
