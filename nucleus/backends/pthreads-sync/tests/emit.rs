@@ -246,6 +246,133 @@ fn kernels_rs_is_copied_verbatim() {
     assert_eq!(src, dst, "kernels.rs was not copied byte-for-byte");
 }
 
+/// TASK-0209 AC#4: a Fire whose output binding has *fewer* indices
+/// than the data's declared rank must lower to a contiguous sub-array
+/// `copy_from_slice` write — NOT a single-scalar `name[idx] = ...`
+/// assignment. Symmetrically, a kernel arg with rank-mismatched
+/// (partial-prefix) indices must lower to a `[start..start+sub_len]
+/// .to_vec()` sub-slice — NOT a single-scalar `name[idx]` access.
+///
+/// The reproducer is example 13's `feat1[n] <-- conv_block_1(input[n])`
+/// where `input`/`feat1` are rank-4 and `n` is rank-1. The
+/// pre-TASK-0209 backend hard-rejected this with
+/// `EmitError::UnsupportedFeature("rank/shape mismatch with index
+/// list")`; the post-TASK-0209 backend emits the sub-slice form.
+///
+/// We drive the FULL pipeline (parse + lower + link + acfg + inject)
+/// against the real example 13 algorithm so the test exercises the
+/// real lowering path — not a synthetic Fire that might encode the
+/// shape differently from what AlgoIR produces. A scratch
+/// `kernels.rs` with the `(Vec<f32>) -> Vec<f32>` aggregate signature
+/// matches the kernel-param convention picked under TASK-0103; the
+/// contract pass reports the aggregate gap (TASK-0012) and the
+/// driver proceeds, exactly as it does on the command line.
+#[test]
+fn partial_index_lowers_to_sub_slice() {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/13-cnn-inference");
+    let scratch = scratch_dir("partial_index_lowers_to_sub_slice");
+
+    // Synthesise a stub kernels.rs for example 13 (the real one is
+    // TASK-0053's scope; we only need a path whose signatures are
+    // contract-compatible enough for the driver path to proceed).
+    let kernels_path = scratch.join("kernels.rs");
+    fs::write(
+        &kernels_path,
+        r#"
+const B: usize = 16;
+const H: usize = 28;
+const W: usize = 28;
+const C0: usize = 1;
+const C1: usize = 8;
+const C2: usize = 16;
+const N_CLASSES: usize = 10;
+pub fn load_input() -> Vec<f32> { vec![0.0; B * C0 * H * W] }
+pub fn save_output(_data: Vec<f32>) {}
+pub fn conv_block_1(_x: Vec<f32>) -> Vec<f32> { vec![0.0; C1 * (H / 2) * (W / 2)] }
+pub fn conv_block_2(_x: Vec<f32>) -> Vec<f32> { vec![0.0; C2 * (H / 4) * (W / 4)] }
+pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
+"#,
+    )
+    .expect("write stub kernels.rs");
+
+    let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
+    let sched_src = fs::read_to_string(ex.join("schedules/naive.sched.nuc")).unwrap();
+    let algo_ir = lower_algo(&parse_algo(&algo_src).unwrap()).unwrap();
+    let sched_ir = lower_sched(&parse_sched(&sched_src).unwrap()).unwrap();
+    let linked = link(algo_ir, sched_ir).unwrap();
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    let out_dir = scratch.join("emit");
+    fs::create_dir_all(&out_dir).unwrap();
+    let (pw, names, sc) = contract_inputs(&linked, &acfg);
+    let result = emit(&pw, &names, &sc, &kernels_path, &out_dir).expect("emit succeeded");
+    let main_rs = fs::read_to_string(&result.main_rs).unwrap();
+
+    // ---- Argument-side: `input[n]` (rank-1 index on rank-4 data) ----
+    // Pre-init confirmed: `input` is rank-4 f32[16][1][28][28] = 12544
+    // slots, sub-array per outer index = 1*28*28 = 784 slots.
+    assert!(
+        main_rs.contains("input[((n) * 784) as usize..((n) * 784) as usize + 784usize].to_vec()"),
+        "TASK-0209 AC#1: partial-index argument did NOT lower to a sub-slice\
+         `.to_vec()`; pre-TASK-0209 emission `input[(n) as usize]` (single \
+         f32) would have been emitted, breaking cargo build (E0308 expected \
+         Vec<f32>, found f32). Generated main.rs:\n{main_rs}"
+    );
+
+    // ---- Output-side: `feat1[n]` (rank-1 LHS on rank-4 data) ----
+    // feat1 is f32[16][8][14][14] = 25088 slots, sub-array per outer
+    // index = 8*14*14 = 1568.
+    assert!(
+        main_rs.contains(
+            "feat1[((n) * 1568) as usize..((n) * 1568) as usize + 1568usize]\
+             .copy_from_slice(&kernels::conv_block_1("
+        ),
+        "TASK-0209 AC#2: partial-index Fire output did NOT lower to a \
+         sub-range `.copy_from_slice(&...)` write; pre-TASK-0209 emission \
+         `feat1[(n) as usize] = kernels::conv_block_1(...)` would have been \
+         emitted, breaking cargo build (E0308 expected f32, found Vec<f32>). \
+         Generated main.rs:\n{main_rs}"
+    );
+
+    // ---- Negative: no single-scalar slot access for the rank-4
+    //      partial cases. If a regression reintroduces the scalar
+    //      `name[idx] = kernels::callee(...)` form for a partial LHS,
+    //      this substring would appear and the test fails LOUD. We
+    //      anchor on the exact pre-TASK-0209 string so an unrelated
+    //      change to the index spelling does not silently match here.
+    assert!(
+        !main_rs.contains("feat1[((n) * 1568) as usize] = kernels::conv_block_1"),
+        "TASK-0209 regression: scalar-slot assignment to a partial-rank LHS \
+         (`feat1[(n) as usize] = ...`) reintroduced. Generated main.rs:\n{main_rs}"
+    );
+
+    // ---- AC#3: the emitted crate actually cargo-builds. The driver
+    //      emit() above wrote it; verify with cargo check (not full
+    //      build — the test only needs to prove the type-checker
+    //      accepts the Vec<f32>/Vec<f32> contract).
+    //
+    // We isolate the target dir under `scratch` to avoid colliding
+    // with the workspace target. CARGO_TARGET_DIR points the build
+    // outputs at the scratch tree.
+    let target = scratch.join("nuc-target");
+    let status = std::process::Command::new(env!("CARGO"))
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(result.cargo_toml)
+        .env("CARGO_TARGET_DIR", &target)
+        .status()
+        .expect("spawn cargo check");
+    assert!(
+        status.success(),
+        "TASK-0209 AC#3: emitted crate did NOT cargo-check (the original \
+         E0308 reproducer). Inspect {} for the generated main.rs.",
+        out_dir.display()
+    );
+}
+
 // REMOVED (TASK-0124): `distributed_placement_is_rejected`.
 //
 // That test hand-built a `LinkedIR` with a `place dist on {w0,w1}`

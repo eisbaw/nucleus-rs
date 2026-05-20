@@ -602,14 +602,15 @@ fn render_event(
                 }
                 Some(o) => {
                     // Indexed assignment. Pre-init guaranteed the
-                    // data exists as a flat Vec<T>.
-                    let name = data_name(o.data, ctx)?;
-                    let idx = render_flat_index(o, ctx)?;
-                    writeln!(
-                        out,
-                        "{pad}{name}[{idx}] = kernels::{callee}({rendered_args});"
-                    )
-                    .ok();
+                    // data exists as a flat Vec<T>. Classify scalar
+                    // vs partial sub-array (TASK-0209): a full-rank
+                    // LHS writes a single slot; a partial-rank LHS
+                    // (e.g. `feat1[n] <-- conv_block_1(input[n])` on
+                    // a rank-4 `feat1`) writes a contiguous trailing
+                    // sub-array via `copy_from_slice`.
+                    let rhs = format!("kernels::{callee}({rendered_args})");
+                    let stmt = render_fire_output_assign(o, &rhs, ctx)?;
+                    writeln!(out, "{pad}{stmt}").ok();
                 }
             }
             Ok(())
@@ -754,6 +755,37 @@ fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
         .ok_or_else(|| EmitError::ContractGap(format!("data id {did:?} has no name in NameTables")))
 }
 
+/// Render one indexed-assignment statement (an `Event::Fire` with a
+/// non-empty `bindings.output.indices`). The caller supplies the RHS
+/// EXPRESSION (typically `kernels::<callee>(<args>)`) — no trailing
+/// semicolon, no leading indent. We return the full Rust statement
+/// ending in `;`. The two shapes (TASK-0209):
+///
+/// - **Scalar** (full rank): `D[idx] = <rhs>;` — single slot, byte-
+///   identical to the pre-TASK-0209 emission for examples 01..07.
+/// - **Sub-array** (partial prefix rank): `D[start..start+sub_len].
+///   copy_from_slice(&<rhs>);` — contiguous trailing region, RHS must
+///   be `Vec<T>` / `&[T]` of length `sub_len`.
+///
+/// Sharing this site between the single-worker `render_main_rs`, the
+/// multi-worker pthreads renderer, and the mp-tcp-bufsync renderer
+/// keeps the three Fire-output sites byte-identical — no codegen
+/// drift between backends, which is what the cross-backend
+/// differential (PRD §10.1) ultimately rests on.
+fn render_fire_output_assign(
+    o: &DataSlice,
+    rhs: &str,
+    ctx: &RenderCtx<'_>,
+) -> Result<String, EmitError> {
+    let name = data_name(o.data, ctx)?;
+    match classify_data_slice(o, ctx)? {
+        SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}] = {rhs};")),
+        SliceForm::SubArray { start, sub_len } => Ok(format!(
+            "{name}[{start}..{start} + {sub_len}usize].copy_from_slice(&{rhs});"
+        )),
+    }
+}
+
 /// Render a kernel call's argument list from its [`FireBinding`]
 /// inputs. `Data` → indexed/whole-array read; `Scalar` → integer
 /// expression with a param-type cast decided via the SIDECAR's
@@ -789,9 +821,34 @@ fn render_fire_arg(
                 // catch it loudly (same as the old backend).
                 data_name(s.data, ctx)
             } else {
+                // Classify scalar vs sub-array based on rank match
+                // (TASK-0209). Sidecar `dims` is the single source of
+                // truth for the data's declared shape — fewer indices
+                // than dims = a contiguous trailing sub-array, NOT a
+                // scalar. The old code emitted `name[idx]` (scalar)
+                // unconditionally; for a rank-4 `f32[B][C0][H][W]`
+                // accessed with one outer index this passed `f32`
+                // where the kernel signature expected `Vec<f32>` and
+                // cargo build failed E0308 (example 13 reproducer).
                 let name = data_name(s.data, ctx)?;
-                let idx = render_flat_index(s, ctx)?;
-                Ok(format!("{name}[{idx}]"))
+                match classify_data_slice(s, ctx)? {
+                    SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}]")),
+                    SliceForm::SubArray { start, sub_len } => {
+                        // Owned `Vec<T>` matches `rust_type_of` for an
+                        // aggregate kernel param (`Vec<T>`); the call
+                        // moves it, consistent with the whole-array
+                        // case above. PRD §6.2.1 single-assignment
+                        // permits the move semantics.
+                        //
+                        // The literal `{sub_len}usize` makes the upper
+                        // bound a `usize` so the `start..start+sub_len`
+                        // range typechecks (`start` is already `as
+                        // usize` from `classify_data_slice`).
+                        Ok(format!(
+                            "{name}[{start}..{start} + {sub_len}usize].to_vec()"
+                        ))
+                    }
+                }
             }
         }
         ArgBinding::Scalar(e) => {
@@ -808,6 +865,122 @@ fn render_fire_arg(
         ArgBinding::Nested { .. } => Err(EmitError::UnsupportedFeature(
             "nested kernel call inside an argument expression".to_string(),
         )),
+    }
+}
+
+/// The two shapes an indexed [`DataSlice`] lowers to in the flat-Vec
+/// layout (TASK-0209). Row-major: a PREFIX of the dims being indexed
+/// leaves a CONTIGUOUS trailing region — that's a sub-array. Equal
+/// rank between indices and dims is a single scalar slot.
+///
+/// Non-prefix partial access (e.g. fix the inner dim, leave the outer
+/// free) is NOT contiguous in row-major and is rejected as
+/// unsupported; the AlgoIR / surface syntax does not produce it (an
+/// access spelled `D[a][b]` always indexes outer dims first), so this
+/// rejection is a contract floor, not a user-visible limitation.
+enum SliceForm {
+    /// Full-rank access — single slot in the flat `Vec<T>`.
+    Scalar(String),
+    /// Partial-prefix access — contiguous sub-slice
+    /// `[start .. start + sub_len]` of the flat `Vec<T>`.
+    SubArray { start: String, sub_len: usize },
+}
+
+/// Decide whether an indexed [`DataSlice`] is a scalar (full rank) or
+/// a contiguous prefix sub-array (partial rank), and render the
+/// flat-Vec coordinates.
+///
+/// Caller is responsible for `s.indices.is_empty() == false` (a
+/// whole-array reference has no index expression to lower — its
+/// argument-site rendering is the bare name).
+///
+/// The classification uses the sidecar `dims` ONLY: it is the single
+/// source of truth for declared shape (AlgoIR-free path; AC#2 of
+/// TASK-0124 still holds — no `algo.data` lookup).
+fn classify_data_slice(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<SliceForm, EmitError> {
+    debug_assert!(!s.indices.is_empty(), "classify_data_slice requires indices");
+    let name = data_name(s.data, ctx)?;
+    let ty = ctx.sidecar.data_type(s.data).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "data `{name}` ({:?}) used with a {}-D index has no ResolvedType \
+             in the NameSidecar",
+            s.data,
+            s.indices.len()
+        ))
+    })?;
+    let dims = &ty.dims;
+    if s.indices.len() > dims.len() {
+        // Over-indexed: a real bug upstream of the backend (the
+        // contract pass should reject this). Fail LOUD with context.
+        return Err(EmitError::UnsupportedFeature(format!(
+            "data `{name}` over-indexed (sidecar dims={dims:?}, \
+             indices={}); contract pass should have rejected",
+            s.indices.len()
+        )));
+    }
+    if dims.is_empty() {
+        // Scalar data with at least one index — also a contract bug.
+        return Err(EmitError::UnsupportedFeature(format!(
+            "scalar data `{name}` indexed with {} expressions",
+            s.indices.len()
+        )));
+    }
+    // Special-case `indices.len() == 1`: the pre-TASK-0209
+    // `render_flat_index` 1D fast-path emitted `({i0}) as usize` (one
+    // paren level, no stride factor since `stride == dims[1..].prod()`).
+    // Preserve that exact spelling for examples 01..07 (load-bearing
+    // for byte-identical determinism on the existing matrix); the
+    // partial-rank-1 case (rank-1 index on rank>=2 data, e.g. example
+    // 13's `input[n]`) ALSO uses this scalar `(i0)` form for the start
+    // expression, with `sub_len = product(dims[1..])` carrying the
+    // trailing extent.
+    if s.indices.len() == 1 {
+        let i0 = render_int_expr(&s.indices[0], &ctx.abs_subst)?;
+        let expr = format!("({i0}) as usize");
+        return if dims.len() == 1 {
+            Ok(SliceForm::Scalar(expr))
+        } else {
+            // Partial outer index into rank-N data (N>=2). The flat
+            // start is `i0 * product(dims[1..])`; reuse the scalar
+            // spelling for the index expression and multiply by the
+            // sub_len when emitting the range. To keep the start
+            // expression cheap and byte-identical to a hand-multiply,
+            // bake the stride into `start` here.
+            let sub_len: usize = dims[1..].iter().copied().product();
+            let start = if sub_len == 1 {
+                expr
+            } else {
+                format!("(({i0}) * {sub_len}) as usize")
+            };
+            Ok(SliceForm::SubArray { start, sub_len })
+        };
+    }
+    // Multi-dim case (indices.len() >= 2). Row-major stride for the
+    // full or partial PREFIX: index k contributes
+    // `(i_k) * (D_{k+1} * .. * D_{n-1})`. For partial rank, sub_len
+    // is `product(dims[indices.len()..])`. For full rank, sub_len's
+    // product is 1 (empty product) and the sum is the scalar flat
+    // index — byte-identical to the pre-TASK-0209 `render_flat_index`
+    // multi-dim path.
+    let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
+    for (k, idx_expr) in s.indices.iter().enumerate() {
+        let stride: usize = dims[k + 1..].iter().copied().product();
+        let rendered = render_int_expr(idx_expr, &ctx.abs_subst)?;
+        if stride == 1 {
+            terms.push(format!("({rendered})"));
+        } else {
+            terms.push(format!("({rendered}) * {stride}"));
+        }
+    }
+    let expr = format!("({}) as usize", terms.join(" + "));
+    if s.indices.len() == dims.len() {
+        Ok(SliceForm::Scalar(expr))
+    } else {
+        let sub_len: usize = dims[s.indices.len()..].iter().copied().product();
+        Ok(SliceForm::SubArray {
+            start: expr,
+            sub_len,
+        })
     }
 }
 
@@ -1046,6 +1219,19 @@ pub fn render_flat_index_pub(
     ctx: &RenderCtxPub<'_>,
 ) -> Result<String, EmitError> {
     render_flat_index(s, &ctx.inner())
+}
+
+/// Public shim for the shared Fire-output assignment renderer
+/// (TASK-0209). `mp-tcp-bufsync` and the pthreads-sync multi-worker
+/// path call through this so all three indexed-assignment sites use
+/// ONE implementation — no codegen drift between backends, which the
+/// cross-backend bit-identical differential (PRD §10.1) depends on.
+pub fn render_fire_output_assign_pub(
+    o: &DataSlice,
+    rhs: &str,
+    ctx: &RenderCtxPub<'_>,
+) -> Result<String, EmitError> {
+    render_fire_output_assign(o, rhs, &ctx.inner())
 }
 
 pub fn render_const_expr_pub(

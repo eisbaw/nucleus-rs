@@ -22,7 +22,7 @@
 //! Expression / index / kernel-call / loop-bound / single-worker
 //! rendering is **not re-implemented** here — it calls
 //! pthreads-sync's `pub` shared shims (`render_fire_args_pub`,
-//! `render_flat_index_pub`, `render_const_expr_pub`,
+//! `render_fire_output_assign_pub`, `render_const_expr_pub`,
 //! `render_single_worker_main`, `rust_type_of`, …). There is exactly
 //! ONE implementation; this crate only adds the multi-PROCESS
 //! transport. That is why a single-worker example is byte-identical
@@ -80,7 +80,7 @@ use compiler::sidecar::NameSidecar;
 // tests) build `NameTables` once and feed both backends.
 pub use pthreads_sync::{EmitError, NameTables};
 use pthreads_sync::{
-    render_array_init_for, render_const_expr_pub, render_fire_args_pub, render_flat_index_pub,
+    render_array_init_for, render_const_expr_pub, render_fire_args_pub,
     render_single_worker_main, rust_type_of, RenderCtxPub,
 };
 
@@ -630,13 +630,16 @@ impl<'a> Plan<'a> {
                             .ok();
                         }
                         Some(o) => {
-                            let name = self.data_name(o.data)?;
-                            let idx = render_flat_index_pub(o, ctx)?;
-                            writeln!(
-                                out,
-                                "{pad}{name}[{idx}] = kernels::{callee}({args});"
-                            )
-                            .ok();
+                            // TASK-0209: shared scalar-vs-sub-array
+                            // classifier via the pthreads-sync helper.
+                            // Same impl as the pthreads-sync single-
+                            // and multi-worker Fire-output sites — no
+                            // codegen drift between backends, which
+                            // the cross-backend bit-identical
+                            // differential (PRD §10.1) depends on.
+                            let rhs = format!("kernels::{callee}({args})");
+                            let stmt = pthreads_sync::render_fire_output_assign_pub(o, &rhs, ctx)?;
+                            writeln!(out, "{pad}{stmt}").ok();
                         }
                     }
                 }

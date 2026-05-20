@@ -461,13 +461,15 @@ impl<'a> Plan<'a> {
                             .ok();
                         }
                         Some(o) => {
-                            let name = self.data_name(o.data)?;
-                            let idx = crate::render_flat_index_pub(o, ctx)?;
-                            writeln!(
-                                out,
-                                "{pad}{name}[{idx}] = kernels::{callee}({args});"
-                            )
-                            .ok();
+                            // TASK-0209: shared scalar-vs-sub-array
+                            // classifier; the pthreads-sync multi-
+                            // worker path and mp-tcp-bufsync both
+                            // route through `render_fire_output_
+                            // assign_pub` so the three Fire-output
+                            // sites cannot drift.
+                            let rhs = format!("kernels::{callee}({args})");
+                            let stmt = crate::render_fire_output_assign_pub(o, &rhs, ctx)?;
+                            writeln!(out, "{pad}{stmt}").ok();
                         }
                     }
                 }

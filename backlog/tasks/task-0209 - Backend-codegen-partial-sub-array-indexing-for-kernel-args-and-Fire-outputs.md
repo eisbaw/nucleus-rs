@@ -1,9 +1,11 @@
 ---
 id: TASK-0209
 title: 'Backend codegen: partial sub-array indexing for kernel args and Fire outputs'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-05-20 20:12'
+updated_date: '2026-05-20 20:44'
 labels:
   - backend
   - codegen
@@ -94,10 +96,90 @@ Scalar-conv would be a different example.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Backend codegen renders partial sub-array indexing on the ARGUMENT side as a typed sub-slice (data[start..start+sub_len], with conventional Rust borrowed/owned spelling matching the kernel param type).
-- [ ] #2 Backend codegen renders sub-array OUTPUT (LHS rank < data rank) as a sub-range copy_from_slice from the kernel return.
-- [ ] #3 pthreads-sync naive emits a nuc-generated crate that cargo-builds for example 13.
-- [ ] #4 Unit test in pthreads-sync exercises a rank<dims Fire binding and asserts the sub-slice form is emitted.
-- [ ] #5 Determinism + bit-identical e2e on examples 01..07 unchanged.
-- [ ] #6 mp-tcp-bufsync naive (or whatever schedule subset is capability-compatible) emits a cargo-buildable crate for example 13.
+- [x] #1 Backend codegen renders partial sub-array indexing on the ARGUMENT side as a typed sub-slice (data[start..start+sub_len], with conventional Rust borrowed/owned spelling matching the kernel param type).
+- [x] #2 Backend codegen renders sub-array OUTPUT (LHS rank < data rank) as a sub-range copy_from_slice from the kernel return.
+- [x] #3 pthreads-sync naive emits a nuc-generated crate that cargo-builds for example 13.
+- [x] #4 Unit test in pthreads-sync exercises a rank<dims Fire binding and asserts the sub-slice form is emitted.
+- [x] #5 Determinism + bit-identical e2e on examples 01..07 unchanged.
+- [x] #6 mp-tcp-bufsync naive (or whatever schedule subset is capability-compatible) emits a cargo-buildable crate for example 13.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-0209 LANDED (cycle-1, single commit).
+
+Implementation summary:
+- New private helper classify_data_slice(DataSlice, ctx) -> SliceForm
+  in pthreads-sync/src/lib.rs. Classifies an indexed DataSlice into:
+    * SliceForm::Scalar(idx_expr) for full-rank access (indices.len()==dims.len()).
+    * SliceForm::SubArray { start, sub_len } for partial-prefix access
+      (indices.len() < dims.len()). sub_len = product(dims[indices.len()..]).
+- New private helper render_fire_output_assign(o, rhs, ctx). Emits either
+    name[idx] = rhs;                              (Scalar)
+  or
+    name[start..start + sub_len usize].copy_from_slice(&rhs); (SubArray)
+- New pub shim render_fire_output_assign_pub for the mp-tcp-bufsync and
+  pthreads-sync-multi-worker call sites. ONE impl across all three
+  Fire-output sites -> no codegen drift across backends.
+- render_fire_arg gains sub-array branch: emits
+    name[start..start + sub_len usize].to_vec()
+  for partial-prefix arg access (owned Vec<T> matches rust_type_of's
+  aggregate kernel-param spelling).
+
+Backend touch points (all 3 call sites use the same helper):
+- nucleus/backends/pthreads-sync/src/lib.rs:603 (single-worker Fire)
+- nucleus/backends/pthreads-sync/src/multi_worker.rs:463 (multi-worker pthreads)
+- nucleus/backends/mp-tcp-bufsync/src/lib.rs:632 (mp-tcp Fire)
+
+Byte-identical determinism for examples 01..07 preserved:
+- 1D-data scalar access (out[i] on i32[N]) still emits ({i0}) as usize via
+  the special-cased indices.len()==1 dims.len()==1 path.
+- Multi-dim full-rank scalar access still emits the same
+  ((i0)*D1 + (i1)) as usize sum from classify_data_slice's multi-dim path
+  (terms vec).
+- Determinism gate ran twice (just determinism-check): 26/30 PASS,
+  identical to baseline.
+
+Example 13 cargo-buildability proven (AC#3, AC#6):
+- pthreads-sync naive emit + cargo build of the emitted crate: OK with
+  a stub kernels.rs.
+- mp-tcp-bufsync naive emit + cargo build: OK. Emitted main body is
+  byte-identical to pthreads-sync's single-worker emission for this
+  example, confirming the shared-renderer guarantee.
+
+Gate (full 7-step, all green):
+1. just test         : 469 passed / 0 failed / 2 ignored (baseline 468 + 1 new test)
+2. clippy            : clean -D warnings
+3. just e2e          : 30 / 26 PASS / 0 FAIL / 4 SKIPPED / 0 required-fail (baseline)
+4. determinism-check : 30/26 PASS x 2 (byte-identical)
+5. determinism-check-negative : bites (NUC_NONDET_PERTURBED_CELLS=26, 26 cells failed as expected)
+6. xbackend-check-negative    : bites (NUC_XBACKEND_CORRUPTED_DETECTED=1)
+7. just ci           : exit 0
+
+Honest limits:
+- Did NOT add example 13 to the e2e matrix or commit a real kernels.rs;
+  that is TASK-0053's scope. The unit test inlines a stub kernels.rs
+  into a scratch dir and asserts cargo check passes on the emitted
+  crate, which is enough to prove the codegen contract.
+- Did NOT use NUC_TRACE; no diagnostic emission was needed.
+- Did NOT delete the now-zero-caller `render_flat_index` / `render_flat_index_pub`
+  pub API. Keeping them as a deprecation surface (next backend wanting
+  scalar-only flat indexing has it); removal is cosmetic and would
+  rename the workspace API. Filable as a follow-up.
+- Did NOT touch the cargo-fmt drift across other workspace files
+  (compiler/, e2e/, drivers/, etc.) that the repo HEAD already had
+  pre-existing. That is not TASK-0209's scope; filable as a workspace
+  hygiene follow-up.
+- Did NOT validate non-prefix partial indexing (e.g. fix inner dim,
+  leave outer free). classify_data_slice's contract is prefix-rank
+  only; the AlgoIR surface syntax cannot produce a non-prefix slice
+  (D[a][b] always indexes outer-first), so this is a contract floor
+  not a user-visible limitation. If a future surface gains
+  D[*][k]-style emission, classify_data_slice would need extension
+  AND a non-contiguous gather codegen path.
+
+Cross-backend determinism caveat: contiguous row-major sub-slice
+access; no reordering; same impl on both backends -> bit-identical
+emission verified by diff on example 13.
+<!-- SECTION:NOTES:END -->
