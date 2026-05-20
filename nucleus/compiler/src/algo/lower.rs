@@ -97,11 +97,14 @@ use super::ir::{
 ///   expr, div-by-zero, overflow, cycle, …) → its name IS poisoned:
 ///   the symbol does not exist for dependents, so every dependent's
 ///   error is a pure cascade and is suppressed.
-/// - A **duplicate** declaration is NOT poisoned: the *first*
-///   declaration of that name is valid and present in the table, so
-///   the name still resolves; the duplicate is itself the one
-///   independent error. Dependents of the name keep working — there is
-///   no cascade to suppress, and suppressing here would be undercount.
+/// - A **duplicate** declaration is NOT additionally poisoned: the
+///   first decl's poison status is unchanged. If the first decl was
+///   *valid* (in `ir.X`), the name still resolves for dependents; if
+///   the first decl was *poisoned* (in `failed_decls`), it stays
+///   poisoned and dependents stay cascade-suppressed. The duplicate
+///   itself is one independent error — emitted regardless of the
+///   first decl's success (TASK-0206 cascade-aware duplicate
+///   detection; see [`is_failed_decl`] and the `M + N` rule below).
 /// - A name that is in neither the symbol table nor `failed_decls` is
 ///   a genuinely-never-declared identifier: that IS an independent
 ///   error and is reported (suppressing it would be undercount).
@@ -129,6 +132,18 @@ use super::ir::{
 ///   / ShapeRefersToNonConst) are guarded by the named fixture, not
 ///   only the data-via-shape × bare-call-read cell that the original
 ///   K×L sweep covered.
+/// - **Cascade-aware duplicates** (TASK-0206): **K** failed
+///   declarations (poisoned roots) each re-declared **M** times →
+///   exactly **K + K*M** errors (K roots + K*M `DuplicateX` for the
+///   re-decls). Duplicate detection IS symmetric in the first decl's
+///   evaluation status: a `const N = 1/0; const N = 7;` fixture emits
+///   **2** errors (`ConstDivByZero` + `DuplicateConst`), not 1.
+///   Implementation: [`lower_const`] / [`lower_data`] / [`lower_kernel`]
+///   consult `Accum::failed_decls` in addition to `ir.X` via
+///   [`is_failed_decl`]; the failed re-decl is rejected before
+///   evaluation so it does not pollute `ir.X` and the cascade-suppress
+///   discipline for downstream references is unchanged. The pinning
+///   fixture is `duplicate_of_failed_decl_fires_for_any_k_m`.
 ///
 /// # Determinism (PRD §10.1)
 ///
@@ -153,17 +168,17 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerErrors> {
     for item in &ast.items {
         match &item.node {
             Item::Const(c) => {
-                if let Err(e) = lower_const(c, &mut ir) {
+                if let Err(e) = lower_const(c, &mut ir, &acc.failed_decls) {
                     acc.record_decl_failure(&c.name.node, e);
                 }
             }
             Item::Data(d) => {
-                if let Err(e) = lower_data(d, &mut ir) {
+                if let Err(e) = lower_data(d, &mut ir, &acc.failed_decls) {
                     acc.record_decl_failure(&d.name.node, e);
                 }
             }
             Item::Kernel(k) => {
-                if let Err(e) = lower_kernel(k, &mut ir) {
+                if let Err(e) = lower_kernel(k, &mut ir, &acc.failed_decls) {
                     acc.record_decl_failure(&k.name.node, e);
                 }
             }
@@ -229,9 +244,20 @@ impl Accum {
     ///    miss them — the classic transitive overcount that bit this
     ///    task at its 5th cascade-class recurrence.
     /// 2. A duplicate-name collision: record the error but do NOT
-    ///    poison — the *first* (valid) declaration is still in the
-    ///    symbol table, so the name resolves for dependents; there is
-    ///    no cascade to suppress.
+    ///    poison. Two sub-cases share this branch:
+    ///    - First decl *succeeded* (name in `ir.X`): the duplicate is
+    ///      one independent error; the name still resolves for
+    ///      dependents via the first decl.
+    ///    - First decl *failed* (name in `failed_decls`): the second
+    ///      decl fires `DuplicateX` BECAUSE duplicate detection is
+    ///      cascade-aware (TASK-0206; see [`is_failed_decl`] and the
+    ///      `lower_const`/`data`/`kernel` duplicate checks). The
+    ///      poison status of the name is already set by case-3 on the
+    ///      first decl (or case-1 if it was transitively poisoned),
+    ///      so we deliberately re-poison nothing — the existing
+    ///      `failed_decls` entry already suppresses downstream
+    ///      references. Net: K poisoned roots × M duplicate
+    ///      re-decls → K + K*M errors.
     /// 3. A genuine independent evaluation failure (bad shape expr,
     ///    div-by-zero, overflow, cycle, …): record the error AND
     ///    poison the name so its dependents' resulting reference
@@ -303,12 +329,39 @@ impl Accum {
 // Declaration lowering
 // --------------------------------------------------------------------
 
-fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
+/// True iff `name` has been recorded as a *failed* declaration (the
+/// decl was seen in source, named, and failed to evaluate — its name
+/// is in `Accum::failed_decls`). Used by the duplicate-detection
+/// arms of [`lower_const`] / [`lower_data`] / [`lower_kernel`] to make
+/// duplicate detection **cascade-aware**: a re-declaration of a
+/// poisoned name is the same independent violation as a re-declaration
+/// of a successfully-evaluated name (TASK-0206).
+///
+/// The reverse-lookup direction is fine: `failed_decls` is a
+/// `BTreeMap` (deterministic), and a contains-key check is read-only,
+/// so the determinism gate is unaffected.
+fn is_failed_decl(failed_decls: &BTreeMap<String, ()>, name: &str) -> bool {
+    failed_decls.contains_key(name)
+}
+
+fn lower_const(
+    c: &ConstDecl,
+    ir: &mut AlgoIR,
+    failed_decls: &BTreeMap<String, ()>,
+) -> Result<(), LowerError> {
     // `c.name` is a `Spanned<String>`; the textual name drives the
     // semantic check and `c.name.span` locates the diagnostic at the
     // duplicate declaration's identifier token (TASK-0090).
     let name = &c.name.node;
-    if ir.consts.contains_key(name) {
+    // Duplicate detection is **cascade-aware** (TASK-0206): the symbol
+    // table consulted here is the union of successful decls
+    // (`ir.consts` / `ir.data` / `ir.kernels`) AND poisoned-decl names
+    // (`failed_decls`). A second `const N` that follows a *failed*
+    // first `const N` still fires `DuplicateConst` — the source-text
+    // re-use of the name is the violation, not whether the first
+    // evaluated. See `Accum::record_decl_failure` case-2 and the
+    // `lower_algo` counting contract (`M + N` rule) for the rationale.
+    if ir.consts.contains_key(name) || is_failed_decl(failed_decls, name) {
         return Err(LowerError::at(
             LowerErrorKind::DuplicateConst(name.clone()),
             c.name.span.clone(),
@@ -316,6 +369,8 @@ fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
     }
     // Other namespaces (data, kernel) may not collide either —
     // identifiers share one global symbol table at the algorithm level.
+    // (failed_decls is a single set covering all three namespaces, so
+    // the cross-namespace check is covered by the union above.)
     if ir.data.contains_key(name) || ir.kernels.contains_key(name) {
         return Err(LowerError::at(
             LowerErrorKind::DuplicateConst(name.clone()),
@@ -339,11 +394,21 @@ fn lower_const(c: &ConstDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
     Ok(())
 }
 
-fn lower_data(d: &DataDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
+fn lower_data(
+    d: &DataDecl,
+    ir: &mut AlgoIR,
+    failed_decls: &BTreeMap<String, ()>,
+) -> Result<(), LowerError> {
     let name = &d.name.node;
+    // Cascade-aware duplicate detection (TASK-0206): see `lower_const`
+    // for rationale. `failed_decls` is one set across all three
+    // namespaces, so a poisoned `const N` followed by `data N : ...`
+    // also fires (cross-namespace) — symmetric with the same flow when
+    // both decls succeed.
     if ir.data.contains_key(name)
         || ir.consts.contains_key(name)
         || ir.kernels.contains_key(name)
+        || is_failed_decl(failed_decls, name)
     {
         return Err(LowerError::at(
             LowerErrorKind::DuplicateData(name.clone()),
@@ -361,11 +426,17 @@ fn lower_data(d: &DataDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
     Ok(())
 }
 
-fn lower_kernel(k: &KernelDecl, ir: &mut AlgoIR) -> Result<(), LowerError> {
+fn lower_kernel(
+    k: &KernelDecl,
+    ir: &mut AlgoIR,
+    failed_decls: &BTreeMap<String, ()>,
+) -> Result<(), LowerError> {
     let name = &k.name.node;
+    // Cascade-aware duplicate detection (TASK-0206); see `lower_const`.
     if ir.kernels.contains_key(name)
         || ir.consts.contains_key(name)
         || ir.data.contains_key(name)
+        || is_failed_decl(failed_decls, name)
     {
         return Err(LowerError::at(
             LowerErrorKind::DuplicateKernel(name.clone()),

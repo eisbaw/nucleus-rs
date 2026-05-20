@@ -1341,6 +1341,384 @@ fn transitive_cascade_collapses_for_any_k_l() {
     }
 }
 
+// --------------------------------------------------------------------
+// TASK-0206: cascade-aware duplicate detection.
+//
+// PRE-EXISTING latent gap surfaced during the TASK-0092 cycle-3
+// review. Before this task, `DuplicateConst` / `DuplicateData` /
+// `DuplicateKernel` consulted only `ir.consts` / `ir.data` /
+// `ir.kernels` — the *successful* symbol tables. A second decl of a
+// name whose first decl FAILED (so the name was in `failed_decls`,
+// not `ir.X`) silently passed the duplicate check and was treated as
+// the first valid decl. Net: the second decl could ITSELF fail (e.g.
+// re-evaluating a bad RHS) or succeed and leave a stale symbol that
+// shadowed the user's intent — either way, the duplicate violation
+// was lost.
+//
+// Decision (TASK-0206 notes): FIX. PRD §6.2.1's single-assignment
+// keyed by symbol name, combined with §6.2.3's one-namespace rule,
+// implies the source-text re-use of the name is the violation —
+// independent of whether the first decl evaluated. The cascade-poison
+// of the original stays in `failed_decls`, so downstream references
+// remain cascade-suppressed; the duplicate detection now consults the
+// UNION of (successful symbol tables, `failed_decls`).
+//
+// Counting contract update (see `lower_algo` docstring):
+//   K poisoned roots × M duplicate-of-failed re-decls → K + K*M errors.
+//
+// The fixture below pins this across K ∈ {1,2,3,5}, M ∈ {1,2,3} and
+// all three decl-kinds (const / data / kernel) — the same multi-axis
+// discipline that closed TASK-0092 cycle-3.
+// --------------------------------------------------------------------
+
+/// AC#1/#2/#3 — duplicate-of-failed-decl detection is **cascade-aware
+/// AND size-parametric**. K poisoned root decls, each re-declared M
+/// times after the failed first, yield EXACTLY `K + K*M` errors: K
+/// root failures + K*M `DuplicateX` for the re-decls. No cascade
+/// suppression of `DuplicateX` (it is an independent violation of
+/// name-uniqueness, NOT a reference-resolution cascade). No leak of
+/// cascade-suppressible variants on dependents of the poisoned name.
+///
+/// **Three cascade-decl kinds** (the decl whose first attempt fails):
+/// - const-via-div-by-zero — `const N_i : usize = 1 / 0;` (independent
+///   root; not via another const, so case-1 transitive-poison is not
+///   involved — keeps the fixture focused on the duplicate-of-failed
+///   axis without entangling with TASK-0092 transitive logic).
+/// - data-via-bad-shape — `data D_i : f32[BAD];` where BAD is an
+///   undeclared name (`ShapeRefersToNonConst` on the data name; the
+///   data name itself goes into `failed_decls` because the error is
+///   NOT a cascade of another failed decl).
+/// - kernel-via-bad-signature — `kernel K_i : (f32[BAD]) -> ()
+///   effectful;` (analogous: kernel name into `failed_decls`).
+///
+/// **M duplicate re-decls per root** — each re-decl uses the SAME
+/// kind (const re-decl of const, data re-decl of data, kernel re-decl
+/// of kernel) with a *valid* RHS that would lower cleanly on its own
+/// (so the cascade-aware duplicate detection is the ONLY thing
+/// catching it). The valid RHS is the discriminating choice: if the
+/// re-decl ALSO had a bad RHS, the test would not distinguish "fix
+/// fired" from "second decl also independently fails".
+///
+/// **Discrimination strength.** Each cell asserts:
+/// - `errors().len() == K + K*M` exactly,
+/// - K errors are the root-kind (`ConstDivByZero` /
+///   `ShapeRefersToNonConst` on the root name),
+/// - K*M errors are `DuplicateX` for the matching kind, naming the
+///   root identifier,
+/// - the order is source order (root-fail at position i precedes its
+///   M `DuplicateX` re-decls, all in source order).
+///
+/// **Negative-control.** A separate cell with the same K roots but
+/// ZERO duplicate re-decls yields exactly K errors (the roots only)
+/// — this catches a regression where `is_failed_decl` over-fires on a
+/// fresh second name (false-positive duplicate).
+#[test]
+fn duplicate_of_failed_decl_fires_for_any_k_m() {
+    #[derive(Clone, Copy, Debug)]
+    enum DeclKind {
+        Const,
+        Data,
+        Kernel,
+    }
+
+    /// Render the FAILED first decl of name `n_i` of the given kind.
+    /// The failure is *independent* (no `failed_decls` entry consulted
+    /// for the failure itself), so the name is poisoned via case-3 of
+    /// `Accum::record_decl_failure`, not case-1 — keeping this fixture
+    /// orthogonal to the TASK-0092 transitive-poison axis.
+    fn render_failed_first(kind: DeclKind, i: usize) -> String {
+        match kind {
+            DeclKind::Const => format!("const n{i} : usize = 1 / 0;\n"),
+            // Data with a shape referencing an undeclared `BAD_i`.
+            DeclKind::Data => format!("data n{i} : f32[BAD_{i}];\n"),
+            DeclKind::Kernel => {
+                format!("kernel n{i} : (f32[BAD_{i}]) -> () effectful;\n")
+            }
+        }
+    }
+
+    /// Render the j-th valid-RHS duplicate re-decl of `n_i`. The RHS
+    /// is well-formed in isolation; the ONLY reason it errors is the
+    /// cascade-aware duplicate check (TASK-0206).
+    fn render_valid_redecl(kind: DeclKind, i: usize, j: usize) -> String {
+        // `j` is unused for the content (every re-decl is structurally
+        // the same valid form), but rendered into the source for
+        // textual uniqueness — keeps any future dedup heuristic from
+        // collapsing rows. Add as a trailing `// j=...` comment so the
+        // parser ignores it.
+        match kind {
+            // Distinct integer values so a regression that silently
+            // inserts the LAST re-decl into `ir.consts` would be
+            // catchable downstream (we don't assert it here; the
+            // duplicate-error count is the load-bearing assertion).
+            DeclKind::Const => format!("const n{i} : usize = {};\n", 1 + j),
+            DeclKind::Data => format!("data n{i} : f32[4];\n"),
+            DeclKind::Kernel => format!("kernel n{i} : () -> () effectful;\n"),
+        }
+    }
+
+    fn root_kind_matches(kind: DeclKind, lk: &LowerErrorKind, name: &str) -> bool {
+        match kind {
+            DeclKind::Const => matches!(
+                lk,
+                LowerErrorKind::ConstDivByZero { in_const } if in_const == name
+            ),
+            DeclKind::Data => matches!(
+                lk,
+                LowerErrorKind::ShapeRefersToNonConst { decl, .. } if decl == name
+            ),
+            DeclKind::Kernel => matches!(
+                lk,
+                LowerErrorKind::ShapeRefersToNonConst { decl, .. } if decl == name
+            ),
+        }
+    }
+
+    fn dup_kind_matches(kind: DeclKind, lk: &LowerErrorKind, name: &str) -> bool {
+        match kind {
+            DeclKind::Const => matches!(
+                lk,
+                LowerErrorKind::DuplicateConst(n) if n == name
+            ),
+            DeclKind::Data => matches!(
+                lk,
+                LowerErrorKind::DuplicateData(n) if n == name
+            ),
+            DeclKind::Kernel => matches!(
+                lk,
+                LowerErrorKind::DuplicateKernel(n) if n == name
+            ),
+        }
+    }
+
+    let kinds = [DeclKind::Const, DeclKind::Data, DeclKind::Kernel];
+    let ks = [1usize, 2, 3, 5];
+    let ms = [0usize, 1, 2, 3];
+
+    for kind in kinds {
+        for k in ks {
+            for m in ms {
+                let mut src = String::new();
+                // K poisoned roots followed by M re-decls each, in
+                // source order so the assertion can index them.
+                for i in 0..k {
+                    src.push_str(&render_failed_first(kind, i));
+                    for j in 0..m {
+                        src.push_str(&render_valid_redecl(kind, i, j));
+                    }
+                }
+
+                let errs = lower_str(&src).expect_err(
+                    "a poisoned root must produce at least one error",
+                );
+
+                let expected = k + k * m;
+                assert_eq!(
+                    errs.errors().len(),
+                    expected,
+                    "kind={kind:?} K={k} M={m}: expected {expected} errors \
+                     (K roots + K*M DuplicateX), got {} — kinds={:?} — \
+                     source:\n{src}",
+                    errs.errors().len(),
+                    errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+                );
+
+                // Source-order discrimination: for each root i, the
+                // i-th block of (1 + M) errors is (root, dup_0,
+                // dup_1, ..., dup_{M-1}).
+                let all = errs.errors();
+                for i in 0..k {
+                    let block_start = i * (1 + m);
+                    let root_name = format!("n{i}");
+
+                    // Root error.
+                    let root_err = &all[block_start];
+                    assert!(
+                        root_kind_matches(kind, &root_err.kind, &root_name),
+                        "kind={kind:?} K={k} M={m} i={i}: root error at \
+                         position {block_start} must be the failed-first \
+                         decl of `{root_name}`, got {:?} — source:\n{src}",
+                        root_err.kind
+                    );
+
+                    // M duplicate re-decls.
+                    for j in 0..m {
+                        let pos = block_start + 1 + j;
+                        let dup_err = &all[pos];
+                        assert!(
+                            dup_kind_matches(kind, &dup_err.kind, &root_name),
+                            "kind={kind:?} K={k} M={m} i={i} j={j}: \
+                             duplicate at position {pos} must be \
+                             Duplicate*({root_name}), got {:?} — \
+                             source:\n{src}",
+                            dup_err.kind
+                        );
+                    }
+                }
+
+                // Anti-leak: no cascade-suppressible kind on a
+                // dependent of the poisoned name. (This fixture has
+                // no dependents beyond the re-decls themselves; the
+                // assertion is a structural guard against a future
+                // regression that accidentally re-classifies a
+                // duplicate as a cascade-suppressible.)
+                //
+                // Exception: for the Data and Kernel root-failure
+                // shapes, the root error itself IS a
+                // `ShapeRefersToNonConst` — that is the ROOT error,
+                // not a cascade leak. We exclude root errors from
+                // the leak count by name: leaked errors are
+                // ShapeRefersToNonConst entries whose `decl` field
+                // does NOT match any `n{i}` root name.
+                let root_names: std::collections::HashSet<String> =
+                    (0..k).map(|i| format!("n{i}")).collect();
+                let leaked: Vec<_> = all
+                    .iter()
+                    .filter(|e| match &e.kind {
+                        LowerErrorKind::UnknownIdent(_)
+                        | LowerErrorKind::AssignmentTargetNotData(_)
+                        | LowerErrorKind::ConstRefersToNonConst { .. } => true,
+                        LowerErrorKind::ShapeRefersToNonConst { decl, .. } => {
+                            !root_names.contains(decl)
+                        }
+                        _ => false,
+                    })
+                    .map(|e| e.kind.clone())
+                    .collect();
+                assert!(
+                    leaked.is_empty(),
+                    "kind={kind:?} K={k} M={m}: no cascade-suppressible \
+                     variant may leak past the duplicate-detection arms — \
+                     found {leaked:?} — source:\n{src}"
+                );
+            }
+        }
+    }
+}
+
+/// AC#3 narrow fixtures — the exact two source strings called out in
+/// the task description. Pinned separately from the parametric sweep
+/// so a regression on the headline cases produces an immediately
+/// readable diagnostic.
+#[test]
+fn duplicate_const_after_failed_first_const_fires_exactly_two_errors() {
+    // The headline case from TASK-0206: `const N = 1/0; const N = 7;`
+    // must produce EXACTLY two errors — the DivByZero AND the
+    // DuplicateConst — not just the DivByZero.
+    let src = "\
+const N : usize = 1 / 0;
+const N : usize = 7;
+";
+    let errs = lower_str(src).expect_err("must error");
+    assert_eq!(
+        errs.errors().len(),
+        2,
+        "expected exactly 2 errors (DivByZero + DuplicateConst), got {} kinds={:?}",
+        errs.errors().len(),
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        matches!(
+            &errs.errors()[0].kind,
+            LowerErrorKind::ConstDivByZero { in_const } if in_const == "N"
+        ),
+        "first error must be ConstDivByZero(N); got {:?}",
+        errs.errors()[0].kind
+    );
+    assert!(
+        matches!(
+            &errs.errors()[1].kind,
+            LowerErrorKind::DuplicateConst(n) if n == "N"
+        ),
+        "second error must be DuplicateConst(N); got {:?}",
+        errs.errors()[1].kind
+    );
+}
+
+#[test]
+fn duplicate_data_after_failed_first_data_fires_exactly_two_errors() {
+    // The companion data-shape headline case from TASK-0206.
+    let src = "\
+data x : f32[BAD];
+data x : f32[4];
+";
+    let errs = lower_str(src).expect_err("must error");
+    assert_eq!(
+        errs.errors().len(),
+        2,
+        "expected exactly 2 errors (ShapeRefersToNonConst + DuplicateData), got {} kinds={:?}",
+        errs.errors().len(),
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        matches!(
+            &errs.errors()[0].kind,
+            LowerErrorKind::ShapeRefersToNonConst { decl, unknown_ident }
+                if decl == "x" && unknown_ident == "BAD"
+        ),
+        "first error must be ShapeRefersToNonConst{{decl=x, unknown_ident=BAD}}; got {:?}",
+        errs.errors()[0].kind
+    );
+    assert!(
+        matches!(
+            &errs.errors()[1].kind,
+            LowerErrorKind::DuplicateData(n) if n == "x"
+        ),
+        "second error must be DuplicateData(x); got {:?}",
+        errs.errors()[1].kind
+    );
+}
+
+/// AC#3 second clause — "cascade chains downstream of the now-redeclared
+/// name still suppress correctly (no new cascade-class regression)".
+/// A statement that bare-call-reads the re-declared name must STILL be
+/// suppressed: the second decl errored at the duplicate check before
+/// reaching evaluation, so `ir.X` is unchanged and the name remains in
+/// `failed_decls`. Downstream references continue to cascade-suppress
+/// against the original root failure.
+#[test]
+fn redecl_of_failed_does_not_unpoison_downstream_cascade() {
+    // `const N = 1/0;` poisons N. A re-decl `const N = 7;` fires
+    // DuplicateConst but does NOT unpoison N. Then `data x : f32[N];`
+    // would, absent suppression, emit ShapeRefersToNonConst{x, N} —
+    // but it must be cascade-suppressed against the original poison.
+    let src = "\
+const N : usize = 1 / 0;
+const N : usize = 7;
+data x : f32[N];
+";
+    let errs = lower_str(src).expect_err("must error");
+    // Expect EXACTLY 2: ConstDivByZero(N) + DuplicateConst(N). The
+    // ShapeRefersToNonConst on `data x` must NOT leak.
+    assert_eq!(
+        errs.errors().len(),
+        2,
+        "expected exactly 2 errors (root + duplicate; downstream `data x` \
+         cascade-suppressed); got {} kinds={:?}",
+        errs.errors().len(),
+        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+    let leaked: Vec<_> = errs
+        .errors()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                LowerErrorKind::ShapeRefersToNonConst { .. }
+                    | LowerErrorKind::UnknownIdent(_)
+                    | LowerErrorKind::ConstRefersToNonConst { .. }
+                    | LowerErrorKind::AssignmentTargetNotData(_)
+            )
+        })
+        .map(|e| e.kind.clone())
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "downstream cascade must remain suppressed after a duplicate-of-failed re-decl; \
+         found leaked {leaked:?}"
+    );
+}
+
 /// Zero behaviour change for VALID input (AC#5): a well-formed program
 /// that lowered before still lowers to `Ok(AlgoIR)` — multi-error
 /// accumulation must never turn a valid program into an error set. The
