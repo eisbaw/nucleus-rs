@@ -1,0 +1,56 @@
+# Nucleus v2
+
+A pre-compiler that takes **two** annotated source files in the Nuc
+language — an *algorithm* (Rust kernels + dataflow + iteration) and a
+*schedule* (workers + mapping + blocking + IO semantics) — and emits
+split, statically-scheduled, parallel code for a range of backends
+spanning commodity CPU, HPC clusters, and embedded targets.
+
+## What this is / isn't
+
+**Is**: a thesis-grade implementation of the algorithm/schedule split,
+with a falsifiable cross-backend bit-identical differential test as the
+correctness gate. The same algorithm runs under multiple radically
+different decompositions (single-worker, batch-parallel, distributed)
+and must produce byte-identical output across backends. The central
+commitment is the **algorithm/schedule separation** — the algorithm
+states *what* to compute; the schedule states *where, when, and how* to
+compute it; the compiler proves they fit and emits the code.
+
+**Isn't**: a production polyhedral compiler, an auto-tuner, or a
+distributed training framework. Backward pass and collectives are
+deliberately out of scope for v2.
+
+## Pointers
+
+- **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
+  Start here. Everything else is implementation.
+- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — fourteen
+  worked examples from element-wise add (one kernel, one for-loop) to
+  CNN inference (multi-layer i32 deterministic) and a multi-MCU hearing
+  aid. Each example is `prog.algo.nuc` + one or more
+  `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
+  impl + an `input.bin` + an expected `reference.bin`.
+- **[`docs/`](docs/)** — grammar documents and the reference-impl
+  policy.
+- **[`nucleus/`](nucleus/)** — the Rust workspace: `compiler/` (parser
+  + IR + passes), `backends/` (pthreads-sync, mp-tcp-bufsync, …),
+  `driver/` (the `nucleus` CLI), and `e2e/` (the differential matrix).
+- **[`backlog/`](backlog/)** — task tracker (`backlog` CLI). Tasks
+  carry plans, notes, and dependencies; decisions live under
+  `backlog/decisions/`.
+
+## Running
+
+The repo provides a Nix dev shell + a `justfile`:
+
+```
+nix develop -c just build       # cargo build --workspace
+nix develop -c just test        # cargo test --workspace
+nix develop -c just e2e         # full cross-backend differential
+nix develop -c just ci          # the gate CI runs
+```
+
+`just e2e` is the load-bearing test: it builds + runs every
+example × schedule × backend cell and diffs the output against the
+reference. Bit-identical or it fails.
