@@ -144,6 +144,24 @@ use super::ir::{
 ///   evaluation so it does not pollute `ir.X` and the cascade-suppress
 ///   discipline for downstream references is unchanged. The pinning
 ///   fixture is `duplicate_of_failed_decl_fires_for_any_k_m`.
+/// - **For-body independents under cascade-poisoned bounds** (TASK-0205):
+///   **1** failed declaration whose poisoned name is referenced by the
+///   `lo`/`hi` bound of **K** cascade-scoped for-loops, each whose body
+///   contains **M** genuinely-independent errors (e.g. never-declared
+///   kernel calls, separate div-by-zeros) → exactly **1 + K*M** errors
+///   (1 root + K*M body independents), for any K, M. The bound-
+///   evaluation cascade itself is suppressed; the body is **always**
+///   visited (with the iter-var in scope) so independent body errors
+///   surface even when the for-statement cannot emit an `IrStmt::For`.
+///   Implementation: [`lower_for_into`] in place of `?`-on-bounds; the
+///   iter-var is `push_loop`-ed regardless of bound-eval success, so
+///   body uses of the iter-var resolve cleanly via the PRD §6.2.3
+///   scoping rule. The pinning fixture is
+///   `for_body_independents_survive_cascade_poisoned_bound_for_any_k_m`,
+///   with companion fixtures pinning iter-var-use-in-body
+///   (`iter_var_use_in_body_of_cascade_scoped_loop_is_clean`) and
+///   nested-for inner-bound cascade
+///   (`nested_for_inner_cascade_bound_still_surfaces_inner_body_independents`).
 ///
 /// # Determinism (PRD §10.1)
 ///
@@ -182,15 +200,25 @@ pub fn lower_algo(ast: &AlgoAst) -> Result<AlgoIR, LowerErrors> {
                     acc.record_decl_failure(&k.name.node, e);
                 }
             }
-            Item::Stmt(s) => match lower_stmt(s, &ir, &mut top_scope) {
-                Ok(lowered) => ir.stmts.push(lowered),
-                // A statement error referencing a poisoned name is a
-                // cascade of an already-reported declaration failure;
-                // suppress it. A statement that itself violates a rule
-                // (double-assignment, never-declared name, …) is
-                // independent and reported.
-                Err(e) => acc.record_stmt_error(e),
-            },
+            Item::Stmt(s) => {
+                // Statement errors flow through `acc` so cascade-
+                // suppression vs independent-reporting is uniform with
+                // the rest of the pass. A statement error referencing a
+                // poisoned name is a cascade of an already-reported
+                // declaration failure; suppress it. A statement that
+                // itself violates a rule (double-assignment,
+                // never-declared name, …) is independent and reported.
+                //
+                // For-statements need acc-aware descent to recover from
+                // bound-evaluation failures (TASK-0205): if `lo`/`hi`
+                // reference a poisoned name, the body must STILL be
+                // visited so genuinely-independent body errors surface.
+                // `lower_stmt_into` routes For through that path; other
+                // variants delegate to the simple `lower_stmt`.
+                if let Some(lowered) = lower_stmt_into(s, &ir, &mut top_scope, &mut acc) {
+                    ir.stmts.push(lowered);
+                }
+            }
         }
     }
 
@@ -805,10 +833,173 @@ impl Scope {
     }
 }
 
+/// Acc-aware statement lowering (TASK-0205).
+///
+/// Returns `Some(IrStmt)` if the statement lowered cleanly. Returns
+/// `None` if any sub-failure occurred — any independent errors have
+/// already been recorded into `acc`; cascade errors have been suppressed
+/// by `acc.record_stmt_error`. The caller does not need to inspect a
+/// `Result`; the error bookkeeping is in `acc`.
+///
+/// Dispatch:
+/// - `Stmt::For`: routed through [`lower_for_into`] which **always
+///   descends into the body** so that independent body errors surface
+///   even when bound evaluation fails on a cascade-poisoned name
+///   (TASK-0205). Without this, a poisoned `lo`/`hi` would `?`-bail the
+///   whole for-statement before its body was visited — losing every
+///   genuinely-independent body error.
+/// - Other variants delegate to [`lower_stmt`] (Result-returning) and
+///   route any `Err` through `acc.record_stmt_error` (which honors the
+///   cascade-suppression rule against `failed_decls`).
+fn lower_stmt_into(
+    stmt: &SpStmt,
+    ir: &AlgoIR,
+    scope: &mut Scope,
+    acc: &mut Accum,
+) -> Option<IrStmt> {
+    match &stmt.node {
+        Stmt::For { var, lo, hi, body } => lower_for_into(var, lo, hi, body, ir, scope, acc),
+        _ => match lower_stmt(stmt, ir, scope) {
+            Ok(lowered) => Some(lowered),
+            Err(e) => {
+                acc.record_stmt_error(e);
+                None
+            }
+        },
+    }
+}
+
+/// Lower a `for` statement with independent-error preservation across
+/// bound-evaluation failure (TASK-0205).
+///
+/// **Why this exists.** The naive `?`-on-bounds path returned `Err`
+/// before the body was visited. When `lo`/`hi` referenced a
+/// cascade-poisoned name (`const BAD = 1/0; const X = BAD + 1; for i :
+/// 0 .. X { … }`), the bound-evaluation error was itself a cascade and
+/// got cascade-suppressed at the top level — but the body never ran, so
+/// any *truly independent* error in the body (a never-declared kernel
+/// call, a separate div-by-zero, …) was silently lost. That violates
+/// the TASK-0092 cycle-3 invariant "independent errors must STILL be
+/// reported".
+///
+/// **What this does instead.** Evaluate `lo`/`hi` separately, recording
+/// any error through `acc` (which cascade-suppresses references to
+/// poisoned names). **Always** descend into the body with the iter-var
+/// in scope, accumulating each body statement's errors through
+/// `acc.record_stmt_error` (cascade-aware). Only emit an
+/// `IrStmt::For` if EVERY part succeeded (both bounds + every body
+/// statement). On any failure return `None`: the partial IR is dropped
+/// because the program does not lower, and the accumulator carries the
+/// full set of independent errors.
+///
+/// **Iter-var poisoning interaction.** The iter-var is `push_loop`-ed
+/// regardless of bound success, so body uses of the iter-var resolve
+/// cleanly to `IrExpr::Ident(name)` — no error is emitted from a
+/// reference to the iter-var of a doomed loop. (There is therefore
+/// nothing to "suppress"; the natural scoping rule already covers it.)
+///
+/// **Shadowing.** Shadowing a declared name with the iter-var is an
+/// **independent** violation: PRD §6.2.3 keeps iteration variables and
+/// data variables in one shared namespace
+/// ("Iteration variables and data variables share one namespace"), and
+/// the lowering pass additionally rejects iter-var-shadows-decl as a
+/// strong code smell (the previous `lower_stmt` for-arm had the same
+/// check; the `IterVarShadowsDecl` arm was preserved here verbatim).
+/// In that case, the body is **not** descended into; the for-statement
+/// is rejected outright. This is the only case in which the
+/// for-statement returns `None` *without* visiting the body. Rationale:
+/// shadowing is a defect of the for-statement *itself*, not a
+/// downstream cascade, and the iter-var would have ambiguous meaning
+/// inside the body — descending would emit double-counted noise about
+/// `i` being both the shadowed declaration and the loop variable.
+fn lower_for_into(
+    var: &super::ast::SpIdent,
+    lo: &SpExpr,
+    hi: &SpExpr,
+    body: &[SpStmt],
+    ir: &AlgoIR,
+    scope: &mut Scope,
+    acc: &mut Accum,
+) -> Option<IrStmt> {
+    let var_span = var.span.clone();
+    let var_name = &var.node;
+    // Shadowing check first. If the iter-var name collides with a
+    // declared symbol, the for-statement is malformed at its head — do
+    // not descend into the body (see docstring rationale). This is an
+    // independent error.
+    if ir.consts.contains_key(var_name)
+        || ir.data.contains_key(var_name)
+        || ir.kernels.contains_key(var_name)
+    {
+        acc.record_stmt_error(LowerError::at(
+            LowerErrorKind::IterVarShadowsDecl {
+                var: var_name.clone(),
+                shadows: var_name.clone(),
+            },
+            var_span,
+        ));
+        return None;
+    }
+
+    // Evaluate bounds. Errors here may themselves be cascades of an
+    // already-poisoned name; `acc.record_stmt_error` cascade-suppresses
+    // them. We remember whether a bound failed so we know not to emit
+    // an `IrStmt::For` for this statement, but we always descend into
+    // the body — that's the TASK-0205 fix.
+    let lo_ir = match lower_index_expr(lo, ir, scope) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            acc.record_stmt_error(e);
+            None
+        }
+    };
+    let hi_ir = match lower_index_expr(hi, ir, scope) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            acc.record_stmt_error(e);
+            None
+        }
+    };
+
+    // Descend into body with iter-var in scope. Each body statement
+    // routes through `lower_stmt_into` so its errors flow through
+    // `acc` independently — a never-declared kernel call in the body
+    // is reported even when the bounds failed.
+    scope.push_loop(var_name.clone());
+    let mut body_ir = Vec::with_capacity(body.len());
+    let mut any_body_failed = false;
+    for s in body {
+        match lower_stmt_into(s, ir, scope, acc) {
+            Some(lowered) => body_ir.push(lowered),
+            None => {
+                any_body_failed = true;
+            }
+        }
+    }
+    scope.pop();
+
+    match (lo_ir, hi_ir) {
+        (Some(lo_ir), Some(hi_ir)) if !any_body_failed => Some(IrStmt::For {
+            var: var_name.clone(),
+            lo: lo_ir,
+            hi: hi_ir,
+            body: body_ir,
+        }),
+        _ => None,
+    }
+}
+
 fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, LowerError> {
     // Diagnosable statement errors are located at the offending
     // identifier's span (TASK-0090): the LHS data symbol, the callee,
     // or the loop variable.
+    //
+    // For-statements are NOT lowered here — they go through
+    // [`lower_for_into`] instead, which preserves independent body
+    // errors when bound evaluation fails (TASK-0205). Reaching the
+    // `Stmt::For` arm of this function would indicate a routing bug;
+    // we assert via `unreachable!()` rather than silently lowering with
+    // the old `?`-on-bounds behavior that lost body errors.
     match &stmt.node {
         Stmt::Dataflow { lhs, rhs } => {
             let lhs_name = &lhs.name.node;
@@ -907,50 +1098,19 @@ fn lower_stmt(stmt: &SpStmt, ir: &AlgoIR, scope: &mut Scope) -> Result<IrStmt, L
                 args,
             })
         }
-        Stmt::For { var, lo, hi, body } => {
-            let var_span = var.span.clone();
-            let var = &var.node;
-            // Loop bounds are evaluated in the *enclosing* scope; the
-            // iteration variable is only visible inside the body.
-            //
-            // We additionally reject shadowing a declared name with a
-            // loop variable. PRD §6.2.3 allows shadowing in general,
-            // but shadowing a const or data symbol with a loop
-            // variable is a strong code smell — flag it. (If a real
-            // example needs this, relax with a follow-up task.)
-            if ir.consts.contains_key(var)
-                || ir.data.contains_key(var)
-                || ir.kernels.contains_key(var)
-            {
-                return Err(LowerError::at(
-                    LowerErrorKind::IterVarShadowsDecl {
-                        var: var.clone(),
-                        shadows: var.clone(),
-                    },
-                    var_span,
-                ));
-            }
-            // Loop bounds are read-time expressions: they can refer to
-            // consts and to any enclosing iteration variables.
-            let lo_ir = lower_index_expr(lo, ir, scope)?;
-            let hi_ir = lower_index_expr(hi, ir, scope)?;
-
-            scope.push_loop(var.clone());
-            let result = (|| -> Result<Vec<IrStmt>, LowerError> {
-                let mut body_ir = Vec::with_capacity(body.len());
-                for s in body {
-                    body_ir.push(lower_stmt(s, ir, scope)?);
-                }
-                Ok(body_ir)
-            })();
-            scope.pop();
-            let body_ir = result?;
-            Ok(IrStmt::For {
-                var: var.clone(),
-                lo: lo_ir,
-                hi: hi_ir,
-                body: body_ir,
-            })
+        Stmt::For { .. } => {
+            // TASK-0205: For-statements MUST flow through
+            // `lower_stmt_into` → `lower_for_into`, which preserves
+            // independent body errors when bound evaluation fails on a
+            // cascade-poisoned name. Reaching this arm via `lower_stmt`
+            // would mean somebody routed a For through the
+            // `?`-on-bounds path; that's a routing bug. The previous
+            // implementation lived here; see [`lower_for_into`] for
+            // the replacement and the rationale.
+            unreachable!(
+                "Stmt::For must be routed through lower_for_into (TASK-0205); \
+                 see the lower_stmt_into dispatcher"
+            )
         }
     }
 }

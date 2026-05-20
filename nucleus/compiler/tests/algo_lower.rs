@@ -2159,3 +2159,343 @@ bad_kernel();\n";
         errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0205: for-body independent-error preservation under
+// cascade-poisoned bounds.
+//
+// Surfaced during TASK-0092 cycle-3 review (qa-test-runner finding #1).
+// In the pre-TASK-0205 code, `lower_stmt` for `Stmt::For` evaluated
+// `lo` and `hi` with `?`-propagation. When either bound referenced a
+// cascade-poisoned name (`const BAD = 1 / 0; const X = BAD + 1; for i :
+// 0 .. X { … }`), the for-statement returned `Err` **before** the body
+// was visited. The bound-error was itself a cascade and got
+// cascade-suppressed at the top level — but **any GENUINELY-independent
+// error inside the body** (a never-declared kernel call, a separate
+// div-by-zero, …) was never reached and therefore silently lost.
+//
+// This is an **undercount** class, NOT a cascade-class regression: the
+// TASK-0092 K + K*L counting contract did not claim to cover
+// "independent errors inside a body whose for has a poisoned bound".
+// But it is adjacent enough that reviewers may misclassify it as a 6th
+// cascade-class recurrence; the cycle-3 docstring rewrite did not call
+// it out as a documented exception.
+//
+// **Decision: FIX** (TASK-0205 AC#1). The TASK-0092 cycle-3 invariant
+// is "independent errors must STILL be reported"; the for-body case
+// must respect it. Implementation: `lower_for_into` (in
+// `algo/lower.rs`) always descends into the body with the iter-var in
+// scope, accumulating body-statement errors through
+// `Accum::record_stmt_error` (which preserves cascade-suppression for
+// references to poisoned names). The for-statement emits an
+// `IrStmt::For` only if everything (bounds + body) succeeded; on any
+// failure the partial IR is dropped.
+//
+// **Counting contract addendum (load-bearing — extends the lower_algo
+// docstring's K + K*L rule):**
+//
+//   - 1 cascade-poisoned const root + K cascade-scoped for-loops each
+//     with M genuinely-independent body errors →
+//     EXACTLY 1 + K*M errors (1 root + K*M independents).
+//
+// The pre-TASK-0205 measurement was 1 (root only) for every K, M.
+// --------------------------------------------------------------------
+
+/// TASK-0205 AC#1/#2/#3 — independent body errors survive a
+/// cascade-poisoned for-bound, **size-parametric** over K (number of
+/// cascade-scoped for-loops) and M (number of independent body errors
+/// per loop).
+///
+/// **Reproducer fidelity.** The canonical case from the task brief is
+/// the (K=1, M=1) cell:
+///
+/// ```text
+/// const BAD : usize = 1 / 0;
+/// const X : usize = BAD + 1;
+/// data y : f32[10];
+/// for i_0 : 0 .. X {
+///   never_k_0_0(y);
+/// }
+/// ```
+///
+/// Pre-TASK-0205 emitted 1 error (the root `ConstDivByZero(BAD)`).
+/// Post-TASK-0205 emits exactly 2 (the root + the independent
+/// `UnknownIdent("never_k_0_0")`).
+///
+/// **Why parametric in BOTH K and M (single-shape masking is the
+/// recurrence the project keeps re-learning).** Memory
+/// `feedback-comment-doc-lie-recurring` and the TASK-0092 cycle-3/4/5/6
+/// methodology demand size-parametric pinning over BOTH axes of the
+/// defect class: a fixed-K-M fixture could mask an off-by-one (one
+/// independent dropped per loop), a per-loop short-circuit
+/// (independents-per-loop > 1 lost), or a per-cascade-bound conflation
+/// (multiple cascade-poisoned for-loops collapsed to one). The K × M
+/// sweep below catches all three.
+///
+/// **Iter-var poisoning.** The brief calls out "do NOT emit cascade
+/// errors from references to the dead iter-var". Implementation note:
+/// when bound-eval fails, `lower_for_into` still calls
+/// `scope.push_loop(var)` before descending, so iter-var references
+/// resolve cleanly in the body (`IrExpr::Ident(name)`) — there are no
+/// errors to suppress; the natural scoping rule handles it. The
+/// `iter_var_use_in_body_of_cascade_scoped_loop_is_clean` cell below
+/// pins this: a body that uses the iter-var as an index emits ONLY the
+/// root error, not a spurious `IterVarOutOfScope` / `UnknownIdent` on
+/// `i`.
+///
+/// **Discrimination strength.** Each (K, M) cell asserts:
+/// - `errors().len() == 1 + K*M` (exact equality, not `>= 1`),
+/// - the first error is the root `ConstDivByZero(BAD)` (source order),
+/// - the next K*M errors are `UnknownIdent("never_k_{f}_{m}")` for
+///   each (f ∈ 0..K, m ∈ 0..M), in source order — no collapsing, no
+///   reordering, no off-by-one.
+/// - NO error of any cascade-suppressible kind for `BAD` or `X` leaks
+///   (the bound-evaluation cascade must stay suppressed).
+///
+/// **Negative-control (M=0).** A body with **zero** independent errors
+/// (just an iter-var use, or an empty body) emits EXACTLY 1 error
+/// (the root only). This catches a regression that would emit a phantom
+/// error per cascade-poisoned for-loop even when its body is clean.
+#[test]
+fn for_body_independents_survive_cascade_poisoned_bound_for_any_k_m() {
+    /// Render a source program with one cascade-poisoned root (`const
+    /// BAD = 1 / 0; const X = BAD + 1;`), one shared data symbol, and
+    /// `K` for-loops each with `M` independent never-declared-kernel
+    /// calls in its body. Loop names are `i_0 .. i_{K-1}`; body errors
+    /// are `never_k_{f}_{m}` so the assertion can pin source order.
+    fn render(k: usize, m: usize) -> String {
+        let mut src = String::from(
+            "const BAD : usize = 1 / 0;\n\
+             const X : usize = BAD + 1;\n\
+             data y : f32[10];\n",
+        );
+        for f in 0..k {
+            src.push_str(&format!("for i_{f} : 0 .. X {{\n"));
+            for mj in 0..m {
+                src.push_str(&format!("  never_k_{f}_{mj}(y);\n"));
+            }
+            src.push_str("}\n");
+        }
+        src
+    }
+
+    /// Anti-leak: no cascade-suppressible variant naming `BAD` or `X`
+    /// may survive the cascade discipline. The bound-evaluation cascade
+    /// (`ConstRefersToNonConst { unknown_ident: "BAD" }` or
+    /// `UnknownIdent("X")`) must stay suppressed.
+    fn no_bound_cascade_leaks(errs: &[LowerError]) -> bool {
+        errs.iter().all(|e| match &e.kind {
+            LowerErrorKind::UnknownIdent(n) => n != "BAD" && n != "X",
+            LowerErrorKind::AssignmentTargetNotData(n) => n != "BAD" && n != "X",
+            LowerErrorKind::ConstRefersToNonConst { unknown_ident, .. } => {
+                unknown_ident != "BAD" && unknown_ident != "X"
+            }
+            LowerErrorKind::ShapeRefersToNonConst { unknown_ident, .. } => {
+                unknown_ident != "BAD" && unknown_ident != "X"
+            }
+            _ => true,
+        })
+    }
+
+    // K ∈ {1, 2, 3} cascade-poisoned for-loops, M ∈ {0, 1, 2, 3}
+    // independent body errors per loop. M=0 is the negative control
+    // (clean body → root error only). The pre-TASK-0205 fixed cell
+    // would always measure 1 here; the K × M sweep makes the 1+K*M rule
+    // measurement-backed across the defect's two dimensions.
+    for k in [1usize, 2, 3] {
+        for m in [0usize, 1, 2, 3] {
+            let src = render(k, m);
+            let errs = lower_str(&src)
+                .expect_err("the root failed const must produce its error");
+            let all = errs.errors();
+
+            let expected = 1 + k * m;
+            assert_eq!(
+                all.len(),
+                expected,
+                "K={k} M={m}: expected {expected} errors (1 root + K*M \
+                 independent body errors), got {} — kinds={:?} — \
+                 source:\n{src}",
+                all.len(),
+                all.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+            );
+
+            // Position 0: the root.
+            assert!(
+                matches!(
+                    &all[0].kind,
+                    LowerErrorKind::ConstDivByZero { in_const } if in_const == "BAD"
+                ),
+                "K={k} M={m}: first error must be the root \
+                 ConstDivByZero(BAD) in source order, got {:?}",
+                all[0].kind
+            );
+
+            // Positions 1..=K*M: the K*M body independents, in source
+            // order. The source-order layout is `for_0 body_0..M-1,
+            // for_1 body_0..M-1, ...` so the (f * M + mj + 1)-th error
+            // is `never_k_{f}_{mj}`.
+            for f in 0..k {
+                for mj in 0..m {
+                    let pos = 1 + f * m + mj;
+                    let want = format!("never_k_{f}_{mj}");
+                    let got = &all[pos];
+                    assert!(
+                        matches!(
+                            &got.kind,
+                            LowerErrorKind::UnknownIdent(n) if n == &want
+                        ),
+                        "K={k} M={m} f={f} mj={mj}: error at position {pos} \
+                         must be UnknownIdent({want:?}) in source order, \
+                         got {:?} — source:\n{src}",
+                        got.kind,
+                    );
+                }
+            }
+
+            // Bound-cascade anti-leak: nothing referencing BAD or X
+            // (the poisoned chain) may survive. The bound-evaluation
+            // error is itself a cascade and must be suppressed; only
+            // the root and the body-independents may appear.
+            assert!(
+                no_bound_cascade_leaks(all),
+                "K={k} M={m}: no cascade-suppressible variant naming \
+                 `BAD` or `X` may leak — kinds={:?} — source:\n{src}",
+                all.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+            );
+        }
+    }
+}
+
+/// TASK-0205 — iter-var poisoning interaction. A body that **uses the
+/// iter-var** of a cascade-scoped for-loop (as an index into a data
+/// symbol) must emit no spurious diagnostic on the iter-var itself —
+/// uses of `i` inside the body resolve cleanly via the lexical scope
+/// rule (PRD §6.2.3) regardless of whether the loop bounds evaluated.
+///
+/// **What this pins.** Without the FIX, the for-statement returned Err
+/// before `push_loop` ran, so the body was never visited and the
+/// question "does iter-var-use-in-body emit a spurious error?" did not
+/// arise. With the FIX, the body IS visited; this fixture pins that
+/// iter-var references stay clean. The only error must be the cascade
+/// root.
+///
+/// **PRD §6.2.3 verbatim (lines 318-323):**
+/// > **Name resolution.** Iteration variables and data variables share
+/// > one namespace. Iteration variables shadow at their loop and go out
+/// > of scope at the loop's end. A name `y` inside a `for y : ...` body
+/// > always refers to the iteration variable; outside, it refers to
+/// > whatever `data y : ...` declared (or is undefined). No `@`-style
+/// > prefix; the compiler disambiguates by scope.
+///
+/// The "always refers to the iteration variable" rule is unconditional
+/// — it does not depend on whether the bounds evaluated successfully.
+/// The FIX honors this by `push_loop`-ing regardless of bound success.
+#[test]
+fn iter_var_use_in_body_of_cascade_scoped_loop_is_clean() {
+    // Body uses iter-var `i` as an index into data `y`; this would
+    // produce a clean `IrStmt::Dataflow` if the for-statement lowered
+    // — and produces NO error on `i` even when the for is doomed.
+    // The `dump` kernel is declared with a clean scalar signature so
+    // its decl does not itself fail.
+    let src = "\
+const BAD : usize = 1 / 0;
+const X : usize = BAD + 1;
+data y : f32[10];
+kernel dump : (f32) -> () effectful;
+for i : 0 .. X {
+  dump(y[i]);
+}
+";
+    let errs = lower_str(src).expect_err("the root failed const must error");
+    let all = errs.errors();
+
+    // EXACTLY 1 — the root. The body's `dump(y[i])` is lowerable in
+    // isolation (no never-declared idents, no double-assignment), so
+    // it contributes ZERO errors. The bound cascade is suppressed.
+    assert_eq!(
+        all.len(),
+        1,
+        "iter-var-use-in-body must contribute no errors; expected 1 \
+         (root only), got {} — kinds={:?} — source:\n{src}",
+        all.len(),
+        all.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        matches!(
+            &all[0].kind,
+            LowerErrorKind::ConstDivByZero { in_const } if in_const == "BAD"
+        ),
+        "the sole error must be the root ConstDivByZero(BAD), got {:?}",
+        all[0].kind,
+    );
+
+    // Discriminating anti-leak: NO IterVarOutOfScope, NO
+    // UnknownIdent("i"), NO ShapeRefersToNonConst on the iter-var.
+    // These are the variants a regression that didn't push_loop would
+    // emit.
+    let iter_var_leaked = all.iter().any(|e| match &e.kind {
+        LowerErrorKind::IterVarOutOfScope(n) => n == "i",
+        LowerErrorKind::UnknownIdent(n) => n == "i",
+        _ => false,
+    });
+    assert!(
+        !iter_var_leaked,
+        "no error referencing the iter-var `i` may leak — the FIX \
+         must push_loop regardless of bound-eval success — kinds={:?}",
+        all.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+}
+
+/// TASK-0205 — nested for, **inner** for has cascade-poisoned bound.
+/// Outer for has clean bounds; inner for's bound references the
+/// poisoned name. The inner body has K=1 independent error.
+///
+/// **What this pins.** The FIX must work for arbitrarily-nested
+/// for-statements, not just top-level. The recursive
+/// `lower_stmt_into` dispatch routes every nested For through
+/// `lower_for_into`, so the body-descent invariant holds at any
+/// nesting depth.
+#[test]
+fn nested_for_inner_cascade_bound_still_surfaces_inner_body_independents() {
+    let src = "\
+const BAD : usize = 1 / 0;
+const X : usize = BAD + 1;
+const N : usize = 4;
+data y : f32[10];
+for outer_i : 0 .. N {
+  for inner_j : 0 .. X {
+    never_k(y);
+  }
+}
+";
+    let errs = lower_str(src).expect_err("the root failed const must error");
+    let all = errs.errors();
+
+    // Expected: 2 — the root + the inner body's `never_k`.
+    assert_eq!(
+        all.len(),
+        2,
+        "nested for with cascade-poisoned INNER bound must still \
+         surface the inner body's independent error — expected 2 \
+         (root + 1 independent), got {} — kinds={:?} — source:\n{src}",
+        all.len(),
+        all.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        matches!(
+            &all[0].kind,
+            LowerErrorKind::ConstDivByZero { in_const } if in_const == "BAD"
+        ),
+        "first error must be ConstDivByZero(BAD); got {:?}",
+        all[0].kind,
+    );
+    assert!(
+        matches!(
+            &all[1].kind,
+            LowerErrorKind::UnknownIdent(n) if n == "never_k"
+        ),
+        "second error must be UnknownIdent(never_k); got {:?}",
+        all[1].kind,
+    );
+}
