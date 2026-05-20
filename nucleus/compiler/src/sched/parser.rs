@@ -707,19 +707,21 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 
 /// `Program ::= 'schedule' 'for' StringLit '{' SchedItem* '}'`.
 ///
-/// # Recovery at the directive boundary
+/// # Recovery at the directive boundary (TASK-0087 / TASK-0199)
 ///
 /// Each directive is lifted to `Option<SpDirective>` and given
-/// `recover_with(skip_until([';'], |_| None).consume_end())`. On a
-/// syntactic failure anywhere inside one directive, chumsky:
+/// `recover_with(skip_parser(brace_balanced_recovery().map(|_| None)))`.
+/// On a syntactic failure anywhere inside one directive, chumsky:
 ///   1. records the error (collected by `parse_recovery`),
-///   2. skips input characters until it finds a `;` — the universal
-///      directive terminator (every directive parser ends at its bare
-///      `;`, TASK-0086),
-///   3. **consumes** that `;` (`consume_end`) so the next iteration
-///      starts at the following directive, not re-failing on the same
-///      `;`,
-///   4. recovers this element to the value `None`.
+///   2. invokes [`brace_balanced_recovery`] to skip ONE logical
+///      directive span — either a stray `;` or one-or-more outer
+///      atoms then an optional `;`, where an outer atom is a
+///      recursively-balanced `{ … }` block (so a `worker_class IDENT
+///      { field; field; … };` directive is consumed WHOLESALE: inner
+///      `;` and the closing `}` are absorbed as nested content; the
+///      trailing directive `;` is consumed by the final
+///      `or_not`-guarded terminator),
+///   3. recovers this element to the value `None`.
 ///
 /// The `None` recovery value is the load-bearing difference from
 /// `skip_then_retry_until` (chumsky 0.9): because the failed element
@@ -737,96 +739,84 @@ fn directive_parser() -> impl Parser<char, SpDirective, Error = Simple<char>> + 
 /// parsed directive is still wrapped by `padded_spanned` exactly as
 /// before, so its span is unchanged.
 ///
-/// Boundedness: each `skip_until` recovery consumes ≥1 character or
-/// reaches end-of-input, where chumsky's strategy terminates — no
-/// infinite retry, and `.repeated()` makes finite progress every
-/// iteration. Determinism: the sync set is a single fixed concrete
-/// token, chumsky's error list is positional, and the message is
-/// rebuilt with a sorted expected-set ([`crate::error`]) — no
-/// hashing / iteration-order dependence on the whole path.
+/// Boundedness: each `brace_balanced_recovery` invocation consumes
+/// ≥1 character or fails non-consumingly. At EOF or `}` the recovery
+/// fails — `.repeated()` detects the non-consuming failure and stops
+/// cleanly (no panic; chumsky 0.9.3's `Repeated::parse_inner`
+/// requires non-zero progress per successful element, see
+/// `combinator.rs:550-553`). Determinism: every combinator in the
+/// recovery is pure/positional (`recursive`/`choice`/`just`/
+/// `none_of`/`or_not`), no hash-iteration; chumsky's error list is
+/// positional; the message is rebuilt with a sorted expected-set
+/// ([`crate::error`]).
 ///
 /// # Sched-specific deviation from the algorithm template
 ///
 /// The algorithm grammar is `Item*` to EOF — its `.repeated()`
-/// terminates naturally at end-of-input (where `skip_until` makes no
-/// progress and *fails*, cleanly stopping the repetition). The
-/// schedule grammar is `'{' Directive* '}'`: the directive list is
-/// brace-delimited. Without a guard, after the last directive
-/// `.repeated()` attempts one more directive at the `}`, that attempt
-/// fails, and `skip_until([';'])` then skips *past the closing brace*
-/// to EOF looking for a `;` — swallowing the `}` and breaking every
-/// valid schedule. We therefore guard each repetition element with a
-/// non-consuming `}` / EOF check (`just('}').rewind()` failing is the
-/// loop's natural terminator): a directive (and its recovery) is only
-/// attempted when the next non-layout token is *not* the closing
-/// brace. At `}` the guard fails WITHOUT consuming and WITHOUT
-/// recovery, so `.repeated()` stops exactly as the algo loop does at
-/// EOF, leaving the `}` for the block's own `pad(just('}'))`. The
-/// first character of every directive keyword is a letter
-/// (`check`/`loop`/`memory_region`/`place`/`place_data`/`transfer`/
-/// `workers`/`worker_class`), never `}`, so the guard never rejects a
-/// real (even broken) directive — recovery still fires for any
-/// directive that *starts* but fails to parse.
+/// terminates naturally at end-of-input. The schedule grammar is
+/// `'{' Directive* '}'`: the directive list is brace-delimited.
+/// Without a guard, after the last directive `.repeated()` attempts
+/// one more directive at the `}`, and `brace_balanced_recovery` at
+/// `}` would also fail (the `outer_safe_char` arm excludes `}`, the
+/// `brace_block_outer` arm requires `{`), so the loop would stop —
+/// but the failure at `}` would still be an error. We therefore
+/// guard each repetition element with a non-consuming `}` lookahead
+/// (`just('}').rewind()` failing is the loop's natural terminator):
+/// a directive (and its recovery) is only attempted when the next
+/// non-layout token is *not* the closing brace. At `}` the guard
+/// fails WITHOUT consuming and WITHOUT recovery, so `.repeated()`
+/// stops cleanly, leaving the `}` for the block's own
+/// `pad(just('}'))`. The first character of every directive keyword
+/// is a letter (`check`/`loop`/`memory_region`/`place`/`place_data`/
+/// `transfer`/`workers`/`worker_class`), never `}`, so the guard
+/// never rejects a real (even broken) directive — recovery still
+/// fires for any directive that *starts* but fails to parse.
 ///
-/// # Follow-on error count (measured — read before trusting "one")
+/// # Follow-on error count (post-TASK-0199 — measured)
 ///
-/// The `;`-only sync set is coarse, exactly as on the algorithm side
-/// (TASK-0199). Two shapes, both bounded and deterministic, both
-/// measured via the real `parse_sched`:
+/// All measured via the real `parse_sched`, deterministic across
+/// two runs, parametric where the pre-fix shape was thought to
+/// scale (the TASK-0087 cycle-4 K×L discipline carried forward —
+/// see [the pre-fix HONESTY TRAIL](#pre-task-0199-honesty-trail)).
 ///
-/// - **Flat directive, one typo, valid tail, clean `}`** (e.g. a bad
-///   `loop`/`place`/`workers` directive): EXACTLY 1 error. The
-///   recovery consumes that directive's own `;`, the loop resumes,
-///   the valid tail absorbs it, the `}`-guard terminates cleanly. No
-///   follow-on.
+/// - **Flat directive, one typo, valid tail, clean `}`** (e.g. a
+///   bad `loop`/`place`/`workers` directive): EXACTLY 1 error. The
+///   recovery's outer-safe-char arm consumes chars up to the
+///   directive's `;`, the trailing `or_not` consumes the `;`, the
+///   loop resumes, the valid tail absorbs cleanly, the `}`-guard
+///   terminates. No follow-on. Pinned by
+///   `single_error_input_yields_exactly_one_error_no_cascade`.
 ///
 /// - **Single error INSIDE a brace-delimited body** —
 ///   `worker_class IDENT { field; field; ... };` or
-///   `memory_region IDENT { field; field; ... };`, whose *fields are
-///   themselves inner-`;`-terminated*: this is a genuine recovery
-///   DEFECT — a **LINEAR CASCADE that scales with brace-body size**.
-///   Measured (real `parse_sched`, deterministic): total errors =
-///   **n + 2**, where `n` is the number of valid fields *after* the
-///   erroneous one — the genuine primary, then `;`-only recovery
-///   consumes each inner field `;` and **desyncs onto every
-///   subsequent field, one follow-on per field** (n=0→2, n=1→3,
-///   n=2→4, n=3→5, n=5→7, n=8→10), then the structural `}`. An error
-///   in the *doubly-nested* `accessible_by = { id, id };` set
-///   independently exceeds this. This IS a cascade and it DOES scale
-///   with source size — **STRUCTURALLY UNLIKE** the algorithm
-///   `for { … }` body, which is *also* `;`-only-recovered but uses a
-///   bare `stmt.clone().repeated()` with NO inner per-`;` recovery
-///   layer and therefore stays at the **constant `2`** errors
-///   regardless of body size (primary + structural close-`}` follow-
-///   on; see `algo/parser.rs` module-doc "Known limitations" and
-///   `tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`,
-///   TASK-0207). Both shapes share the *root-cause* sync-set design
-///   defect that TASK-0199 fixes, but their pre-fix error counts
-///   diverge — sched scales linearly in n, algo is flat at 2.
+///   `memory_region IDENT { field; field; ... };`: EXACTLY 1 error
+///   post-fix. The brace-balanced recovery consumes the entire
+///   directive (body + trailing `;`) as one atomic step, so the
+///   pre-fix `n + 2` linear cascade — which was caused by each
+///   residual `field;` line re-failing the directive parser and
+///   re-triggering recovery — disappears. Pinned parametrically by
+///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_single_primary_after_keyword_sync_{worker_class,memory_region}_parametric`
+///   (TASK-0199 AC#7) over `n ∈ {0, 1, 2, 5}`; n=1 witness fixtures
+///   `nested_brace_body_error_surfaces_single_primary_after_keyword_sync_*`
+///   retain the exact-position pin.
 ///
-///   HONEST TRAIL: earlier TASK-0087 disclosures, commit
-///   `0c935a5`'s message, AND the first "+2 bounded / not a cascade"
-///   correction were all WRONG undercounts (the recurring undercount
-///   class — caught 3× by the review gate on this task). The true
-///   measured `n+2` behaviour is parametrically pinned over
-///   `n ∈ {0, 1, 2, 5}` by
-///   `tests/sched_parser.rs::nested_brace_body_error_surfaces_n_plus_two_parametric_{worker_class,memory_region}`
-///   (TASK-0087 close-out cycle, applying the K×L parametric
-///   discipline that closed the analogous algorithm-lowering cascade
-///   class at TASK-0092 cycle-3). Its fix — collapsing the cascade
-///   to the primary error only — lives in **TASK-0199**
-///   (keyword/field-anchored sync set); once that lands, the
-///   parametric `== n + 2` assertion flips mechanically to `== 1`
-///   (TASK-0199 AC#7). The `n=1`-pinned fixtures
-///   (`nested_brace_body_error_surfaces_bounded_follow_ons_*`) are
-///   retained as detailed per-error-column witnesses for the n=1
-///   case alongside the parametric counts.
+/// ## Pre-TASK-0199 honesty trail
 ///
-/// The flat-directive case is correct (exactly 1) and is the common
-/// path; the brace-body `n+2` cascade is a known, honestly-disclosed
-/// recovery limitation of `;`-only recovery, deferred to TASK-0199,
-/// which collapses it to the primary error. Until then a malformed
-/// schedule directive *body* over-reports linearly in its field count.
+/// HONEST TRAIL (for code-archaeology readers): the pre-fix `;`-only
+/// sync set produced a genuine `n + 2` LINEAR cascade on the
+/// brace-body shape (`n` = valid fields after the typo; n=0→2,
+/// n=1→3, n=2→4, n=3→5, n=5→7, n=8→10). The corresponding algorithm
+/// `for { … }` shape produced a `constant 2` cascade instead — both
+/// share the same root-cause sync-set design defect, but diverged
+/// because algo's top-level grammar accepts `Stmt` items (residual
+/// for-body lines parsed cleanly post-recovery → no re-failures)
+/// while sched's directive grammar accepts only directive-keyword-
+/// led items (residual field lines re-failed → one cascade per
+/// residual `;`). Earlier disclosures undercounted this 3× (the
+/// recurring undercount-honesty class — review-gate-caught); the
+/// true measured behaviour was pinned parametrically before the fix
+/// (TASK-0087 cycle-4 / TASK-0207) and the brace-balanced recovery
+/// in TASK-0199 collapses both shapes to `EXACTLY 1`.
 fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
     // Repetition element: leading layout, then a non-consuming check
     // that we are NOT at the closing `}` (the loop terminator), then
@@ -838,7 +828,7 @@ fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
         .ignore_then(
             directive_parser()
                 .map(Some)
-                .recover_with(skip_until([';'], |_| None).consume_end()),
+                .recover_with(skip_parser(brace_balanced_recovery().map(|_| None))),
         );
 
     comment_or_ws()
@@ -854,4 +844,62 @@ fn program_parser() -> impl Parser<char, SchedAst, Error = Simple<char>> {
             algo_path,
             directives,
         })
+}
+
+/// Brace-balanced recovery parser (TASK-0199).
+///
+/// Replaces the historical `;`-only `skip_until` sync set. Identical
+/// shape and rationale to `algo/parser.rs::brace_balanced_recovery`
+/// (kept as a sibling rather than a shared helper to avoid a
+/// cross-sublanguage abstraction over the recovery details — the two
+/// parsers should be readable in isolation, per the project's
+/// "libraries-not-frameworks" convention). See `algo/parser.rs` for
+/// the full mechanism + multi-error / boundedness / determinism
+/// argument.
+///
+/// # Effect on the sched-side pre-fix shape
+///
+/// The pre-fix `n + 2` linear cascade inside `worker_class IDENT { … };`
+/// and `memory_region IDENT { … };` collapses to `EXACTLY 1` because
+/// recovery now consumes the entire brace-delimited directive (body
+/// `{ … }` + trailing `;`) as one atomic step instead of consuming
+/// only the inner typo's `;` and desyncing onto every subsequent
+/// `field;` line. Pinned post-fix by the renamed parametric fixtures
+/// `tests/sched_parser.rs::nested_brace_body_error_surfaces_single_primary_after_keyword_sync_{worker_class,memory_region}`
+/// (was `_n_plus_two_parametric_*`, TASK-0087 cycle-4).
+///
+/// The flat-directive shape (e.g. `loop i : @;`) is unaffected — the
+/// `outer_safe_char` arm handles it identically to the historical
+/// behaviour: skip chars until the terminating `;`, consume it. The
+/// existing `single_error_input_yields_exactly_one_error_no_cascade`
+/// and `multi_error_two_independent_errors_both_reported` fixtures
+/// continue to pass.
+fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Clone {
+    let inner_balanced = recursive(
+        |inner: chumsky::recursive::Recursive<char, (), Simple<char>>| {
+            let brace_block = just('{')
+                .ignore_then(inner.clone())
+                .then_ignore(just('}'))
+                .ignored();
+            let any_non_brace = none_of(['{', '}']).ignored();
+            choice((brace_block, any_non_brace)).repeated().ignored()
+        },
+    );
+
+    let brace_block_outer = just('{')
+        .ignore_then(inner_balanced.clone())
+        .then_ignore(just('}'))
+        .ignored();
+    let outer_safe_char = none_of(['{', '}', ';']).ignored();
+    let outer_atom = choice((brace_block_outer, outer_safe_char));
+
+    let lone_semicolon = just(';').ignored();
+
+    let normal = outer_atom
+        .clone()
+        .then(outer_atom.repeated())
+        .then_ignore(just(';').or_not())
+        .ignored();
+
+    choice((lone_semicolon, normal))
 }

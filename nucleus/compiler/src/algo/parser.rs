@@ -47,37 +47,41 @@
 //! into a non-empty [`ParseErrors`]; valid input is wholly unaffected
 //! (same AST, byte-identical downstream codegen).
 //!
-//! # Known limitations
+//! # Recovery shape (TASK-0199 — brace-balanced sync)
 //!
-//! - Recovery sync token is `;` only. A malformed `for { … }` whose
-//!   body contains `;`-terminated statements causes the OUTER
-//!   program-level `skip_until([';'])` recovery to consume the
-//!   typo's `;` and land mid-body. **Measured** (deterministic,
-//!   parametric over the number `n` of valid trailing for-body
-//!   statements after a single primary `@`-typo, `n ∈ {0,1,2,5}` and
-//!   out-of-fixture `{3,8,12}`): the total error count is the
-//!   **constant `2`** — primary + structural close-`}` `Unexpected`
-//!   follow-on — INDEPENDENT of `n`. This is strictly *better* than
-//!   the sched sibling's `n+2` linear cascade
-//!   (`sched/parser.rs::nested_brace_body_error_surfaces_n_plus_two_*`),
-//!   for a STRUCTURAL reason verified by reading the parsers (NOT a
-//!   recovery-layer-shape claim — neither parser has inner
-//!   field/stmt-level `recover_with`). The divergence is in what
-//!   the OUTER grammar accepts for the residue after recovery:
-//!   (a) algo's top-level grammar accepts `Stmt` items, so each
-//!   residual `x[i] <-- inc(i);` line parses cleanly as a top-level
-//!   Item — zero re-failures, hence no cascade; (b) sched's
-//!   directive grammar accepts only directive-keyword-led items, so
-//!   each residual field-keyword line re-fails directive parsing
-//!   and re-triggers the directive-level `recover_with` — one
-//!   cascade per residual `;`. Pinned parametrically by
-//!   `compiler/tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`
-//!   (TASK-0207). Boundedness and determinism — the invariants that
-//!   matter — both hold. A keyword-anchored sync set is a possible
-//!   future refinement (TASK-0199); when it lands, the algo count
-//!   collapses from `2` to `1` (primary only) — same mechanical
-//!   edit as the sched fixtures (replace the `expected = 2` literal
-//!   with `1`).
+//! Recovery uses a brace-balanced `skip_parser` (see
+//! [`brace_balanced_recovery`]) — NOT a `;`-only `skip_until`.
+//! When a top-level item fails, recovery consumes ONE "logical item
+//! span": either a bare stray `;`, or one-or-more outer atoms
+//! followed by an optional terminating `;`. An outer atom is either
+//! a recursively-balanced `{ … }` block (inner `;` absorbed as
+//! nested content) or any single character that is NOT `{`, `}`, or
+//! `;` at the outer depth.
+//!
+//! The historical `;`-only sync set had a genuine recovery defect:
+//! a typo inside a `for { … }` body caused recovery to consume the
+//! typo's inner `;` and land mid-body, producing a structural
+//! close-`}` `Unexpected` follow-on (measured `constant 2`,
+//! parametric over `n ∈ {0,1,2,5}` and out-of-fixture `{3,8,12}`).
+//! Sched had the parallel `n + 2` linear cascade for the same root
+//! reason. The brace-balanced recovery collapses both shapes to
+//! **`EXACTLY 1`** error — the genuine primary alone — by consuming
+//! the entire brace-delimited body wholesale (the recursive
+//! `{ … }`-balanced inner content swallows all inner `;` and the
+//! closing `}` as nested content, leaving the stream cleanly at
+//! the next top-level item position or at EOF). Pinned post-fix by
+//! `tests/algo_parser.rs::for_body_error_surfaces_single_primary_after_keyword_sync`
+//! (algo, was `_constant_two_parametric`, TASK-0207) and
+//! `tests/sched_parser.rs::nested_brace_body_error_surfaces_single_primary_after_keyword_sync_*`
+//! (sched, was `_n_plus_two_parametric_*`, TASK-0087 cycle-4).
+//!
+//! Boundedness and determinism are preserved: each recovery
+//! invocation consumes ≥1 character or fails non-consumingly so
+//! `.repeated()` stops cleanly at EOF (no panic — chumsky 0.9.3's
+//! `Repeated::parse_inner` requires non-zero progress per
+//! successful element); all combinators are pure/positional
+//! (`recursive`, `choice`, `just`, `none_of`, `or_not`) with no
+//! hash-iteration.
 //! - AST nodes carry per-node byte-range spans (TASK-0082): every
 //!   wrapped node is built with `.map_with_span(Spanned::new)`, so a
 //!   node's span is the `start..end` of exactly the source text it was
@@ -175,19 +179,21 @@ const KEYWORDS: &[&str] = &[
 /// Wrapped in a function so callers don't depend on chumsky's exact
 /// return type.
 ///
-/// # Error recovery (TASK-0081)
+/// # Error recovery (TASK-0081 / TASK-0199)
 ///
 /// The per-item parser is lifted to `Option<SpItem>` (`Some` on a
 /// clean parse) and given
-/// `recover_with(skip_until([';'], |_| None).consume_end())`. On a
-/// syntactic failure anywhere inside one top-level item, chumsky:
+/// `recover_with(skip_parser(brace_balanced_recovery().map(|_| None)))`.
+/// On a syntactic failure anywhere inside one top-level item,
+/// chumsky:
 ///   1. records the error (collected by `parse_recovery`),
-///   2. skips input characters until it finds a `;` — the universal
-///      statement / declaration terminator (`const`/`data`/`kernel`/
-///      dataflow/bare-call all end in `;`),
-///   3. **consumes** that `;` (`consume_end`) so the next iteration
-///      starts at the following item, not re-failing on the same `;`,
-///   4. recovers this element to the value `None`.
+///   2. invokes [`brace_balanced_recovery`] to skip ONE logical item
+///      span — either a stray `;` or one-or-more outer atoms then an
+///      optional `;`, where an outer atom is a recursively-balanced
+///      `{ … }` block (so a `for { stmt; stmt; … }` body is consumed
+///      WHOLESALE, inner `;` and closing `}` absorbed as nested
+///      content) or any non-`{`/`}`/`;` char,
+///   3. recovers this element to the value `None`.
 ///
 /// The `None` recovery value is the load-bearing difference from
 /// `skip_then_retry_until` (chumsky 0.9): because the failed element
@@ -202,32 +208,155 @@ const KEYWORDS: &[&str] = &[
 /// ever reaches a caller and the `Item` AST shape is unchanged
 /// (TASK-0082 substrate untouched).
 ///
-/// Boundedness: each `skip_until` recovery consumes ≥1 character or
-/// reaches end-of-input, where chumsky's strategy terminates (the
-/// `Err(_) if stream.save() > pre_state` / `Err(...)` arms in
-/// `SkipUntil::recover`) — no infinite retry, and `.repeated()` makes
-/// finite progress every iteration. Determinism: the sync set is a
-/// single fixed concrete token, chumsky's error list is positional,
-/// and the message is rebuilt with a sorted expected-set
-/// ([`crate::error`]) — no hashing / iteration-order dependence on the
-/// whole path.
+/// Boundedness: each `brace_balanced_recovery` invocation consumes
+/// ≥1 character or fails non-consumingly (the `lone_semicolon` arm
+/// consumes exactly `;`; the `normal` arm requires at least one
+/// initial atom). At EOF the recovery fails — `.repeated()` detects
+/// the non-consuming failure and stops cleanly (no panic — chumsky
+/// 0.9.3's `Repeated::parse_inner` requires non-zero progress per
+/// successful element; see `combinator.rs:550-553`). Determinism:
+/// every combinator in the recovery is pure/positional
+/// (`recursive`/`choice`/`just`/`none_of`/`or_not`), no
+/// hash-iteration; chumsky's error list is positional; the message
+/// is rebuilt with a sorted expected-set ([`crate::error`]).
 ///
-/// Sync token is `;` only — see the module-doc "Known limitations"
-/// note on the algo `for { … }` body's measured **constant-2** error
-/// shape (primary + structural close-`}` follow-on, INDEPENDENT of
-/// the number of valid trailing body statements). This is the
-/// load-bearing structural difference from the sched `worker_class` /
-/// `memory_region` brace-body case, which scales as `n+2`. Pinned by
-/// `tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`
-/// (TASK-0207); TASK-0199 will collapse both to `1`.
+/// Brace-balanced sync collapses the brace-body cascade — see the
+/// module-doc "Recovery shape" section for the pre-fix vs post-fix
+/// numbers; pinned post-fix by
+/// `tests/algo_parser.rs::for_body_error_surfaces_single_primary_after_keyword_sync`
+/// (algo, TASK-0207 → TASK-0199) and the sched sibling
+/// `tests/sched_parser.rs::nested_brace_body_error_surfaces_single_primary_after_keyword_sync_*`
+/// (sched, TASK-0087 cycle-4 → TASK-0199).
 fn program_parser() -> impl Parser<char, Vec<SpItem>, Error = Simple<char>> {
     item_parser()
         .map(Some)
         .padded_by(comment_or_ws())
-        .recover_with(skip_until([';'], |_| None).consume_end())
+        .recover_with(skip_parser(brace_balanced_recovery().map(|_| None)))
         .repeated()
         .flatten()
         .then_ignore(end())
+}
+
+/// Brace-balanced recovery parser (TASK-0199).
+///
+/// Replaces the historical `;`-only `skip_until` sync set, which had a
+/// genuine recovery defect when a syntactic error fell inside a
+/// brace-delimited body (algo `for { … }`, sched `worker_class { … }` /
+/// `memory_region { … }`): the OUTER recovery consumed the typo's
+/// inner `;` and landed mid-body, producing follow-on errors (constant
+/// `2` on the algo side, `n + 2` linear cascade on the sched side).
+/// Post-fix pins live at
+/// `tests/algo_parser.rs::for_body_error_surfaces_single_primary_after_keyword_sync`
+/// (renamed from `_constant_two_parametric`, TASK-0207) and
+/// `tests/sched_parser.rs::nested_brace_body_error_surfaces_single_primary_after_keyword_sync_*`
+/// (renamed from `_n_plus_two_parametric_*` and
+/// `_bounded_follow_ons_*`, TASK-0087 cycle-4).
+///
+/// # Mechanism
+///
+/// On a top-level item failure, recovery consumes ONE "logical item
+/// span" — a stretch of source that is either:
+/// - a single `;` (degenerate item: the parser was sitting on a stray
+///   `;` with no preceding content; consume it and let `.repeated()`
+///   try the next item), or
+/// - one or more "outer atoms" optionally followed by a terminating
+///   `;`. An outer atom is either:
+///     - a fully-balanced `{ … }` block (recursively skipped, inner
+///       `;` consumed transparently as nested-content); or
+///     - any single character that is NOT `{`, `}`, or `;` at the
+///       outer depth.
+///
+/// At the outer depth the loop stops at the first `;` (consumed as
+/// the item terminator) OR at the first `}` (NOT consumed — left for
+/// the enclosing block parser; this is the sched-block-close path).
+///
+/// # Effect on the historical cascade shapes
+///
+/// - Algo `for { stmt; stmt; … }`: when a stmt inside the body fails,
+///   recovery skips through `for i : 0 .. N` (safe chars), then
+///   recursively-consumes the entire `{ … }` body (inner `;` are
+///   safely consumed as nested-content, brace nesting respected),
+///   leaving the stream at the position after `}`. The outer loop
+///   resumes cleanly with no residual follow-on, collapsing the
+///   pre-fix `constant 2` (primary + structural close-`}`
+///   `Unexpected`) to `EXACTLY 1` (primary only).
+///
+/// - Sched `worker_class IDENT { field; field; … };` and
+///   `memory_region IDENT { field; field; … };`: same trail — safe
+///   chars through `worker_class IDENT`, brace-balanced consumption
+///   of `{ … }`, then `;.or_not()` consumes the directive terminator.
+///   The pre-fix `n + 2` linear cascade — caused by each residual
+///   `field;` line re-failing the directive parser and re-triggering
+///   recovery — disappears: the entire directive (body + terminator)
+///   is consumed in one recovery step. Collapses to `EXACTLY 1`.
+///
+/// # Multi-error preservation
+///
+/// For genuinely-independent errors in DIFFERENT items, each item
+/// fails on its own and triggers its own recovery; the recovery
+/// consumes only THAT item's span (up to its terminating `;` or
+/// brace-block), leaving subsequent items intact. So N independent
+/// errors still produce N errors (verified by the existing
+/// `multi_error_two_independent_errors_both_reported` fixtures in
+/// both `tests/algo_parser.rs` and `tests/sched_parser.rs`).
+///
+/// # Boundedness + determinism
+///
+/// Each invocation of the recovery parser consumes ≥1 character or
+/// fails (the `lone_semicolon` branch consumes exactly the `;`; the
+/// `normal` branch requires at least one initial atom). At EOF the
+/// recovery fails non-consumingly so the outer `.repeated()` stops
+/// cleanly (no panic — see chumsky's `Repeated::parse_inner`
+/// no-progress contract). All combinators used are pure/positional
+/// (`recursive`, `choice`, `just`, `none_of`, `or_not`), no
+/// hash-iteration, so the resulting error set+order is a
+/// deterministic function of the source — verified by the
+/// `recovery_resumes_and_is_deterministic` and `pathological_input_*`
+/// fixtures.
+fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Clone {
+    // Inner balanced content (used inside a `{ … }` block). Allows `;`
+    // as a regular nested character; the only structural concerns at
+    // this level are the matching `{` (recurse) and `}` (terminate
+    // the enclosing block).
+    let inner_balanced = recursive(
+        |inner: chumsky::recursive::Recursive<char, (), Simple<char>>| {
+            let brace_block = just('{')
+                .ignore_then(inner.clone())
+                .then_ignore(just('}'))
+                .ignored();
+            let any_non_brace = none_of(['{', '}']).ignored();
+            choice((brace_block, any_non_brace)).repeated().ignored()
+        },
+    );
+
+    // Outer atom: at depth 0, `;` is the item terminator (NOT consumed
+    // here — handled by the trailing `or_not`) and `}` is the enclosing
+    // block's close (NOT consumed — left for the outer parser).
+    let brace_block_outer = just('{')
+        .ignore_then(inner_balanced.clone())
+        .then_ignore(just('}'))
+        .ignored();
+    let outer_safe_char = none_of(['{', '}', ';']).ignored();
+    let outer_atom = choice((brace_block_outer, outer_safe_char));
+
+    // Degenerate case: the parser is sitting on a bare `;` (e.g. the
+    // pathological-input fixture `@@@ ;; ??? ;;`). Consume just the
+    // `;` so each stray sync token surfaces its own error and the loop
+    // makes progress.
+    let lone_semicolon = just(';').ignored();
+
+    // Normal case: at least one outer atom (so we always make ≥1 char
+    // of progress; chumsky's `Repeated::parse_inner` panics on
+    // zero-consumption success — see line 550-553 in chumsky 0.9.3's
+    // `combinator.rs`), then any number of further atoms, then an
+    // optional terminating `;`.
+    let normal = outer_atom
+        .clone()
+        .then(outer_atom.repeated())
+        .then_ignore(just(';').or_not())
+        .ignored();
+
+    choice((lone_semicolon, normal))
 }
 
 /// Whitespace + line comments. Grammar §1 lexical rules.

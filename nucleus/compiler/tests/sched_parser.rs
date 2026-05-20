@@ -654,63 +654,35 @@ fn pathological_input_terminates_bounded_and_deterministic() {
     );
 }
 
-/// TASK-0087 review-gate correction: the SCHED brace-body shape
-/// (`worker_class { … }` / `memory_region { … }`) whose `;`-only
-/// recovery defect surfaces with `n + 2` cascade. Both this and the
-/// algo `for { … }` body (TASK-0207) descend from the same
-/// `;`-only-sync-set root cause that TASK-0199 fixes, but they
-/// CASCADE DIFFERENTLY — for a STRUCTURAL reason, verified by
-/// reading the parsers (NOT by guessing at recovery-layer shapes
-/// that don't exist):
+/// TASK-0199 post-fix pin (n=1 witness) — superseding the pre-fix
+/// `nested_brace_body_error_surfaces_bounded_follow_ons_worker_class`
+/// fixture. With the brace-balanced recovery in place, the entire
+/// `worker_class cc { … };` directive (body + trailing `;`) is
+/// consumed as a single atomic recovery step, so the pre-fix
+/// `primary + inner-field-cascade + structural-}` 3-error shape
+/// collapses to the primary alone.
 ///
-/// BOTH parsers have only ONE `recover_with(skip_until([';'], …))`
-/// site — at the OUTER directive/item level
-/// (sched/parser.rs:841 `directive_or_recover`; algo/parser.rs
-/// `program_parser`). NEITHER has inner field/stmt-level recovery —
-/// inner bodies are bare `.repeated()` over the item parser
-/// (sched/parser.rs:393, :450 `field.repeated()`; algo for-arm
-/// `stmt.clone().repeated()`).
-///
-/// The divergence is in WHAT THE OUTER GRAMMAR ACCEPTS for the
-/// residue after recovery lands mid-body:
-/// - Sched's directive grammar accepts only directive-keyword-led
-///   items, so each residual field-keyword line re-fails directive
-///   parsing → re-triggers the directive-level `recover_with` →
-///   contributes ONE cascade per residual `;`. Total `n + 2`.
-/// - Algo's top-level grammar accepts Stmt items, so each residual
-///   `x[i] <-- inc(i);` line parses cleanly as an Item — ZERO
-///   re-failures. Total constant `2`
-///   (`tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`).
-///
-/// A single syntax error
-/// INSIDE a brace-delimited `worker_class { ... }` / `memory_region
-/// { ... }` body — whose fields are themselves inner-`;`-terminated —
-/// does NOT collapse to one error under the `;`-only sync set. The
-/// `;`-only recovery consumes the inner field `;`, then desyncs on
-/// the next field, and finally trips the structural brace that closes
-/// the body, so the genuine primary surfaces with TWO bounded,
-/// deterministic follow-ons (3 total: the primary, an inner-field
-/// cascade, and a structural close-brace). This is the exact shape
-/// the original TASK-0087 disclosure WRONGLY claimed did not exist on
-/// sched ("max follow-on is ONE / no algo `for{}`-body case"); it
-/// does. Measured via the real `parse_sched`. This fixture PINS that
-/// measured shape (exact count, per-error line:col, kind) so the
-/// bound cannot silently regress and so the recurring
-/// undercount-honesty class — which recurred here precisely because
-/// every other recovery fixture used only FLAT directives — is
-/// closed. When TASK-0199's keyword-anchored sync set lands, this
-/// shape must collapse to the primary only; this test (and TASK-0199
-/// AC#2) is the gate for that.
+/// Kept alongside the parametric fixture (TASK-0199 AC#7) as an n=1
+/// readability witness: the parametric fixture asserts `== 1` over
+/// `n ∈ {0, 1, 2, 5}`; this fixture pins the primary's exact
+/// (line, column, kind) for the n=1 case, so the test name still
+/// reads as a regression check (a future change that surfaces a new
+/// follow-on at THIS shape, even one not scaling with `n`, would
+/// break this exact-count assertion).
 #[test]
-fn nested_brace_body_error_surfaces_bounded_follow_ons_worker_class() {
+fn nested_brace_body_error_surfaces_single_primary_after_keyword_sync_worker_class() {
     // Line 1: prologue.
     // Line 2: `worker_class cc {` — opens the brace body.
     // Line 3: `simd = @;` — the genuine PRIMARY error (`@` after
-    //         `simd =`), inner-`;`-terminated field.
-    // Line 4: `memory = shared;` — a VALID field, but the `;`-only
-    //         recovery from line 3 desyncs onto it (inner-field
-    //         cascade follow-on).
-    // Line 5: `};` — the brace-body close; structural follow-on.
+    //         `simd =`), inner-`;`-terminated field. The
+    //         brace-balanced recovery consumes the entire
+    //         `worker_class cc { … };` directive as one atom; the
+    //         pre-fix `memory = shared;` inner-field cascade and
+    //         structural `}` follow-on disappear.
+    // Line 4: `memory = shared;` — VALID field, now swallowed by the
+    //         brace-balanced recovery (no longer a desync target).
+    // Line 5: `};` — brace-body close + directive terminator, both
+    //         swallowed by the brace-balanced recovery.
     // Line 6: valid `workers` decl (recovery must still reach it).
     // Line 7: valid `place`.
     let src = "\
@@ -729,49 +701,33 @@ schedule for \"../prog.algo.nuc\" {
         e1, e2,
         "nested-brace-body recovery must be a deterministic function of the source"
     );
-    // Measured shape (real `parse_sched`, TASK-0087 correction probe):
-    // EXACTLY 3 = genuine primary (L3C16, the `@`) + inner-field
-    // cascade (L4C15, the `s` of `shared`) + structural `}` (L5C5).
-    // This is the n=1 instance of the n+2 sched brace-body cascade,
-    // NOT the falsely-disclosed "max ONE". STRUCTURALLY DISTINCT
-    // from the algo for{}-body shape (TASK-0207, constant `2` — see
-    // the function-level docstring above for the structural reason).
     let es = e1.errors();
     assert_eq!(
         es.len(),
-        3,
-        "expected exactly 3 (primary + inner-field cascade + structural }}): {es:?}"
+        1,
+        "expected EXACTLY 1 error (primary only) — TASK-0199 \
+         brace-balanced recovery should collapse the pre-fix \
+         3-error shape (primary + inner-field cascade + structural \
+         `}}`): {es:?}"
     );
     assert_eq!((es[0].line, es[0].column), (3, 16), "primary @ : {es:?}");
     assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "{es:?}");
-    assert_eq!(
-        (es[1].line, es[1].column),
-        (4, 15),
-        "inner-field cascade (desync onto valid `memory` field): {es:?}"
-    );
-    assert_eq!(es[1].kind, ParseErrorKind::Unexpected, "{es:?}");
-    assert_eq!(
-        (es[2].line, es[2].column),
-        (5, 5),
-        "structural follow-on at the brace-body closing `}}`: {es:?}"
-    );
-    assert_eq!(es[2].kind, ParseErrorKind::Unexpected, "{es:?}");
-    // The genuine primary is always first and always correct — the
-    // follow-ons are bounded noise, never a scaling cascade.
     assert_eq!(e1.first().line, 3, "primary must be earliest: {es:?}");
 }
 
-/// Companion to the `worker_class` fixture: the SAME nested-brace
-/// follow-on shape on a `memory_region { ... }` body, confirming it
-/// is a property of the inner-`;`-terminated brace body in general,
-/// not one directive. Same measured 3-error shape (primary +
-/// inner-field cascade + structural `}`).
+/// TASK-0199 post-fix pin (n=1 witness) — superseding the pre-fix
+/// `nested_brace_body_error_surfaces_bounded_follow_ons_memory_region`
+/// fixture. Same shape as the `worker_class` sibling: the entire
+/// `memory_region r { … };` directive is consumed as one atomic
+/// brace-balanced recovery step, collapsing the pre-fix 3-error
+/// shape to the primary alone.
 #[test]
-fn nested_brace_body_error_surfaces_bounded_follow_ons_memory_region() {
+fn nested_brace_body_error_surfaces_single_primary_after_keyword_sync_memory_region() {
     // Line 3: `size = @;` — genuine PRIMARY (`@` after `size =`).
-    // Line 4: `per_worker = true;` — valid field; recovery desyncs
-    //         onto it (inner-field cascade).
-    // Line 5: `};` — structural follow-on.
+    // Line 4: `per_worker = true;` — valid field, now swallowed by
+    //         the brace-balanced recovery.
+    // Line 5: `};` — brace-body close + directive terminator, both
+    //         swallowed.
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     memory_region r {
@@ -788,59 +744,56 @@ schedule for \"../prog.algo.nuc\" {
     let es = e1.errors();
     assert_eq!(
         es.len(),
-        3,
-        "expected exactly 3 (primary + inner-field cascade + structural }}): {es:?}"
+        1,
+        "expected EXACTLY 1 error (primary only): {es:?}"
     );
     assert_eq!((es[0].line, es[0].column), (3, 16), "primary @ : {es:?}");
     assert_eq!(es[0].kind, ParseErrorKind::Unexpected, "{es:?}");
-    assert_eq!(
-        (es[1].line, es[1].column),
-        (4, 10),
-        "inner-field cascade (desync onto valid `per_worker` field): {es:?}"
-    );
-    assert_eq!(es[1].kind, ParseErrorKind::Unexpected, "{es:?}");
-    assert_eq!(
-        (es[2].line, es[2].column),
-        (5, 5),
-        "structural follow-on at the brace-body closing `}}`: {es:?}"
-    );
-    assert_eq!(es[2].kind, ParseErrorKind::Unexpected, "{es:?}");
     assert_eq!(e1.first().line, 3, "primary must be earliest: {es:?}");
 }
 
-/// TASK-0087 close-out (cycle-3, parametric measurement discipline
-/// borrowed from TASK-0092 cycle-3 / `algo_lower::transitive_cascade_
-/// collapses_for_any_k_l`). The `n=1` siblings above pin a single
-/// brace-body shape. The masking-defect class that bit TASK-0080 /
-/// TASK-0081 / TASK-0087 (3×) was precisely that count/scaling
-/// disclosures were never measured PARAMETRICALLY over the dimension
-/// they claim to scale with — a single-shape fixture cannot tell n+2
-/// apart from n+1, n+3, or anything else. This test sweeps `n` (the
-/// number of valid inner-`;`-terminated fields AFTER the primary
-/// error) over `{0, 1, 2, 5}` and asserts the disclosed `n + 2`
-/// linear cascade holds EXACTLY for each `n`, deterministically
-/// across two runs. The primary error stays anchored at line 3,
-/// column 16 (the `@`) regardless of `n`. The structural `}` follow-on
-/// stays the LAST error and sits at column 5 of the line that holds
-/// the brace-body close. When TASK-0199's keyword-anchored sync set
-/// lands, this assertion flips from `== n + 2` to `== 1` (TASK-0199
-/// AC#7).
+/// TASK-0199 post-fix parametric pin (renamed from
+/// `nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class`,
+/// TASK-0087 cycle-4).
+///
+/// Sweeps `n` (the number of valid inner-`;`-terminated fields AFTER
+/// the primary error) over `{0, 1, 2, 5}` and asserts the post-fix
+/// count is `EXACTLY 1` for every `n` — the brace-balanced recovery
+/// consumes the entire `worker_class IDENT { … };` directive as a
+/// single atomic step regardless of how many fields the body
+/// contains, so the pre-fix `n + 2` linear cascade collapses to the
+/// primary alone.
+///
+/// The parametric sweep (vs a single-`n` fixture) is the
+/// masking-defect-class guard inherited from TASK-0087 cycle-4 / the
+/// K×L methodology that closed `algo_lower::transitive_cascade_
+/// collapses_for_any_k_l`: a single-shape fixture cannot tell `1`
+/// apart from `n + 1`, `n / 2 + 1`, etc. By iterating over multiple
+/// `n` and asserting CONSTANT `1`, the parametric assertion proves
+/// the collapse holds at ALL sizes, not just the n=1 witness's
+/// coincidental match.
+///
+/// Primary error stays anchored at line 3 column 16 (the `@`)
+/// regardless of `n`; deterministic across two runs.
 ///
 /// `worker_class` only has two distinct valid field kinds (`simd`,
 /// `memory`) but `field.repeated()` accepts duplicates (last-write-
 /// wins at parse time; duplicate detection is a downstream concern),
 /// so the parametric trailing-tail is built by repeating
-/// `memory = shared;`. Any field kind is fine — the cascade is a
-/// property of the recovery sync set, not the field choice.
+/// `memory = shared;`. Any field kind is fine — the collapse is a
+/// property of the recovery skipping the brace-balanced body
+/// wholesale, not the field choice.
 #[test]
-fn nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class() {
+fn nested_brace_body_error_surfaces_single_primary_after_keyword_sync_worker_class_parametric() {
     for n in [0usize, 1, 2, 5] {
         // Lines:
         //   1: `schedule for "../prog.algo.nuc" {`
         //   2: `    worker_class cc {`
         //   3: `        simd = @;`           (primary, @ at col 16)
         //   4..3+n: `        memory = shared;` (n valid trailing fields)
-        //   4+n: `    };`                     (structural }, col 5)
+        //   4+n: `    };`                     (close-} + terminator,
+        //                                      both swallowed by the
+        //                                      brace-balanced recovery)
         //   5+n: `    workers = { host };`
         //   6+n: `    place k on host;`
         //   7+n: `}`
@@ -862,14 +815,17 @@ fn nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class() {
             "n={n}: parametric nested-brace-body recovery must be deterministic"
         );
         let es = e1.errors();
-        let expected = n + 2;
+        // CORE ASSERTION (post-fix): exactly 1 for every probed n.
+        // Pre-fix this was `n + 2`; the brace-balanced recovery
+        // consumes the entire directive wholesale, killing all
+        // inner-field cascades AND the structural close-}.
         assert_eq!(
             es.len(),
-            expected,
-            "n={n}: expected exactly n + 2 = {expected} errors (primary + \
-             {n} inner-field cascade(s) + structural }}); got {} — source:\n{src}\n\
-             errors: {es:?}",
-            es.len()
+            1,
+            "n={n}: expected EXACTLY 1 error (primary only) — TASK-0199 \
+             brace-balanced recovery should collapse the pre-fix \
+             `n + 2` linear cascade for every n. \
+             source:\n{src}\nerrors: {es:?}"
         );
         // Primary at line 3 column 16 (the `@`), regardless of n.
         assert_eq!(
@@ -883,59 +839,27 @@ fn nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class() {
             3,
             "n={n}: primary must be earliest in deterministic order: {es:?}"
         );
-        // Last error is the structural `}` follow-on at the brace-body
-        // close line (4 + n), column 5 (4 spaces of indent then `}`).
-        let close_line = 4 + n;
-        assert_eq!(
-            (es[expected - 1].line, es[expected - 1].column),
-            (close_line, 5),
-            "n={n}: structural `}}` follow-on must be at (L{close_line}, C5); got {es:?}"
-        );
-        assert_eq!(
-            es[expected - 1].kind,
-            ParseErrorKind::Unexpected,
-            "n={n}: structural follow-on kind: {es:?}"
-        );
-        // Each intermediate cascade error sits on one of the
-        // `memory = shared;` lines (lines 4..3+n) and is `Unexpected`.
-        // We don't pin the exact intra-line column past n=1 — that's a
-        // chumsky-implementation detail of how `memory_region` keyword
-        // prefix-matches and reports its rejection point — but the
-        // per-error line MUST be one of the inner-field lines, never
-        // outside the body. This kills any "off-by-one cascade
-        // overshoot" regression even though we don't over-pin the
-        // column.
-        for (i, e) in es.iter().enumerate().take(expected - 1).skip(1) {
-            let line_ok = (4..=3 + n).contains(&e.line);
-            assert!(
-                line_ok,
-                "n={n}: cascade error {i} must sit on a valid \
-                 inner-field line in [4, {}], got line {} — {es:?}",
-                3 + n,
-                e.line
-            );
-            assert_eq!(e.kind, ParseErrorKind::Unexpected, "n={n} i={i}: {es:?}");
-        }
     }
 }
 
-/// `memory_region` counterpart to
-/// `nested_brace_body_error_surfaces_n_plus_two_parametric_worker_class`.
-/// Same dimension swept (`n` valid trailing fields after the primary
-/// `size = @;`), same `n + 2` linear cascade asserted parametrically.
-/// `memory_region` has three valid field kinds (`size`,
-/// `accessible_by`, `per_worker`); we repeat `per_worker = true;` for
-/// the trailing tail — same rationale as the `worker_class` sibling
-/// (the cascade is a sync-set property, not a field-kind property).
+/// `memory_region` counterpart to the `worker_class` parametric
+/// fixture. Same dimension swept (`n` valid trailing fields after the
+/// primary `size = @;`), same `== 1` post-fix collapse asserted
+/// parametrically. `memory_region` has three valid field kinds
+/// (`size`, `accessible_by`, `per_worker`); we repeat
+/// `per_worker = true;` for the trailing tail — same rationale as the
+/// `worker_class` sibling (the collapse is a recovery property, not a
+/// field-kind property).
 #[test]
-fn nested_brace_body_error_surfaces_n_plus_two_parametric_memory_region() {
+fn nested_brace_body_error_surfaces_single_primary_after_keyword_sync_memory_region_parametric() {
     for n in [0usize, 1, 2, 5] {
         // Lines:
         //   1: `schedule for "../prog.algo.nuc" {`
         //   2: `    memory_region r {`
         //   3: `        size = @;`            (primary, @ at col 16)
         //   4..3+n: `        per_worker = true;` (n valid trailing fields)
-        //   4+n: `    };`                     (structural }, col 5)
+        //   4+n: `    };`                     (close-} + terminator,
+        //                                      both swallowed)
         //   5+n: `    workers = { host };`
         //   6+n: `    place k on host;`
         //   7+n: `}`
@@ -958,14 +882,11 @@ fn nested_brace_body_error_surfaces_n_plus_two_parametric_memory_region() {
              must be deterministic"
         );
         let es = e1.errors();
-        let expected = n + 2;
         assert_eq!(
             es.len(),
-            expected,
-            "n={n}: expected exactly n + 2 = {expected} errors (primary + \
-             {n} inner-field cascade(s) + structural }}); got {} — source:\n{src}\n\
-             errors: {es:?}",
-            es.len()
+            1,
+            "n={n}: expected EXACTLY 1 error (primary only): \
+             source:\n{src}\nerrors: {es:?}"
         );
         assert_eq!(
             (es[0].line, es[0].column),
@@ -978,28 +899,6 @@ fn nested_brace_body_error_surfaces_n_plus_two_parametric_memory_region() {
             3,
             "n={n}: primary must be earliest in deterministic order: {es:?}"
         );
-        let close_line = 4 + n;
-        assert_eq!(
-            (es[expected - 1].line, es[expected - 1].column),
-            (close_line, 5),
-            "n={n}: structural `}}` follow-on must be at (L{close_line}, C5); got {es:?}"
-        );
-        assert_eq!(
-            es[expected - 1].kind,
-            ParseErrorKind::Unexpected,
-            "n={n}: structural follow-on kind: {es:?}"
-        );
-        for (i, e) in es.iter().enumerate().take(expected - 1).skip(1) {
-            let line_ok = (4..=3 + n).contains(&e.line);
-            assert!(
-                line_ok,
-                "n={n}: cascade error {i} must sit on a valid \
-                 inner-field line in [4, {}], got line {} — {es:?}",
-                3 + n,
-                e.line
-            );
-            assert_eq!(e.kind, ParseErrorKind::Unexpected, "n={n} i={i}: {es:?}");
-        }
     }
 }
 
