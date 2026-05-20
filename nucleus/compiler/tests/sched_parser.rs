@@ -656,15 +656,32 @@ fn pathological_input_terminates_bounded_and_deterministic() {
 
 /// TASK-0087 review-gate correction: the SCHED brace-body shape
 /// (`worker_class { … }` / `memory_region { … }`) whose `;`-only
-/// recovery defect lives at the **field** level. Both this and the
+/// recovery defect surfaces with `n + 2` cascade. Both this and the
 /// algo `for { … }` body (TASK-0207) descend from the same
 /// `;`-only-sync-set root cause that TASK-0199 fixes, but they
-/// CASCADE DIFFERENTLY: sched has per-field inner recovery
-/// (`field.recover_with(skip_until(...))).repeated()`) so the count
-/// scales as `n + 2` in the field count; the algo for-body uses a
-/// bare `stmt.clone().repeated()` (no inner recovery) so its count
-/// is the **constant `2`** regardless of body size
-/// (`tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`).
+/// CASCADE DIFFERENTLY — for a STRUCTURAL reason, verified by
+/// reading the parsers (NOT by guessing at recovery-layer shapes
+/// that don't exist):
+///
+/// BOTH parsers have only ONE `recover_with(skip_until([';'], …))`
+/// site — at the OUTER directive/item level
+/// (sched/parser.rs:841 `directive_or_recover`; algo/parser.rs
+/// `program_parser`). NEITHER has inner field/stmt-level recovery —
+/// inner bodies are bare `.repeated()` over the item parser
+/// (sched/parser.rs:393, :450 `field.repeated()`; algo for-arm
+/// `stmt.clone().repeated()`).
+///
+/// The divergence is in WHAT THE OUTER GRAMMAR ACCEPTS for the
+/// residue after recovery lands mid-body:
+/// - Sched's directive grammar accepts only directive-keyword-led
+///   items, so each residual field-keyword line re-fails directive
+///   parsing → re-triggers the directive-level `recover_with` →
+///   contributes ONE cascade per residual `;`. Total `n + 2`.
+/// - Algo's top-level grammar accepts Stmt items, so each residual
+///   `x[i] <-- inc(i);` line parses cleanly as an Item — ZERO
+///   re-failures. Total constant `2`
+///   (`tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`).
+///
 /// A single syntax error
 /// INSIDE a brace-delimited `worker_class { ... }` / `memory_region
 /// { ... }` body — whose fields are themselves inner-`;`-terminated —
@@ -715,8 +732,10 @@ schedule for \"../prog.algo.nuc\" {
     // Measured shape (real `parse_sched`, TASK-0087 correction probe):
     // EXACTLY 3 = genuine primary (L3C16, the `@`) + inner-field
     // cascade (L4C15, the `s` of `shared`) + structural `}` (L5C5).
-    // This is +2 bounded follow-ons — the sched analog of the algo
-    // `for{}` shape, NOT the falsely-disclosed "max ONE".
+    // This is the n=1 instance of the n+2 sched brace-body cascade,
+    // NOT the falsely-disclosed "max ONE". STRUCTURALLY DISTINCT
+    // from the algo for{}-body shape (TASK-0207, constant `2` — see
+    // the function-level docstring above for the structural reason).
     let es = e1.errors();
     assert_eq!(
         es.len(),

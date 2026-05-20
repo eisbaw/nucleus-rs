@@ -51,30 +51,33 @@
 //!
 //! - Recovery sync token is `;` only. A malformed `for { … }` whose
 //!   body contains `;`-terminated statements causes the OUTER
-//!   program-level recovery to `skip_until([';'])` straight through
-//!   the entire body — consuming *every* inner `;` (valid and invalid
-//!   alike) and stopping at the bare body-close `}` (a non-item
-//!   token), where the parser emits a single structural `Unexpected`
-//!   follow-on. **Measured** (deterministic, parametric over the
-//!   number `n` of valid trailing for-body statements after a single
-//!   primary `@`-typo, `n ∈ {0,1,2,5}` and out-of-fixture
-//!   `{3,8,12}`): the total error count is the **constant `2`** —
-//!   primary + structural follow-on — INDEPENDENT of `n`. This is
-//!   strictly *better* than the sched sibling's `n+2` linear cascade
-//!   (`sched/parser.rs::nested_brace_body_error_surfaces_n_plus_two_*`)
-//!   because the algo for-body parser is a bare
-//!   `stmt.clone().repeated()` (no inner per-`;` recovery layer), so
-//!   the valid trailing `;`s after the primary contribute *zero*
-//!   per-field cascade entries — the OUTER recovery just chews
-//!   through them and emits the lone structural close-`}`
-//!   `Unexpected` once. Pinned parametrically by
+//!   program-level `skip_until([';'])` recovery to consume the
+//!   typo's `;` and land mid-body. **Measured** (deterministic,
+//!   parametric over the number `n` of valid trailing for-body
+//!   statements after a single primary `@`-typo, `n ∈ {0,1,2,5}` and
+//!   out-of-fixture `{3,8,12}`): the total error count is the
+//!   **constant `2`** — primary + structural close-`}` `Unexpected`
+//!   follow-on — INDEPENDENT of `n`. This is strictly *better* than
+//!   the sched sibling's `n+2` linear cascade
+//!   (`sched/parser.rs::nested_brace_body_error_surfaces_n_plus_two_*`),
+//!   for a STRUCTURAL reason verified by reading the parsers (NOT a
+//!   recovery-layer-shape claim — neither parser has inner
+//!   field/stmt-level `recover_with`). The divergence is in what
+//!   the OUTER grammar accepts for the residue after recovery:
+//!   (a) algo's top-level grammar accepts `Stmt` items, so each
+//!   residual `x[i] <-- inc(i);` line parses cleanly as a top-level
+//!   Item — zero re-failures, hence no cascade; (b) sched's
+//!   directive grammar accepts only directive-keyword-led items, so
+//!   each residual field-keyword line re-fails directive parsing
+//!   and re-triggers the directive-level `recover_with` — one
+//!   cascade per residual `;`. Pinned parametrically by
 //!   `compiler/tests/algo_parser.rs::for_body_error_surfaces_constant_two_parametric`
 //!   (TASK-0207). Boundedness and determinism — the invariants that
 //!   matter — both hold. A keyword-anchored sync set is a possible
 //!   future refinement (TASK-0199); when it lands, the algo count
-//!   collapses from `2` to `1` (primary only) — same mechanical edit
-//!   as the sched fixtures (replace the `expected = 2` literal with
-//!   `1`).
+//!   collapses from `2` to `1` (primary only) — same mechanical
+//!   edit as the sched fixtures (replace the `expected = 2` literal
+//!   with `1`).
 //! - AST nodes carry per-node byte-range spans (TASK-0082): every
 //!   wrapped node is built with `.map_with_span(Spanned::new)`, so a
 //!   node's span is the `start..end` of exactly the source text it was

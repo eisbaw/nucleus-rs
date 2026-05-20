@@ -799,25 +799,39 @@ for i : 0 .. N {
 /// first token the OUTER program-level `skip_until([';'])` recovery
 /// reaches without a leading `;` to consume.
 ///
-/// **Root cause of the algo/sched divergence** (structural, not a bug
-/// in either):
-/// - **Sched** parses brace bodies (`worker_class IDENT { field;
-///   field; }`) with an INNER `;`-anchored
-///   `field.recover_with(skip_until(...)).repeated()`, so each valid
-///   inner-`;` after the primary fires its own field-level recovery
-///   error → `n` per-field cascade entries → `n + 2` total (primary +
-///   n inner-field cascades + structural close-`}` follow-on).
-/// - **Algo** parses for{}-body statements with a bare
-///   `stmt.clone().repeated()` (no inner recovery; see
-///   `algo/parser.rs::stmt_parser` for-arm). On the primary failure
-///   the entire `for_stmt` alternative bails to the OUTER program-
-///   level recovery, which `skip_until([';'])` straight through the
-///   whole body — eating *every* inner `;` (valid and invalid alike)
-///   — and stops at the bare body-close `}` (a non-item token), where
-///   it emits one structural `Unexpected`. The body's `n` valid
-///   trailing `;`s contribute **zero** per-field cascade entries
-///   because the algo grammar has no per-statement recovery layer at
-///   this depth.
+/// **Root cause of the algo/sched divergence** (structural, not a
+/// bug in either — verified by reading the parsers, NOT by guessing
+/// at recovery layer shapes that don't exist):
+///
+/// BOTH parsers have only ONE `;`-anchored recovery site — at the
+/// top-level item/directive boundary (algo/parser.rs program_parser;
+/// sched/parser.rs:841 `directive_or_recover.recover_with(skip_until([';'], …))`).
+/// NEITHER parser has an inner field/statement-level `recover_with` —
+/// the inner bodies are bare `.repeated()` over their item parser
+/// (sched/parser.rs:393, :450 `field.repeated()`;
+/// algo/parser.rs `stmt.clone().repeated()` in the for-arm).
+///
+/// The divergence is in WHAT THE OUTER GRAMMAR ACCEPTS FOR THE
+/// RESIDUE after recovery consumes the typo's `;` and the parser
+/// lands mid-body:
+///
+/// - **Sched's top-level grammar accepts only directive-keyword-led
+///   items** (`worker_class`/`memory_region`/`place`/`place_data`/
+///   `loop`/`transfer`/`check`/`workers`). After outer recovery, each
+///   residual `memory = …;` field line fails the directive parser
+///   (since `memory` is not a directive keyword) → re-triggers the
+///   directive-level `recover_with` → consumes that field's `;` →
+///   contributes ONE error per residual field. Total = primary +
+///   `n` residual-field re-failures + 1 structural close-`}` →
+///   **`n + 2`**.
+///
+/// - **Algo's top-level grammar accepts Stmt items** (see
+///   `algo/parser.rs program_parser` — the for-body shape
+///   `x[i] <-- inc(i);` is a valid top-level Stmt because Stmt is one
+///   of the Item alternatives). After outer recovery lands mid-body,
+///   each residual `x[i] <-- inc(i);` line parses cleanly as a
+///   top-level Item — zero re-failures. Total = primary + 1
+///   structural close-`}` → **constant `2`**.
 ///
 /// **Implication for TASK-0199**: when the keyword-anchored sync set
 /// fix lands, both algo and sched will collapse to **`== 1`** (the
