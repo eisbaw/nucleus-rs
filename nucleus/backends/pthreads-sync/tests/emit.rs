@@ -263,10 +263,12 @@ fn kernels_rs_is_copied_verbatim() {
 /// against the real example 13 algorithm so the test exercises the
 /// real lowering path — not a synthetic Fire that might encode the
 /// shape differently from what AlgoIR produces. A scratch
-/// `kernels.rs` with the `(Vec<f32>) -> Vec<f32>` aggregate signature
-/// matches the kernel-param convention picked under TASK-0103; the
-/// contract pass reports the aggregate gap (TASK-0012) and the
-/// driver proceeds, exactly as it does on the command line.
+/// `kernels.rs` with the `(Vec<i32>) -> Vec<i32>` aggregate signature
+/// matches the kernel-param convention picked under TASK-0103 AND
+/// matches the i32 element type of example 13's `prog.algo.nuc` post
+/// TASK-0053 cycle-2; the contract pass reports the aggregate gap
+/// (TASK-0012) and the driver proceeds, exactly as it does on the
+/// command line.
 #[test]
 fn partial_index_lowers_to_sub_slice() {
     let root = repo_root();
@@ -276,6 +278,10 @@ fn partial_index_lowers_to_sub_slice() {
     // Synthesise a stub kernels.rs for example 13 (the real one is
     // TASK-0053's scope; we only need a path whose signatures are
     // contract-compatible enough for the driver path to proceed).
+    // Element type is `i32` to match the example's `prog.algo.nuc`
+    // after TASK-0053 cycle-2 landed (CNN uses integer arithmetic
+    // per PRD §13 "Leaning toward integer-only for v2"; see
+    // examples/13-cnn-inference/README.md).
     let kernels_path = scratch.join("kernels.rs");
     fs::write(
         &kernels_path,
@@ -287,11 +293,11 @@ const C0: usize = 1;
 const C1: usize = 8;
 const C2: usize = 16;
 const N_CLASSES: usize = 10;
-pub fn load_input() -> Vec<f32> { vec![0.0; B * C0 * H * W] }
-pub fn save_output(_data: Vec<f32>) {}
-pub fn conv_block_1(_x: Vec<f32>) -> Vec<f32> { vec![0.0; C1 * (H / 2) * (W / 2)] }
-pub fn conv_block_2(_x: Vec<f32>) -> Vec<f32> { vec![0.0; C2 * (H / 4) * (W / 4)] }
-pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
+pub fn load_input() -> Vec<i32> { vec![0; B * C0 * H * W] }
+pub fn save_output(_data: Vec<i32>) {}
+pub fn conv_block_1(_x: Vec<i32>) -> Vec<i32> { vec![0; C1 * (H / 2) * (W / 2)] }
+pub fn conv_block_2(_x: Vec<i32>) -> Vec<i32> { vec![0; C2 * (H / 4) * (W / 4)] }
+pub fn classifier(_x: Vec<i32>) -> Vec<i32> { vec![0; N_CLASSES] }
 "#,
     )
     .expect("write stub kernels.rs");
@@ -312,18 +318,18 @@ pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
     let main_rs = fs::read_to_string(&result.main_rs).unwrap();
 
     // ---- Argument-side: `input[n]` (rank-1 index on rank-4 data) ----
-    // Pre-init confirmed: `input` is rank-4 f32[16][1][28][28] = 12544
+    // Pre-init confirmed: `input` is rank-4 i32[16][1][28][28] = 12544
     // slots, sub-array per outer index = 1*28*28 = 784 slots.
     assert!(
         main_rs.contains("input[((n) * 784) as usize..((n) * 784) as usize + 784usize].to_vec()"),
         "TASK-0209 AC#1: partial-index argument did NOT lower to a sub-slice\
          `.to_vec()`; pre-TASK-0209 emission `input[(n) as usize]` (single \
-         f32) would have been emitted, breaking cargo build (E0308 expected \
-         Vec<f32>, found f32). Generated main.rs:\n{main_rs}"
+         i32) would have been emitted, breaking cargo build (E0308 expected \
+         Vec<i32>, found i32). Generated main.rs:\n{main_rs}"
     );
 
     // ---- Output-side: `feat1[n]` (rank-1 LHS on rank-4 data) ----
-    // feat1 is f32[16][8][14][14] = 25088 slots, sub-array per outer
+    // feat1 is i32[16][8][14][14] = 25088 slots, sub-array per outer
     // index = 8*14*14 = 1568. Cycle-2 review-gate finding-2: the
     // emission now binds the RHS to `let _rhs = ...;`, asserts
     // `_rhs.len() == sub_len` for fail-loud-with-context on kernel
@@ -343,7 +349,7 @@ pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
          the bound-RHS + length-assert + sub-range `.copy_from_slice(&_rhs)` \
          emission. Pre-TASK-0209 cycle-1 would have emitted scalar \
          `feat1[(n) as usize] = kernels::conv_block_1(...)` breaking cargo \
-         build (E0308 expected f32, found Vec<f32>); pre-cycle-2 would have \
+         build (E0308 expected i32, found Vec<i32>); pre-cycle-2 would have \
          emitted the bare `.copy_from_slice(&kernels::conv_block_1(...))` \
          form which panics with std's terse message on kernel-impl length \
          mismatch. Generated main.rs:\n{main_rs}"
@@ -367,7 +373,7 @@ pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
     // ---- AC#3: the emitted crate actually cargo-builds. The driver
     //      emit() above wrote it; verify with cargo check (not full
     //      build — the test only needs to prove the type-checker
-    //      accepts the Vec<f32>/Vec<f32> contract).
+    //      accepts the Vec<i32>/Vec<i32> contract).
     //
     // We isolate the target dir under `scratch` to avoid colliding
     // with the workspace target. CARGO_TARGET_DIR points the build

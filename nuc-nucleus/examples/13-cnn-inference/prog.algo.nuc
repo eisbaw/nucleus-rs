@@ -26,20 +26,27 @@ const N_CLASSES : usize = 10;
 
 // Per-sample tensors. The batch dimension is exposed at the algorithm
 // level so a schedule can partition it.
-data input  : f32[B][C0][H  ][W  ];
-data feat1  : f32[B][C1][H/2][W/2];
-data feat2  : f32[B][C2][H/4][W/4];
-data output : f32[B][N_CLASSES];
+//
+// Element type i32 (not f32) per PRD §13 "Leaning toward integer-only
+// for v2" and docs/reference-impl-policy.md §5 (integer arithmetic is
+// bit-deterministic by language definition; f32 reductions are not).
+// The "CNN" here demonstrates the layer-wise dataflow shape — it is
+// not a quantised neural net; activations and weights are abstract
+// integers chosen to stay inside i32 (see kernels.rs for ranges).
+data input  : i32[B][C0][H  ][W  ];
+data feat1  : i32[B][C1][H/2][W/2];
+data feat2  : i32[B][C2][H/4][W/4];
+data output : i32[B][N_CLASSES];
 
 
-kernel load_input   : ()                     -> f32[B][C0][H][W]                effectful;
-kernel save_output  : (f32[B][N_CLASSES])    -> ()                              effectful;
+kernel load_input   : ()                     -> i32[B][C0][H][W]                effectful;
+kernel save_output  : (i32[B][N_CLASSES])    -> ()                              effectful;
 
 // Each conv_block is (conv -> relu -> 2x2 maxpool) on a single sample.
 // Implementation lives in kernels.rs; Nucleus only sees the contract.
-kernel conv_block_1 : (f32[C0][H  ][W  ])    -> f32[C1][H/2][W/2]               pure;
-kernel conv_block_2 : (f32[C1][H/2][W/2])    -> f32[C2][H/4][W/4]               pure;
-kernel classifier   : (f32[C2][H/4][W/4])    -> f32[N_CLASSES]                  pure;
+kernel conv_block_1 : (i32[C0][H  ][W  ])    -> i32[C1][H/2][W/2]               pure;
+kernel conv_block_2 : (i32[C1][H/2][W/2])    -> i32[C2][H/4][W/4]               pure;
+kernel classifier   : (i32[C2][H/4][W/4])    -> i32[N_CLASSES]                  pure;
 
 
 input <-- load_input();

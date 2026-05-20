@@ -57,10 +57,12 @@
 # from a subset run).
 
 # Examples that have an `input.bin`, `reference.bin`, and `kernels.rs`
-# and thus can be driven end-to-end. Examples without these (13, 14
-# at the time of writing) are not yet in the matrix; adding them
-# means landing their reference implementation and fixtures first.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul"]
+# and thus can be driven end-to-end. Example 13 joined the matrix at
+# TASK-0053 cycle-2 (kernels.rs + reference impl + reference.bin
+# landed once TASK-0209 cleared the partial-sub-array codegen
+# blocker). Example 14 still pending its own kernels.rs / reference /
+# fixture trio.
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "13-cnn-inference"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -291,6 +293,30 @@ schedule = "blocked"
 backend  = "mp-tcp-bufsync"
 milestone = "M3"
 
+# Example 13 cnn-inference: NAIVE schedule is the cycle-2 differential
+# cell on BOTH tier-1 backends (TASK-0053 cycle-2). Single-`host`, so
+# mp-tcp-bufsync is single-process (shared single-worker renderer ⇒
+# arithmetic byte-identical to pthreads-sync). Both byte-identical to
+# the std-only independent reference oracle at `reference/`. The other
+# two schedules (`batch_parallel`, `pipeline_parallel`) are deferred:
+# see the [[skip]] entries below for the precise capability/codegen
+# gaps and the tracking tasks.
+#
+# Milestone tag M3: the matrix entered the runnable set at M3-cycle
+# (the example exercises partial sub-array indexing — TASK-0209 — a
+# capability landed during the M3 second-backend tier).
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M3"
+
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M3"
+
 # Cells known to fail at the current milestone. The harness reports
 # them as SKIPPED with the cited reason — counted toward the
 # "informational" tally only. Once the underlying gap is closed
@@ -398,5 +424,55 @@ example  = "05-stencil"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
 reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions; also async/buffer=2/notify=event exceed the sync tier-1 capability surface (same as pthreads-sync)"
+milestone = "M3"
+
+# Example 13 batch_parallel × pthreads-sync: the partition=workers
+# schedule replicates the loop body across w0/w1/w2/w3, but the
+# backend codegen emits sub-slice reads of `input` in EVERY worker's
+# body even though only w0 receives `input` via slot_0.wait() — w1/w2/w3
+# reference an undeclared `input` local => E0425 "cannot find value
+# `input` in this scope" at cargo build of the generated crate.
+# Pre-existing multi-worker transfer-distribution codegen gap exposed
+# by the new partial-sub-array codegen path from TASK-0209 (the
+# scalar-only multi-worker path emitted by the SAME bug for examples
+# 01-07 happens to not trigger E0425 because no current required cell
+# combines partition=workers + multi-worker recv into one scope).
+# Filed as a precise follow-up (see TASK-0053 cycle-2 notes).
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "pthreads-sync"
+reason   = "TASK-0211: multi-worker transfer-distribution codegen omits per-worker recv of `input` under partition=workers; emitted crate fails cargo build with E0425 in w1/w2/w3 scopes"
+milestone = "M3"
+
+# Example 13 batch_parallel × mp-tcp-bufsync: same multi-worker transfer
+# gap as the pthreads-sync sibling above PLUS the pre-existing host-
+# excluding inter-worker barrier limitation (TASK-0175). The codegen
+# fails at the contract layer (loud), not at cargo build, because the
+# capability mismatch fires first.
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0175 (host-excluding barrier) + TASK-0211 (multi-worker transfer-distribution under partition=workers)"
+milestone = "M3"
+
+# Example 13 pipeline_parallel × both backends: requires async + buffer=3
+# + notify=event, none of which any tier-1 backend supports (sync
+# transports, single-buffer slots, polled notification). Filed and
+# tracked as TASK-0210; waits on a tier-2 async + buffer + event-capable
+# backend.
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "pthreads-sync"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by any tier-1 backend; awaits a tier-2 async backend"
+milestone = "M3"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by any tier-1 backend; awaits a tier-2 async backend"
 milestone = "M3"
 

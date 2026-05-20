@@ -303,12 +303,15 @@ fn lowers_example_13_cnn_inference() {
     assert_eq!(ir.consts["W"].value, 28);
     assert_eq!(ir.consts["N_CLASSES"].value, 10);
 
-    // feat1 : f32[B][C1][H/2][W/2] should resolve to [16, 8, 14, 14].
+    // feat1 : i32[B][C1][H/2][W/2] should resolve to [16, 8, 14, 14].
+    // (Element type i32, not f32 — TASK-0053 cycle-2 settled on integer
+    // arithmetic per PRD §13 "Leaning toward integer-only for v2";
+    // see examples/13-cnn-inference/README.md for the rationale.)
     let feat1 = &ir.data["feat1"].ty;
     assert_eq!(
         feat1,
         &ResolvedType {
-            scalar: ScalarType::F32,
+            scalar: ScalarType::I32,
             dims: vec![16, 8, 14, 14],
         }
     );
