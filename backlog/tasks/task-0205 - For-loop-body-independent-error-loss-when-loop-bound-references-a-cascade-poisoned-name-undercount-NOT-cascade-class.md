@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 23:00'
-updated_date: '2026-05-20 18:35'
+updated_date: '2026-05-20 18:45'
 labels:
   - compiler
   - diagnostics
@@ -93,6 +93,26 @@ This is MORE correct: PRD §6.2.1 single-assignment is per-symbol over the progr
 ### Forward-carry
 
 No interaction expected with TASK-0199 (parser-layer cascade fix is at a different layer; the FIX in lower.rs is independent and lives in the acc-aware body-descent path).
+
+ORCHESTRATOR review-gate cycle (post-9e1c985):
+
+qa-test-runner: GO. All 7 gate numbers reproduce exactly. K=4 × M=5 unprobed-cell probe yields 21 errors = 1 + 4*5 (the 1+K*M rule scales beyond the parametric set). Anti-leak guard fires correctly (no UnknownIdent("BAD"/"X"), no ConstRefersToNonConst leak). Doomed-body double-assignment behavior change reproduces exactly as disclosed and is correct under PRD §6.2.1 + §6.2.5(2). Stale release binary noted as gotcha (not introduced by this commit).
+
+mped-architect: GO with two minor findings, neither blocking:
+
+(1) BRIEF-PREMISE CORRECTION: the orchestrator brief said "iter-var enters scope as POISONED (added to failed_decls)" — the implementer chose the OPPOSITE design (unconditional iter-var resolution via scope.iter_var_in_scope per PRD §6.2.3, NOT failed_decls). The implementer's design is BETTER — more honest about the PRD scoping rule and avoids cross-cutting interactions between failed_decls and scope semantics. The brief was wrong in its prescriptive language; the implementer correctly chose the better design. Forward-carry for memory: orchestrator briefs should describe the PROBLEM, not over-specify the MECHANISM; the implementer is closer to the code and may find a better design.
+
+(2) PRD-ANCHOR PRECISION on the doomed-body double-assignment behavior change: the commit message cites PRD §6.2.1 (ambiguous about cross-scope), but the LOAD-BEARING anchor for "single-assignment over symbol life" is PRD §6.2.5(2) at PRD.md:350-352: "Single-assignment is keyed by data symbol name". The in-code reference at lower.rs:772-775 is correct; only the commit-message citation is imprecise. Non-blocking.
+
+Both findings are recorded for forward-carry to the memory file. The IMPLEMENTATION is correct; the FIX direction is sound; all 3 ACs honestly met; gate green. TASK-0205 close-out confirmed Done.
+
+CASCADE-CLASS METHODOLOGY-TRANSFER SCORECARD (now 4-for-4):
+- TASK-0092 cycle-3: AlgoIR lowering — 5x-recurrence closure. Clean.
+- TASK-0087 cycle-4: sched-parser n+2 measurement. Clean.
+- TASK-0200 cycles 1+2+review: sched-lowering Path-2 closure. Required cycle-2-review.
+- TASK-0204+TASK-0207+TASK-0206+TASK-0205: incremental hardening + closures. TASK-0207 required cycle-7 PRD-citation correction; TASK-0206 required cycle-7 PRD-misattribution sweep; TASK-0205 chose the better design despite the brief's prescriptive over-specification.
+
+The cycle-7 lesson (rationale citations need grep+read+cite) has now triggered preventatively in TASK-0205 (implementer correctly chose the design AND verified the PRD quote VERBATIM with line numbers, per the brief's explicit citation-discipline instruction). The discipline IS becoming preventative rather than reactive.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
