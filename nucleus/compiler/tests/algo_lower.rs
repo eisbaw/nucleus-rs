@@ -1500,6 +1500,21 @@ fn located_effect_purity_error_has_correct_line_col() {
 /// are each reported at their own site (TASK-0092 multi-error
 /// infrastructure — collected, not bailed). Pins the per-site nature
 /// of the check (this is NOT a cascade-class defect).
+///
+/// Assertion-strength (TASK-0202): the per-violation `(line, col)` is
+/// pinned via `offset_to_line_col`, analogous to the singular-violation
+/// template `located_effect_purity_error_has_correct_line_col`. A
+/// regression placing both spans at DISTINCT-BUT-WRONG positions (the
+/// "wrong-token-on-the-line" bug class) would pass the older
+/// `spans[0] != spans[1]` blanket but bites here.
+///
+/// Why each violation lands at column 1: the `Stmt::Effect` arm in
+/// `algo/lower.rs` (commit 6e77fce) emits `EffectCalleeNotEffectful`
+/// with `call.callee.span` — i.e. the span of the callee `Ident` in
+/// the parsed `Call`, which starts at the identifier's first
+/// character. Effect-statement syntax is `<callee>(<args>);` with no
+/// leading token, so for an un-indented effect statement the callee
+/// start coincides with the statement start, i.e. column 1.
 #[test]
 fn multiple_effect_purity_violations_each_reported() {
     let src = "\
@@ -1531,11 +1546,66 @@ pure_b(y);
         LowerErrorKind::EffectCalleeNotEffectful { callee } => assert_eq!(callee, "pure_b"),
         other => panic!("second error: expected EffectCalleeNotEffectful(pure_b); got {other:?}"),
     }
-    // Each error carries its own callee span; they are distinct
-    // positions in the source.
+    // Each error carries its own callee span. Pin the EXACT
+    // (line, col) per violation via `offset_to_line_col` against the
+    // source — not a guessed constant — so the test bites against a
+    // "wrong token on the line" regression that would still produce
+    // two distinct spans (defeating the older `spans[0] != spans[1]`
+    // assertion). TASK-0202.
     let spans: Vec<_> = errs.errors().iter().filter_map(|e| e.span.clone()).collect();
     assert_eq!(spans.len(), 2, "both errors must carry spans");
-    assert_ne!(spans[0], spans[1], "the two violation spans must differ");
+
+    // `pure_a` appears three times in the source: line 5 (kernel
+    // decl), line 8 (dataflow RHS — legal), line 9 (effect-stmt —
+    // violation). The violation is the THIRD occurrence (index 2).
+    let pure_a_violation_off = src
+        .match_indices("pure_a")
+        .nth(2)
+        .expect("three `pure_a` occurrences in source")
+        .0;
+    let expected_a = offset_to_line_col(src, pure_a_violation_off);
+    assert_eq!(
+        expected_a,
+        (9, 1),
+        "sanity: bare-call `pure_a` is at line 9 col 1"
+    );
+
+    // `pure_b` appears twice: line 6 (kernel decl), line 10
+    // (effect-stmt — violation). The violation is the SECOND
+    // occurrence (index 1).
+    let pure_b_violation_off = src
+        .match_indices("pure_b")
+        .nth(1)
+        .expect("two `pure_b` occurrences in source")
+        .0;
+    let expected_b = offset_to_line_col(src, pure_b_violation_off);
+    assert_eq!(
+        expected_b,
+        (10, 1),
+        "sanity: bare-call `pure_b` is at line 10 col 1"
+    );
+
+    // The two expected positions are distinct (defence-in-depth: if
+    // the source layout drifts so both violations land on the same
+    // line, the per-site assertion below is no longer discriminating).
+    assert_ne!(
+        expected_a, expected_b,
+        "the two expected violation positions must differ \
+         (else the per-site assertions below collapse)"
+    );
+
+    assert_eq!(
+        offset_to_line_col(src, spans[0].start),
+        expected_a,
+        "first violation (`pure_a`) must point at the bare-call callee \
+         at line 9 col 1"
+    );
+    assert_eq!(
+        offset_to_line_col(src, spans[1].start),
+        expected_b,
+        "second violation (`pure_b`) must point at the bare-call callee \
+         at line 10 col 1"
+    );
 }
 
 /// Cascade discipline: a bare-call to an UNKNOWN kernel (never declared)
