@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-19 19:44'
-updated_date: '2026-05-19 20:55'
+updated_date: '2026-05-20 04:59'
 labels:
   - compiler
   - language
@@ -48,4 +48,10 @@ CORRECTION (from TASK-0087 review-gate cycle — supersedes the sched follow-on 
 - memory_region brace body, single error (size = @;): 3 errors = primary L3C16 + inner-field cascade L4C10 + structural } L5C5.
 - Flat directive + valid tail + clean }: still EXACTLY 1 (genuinely no follow-on; that part of the earlier note stands).
 Pinned by sched_parser.rs::nested_brace_body_error_surfaces_bounded_follow_ons_{worker_class,memory_region}. The algo "up to two" DOES occur on sched. The keyword-anchored sync-set refinement (AC#1) must collapse this brace-body shape to the primary only, the same as the algo for{} shape — extended AC added.
+
+UPDATE (TASK-0087 close-out cycle): the parametric over-n measurement for the worker_class/memory_region brace-body cascade now lives at nucleus/compiler/tests/sched_parser.rs::nested_brace_body_error_surfaces_n_plus_two_parametric_{worker_class,memory_region} (n in {0, 1, 2, 5}, asserts errors().len() == n + 2 + deterministic + primary-position-stable). The disclosed n+2 LINEAR cascade is EMPIRICALLY CONFIRMED across all four probed n values; the masking-defect class (single-n fixture cannot tell n+2 apart from n+1/n+3/unbounded) is now closed at the test layer for the sched side.
+
+TASK-0199's responsibility going forward is the FIX (keyword/field-anchored sync set in sched/parser.rs + algo/parser.rs, see ACs #1, #6) and FLIPPING the two parametric assertions from == n + 2 to == 1 (AC#7). The fixture shape and per-n probe layout are now compatible — the assertion edit is mechanical when the fix lands.
+
+The n=1-pinned siblings nested_brace_body_error_surfaces_bounded_follow_ons_{worker_class,memory_region} are retained as detailed per-error-column witnesses (cascade column 15, structural-} column 5) for the n=1 case alongside the parametric counts. The algo for{}-body case is NOT yet parametrically pinned this cycle (carried as a separate follow-up — see new task).
 <!-- SECTION:NOTES:END -->
