@@ -763,9 +763,20 @@ fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
 ///
 /// - **Scalar** (full rank): `D[idx] = <rhs>;` — single slot, byte-
 ///   identical to the pre-TASK-0209 emission for examples 01..07.
-/// - **Sub-array** (partial prefix rank): `D[start..start+sub_len].
-///   copy_from_slice(&<rhs>);` — contiguous trailing region, RHS must
-///   be `Vec<T>` / `&[T]` of length `sub_len`.
+/// - **Sub-array** (partial prefix rank): the emitted code binds the
+///   RHS to a local, runtime-asserts the length against `sub_len`
+///   with a fail-loud-with-context message naming the slot, then
+///   `D[start..start+sub_len].copy_from_slice(&_rhs);`. The
+///   length-assert exists because the LHS `sub_len` derives from the
+///   declared shape (sidecar) while the RHS length depends on the
+///   kernel author's implementation. Without it, `copy_from_slice`
+///   would panic with std's terse `source slice length (N) does not
+///   match destination slice length (M)` message; the assert turns
+///   that into a diagnostic naming the slot and expected length
+///   (MPED fail-loud-with-context discipline; review-gate finding
+///   cycle-2 TASK-0209). Note the assert fires AFTER the RHS is
+///   evaluated, so behaviour for valid input is byte-identical when
+///   kernels honour their declared return shape.
 ///
 /// Sharing this site between the single-worker `render_main_rs`, the
 /// multi-worker pthreads renderer, and the mp-tcp-bufsync renderer
@@ -781,7 +792,11 @@ fn render_fire_output_assign(
     match classify_data_slice(o, ctx)? {
         SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}] = {rhs};")),
         SliceForm::SubArray { start, sub_len } => Ok(format!(
-            "{name}[{start}..{start} + {sub_len}usize].copy_from_slice(&{rhs});"
+            "{{ let _rhs = {rhs}; \
+             assert_eq!(_rhs.len(), {sub_len}usize, \
+             \"kernel result for `{name}` slot returned {{}} elements, declared shape requires {{}}\", \
+             _rhs.len(), {sub_len}usize); \
+             {name}[{start}..{start} + {sub_len}usize].copy_from_slice(&_rhs); }}"
         )),
     }
 }
@@ -874,10 +889,15 @@ fn render_fire_arg(
 /// rank between indices and dims is a single scalar slot.
 ///
 /// Non-prefix partial access (e.g. fix the inner dim, leave the outer
-/// free) is NOT contiguous in row-major and is rejected as
-/// unsupported; the AlgoIR / surface syntax does not produce it (an
-/// access spelled `D[a][b]` always indexes outer dims first), so this
-/// rejection is a contract floor, not a user-visible limitation.
+/// free) is NOT contiguous in row-major and cannot be produced by the
+/// current grammar — `IndexedLValue.indices` (`algo/ast.rs`) is a
+/// positional `Vec<SpExpr>` with no skip-marker, and the parser
+/// grammar `IDENT ('[' EXPR ']')*` always indexes outer dims first.
+/// `classify_data_slice` trusts that grammar floor and does not
+/// defensively reject; if a future IR or surface-syntax change adds
+/// skip-indexing, the classifier must be extended with a
+/// non-contiguous gather emission path (review-gate finding,
+/// cycle-2 TASK-0209).
 enum SliceForm {
     /// Full-rank access — single slot in the flat `Vec<T>`.
     Scalar(String),

@@ -324,27 +324,42 @@ pub fn classifier(_x: Vec<f32>) -> Vec<f32> { vec![0.0; N_CLASSES] }
 
     // ---- Output-side: `feat1[n]` (rank-1 LHS on rank-4 data) ----
     // feat1 is f32[16][8][14][14] = 25088 slots, sub-array per outer
-    // index = 8*14*14 = 1568.
+    // index = 8*14*14 = 1568. Cycle-2 review-gate finding-2: the
+    // emission now binds the RHS to `let _rhs = ...;`, asserts
+    // `_rhs.len() == sub_len` for fail-loud-with-context on kernel
+    // length mismatches, then copies into the destination sub-range.
     assert!(
-        main_rs.contains(
-            "feat1[((n) * 1568) as usize..((n) * 1568) as usize + 1568usize]\
-             .copy_from_slice(&kernels::conv_block_1("
-        ),
-        "TASK-0209 AC#2: partial-index Fire output did NOT lower to a \
-         sub-range `.copy_from_slice(&...)` write; pre-TASK-0209 emission \
-         `feat1[(n) as usize] = kernels::conv_block_1(...)` would have been \
-         emitted, breaking cargo build (E0308 expected f32, found Vec<f32>). \
-         Generated main.rs:\n{main_rs}"
+        main_rs.contains("let _rhs = kernels::conv_block_1(")
+            && main_rs.contains(
+                "assert_eq!(_rhs.len(), 1568usize, \
+                 \"kernel result for `feat1` slot returned {} elements, \
+                 declared shape requires {}\""
+            )
+            && main_rs.contains(
+                "feat1[((n) * 1568) as usize..((n) * 1568) as usize + 1568usize]\
+                 .copy_from_slice(&_rhs);"
+            ),
+        "TASK-0209 AC#2 (cycle-2): partial-index Fire output did NOT lower to \
+         the bound-RHS + length-assert + sub-range `.copy_from_slice(&_rhs)` \
+         emission. Pre-TASK-0209 cycle-1 would have emitted scalar \
+         `feat1[(n) as usize] = kernels::conv_block_1(...)` breaking cargo \
+         build (E0308 expected f32, found Vec<f32>); pre-cycle-2 would have \
+         emitted the bare `.copy_from_slice(&kernels::conv_block_1(...))` \
+         form which panics with std's terse message on kernel-impl length \
+         mismatch. Generated main.rs:\n{main_rs}"
     );
 
     // ---- Negative: no single-scalar slot access for the rank-4
     //      partial cases. If a regression reintroduces the scalar
     //      `name[idx] = kernels::callee(...)` form for a partial LHS,
     //      this substring would appear and the test fails LOUD. We
-    //      anchor on the exact pre-TASK-0209 string so an unrelated
-    //      change to the index spelling does not silently match here.
+    //      anchor on the ACTUAL pre-TASK-0209 string — the 1D fast
+    //      path emitted `(i0) as usize` with no stride factor, so the
+    //      pre-cycle-1 spelling was `feat1[(n) as usize] = ...`, NOT
+    //      `feat1[((n) * 1568) as usize] = ...` (cycle-2 review-gate
+    //      finding-3 corrected this anchor).
     assert!(
-        !main_rs.contains("feat1[((n) * 1568) as usize] = kernels::conv_block_1"),
+        !main_rs.contains("feat1[(n) as usize] = kernels::conv_block_1"),
         "TASK-0209 regression: scalar-slot assignment to a partial-rank LHS \
          (`feat1[(n) as usize] = ...`) reintroduced. Generated main.rs:\n{main_rs}"
     );
