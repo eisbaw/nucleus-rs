@@ -104,7 +104,7 @@ use super::ir::{
 ///   poisoned and dependents stay cascade-suppressed. The duplicate
 ///   itself is one independent error — emitted regardless of the
 ///   first decl's success (TASK-0206 cascade-aware duplicate
-///   detection; see [`is_failed_decl`] and the `M + N` rule below).
+///   detection; see [`is_failed_decl`] and the `K + K*M` rule below).
 /// - A name that is in neither the symbol table nor `failed_decls` is
 ///   a genuinely-never-declared identifier: that IS an independent
 ///   error and is reported (suppressing it would be undercount).
@@ -360,7 +360,7 @@ fn lower_const(
     // first `const N` still fires `DuplicateConst` — the source-text
     // re-use of the name is the violation, not whether the first
     // evaluated. See `Accum::record_decl_failure` case-2 and the
-    // `lower_algo` counting contract (`M + N` rule) for the rationale.
+    // `lower_algo` counting contract (`K + K*M` rule) for the rationale.
     if ir.consts.contains_key(name) || is_failed_decl(failed_decls, name) {
         return Err(LowerError::at(
             LowerErrorKind::DuplicateConst(name.clone()),

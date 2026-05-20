@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 23:00'
-updated_date: '2026-05-20 18:00'
+updated_date: '2026-05-20 18:13'
 labels:
   - compiler
   - diagnostics
@@ -153,4 +153,21 @@ HONEST LIMITS:
   is one set across all three namespaces, so the helper fires
   uniformly), but NOT pinned by a dedicated test. Risk: low; could be
   added if a regression surfaces.
+
+CORRECTION (review-gate cycle, 2026-05-20): the prior "PRD-grounded rationale" sections above (in both the Implementation Notes header and the Final Summary) cite PRD §6.2.1 / §6.2.3 / §6.2.5 as grounding the cascade-aware-duplicate-detection FIX direction. mped-architect review independently re-read the PRD and found this is a MISATTRIBUTION. The cited sections are about STATEMENT-LEVEL single-assignment of DATA SYMBOLS via the dataflow `<--` operator, NOT about declaration uniqueness. Specifically:
+
+- PRD §6.2.1 (PRD.md:234-239): "Single-assignment within a scope. Mutation only via a fresh binding." This is a bullet in "Storage and data", grouped with "No pointers", "Scalars are degenerate arrays", "Views are read-only slices". The neighboring "Mutation only via a fresh binding" makes it unambiguous — single-assignment refers to `<--` writes to array elements.
+- PRD §6.2.5 (PRD.md:350-352): "Single-assignment is keyed by data symbol name, so a base-case + loop split (`out[0] <-- ...; for i : 1 .. N { ... }` on the same `out`) is a double-assignment." Verbatim about `<--` statements.
+- PRD §6.2.3 (PRD.md:318-323): "Iteration variables and data variables share one namespace." Disambiguates iteration-var-vs-data-var, NOT const/data/kernel decl re-use.
+
+The PRD does NOT explicitly state that `const N; const N;` (decl re-use) is an error. A grep of the PRD for "duplicate|redeclar|re-declar|unique" returns one hit (PRD.md:274, about effectful kernels never being duplicated — different topic).
+
+TRUE RATIONALE (re-grounded, replaces the misattributed PRD citation): the FIX direction is grounded in:
+(a) Existing codebase convention from TASK-0092 cycle-3: "first-decl-wins, Duplicate* fires on the second" is ALREADY the established behavior when the first decl SUCCEEDED (lower.rs `record_decl_failure` case-2). The cycle-6 TASK-0206 change extends this convention symmetrically to the failed-first case — the latent gap (failed-first dup-silent) was an asymmetry, not a deliberate design choice.
+(b) Cross-namespace collision (data-vs-const, kernel-vs-data, etc.) is already enforced PRE-evaluation at lower.rs:317-323 / 344-352 / 366-374; the cycle-6 change extends that same intent to single-namespace failed-first re-decls.
+(c) The "fixing-forward by adding a sibling decl" rejected reading: a user fixing a typo would EDIT the broken first decl, not ADD a second one with the same name. Spurious duplicate errors on edit-forward patterns are not a realistic concern.
+
+The IMPLEMENTATION (commit 2a42291) and the chosen FIX DIRECTION are correct; only the rationale CITATIONS were misapplied. This is the cycle-6 "plausible-sounding rationale without verifying the actual source" pattern caught by independent grep+read+cite review discipline. Future cycles should ground rationale claims in actual code/spec reads with verbatim citations + line numbers, NOT plausible reconstruction.
+
+Also: doc inconsistency in lower.rs:107 and lower.rs:363 where stale "M + N rule" references were used — actual rule defined at lower.rs:135-147 is "K + K*M". Fixed in-thread (the lower.rs:107 and 363 references now read "K + K*M rule").
 <!-- SECTION:NOTES:END -->
