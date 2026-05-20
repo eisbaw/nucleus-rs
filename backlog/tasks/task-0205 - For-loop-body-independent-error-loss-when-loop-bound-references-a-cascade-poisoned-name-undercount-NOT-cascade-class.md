@@ -3,11 +3,11 @@ id: TASK-0205
 title: >-
   For-loop body independent-error loss when loop bound references a
   cascade-poisoned name (undercount, NOT cascade-class)
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 23:00'
-updated_date: '2026-05-20 18:34'
+updated_date: '2026-05-20 18:35'
 labels:
   - compiler
   - diagnostics
@@ -27,9 +27,9 @@ Surfaced during TASK-0092 cycle-3 review (qa-test-runner finding #1). In compile
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Decide whether to fix (descend into for-body to collect independent errors even when bound evaluation fails) or to explicitly disclaim in lower.rs / TASK-0092 docstring contract. If fix: descend with a fresh accumulator branch when bound-eval fails; carry independent errors out; do NOT emit cascade errors from references to the dead iter-var. If disclaim: extend the lower_algo counting-contract docstring at lower.rs:109-122 to explicitly state 'a for-body with a cascade-poisoned bound is not visited; independent errors inside it are not reported'
-- [ ] #2 Either way: add a SIZE-PARAMETRISED regression fixture that pins the chosen behaviour for K∈{1,3} independent errors inside K∈{1,3} cascade-scoped for-bodies — if fix, K independents → K errors + the bound root; if disclaim, the bound root only and the test pins K independents are lost (assertion-strength PRESERVED — no len==1 blanket assertion masking)
-- [ ] #3 just test / just ci / clippy clean; no behaviour change for valid input (e2e 30/26/0/4/0)
+- [x] #1 Decide whether to fix (descend into for-body to collect independent errors even when bound evaluation fails) or to explicitly disclaim in lower.rs / TASK-0092 docstring contract. If fix: descend with a fresh accumulator branch when bound-eval fails; carry independent errors out; do NOT emit cascade errors from references to the dead iter-var. If disclaim: extend the lower_algo counting-contract docstring at lower.rs:109-122 to explicitly state 'a for-body with a cascade-poisoned bound is not visited; independent errors inside it are not reported'
+- [x] #2 Either way: add a SIZE-PARAMETRISED regression fixture that pins the chosen behaviour for K∈{1,3} independent errors inside K∈{1,3} cascade-scoped for-bodies — if fix, K independents → K errors + the bound root; if disclaim, the bound root only and the test pins K independents are lost (assertion-strength PRESERVED — no len==1 blanket assertion masking)
+- [x] #3 just test / just ci / clippy clean; no behaviour change for valid input (e2e 30/26/0/4/0)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -94,3 +94,31 @@ This is MORE correct: PRD §6.2.1 single-assignment is per-symbol over the progr
 
 No interaction expected with TASK-0199 (parser-layer cascade fix is at a different layer; the FIX in lower.rs is independent and lives in the acc-aware body-descent path).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+**Direction: FIX (AC#1).** PRD §6.2.3 lines 318-323 verbatim: "A name `y` inside a `for y : ...` body always refers to the iteration variable" — unconditional, no dependency on bound-eval success. Cycle-3 invariant "independent errors must STILL be reported" violated by the pre-existing ?-on-bounds path; the FIX honors both.
+
+**Implementation (nucleus/compiler/src/algo/lower.rs):**
+- New `lower_stmt_into` dispatcher (acc-aware): routes Stmt::For through `lower_for_into`; other variants delegate to `lower_stmt` and route Err through `acc.record_stmt_error`.
+- New `lower_for_into`: always descends into the body with iter-var in scope; emits IrStmt::For only if both bounds AND every body statement succeeded; on any failure returns None (independent errors live in acc).
+- `lower_stmt` Stmt::For arm: replaced with `unreachable!` guard.
+- `lower_algo` Item::Stmt: switched to `lower_stmt_into(.., &mut acc)`.
+- `lower_algo` counting-contract docstring extended with the 1 + K*M rule.
+
+**Pinning (algo_lower.rs, +3 tests):**
+1. `for_body_independents_survive_cascade_poisoned_bound_for_any_k_m` — size-parametric K ∈ {1,2,3} × M ∈ {0,1,2,3} sweep (12 cells, M=0 negative control); exact 1 + K*M count, source-order discrimination, anti-leak.
+2. `iter_var_use_in_body_of_cascade_scoped_loop_is_clean` — iter-var-as-index emits no spurious diagnostic; honors PRD §6.2.3 unconditionally.
+3. `nested_for_inner_cascade_bound_still_surfaces_inner_body_independents` — recursive dispatch works at any nesting depth.
+
+**Counting-contract addendum:** 1 cascade-poisoned root + K cascade-scoped for-loops × M independent body errors each → EXACTLY 1 + K*M errors. Pre-FIX was always 1 (the root). Companion to the K+K*L (TASK-0092) and K+K*M (TASK-0206) rules.
+
+**Gate (7/7 green):** test 466 (= 463 baseline + 3 new); clippy clean; e2e 30/26/0/4/0; determinism byte-identical; det-neg bites (26 perturbed); xb-neg bites (13 corrupted, 1 detected); ci exit 0.
+
+**Behavior change in valid-rhs dataflow inside a doomed body:** a `c <-- f(c)` inside a for-body whose bound is poisoned now records the assignment; a subsequent top-level `c <-- f(c)` now fires DoubleAssignment. MORE correct: PRD §6.2.1 single-assignment is per-symbol over the program's lifetime, not contingent on bound-reachability. No existing test depended on the old behavior.
+
+**Commit:** 9e1c985.
+
+**Follow-ups: none.** No deeper defect surfaced during the for-body descent. No interaction with TASK-0199 (parser-layer cascade fix is at a different layer).
+<!-- SECTION:FINAL_SUMMARY:END -->
