@@ -320,12 +320,20 @@ fn repeat_preserves_structure_in_event_list() {
             range,
             body,
             block_tag,
+            check_frame,
         } => {
             assert_eq!(*iter_var, compiler::event::IterVar(7), "iter-var carried");
             assert_eq!(*range, 0..3, "concrete loop bound carried verbatim");
             // A plain source loop (no block= directive) is NOT
             // strip-mined, so it carries no rebinding tag (TASK-0180).
             assert_eq!(*block_tag, None, "source loop must be untagged");
+            // TASK-0052.02: `acfg_to_events` does NOT populate
+            // `check_frame` (the join with sched_ir happens in the
+            // post-projection pass `inject_check_frames`).
+            assert_eq!(
+                *check_frame, None,
+                "acfg_to_events leaves check_frame unset"
+            );
             assert_eq!(body.len(), 1, "loop body projected once, not unrolled");
             assert!(
                 matches!(&body[0], Event::Fire { kernel, .. } if *kernel == KernelId(100)),

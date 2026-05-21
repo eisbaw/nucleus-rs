@@ -319,6 +319,14 @@ fn walk(
                     range: projected_range,
                     body: body_events,
                     block_tag: *block_tag,
+                    // `check_frame` is populated later by
+                    // `passes::inject_check_frames`, which joins the
+                    // schedule's `check loop V` directives against the
+                    // ACFG's `name_iter_vars` map (TASK-0052.02). The
+                    // projection here does not see SchedIR — keeping
+                    // `acfg_to_events` signature unchanged keeps every
+                    // existing test call site stable.
+                    check_frame: None,
                 });
             }
         }

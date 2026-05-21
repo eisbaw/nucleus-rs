@@ -526,6 +526,7 @@ impl<'a> Plan<'a> {
                     range,
                     body,
                     block_tag,
+                    check_frame,
                 } => {
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(
@@ -550,6 +551,29 @@ impl<'a> Plan<'a> {
                              shared single-worker path (TASK-0180). No tier-1 schedule \
                              blocks a multi-worker loop; refusing to emit un-rebound \
                              (would double-count). Tracked as TASK-0181."
+                        )));
+                    }
+                    // TASK-0052.02: real-time `check loop V :
+                    // latency_max=T` does carry a `check_frame` to the
+                    // outer loop here too, but the multi-worker pthreads
+                    // emit lives in this file; we DEFER the codegen for
+                    // the multi-worker path. It is rare (no tier-1 cell
+                    // attaches a `check loop V` to a partition=workers
+                    // loop today), and the single-worker `lib.rs` path
+                    // already implements panic-on-violation. A
+                    // `check_frame` reaching here today would silently
+                    // become a no-op; surface that as a fail-loud typed
+                    // error so a future schedule that wires both at
+                    // once does NOT lose the assertion. Tracked as
+                    // TASK-0052.05.
+                    if check_frame.is_some() {
+                        return Err(EmitError::ContractGap(format!(
+                            "Event::Loop for iter var `{var}` carries a \
+                             check_frame (real-time latency assertion) in a \
+                             MULTI-worker pthreads-sync schedule; codegen for \
+                             the multi-worker path is deferred to TASK-0052.05. \
+                             No tier-1 cell exercises this combination today; \
+                             refusing to emit without the assertion."
                         )));
                     }
                     // Per-worker partition override (TASK-0212): if the

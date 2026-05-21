@@ -454,6 +454,112 @@ pub struct BlockTag {
     pub is_partial: bool,
 }
 
+// --------------------------------------------------------------------
+// CheckFrame  (TASK-0052.02)
+// --------------------------------------------------------------------
+
+/// On-violation action for a real-time `check loop V : latency_max=T`
+/// directive (PRD §6.3.5).
+///
+/// This is the **codegen-layer** carrier: the same three variants as
+/// `sched::ast::ViolationKind`, intentionally duplicated rather than
+/// re-exported so the `event` module stays independent of `sched`
+/// (the EventList is the *output* of scheduling and downstream-only;
+/// adding a back-edge `event -> sched` would invert the dep graph and
+/// break the `algo / sched / link -> event` pipeline direction stated
+/// in this module's docstring).
+///
+/// The bridge from `sched::ast::ViolationKind` to this lives in the
+/// check-frame projection pass (`passes::inject_check_frames`); the
+/// two enums have one-to-one structure so the conversion is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ViolationKind {
+    /// Default per PRD §6.3.5: abort the worker process with a
+    /// distinct exit signature naming the loop_var + measured ns +
+    /// threshold ns. The cross-backend differential distinguishes
+    /// "panic-on-violation" (exit code 101 + empty stdout) from
+    /// "wrong output" cleanly.
+    Panic,
+    /// `eprintln!` once per violation; execution continues. The
+    /// generated stdout is unchanged on violation, so determinism on
+    /// the output channel is preserved (the message goes to stderr).
+    /// NOT wired in this cycle — TASK-0052.04.
+    Log,
+    /// Increment an atomic counter; print a one-line summary to
+    /// stderr at run end (`Drop` on a guard struct). Determinism on
+    /// stdout is preserved (the count goes to stderr).
+    /// NOT wired in this cycle — TASK-0052.04.
+    Count,
+}
+
+/// Per-`Event::Loop` real-time assertion frame (TASK-0052.02).
+///
+/// ## Why an additive field on `Event::Loop` (not a new event variant)
+///
+/// The loop boundary is already a first-class concept here — `Event::
+/// Loop` mirrors `ACFGNode::Repeat` one-for-one. A `CheckBegin/End`
+/// pair bracketing the loop would (a) project ambiguously onto
+/// per-worker EventLists (which side of a partial-participation
+/// barrier does the bracket sit on?), (b) duplicate the
+/// loop-identity join key (`iter_var`) into a separate event, and
+/// (c) require every existing consumer (boundedness, deadlock,
+/// reconstruction tests, backends) to acquire bracket-pairing logic.
+/// An optional annotation, mirroring the `block_tag` precedent on the
+/// SAME variant, is the minimal change.
+///
+/// ## Source of the field — projection-time join, not lowering-time
+///
+/// `sched_ir.checks: BTreeMap<String, ResolvedCheckDirective>` is
+/// keyed by loop-variable NAME; `Event::Loop.iter_var` is an opaque
+/// `IterVar` id. The `acfg.name_iter_vars: BTreeMap<String, IterVar>`
+/// map is the join key. The projection pass
+/// `passes::inject_check_frames` performs that join AFTER
+/// `acfg_to_events`, so the `acfg_to_events` signature stays
+/// `acfg -> per_worker` (every existing test call site is unchanged).
+///
+/// ## Which loops carry a frame
+///
+/// Only the OUTER user-source loop matches a `check loop V` directive
+/// (the user writes the source-loop name, not a strip-mined tile name).
+/// `block_tag.is_some()` ⇒ this loop is a strip-mine-synthesised inner
+/// loop; the projection pass skips it. A user who writes
+/// `check loop tile : ...` on a tile-loop name (synthesised by
+/// `block_transform`) does not match — the projection pass leaves
+/// `check_frame = None`, since the strip-mining is implementation
+/// detail rather than a source-visible loop.
+///
+/// ## Default-materialisation rationale
+///
+/// `on_violation` materialises `ViolationKind::Panic` here (the
+/// projection seam) when the user's `check loop V` directive omits
+/// `on_violation = ...`. The IR (`sched::ir::ResolvedCheckDirective`)
+/// stays faithful to what the user wrote (zero `OnViolation` entries
+/// when the user wrote none — TASK-0052.01 forward-carry note); the
+/// codegen-layer default is materialised here, NOT at IR.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CheckFrame {
+    /// `latency_max = T` normalised to nanoseconds (the source unit
+    /// is preserved on `sched::ast::TimeLit` for diagnostics; once it
+    /// reaches codegen the comparison uses nanoseconds exclusively).
+    /// Guaranteed `> 0` — `latency_max = 0` is rejected at sched-lower
+    /// (TASK-0052.01, `ZeroLatencyMax`).
+    pub latency_max_ns: u64,
+    /// Resolved on-violation action (codegen-layer default applied —
+    /// see struct docstring).
+    pub on_violation: ViolationKind,
+    /// The source loop-variable name (`check loop V` -> `V`).
+    /// Carried by VALUE so the backend produces a precise panic
+    /// message without a back-reference to `NameTables`. Backends
+    /// already have the iter-var name available too, but threading it
+    /// from one source of truth via `Event::Loop.iter_var` and looking
+    /// up `NameTables` would risk a mismatch on a future projection
+    /// that diverges the two; carrying it on the frame keeps the
+    /// panic-message identity tied to the user's check directive.
+    pub loop_var: String,
+}
+
 impl FireBinding {
     /// The empty binding: no inputs, no output. Used by synthetic
     /// callers / tests that do not model values, and by the
@@ -669,6 +775,20 @@ pub enum Event {
         /// with no `block_tag` deserialises as `None`).
         #[cfg_attr(feature = "serde", serde(default))]
         block_tag: Option<BlockTag>,
+        /// `Some` iff the user wrote `check loop V : latency_max=T
+        /// [, on_violation=K]` whose `V` is this loop's source name AND
+        /// this loop is the OUTER user-source loop (`block_tag ==
+        /// None`); the codegen backend wraps the loop body in an
+        /// `Instant::now()` measurement and a comparison against the
+        /// threshold, panicking (default) / logging / counting on
+        /// violation (PRD §6.3.5; TASK-0052.02). The projection pass
+        /// `passes::inject_check_frames` populates this AFTER
+        /// `acfg_to_events` so the `acfg_to_events` signature stays
+        /// unchanged. serde-default keeps the wire form backward
+        /// compatible (an old payload with no `check_frame`
+        /// deserialises as `None`); see [`CheckFrame`].
+        #[cfg_attr(feature = "serde", serde(default))]
+        check_frame: Option<CheckFrame>,
     },
 }
 
@@ -742,6 +862,7 @@ impl Hash for Event {
                 range,
                 body,
                 block_tag,
+                check_frame,
             } => {
                 6u8.hash(state);
                 iter_var.hash(state);
@@ -753,6 +874,11 @@ impl Hash for Event {
                 // structurally distinct strip-mine occurrences (full
                 // vs partial) don't collide in `HashSet` dedup paths.
                 block_tag.hash(state);
+                // `CheckFrame` is `Hash`-derivable; hash it so two
+                // structurally identical loops with vs without a
+                // check directive don't collide in `HashSet` paths
+                // (TASK-0052.02).
+                check_frame.hash(state);
                 // Recurse the body; length first so a prefix can't
                 // collide with a different-length body.
                 body.len().hash(state);
@@ -797,6 +923,7 @@ impl Event {
             range,
             body,
             block_tag: None,
+            check_frame: None,
         }
     }
 
@@ -816,6 +943,7 @@ impl Event {
             range,
             body,
             block_tag: Some(block_tag),
+            check_frame: None,
         }
     }
 }

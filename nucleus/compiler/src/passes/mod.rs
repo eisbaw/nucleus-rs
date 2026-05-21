@@ -18,6 +18,10 @@ pub mod acfg_to_petri;
 pub mod block_transform;
 pub mod boundedness;
 pub mod deadlock;
+// TASK-0052.02: real-time `check loop V : latency_max=T` projection.
+// Runs AFTER `petri_to_events`, BEFORE backend codegen — see module
+// docstring for the dependency rationale.
+pub mod inject_check_frames;
 pub mod partition_workers;
 pub mod petri_to_events;
 pub mod sync_inject;

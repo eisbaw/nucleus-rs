@@ -40,6 +40,7 @@ name = "compiler"
 version = "0.0.0"
 dependencies = [
  "chumsky",
+ "pthreads-sync",
  "quote",
  "serde",
  "serde_json",

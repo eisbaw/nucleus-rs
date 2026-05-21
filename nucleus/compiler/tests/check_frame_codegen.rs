@@ -1,0 +1,520 @@
+//! Codegen-string tests for `check loop V : latency_max=T` on the
+//! tier-1 backends (TASK-0052.02 AC#1/AC#3 codegen arm).
+//!
+//! Asserts the rendered main.rs contains the expected
+//! `std::time::Instant::now()` measurement + threshold comparison +
+//! panic message embedding {loop_var, measured_ns, threshold_ns}.
+//!
+//! Why string-asserting and not compile-and-run: a string assert is
+//! deterministic, takes ~10ms, and proves the codegen *shape* — the
+//! property AC#1/AC#3 is really about. The downstream `cargo build` +
+//! binary run is covered by the e2e harness when an example with a
+//! `check loop` gets promoted into the required-cell matrix (filed as
+//! a follow-up; not in tier-1 today).
+
+use std::collections::BTreeMap;
+use std::fs;
+
+use compiler::acfg_to_events;
+use compiler::algo::{lower_algo, parse_algo};
+use compiler::event::{Event, WorkerId};
+use compiler::sched::{lower_sched, parse_sched};
+use compiler::{
+    apply_block_transforms, apply_partition_workers, build_acfg, build_sidecar,
+    inject_check_frames, inject_syncs, inject_transfers, link,
+};
+use compiler::sidecar::NameSidecar;
+use pthreads_sync::NameTables;
+
+fn build_per_worker_with_names(
+    algo_src: &str,
+    sched_src: &str,
+) -> (BTreeMap<WorkerId, Vec<Event>>, NameTables, NameSidecar) {
+    let algo_ast = parse_algo(algo_src).expect("algo parse");
+    let algo_ir = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(sched_src).expect("sched parse");
+    let sched_ir = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("acfg");
+    let acfg = apply_block_transforms(&linked, acfg).expect("block-transform");
+    let acfg = apply_partition_workers(&linked, acfg).expect("partition-workers");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    let per_worker = acfg_to_events(&acfg);
+    let per_worker =
+        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg
+            .name_kernels
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        worker: acfg
+            .name_workers
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        iter_var: acfg
+            .name_iter_vars
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+    (per_worker, names, sidecar)
+}
+
+/// Locate the workspace root for fixture lookup.
+fn repo_root() -> std::path::PathBuf {
+    let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(std::path::Path::parent)
+        .expect("CARGO_MANIFEST_DIR has ancestors")
+        .to_path_buf()
+}
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let target = repo_root().join("nucleus/target/check-frame-scratch");
+    let _ = fs::create_dir_all(&target);
+    let d = target.join(name);
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).expect("create scratch");
+    d
+}
+
+// --------------------------------------------------------------------
+// pthreads-sync codegen
+// --------------------------------------------------------------------
+
+#[test]
+fn pthreads_sync_emit_includes_panic_instrumentation_on_check_loop() {
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    // 1ms threshold; element-wise inc over N=4 will finish in << 1ms
+    // wall-time on any reasonable host, so the run-time path is the
+    // success path (no panic). The codegen STRING, which is what we
+    // assert here, embeds the threshold literal regardless.
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+    check loop n : latency_max = 1ms;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_with_names(algo, sched);
+
+    // Write a stub kernels.rs so emit() can read it.
+    let out = scratch_dir("pthreads_panic_codegen");
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .expect("write kernels stub");
+
+    let res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("emit must succeed for a valid schedule with a check loop");
+    let main_src = fs::read_to_string(&res.main_rs).expect("read main.rs");
+
+    // AC#1 (codegen arm): timing measurement at iter start.
+    assert!(
+        main_src.contains("let _check_start = std::time::Instant::now();"),
+        "main.rs must contain Instant::now() inside the `n` loop body. \
+         Got:\n{main_src}"
+    );
+    // AC#1: comparison + AC#3: message includes loop_var + measured + threshold.
+    assert!(
+        main_src.contains("let _check_elapsed = _check_start.elapsed().as_nanos();"),
+        "main.rs must contain the elapsed-nanos read. Got:\n{main_src}"
+    );
+    assert!(
+        main_src.contains("if _check_elapsed > 1000000_u128"),
+        "main.rs must contain `if _check_elapsed > 1000000_u128`. Got:\n{main_src}"
+    );
+    // The panic message embeds:
+    //   - the loop_var name ("n")
+    //   - the measured ns (runtime, via {} formatter)
+    //   - the threshold ns ("1000000")
+    assert!(
+        main_src.contains("panic!(\"latency budget violated on `check loop n`"),
+        "panic message must name the loop_var. Got:\n{main_src}"
+    );
+    assert!(
+        main_src.contains("max 1000000 ns"),
+        "panic message must contain `max 1000000 ns` (the threshold literal). Got:\n{main_src}"
+    );
+}
+
+#[test]
+fn pthreads_sync_emit_unchanged_without_check_loop_directive() {
+    // AC#2 (codegen arm): a schedule WITHOUT `check loop V` is
+    // byte-identical to the pre-TASK-0052.02 baseline — no Instant
+    // call appears in the rendered source. This is the determinism
+    // contract carrying through: every existing e2e cell must keep its
+    // bit-identical output.
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_with_names(algo, sched);
+    let out = scratch_dir("pthreads_no_check");
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .unwrap();
+    let res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out).unwrap();
+    let main_src = fs::read_to_string(&res.main_rs).unwrap();
+    assert!(
+        !main_src.contains("std::time::Instant"),
+        "schedule with NO `check loop` MUST NOT emit Instant::now(). \
+         The bit-identical baseline contract requires the success-path \
+         emitted bytes to be unchanged. Got:\n{main_src}"
+    );
+    assert!(
+        !main_src.contains("latency budget violated"),
+        "no check loop -> no panic message embedded. Got:\n{main_src}"
+    );
+}
+
+#[test]
+fn pthreads_sync_emit_threshold_unit_normalisation_to_ns() {
+    // AC#1 (codegen arm + AC#1 of TASK-0052.01 carry): the unit
+    // normalisation produces a NANOSECOND literal in the rendered
+    // source. 10ms must become 10_000_000.
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    for (unit_literal, expected_ns_literal) in [
+        ("10ms", "10000000"),
+        ("250us", "250000"),
+        ("3s", "3000000000"),
+        ("42ns", "42"),
+    ] {
+        let sched = format!(
+            "\
+schedule for \"a.algo.nuc\" {{
+    workers = {{ host }};
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+    check loop n : latency_max = {unit_literal};
+}}
+"
+        );
+        let (per_worker, names, sidecar) = build_per_worker_with_names(algo, &sched);
+        let out = scratch_dir(&format!(
+            "pthreads_unit_{}",
+            unit_literal.replace(['/', '\\'], "_")
+        ));
+        let kernels_rs = out.join("kernels_stub.rs");
+        fs::write(
+            &kernels_rs,
+            "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+             pub fn save_output(_c: Vec<i32>) {}\n\
+             pub fn inc(x: i32) -> i32 { x + 1 }\n",
+        )
+        .unwrap();
+        let res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out).unwrap();
+        let main_src = fs::read_to_string(&res.main_rs).unwrap();
+        assert!(
+            main_src.contains(&format!("if _check_elapsed > {expected_ns_literal}_u128")),
+            "unit {unit_literal} must normalise to {expected_ns_literal}ns in the rendered \
+             source. Got:\n{main_src}"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
+// Negative arm: rendered code embeds a literally-impossible tight
+// threshold (1ns), runs, and the panic message contains the right
+// numbers.
+//
+// We do NOT compile-and-run here (that is what the e2e harness does
+// when example 14 lands in tier-1). But we DO assert the codegen
+// string contains the inputs that a downstream `cargo build && run`
+// would surface. The full compile-and-run negative arm is a follow-up;
+// see TASK-0052.04 notes.
+// --------------------------------------------------------------------
+
+#[test]
+fn negative_tight_threshold_codegen_embeds_inputs_for_a_runnable_repro() {
+    // 1ns is structurally allowed (>0 per TASK-0052.01) and is below
+    // any conceivable wall-clock cost of a function call + atomic
+    // load — so a generated binary would panic on iteration 0.
+    let algo = "\
+const N : usize = 1;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel slow : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- slow(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place slow on host;
+    check loop n : latency_max = 1ns;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_with_names(algo, sched);
+    let out = scratch_dir("pthreads_negative_1ns");
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 1] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn slow(x: i32) -> i32 { std::thread::sleep(std::time::Duration::from_millis(1)); x }\n",
+    )
+    .unwrap();
+    let res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out).unwrap();
+    let main_src = fs::read_to_string(&res.main_rs).unwrap();
+    assert!(
+        main_src.contains("if _check_elapsed > 1_u128"),
+        "1ns must render as the literal `1_u128`. Got:\n{main_src}"
+    );
+    assert!(
+        main_src.contains("max 1 ns"),
+        "panic message must name the (tight) threshold literally. Got:\n{main_src}"
+    );
+}
+
+// --------------------------------------------------------------------
+// mp-tcp-bufsync codegen — only meaningful on a multi-process
+// schedule because the file uses Event::Sync. A single-worker
+// schedule emits via pthreads_sync internals (so test in pthreads
+// above is the right place for single-worker). Skipping a dedicated
+// mp-tcp test for now; the multi-worker mp-tcp branch with a
+// `check loop` is exercised when example 14 (multi-MCU) lands in
+// tier-1 — a follow-up.
+// --------------------------------------------------------------------
+
+// --------------------------------------------------------------------
+// AC#3 (end-to-end): compile-and-run positive + negative.
+//
+// `cargo` is available inside `nix develop`. These tests cargo-build
+// the rendered project and run the resulting binary; AC#3 demands the
+// negative (tight threshold) actually panic with a clear message and
+// the positive (generous threshold) run clean. Two tests, each ~10s
+// (cargo init + small build); run under `just test` and gate before
+// commit.
+// --------------------------------------------------------------------
+
+use std::process::Command;
+
+fn cargo_build_and_run(project_dir: &std::path::Path) -> std::process::Output {
+    // Per-project target dir so concurrent tests do NOT race on the
+    // same `nuc-generated` binary (cargo test parallelises). Naming
+    // by project_dir basename keeps the dir deterministic and
+    // human-inspectable across runs.
+    let leaf = project_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("default");
+    let target_dir = repo_root()
+        .join("nucleus/target/check-frame-binaries")
+        .join(leaf);
+    let build = Command::new("cargo")
+        .arg("build")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(project_dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .output()
+        .expect("cargo build");
+    if !build.status.success() {
+        panic!(
+            "cargo build of generated project failed:\nstdout:{}\nstderr:{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+    let bin = target_dir.join("debug/nuc-generated");
+    assert!(bin.exists(), "generated binary missing at {}", bin.display());
+    Command::new(&bin)
+        .output()
+        .expect("run generated binary")
+}
+
+#[test]
+fn ac3_positive_generous_threshold_runs_clean() {
+    // 1s threshold; the kernel is trivial — the loop iteration cannot
+    // exceed 1 second wall-clock on any reasonable machine. The
+    // generated binary must exit 0 and produce no panic message.
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+    check loop n : latency_max = 1s;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_with_names(algo, sched);
+    let out = scratch_dir("ac3_positive");
+    let kernels_rs = out.join("kernels.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![1, 2, 3, 4] }\n\
+         pub fn save_output(c: Vec<i32>) { println!(\"{:?}\", c); }\n\
+         pub fn inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .unwrap();
+    pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out).unwrap();
+    let out = cargo_build_and_run(&out);
+    assert!(
+        out.status.success(),
+        "AC#3 positive: generous 1s threshold must run clean. \
+         exit={:?}\nstdout:{}\nstderr:{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("latency budget violated"),
+        "AC#3 positive: stderr must contain no panic message"
+    );
+}
+
+#[test]
+fn ac3_negative_tight_threshold_panics_with_loop_var_and_numbers() {
+    // 1ns threshold; the inc kernel adds at least a function call,
+    // which dwarfs 1ns on any host. Binary must exit non-zero with a
+    // panic message naming the loop_var + measured ns + threshold ns.
+    let algo = "\
+const N : usize = 1;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel slow : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- slow(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place slow on host;
+    check loop n : latency_max = 1ns;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_with_names(algo, sched);
+    let out = scratch_dir("ac3_negative");
+    let kernels_rs = out.join("kernels.rs");
+    fs::write(
+        &kernels_rs,
+        // Deliberately slow: sleep 1ms so the elapsed-ns measurement
+        // CANNOT be 1ns regardless of host noise.
+        "pub fn load_input() -> Vec<i32> { vec![0] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn slow(x: i32) -> i32 { std::thread::sleep(std::time::Duration::from_millis(1)); x }\n",
+    )
+    .unwrap();
+    pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out).unwrap();
+    let out = cargo_build_and_run(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    // Rust panic exits with code 101.
+    assert_eq!(
+        out.status.code(),
+        Some(101),
+        "AC#3 negative: tight threshold must terminate with rustc \
+         panic exit code 101. exit={:?}\nstderr:{}",
+        out.status.code(),
+        stderr
+    );
+    // Message includes:
+    //   1. the user's loop_var name ("n")
+    //   2. the measured ns (some number > 1)
+    //   3. the threshold ns (1)
+    assert!(
+        stderr.contains("latency budget violated on `check loop n`"),
+        "panic message must name the loop_var. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("max 1 ns"),
+        "panic message must contain `max 1 ns` (threshold). stderr:\n{stderr}"
+    );
+    // The measured-ns value is dynamic but MUST be greater than the
+    // 1ns threshold for the panic to have fired. Extract it.
+    // Message form: "iteration took {N} ns, max 1 ns"
+    let took = stderr
+        .split("iteration took ")
+        .nth(1)
+        .and_then(|s| s.split(" ns").next())
+        .and_then(|s| s.parse::<u128>().ok())
+        .unwrap_or_else(|| panic!("could not parse measured ns from: {stderr}"));
+    assert!(took > 1, "measured ns ({took}) must exceed threshold (1)");
+}

@@ -648,6 +648,7 @@ impl<'a> Plan<'a> {
                     range,
                     body,
                     block_tag,
+                    check_frame,
                 } => {
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(
@@ -701,7 +702,59 @@ impl<'a> Plan<'a> {
                         },
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    self.render_events(body, out, indent + 1, worker, is_host, ctx)?;
+                    // Real-time `check loop V : latency_max=T` codegen
+                    // (TASK-0052.02). Mirrors the pthreads-sync
+                    // single-worker emit: `Instant::now()` at iter
+                    // start, comparison + panic at iter end. Determinism
+                    // preserved: the emitted bytes on the success path
+                    // are unchanged (the instant is consumed locally,
+                    // never written to wire / stdout), and panic exits
+                    // with rustc's standard code 101 — the cross-backend
+                    // differential treats "exit 101 + empty stdout" as
+                    // an assertion signal, NOT a corrupt-output false
+                    // positive. The cross-backend differential against
+                    // pthreads-sync's identical codegen pattern means a
+                    // schedule's latency assertion is bit-identically
+                    // checked on both tier-1 backends.
+                    let body_indent = indent + 1;
+                    let body_pad = "    ".repeat(body_indent);
+                    if let Some(frame) = check_frame {
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_start = std::time::Instant::now();"
+                        )
+                        .ok();
+                        self.render_events(body, out, body_indent, worker, is_host, ctx)?;
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
+                        )
+                        .ok();
+                        match frame.on_violation {
+                            compiler::event::ViolationKind::Panic => {
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
+                                    ns = frame.latency_max_ns,
+                                    lv = frame.loop_var,
+                                )
+                                .ok();
+                            }
+                            compiler::event::ViolationKind::Log
+                            | compiler::event::ViolationKind::Count => {
+                                return Err(EmitError::ContractGap(format!(
+                                    "on_violation={:?} for `check loop {lv}` is \
+                                     deferred to TASK-0052.04 — only Panic is \
+                                     wired in mp-tcp-bufsync codegen this cycle. \
+                                     Refusing to emit without the assertion.",
+                                    frame.on_violation,
+                                    lv = frame.loop_var,
+                                )));
+                            }
+                        }
+                    } else {
+                        self.render_events(body, out, body_indent, worker, is_host, ctx)?;
+                    }
                     writeln!(out, "{pad}}}").ok();
                 }
                 Event::Sync {

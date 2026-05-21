@@ -92,7 +92,9 @@ use std::path::{Path, PathBuf};
 // `ResolvedKernel`, no statement walk. ResolvedType/ScalarType come
 // exclusively from the NameSidecar.
 use compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
-use compiler::event::{ArgBinding, DataId, DataSlice, Event, IterVar, KernelId, WorkerId};
+use compiler::event::{
+    ArgBinding, DataId, DataSlice, Event, IterVar, KernelId, ViolationKind, WorkerId,
+};
 use compiler::sidecar::NameSidecar;
 
 mod multi_worker;
@@ -620,6 +622,7 @@ fn render_event(
             range,
             body,
             block_tag,
+            check_frame,
         } => {
             let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -718,7 +721,86 @@ fn render_event(
 
             let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
             writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
-            render_events_in(body, out, indent + 1, ctx, Some(*iter_var))?;
+            // Real-time `check loop V : latency_max=T` (TASK-0052.02 /
+            // PRD §6.3.5). The projection pass `inject_check_frames`
+            // populates `check_frame` ONLY on outer source loops
+            // (`block_tag == None`), and the strip-mined / tagged path
+            // above returns early — so reaching here with a tagged loop
+            // and a `check_frame` would be a projection-layer bug.
+            // Defend the invariant rather than silently dropping the
+            // assertion.
+            if check_frame.is_some() && block_tag.is_some() {
+                return Err(EmitError::ContractGap(format!(
+                    "Event::Loop {{ iter_var: {iter_var:?} }} carries BOTH a \
+                     check_frame and a block_tag — `inject_check_frames` is \
+                     contracted to populate check_frame only on outer source \
+                     loops (block_tag == None). This is a projection-layer \
+                     bug (TASK-0052.02 invariant)."
+                )));
+            }
+            let body_indent = indent + 1;
+            let body_pad = "    ".repeat(body_indent);
+            if let Some(frame) = check_frame {
+                // Tier-1 clock: std::time::Instant. PRD §6.3.5 names
+                // this for backends "where Instant is available";
+                // pthreads-sync runs hosted on a real OS so this is
+                // free. Determinism: the success-path emitted BYTES
+                // are unchanged (`_check_start` is computed and
+                // consumed locally, never written to stdout). The
+                // panic message on violation is the only behavioural
+                // difference, and panic terminates with rustc's
+                // standard exit code 101 — the cross-backend
+                // differential treats "exit 101 + empty stdout" as a
+                // clean assertion signal, not a corrupt-output false
+                // positive.
+                writeln!(
+                    out,
+                    "{body_pad}let _check_start = std::time::Instant::now();"
+                )
+                .ok();
+                render_events_in(body, out, body_indent, ctx, Some(*iter_var))?;
+                writeln!(
+                    out,
+                    "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
+                )
+                .ok();
+                match frame.on_violation {
+                    ViolationKind::Panic => {
+                        // `as u128` widen of `latency_max_ns: u64` keeps
+                        // the comparison total-ordered (Instant::elapsed
+                        // returns u128). The panic message embeds:
+                        //   1. loop_var name (from the user's directive)
+                        //   2. measured ns (runtime value)
+                        //   3. threshold ns (compile-time literal)
+                        // — AC#3 requires all three.
+                        writeln!(
+                            out,
+                            "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
+                            ns = frame.latency_max_ns,
+                            lv = frame.loop_var,
+                        )
+                        .ok();
+                    }
+                    ViolationKind::Log | ViolationKind::Count => {
+                        // log/count handlers deferred to TASK-0052.04.
+                        // The projection pass currently only materialises
+                        // Panic (it is also the codegen default per
+                        // PRD §6.3.5), so the user can't currently reach
+                        // here — but a future enabling change must NOT
+                        // silently no-op the assertion. Fail loud.
+                        return Err(EmitError::ContractGap(format!(
+                            "on_violation={:?} for `check loop {lv}` is \
+                             deferred to TASK-0052.04 — only Panic is \
+                             wired in pthreads-sync codegen this cycle. \
+                             Refusing to emit without the assertion.",
+                            frame.on_violation,
+                            lv = frame.loop_var,
+                        )));
+                    }
+                }
+            } else {
+                render_events_in(body, out, body_indent, ctx, Some(*iter_var))?;
+            }
             writeln!(out, "{pad}}}").ok();
             Ok(())
         }

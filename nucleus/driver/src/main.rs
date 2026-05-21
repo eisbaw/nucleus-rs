@@ -43,8 +43,8 @@ use std::process::ExitCode;
 
 use compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_workers, build_acfg,
-    build_sidecar, check_kernels_contract, check_schedule_compat, inject_syncs, inject_transfers,
-    link, load_capabilities,
+    build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
+    inject_syncs, inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -376,6 +376,13 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // error channel exactly like apply_block_transforms above. The
     // EventList path is panic-safe (never aborts the process).
     let per_worker = acfg_to_events(&acfg);
+    // TASK-0052.02: real-time `check loop V : latency_max=T` projection.
+    // Joins `sched_ir.checks` (keyed by loop NAME) against the ACFG's
+    // `name_iter_vars` (NAME -> IterVar id) and annotates each outer
+    // source `Event::Loop` whose iter_var matches. The pass is a no-op
+    // when `sched_ir.checks` is empty — preserves the pre-TASK-0052.02
+    // e2e baseline byte-identically (no tier-1 cell uses `check loop`).
+    let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).map_err(|e| format!("sidecar error: {e}"))?;
     // Reverse name tables: invert acfg.name_* (name -> id) to
     // (id -> name) — the join key the EventList / sidecar use. Built

@@ -486,6 +486,7 @@ fn loop_constructor_carries_iter_var_range_and_body() {
             range,
             body: b,
             block_tag,
+            check_frame,
         } => {
             assert_eq!(*iter_var, IterVar(3));
             assert_eq!(*range, 1..15, "concrete bound carried verbatim");
@@ -493,6 +494,10 @@ fn loop_constructor_carries_iter_var_range_and_body() {
             // `loop_over` is the untagged constructor (source loops);
             // strip-mined inner loops use `loop_over_tagged`.
             assert_eq!(*block_tag, None, "loop_over yields no block_tag");
+            // TASK-0052.02: `loop_over` is the bare constructor; the
+            // check-frame is populated only by the post-projection
+            // pass `inject_check_frames`, never by the constructor.
+            assert_eq!(*check_frame, None, "loop_over yields no check_frame");
         }
         other => panic!("expected Event::Loop, got {other:?}"),
     }
@@ -504,6 +509,44 @@ fn loop_serde_roundtrip_including_nested_loop() {
     let inner = Event::loop_over(IterVar(1), 0..8, vec![sample_fire()]);
     let outer = Event::loop_over(IterVar(0), 0..4, vec![inner, sample_sync()]);
     assert_eq!(roundtrip(&outer), outer, "Loop survives serde verbatim");
+}
+
+#[test]
+fn loop_serde_backward_compat_without_check_frame_field() {
+    // TASK-0052.02: `Event::Loop.check_frame` was added with
+    // `#[serde(default)]` so an OLD payload that lacks the field
+    // still deserialises (as `None`). This pins the wire-format
+    // backward compat — a future change that drops the
+    // `#[serde(default)]` would silently break stored payloads;
+    // catch it here.
+    //
+    // Reference JSON shape (taken from the externally-tagged serde
+    // form documented at the `Event` enum docstring): a Loop with
+    // only the pre-TASK-0052.02 fields.
+    let legacy_json = r#"{
+        "Loop": {
+            "iter_var": 5,
+            "range": {"start": 0, "end": 4},
+            "body": []
+        }
+    }"#;
+    let e: Event = serde_json::from_str(legacy_json).expect("legacy payload must parse");
+    match e {
+        Event::Loop {
+            iter_var,
+            check_frame,
+            block_tag,
+            ..
+        } => {
+            assert_eq!(iter_var, IterVar(5));
+            assert_eq!(
+                check_frame, None,
+                "missing check_frame in wire form -> None (serde default)"
+            );
+            assert_eq!(block_tag, None, "missing block_tag -> None (serde default)");
+        }
+        other => panic!("expected Event::Loop, got {other:?}"),
+    }
 }
 
 #[test]
