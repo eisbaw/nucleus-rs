@@ -44,16 +44,30 @@
           "rustfmt"
           "rust-src"
         ];
+        # Single source of truth for the tier-1 dev toolchain. The renode
+        # shell inherits this list verbatim and adds heavier tier-3 tools
+        # on top, so the MSRV pin and tooling stay aligned across tiers.
+        basePackages = [
+          rustToolchain
+          fenix.packages.${system}.rust-analyzer
+          pkgs.just
+        ];
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = [
-            rustToolchain
-            fenix.packages.${system}.rust-analyzer
-            pkgs.just
-          ];
+          packages = basePackages;
 
           # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
+          shellHook = "";
+        };
+
+        # Tier-3 (M10+) runtime validation shell. Opt-in via
+        # `nix develop .#renode`. Renode is Mono-based and pulls hundreds
+        # of MB of closure, so it is deliberately kept out of the default
+        # shell that CI and day-to-day tier-1 dev use. See PRD §10.3, §12.1
+        # and TASK-0064.
+        devShells.renode = pkgs.mkShell {
+          packages = basePackages ++ [ pkgs.renode ];
           shellHook = "";
         };
 
