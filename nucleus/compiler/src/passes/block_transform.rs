@@ -110,6 +110,13 @@
 //! - **Only `block=` is handled.** `vectorize=`, `unroll=`,
 //!   `pipeline=`, `reuse`, `partition=` are no-ops in this pass; their
 //!   transforms land in sibling passes per their respective tasks.
+//!   Specifically: `pipeline=D` is consumed by
+//!   `transfer_inject::annotate_pipeline_depth_for_seq` (post-pass) and
+//!   `acfg_to_petri` (sets buffer-place `initial_marking=D`); see
+//!   [`crate::acfg::ACFG::pipeline_depth_for_seq`] (TASK-0134).
+//!   `partition=workers` is consumed by `partition_workers` (TASK-0212).
+//!   Combining `block=N` with `pipeline=D` on the same loop is a
+//!   silent under-tested area (TASK-0215).
 
 use std::collections::BTreeMap;
 

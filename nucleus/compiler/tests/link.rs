@@ -940,6 +940,61 @@ schedule for \"a.algo.nuc\" {
 }
 
 #[test]
+fn pipeline_exceeds_buffer_coexists_with_other_link_errors() {
+    // Cascade-safety: the new PipelineExceedsBuffer error rides the
+    // independent-errors path in link.rs (just `errors.push`, no
+    // cascade-suppression keyed on a failed-decl set). Confirm it
+    // surfaces alongside an unrelated LinkError variant in one pass.
+    //
+    // Setup: TWO defects — (a) pipeline=4 vs stage1's buffer=3
+    // (PipelineExceedsBuffer); (b) `unknown_loop` named in `loop`
+    // does not appear in the algorithm (UnknownLoop). Both must
+    // appear in the same link() result.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=4;
+    loop unknown_loop : block=2;
+    transfer input  : async, buffer=4, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("two defects must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::PipelineExceedsBuffer {
+                loop_var, data, depth: 4, buffer: 3
+            } if loop_var == "n" && data == "stage1"
+        )),
+        "expected PipelineExceedsBuffer; got {:?}",
+        errs
+    );
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::UnknownLoop { name, .. } if name == "unknown_loop"
+        )),
+        "expected UnknownLoop(unknown_loop) reported in the same pass; got {:?}",
+        errs
+    );
+    assert!(
+        errs.len() >= 2,
+        "expected >=2 distinct errors in one pass, got {} ({:?})",
+        errs.len(),
+        errs
+    );
+}
+
+#[test]
 fn pipeline_check_message_names_offending_quartet() {
     // The error message must name the loop, data, depth, and buffer.
     let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);

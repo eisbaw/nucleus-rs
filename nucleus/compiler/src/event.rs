@@ -226,6 +226,17 @@ pub struct Region(pub u64);
 pub struct IterTile {
     /// Outer-most iteration variable first. Empty for non-iterated
     /// firings.
+    ///
+    /// **Convention is load-bearing:** downstream passes rely on the
+    /// outer-to-inner ordering. In particular, `transfer_inject::
+    /// annotate_pipeline_depth_for_seq` (TASK-0134) walks
+    /// `bounds.iter().rev()` to find the innermost pipelined iter-var.
+    /// All canonical construction sites (the enclosing-tile stack in
+    /// `transfer_inject` Push/Wait creation; the fan-out path) build
+    /// outer-to-inner naturally. The partition-rewrite path
+    /// (`rewrite_partition_tiles_inner`) builds bounds in `IterVar`
+    /// id order; when combined with `pipeline=D` that breaks the
+    /// invariant (tracked as TASK-0216).
     pub bounds: Vec<(IterVar, Range<i64>)>,
 }
 

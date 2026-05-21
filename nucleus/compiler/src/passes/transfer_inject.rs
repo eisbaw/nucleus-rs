@@ -414,7 +414,18 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
 /// Walk the final ACFG (post-hoist, post-splice, post-rewrite-tiles)
 /// and populate `out` with (SeqTag, depth) for every `Xfer`
 /// placeholder whose enclosing iteration tile contains an iter-var
-/// with a `pipeline=D` directive. Innermost wins.
+/// with a `pipeline=D` directive. **Innermost wins.**
+///
+/// The "innermost wins" semantic rests on [`IterTile::bounds`]'s
+/// documented convention (event.rs ~line 227): "Outer-most iteration
+/// variable first." Walking `bounds.iter().rev()` therefore visits
+/// innermost-to-outermost, and `find_map` stops at the first
+/// (= innermost) pipelined iter-var. Construction sites that build
+/// `bounds` in non-nest order would silently break this — currently
+/// only the partition-rewrite path (`rewrite_partition_tiles_inner`)
+/// builds bounds in `IterVar` id order instead of nest order; that
+/// path is not exercised together with `pipeline=D` today and is
+/// tracked as a follow-up (TASK-0216, partition + pipeline coverage).
 ///
 /// Why we use the Xfer's `tile` (not the live walk's enclosing-tile
 /// stack): after `hoist_invariant_waits` runs, a Wait may live at a
@@ -427,8 +438,11 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
 /// insertion preserves stable iteration. If Push and Wait of the
 /// same seq disagree on depth (shouldn't happen in well-formed
 /// inputs — `splice_pushes_global` places the Push at the same
-/// tile-scope as the Wait), the Wait wins (we visit it last by
-/// convention, but in practice they agree).
+/// tile-scope as the Wait), **last-visited wins**: source-order
+/// traversal visits Push before Wait inside a Sequence, so in
+/// practice the Wait's annotation is what lands. In well-formed
+/// inputs they agree, so the distinction is academic; documented
+/// here so a future invariant change doesn't surprise the reader.
 fn annotate_pipeline_depth_for_seq(
     node: &ACFGNode,
     pipeline_for_iv: &BTreeMap<IterVar, NonZeroU64>,

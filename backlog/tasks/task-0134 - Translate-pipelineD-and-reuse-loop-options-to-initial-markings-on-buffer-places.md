@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 03:36'
-updated_date: '2026-05-21 13:53'
+updated_date: '2026-05-21 14:10'
 labels:
   - M2
   - M4
@@ -152,4 +152,46 @@ Interpretation (a) of PRD §8.2 — every transfer inside a `pipeline=D` loop bo
 - DEFERRED via TASK-0213: boundedness/deadlock assertion. With `initial_marking=D=N=capacity`, source-order firing trips on the first Push. derive_firing_order is currently marking-blind. TASK-0213 specifies two clean resolutions: marking-aware firing-order generation, or structural acfg_to_petri rewrite that elides D pre-fired Push transitions. The IR contract (sidecar + initial_marking) is in place; the firing-order generation is the missing piece.
 
 Recommended state: leave TASK-0134 In Progress until TASK-0213 lands and the `#[ignore]`d boundedness assertion goes green. The IR-layer M4 piece (per the task brief "IR/Petri-layer load-bearing piece of M4") is complete and downstream (TASK-0042.01) can build on the contract. The boundedness gap is downstream-analysis-only; it does NOT block codegen, which reads `pipeline_depth_for_seq` directly.
+
+Review-gate hardening (cycle close):
+
+mped-architect review (read-only, this cycle): GO with conditions.
+qa-test-runner review (read-only, this cycle): GO clean.
+
+Findings folded in-thread:
+- transfer_inject.rs annotate_pipeline_depth_for_seq docstring: "innermost wins"
+  now explicitly cites IterTile::bounds outer-to-inner convention as
+  load-bearing; "Wait wins" overclaim corrected to "last-visited wins"
+  with the source-order rationale.
+- event.rs IterTile::bounds docstring strengthened — the outer-to-inner
+  convention is now flagged as load-bearing for downstream passes,
+  with explicit pointer to the partition-rewrite caveat (TASK-0216).
+- link.rs check_pipeline_buffer_constraints docstring softened: now
+  states it mirrors specifically hoist_invariant_waits's semantic,
+  with an explicit Caveat block calling out the same-worker
+  src==dst skip gap (TASK-0214).
+- block_transform.rs module doc now points at where pipeline=D IS
+  consumed (transfer_inject post-pass + acfg_to_petri) and flags
+  block= + pipeline= as untested (TASK-0215).
+- New test: pipeline_exceeds_buffer_coexists_with_other_link_errors
+  (link.rs tests) — pins cascade-safety claim that the new error
+  rides the independent-error path and surfaces alongside an
+  UnknownLoop in one pass.
+
+Follow-ups filed for the medium-severity findings that did not fit
+in-thread (each with the precise root cause + acceptance criteria):
+- TASK-0214: same-worker transfer directive vs PipelineExceedsBuffer.
+- TASK-0215: block=N + pipeline=D combination semantics.
+- TASK-0216: partition=workers + pipeline=D coverage; partition-rewrite
+  path's IterVar-id-order vs nest-order tile bounds.
+
+Post-hardening gate (re-run in nix develop):
+- cargo test workspace: 504 pass / 0 fail / 3 ignored (added 1 test).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 36 cells / 29 pass / 0 fail / 7 skipped / 0 required-fail.
+
+AC#5 stays PARTIAL (boundedness/deadlock under pipelined initial
+markings → TASK-0213). Task remains In Progress with that honest
+deferral; the rest of the AC set is verified by the (now reviewed)
+implementation.
 <!-- SECTION:NOTES:END -->

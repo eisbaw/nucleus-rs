@@ -666,16 +666,26 @@ fn collect_dataref_consumers(
 /// (both producer kernel and consumer kernel inside the loop) for a
 /// data symbol with `transfer DATA : buffer=N` where `D > N`.
 ///
-/// "Both endpoints inside" mirrors what `transfer_inject` does:
+/// "Both endpoints inside" mirrors specifically the
+/// `hoist_invariant_waits` semantic in `transfer_inject`:
 /// `hoist_invariant_waits` moves the Wait OUT of the loop body for
 /// data symbols not produced inside (e.g. `input` in example 13's
 /// pipeline-parallel schedule, where `load_input` lives on host
 /// outside the loop). When the Wait is hoisted, the IR-level
 /// `pipeline_depth_for_seq` annotation no longer applies (the Xfer's
 /// tile no longer contains the pipelined iter-var), so the
-/// constraint we are policing here also no longer applies. Mirroring
-/// that semantic exactly keeps the link diagnostic in sync with the
-/// downstream IR contract.
+/// constraint we are policing here also no longer applies.
+///
+/// **Caveat (TASK-0214):** the link check does NOT mirror
+/// `transfer_inject`'s `src == dst` skip (same-worker producer +
+/// consumer suppresses Xfer emission). The schedule grammar
+/// currently allows a `transfer X : buffer=N` directive on a
+/// same-worker data symbol (it's harmless — no Xfer is emitted —
+/// but not rejected); combined with `pipeline=D > N`, the link
+/// check fires `PipelineExceedsBuffer` even though no IR-level
+/// constraint exists. Filed as TASK-0214; in practice users do
+/// not write transfer directives on same-worker symbols, so this
+/// is a latent inconsistency rather than an active defect.
 ///
 /// Dual-direction check: producer-and-consumer-both-inside (the
 /// pipelined inter-stage case, e.g. `feat1`, `feat2` in example 13).
