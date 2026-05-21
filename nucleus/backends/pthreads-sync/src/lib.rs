@@ -974,8 +974,9 @@ fn render_event(
                         // requirement; the Drop-time `load(Relaxed)`
                         // observes the fetch_adds because they all
                         // happen on the same thread before `main`
-                        // returns. (Multi-worker pthreads-sync rejects
-                        // check_frame today — TASK-0052.05.)
+                        // returns. (Multi-worker pthreads-sync wires
+                        // the same shape with a SHARED static across
+                        // worker threads — TASK-0052.05.)
                         let id = sanitize_loop_var(&frame.loop_var);
                         writeln!(
                             out,

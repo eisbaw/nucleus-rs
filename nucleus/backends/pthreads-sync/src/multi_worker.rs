@@ -77,10 +77,13 @@ use std::fmt::Write as _;
 // (one slot per cross-worker data symbol — the pre-TASK-0124
 // behaviour), so `SeqTag` is not consulted here; a future
 // per-(seq) slot split (multi-buffer transfers) would use it.
-use compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
+use compiler::event::{DataId, Event, SeqTag, SyncTag, ViolationKind, WorkerId};
 use compiler::sidecar::NameSidecar;
 
-use crate::{render_const_expr_pub, rust_scalar_type, EmitError, NameTables, RenderCtxPub};
+use crate::{
+    collect_count_check_frames, emit_count_reporter_struct, render_const_expr_pub,
+    rust_scalar_type, sanitize_loop_var, CountCheckLoop, EmitError, NameTables, RenderCtxPub,
+};
 
 // --------------------------------------------------------------------
 // Entry point
@@ -289,12 +292,76 @@ impl<'a> Plan<'a> {
         writeln!(out, "}}").ok();
         writeln!(out).ok();
 
+        // TASK-0052.05: file-scope items for every Count `check loop`
+        // in the program. The codegen helpers `collect_count_check_
+        // frames` / `emit_count_reporter_struct` / `sanitize_loop_var`
+        // are shared verbatim with the single-worker pthreads-sync
+        // path (see `lib.rs`) and mp-tcp-bufsync — same emit-string
+        // shape across all three sites, by construction.
+        //
+        // **Multi-worker Count semantic (shared static across threads).**
+        // `partition=workers` projects the SAME source loop onto every
+        // participating worker; `inject_check_frames` attaches a frame
+        // to each projected `Event::Loop`, so the SAME (loop_var,
+        // threshold, ViolationKind::Count) appears in N workers'
+        // event lists. All N workers must `fetch_add` into the SAME
+        // `AtomicU64` (PRD §6.3.5 "tallied across the program run":
+        // ONE summary line, not N), so we emit ONE static per UNIQUE
+        // sanitized ident — keyed by `ident`, not by worker. The
+        // `AtomicU64` lives at file scope and is reachable from every
+        // thread without closure capture; threads coordinate by
+        // `fetch_add(_, Relaxed)` on the same global. The Drop guard
+        // local (emitted inside `fn main` below) is OWNED BY THE HOST
+        // THREAD and prints ONE aggregate stderr summary at fn main
+        // exit (after `join()` on every worker handle — see the join
+        // site at the end of `fn main`), which is the correct semantic
+        // for "tallied across the program run".
+        let count_frames = collect_unique_count_check_frames(self.per_worker);
+        if !count_frames.is_empty() {
+            emit_count_reporter_struct(&mut out);
+            for cf in &count_frames {
+                writeln!(
+                    out,
+                    "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
+                     std::sync::atomic::AtomicU64::new(0);",
+                    ident = cf.ident,
+                )
+                .ok();
+            }
+            writeln!(out).ok();
+        }
+
         writeln!(
             out,
             "#[allow(unused_mut, dead_code, unused_variables, clippy::needless_late_init)]"
         )
         .ok();
         writeln!(out, "fn main() {{").ok();
+
+        // TASK-0052.05: per-Count-loop Drop guard local. Mirrors the
+        // single-worker emit in `lib.rs::render_main_rs`. The guard's
+        // Drop runs at fn main exit (after every `handle.join()`
+        // below has returned, since handles are dropped LIFO in
+        // reverse insertion order: the guards declared HERE outlive
+        // the handles declared below). Each unique sanitized ident
+        // gets ONE guard, matching the single static.
+        for cf in &count_frames {
+            writeln!(
+                out,
+                "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
+                 \x20\x20\x20\x20}};",
+                ident = cf.ident,
+                loop_var = cf.loop_var,
+                ns = cf.latency_max_ns,
+            )
+            .ok();
+        }
+        if !count_frames.is_empty() {
+            writeln!(out).ok();
+        }
 
         // NOTE: this production codegen path is intentionally free of
         // any test-only nondeterminism branch. The determinism-check
@@ -553,27 +620,39 @@ impl<'a> Plan<'a> {
                              (would double-count). Tracked as TASK-0181."
                         )));
                     }
-                    // TASK-0052.02: real-time `check loop V :
-                    // latency_max=T` does carry a `check_frame` to the
-                    // outer loop here too, but the multi-worker pthreads
-                    // emit lives in this file; we DEFER the codegen for
-                    // the multi-worker path. It is rare (no tier-1 cell
-                    // attaches a `check loop V` to a partition=workers
-                    // loop today), and the single-worker `lib.rs` path
-                    // already implements panic-on-violation. A
-                    // `check_frame` reaching here today would silently
-                    // become a no-op; surface that as a fail-loud typed
-                    // error so a future schedule that wires both at
-                    // once does NOT lose the assertion. Tracked as
-                    // TASK-0052.05.
-                    if check_frame.is_some() {
+                    // TASK-0052.05: real-time `check loop V :
+                    // latency_max=T` codegen on the multi-worker path.
+                    // The shape MIRRORS the single-worker path in
+                    // `lib.rs::render_event` (Event::Loop arm) — same
+                    // `Instant::now()` + `_check_elapsed` + dispatch on
+                    // `on_violation`. The per-thread semantics:
+                    //   * Panic: each worker thread panics
+                    //     independently; the `handle.join().expect(..)`
+                    //     at fn main propagates the panic, exit code 101.
+                    //   * Log: each worker thread's `eprintln!` is
+                    //     atomic per call; multiple threads' lines may
+                    //     interleave on stderr — that is the intended
+                    //     behaviour (the cross-backend differential
+                    //     compares stdout only, per PRD §10.1).
+                    //   * Count: ALL threads `fetch_add(_, Relaxed)`
+                    //     into the SAME file-scope static
+                    //     `NUC_CHECK_COUNT_<ident>` (emitted once per
+                    //     unique ident in `Plan::emit`, NOT per worker).
+                    //     The Drop guard on the host thread aggregates
+                    //     all threads' contributions into ONE summary
+                    //     line at fn main exit — PRD §6.3.5 "tallied".
+                    // Strip-mined invariant: `inject_check_frames`
+                    // populates check_frame only on outer source loops
+                    // (block_tag == None); the `block_tag.is_some()`
+                    // arm above already rejected, so reaching here with
+                    // a check_frame implies block_tag.is_none() — the
+                    // invariant the single-worker path also defends.
+                    if check_frame.is_some() && block_tag.is_some() {
                         return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries a \
-                             check_frame (real-time latency assertion) in a \
-                             MULTI-worker pthreads-sync schedule; codegen for \
-                             the multi-worker path is deferred to TASK-0052.05. \
-                             No tier-1 cell exercises this combination today; \
-                             refusing to emit without the assertion."
+                            "Event::Loop for iter var `{var}` carries BOTH a check_frame \
+                             and a block_tag — `inject_check_frames` is contracted to \
+                             populate check_frame only on outer source loops; this is a \
+                             projection-layer bug (TASK-0052.05 multi-worker invariant)."
                         )));
                     }
                     // Per-worker partition override (TASK-0212): if the
@@ -608,7 +687,75 @@ impl<'a> Plan<'a> {
                         },
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    self.render_worker_events(worker, body, out, indent + 1, prefix, ctx)?;
+                    let body_indent = indent + 1;
+                    let body_pad = "    ".repeat(body_indent);
+                    if let Some(frame) = check_frame {
+                        // TASK-0052.05 — mirrors `lib.rs::render_event`
+                        // Event::Loop check_frame arm verbatim (same
+                        // emit strings, same `_check_start` /
+                        // `_check_elapsed` locals, same dispatch).
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_start = std::time::Instant::now();"
+                        )
+                        .ok();
+                        self.render_worker_events(
+                            worker,
+                            body,
+                            out,
+                            body_indent,
+                            prefix,
+                            ctx,
+                        )?;
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
+                        )
+                        .ok();
+                        match frame.on_violation {
+                            ViolationKind::Panic => {
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
+                                    ns = frame.latency_max_ns,
+                                    lv = frame.loop_var,
+                                )
+                                .ok();
+                            }
+                            ViolationKind::Log => {
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
+                                    ns = frame.latency_max_ns,
+                                    lv = frame.loop_var,
+                                )
+                                .ok();
+                            }
+                            ViolationKind::Count => {
+                                // SHARED file-scope static (one per
+                                // unique sanitized ident; emitted by
+                                // `Plan::emit`). All worker threads
+                                // `fetch_add(Relaxed)` into the same
+                                // global. Relaxed is sufficient: the
+                                // host-thread Drop guard's
+                                // `load(Relaxed)` runs AFTER every
+                                // `handle.join()` (synchronises-with
+                                // its panicking-or-clean termination),
+                                // so all preceding fetch_adds happen-
+                                // before the load on the host thread.
+                                let id = sanitize_loop_var(&frame.loop_var);
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
+                                    ns = frame.latency_max_ns,
+                                    id = id,
+                                )
+                                .ok();
+                            }
+                        }
+                    } else {
+                        self.render_worker_events(worker, body, out, indent + 1, prefix, ctx)?;
+                    }
                     writeln!(out, "{pad}}}").ok();
                 }
                 Event::Sync { sync, .. } => {
@@ -973,3 +1120,42 @@ fn rust_scalar_zero(t: &compiler::algo::ScalarType) -> &'static str {
 // implementation shared with the single-worker emitter and the two
 // paths cannot byte-drift. This module therefore does not import the
 // lower-level `bin_op_str` / `render_int_expr_pub` directly.
+
+// --------------------------------------------------------------------
+// TASK-0052.05: Count check_frame collection across workers
+// --------------------------------------------------------------------
+
+/// Collect every Count `check loop` frame from every worker's
+/// EventList and DEDUPLICATE by sanitized ident. Why dedup is needed:
+/// when a `check loop V` directive lands on a loop var whose loop is
+/// projected onto N workers (`partition=workers`), the
+/// `inject_check_frames` pass attaches the SAME `CheckFrame` to every
+/// participating worker's `Event::Loop`. The single-worker helper
+/// `collect_count_check_frames` walks one worker's events and never
+/// sees duplicates; here we must aggregate across workers and emit
+/// ONE static + ONE Drop guard per UNIQUE ident (the static is shared
+/// across threads — see `Plan::emit` comment on Count semantics).
+///
+/// Determinism: the result preserves the first sighting of each
+/// ident in worker-iteration order (BTreeMap is sorted by WorkerId);
+/// within a worker, events are walked in their EventList order. Two
+/// identical CheckFrames (same loop_var + same threshold +
+/// `ViolationKind::Count`) sanitize to the same ident, so the dedup
+/// is well-defined. Two DIFFERENT directives that sanitize to the
+/// same ident — only reachable today via grammar-extension to non-
+/// ASCII loop names — would silently collide; the grammar rejects
+/// those at parse, see `sanitize_loop_var`'s docstring.
+fn collect_unique_count_check_frames(
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+) -> Vec<CountCheckLoop> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<CountCheckLoop> = Vec::new();
+    for evs in per_worker.values() {
+        for cf in collect_count_check_frames(evs) {
+            if seen.insert(cf.ident.clone()) {
+                out.push(cf);
+            }
+        }
+    }
+    out
+}

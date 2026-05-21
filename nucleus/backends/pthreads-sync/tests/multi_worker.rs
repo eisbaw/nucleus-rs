@@ -570,3 +570,246 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
         "partial-barrier program produced wrong result"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0052.05: check_frame codegen on the multi-worker path.
+//
+// Combines `partition=workers` + `check loop V : latency_max=T,
+// on_violation=panic`. With partition=workers, each compute worker
+// projects its OWN Event::Loop over the partitioned slice; each of
+// those loops carries the same `check_frame`. The multi-worker
+// renderer wraps EACH worker's loop in `let _check_start =
+// Instant::now()` + body + `let _check_elapsed = ...as_nanos()` +
+// panic dispatch — so a violation by ANY worker thread panics that
+// thread, and the host's `handle.join().expect(..)` propagates the
+// panic to the main thread (exit 101).
+//
+// Why this matters: the single-worker codegen and the multi-worker
+// codegen live in DIFFERENT files (lib.rs vs multi_worker.rs); only
+// the multi-worker path drives this combination of features.
+// Pinning the emit-string shape catches drift between the two
+// renderers (it's the same shape — same `Instant::now()` line,
+// same elapsed read, same `panic!` format string).
+// --------------------------------------------------------------------
+
+const CHECK_ALGO_SRC: &str = r#"
+const N : usize = 4;
+data x : i32[N];
+data y : i32[N];
+
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel slow_inc    : (i32)    -> i32   pure;
+
+x <-- load_input();
+for n : 0 .. N {
+    y[n] <-- slow_inc(x[n]);
+}
+save_output(y);
+"#;
+
+const CHECK_SCHED_SRC: &str = r#"
+schedule for "anything.algo.nuc" {
+    workers = { host, w0, w1 };
+
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+
+    loop n : partition=workers;
+
+    transfer x : sync;
+    transfer y : sync;
+
+    // 1ns is unachievable: the kernel sleeps 1ms (see kernels), so
+    // every iteration violates the budget. AC#3: both worker threads
+    // panic independently with loop_var + measured + threshold in
+    // the message.
+    check loop n : latency_max = 1ns;
+}
+"#;
+
+const CHECK_KERNELS_SRC: &str = r#"
+use std::env;
+use std::fs;
+use std::io::Write;
+
+const N: usize = 4;
+
+pub fn load_input() -> Vec<i32> {
+    (0..N as i32).collect()
+}
+pub fn slow_inc(x: i32) -> i32 {
+    // Deliberately slow so the 1ns latency budget can never hold.
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    x + 1
+}
+pub fn save_output(y: Vec<i32>) {
+    let sum: i32 = y.iter().copied().sum();
+    let path = env::var("NUC_OUTPUT_PATH").unwrap_or_else(|_| "output.bin".to_string());
+    let mut f = fs::File::create(&path).expect("save_output: cannot create output file");
+    f.write_all(&sum.to_le_bytes()).expect("save_output: write failed");
+}
+"#;
+
+#[test]
+fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
+    use compiler::{apply_block_transforms, apply_partition_workers, inject_check_frames};
+    let scratch = scratch_dir("multi_worker_check_loop_panic");
+    let algo_path = scratch.join("prog.algo.nuc");
+    let sched_path = scratch.join("prog.sched.nuc");
+    let kernels_path = scratch.join("kernels.rs");
+    fs::write(&algo_path, CHECK_ALGO_SRC).unwrap();
+    fs::write(&sched_path, CHECK_SCHED_SRC).unwrap();
+    fs::write(&kernels_path, CHECK_KERNELS_SRC).unwrap();
+
+    let algo_ast = parse_algo(CHECK_ALGO_SRC).expect("algo parse");
+    let sched_ast = parse_sched(CHECK_SCHED_SRC).expect("sched parse");
+    let algo_ir = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ir = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = apply_block_transforms(&linked, acfg).expect("block-transform");
+    let acfg = apply_partition_workers(&linked, acfg).expect("partition-workers");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    let per_worker = acfg_to_events(&acfg);
+    let per_worker =
+        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg
+            .name_kernels
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        worker: acfg
+            .name_workers
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        iter_var: acfg
+            .name_iter_vars
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+
+    let out_dir = scratch.join("gen");
+    let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+        .expect("multi-worker emit with check_frame must succeed (TASK-0052.05)");
+
+    let main_rs = fs::read_to_string(&result.main_rs).unwrap();
+
+    // AC#1: the Event::Loop arm in multi_worker.rs wraps the body in
+    // Instant::now() + elapsed compare + panic dispatch. The renderer
+    // emits ONE `_check_start = Instant::now()` per projected Event::
+    // Loop body — partition=workers projects the same source loop
+    // onto each of {w0, w1}, so the rendered main.rs contains
+    // exactly TWO occurrences (one per spawned worker; host is not
+    // a participant of partition=workers).
+    let start_count = main_rs.matches("let _check_start = std::time::Instant::now();").count();
+    assert_eq!(
+        start_count, 2,
+        "expected 2 `Instant::now()` instrumentation points (one per \
+         partitioned worker w0/w1); got {start_count}.\nmain.rs:\n{main_rs}"
+    );
+    let elapsed_count = main_rs
+        .matches("let _check_elapsed = _check_start.elapsed().as_nanos();")
+        .count();
+    assert_eq!(
+        elapsed_count, 2,
+        "expected 2 elapsed-nanos reads. Got {elapsed_count}.\nmain.rs:\n{main_rs}"
+    );
+    // The panic message embeds loop_var + threshold literal (matches
+    // the single-worker emit shape — TASK-0052.02 byte-shape pin).
+    let panic_count = main_rs
+        .matches("panic!(\"latency budget violated on `check loop n`")
+        .count();
+    assert_eq!(
+        panic_count, 2,
+        "expected 2 panic-message sites (per-worker). Got {panic_count}.\nmain.rs:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("if _check_elapsed > 1_u128"),
+        "panic guard must compare against the 1ns threshold literal.\nmain.rs:\n{main_rs}"
+    );
+
+    // AC#3: cargo-build + run; at least one worker thread must panic
+    // and `handle.join().expect(..)` must propagate it (exit 101 with
+    // a panic message naming the loop_var + measured + threshold).
+    let build = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("--quiet")
+        .current_dir(&out_dir)
+        .output()
+        .expect("cargo build on generated multi-worker check_loop project");
+    assert!(
+        build.status.success(),
+        "generated multi-worker check_loop project failed to build:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+    let exe = out_dir.join("target/release/nuc-generated");
+    assert!(exe.exists(), "expected binary at {}", exe.display());
+    let out_bin = out_dir.join("output.bin");
+    let run = Command::new(&exe)
+        .env("NUC_OUTPUT_PATH", &out_bin)
+        .output()
+        .expect("run generated multi-worker check_loop binary");
+
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    // The generated Cargo.toml sets `[profile.release] panic = "abort"`
+    // (see `Plan::emit` Cargo.toml template / nucleus default). Under
+    // panic=abort a thread panic immediately aborts the WHOLE process
+    // with SIGABRT — Rust does not unwind. So the binary terminates
+    // either with:
+    //   * exit code 101 (panic + unwind to main + main's panic on
+    //     join().expect — only if the binary is built with panic=
+    //     "unwind"), OR
+    //   * signal-terminated by SIGABRT (exit code None) — the panic=
+    //     "abort" path; the same signal the OS uses for `abort()`.
+    // BOTH are valid evidence that a worker thread panicked; what
+    // matters for the AC#3 assertion is the panic MESSAGE on stderr
+    // (loop_var + measured + threshold) and that the process did NOT
+    // exit cleanly. A clean exit (status == Some(0)) would mean the
+    // panic dispatch silently no-op'd, which is the bug TASK-0052.05
+    // exists to prevent.
+    let exited_cleanly = matches!(run.status.code(), Some(0));
+    assert!(
+        !exited_cleanly,
+        "multi-worker check_loop with tight threshold must NOT exit \
+         cleanly — the worker threads' panic dispatch was silently \
+         dropped. exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        run.status.code(),
+    );
+    // The worker-thread panic message must embed the loop_var + the
+    // threshold literal. Measured ns is dynamic (whatever 1ms-of-
+    // sleep elapsed; always >> 1ns).
+    assert!(
+        stderr.contains("latency budget violated on `check loop n`"),
+        "stderr must contain the worker-thread panic naming the \
+         loop_var.\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("max 1 ns"),
+        "stderr must contain the threshold literal (`max 1 ns`).\nstderr:\n{stderr}"
+    );
+    // The measured ns must be > 1 (the kernel sleeps 1ms). Extract
+    // from the message form "iteration took {N} ns, max 1 ns".
+    let took = stderr
+        .split("iteration took ")
+        .nth(1)
+        .and_then(|s| s.split(" ns").next())
+        .and_then(|s| s.parse::<u128>().ok())
+        .unwrap_or_else(|| panic!("could not parse measured ns from:\n{stderr}"));
+    assert!(
+        took > 1,
+        "measured ns ({took}) must exceed the 1ns threshold for the \
+         panic to have fired."
+    );
+}
