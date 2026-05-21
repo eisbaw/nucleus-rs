@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-21 17:16'
+updated_date: '2026-05-21 17:36'
 labels:
   - M10
   - backend
@@ -70,4 +70,6 @@ TASK-0064 (Add Renode to flake) AC#1+AC#2 landed in commit 632d98c:
 - 'nix develop .#renode -c renode --version' returns 'Renode v1.16.1.0' (.NET 9.0.15), exit 0.
 
 The 'is Renode available at all?' prerequisite for this M10 task is satisfied. AC#3 of TASK-0064 (example .resc + UART capture harness) was scope-split to TASK-0223, which IS load-bearing for this task (the shim development needs a harness to validate against). TASK-0223 + TASK-0062 (cross-compile Rust target for embedded) remain the open prereqs before M10 implementation can start.
+
+Toolchain prereq satisfied by TASK-0062 (commit 9787412 / 2026-05-21): `nix develop .#embedded` provides thumbv7em-none-eabihf rust-std + probe-rs 0.31.0 on the pinned 1.83.0 toolchain. Renode-side (.resc + UART) tracked by TASK-0223.
 <!-- SECTION:NOTES:END -->
