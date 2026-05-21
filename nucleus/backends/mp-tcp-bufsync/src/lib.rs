@@ -768,6 +768,16 @@ impl<'a> Plan<'a> {
                     let body_indent = indent + 1;
                     let body_pad = "    ".repeat(body_indent);
                     if let Some(frame) = check_frame {
+                        // TASK-0221 (a): defensive — `var` (NameTables)
+                        // and `frame.loop_var` (CheckFrame) must name
+                        // the same user-source loop variable. Dev-only
+                        // assert catches future projection divergence.
+                        debug_assert_eq!(
+                            var.as_str(),
+                            frame.loop_var.as_str(),
+                            "CheckFrame.loop_var diverged from NameTables.iter_var \
+                             (projection-layer bug; TASK-0221)"
+                        );
                         writeln!(
                             out,
                             "{body_pad}let _check_start = std::time::Instant::now();"

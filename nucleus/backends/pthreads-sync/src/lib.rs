@@ -900,6 +900,20 @@ fn render_event(
             let body_indent = indent + 1;
             let body_pad = "    ".repeat(body_indent);
             if let Some(frame) = check_frame {
+                // TASK-0221 (a): CheckFrame.loop_var carries the
+                // user-source loop variable name, but `var` (resolved
+                // from NameTables) is the authoritative source of the
+                // same identifier at emit time. Defensive assert in
+                // dev builds catches any future projection that
+                // diverges the two; release builds skip the check
+                // (no perf or behaviour change on the codegen path).
+                debug_assert_eq!(
+                    var.as_str(),
+                    frame.loop_var.as_str(),
+                    "CheckFrame.loop_var diverged from NameTables.iter_var \
+                     (projection-layer bug — both should name the same \
+                     user-source loop variable; TASK-0221)"
+                );
                 // Tier-1 clock: std::time::Instant. PRD §6.3.5 names
                 // this for backends "where Instant is available";
                 // pthreads-sync runs hosted on a real OS so this is

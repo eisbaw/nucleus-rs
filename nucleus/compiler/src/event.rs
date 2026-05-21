@@ -551,12 +551,22 @@ pub struct CheckFrame {
     pub on_violation: ViolationKind,
     /// The source loop-variable name (`check loop V` -> `V`).
     /// Carried by VALUE so the backend produces a precise panic
-    /// message without a back-reference to `NameTables`. Backends
-    /// already have the iter-var name available too, but threading it
-    /// from one source of truth via `Event::Loop.iter_var` and looking
-    /// up `NameTables` would risk a mismatch on a future projection
-    /// that diverges the two; carrying it on the frame keeps the
-    /// panic-message identity tied to the user's check directive.
+    /// message without a back-reference to `NameTables`.
+    ///
+    /// **Duplication-vs-NameTables (TASK-0221):** backends ALSO have
+    /// the iter-var name available via `NameTables.iter_var[iter_var]`
+    /// where `iter_var` is the enclosing `Event::Loop`'s field. These
+    /// two MUST name the same identifier. The defensive-assert path
+    /// was chosen: each backend's Event::Loop arm includes a
+    /// `debug_assert_eq!(var.as_str(), frame.loop_var.as_str(), ...)`
+    /// before any emit that uses `frame.loop_var`. Dev builds catch
+    /// projection-layer divergence loudly; release builds skip the
+    /// check (zero cost on the codegen path). Alternative considered:
+    /// drop the field and look up via NameTables at emit time —
+    /// rejected because it would require threading NameTables
+    /// through `collect_count_check_frames` (an EventList walker that
+    /// has no NameTables today), expanding API surface for marginal
+    /// architectural gain.
     pub loop_var: String,
 }
 
