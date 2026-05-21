@@ -126,6 +126,7 @@ fn synthetic_acfg(
         name_iter_vars: Default::default(),
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     }
 }
 
@@ -816,7 +817,132 @@ fn fanout_per_worker_tile_for_output_direction() {
 /// Empty `partition_worker_ranges` (the pre-TASK-0212 / non-partitioned
 /// case) leaves the pair tiles untouched at the construction-site
 /// enclosing tile. No regression for examples 01..07 which never set
-/// the sidecar.
+// --------------------------------------------------------------------
+// TASK-0134: pipeline-depth sidecar
+// --------------------------------------------------------------------
+
+#[test]
+fn pipeline_depth_populated_for_inter_stage_transfers() {
+    // TASK-0134 AC#1: the sidecar carries SeqTag -> D for every
+    // Push/Wait pair created inside a pipelined loop body.
+    //
+    // Real fixture: example 13 with pipeline_parallel schedule.
+    // `loop n : pipeline=3`; feat1 / feat2 transfers have producer
+    // AND consumer inside the loop, so their seqs MUST be in the
+    // sidecar with value 3. input / output cross the loop boundary
+    // and are hoisted out -> no entry expected.
+    use compiler::algo::{lower_algo, parse_algo};
+    use compiler::sched::{lower_sched, parse_sched};
+
+    let algo_ast =
+        parse_algo(&read_example("13-cnn-inference/prog.algo.nuc")).expect("algo parse");
+    let algo = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(&read_example(
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    ))
+    .expect("sched parse");
+    let sched = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = compiler::acfg::build_acfg(&linked).expect("build_acfg");
+    let acfg = compiler::passes::sync_inject::inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    assert!(
+        !acfg.pipeline_depth_for_seq.is_empty(),
+        "expected at least one pipeline-depth annotation; got empty"
+    );
+
+    // Find the data_id for feat1, feat2, input, output.
+    let id_of = |name: &str| acfg.name_data.get(name).copied();
+    let feat1_id = id_of("feat1").expect("feat1");
+    let feat2_id = id_of("feat2").expect("feat2");
+    let input_id = id_of("input").expect("input");
+    let output_id = id_of("output").expect("output");
+
+    // Walk the ACFG and collect (seq, data) for every Xfer node.
+    fn walk(node: &compiler::acfg::ACFGNode, out: &mut Vec<(SeqTag, DataId)>) {
+        match node {
+            compiler::acfg::ACFGNode::Xfer(x) => out.push((x.seq, x.data)),
+            compiler::acfg::ACFGNode::Sequence(cs) => cs.iter().for_each(|c| walk(c, out)),
+            compiler::acfg::ACFGNode::Repeat { body, .. } => walk(body, out),
+            _ => {}
+        }
+    }
+    let mut xfers: Vec<(SeqTag, DataId)> = Vec::new();
+    walk(&acfg.root, &mut xfers);
+
+    // Group by data_id.
+    let mut seqs_for: BTreeMap<DataId, BTreeSet<SeqTag>> = BTreeMap::new();
+    for (s, d) in xfers {
+        seqs_for.entry(d).or_default().insert(s);
+    }
+
+    // Sanity: feat1 has at least one Push/Wait pair.
+    assert!(!seqs_for.get(&feat1_id).unwrap_or(&BTreeSet::new()).is_empty());
+    assert!(!seqs_for.get(&feat2_id).unwrap_or(&BTreeSet::new()).is_empty());
+
+    let expect_depth = std::num::NonZeroU64::new(3).unwrap();
+    for s in seqs_for.get(&feat1_id).unwrap() {
+        assert_eq!(
+            acfg.pipeline_depth_for_seq.get(s),
+            Some(&expect_depth),
+            "feat1 seq {:?} must carry pipeline depth 3",
+            s
+        );
+    }
+    for s in seqs_for.get(&feat2_id).unwrap() {
+        assert_eq!(
+            acfg.pipeline_depth_for_seq.get(s),
+            Some(&expect_depth),
+            "feat2 seq {:?} must carry pipeline depth 3",
+            s
+        );
+    }
+
+    // input / output get hoisted out of the loop (producer or
+    // consumer outside); the post-hoist tile drops the `n` axis, so
+    // they have NO pipeline-depth entry.
+    for s in seqs_for.get(&input_id).unwrap_or(&BTreeSet::new()) {
+        assert!(
+            !acfg.pipeline_depth_for_seq.contains_key(s),
+            "input seq {:?} must NOT carry pipeline depth (hoisted out of loop)",
+            s
+        );
+    }
+    for s in seqs_for.get(&output_id).unwrap_or(&BTreeSet::new()) {
+        assert!(
+            !acfg.pipeline_depth_for_seq.contains_key(s),
+            "output seq {:?} must NOT carry pipeline depth (consumed outside loop)",
+            s
+        );
+    }
+}
+
+#[test]
+fn pipeline_depth_empty_for_non_pipelined_schedules() {
+    // Regression guard: a schedule WITHOUT `pipeline=` must leave
+    // `pipeline_depth_for_seq` empty. Pre-TASK-0134 behaviour
+    // preserved for every existing example.
+    use compiler::algo::{lower_algo, parse_algo};
+    use compiler::sched::{lower_sched, parse_sched};
+
+    let algo_ast = parse_algo(&read_example("02-split-add/prog.algo.nuc")).expect("algo");
+    let algo = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(&read_example("02-split-add/schedules/split.sched.nuc"))
+        .expect("sched");
+    let sched = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = compiler::acfg::build_acfg(&linked).expect("build_acfg");
+    let acfg = compiler::passes::sync_inject::inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    assert!(
+        acfg.pipeline_depth_for_seq.is_empty(),
+        "no pipeline= in schedule must leave the sidecar empty; got {:?}",
+        acfg.pipeline_depth_for_seq
+    );
+}
+
 #[test]
 fn fanout_empty_partition_sidecar_preserves_construction_tile() {
     // No partition_worker_ranges entries; the 1:1 case keeps the

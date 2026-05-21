@@ -89,6 +89,7 @@ fn build_synthetic_acfg(
         name_iter_vars,
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     }
 }
 
@@ -372,6 +373,7 @@ fn non_divisible_range_is_rejected() {
         name_iter_vars,
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     };
 
     let err = apply_partition_workers(&linked, acfg).expect_err("non-divisible should error");
@@ -473,6 +475,7 @@ fn partitioned_repeat_skips_body_entry_exit_syncs() {
         name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     };
     let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     per_worker.insert(WorkerId(1), 0..4);
@@ -553,6 +556,7 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
         name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(), // empty — no partition
+        pipeline_depth_for_seq: BTreeMap::new(),
     };
 
     let after = inject_syncs(acfg);
@@ -633,6 +637,7 @@ fn transfer_fanout_composes_with_partition_sidecar() {
         name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     };
 
     // Populate the partition sidecar by hand — equivalent to running

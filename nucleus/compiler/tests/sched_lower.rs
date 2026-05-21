@@ -673,6 +673,44 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_unit_pipeline_loop_option() {
+    // TASK-0134: pipeline=1 is rejected as a no-op pipeline. The
+    // schedule author must either specify pipeline=D with D >= 2 or
+    // omit the option entirely.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop y : pipeline=1;
+}
+";
+    let err = lower_str(src).expect_err("pipeline=1 must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnitPipelineOption {
+            var: "y".into()
+        }
+    );
+    // The error message names the option and tells the user how to fix.
+    let msg = format!("{}", err.kind);
+    assert!(msg.contains("pipeline=1"), "msg should name pipeline=1: {msg}");
+    assert!(msg.contains("D >= 2") || msg.contains(">= 2"), "msg should suggest D >= 2: {msg}");
+}
+
+#[test]
+fn positive_pipeline_two_lowers_ok() {
+    // The minimum legal pipeline depth is 2 — the smallest value
+    // distinguishable from the default sequential mode.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop y : pipeline=2;
+}
+";
+    let ir = lower_str(src).expect("pipeline=2 must lower");
+    assert_eq!(ir.loops.len(), 1);
+}
+
+#[test]
 fn negative_zero_vectorize_loop_option() {
     let src = "\
 schedule for \"../prog.algo.nuc\" {

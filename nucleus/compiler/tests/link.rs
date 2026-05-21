@@ -765,3 +765,209 @@ schedule for \"a.algo.nuc\" {
     );
     link(algo, sched).expect("transfer-present cross-worker case must link");
 }
+
+// --------------------------------------------------------------------
+// TASK-0134: pipeline-depth vs buffer-capacity constraint
+// --------------------------------------------------------------------
+
+/// Common algorithm fixture for the TASK-0134 link tests. Two stages
+/// inside one loop, so a cross-worker transfer's Push/Wait pair stays
+/// inside the loop (both producer kernel and consumer kernel inside).
+const TWO_STAGE_PIPELINE_ALGO: &str = "\
+const N : usize = 16;
+data input  : i32[N];
+data stage1 : i32[N];
+data stage2 : i32[N];
+kernel load_input : () -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel f1 : (i32) -> i32 pure;
+kernel f2 : (i32) -> i32 pure;
+
+input <-- load_input();
+for n : 0 .. N {
+    stage1[n] <-- f1(input[n]);
+    stage2[n] <-- f2(stage1[n]);
+}
+save_output(stage2);
+";
+
+#[test]
+fn negative_pipeline_depth_exceeds_buffer() {
+    // pipeline=4 with buffer=3 on the inter-stage transfer (both
+    // producer and consumer inside the loop) -> hard error.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=4;
+    transfer input  : async, buffer=4, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("D=4 > buffer=3 must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::PipelineExceedsBuffer {
+                loop_var,
+                data,
+                depth: 4,
+                buffer: 3
+            } if loop_var == "n" && data == "stage1"
+        )),
+        "expected PipelineExceedsBuffer for (n, stage1, 4, 3); got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn positive_pipeline_depth_equals_buffer() {
+    // AC#3 positive: D=N is allowed (exactly fills the buffer).
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    transfer input  : async, buffer=3, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    link(algo, sched).expect("D=3 == buffer=3 must link");
+}
+
+#[test]
+fn positive_pipeline_depth_less_than_buffer() {
+    // AC#3 positive: D=N-1 is allowed.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=2;
+    transfer input  : async, buffer=3, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    link(algo, sched).expect("D=2 < buffer=3 must link");
+}
+
+#[test]
+fn pipeline_does_not_check_loop_invariant_transfer() {
+    // For example 13's `input` symbol: load_input is OUTSIDE the
+    // pipelined loop, the consumer is INSIDE. The Push/Wait pair
+    // gets hoisted out by transfer_inject, so the IR-level pipeline
+    // depth annotation does NOT apply — the link-step check must
+    // also skip this case. Otherwise we'd reject `input` carrying
+    // `buffer=1` (default) under `pipeline=3`.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    // `input` has the default buffer=1; producer (load_input) is
+    // outside the loop, so this must NOT trigger PipelineExceedsBuffer.
+    transfer input  : sync;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    link(algo, sched).expect(
+        "loop-invariant transfer (producer outside the loop) is not policed by the pipeline-depth constraint",
+    );
+}
+
+#[test]
+fn pipeline_check_uses_default_buffer_when_unspecified() {
+    // No buffer=N on the transfer -> default buffer=1. pipeline=3 on
+    // both-endpoints-inside fires the constraint with buffer=1.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    transfer input  : async, buffer=3, notify=event;
+    // No buffer= on stage1: default is 1. D=3 > 1 -> hard error.
+    transfer stage1 : sync;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("default buffer=1 vs pipeline=3 must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::PipelineExceedsBuffer {
+                loop_var,
+                data,
+                depth: 3,
+                buffer: 1
+            } if loop_var == "n" && data == "stage1"
+        )),
+        "expected PipelineExceedsBuffer for (n, stage1, 3, 1); got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn pipeline_check_message_names_offending_quartet() {
+    // The error message must name the loop, data, depth, and buffer.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=5;
+    transfer input  : async, buffer=5, notify=event;
+    transfer stage1 : async, buffer=2, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    let msg = errs
+        .iter()
+        .find_map(|e| match e {
+            err @ LinkError::PipelineExceedsBuffer { .. } => Some(format!("{err}")),
+            _ => None,
+        })
+        .expect("PipelineExceedsBuffer present");
+    assert!(msg.contains("`n`"), "names loop_var: {msg}");
+    assert!(msg.contains("stage1"), "names data: {msg}");
+    assert!(msg.contains("pipeline=5"), "names depth: {msg}");
+    assert!(msg.contains("buffer=2"), "names buffer: {msg}");
+}

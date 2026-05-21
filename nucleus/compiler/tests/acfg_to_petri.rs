@@ -83,6 +83,7 @@ fn synthetic_acfg(
         name_iter_vars: Default::default(),
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
     }
 }
 
@@ -566,4 +567,229 @@ fn e2e_determinism_real_example_02() {
         "02-split-add/schedules/split.sched.nuc",
     );
     assert!(nets_structurally_equal(&net_a, &net_b));
+}
+
+// --------------------------------------------------------------------
+// TASK-0134: pipeline=D -> buffer place initial_marking = D
+// --------------------------------------------------------------------
+
+#[test]
+fn synthetic_pipeline_depth_sets_initial_marking() {
+    // Hand-built: a Push/Wait pair whose seq is annotated with
+    // pipeline depth 3 on the ACFG sidecar. The buffer place should
+    // start with 3 tokens, not 0.
+    let tile = IterTile::empty();
+    let policy = TransferPolicy {
+        synchronous: false,
+        buffer: 4, // capacity high enough to hold the head-start
+        notify: NotifyMode::Default,
+    };
+    let push = ACFGNode::Xfer(XferPlaceholder {
+        role: XferRole::Push,
+        src: WorkerId(0),
+        dst: WorkerId(1),
+        data: DataId(0),
+        tile: tile.clone(),
+        seq: SeqTag(7),
+        policy,
+    });
+    let wait = ACFGNode::Xfer(XferPlaceholder {
+        role: XferRole::Wait,
+        src: WorkerId(0),
+        dst: WorkerId(1),
+        data: DataId(0),
+        tile,
+        seq: SeqTag(7),
+        policy,
+    });
+    let root = ACFGNode::Sequence(vec![
+        op_node(&[0], 100, vec![], Some(0)),
+        push,
+        wait,
+        op_node(&[1], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
+    acfg.pipeline_depth_for_seq.insert(
+        SeqTag(7),
+        std::num::NonZeroU64::new(3).expect("3 != 0"),
+    );
+
+    let net = acfg_to_net(&acfg);
+
+    let buf = net
+        .places
+        .iter()
+        .find(|p| p.name.starts_with("buf_"))
+        .expect("buffer place present");
+    assert_eq!(
+        buf.initial_marking, 3,
+        "pipeline_depth_for_seq[seq=7]=3 must set initial_marking=3"
+    );
+    // The Net::initial_marking aggregate also reports this:
+    assert_eq!(
+        net.initial_marking.get(buf.id),
+        3,
+        "Net.initial_marking reflects the place's initial_marking"
+    );
+    // Capacity is still buffer=4 from the policy.
+    assert_eq!(buf.capacity.unwrap().get(), 4);
+}
+
+#[test]
+fn synthetic_no_pipeline_depth_keeps_initial_marking_zero() {
+    // Regression guard: with NO sidecar entry, the buffer place must
+    // start at 0 tokens (pre-TASK-0134 behaviour preserved).
+    let tile = IterTile::empty();
+    let policy = TransferPolicy {
+        synchronous: true,
+        buffer: 1,
+        notify: NotifyMode::Default,
+    };
+    let push = ACFGNode::Xfer(XferPlaceholder {
+        role: XferRole::Push,
+        src: WorkerId(0),
+        dst: WorkerId(1),
+        data: DataId(0),
+        tile: tile.clone(),
+        seq: SeqTag(0),
+        policy,
+    });
+    let wait = ACFGNode::Xfer(XferPlaceholder {
+        role: XferRole::Wait,
+        src: WorkerId(0),
+        dst: WorkerId(1),
+        data: DataId(0),
+        tile,
+        seq: SeqTag(0),
+        policy,
+    });
+    let root = ACFGNode::Sequence(vec![
+        op_node(&[0], 100, vec![], Some(0)),
+        push,
+        wait,
+        op_node(&[1], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
+    // No pipeline_depth_for_seq insert.
+
+    let net = acfg_to_net(&acfg);
+    let buf = net
+        .places
+        .iter()
+        .find(|p| p.name.starts_with("buf_"))
+        .expect("buffer place present");
+    assert_eq!(buf.initial_marking, 0);
+}
+
+#[test]
+fn e2e_example_13_pipeline_parallel_sets_buffer_initial_markings() {
+    // Real fixture: example 13 with pipeline_parallel schedule.
+    // `loop n : pipeline=3`; the inter-stage transfers (feat1, feat2)
+    // have both producer AND consumer inside the loop, so their
+    // buffer places should pick up initial_marking = 3.
+    let net = pipeline_to_net(
+        "13-cnn-inference/prog.algo.nuc",
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    );
+
+    // Collect every buffer place by name -> initial_marking.
+    let mut buf_markings: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    for p in &net.places {
+        if p.name.starts_with("buf_") {
+            buf_markings.insert(p.name.clone(), p.initial_marking);
+        }
+    }
+
+    // We don't pin exact seq numbers (they are an internal allocation
+    // detail) — we filter by data-symbol name in the human-readable
+    // place name (`buf_<data>_seq<N>`).
+    let feat1_markings: Vec<u32> = buf_markings
+        .iter()
+        .filter(|(n, _)| n.starts_with("buf_feat1_"))
+        .map(|(_, m)| *m)
+        .collect();
+    let feat2_markings: Vec<u32> = buf_markings
+        .iter()
+        .filter(|(n, _)| n.starts_with("buf_feat2_"))
+        .map(|(_, m)| *m)
+        .collect();
+    assert!(
+        !feat1_markings.is_empty(),
+        "expected at least one buf_feat1_* place: got {:?}",
+        buf_markings
+    );
+    assert!(
+        feat1_markings.iter().all(|m| *m == 3),
+        "every buf_feat1_* place must have initial_marking = 3 (pipeline=3); got {:?}",
+        feat1_markings
+    );
+    assert!(
+        feat2_markings.iter().all(|m| *m == 3),
+        "every buf_feat2_* place must have initial_marking = 3; got {:?}",
+        feat2_markings
+    );
+
+    // `output` is produced inside the loop but consumed outside
+    // (save_output runs after the loop). Its Push/Wait pair is
+    // hoisted out by hoist_invariant_waits / splice_pushes_global,
+    // so the tile no longer contains `n` and pipeline depth does
+    // NOT apply.
+    for (name, marking) in &buf_markings {
+        if name.starts_with("buf_output_") {
+            assert_eq!(
+                *marking, 0,
+                "output transfer is hoisted out of the pipelined loop; initial_marking must stay 0 (got {})",
+                marking
+            );
+        }
+    }
+}
+
+#[test]
+fn e2e_example_13_pipeline_parallel_is_deterministic() {
+    // TASK-0134 AC#5: build the pipelined net twice; structurally
+    // identical including initial markings.
+    let net_a = pipeline_to_net(
+        "13-cnn-inference/prog.algo.nuc",
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    );
+    let net_b = pipeline_to_net(
+        "13-cnn-inference/prog.algo.nuc",
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    );
+    assert!(nets_structurally_equal(&net_a, &net_b));
+}
+
+#[test]
+#[ignore = "deferred to TASK-0213 — boundedness must be initial-marking-aware"]
+fn e2e_example_13_pipeline_parallel_passes_boundedness_and_deadlock() {
+    // TASK-0134 AC#5 partial — DEFERRED.
+    //
+    // With initial_marking=D and capacity=N=D on a pipelined buffer
+    // place, the source-order firing trace tries to fire Push first
+    // (buffer at D + 1 = capacity-overflow). The buffer place is
+    // FULL at startup; the consumer must fire BEFORE the producer.
+    // `derive_firing_order` is not yet marking-aware, so this trips.
+    //
+    // The tension is structural: interpretation (a) of PRD §8.2
+    // puts D head-start tokens in the buffer place, which is
+    // mutually exclusive with source-order firing when D = N.
+    // Resolution lives in TASK-0213: either generalise
+    // derive_firing_order to consult initial markings, or change
+    // acfg_to_petri to eliminate D Push transitions (representing
+    // them as pre-fired by the initial marking).
+    //
+    // The TASK-0134 IR contract (the sidecar and the
+    // initial_marking emission) is in place; this assertion will
+    // re-enable when TASK-0213 lands.
+    let net = pipeline_to_net(
+        "13-cnn-inference/prog.algo.nuc",
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    );
+    let firing_order = compiler::passes::boundedness::derive_firing_order(&net);
+    compiler::passes::boundedness::check_bounded(&net, &firing_order)
+        .expect("boundedness must hold");
+    compiler::passes::deadlock::check_deadlock_free(&net, &firing_order)
+        .expect("deadlock-free must hold");
 }
