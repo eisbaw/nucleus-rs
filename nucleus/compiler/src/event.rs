@@ -154,8 +154,17 @@ pub struct IterVar(pub u64);
 
 /// Compile-time sequence number on a `Push`/`Wait` pair. Two events
 /// match if and only if they carry the same `(src, dst, data, tile,
-/// seq)`. Assigned monotonically per `(src, dst, data)` triple by the
-/// scheduler.
+/// seq)`.
+///
+/// **Implementation invariant (load-bearing for TASK-0233)**: assigned
+/// from a SINGLE GLOBAL MONOTONIC COUNTER by
+/// `passes::transfer_inject` (see `transfer_inject.rs:279-290`), NOT
+/// per-(src, dst, data) triple. So every SeqTag in a single program is
+/// unique globally — different transfers (different DataIds) never
+/// share a SeqTag. This stronger guarantee lets
+/// `NameSidecar::transfer_buffer_for_seq` use `SeqTag` alone as the
+/// key (rather than `(DataId, SeqTag)`); a future cycle that
+/// shards the counter per-triple MUST also widen the sidecar key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]

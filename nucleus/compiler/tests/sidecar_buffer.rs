@@ -76,19 +76,26 @@ fn async_pipeline_parallel_populates_buffer_for_each_cross_worker_pair() {
         sidecar.transfer_buffer_for_seq
     );
 
-    // Count buffer values: there must be entries with value 3 (the
-    // async edges) — at least one. The exact number depends on
-    // transfer_inject's pair-fan-out behaviour; assert >= 1.
+    // Count buffer values. pipeline_parallel declares 3 async edges
+    // (input, feat1, feat2 — each `transfer ... : async, buffer=3`).
+    // Each edge produces one Push/Wait pair sharing ONE SeqTag, so the
+    // map has exactly 3 entries whose value is 3. (transfer_inject's
+    // per-(src,dst) fan-out preserves seq sharing per pair — see
+    // TASK-0216 forward-carry on TASK-0228.) A partial-drop regression
+    // that dropped 1 of the 3 entries would slip past a `>= 1`
+    // assertion; pin the exact 3 instead. Cycle-19 review-gate C.2.
     let count_3 = sidecar
         .transfer_buffer_for_seq
         .values()
         .filter(|&&v| v == 3)
         .count();
-    assert!(
-        count_3 >= 1,
-        "pipeline_parallel has 3 async transfers (input/feat1/feat2 with \
-         buffer=3); at least one SeqTag in the map must carry value 3. \
-         Got: {:?}",
+    assert_eq!(
+        count_3, 3,
+        "pipeline_parallel declares EXACTLY 3 async transfers \
+         (input/feat1/feat2 with buffer=3); each Push/Wait pair shares \
+         one SeqTag so the map must have exactly 3 entries with value 3. \
+         A drop here is a regression in either transfer_inject's pair \
+         creation or the sidecar walker. Got: {:?}",
         sidecar.transfer_buffer_for_seq
     );
 
@@ -174,9 +181,59 @@ fn collect_walks_repeat_and_sequence_via_pipeline_parallel_fixture() {
     );
 }
 
+/// Forward-compatibility (cycle-19 review-gate B.1): a wire payload
+/// serialised BEFORE TASK-0233 lacks the new `transfer_buffer_for_seq`
+/// field. The struct's serde-default attribute on the field means
+/// such payloads must deserialise successfully with the new field
+/// defaulting to empty. This pins the contract on the wire surface,
+/// not just the in-memory roundtrip (the existing
+/// `sidecar_serde_roundtrip_is_byte_identical` in petri_to_events.rs
+/// only exercises the current schema).
+#[cfg(feature = "serde")]
+#[test]
+fn old_wire_payload_without_transfer_buffer_field_deserializes_with_empty_default() {
+    use compiler::NameSidecar;
+
+    // A NameSidecar JSON payload missing the new field. Every other
+    // field is present at its minimal valid empty shape.
+    let old_json = r#"{
+        "data_types": {},
+        "consts": {},
+        "loop_bounds": {},
+        "kernel_sigs": {},
+        "partition_worker_ranges": {}
+    }"#;
+
+    let sidecar: NameSidecar =
+        serde_json::from_str(old_json).expect("old-wire payload must deserialize cleanly");
+    assert!(
+        sidecar.transfer_buffer_for_seq.is_empty(),
+        "missing field on the wire must default to empty BTreeMap, \
+         not error; got {:?}",
+        sidecar.transfer_buffer_for_seq
+    );
+
+    // Defensive: a fresh (non-deserialised) NameSidecar::default()
+    // also produces an empty map — behavioral symmetry between
+    // "field absent on wire" and "field constructed fresh".
+    let fresh = NameSidecar::default();
+    assert_eq!(
+        sidecar.transfer_buffer_for_seq, fresh.transfer_buffer_for_seq,
+        "old-wire-deserialized empty must equal fresh-default empty"
+    );
+}
+
 /// Cross-check helper that mirrors the sidecar's walker — independent
 /// implementation so a bug in the sidecar walker is caught by
 /// disagreement with this implementation.
+///
+/// **Why a fresh helper instead of `ACFGNode::count_xfers`** (cycle-19
+/// review-gate C.1): `compiler::passes::transfer_inject::count_xfers`
+/// exists and walks the same shape. Reusing it here would make the
+/// cross-check vacuous (one walker calling itself). The point of a
+/// cross-check is structural INDEPENDENCE: if both walkers are correct
+/// they agree; if either drifts, this test trips. So the duplication
+/// is intentional — keep both.
 fn count_xfer_nodes(node: &ACFGNode) -> usize {
     match node {
         ACFGNode::Operation(_) | ACFGNode::Sync(_) => 0,

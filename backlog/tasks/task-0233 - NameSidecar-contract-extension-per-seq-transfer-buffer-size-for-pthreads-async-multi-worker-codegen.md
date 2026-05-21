@@ -3,9 +3,10 @@ id: TASK-0233
 title: >-
   NameSidecar contract extension: per-seq transfer buffer size for
   pthreads-async multi-worker codegen
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-21 23:08'
+updated_date: '2026-05-21 23:22'
 labels:
   - M4
   - backend
@@ -36,9 +37,19 @@ Why a separate task: this is a contract extension affecting the shared sidecar; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 NameSidecar.transfer_buffer_for_seq: BTreeMap<SeqTag, u64> exists with serde-default.
-- [ ] #2 build_sidecar populates it by walking the ACFG tree (Repeat/Sequence/Xfer) and reading XferPlaceholder.policy.buffer keyed by .seq.
-- [ ] #3 A Push and its matching Wait share one SeqTag and one buffer value (acfg-level invariant); the map is keyed by SeqTag so each pair gets exactly one entry, not two.
-- [ ] #4 Unit test exercises example 13/pipeline_parallel (async, buffer=3); asserts the map has the expected SeqTag -> 3 entries and the corresponding sync-only schedule has the map empty.
-- [ ] #5 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (no behavior change).
+- [x] #1 NameSidecar.transfer_buffer_for_seq: BTreeMap<SeqTag, u64> exists with serde-default.
+- [x] #2 build_sidecar populates it by walking the ACFG tree (Repeat/Sequence/Xfer) and reading XferPlaceholder.policy.buffer keyed by .seq.
+- [x] #3 A Push and its matching Wait share one SeqTag and one buffer value (acfg-level invariant); the map is keyed by SeqTag so each pair gets exactly one entry, not two.
+- [x] #4 Unit test exercises example 13/pipeline_parallel (async, buffer=3); asserts the map has the expected SeqTag -> 3 entries and the corresponding sync-only schedule has the map empty.
+- [x] #5 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (no behavior change).
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 19 (2026-05-22): all 5 ACs met. NameSidecar.transfer_buffer_for_seq landed in nucleus/compiler/src/sidecar.rs; populated by collect_transfer_buffers walking ACFGNode::{Operation/Sync(no-op), Xfer(extract), Sequence/Repeat(recurse)}. 5 unit tests in nucleus/compiler/tests/sidecar_buffer.rs pin: async pipeline_parallel populates exactly 3 entries with cap=3; sync naive produces empty map; multi-worker sync produces non-empty all-cap=1 map; the walker descends Repeat (defensive vs independent ACFG walker); literal old-wire JSON without the new field deserializes with empty default (serde-default backward-compat).
+
+Gate: cargo test --workspace 564 / 0 / 2 (was 559 before TASK-0233; +5 new tests). Clippy clean. just e2e 36/29/0/7 preserved. Commits: 67a02f6 (initial landing) + cycle-19 review-gate lockstep fixes (this commit).
+
+Unblocks TASK-0228 Wave B (the multi-worker codegen consumer).
+<!-- SECTION:FINAL_SUMMARY:END -->
