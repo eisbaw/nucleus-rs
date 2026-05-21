@@ -80,8 +80,9 @@ use compiler::sidecar::NameSidecar;
 // tests) build `NameTables` once and feed both backends.
 pub use pthreads_sync::{EmitError, NameTables};
 use pthreads_sync::{
-    render_array_init_for, render_const_expr_pub, render_fire_args_pub,
-    render_single_worker_main, rust_type_of, RenderCtxPub,
+    collect_count_check_frames, emit_count_reporter_struct, render_array_init_for,
+    render_const_expr_pub, render_fire_args_pub, render_single_worker_main, rust_type_of,
+    RenderCtxPub,
 };
 
 /// Paths to the files [`emit`] wrote.
@@ -450,6 +451,27 @@ impl<'a> Plan<'a> {
         }
         writeln!(out).ok();
 
+        // TASK-0052.04: per-worker file-scope items for every Count
+        // check loop on THIS worker. The collector + reporter struct +
+        // static `AtomicU64` shape are shared with pthreads-sync — one
+        // implementation, no codegen drift (the cross-backend
+        // bit-identical differential per PRD §10.1 depends on this).
+        let count_frames =
+            collect_count_check_frames(&self.per_worker[&worker]);
+        if !count_frames.is_empty() {
+            emit_count_reporter_struct(&mut out);
+            for cf in &count_frames {
+                writeln!(
+                    out,
+                    "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
+                     std::sync::atomic::AtomicU64::new(0);",
+                    ident = cf.ident,
+                )
+                .ok();
+            }
+            writeln!(out).ok();
+        }
+
         // Connection setup. TWO connections per (host, worker) pair:
         //
         //   - DATA  channel: Push/Wait framed messages.
@@ -558,6 +580,28 @@ impl<'a> Plan<'a> {
             writeln!(out, "    wire::apply_sock_buf(&ctrl_host);").ok();
         }
         writeln!(out).ok();
+
+        // TASK-0052.04: per-Count-check-loop Drop guard local. The
+        // guard's Drop fires when `fn main` returns, printing a
+        // stderr summary line. SAME shape as pthreads-sync — single
+        // codegen implementation.
+        for cf in &count_frames {
+            writeln!(
+                out,
+                "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
+                 \x20\x20\x20\x20}};",
+                ident = cf.ident,
+                loop_var = cf.loop_var,
+                ns = cf.latency_max_ns,
+            )
+            .ok();
+        }
+        if !count_frames.is_empty() {
+            writeln!(out).ok();
+        }
 
         // Pre-init: data this worker Waits on (overwritten on recv)
         // OR writes via an indexed Fire output and never whole-array.
@@ -745,16 +789,38 @@ impl<'a> Plan<'a> {
                                 )
                                 .ok();
                             }
-                            compiler::event::ViolationKind::Log
-                            | compiler::event::ViolationKind::Count => {
-                                return Err(EmitError::ContractGap(format!(
-                                    "on_violation={:?} for `check loop {lv}` is \
-                                     deferred to TASK-0052.04 — only Panic is \
-                                     wired in mp-tcp-bufsync codegen this cycle. \
-                                     Refusing to emit without the assertion.",
-                                    frame.on_violation,
+                            compiler::event::ViolationKind::Log => {
+                                // TASK-0052.04. eprintln per violation;
+                                // execution continues. Mirrors the
+                                // pthreads-sync emit verbatim — the
+                                // cross-backend differential test pins
+                                // this in
+                                // `mp_tcp_bufsync_emit_includes_log_eprintln_on_check_loop`.
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
+                                    ns = frame.latency_max_ns,
                                     lv = frame.loop_var,
-                                )));
+                                )
+                                .ok();
+                            }
+                            compiler::event::ViolationKind::Count => {
+                                // TASK-0052.04. The static counter +
+                                // Drop guard are emitted at file scope
+                                // by `render_worker_program` above
+                                // (`collect_count_check_frames` walks
+                                // the SAME events). Relaxed ordering is
+                                // sufficient: the fetch_add and the
+                                // Drop-time load both happen on the
+                                // worker process's main thread.
+                                let id = pthreads_sync::sanitize_loop_var(&frame.loop_var);
+                                writeln!(
+                                    out,
+                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
+                                    ns = frame.latency_max_ns,
+                                    id = id,
+                                )
+                                .ok();
                             }
                         }
                     } else {

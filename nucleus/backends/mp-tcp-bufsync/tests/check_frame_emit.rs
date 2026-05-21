@@ -211,3 +211,143 @@ schedule for \"a.algo.nuc\" {
         "worker bin MUST NOT contain _check_start. Got:\n{bin_src}"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0052.04: on_violation=log + on_violation=count.
+// Same emit-string shape as pthreads-sync (single codegen
+// implementation, shared helpers `collect_count_check_frames` +
+// `emit_count_reporter_struct` + `sanitize_loop_var`). The two
+// suites pin the same patterns on each backend so a drift fails
+// loudly in one of them.
+// --------------------------------------------------------------------
+
+#[test]
+fn mp_tcp_bufsync_emit_includes_log_eprintln_on_check_loop() {
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+    check loop n : latency_max = 1ms, on_violation = log;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker(algo, sched);
+
+    let out = scratch_dir("mp_tcp_log_codegen");
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .expect("write kernels stub");
+
+    let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("emit must succeed");
+    assert!(!res.worker_bins.is_empty());
+    let bin_src = fs::read_to_string(&res.worker_bins[0]).expect("read worker bin");
+
+    assert!(
+        bin_src.contains("let _check_start = std::time::Instant::now();"),
+        "Log path must still emit Instant measurement. Got:\n{bin_src}"
+    );
+    assert!(
+        bin_src.contains("eprintln!(\"warning: check loop `n` violated latency_max=1000000 ns:"),
+        "Log path must emit the eprintln warning. Got:\n{bin_src}"
+    );
+    assert!(
+        !bin_src.contains("panic!(\"latency budget violated"),
+        "Log path must NOT emit panic!. Got:\n{bin_src}"
+    );
+    assert!(
+        !bin_src.contains("NUC_CHECK_COUNT_"),
+        "Log-only schedule must not emit Count statics. Got:\n{bin_src}"
+    );
+}
+
+#[test]
+fn mp_tcp_bufsync_emit_includes_atomic_and_reporter_on_count_violation() {
+    let algo = "\
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel inc : (i32) -> i32 pure;
+a <-- load_input();
+for n : 0 .. N {
+    c[n] <-- inc(a[n]);
+}
+save_output(c);
+";
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place load_input on host;
+    place save_output on host;
+    place inc on host;
+    check loop n : latency_max = 1ms, on_violation = count;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker(algo, sched);
+
+    let out = scratch_dir("mp_tcp_count_codegen");
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .expect("write kernels stub");
+
+    let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("emit must succeed");
+    let bin_src = fs::read_to_string(&res.worker_bins[0]).expect("read worker bin");
+
+    assert!(
+        bin_src.contains(
+            "static NUC_CHECK_COUNT_n: std::sync::atomic::AtomicU64 = \
+             std::sync::atomic::AtomicU64::new(0);"
+        ),
+        "Count path must emit the AtomicU64 static at file scope. Got:\n{bin_src}"
+    );
+    assert!(
+        bin_src.contains("struct NucCheckCountReporter {"),
+        "Count path must emit the reporter struct. Got:\n{bin_src}"
+    );
+    assert!(
+        bin_src.contains("impl Drop for NucCheckCountReporter {"),
+        "Count path must emit the Drop impl. Got:\n{bin_src}"
+    );
+    assert!(
+        bin_src.contains("let _nuc_check_reporter_n = NucCheckCountReporter {"),
+        "main must instantiate the per-loop guard local. Got:\n{bin_src}"
+    );
+    assert!(
+        bin_src.contains(
+            "if _check_elapsed > 1000000_u128 { \
+             NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }"
+        ),
+        "loop body must fetch_add on threshold violation. Got:\n{bin_src}"
+    );
+    assert!(
+        !bin_src.contains("panic!(\"latency budget violated"),
+        "Count path must NOT emit panic!. Got:\n{bin_src}"
+    );
+}

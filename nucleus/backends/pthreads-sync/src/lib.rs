@@ -366,6 +366,114 @@ fn render_run_sh() -> String {
 // EventList -> main.rs codegen (single-worker / straight-line)
 // --------------------------------------------------------------------
 
+// --------------------------------------------------------------------
+// Count-on-violation helpers (TASK-0052.04).
+//
+// Shared by `render_main_rs` (single-worker) and the
+// per-Count-loop emit inside `render_event`. The mp-tcp-bufsync
+// backend mirrors the SAME emit string shape (see its
+// `render_worker_program`); both are exercised by integration tests
+// that pin the emit string, so a drift between backends is caught.
+//
+// The `loop_var` sanitizer is defensive: today every schedule's
+// loop-var name is `[A-Za-z_][A-Za-z0-9_]*` (chumsky-grammar enforced
+// at parse), so the sanitizer is a no-op on every realistic input.
+// It's here so a future grammar change doesn't silently emit invalid
+// Rust identifiers (e.g. UTF-8 idents, `-`, leading digits).
+// --------------------------------------------------------------------
+
+/// One Count check loop, materialised for codegen. Public so the
+/// mp-tcp-bufsync backend can reuse the SAME collector and emit the
+/// SAME shape — single implementation, no drift, the cross-backend
+/// differential property holds.
+#[derive(Debug, Clone)]
+pub struct CountCheckLoop {
+    /// Sanitized identifier suffix — appears in the static name
+    /// `NUC_CHECK_COUNT_<ident>` and the guard local
+    /// `_nuc_check_reporter_<ident>`.
+    pub ident: String,
+    /// Original loop variable name (carried verbatim into the
+    /// stderr summary so the user sees the directive they wrote).
+    pub loop_var: String,
+    /// Threshold in nanoseconds (post-unit-normalisation, same as
+    /// `CheckFrame::latency_max_ns`).
+    pub latency_max_ns: u64,
+}
+
+/// Replace any non-`[A-Za-z0-9_]` byte with `_`; if the resulting
+/// first byte is a digit, prefix `_`. Pure-ASCII; idempotent. Two
+/// loop_vars that differ only outside the alphabet (e.g. `a-1` vs
+/// `a_1`) collide post-sanitization — but the parser would already
+/// have rejected the first form, so this is an unreachable contract
+/// position in practice; documenting it here rather than guarding it
+/// with a runtime check.
+pub fn sanitize_loop_var(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if s.is_empty() {
+        s.push('_');
+    }
+    if s.as_bytes()[0].is_ascii_digit() {
+        s.insert(0, '_');
+    }
+    s
+}
+
+/// Walk `events` recursively; collect every Count check_frame in
+/// EventList order. Deterministic order is the EventList walk
+/// order (which is itself deterministic across builds — same
+/// guarantee the rest of codegen relies on).
+pub fn collect_count_check_frames(events: &[Event]) -> Vec<CountCheckLoop> {
+    let mut out = Vec::new();
+    fn walk(events: &[Event], out: &mut Vec<CountCheckLoop>) {
+        for e in events {
+            if let Event::Loop { body, check_frame, .. } = e {
+                if let Some(frame) = check_frame {
+                    if matches!(frame.on_violation, ViolationKind::Count) {
+                        out.push(CountCheckLoop {
+                            ident: sanitize_loop_var(&frame.loop_var),
+                            loop_var: frame.loop_var.clone(),
+                            latency_max_ns: frame.latency_max_ns,
+                        });
+                    }
+                }
+                walk(body, out);
+            }
+        }
+    }
+    walk(events, &mut out);
+    out
+}
+
+/// Emit the file-scope Drop-guard struct + its `Drop` impl. Called
+/// from `render_main_rs` only when at least one Count check loop is
+/// present. The summary message is gated by `n > 0` so a clean run
+/// (zero violations) prints NOTHING to stderr — keeping stderr quiet
+/// on the happy path is what makes the cross-backend differential
+/// indifferent to Count's presence in the schedule.
+pub fn emit_count_reporter_struct(out: &mut String) {
+    writeln!(
+        out,
+        "// TASK-0052.04: per-`check loop` Count summary guard.\n\
+         struct NucCheckCountReporter {{\n\
+         \x20\x20\x20\x20counter: &'static std::sync::atomic::AtomicU64,\n\
+         \x20\x20\x20\x20loop_var: &'static str,\n\
+         \x20\x20\x20\x20threshold_ns: u64,\n\
+         }}\n\
+         impl Drop for NucCheckCountReporter {{\n\
+         \x20\x20\x20\x20fn drop(&mut self) {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let n = self.counter.load(std::sync::atomic::Ordering::Relaxed);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20if n > 0 {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"check loop `{{}}` violated latency_max={{}} ns: {{}} occurrence(s)\", self.loop_var, self.threshold_ns, n);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20}}\n\
+         }}"
+    )
+    .ok();
+}
+
 /// Render `main.rs` from a single worker's `EventList`.
 ///
 /// Strategy (mirrors the old AlgoIR walk one-for-one so the output
@@ -399,8 +507,59 @@ fn render_main_rs(
     writeln!(out, "// The user's kernel bodies live in kernels.rs.").ok();
     writeln!(out, "mod kernels;").ok();
     writeln!(out).ok();
+
+    // Real-time `check loop V : on_violation=count` (TASK-0052.04).
+    // For every `Count` check loop in the program, emit ONE file-scope
+    // `AtomicU64` static + ONE Drop guard local in `fn main` (below).
+    // The Drop guard struct itself is emitted once per file (iff any
+    // Count loop exists). The guard's Drop prints a stderr summary at
+    // run end. Stdout is untouched -> the cross-backend differential
+    // remains stable.
+    //
+    // Why Drop-guard over atexit/thread-local: see TASK-0052.04 notes.
+    // `static` (not `static mut`) + `AtomicU64` is the std-idiomatic
+    // way; no `unsafe`, no init, lock-free fetch_add. The guard struct
+    // is named `NucCheckCountReporter` (file-private).
+    let count_frames = collect_count_check_frames(events);
+    if !count_frames.is_empty() {
+        emit_count_reporter_struct(&mut out);
+        for cf in &count_frames {
+            writeln!(
+                out,
+                "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
+                 std::sync::atomic::AtomicU64::new(0);",
+                ident = cf.ident,
+            )
+            .ok();
+        }
+        writeln!(out).ok();
+    }
+
     writeln!(out, "#[allow(unused_mut, dead_code, unused_variables)]").ok();
     writeln!(out, "fn main() {{").ok();
+
+    // Per-Count-loop Drop guard local. Variable name is unique per
+    // sanitized loop_var and is `_nuc_check_reporter_<ident>`; the
+    // underscore prefix suppresses the unused-binding warning while
+    // keeping the binding alive until `fn main` returns. The Drop on
+    // the guard fires there, printing the final tally to stderr.
+    for cf in &count_frames {
+        writeln!(
+            out,
+            "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
+             \x20\x20\x20\x20}};",
+            ident = cf.ident,
+            loop_var = cf.loop_var,
+            ns = cf.latency_max_ns,
+        )
+        .ok();
+    }
+    if !count_frames.is_empty() {
+        writeln!(out).ok();
+    }
 
     // Pre-initialise every data symbol assigned via an indexed Fire
     // output and never whole-array. Sorted by name (BTreeSet) so the
@@ -781,21 +940,50 @@ fn render_event(
                         )
                         .ok();
                     }
-                    ViolationKind::Log | ViolationKind::Count => {
-                        // log/count handlers deferred to TASK-0052.04.
-                        // The projection pass currently only materialises
-                        // Panic (it is also the codegen default per
-                        // PRD §6.3.5), so the user can't currently reach
-                        // here — but a future enabling change must NOT
-                        // silently no-op the assertion. Fail loud.
-                        return Err(EmitError::ContractGap(format!(
-                            "on_violation={:?} for `check loop {lv}` is \
-                             deferred to TASK-0052.04 — only Panic is \
-                             wired in pthreads-sync codegen this cycle. \
-                             Refusing to emit without the assertion.",
-                            frame.on_violation,
+                    ViolationKind::Log => {
+                        // TASK-0052.04. eprintln-once per violation;
+                        // execution continues. Stderr-only (the
+                        // cross-backend differential compares stdout /
+                        // output.bin), so this stays determinism-safe
+                        // on the success-path bytes. The runtime SHAPE
+                        // of when this fires is non-deterministic
+                        // (clock-dependent), but that does not perturb
+                        // the byte-identical comparison.
+                        writeln!(
+                            out,
+                            "{body_pad}if _check_elapsed > {ns}_u128 {{ eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
+                            ns = frame.latency_max_ns,
                             lv = frame.loop_var,
-                        )));
+                        )
+                        .ok();
+                    }
+                    ViolationKind::Count => {
+                        // TASK-0052.04. Atomic fetch_add per violation.
+                        // The summary line is printed by the Drop on
+                        // the guard local (`_nuc_check_reporter_<id>`),
+                        // emitted at the top of `fn main`; the static
+                        // counter (`NUC_CHECK_COUNT_<id>`) lives at file
+                        // scope. Both are emitted in `render_main_rs`
+                        // from `collect_count_check_frames(events)`,
+                        // which performs the SAME walk this codegen
+                        // path takes — so the static+guard pair always
+                        // exists by the time this fetch_add runs.
+                        //
+                        // Relaxed ordering is sufficient: single-worker
+                        // emit, so there is no cross-thread fence
+                        // requirement; the Drop-time `load(Relaxed)`
+                        // observes the fetch_adds because they all
+                        // happen on the same thread before `main`
+                        // returns. (Multi-worker pthreads-sync rejects
+                        // check_frame today — TASK-0052.05.)
+                        let id = sanitize_loop_var(&frame.loop_var);
+                        writeln!(
+                            out,
+                            "{body_pad}if _check_elapsed > {ns}_u128 {{ NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
+                            ns = frame.latency_max_ns,
+                            id = id,
+                        )
+                        .ok();
                     }
                 }
             } else {
