@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 23:43'
+updated_date: '2026-05-21 23:52'
 labels:
   - M4
   - backend
@@ -142,4 +142,39 @@ Wave B-2 scope (next cycle or fresh session): replace emit()'s ContractGap with 
 - Host thread: input loading + handle joins + output writing.
 - Same-worker carveout via TASK-0214 (transfer_inject's src==dst skip means no Push/Wait reaches us for same-worker data).
 - Multi-worker check_frame via TASK-0227 (now MULTI-worker scoped, depends on TASK-0222 emit-string extraction).
+
+## Wave deliverables map (cycle-20 review-gate D.1)
+
+To make wave progress legible — AC structure stays as filed; each AC's wave assignment + status:
+
+| AC# | Wave | Status | Notes |
+|-----|------|--------|-------|
+| #1 (Ring<T> struct emitted once per file) | Wave A helper + Wave B-2 emission | Wave A DONE (helper landed cycle 18); EMISSION pending Wave B-2 | Two halves; shape complete, integration pending |
+| #2 (Per-(DataId,SeqTag) Arc<Ring<T>> sized N=buffer, starts EMPTY) | Wave A helper + Wave B-1 Plan + Wave B-2 emission | Wave A helper DONE; Wave B-1 Plan ring_caps populated DONE; EMISSION pending Wave B-2 | Three halves; same as #1 |
+| #3 (Same-worker carveout) | Wave B-2 (verify-by-construction via TASK-0214 upstream) | Pending | Should be free — transfer_inject already skips src==dst |
+| #4 (Per-worker thread::spawn + Push/Wait dispatch) | Wave B-2 | Pending | The bulk of B-2 work |
+| #5 (Multi-worker check_frame) | Wave B-2 — depends on TASK-0222 (template extraction) | Pending | Will not land until TASK-0222 lands |
+| #6 (Per-fan-out-pair sizing) | Wave B-1 Plan ring_ids structurally + Wave B-2 emission | Wave B-1 partial DONE (key is (DataId, SeqTag), fan-out tie-breaks correctly); EMISSION pending B-2 | No fan-out test yet (cycle-20 review-gate B.2) |
+| #7 (Workspace gates preserved) | Every wave gate-tracked | DONE for each cycle |
+| #8 (Codegen-string assertion tests pin Ring<T> + push/wait pair) | Wave A (struct) + Wave B-2 (push/wait pair) | Wave A struct shape DONE (4 negative+positive tests); push/wait pair tests pending B-2 |
+
+## Wave B-2 entry-criteria (decide BEFORE writing render_main_rs_multi)
+
+- **TASK-0234** (cycle 20 filed): decide Event::Sync handling — ContractGap-reject vs Barrier emit. Wave B-1's Plan SILENTLY SKIPS Event::Sync; Wave B-2 must close this gap explicitly.
+- **TASK-0222** (still To Do): template extraction is a precondition for TASK-0228 AC#5 (multi-worker check_frame). Wave B-2's check_frame work BLOCKS on TASK-0222 landing.
+- **Realistic estimate**: Wave B-2 is ~2-4 cycles in itself (~800 LoC of render_main_rs_multi mirroring pthreads-sync's, plus per-worker dispatch, plus compile-check integration test). The cycle-20 close 'next cycle or fresh session' phrasing was optimistic; revise the next implementer's expectation downward.
+
+## Cycle-20 review-gate lockstep fixes applied in-thread (this commit + amend)
+
+- LOW E.2 (.expect → .ok_or_else): aligned with pthreads-sync precedent. Now typed ContractGap if the upstream guard regresses.
+- LOW A.5 (debug_assert ring_ids.len() == ring_caps.len()): added at Plan::build site so a production-build regression catches the join collapse (the test pins it already; the assert is defense-in-depth).
+- A.1 / E.3 (Event::Sync silently skipped): now docstring-flagged on collect_xfer_pairs with forward-link to TASK-0234.
+- D.1 (AC list doesn't reflect wave progress): this notes block IS the Wave deliverables map (architect recommended option (b)).
+
+## Cycle-20 review-gate items NOT applied this cycle
+
+- B.2 (fan-out test fixture using 05-stencil/distributed): the schedule's  exceeds the sync tier-1 capability surface but should still LOWER cleanly for sidecar testing. Adding the test is bounded but I'm leaving it for cycle 21 — deferring rather than over-running this cycle's budget.
+- C.1 (per-item dead_code allows): when Wave B-2 removes the module-level allow, audit each unused item then.
+- C.2 (pair_tiles consumer hypothetical): Wave B-2 must consume or delete. Documented as Wave B-2 must-decide.
+- A.2 (guard message conflates n==0/n==1): nice-to-have polish in Wave B-2 commit.
 <!-- SECTION:NOTES:END -->

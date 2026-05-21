@@ -139,9 +139,22 @@ impl<'a> Plan<'a> {
             .find(|(_, n)| n.as_str() == "host")
             .map(|(w, _)| *w)
             .filter(|w| used_workers.contains(w));
+        // Mirror pthreads-sync's `.ok_or_else(...)` shape (cycle-20
+        // review-gate E.2): typed error instead of `.expect()` so a
+        // future refactor that breaks the `len() >= 2` guard above
+        // surfaces as a typed ContractGap rather than a panic. The
+        // guard is upstream; this branch is structurally unreachable
+        // today, but the alignment with pthreads-sync's precedent
+        // keeps error handling consistent across backends.
         let host_worker = host_named
             .or_else(|| used_workers.first().copied())
-            .expect("used_workers.len() >= 2 guarantees first() is Some");
+            .ok_or_else(|| {
+                EmitError::ContractGap(
+                    "pthreads-async Plan: used_workers reachable to host \
+                     election but empty — invariant len() >= 2 violated"
+                        .to_string(),
+                )
+            })?;
 
         // Collect cross-worker (DataId, SeqTag) pairs from every
         // Push/Wait in every worker's events. The pair-tile is the
@@ -187,6 +200,23 @@ impl<'a> Plan<'a> {
             ring_caps.insert((*data, *seq), cap);
         }
 
+        // Defensive site-local assertion (cycle-20 review-gate A.5):
+        // ring_ids and ring_caps must be in 1:1 correspondence.
+        // A divergence here would indicate that the (seq -> cap) join
+        // silently collapsed two pairs onto one entry — only possible
+        // if the SeqTag-globally-unique invariant (tightened in cycle
+        // 19 at event.rs:155-167) regressed. The tests already pin
+        // this, but a debug_assert at the build site catches a
+        // production-build regression that the test suite misses.
+        debug_assert_eq!(
+            ring_ids.len(),
+            ring_caps.len(),
+            "ring_ids and ring_caps must be 1:1; a divergence here means \
+             two distinct (DataId, SeqTag) pairs collapsed onto one \
+             SeqTag in transfer_buffer_for_seq — see event.rs SeqTag \
+             docstring (load-bearing for TASK-0233)."
+        );
+
         Ok(Plan {
             per_worker,
             names,
@@ -223,6 +253,14 @@ impl<'a> Plan<'a> {
 /// One entry per pair: the second sighting (the matching endpoint)
 /// is `.or_insert_with` a no-op since the tile is identical on both
 /// endpoints (transfer_inject invariant).
+///
+/// **Event::Sync is SKIPPED silently** (cycle-20 review-gate A.1 +
+/// E.1): a multi-worker schedule with barriers will reach Wave B-2
+/// without the Plan recording any barrier participants. Wave B-2 must
+/// either (a) reject `Event::Sync` with a typed ContractGap, or (b)
+/// extend the Plan with `barrier_participants` (matching
+/// pthreads-sync's field) and emit `std::sync::Barrier` like
+/// pthreads-sync does. Filed as TASK-0234 for Wave B-2 entry-criterion.
 fn collect_xfer_pairs(
     events: &[Event],
     out: &mut BTreeMap<(DataId, SeqTag), IterTile>,
