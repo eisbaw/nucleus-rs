@@ -37,14 +37,14 @@ deployed ML cares about anyway.
 
 ## Required schedules — current cycle status
 
-Landed cycle-2 of TASK-0053 (post TASK-0209):
+Landed across TASK-0053 cycle-2 + TASK-0209 + TASK-0117 + TASK-0212:
 
 | Schedule          | Backend         | Status     | Notes                                            |
 | ----------------- | --------------- | ---------- | ------------------------------------------------ |
 | naive             | pthreads-sync   | REQUIRED   | byte-identical to `reference.bin`.               |
 | naive             | mp-tcp-bufsync  | REQUIRED   | single-process under mp-tcp; same renderer.      |
-| batch_parallel    | pthreads-sync   | SKIPPED    | TASK-0211 (multi-worker transfer distribution).  |
-| batch_parallel    | mp-tcp-bufsync  | SKIPPED    | TASK-0175 + TASK-0211.                           |
+| batch_parallel    | pthreads-sync   | **REQUIRED** | four-worker partition=workers; transfer-injection fan-out (TASK-0117) + per-worker loop-bound rewrite (TASK-0212). Byte-identical to `reference.bin`. |
+| batch_parallel    | mp-tcp-bufsync  | SKIPPED    | TASK-0175 (host-excluding barrier) + mp-tcp slot-keying not yet ported to (DataId, SeqTag). |
 | pipeline_parallel | (both)          | SKIPPED    | TASK-0210 (async+buffer+event tier-2).           |
 
 `naive` exercises the load-bearing claim of this example: a single

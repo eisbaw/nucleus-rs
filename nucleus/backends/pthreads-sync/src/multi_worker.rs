@@ -743,6 +743,25 @@ impl<'a> Plan<'a> {
     /// axis range exceeds the data's leading-dim length; that is a
     /// compiler-pass invariant violation worth failing loud rather
     /// than silently emitting an out-of-bounds slice.
+    ///
+    /// **HONEST-PARTIAL ASSUMPTION (TASK-0117 cycle-1 review-gate
+    /// finding):** this gather code assumes `tile.bounds[0].iter_var`
+    /// maps to the DATA's leading dim (axis 0). The `_iv` is
+    /// currently not consulted — only the numerical range is
+    /// validated. For the in-tree `partition=workers` schedules
+    /// (example 13's `loop n : partition=workers` on rank-4 data
+    /// `f32[B][C][H][W]` where `n` IS the leading-axis index), this
+    /// holds. For a hypothetical inner-axis partition
+    /// (`loop k : partition=workers` on `data D : i32[B][K]` where
+    /// `k` is axis 1, NOT axis 0), the slice would silently address
+    /// the WRONG axis. The numerical bounds-check guards against
+    /// out-of-range slices but NOT against wrong-axis selection.
+    /// Tracked as a honest-limit in TASK-0117 final notes (§ "Honest
+    /// limits / not-tested-this-cycle"); a future cycle that exercises
+    /// inner-axis partition must extend this helper to consult
+    /// `_iv → axis` via the data-type metadata. Failing loud with a
+    /// dedicated EmitError variant would be preferable to silent
+    /// wrong-axis slicing; left as a follow-up.
     fn leading_axis_slice(
         &self,
         data: DataId,
