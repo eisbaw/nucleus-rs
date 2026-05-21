@@ -30,13 +30,23 @@
 //! and then validated against each property in turn.
 //!
 //! For convenience this module also exposes [`derive_firing_order`]
-//! that produces a deterministic order by repeatedly picking the
-//! lowest-id enabled transition until none remain. The chain of
-//! per-worker control places (built by `acfg_to_petri` — see TASK-0026)
-//! guarantees that this greedy strategy advances each worker through
-//! its own per-worker linear order, and that cross-worker transitions
-//! (Sync, Push/Wait pairs) only become enabled once all upstream
-//! per-worker tokens are present.
+//! that produces a deterministic order by walking a virtual marking:
+//! at each step it picks the first transition in source order that is
+//! *firable* under the current marking (enabled AND not capacity-
+//! overflowing). The chain of per-worker control places (built by
+//! `acfg_to_petri` — see TASK-0026) guarantees that this strategy
+//! advances each worker through its own per-worker linear order, and
+//! that cross-worker transitions (Sync, Push/Wait pairs) only become
+//! enabled once all upstream per-worker tokens are present.
+//!
+//! The marking-aware step is what makes the order respect *initial
+//! marking* — when a buffer place is pre-marked at capacity by a
+//! `pipeline=D` loop (TASK-0134), the producer Push at the head of
+//! the source order is not firable (it would overflow), so the
+//! algorithm naturally pulls the matching consumer Wait forward.
+//! For nets without nonzero initial markings the source-order
+//! tiebreak makes the result identical to plain insertion order, so
+//! existing non-pipelined fixtures see no change (TASK-0213).
 //!
 //! ## Errors
 //!
@@ -226,33 +236,101 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// Produce a deterministic firing order from a net built by
 /// [`crate::passes::acfg_to_petri::acfg_to_net`].
 ///
-/// ## Why insertion order works for v2 nets
+/// ## Algorithm
 ///
-/// `acfg_to_net` walks the ACFG depth-first in source order. Every
-/// transition it emits is appended to the net in that walk order, so
-/// `TransitionId(i) = TransitionId(i+1)` reflects "i was emitted
-/// before i+1". The walk itself respects per-worker control chains
-/// (each worker advances strictly through its own slots) and
-/// cross-worker dataflow (a Push is emitted before its matched Wait,
-/// because that's the source order). Hence the *insertion order*
-/// 0, 1, ..., N-1 is a legal firing order for the net.
+/// At each step, replay against a virtual marking (initialised from
+/// `net.initial_marking`) and pick the *first* transition in source
+/// order that is firable — i.e. enabled (every input place has enough
+/// tokens) AND would not overflow any output place's capacity. Fire
+/// it, drop it from the remaining set, repeat. Stop when either:
 ///
-/// PRD §8.6 describes the linearisation as "deterministic greedy
-/// (source order + dataflow constraints)". Insertion order *is* source
-/// order, and the dataflow constraints are discharged structurally by
-/// the per-worker control chain. So we don't need a runtime greedy
-/// search — we just trust the construction.
+/// 1. every transition has been fired (success — the returned order
+///    is a legal firing sequence), or
+/// 2. no remaining transition is firable. We append the remaining
+///    transitions in source order so that [`check_bounded`] /
+///    [`check_deadlock_free`] still surface a precise diagnostic at
+///    the stall point (`BoundednessError::CapacityExceeded` or
+///    `BoundednessError::InvalidFiringOrder` /
+///    `DeadlockError::Stalled`) rather than silently truncating.
+///
+/// ## Why this (vs. plain insertion order)
+///
+/// `acfg_to_net` walks the ACFG depth-first in source order, so
+/// transition ids are assigned in source order and per-worker control
+/// chains discharge most ordering constraints structurally. For nets
+/// without nonzero initial markings, source order *is* a legal
+/// firing sequence, and the algorithm above degenerates to "fire
+/// transitions in id order" — so all pre-TASK-0213 fixtures see no
+/// change.
+///
+/// What pure insertion order does NOT cope with is a buffer place
+/// pre-marked at capacity by a `pipeline=D` loop (TASK-0134). The
+/// producer Push appears first in source order but is *not firable*
+/// under the initial marking — the buffer is already full, so the
+/// Push would overflow. The algorithm pulls the matching consumer
+/// Wait forward (it appears later in source order but is firable
+/// under the initial marking), which is exactly the legal firing
+/// sequence the pipelined net admits.
 ///
 /// We accept any [`Net`] here, not only nets built by `acfg_to_net`.
 /// For other producers the function still returns a deterministic
-/// order, and [`check_bounded`] will surface a clear
-/// [`BoundednessError::InvalidFiringOrder`] if the order turns out
-/// not to be a legal interleaving.
+/// order; if the net is genuinely deadlocked or boundedness-broken
+/// the downstream passes surface it cleanly.
 ///
-/// **Determinism**: a `Vec` iterated in index order is the most
-/// deterministic possible source — no hash maps, no greedy tiebreaks.
+/// ## Determinism
+///
+/// - Source order is iteration over a `Vec<Transition>`, indexed
+///   `0..N`. No hash-map iteration.
+/// - The virtual marking lives in a cloned `Net` and so reuses the
+///   `BTreeMap`-backed `Marking` (see `petri.rs`).
+/// - The "first firable" tiebreak is by source index, the cheapest
+///   deterministic choice. For the same `net` the output is
+///   byte-identical across runs.
 pub fn derive_firing_order(net: &Net) -> Vec<TransitionId> {
-    net.transitions.iter().map(|t| t.id).collect()
+    let total = net.transitions.len();
+    let mut order = Vec::with_capacity(total);
+    let mut fired: Vec<bool> = vec![false; total];
+
+    // Replay against a cloned net so we don't touch the caller's
+    // marking. `reset_to_initial` makes the simulator start from the
+    // declared initial marking (TASK-0134's `initial_marking = D`
+    // lands here).
+    let mut sim = net.clone();
+    sim.reset_to_initial();
+
+    'outer: loop {
+        // Scan in source order; the first firable un-fired transition
+        // wins. `Net::fire` commits on success and leaves the marking
+        // alone on failure, so we can use it as the firability oracle
+        // directly without an extra `enabled_transitions` call.
+        for (idx, t) in net.transitions.iter().enumerate() {
+            if fired[idx] {
+                continue;
+            }
+            if sim.fire(t.id).is_ok() {
+                order.push(t.id);
+                fired[idx] = true;
+                continue 'outer;
+            }
+        }
+        // No remaining transition is firable. Either we are done
+        // (every fired[i] is true) or the net is structurally stuck
+        // and downstream passes will diagnose. In the stuck case,
+        // append leftovers in source order so the diagnostic points
+        // at the first stuck transition rather than silently
+        // truncating the trace.
+        break;
+    }
+
+    if order.len() < total {
+        for (idx, t) in net.transitions.iter().enumerate() {
+            if !fired[idx] {
+                order.push(t.id);
+            }
+        }
+    }
+
+    order
 }
 
 // --------------------------------------------------------------------

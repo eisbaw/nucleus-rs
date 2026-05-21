@@ -268,6 +268,33 @@ fn e2e_example_01_naive_is_bounded() {
     check_bounded(&net, &order).expect("example 01 naive must be bounded by construction");
 }
 
+#[test]
+fn derive_firing_order_preserves_source_order_on_nonpipelined_fixture() {
+    // TASK-0213 regression: when no place carries an initial marking
+    // that forces a reorder, derive_firing_order must return the
+    // plain source order (TransitionId(0), TransitionId(1), ...).
+    //
+    // This pins the behaviour for every pre-TASK-0213 fixture: the
+    // marking-aware algorithm degenerates to source-order whenever
+    // source-order is already a legal firing sequence.
+    //
+    // Example 02 naive is the simplest example with multiple
+    // transitions in source order; it has no buffer places and no
+    // initial markings beyond the per-worker control places (each
+    // pre-marked with exactly 1 to enable that worker's first step).
+    use compiler::petri::TransitionId;
+    let net = pipeline_to_net(
+        "02-split-add/prog.algo.nuc",
+        "02-split-add/schedules/naive.sched.nuc",
+    );
+    let order = derive_firing_order(&net);
+    let expected: Vec<TransitionId> = net.transitions.iter().map(|t| t.id).collect();
+    assert_eq!(
+        order, expected,
+        "non-pipelined fixture must keep plain insertion order"
+    );
+}
+
 // --------------------------------------------------------------------
 // Determinism
 // --------------------------------------------------------------------

@@ -762,27 +762,13 @@ fn e2e_example_13_pipeline_parallel_is_deterministic() {
 }
 
 #[test]
-#[ignore = "deferred to TASK-0213 — boundedness must be initial-marking-aware"]
 fn e2e_example_13_pipeline_parallel_passes_boundedness_and_deadlock() {
-    // TASK-0134 AC#5 partial — DEFERRED.
-    //
-    // With initial_marking=D and capacity=N=D on a pipelined buffer
-    // place, the source-order firing trace tries to fire Push first
-    // (buffer at D + 1 = capacity-overflow). The buffer place is
-    // FULL at startup; the consumer must fire BEFORE the producer.
-    // `derive_firing_order` is not yet marking-aware, so this trips.
-    //
-    // The tension is structural: interpretation (a) of PRD §8.2
-    // puts D head-start tokens in the buffer place, which is
-    // mutually exclusive with source-order firing when D = N.
-    // Resolution lives in TASK-0213: either generalise
-    // derive_firing_order to consult initial markings, or change
-    // acfg_to_petri to eliminate D Push transitions (representing
-    // them as pre-fired by the initial marking).
-    //
-    // The TASK-0134 IR contract (the sidecar and the
-    // initial_marking emission) is in place; this assertion will
-    // re-enable when TASK-0213 lands.
+    // TASK-0213: derive_firing_order is now marking-aware. With
+    // initial_marking=D and capacity=N=D on a pipelined buffer
+    // place, the producer Push at the head of source order is not
+    // firable (buffer is full at startup), so the algorithm pulls
+    // the matching consumer Wait forward and produces a legal
+    // firing sequence. Both boundedness and deadlock-freedom hold.
     let net = pipeline_to_net(
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",

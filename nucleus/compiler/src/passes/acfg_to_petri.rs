@@ -105,6 +105,51 @@
 //! metadata not currently in the ACFG, and the link-step
 //! `D <= N` check (TASK-0134 AC#3) makes (a) safe for any backend.
 //!
+//! ### Elision of D head-start pushes (TASK-0213)
+//!
+//! With `initial_marking = D` and capacity `N = D` on the same buffer
+//! place, the *first* Push in the unrolled loop body would overflow
+//! the buffer on firing (the buffer is already at capacity). The
+//! per-worker control chain plus the sync-injector's barrier between
+//! Push and Wait forces Push to fire before Wait, so no marking-aware
+//! firing order can resolve this (path 1 of the TASK-0213 brief — the
+//! recursive consumer closure leads straight back to the producer
+//! through the sync_barrier).
+//!
+//! Resolution: treat `initial_marking = D` and "the first D Push
+//! transitions" as TWO EXPRESSIONS OF THE SAME CREDITS (PRD §8.2:
+//! "tokens placed in pipeline-register places by the initial marking
+//! ... schedule keywords lower into different initial markings on the
+//! same kind of place"). Concretely, the first D Push transitions
+//! per seq DO NOT add a `TtoP` arc to the buffer place; their
+//! buffer-side effect is folded into the place's initial marking.
+//! All N pushes still exist as transitions (worker-control chain
+//! intact, EventList projection unchanged, runtime codegen unchanged).
+//! Only the analysis-level buffer arithmetic credits the first D
+//! pushes against the initial marking.
+//!
+//! Net effect on the buffer:
+//!
+//! ```text
+//!  initial = D
+//!  + (N - D) real pushes  (the last N - D)
+//!  - N waits
+//!  = 0  (end state)
+//! ```
+//!
+//! Honest mismatch with runtime semantics: at runtime, all N pushes
+//! deposit into the ring buffer, and consumers drain in parallel —
+//! the buffer never holds more than D items concurrently, but the
+//! *pre-fill* the analysis net models does not actually exist in the
+//! backend's ring buffer. The analysis-net encoding is a *
+//! conservative bound* — if it accepts, the runtime will also be
+//! within capacity. The encoding is not a one-to-one trace of runtime
+//! state. This trade was made deliberately because (i) backends
+//! consume the EventList, not the analysis net, so divergence is
+//! invisible to codegen, and (ii) the alternative IR (interpretation
+//! (b), per-stage decremented markings) requires stage-numbering
+//! metadata that the ACFG does not carry.
+//!
 //! For Petri-net analysis purposes: an `async, buffer=N` transfer
 //! still has the *same* net shape as `sync` apart from the buffer
 //! place's capacity. Synchrony affects when the producer is considered
@@ -229,6 +274,15 @@ struct NetBuilder<'a> {
     /// Useful only for human-readable labels; firing semantics depend
     /// solely on arc structure.
     slot_counters: BTreeMap<WorkerId, u32>,
+    /// TASK-0213: count of Push transitions emitted so far per seq.
+    /// Used to elide the buffer-side `TtoP` arc on the first `D`
+    /// Push transitions when the seq has a pipeline-depth sidecar
+    /// entry (initial_marking = D on its buffer place). The first D
+    /// pushes are represented as already accounted for by the head-
+    /// start initial marking; only the remaining N-D pushes deposit
+    /// new tokens. See the `Elision of D head-start pushes` module-
+    /// doc section above for the full rationale.
+    push_count_per_seq: BTreeMap<SeqTag, u32>,
 }
 
 impl<'a> NetBuilder<'a> {
@@ -257,6 +311,7 @@ impl<'a> NetBuilder<'a> {
             worker_current,
             buffer_places: BTreeMap::new(),
             slot_counters,
+            push_count_per_seq: BTreeMap::new(),
         }
     }
 
@@ -357,8 +412,55 @@ impl<'a> NetBuilder<'a> {
 
         match x.role {
             XferRole::Push => {
-                // Push deposits one token into the buffer place.
-                self.net.add_arc(ArcKind::TtoP, bpid, tid, 1);
+                // TASK-0213: elide the buffer-deposit arc for the
+                // first D pushes per seq when this seq lives inside
+                // a `pipeline=D` loop. The buffer place already
+                // carries `initial_marking = D` (TASK-0134); those
+                // D head-start credits ARE the first D pushes,
+                // expressed as the initial marking. Emitting a real
+                // TtoP arc for them would overflow the capacity-D
+                // buffer on the very first firing (PRD §8.2's
+                // mapping table treats initial marking and producer
+                // firings as alternative encodings of the same
+                // pipeline-depth credit).
+                //
+                // The Push *transition* still exists: it still
+                // threads through the worker's control chain, still
+                // shows up as a `Push` event in the EventList
+                // projection (the EventList is built from the ACFG
+                // by `acfg_to_events`, not the net — see
+                // `petri_to_events.rs`), and still drives runtime
+                // codegen to emit a real Push call. Only the
+                // *buffer-side* effect is folded into the initial
+                // marking.
+                //
+                // Per-seq counter is bumped unconditionally so the
+                // ELIDE/EMIT decision uses the count BEFORE this
+                // push (1-based comparison: push #1..#D elide,
+                // push #(D+1).. emit).
+                //
+                // CAVEAT (TASK-0217): when `D > iteration_count`,
+                // every push for the seq is elided. The buffer place
+                // ends with `D - iteration_count` leftover tokens
+                // (boundedness still holds; the leftover is below
+                // capacity). The link step (TASK-0134 AC#3) only
+                // rejects `D > buffer=N`, not `D > iteration_count`;
+                // the latter is semantically odd but not unsafe.
+                // TASK-0217 will either reject it at link time or
+                // document it as intentional.
+                let count = self.push_count_per_seq.entry(x.seq).or_insert(0);
+                *count += 1;
+                let depth = self
+                    .acfg
+                    .pipeline_depth_for_seq
+                    .get(&x.seq)
+                    .map(|d| u32::try_from(d.get()).unwrap_or(u32::MAX))
+                    .unwrap_or(0);
+                if *count > depth {
+                    self.net.add_arc(ArcKind::TtoP, bpid, tid, 1);
+                }
+                // else: this push is a head-start credit; the buffer
+                // initial marking already accounts for it.
             }
             XferRole::Wait => {
                 // Wait consumes one token from the buffer place.
