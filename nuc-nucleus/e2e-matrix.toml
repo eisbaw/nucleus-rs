@@ -457,22 +457,31 @@ backend  = "mp-tcp-bufsync"
 reason   = "TASK-0175 (host-excluding barrier) + TASK-0117 (transfer-injection fan-out across distributed entities, upstream root of TASK-0211)"
 milestone = "M3"
 
-# Example 13 pipeline_parallel × both backends: requires async + buffer=3
-# + notify=event, none of which any tier-1 backend supports (sync
-# transports, single-buffer slots, polled notification). Filed and
-# tracked as TASK-0210; waits on a tier-2 async + buffer + event-capable
-# backend.
+# Example 13 pipeline_parallel × the two SYNC tier-1 backends:
+# requires async + buffer=3 + notify=event, none of which pthreads-sync
+# or mp-tcp-bufsync supports (sync transports, single-buffer slots,
+# polled/barrier notification). Filed and tracked as TASK-0210.
+#
+# Update (TASK-0042.01 cycle 16, 2026-05-21): pthreads-async is a
+# registered tier-1 backend whose capabilities.toml declares
+# supports_async=true + supports_buffer=true + notify=["event"], so the
+# capability surface IS now satisfiable. However its emit() is a
+# skeleton returning ContractGap (TASK-0226 carries the actual
+# ring-buffer codegen). The pipeline_parallel × pthreads-async e2e
+# cells will land alongside TASK-0229; until then pthreads-async is
+# absent from the `backends = [...]` list above on purpose, so no
+# false-fail surfaces from the skeleton.
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "pthreads-sync"
-reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by any tier-1 backend; awaits a tier-2 async backend"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by pthreads-sync (sync, single-buffer, barrier/blocking only); the registered tier-1 async backend `pthreads-async` declares the matching capability but its codegen body is a skeleton (TASK-0226)"
 milestone = "M3"
 
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by any tier-1 backend; awaits a tier-2 async backend"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only); the registered tier-1 async backend `pthreads-async` declares the matching capability but its codegen body is a skeleton (TASK-0226)"
 milestone = "M3"
 

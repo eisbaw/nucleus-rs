@@ -1,0 +1,43 @@
+# pthreads-async backend crate (SKELETON). See PRD §7.1, TASK-0042.01.
+#
+# Tier-1 CPU backend: std::thread + std::sync::Condvar + bounded ring
+# buffer per (DataId, SeqTag). supports_async=true, supports_buffer=true
+# — the THIRD tier-1 backend, providing the buffered/pipelined surface
+# that the two sync tier-1 backends (pthreads-sync, mp-tcp-bufsync)
+# cannot. Same workspace shape as pthreads-sync (shared memory, single
+# binary, copy-of-kernels.rs).
+#
+# ## Current status: SKELETON (TASK-0042.01 cycle 16, 2026-05-21)
+#
+# The crate, capabilities.toml, public `emit(...)` entry point,
+# workspace registration, and driver dispatch arm are wired through.
+# The actual codegen body (ring buffer + Condvar + check_frame
+# integration) is NOT in this cycle — it is the subject of follow-up
+# sub-tasks TASK-0226 / 0227 / 0228 / 0229 that depend on this
+# foundation. `emit()` returns `EmitError::ContractGap` until then.
+
+[package]
+name = "pthreads-async"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "pthreads_async"
+path = "src/lib.rs"
+
+[dependencies]
+# Post-TASK-0124 the backend consumes only the per-worker EventList +
+# NameSidecar + inert expr grammar from `compiler`. No parser / lower /
+# link / acfg internals.
+compiler = { path = "../../compiler" }
+# Shared codegen + reverse name tables + error type. Mirrors the
+# mp-tcp-bufsync precedent (TASK-0036): `EmitError` + `NameTables` are
+# single-sourced in pthreads-sync so the driver builds them ONCE and
+# feeds every tier-1 backend the identical input (PRD §8.4 — the
+# cross-backend differential requires bitwise input identity). Until
+# TASK-0226 lands the ring-buffer codegen, this dep is only for the
+# re-exports; the helper functions for emit-string templates will be
+# consumed by TASK-0226/0227 as they land.
+pthreads-sync = { path = "../pthreads-sync" }

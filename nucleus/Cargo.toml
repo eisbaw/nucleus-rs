@@ -16,6 +16,11 @@ members = [
     "mp-tcp-common",
     "backends/pthreads-sync",
     "backends/mp-tcp-bufsync",
+    # pthreads-async (TASK-0042.01 cycle 16): skeleton only — `emit()`
+    # returns `ContractGap` until TASK-0226 lands the ring-buffer +
+    # Condvar codegen. The workspace member is registered so the
+    # capability-compat check + driver dispatch work end-to-end.
+    "backends/pthreads-async",
 ]
 
 [workspace.package]

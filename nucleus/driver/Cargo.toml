@@ -27,3 +27,7 @@ path = "src/main.rs"
 compiler = { path = "../compiler" }
 pthreads-sync = { path = "../backends/pthreads-sync" }
 mp-tcp-bufsync = { path = "../backends/mp-tcp-bufsync" }
+# pthreads-async — third tier-1 backend, skeleton (TASK-0042.01 cycle 16);
+# emit() returns ContractGap until TASK-0226 lands ring-buffer codegen.
+# The dispatch arm in main.rs surfaces the precise forward-link.
+pthreads-async = { path = "../backends/pthreads-async" }

@@ -31,11 +31,15 @@
 //! also triggering backend codegen. If both `--out` and `--emit-pn`
 //! are given, both outputs are produced.
 //!
-//! Registered backends: `pthreads-sync` (M1, shared-memory threads)
-//! and `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
-//! TASK-0036). Both consume the identical EventList contract; the
-//! cross-backend differential (same source -> bit-identical
-//! output.bin under both) is the M3 headline.
+//! Registered backends: `pthreads-sync` (M1, shared-memory threads),
+//! `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
+//! TASK-0036), and `pthreads-async` (M4, shared-memory + per-(DataId,
+//! SeqTag) ring buffer + Condvar — TASK-0042.01; SKELETON only in
+//! cycle 16, codegen body is TASK-0226). All three consume the
+//! identical EventList contract; the cross-backend differential (same
+//! source -> bit-identical output.bin) is the M3 headline (two-way
+//! today) and the M4 headline (three-way once TASK-0229 lands the
+//! pthreads-async e2e cells).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -81,7 +85,10 @@ fn print_help() {
          \n\
          BACKENDS:\n    \
              pthreads-sync   shared-memory threads (tier 1)\n    \
-             mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n"
+             mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
+             pthreads-async  shared-memory + ring buffer (tier 1)\n                     \
+                             (SKELETON — codegen is TASK-0226; capability\n                     \
+                             matrix is real, codegen body is not yet wired)\n"
     );
 }
 
@@ -448,8 +455,28 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // Third tier-1 backend (TASK-0042.01): shared-memory + ring
+        // buffer per (DataId, SeqTag). SKELETON in this cycle (16) —
+        // `pthreads_async::emit` returns ContractGap until TASK-0226
+        // lands the ring-buffer + Condvar codegen. The capability
+        // matrix + dispatch wiring are real so that schedule authoring
+        // can target this backend now; the user-facing error from this
+        // arm carries the precise forward-link.
+        "pthreads-async" => {
+            let result =
+                pthreads_async::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("pthreads-async codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            println!("main_rs     = {}", result.main_rs.display());
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
-            "unknown backend `{other}`; registered: `pthreads-sync`, `mp-tcp-bufsync`"
+            "unknown backend `{other}`; registered: `pthreads-sync`, \
+             `mp-tcp-bufsync`, `pthreads-async`"
         )),
     }
 }

@@ -1,0 +1,35 @@
+# capabilities.toml for the pthreads-async backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1 row pthreads-async: tier-1 CPU backend, std::thread +
+# std::sync::Condvar + bounded ring buffer; shared memory transport;
+# supports_async=true, supports_buffer=true.
+#
+# This file is read by the capability-compat check (TASK-0118) the
+# moment the driver receives `--backend pthreads-async`, EVEN
+# THOUGH this backend's `emit()` is still a SKELETON returning
+# ContractGap (TASK-0042.01 cycle 16). The capability surface IS
+# real — a schedule that requires async/buffered transfers will
+# compatibility-check against pthreads-async correctly, but the
+# subsequent codegen call surfaces the skeleton with a precise
+# forward-link to TASK-0226 (ring-buffer codegen). That separation
+# is deliberate: the capability matrix matures FIRST so that
+# schedule authoring can target pthreads-async, with codegen
+# arriving in subsequent cycles.
+#
+# `max_buffer = 64` is a conservative initial cap. The ring buffer
+# is `std::sync::Mutex<VecDeque<T>>` + condvars (see TASK-0226's
+# ring-buffer pseudocode forward-carried from TASK-0042.01 notes);
+# 64 elements of even a small token type are <<heap-budget on the
+# host platforms in scope, but a real per-cell bound becomes
+# meaningful at M4 examples 9 / 11 — TASK-0226 may raise this if
+# the e2e cells justify it.
+
+name            = "pthreads-async"
+tier            = 1
+transport       = "shared-memory"
+notify          = ["event"]
+supports_async  = true
+supports_buffer = true
+max_buffer      = 64
+worker_classes  = ["default"]
+memory_regions  = ["heap"]
