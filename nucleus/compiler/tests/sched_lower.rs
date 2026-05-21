@@ -700,6 +700,26 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_block_pipeline_combination_on_same_loop_is_rejected() {
+    // TASK-0215: `loop V : block=N, pipeline=D` has ambiguous semantics
+    // (per-tile vs per-iter pipelining) and is rejected at sched-lower.
+    // PRD §6.3.3: "bad combinations rejected at compile time".
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop n : block=4, pipeline=2;
+}
+";
+    let err = lower_str(src).expect_err("block+pipeline on same loop must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::BlockPipelineConflict {
+            var: "n".into(),
+        }
+    );
+}
+
+#[test]
 fn negative_check_on_strip_mined_loop_is_rejected() {
     // TASK-0052.02 review-gate finding #3: `loop V : block=N;` +
     // `check loop V : latency_max=T;` would silently drop the check

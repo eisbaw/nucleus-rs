@@ -115,8 +115,10 @@
 //!   `acfg_to_petri` (sets buffer-place `initial_marking=D`); see
 //!   [`crate::acfg::ACFG::pipeline_depth_for_seq`] (TASK-0134).
 //!   `partition=workers` is consumed by `partition_workers` (TASK-0212).
-//!   Combining `block=N` with `pipeline=D` on the same loop is a
-//!   silent under-tested area (TASK-0215).
+//!   The `block=N + pipeline=D` combination on the same loop is
+//!   REJECTED at sched-lower via `SchedLowerErrorKind::BlockPipelineConflict`
+//!   (TASK-0215 — closed). Per PRD §6.3.3 the semantics would be
+//!   ambiguous (per-tile vs per-iter pipelining); the user picks one.
 
 use std::collections::BTreeMap;
 

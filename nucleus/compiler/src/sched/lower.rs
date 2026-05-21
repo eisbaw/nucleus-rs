@@ -142,6 +142,7 @@ use super::ir::{
 /// | `UnitPipelineOption`                   | Independent | yes               | never |
 /// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
+/// | `BlockPipelineConflict`                | Independent | yes               | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -870,6 +871,26 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
     for opt in &l.options {
         options.push(lower_loop_option(var, var_span, opt)?);
     }
+
+    // TASK-0215: reject `block=N + pipeline=D` on the same loop.
+    // PRD §6.3.3 "bad combinations rejected at compile time".
+    // The combination's semantics are ambiguous (per-tile vs
+    // per-iter pipelining) and block_transform's current iter-var
+    // reuse would silently land pipeline=D on intra-tile iterations,
+    // almost certainly not the schedule author's intent.
+    let has_block = options
+        .iter()
+        .any(|opt| matches!(opt, ResolvedLoopOption::Block(_)));
+    let has_pipeline = options
+        .iter()
+        .any(|opt| matches!(opt, ResolvedLoopOption::Pipeline(_)));
+    if has_block && has_pipeline {
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::BlockPipelineConflict { var: var.clone() },
+            var_span.clone(),
+        ));
+    }
+
     ir.loops.insert(
         var.clone(),
         ResolvedLoopDirective {

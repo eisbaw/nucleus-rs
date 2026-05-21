@@ -468,6 +468,19 @@ pub enum SchedLowerErrorKind {
     /// close the panic-not-diagnostic gap (TASK-0052.02 review-gate
     /// finding #1).
     MissingLatencyMax { var: String },
+    /// `loop V : block=N, pipeline=D` — both options on the same
+    /// loop. PRD §6.3.3: "Loop options are orthogonal where possible.
+    /// Bad combinations ... are rejected at compile time, not at
+    /// runtime." The block + pipeline combo has ambiguous semantics:
+    /// after `block_transform` tiles V into outer/inner, where does
+    /// pipeline=D apply? Per-tile (D in-flight tiles)? Per-iter
+    /// (D in-flight intra-tile iterations)? The current block_transform
+    /// reuses the iter-var id for the inner intra-tile loop, so the
+    /// downstream pipeline=D would land on intra-tile iterations —
+    /// almost certainly not what the schedule author intended. Reject
+    /// at sched-lower with a precise diagnostic so the user picks
+    /// ONE of (block, pipeline) for now (TASK-0215).
+    BlockPipelineConflict { var: String },
     /// `loop V : block=N;` + `check loop V : latency_max=T;` — the
     /// loop V has both a strip-mine directive AND a latency check.
     /// `block_transform` tiles V into outer/inner; the inner Event::Loop
@@ -652,6 +665,13 @@ impl std::fmt::Display for SchedLowerErrorKind {
                  a check directive must contain a measurement assert \
                  (`on_violation` alone is meaningless — it is the action \
                  when an assertion fails)"
+            ),
+            SchedLowerErrorKind::BlockPipelineConflict { var } => write!(
+                f,
+                "loop `{var}` has both `block=N` and `pipeline=D`; the combination has \
+                 ambiguous semantics (per-tile vs per-iteration pipelining) and is not \
+                 yet supported. Pick ONE: drop `block=N` to pipeline the full loop, or \
+                 drop `pipeline=D` to tile without pipelining. PRD §6.3.3 (TASK-0215)."
             ),
             SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
                 f,
