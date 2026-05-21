@@ -134,6 +134,15 @@ use compiler::sidecar::NameSidecar;
 pub mod ring_buffer;
 pub use ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
 
+// Multi-worker Plan (TASK-0228 Wave B-1, cycle 20).
+// Data structure capturing every fact a Wave B-2 `emit()` needs to
+// produce a multi-worker binary: used_workers, host election,
+// ring_ids per (DataId, SeqTag), ring_caps from the sidecar.
+// The Plan is `pub(crate)` because no out-of-crate caller needs it
+// today; Wave B-2 will keep it that way and expose only the
+// `render_main_rs_multi` entry point (mirroring pthreads-sync).
+mod multi_worker;
+
 // --------------------------------------------------------------------
 // Public surface
 // --------------------------------------------------------------------

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 23:13'
+updated_date: '2026-05-21 23:43'
 labels:
   - M4
   - backend
@@ -108,4 +108,38 @@ TASK-0228 now depends on TASK-0233. Wave B can consume the new field directly:
   emit_ring_instance_decl(&mut out, &format!('ring_{ring_id}'), &rty, cap);
 
 — no ACFG access, no Event variant change. EventList contract preserved.
+
+## Cycle 20 (2026-05-22) — Wave B-1 landed: Plan data structure
+
+Pure data-structure cycle. The Plan struct captures every fact a Wave B-2 emit() will need:
+- used_workers (filter per_worker by non-empty events; matches pthreads-sync host election)
+- host_worker (named 'host' else smallest WorkerId)
+- ring_ids: BTreeMap<(DataId, SeqTag), RingId> — assigned ascending 0..N-1 deterministically
+- ring_caps: BTreeMap<(DataId, SeqTag), u64> — joined from sidecar.transfer_buffer_for_seq (TASK-0233 precondition). Missing entry -> ContractGap with forward-link.
+- pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> — for Wave B-2 fan-out gather.
+- worker_rings(w): subset of ring_ids that worker w touches via Push/Wait.
+
+Files:
+- nucleus/backends/pthreads-async/src/multi_worker.rs: NEW (~280 LoC incl. 200 LoC of in-module unit tests).
+- nucleus/backends/pthreads-async/src/lib.rs: added 'mod multi_worker' (pub(crate)).
+
+5 unit tests pin the build invariants:
+1. build_rejects_single_worker_with_contract_gap (single-worker arm should not call this)
+2. build_succeeds_for_02_split_with_default_buffer_1 (host election by name + all ring_caps == 1)
+3. build_succeeds_for_13_pipeline_parallel_with_mixed_buffers (4 used workers + exactly 3 ring_caps == 3 + ring_ids ascending 0..N-1)
+4. worker_rings_returns_subset_per_worker (per-worker touch sets are subsets; union covers all rings)
+5. build_fails_on_missing_sidecar_buffer_entry (TASK-0233 contract-gap path: empty sidecar.transfer_buffer_for_seq with real per_worker -> fail-loud)
+
+Gate:
+- cargo test --workspace: 569 / 0 / 2 (was 564; +5 new Plan tests).
+- cargo clippy --workspace --all-targets -- -D warnings: clean (one explicit-counter-loop fix in the test).
+- just e2e: 36 / 29 / 0 / 7 baseline preserved.
+
+Wave B-2 scope (next cycle or fresh session): replace emit()'s ContractGap with a Plan::build + render_main_rs_multi call sequence. Emit:
+- File-scope Ring<T> struct via ring_buffer::emit_ring_struct_decl().
+- One Arc<Ring<T>> per ring_ids entry, sized by ring_caps[key], via ring_buffer::emit_ring_instance_decl().
+- Per worker: a thread::spawn closure with the worker's EventList rendered. Event::Push -> ring_<id>.push(value); Event::Wait -> let v = ring_<id>.wait();. Reuse the SHARED pthreads_sync renderers for everything that's not Push/Wait (Fire/Loop/etc.).
+- Host thread: input loading + handle joins + output writing.
+- Same-worker carveout via TASK-0214 (transfer_inject's src==dst skip means no Push/Wait reaches us for same-worker data).
+- Multi-worker check_frame via TASK-0227 (now MULTI-worker scoped, depends on TASK-0222 emit-string extraction).
 <!-- SECTION:NOTES:END -->
