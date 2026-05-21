@@ -4,12 +4,14 @@ title: pthreads-async single-worker check_frame codegen (Panic/Log/Count)
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
+updated_date: '2026-05-21 22:00'
 labels:
   - M4
   - backend
   - check-frame
 dependencies:
   - TASK-0226
+  - TASK-0222
 priority: medium
 ---
 
@@ -33,3 +35,15 @@ Dispatch on frame.on_violation:
 - [ ] #3 New emit-string test file at nucleus/backends/pthreads-async/tests/check_frame_emit.rs mirrors backends/mp-tcp-bufsync/tests/check_frame_emit.rs and backends/pthreads-sync/tests/check_frame_codegen.rs.
 - [ ] #4 Workspace tests pass, clippy -D warnings clean.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Review-gate finding (TASK-0042.01 cycle 16 review)
+
+HIGH-severity inconsistency: as filed AC#2 said 'no template-string is re-emitted locally (TASK-0222 cleanup precedent: can be extracted in a follow-up)'. But TASK-0222 explicitly states its trigger is 'when pthreads-async lands as 3rd tier-1 backend' — i.e. the third backend landing IS the extraction trigger, not 'later if it becomes load-bearing'.
+
+Fix (filed in-thread): TASK-0227 now depends on BOTH TASK-0226 (codegen body lands first) AND TASK-0222 (helpers extracted into shared form). Natural order: TASK-0226 lands ring-buffer codegen using the existing duplicated helpers (it's only two backends at that point), then TASK-0222 extracts the 4 emit-string templates into shared form, then TASK-0227 wires check_frame on pthreads-async using the now-shared helpers — so no 3-way clone is ever introduced.
+
+AC#2 reading remains correct under this ordering: 'reused from pthreads_sync::*; no template re-emit' is exactly what's available after TASK-0222 extracts.
+<!-- SECTION:NOTES:END -->

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
+updated_date: '2026-05-21 22:01'
 labels:
   - M4
   - backend
@@ -37,4 +38,16 @@ Add 'pthreads-async' to nuc-nucleus/e2e-matrix.toml backends list ONLY when this
 - [ ] #2 Cells for 13-cnn-inference/pipeline_parallel/pthreads-async (and any new examples 9/11 if authored) are listed as required + pass bit-identical.
 - [ ] #3 Determinism gate (PRD §10.1): the bit-identical output reproduces under a 2x run.
 - [ ] #4 The two SKIPPED 13-cnn-inference/pipeline_parallel entries (pthreads-sync + mp-tcp-bufsync) STAY SKIPPED because those backends genuinely lack the capability — they are not converted; pthreads-async is the new column carrying that schedule.
+- [ ] #5 NUC_NONDET_TEST perturbation seam bites pthreads-async cells: NUC_NONDET_PERTURBED_CELLS is greater-than-or-equal-to 1 for at least one required pthreads-async cell (verifies the test-injection-relocation thread TASK-0157/0187/0188 is real on the new backend, per project-negative-seam-and-backend-layout). pthreads-async emits src/main.rs (same layout as pthreads-sync), so the existing perturbation should bite naturally — this AC verifies it actually does.
+- [ ] #6 NUC_XBACKEND_NEGATIVE corruption seam catches pthreads-async cells: if any pthreads-async cell pairs with mp-tcp-bufsync (i.e. both backends are listed as required for the same example/schedule cell), NUC_XBACKEND_CORRUPTED_DETECTED is greater-than-or-equal-to 1 proves the cross-backend differential bites for the three-way comparison. If no such cell exists, file a follow-up to ensure the third-backend column is exercised by the falsifier.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Review-gate finding (TASK-0042.01 cycle 16 review)
+
+HIGH-severity gap: TASK-0229 had no AC verifying the two falsifier seams bite the new backend. Per project-negative-seam-and-backend-layout: 'harness perturbation must hit a file all backends emit + hard-fail on zero'. pthreads-async emits src/main.rs (mirrors pthreads-sync — TASK-0229 author should NOT change this), so the existing maybe_perturb_for_nondet_test machinery (post-TASK-0187) should perturb pthreads-async cells naturally; this is verified by the new AC.
+
+Fixed in-thread by adding AC#5 (NUC_NONDET_TEST) and AC#6 (NUC_XBACKEND_NEGATIVE). The implementer must show the counters move when the new column is exercised — same hard-fail-on-zero discipline TASK-0187 established.
+<!-- SECTION:NOTES:END -->

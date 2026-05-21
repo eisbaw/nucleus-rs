@@ -4,6 +4,7 @@ title: pthreads-async single-worker ring-buffer + Condvar codegen
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
+updated_date: '2026-05-21 22:01'
 labels:
   - M4
   - backend
@@ -27,6 +28,16 @@ Read FIRST: TASK-0042.01 notes (forward-carried context: ring contract post-TASK
 - [ ] #1 pthreads-async emit() produces a runnable Cargo.toml + src/main.rs + src/kernels.rs + run.sh Cargo project for the single-worker case.
 - [ ] #2 Per (DataId, SeqTag) ring is Mutex<VecDeque<T>> + two Condvars; sized N=buffer; starts EMPTY (no pre-fill); producer blocks on full, consumer blocks on empty.
 - [ ] #3 render_array_init_for / render_const_expr_pub / render_fire_args_pub / render_single_worker_main / rust_type_of are reused from pthreads_sync::* — no expr/index/call renderer is duplicated (drift control).
-- [ ] #4 The skeleton smoke test in nucleus/backends/pthreads-async/tests/skeleton.rs is REMOVED in this cycle (its docstring tells the implementer to delete it).
-- [ ] #5 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (this task does NOT add e2e cells — those are TASK-0229).
+- [ ] #4 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (this task does NOT add e2e cells — those are TASK-0229).
+- [ ] #5 Of the two skeleton smoke tests in nucleus/backends/pthreads-async/tests/skeleton.rs: (a) DELETE skeleton_emit_returns_contract_gap_with_task_0226_forward_link (the ContractGap message is gone once codegen lands). (b) KEEP emit_result_shape_is_single_binary_five_fields (the EmitResult struct still exists; the compile-time shape pin still protects the driver dispatch arm from silent struct drift). Move or rename if desired but do not delete.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Review-gate finding (TASK-0042.01 cycle 16 review)
+
+MEDIUM: as originally filed AC#4 said 'the skeleton smoke test is REMOVED' — but the skeleton.rs file has TWO tests, only one of which becomes obsolete when codegen lands. The other (emit_result_shape_is_single_binary_five_fields) is a compile-time tripwire on the EmitResult struct that the driver dispatch arm reads — deleting it would silently allow driver/struct drift.
+
+Fixed in-thread by splitting AC#4: delete the ContractGap-message test, keep (or migrate) the struct-shape pin.
+<!-- SECTION:NOTES:END -->
