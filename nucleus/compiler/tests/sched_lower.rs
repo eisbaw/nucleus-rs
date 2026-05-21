@@ -678,6 +678,51 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_missing_latency_max_in_check() {
+    // TASK-0052.02 review-gate finding #1: `check loop V :
+    // on_violation=panic;` is grammar-valid (asserts are `at_least(1)`
+    // and each is a CheckAssert choice) but semantically empty
+    // (on_violation is the action when an assertion fails — there's
+    // no measurement to violate). Reject at sched-lower.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    check loop frame : on_violation = panic;
+}
+";
+    let err = lower_str(src).expect_err("on_violation-only check must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::MissingLatencyMax {
+            var: "frame".into(),
+        }
+    );
+}
+
+#[test]
+fn negative_check_on_strip_mined_loop_is_rejected() {
+    // TASK-0052.02 review-gate finding #3: `loop V : block=N;` +
+    // `check loop V : latency_max=T;` would silently drop the check
+    // because inject_check_frames skips strip-mined inner Event::Loops
+    // by design. Reject at sched-lower with a clear diagnostic
+    // pointing at the actionable option (remove block OR remove check).
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop n : block=4;
+    check loop n : latency_max = 10ms;
+}
+";
+    let err = lower_str(src).expect_err("check on strip-mined loop must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::CheckOnStripMinedLoop {
+            var: "n".into(),
+        }
+    );
+}
+
+#[test]
 fn negative_duplicate_on_violation_within_one_check() {
     // Same DuplicateCheckAssertion variant, on_violation slot.
     let src = "\

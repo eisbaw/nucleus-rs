@@ -712,10 +712,15 @@ impl<'a> Plan<'a> {
                     // with rustc's standard code 101 — the cross-backend
                     // differential treats "exit 101 + empty stdout" as
                     // an assertion signal, NOT a corrupt-output false
-                    // positive. The cross-backend differential against
-                    // pthreads-sync's identical codegen pattern means a
-                    // schedule's latency assertion is bit-identically
-                    // checked on both tier-1 backends.
+                    // positive.
+                    //
+                    // Test coverage: the emit-string pattern is pinned
+                    // by `mp_tcp_bufsync_emit_includes_panic_instrumentation_on_check_loop`
+                    // (TASK-0052.02 review-gate finding #2). No tier-1
+                    // e2e cell uses `check loop` today; the
+                    // string-assertion test is the lower-bound
+                    // verification that this backend emits the
+                    // contracted shape.
                     let body_indent = indent + 1;
                     let body_pad = "    ".repeat(body_indent);
                     if let Some(frame) = check_frame {

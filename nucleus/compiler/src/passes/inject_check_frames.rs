@@ -137,20 +137,21 @@ fn resolve_check_directive(loop_var: &str, directive: &ResolvedCheckDirective) -
             }
         }
     }
-    // `latency_max` is mandatory on a `check loop` directive (the
-    // grammar requires at least one assert and `latency_max` is the
-    // only currently-allowed measurement) — this is implicit in the
-    // grammar today. A future grammar extension that allows other
-    // measurements alone would surface here; the codegen MUST have a
-    // latency_max to emit a comparison. Until that grammar extension,
-    // it is a compiler invariant: every directive contains exactly
-    // one `LatencyMax(_)`. Fail loud if violated rather than emit a
-    // useless check.
+    // `latency_max` is mandatory on a `check loop` directive. The
+    // grammar permits `check loop V : on_violation=panic;` (asserts
+    // are `.at_least(1)` but the variant is a choice — on_violation
+    // alone is parseable). Sched-lower's `MissingLatencyMax` gate
+    // (TASK-0052.02 review-gate finding #1) rejects that case at the
+    // user-input layer, so by the time inject_check_frames runs,
+    // every `ResolvedCheckDirective` is guaranteed to contain
+    // exactly one `LatencyMax(_)`. `unreachable!()` here is a
+    // compiler-invariant assertion, NOT a user-input handler:
     let latency_max_ns = latency_max_ns.unwrap_or_else(|| {
-        panic!(
+        unreachable!(
             "inject_check_frames: `check loop {loop_var}` has no `latency_max` assert; \
-             the grammar requires at least one and `latency_max` is the only \
-             measurement variant today — malformed SchedIR (compiler bug, not user error)"
+             sched_lower::lower_check is supposed to reject this case via \
+             SchedLowerErrorKind::MissingLatencyMax — if you see this panic, \
+             the sched-lower gate has regressed (TASK-0052.02 review-gate finding #1)"
         )
     });
     CheckFrame {

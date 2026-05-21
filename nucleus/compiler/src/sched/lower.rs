@@ -141,6 +141,7 @@ use super::ir::{
 /// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               | never |
 /// | `UnitPipelineOption`                   | Independent | yes               | never |
 /// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
+/// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -470,6 +471,52 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
                     acc.record_stmt_error(e);
                 }
             }
+        }
+    }
+
+    // TASK-0052.02 review-gate finding #3: cross-check that no
+    // `check loop V` targets a loop V that is strip-mined by
+    // `loop V : block=N`. After strip-mining, `inject_check_frames`
+    // would silently drop the check (the inner block-tile Event::Loop
+    // is skipped by design; the source-loop V's `iter_var` is reused
+    // for the inner loop). Reject here so the silent-loss case is
+    // fail-loud, not deferred to a runtime that never runs.
+    let strip_mined_vars: Vec<String> = ir
+        .loops
+        .iter()
+        .filter_map(|(var, dir)| {
+            if dir
+                .options
+                .iter()
+                .any(|opt| matches!(opt, ResolvedLoopOption::Block(_)))
+            {
+                Some(var.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for var in &strip_mined_vars {
+        if ir.checks.contains_key(var) {
+            // Use the directive's loop_var span (the check directive's
+            // var span) so the diagnostic points at the user-written
+            // `check loop V` not the `loop V` directive — the latter
+            // could remain (just drop the check), but the user's
+            // intent is more likely the check is what they want.
+            let span = ast
+                .directives
+                .iter()
+                .find_map(|d| match &d.node {
+                    super::ast::Directive::Check(c) if c.var.node == *var => {
+                        Some(c.var.span.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or(0..0);
+            acc.record_stmt_error(SchedLowerError::at(
+                SchedLowerErrorKind::CheckOnStripMinedLoop { var: var.clone() },
+                span,
+            ));
         }
     }
 
@@ -997,6 +1044,16 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
     // per check directive; AC#3 — latency_max=0 is degenerate. Both
     // checks happen here before the asserts vector is built so the
     // first offender is reported at its source span.
+    //
+    // TASK-0052.02 review-gate finding #1: also enforce that at least
+    // one `latency_max` is present. The grammar requires >= 1 assert
+    // but allows the on_violation-only directive `check loop V :
+    // on_violation=panic;` which is semantically empty (on_violation
+    // is the action when an assertion fails; without a measurement
+    // there is nothing to violate). The check is at the end of the
+    // walk so kind-duplicates / zero-value errors take precedence
+    // (they name a specific bad token; missing-latency is the
+    // catch-all when the whole directive lacks a measurement).
     let mut seen_latency = false;
     let mut seen_on_violation = false;
     for a in &c.asserts {
@@ -1032,6 +1089,13 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
                 seen_on_violation = true;
             }
         }
+    }
+
+    if !seen_latency {
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::MissingLatencyMax { var: var.clone() },
+            c.var.span.clone(),
+        ));
     }
 
     let asserts = c

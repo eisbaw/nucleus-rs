@@ -459,6 +459,28 @@ pub enum SchedLowerErrorKind {
     /// honest answer. `var` is the loop variable; `kind` is the
     /// duplicated keyword (`latency_max`, `on_violation`, …).
     DuplicateCheckAssertion { var: String, kind: String },
+    /// `check loop V : on_violation=panic;` — the grammar allows a
+    /// `check` directive whose asserts contain only `on_violation` and
+    /// no `latency_max`. PRD §6.3.5 frames `on_violation` as "Action
+    /// when an assertion fails"; without a measurement assert there is
+    /// nothing to violate, so the directive is semantically empty.
+    /// Reject at sched-lower with the explicit MissingLatencyMax to
+    /// close the panic-not-diagnostic gap (TASK-0052.02 review-gate
+    /// finding #1).
+    MissingLatencyMax { var: String },
+    /// `loop V : block=N;` + `check loop V : latency_max=T;` — the
+    /// loop V has both a strip-mine directive AND a latency check.
+    /// `block_transform` tiles V into outer/inner; the inner Event::Loop
+    /// is the strip-mined block-tile loop (`block_tag.is_some()`) and
+    /// `inject_check_frames` does not attach `check_frame` to those by
+    /// design — so the user's check would silently vanish. PRD §6.3.5
+    /// frames `latency_max` as "wall-clock duration of one iteration";
+    /// after strip-mining, "one source iteration" is no longer a single
+    /// Event::Loop boundary, so the semantic translation is unclear.
+    /// Reject at sched-lower until the semantics are decided
+    /// (TASK-0052.02 review-gate finding #3 / TASK-0220 follow-up).
+    /// `var` is the loop variable carrying both directives.
+    CheckOnStripMinedLoop { var: String },
     /// `pipeline=1` on a loop (TASK-0134). A pipeline depth of 1 is
     /// "no pipelining" — one iteration in flight is the default
     /// sequential mode. Accepting it would lower to
@@ -623,6 +645,20 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 f,
                 "`check loop {var}` has more than one `{kind}` assertion; \
                  each assertion kind may appear at most once per check directive"
+            ),
+            SchedLowerErrorKind::MissingLatencyMax { var } => write!(
+                f,
+                "`check loop {var}` has no `latency_max` assertion; \
+                 a check directive must contain a measurement assert \
+                 (`on_violation` alone is meaningless — it is the action \
+                 when an assertion fails)"
+            ),
+            SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
+                f,
+                "`check loop {var}` cannot apply when `loop {var}` is strip-mined by `block=N`; \
+                 after strip-mining, one source iteration is no longer one Event::Loop boundary, \
+                 so the latency assertion's semantic is unclear (TASK-0220). \
+                 Either remove the `block=N` option on `loop {var}` or remove the `check loop {var}` directive."
             ),
             SchedLowerErrorKind::DuplicateWorkersDecl => write!(
                 f,
