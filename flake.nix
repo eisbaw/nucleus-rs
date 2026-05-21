@@ -52,6 +52,20 @@
           fenix.packages.${system}.rust-analyzer
           pkgs.just
         ];
+
+        # Tier-3 (M9+) cross-compile toolchain. Adds the
+        # `thumbv7em-none-eabihf` rust-std (Cortex-M7 / STM32H7, the M9
+        # reference target per PRD §7.3) on top of the same MSRV-pinned
+        # host toolchain. fenix's `combine` is the documented way to
+        # union a host toolchain with per-target rust-std components.
+        # See PRD §7.3 and TASK-0062.
+        embeddedToolchain = fenix.packages.${system}.combine [
+          rustToolchain
+          (fenix.packages.${system}.targets.thumbv7em-none-eabihf.toolchainOf {
+            channel = rustChannel;
+            sha256 = "sha256-s1RPtyvDGJaX/BisLT+ifVfuhDT1nZkZ1NcK8sbwELM=";
+          }).rust-std
+        ];
       in
       {
         devShells.default = pkgs.mkShell {
@@ -68,6 +82,26 @@
         # and TASK-0064.
         devShells.renode = pkgs.mkShell {
           packages = basePackages ++ [ pkgs.renode ];
+          # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
+          shellHook = "";
+        };
+
+        # Tier-3 (M9+) embedded cross-compile shell. Opt-in via
+        # `nix develop .#embedded`. Adds `thumbv7em-none-eabihf` rust-std
+        # to the host toolchain (Cortex-M7 / STM32H7 reference target per
+        # PRD §7.3) plus probe-rs for on-chip flashing/debug. Kept out of
+        # the default shell because per-target rust-std + probe-rs pull a
+        # non-trivial closure that tier-1 dev does not need. The packages
+        # list is spelled out (rather than `basePackages ++ ...`) because
+        # `embeddedToolchain` replaces — not augments — the plain
+        # `rustToolchain` from `basePackages`. See PRD §7.3 and TASK-0062.
+        devShells.embedded = pkgs.mkShell {
+          packages = [
+            embeddedToolchain
+            fenix.packages.${system}.rust-analyzer
+            pkgs.just
+            pkgs.probe-rs-tools
+          ];
           # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
           shellHook = "";
         };
