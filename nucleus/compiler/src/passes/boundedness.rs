@@ -264,13 +264,24 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// change.
 ///
 /// What pure insertion order does NOT cope with is a buffer place
-/// pre-marked at capacity by a `pipeline=D` loop (TASK-0134). The
-/// producer Push appears first in source order but is *not firable*
-/// under the initial marking — the buffer is already full, so the
-/// Push would overflow. The algorithm pulls the matching consumer
-/// Wait forward (it appears later in source order but is firable
-/// under the initial marking), which is exactly the legal firing
-/// sequence the pipelined net admits.
+/// pre-marked at capacity, where source-order's first transition is
+/// a producer that would overflow. The algorithm above will pull a
+/// later consumer transition forward when one is firable, producing
+/// a legal interleaving.
+///
+/// **Honest note on the example-13 fixture**: pipeline=D's *first*
+/// expression of "the buffer has D head-start credits" is the
+/// `pipeline_depth_for_seq` → `initial_marking = D` mapping
+/// (TASK-0134). The *second*, complementary expression — eliding the
+/// first D producer Push TtoP arcs in `acfg_to_petri::emit_xfer`
+/// (TASK-0213 path 2) — is what makes source-order legal on the
+/// example-13 net directly. Without path 2, sync_inject's barrier
+/// between Push and Wait creates a structural cycle that this
+/// path-1 reordering alone cannot resolve (the consumer Wait is
+/// blocked behind the barrier). Path 1 here is the general fallback
+/// for nets whose source-order isn't legal even after path-2
+/// elision — currently no in-tree fixture exercises it; see
+/// TASK-0218 for the underlying sync_inject limitation.
 ///
 /// We accept any [`Net`] here, not only nets built by `acfg_to_net`.
 /// For other producers the function still returns a deterministic

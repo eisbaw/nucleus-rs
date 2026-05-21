@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-21 13:41'
-updated_date: '2026-05-21 14:38'
+updated_date: '2026-05-21 14:56'
 labels:
   - compiler
   - ir
@@ -174,6 +174,57 @@ firable by construction (making Layer 1 dormant on pipelined nets).
 Reason: defense in depth. Future schedules with softer constraints
 may produce nets where source-order isn't legal but a legal
 interleaving exists; Layer 1 handles those. No fixture loses.
+
+## Review-gate hardening (cycle close)
+
+mped-architect read-only review: GO with one HIGH-priority follow-up.
+qa-test-runner read-only review: GO clean (506/0/2 stable across 3 runs).
+
+Doc-contradiction fix (in-thread, HIGH-priority architecture finding):
+
+The prior TASK-0042.01 forward-carry note said the ring buffer must
+"START with D pre-filled slots". After TASK-0213's elision, this is
+WRONG: the ring starts EMPTY, the IR's initial_marking is an
+analysis-encoding carrier of D, NOT a runtime pre-fill instruction.
+Pre-filling at thread spawn + N runtime pushes would actually
+overflow the ring.
+
+Applied in-thread:
+- acfg_to_petri.rs Initial markings section: added "what initial_marking
+  IS, and is NOT" subsection; explicit pointer that backends size the
+  ring to N and start empty.
+- acfg_to_petri.rs Initial markings section: added "Coupled to the
+  elision" cross-reference so the two sites reading
+  pipeline_depth_for_seq stay in sync.
+- acfg_to_petri.rs Honest limitations: added 3 explicit bullets
+  (analysis-vs-runtime trade; TASK-0217 D>iteration_count;
+  TASK-0218 sync_inject over-syncing).
+- acfg_to_petri.rs § "Initial markings": removed the misleading "ring
+  buffer initialisation" claim that contradicted the runtime semantics.
+- tests/acfg_to_petri.rs e2e_example_13_pipeline_parallel docstring:
+  corrected to attribute the resolution to path 2 (TtoP-arc elision),
+  not path 1 (which alone cannot resolve this fixture).
+- boundedness.rs derive_firing_order docstring: corrected the
+  worked-example claim — path-1 reordering alone does NOT resolve
+  example-13; the path-2 elision in acfg_to_petri does.
+- TASK-0042.01 Implementation Notes: appended a CORRECTION block that
+  explicitly supersedes the prior "Ring-buffer pre-fill contract" and
+  provides correct codegen pseudocode (size N, start EMPTY).
+
+Follow-ups filed:
+- TASK-0218: sync_inject over-syncing is the root cause that forced
+  the path-2 elision; if fixed, path-2 could be reverted.
+- TASK-0219: path-1 marking-aware logic is dead code under current
+  pipeline; test it (synthetic-net fixture) or remove it.
+
+Re-run gate post-hardening (independent):
+- cargo test workspace: 506 pass / 0 fail / 2 ignored.
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 36 cells: 29 pass / 0 fail / 7 skipped / 0 required-fail.
+
+QA cosmetic: implementer's commit-message body claimed 507/0/2; actual
+across 3 stable runs is 506/0/2. Reviewer-of-record number recorded
+here as the fact.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

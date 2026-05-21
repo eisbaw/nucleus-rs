@@ -763,12 +763,20 @@ fn e2e_example_13_pipeline_parallel_is_deterministic() {
 
 #[test]
 fn e2e_example_13_pipeline_parallel_passes_boundedness_and_deadlock() {
-    // TASK-0213: derive_firing_order is now marking-aware. With
-    // initial_marking=D and capacity=N=D on a pipelined buffer
-    // place, the producer Push at the head of source order is not
-    // firable (buffer is full at startup), so the algorithm pulls
-    // the matching consumer Wait forward and produces a legal
-    // firing sequence. Both boundedness and deadlock-freedom hold.
+    // TASK-0213: the actual resolution for this fixture is path 2
+    // (acfg_to_petri TtoP-arc elision of the first D Push transitions
+    // per seq). The buffer is pre-marked at D, the first D pushes
+    // are credited against that marking (their TtoP arcs dropped),
+    // and source-order is then a legal firing sequence directly.
+    //
+    // The marking-aware logic in `derive_firing_order` (path 1) is
+    // defense-in-depth for nets whose source-order isn't legal even
+    // after path-2 elision — currently no fixture exercises it; see
+    // TASK-0218 (sync_inject over-syncing) for why path 1 alone is
+    // not sufficient here.
+    //
+    // Both boundedness and deadlock-freedom hold under the combined
+    // path-2 + path-1 stack.
     let net = pipeline_to_net(
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",

@@ -105,6 +105,14 @@
 //! metadata not currently in the ACFG, and the link-step
 //! `D <= N` check (TASK-0134 AC#3) makes (a) safe for any backend.
 //!
+//! **Coupled to the elision in § "Elision of D head-start pushes"
+//! below.** `ACFG::pipeline_depth_for_seq` is read at TWO sites in
+//! this pass — here, to set `initial_marking = D` on the buffer
+//! place; and in `emit_xfer`, to elide the first D Push transitions'
+//! `TtoP` arcs. Both reads MUST stay in sync: the head-start credit
+//! and the elided pushes are two expressions of the same `D` tokens.
+//! Changing one without the other silently desyncs the analysis net.
+//!
 //! ### Elision of D head-start pushes (TASK-0213)
 //!
 //! With `initial_marking = D` and capacity `N = D` on the same buffer
@@ -155,10 +163,30 @@
 //! place's capacity. Synchrony affects when the producer is considered
 //! free to continue, but per the EventList contract that manifests in
 //! the linearisation pass (TASK-0027), not in the net topology
-//! emitted here. The initial marking is the one explicit Petri-net
-//! contract that DOES change with `pipeline=D` — it is the IR-layer
-//! authoritative encoding consumed downstream by backends (e.g.
-//! pthreads-async's ring-buffer initialisation, TASK-0042.01).
+//! emitted here.
+//!
+//! **What `initial_marking = D` is, and is not** (load-bearing for
+//! backend authors — TASK-0042.01 et al.):
+//!
+//! It IS the **analysis-encoding carrier** of the pipeline depth D for
+//! a given buffer place. It is the IR's authoritative representation
+//! of "there are D in-flight credits between producer and consumer at
+//! steady state" for the boundedness/deadlock analyses.
+//!
+//! It is NOT a runtime instruction to pre-fill the backend's ring
+//! buffer. At runtime the ring buffer for that data symbol is sized
+//! to `buffer = N` and starts **empty**; producers push and consumers
+//! drain naturally, with the buffer holding at most D items
+//! concurrently because the pipelined loop only ever has D iterations
+//! in flight. Backends read `D` from the EventList projection
+//! (TASK-0042.01 ring-buffer **sizing**, not pre-fill); pre-filling
+//! the ring with D tokens at thread spawn would be a defect — the
+//! producer's first N real pushes would then deposit on top of an
+//! already-D-full ring and overflow.
+//!
+//! See "Honest mismatch with runtime semantics" above; this paragraph
+//! exists to keep the IR-layer contract and the backend-layer
+//! contract from being read as the same thing. They are not.
 //!
 //! `reuse` is still a no-op at this layer (filed as a follow-up to
 //! TASK-0134; reuse needs a different ACFG carrier than pipeline
@@ -195,6 +223,35 @@
 //!    start count — it needs a different ACFG carrier (the carried
 //!    slice's identity, not a depth count). Filed as a follow-up to
 //!    TASK-0134.
+//!
+//! - **Analysis net is a conservative bound, not a runtime trace
+//!    (TASK-0213).** The head-start-push elision lets the IR's analysis
+//!    net pass boundedness/deadlock under `pipeline=D` with capacity
+//!    `N=D`; at runtime backends will execute all N real pushes against
+//!    an EMPTY ring of size N. If the analysis accepts, the runtime
+//!    stays within capacity — but the analysis net does NOT model the
+//!    one-to-one runtime token trace. See "Elision of D head-start
+//!    pushes" above. Codegen reads only the EventList, which IS a
+//!    one-to-one trace (every Push/Wait preserved).
+//!
+//! - **`pipeline=D` with `D > iteration_count`** (TASK-0217). The
+//!    elision drops the first D Push transitions per seq; if a loop
+//!    has fewer than D iterations, EVERY Push for that seq is elided,
+//!    and the buffer place ends with `D - iteration_count` leftover
+//!    initial-marking tokens (still below capacity N, so boundedness
+//!    holds, but the residue is semantically odd). The link step
+//!    currently only rejects `D > buffer=N`, not `D > iteration_count`.
+//!    Filed as TASK-0217 for the reject-or-document decision.
+//!
+//! - **`sync_inject` over-syncing forces the path-2 elision**
+//!    (TASK-0218). The root reason the analysis net needs the elision
+//!    at all is that `sync_inject` currently interposes a barrier
+//!    between a Push and its matching Wait (the Push/Wait pair already
+//!    supplies the rendezvous; the extra barrier is over-synchronisation).
+//!    A future `sync_inject` fix that elides such barriers would let
+//!    the marking-aware firing-order in `boundedness::derive_firing_order`
+//!    resolve the example-13 fixture directly, making path 2's TtoP-arc
+//!    elision unnecessary. Filed as TASK-0218.
 //!
 //! - **Distributed placements treat the set as one entity**. If a
 //!    kernel is placed on `{w0, w1, w2, w3}`, the Operation transition
