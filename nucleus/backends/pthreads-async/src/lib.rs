@@ -1,81 +1,94 @@
-//! pthreads-async backend (SKELETON). PRD §7.1, TASK-0042.01.
+//! pthreads-async backend. PRD §7.1, TASK-0042.01.
 //!
 //! Tier-1 CPU backend: `std::thread` + `std::sync::Condvar` +
 //! bounded ring buffer per `(DataId, SeqTag)`. Shared-memory
-//! transport, single binary. **supports_async=true,
-//! supports_buffer=true** — the third tier-1 backend, completing
-//! the async/buffered surface that pthreads-sync and mp-tcp-bufsync
-//! cannot.
+//! transport, single binary (single-worker) or thread-per-worker
+//! (multi-worker). **supports_async=true, supports_buffer=true** —
+//! the third tier-1 backend, completing the async/buffered surface
+//! that pthreads-sync and mp-tcp-bufsync cannot.
 //!
-//! # Current status: SKELETON (TASK-0042.01 cycle 16, 2026-05-21)
+//! # Implementation status (TASK-0042.01 cycle 17, 2026-05-22)
 //!
-//! This crate is the **foundation** for the third tier-1 backend:
+//! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED
+//!   under TASK-0226. Delegates to `pthreads_sync::render_single_worker_main`
+//!   plus the SHARED `pthreads_sync::render_cargo_toml` and
+//!   `pthreads_sync::render_run_sh`, so the emitted artefact is
+//!   byte-identical to pthreads-sync's single-worker output for any
+//!   naive schedule. The cross-backend differential invariant
+//!   ("same algorithm + same naive schedule -> bit-identical output
+//!   across backends") holds by construction.
+//! - **Multi-worker arm** (`used_workers.len() >= 2`) is NOT YET
+//!   implemented (TASK-0228 — the headline work, per-(DataId,
+//!   SeqTag) ring buffer + Condvar + thread/Plan structure). Returns
+//!   [`EmitError::ContractGap`] with a precise forward-link.
+//! - **check_frame codegen** (single-worker) is deferred to TASK-0227.
+//!   `inject_check_frames` populates `Event::Loop.check_frame`; the
+//!   single-worker delegation to `pthreads_sync::render_single_worker_main`
+//!   inherits the pthreads-sync check_frame codegen by construction —
+//!   any `check loop V` directive on a single-worker pthreads-async
+//!   schedule emits the SAME instrumentation as pthreads-sync.
 //!
-//! - `Cargo.toml` + workspace registration: DONE.
-//! - `capabilities.toml`: DONE (tier-1, shared-memory, notify=[event],
-//!   async+buffer support, max_buffer=64).
-//! - Public [`emit`] entry point with the pthreads-sync signature: DONE,
-//!   but returns [`EmitError::ContractGap`] until ring-buffer codegen
-//!   lands.
-//! - Driver dispatch arm: DONE (`--backend pthreads-async` resolves to
-//!   this crate).
+//! # Why split single-worker vs multi-worker into separate cycles
 //!
-//! The actual codegen body is intentionally NOT in this cycle. Splitting
-//! the foundation off lets the next implementer step directly into
-//! ring-buffer + Condvar work with a fresh context budget, without
-//! bikeshedding crate layout, Cargo wiring, capabilities.toml schema,
-//! or driver dispatch.
+//! Single-worker pthreads-async has NO cross-worker `Push`/`Wait`
+//! events (the pthreads-sync single-worker emitter `ContractGap`s on
+//! either; same is true here, inherited via delegation). The ring
+//! buffer + Condvar machinery only fires across two or more workers.
+//! Splitting the single-worker arm off as TASK-0226 keeps it a
+//! genuinely single-cycle unit (mechanical delegation) and quarantines
+//! the multi-cycle ring-buffer headline work under TASK-0228.
 //!
-//! # Follow-up sub-tasks (filed in this cycle)
+//! # Forward-carried context for TASK-0228 (multi-worker)
 //!
-//! - **TASK-0226**: Single-worker ring-buffer + Condvar codegen.
-//!   `std::sync::Mutex<VecDeque<T>>` + two `Condvar`s per
-//!   `(DataId, SeqTag)`. Ring STARTS EMPTY (D is sizing, not a fill
-//!   input — see the post-TASK-0213 corrected contract in TASK-0042.01
-//!   notes).
-//! - **TASK-0227**: Single-worker `check_frame` codegen (Panic / Log /
-//!   Count). Reuses the shared helpers `pthreads_sync::{sanitize_loop_var,
-//!   collect_count_check_frames, emit_count_reporter_struct,
-//!   CountCheckLoop}` per the TASK-0052.04 forward-carry on TASK-0042.01.
-//! - **TASK-0228**: Multi-worker arm. Initial: reject with
-//!   `EmitError::ContractGap` (mirror the pthreads-sync multi-worker
-//!   `check_frame=Some` pattern). Full multi-worker pipelined emit
-//!   deferred to a further sub-task.
-//! - **TASK-0229**: e2e cells (examples 9 producer/consumer pipe + 11
-//!   Game of Life multi-iter) + bit-identical differential vs the
-//!   reference oracle. The cross-backend differential gate becomes
-//!   three-way (pthreads-sync, mp-tcp-bufsync, pthreads-async) once
-//!   AC#4 lands.
+//! 1. **Ring buffer contract** (post-TASK-0213): `Mutex<VecDeque<T>>`
+//!    plus `Condvar` (not_empty) plus `Condvar` (not_full). Capacity
+//!    = `transfer DATA : buffer=N` (the `N`). Ring STARTS EMPTY (D
+//!    is the analysis-only sizing invariant, NOT a runtime pre-fill).
+//! 2. **Per-fan-out-pair sizing** (TASK-0216): one ring per
+//!    `(DataId, SeqTag, src_worker, dst_worker)` tuple — fan-out
+//!    splits one data symbol into N rings.
+//! 3. **Same-worker carveout** (TASK-0214): a transfer whose producer
+//!    plus consumer share one worker emits NO ring; the EventList
+//!    already omits the cross-worker Push/Wait per transfer_inject's
+//!    src==dst skip.
+//! 4. **Multi-worker check_frame** (TASK-0052.05): file-scope shared
+//!    `static AtomicU64` per UNIQUE sanitized ident; Drop guard on
+//!    host thread; panic=abort SIGABRT gotcha applies (worker thread
+//!    panic SIGABRTs the whole process; tests must accept exit
+//!    code = `None`).
+//! 5. **EventList contract** (TASK-0124): `D` is NOT yet carried on
+//!    `Event::Push`/`Wait` — derive sizing from `buffer=N` directly
+//!    (Option (c) from the post-TASK-0213 contract carry).
 //!
-//! # Why a skeleton-first cycle?
+//! # Generated artefact layout
 //!
-//! The ring-buffer codegen is genuinely multi-cycle: check_frame
-//! integration + multi-worker arm + e2e cells + bit-identical
-//! differential gate. The IR contract carrying the per-seq pipeline
-//! depth (`ACFG::pipeline_depth_for_seq`) is itself <1 month old
-//! (TASK-0134), and the marking-aware boundedness pass (TASK-0213) +
-//! the link-step's `D <= N` invariant are the load-bearing
-//! preconditions a runtime ring-buffer relies on. Splitting the
-//! foundation off keeps the diff reviewable and the gate-bisectable
-//! risk small.
+//! Identical to pthreads-sync's: under the user-provided `out_dir`,
+//! `Cargo.toml` + `src/main.rs` + `src/kernels.rs` + `run.sh`. The
+//! `[[bin]]` name + the package name are backend-agnostic so the
+//! generated project is movable.
 //!
-//! # Forward-carried context the next implementer should read first
+//! # Error handling
 //!
-//! 1. **TASK-0042.01 notes** — the parent task carries: ring-buffer
-//!    pre-fill contract (STARTS EMPTY post-TASK-0213), `D` is the
-//!    sizing invariant not a fill input, `Place::initial_marking = D`
-//!    is the analysis encoding, EventList NOT YET carrying D (option
-//!    (c) recommended: read `buffer=N` directly).
-//! 2. **TASK-0124** — EventList contract (no AlgoIR/ACFG access).
-//! 3. **TASK-0052.04 + 0052.05** — check_frame codegen pattern (single-
-//!    + multi-worker), shared helpers from pthreads-sync.
-//! 4. **TASK-0214** — same-worker carveout (no Xfer for same-worker
-//!    data; ignore harmless `transfer X : buffer=N` in codegen).
-//! 5. **TASK-0216** — partition + pipeline: per fan-out pair
-//!    `(DataId, SeqTag)` is the right sizing unit for multi-worker
-//!    pipelined rings.
+//! Failures bubble up as [`EmitError`] variants (re-exported from
+//! `pthreads-sync` — same shared-surface precedent as mp-tcp-bufsync;
+//! see TASK-0230 for the cosmetic Display-prefix cleanup).
+//!
+//! # Honest limitations
+//!
+//! - Multi-worker codegen is `ContractGap` (TASK-0228). Until
+//!   TASK-0228 lands, the *only* schedules this backend runs
+//!   end-to-end are those whose worker count is 0 or 1 — which is
+//!   already covered by pthreads-sync. Single-worker pthreads-async
+//!   is therefore a *capability-check gateway* (capability surface
+//!   satisfiable) more than a new runtime — the real value lands
+//!   when TASK-0228 + TASK-0229 ship the multi-worker arm + the
+//!   e2e cells.
+//! - Async/buffer-N schedules whose `used_workers >= 2` (e.g.
+//!   13-cnn-inference/pipeline_parallel) still hit the multi-worker
+//!   ContractGap. These are the headline targets of TASK-0229.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 // Re-export the SHARED error + reverse name tables from pthreads-sync.
@@ -95,13 +108,20 @@ use std::path::{Path, PathBuf};
 // would otherwise create churn against the gate test strings).
 pub use pthreads_sync::{EmitError, NameTables};
 
-// AlgoIR-free: the only `compiler::*` surface this skeleton uses is the
+// Shared codegen — the single source of truth for the project skeleton
+// (Cargo.toml + run.sh) AND the single-worker main.rs body. Reusing
+// these IS how the cross-backend differential invariant on naive
+// schedules holds: pthreads-async's emitted artefact is byte-identical
+// to pthreads-sync's for any `used_workers <= 1` input.
+use pthreads_sync::{render_cargo_toml, render_run_sh, render_single_worker_main};
+
+// AlgoIR-free: the only `compiler::*` surface this crate uses is the
 // inert per-worker EventList carrier (`compiler::event::{Event, WorkerId}`)
-// + the NameSidecar (`compiler::sidecar`). When TASK-0226 lands the
-// codegen body, it will additionally import the inert expression grammar
-// (`compiler::algo::{IrExpr, IrBinOp, ResolvedType, ScalarType}`) the
-// EventList already carries — exactly the surface pthreads-sync +
-// mp-tcp-bufsync consume.
+// + the NameSidecar (`compiler::sidecar`). When TASK-0228 lands the
+// multi-worker ring-buffer codegen, it will additionally import the
+// inert expression grammar (`compiler::algo::{IrExpr, IrBinOp,
+// ResolvedType, ScalarType}`) the EventList already carries — exactly
+// the surface pthreads-sync + mp-tcp-bufsync consume.
 use compiler::event::{Event, WorkerId};
 use compiler::sidecar::NameSidecar;
 
@@ -113,9 +133,9 @@ use compiler::sidecar::NameSidecar;
 /// `pthreads_sync::EmitResult` because pthreads-async also produces a
 /// single Cargo project + single binary (shared-memory transport) —
 /// only the per-loop codegen body differs (ring buffer + Condvar
-/// instead of sequential barrier). Mirrors the field set so the driver
-/// can pattern-match the dispatch arm against either single-binary
-/// tier-1 backend identically.
+/// instead of sequential barrier, once TASK-0228 lands). Mirrors the
+/// field set so the driver can pattern-match the dispatch arm against
+/// either single-binary tier-1 backend identically.
 ///
 /// Defined locally (not a re-export of `pthreads_sync::EmitResult`)
 /// because the *backend identity* is part of the result — a caller
@@ -138,35 +158,128 @@ pub struct EmitResult {
 
 /// Emit a runnable Cargo project from the per-worker EventList.
 ///
-/// **SKELETON**: returns [`EmitError::ContractGap`] with a precise
-/// forward-link to **TASK-0226** (ring-buffer + Condvar codegen). The
-/// wire-shape matches `pthreads_sync::emit` and `mp_tcp_bufsync::emit`
-/// — the next implementer fills in the body without changing the
-/// signature.
-///
 /// Wire contract (AC#1, TASK-0124): consumes the per-worker [`Event`]
 /// lists + the [`NameTables`] (reverse `name_*`) + the [`NameSidecar`].
 /// **No `&ACFG` / `&LinkedIR` access**, exactly like pthreads-sync and
 /// mp-tcp-bufsync.
+///
+/// Dispatch:
+///
+/// - `used_workers <= 1` → SINGLE-WORKER (TASK-0226). Delegates to the
+///   SHARED `pthreads_sync::render_single_worker_main` so the emitted
+///   `main.rs` is byte-identical to pthreads-sync's. The Cargo.toml
+///   and run.sh come from `pthreads_sync::render_cargo_toml` +
+///   `render_run_sh` for the same reason.
+/// - `used_workers >= 2` → MULTI-WORKER. Returns
+///   [`EmitError::ContractGap`] pointing at TASK-0228 (the
+///   ring-buffer + Condvar + thread/Plan headline work).
 pub fn emit(
-    _per_worker: &BTreeMap<WorkerId, Vec<Event>>,
-    _names: &NameTables,
-    _sidecar: &NameSidecar,
-    _kernels_rs_path: &Path,
-    _out_dir: &Path,
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_rs_path: &Path,
+    out_dir: &Path,
 ) -> Result<EmitResult, EmitError> {
-    // FAIL-LOUD: there is no silent fallback. The capability-compat
-    // check already accepted this backend (capabilities.toml is real);
-    // the codegen body is not yet implemented and that is HONEST.
-    // CLAUDE.md: no workarounds — the next implementer rips this
-    // early-return out as the first line of TASK-0226.
-    Err(EmitError::ContractGap(
-        "pthreads-async backend (skeleton, TASK-0042.01 cycle 16): \
-         ring-buffer + Condvar codegen not yet implemented. \
-         The capabilities.toml + Cargo wiring + driver dispatch arm \
-         are real; the codegen body is the subject of TASK-0226. \
-         Use `--backend pthreads-sync` or `--backend mp-tcp-bufsync` \
-         for runnable output until then."
-            .to_string(),
-    ))
+    // ---- Pick code path: single- vs multi-worker. ----
+    //
+    // `acfg_to_events` seeds every declared worker with an empty list
+    // so an unused-but-declared worker does not falsely trip the
+    // multi-worker path. Same `collect_used_workers` semantics as
+    // pthreads-sync.
+    let used_workers: Vec<WorkerId> = per_worker
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+
+    if used_workers.len() >= 2 {
+        // ---- Multi-worker arm: not yet implemented. ----
+        //
+        // FAIL-LOUD: the capability check already accepted this
+        // backend (capabilities.toml declares supports_async +
+        // supports_buffer); the multi-worker arm is the ring-buffer
+        // + Condvar + thread/Plan work tracked under TASK-0228 — the
+        // actual headline. Until it lands, schedules whose `used_workers
+        // >= 2` get a typed ContractGap, NEVER a silent fallback.
+        // CLAUDE.md: no workarounds — the next implementer rips this
+        // multi-worker branch out as part of TASK-0228 and replaces
+        // it with the real codegen.
+        return Err(EmitError::ContractGap(format!(
+            "pthreads-async multi-worker codegen ({used} used workers): \
+             per-(DataId,SeqTag) ring buffer + Condvar + thread/Plan \
+             structure not yet implemented. See TASK-0228 for the actual \
+             multi-worker arm. Single-worker schedules ARE supported on \
+             this backend; for now use pthreads-sync or mp-tcp-bufsync \
+             for multi-worker workloads.",
+            used = used_workers.len(),
+        )));
+    }
+
+    // ---- Single-worker arm (TASK-0226). ----
+    //
+    // Delegate to the SHARED renderers in pthreads-sync. The emitted
+    // main.rs is byte-identical to pthreads-sync's by construction
+    // (same function, same inputs); Cargo.toml + run.sh ditto. The
+    // single-worker check_frame codegen (Panic / Log / Count) is
+    // inherited from pthreads-sync's render_single_worker_main →
+    // render_main_rs path automatically — no per-backend Log/Count
+    // emit is needed for the single-worker case (TASK-0227 carries
+    // multi-worker check_frame, which lands with TASK-0228).
+    let kernels_src =
+        fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
+            path: kernels_rs_path.to_path_buf(),
+            source: e,
+        })?;
+
+    let src_dir = out_dir.join("src");
+    fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
+        path: src_dir.clone(),
+        source: e,
+    })?;
+
+    let cargo_toml = out_dir.join("Cargo.toml");
+    let main_rs = src_dir.join("main.rs");
+    let kernels_rs = src_dir.join("kernels.rs");
+    let run_sh = out_dir.join("run.sh");
+
+    let events = used_workers
+        .first()
+        .and_then(|w| per_worker.get(w))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let main_rs_src = render_single_worker_main(events, names, sidecar)?;
+
+    write_file(&cargo_toml, &render_cargo_toml())?;
+    write_file(&kernels_rs, &kernels_src)?;
+    write_file(&main_rs, &main_rs_src)?;
+    write_file(&run_sh, &render_run_sh())?;
+
+    // Best-effort: mark run.sh executable. Failure here is non-fatal
+    // (mirrors pthreads-sync precedent at lib.rs:300-309).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&run_sh) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&run_sh, perms);
+        }
+    }
+
+    Ok(EmitResult {
+        project_dir: out_dir.to_path_buf(),
+        cargo_toml,
+        main_rs,
+        kernels_rs,
+        run_sh,
+    })
+}
+
+/// Write `content` to `path`, mapping io errors to
+/// [`EmitError::WriteFailed`] with the offending path attached.
+fn write_file(path: &Path, content: &str) -> Result<(), EmitError> {
+    fs::write(path, content).map_err(|e| EmitError::WriteFailed {
+        path: path.to_path_buf(),
+        source: e,
+    })
 }
