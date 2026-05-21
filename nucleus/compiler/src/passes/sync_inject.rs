@@ -65,7 +65,7 @@
 use std::collections::BTreeSet;
 
 use crate::acfg::{ACFGNode, SyncPlaceholder, ACFG};
-use crate::event::{SyncTag, WorkerId};
+use crate::event::{IterVar, SyncTag, WorkerId};
 
 // --------------------------------------------------------------------
 // Entry point
@@ -88,9 +88,34 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         partition_worker_ranges,
     } = acfg;
 
+    // The set of iter-vars that the partition-workers pass (TASK-0212)
+    // has rewritten into per-worker slices. For such a Repeat the
+    // workers iterate disjoint sub-ranges while non-participating
+    // workers (host) still project the source range; a per-iteration
+    // body-entry / body-exit barrier in this shape *deadlocks* because
+    // each iteration expects N+1 arrivals (host + N compute workers)
+    // but only the host arrives in iterations that no compute worker
+    // covers, and 1 worker + host in iterations that one covers. We
+    // therefore skip the body-internal entry/exit Sync insertions on
+    // partitioned Repeats; the loop-boundary Syncs (the Sequence rule
+    // between the prior/next siblings and the Repeat itself) survive
+    // unchanged and provide the once-before / once-after barrier
+    // semantic that an embarrassingly-parallel partition expects.
+    //
+    // Why this is correct: the cross-worker data the entry Sync was
+    // guarding is delivered by the Push/Wait pair (TASK-0117 fan-out
+    // makes each compute worker receive its slice before its body
+    // runs); the exit Sync was guarding the gather back to the host,
+    // which is again handled by the Push/Wait gather pair. The body
+    // has no cross-iteration data dependency (single-assignment + per-
+    // sample dataflow), so per-iteration synchronisation is redundant
+    // for the partition=workers shape.
+    let partitioned_iter_vars: BTreeSet<IterVar> =
+        partition_worker_ranges.keys().copied().collect();
+
     // `prior_writes` for the outer-most call is empty: there is no
     // statement before the program root.
-    let mut new_root = inject_in_node(root, &BTreeSet::new());
+    let mut new_root = inject_in_node(root, &BTreeSet::new(), &partitioned_iter_vars);
 
     // Assign the stable cross-worker barrier identity (TASK-0172).
     //
@@ -142,9 +167,15 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
 /// Returns the rewritten node. Only [`ACFGNode::Sequence`] and
 /// [`ACFGNode::Repeat`] descend; the other variants are returned
 /// unchanged.
-fn inject_in_node(node: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNode {
+fn inject_in_node(
+    node: ACFGNode,
+    prior_writes: &BTreeSet<WorkerId>,
+    partitioned_iter_vars: &BTreeSet<IterVar>,
+) -> ACFGNode {
     match node {
-        ACFGNode::Sequence(children) => ACFGNode::Sequence(inject_in_sequence(children)),
+        ACFGNode::Sequence(children) => {
+            ACFGNode::Sequence(inject_in_sequence(children, partitioned_iter_vars))
+        }
         ACFGNode::Repeat {
             iter_var,
             range,
@@ -159,12 +190,24 @@ fn inject_in_node(node: ACFGNode, prior_writes: &BTreeSet<WorkerId>) -> ACFGNode
             //    nothing precedes its first statement inside the
             //    Repeat. The boundary into the Repeat is handled by
             //    the wrap step below.
-            let inner = inject_in_node(*body, &BTreeSet::new());
+            let inner = inject_in_node(*body, &BTreeSet::new(), partitioned_iter_vars);
 
             // 2) Apply Repeat entry/exit rules. The result is still a
             //    Sequence (the body of a Repeat is always a Sequence
-            //    by construction, see acfg::build_stmt).
-            let wrapped = wrap_repeat_body(inner, prior_writes);
+            //    by construction, see acfg::build_stmt). A partitioned
+            //    Repeat (partition=workers; TASK-0212) skips this step
+            //    entirely — per-iteration body Syncs would deadlock
+            //    because host iterates the source range while each
+            //    compute worker iterates its slice. The cross-worker
+            //    data the boundary Syncs protect is delivered by the
+            //    TASK-0117 fan-out Push/Wait pairs around the loop
+            //    instead.
+            let is_partitioned = partitioned_iter_vars.contains(&iter_var);
+            let wrapped = if is_partitioned {
+                inner
+            } else {
+                wrap_repeat_body(inner, prior_writes)
+            };
 
             ACFGNode::Repeat {
                 iter_var,
@@ -218,7 +261,10 @@ fn assign_sync_tags(node: &mut ACFGNode, next: &mut u64) {
 /// We process the children left to right, building `out`. For each
 /// adjacent pair `(out.last(), child)` we check the rule and push a
 /// Sync between them when needed.
-fn inject_in_sequence(children: Vec<ACFGNode>) -> Vec<ACFGNode> {
+fn inject_in_sequence(
+    children: Vec<ACFGNode>,
+    partitioned_iter_vars: &BTreeSet<IterVar>,
+) -> Vec<ACFGNode> {
     let mut out: Vec<ACFGNode> = Vec::with_capacity(children.len());
 
     for child in children {
@@ -232,7 +278,7 @@ fn inject_in_sequence(children: Vec<ACFGNode>) -> Vec<ACFGNode> {
         // could itself be a Sync this pass inserted on a previous
         // iteration. Computing prior_writes after the rule but before
         // recursion is the correct ordering.
-        let child = inject_in_node(child, &prior_writes);
+        let child = inject_in_node(child, &prior_writes, partitioned_iter_vars);
 
         // Sequence rule: insert a Sync between `out.last()` and
         // `child` if their worker sets disagree on the write/read

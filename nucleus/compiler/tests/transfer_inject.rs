@@ -32,7 +32,7 @@ use compiler::acfg::{
     XferPlaceholder, XferRole, ACFG,
 };
 use compiler::algo::{lower_algo, parse_algo};
-use compiler::event::{DataId, KernelId, SeqTag, WorkerId};
+use compiler::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use compiler::link::{self, LinkedIR, WorkerEntity};
 use compiler::passes::transfer_inject::inject_transfers;
 use compiler::sched::{lower_sched, parse_sched};
@@ -535,6 +535,316 @@ fn inject_transfers_preserves_operation_count_on_real_examples() {
             before.repeat_count(),
             after.repeat_count(),
             "repeat count must be preserved (algo={algo}, sched={sched})"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0117 fan-out
+// --------------------------------------------------------------------
+
+/// 1:N broadcast (one host producer, N compute consumers) emits N
+/// Push/Wait pairs with distinct `seq` tags.
+#[test]
+fn fanout_one_to_n_emits_n_pairs() {
+    // host produces d0; {w1,w2,w3,w4} consumes d0.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),                // host
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),      // {w1..w4}
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    // 4 destination workers -> 4 Push/Wait pairs.
+    assert_eq!(result.push_count(), 4, "one Push per destination worker");
+    assert_eq!(result.wait_count(), 4, "one Wait per destination worker");
+
+    let xfers = result.root.collect_xfers();
+    // Distinct seqs.
+    let seqs: BTreeSet<SeqTag> = xfers.iter().map(|x| x.seq).collect();
+    assert_eq!(seqs.len(), 4, "four distinct seq tags");
+
+    // Each Push has src=host(0) and dst in {1,2,3,4}; each Wait has
+    // matching src=host(0) and the same dst.
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Push)
+        .collect();
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait)
+        .collect();
+    let push_dsts: BTreeSet<WorkerId> = pushes.iter().map(|x| x.dst).collect();
+    let wait_dsts: BTreeSet<WorkerId> = waits.iter().map(|x| x.dst).collect();
+    assert_eq!(
+        push_dsts,
+        BTreeSet::from([WorkerId(1), WorkerId(2), WorkerId(3), WorkerId(4)]),
+        "Push dsts cover every consumer worker"
+    );
+    assert_eq!(push_dsts, wait_dsts);
+    for x in &xfers {
+        assert_eq!(x.src, WorkerId(0));
+        assert_eq!(x.data, DataId(0));
+    }
+}
+
+/// N:1 gather (N compute producers, one host consumer) emits N
+/// Push/Wait pairs with distinct `seq` tags.
+///
+/// Producers are multiple workers writing the same single-assignment
+/// data symbol; build_acfg models this as one Operation with
+/// `workers: {w0..w3}`. (Outside this synthetic shape — in real
+/// schedules — distributed placement is the source.)
+#[test]
+fn fanout_n_to_one_emits_n_pairs() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[1, 2, 3, 4], 100, vec![], Some(0)), // producer on {w1..w4}
+        op(&[0], 101, vec![0], Some(1)),         // consumer on host
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w1", "w2", "w3", "w4"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.push_count(), 4, "one Push per producer worker");
+    assert_eq!(result.wait_count(), 4, "one Wait per producer worker");
+
+    let xfers = result.root.collect_xfers();
+    let seqs: BTreeSet<SeqTag> = xfers.iter().map(|x| x.seq).collect();
+    assert_eq!(seqs.len(), 4);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Push)
+        .collect();
+    let push_srcs: BTreeSet<WorkerId> = pushes.iter().map(|x| x.src).collect();
+    assert_eq!(
+        push_srcs,
+        BTreeSet::from([WorkerId(1), WorkerId(2), WorkerId(3), WorkerId(4)]),
+        "Push srcs cover every producer worker"
+    );
+    for x in &xfers {
+        assert_eq!(x.dst, WorkerId(0));
+        assert_eq!(x.data, DataId(0));
+    }
+}
+
+/// The 1:1 host↔single-worker case (examples 01..07 shape) emits
+/// exactly ONE pair after fan-out, with no spurious replication; this
+/// is the no-regression guard for the pre-TASK-0117 contract on those
+/// cells.
+#[test]
+fn fanout_one_to_one_unchanged() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)), // host
+        op(&[1], 101, vec![0], Some(1)), // w0
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w0", 1)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.push_count(), 1);
+    assert_eq!(result.wait_count(), 1);
+}
+
+/// Determinism: the fan-out ordering is a deterministic function of
+/// (producer_workers, consumer_workers). Re-running the pass on the
+/// same input produces structurally identical XferPlaceholders with
+/// the same seq tags (the State::next_seq counter is monotonic and
+/// the BTreeSet iteration is sorted).
+#[test]
+fn fanout_is_deterministic_across_runs() {
+    let mk_acfg = || {
+        let root = ACFGNode::Sequence(vec![
+            op(&[0], 100, vec![], Some(0)),
+            op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+        ]);
+        synthetic_acfg(
+            root,
+            &[("d", 0), ("c", 1)],
+            &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+        )
+    };
+    let linked = synthetic_linked_ir(
+        &mk_acfg().name_data,
+        &mk_acfg().name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let r1 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
+    let r2 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
+    assert_eq!(r1.len(), r2.len());
+    for (a, b) in r1.iter().zip(r2.iter()) {
+        assert_eq!(a.role, b.role);
+        assert_eq!(a.src, b.src);
+        assert_eq!(a.dst, b.dst);
+        assert_eq!(a.data, b.data);
+        assert_eq!(a.seq, b.seq, "seq tags reproduce across runs");
+    }
+}
+
+/// With a `partition_worker_ranges` sidecar populated, fan-out
+/// rewrites each pair's tile to the compute worker's slice. Tests
+/// the 1:N input direction at the {host}→{w1..w4} shape over an
+/// iter-var with B=8 split 4 ways.
+#[test]
+fn fanout_per_worker_tile_for_input_direction() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    // Register iter-var "n" against IterVar(7) and populate the
+    // partition sidecar: source range 0..8 split across {w1..w4} so
+    // each worker owns a 2-element slice.
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    // Each pair's tile must carry the dst-worker's partition slice.
+    for x in &xfers {
+        // The compute worker for a (host, w_i) pair is w_i.
+        let expected_range: std::ops::Range<i64> = match x.dst.0 {
+            1 => 0..2,
+            2 => 2..4,
+            3 => 4..6,
+            4 => 6..8,
+            _ => panic!("unexpected dst worker {:?}", x.dst),
+        };
+        assert_eq!(
+            x.tile.bounds,
+            vec![(IterVar(7), expected_range)],
+            "pair {:?}->{:?} tile must be the dst worker's partition slice",
+            x.src,
+            x.dst
+        );
+    }
+}
+
+/// Same per-worker tile assignment in the N:1 gather direction
+/// (workers→host). The compute worker for each pair is the src.
+#[test]
+fn fanout_per_worker_tile_for_output_direction() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[1, 2, 3, 4], 100, vec![], Some(0)),
+        op(&[0], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w1", "w2", "w3", "w4"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    for x in &xfers {
+        let expected_range: std::ops::Range<i64> = match x.src.0 {
+            1 => 0..2,
+            2 => 2..4,
+            3 => 4..6,
+            4 => 6..8,
+            _ => panic!("unexpected src worker {:?}", x.src),
+        };
+        assert_eq!(
+            x.tile.bounds,
+            vec![(IterVar(7), expected_range)],
+            "pair {:?}->{:?} tile must be the src worker's partition slice",
+            x.src,
+            x.dst
+        );
+    }
+}
+
+/// Empty `partition_worker_ranges` (the pre-TASK-0212 / non-partitioned
+/// case) leaves the pair tiles untouched at the construction-site
+/// enclosing tile. No regression for examples 01..07 which never set
+/// the sidecar.
+#[test]
+fn fanout_empty_partition_sidecar_preserves_construction_tile() {
+    // No partition_worker_ranges entries; the 1:1 case keeps the
+    // pre-TASK-0117 tile (empty top-level for a flat sequence).
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w0", 1)],
+    );
+    // partition_worker_ranges left empty by `synthetic_acfg`.
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    for x in &xfers {
+        assert!(
+            x.tile.bounds.is_empty(),
+            "no partition sidecar => no partition rewrite => empty tile"
         );
     }
 }

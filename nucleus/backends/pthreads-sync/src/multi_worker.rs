@@ -77,7 +77,7 @@ use std::fmt::Write as _;
 // (one slot per cross-worker data symbol — the pre-TASK-0124
 // behaviour), so `SeqTag` is not consulted here; a future
 // per-(seq) slot split (multi-buffer transfers) would use it.
-use compiler::event::{DataId, Event, SyncTag, WorkerId};
+use compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
 use crate::{render_const_expr_pub, rust_scalar_type, EmitError, NameTables, RenderCtxPub};
@@ -101,10 +101,22 @@ pub(crate) fn render_main_rs_multi(
 // Plan
 // --------------------------------------------------------------------
 
-/// Stable identifier for one Slot allocated for a cross-worker data
-/// symbol (assigned by sorted `DataId` — the same deterministic
-/// order the old `xfers.keys().enumerate()` produced, since
-/// `acfg.name_data` assigned DataIds in declaration order).
+/// Stable identifier for one Slot allocated for a cross-worker
+/// Push/Wait pair (TASK-0117). Pre-TASK-0117, slots were keyed by
+/// `DataId` alone (one slot per cross-worker data symbol); the
+/// transfer-injection canonical-collapse meant a data symbol crossing
+/// {host} → {w0,w1,w2,w3} produced exactly one pair, hence one slot.
+/// Post-TASK-0117, the same crossing produces N pairs (one per
+/// destination worker) and each pair MUST have its own slot — without
+/// per-pair slots, four `slot.push(input.clone())` and four
+/// `slot.wait()` would race nondeterministically.
+///
+/// Slots are now keyed by the `(DataId, SeqTag)` pair (= one slot per
+/// XferPlaceholder pair). For an example whose data symbols each have
+/// one pair (examples 01..07: 1:1 host↔single-worker transfers), the
+/// keying degrades to the pre-TASK-0117 1-slot-per-data shape with
+/// stable `slot_X` indices, because the BTreeSet iteration order over
+/// (DataId, SeqTag) ascends by DataId first.
 type SlotId = usize;
 /// Stable identifier for one barrier — the contract-carried
 /// [`SyncTag`] (TASK-0172). Same value for every participant of the
@@ -119,9 +131,20 @@ struct Plan<'a> {
     used_workers: Vec<WorkerId>,
     /// The host (worker named "host", else smallest used WorkerId).
     host_worker: WorkerId,
-    /// Cross-worker data symbols (those that appear in a Push/Wait),
-    /// sorted by DataId -> SlotId.
-    slot_ids: BTreeMap<DataId, SlotId>,
+    /// Cross-worker Push/Wait pairs (those that appear in a Push or
+    /// Wait event), sorted by `(DataId, SeqTag)` -> SlotId. The
+    /// `SeqTag` half disambiguates the per-destination fan-out pairs
+    /// for one data symbol so multi-worker codegen (TASK-0117) can
+    /// allocate distinct slots without racing.
+    slot_ids: BTreeMap<(DataId, SeqTag), SlotId>,
+    /// Per-pair tile carried on the originating XferPlaceholder. The
+    /// tile names the iteration-axis slice this pair is responsible
+    /// for. Used by host-side Wait codegen to slice-paste a
+    /// per-worker partial buffer into the host's whole `output` (the
+    /// gather half of TASK-0117 fan-out). Empty tile (no iteration
+    /// nest) means "whole-array transfer"; the receiver-side
+    /// `name = slot.wait();` path is taken.
+    pair_tiles: BTreeMap<(DataId, SeqTag), compiler::event::IterTile>,
     /// `SyncTag` -> participants. Keyed directly by the contract
     /// barrier identity (TASK-0172). The projection clones the same
     /// participant set into every participant's `Event::Sync`, so
@@ -159,15 +182,25 @@ impl<'a> Plan<'a> {
                 )
             })?;
 
-        // Cross-worker data: every DataId mentioned by a Push/Wait.
-        // Sorted by DataId (BTreeSet) -> SlotId, the same order the
-        // old `xfers` BTreeMap<DataId> produced.
-        let mut xfer_data: BTreeSet<DataId> = BTreeSet::new();
+        // Cross-worker pairs: every (DataId, SeqTag) appearing on a
+        // Push or Wait event (a Push and its matching Wait carry the
+        // same `seq`, so seeing either is enough). Sorted by (DataId,
+        // SeqTag) so the slot order is deterministic; ties on DataId
+        // ascend by SeqTag. Examples with one pair per data symbol
+        // (01..07: every cross-worker transfer is host↔single-worker)
+        // map to one slot each at slot indices 0..N-1, preserving the
+        // pre-TASK-0117 stable layout.
+        let mut xfer_pairs: BTreeMap<(DataId, SeqTag), compiler::event::IterTile> =
+            BTreeMap::new();
         for evs in per_worker.values() {
-            collect_xfer_data(evs, &mut xfer_data);
+            collect_xfer_pairs(evs, &mut xfer_pairs);
         }
-        let slot_ids: BTreeMap<DataId, SlotId> =
-            xfer_data.iter().enumerate().map(|(i, d)| (*d, i)).collect();
+        let slot_ids: BTreeMap<(DataId, SeqTag), SlotId> = xfer_pairs
+            .keys()
+            .enumerate()
+            .map(|(i, k)| (*k, i))
+            .collect();
+        let pair_tiles = xfer_pairs;
 
         // Barrier identity by the contract-carried `SyncTag`
         // (TASK-0172). Each `Event::Sync` names its own barrier; the
@@ -192,6 +225,7 @@ impl<'a> Plan<'a> {
             used_workers,
             host_worker,
             slot_ids,
+            pair_tiles,
             barrier_participants,
         })
     }
@@ -272,8 +306,12 @@ impl<'a> Plan<'a> {
         // `maybe_perturb_for_nondet_test`. Do NOT reintroduce an env
         // read or self-corruption branch on the codegen critical path.
 
-        // ---- Allocate slots (sorted DataId order). ----
-        for (data_id, slot_id) in &self.slot_ids {
+        // ---- Allocate slots (sorted (DataId, SeqTag) order). ----
+        // One slot per Push/Wait pair, so multi-worker fan-out
+        // (TASK-0117) doesn't race; an example with one pair per data
+        // symbol degrades to the pre-TASK-0117 one-slot-per-data
+        // layout, byte-identical to the old emit.
+        for ((data_id, _seq), slot_id) in &self.slot_ids {
             let name = self.data_name(*data_id)?;
             let ty = self.sidecar.data_type(*data_id).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -558,11 +596,11 @@ impl<'a> Plan<'a> {
                     let bid = sync.0;
                     writeln!(out, "{pad}{prefix}bar_{bid}.wait();").ok();
                 }
-                Event::Push { data, dst, .. } => {
-                    let sid = self.slot_ids.get(data).ok_or_else(|| {
+                Event::Push { data, dst, seq, .. } => {
+                    let sid = self.slot_ids.get(&(*data, *seq)).ok_or_else(|| {
                         EmitError::ContractGap(format!(
-                            "Push of data {data:?} has no slot id (not collected as \
-                             cross-worker)"
+                            "Push of data {data:?} (seq {seq:?}) has no slot id \
+                             (not collected as cross-worker)"
                         ))
                     })?;
                     let name = self.data_name(*data)?;
@@ -573,20 +611,33 @@ impl<'a> Plan<'a> {
                     )
                     .ok();
                 }
-                Event::Wait { data, src, .. } => {
-                    let sid = self.slot_ids.get(data).ok_or_else(|| {
+                Event::Wait {
+                    data, src, seq, ..
+                } => {
+                    let sid = self.slot_ids.get(&(*data, *seq)).ok_or_else(|| {
                         EmitError::ContractGap(format!(
-                            "Wait of data {data:?} has no slot id (not collected as \
-                             cross-worker)"
+                            "Wait of data {data:?} (seq {seq:?}) has no slot id \
+                             (not collected as cross-worker)"
                         ))
                     })?;
                     let name = self.data_name(*data)?;
                     let from = self.worker_name(*src);
-                    writeln!(
-                        out,
-                        "{pad}{name} = {prefix}slot_{sid}.wait(); // recv `{name}` from {from}",
-                    )
-                    .ok();
+                    // TASK-0117 host-side gather: when the pair's tile
+                    // names a strict sub-slice of the data's leading
+                    // axis, the producer worker pushed its whole local
+                    // buffer with only its slice populated; the host
+                    // must slice-paste that slice into its own whole
+                    // `name` buffer (so the union of 4 workers'
+                    // contributions covers the source range). When the
+                    // tile is empty or covers the source range, fall
+                    // back to the pre-TASK-0117 whole-array assign.
+                    let assign = self.render_wait_assign(
+                        &name,
+                        *data,
+                        *seq,
+                        &format!("{prefix}slot_{sid}.wait()"),
+                    )?;
+                    writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
                 }
                 Event::Alloc { .. } | Event::Free { .. } => {
                     // RAII Vec storage; no explicit reservation.
@@ -622,19 +673,153 @@ impl<'a> Plan<'a> {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
     }
+
+    /// Render the receiver-side assignment statement for one Wait
+    /// event. Returns one statement (no trailing newline).
+    ///
+    /// Two shapes:
+    /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
+    ///   single-pair behaviour. Selected when the pair's tile is
+    ///   empty (no enclosing iteration nest, e.g. a top-level
+    ///   load_input ⇒ host transfer), OR when the leading axis of
+    ///   the tile covers the data's full leading-axis range (i.e. the
+    ///   producer sent the whole array on this pair).
+    /// - **Slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
+    ///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 host-side
+    ///   gather. Selected when the tile's outer axis is a strict
+    ///   sub-range of the data's leading axis. The producer pushed
+    ///   its whole local buffer with only its tile-slice populated;
+    ///   the receiver copies that slice into its own whole buffer.
+    ///   The byte/element stride per outer-axis element is the
+    ///   product of the data's inner dims.
+    ///
+    /// Why receiver-side slice-paste (not producer-side slice-push):
+    /// the producer-worker's local `name` is pre-initialised to the
+    /// full-shape Vec (collect_pre_init logic) with only its tile
+    /// positions filled; pushing the whole Vec keeps the producer
+    /// codegen identical to the single-worker case. Slicing on the
+    /// receiver concentrates the new logic at one site and keeps the
+    /// 1:1 transfers (examples 01..07) byte-identical to before
+    /// because their pair tiles are empty.
+    fn render_wait_assign(
+        &self,
+        name: &str,
+        data: DataId,
+        seq: SeqTag,
+        rhs: &str,
+    ) -> Result<String, EmitError> {
+        let slice = match self.pair_tiles.get(&(data, seq)) {
+            Some(tile) => self.leading_axis_slice(data, tile)?,
+            None => None,
+        };
+        match slice {
+            None => {
+                // Empty tile (or no shape match) — whole-array
+                // assign. The pre-TASK-0117 contract; the 1:1 cases
+                // (examples 01..07) take this path.
+                Ok(format!("{name} = {rhs};"))
+            }
+            Some(LeadingAxis { lo, hi, stride }) => {
+                // Slice-paste: the receiver-side gather half of
+                // TASK-0117. Element offsets are `lo*stride..hi*stride`.
+                let lo_off = lo.saturating_mul(stride);
+                let hi_off = hi.saturating_mul(stride);
+                Ok(format!(
+                    "{{ let _tmp = {rhs}; \
+                     {name}[{lo_off}usize..{hi_off}usize].copy_from_slice(\
+                     &_tmp[{lo_off}usize..{hi_off}usize]); }}"
+                ))
+            }
+        }
+    }
+
+    /// Compute the leading-axis slice for a Wait's tile, returning
+    /// `Some(LeadingAxis { lo, hi, stride })` when the tile's outer
+    /// axis is a strict sub-range of the data's leading axis (the
+    /// slice-paste path), `None` when the tile is empty or the outer
+    /// axis covers the full source range (the whole-array path).
+    ///
+    /// Returns `Err` on a shape mismatch — e.g. the tile's leading
+    /// axis range exceeds the data's leading-dim length; that is a
+    /// compiler-pass invariant violation worth failing loud rather
+    /// than silently emitting an out-of-bounds slice.
+    fn leading_axis_slice(
+        &self,
+        data: DataId,
+        tile: &compiler::event::IterTile,
+    ) -> Result<Option<LeadingAxis>, EmitError> {
+        // Empty tile ⇒ no per-axis slicing.
+        let Some((_iv, range)) = tile.bounds.first() else {
+            return Ok(None);
+        };
+        let ty = self.sidecar.data_type(data).ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "Wait of data {data:?} has no ResolvedType in NameSidecar"
+            ))
+        })?;
+        // Scalar data: no slice axes — whole-value transfer.
+        if ty.dims.is_empty() {
+            return Ok(None);
+        }
+        let leading_dim = ty.dims[0] as i64;
+        // Pre-TASK-0117 single-pair: tile covers the full source
+        // range of the leading axis (0..B). No slicing.
+        if range.start == 0 && range.end == leading_dim {
+            return Ok(None);
+        }
+        if range.start < 0 || range.end > leading_dim || range.start >= range.end {
+            return Err(EmitError::ContractGap(format!(
+                "Wait of data {data:?}: tile leading-axis range {:?} out of \
+                 bounds for data dims {:?} (leading-dim {})",
+                range, ty.dims, leading_dim
+            )));
+        }
+        let stride: usize = ty.dims[1..].iter().product();
+        Ok(Some(LeadingAxis {
+            lo: range.start as usize,
+            hi: range.end as usize,
+            stride,
+        }))
+    }
+}
+
+/// Leading-axis slice descriptor for the host-side gather codegen
+/// (TASK-0117).
+struct LeadingAxis {
+    lo: usize,
+    hi: usize,
+    /// Product of the data type's inner dims; the per-outer-axis
+    /// stride in flat-Vec elements.
+    stride: usize,
 }
 
 // --------------------------------------------------------------------
 // Event-walk helpers (recurse into Event::Loop bodies)
 // --------------------------------------------------------------------
 
-fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
+/// Collect every (DataId, SeqTag) pair appearing on a Push or Wait
+/// event in `events` (descending into Loop bodies). The map's value is
+/// the pair's tile, copied from the first event sighting; the same
+/// `seq` is carried on both endpoints (Push and Wait) by the
+/// XferPlaceholder construction (TASK-0018) so first-sighting is
+/// well-defined. The tile is retained for later host-side slice-paste
+/// codegen (TASK-0117 gather).
+fn collect_xfer_pairs(
+    events: &[Event],
+    out: &mut BTreeMap<(DataId, SeqTag), compiler::event::IterTile>,
+) {
     for e in events {
         match e {
-            Event::Push { data, .. } | Event::Wait { data, .. } => {
-                out.insert(*data);
+            Event::Push {
+                data, seq, tile, ..
             }
-            Event::Loop { body, .. } => collect_xfer_data(body, out),
+            | Event::Wait {
+                data, seq, tile, ..
+            } => {
+                out.entry((*data, *seq))
+                    .or_insert_with(|| tile.clone());
+            }
+            Event::Loop { body, .. } => collect_xfer_pairs(body, out),
             _ => {}
         }
     }
@@ -642,13 +827,13 @@ fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
 
 fn collect_worker_slots(
     events: &[Event],
-    slot_ids: &BTreeMap<DataId, SlotId>,
+    slot_ids: &BTreeMap<(DataId, SeqTag), SlotId>,
     out: &mut BTreeSet<SlotId>,
 ) {
     for e in events {
         match e {
-            Event::Push { data, .. } | Event::Wait { data, .. } => {
-                if let Some(s) = slot_ids.get(data) {
+            Event::Push { data, seq, .. } | Event::Wait { data, seq, .. } => {
+                if let Some(s) = slot_ids.get(&(*data, *seq)) {
                     out.insert(*s);
                 }
             }

@@ -22,6 +22,8 @@ use compiler::event::{DataId, Event, IterVar, KernelId, WorkerId};
 use compiler::link;
 use compiler::passes::partition_workers::{apply_partition_workers, PartitionError};
 use compiler::passes::petri_to_events::acfg_to_events;
+use compiler::passes::sync_inject::inject_syncs;
+use compiler::passes::transfer_inject::inject_transfers;
 use compiler::sched::{lower_sched, parse_sched};
 
 // --------------------------------------------------------------------
@@ -406,4 +408,293 @@ fn projection_is_deterministic_under_override() {
     let a = acfg_to_events(&acfg);
     let b = acfg_to_events(&acfg);
     assert_eq!(a, b, "two projections of the same ACFG must be identical");
+}
+
+// --------------------------------------------------------------------
+// TASK-0117 ↔ TASK-0212 ↔ sync-injection composition tests
+// --------------------------------------------------------------------
+
+/// On a partitioned `Repeat`, `inject_syncs` must NOT inject a
+/// body-internal entry / exit `Sync`: the per-iteration barrier would
+/// deadlock because the host iterates the source range while each
+/// compute worker iterates its slice. The loop-boundary Syncs (between
+/// the Repeat and its prior/next siblings) are unaffected.
+///
+/// Regression test for the sync-injection co-fix in TASK-0117 cycle-1.
+#[test]
+fn partitioned_repeat_skips_body_entry_exit_syncs() {
+    use compiler::acfg::ACFGNode;
+
+    // Mirror the example-13 batch_parallel shape with synthetic ops:
+    //   host: write `a` -> Repeat (body on {w1..w4}: read `a`) ->
+    //   host read `b`. The body has cross-worker writes -> pre-fix
+    //   this would attach an entry-sync at body[0] AND an exit-sync
+    //   at body[end].
+    use compiler::acfg::{DataflowDag, DataflowEdge, Operation};
+    fn op_on(workers: &[u64], data_in: &[u64], data_out: Option<u64>) -> ACFGNode {
+        let ws: BTreeSet<WorkerId> = workers.iter().copied().map(WorkerId).collect();
+        ACFGNode::Operation(Operation {
+            kernel: compiler::event::KernelId(0),
+            workers: ws,
+            dataflow: DataflowDag {
+                edges: vec![DataflowEdge::new(
+                    data_in.iter().copied().map(DataId).collect(),
+                    compiler::event::KernelId(0),
+                    data_out.map(DataId),
+                )],
+            },
+        })
+    }
+
+    let body = ACFGNode::Sequence(vec![op_on(&[1, 2, 3, 4], &[0], Some(1))]);
+    let root = ACFGNode::Sequence(vec![
+        op_on(&[0], &[], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..16,
+            body: Box::new(body),
+            block_tag: None,
+        },
+        op_on(&[0], &[1], None),
+    ]);
+
+    // Sidecar marks IterVar(7) as partitioned across {w1..w4}.
+    let mut acfg = compiler::acfg::ACFG {
+        root,
+        name_kernels: Default::default(),
+        name_data: BTreeMap::from([("a".to_string(), DataId(0)), ("b".to_string(), DataId(1))]),
+        name_workers: BTreeMap::from([
+            ("host".to_string(), WorkerId(0)),
+            ("w1".to_string(), WorkerId(1)),
+            ("w2".to_string(), WorkerId(2)),
+            ("w3".to_string(), WorkerId(3)),
+            ("w4".to_string(), WorkerId(4)),
+        ]),
+        name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: BTreeMap::new(),
+    };
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..4);
+    per_worker.insert(WorkerId(2), 4..8);
+    per_worker.insert(WorkerId(3), 8..12);
+    per_worker.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let after = inject_syncs(acfg);
+
+    // The Repeat's body must contain ZERO Sync nodes.
+    if let ACFGNode::Sequence(children) = &after.root {
+        let repeat = children
+            .iter()
+            .find_map(|c| match c {
+                ACFGNode::Repeat { body, .. } => Some(body.as_ref()),
+                _ => None,
+            })
+            .expect("Repeat node");
+        if let ACFGNode::Sequence(body_children) = repeat {
+            let sync_count = body_children
+                .iter()
+                .filter(|c| matches!(c, ACFGNode::Sync(_)))
+                .count();
+            assert_eq!(
+                sync_count, 0,
+                "partitioned Repeat body must have zero Sync nodes (got {sync_count})"
+            );
+        } else {
+            panic!("Repeat body must be a Sequence");
+        }
+    } else {
+        panic!("expected top-level Sequence");
+    }
+}
+
+/// The same shape on an UN-partitioned Repeat must still get its
+/// per-iteration entry/exit Syncs, so the regression for examples
+/// like 02-split-add (which legitimately need the per-iteration
+/// barrier) is locked in.
+#[test]
+fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
+    use compiler::acfg::{ACFGNode, DataflowDag, DataflowEdge, Operation};
+    fn op_on(workers: &[u64], data_in: &[u64], data_out: Option<u64>) -> ACFGNode {
+        let ws: BTreeSet<WorkerId> = workers.iter().copied().map(WorkerId).collect();
+        ACFGNode::Operation(Operation {
+            kernel: compiler::event::KernelId(0),
+            workers: ws,
+            dataflow: DataflowDag {
+                edges: vec![DataflowEdge::new(
+                    data_in.iter().copied().map(DataId).collect(),
+                    compiler::event::KernelId(0),
+                    data_out.map(DataId),
+                )],
+            },
+        })
+    }
+
+    let body = ACFGNode::Sequence(vec![op_on(&[1], &[0], Some(1))]);
+    let root = ACFGNode::Sequence(vec![
+        op_on(&[0], &[], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..16,
+            body: Box::new(body),
+            block_tag: None,
+        },
+        op_on(&[0], &[1], None),
+    ]);
+    let acfg = compiler::acfg::ACFG {
+        root,
+        name_kernels: Default::default(),
+        name_data: BTreeMap::from([("a".to_string(), DataId(0)), ("b".to_string(), DataId(1))]),
+        name_workers: BTreeMap::from([
+            ("host".to_string(), WorkerId(0)),
+            ("w0".to_string(), WorkerId(1)),
+        ]),
+        name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: BTreeMap::new(), // empty — no partition
+    };
+
+    let after = inject_syncs(acfg);
+
+    if let ACFGNode::Sequence(children) = &after.root {
+        let repeat = children
+            .iter()
+            .find_map(|c| match c {
+                ACFGNode::Repeat { body, .. } => Some(body.as_ref()),
+                _ => None,
+            })
+            .expect("Repeat node");
+        if let ACFGNode::Sequence(body_children) = repeat {
+            let sync_count = body_children
+                .iter()
+                .filter(|c| matches!(c, ACFGNode::Sync(_)))
+                .count();
+            assert!(
+                sync_count >= 1,
+                "non-partitioned Repeat body MUST keep its entry/exit Syncs \
+                 (got {sync_count})"
+            );
+        } else {
+            panic!("Repeat body must be a Sequence");
+        }
+    }
+}
+
+/// End-to-end composition: apply partition_workers + transfer_inject
+/// on a synthetic 1:N broadcast inside a partitioned Repeat, and
+/// assert that the FINAL `Xfer` tile carries the per-worker partition
+/// slice (the `rewrite_partition_tiles` sink). This is the load-bearing
+/// composability check between TASK-0212 and TASK-0117.
+#[test]
+fn transfer_fanout_composes_with_partition_sidecar() {
+    use compiler::acfg::{ACFGNode, DataflowDag, DataflowEdge, Operation, ACFG, XferRole};
+    use compiler::link::{LinkedIR, WorkerEntity};
+
+    fn op_on(workers: &[u64], data_in: &[u64], data_out: Option<u64>) -> ACFGNode {
+        let ws: BTreeSet<WorkerId> = workers.iter().copied().map(WorkerId).collect();
+        ACFGNode::Operation(Operation {
+            kernel: compiler::event::KernelId(0),
+            workers: ws,
+            dataflow: DataflowDag {
+                edges: vec![DataflowEdge::new(
+                    data_in.iter().copied().map(DataId).collect(),
+                    compiler::event::KernelId(0),
+                    data_out.map(DataId),
+                )],
+            },
+        })
+    }
+
+    // host writes `a` at top level; Repeat body on {w1..w4} reads
+    // `a` (cross-worker, broadcast 1:N).
+    let body = ACFGNode::Sequence(vec![op_on(&[1, 2, 3, 4], &[0], Some(1))]);
+    let root = ACFGNode::Sequence(vec![
+        op_on(&[0], &[], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..8,
+            body: Box::new(body),
+            block_tag: None,
+        },
+    ]);
+
+    let mut acfg = ACFG {
+        root,
+        name_kernels: Default::default(),
+        name_data: BTreeMap::from([("a".to_string(), DataId(0)), ("b".to_string(), DataId(1))]),
+        name_workers: BTreeMap::from([
+            ("host".to_string(), WorkerId(0)),
+            ("w1".to_string(), WorkerId(1)),
+            ("w2".to_string(), WorkerId(2)),
+            ("w3".to_string(), WorkerId(3)),
+            ("w4".to_string(), WorkerId(4)),
+        ]),
+        name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: BTreeMap::new(),
+    };
+
+    // Populate the partition sidecar by hand — equivalent to running
+    // apply_partition_workers on a schedule that declares
+    // `loop n : partition=workers;`.
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    // Build a minimal LinkedIR carrying just enough for
+    // inject_transfers: the producer entity for `a` (host) and a
+    // schedule with the transfer directive.
+    let sched_src = r#"schedule for "../prog.algo.nuc" {
+    workers = { host, w1, w2, w3, w4 };
+    transfer a : sync;
+}"#;
+    let sched_ast = parse_sched(sched_src).expect("parse");
+    let sched = lower_sched(&sched_ast).expect("lower");
+    let mut data_producers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
+    data_producers.insert("a".to_string(), WorkerEntity(BTreeSet::from(["host".to_string()])));
+    let linked = LinkedIR {
+        algo: Default::default(),
+        sched,
+        placements: Default::default(),
+        kernel_workers: Default::default(),
+        data_producers,
+        data_consumers: Default::default(),
+    };
+
+    let after = inject_transfers(&linked, acfg);
+
+    // After the fan-out, count Wait nodes whose tile == the expected
+    // per-worker slice for their dst.
+    fn collect_waits(node: &ACFGNode, out: &mut Vec<(WorkerId, std::ops::Range<i64>)>) {
+        match node {
+            ACFGNode::Xfer(x) if x.role == XferRole::Wait => {
+                let r = x.tile.bounds.first().map(|(_, r)| r.clone()).unwrap_or(0..0);
+                out.push((x.dst, r));
+            }
+            ACFGNode::Sequence(cs) => {
+                for c in cs {
+                    collect_waits(c, out);
+                }
+            }
+            ACFGNode::Repeat { body, .. } => collect_waits(body, out),
+            _ => {}
+        }
+    }
+    let mut waits = Vec::new();
+    collect_waits(&after.root, &mut waits);
+    waits.sort_by_key(|(w, _)| w.0);
+    assert_eq!(
+        waits,
+        vec![
+            (WorkerId(1), 0..2),
+            (WorkerId(2), 2..4),
+            (WorkerId(3), 4..6),
+            (WorkerId(4), 6..8),
+        ],
+        "every fan-out Wait's tile must carry its dst worker's partition slice"
+    );
 }

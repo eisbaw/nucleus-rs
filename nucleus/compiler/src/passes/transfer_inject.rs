@@ -68,20 +68,26 @@
 //! when deciding "same entity?".
 //!
 //! For the `src` and `dst` fields on [`XferPlaceholder`] we need *a*
-//! `WorkerId`, not a set. We pick the lexicographically-first worker
-//! in the entity's BTreeSet as the canonical representative. This is
-//! a known simplification — see "Honest limitations" below.
+//! `WorkerId`, not a set. TASK-0117 fan-out (now landed) emits one
+//! XferPlaceholder pair per (src-worker, dst-worker) member of the
+//! cartesian product of the producer and consumer entities, skipping
+//! same-worker pairs. Each pair carries a fresh `SeqTag` and a tile
+//! that is the enclosing iteration tile with any axis named in the
+//! ACFG's `partition_worker_ranges` sidecar (TASK-0212) rewritten to
+//! the compute worker's slice. The {host} -> {single worker} shape
+//! (M1/M2 single-distributed cases) lowers to exactly one pair — no
+//! behavioural delta versus the pre-TASK-0117 canonical-collapse path
+//! for those cases.
 //!
 //! ## Honest limitations (recorded for follow-up)
 //!
-//! - **Distributed placements treated as a single entity.** The link
-//!   pass already collapses `place k on {w0,w1,w2,w3}` into one
-//!   `WorkerEntity`. Transfer injection inherits this: a transfer
-//!   between `host` and `{w0..w3}` becomes one Push/Wait pair, not
-//!   four; the canonical `src`/`dst` we record is the BTreeSet's
-//!   first element. A future partition pass (TASK-0016+) will
-//!   replicate the pair across the named workers per the partition
-//!   policy.
+//! - **N-to-M fan-out** (both sides multi-worker, e.g. an all-to-all
+//!   shuffle) falls back to the "compute worker = dst" convention
+//!   when constructing per-pair tiles. The 1-to-N (broadcast) and
+//!   N-to-1 (gather) shapes — the only shapes the in-tree schedules
+//!   exercise — pick the multi-worker side correctly. A coordinate-
+//!   mapping policy for N-to-M is a follow-up not blocked by any
+//!   current example.
 //!
 //! - **Per-point granularity outside `block=`.** When the consumer
 //!   is inside a non-blocked `for`, we still fire one Push/Wait per
@@ -313,7 +319,19 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
                 w.data, w.seq, w.src, w.dst
             );
         }
-        splice_pushes_global(hoisted, &inner_block_iter_vars, &name_data)
+        let spliced = splice_pushes_global(hoisted, &inner_block_iter_vars, &name_data);
+        // TASK-0117 per-worker tile finalisation. The hoist + splice
+        // passes above may rewrite a Wait/Push tile to the
+        // post-hoist enclosing tile (e.g. a loop-invariant `input`
+        // Wait at top level lands with `[]`). For a fan-out pair the
+        // tile must reflect the COMPUTE worker's partition slice so
+        // the backend host-side gather can slice-paste. We do the
+        // rewrite as a final ACFG walk keyed by the pair's
+        // src/dst against `partition_worker_ranges`; pairs whose
+        // neither endpoint is partitioned (the 1:1 host↔single-worker
+        // shape from examples 01..07) survive unchanged because the
+        // map has no entry for either side.
+        rewrite_partition_tiles(spliced, &partition_worker_ranges)
     };
 
     ACFG {
@@ -1423,6 +1441,95 @@ fn splice_pushes_global(
 }
 
 // --------------------------------------------------------------------
+// TASK-0117 per-worker tile finalisation
+// --------------------------------------------------------------------
+
+/// Walk the ACFG and rewrite every `Xfer`'s `tile` to its
+/// fan-out compute worker's partition slice.
+///
+/// "Compute worker" rule:
+/// - If `src` appears in `partition_ranges` for any iter-var:
+///   compute_worker = src (the N:1 gather direction, e.g. output).
+/// - Else if `dst` appears: compute_worker = dst (the 1:N broadcast
+///   direction, e.g. input).
+/// - Else: no partition involvement — leave the tile unchanged
+///   (the 1:1 host↔single-worker shape from examples 01..07).
+///
+/// The new tile is `[(iv, partition_ranges[iv][compute_worker])]`
+/// for each iv where compute_worker has an entry; BTreeMap iteration
+/// keeps the axis order deterministic.
+///
+/// We do this AFTER `hoist_invariant_waits` + `splice_pushes_global`
+/// rather than at `build_waits_for_op` time because the hoist
+/// rewrites the tile to the post-hoist enclosing tile (TASK-0151), so
+/// a tile set at construction time would be clobbered for any Wait
+/// hoisted out of the partitioned loop body. Setting the tile here
+/// is the single sink for the contract.
+fn rewrite_partition_tiles(
+    node: ACFGNode,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+) -> ACFGNode {
+    if partition_ranges.is_empty() {
+        return node;
+    }
+    rewrite_partition_tiles_inner(node, partition_ranges)
+}
+
+fn rewrite_partition_tiles_inner(
+    node: ACFGNode,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+) -> ACFGNode {
+    match node {
+        ACFGNode::Xfer(mut x) => {
+            // Pick the compute worker per the rule above.
+            let compute_worker = if partition_ranges
+                .values()
+                .any(|m| m.contains_key(&x.src))
+            {
+                Some(x.src)
+            } else if partition_ranges
+                .values()
+                .any(|m| m.contains_key(&x.dst))
+            {
+                Some(x.dst)
+            } else {
+                None
+            };
+            if let Some(w) = compute_worker {
+                let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
+                for (iv, per_worker) in partition_ranges {
+                    if let Some(range) = per_worker.get(&w) {
+                        bounds.push((*iv, range.clone()));
+                    }
+                }
+                if !bounds.is_empty() {
+                    x.tile = IterTile::new(bounds);
+                }
+            }
+            ACFGNode::Xfer(x)
+        }
+        ACFGNode::Sequence(children) => ACFGNode::Sequence(
+            children
+                .into_iter()
+                .map(|c| rewrite_partition_tiles_inner(c, partition_ranges))
+                .collect(),
+        ),
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            block_tag,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(rewrite_partition_tiles_inner(*body, partition_ranges)),
+            block_tag,
+        },
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
+    }
+}
+
+// --------------------------------------------------------------------
 // Wait construction
 // --------------------------------------------------------------------
 
@@ -1452,50 +1559,72 @@ fn build_waits_for_op(
             if producer_workers == &consumer_workers {
                 continue; // Same entity — intra-worker dataflow.
             }
-            let src = canonical_worker(producer_workers);
-            let dst = canonical_worker(&consumer_workers);
-            // Skip if canonicalisation collapsed src == dst (this
-            // would happen only if both sets were empty, which the
-            // earlier `if` already eliminates; defensive).
-            if src == dst {
-                continue;
-            }
             let policy = ctx
                 .policies_by_data
                 .get(&data_id)
                 .copied()
                 .unwrap_or_default();
-            out.push(XferPlaceholder {
-                role: XferRole::Wait,
-                src,
-                dst,
-                data: data_id,
-                tile: IterTile::new(enclosing_tile.to_vec()),
-                seq: state.fresh_seq(),
-                policy,
-            });
+
+            // TASK-0117 fan-out: emit one Wait per (src-worker,
+            // dst-worker) member of the cartesian product of the
+            // producer and consumer worker entities, skipping any
+            // same-worker pair. Each pair gets its own fresh `seq` so
+            // the projection's per-worker EventLists carry distinct
+            // Pushes/Waits, and the backend can allocate per-pair
+            // slots without collision.
+            //
+            // The pair's `tile` is the enclosing iteration tile with
+            // any partitioned axis (TASK-0212) rewritten to the
+            // *compute* worker's slice. The "compute worker" for a
+            // pair is the worker in the multi-worker side: for a
+            // (host -> {w0..w3}) pair to w_i, compute = w_i; for a
+            // ({w0..w3} -> host) pair from w_i, compute = w_i. When
+            // both sides are size 1, the source range survives
+            // unchanged (no partition meaning) — this is exactly the
+            // pre-TASK-0117 behaviour for {host} -> {single worker}
+            // transfers.
+            //
+            // Determinism: BTreeSet iterates in sorted WorkerId
+            // order; the cartesian-product enumeration is therefore
+            // a deterministic function of (producer_workers,
+            // consumer_workers). Seq tags are assigned monotonically
+            // by `state.fresh_seq()` — same input ⇒ same seqs.
+            // Emit one Wait per (src, dst) member of the cartesian
+            // product. The per-pair `tile` is initialised here from
+            // `enclosing_tile` (the construction-site semantic the
+            // pre-TASK-0117 single-pair path used); the final
+            // per-worker tile is set by `rewrite_partition_tiles`
+            // at the end of `inject_transfers`, after the hoist +
+            // splice passes have positioned the placeholders. Doing
+            // the partition rewrite as a separate sink keeps the
+            // hoist invariant (TASK-0151's loop-invariant tile
+            // rewrite) untouched.
+            for &src in producer_workers.iter() {
+                for &dst in consumer_workers.iter() {
+                    if src == dst {
+                        continue;
+                    }
+                    out.push(XferPlaceholder {
+                        role: XferRole::Wait,
+                        src,
+                        dst,
+                        data: data_id,
+                        tile: IterTile::new(enclosing_tile.to_vec()),
+                        seq: state.fresh_seq(),
+                        policy,
+                    });
+                }
+            }
         }
     }
 
     out
 }
 
+
 // --------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------
-
-/// Pick a canonical `WorkerId` from a worker set. We take the
-/// lexicographically-first (smallest by `Ord`) member. BTreeSet
-/// iteration is sorted, so `.iter().next()` is the canonical choice.
-///
-/// Panics on an empty set, which would be a builder-pass invariant
-/// violation (every Operation has at least one worker, see
-/// `acfg::resolve_worker_set`).
-fn canonical_worker(set: &BTreeSet<WorkerId>) -> WorkerId {
-    *set.iter()
-        .next()
-        .expect("worker entity must be non-empty (acfg invariant)")
-}
 
 /// Convert a [`WorkerEntity`] (BTreeSet<String>) to a
 /// `BTreeSet<WorkerId>` using the ACFG's name table. Skip names that
