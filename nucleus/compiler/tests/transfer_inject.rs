@@ -974,3 +974,97 @@ fn fanout_empty_partition_sidecar_preserves_construction_tile() {
         );
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0216: partition=workers + pipeline=D combination
+// --------------------------------------------------------------------
+
+/// Synthetic fixture: partition_worker_ranges + pipeline=D on the
+/// SAME loop variable. Asserts (AC#1) that pipeline_depth_for_seq is
+/// populated correctly for each per-worker fan-out pair.
+///
+/// Setup mirrors `fanout_per_worker_tile_for_input_direction` but
+/// adds a `loop n : pipeline=2;` schedule directive. The post-pass
+/// `annotate_pipeline_depth_for_seq` walks each Xfer's `tile.bounds`
+/// in `.rev()` order looking for an iter-var with a pipeline depth;
+/// for the single-iter-var tile produced by partition-rewrite, the
+/// .rev() walk finds IterVar(7) on the first step and reads D=2.
+///
+/// Latency: the architect's id-order-vs-nest-order concern was that
+/// `rewrite_partition_tiles_inner` iterates `partition_ranges`
+/// (BTreeMap<IterVar, ...>) in IterVar id order, NOT nest order; for
+/// MULTIPLE partitioned iter-vars in nested fashion these can diverge
+/// theoretically. For real schedules with a single partitioned
+/// iter-var (the only shape any in-tree example uses) `bounds` has
+/// length 1 and ordering is trivial. This test pins that case;
+/// nested-multi-partitioned coverage is deferred to TASK-0216.01 if
+/// it ever becomes a real shape.
+#[test]
+fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        // Pipeline directive on the partitioned loop. The synthetic
+        // sched-lower path doesn't require the loop var to exist in
+        // an algorithm — it's a sched-side declaration.
+        "loop n : pipeline=2;\n    transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    assert!(!xfers.is_empty(), "expected fan-out xfers; got none");
+
+    let expect_depth = std::num::NonZeroU64::new(2).expect("D=2 nonzero");
+
+    // Every fan-out pair's seq must carry pipeline_depth_for_seq[seq] = D.
+    for x in &xfers {
+        assert_eq!(
+            x.tile.bounds.len(),
+            1,
+            "single-iter-var partition produces a 1-element bounds vec; \
+             got {:?}",
+            x.tile.bounds
+        );
+        assert_eq!(x.tile.bounds[0].0, IterVar(7));
+        assert_eq!(
+            result.pipeline_depth_for_seq.get(&x.seq),
+            Some(&expect_depth),
+            "pair seq {:?} must carry pipeline depth 2 (the post-pass \
+             reads IterVar(7) from the tile and resolves pipeline_depth_for_iter_var[IterVar(7)]=2)",
+            x.seq
+        );
+    }
+
+    // Cross-check: the sidecar has one entry per UNIQUE seq (Push
+    // and Wait of a pair share one seq, so 4 fan-out pairs = 4 seqs
+    // = 4 annotations, NOT 8 xfers).
+    let unique_seqs: std::collections::BTreeSet<_> =
+        xfers.iter().map(|x| x.seq).collect();
+    let annotated_count = result.pipeline_depth_for_seq.len();
+    assert_eq!(
+        annotated_count,
+        unique_seqs.len(),
+        "pipeline_depth_for_seq must have one entry per UNIQUE seq \
+         (Push+Wait share a seq); got {} annotated vs {} unique seqs",
+        annotated_count,
+        unique_seqs.len()
+    );
+}

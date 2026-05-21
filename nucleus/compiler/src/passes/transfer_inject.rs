@@ -1624,6 +1624,19 @@ fn rewrite_partition_tiles_inner(
             };
             if let Some(w) = compute_worker {
                 let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
+                // TASK-0216: this iteration order is BTreeMap<IterVar, ...>
+                // key-ascending, i.e. IterVar id order. For real schedules
+                // in this codebase that coincides with nest order (outer
+                // loops are walked first during ACFG construction, so
+                // their IterVars get LOWER ids). For multiple nested
+                // partitioned iter-vars under a future schedule the
+                // distinction could matter — see IterTile::bounds doc on
+                // outer-to-inner being load-bearing for the path-1
+                // annotate_pipeline_depth_for_seq reorder. The deeper
+                // fix (walk the enclosing Repeat stack instead) is
+                // TASK-0224; not exercised today (single-partitioned-
+                // iter-var schedules give a 1-element bounds vec).
+                // Test coverage: `partition_with_pipeline_populates_pipeline_depth_per_fanout_pair`.
                 for (iv, per_worker) in partition_ranges {
                     if let Some(range) = per_worker.get(&w) {
                         bounds.push((*iv, range.clone()));
