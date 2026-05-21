@@ -6,13 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 22:10'
+updated_date: '2026-05-21 22:32'
 labels:
   - M4
   - backend
   - multi-worker
 dependencies:
   - TASK-0226
+  - TASK-0222
 priority: medium
 ---
 

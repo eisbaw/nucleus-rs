@@ -326,10 +326,21 @@ pub fn emit(
 // the emitted Cargo.toml / run.sh are byte-identical to pthreads-sync's
 // — required for the cross-backend differential invariant on naive
 // schedules (same algorithm + same naive schedule -> bit-identical
-// output across pthreads-sync + pthreads-async by construction). The
-// `pthreads-sync` package name + the `nuc-generated` binary name are
-// deliberately backend-agnostic in the emitted artifact: the choice
-// of backend only changes per-loop codegen, not the project skeleton.
+// output across pthreads-sync + pthreads-async by construction).
+//
+// Scope precision (cycle-17 review-gate D1.1): these are the project-
+// skeleton renderers for the TWO SINGLE-BINARY tier-1 backends
+// (pthreads-sync + pthreads-async). The mp-tcp-bufsync backend emits
+// multiple `[[bin]]` targets and has its OWN
+// `render_cargo_toml(bin_names: &[String])` + `render_run_sh_single()`
+// — different signature, different shape (see
+// nucleus/backends/mp-tcp-bufsync/src/lib.rs). The "shared renderer"
+// claim therefore covers pthreads-sync + pthreads-async only, not
+// mp-tcp-bufsync.
+//
+// The `nuc-generated` binary name is deliberately backend-agnostic
+// in the emitted artifact: the choice of single-binary backend only
+// changes per-loop codegen, not the project skeleton.
 
 /// Emit the standalone Cargo.toml the generated project ships.
 /// Public so pthreads-async (TASK-0226 single-worker arm) reuses it.

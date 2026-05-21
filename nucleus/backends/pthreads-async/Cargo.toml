@@ -36,8 +36,12 @@ compiler = { path = "../../compiler" }
 # mp-tcp-bufsync precedent (TASK-0036): `EmitError` + `NameTables` are
 # single-sourced in pthreads-sync so the driver builds them ONCE and
 # feeds every tier-1 backend the identical input (PRD §8.4 — the
-# cross-backend differential requires bitwise input identity). Until
-# TASK-0226 lands the ring-buffer codegen, this dep is only for the
-# re-exports; the helper functions for emit-string templates will be
-# consumed by TASK-0226/0227 as they land.
+# cross-backend differential requires bitwise input identity). Cycle-17
+# (TASK-0226) added `pub use render_cargo_toml + render_run_sh +
+# render_single_worker_main` to this surface; the single-worker arm
+# delegates to those by construction. TASK-0228 (multi-worker arm)
+# will additionally consume the codegen helpers in the
+# `pthreads_sync::{sanitize_loop_var, collect_count_check_frames,
+# emit_count_reporter_struct, CountCheckLoop}` shared shape after
+# TASK-0222 extracts the four emit-string templates.
 pthreads-sync = { path = "../pthreads-sync" }

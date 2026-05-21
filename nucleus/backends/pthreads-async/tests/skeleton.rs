@@ -169,6 +169,134 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync() {
     );
 }
 
+/// Locate the repo root from this crate's manifest. Mirrors the
+/// pattern in pthreads-sync/tests/emit.rs:79 — the test must work
+/// regardless of where cargo is invoked.
+fn repo_root() -> PathBuf {
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .expect("three ancestors above pthreads-async crate")
+        .to_path_buf()
+}
+
+/// Build (per_worker, NameTables, NameSidecar, kernels.rs path) for
+/// example 01-elementwise-add / naive.sched.nuc by running the full
+/// compiler pipeline — same shape as pthreads-sync/tests/emit.rs's
+/// `link_example_01_naive` + `contract_inputs`. Re-implemented here
+/// rather than imported because cross-crate test helpers add a
+/// non-trivial compile-graph dependency and the pattern is small.
+fn lower_example_01_naive() -> (
+    BTreeMap<WorkerId, Vec<Event>>,
+    NameTables,
+    NameSidecar,
+    PathBuf,
+) {
+    use compiler::{
+        acfg_to_events, build_acfg, build_sidecar,
+        algo::{lower_algo, parse_algo},
+        inject_syncs, inject_transfers, link,
+        sched::{lower_sched, parse_sched},
+    };
+
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/01-elementwise-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("01 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/naive.sched.nuc")).expect("01 sched");
+
+    let algo_ir = lower_algo(&parse_algo(&algo_src).expect("parse_algo")).expect("lower_algo");
+    let sched_ir =
+        lower_sched(&parse_sched(&sched_src).expect("parse_sched")).expect("lower_sched");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    let per_worker = acfg_to_events(&acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg
+            .name_kernels
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        worker: acfg
+            .name_workers
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        iter_var: acfg
+            .name_iter_vars
+            .iter()
+            .map(|(n, i)| (*i, n.clone()))
+            .collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+
+    (per_worker, names, sidecar, ex.join("kernels.rs"))
+}
+
+/// Non-empty witness for the byte-identical-by-construction claim
+/// (HIGH finding A1 from the cycle-17 review-gate). The empty-eventlist
+/// test above proves the *scaffold* (mod header, fn main, no body)
+/// matches; this test proves the *actual codegen* (kernel calls,
+/// loop headers, sidecar-driven pre-init, real symbolic loops) also
+/// matches.
+///
+/// If a future drift adds a pthreads-async-specific wrapper around
+/// the delegated `render_single_worker_main` (e.g. an async-runtime
+/// prelude), this test fails: the prelude appears in the async
+/// output but not the sync output. That is exactly the drift the
+/// commit-message "byte-identical by construction" wording is
+/// promising.
+///
+/// Example 01-elementwise-add / naive is the smallest non-trivial
+/// witness — one input, one output, one kernel call inside one
+/// loop. Real loop, real Fire, real sidecar consumption.
+#[test]
+fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
+    let (per_worker, names, sidecar, kernels) = lower_example_01_naive();
+
+    let scratch = repo_root().join("nucleus/target/pthreads-async-test-scratch/single_worker_01_naive");
+    let async_out = scratch.join("async");
+    let sync_out = scratch.join("sync");
+    let _ = std::fs::remove_dir_all(&async_out);
+    let _ = std::fs::remove_dir_all(&sync_out);
+
+    let async_res = emit(&per_worker, &names, &sidecar, &kernels, &async_out)
+        .expect("pthreads-async emit (single-worker real example)");
+    let sync_res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels, &sync_out)
+        .expect("pthreads-sync emit (same input)");
+
+    // The cross-backend differential invariant: same algorithm + same
+    // naive schedule -> byte-identical main.rs across both backends.
+    let async_main =
+        std::fs::read_to_string(&async_res.main_rs).expect("async main.rs");
+    let sync_main = std::fs::read_to_string(&sync_res.main_rs).expect("sync main.rs");
+    assert_eq!(
+        async_main, sync_main,
+        "pthreads-async single-worker main.rs on 01-elementwise-add/naive \
+         MUST be byte-identical to pthreads-sync's (the cross-backend \
+         differential invariant). A diff here means the delegation to \
+         pthreads_sync::render_single_worker_main was bypassed or wrapped:\n\
+         === async main.rs ===\n{async_main}\n\
+         === sync main.rs ===\n{sync_main}"
+    );
+
+    // Sanity: the witness IS non-trivial. The emitted main.rs must
+    // contain a kernel call (so we are not vacuously identical because
+    // both emitters output nothing). 01-elementwise-add's kernel is
+    // `add`.
+    assert!(
+        async_main.contains("kernels::add"),
+        "non-trivial witness check: 01-elementwise-add emits a kernels::add \
+         call; absence of it would mean the test passed vacuously:\n{async_main}"
+    );
+}
+
 #[test]
 fn emit_result_shape_is_single_binary_five_fields() {
     // Compile-time pin: if the EmitResult struct gains/loses a field

@@ -1,10 +1,10 @@
 ---
 id: TASK-0227
-title: pthreads-async single-worker check_frame codegen (Panic/Log/Count)
+title: pthreads-async MULTI-WORKER check_frame codegen (Panic/Log/Count)
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 22:00'
+updated_date: '2026-05-21 22:32'
 labels:
   - M4
   - backend
@@ -46,4 +46,12 @@ HIGH-severity inconsistency: as filed AC#2 said 'no template-string is re-emitte
 Fix (filed in-thread): TASK-0227 now depends on BOTH TASK-0226 (codegen body lands first) AND TASK-0222 (helpers extracted into shared form). Natural order: TASK-0226 lands ring-buffer codegen using the existing duplicated helpers (it's only two backends at that point), then TASK-0222 extracts the 4 emit-string templates into shared form, then TASK-0227 wires check_frame on pthreads-async using the now-shared helpers — so no 3-way clone is ever introduced.
 
 AC#2 reading remains correct under this ordering: 'reused from pthreads_sync::*; no template re-emit' is exactly what's available after TASK-0222 extracts.
+
+## Review-gate finding (cycle 17 review)
+
+HIGH-severity stale-task: original scope said 'single-worker check_frame codegen' for pthreads-async. After TASK-0226 (cycle 17) landed the single-worker arm as a delegation to pthreads_sync::render_single_worker_main, single-worker check_frame is INHERITED FREE — pthreads_sync's render_main_rs path already emits the Panic/Log/Count instrumentation, and delegation means pthreads-async inherits the identical output.
+
+Fix (lockstep this cycle): retitled to MULTI-WORKER check_frame. The single-worker case is now structurally done. The remaining work is the multi-worker check_frame codegen — file-scope shared static AtomicU64 deduped by sanitized ident; Drop guard on host thread; panic=abort SIGABRT gotcha (forward-carried from TASK-0052.05).
+
+Note: TASK-0228 AC#5 already covers this scope. TASK-0227 should be considered consolidated into TASK-0228 AC#5 when TASK-0228 lands. Keeping TASK-0227 as a separate task is a contingency: if the multi-worker check_frame work needs its own cycle outside of TASK-0228's wave, it lives here. Otherwise CLOSE TASK-0227 with a forward-link to TASK-0228 AC#5 at the moment TASK-0228 starts.
 <!-- SECTION:NOTES:END -->
