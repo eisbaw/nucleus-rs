@@ -266,6 +266,13 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         mut name_iter_vars,
         mut inner_block_iter_vars,
         partition_worker_ranges,
+        // TASK-0134: block_transform runs BEFORE transfer_inject so
+        // this map is always empty here; we forward verbatim.
+        // block_transform splits one iter_var into two (outer tile +
+        // inner intra-tile) but does NOT create any Push/Wait pairs —
+        // those are transfer_inject's product, so there is no
+        // SeqTag remapping to do here.
+        pipeline_depth_for_seq,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -307,6 +314,7 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        pipeline_depth_for_seq,
     })
 }
 

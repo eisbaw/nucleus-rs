@@ -180,12 +180,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::num::NonZeroU64;
+
 use crate::acfg::{
     ACFGNode, NotifyMode, Operation, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 use crate::event::{DataId, IterTile, IterVar, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
-use crate::sched::{ResolvedTransferDirective, ResolvedTransferOption};
+use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransferOption};
 
 // --------------------------------------------------------------------
 // Entry point
@@ -210,6 +212,11 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        // Forward through pre-existing pipeline depths. In the
+        // standard driver pipeline this is always empty here (we are
+        // the populator), but tests may inject their own values
+        // before calling us — preserve them.
+        pipeline_depth_for_seq: pre_existing_pipeline_depth,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -235,6 +242,31 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         .filter_map(|(data_name, dir)| {
             let data_id = name_data.get(data_name).copied()?;
             Some((data_id, policy_from_directive(dir)))
+        })
+        .collect();
+
+    // Resolve `loop VAR : pipeline=D` directives into a per-IterVar
+    // map (TASK-0134). The schedule's `loops` is keyed by var NAME;
+    // we translate once via `name_iter_vars`. Loops not in
+    // `name_iter_vars` (e.g. a `loop x : pipeline=N` referencing a
+    // var the algorithm doesn't have) are already a link-step error
+    // (LinkError::UnknownLoop), so we silently skip them here —
+    // build_acfg will not have reached us if link rejected.
+    let pipeline_depth_for_iter_var: BTreeMap<IterVar, NonZeroU64> = linked
+        .sched
+        .loops
+        .iter()
+        .filter_map(|(var_name, dir)| {
+            let iv = name_iter_vars.get(var_name).copied()?;
+            // PRD §6.3.3: only `pipeline=D` lowers to an initial
+            // marking; `block=`, `vectorize=`, `unroll=`, `reuse`,
+            // `partition=` all have other effects handled by other
+            // passes.
+            let depth = dir.options.iter().find_map(|opt| match opt {
+                ResolvedLoopOption::Pipeline(d) => NonZeroU64::new(*d),
+                _ => None,
+            })?;
+            Some((iv, depth))
         })
         .collect();
 
@@ -334,6 +366,39 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         rewrite_partition_tiles(spliced, &partition_worker_ranges)
     };
 
+    // TASK-0134 — populate the pipeline-depth sidecar AFTER all the
+    // hoist/splice/rewrite passes have run. Doing it now (rather than
+    // at `fresh_seq` time) is load-bearing: `hoist_invariant_waits`
+    // moves Waits OUT of the loop body for loop-invariant whole-symbol
+    // transfers, AND rewrites their `tile` to the post-hoist
+    // enclosing tile. The seq's pipeline depth must reflect WHERE the
+    // Push/Wait pair LANDED, not where it was born — otherwise we'd
+    // pre-seed a buffer place with `D` tokens when only one
+    // Push/Wait fires for the whole loop and the buffer place would
+    // overflow at construction.
+    //
+    // Walk each `Xfer`'s `tile` (post-hoist enclosing iteration tile)
+    // against `pipeline_depth_for_iter_var`; the innermost matching
+    // entry wins. If neither endpoint of the pair sits inside a
+    // pipelined loop, the seq has no entry (-> `initial_marking = 0`,
+    // the default). Pairs whose Push and Wait have differing tiles
+    // are kept in sync because: (1) the Wait's tile is the
+    // authoritative enclosing context (it is the consumer side; the
+    // pair fires per-consumer-tile), and (2) for whole-symbol
+    // hoisting both sides are moved together so tiles agree post-
+    // splice. We aggregate per seq using "any endpoint inside a
+    // pipelined loop" as the trigger, but in practice the two
+    // endpoints share the same enclosing tile by construction.
+    let mut pipeline_depth_for_seq: BTreeMap<SeqTag, NonZeroU64> =
+        pre_existing_pipeline_depth;
+    if !pipeline_depth_for_iter_var.is_empty() {
+        annotate_pipeline_depth_for_seq(
+            &new_root,
+            &pipeline_depth_for_iter_var,
+            &mut pipeline_depth_for_seq,
+        );
+    }
+
     ACFG {
         root: new_root,
         name_kernels,
@@ -342,6 +407,54 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        pipeline_depth_for_seq,
+    }
+}
+
+/// Walk the final ACFG (post-hoist, post-splice, post-rewrite-tiles)
+/// and populate `out` with (SeqTag, depth) for every `Xfer`
+/// placeholder whose enclosing iteration tile contains an iter-var
+/// with a `pipeline=D` directive. Innermost wins.
+///
+/// Why we use the Xfer's `tile` (not the live walk's enclosing-tile
+/// stack): after `hoist_invariant_waits` runs, a Wait may live at a
+/// shallower nesting than the Repeat it was born in, but its `tile`
+/// is rewritten to that shallower nesting (see line ~733 in
+/// `inject_in_sequence`). The tile is therefore the authoritative
+/// "in which loop does this transfer fire" record.
+///
+/// Determinism: the walk is depth-first source-order; `BTreeMap`
+/// insertion preserves stable iteration. If Push and Wait of the
+/// same seq disagree on depth (shouldn't happen in well-formed
+/// inputs — `splice_pushes_global` places the Push at the same
+/// tile-scope as the Wait), the Wait wins (we visit it last by
+/// convention, but in practice they agree).
+fn annotate_pipeline_depth_for_seq(
+    node: &ACFGNode,
+    pipeline_for_iv: &BTreeMap<IterVar, NonZeroU64>,
+    out: &mut BTreeMap<SeqTag, NonZeroU64>,
+) {
+    match node {
+        ACFGNode::Xfer(x) => {
+            let depth = x
+                .tile
+                .bounds
+                .iter()
+                .rev()
+                .find_map(|(iv, _)| pipeline_for_iv.get(iv).copied());
+            if let Some(d) = depth {
+                out.insert(x.seq, d);
+            }
+        }
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                annotate_pipeline_depth_for_seq(c, pipeline_for_iv, out);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => {
+            annotate_pipeline_depth_for_seq(body, pipeline_for_iv, out);
+        }
     }
 }
 

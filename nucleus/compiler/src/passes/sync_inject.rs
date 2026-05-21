@@ -86,6 +86,10 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        // TASK-0134: sync_inject does not consult or mutate the
+        // pipeline-depth sidecar; forward verbatim. transfer_inject
+        // populates it; acfg_to_petri reads it.
+        pipeline_depth_for_seq,
     } = acfg;
 
     // The set of iter-vars that the partition-workers pass (TASK-0212)
@@ -152,6 +156,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        pipeline_depth_for_seq,
     }
 }
 

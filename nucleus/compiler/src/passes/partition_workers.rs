@@ -241,6 +241,9 @@ pub fn apply_partition_workers(
         name_iter_vars,
         inner_block_iter_vars,
         mut partition_worker_ranges,
+        // TASK-0134: partition_workers does not consult or mutate the
+        // pipeline-depth sidecar; forward verbatim.
+        pipeline_depth_for_seq,
     } = acfg;
 
     for (_var, iter_var, range, body_workers) in to_record {
@@ -267,6 +270,7 @@ pub fn apply_partition_workers(
         name_iter_vars,
         inner_block_iter_vars,
         partition_worker_ranges,
+        pipeline_depth_for_seq,
     })
 }
 

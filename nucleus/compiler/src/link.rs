@@ -62,7 +62,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt};
-use crate::sched::{ResolvedPlaceTarget, ResolvedPlacement, SchedIR};
+use crate::sched::{ResolvedLoopOption, ResolvedPlaceTarget, ResolvedPlacement, ResolvedTransferOption, SchedIR};
 
 // --------------------------------------------------------------------
 // Public types
@@ -229,6 +229,32 @@ pub enum LinkError {
         producer_worker: String,
         consumer_worker: String,
     },
+    /// A loop directive `loop VAR : pipeline=D` was applied to a
+    /// loop whose body references a data symbol with a
+    /// `transfer DATA : buffer=N` where `N < D` (TASK-0134).
+    /// PRD §8.2: "Initial marking on a place = pipeline depth /
+    /// latency-hiding head-start". A pipelined loop pre-seeds each
+    /// inter-stage buffer place with `D` tokens; the place's
+    /// capacity is `N`, so `D > N` would overflow the place at
+    /// construction time. Caught here (rather than waiting for the
+    /// boundedness pass to trip) because the link step has the
+    /// schedule names in source-friendly form — the diagnostic can
+    /// name the offending {loop_var, data, depth, buffer} directly.
+    ///
+    /// Why this lives in the link step and not in `acfg_to_petri`:
+    /// loop-variable names and transfer data names live in the
+    /// schedule directives. By the time `acfg_to_petri` runs, those
+    /// names have been resolved to integer IDs and the offending
+    /// loop iter-var may have been block-transformed into multiple
+    /// new iter-vars — making a precise user-facing diagnostic
+    /// harder. Catching at link time keeps the diagnostic close to
+    /// the user's source.
+    PipelineExceedsBuffer {
+        loop_var: String,
+        data: String,
+        depth: u64,
+        buffer: u64,
+    },
 }
 
 /// Append ` -- did you mean `X`?` when a suggestion exists; emit
@@ -286,6 +312,17 @@ impl std::fmt::Display for LinkError {
             } => write!(
                 f,
                 "data symbol `{data}` flows from {producer_worker} to {consumer_worker} but the schedule declares no `transfer {data} : ...` directive"
+            ),
+            LinkError::PipelineExceedsBuffer {
+                loop_var,
+                data,
+                depth,
+                buffer,
+            } => write!(
+                f,
+                "loop `{loop_var}` has `pipeline={depth}` but the schedule's \
+                 `transfer {data} : buffer={buffer}` cannot hold {depth} in-flight \
+                 tokens (pipeline depth must be <= buffer capacity; PRD §8.2)"
             ),
         }
     }
@@ -433,6 +470,22 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
             }
         }
     }
+
+    // --- 7: pipeline depth vs buffer capacity (TASK-0134) ---
+    //
+    // For each `loop V : pipeline=D` directive, find every data
+    // symbol referenced inside `for V : ...`'s body. For each such
+    // symbol that has a `transfer DATA : buffer=N` directive, assert
+    // `D <= N`. Otherwise the buffer place's initial_marking would
+    // exceed its capacity and `acfg_to_petri` would emit a Petri net
+    // the boundedness pass rejects on the spot — moving the
+    // diagnostic earlier preserves the {loop_var, data, depth,
+    // buffer} naming.
+    //
+    // We iterate `sched.loops` in BTreeMap order and emit at most one
+    // PipelineExceedsBuffer per (loop_var, data) pair, in source-stable
+    // order — same determinism contract as every other check above.
+    check_pipeline_buffer_constraints(&algo, &sched, &mut errors);
 
     // Deduplicate identical errors. Possible because two consumers on
     // the same different-entity could each emit the same
@@ -599,6 +652,160 @@ fn collect_dataref_consumers(
         IrExpr::BinOp(_, l, r) => {
             collect_dataref_consumers(l, worker, consumers);
             collect_dataref_consumers(r, worker, consumers);
+        }
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0134: pipeline-depth vs buffer-capacity constraint
+// --------------------------------------------------------------------
+
+/// Append [`LinkError::PipelineExceedsBuffer`] for each `loop V :
+/// pipeline=D` whose body contains a cross-worker Push/Wait pair
+/// (both producer kernel and consumer kernel inside the loop) for a
+/// data symbol with `transfer DATA : buffer=N` where `D > N`.
+///
+/// "Both endpoints inside" mirrors what `transfer_inject` does:
+/// `hoist_invariant_waits` moves the Wait OUT of the loop body for
+/// data symbols not produced inside (e.g. `input` in example 13's
+/// pipeline-parallel schedule, where `load_input` lives on host
+/// outside the loop). When the Wait is hoisted, the IR-level
+/// `pipeline_depth_for_seq` annotation no longer applies (the Xfer's
+/// tile no longer contains the pipelined iter-var), so the
+/// constraint we are policing here also no longer applies. Mirroring
+/// that semantic exactly keeps the link diagnostic in sync with the
+/// downstream IR contract.
+///
+/// Dual-direction check: producer-and-consumer-both-inside (the
+/// pipelined inter-stage case, e.g. `feat1`, `feat2` in example 13).
+/// One-side-inside-other-outside cases (e.g. `input` flowing INTO
+/// the loop from `load_input`, or `output` flowing OUT of the loop
+/// to `save_output`) are NOT policed here: the IR will hoist them
+/// and the pipeline-depth annotation will not fire.
+///
+/// Inputs:
+/// - `algo` — needed for the body-data-symbol walk + producer/
+///   consumer kernel identity per loop body.
+/// - `sched` — for the loop directives, transfer buffer values, and
+///   kernel placements (to determine which kernels are cross-worker).
+/// - `errors` — appended to (one error per (loop_var, data) violation).
+///
+/// Determinism: outer iteration is `sched.loops.values()` (BTreeMap by
+/// loop_var name); the inner check walks a `BTreeSet<String>`.
+fn check_pipeline_buffer_constraints(
+    algo: &AlgoIR,
+    sched: &SchedIR,
+    errors: &mut Vec<LinkError>,
+) {
+    for loop_dir in sched.loops.values() {
+        // Find the pipeline depth (if any) on this loop. PRD §6.3.3
+        // forbids duplicate option keywords (DuplicateLoopOption), so
+        // at most one `Pipeline(_)` survives here; we still iterate
+        // defensively so a future grammar relaxation doesn't change
+        // the answer.
+        let Some(depth) = loop_dir.options.iter().find_map(|opt| match opt {
+            ResolvedLoopOption::Pipeline(d) => Some(*d),
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        // Gather data symbols that are BOTH produced and consumed
+        // inside `for VAR : ...`. The intersection is the set of
+        // symbols whose Push/Wait pair the IR will keep inside the
+        // loop (the IR contract that triggers `initial_marking = D`).
+        let mut produced: BTreeSet<String> = BTreeSet::new();
+        let mut consumed: BTreeSet<String> = BTreeSet::new();
+        collect_data_in_loop(&algo.stmts, &loop_dir.var, false, &mut produced, &mut consumed);
+
+        // Intersect (deterministic — both are BTreeSets).
+        for data_name in produced.intersection(&consumed) {
+            let Some(tx) = sched.transfers.get(data_name) else {
+                continue;
+            };
+            let buffer = tx
+                .options
+                .iter()
+                .find_map(|opt| match opt {
+                    ResolvedTransferOption::Buffer(n) => Some(*n),
+                    _ => None,
+                })
+                // Default buffer is 1 (matches TransferPolicy::default,
+                // PRD §6.3.4 row `buffer=N`).
+                .unwrap_or(1);
+            if depth > buffer {
+                errors.push(LinkError::PipelineExceedsBuffer {
+                    loop_var: loop_dir.var.clone(),
+                    data: data_name.clone(),
+                    depth,
+                    buffer,
+                });
+            }
+        }
+    }
+}
+
+/// Walk `stmts` and, when inside (or under) `for var : ...`, record
+/// data symbols by side:
+/// - `produced`: every Dataflow LHS name (a kernel writes the symbol).
+/// - `consumed`: every DataRef name in Dataflow RHS or Effect args
+///   (a kernel reads the symbol).
+///
+/// `inside` is the accumulator: once we enter the target `for`, every
+/// nested loop body is also "inside" — pipeline depth propagates to
+/// every transfer in the loop's transitive body.
+fn collect_data_in_loop(
+    stmts: &[IrStmt],
+    target_var: &str,
+    inside: bool,
+    produced: &mut BTreeSet<String>,
+    consumed: &mut BTreeSet<String>,
+) {
+    for s in stmts {
+        match s {
+            IrStmt::Dataflow { lhs, rhs } if inside => {
+                produced.insert(lhs.name.clone());
+                collect_data_refs(rhs, consumed);
+                for idx in &lhs.indices {
+                    collect_data_refs(idx, consumed);
+                }
+            }
+            IrStmt::Effect { args, .. } if inside => {
+                for a in args {
+                    collect_data_refs(a, consumed);
+                }
+            }
+            IrStmt::For { var, body, .. } => {
+                let now_inside = inside || var == target_var;
+                collect_data_in_loop(body, target_var, now_inside, produced, consumed);
+            }
+            // Stmt outside any enclosing target loop: skip (we only
+            // care about transfers happening *inside* the pipelined
+            // loop).
+            _ => {}
+        }
+    }
+}
+
+/// Recursively visit an expression and record every `DataRef`'s name.
+fn collect_data_refs(e: &IrExpr, out: &mut BTreeSet<String>) {
+    match e {
+        IrExpr::DataRef(IndexedRef { name, indices }) => {
+            out.insert(name.clone());
+            for idx in indices {
+                collect_data_refs(idx, out);
+            }
+        }
+        IrExpr::Call { args, .. } => {
+            for a in args {
+                collect_data_refs(a, out);
+            }
+        }
+        IrExpr::Neg(inner) => collect_data_refs(inner, out),
+        IrExpr::BinOp(_, l, r) => {
+            collect_data_refs(l, out);
+            collect_data_refs(r, out);
         }
         IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
     }

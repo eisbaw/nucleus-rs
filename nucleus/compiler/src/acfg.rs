@@ -623,6 +623,50 @@ pub struct ACFG {
     #[cfg_attr(feature = "serde", serde(default))]
     pub partition_worker_ranges:
         BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+
+    /// Pipeline-depth annotation for buffer places (TASK-0134, PRD §8.2
+    /// "Initial marking on a place = pipeline depth / latency-hiding
+    /// head-start"). Populated by [`crate::passes::transfer_inject`]
+    /// when a Push/Wait pair is created inside a loop whose schedule
+    /// carries `loop VAR : pipeline=D`. Key = the pair's
+    /// [`SeqTag`]; value = the depth `D` (always `>= 2`; the schedule
+    /// lowering rejects `pipeline=0` and `pipeline=1`).
+    ///
+    /// [`crate::passes::acfg_to_petri`] reads this sidecar at buffer-
+    /// place creation time and sets `Place::initial_marking = D` for
+    /// any seq present here; absence means `initial_marking = 0`
+    /// (the default — every previously-translated example continues
+    /// to start its buffer places empty).
+    ///
+    /// ## Semantics
+    ///
+    /// Interpretation (a) of PRD §8.2 (TASK-0134 design choice): every
+    /// transfer in a pipelined loop body gets `initial_marking = D`.
+    /// The producer is pre-credited with `D` head-start firings; the
+    /// `buffer=N` capacity (>= D, enforced upstream by the link step)
+    /// caps the in-flight count. Interpretation (b) — stage-decremented
+    /// markings — was rejected for TASK-0134 because the ACFG carries
+    /// no stage-numbering metadata, and the boundedness pass still
+    /// polices (a) for soundness. See `acfg_to_petri.rs` "Initial
+    /// markings" section.
+    ///
+    /// ## Innermost wins
+    ///
+    /// If a Push/Wait pair sits inside more than one pipelined loop
+    /// (nested `pipeline=D1` ... `pipeline=D2` ...), the **innermost**
+    /// enclosing pipelined loop's depth applies. The outer loop's
+    /// depth is captured on a different (outer) buffer-place id by
+    /// definition only if a separate Push/Wait pair was created at
+    /// the outer scope. No example exercises nested pipelines today;
+    /// the rule is fixed conservatively so the behaviour is defined.
+    ///
+    /// ## Determinism
+    ///
+    /// `BTreeMap<SeqTag, NonZeroU64>` — `SeqTag` is a `u64` newtype,
+    /// `BTreeMap` iterates in numeric order. No `HashMap`/`HashSet` on
+    /// any path that affects emitted output.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pipeline_depth_for_seq: BTreeMap<SeqTag, std::num::NonZeroU64>,
 }
 
 // --------------------------------------------------------------------
@@ -796,6 +840,11 @@ pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
         // means "no per-worker override", so source-range projection
         // applies — identical to pre-TASK-0212 behaviour.
         partition_worker_ranges: BTreeMap::new(),
+        // Populated by `passes::transfer_inject` (TASK-0134).
+        // `build_acfg` runs before transfer-injection so the map is
+        // always empty here; empty means "no pipeline head-start", so
+        // every buffer place starts at `initial_marking = 0`.
+        pipeline_depth_for_seq: BTreeMap::new(),
     })
 }
 

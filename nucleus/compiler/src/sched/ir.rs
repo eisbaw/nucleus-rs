@@ -443,6 +443,17 @@ pub enum SchedLowerErrorKind {
     ZeroLoopOption { var: String, option: String },
     /// `buffer=0` on a transfer.
     ZeroBufferOption { data: String },
+    /// `pipeline=1` on a loop (TASK-0134). A pipeline depth of 1 is
+    /// "no pipelining" — one iteration in flight is the default
+    /// sequential mode. Accepting it would lower to
+    /// `initial_marking = 1` on every buffer place in the loop body,
+    /// which is observable but semantically indistinguishable from
+    /// the producer firing once before the consumer (i.e. the
+    /// default behaviour). Rejecting it forces the schedule author
+    /// to either specify a real pipelined depth (>= 2) or omit the
+    /// directive entirely — eliminating a silent-no-op footgun.
+    /// `var` is the loop variable carrying the option.
+    UnitPipelineOption { var: String },
 
     // ----- Multiple workers decls -----
     /// More than one `workers = ...` directive in a single schedule.
@@ -580,6 +591,11 @@ impl std::fmt::Display for SchedLowerErrorKind {
             SchedLowerErrorKind::ZeroBufferOption { data } => write!(
                 f,
                 "transfer `{data}` has `buffer=0`; `buffer` requires a strictly positive value"
+            ),
+            SchedLowerErrorKind::UnitPipelineOption { var } => write!(
+                f,
+                "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
+                 (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
             ),
             SchedLowerErrorKind::DuplicateWorkersDecl => write!(
                 f,

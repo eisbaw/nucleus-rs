@@ -869,7 +869,22 @@ fn lower_loop_option(
         LoopOption::Block(n) => ResolvedLoopOption::Block(positive(*n, "block")?),
         LoopOption::Vectorize(n) => ResolvedLoopOption::Vectorize(positive(*n, "vectorize")?),
         LoopOption::Unroll(n) => ResolvedLoopOption::Unroll(positive(*n, "unroll")?),
-        LoopOption::Pipeline(n) => ResolvedLoopOption::Pipeline(positive(*n, "pipeline")?),
+        // pipeline=D rejects BOTH D=0 (via `positive`) and D=1 (TASK-0134).
+        // D=1 is a no-op pipeline that would silently lower to
+        // initial_marking=1 — equivalent to the default. Force the user to
+        // either omit `pipeline` or specify D >= 2.
+        LoopOption::Pipeline(n) => {
+            let d = positive(*n, "pipeline")?;
+            if d == 1 {
+                return Err(SchedLowerError::at(
+                    SchedLowerErrorKind::UnitPipelineOption {
+                        var: var.to_string(),
+                    },
+                    var_span.clone(),
+                ));
+            }
+            ResolvedLoopOption::Pipeline(d)
+        }
         LoopOption::Reuse => ResolvedLoopOption::Reuse,
         LoopOption::Partition(k) => ResolvedLoopOption::Partition(*k),
     })

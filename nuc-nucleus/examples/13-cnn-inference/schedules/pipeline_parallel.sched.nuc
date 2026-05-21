@@ -29,6 +29,10 @@ schedule for "../prog.algo.nuc" {
     transfer feat1  : async, buffer=3, notify=event;
     transfer feat2  : async, buffer=3, notify=event;
 
-    // Final hop back to host can be simple.
+    // Final hop back to host can be simple. `save_output(output)`
+    // runs OUTSIDE the pipelined loop, so the producer-side Push
+    // hoists to per-loop granularity and the pipeline-depth
+    // constraint does not apply here (TASK-0134 link-step check
+    // requires the consumer to ALSO sit inside the pipelined loop).
     transfer output : sync;
 }

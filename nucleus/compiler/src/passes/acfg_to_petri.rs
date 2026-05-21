@@ -77,23 +77,48 @@
 //! a 0 produces a loud failure here rather than a silently-unbounded
 //! place.
 //!
-//! ### Initial markings — what we DO and DO NOT translate
+//! ### Initial markings (TASK-0134)
 //!
-//! PRD §8.2 says "pipeline depth / latency-hiding head-start" maps to
-//! initial markings on places. The ACFG today carries `TransferPolicy`
-//! (sync/async/buffer/notify) but NOT a `pipeline=D` loop option (no
-//! schedule-IR field, no ACFG carrier). So `pipeline=D` and `reuse`
-//! loop options are **not yet** translated to initial markings —
-//! buffer places start at 0 tokens. This is recorded as a follow-up
-//! (TASK-0028/0029 area or a dedicated task) and matches the task's
-//! note that analyses come later.
+//! PRD §8.2 maps "Initial marking on a place = pipeline depth /
+//! latency-hiding head-start". This pass reads
+//! [`ACFG::pipeline_depth_for_seq`] — populated by
+//! [`crate::passes::transfer_inject`] when a Push/Wait pair lands
+//! inside a loop carrying `loop VAR : pipeline=D` — and sets the
+//! buffer place's `initial_marking = D` for that seq.
+//!
+//! Buffer places NOT in the sidecar map start at 0 tokens (every
+//! pre-TASK-0134 example continues to lower identically). The depth
+//! is clamped from `NonZeroU64` to `u32` for the Petri-net layer the
+//! same way [`TransferPolicy::buffer`] is clamped (see "Buffer place
+//! capacity" above): values above `u32::MAX` saturate, and that
+//! saturation is impossible to reach with real schedules — the link
+//! step rejects `pipeline=D` whose `D > buffer=N` (where `N` is
+//! already `<= u32::MAX` by the same conversion).
+//!
+//! Semantics: interpretation (a) of PRD §8.2 (the design choice
+//! recorded in TASK-0134 notes). Every cross-worker Push/Wait pair
+//! created inside a `pipeline=D` loop body gets `initial_marking = D`
+//! independently — the producer side has `D` head-start credits per
+//! pair. The boundedness pass still polices that against the
+//! transfer's `buffer=N` capacity. Interpretation (b) — per-stage
+//! decremented markings — was rejected: it requires stage-numbering
+//! metadata not currently in the ACFG, and the link-step
+//! `D <= N` check (TASK-0134 AC#3) makes (a) safe for any backend.
 //!
 //! For Petri-net analysis purposes: an `async, buffer=N` transfer
-//! currently has the *same* net shape as `sync` apart from the buffer
-//! place's capacity. Synchrony also affects when the producer is
-//! considered free to continue, but per the EventList contract that
-//! manifests in the linearisation pass (TASK-0027), not in the net
-//! topology emitted here.
+//! still has the *same* net shape as `sync` apart from the buffer
+//! place's capacity. Synchrony affects when the producer is considered
+//! free to continue, but per the EventList contract that manifests in
+//! the linearisation pass (TASK-0027), not in the net topology
+//! emitted here. The initial marking is the one explicit Petri-net
+//! contract that DOES change with `pipeline=D` — it is the IR-layer
+//! authoritative encoding consumed downstream by backends (e.g.
+//! pthreads-async's ring-buffer initialisation, TASK-0042.01).
+//!
+//! `reuse` is still a no-op at this layer (filed as a follow-up to
+//! TASK-0134; reuse needs a different ACFG carrier than pipeline
+//! depth — it identifies loop-carried slices, not a head-start
+//! count).
 //!
 //! ## Output shape
 //!
@@ -117,10 +142,14 @@
 //!    optimisation should fold static-bounded loops into a parametric
 //!    encoding.
 //!
-//! - **No pipeline-depth initial markings**. See "Initial markings"
-//!    above. A `pipeline=D` loop directive does not yet flow through
-//!    ACFG; once it does, we set the corresponding buffer place's
-//!    initial marking accordingly.
+//! - **`reuse` loop option not yet translated.** PRD §6.3.3 lists
+//!    `reuse` alongside `pipeline=D` in the loop-options table, and
+//!    PRD §8.2 lumps both under "initial marking on a place". TASK-0134
+//!    landed `pipeline=D` only. `reuse` identifies loop-carried slices
+//!    (the 2013 gap), a fundamentally different shape than a head-
+//!    start count — it needs a different ACFG carrier (the carried
+//!    slice's identity, not a depth count). Filed as a follow-up to
+//!    TASK-0134.
 //!
 //! - **Distributed placements treat the set as one entity**. If a
 //!    kernel is placed on `{w0, w1, w2, w3}`, the Operation transition
@@ -339,7 +368,8 @@ impl<'a> NetBuilder<'a> {
     }
 
     /// Allocate (or return the existing) buffer place for transfer
-    /// `x`. Capacity comes from `x.policy.buffer`.
+    /// `x`. Capacity comes from `x.policy.buffer`; initial marking
+    /// (TASK-0134) comes from `acfg.pipeline_depth_for_seq`.
     fn buffer_place_for(&mut self, x: &XferPlaceholder) -> PlaceId {
         if let Some(pid) = self.buffer_places.get(&x.seq) {
             return *pid;
@@ -358,6 +388,19 @@ impl<'a> NetBuilder<'a> {
         let cap_u32 = u32::try_from(cap_u64).unwrap_or(u32::MAX);
         let cap = NonZeroU32::new(cap_u32).expect("cap > 0 by the assertion above");
 
+        // Initial marking (TASK-0134, PRD §8.2). If this seq's
+        // Push/Wait pair was created inside a `pipeline=D` loop body,
+        // pre-seed the buffer place with `D` tokens (producer-runs-
+        // ahead semantics). The link step has already rejected any
+        // `D > buffer=N`, so the saturating clamp below cannot lose
+        // information for a well-formed schedule.
+        let initial_marking_u32 = self
+            .acfg
+            .pipeline_depth_for_seq
+            .get(&x.seq)
+            .map(|d| u32::try_from(d.get()).unwrap_or(u32::MAX))
+            .unwrap_or(0);
+
         // Look up data symbol name for readability.
         let data_name = self
             .acfg
@@ -373,7 +416,7 @@ impl<'a> NetBuilder<'a> {
             .unwrap_or("?");
         let name = format!("buf_{data_name}_seq{}", x.seq.0);
 
-        let pid = self.net.add_place(name, Some(cap), 0);
+        let pid = self.net.add_place(name, Some(cap), initial_marking_u32);
         self.buffer_places.insert(x.seq, pid);
         pid
     }
