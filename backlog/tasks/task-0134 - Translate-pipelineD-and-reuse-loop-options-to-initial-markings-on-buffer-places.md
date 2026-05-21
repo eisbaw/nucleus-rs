@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-18 03:36'
-updated_date: '2026-05-21 13:17'
+updated_date: '2026-05-21 13:53'
 labels:
   - M2
   - M4
@@ -79,4 +79,77 @@ A `pipeline=D` on a loop whose downstream transfer is `buffer=N` requires `D ≤
 - `nucleus/compiler/src/link.rs` — add `PipelineExceedsBuffer` variant; add `check_pipeline_constraints`.
 - `nucleus/compiler/src/sched/lower.rs` — reject pipeline=1.
 - Tests as above.
+
+## Final implementation summary (TASK-0134)
+
+### Commit hashes
+- 08c3540 — pipeline=D loop options lower to buffer-place initial markings (core IR/passes/link/sched)
+- 478f57c — tests covering AC#1-#6 (AC#5 boundedness `#[ignore]`d -> TASK-0213)
+- 918741c — backlog: TASK-0134 progress + TASK-0213 follow-up
+
+### Gate numbers (actual, end of cycle)
+- `just build`: clean.
+- `just test`: 503 passed, 0 failed, 3 ignored (one new ignore is the TASK-0213-deferred boundedness assertion).
+- `just e2e`: 36 cells: 29 pass, 0 fail, 7 skipped (capability mismatches + open distributed-placement tasks — unchanged set).
+- `just determinism-check`: 36 cells: 29 pass, 0 fail, 7 skipped — byte-identical x2 across runs.
+- `just determinism-check-negative`: 29 of 36 cells correctly perturbed (negative gate bit).
+- `just ci`: exit 0.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+
+### Per-AC status
+
+- **AC#1 carrier (DONE)**: `ACFG::pipeline_depth_for_seq: BTreeMap<SeqTag, NonZeroU64>` declared in acfg.rs (~line 627). Populated by `transfer_inject::annotate_pipeline_depth_for_seq` (transfer_inject.rs ~line 408) as a post-pass over the FINAL ACFG, reading each `Xfer::tile`. Post-pass placement was load-bearing: the at-build-time `enclosing_tile` is stale after `hoist_invariant_waits` moves a Wait out of the pipelined loop.
+- **AC#2 initial-marking (DONE)**: `acfg_to_petri.buffer_place_for` reads the sidecar and passes `D` to `add_place` as `initial_marking_u32`. Module docstring §"Initial markings" rewritten — the prior "not yet" wording is gone; no doc-lie. Honest-limitation bullet retired for pipeline, kept for `reuse` (different carrier shape).
+- **AC#3 constraint (DONE)**: `link::check_pipeline_buffer_constraints` rejects `D > buffer(N)` with `LinkError::PipelineExceedsBuffer { loop_var, data, depth, buffer }`. Fires only when the data symbol is BOTH produced and consumed inside the loop — mirrors the IR-level hoist semantics so the link diagnostic and the IR contract agree. Positive tests for D=N and D=N-1; negative tests for D=N+1 and default-buffer-1 vs D=3. `pipeline=0` already rejected by `positive()` (`SchedLowerErrorKind::ZeroLoopOption`).
+- **AC#4 pipeline=1 (DONE)**: `SchedLowerErrorKind::UnitPipelineOption` introduced; sched_lower.rs:868 rejects `pipeline=1` with a message naming the loop var and suggesting `D >= 2 or omit`. Tested both negative (pipeline=1 -> error) and positive (pipeline=2 -> OK).
+- **AC#5 Petri test (DONE except boundedness/deadlock — DEFERRED to TASK-0213)**: real fixture (example 13 pipeline_parallel) asserts buffer place initial_marking=3 for feat1/feat2, 0 for input/output (hoist semantics). Determinism (two lowerings of the same input -> structurally-equal nets) passes. Boundedness assertion deferred: with `initial_marking=D=N`, the source-order firing trips on the first Push (buffer full at startup, no room for one more deposit). Two clean resolution paths documented in TASK-0213.
+- **AC#6 regression (DONE)**: 503 unit tests pass; e2e 36 cells unchanged set (29 pass, 7 skipped — same as before); determinism gate byte-identical; clippy clean. The fixture-update sweep (sidecar field added to test ACFG hand-built constructors) is mechanical — no behavioural delta in those tests.
+- **AC#7 forward-carry (DONE)**: noted in acfg_to_petri.rs docstring + the next note below for TASK-0042.01.
+
+### Follow-ups filed
+- TASK-0213 — Boundedness pass must be initial-marking-aware for pipelined nets. Blocks AC#5's boundedness/deadlock assertion.
+
+### Design choice resolution
+
+Interpretation (a) of PRD §8.2 — every transfer inside a `pipeline=D` loop body gets `initial_marking = D` independently. Rationale:
+- Conservative upper bound: in steady state the buffer holds D head-start credits per pair.
+- The link-step `D <= N` check makes (a) consistent with the buffer's declared capacity.
+- (b) — stage-decremented markings — was rejected because the ACFG has no stage-numbering metadata; synthesising it would require an extra tropic-sort pass orthogonal to TASK-0134's scope.
+- The boundedness/deadlock interaction (AC#5 deferral) is documented as a known limitation of (a) under source-order firing: TASK-0213 will resolve it by either marking-aware firing-order generation or a structural acfg_to_petri rewrite.
+
+### Honest limitations / gotchas / rejected approaches
+
+1. **Boundedness pass tension**. With interpretation (a) and `D = N = capacity`, the buffer place is FULL at startup. Source-order firing then trips the first Push (would-be=D+1, capacity=D). The current `derive_firing_order` is marking-blind. TASK-0213 captures the precise fix space.
+
+2. **Hoist invariance changes the annotation lifecycle**. The first implementation registered pipeline depth at `fresh_seq()` time (during the recursive walk). That was wrong: `hoist_invariant_waits` later moves a Wait OUT of the loop body and REWRITES its `tile` to the new enclosing context (transfer_inject.rs:733). Annotating at fresh_seq leaves a STALE D for the now-hoisted seq, which would over-fill the buffer. The post-pass approach (walk the final ACFG, use each Xfer's final `tile`) avoids this — but the lesson is general: any IR annotation derived from "at-build-time enclosing context" must be recomputed AFTER all the structural rewrites complete.
+
+3. **Link-step check mirrors hoist semantics**. `input` in example 13 has producer (load_input) outside the loop, consumer (conv_block_1) inside. transfer_inject hoists the Wait OUT (loop-invariant whole-symbol transfer). So the IR-level pipeline_depth_for_seq has no entry for input's seq. The link-step check must also skip this case — otherwise the link error and the IR contract would disagree (link rejects D=3 vs buffer=1, but the IR would never set initial_marking=3 for input anyway). Mirror by requiring "BOTH producer and consumer inside the loop" at link time.
+
+4. **`pipeline=1` is a hard error, not silent-accept**. The PRD didn't pin the semantics. Hard-error chosen because (i) initial_marking=1 is equivalent to the default sequential producer-then-consumer pattern; (ii) accepting silently would hide a user error (they probably meant `pipeline=2+` or `omit`); (iii) the error message tells them how to fix.
+
+5. **The `output` transfer in example 13 pipeline_parallel**. The schedule writes `transfer output : sync;` (default buffer=1). With pipeline=3, naively this looks like a buffer-too-small bug — `output[n]` is written inside the loop. But `save_output(output)` is OUTSIDE the loop, and `save_output` reads `output` as a whole array (no per-iteration consumer side). transfer_inject hoists the Wait out (Push is at top level too, by splice_pushes_global). The buffer place stays at initial_marking=0. So buffer=1 (default) is fine — the link check correctly skips it.
+
+6. **block_transform interaction**: when both `block=` and `pipeline=` apply to the same loop var, `block_transform` runs first, splitting V into V (inner, intra-tile) and V__tile (outer). The pipeline depth is then looked up against the INNER iter_var's id (block_transform keeps the original IterVar id for the inner loop). This means pipeline applies to the intra-tile loop. Not exercised by any current example; documented in code as the lookup-by-IterVar-id semantic.
+
+### Files touched (absolute paths)
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/acfg.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/passes/acfg_to_petri.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/passes/transfer_inject.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/passes/sync_inject.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/passes/partition_workers.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/passes/block_transform.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/sched/ir.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/sched/lower.rs
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/src/link.rs
+- /home/mpedersen/topics/mark_thesis/nuc-nucleus/examples/13-cnn-inference/schedules/pipeline_parallel.sched.nuc (doc-only comment update)
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/tests/{acfg_to_petri.rs, link.rs, sched_lower.rs, transfer_inject.rs} (new tests for ACs)
+- /home/mpedersen/topics/mark_thesis/nucleus/compiler/tests/{partition_workers.rs, petri_to_events.rs, sync_inject.rs, transfer_inject_hoist.rs} (mechanical sidecar field add)
+
+## Cycle outcome: HONEST-PARTIAL (TASK-0213 deferral on AC#5 boundedness)
+
+6 of 7 ACs fully DONE (AC#1, AC#2, AC#3, AC#4, AC#6, AC#7). AC#5 split:
+- DONE: initial_marking emission, determinism gate, test fixture lowering.
+- DEFERRED via TASK-0213: boundedness/deadlock assertion. With `initial_marking=D=N=capacity`, source-order firing trips on the first Push. derive_firing_order is currently marking-blind. TASK-0213 specifies two clean resolutions: marking-aware firing-order generation, or structural acfg_to_petri rewrite that elides D pre-fired Push transitions. The IR contract (sidecar + initial_marking) is in place; the firing-order generation is the missing piece.
+
+Recommended state: leave TASK-0134 In Progress until TASK-0213 lands and the `#[ignore]`d boundedness assertion goes green. The IR-layer M4 piece (per the task brief "IR/Petri-layer load-bearing piece of M4") is complete and downstream (TASK-0042.01) can build on the contract. The boundedness gap is downstream-analysis-only; it does NOT block codegen, which reads `pipeline_depth_for_seq` directly.
 <!-- SECTION:NOTES:END -->
