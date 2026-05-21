@@ -73,12 +73,9 @@ serde = []
 # discipline as the runtime serde dep.
 serde_json = "=1.0.140"
 
-# Pthreads-sync backend is required by the
-# `check_frame_codegen.rs` integration test (TASK-0052.02) — it
-# exercises the rendered main.rs string for `check loop V :
-# latency_max=T`. Listed as a dev-dep (not a regular dep) so the
-# compiler library itself stays backend-independent; only the test
-# binaries link the backend. No cycle: pthreads-sync depends on
-# compiler at the regular-dep level; this only adds the edge for the
-# test target.
-pthreads-sync = { path = "../backends/pthreads-sync" }
+# (TASK-0225 — closed) compiler/Cargo.toml previously dev-dep'd
+# pthreads-sync for `check_frame_codegen.rs`. That test moved to
+# `nucleus/backends/pthreads-sync/tests/check_frame_codegen.rs`
+# where it can use pthreads-sync as a sibling (own crate), closing
+# the backwards dev-dep arrow. The compiler library + test suite
+# is now genuinely backend-independent.
