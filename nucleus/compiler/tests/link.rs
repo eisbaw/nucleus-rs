@@ -1026,3 +1026,120 @@ schedule for \"a.algo.nuc\" {
     assert!(msg.contains("pipeline=5"), "names depth: {msg}");
     assert!(msg.contains("buffer=2"), "names buffer: {msg}");
 }
+
+// --------------------------------------------------------------------
+// TASK-0217: pipeline=D > iteration_count
+// --------------------------------------------------------------------
+
+/// Algorithm fixture with an EXPLICIT-small loop range (N=2) so we can
+/// trigger `pipeline=D > iter_count` with D=3 — the IR-level oddity
+/// TASK-0217 closes.
+const SMALL_LOOP_PIPELINE_ALGO: &str = "\
+const N : usize = 2;
+data input  : i32[N];
+data stage1 : i32[N];
+data stage2 : i32[N];
+kernel load_input : () -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel f1 : (i32) -> i32 pure;
+kernel f2 : (i32) -> i32 pure;
+
+input <-- load_input();
+for n : 0 .. N {
+    stage1[n] <-- f1(input[n]);
+    stage2[n] <-- f2(stage1[n]);
+}
+save_output(stage2);
+";
+
+#[test]
+fn negative_pipeline_depth_exceeds_iteration_count() {
+    // pipeline=3 on a 2-iteration loop — D > iter_count.
+    // TASK-0217 says reject at link time so the diagnostic points at the
+    // user-visible loop_var instead of surfacing as analysis-net
+    // leftover initial-marking tokens at acfg_to_petri.
+    let algo = algo_from_str(SMALL_LOOP_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    transfer input  : async, buffer=3, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("D=3 > iter_count=2 must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::PipelineExceedsIterationCount {
+                loop_var,
+                depth: 3,
+                iteration_count: 2,
+            } if loop_var == "n"
+        )),
+        "expected PipelineExceedsIterationCount for (n, 3, 2); got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn pipeline_iter_count_check_message_names_loop_and_numbers() {
+    let algo = algo_from_str(SMALL_LOOP_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    transfer input  : async, buffer=3, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    let msg = errs
+        .iter()
+        .find_map(|e| match e {
+            err @ LinkError::PipelineExceedsIterationCount { .. } => Some(format!("{err}")),
+            _ => None,
+        })
+        .expect("PipelineExceedsIterationCount present");
+    assert!(msg.contains("`n`"), "names loop_var: {msg}");
+    assert!(msg.contains("pipeline=3"), "names depth: {msg}");
+    assert!(msg.contains("2 iteration"), "names iter_count: {msg}");
+}
+
+#[test]
+fn positive_pipeline_depth_equals_iteration_count() {
+    // pipeline=2 on a 2-iteration loop = OK boundary. D == iter_count
+    // is the tightest legal pipeline (the head-start exactly fills the
+    // loop). With buffer=2, this should link cleanly.
+    let algo = algo_from_str(SMALL_LOOP_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=2;
+    transfer input  : async, buffer=2, notify=event;
+    transfer stage1 : async, buffer=2, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    link(algo, sched).expect("D=iter_count=2, buffer=2: must link cleanly");
+}

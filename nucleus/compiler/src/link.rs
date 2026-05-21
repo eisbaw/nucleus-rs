@@ -255,6 +255,22 @@ pub enum LinkError {
         depth: u64,
         buffer: u64,
     },
+    /// `loop V : pipeline=D` where `D > iteration_count(V)`. Two
+    /// different N's are at play here (TASK-0217):
+    /// - `D <= buffer=N`  — bounds the runtime ring (`PipelineExceedsBuffer`).
+    /// - `D <= iter_count(V)` — ensures pipelining makes sense.
+    ///   `pipeline=3` over a 2-iteration loop tries to put 3 iterations
+    ///   in flight when at most 2 exist; the head-start cannot drain.
+    ///
+    /// Reject at link-time so the user gets a precise diagnostic, not
+    /// "I produced a net with leftover initial-marking tokens" (which
+    /// is what would happen at acfg_to_petri layer per TASK-0213's
+    /// elision math). Filed as TASK-0217.
+    PipelineExceedsIterationCount {
+        loop_var: String,
+        depth: u64,
+        iteration_count: i64,
+    },
 }
 
 /// Append ` -- did you mean `X`?` when a suggestion exists; emit
@@ -323,6 +339,17 @@ impl std::fmt::Display for LinkError {
                 "loop `{loop_var}` has `pipeline={depth}` but the schedule's \
                  `transfer {data} : buffer={buffer}` cannot hold {depth} in-flight \
                  tokens (pipeline depth must be <= buffer capacity; PRD §8.2)"
+            ),
+            LinkError::PipelineExceedsIterationCount {
+                loop_var,
+                depth,
+                iteration_count,
+            } => write!(
+                f,
+                "loop `{loop_var}` has `pipeline={depth}` but the loop's source range \
+                 yields only {iteration_count} iteration(s); pipeline depth must be \
+                 <= iteration count (a head-start of {depth} cannot drain through \
+                 fewer iterations). TASK-0217."
             ),
         }
     }
@@ -721,6 +748,35 @@ fn check_pipeline_buffer_constraints(
             continue;
         };
 
+        // TASK-0217: pipeline depth D must be <= iteration count of the
+        // source `for V : LO .. HI`. With D > iter_count, TASK-0213's
+        // path-2 elision drops every Push (there are only iter_count of
+        // them, but D > iter_count credits are pre-marked), leaving
+        // `D - iter_count` leftover tokens in the buffer place — odd
+        // semantics. Reject here so the user sees the precise
+        // diagnostic rather than an analysis-net oddity.
+        //
+        // Iteration count is computed by walking algo.stmts to find the
+        // `for V` matching this loop_dir.var and evaluating `hi - lo`
+        // via the same const-evaluator the ACFG uses. If either bound
+        // is non-const (impossible in v2 grammar — every loop bound is
+        // a const expression per PRD §6.2) or the for isn't found
+        // (would surface as `UnknownLoop` separately), we skip — this
+        // is an independent check that doesn't cascade.
+        if let Some(iter_count) = find_loop_iter_count(&algo.stmts, &loop_dir.var, &algo.consts) {
+            if (depth as i64) > iter_count {
+                errors.push(LinkError::PipelineExceedsIterationCount {
+                    loop_var: loop_dir.var.clone(),
+                    depth,
+                    iteration_count: iter_count,
+                });
+                // Do NOT continue — if both D > iter_count AND D > buffer,
+                // report BOTH. They name different problems with
+                // different actionable fixes (raise buffer vs reduce D vs
+                // extend the loop).
+            }
+        }
+
         // Gather data symbols that are BOTH produced and consumed
         // inside `for VAR : ...`. The intersection is the set of
         // symbols whose Push/Wait pair the IR will keep inside the
@@ -754,6 +810,38 @@ fn check_pipeline_buffer_constraints(
             }
         }
     }
+}
+
+/// TASK-0217: find the iteration count for `for VAR : LO .. HI`
+/// matching `target_var` anywhere in `stmts` (recursing into nested
+/// for bodies). Returns `Some(hi - lo)` when a matching for is found
+/// and BOTH bounds evaluate to a const i64, else `None`.
+///
+/// `None` covers two cases that callers want to skip (not report):
+/// - The named loop doesn't exist (UnknownLoop is reported separately
+///   by the link step's loop-resolution pass).
+/// - A bound contains a non-const construct (impossible in v2 grammar;
+///   defensive against a future relaxation).
+fn find_loop_iter_count(
+    stmts: &[IrStmt],
+    target_var: &str,
+    consts: &BTreeMap<String, crate::algo::ResolvedConst>,
+) -> Option<i64> {
+    for s in stmts {
+        if let IrStmt::For { var, lo, hi, body } = s {
+            if var == target_var {
+                let lo_v = crate::acfg::eval_const(lo, consts)?;
+                let hi_v = crate::acfg::eval_const(hi, consts)?;
+                // Negative range = zero iterations; saturate to 0 so
+                // `pipeline=D > 0` always fires the diagnostic.
+                return Some((hi_v - lo_v).max(0));
+            }
+            if let Some(n) = find_loop_iter_count(body, target_var, consts) {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// Walk `stmts` and, when inside (or under) `for var : ...`, record

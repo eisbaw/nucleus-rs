@@ -1163,7 +1163,10 @@ fn collect_dataref_access_expr(
 /// that reference an outer iter var would be a parser/lowering bug.
 /// If a real example demands iter-var-dependent bounds, the lowering
 /// pass tightens; we panic here on `None`.
-fn eval_const(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Option<i64> {
+///
+/// `pub(crate)` so the link step can reuse it for TASK-0217's
+/// iteration-count check without duplicating the evaluator.
+pub(crate) fn eval_const(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Option<i64> {
     match e {
         IrExpr::IntLit(v) => Some(*v),
         IrExpr::Ident(name) => consts.get(name).map(|c| c.value),

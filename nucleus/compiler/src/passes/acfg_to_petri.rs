@@ -234,14 +234,16 @@
 //!    pushes" above. Codegen reads only the EventList, which IS a
 //!    one-to-one trace (every Push/Wait preserved).
 //!
-//! - **`pipeline=D` with `D > iteration_count`** (TASK-0217). The
-//!    elision drops the first D Push transitions per seq; if a loop
-//!    has fewer than D iterations, EVERY Push for that seq is elided,
-//!    and the buffer place ends with `D - iteration_count` leftover
-//!    initial-marking tokens (still below capacity N, so boundedness
-//!    holds, but the residue is semantically odd). The link step
-//!    currently only rejects `D > buffer=N`, not `D > iteration_count`.
-//!    Filed as TASK-0217 for the reject-or-document decision.
+//! - **`pipeline=D` with `D > iteration_count`** — RESOLVED by
+//!    TASK-0217: the link step now rejects this combination via
+//!    [`crate::link::LinkError::PipelineExceedsIterationCount`].
+//!    Without that reject, the elision below drops every Push for the
+//!    seq (only `iter_count < D` exist) and the buffer place ends
+//!    with `D - iter_count` leftover initial-marking tokens —
+//!    boundedness still holds (below capacity), but the residue is
+//!    semantically odd. By the time this pass runs, the link step has
+//!    already failed, so the leftover-tokens shape is structurally
+//!    unreachable for compiler-built fixtures.
 //!
 //! - **`sync_inject` over-syncing forces the path-2 elision**
 //!    (TASK-0218). The root reason the analysis net needs the elision
@@ -496,15 +498,16 @@ impl<'a> NetBuilder<'a> {
                 // push (1-based comparison: push #1..#D elide,
                 // push #(D+1).. emit).
                 //
-                // CAVEAT (TASK-0217): when `D > iteration_count`,
-                // every push for the seq is elided. The buffer place
-                // ends with `D - iteration_count` leftover tokens
-                // (boundedness still holds; the leftover is below
-                // capacity). The link step (TASK-0134 AC#3) only
-                // rejects `D > buffer=N`, not `D > iteration_count`;
-                // the latter is semantically odd but not unsafe.
-                // TASK-0217 will either reject it at link time or
-                // document it as intentional.
+                // NOTE (TASK-0217 — closed): when `D > iteration_count`
+                // every push for the seq would be elided, leaving
+                // `D - iter_count` leftover initial-marking tokens in
+                // the buffer place. The link step rejects that
+                // combination via PipelineExceedsIterationCount BEFORE
+                // this pass runs, so the leftover-tokens shape is
+                // structurally unreachable for compiler-built nets.
+                // Hand-built nets fed to this pass directly can still
+                // hit it; boundedness still holds (leftover below
+                // capacity), the residue is just semantically odd.
                 let count = self.push_count_per_seq.entry(x.seq).or_insert(0);
                 *count += 1;
                 let depth = self
