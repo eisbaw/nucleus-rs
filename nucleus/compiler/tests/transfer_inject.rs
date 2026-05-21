@@ -125,6 +125,7 @@ fn synthetic_acfg(
         name_workers,
         name_iter_vars: Default::default(),
         inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: Default::default(),
     }
 }
 

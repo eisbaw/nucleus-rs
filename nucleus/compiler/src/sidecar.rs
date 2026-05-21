@@ -91,7 +91,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{IrExpr, ResolvedType, ScalarType};
-use crate::event::{DataId, IterVar, KernelId};
+use crate::event::{DataId, IterVar, KernelId, WorkerId};
 use crate::link::LinkedIR;
 
 /// The unevaluated source bounds of a `for` loop, captured before
@@ -177,6 +177,36 @@ pub struct NameSidecar {
     /// This is the last `algo.kernels` read pthreads-sync codegen
     /// has; with this table the contract is fully AlgoIR-free.
     pub kernel_sigs: BTreeMap<KernelId, KernelSig>,
+
+    /// Per-worker loop-range override for loops carrying a
+    /// `partition=workers` schedule directive (TASK-0212). Mirrors
+    /// [`crate::acfg::ACFG::partition_worker_ranges`] verbatim — the
+    /// codegen contract surface for that ACFG sidecar. A backend
+    /// rendering an `Event::Loop` for a worker whose `iter_var` has
+    /// an entry here MUST prefer the concrete per-worker range over
+    /// the symbolic [`loop_bounds`] entry (the symbolic bound names
+    /// the SOURCE range, not the partitioned per-worker slice).
+    /// Workers not listed in the inner map (e.g. host) and iter vars
+    /// without an outer entry fall back to [`loop_bounds`] /
+    /// `Event::Loop.range` exactly as before TASK-0212.
+    ///
+    /// Why a separate sidecar field and not e.g. overloading the
+    /// existing `loop_bounds` with a per-worker variant: `loop_bounds`
+    /// carries SYMBOLIC bounds (e.g. `B - 1`) for source loops so the
+    /// backend can render the bound expression verbatim with consts
+    /// in scope. Per-worker partition bounds are CONCRETE literals
+    /// (`0..4`, `4..8`, …) the partition pass computes from the
+    /// source range and the worker count; mixing concrete and
+    /// symbolic into one map would lose that distinction. A
+    /// dedicated map makes the precedence rule (concrete overrides
+    /// symbolic for partitioned vars) explicit at the consumer site.
+    ///
+    /// Determinism: nested `BTreeMap`s keyed by id; iteration is in
+    /// numeric order. serde-default so an old wire payload (no field)
+    /// deserialises as empty (no overrides, pre-TASK-0212 behaviour).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub partition_worker_ranges:
+        BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -433,11 +463,25 @@ pub fn build_sidecar(
         );
     }
 
+    // (e) Per-worker partition ranges (TASK-0212). Forwarded verbatim
+    //     from the ACFG sidecar `partition_worker_ranges`, which the
+    //     `passes::partition_workers` pass populated by consuming
+    //     `loop X : partition=workers` schedule directives. Empty for
+    //     ACFGs whose schedule carries no `partition=workers`
+    //     directive — backends then see the pre-TASK-0212 source-range
+    //     `Event::Loop.range` projection and the symbolic
+    //     `loop_bounds` entry as before. A `.clone()` because the
+    //     ACFG and the sidecar are independent owners of their
+    //     respective copies (the ACFG flows through the rest of the
+    //     middle-end; the sidecar flows out to codegen).
+    let partition_worker_ranges = acfg.partition_worker_ranges.clone();
+
     Ok(NameSidecar {
         data_types,
         consts,
         loop_bounds,
         kernel_sigs,
+        partition_worker_ranges,
     })
 }
 

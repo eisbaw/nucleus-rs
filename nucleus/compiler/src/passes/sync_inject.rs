@@ -85,6 +85,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         name_workers,
         name_iter_vars,
         inner_block_iter_vars,
+        partition_worker_ranges,
     } = acfg;
 
     // `prior_writes` for the outer-most call is empty: there is no
@@ -125,6 +126,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         name_workers,
         name_iter_vars,
         inner_block_iter_vars,
+        partition_worker_ranges,
     }
 }
 

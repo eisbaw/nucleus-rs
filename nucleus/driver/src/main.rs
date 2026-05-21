@@ -42,9 +42,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, build_acfg, build_sidecar,
-    check_kernels_contract, check_schedule_compat, inject_syncs, inject_transfers, link,
-    load_capabilities,
+    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_workers, build_acfg,
+    build_sidecar, check_kernels_contract, check_schedule_compat, inject_syncs, inject_transfers,
+    link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -303,6 +303,15 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let acfg = build_acfg(&linked).map_err(|e| format!("acfg build error: {e}"))?;
     let acfg =
         apply_block_transforms(&linked, acfg).map_err(|e| format!("block-transform error: {e}"))?;
+    // Partition-workers loop-bound rewrite (TASK-0212): consume any
+    // `loop X : partition=workers` directive whose body is multi-worker
+    // and record a per-worker range override on the ACFG sidecar.
+    // `petri_to_events` honours the override at projection time. Runs
+    // after block-transform so the iter_var ids it records are the
+    // final ones, and before sync/transfer injection (which do not
+    // consult the sidecar — order is for diagnostic clarity).
+    let acfg = apply_partition_workers(&linked, acfg)
+        .map_err(|e| format!("partition-workers error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

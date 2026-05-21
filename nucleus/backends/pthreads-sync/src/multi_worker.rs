@@ -421,15 +421,25 @@ impl<'a> Plan<'a> {
         }
 
         let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_worker_events(evs, &mut out, base_indent, prefix, &ctx)?;
+        self.render_worker_events(worker, evs, &mut out, base_indent, prefix, &ctx)?;
         Ok(out)
     }
 
     /// Walk a worker's EventList. Barrier identity comes from each
     /// `Event::Sync`'s contract-carried `SyncTag` (TASK-0172) — no
     /// running pre-order counter is needed any more.
+    ///
+    /// `worker` is the [`WorkerId`] of the scope being rendered (the
+    /// same one `render_worker_body` was called with — threaded
+    /// verbatim through recursion into nested `Event::Loop` bodies).
+    /// It is consulted at the `Event::Loop` site to apply the
+    /// per-worker partition range from
+    /// [`NameSidecar::partition_worker_ranges`] (TASK-0212), so each
+    /// participating worker emits `for n in (lo)..(hi)` over its own
+    /// exclusive slice rather than the shared source range.
     fn render_worker_events(
         &self,
+        worker: WorkerId,
         events: &[Event],
         out: &mut String,
         indent: usize,
@@ -504,18 +514,39 @@ impl<'a> Plan<'a> {
                              (would double-count). Tracked as TASK-0181."
                         )));
                     }
-                    let (lo, hi) = match self.sidecar.loop_bounds.get(iter_var) {
-                        Some(b) => (
-                            render_const_expr_pub(&b.lo, ctx)?,
-                            render_const_expr_pub(&b.hi, ctx)?,
+                    // Per-worker partition override (TASK-0212): if the
+                    // partition pass recorded a slice for THIS worker on
+                    // this iter var, render the concrete literal range.
+                    // The symbolic `loop_bounds` entry names the SOURCE
+                    // range, not the partitioned slice, so it is the
+                    // wrong rendering for a partitioned worker. A worker
+                    // not listed in the per-iter-var map (e.g. host,
+                    // which doesn't participate in partition=workers)
+                    // falls through to the source-form symbolic /
+                    // literal precedence exactly as before TASK-0212.
+                    let partition_slice = self
+                        .sidecar
+                        .partition_worker_ranges
+                        .get(iter_var)
+                        .and_then(|m| m.get(&worker));
+                    let (lo, hi) = match partition_slice {
+                        Some(r) => (
+                            format!("{}_i64", r.start),
+                            format!("{}_i64", r.end),
                         ),
-                        None => (
-                            format!("{}_i64", range.start),
-                            format!("{}_i64", range.end),
-                        ),
+                        None => match self.sidecar.loop_bounds.get(iter_var) {
+                            Some(b) => (
+                                render_const_expr_pub(&b.lo, ctx)?,
+                                render_const_expr_pub(&b.hi, ctx)?,
+                            ),
+                            None => (
+                                format!("{}_i64", range.start),
+                                format!("{}_i64", range.end),
+                            ),
+                        },
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    self.render_worker_events(body, out, indent + 1, prefix, ctx)?;
+                    self.render_worker_events(worker, body, out, indent + 1, prefix, ctx)?;
                     writeln!(out, "{pad}}}").ok();
                 }
                 Event::Sync { sync, .. } => {

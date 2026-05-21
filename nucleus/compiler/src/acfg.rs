@@ -597,6 +597,32 @@ pub struct ACFG {
     /// hoisting site, which is hot only for blocked schedules.
     #[cfg_attr(feature = "serde", serde(default))]
     pub inner_block_iter_vars: BTreeSet<IterVar>,
+
+    /// Per-worker loop-range override for loops carrying a
+    /// `partition=workers` schedule directive (TASK-0212). Populated by
+    /// [`crate::passes::partition_workers`]. The outer key is the loop's
+    /// [`IterVar`] (the one the source `for` declares); the inner map
+    /// names each participating worker's exclusive iteration slice of
+    /// the source range, so the union over workers re-covers the source
+    /// range exactly once (B/N exact-divisible first cut). Loops with
+    /// no `partition=workers` directive have no entry, and
+    /// [`crate::passes::petri_to_events`] then projects the loop with
+    /// the source range verbatim — unchanged from pre-TASK-0212.
+    ///
+    /// Why a sidecar map instead of a per-`Repeat` field: same reason
+    /// as `inner_block_iter_vars` — keeps the
+    /// `ACFGNode::Repeat { iter_var, range, body, block_tag }` payload
+    /// stable so existing pattern matches keep compiling, and the
+    /// per-worker projection in `petri_to_events::walk` already iterates
+    /// workers individually for the `Event::Loop` emit, so the
+    /// override is a small per-worker lookup at that one site.
+    ///
+    /// Determinism: outer `BTreeMap<IterVar, _>` keyed by id (a `u64`),
+    /// inner `BTreeMap<WorkerId, Range<i64>>` keyed by id (a `u64`).
+    /// Both iterate in numeric order; no `HashMap`/`HashSet`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub partition_worker_ranges:
+        BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
 }
 
 // --------------------------------------------------------------------
@@ -765,6 +791,11 @@ pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
         name_workers,
         name_iter_vars,
         inner_block_iter_vars: BTreeSet::new(),
+        // Populated by `passes::partition_workers` (TASK-0212).
+        // `build_acfg` is schedule-unaware in this respect; empty
+        // means "no per-worker override", so source-range projection
+        // applies — identical to pre-TASK-0212 behaviour.
+        partition_worker_ranges: BTreeMap::new(),
     })
 }
 

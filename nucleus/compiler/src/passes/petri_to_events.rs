@@ -186,9 +186,10 @@
 //! `acfg_to_events(acfg)` produce structurally identical maps.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use crate::acfg::{ACFGNode, Operation, SyncPlaceholder, XferPlaceholder, XferRole, ACFG};
-use crate::event::{Event, FireBinding, IterTile, SyncKind, WorkerId};
+use crate::event::{Event, FireBinding, IterTile, IterVar, SyncKind, WorkerId};
 use crate::petri::Net;
 
 // --------------------------------------------------------------------
@@ -210,7 +211,7 @@ pub fn acfg_to_events(acfg: &ACFG) -> BTreeMap<WorkerId, Vec<Event>> {
         out.entry(*wid).or_default();
     }
 
-    walk(&acfg.root, &mut out);
+    walk(&acfg.root, &mut out, &acfg.partition_worker_ranges);
     out
 }
 
@@ -228,14 +229,18 @@ pub fn petri_to_events(acfg: &ACFG, _net: &Net) -> BTreeMap<WorkerId, Vec<Event>
 // Walker
 // --------------------------------------------------------------------
 
-fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
+fn walk(
+    node: &ACFGNode,
+    out: &mut BTreeMap<WorkerId, Vec<Event>>,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, Range<i64>>>,
+) {
     match node {
         ACFGNode::Operation(op) => emit_operation(op, out),
         ACFGNode::Sync(s) => emit_sync(s, out),
         ACFGNode::Xfer(x) => emit_xfer(x, out),
         ACFGNode::Sequence(children) => {
             for c in children {
-                walk(c, out);
+                walk(c, out, partition_ranges);
             }
         }
         ACFGNode::Repeat {
@@ -273,13 +278,36 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
             // wants "this worker does nothing in this scope", not "this
             // worker spins an empty loop".
             let mut scratch: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-            walk(body, &mut scratch);
+            walk(body, &mut scratch, partition_ranges);
             // Deterministic: `scratch` is a BTreeMap, iterated in
             // WorkerId order.
+            //
+            // Per-worker range override (TASK-0212). If the schedule
+            // attached `partition=workers` to this loop AND the
+            // partition pass recorded a per-worker range for this
+            // worker, use that worker's exclusive slice as the
+            // emitted `Event::Loop.range`; otherwise fall back to the
+            // source range (the pre-TASK-0212 behaviour). The override
+            // map is keyed by the loop's `iter_var` so two loops with
+            // the same body workers but different iter vars stay
+            // independent. A worker NOT listed in the per-iter-var
+            // map (e.g. host, which doesn't participate in
+            // partition=workers) falls back to the source range —
+            // that worker would normally contribute no body events
+            // anyway, but emitting it with the source range matches
+            // the pre-TASK-0212 contract for any non-participating
+            // worker that happens to project a body event.
+            let per_worker_override = partition_ranges.get(iter_var);
             for (wid, body_events) in scratch {
                 if body_events.is_empty() {
                     continue;
                 }
+                let projected_range = match per_worker_override
+                    .and_then(|m| m.get(&wid))
+                {
+                    Some(r) => r.clone(),
+                    None => range.clone(),
+                };
                 // Thread the per-occurrence strip-mine rebinding tag
                 // (TASK-0180) verbatim onto the projected loop. It is
                 // `None` for source / tile loops and `Some` only for a
@@ -288,7 +316,7 @@ fn walk(node: &ACFGNode, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
                 // global EventList occurrence count).
                 out.entry(wid).or_default().push(Event::Loop {
                     iter_var: *iter_var,
-                    range: range.clone(),
+                    range: projected_range,
                     body: body_events,
                     block_tag: *block_tag,
                 });

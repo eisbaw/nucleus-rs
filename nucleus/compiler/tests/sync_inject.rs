@@ -79,6 +79,7 @@ fn empty_acfg(root: ACFGNode) -> ACFG {
         name_workers: Default::default(),
         name_iter_vars: Default::default(),
         inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: Default::default(),
     }
 }
 

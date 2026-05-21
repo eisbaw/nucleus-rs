@@ -1,9 +1,11 @@
 ---
 id: TASK-0212
 title: 'Loop-bound rewrite under partition=workers: each worker iterates its slice'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-05-20 22:07'
+updated_date: '2026-05-21 05:18'
 labels:
   - compiler
   - ir
@@ -83,3 +85,135 @@ Acceptance criteria:
    pthreads-sync becomes byte-identical to reference.bin (closes
    TASK-0211 AC#4 jointly).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle-1 IMPLEMENT (claude, 2026-05-21)
+
+Landed: per-worker loop-bound rewrite for `partition=workers` via a new
+sidecar-populating pass plus a small projection-time / codegen-time
+consumer change. Each compute worker now iterates its own exclusive
+batch slice; the headline B=16/N=4 shape is asserted as a unit test
+(`compiler/tests/partition_workers.rs::cnn_batch_parallel_shape_b16_n4`).
+
+### Architecture (file:line citations)
+
+1. NEW ACFG sidecar map: `compiler/src/acfg.rs:599..621`
+   - `ACFG::partition_worker_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, Range<i64>>>`
+   - Deterministic by id; serde-default; mirrored from the
+     `inner_block_iter_vars` design (TASK-0143) for the same reason
+     (keep `ACFGNode::Repeat` payload stable, single consumer site).
+
+2. NEW pass: `compiler/src/passes/partition_workers.rs`
+   - `pub fn apply_partition_workers(&LinkedIR, ACFG) -> Result<ACFG, PartitionError>`
+   - Reads `linked.sched.loops[*]` for
+     `ResolvedLoopOption::Partition(PartitionKind::Workers)`.
+   - Finds each target Repeat's body-worker union and source range.
+   - Validates and commits per-worker exclusive slices to the sidecar.
+   - Wired into `driver/src/main.rs:309..317` between block_transform
+     and sync_inject.
+
+3. Projection consumes the sidecar:
+   `compiler/src/passes/petri_to_events.rs:231..312`
+   - `walk` now threads `partition_ranges` through recursion.
+   - Per-worker `Event::Loop.range` falls back to source range when
+     this worker is not listed in the override (host, etc.).
+
+4. NameSidecar mirror: `compiler/src/sidecar.rs:181..212`
+   - Same shape as the ACFG sidecar; populated verbatim in
+     `build_sidecar`.
+   - Why a sidecar field on NameSidecar and not e.g. eviction of the
+     symbolic `loop_bounds` entry for partitioned vars: `loop_bounds`
+     is per-IterVar GLOBALLY, but partition is per-(IterVar, WorkerId).
+     Host (non-participating) still wants the symbolic source-form
+     bound; only compute workers want the concrete per-worker slice.
+
+5. Backend consumer changes:
+   - `nucleus/backends/pthreads-sync/src/multi_worker.rs:438..476` —
+     `render_worker_events` now takes `worker: WorkerId`; the
+     `Event::Loop` arm consults
+     `sidecar.partition_worker_ranges` first.
+   - `nucleus/backends/mp-tcp-bufsync/src/lib.rs:646..698` — same
+     change; backend already had `worker` in scope.
+   - Precedence: per-worker partition slice (concrete literal) >
+     symbolic source bound from `loop_bounds` > concrete folded
+     `Event::Loop.range`.
+
+### Verification
+
+Verified by regenerating 13/batch_parallel/pthreads-sync:
+  for n in (0_i64)..(4_i64)    // w0 body
+  for n in (4_i64)..(8_i64)    // w1 body
+  for n in (8_i64)..(12_i64)   // w2 body
+  for n in (12_i64)..(16_i64)  // w3 body
+  for n in (0_i64)..(16_i64)   // host (sends output)
+
+(versus pre-TASK-0212: every worker had `for n in (0)..(16)`.)
+
+### AC status
+
+- AC#1 (PartitionKind::Workers consumed; union covers source range
+  exactly once for B/N exact case): GREEN. Sidecar populated; per-
+  worker projection emits the slice; the synthetic 4-element-over-2-
+  workers test (`projection_honours_per_worker_range_two_workers`)
+  pins the union.
+- AC#2 (petri_to_events emits per-worker range): GREEN.
+  Implementation lives in `walk`'s Repeat arm; pinned by
+  `cnn_batch_parallel_projects_b_over_n_per_worker`.
+- AC#3 (unit test on synthetic partition=workers loop): GREEN.
+  `compiler/tests/partition_workers.rs` has 8 tests including the
+  required AC#3 shape.
+- AC#4 (no regression on 01..07 / 02-split / 03-reduction-naive
+  cells): GREEN. Existing e2e gate at 36/28/0/8/0 unchanged;
+  determinism gate byte-identical across two runs.
+- AC#5 (composes with TASK-0117 so 13/batch_parallel/pthreads-sync
+  byte-identical to reference.bin, closes TASK-0211 AC#4 jointly):
+  HONEST-PARTIAL. The loop-bound rewrite lands correctly, but
+  cargo-build still fails E0425 in w1/w2/w3 because only w0 receives
+  the `input` slot. That is the TASK-0117 (transfer-injection fan-
+  out) gap, NOT a partition-pass gap. Filed for the next cycle.
+
+### Honest limits / non-divisible policy
+
+- First cut: exact-divisible only. `(hi - lo) % N != 0` reports
+  `PartitionError::NonDivisible` and refuses to compile (verified by
+  `non_divisible_range_is_rejected` unit test). A remainder-policy
+  follow-up is the task description's filed follow-up.
+- 1D partition axis only. `partition=rows` / `partition=blocks2d` are
+  separate grammars handled by sibling passes (not yet filed).
+- No `block=` interaction. A `block=N, partition=workers` combination
+  on the same loop would partition the strip-mined inner loop, not
+  the outer source iteration. None of the in-tree schedules combines
+  the two, so this is a documented gap not a live bug.
+- Multi-worker `Event::Loop.range` rebinding for blocked schedules
+  (TASK-0181) is unchanged and still fails LOUD as before.
+
+### Determinism
+
+Sidecar key sets are `BTreeMap<IterVar, BTreeMap<WorkerId, Range<i64>>>`,
+both keyed by numeric id; iteration is in numeric order. No HashMap
+or HashSet on the pass or projection paths. `determinism-check` ran
+twice, byte-identical both runs. `determinism-check-negative` and
+`xbackend-check-negative` both bit on injected nondeterminism /
+corruption.
+
+### Gate measurements (7-step)
+
+1. `nix develop -c just test`           — 479 passed; 0 failed; 2 ignored.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+3. `nix develop -c just e2e`            — 36 / 28 / 0 / 8 / 0 (unchanged).
+4. `nix develop -c just determinism-check` ×2 — byte-identical both runs.
+5. `nix develop -c just determinism-check-negative` — 28/36 perturbed; OK.
+6. `nix develop -c just xbackend-check-negative` — 14 corrupted, 1 detected; OK.
+7. `nix develop -c just ci` — exit 0.
+
+### NOT marked Done
+
+Marked Done = false. AC#5 is the remaining acceptance criterion and
+its blocker is TASK-0117 (transfer-injection fan-out), filed as
+sibling. Per task brief "HONEST-PARTIAL if the rewrite lands cleanly
+but requires TASK-0117 to actually be observable in cargo-build".
+TASK-0212 stays In Progress until TASK-0117 lands and the e2e cell
+moves [[skip]] → [[required]] byte-identical to reference.bin.
+<!-- SECTION:NOTES:END -->

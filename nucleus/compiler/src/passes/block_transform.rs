@@ -265,6 +265,7 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         name_workers,
         mut name_iter_vars,
         mut inner_block_iter_vars,
+        partition_worker_ranges,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -305,6 +306,7 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         name_workers,
         name_iter_vars,
         inner_block_iter_vars,
+        partition_worker_ranges,
     })
 }
 

@@ -53,6 +53,7 @@ pub use passes::acfg_to_petri::acfg_to_net;
 pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
+pub use passes::partition_workers::{apply_partition_workers, PartitionError};
 pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
 pub use passes::sync_inject::inject_syncs;
 pub use passes::transfer_inject::inject_transfers;

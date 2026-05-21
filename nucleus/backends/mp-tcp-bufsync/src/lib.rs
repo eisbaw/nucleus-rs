@@ -673,18 +673,32 @@ impl<'a> Plan<'a> {
                              emit un-rebound. Tracked as TASK-0181."
                         )));
                     }
-                    // SHARED bound renderer (source-form via sidecar,
-                    // else concrete folded range) — identical to
-                    // pthreads-sync multi-worker.
-                    let (lo, hi) = match self.sidecar.loop_bounds.get(iter_var) {
-                        Some(b) => (
-                            render_const_expr_pub(&b.lo, ctx)?,
-                            render_const_expr_pub(&b.hi, ctx)?,
+                    // Per-worker partition override (TASK-0212): if the
+                    // partition pass recorded a slice for THIS worker on
+                    // this iter var, render the concrete literal range.
+                    // See pthreads-sync multi_worker for the precedence
+                    // rationale (concrete-per-worker > symbolic-source-
+                    // form > concrete-folded fallback).
+                    let partition_slice = self
+                        .sidecar
+                        .partition_worker_ranges
+                        .get(iter_var)
+                        .and_then(|m| m.get(&worker));
+                    let (lo, hi) = match partition_slice {
+                        Some(r) => (
+                            format!("{}_i64", r.start),
+                            format!("{}_i64", r.end),
                         ),
-                        None => (
-                            format!("{}_i64", range.start),
-                            format!("{}_i64", range.end),
-                        ),
+                        None => match self.sidecar.loop_bounds.get(iter_var) {
+                            Some(b) => (
+                                render_const_expr_pub(&b.lo, ctx)?,
+                                render_const_expr_pub(&b.hi, ctx)?,
+                            ),
+                            None => (
+                                format!("{}_i64", range.start),
+                                format!("{}_i64", range.end),
+                            ),
+                        },
                     };
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                     self.render_events(body, out, indent + 1, worker, is_host, ctx)?;

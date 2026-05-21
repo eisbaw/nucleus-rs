@@ -203,6 +203,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_workers,
         name_iter_vars,
         inner_block_iter_vars,
+        partition_worker_ranges,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -322,6 +323,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         name_workers,
         name_iter_vars,
         inner_block_iter_vars,
+        partition_worker_ranges,
     }
 }
 
