@@ -703,16 +703,19 @@ fn collect_dataref_consumers(
 /// tile no longer contains the pipelined iter-var), so the
 /// constraint we are policing here also no longer applies.
 ///
-/// **Caveat (TASK-0214):** the link check does NOT mirror
-/// `transfer_inject`'s `src == dst` skip (same-worker producer +
-/// consumer suppresses Xfer emission). The schedule grammar
-/// currently allows a `transfer X : buffer=N` directive on a
-/// same-worker data symbol (it's harmless — no Xfer is emitted —
-/// but not rejected); combined with `pipeline=D > N`, the link
-/// check fires `PipelineExceedsBuffer` even though no IR-level
-/// constraint exists. Filed as TASK-0214; in practice users do
-/// not write transfer directives on same-worker symbols, so this
-/// is a latent inconsistency rather than an active defect.
+/// **Same-worker carveout (TASK-0214 — closed):** the link check
+/// now mirrors `transfer_inject`'s `src == dst` skip. A `transfer X
+/// : buffer=N` directive on a same-worker data symbol is harmless
+/// (no Xfer is emitted at runtime by `transfer_inject`) and the
+/// pipeline-buffer check should not fire on it either, otherwise it
+/// would misdirect the user (the actionable bug, if any, is the
+/// placement — not the buffer). `data_is_cross_worker(algo, sched,
+/// data_name)` is the new gate: it walks the kernels touching
+/// `data_name` in `algo.stmts`, looks up each kernel's placement in
+/// `sched.places`, and returns true iff MORE THAN ONE distinct
+/// worker is named. An unplaced kernel is conservatively treated
+/// as cross-worker so a broken-but-cross-worker schedule still
+/// gets the pipeline diagnostic.
 ///
 /// Dual-direction check: producer-and-consumer-both-inside (the
 /// pipelined inter-stage case, e.g. `feat1`, `feat2` in example 13).
@@ -790,6 +793,21 @@ fn check_pipeline_buffer_constraints(
             let Some(tx) = sched.transfers.get(data_name) else {
                 continue;
             };
+            // TASK-0214: skip same-worker data symbols. The
+            // PipelineExceedsBuffer check polices the IR-level
+            // initial_marking that `transfer_inject` would attach to
+            // a Push/Wait pair — but `transfer_inject` does NOT emit
+            // any Xfer when producer and consumer share a worker
+            // (`src == dst` skip). A redundant `transfer X : buffer=N`
+            // directive on a same-worker symbol therefore has no
+            // runtime correlate, and complaining about pipeline depth
+            // vs buffer would misdirect the user (the actual issue, if
+            // any, is the placement — not the buffer). Mirror the
+            // transfer_inject semantic: only police data symbols whose
+            // producer + consumer kernels span more than one worker.
+            if !data_is_cross_worker(algo, sched, data_name) {
+                continue;
+            }
             let buffer = tx
                 .options
                 .iter()
@@ -809,6 +827,104 @@ fn check_pipeline_buffer_constraints(
                 });
             }
         }
+    }
+}
+
+/// TASK-0214: return `true` iff `data_name` has kernels on MORE THAN
+/// ONE distinct worker (i.e., is genuinely cross-worker). When the
+/// producer + consumer kernels of a data symbol all share a single
+/// worker placement, the data is same-worker and `transfer_inject`'s
+/// `src == dst` skip means no Xfer is emitted at runtime — so any
+/// pipeline-vs-buffer check on it would misdirect the user.
+///
+/// Walks `algo.stmts` to find kernels referencing the data symbol on
+/// either side of a dataflow stmt or as an arg, then looks up each
+/// kernel's placement in `sched.places`. A kernel WITHOUT a placement
+/// is treated as unknown — that's a separate `UnplacedKernel` error
+/// the link step already reports; here we conservatively count it as
+/// "could be on a different worker" so we don't accidentally squelch
+/// the pipeline check on a broken schedule.
+fn data_is_cross_worker(algo: &AlgoIR, sched: &SchedIR, data_name: &str) -> bool {
+    let mut kernels: BTreeSet<String> = BTreeSet::new();
+    collect_kernels_touching_data(&algo.stmts, data_name, &mut kernels);
+    if kernels.is_empty() {
+        // Unreferenced data — let the outer check proceed; the
+        // intersect-of-produced-and-consumed already filtered this.
+        return true;
+    }
+    let mut workers: BTreeSet<String> = BTreeSet::new();
+    for kernel in &kernels {
+        match sched.places.get(kernel) {
+            Some(placement) => match &placement.target {
+                crate::sched::ir::ResolvedPlaceTarget::One(w) => {
+                    workers.insert(w.clone());
+                }
+                crate::sched::ir::ResolvedPlaceTarget::Many(ws) => {
+                    for w in ws {
+                        workers.insert(w.clone());
+                    }
+                }
+            },
+            None => {
+                // Unplaced kernel — conservatively assume distinct
+                // worker (don't squelch the check on a broken sched).
+                return true;
+            }
+        }
+    }
+    workers.len() > 1
+}
+
+/// Walk `stmts` and record every kernel name that touches `data_name`
+/// — as Dataflow LHS-producing-kernel (RHS expression is a Call), as a
+/// Dataflow RHS DataRef inside a kernel's arg list, or as an Effect
+/// arg. Recurses into For-bodies.
+fn collect_kernels_touching_data(
+    stmts: &[IrStmt],
+    data_name: &str,
+    out: &mut BTreeSet<String>,
+) {
+    for s in stmts {
+        match s {
+            IrStmt::Dataflow { lhs, rhs } => {
+                let touches_lhs = lhs.name == data_name;
+                let touches_rhs = expr_touches_data(rhs, data_name);
+                if touches_lhs || touches_rhs {
+                    // The kernel responsible is the RHS top-level Call,
+                    // if any.
+                    if let Some(name) = call_callee(rhs) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+            IrStmt::Effect { callee, args } => {
+                if args.iter().any(|a| expr_touches_data(a, data_name)) {
+                    out.insert(callee.clone());
+                }
+            }
+            IrStmt::For { body, .. } => {
+                collect_kernels_touching_data(body, data_name, out);
+            }
+        }
+    }
+}
+
+/// True iff `e` references `data_name` directly or transitively.
+fn expr_touches_data(e: &IrExpr, data_name: &str) -> bool {
+    match e {
+        IrExpr::DataRef(r) => r.name == data_name,
+        IrExpr::Call { args, .. } => args.iter().any(|a| expr_touches_data(a, data_name)),
+        IrExpr::BinOp(_, l, r) => expr_touches_data(l, data_name) || expr_touches_data(r, data_name),
+        IrExpr::Neg(inner) => expr_touches_data(inner, data_name),
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
+    }
+}
+
+/// If `e` is a top-level Call, return the callee name. Otherwise None.
+fn call_callee(e: &IrExpr) -> Option<&str> {
+    match e {
+        IrExpr::Call { callee, .. } => Some(callee.as_str()),
+        _ => None,
     }
 }
 

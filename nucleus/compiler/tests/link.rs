@@ -1143,3 +1143,80 @@ schedule for \"a.algo.nuc\" {
     );
     link(algo, sched).expect("D=iter_count=2, buffer=2: must link cleanly");
 }
+
+// --------------------------------------------------------------------
+// TASK-0214: same-worker transfer carveout for PipelineExceedsBuffer
+// --------------------------------------------------------------------
+
+/// Same-worker producer/consumer with a redundant `transfer X :
+/// buffer=N` directive AND `pipeline=D > N` must NOT fire
+/// `PipelineExceedsBuffer`. The IR-level constraint the check
+/// polices doesn't exist (transfer_inject emits no Xfer when
+/// src==dst). Path (b) of TASK-0214 AC#1: gate the check on
+/// cross-worker placement.
+#[test]
+fn pipeline_buffer_check_skips_same_worker_data() {
+    // Two stages, BOTH placed on the same worker. The `transfer
+    // stage1` directive is technically redundant (no cross-worker
+    // pair); the link step must NOT complain about D > buffer for it.
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w0;
+    loop n : pipeline=4;
+    transfer input  : async, buffer=4, notify=event;
+    transfer stage1 : async, buffer=1, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    // pipeline=4 > buffer=1 on stage1 — but stage1 is same-worker
+    // (f1 and f2 both on w0), so the check must skip it. The
+    // schedule should link cleanly.
+    link(algo, sched).expect(
+        "same-worker stage1 must not trigger PipelineExceedsBuffer; the IR \
+         constraint doesn't exist (transfer_inject skips src==dst)",
+    );
+}
+
+/// Sister-positive: cross-worker SAME data + pipeline=D > buffer DOES
+/// still fire, so the carveout doesn't accidentally squelch the
+/// legitimate case.
+#[test]
+fn pipeline_buffer_check_still_fires_on_cross_worker_data() {
+    let algo = algo_from_str(TWO_STAGE_PIPELINE_ALGO);
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=4;
+    transfer input  : async, buffer=4, notify=event;
+    transfer stage1 : async, buffer=1, notify=event;
+    transfer stage2 : sync;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("cross-worker D=4 > N=1 must fail");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LinkError::PipelineExceedsBuffer {
+                loop_var,
+                data,
+                depth: 4,
+                buffer: 1,
+            } if loop_var == "n" && data == "stage1"
+        )),
+        "expected PipelineExceedsBuffer for cross-worker (n, stage1, 4, 1); got {:?}",
+        errs
+    );
+}
