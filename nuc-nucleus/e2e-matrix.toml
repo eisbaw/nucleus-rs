@@ -442,7 +442,7 @@ milestone = "M3"
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "pthreads-sync"
-reason   = "TASK-0211: multi-worker transfer-distribution codegen omits per-worker recv of `input` under partition=workers; emitted crate fails cargo build with E0425 in w1/w2/w3 scopes"
+reason   = "TASK-0117 (transfer-injection fan-out across distributed worker entities, upstream root cause of the TASK-0211 symptom): emitted crate fails cargo build with E0425 in w1/w2/w3 scopes because only the canonical-first worker (w0) receives `input` via slot.wait(). TASK-0212 (loop-bound rewrite) is Done — per-worker `for n in lo..hi` slices land correctly; only the transfer fan-out remains."
 milestone = "M3"
 
 # Example 13 batch_parallel × mp-tcp-bufsync: same multi-worker transfer
@@ -454,7 +454,7 @@ milestone = "M3"
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0175 (host-excluding barrier) + TASK-0211 (multi-worker transfer-distribution under partition=workers)"
+reason   = "TASK-0175 (host-excluding barrier) + TASK-0117 (transfer-injection fan-out across distributed entities, upstream root of TASK-0211)"
 milestone = "M3"
 
 # Example 13 pipeline_parallel × both backends: requires async + buffer=3

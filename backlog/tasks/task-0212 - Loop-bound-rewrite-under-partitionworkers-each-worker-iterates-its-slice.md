@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-05-20 22:07'
-updated_date: '2026-05-21 05:18'
+updated_date: '2026-05-21 05:29'
 labels:
   - compiler
   - ir
@@ -216,4 +216,38 @@ sibling. Per task brief "HONEST-PARTIAL if the rewrite lands cleanly
 but requires TASK-0117 to actually be observable in cargo-build".
 TASK-0212 stays In Progress until TASK-0117 lands and the e2e cell
 moves [[skip]] → [[required]] byte-identical to reference.bin.
+
+ORCHESTRATOR review-gate cycle (post-6df9058):
+
+Both reviewers returned GO with 3 minor non-blocking findings.
+
+qa-test-runner: all 7 gate numbers reproduce (test 479/0/2, clippy clean, e2e 36/28/0/8/0 unchanged, det-check x2 byte-identical, canaries bite, ci exit 0). All 10 new tests pass. Driver-level probe of example 13 batch_parallel × pthreads-sync confirms per-worker bounds rewrite is exactly correct: w0=0..4, w1=4..8, w2=8..12, w3=12..16, host=0..16 (non-participating worker falls back to source range per the documented contract). Cargo build still fails E0425 — exactly as expected (AC#5 honest-partial blocker is TASK-0117 transfer-injection fan-out).
+
+mped-architect: GO with 3 minor non-blocking findings:
+1. Cross-backend precedence rule comment in mp-tcp-bufsync says "see pthreads-sync multi_worker for the precedence rationale" — anchors the contract but risks doc-rot if the rules diverge later. Worth a follow-up to consolidate into a shared helper.
+2. Coverage gap: PartitionError::NoMultiWorkerBody and PartitionError::UnknownLoopVar lack tests. Fail-closed guards on linker invariants but worth regression tests.
+3. Doc seam: e2e-matrix skip reason cited TASK-0211 while task notes cite TASK-0117 as AC#5 blocker. Same underlying defect (transfer-injection fan-out), two task IDs.
+
+Finding 3 fixed in-thread: e2e-matrix.toml skip reasons rewritten to cite TASK-0117 (upstream root cause) as the actual blocker, with TASK-0211 noted as the symptom. Per cycle-10 lesson: prefer citing upstream root over downstream symptom.
+
+Findings 1 and 2 deferred — neither blocks; the precedence-rule consolidation is a hygiene follow-up best paired with a future codegen refactor; the missing-variant tests are guards-on-guards (linker pre-rejects the cases that would trigger them).
+
+CASCADE-CLASS METHODOLOGY-TRANSFER SCORECARD now extends to deep-pipeline cycles (6-for-6 with TASK-0212 making it 6):
+- TASK-0092 cycle-3 (AlgoIR lowering 5x closure)
+- TASK-0087 cycle-4 (sched-parser n+2 measurement)
+- TASK-0200 cycles 1+2+review (sched-lowering Path-2)
+- TASK-0204 (broadened K×L fixture)
+- TASK-0207+review-sweep (algo for-body constant-2)
+- TASK-0199 cycles 1+2+review (parser brace-balanced recovery)
+- TASK-0205 (for-body undercount closure)
+- TASK-0206 (cascade-aware duplicate)
+- TASK-0203 (poisoned-kernel test)
+- TASK-0202 (multi-error line:col)
+- TASK-0209 cycles 1+2 (backend sub-array codegen)
+- TASK-0053 cycle-2 (CNN inference cross-backend bit-identical)
+- TASK-0212 cycle-1 (partition=workers loop-bound rewrite — DEEPEST PIPELINE CYCLE)
+
+The cycle-3 methodology (parametric measurement + independent reviewer probes + comprehensive doc-sweep + honest-partial discipline) has transferred from cascade-class lowering work to deep-pipeline cycles cleanly. TASK-0212's 8 integration tests + 2 unit tests with exact-shape assertions on per-worker ranges (not tautological) are the methodological signature.
+
+TASK-0212 cycle-1 disposition: per-worker bound rewrite COMPLETE; cargo-build observation requires TASK-0117. Status stays In Progress with Dependencies: TASK-0117 (AC#5 unblocks once TASK-0117 lands).
 <!-- SECTION:NOTES:END -->
