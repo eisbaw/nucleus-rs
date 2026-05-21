@@ -139,6 +139,8 @@ use super::ir::{
 /// | `DuplicateLoopOption` / `DuplicateTransferOption` | Independent | yes | never |
 /// | `ConflictingTransferMode`              | Independent | yes               | never |
 /// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               | never |
+/// | `UnitPipelineOption`                   | Independent | yes               | never |
+/// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -990,6 +992,48 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
             c.var.span.clone(),
         ));
     }
+
+    // TASK-0052.01: AC#2/AC#3 — each assertion kind is a unique slot
+    // per check directive; AC#3 — latency_max=0 is degenerate. Both
+    // checks happen here before the asserts vector is built so the
+    // first offender is reported at its source span.
+    let mut seen_latency = false;
+    let mut seen_on_violation = false;
+    for a in &c.asserts {
+        match a {
+            CheckAssert::LatencyMax(t) => {
+                if t.nanos == 0 {
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::ZeroLatencyMax { var: var.clone() },
+                        c.var.span.clone(),
+                    ));
+                }
+                if seen_latency {
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateCheckAssertion {
+                            var: var.clone(),
+                            kind: "latency_max".into(),
+                        },
+                        c.var.span.clone(),
+                    ));
+                }
+                seen_latency = true;
+            }
+            CheckAssert::OnViolation(_) => {
+                if seen_on_violation {
+                    return Err(SchedLowerError::at(
+                        SchedLowerErrorKind::DuplicateCheckAssertion {
+                            var: var.clone(),
+                            kind: "on_violation".into(),
+                        },
+                        c.var.span.clone(),
+                    ));
+                }
+                seen_on_violation = true;
+            }
+        }
+    }
+
     let asserts = c
         .asserts
         .iter()

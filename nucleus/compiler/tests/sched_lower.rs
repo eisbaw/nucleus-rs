@@ -637,6 +637,66 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_zero_latency_max_is_rejected() {
+    // TASK-0052.01 AC#3 — `latency_max = 0<UNIT>` is semantically
+    // degenerate (every iteration violates a zero budget). The
+    // typed SchedLowerError names the offending loop var.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    check loop frame : latency_max = 0ms;
+}
+";
+    let err = lower_str(src).expect_err("latency_max=0 must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::ZeroLatencyMax {
+            var: "frame".into(),
+        }
+    );
+}
+
+#[test]
+fn negative_duplicate_latency_max_within_one_check() {
+    // TASK-0052.01 AC#2/AC#3 — two `latency_max` assertions inside
+    // one `check loop` directive (which value wins is ambiguous).
+    // Typed SchedLowerError, not papered over.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    check loop frame : latency_max = 10ms, latency_max = 5ms;
+}
+";
+    let err = lower_str(src).expect_err("duplicate latency_max must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateCheckAssertion {
+            var: "frame".into(),
+            kind: "latency_max".into(),
+        }
+    );
+}
+
+#[test]
+fn negative_duplicate_on_violation_within_one_check() {
+    // Same DuplicateCheckAssertion variant, on_violation slot.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    check loop frame : latency_max = 10ms, on_violation = panic, on_violation = log;
+}
+";
+    let err = lower_str(src).expect_err("duplicate on_violation must fail").first().clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateCheckAssertion {
+            var: "frame".into(),
+            kind: "on_violation".into(),
+        }
+    );
+}
+
+#[test]
 fn negative_zero_block_loop_option() {
     let src = "\
 schedule for \"../prog.algo.nuc\" {

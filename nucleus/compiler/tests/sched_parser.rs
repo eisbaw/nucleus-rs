@@ -496,6 +496,25 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_check_unknown_on_violation_value_is_rejected() {
+    // TASK-0052.01 AC#3 — `on_violation = foo` (not in
+    // panic|log|count) MUST be a parser error. The grammar restricts
+    // ViolationKind to the three closed enum values; an unknown
+    // identifier fails to match the choice() and propagates as a
+    // parse error at the offending token.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    check loop frame : latency_max = 10ms, on_violation = foobar;
+}
+";
+    let err = expect_err(src);
+    // `foobar` is on line 4.
+    assert_eq!(err.line, 4, "{:?}", err);
+}
+
+#[test]
 fn negative_missing_semicolon_after_workers() {
     let src = "\
 schedule for \"../prog.algo.nuc\" {

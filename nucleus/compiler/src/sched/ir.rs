@@ -443,6 +443,22 @@ pub enum SchedLowerErrorKind {
     ZeroLoopOption { var: String, option: String },
     /// `buffer=0` on a transfer.
     ZeroBufferOption { data: String },
+    /// `check loop V : latency_max = 0<UNIT>` (TASK-0052.01). A
+    /// zero-time latency assertion is semantically degenerate: every
+    /// non-trivial iteration violates it, so the assertion gives no
+    /// information about the schedule. Rejecting it forces the
+    /// schedule author to either specify a real budget or omit the
+    /// directive. PRD §6.3.5 frames `latency_max` as a strictly
+    /// positive upper bound. `var` is the loop variable.
+    ZeroLatencyMax { var: String },
+    /// `check loop V : KIND = ..., KIND = ...` — the same assertion
+    /// keyword appears more than once on one `check loop` directive
+    /// (TASK-0052.01). PRD §6.3.5 makes each assertion kind a unique
+    /// slot on its loop; two values are an internal conflict (which
+    /// budget wins?). Rejecting at the IR layer is the simplest
+    /// honest answer. `var` is the loop variable; `kind` is the
+    /// duplicated keyword (`latency_max`, `on_violation`, …).
+    DuplicateCheckAssertion { var: String, kind: String },
     /// `pipeline=1` on a loop (TASK-0134). A pipeline depth of 1 is
     /// "no pipelining" — one iteration in flight is the default
     /// sequential mode. Accepting it would lower to
@@ -596,6 +612,17 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 f,
                 "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
                  (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
+            ),
+            SchedLowerErrorKind::ZeroLatencyMax { var } => write!(
+                f,
+                "`check loop {var} : latency_max = 0...` is rejected; \
+                 latency_max requires a strictly positive budget \
+                 (PRD §6.3.5: latency_max is an upper bound on per-iteration wall-clock time)"
+            ),
+            SchedLowerErrorKind::DuplicateCheckAssertion { var, kind } => write!(
+                f,
+                "`check loop {var}` has more than one `{kind}` assertion; \
+                 each assertion kind may appear at most once per check directive"
             ),
             SchedLowerErrorKind::DuplicateWorkersDecl => write!(
                 f,
