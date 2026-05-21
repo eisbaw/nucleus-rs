@@ -3,11 +3,11 @@ id: TASK-0211
 title: >-
   Multi-worker transfer-distribution under partition=workers omits per-worker
   recv of partial-sub-array slot
-status: To Do
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-20 21:43'
-updated_date: '2026-05-20 22:07'
+updated_date: '2026-05-21 06:27'
 labels:
   - backend
   - codegen
@@ -217,4 +217,20 @@ report and stop, do not paper.
 TASK-0211 stays open as the *symptom* tracker (cargo-build E0425 +
 matrix promotion); its fix is composite (TASK-0117 + TASK-0212),
 not a standalone backend codegen change.
+
+## TASK-0117 cycle-1 follow-up (claude, 2026-05-21)
+
+Resolved upstream by TASK-0117 + TASK-0212 + a sync-injection co-fix landed in TASK-0117 cycle-1.
+
+### AC status against the TASK-0211 description
+
+- AC#1 (uniform per-worker recv/send for every shared slot read by a partition=workers body): GREEN. Each compute worker has its own `slot_X.wait()` for `input` before the body and its own `slot_X.push(output.clone())` after the body; no E0425. The host slice-pastes each worker's contribution into its whole `output` (TASK-0117 backend gather).
+- AC#2 (cargo-build for 13-cnn-inference/batch_parallel/pthreads-sync): GREEN. Regenerated /tmp/nuc-13-bp; `cargo build --release` exit 0.
+- AC#3 (synthetic partition=workers loop body partial sub-array test asserts per-worker recv): GREEN — equivalent coverage in `tests/transfer_inject.rs::fanout_one_to_n_emits_n_pairs` (asserts 4 Waits with distinct dst for a 1:N broadcast) and `tests/partition_workers.rs::transfer_fanout_composes_with_partition_sidecar` (asserts each Wait's tile carries the dst worker's partition slice).
+- AC#4 (matrix [[skip]]→[[required]], byte-identical to reference.bin): GREEN. e2e cell now `[[required]]` and bit-identical.
+- AC#5 (01..07 cells unchanged): GREEN. e2e count unchanged for those cells; cross-backend differential green.
+
+### Disposition
+
+Marked Done. The bug as filed was a downstream symptom of the missing transfer fan-out (now landed); the additional sync_inject co-fix was discovered during the TASK-0117 build (per-iteration body Sync deadlocks under partition=workers' asymmetric iteration) and landed in the same commit. Out-of-scope items from this task (TASK-0175 mp-tcp host-excluding barrier; pipeline_parallel via TASK-0210) remain on their original trackers.
 <!-- SECTION:NOTES:END -->

@@ -427,22 +427,22 @@ reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions; al
 milestone = "M3"
 
 # Example 13 batch_parallel × pthreads-sync: the partition=workers
-# schedule replicates the loop body across w0/w1/w2/w3, but the
-# backend codegen emits sub-slice reads of `input` in EVERY worker's
-# body even though only w0 receives `input` via slot_0.wait() — w1/w2/w3
-# reference an undeclared `input` local => E0425 "cannot find value
-# `input` in this scope" at cargo build of the generated crate.
-# Pre-existing multi-worker transfer-distribution codegen gap exposed
-# by the new partial-sub-array codegen path from TASK-0209 (the
-# scalar-only multi-worker path emitted by the SAME bug for examples
-# 01-07 happens to not trigger E0425 because no current required cell
-# combines partition=workers + multi-worker recv into one scope).
-# Filed as a precise follow-up (see TASK-0053 cycle-2 notes).
-[[skip]]
+# schedule replicates the loop body across w0..w3, each receiving its
+# own input slice and contributing its output slice back to the host.
+# TASK-0212 rewrote per-worker loop bounds, TASK-0117 fan-out emits
+# one Push/Wait pair per (src,dst) worker, the backend allocates one
+# slot per (DataId, SeqTag) pair, and the host slice-pastes each
+# worker's contribution into its whole `output` buffer. Co-fix in
+# sync_inject (TASK-0117 cycle-1): a partitioned Repeat suppresses
+# the body-entry/exit Sync inserts — they were emitted on the
+# pre-partition symmetric-iteration assumption and would deadlock
+# when host iterates the source range while each worker iterates its
+# slice. Required from this cycle on; the cell is byte-identical to
+# reference.bin (sha256 d893337208d7b469…).
+[[required]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "pthreads-sync"
-reason   = "TASK-0117 (transfer-injection fan-out across distributed worker entities, upstream root cause of the TASK-0211 symptom): emitted crate fails cargo build with E0425 in w1/w2/w3 scopes because only the canonical-first worker (w0) receives `input` via slot.wait(). TASK-0212 (loop-bound rewrite) is Done — per-worker `for n in lo..hi` slices land correctly; only the transfer fan-out remains."
 milestone = "M3"
 
 # Example 13 batch_parallel × mp-tcp-bufsync: same multi-worker transfer

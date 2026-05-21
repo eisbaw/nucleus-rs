@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:09'
-updated_date: '2026-05-20 21:44'
+updated_date: '2026-05-21 06:28'
 labels:
   - examples
   - M6
@@ -227,4 +227,20 @@ Honest limits / not done this cycle:
   i32 accumulators, NOT for any classification accuracy.
 - Cargo.lock for the reference crate IS committed (matches the
   convention of all other examples/01..07).
+
+## TASK-0117 cycle-1 partial unblock (claude, 2026-05-21)
+
+TASK-0117 cycle-1 landed transfer-injection fan-out + sync-injection co-fix; example 13 batch_parallel × pthreads-sync now cargo-builds AND is byte-identical to reference.bin (sha256 d893337208d7b469…). The cell is [[required]] in nuc-nucleus/e2e-matrix.toml.
+
+### Updated AC status
+
+- AC#4 (Required schedules: naive, batch_parallel, pipeline_parallel — all listed in README under M6 are present and reference-matching): PARTIAL.
+  - naive × {pthreads-sync, mp-tcp-bufsync}: GREEN (was already so).
+  - batch_parallel × pthreads-sync: GREEN (new, this cycle).
+  - batch_parallel × mp-tcp-bufsync: blocked on TASK-0175 (host-excluding barrier) — see e2e-matrix.toml skip reason.
+  - pipeline_parallel × both backends: blocked on TASK-0210 (async + buffer=3 + notify=event capability).
+
+- AC#5 (all three schedules × all tier-1 backends produce reference-matching output): PARTIAL. 3 of 6 cells now green; 3 still blocked behind TASK-0175 / TASK-0210.
+
+TASK-0053 stays In Progress; the remaining gaps (mp-tcp host-excluding barrier; pipeline_parallel capability) are tracked separately.
 <!-- SECTION:NOTES:END -->

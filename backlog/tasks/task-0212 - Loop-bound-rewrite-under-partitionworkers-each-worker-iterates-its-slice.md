@@ -1,11 +1,11 @@
 ---
 id: TASK-0212
 title: 'Loop-bound rewrite under partition=workers: each worker iterates its slice'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-20 22:07'
-updated_date: '2026-05-21 05:29'
+updated_date: '2026-05-21 06:27'
 labels:
   - compiler
   - ir
@@ -250,4 +250,12 @@ CASCADE-CLASS METHODOLOGY-TRANSFER SCORECARD now extends to deep-pipeline cycles
 The cycle-3 methodology (parametric measurement + independent reviewer probes + comprehensive doc-sweep + honest-partial discipline) has transferred from cascade-class lowering work to deep-pipeline cycles cleanly. TASK-0212's 8 integration tests + 2 unit tests with exact-shape assertions on per-worker ranges (not tautological) are the methodological signature.
 
 TASK-0212 cycle-1 disposition: per-worker bound rewrite COMPLETE; cargo-build observation requires TASK-0117. Status stays In Progress with Dependencies: TASK-0117 (AC#5 unblocks once TASK-0117 lands).
+
+## TASK-0117 cycle-1 follow-up (claude, 2026-05-21)
+
+AC#5 now ticks: TASK-0117 cycle-1 landed the transfer-injection fan-out across distributed worker entities AND a sync-injection co-fix to suppress per-iteration body Syncs on partitioned Repeats. Together with TASK-0212's per-worker loop-bound rewrite, example 13 batch_parallel × pthreads-sync now cargo-builds AND is byte-identical to reference.bin (sha256 d893337208d7b469…).
+
+e2e gate: 36 / 29 / 0 / 7 / 0 (the cell is now [[required]] in nuc-nucleus/e2e-matrix.toml).
+
+TASK-0212 disposition: Done (was "stays In Progress until TASK-0117 lands and the e2e cell moves [[skip]] → [[required]] byte-identical to reference.bin" — the condition is met).
 <!-- SECTION:NOTES:END -->
