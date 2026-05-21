@@ -125,6 +125,15 @@ use pthreads_sync::{render_cargo_toml, render_run_sh, render_single_worker_main}
 use compiler::event::{Event, WorkerId};
 use compiler::sidecar::NameSidecar;
 
+// Multi-worker runtime substrate emitters (TASK-0228 Wave A, cycle 18).
+// Pure-function emit helpers; NOT YET integrated into `emit()` —
+// integration is Wave B's job (will land alongside the per-worker
+// thread::spawn machinery). Surfaced now via `pub use` so a future
+// implementer can call them directly without re-importing from the
+// inner module path.
+pub mod ring_buffer;
+pub use ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
+
 // --------------------------------------------------------------------
 // Public surface
 // --------------------------------------------------------------------
