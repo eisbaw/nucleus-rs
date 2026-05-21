@@ -3,10 +3,11 @@ id: TASK-0134
 title: >-
   Translate pipeline=D and reuse loop options to initial markings on buffer
   places
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped'
 created_date: '2026-05-18 03:36'
-updated_date: '2026-05-21 13:10'
+updated_date: '2026-05-21 13:17'
 labels:
   - M2
   - M4
@@ -40,3 +41,42 @@ A `pipeline=D` on a loop whose downstream transfer is `buffer=N` requires `D ≤
 - [ ] #6 Existing fixtures regress unchanged: every example without pipeline= still has buffer place initial_marking=0; nucleus/e2e matrix bit-identical x2 vs determinism gate; clippy --workspace --all-targets clean; just ci exit 0.
 - [ ] #7 Forward-carried lesson into TASK-0042 (and any pthreads-async sub-task once filed): when codegen lands, the ring-buffer must be pre-populated with D 'empty slots' (or producer-runs-ahead semantics matching the initial-marking) — the IR contract is now 'D producer tokens ready to fire before any consumer'. Do NOT defer-translate at codegen; the Petri net is the authoritative encoding.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Implementation plan (TASK-0134)
+
+### Design choice (resolved)
+- **Interpretation (a)**: every transfer inside a `pipeline=D` loop body gets initial_marking = D on its buffer place. Producer-runs-ahead. Rejected (b) (per-stage decremented marking) because (i) we have no stage-numbering metadata in the ACFG and synthesising it would couple this to a tropic-sort pass we don't have; (ii) the boundedness pass still polices each buffer place's `buffer=N` capacity, so an oversized (a) marking is caught upstream; (iii) (a) is a conservative upper bound — the kernels can fire fewer head-start producer iterations and still respect the contract, but (a) gives backends a clear "ring is pre-armed with D producer credits" semantics.
+- **pipeline=1 policy**: HARD ERROR ("no-op pipelining; specify pipeline=D with D>=2 or omit"). Rationale: pipeline=1 has *no* meaningful semantics — it would mark the buffer place with 1 token, which is identical to no marking + the producer firing once before the consumer; that is just the default sequential flow. Accepting it would be a silent footgun (users would think they're pipelining). Rejecting it forces a clear schedule.
+- **D ≤ N constraint**: rejected as `LinkError::PipelineExceedsBuffer { loop_var, data, depth, buffer }`. Closer-to-source layer (Link) wins because we have schedule directives & data-symbol names in source-friendly form at that layer; rejecting later (inside acfg_to_petri) would lose the loop_var name. (Variant rationale recorded in the link.rs docstring.)
+
+### Carrier shape
+- New ACFG sidecar `pipeline_depth_for_seq: BTreeMap<SeqTag, NonZeroU64>`, `#[cfg_attr(serde, default)]`, mirroring `inner_block_iter_vars` / `partition_worker_ranges` pattern (sidecar > struct field — leaves Repeat payload + every existing match unchanged).
+- Populated in **transfer_inject**: when a Push/Wait pair is created, walk `enclosing_tile` against `linked.sched.loops`; if any enclosing loop carries `ResolvedLoopOption::Pipeline(D)`, insert seq -> D. (If multiple enclosing loops carry pipeline=D, choose the **innermost** — most-recently-entered; corresponds to "the stage producer/consumer pair lives in".)
+- Carrier point: a single new helper `pipeline_depth_for_tile(tile, linked.sched) -> Option<NonZeroU64>`.
+
+### Constraint check
+- Lives in `link.rs` (`check_pipeline_constraints`), called from `link()` after the existing 6 checks. For each loop directive that has `Pipeline(D)`, for each transfer directive whose data is read by an Operation inside that loop, assert D <= buffer(transfer). Source of "which transfers are inside loop L" comes from the algo's `for VAR : ...` body — we can use the existing `collect_loop_vars` traversal extended to collect (loop_var -> data symbols read inside).
+
+### acfg_to_petri changes
+- `buffer_place_for` reads `acfg.pipeline_depth_for_seq.get(&x.seq)`; if present, pass D (clamped to u32::MAX, NonZeroU64 -> u32 conversion) as `initial_marking` to `add_place`; else 0.
+- Module docstring "Initial markings" §: rewrite from "not yet" to the actual current behaviour.
+
+### Tests
+- Unit (acfg_to_petri.rs): synthetic ACFG with `pipeline_depth_for_seq` populated -> initial_marking on the buffer place == D.
+- Unit (transfer_inject.rs): real LinkedIR with `loop n : pipeline=3` -> resulting ACFG's sidecar has one entry per Push/Wait pair seq.
+- Unit (link.rs): pipeline=4 + buffer=3 -> LinkError::PipelineExceedsBuffer; pipeline=3 + buffer=3 -> ok; pipeline=2 + buffer=3 -> ok.
+- Negative parser: pipeline=0 already rejected by `positive()` — confirm with a test (probably exists; if not, add one).
+- Lower-sched: pipeline=1 -> SchedLowerError. New variant + display.
+- Determinism: build the example-13 pipeline_parallel net twice; equal.
+
+### Files to touch
+- `nucleus/compiler/src/acfg.rs` — add sidecar field.
+- `nucleus/compiler/src/passes/transfer_inject.rs` — populate sidecar; thread it through.
+- `nucleus/compiler/src/passes/acfg_to_petri.rs` — read sidecar; update docstring.
+- `nucleus/compiler/src/link.rs` — add `PipelineExceedsBuffer` variant; add `check_pipeline_constraints`.
+- `nucleus/compiler/src/sched/lower.rs` — reject pipeline=1.
+- Tests as above.
+<!-- SECTION:NOTES:END -->
