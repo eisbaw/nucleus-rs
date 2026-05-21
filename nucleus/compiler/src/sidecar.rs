@@ -91,7 +91,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::algo::{IrExpr, ResolvedType, ScalarType};
-use crate::event::{DataId, IterVar, KernelId, WorkerId};
+use crate::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::LinkedIR;
 
 /// The unevaluated source bounds of a `for` loop, captured before
@@ -207,6 +207,33 @@ pub struct NameSidecar {
     #[cfg_attr(feature = "serde", serde(default))]
     pub partition_worker_ranges:
         BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+
+    /// Per-SeqTag transfer buffer size — the `transfer DATA : buffer=N`
+    /// value the schedule's directive carries through to the matched
+    /// Push/Wait pair (TASK-0233). Pthreads-async multi-worker codegen
+    /// (TASK-0228 Wave B) needs this to size the per-(DataId,SeqTag)
+    /// `Arc<Ring<T>>` instances — the value lives in
+    /// `ACFG::XferPlaceholder::policy.buffer` upstream, but the backend
+    /// receives only NameSidecar per the EventList contract (TASK-0124),
+    /// so it has to ride along the sidecar.
+    ///
+    /// One entry per matched Push/Wait pair (the seq is unique per
+    /// pair; both endpoints share it — `passes::transfer_inject`
+    /// guarantees that invariant). Sync transfers also appear here
+    /// (their `buffer` defaults to 1 per `TransferPolicy::default`);
+    /// async transfers carry the schedule's chosen `buffer=N`.
+    ///
+    /// Empty for any algorithm that produces no cross-worker
+    /// transfers (single-worker or same-worker-only schedules). The
+    /// `Event::Push` / `Event::Wait` variants carry `seq: SeqTag` so
+    /// a codegen consumer joins this map with the event's seq to
+    /// size the ring at runtime.
+    ///
+    /// Determinism: `BTreeMap` keyed by SeqTag; iteration is in numeric
+    /// order. serde-default so an older wire payload (no field)
+    /// deserialises as empty.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub transfer_buffer_for_seq: BTreeMap<SeqTag, u64>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -476,13 +503,52 @@ pub fn build_sidecar(
     //     middle-end; the sidecar flows out to codegen).
     let partition_worker_ranges = acfg.partition_worker_ranges.clone();
 
+    // (f) Per-SeqTag transfer buffer (TASK-0233). Walk the post-pass
+    //     ACFG tree (after transfer_inject populated the XferPlaceholder
+    //     nodes) and key the policy.buffer values by seq. A Push and
+    //     its matching Wait share one seq and one buffer value — that
+    //     pair-level invariant is established by transfer_inject and
+    //     means the map entry is idempotent across the two endpoints.
+    let mut transfer_buffer_for_seq: BTreeMap<SeqTag, u64> = BTreeMap::new();
+    collect_transfer_buffers(&acfg.root, &mut transfer_buffer_for_seq);
+
     Ok(NameSidecar {
         data_types,
         consts,
         loop_bounds,
         kernel_sigs,
         partition_worker_ranges,
+        transfer_buffer_for_seq,
     })
+}
+
+/// Walk an ACFG subtree, populating `out` with `(seq -> policy.buffer)`
+/// from every `XferPlaceholder` encountered. Mirrors the existing
+/// `acfg`-walk pattern (no allocation; in-place fold over the tree).
+///
+/// Push and Wait endpoints of the same pair share one seq + one
+/// policy.buffer, so the second insertion under a given key is
+/// idempotent. We accept the redundant write rather than branching
+/// on role — simpler + no behavior difference.
+fn collect_transfer_buffers(
+    node: &crate::acfg::ACFGNode,
+    out: &mut BTreeMap<SeqTag, u64>,
+) {
+    use crate::acfg::ACFGNode;
+    match node {
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Xfer(x) => {
+            out.insert(x.seq, x.policy.buffer);
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_transfer_buffers(c, out);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => {
+            collect_transfer_buffers(body, out);
+        }
+    }
 }
 
 /// Recursively collect each `for` loop's unevaluated `(lo, hi)`,

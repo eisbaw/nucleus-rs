@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 22:50'
+updated_date: '2026-05-21 23:13'
 labels:
   - M4
   - backend
@@ -14,6 +14,7 @@ labels:
 dependencies:
   - TASK-0226
   - TASK-0222
+  - TASK-0233
 priority: medium
 ---
 
@@ -92,4 +93,19 @@ Similarly AC#8 is PARTIALLY met: the Ring<T> struct shape pin lives in tests/mul
 * tests/multi_worker_codegen.rs: added ring_struct_decl_has_exactly_four_fields test — pins struct field count (catches future cycle silently adding a 5th field).
 * src/ring_buffer.rs: tightened emit_ring_instance_decl docstring from 'cap >= D' to 'cap >= max(1, D)', citing both upstream gates (ZeroBufferOption + PipelineExceedsBuffer).
 * TASK-0232 filed (LOW): cross-backend lockstep harden Mutex::lock() unwrap -> expect across pthreads-sync Slot<T> + pthreads-async Ring<T>. Deferred (cross-backend coordination; not Wave A's scope).
+
+## Cycle 19: TASK-0233 precondition landed (2026-05-22)
+
+Wave B needs per-(DataId, SeqTag) ring sizing from the schedule's 'transfer DATA : buffer=N' directive. The value lives in ACFG::XferPlaceholder::policy.buffer but the backend receives only NameSidecar per the EventList contract (TASK-0124). Cycle 19 (commit pending) closes this gap as TASK-0233:
+
+- NameSidecar.transfer_buffer_for_seq: BTreeMap<SeqTag, u64> — new field with serde-default.
+- build_sidecar populates it by walking ACFGNode tree (Operation/Sync no-op; Xfer extract seq+buffer; Repeat/Sequence recurse).
+- 4 unit tests pin the invariant: async pipeline_parallel populates with mix of 1 + 3 values; sync naive is empty; multi-worker sync (02-split) is non-empty with all-1; the walker descends Repeat (defensive cross-check vs independent ACFG walk).
+
+TASK-0228 now depends on TASK-0233. Wave B can consume the new field directly:
+
+  let cap = sidecar.transfer_buffer_for_seq[&seq];
+  emit_ring_instance_decl(&mut out, &format!('ring_{ring_id}'), &rty, cap);
+
+— no ACFG access, no Event variant change. EventList contract preserved.
 <!-- SECTION:NOTES:END -->
