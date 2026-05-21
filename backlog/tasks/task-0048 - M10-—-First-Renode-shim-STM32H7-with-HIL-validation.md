@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-21 16:19'
+updated_date: '2026-05-21 17:16'
 labels:
   - M10
   - backend
@@ -62,4 +62,12 @@ PRD §6.3.5: `on_violation=panic` on tier-3 BRICKS the device — for
 embedded targets, `log` or `count` is preferred. TASK-0052.04 wires
 log/count for tier-1 first; the tier-3 shim should follow that
 contract.
+
+## Prereq unblocked: 'Renode in flake' (TASK-0064 AC#1+AC#2 — commit 632d98c)
+
+TASK-0064 (Add Renode to flake) AC#1+AC#2 landed in commit 632d98c:
+- 'nix develop .#renode -c which renode' resolves to /nix/store/.../renode-1.16.1/bin/renode.
+- 'nix develop .#renode -c renode --version' returns 'Renode v1.16.1.0' (.NET 9.0.15), exit 0.
+
+The 'is Renode available at all?' prerequisite for this M10 task is satisfied. AC#3 of TASK-0064 (example .resc + UART capture harness) was scope-split to TASK-0223, which IS load-bearing for this task (the shim development needs a harness to validate against). TASK-0223 + TASK-0062 (cross-compile Rust target for embedded) remain the open prereqs before M10 implementation can start.
 <!-- SECTION:NOTES:END -->

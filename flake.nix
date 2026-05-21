@@ -68,6 +68,7 @@
         # and TASK-0064.
         devShells.renode = pkgs.mkShell {
           packages = basePackages ++ [ pkgs.renode ];
+          # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
           shellHook = "";
         };
 
