@@ -269,6 +269,21 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// later consumer transition forward when one is firable, producing
 /// a legal interleaving.
 ///
+/// **Why this defensive layer is kept (TASK-0219).** With TASK-0213's
+/// path-2 elision in `acfg_to_petri`, every net the in-tree pipeline
+/// produces has source-order legal directly — so the marking-aware
+/// reorder above and the stuck-state fallback below are NOT exercised
+/// by any compiler-built fixture today. The function is `pub` and
+/// accepts ANY [`Net`], including hand-built ones with soft
+/// constraints (legal interleaving exists but isn't source-order).
+/// Removing path-1 would punish those callers (incl. analysis-only
+/// experiments) without saving meaningful complexity. Path-1 + the
+/// stuck-state fallback are pinned by two synthetic-net unit tests in
+/// `tests/boundedness.rs` (`derive_firing_order_reorders_under_initial_marking_pressure`
+/// and `derive_firing_order_appends_stuck_leftovers_so_check_bounded_diagnoses`).
+/// Defensive code WITH tests is acceptable; dead-code-with-no-test was
+/// the original TASK-0219 finding — closed.
+///
 /// **Honest note on the example-13 fixture**: pipeline=D's *first*
 /// expression of "the buffer has D head-start credits" is the
 /// `pipeline_depth_for_seq` → `initial_marking = D` mapping

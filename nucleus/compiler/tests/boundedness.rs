@@ -387,3 +387,128 @@ fn illegal_firing_order_surfaced_as_invalid() {
         other => panic!("expected InvalidFiringOrder, got {:?}", other),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0219: path-1 marking-aware firing-order coverage
+//
+// `derive_firing_order` has two layers: source-order with marking-aware
+// reordering (path 1), and a stuck-state fallback that appends
+// remaining transitions in source order so `check_bounded` surfaces
+// the violation cleanly. Until TASK-0219, neither layer had a direct
+// test — every in-tree fixture either has source-order legal already
+// (TASK-0213's path-2 elision applies) or doesn't construct nets with
+// pre-marked-at-capacity buffer places. These tests cover the two
+// path-1 behaviours on hand-built synthetic nets so the defensive
+// logic is no longer "dead code with no test".
+// --------------------------------------------------------------------
+
+/// Path-1 marking-aware REORDER: source-order picks a transition first
+/// that would overflow under the *initial marking*, but a later
+/// transition is firable from the same marking and drains the place;
+/// after that, the originally-first transition becomes firable too. A
+/// legal firing sequence exists; `derive_firing_order` must discover
+/// it by picking firable transitions in source order at each step
+/// (NOT by replaying source order blindly).
+///
+/// Setup:
+///   - "ctrl" : cap=2, initial=2  — enables both transitions.
+///   - "buf"  : cap=1, initial=1  — FULL at start.
+///   - T1 "produce" : consume 1 from ctrl, produce 1 into buf  (source idx 0).
+///   - T2 "consume" : consume 1 from buf                       (source idx 1).
+///
+/// Plain source-order [T1, T2] would overflow buf on the first step.
+/// Marking-aware path-1 picks [T2, T1]: T2 drains buf to 0; then T1
+/// can produce into buf without overflow. `check_bounded` on the
+/// path-1 output must succeed.
+#[test]
+fn derive_firing_order_reorders_under_initial_marking_pressure() {
+    let mut net = Net::new();
+    let ctrl = net.add_place("ctrl", cap(2), 2);
+    let buf = net.add_place("buf", cap(1), 1);
+
+    // T1 first in source order — would overflow if fired now.
+    let produce = net.add_transition("produce", None);
+    net.add_arc(ArcKind::PtoT, ctrl, produce, 1);
+    net.add_arc(ArcKind::TtoP, buf, produce, 1);
+
+    // T2 second — drains buf, making room for T1.
+    let consume = net.add_transition("consume", None);
+    net.add_arc(ArcKind::PtoT, buf, consume, 1);
+    net.add_arc(ArcKind::PtoT, ctrl, consume, 1);
+
+    let order = derive_firing_order(&net);
+    // Marking-aware: consume FIRST (drains buf), then produce (refills).
+    assert_eq!(
+        order,
+        vec![consume, produce],
+        "path-1 must pick the firable consumer first when the producer \
+         would overflow under the initial marking; got {:?}",
+        order
+    );
+    // The path-1 output IS a legal firing sequence.
+    check_bounded(&net, &order).expect("path-1 order must be legal");
+}
+
+/// Path-1 STUCK-STATE FALLBACK: a net where source-order isn't legal
+/// AND no legal interleaving exists from the initial marking.
+/// `derive_firing_order` fires what it CAN, then appends the
+/// unfirable leftover transitions in source order — so `check_bounded`
+/// can surface a precise violation at the first stuck transition,
+/// not silently truncate the firing trace.
+///
+/// Setup:
+///   - "ctrl" : cap=1, initial=1  — enables T1.
+///   - "buf"  : cap=1, initial=0  — empty.
+///   - T1 "fill_partial" : consume ctrl, produce 1 into buf  (idx 0).
+///   - T2 "overfill"     : consume nothing, produce 1 into buf  (idx 1).
+///       (Synthetic: T2 has no input arc on any place — always firable
+///       from the marking-readiness perspective, BUT after T1 fires
+///       buf is at cap=1, so T2 would overflow. This wedges the net.)
+///
+/// Expected trace:
+///   - Step 1: T1 firable (ctrl=1, buf=0→1). Fired. buf=1.
+///   - Step 2: T2 unfirable (buf=1 + 1 = 2 > cap=1). No other firable
+///     transition. Stuck.
+///   - Path-1 appends T2 in source order: order = [T1, T2].
+///   - `check_bounded([T1, T2])` re-fires from initial; T1 ok; T2
+///     trips `CapacityExceeded { place: buf, transition: T2 }`.
+#[test]
+fn derive_firing_order_appends_stuck_leftovers_so_check_bounded_diagnoses() {
+    let mut net = Net::new();
+    let ctrl = net.add_place("ctrl", cap(1), 1);
+    let buf = net.add_place("buf", cap(1), 0);
+
+    let fill_partial = net.add_transition("fill_partial", None);
+    net.add_arc(ArcKind::PtoT, ctrl, fill_partial, 1);
+    net.add_arc(ArcKind::TtoP, buf, fill_partial, 1);
+
+    let overfill = net.add_transition("overfill", None);
+    // No PtoT arc — `overfill` has no input dependency, so it is
+    // always "enabled" from a token-availability standpoint. The
+    // capacity check on its TtoP arc is what wedges it after T1.
+    net.add_arc(ArcKind::TtoP, buf, overfill, 1);
+
+    let order = derive_firing_order(&net);
+    // Path-1 fires T1, then appends T2 in source order despite T2
+    // being unfirable from the post-T1 marking.
+    assert_eq!(
+        order,
+        vec![fill_partial, overfill],
+        "stuck-state fallback must append the unfirable leftover in \
+         source order so check_bounded can pinpoint it; got {:?}",
+        order
+    );
+    // check_bounded surfaces the precise overflow at the stuck site.
+    let err = check_bounded(&net, &order).expect_err("must reject");
+    match err {
+        BoundednessError::CapacityExceeded {
+            transition_name,
+            place_name,
+            ..
+        } => {
+            assert_eq!(transition_name, "overfill");
+            assert_eq!(place_name, "buf");
+        }
+        other => panic!("expected CapacityExceeded at overfill, got {:?}", other),
+    }
+}
