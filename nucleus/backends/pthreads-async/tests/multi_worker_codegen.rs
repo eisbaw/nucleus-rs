@@ -1,6 +1,15 @@
 //! Codegen-string pins for the pthreads-async multi-worker runtime
 //! substrate (TASK-0228 Wave A, cycle 18).
 //!
+//! **File-naming note (cycle-18 review-gate D.4 finding)**: this file
+//! is `multi_worker_codegen.rs` but Wave A covers ONLY the `Ring<T>`
+//! runtime substrate, not yet the actual multi-worker dispatch
+//! codegen. Wave B (the per-worker `thread::spawn` Plan structure
+//! mirroring `pthreads_sync::multi_worker::Plan`, plus push/wait
+//! dispatch pairs emitting `ring_<id>.push(...)` / `let v =
+//! ring_<id>.wait();`) will land in THIS same file. The aspirational
+//! filename is intentional — keeps Wave A + Wave B tests co-located.
+//!
 //! These tests pin the emit-string shape of the Wave A pure-function
 //! helpers — `emit_ring_struct_decl` and `emit_ring_instance_decl` —
 //! BEFORE the Wave B integration (the per-worker `thread::spawn`
@@ -175,5 +184,99 @@ fn ring_struct_decl_does_not_pre_fill_with_d() {
         out.contains("EMPTY") || out.contains("empty"),
         "Ring docstring should mention the empty-at-start contract \
          (post-TASK-0213); a future reader needs that signal:\n{out}"
+    );
+}
+
+#[test]
+fn ring_struct_decl_negative_checks_pin_design_decisions() {
+    // Cycle-18 review-gate C.2 finding: additional negative checks
+    // on documented design decisions that the positive-side tests do
+    // not lock down.
+    let mut out = String::new();
+    emit_ring_struct_decl(&mut out);
+
+    // notify_one (not notify_all) is documented as correct given SeqTag
+    // uniqueness (each (DataId, SeqTag) ring has exactly ONE producer
+    // + ONE consumer; the per-fan-out-pair sizing of TASK-0216 means a
+    // fan-out splits into N separate rings, not one shared ring with N
+    // consumers). A future cycle "fixing" perceived starvation by
+    // switching to notify_all would still be runtime-correct but
+    // scheduler-wasteful — and indicates a misunderstanding of the
+    // analysis-net structure. Catch it.
+    assert!(
+        !out.contains("notify_all"),
+        "Ring push/wait must use notify_one (per-(DataId,SeqTag) ring is \
+         SPSC under TASK-0216 fan-out sizing — notify_all is unnecessary \
+         and indicates the implementer misunderstood the structure):\n{out}"
+    );
+
+    // Spurious-wakeup safety: both blocks must use `while`, not `if`.
+    // The positive-side test asserts `while g.len() == self.cap` and
+    // `while g.is_empty()` appear; this negative-side test catches an
+    // adjacent `if g.len() == self.cap` (which would be a silent
+    // spurious-wakeup defect).
+    assert!(
+        !out.contains("if g.len() == self.cap"),
+        "Ring push must use `while`, not `if`, for spurious-wakeup safety \
+         (Condvar wakes are documented as possibly-spurious; `if` would \
+         drop a value to an over-cap ring):\n{out}"
+    );
+    assert!(
+        !out.contains("if g.is_empty()"),
+        "Ring wait must use `while`, not `if`, for spurious-wakeup safety:\n{out}"
+    );
+
+    // Defensive: the runtime must never silently fall back to a
+    // 0-capacity ring (deadlock both push and wait). The upstream
+    // ZeroBufferOption + PipelineExceedsBuffer gates prevent cap=0
+    // from ever reaching codegen — verify the emit string doesn't
+    // contain a sneaky `cap = 0` fallback that would defeat them.
+    assert!(
+        !out.contains("with_capacity(0)"),
+        "Ring must never pre-allocate VecDeque::with_capacity(0) — the \
+         schedule's buffer=N is `N >= 1` (sched/ir.rs:ZeroBufferOption) \
+         and `N >= D` (link.rs:PipelineExceedsBuffer); a 0-cap fallback \
+         would defeat both gates:\n{out}"
+    );
+}
+
+#[test]
+fn ring_struct_decl_has_exactly_four_fields() {
+    // Cycle-18 review-gate C.1 finding: the four positive-side field
+    // checks tolerate ADDITION of fields — a future cycle adding e.g.
+    // `n_in_flight: AtomicUsize` for instrumentation would pass every
+    // other test but would change the struct shape without intent
+    // visible in the diff.
+    //
+    // Pin the field count explicitly. If a 5th field is needed for a
+    // legitimate reason, this test must be updated in the same diff
+    // that adds the field — making the design decision explicit.
+    let mut out = String::new();
+    emit_ring_struct_decl(&mut out);
+
+    // Count lines inside the `struct Ring<T> { ... }` block. Use
+    // simple state-machine: enter on the struct line, exit on the
+    // closing `}`.
+    let mut field_count = 0;
+    let mut inside = false;
+    for line in out.lines() {
+        let trimmed = line.trim();
+        if trimmed == "struct Ring<T> {" {
+            inside = true;
+            continue;
+        }
+        if inside && trimmed == "}" {
+            break;
+        }
+        if inside && !trimmed.is_empty() && !trimmed.starts_with("//") {
+            // A field line — type-annotated, comma-terminated.
+            field_count += 1;
+        }
+    }
+    assert_eq!(
+        field_count, 4,
+        "Ring<T> must have EXACTLY 4 fields (mu, cap, not_empty, not_full); \
+         adding a 5th is a design change that should update this test in \
+         lockstep. Counted {field_count} fields in:\n{out}"
     );
 }

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 22:40'
+updated_date: '2026-05-21 22:50'
 labels:
   - M4
   - backend
@@ -76,4 +76,20 @@ Gate (cycle 18):
 - cargo test --workspace: 557 / 0 / 2 (+4 ring_buffer tests).
 - cargo clippy --workspace --all-targets -- -D warnings: clean.
 - just e2e: 36 / 29 / 0 / 7 baseline preserved.
+
+## Cycle 18 review-gate corrections (HIGH D.1 wording)
+
+Cycle 18's prior notes claimed 'Wave A delivers AC#1 fully'. The architect review-gate correctly noted this OVERCLAIMS: AC#1 literal text says 'File-scope Ring<T> struct is EMITTED ONCE PER FILE with the documented push/wait semantics'. The phrase 'emitted once per file' implies the helper is CALLED from emit() and produces output in the generated file. Wave A delivers only the helper (pure function returning string); the multi-worker arm still ContractGaps, so no Ring<T> is emitted by any actual codegen path.
+
+CORRECTION: Wave A delivers AC#1 PARTIALLY — the SHAPE half ('with the documented push/wait semantics, Mutex<VecDeque<T>> + Condvar pair, capacity-in-instance') is met by the helper. The EMISSION half ('emitted once per file') closes ONLY in Wave B, when the helper is called from emit() during the multi-worker codegen path. AC#1 will not be ticked until Wave B integrates the helper.
+
+Similarly AC#8 is PARTIALLY met: the Ring<T> struct shape pin lives in tests/multi_worker_codegen.rs (closed); the 'representative push/wait pair' pin requires actual push/wait emit code which only exists after Wave B.
+
+## Cycle 18 review-gate medium fixes applied (cycle 18 in-thread lockstep)
+
+* tests/multi_worker_codegen.rs: added file-level docstring note explaining the aspirational filename + Wave B coverage.
+* tests/multi_worker_codegen.rs: added ring_struct_decl_negative_checks_pin_design_decisions test — pins !notify_all, !if-vs-while spurious-wakeup safety, !with_capacity(0) defensive negative checks.
+* tests/multi_worker_codegen.rs: added ring_struct_decl_has_exactly_four_fields test — pins struct field count (catches future cycle silently adding a 5th field).
+* src/ring_buffer.rs: tightened emit_ring_instance_decl docstring from 'cap >= D' to 'cap >= max(1, D)', citing both upstream gates (ZeroBufferOption + PipelineExceedsBuffer).
+* TASK-0232 filed (LOW): cross-backend lockstep harden Mutex::lock() unwrap -> expect across pthreads-sync Slot<T> + pthreads-async Ring<T>. Deferred (cross-backend coordination; not Wave A's scope).
 <!-- SECTION:NOTES:END -->
