@@ -19,12 +19,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use compiler::{
-    acfg_to_events,
-    algo::{lower_algo, parse_algo},
-    build_acfg, build_sidecar, inject_check_frames, inject_syncs, inject_transfers, link,
-    sched::{lower_sched, parse_sched},
-};
+// Cycle-25 (TASK-0238): the pipeline imports were used by the
+// pre-refactor inline helpers; both helpers now call
+// test_common::lower_for_test which encapsulates them. Only NameTables
+// remains.
 use pthreads_sync::NameTables;
 
 fn repo_root() -> PathBuf {
@@ -53,38 +51,27 @@ fn build_per_worker(
     NameTables,
     compiler::sidecar::NameSidecar,
 ) {
-    let algo_ast = parse_algo(algo_src).expect("algo parse");
-    let algo_ir = lower_algo(&algo_ast).expect("algo lower");
-    let sched_ast = parse_sched(sched_src).expect("sched parse");
-    let sched_ir = lower_sched(&sched_ast).expect("sched lower");
-    let linked = link(algo_ir, sched_ir).expect("link");
-    let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
-    let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
-    let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
-    let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
-    (per_worker, names, sidecar)
+    // Cycle-25 follow-on (cycle-24 review-gate A.3 LOW closed): the
+    // pre-cycle-24 single-worker variant of this helper was NOT
+    // refactored to call test_common; cycle 25's TASK-0238 made the
+    // refactor cleaner (LowerForTestResult.names is now a pre-built
+    // NameTables). The 4th in-file site is now one call.
+    //
+    // Single-worker check_frame schedules need inject_check_frames=true
+    // but NOT apply_partition_workers (single worker) and NOT
+    // apply_block_transforms (pre-cycle-24 helper didn't call it; mirror
+    // that pre-refactor byte-faithful behaviour, even though
+    // block_transforms is a no-op on these schedules).
+    let r = test_common::lower_for_test(
+        algo_src,
+        sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: true,
+        },
+    );
+    (r.per_worker, r.names, r.sidecar)
 }
 
 #[test]
