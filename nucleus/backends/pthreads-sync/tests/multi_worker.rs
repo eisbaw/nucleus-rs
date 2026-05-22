@@ -813,3 +813,201 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
          panic to have fired."
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0236 (cycle 23, 2026-05-22): multi-worker check_frame emit-string
+// pinning for Log + Count on_violation kinds. These tests close the
+// review-gate B.1 gap surfaced in cycle 22: the single-worker
+// emit-string tests at check_frame_codegen.rs pin the SHARED helpers
+// end-to-end via the single-worker call paths, but multi_worker.rs's
+// own 4 call sites (Plan::emit's static + guard, render_worker_events
+// Log + Count branches) were structurally byte-transparent (by
+// shared-helper construction) without a direct pinning test.
+//
+// These two tests are EMIT-ONLY (no cargo build/run): they call emit()
+// + read main.rs + assert the multi-worker shape literally. Fast,
+// drift-detection focused. The slower build+run coverage already
+// exists for Panic at multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers
+// above; Log + Count don't need a runtime witness here (check_frame_codegen.rs
+// already builds + runs them on the single-worker code path).
+// --------------------------------------------------------------------
+
+const CHECK_LOG_SCHED_SRC: &str = r#"
+schedule for "anything.algo.nuc" {
+    workers = { host, w0, w1 };
+
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+
+    loop n : partition=workers;
+
+    transfer x : sync;
+    transfer y : sync;
+
+    check loop n : latency_max = 5ms, on_violation = log;
+}
+"#;
+
+const CHECK_COUNT_SCHED_SRC: &str = r#"
+schedule for "anything.algo.nuc" {
+    workers = { host, w0, w1 };
+
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+
+    loop n : partition=workers;
+
+    transfer x : sync;
+    transfer y : sync;
+
+    check loop n : latency_max = 5ms, on_violation = count;
+}
+"#;
+
+/// Build the (per_worker, names, sidecar, kernels_path, out_dir)
+/// tuple for the multi-worker check_loop schedule variant.
+fn lower_multi_worker_check_schedule(
+    sched_src: &str,
+    scratch_name: &str,
+) -> (
+    std::collections::BTreeMap<compiler::WorkerId, Vec<compiler::event::Event>>,
+    NameTables,
+    compiler::NameSidecar,
+    PathBuf,
+    PathBuf,
+) {
+    use compiler::{apply_block_transforms, apply_partition_workers, inject_check_frames};
+    let scratch = scratch_dir(scratch_name);
+    let algo_path = scratch.join("prog.algo.nuc");
+    let sched_path = scratch.join("prog.sched.nuc");
+    let kernels_path = scratch.join("kernels.rs");
+    fs::write(&algo_path, CHECK_ALGO_SRC).unwrap();
+    fs::write(&sched_path, sched_src).unwrap();
+    fs::write(&kernels_path, CHECK_KERNELS_SRC).unwrap();
+
+    let algo_ir = lower_algo(&parse_algo(CHECK_ALGO_SRC).unwrap()).unwrap();
+    let sched_ir = lower_sched(&parse_sched(sched_src).unwrap()).unwrap();
+    let linked = link(algo_ir, sched_ir).unwrap();
+    let acfg = build_acfg(&linked).unwrap();
+    let acfg = apply_block_transforms(&linked, acfg).unwrap();
+    let acfg = apply_partition_workers(&linked, acfg).unwrap();
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    let per_worker = acfg_to_events(&acfg);
+    let per_worker =
+        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let sidecar = build_sidecar(&linked, &acfg).unwrap();
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg.name_kernels.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        worker: acfg.name_workers.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        iter_var: acfg.name_iter_vars.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+    (per_worker, names, sidecar, kernels_path, scratch.join("gen"))
+}
+
+#[test]
+fn multi_worker_check_loop_log_emit_pins_per_thread_eprintln_template() {
+    // Mirrors single-worker check_frame_codegen::log_on_violation_codegen
+    // shape but exercises the MULTI-WORKER code path (render_worker_events
+    // Log branch via the shared `emit_log_branch` helper, TASK-0222).
+    let (per_worker, names, sidecar, kernels_path, out_dir) = lower_multi_worker_check_schedule(
+        CHECK_LOG_SCHED_SRC,
+        "multi_worker_check_loop_log_emit",
+    );
+    let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+        .expect("multi-worker emit with on_violation=log must succeed");
+    let main_rs = fs::read_to_string(&result.main_rs).unwrap();
+
+    // partition=workers projects the source loop onto BOTH w0 and w1;
+    // each rendered Event::Loop carries the same check_frame. So the
+    // multi-worker main.rs contains EXACTLY 2 eprintln template sites
+    // (one per spawned worker; host is not a participant).
+    let eprintln_count = main_rs
+        .matches(
+            "eprintln!(\"warning: check loop `n` violated latency_max=5000000 ns: iteration took {} ns\", _check_elapsed);",
+        )
+        .count();
+    assert_eq!(
+        eprintln_count, 2,
+        "expected 2 Log eprintln sites in multi-worker main.rs (per-worker); \
+         got {eprintln_count}. Shared template via emit_log_branch (TASK-0222) \
+         must produce the SAME template across both workers.\nmain.rs:\n{main_rs}"
+    );
+    // No Panic site should appear (verifies Log dispatch beats Panic
+    // in the multi-worker render_worker_events arm).
+    assert!(
+        !main_rs.contains("panic!(\"latency budget violated"),
+        "multi-worker Log emit must NOT include the Panic template:\n{main_rs}"
+    );
+}
+
+#[test]
+fn multi_worker_check_loop_count_emit_pins_static_guard_and_fetch_add_templates() {
+    // Mirrors single-worker check_frame_codegen::count_on_violation_codegen
+    // shape but exercises the MULTI-WORKER path's THREE Count templates
+    // (TASK-0052.05): file-scope static + per-loop guard local in fn main
+    // + per-worker fetch_add branch. All three are emitted via the shared
+    // helpers (TASK-0222).
+    let (per_worker, names, sidecar, kernels_path, out_dir) = lower_multi_worker_check_schedule(
+        CHECK_COUNT_SCHED_SRC,
+        "multi_worker_check_loop_count_emit",
+    );
+    let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+        .expect("multi-worker emit with on_violation=count must succeed");
+    let main_rs = fs::read_to_string(&result.main_rs).unwrap();
+
+    // (a) ONE file-scope static (deduped by sanitized ident; both
+    // workers share it under partition=workers — TASK-0052.05).
+    let static_count = main_rs
+        .matches(
+            "static NUC_CHECK_COUNT_n: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);",
+        )
+        .count();
+    assert_eq!(
+        static_count, 1,
+        "expected exactly 1 shared static AtomicU64 (deduped by ident across workers); \
+         got {static_count}.\nmain.rs:\n{main_rs}"
+    );
+
+    // (b) ONE Drop guard local in fn main (host thread owns the
+    // summary printing — Drop runs after all handle.join() returns).
+    let guard_count = main_rs
+        .matches("let _nuc_check_reporter_n = NucCheckCountReporter {").count();
+    assert_eq!(
+        guard_count, 1,
+        "expected exactly 1 NucCheckCountReporter guard local in fn main \
+         (host thread owns the Drop summary); got {guard_count}.\nmain.rs:\n{main_rs}"
+    );
+
+    // (c) EXACTLY 2 fetch_add sites (one per spawned worker; host is
+    // not a participant of partition=workers).
+    let fetch_add_count = main_rs
+        .matches(
+            "NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);",
+        )
+        .count();
+    assert_eq!(
+        fetch_add_count, 2,
+        "expected 2 fetch_add sites (per-worker); got {fetch_add_count}.\n\
+         main.rs:\n{main_rs}"
+    );
+
+    // (d) The reporter struct definition appears ONCE at file scope.
+    assert!(
+        main_rs.contains("struct NucCheckCountReporter {"),
+        "NucCheckCountReporter struct definition missing:\n{main_rs}"
+    );
+    // No Panic / Log dispatch leaked in (Count is exclusive).
+    assert!(
+        !main_rs.contains("panic!(\"latency budget violated"),
+        "Count emit must NOT include Panic template:\n{main_rs}"
+    );
+    assert!(
+        !main_rs.contains("eprintln!(\"warning: check loop"),
+        "Count emit must NOT include Log template:\n{main_rs}"
+    );
+}

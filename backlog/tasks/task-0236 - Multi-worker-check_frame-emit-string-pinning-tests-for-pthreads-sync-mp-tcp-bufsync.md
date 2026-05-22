@@ -3,9 +3,10 @@ id: TASK-0236
 title: >-
   Multi-worker check_frame emit-string pinning tests for pthreads-sync +
   mp-tcp-bufsync
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-22 00:50'
+updated_date: '2026-05-22 01:11'
 labels:
   - test-coverage
   - M4
@@ -35,7 +36,27 @@ When Wave B-2 of TASK-0228 lands, the same test shape should also live at nucleu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 nucleus/backends/pthreads-sync/tests/multi_worker_check_frame.rs pins static decl + guard local + per-thread Log/Count branch emit-strings for a synthetic 2-worker fixture.
-- [ ] #2 nucleus/backends/mp-tcp-bufsync/tests/multi_worker_check_frame.rs does the same for the multi-process backend.
-- [ ] #3 A regression that inlines a writeln! back into either multi_worker site (breaking the shared-helper invariant) trips the new tests.
+- [x] #1 nucleus/backends/pthreads-sync/tests/multi_worker_check_frame.rs pins static decl + guard local + per-thread Log/Count branch emit-strings for a synthetic 2-worker fixture.
+- [x] #2 nucleus/backends/mp-tcp-bufsync/tests/multi_worker_check_frame.rs does the same for the multi-process backend.
+- [x] #3 A regression that inlines a writeln! back into either multi_worker site (breaking the shared-helper invariant) trips the new tests.
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 23 (2026-05-22): 4 multi-worker emit-string pinning tests added. Closes the cycle-22 review-gate B.1 gap: the shared template helpers (TASK-0222) were byte-transparent on multi-worker emit paths only by shared-helper CONSTRUCTION; now they are byte-transparent by TEST too.
+
+pthreads-sync (extended existing tests/multi_worker.rs):
+- multi_worker_check_loop_log_emit_pins_per_thread_eprintln_template: partition=workers (2 compute workers); asserts exactly 2 eprintln Log template sites in main.rs (one per spawned worker).
+- multi_worker_check_loop_count_emit_pins_static_guard_and_fetch_add_templates: same fixture with on_violation=count; asserts 1 file-scope static (deduped by ident across workers per TASK-0052.05) + 1 Drop guard local (host thread owns) + 2 fetch_add sites (one per worker) + 1 struct NucCheckCountReporter declaration. Cross-checks no leakage of Panic/Log templates.
+
+mp-tcp-bufsync (extended tests/check_frame_emit.rs):
+- mp_tcp_bufsync_multi_worker_log_emit_pins_per_thread_eprintln_template: 3 worker bins (host + w0 + w1); asserts exactly 2 eprintln sites total across all per-worker bins (host has no check_frame, partition=workers projects onto compute workers only).
+- mp_tcp_bufsync_multi_worker_count_emit_pins_static_guard_and_fetch_add: each compute worker is a SEPARATE PROCESS so each has its OWN static + guard + struct + fetch_add (unlike pthreads-sync's shared-static-across-threads). Asserts 2 of each across the 2 compute workers' bins.
+
+A regression that inlines a writeln back into a multi-worker site (breaking the shared-helper invariant) now trips one or more of these tests.
+
+Gate: cargo test --workspace 575 / 0 / 2 (was 571; +4 new pins). Clippy clean. just e2e 36/29/0/7 preserved.
+
+AC#3 verified: the synthetic 2-worker fixture (CHECK_ALGO_SRC + variants of CHECK_SCHED_SRC with on_violation=log|count) IS the same shape Wave B-2 will use for pthreads-async's equivalent test file (TASK-0228 AC#5).
+<!-- SECTION:FINAL_SUMMARY:END -->

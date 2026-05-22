@@ -351,3 +351,191 @@ schedule for \"a.algo.nuc\" {
         "Count path must NOT emit panic!. Got:\n{bin_src}"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0236 (cycle 23, 2026-05-22): MULTI-WORKER check_frame emit-string
+// pinning for Log + Count on_violation kinds. Mirror of the
+// pthreads-sync multi_worker.rs Log + Count tests; closes the cycle-22
+// review-gate B.1 gap (multi-worker emit paths were byte-transparent
+// only by shared-helper construction, not by direct test).
+//
+// These tests exercise the MULTI-WORKER `render_worker_program` arm in
+// mp-tcp-bufsync, which writes a per-worker `src/bin/<worker>.rs`. The
+// 4 shared templates from TASK-0222 are called from inside that
+// per-worker render path; this is what the cycle-22 architect review
+// flagged as having no direct pinning coverage.
+// --------------------------------------------------------------------
+
+/// Variant of build_per_worker that also runs apply_partition_workers
+/// (needed for `partition=workers` schedules; pre-cycle-22 tests in
+/// this file all used single-worker schedules).
+fn build_per_worker_partitioned(
+    algo_src: &str,
+    sched_src: &str,
+) -> (
+    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>,
+    NameTables,
+    compiler::sidecar::NameSidecar,
+) {
+    use compiler::{apply_block_transforms, apply_partition_workers};
+    let algo_ir = lower_algo(&parse_algo(algo_src).unwrap()).unwrap();
+    let sched_ir = lower_sched(&parse_sched(sched_src).unwrap()).unwrap();
+    let linked = link(algo_ir, sched_ir).unwrap();
+    let acfg = build_acfg(&linked).unwrap();
+    let acfg = apply_block_transforms(&linked, acfg).unwrap();
+    let acfg = apply_partition_workers(&linked, acfg).unwrap();
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    let per_worker = acfg_to_events(&acfg);
+    let per_worker =
+        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
+    let names = NameTables {
+        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        kernel: acfg.name_kernels.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        worker: acfg.name_workers.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        iter_var: acfg.name_iter_vars.iter().map(|(n, i)| (*i, n.clone())).collect(),
+        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+    };
+    (per_worker, names, sidecar)
+}
+
+const MULTI_ALGO_SRC: &str = "\
+const N : usize = 4;
+data x : i32[N];
+data y : i32[N];
+kernel load_input  : ()      -> i32[N] effectful;
+kernel save_output : (i32[N]) -> () effectful;
+kernel slow_inc    : (i32)    -> i32   pure;
+x <-- load_input();
+for n : 0 .. N {
+    y[n] <-- slow_inc(x[n]);
+}
+save_output(y);
+";
+
+fn write_kernels_stub(out: &Path) -> PathBuf {
+    let kernels_rs = out.join("kernels_stub.rs");
+    fs::write(
+        &kernels_rs,
+        "pub fn load_input() -> Vec<i32> { vec![0; 4] }\n\
+         pub fn save_output(_c: Vec<i32>) {}\n\
+         pub fn slow_inc(x: i32) -> i32 { x + 1 }\n",
+    )
+    .expect("write kernels stub");
+    kernels_rs
+}
+
+#[test]
+fn mp_tcp_bufsync_multi_worker_log_emit_pins_per_thread_eprintln_template() {
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+    loop n : partition=workers;
+    transfer x : sync;
+    transfer y : sync;
+    check loop n : latency_max = 5ms, on_violation = log;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_partitioned(MULTI_ALGO_SRC, sched);
+    let out = scratch_dir("mp_tcp_multi_worker_log_emit");
+    let kernels_rs = write_kernels_stub(&out);
+    let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("multi-worker emit with on_violation=log must succeed");
+
+    // mp-tcp emits one bin per used worker. Expect 3 (host + w0 + w1).
+    assert!(
+        res.worker_bins.len() >= 2,
+        "multi-worker emit must produce >= 2 worker bins; got {}",
+        res.worker_bins.len()
+    );
+
+    // The eprintln template appears in EACH of w0's and w1's bin
+    // (host's bin has no check_frame because partition=workers projects
+    // the loop onto compute workers only).
+    let mut eprintln_count = 0usize;
+    for bin in &res.worker_bins {
+        let bin_src = fs::read_to_string(bin).expect("read worker bin");
+        let n = bin_src
+            .matches(
+                "eprintln!(\"warning: check loop `n` violated latency_max=5000000 ns: iteration took {} ns\", _check_elapsed);",
+            )
+            .count();
+        eprintln_count += n;
+    }
+    assert_eq!(
+        eprintln_count, 2,
+        "expected exactly 2 Log eprintln sites across all worker bins (one per \
+         partitioned worker); got {eprintln_count}. Shared template via \
+         emit_log_branch (TASK-0222) must produce SAME template across all \
+         consumers."
+    );
+}
+
+#[test]
+fn mp_tcp_bufsync_multi_worker_count_emit_pins_static_guard_and_fetch_add() {
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+    loop n : partition=workers;
+    transfer x : sync;
+    transfer y : sync;
+    check loop n : latency_max = 5ms, on_violation = count;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_partitioned(MULTI_ALGO_SRC, sched);
+    let out = scratch_dir("mp_tcp_multi_worker_count_emit");
+    let kernels_rs = write_kernels_stub(&out);
+    let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("multi-worker emit with on_violation=count must succeed");
+
+    let mut total_static_count = 0usize;
+    let mut total_guard_count = 0usize;
+    let mut total_fetch_add = 0usize;
+    let mut reporter_struct_seen = 0usize;
+    for bin in &res.worker_bins {
+        let bin_src = fs::read_to_string(bin).expect("read worker bin");
+        total_static_count += bin_src.matches(
+            "static NUC_CHECK_COUNT_n: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);"
+        ).count();
+        total_guard_count += bin_src
+            .matches("let _nuc_check_reporter_n = NucCheckCountReporter {").count();
+        total_fetch_add += bin_src
+            .matches("NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);")
+            .count();
+        if bin_src.contains("struct NucCheckCountReporter {") {
+            reporter_struct_seen += 1;
+        }
+    }
+
+    // Each worker bin is a SEPARATE PROCESS (mp-tcp-bufsync). Unlike
+    // pthreads-sync's multi-worker (one process, shared static), every
+    // worker process owns its OWN static + guard + reporter struct.
+    // So each compute worker (w0, w1) has 1 static + 1 guard + 1
+    // fetch_add + 1 reporter struct = 2 of each across the 2 compute
+    // workers' bins. Host's bin has none (not a participant).
+    assert_eq!(
+        total_static_count, 2,
+        "expected 2 static AtomicU64 across workers (one per compute worker process); \
+         got {total_static_count}"
+    );
+    assert_eq!(
+        total_guard_count, 2,
+        "expected 2 guard locals across workers (per-process); got {total_guard_count}"
+    );
+    assert_eq!(
+        total_fetch_add, 2,
+        "expected 2 fetch_add sites across workers (per-process); got {total_fetch_add}"
+    );
+    assert_eq!(
+        reporter_struct_seen, 2,
+        "expected 2 NucCheckCountReporter struct definitions (per-process); \
+         got {reporter_struct_seen}"
+    );
+}
