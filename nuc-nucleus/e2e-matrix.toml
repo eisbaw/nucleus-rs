@@ -67,7 +67,7 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-p
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
 # enumeration of which backend crates to consider.
-backends = ["pthreads-sync", "mp-tcp-bufsync"]
+backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -462,26 +462,204 @@ milestone = "M3"
 # or mp-tcp-bufsync supports (sync transports, single-buffer slots,
 # polled/barrier notification). Filed and tracked as TASK-0210.
 #
-# Update (TASK-0042.01 cycle 16, 2026-05-21): pthreads-async is a
+# Update (TASK-0229 cycle 27, 2026-05-22): pthreads-async is now a
 # registered tier-1 backend whose capabilities.toml declares
-# supports_async=true + supports_buffer=true + notify=["event"], so the
-# capability surface IS now satisfiable. However its emit() is a
-# skeleton returning ContractGap (TASK-0226 carries the actual
-# ring-buffer codegen). The pipeline_parallel × pthreads-async e2e
-# cells will land alongside TASK-0229; until then pthreads-async is
-# absent from the `backends = [...]` list above on purpose, so no
-# false-fail surfaces from the skeleton.
+# supports_async=true + supports_buffer=true + notify=["event"], AND
+# whose multi-worker emit landed in TASK-0228 Wave B-2 (commit
+# 299e1b0, cycle 26). The pipeline_parallel × pthreads-async cell
+# below is now [[required]] and byte-identical to reference.bin. The
+# TWO entries below STAY SKIPPED because pthreads-sync and
+# mp-tcp-bufsync genuinely cannot run pipeline_parallel — the
+# capability mismatch is real (not a codegen gap), so this is the
+# carrying-column case: pthreads-async is the column that satisfies
+# the schedule's capability surface.
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "pthreads-sync"
-reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by pthreads-sync (sync, single-buffer, barrier/blocking only); the registered tier-1 async backend `pthreads-async` declares the matching capability but its codegen body is a skeleton (TASK-0226)"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by pthreads-sync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] below)."
 milestone = "M3"
 
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only); the registered tier-1 async backend `pthreads-async` declares the matching capability but its codegen body is a skeleton (TASK-0226)"
+reason   = "TASK-0210: capability mismatch — async + buffer=3 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] below)."
+milestone = "M3"
+
+# ---- pthreads-async: the third tier-1 backend (TASK-0228 / TASK-0229).
+#
+# Async (Ring<T> + Condvar) + buffered transfers, shared-memory; the
+# only tier-1 backend whose capability surface satisfies the
+# pipeline_parallel schedule. Multi-worker emit landed in TASK-0228
+# Wave B-2 (commit 299e1b0, cycle 26); this cycle (TASK-0229) wires
+# every passing pthreads-async cell into the e2e gate.
+#
+# The required set was derived empirically: with pthreads-async added
+# to `backends = [...]` above, the harness reported the cells below as
+# PASS (byte-identical against the shared reference.bin oracle for
+# every cell, since each pthreads-async cell's `output.bin` is diffed
+# against the same hand-written reference.bin that drives the
+# pthreads-sync and mp-tcp-bufsync cells). 17 of 18 cells passed
+# cleanly on the first try; the 18th (05-stencil/distributed) hits an
+# existing multi-worker strip-mine rebinding gap and is listed as
+# [[skip]] further below.
+#
+# Single-worker schedules: pthreads-async DELEGATES to the shared
+# single-worker renderer (the same code path pthreads-sync runs for
+# `used_workers <= 1`), so cells like 01-elementwise-add/naive,
+# 03-reduction/naive, 04-*, 06-*, 07-*, 13-naive are byte-identical
+# to pthreads-sync by construction (one render pipeline; the
+# difference is only the wrapper that decides single vs multi).
+#
+# Multi-worker schedules: 02-split-add/split (2 workers, sync
+# transfers buffer=1, 3 SyncTag barriers) and 13-cnn-inference/
+# {batch_parallel, pipeline_parallel} (4 workers, partition=workers
+# and/or async buffer=3) exercise the Wave B-2 multi-worker emit
+# (Ring<T> substrate + Barriers + per-pair Arc<Ring<T>> instances).
+# pipeline_parallel is the HEADLINE target — async + buffer=3 +
+# notify=event is the capability surface NO other tier-1 backend
+# satisfies; bit-identical against reference.bin
+# (sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861)
+# this cycle locks in TASK-0042.01 AC#4.
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# Multi-worker (host + w0): the 2-worker sync-transfer cell — Ring<T>
+# substrate carries buffer=1 transfers, 3 SyncTag barriers gate the
+# load/add/save sequence. Wave B-2 multi-worker emit verified
+# bit-identical against reference.bin cycle 26.
+[[required]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# 03-reduction/distributed × pthreads-async: empirically PASSES and
+# matches reference.bin. The MECHANISM is unclear: pthreads-async's
+# multi-worker emit is a near-verbatim copy of pthreads-sync's (cycle
+# 26 / TASK-0228 Wave B-2), so if the copy succeeds on this cell the
+# original should too — meaning pthreads-sync's SKIP citing TASK-0117
+# + TASK-0126 is plausibly STALE. The pthreads-sync + mp-tcp-bufsync
+# SKIPs above (lines 387, 416) are LEFT IN PLACE this cycle —
+# unblocking them is out of TASK-0229 scope. Audit follow-up: TASK-0242.
+[[required]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "pthreads-async"
+milestone = "M3"
+
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# Multi-worker (4 workers, partition=workers via TASK-0212): each
+# worker iterates its slice of the batch axis. Wave B-2 multi-worker
+# emit (TASK-0228) inherits the Ring<T>+barrier shape and runs the
+# leading-axis slice-paste gather (TASK-0117) on the host side.
+[[required]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# THE HEADLINE: 4-worker pipeline with async + buffer=3 + notify=event
+# transfers (input -> feat1 -> feat2 -> output). NO other tier-1
+# backend satisfies this capability surface. Wave B-2 multi-worker
+# emit (TASK-0228, commit 299e1b0) bit-identical to reference.bin
+# (sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861).
+# This cell closes TASK-0042.01 AC#4.
+[[required]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# 05-stencil/distributed × pthreads-async: hits TASK-0181
+# (multi-worker strip-mine rebinding gap — `Event::Loop` for iter
+# var `x` carries a block_tag inside a MULTI-worker schedule, but
+# per-occurrence absolute-index rebinding currently lives only on
+# the shared single-worker path). Backend fails LOUD (ContractGap)
+# rather than emit un-rebound double-counting code — the fail-loud
+# contract is working. Distinct from the pthreads-sync /
+# mp-tcp-bufsync SKIPs of the same cell, which are blocked on
+# TASK-0117 (distributed transfer codegen) instead.
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "pthreads-async"
+reason   = "TASK-0181: multi-worker strip-mine per-occurrence rebinding lives only on the shared single-worker path. pthreads-async fails LOUD with ContractGap rather than emit un-rebound double-counting code (correct fail-loud behaviour, not a regression)."
 milestone = "M3"
 
