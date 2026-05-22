@@ -45,12 +45,16 @@
 //!   runtime (the IR's analysis-net algebra is consistent only
 //!   because `acfg_to_petri` elides the first `D` Push TtoP arcs as
 //!   "head-start credit"; the runtime has no such elision).
-//! - **Mutex poisoning**: `.lock().unwrap()` mirrors the
-//!   pthreads-sync `Slot<T>` precedent (multi_worker.rs:279). If a
-//!   producer thread panics while holding the mutex, every consumer
-//!   panics on `.lock().unwrap()` — the desired propagation under
-//!   `panic = "abort"` (the program SIGABRTs as a unit; no
-//!   thread is left dangling on a poisoned guard).
+//! - **Mutex poisoning**: `.lock().expect("ring mutex poisoned —
+//!   producer panicked before notify")` mirrors the pthreads-sync
+//!   `Slot<T>` precedent — both rendezvous substrates use a context-
+//!   bearing `.expect(...)` in lockstep (TASK-0232). If a producer
+//!   thread panics while holding the mutex, every consumer panics
+//!   on `.lock().expect(...)` — the desired propagation under
+//!   `panic = "abort"` (the program SIGABRTs as a unit; no thread is
+//!   left dangling on a poisoned guard). Under a future `panic =
+//!   unwind` toggle the `.expect` message names the failure rather
+//!   than emitting a useless `PoisonError { .. }` Display.
 
 use std::fmt::Write as _;
 
@@ -90,7 +94,11 @@ pub fn emit_ring_struct_decl(out: &mut String) {
     writeln!(out, "        }}").ok();
     writeln!(out, "    }}").ok();
     writeln!(out, "    fn push(&self, v: T) {{").ok();
-    writeln!(out, "        let mut g = self.mu.lock().unwrap();").ok();
+    writeln!(
+        out,
+        "        let mut g = self.mu.lock().expect(\"ring mutex poisoned — producer panicked before notify\");"
+    )
+    .ok();
     writeln!(out, "        while g.len() == self.cap {{").ok();
     writeln!(out, "            g = self.not_full.wait(g).unwrap();").ok();
     writeln!(out, "        }}").ok();
@@ -98,7 +106,11 @@ pub fn emit_ring_struct_decl(out: &mut String) {
     writeln!(out, "        self.not_empty.notify_one();").ok();
     writeln!(out, "    }}").ok();
     writeln!(out, "    fn wait(&self) -> T {{").ok();
-    writeln!(out, "        let mut g = self.mu.lock().unwrap();").ok();
+    writeln!(
+        out,
+        "        let mut g = self.mu.lock().expect(\"ring mutex poisoned — producer panicked before notify\");"
+    )
+    .ok();
     writeln!(out, "        while g.is_empty() {{").ok();
     writeln!(out, "            g = self.not_empty.wait(g).unwrap();").ok();
     writeln!(out, "        }}").ok();

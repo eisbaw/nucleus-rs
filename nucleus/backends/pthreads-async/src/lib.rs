@@ -97,15 +97,14 @@ use std::path::{Path, PathBuf};
 // is required by the cross-backend differential gate (PRD §8.4 — same
 // algorithm + same schedule -> bit-identical output across backends).
 //
-// Caveat: `EmitError`'s `Display` impl prepends "pthreads-sync:" to
-// every message regardless of which crate emitted the error. This is a
-// known cross-backend cosmetic lie (mp-tcp-bufsync inherits the same
-// issue). The driver dispatch site prepends "pthreads-async codegen
-// error:" outside the inner Display, so the final user-visible text
-// reads "pthreads-async codegen error: pthreads-sync: <msg>" — confusing
-// but not a correctness defect. Filed as TASK-0230 for architectural
-// cleanup once the third backend's codegen lands (any cosmetic shift
-// would otherwise create churn against the gate test strings).
+// Note (TASK-0230, closed cycle 32): the inner `EmitError::Display`
+// prefix was historically "pthreads-sync: ..." regardless of which
+// re-exporter surfaced the error — a cross-backend cosmetic lie. The
+// per-backend prefix is now owned solely by the driver dispatch site
+// (`driver/src/main.rs:406/426/448`, which wraps every Display with
+// "<backend> codegen error:"). The Display arms in `pthreads-sync`
+// emit the message without a backend literal, so user-visible text
+// from any re-exporter (this crate, mp-tcp-bufsync) reads cleanly.
 pub use pthreads_sync::{EmitError, NameTables};
 
 // Shared codegen — the single source of truth for the project skeleton
