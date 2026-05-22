@@ -94,7 +94,7 @@ use backend_common::check_frame::{
 use backend_common::render::{
     render_array_init_for, render_const_expr_pub, render_fire_args_pub, rust_type_of, RenderCtxPub,
 };
-use pthreads_sync::render_single_worker_main;
+use pthreads_sync::render_single_worker_main_with_kernels_attr;
 
 /// Paths to the files [`emit`] wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,9 +174,14 @@ pub fn emit(
             .and_then(|w| per_worker.get(w))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let body = render_single_worker_main(events, names, sidecar)?;
+        let body = render_single_worker_main_with_kernels_attr(
+            events,
+            names,
+            sidecar,
+            KERNELS_MOD_ATTR_FOR_SRC_BIN,
+        )?;
         let bin_path = bin_dir.join("nuc-generated.rs");
-        write_file(&bin_path, &wrap_single_worker(&body))?;
+        write_file(&bin_path, &body)?;
         write_file(&cargo_toml, &render_cargo_toml(&[String::from("nuc-generated")]))?;
         write_file(&run_sh, &render_run_sh_single())?;
         mark_executable(&run_sh);
@@ -290,20 +295,14 @@ fn render_run_sh_single() -> String {
     )
 }
 
-/// Wrap a shared single-worker `main.rs` body. The shared renderer
-/// emits `mod kernels;` + `fn main() {...}`; for the
-/// `src/bin/<name>.rs` layout we redirect `mod kernels` at the copied
-/// `../kernels.rs` via `#[path]`.
-fn wrap_single_worker(shared_body: &str) -> String {
-    // The shared body starts with doc comments then `mod kernels;`.
-    // Replace the bare `mod kernels;` with a `#[path]` form so the
-    // binary in `src/bin/` finds the sibling `src/kernels.rs`.
-    shared_body.replacen(
-        "mod kernels;",
-        "#[path = \"../kernels.rs\"]\n#[allow(dead_code)]\nmod kernels;",
-        1,
-    )
-}
+/// `#[path]` attribute block that redirects the shared single-worker
+/// renderer's `mod kernels;` at the copied sibling `../kernels.rs`,
+/// because mp-tcp-bufsync emits the binary under `src/bin/` rather
+/// than as a sibling of `src/kernels.rs`. Passed to
+/// `pthreads_sync::render_single_worker_main_with_kernels_attr` as a
+/// typed parameter (TASK-0177) — replaces the prior `replacen` token-
+/// match against the renderer's literal `mod kernels;` spelling.
+const KERNELS_MOD_ATTR_FOR_SRC_BIN: &str = "#[path = \"../kernels.rs\"]\n#[allow(dead_code)]\n";
 
 // --------------------------------------------------------------------
 // Multi-process plan

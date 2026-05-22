@@ -209,7 +209,7 @@ pub fn emit(
             .and_then(|w| per_worker.get(w))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        render_main_rs(events, names, sidecar)?
+        render_main_rs(events, names, sidecar, "")?
     } else {
         multi_worker::render_main_rs_multi(per_worker, names, sidecar)?
     };
@@ -290,6 +290,7 @@ fn render_main_rs(
     events: &[Event],
     names: &NameTables,
     sidecar: &NameSidecar,
+    kernels_mod_attr: &str,
 ) -> Result<String, EmitError> {
     let mut out = String::new();
     // Backend-agnostic header (TASK-0231): this renderer is the SHARED
@@ -304,6 +305,15 @@ fn render_main_rs(
     writeln!(out, "//! Do not edit; rerun `nucleus build` to regenerate.").ok();
     writeln!(out).ok();
     writeln!(out, "// The user's kernel bodies live in kernels.rs.").ok();
+    // `kernels_mod_attr` (TASK-0177): typed module-attribute injection
+    // for backends that need a `#[path = "..."]` redirect (mp-tcp-bufsync
+    // emits the binary under `src/bin/`, so the bare `mod kernels;` form
+    // does not resolve the sibling `src/kernels.rs`). The caller owns
+    // the trailing newline; an empty string emits the bare form unchanged
+    // (byte-identical to the pre-TASK-0177 output for pthreads-sync /
+    // pthreads-async). Replaces the prior `replacen("mod kernels;", …)`
+    // string-mangling in mp-tcp-bufsync::wrap_single_worker.
+    write!(out, "{}", kernels_mod_attr).ok();
     writeln!(out, "mod kernels;").ok();
     writeln!(out).ok();
 
@@ -807,12 +817,34 @@ fn render_event(
 /// byte-identical to pthreads-sync's, so the differential on
 /// single-worker examples is real, not coincidental. Public for
 /// `mp-tcp-bufsync` (TASK-0036).
+///
+/// Emits the bare `mod kernels;` form — siblings-in-the-same-directory.
+/// A backend whose binary is NOT a sibling of `kernels.rs` (e.g.
+/// `mp-tcp-bufsync` emits under `src/bin/`) must instead call
+/// `render_single_worker_main_with_kernels_attr` with an explicit
+/// `#[path = "..."]` attribute (TASK-0177 — replaces the prior
+/// `replacen("mod kernels;", …)` post-hoc string-mangling).
 pub fn render_single_worker_main(
     events: &[Event],
     names: &NameTables,
     sidecar: &NameSidecar,
 ) -> Result<String, EmitError> {
-    render_main_rs(events, names, sidecar)
+    render_single_worker_main_with_kernels_attr(events, names, sidecar, "")
+}
+
+/// Variant of `render_single_worker_main` that injects an explicit
+/// attribute block immediately before `mod kernels;`. The caller owns
+/// the full text — including any trailing newline — so the shape of
+/// the attribute (`#[path = "…"]`, `#[allow(…)]`, etc.) is the
+/// caller's contract, not this renderer's. An empty `kernels_mod_attr`
+/// is byte-identical to `render_single_worker_main` (TASK-0177).
+pub fn render_single_worker_main_with_kernels_attr(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_mod_attr: &str,
+) -> Result<String, EmitError> {
+    render_main_rs(events, names, sidecar, kernels_mod_attr)
 }
 
 // `render_array_init_for`, `rust_type_of`, `rust_scalar_type_pub`
