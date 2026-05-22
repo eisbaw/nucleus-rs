@@ -446,10 +446,13 @@ schedule for \"a.algo.nuc\" {
     let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
         .expect("multi-worker emit with on_violation=log must succeed");
 
-    // mp-tcp emits one bin per used worker. Expect 3 (host + w0 + w1).
-    assert!(
-        res.worker_bins.len() >= 2,
-        "multi-worker emit must produce >= 2 worker bins; got {}",
+    // mp-tcp emits one bin per used worker. Expect EXACTLY 3 (host +
+    // w0 + w1); tightened from `>= 2` per cycle-23 review-gate C.1 —
+    // the commit body claims 3 bins so the assert must pin that count.
+    assert_eq!(
+        res.worker_bins.len(),
+        3,
+        "multi-worker emit must produce exactly 3 worker bins (host + w0 + w1); got {}",
         res.worker_bins.len()
     );
 
@@ -537,5 +540,64 @@ schedule for \"a.algo.nuc\" {
         reporter_struct_seen, 2,
         "expected 2 NucCheckCountReporter struct definitions (per-process); \
          got {reporter_struct_seen}"
+    );
+}
+
+#[test]
+fn mp_tcp_bufsync_multi_worker_panic_emit_pins_per_worker_panic_template() {
+    // Cycle-23 review-gate HIGH A.3 finding: TASK-0236 landed Log +
+    // Count multi-worker pins for both backends, but pthreads-sync had
+    // a Panic multi-worker pin from cycle 16 (TASK-0052.05) that
+    // mp-tcp-bufsync lacked. Without this test, the cross-backend
+    // ViolationKind coverage was 3/3 for pthreads-sync but only 2/3
+    // for mp-tcp-bufsync. Closing the symmetry gap.
+    //
+    // Emit-only (no cargo build/run): mirrors the cycle-23 Log + Count
+    // shape; the single-worker Panic test
+    // (mp_tcp_bufsync_emit_includes_panic_instrumentation_on_check_loop
+    // above) already exercises the build+run path on the single-worker
+    // arm; this test pins the emit-string shape for the MULTI-WORKER
+    // arm specifically.
+    let sched = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place slow_inc    on { w0, w1 };
+    loop n : partition=workers;
+    transfer x : sync;
+    transfer y : sync;
+    check loop n : latency_max = 5ms, on_violation = panic;
+}
+";
+    let (per_worker, names, sidecar) = build_per_worker_partitioned(MULTI_ALGO_SRC, sched);
+    let out = scratch_dir("mp_tcp_multi_worker_panic_emit");
+    let kernels_rs = write_kernels_stub(&out);
+    let res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels_rs, &out)
+        .expect("multi-worker emit with on_violation=panic must succeed");
+
+    // 3 worker bins: host + w0 + w1. Tightened from `>= 2` to `== 3`
+    // per cycle-23 review-gate C.1 (the commit body claims 3 bins; the
+    // assertion should pin it).
+    assert_eq!(
+        res.worker_bins.len(),
+        3,
+        "multi-worker emit must produce exactly 3 worker bins (host + w0 + w1); got {}",
+        res.worker_bins.len()
+    );
+
+    let mut panic_count = 0usize;
+    for bin in &res.worker_bins {
+        let bin_src = fs::read_to_string(bin).expect("read worker bin");
+        panic_count += bin_src
+            .matches("panic!(\"latency budget violated on `check loop n`")
+            .count();
+    }
+    // 2 panic sites (one per compute worker; host has no check_frame
+    // under partition=workers — same invariant as Log/Count tests).
+    assert_eq!(
+        panic_count, 2,
+        "expected exactly 2 Panic sites across worker bins (per-compute-worker, \
+         host excluded under partition=workers); got {panic_count}"
     );
 }

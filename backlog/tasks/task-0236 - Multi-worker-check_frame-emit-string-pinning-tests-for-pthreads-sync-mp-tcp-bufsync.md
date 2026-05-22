@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-22 00:50'
-updated_date: '2026-05-22 01:11'
+updated_date: '2026-05-22 01:20'
 labels:
   - test-coverage
   - M4
@@ -40,6 +40,53 @@ When Wave B-2 of TASK-0228 lands, the same test shape should also live at nucleu
 - [x] #2 nucleus/backends/mp-tcp-bufsync/tests/multi_worker_check_frame.rs does the same for the multi-process backend.
 - [x] #3 A regression that inlines a writeln! back into either multi_worker site (breaking the shared-helper invariant) trips the new tests.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 23 review-gate lockstep fixes (HIGH A.3, MEDIUM C.1/E.1, MEDIUM D.2 filed)
+
+HIGH A.3 (mp-tcp-bufsync Panic multi-worker not pinned):
+  Added mp_tcp_bufsync_multi_worker_panic_emit_pins_per_worker_panic_template
+  to mp-tcp-bufsync/tests/check_frame_emit.rs. Closes the
+  cross-backend ViolationKind symmetry gap: pthreads-sync had Panic
+  multi-worker pinned since cycle 16 (TASK-0052.05); cycle-23 added
+  Log + Count but missed Panic for mp-tcp-bufsync. Now 3/3
+  ViolationKind variants pinned on both backends' multi-worker
+  emit paths.
+
+MEDIUM C.1 (>= 2 vs == 3 assertion tightening):
+  Tightened res.worker_bins.len() >= 2 to == 3 in the existing Log
+  test (the commit body claimed 3 bins; the assertion now pins it).
+  Also asserts == 3 in the new Panic test added above. A regression
+  that dropped host's bin would slip past >= 2 but trips == 3.
+
+MEDIUM E.1 (AC text vs delivery deviation):
+  AC#1/#2 literal text says 'tests/multi_worker_check_frame.rs' but
+  delivery extended EXISTING files (tests/multi_worker.rs and
+  tests/check_frame_emit.rs). The deviation was the principled
+  engineering choice — avoids duplicating helper boilerplate that
+  already lives in those files. The AC checkboxes remain ticked
+  with this deviation note as the durable record. (Architect-
+  recommended option (b) from cycle-22's same precedent.)
+
+MEDIUM D.2 (helper duplication 3-way fanout):
+  Filed as TASK-0237. The lower-link-inject pipeline boilerplate
+  now duplicates in 3 places (pthreads-sync/tests/multi_worker.rs,
+  mp-tcp-bufsync/tests/check_frame_emit.rs, pthreads-async/tests/
+  skeleton.rs). Wave B-2 will make it 4-way; extracting now
+  (before Wave B-2) prevents the 4-way fanout from ever existing.
+
+Gate after lockstep:
+- cargo test --workspace: 576 / 0 / 2 (was 575 at cycle close; +1
+  Panic multi-worker pin).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 36 / 29 / 0 / 7 baseline preserved (untouched).
+
+LOW findings deferred (B.2 5ms-vs-1ns choice, C.4 negative-cross-
+check coverage, D.1 mirror-shape claim) — cosmetic or
+already-satisfied; carry forward in tracker.
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
