@@ -28,6 +28,16 @@ members = [
     # Condvar codegen. The workspace member is registered so the
     # capability-compat check + driver dispatch work end-to-end.
     "backends/pthreads-async",
+    # mp-tcp-event (TASK-0042.02 cycle 41 Stages 1+2): the fourth
+    # tier-1 backend — SYNC -> ASYNC upgrade of mp-tcp-bufsync (the
+    # same kind of upgrade pthreads-async is to pthreads-sync).
+    # capabilities: transport=tcp, notify=event, supports_async=true,
+    # supports_buffer=true. Single-worker emit delegates to the shared
+    # pthreads-sync renderer (byte-identical to the other three tier-1
+    # backends on single-worker schedules); multi-worker emit (mio
+    # reactor + per-(src,dst) ring buffer over TCP loopback) is Stage 3,
+    # returns ContractGap until that lands.
+    "backends/mp-tcp-event",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate
     # used by every backend's test suite. dev-dependency only.

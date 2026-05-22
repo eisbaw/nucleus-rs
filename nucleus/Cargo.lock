@@ -122,11 +122,23 @@ name = "mp-tcp-common"
 version = "0.0.0"
 
 [[package]]
+name = "mp-tcp-event"
+version = "0.0.0"
+dependencies = [
+ "backend-common",
+ "compiler",
+ "mp-tcp-common",
+ "pthreads-sync",
+ "test-common",
+]
+
+[[package]]
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
  "compiler",
  "mp-tcp-bufsync",
+ "mp-tcp-event",
  "pthreads-async",
  "pthreads-sync",
 ]

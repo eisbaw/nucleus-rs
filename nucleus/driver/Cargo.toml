@@ -31,3 +31,10 @@ mp-tcp-bufsync = { path = "../backends/mp-tcp-bufsync" }
 # emit() returns ContractGap until TASK-0226 lands ring-buffer codegen.
 # The dispatch arm in main.rs surfaces the precise forward-link.
 pthreads-async = { path = "../backends/pthreads-async" }
+# mp-tcp-event — fourth tier-1 backend, SYNC -> ASYNC upgrade of
+# mp-tcp-bufsync (TASK-0042.02 cycle 41 Stages 1+2). Single-worker emit
+# delegates to the shared pthreads-sync renderer (byte-identical to the
+# three shipped backends on single-worker schedules); multi-worker emit
+# (mio reactor + per-(src,dst) ring buffer over TCP loopback) returns
+# ContractGap with a precise forward-link until Stage 3 lands.
+mp-tcp-event = { path = "../backends/mp-tcp-event" }

@@ -1,0 +1,33 @@
+# capabilities.toml for the mp-tcp-event backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1 row mp-tcp-event: tier-1 backend, workers are OS PROCESSES,
+# transport is TCP loopback, notify=event (mio + epoll for readiness),
+# bounded ring buffer per cross-worker (DataId, SeqTag, src, dst).
+# supports_async=true, supports_buffer=true.
+#
+# This is the SYNC -> ASYNC upgrade of mp-tcp-bufsync, the SAME shape
+# of upgrade pthreads-async is to pthreads-sync. mp-tcp-event and
+# pthreads-async share the (supports_async, supports_buffer, notify)
+# capability surface; the only PRD-row difference is `transport`
+# (shared-memory vs tcp). Both satisfy the pipeline-capable schedules
+# (09/pipelined, 11/pipelined, 13/pipeline_parallel) that the sync
+# tier-1 backends do not.
+#
+# `max_buffer = 64` — same conservative initial cap as pthreads-async.
+# A ring buffer in this backend is a per-(DataId, SeqTag) bounded
+# VecDeque<Vec<u8>> (one frame per slot) gated by epoll readiness on
+# the underlying TCP stream. 64 frames of even a small payload type
+# are comfortably below the OS-level SO_*BUF cap on the host platforms
+# in scope. If a real e2e cell justifies raising it (multi-worker
+# pipelined examples 9 / 11 / 13 first; the same headlines pthreads-
+# async carries), Stage 3 of TASK-0042.02 may revisit.
+
+name            = "mp-tcp-event"
+tier            = 1
+transport       = "tcp"
+notify          = ["event"]
+supports_async  = true
+supports_buffer = true
+max_buffer      = 64
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

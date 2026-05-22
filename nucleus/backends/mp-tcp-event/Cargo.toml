@@ -1,0 +1,74 @@
+# mp-tcp-event backend crate. See PRD §7.1, TASK-0042.02.
+#
+# Tier-1 backend: workers are OS PROCESSES, transport is TCP loopback,
+# notify=event (mio + epoll for readiness multiplexing), buffered
+# (ring-buffered Push/Wait per (DataId, SeqTag, src, dst) pair).
+# `supports_async=true`, `supports_buffer=true`.
+#
+# Relationship to siblings:
+#   mp-tcp-event : mp-tcp-bufsync :: pthreads-async : pthreads-sync.
+#
+# That is, this is the SYNC -> ASYNC upgrade of mp-tcp-bufsync, the
+# same way pthreads-async is the upgrade of pthreads-sync. The PRD §7.1
+# row gives this backend the SAME capability surface as pthreads-async
+# (async + buffered + notify=event) but over the multi-process TCP
+# loopback transport instead of shared memory.
+#
+# ## Current status: SKELETON (Stages 1+2, TASK-0042.02 cycle 41).
+#
+# The crate, capabilities.toml, public `emit(...)` entry point,
+# workspace registration, and driver dispatch arm are wired. The 0/1
+# used-worker arm DELEGATES to pthreads_sync::render_single_worker_main
+# + the shared `backend_common::project_skeleton::single_binary`
+# renderers, so the emitted artefact is byte-identical to pthreads-sync's
+# (and to mp-tcp-bufsync's / pthreads-async's) single-worker output —
+# the cross-backend bit-identical differential holds on this path by
+# construction.
+#
+# The MULTI-worker arm is the deferred head: codegen with a mio reactor
+# multiplexing inbound transfers + per-(src,dst) outbound ring buffer.
+# `emit()` returns `EmitError::ContractGap` with a precise forward-link
+# on the multi-worker path until that lands.
+
+[package]
+name = "mp-tcp-event"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mp_tcp_event"
+path = "src/lib.rs"
+
+[dependencies]
+# Post-TASK-0124 the backend consumes only the per-worker EventList +
+# NameSidecar + inert expr grammar from `compiler`. No parser / lower /
+# link / acfg internals.
+compiler = { path = "../../compiler" }
+# Shared codegen primitives: RenderCtx, the expression/index/kernel-call/
+# loop-bound/type renderers, the check_frame emit templates, and the
+# multi-worker event walker (TASK-0244 / TASK-0239 / TASK-0246). When
+# multi-worker codegen lands, the walker will parameterise with
+# `rendezvous_prefix = "chan"` (cf. pthreads-async's `"ring"`,
+# pthreads-sync's `"slot"`).
+backend-common = { path = "../../backend-common" }
+# pthreads-sync provides `render_single_worker_main` — the straight-
+# line single-worker main.rs emitter. mp-tcp-event DELEGATES to it for
+# the 0/1-used-worker case, exactly as pthreads-async and
+# mp-tcp-bufsync do (the single semantic inter-backend arrow that
+# survives the TASK-0244 / 0246 refactor). This gives the byte-
+# identical single-worker emit the cross-backend differential relies
+# on.
+pthreads-sync = { path = "../pthreads-sync" }
+# Wire protocol v0 source text, copied verbatim into generated
+# projects (single source of truth with the protocol's own tests).
+# Shared with mp-tcp-bufsync; the wire format does not vary across
+# the two mp-tcp-* backends, only the reactor + buffering shape does.
+mp-tcp-common = { path = "../../mp-tcp-common" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237) — when
+# multi-worker tests are added (Stage 3+), they will route through
+# this for the fixture build-up step.
+test-common = { path = "../../test-common" }

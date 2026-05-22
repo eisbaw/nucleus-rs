@@ -33,13 +33,15 @@
 //!
 //! Registered backends: `pthreads-sync` (M1, shared-memory threads),
 //! `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
-//! TASK-0036), and `pthreads-async` (M4, shared-memory + per-(DataId,
-//! SeqTag) ring buffer + Condvar — TASK-0042.01; SKELETON only in
-//! cycle 16, codegen body is TASK-0226). All three consume the
+//! TASK-0036), `pthreads-async` (M4, shared-memory + per-(DataId,
+//! SeqTag) ring buffer + Condvar — TASK-0042.01), and `mp-tcp-event`
+//! (M4, OS processes + TCP loopback + mio reactor + per-(src,dst) ring
+//! buffer — TASK-0042.02; Stages 1+2 only in cycle 41, multi-worker
+//! codegen Stage 3 returns ContractGap). All four consume the
 //! identical EventList contract; the cross-backend differential (same
 //! source -> bit-identical output.bin) is the M3 headline (two-way
-//! today) and the M4 headline (three-way once TASK-0229 lands the
-//! pthreads-async e2e cells).
+//! today) and the M4 headline (four-way once Stage 3 of TASK-0042.02
+//! lands the mp-tcp-event multi-worker codegen).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -86,9 +88,10 @@ fn print_help() {
          BACKENDS:\n    \
              pthreads-sync   shared-memory threads (tier 1)\n    \
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
-             pthreads-async  shared-memory + ring buffer (tier 1)\n                     \
-                             (SKELETON — codegen is TASK-0226; capability\n                     \
-                             matrix is real, codegen body is not yet wired)\n"
+             pthreads-async  shared-memory + ring buffer (tier 1)\n    \
+             mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n                     \
+                             (Stages 1+2 — multi-worker codegen Stage 3\n                     \
+                             of TASK-0042.02; ContractGap on >=2 workers)\n"
     );
 }
 
@@ -454,9 +457,34 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // Fourth tier-1 backend (TASK-0042.02): OS processes + TCP
+        // loopback + mio reactor + per-(src,dst) ring buffer. SYNC
+        // -> ASYNC upgrade of mp-tcp-bufsync (same shape as
+        // pthreads-async / pthreads-sync). Stages 1+2 in cycle 41 —
+        // 0/1-used-worker emit DELEGATES to the shared single-worker
+        // renderer (byte-identical to the three shipped tier-1
+        // backends); multi-worker emit returns ContractGap until
+        // Stage 3 lands the mio + ring-buffer codegen. The
+        // user-facing error from this arm carries the precise
+        // forward-link.
+        "mp-tcp-event" => {
+            let result =
+                mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("mp-tcp-event codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            for (i, b) in result.worker_bins.iter().enumerate() {
+                println!("worker_bin{i} = {}", b.display());
+            }
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("wire_rs     = {}", result.wire_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
-             `mp-tcp-bufsync`, `pthreads-async`"
+             `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`"
         )),
     }
 }
