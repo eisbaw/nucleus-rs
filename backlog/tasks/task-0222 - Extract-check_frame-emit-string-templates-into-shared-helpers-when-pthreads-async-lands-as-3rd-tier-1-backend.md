@@ -3,10 +3,10 @@ id: TASK-0222
 title: >-
   Extract check_frame emit-string templates into shared helpers when
   pthreads-async lands as 3rd tier-1 backend
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-21 16:57'
-updated_date: '2026-05-22 00:43'
+updated_date: '2026-05-22 11:54'
 labels:
   - tech-debt
   - M4
@@ -26,7 +26,7 @@ Architecture-review finding (TASK-0052.04 cycle): four emit-string templates are
 <!-- AC:BEGIN -->
 - [x] #1 Identify the 4 textually-duplicated emit-string templates (static decl, guard local, Log eprintln, Count fetch_add).
 - [x] #2 Extract into pub helpers in pthreads-sync (or a sibling 'backend-common' crate): emit_count_static, emit_count_guard_local, emit_log_branch, emit_count_branch.
-- [ ] #3 Three backends (pthreads-sync + mp-tcp-bufsync + pthreads-async) consume the helpers; the existing tests in compiler/tests/check_frame_codegen.rs + backends/mp-tcp-bufsync/tests/check_frame_emit.rs continue to pin emit-string shape; one new test file covers pthreads-async.
+- [x] #3 Three backends (pthreads-sync + mp-tcp-bufsync + pthreads-async) consume the helpers; the existing tests in compiler/tests/check_frame_codegen.rs + backends/mp-tcp-bufsync/tests/check_frame_emit.rs continue to pin emit-string shape; one new test file covers pthreads-async.
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -59,3 +59,15 @@ AC#1 + AC#2 fully met (templates identified + extracted to pthreads-sync). AC#3 
 
 Task STAYS In Progress until AC#3's third-backend half closes (alongside TASK-0228 AC#5 multi-worker check_frame work).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 38 administrative closure (2026-05-22).
+
+All 3 ACs now closed. AC#3 (three backends consume the shared helpers + pthreads-async test file pins emit-string shape) closed by TASK-0240 cycle 29 commit 90c6d1f, which added nucleus/backends/pthreads-async/tests/check_frame_emit.rs with 3 sister tests pinning Panic/Log/Count multi-worker emit-string shapes via the shared helpers.
+
+All three tier-1 backends now consume the same template helpers (emit_count_static, emit_count_reporter_struct, emit_count_guard_local, emit_log_branch, emit_count_branch, collect_count_check_frames, sanitize_loop_var, CountCheckLoop) AND test-pin their emit-string shape — drift is now structurally + test-detected across all 3 backends.
+
+Cycle 37 (TASK-0244) further hardened: the helpers moved from pthreads-sync to backend-common. Backend-common is now the canonical home; pthreads-sync, mp-tcp-bufsync, pthreads-async all consume as siblings (no inter-backend dependency on the shared check_frame surface).
+<!-- SECTION:FINAL_SUMMARY:END -->
