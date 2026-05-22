@@ -1,11 +1,11 @@
 ---
 id: TASK-0092
 title: Multi-error reporting in AlgoIR lowering
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 00:25'
-updated_date: '2026-05-19 22:47'
+updated_date: '2026-05-22 13:35'
 labels:
   - M0
   - compiler
@@ -191,4 +191,6 @@ Gate (all inside nix develop, cycle-3 measurements):
 Scope: AlgoIR lowering. Sched-lowering multi-error remains TASK-0200 — the cascade-design template now transfers cleanly including the transitive dimension (forward-carry note appended to TASK-0200). TASK-0203 (Effect-to-poisoned-kernel cascade-short-circuit test) is now UNBLOCKED.
 
 Commits: 0548f02 (multi-error infra) + dcdc302 (depth=1-only honesty docstring) + 79c654d (cycle-3 transitive-poison fix + K×L parametric fixture). All five ACs ticked. Status: ready-for-Done pending orchestrator review.
+
+Cycle 48 tracker hygiene (2026-05-22). All 5 ACs ticked; multi-error AlgoIR lowering is in production with the LowerErrors accumulator + cascade-suppression discipline. Size-parametrised regression fixture exists. Decision-0003 typed-Result respected; per-error line:col preserved. M genuinely-independent errors yield M (no undercount); 1 upstream + N dependents yields 1 (no cascade overcount). Zero behaviour change for valid input — verified continuously across 22+ cycles in 2026-05-22 (e2e tally currently 88/70/0/18).
 <!-- SECTION:FINAL_SUMMARY:END -->

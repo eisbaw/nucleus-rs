@@ -1,11 +1,11 @@
 ---
 id: TASK-0036
 title: 'mp-tcp-bufsync backend crate (second backend, tier 1)'
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:07'
-updated_date: '2026-05-19 04:13'
+updated_date: '2026-05-22 13:35'
 labels:
   - M3
   - backend
@@ -97,4 +97,6 @@ User impact: cross-backend differential is now real and CI-pinned. 8 example/sch
 Tests: just test 0 failed (mp-tcp-common 7, pingpong differential 1, pthreads-sync multi_worker unchanged); just e2e 20/16-pass/0-fail/4-skip/0-required-fail; determinism-check 0 fail; determinism-check-negative still bites; clippy --workspace -D warnings clean. 02-split/split 5/5 + pingpong 3/3 — no TCP flakiness.
 
 Risks / follow-ups: TASK-0174 (verify AC#5-style SO_*BUF clear-error in a lowered-wmem_max container — fail-loud code present but container scenario unverified; TASK-0038 stays In Progress until then). TASK-0175 (worker-to-worker / host-excluding-barrier mesh — current STAR topology fails LOUD on peer!=host, sufficient for tier-1 scope). Inherited fail-loud caveats: TASK-0172 (non-uniform barrier — confirmed correctly rejected, not mis-emitted), TASK-0173 (non-divisible blocked accumulator — no required mp-tcp cell hits it). Perf is explicitly not a goal at M3.
+
+Cycle 48 tracker hygiene (2026-05-22). All 7 ACs ticked; substantive work landed across many cycles long before this commit. mp-tcp-bufsync is the second tier-1 backend, fully wired into the e2e matrix (~22 required cells), cross-backend bit-identical against pthreads-sync + reference.bin oracle. Headline pingpong test passes byte-for-byte. Honest limitations remain (no buffer-pool reuse, one allocation per transfer) — these are M3 scope decisions, not gaps.
 <!-- SECTION:FINAL_SUMMARY:END -->
