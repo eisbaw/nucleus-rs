@@ -2630,12 +2630,15 @@ fn xml_escape_cdata(s: &str) -> String {
 ///     `name="<backend>"`, `time="<elapsed_seconds>"`;
 ///   * PASS → empty element;
 ///   * SKIPPED → `<skipped message="<reason>"/>`;
-///   * FAILED → `<failure type="<phase>" message="<phase>">` with the
-///     detail wrapped in CDATA.
+///   * FAILED → `<failure type="<phase>">` with the detail wrapped in
+///     CDATA. The redundant `message=<phase>` attr (cycle-53) was
+///     dropped in TASK-0248 because it duplicated `type=` verbatim;
+///     `message` is optional in JUnit and consumers fall back to the
+///     `type` attr / body.
 ///
 /// Bytes are written via `println!` so the output goes to stdout where
 /// CI runners look for it.
-fn print_summary_junit(results: &[CellResult]) {
+fn print_summary_junit(results: &[CellResult], wall_clock: Option<Duration>) {
     let total = results.len();
     let failed = results
         .iter()
@@ -2645,10 +2648,18 @@ fn print_summary_junit(results: &[CellResult]) {
         .iter()
         .filter(|r| matches!(r.status, Status::Skipped { .. }))
         .count();
-    let suite_time: f64 = results
-        .iter()
-        .map(|r| r.timings.total().as_secs_f64())
-        .sum();
+    // TASK-0248: prefer the executor-measured wall-clock (honest under
+    // --jobs N>=2). Fall back to summing per-cell elapsed when the
+    // caller can't supply one — that path matches the old (cycle-53)
+    // emit, which is still schema-legal and only overstates parallel
+    // runs.
+    let suite_time: f64 = match wall_clock {
+        Some(d) => d.as_secs_f64(),
+        None => results
+            .iter()
+            .map(|r| r.timings.total().as_secs_f64())
+            .sum(),
+    };
 
     println!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     println!(
@@ -2681,14 +2692,20 @@ fn print_summary_junit(results: &[CellResult]) {
                 println!("    </testcase>");
             }
             Status::Failed { phase, detail } => {
+                // TASK-0248: drop the redundant `message=` attribute —
+                // the previous emit set message= to the same string as
+                // type= (a comment-lie: two attrs with the same content
+                // pretending to mean different things). `message` is
+                // optional in JUnit; CI consumers fall back to either
+                // the type attr or the CDATA body, so the structural
+                // failure phase still surfaces via `type=`.
                 let phase_attr = xml_escape_attr(&phase.to_string());
                 let detail_cdata = xml_escape_cdata(detail);
                 println!(
                     "    <testcase classname=\"{classname}\" name=\"{name}\" time=\"{time_s:.3}\">"
                 );
                 println!(
-                    "      <failure type=\"{phase_attr}\" \
-                     message=\"{phase_attr}\"><![CDATA[{detail_cdata}]]></failure>"
+                    "      <failure type=\"{phase_attr}\"><![CDATA[{detail_cdata}]]></failure>"
                 );
                 println!("    </testcase>");
             }
@@ -2703,7 +2720,7 @@ fn print_summary_junit(results: &[CellResult]) {
 /// from `DetCellResult` — Failed carries a `DetMismatch` rather than a
 /// `Phase`+detail, so the `<failure type=...>` is hard-coded to
 /// `"determinism"` and the body is the mismatch description.
-fn print_determinism_summary_junit(results: &[DetCellResult]) {
+fn print_determinism_summary_junit(results: &[DetCellResult], wall_clock: Option<Duration>) {
     let total = results.len();
     let failed = results
         .iter()
@@ -2713,7 +2730,15 @@ fn print_determinism_summary_junit(results: &[DetCellResult]) {
         .iter()
         .filter(|r| matches!(r.status, DetCellStatus::Skipped { .. }))
         .count();
-    let suite_time: f64 = results.iter().map(|r| r.elapsed.as_secs_f64()).sum();
+    // TASK-0248: see [`print_summary_junit`] for the wall-clock-vs-sum
+    // rationale. Determinism mode runs each cell twice back-to-back
+    // (single-cell-twice timing inside `check_cell_determinism`), so
+    // the per-cell `elapsed` field captures BOTH runs and the parallel
+    // overstatement is the same shape — same fix.
+    let suite_time: f64 = match wall_clock {
+        Some(d) => d.as_secs_f64(),
+        None => results.iter().map(|r| r.elapsed.as_secs_f64()).sum(),
+    };
 
     println!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     println!(
@@ -2754,9 +2779,11 @@ fn print_determinism_summary_junit(results: &[DetCellResult]) {
                 println!(
                     "    <testcase classname=\"{classname}\" name=\"{name}\" time=\"{time_s:.3}\">"
                 );
+                // TASK-0248: drop the redundant `message=` attribute
+                // (see `print_summary_junit` for rationale). The
+                // structural failure kind is exposed via `type=`.
                 println!(
-                    "      <failure type=\"determinism\" \
-                     message=\"determinism\"><![CDATA[{detail_cdata}]]></failure>"
+                    "      <failure type=\"determinism\"><![CDATA[{detail_cdata}]]></failure>"
                 );
                 println!("    </testcase>");
             }
@@ -3906,11 +3933,21 @@ fn execute_cells_parallel<R, F>(
     planned: &[PlannedCell],
     jobs: usize,
     f: F,
-) -> Vec<R>
+) -> (Vec<R>, Duration)
 where
     R: Send + 'static,
     F: Fn(&Paths, &PlannedCell, usize, usize) -> (R, String) + Send + Sync + 'static,
 {
+    // Wall-clock around the WHOLE execution (sequential or parallel
+    // branch alike). TASK-0248: under --jobs N>=2 the suite-level
+    // <testsuite time=...> attribute previously summed per-cell elapsed,
+    // which overstates parallel runs (4 cells of 1s on --jobs 4 take
+    // ~1s wall but were reported as ~4s). Capturing the wall-clock
+    // here — at the executor boundary — gives the JUnit emitter a
+    // honest figure regardless of the jobs count. Sequential users see
+    // a number that matches the per-cell sum within scheduler-overhead
+    // rounding; parallel users see a number that matches reality.
+    let wall_start = Instant::now();
     // Strictly sequential path (default; bare `just e2e`).
     //
     // Kept as a separate branch — NOT routed through the mpsc/worker
@@ -3929,7 +3966,7 @@ where
             let _ = std::io::stderr().flush();
             out.push(r);
         }
-        return out;
+        return (out, wall_start.elapsed());
     }
 
     // Parallel path. The work-queue is the canonical task list; workers
@@ -4001,7 +4038,7 @@ where
         }
     }
 
-    slots
+    let out: Vec<R> = slots
         .into_iter()
         .enumerate()
         .map(|(i, slot)| {
@@ -4014,7 +4051,8 @@ where
                 )
             })
         })
-        .collect()
+        .collect();
+    (out, wall_start.elapsed())
 }
 
 // --------------------------------------------------------------------
@@ -4128,7 +4166,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
         // jobs>=2 cells run on a worker pool and completion lines emit
         // in completion order while `det_results` is re-sorted to
         // planned order before the summary + gate-signal block runs.
-        let det_results: Vec<DetCellResult> = execute_cells_parallel(
+        let (det_results, det_wall_clock): (Vec<DetCellResult>, Duration) = execute_cells_parallel(
             paths,
             &planned,
             args.jobs,
@@ -4164,7 +4202,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
         // independent of this choice.
         match args.format {
             Format::Text => print_determinism_summary(&det_results),
-            Format::Junit => print_determinism_summary_junit(&det_results),
+            Format::Junit => print_determinism_summary_junit(&det_results, Some(det_wall_clock)),
         }
 
         // TASK-0023.03.03 Stage 1.5 (cycle-57): persist per-cell det-mode
@@ -4297,7 +4335,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // lines emit in completion order, but `results` is returned in
     // planned order so the summary / required-fail / NUC_XBACKEND_*
     // gates stay deterministic.
-    let results: Vec<CellResult> = execute_cells_parallel(
+    let (results, wall_clock): (Vec<CellResult>, Duration) = execute_cells_parallel(
         paths,
         &planned,
         args.jobs,
@@ -4328,7 +4366,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // whether the developer asked for human or machine output.
     match args.format {
         Format::Text => print_summary(&results),
-        Format::Junit => print_summary_junit(&results),
+        Format::Junit => print_summary_junit(&results, Some(wall_clock)),
     }
 
     // TASK-0023.03 Stage 1: persist per-cell timings as JSON when

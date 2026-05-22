@@ -1,9 +1,10 @@
 ---
 id: TASK-0248
 title: 'JUnit XML: parallel-aware suite_time accounting'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-22 19:50'
+updated_date: '2026-05-22 20:54'
 labels:
   - tooling
   - e2e
@@ -27,3 +28,24 @@ Acceptance:
 - <failure type=phase> and <failure message=...> are distinct (or message removed).
 - Sequential default behavior unchanged.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 58 (2026-05-22) — closed. JUnit XML <testsuite time=> now wall-clock-honest under --jobs N; <failure type=phase message=phase> duplicate attribute dropped.
+
+Implementation: nucleus/e2e/src/main.rs only. execute_cells_parallel signature returns (Vec<R>, Duration) — wall_start anchored at entry, elapsed() captured at exit. print_summary_junit + print_determinism_summary_junit take wall_clock: Option<Duration>; Some-branch uses it; None-branch falls back to the cycle-53 per-cell sum (no regression for any future caller without an executor wall-clock).
+
+<failure> element now emits as <failure type="phase"><![CDATA[detail]]></failure> — dropped the redundant message="phase" attr (was a verbatim duplicate of type, cosmetic doc-lie). doc-comment cites TASK-0248 as the source.
+
+Acceptance:
+- <testsuite time=N> wall-clock under --jobs >=2: VERIFIED (29.080s sequential vs 13.600s --jobs 4 = 2.14x speedup correctly reflected). Sequential default behavior preserved — wall_start anchored BEFORE the jobs==1 branch so sequential runs are also timed honestly (not skipped).
+- <failure> type + message distinct: dropped message= entirely (architect option A — simplest, schema-legal). type=phase + CDATA(detail) carries the load.
+- Sequential default behavior unchanged: byte-for-byte tally unchanged 88/70/0/18.
+
+Gate (cycle 58): just e2e 88/70/0/18 UNCHANGED; --format=junit sequential time=29.080; --format=junit --jobs 4 time=13.600; just test 0 FAILED; just clippy clean.
+
+Honest limit (architect LOW): Option<Duration> fallback is paid-for code but currently unused (both in-tree callers pass Some(...)). Justifiable as future-proofing (a synthetic test that calls the emitter on a hand-built Vec<CellResult> without running the executor). Cheap insurance.
+
+Review-gate: both qa-test-runner + mped-architect GO. QA verified the 29s→14s wall-clock delta as the structural observable. Architect: HIGH confidence on wall_start placement, Option fallback, message-attr dedup. 1 LOW (dead None-branch) accepted as future-proofing.
+<!-- SECTION:FINAL_SUMMARY:END -->
