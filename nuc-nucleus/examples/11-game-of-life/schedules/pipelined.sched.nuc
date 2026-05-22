@@ -1,0 +1,131 @@
+// Pipelined schedule: `step_or_seed` on a dedicated compute worker,
+// `ident` staging on host, with the inter-generation `grid` symbol
+// carried as an async buffered channel.
+//
+// Two workers:
+//   host     -- runs the effectful I/O kernels (load_input,
+//               save_output) and the scalar `ident` staging kernel
+//               (the loop that copies grid[ITERS] -> result).
+//   compute  -- runs the stencil kernel `step_or_seed`. Each (t, i)
+//               application reads three cells of grid[t-1] (modulo
+//               the wrap-around index) and the corresponding seed
+//               cell, branching on `t` to pick which path; writes
+//               one cell of grid[t].
+//
+// Capability surface exercised (PRD §9 row 11, M4):
+//   - `transfer grid : async, buffer=2, notify=event`
+//     The async-streaming channel for the inter-generation state.
+//     `buffer=2` = double-buffer (the literal "double-buffer" the
+//     PRD row names) — at steady state one slot holds generation
+//     `t` being written while the other holds generation `t-1`
+//     being read. `notify=event` = condvar-style readiness
+//     notification (not a barrier-style sync), which only the
+//     async backend supports.
+//   - `loop t : pipeline=2`
+//     Pipeline depth 2 on the outer iteration axis, matched to
+//     `buffer=2` so the pipeline-depth-<=-buffer-capacity link
+//     gate (TASK-0134, PRD §8.2) is exactly at the bound.
+//
+// Why two workers, not three
+// --------------------------
+// Example 9 (producer/consumer pipe) uses three workers (host +
+// producer + consumer) because its loop body has two distinct compute
+// kernels in a two-stage chain. This example has a single compute
+// kernel (`step_or_seed`) iterated over the time dimension, so the
+// natural shape is host + one compute worker. The grid array is the
+// load-bearing cross-worker symbol: compute writes every cell of
+// `grid` inside the iteration loop (each `step_or_seed` call), and
+// host reads `grid[ITERS]` (via `ident` in the result-stage loop).
+// `seed` is loaded on host and consumed by the compute kernel (via
+// the seed-cell argument to each `step_or_seed` call) — also
+// cross-worker. The link step's `data_is_cross_worker` check
+// (TASK-0214) inspects every kernel touching `grid` —
+// `{ident @ host, step_or_seed @ compute}` covers two distinct
+// workers, so `grid` is genuinely cross-worker.
+//
+// Honest scope note: pipelining inside the per-generation loop
+// ---------------------------------------------------------
+// With `step_or_seed` alone on `compute`, the per-(t, i) body of the
+// inner stencil loop is a single-worker chunk. `transfer_inject`'s
+// same-worker skip (TASK-0214) means no per-iteration Xfer is emitted
+// between consecutive `step_or_seed` applications on `compute` —
+// they share a worker, so the grid array is intra-compute inside the
+// iteration body. The `loop t : pipeline=2` directive therefore does
+// NOT introduce genuine stage-parallelism inside the iteration loop
+// on this schedule — its primary effect is to drive the IR-level
+// `initial_marking=2` on the `grid` Push/Wait pair (so the link gate
+// validates the pipeline-buffer match) and to pin the M4 capability
+// surface end-to-end (`async + buffer=2 + notify=event` on the
+// cross-worker `grid` symbol — the cross-worker hops happen at the
+// boundaries, host -> compute via `seed` and compute -> host via
+// the `result`-staging `ident` reads on `grid[ITERS]`). The genuine
+// stage-parallelism fixture in this milestone is example 09 (two
+// distinct compute kernels on two distinct workers, `pipeline=4`
+// matched to `buffer=4`); example 11 is the iterated-state companion
+// that exercises the SAME capability vector through the SAME e2e
+// gate, on a different algorithmic shape (cross-iteration data
+// dependency rather than cross-stage chaining).
+//
+// Why this schedule cannot run on pthreads-sync / mp-tcp-bufsync
+// -------------------------------------------------------------
+// Both backends' capabilities.toml declare `supports_async = false`,
+// `supports_buffer = false`, `notify = ["polled"|"barrier"]`. The
+// `transfer grid` clause here requires all three (async + buffer>1 +
+// notify=event), so the capability check rejects this schedule on
+// those backends BEFORE codegen. The e2e harness reports the
+// corresponding cells as [[skip]] with the cited capability
+// mismatch; see e2e-matrix.toml. pthreads-async is the tier-1
+// backend whose capability surface satisfies this schedule.
+//
+// What's intentionally NOT here
+// -----------------------------
+//   - No `block=`, no `vectorize=`. The pipeline transform is the
+//     only loop transform; the inner `i` loop is left alone.
+//   - No distributed placement (`place step_or_seed on { c0, c1, ... }`).
+//     A single compute worker is the smallest fixture for the
+//     pipelined capability surface on a single-stage body.
+//   - No `partition=workers` on the inner `i` loop. The grid is
+//     small (N=32) and partitioning the spatial axis is example
+//     03/05's territory, not the M4 double-buffer surface.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, compute };
+
+    // I/O on host (owns the file system).
+    place load_input  on host;
+    place save_output on host;
+
+    // Result staging on host (the `ident` loop reads `grid[ITERS]`).
+    place ident on host;
+
+    // The stencil step (with seed-fallback for t==0) on the
+    // dedicated compute worker. Each application reads three cells
+    // of the previous generation (or pre-initialised zeros at t==0)
+    // and the corresponding seed cell, and writes one cell of the
+    // current generation.
+    place step_or_seed on compute;
+
+    // Pipeline depth 2 on the outer iteration axis, matched to
+    // `buffer=2` on `grid` below. The link gate (TASK-0134) checks
+    // `depth <= buffer` for every data symbol intersected in
+    // `for t`'s produced ∩ consumed set — here that intersection is
+    // `{grid}` (the inner stencil loop reads grid[t-1] and writes
+    // grid[t] for each t).
+    loop t : pipeline=2;
+
+    // The inter-generation edge. async + buffer=2 + notify=event is
+    // the M4 capability set; only pthreads-async satisfies it.
+    transfer grid : async, buffer=2, notify=event;
+
+    // Fan-in / fan-out hops. `seed` is loaded on host and consumed
+    // by `step_or_seed` on compute — genuinely cross-worker, but
+    // outside the pipelined loop so a sync transfer is the right
+    // shape (the host's `load_input` completes before any iteration
+    // begins). `result` is written by the result-stage `ident` loop
+    // on host and saved by `save_output` also on host — same-worker,
+    // no actual Xfer emitted (`transfer_inject`'s src==dst skip). We
+    // still declare both transfers explicitly because PRD §6.3.4
+    // forbids implicit defaults.
+    transfer seed   : sync;
+    transfer result : sync;
+}

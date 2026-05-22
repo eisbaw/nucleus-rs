@@ -1,0 +1,24 @@
+// Naive schedule: single worker, no decomposition, no pipelining.
+//
+// Smoke test for the algorithm/schedule split. Every kernel runs on
+// one worker (`host`); no cross-worker dataflow means no `transfer`
+// directives. Required cell on all three tier-1 backends — the result
+// must be bit-identical to `reference.bin` on each.
+//
+// pthreads-async runs this through its single-worker arm, which
+// DELEGATES to the shared single-worker renderer (the same code path
+// pthreads-sync runs for `used_workers <= 1`). The three backends'
+// outputs are therefore byte-identical by construction; the e2e gate
+// pins that.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input   on host;
+    place save_output  on host;
+    place step_or_seed on host;
+    place ident        on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

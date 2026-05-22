@@ -1,0 +1,172 @@
+// Multi-iteration 1D cellular automaton — the "Game of Life
+// (multi-iter)" fixture from PRD §9 row 11.
+//
+// A 1D stencil applied to a circular (toroidal) grid of N cells, for
+// ITERS generations:
+//
+//   grid[0][i]   = seed[i]                                       (t=0)
+//   grid[t][i]   = grid[t-1][(i-1+N)%N]                          (t>=1)
+//                + grid[t-1][i]
+//                + grid[t-1][(i+1)%N]
+//
+// `step_or_seed(prev_l, prev_m, prev_r, seed_m, t)` does both:
+// returns `seed_m` when `t == 0`, returns `prev_l + prev_m + prev_r`
+// otherwise. Implementation in `kernels.rs`. The kernel-side branch
+// on `t` is the same boundary-handling trick example 04-prefix-sum
+// uses (`exclusive_add`, `block_scan` — see that file's header for
+// the "Nuc has no conditionals; carry/boundary logic lives in Rust
+// kernels" rationale).
+//
+// Single-assignment shape (PRD §6.2.1): each `data` symbol is the
+// LHS of EXACTLY ONE Dataflow statement, globally. We use three
+// symbols:
+//   - `seed`   — loaded once via `load_input`.
+//   - `grid`   — the full per-generation state, computed by ONE
+//                rectangular-accumulator-style for-loop (matching
+//                example 04's shape: codegen pre-inits `grid` to 0,
+//                the loop body reads grid[t-1] and writes grid[t]).
+//   - `result` — extracted from `grid[ITERS]` via a copy loop, then
+//                saved via `save_output`.
+//
+// The single-Dataflow-on-`grid` constraint is why we cannot have a
+// separate `for i { grid[0][i] <-- ident(seed[i]) }` seed-staging
+// loop alongside the iteration loop — that would be two Dataflows
+// on `grid` and the SSA check (algo/lower.rs, DoubleAssignment) would
+// reject it. Folding the seed case into the iteration body via a
+// kernel-side branch on `t` is the smallest change that preserves
+// single-assignment.
+//
+// `grid` is indexed `grid[t][i]` where `t` is the generation index;
+// the LHS writes `grid[t][i]` for `t in 0..ITERS+1`. For the
+// prev-state read, `grid[(t+ITERS) % (ITERS+1)][...]` evaluates to
+// `grid[ITERS][...]` at `t==0` (uninitialized cells, ignored by the
+// kernel) and to `grid[t-1][...]` for `t>=1` (the cells written by
+// the previous iteration). The modulo wrap is purely to keep the
+// index expression IN-BOUNDS for `t==0` — the kernel discards
+// whatever it reads there.
+//
+// What this example demonstrates
+// ------------------------------
+//   - The smallest fixture with a CROSS-ITERATION data dependency:
+//     generation `t` reads cells of generation `t-1`. This is the
+//     M4-capability surface PRD §9 row 11 calls out — multi-iteration
+//     stencil, double-buffer.
+//   - The SAME `prog.algo.nuc` compiles under a single-worker `naive`
+//     schedule (smoke test, runs on every tier-1 backend) AND a
+//     two-worker `pipelined` schedule (only the async-capable backend,
+//     `pthreads-async`, can run it). The algorithm/schedule split
+//     (PRD §2) survives the capability spread.
+//   - That `pipeline=2 + buffer=2 + notify=event` on the
+//     cross-iteration `grid` symbol is a meaningful capability test:
+//     the buffer=2 is literally a double-buffer (two slots holding
+//     consecutive generations in flight at steady state).
+//
+// What this example does NOT demonstrate
+// --------------------------------------
+//   - 2D stencil with halo regions. PRD §9 row 11 names "Game of
+//     Life", which in its classical Conway form is a 2D 8-neighbour
+//     rule with halo exchange — that is TASK-0117 / TASK-0126
+//     territory and exceeds the current backend's distributed-halo
+//     capability. The 1D wrap-around here is the smallest concrete
+//     realisation of "iterated stencil" that the existing backends
+//     can carry; see README §"Algorithm choice (option A vs B)" for
+//     the discussion.
+//   - Reduction, sort, or any non-deterministic-under-reorder
+//     operation. The `step_or_seed` kernel is pure and three-way
+//     associative; each `grid[t][i]` depends only on three cells of
+//     `grid[t-1]` (or on `seed[i]` for `t==0`), so ordering across
+//     `i` does not affect the output bits.
+//   - Multi-stage pipelining of the loop body. Example 9 is the
+//     two-stage producer/consumer fixture; this example is the
+//     iterated-state fixture. Both are M4, exercising different axes
+//     of the buffer/pipeline/event capability set.
+//
+// Numeric type: i32 throughout (PRD §13, docs/reference-impl-policy.md
+// §5). All arithmetic uses `wrapping_add` in `kernels.rs` and the
+// independent reference; the committed input + ITERS=8 generations
+// stay inside the i32 range (worst-case growth is 3^8 ≈ 6561 from a
+// 7-valued seed, well below i32::MAX) so wrap is never tripped in
+// practice — the choice documents intent.
+
+const N     : usize = 32;     // 32 cells per generation
+const ITERS : usize = 8;      // 8 generations
+
+
+// Whole-program input, full per-generation state, output. Each is
+// assigned exactly once at the data-symbol level (PRD §6.2.1):
+//   - `seed[i]`         once, by `seed <-- load_input()`.
+//   - `grid[t][i]`      once per (t, i), by the iteration loop.
+//   - `result[i]`       once per i, by the result-stage loop.
+data seed   : i32[N];
+data grid   : i32[ITERS+1][N];
+data result : i32[N];
+
+
+// Pure stencil step (with seed fallback for `t==0`). Scalar signature
+// — the contract pass (TASK-0012) is scalar-only at present. The
+// three `prev_*` args are the three-tap neighbours read from
+// `grid[t-1]`; `seed_m` is the seed cell at index `i`; `t` is the
+// generation index (0 means "use seed_m as the result"; t>=1 means
+// "sum the three prev_* taps").
+//
+// The five-argument shape matches example 04-prefix-sum's
+// `block_scan` (5 scalar args), `exclusive_add` (4 scalar args), and
+// example 05-stencil's `blur3` (9 scalar args) — scalar kernel
+// contracts that the M1-era contract pass already accepts.
+kernel step_or_seed : (i32, i32, i32, i32, i32) -> i32 pure;
+
+// Identity copy. Used to extract the final generation `grid[ITERS]`
+// into a flat `result` array that the aggregate-typed `save_output`
+// can consume. The staging loop adds N kernel calls of overhead over
+// a hypothetical direct-sub-array I/O surface; that overhead is the
+// price of staying inside TASK-0012's scalar contract pass at the
+// current milestone.
+kernel ident : (i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated. Same
+// `Vec<i32>`-on-the-Rust-side convention as examples 01..07/09/13
+// (TASK-0103 is the open question for aggregate-type matching).
+kernel load_input  : ()       -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+
+
+// Dataflow.
+//
+// 1. Load the seed.
+seed <-- load_input();
+
+// 2. Compute every generation. Single Dataflow on `grid` covers both
+//    the seed-staging case (`t == 0`) and the iteration case
+//    (`t >= 1`); `step_or_seed` branches on `t` to pick which to do.
+//
+//    `(t + ITERS) % (ITERS + 1)` is the previous-generation index:
+//    - At `t == 0`, it evaluates to `ITERS` — reads `grid[ITERS]`
+//      which is pre-initialised to 0 by codegen. The kernel ignores
+//      those reads and returns `seed[i]`.
+//    - At `t >= 1`, it evaluates to `t - 1` — reads the just-written
+//      cells of the previous generation. The kernel returns the
+//      three-tap sum.
+//
+//    This is the load-bearing cross-iteration data edge a pipelined
+//    schedule streams as an async, buffered channel (`grid[t-1]` ->
+//    `grid[t]`). Iterations of the outer `t` loop have a
+//    read-after-write dependency on `grid` through this edge.
+for t : 0 .. ITERS+1 {
+for i : 0 .. N {
+    grid[t][i] <-- step_or_seed(
+        grid[(t + ITERS) % (ITERS + 1)][(i + N - 1) % N],
+        grid[(t + ITERS) % (ITERS + 1)][i],
+        grid[(t + ITERS) % (ITERS + 1)][(i + 1) % N],
+        seed[i],
+        t
+    );
+}}
+
+// 3. Extract the final generation into a flat array for save_output.
+//    Each `result[i]` is written exactly once.
+for i : 0 .. N {
+    result[i] <-- ident(grid[ITERS][i]);
+}
+
+// 4. Save.
+save_output(result);

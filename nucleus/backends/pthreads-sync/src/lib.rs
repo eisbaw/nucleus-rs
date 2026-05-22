@@ -1235,7 +1235,7 @@ fn render_fire_arg(
             }
         }
         ArgBinding::Scalar(e) => {
-            let rendered = render_int_expr(e, &ctx.abs_subst)?;
+            let rendered = render_int_expr(e, ctx)?;
             // Iter-var-derived scalars are typed i64; a scalar kernel
             // param needs a cast. Param type from the sidecar.
             if let Some(pty) = param_ty {
@@ -1323,7 +1323,7 @@ fn classify_data_slice(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<SliceForm, 
     // expression, with `sub_len = product(dims[1..])` carrying the
     // trailing extent.
     if s.indices.len() == 1 {
-        let i0 = render_int_expr(&s.indices[0], &ctx.abs_subst)?;
+        let i0 = render_int_expr(&s.indices[0], ctx)?;
         let expr = format!("({i0}) as usize");
         return if dims.len() == 1 {
             Ok(SliceForm::Scalar(expr))
@@ -1353,7 +1353,7 @@ fn classify_data_slice(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<SliceForm, 
     let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
     for (k, idx_expr) in s.indices.iter().enumerate() {
         let stride: usize = dims[k + 1..].iter().copied().product();
-        let rendered = render_int_expr(idx_expr, &ctx.abs_subst)?;
+        let rendered = render_int_expr(idx_expr, ctx)?;
         if stride == 1 {
             terms.push(format!("({rendered})"));
         } else {
@@ -1383,7 +1383,7 @@ fn render_flat_index(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitE
         ));
     }
     if s.indices.len() == 1 {
-        let i0 = render_int_expr(&s.indices[0], &ctx.abs_subst)?;
+        let i0 = render_int_expr(&s.indices[0], ctx)?;
         return Ok(format!("({i0}) as usize"));
     }
     let name = data_name(s.data, ctx)?;
@@ -1407,7 +1407,7 @@ fn render_flat_index(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitE
     let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
     for (k, idx_expr) in s.indices.iter().enumerate() {
         let stride: usize = dims[k + 1..].iter().copied().product();
-        let rendered = render_int_expr(idx_expr, &ctx.abs_subst)?;
+        let rendered = render_int_expr(idx_expr, ctx)?;
         if stride == 1 {
             terms.push(format!("({rendered})"));
         } else {
@@ -1418,22 +1418,48 @@ fn render_flat_index(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitE
 }
 
 /// Render an integer-valued index/scalar expression as Rust.
-/// Identifiers (iter vars) are emitted verbatim UNLESS they are an
-/// active absolute-index substitution (a strip-mined inner-block
-/// loop var → `(LO + tile*N + inner)`). The map is empty for every
-/// non-blocked program, so this is byte-identical to the old
-/// `render_int_expr` there.
-fn render_int_expr(e: &IrExpr, subst: &BTreeMap<String, String>) -> Result<String, EmitError> {
+///
+/// Identifier resolution priority (highest first):
+///   1. `ctx.abs_subst` — an active strip-mined absolute-index
+///      rebinding (`inner_var` → `(LO + tile*N + inner)`). The map
+///      is empty for every non-blocked program.
+///   2. `ctx.sidecar.consts` — a declared `const` in the source
+///      algorithm (e.g. `const N : usize = 32;` referenced as `N`
+///      inside an `IndexExpr` such as `grid[t][(i+N-1) % N]`).
+///      Grammar §1 line 91-93 explicitly allows consts inside an
+///      IndexExpr; PRD §6.2.1 forbids iter-var shadowing a const, so
+///      the two namespaces never collide.
+///   3. Bare ident — an iteration variable in scope. Emitted as the
+///      verbatim Rust identifier; Rust's type-checker is responsible
+///      for confirming it is in scope (mirrors the prior backend).
+///
+/// The const-resolution path (step 2) is the fix for the IndexExpr-
+/// const bug discovered while landing example 11-game-of-life
+/// (cycle 35 / TASK-0042.04). Prior to that, an IndexExpr like
+/// `(t + ITERS) % (ITERS + 1)` rendered as `((t + ITERS) % (ITERS +
+/// 1))` — emitting bare `ITERS` as a Rust identifier, which is not
+/// in scope in the generated host source (the codegen does not
+/// declare a Rust `const ITERS` mirroring the Nuc const). Loop
+/// BOUNDS already resolve consts via `render_const_expr` (step 2 in
+/// that function), so `for t : 0 .. ITERS+1` worked; the asymmetry
+/// was the bug. Examples 01..09/13 only used loop variables in
+/// `IndexExpr`, so the bug was inert in the existing matrix.
+fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
     match e {
         IrExpr::IntLit(v) => Ok(format!("{v}")),
-        IrExpr::Ident(n) => Ok(match subst.get(n) {
-            Some(repl) => repl.clone(),
-            None => n.clone(),
-        }),
-        IrExpr::Neg(inner) => Ok(format!("-({})", render_int_expr(inner, subst)?)),
+        IrExpr::Ident(n) => {
+            if let Some(repl) = ctx.abs_subst.get(n) {
+                Ok(repl.clone())
+            } else if let Some(c) = ctx.sidecar.consts.get(n) {
+                Ok(format!("{}", c.value))
+            } else {
+                Ok(n.clone())
+            }
+        }
+        IrExpr::Neg(inner) => Ok(format!("-({})", render_int_expr(inner, ctx)?)),
         IrExpr::BinOp(op, l, r) => {
-            let ls = render_int_expr(l, subst)?;
-            let rs = render_int_expr(r, subst)?;
+            let ls = render_int_expr(l, ctx)?;
+            let rs = render_int_expr(r, ctx)?;
             Ok(format!("({ls} {} {rs})", bin_op_str(op)))
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(

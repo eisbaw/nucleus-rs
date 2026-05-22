@@ -62,7 +62,7 @@
 # landed once TASK-0209 cleared the partial-sub-array codegen
 # blocker). Example 14 still pending its own kernels.rs / reference /
 # fixture trio.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "09-producer-consumer", "13-cnn-inference"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "09-producer-consumer", "11-game-of-life", "13-cnn-inference"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -746,5 +746,72 @@ example  = "09-producer-consumer"
 schedule = "pipelined"
 backend  = "mp-tcp-bufsync"
 reason   = "TASK-0042: capability mismatch — async + buffer=4 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] above)."
+milestone = "M4"
+
+# ---- Example 11 game-of-life (TASK-0042.04) -------------------------
+#
+# The iterated-state companion to example 09 (TASK-0042.03). Same M4
+# capability set (async + buffer>1 + notify=event + pipeline=D), but
+# applied to a SINGLE-STAGE iterated body with a cross-iteration data
+# dependency rather than 09's two-stage chain. PRD §9 row 11: "Game of
+# Life (multi-iter) — Multi-iteration stencil, double buffer".
+#
+# - naive: single-worker (host) smoke test; every tier-1 backend must
+#   produce bit-identical output. pthreads-async's single-worker arm
+#   delegates to the shared single-worker renderer, so the three
+#   backends' outputs are byte-identical by construction.
+# - pipelined: 2 workers (host, compute), `transfer grid : async,
+#   buffer=2, notify=event`, `loop t : pipeline=2`. buffer=2 exactly
+#   matches pipeline=2 — the "double-buffer" the PRD row names. Only
+#   pthreads-async's capability surface (supports_async=true,
+#   supports_buffer=true, notify=["event"]) satisfies this schedule.
+#   The two sync backends are SKIPPED with the verbatim capability
+#   mismatch cited — same pattern as 09/pipelined and 13/pipeline_parallel.
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M3"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M3"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# The M4 headline cell for this example: 2-worker schedule with
+# `transfer grid : async, buffer=2, notify=event`. The
+# inter-generation `grid` symbol crosses host->compute (seed staging
+# via `ident` on host, then `step` on compute) and compute->host
+# (result staging via `ident` on host). The `loop t : pipeline=2`
+# directive drives the IR-level initial_marking=2 on the grid
+# Push/Wait pair so the link gate (TASK-0134) validates the
+# pipeline-buffer match. Pinned byte-identical against reference.bin
+# (sha256 f2c2069c773a5cfe7242d3f406ee210dbc9cfd0482f83d8982b18e116ff01a52).
+[[required]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "pthreads-async"
+milestone = "M4"
+
+[[skip]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "pthreads-sync"
+reason   = "TASK-0042: capability mismatch — async + buffer=2 + notify=event not supported by pthreads-sync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] above)."
+milestone = "M4"
+
+[[skip]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0042: capability mismatch — async + buffer=2 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] above)."
 milestone = "M4"
 

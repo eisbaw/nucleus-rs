@@ -1,0 +1,36 @@
+# Standalone reference implementation for example 11-game-of-life.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the compiler crate, on any backend crate, or on any
+# Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/11-game-of-life/reference/Cargo.toml -- \
+#     --in    nuc-nucleus/examples/11-game-of-life/input.bin \
+#     --out   nuc-nucleus/examples/11-game-of-life/reference.bin
+#
+# The crate is excluded from the parent workspace by being inside the
+# `nuc-nucleus/` tree, which the `nucleus/` workspace does not include.
+# An explicit empty `[workspace]` table below makes that intent
+# defensive against future workspace globs.
+
+[package]
+name        = "game-of-life-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 11-game-of-life."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "game-of-life-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"
