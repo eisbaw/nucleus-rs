@@ -390,14 +390,7 @@ fn build_per_worker_partitioned(
             inject_check_frames: true,
         },
     );
-    let names = NameTables {
-        data: r.name_data,
-        kernel: r.name_kernel,
-        worker: r.name_worker,
-        iter_var: r.name_iter_var,
-        inner_block_iter_vars: r.inner_block_iter_vars,
-    };
-    (r.per_worker, names, r.sidecar)
+    (r.per_worker, r.names, r.sidecar)
 }
 
 const MULTI_ALGO_SRC: &str = "\

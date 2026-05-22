@@ -26,17 +26,13 @@
 //! five maps (one 5-line local block per call site — but isolated to
 //! the test files, not duplicated across the lowering pipeline).
 //!
-//! Why the result returns the maps instead of a pre-built NameTables:
-//! NameTables lives in `pthreads-sync`. test-common cannot depend on
-//! pthreads-sync (would create a circular arrow: pthreads-sync
-//! dev-dep test-common → test-common deps pthreads-sync). Returning
-//! the raw maps lets every backend's test compose the SAME
-//! `pthreads_sync::NameTables` type from its 5-line literal block
-//! at the call site. Cycle-24 review-gate B.1 flagged that
-//! NameTables is a `compiler::event`-typed struct with zero
-//! pthreads-sync-specific content — moving it to `compiler` would
-//! dissolve the circular-dep constraint and eliminate the 3-site
-//! literal block (filed as TASK-0238).
+//! Why the result returns a pre-built NameTables:
+//! TASK-0238 (cycle 25) moved NameTables from `pthreads-sync` to
+//! `compiler`. test-common can therefore depend on compiler and
+//! return a pre-built `compiler::NameTables` directly in
+//! [`LowerForTestResult`] — eliminating the 5-field literal block
+//! that previously lived at every call site (3 backend tests + the
+//! driver; cycle-24 close).
 //!
 //! # Scope vs the driver's pipeline
 //!
@@ -51,10 +47,11 @@
 //! diagnostic surface a test doesn't exercise). This is therefore not
 //! a strict mirror of the driver — it's an IR-shape mirror.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use compiler::event::{DataId, Event, IterVar, KernelId, WorkerId};
+use compiler::event::{Event, WorkerId};
 use compiler::sidecar::NameSidecar;
+use compiler::NameTables;
 
 /// Toggles for optional pipeline stages.
 ///
@@ -99,8 +96,10 @@ impl Default for LowerForTestOpts {
 }
 
 /// Result of [`lower_for_test`]: the per-worker EventList + sidecar +
-/// the five raw reverse-name-table maps the caller needs to compose
-/// its backend's `NameTables` type.
+/// pre-built NameTables (built from the post-pass ACFG via
+/// [`NameTables::from_acfg`]). Cycle-25 / TASK-0238 collapsed the
+/// previous 5-raw-map shape into the canonical NameTables struct,
+/// which is now part of `compiler`'s public API.
 #[derive(Debug, Clone)]
 pub struct LowerForTestResult {
     /// The per-worker EventList projection that `acfg_to_events`
@@ -108,19 +107,10 @@ pub struct LowerForTestResult {
     pub per_worker: BTreeMap<WorkerId, Vec<Event>>,
     /// The sidecar `build_sidecar` produced from the post-pass ACFG.
     pub sidecar: NameSidecar,
-    /// Reverse of `ACFG::name_data` (id → name).
-    pub name_data: BTreeMap<DataId, String>,
-    /// Reverse of `ACFG::name_kernels` (id → name).
-    pub name_kernel: BTreeMap<KernelId, String>,
-    /// Reverse of `ACFG::name_workers` (id → name).
-    pub name_worker: BTreeMap<WorkerId, String>,
-    /// Reverse of `ACFG::name_iter_vars` (id → name).
-    pub name_iter_var: BTreeMap<IterVar, String>,
-    /// `ACFG::inner_block_iter_vars` cloned (the inner intra-tile
-    /// loop iter-var set produced by `block_transform`; carried so
-    /// the backend's NameTables.inner_block_iter_vars is identical
-    /// to what the driver produces).
-    pub inner_block_iter_vars: BTreeSet<IterVar>,
+    /// The reverse name tables built from the post-pass ACFG. The
+    /// 3 backend tests can now use `r.names` directly instead of
+    /// composing their own from raw maps.
+    pub names: NameTables,
 }
 
 /// Run the lower-link-inject IR-stage pipeline for a (algo_src,
@@ -181,26 +171,12 @@ pub fn lower_for_test(
     };
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
 
+    let names = NameTables::from_acfg(&acfg);
+
     LowerForTestResult {
         per_worker,
         sidecar,
-        name_data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        name_kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        name_worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        name_iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+        names,
     }
 }
 
@@ -245,16 +221,16 @@ schedule for "anything.algo.nuc" {
         );
         assert!(!r.per_worker.is_empty(), "per_worker must be non-empty");
         assert!(
-            !r.name_data.is_empty(),
-            "name_data must contain x + y at minimum"
+            !r.names.data.is_empty(),
+            "names.data must contain x + y at minimum"
         );
         assert!(
-            r.name_kernel.values().any(|n| n == "inc"),
-            "name_kernel must contain the inc kernel"
+            r.names.kernel.values().any(|n| n == "inc"),
+            "names.kernel must contain the inc kernel"
         );
         assert!(
-            r.name_worker.values().any(|n| n == "host"),
-            "name_worker must contain host"
+            r.names.worker.values().any(|n| n == "host"),
+            "names.worker must contain host"
         );
         // No check directives in this schedule, so the transfer
         // buffer map must be empty.

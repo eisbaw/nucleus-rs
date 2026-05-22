@@ -395,29 +395,9 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // (id -> name) — the join key the EventList / sidecar use. Built
     // ONCE; both tier-1 backends share the identical tables (the
     // cross-backend differential requires identical inputs).
-    let names = pthreads_sync::NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        // The inner intra-tile loop iter-vars block_transform
-        // produced (it reuses the source loop's IterVar on the inner
-        // loop and iterates 0..N — the backend must rebind the
-        // absolute index; TASK-0124).
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
+    // TASK-0238 (cycle 25): the 5-field composition collapsed into
+    // the centralized constructor.
+    let names = compiler::NameTables::from_acfg(&acfg);
 
     match backend.as_str() {
         "pthreads-sync" => {

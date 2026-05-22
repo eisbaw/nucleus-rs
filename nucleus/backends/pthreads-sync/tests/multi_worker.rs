@@ -900,14 +900,7 @@ fn lower_multi_worker_check_schedule(
             inject_check_frames: true,
         },
     );
-    let names = NameTables {
-        data: r.name_data,
-        kernel: r.name_kernel,
-        worker: r.name_worker,
-        iter_var: r.name_iter_var,
-        inner_block_iter_vars: r.inner_block_iter_vars,
-    };
-    (r.per_worker, names, r.sidecar, kernels_path, scratch.join("gen"))
+    (r.per_worker, r.names, r.sidecar, kernels_path, scratch.join("gen"))
 }
 
 #[test]

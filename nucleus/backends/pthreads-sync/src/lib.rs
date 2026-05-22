@@ -103,66 +103,16 @@ mod multi_worker;
 // Public surface
 // --------------------------------------------------------------------
 
-/// Reverse name tables travelling alongside the per-worker
-/// `EventList` + the [`NameSidecar`]. Each map is the inverse of the
-/// corresponding `ACFG::name_*` table (`name -> id` inverted to
-/// `id -> name`). The backend joins these against the opaque ids the
-/// `Event`s / sidecar carry — exactly the join the proven
-/// reconstruction tests in `compiler/tests/petri_to_events.rs`
-/// perform. The driver builds these from the post-pass ACFG; the
-/// backend never sees the ACFG itself.
-#[derive(Debug, Clone, Default)]
-pub struct NameTables {
-    /// `DataId -> data symbol name` (inverse of `acfg.name_data`).
-    pub data: BTreeMap<DataId, String>,
-    /// `KernelId -> kernel name` (inverse of `acfg.name_kernels`).
-    pub kernel: BTreeMap<KernelId, String>,
-    /// `WorkerId -> worker name` (inverse of `acfg.name_workers`).
-    pub worker: BTreeMap<WorkerId, String>,
-    /// `IterVar -> loop-variable name` (inverse of
-    /// `acfg.name_iter_vars`). A `block_transform`-synthesised tile
-    /// iter-var has an entry here too (it has a generated name) but
-    /// NO `NameSidecar::loop_bounds` entry — that absence is how the
-    /// backend tells "synthesised tile loop, use concrete range" from
-    /// "source loop, render symbolic bound".
-    pub iter_var: BTreeMap<IterVar, String>,
-    /// The set of *inner intra-tile* loop iter-vars produced by
-    /// `block_transform` (verbatim `acfg.inner_block_iter_vars`).
-    ///
-    /// `block_transform` rewrites `for VAR : LO..HI  block=N` into
-    /// `for VAR__tile : 0..ceil((HI-LO)/N) { for VAR : 0..N { body } }`
-    /// and **reuses VAR's original [`IterVar`] on the inner loop**.
-    /// Its module docs are explicit (line ~83): the inner loop
-    /// iterates `0..N`, NOT `LO..LO+N`, so **codegen** that wants the
-    /// absolute iteration value "must compute `LO + tile*N + inner`"
-    /// — block_transform deliberately defers that index rebinding to
-    /// the backend.
-    ///
-    /// The pre-TASK-0124 AlgoIR-walking backend never did this: it
-    /// walked the *source* `IrStmt` (which has no block transform at
-    /// all) and emitted the untiled loop, which is runtime-correct
-    /// only because it never tiled. The EventList faithfully carries
-    /// the tiled structure, so the EventList-only backend MUST do
-    /// the absolute-index rebinding block_transform defers, or an
-    /// accumulator kernel (07-matmul `madd`) double-counts.
-    ///
-    /// LIMITATION (filed as TASK-0173): the rebinding is applied only
-    /// for the **evenly-divisible** case (one tile nest per inner
-    /// var — e.g. 07-matmul `block=8`, N=16). The **non-divisible /
-    /// trailing-partial-tile** case (05-stencil `block=4`, range
-    /// length 14) decomposes into TWO sibling nests whose correct
-    /// absolute formulas differ (`LO + tile*N + inner` for the full
-    /// nest vs the constant base `LO + num_full*N + inner` for the
-    /// partial nest) — and the EventList/ACFG does NOT carry
-    /// `num_full` / a "this is the partial tile" marker, so a correct
-    /// general rebinding is a real contract extension, not a clean
-    /// backend-local change. For the non-divisible inner var the
-    /// backend keeps the source-form bound (current behaviour);
-    /// 05-stencil/blocked stays runtime-correct because `blur3` is
-    /// idempotent (re-writing `img_out[y][x]` with the same value).
-    /// See TASK-0173 for the proper fix.
-    pub inner_block_iter_vars: BTreeSet<IterVar>,
-}
+// NameTables moved to `compiler` as of TASK-0238 (cycle 25). Re-exported
+// here so historic `pthreads_sync::NameTables` paths continue to work
+// (mp-tcp-bufsync's `pub use pthreads_sync::NameTables` + pthreads-
+// async's same re-export are unchanged; both transitively re-export
+// the now-`compiler::NameTables` definition). Cycle-24 review-gate
+// B.1 found that the struct holds zero pthreads-sync-specific content,
+// and its prior home prevented the cross-backend test-helper crate
+// `test-common` from depending on pthreads-sync (would cycle). Moving
+// to compiler dissolves both constraints.
+pub use compiler::NameTables;
 
 /// Paths to the files [`emit`] wrote, returned for callers that want
 /// to inspect or invoke them.
