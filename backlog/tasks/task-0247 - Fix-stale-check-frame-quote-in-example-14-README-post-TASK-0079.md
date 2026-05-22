@@ -1,9 +1,10 @@
 ---
 id: TASK-0247
 title: Fix stale 'check frame' quote in example 14 README (post-TASK-0079)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-22 13:01'
+updated_date: '2026-05-22 13:06'
 labels:
   - docs
   - M4
@@ -21,5 +22,11 @@ nuc-nucleus/examples/14-hearing-aid/README.md:32 still quotes the directive as '
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 README.md line 32 quotes the conformant 'check loop frame : latency_max = 10ms;' form (matches schedule file verbatim)
+- [x] #1 README.md line 32 quotes the conformant 'check loop frame : latency_max = 10ms;' form (matches schedule file verbatim)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 43 (2026-05-22) — closed via direct main-thread edit (too trivial to warrant a delegated subagent cycle). One-line README fix: 'check frame : latency_max = 10ms;' → 'check loop frame : latency_max = 10ms;' (matching the schedule file at schedules/embedded_multimcu.sched.nuc:105 which TASK-0079 already updated).
+<!-- SECTION:FINAL_SUMMARY:END -->

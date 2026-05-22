@@ -29,7 +29,7 @@ spatial decomposition*, not data parallelism.
 `embedded_multimcu.sched.nuc` ends with:
 
 ```
-check frame : latency_max = 10ms;
+check loop frame : latency_max = 10ms;
 ```
 
 This is a **runtime assertion**, not a compiler constraint. v2 has no
