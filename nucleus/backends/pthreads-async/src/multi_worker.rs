@@ -876,4 +876,177 @@ mod tests {
             ),
         }
     }
+
+    // ----------------------------------------------------------------
+    // TASK-0235: edge-case coverage for `barrier_participants` (cycle-21
+    // review-gate C.2 / F.3 follow-up). The existing TASK-0234 tests pin
+    // the COMMON case (non-empty + uniform participants per tag); these
+    // two synthetic fixtures cover the two edges that no in-tree e2e
+    // example exercises.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn build_zero_barrier_multi_worker_has_empty_barrier_participants() {
+        // Edge (a): a multi-worker schedule with ZERO Event::Sync.
+        // No real e2e fixture produces this (every schedule that
+        // crosses worker boundaries also gets `inject_syncs` barriers),
+        // so the only way to exercise it is to construct per_worker
+        // directly. A future regression in the walker that synthesised
+        // a phantom tag for non-Sync events (e.g. confusing a Push with
+        // a barrier) would pass every existing test — this one pins
+        // that the map stays empty when the input has no Sync.
+        use compiler::event::{DataId, SeqTag};
+        let host = WorkerId(0);
+        let w_b = WorkerId(1);
+        let data = DataId(0);
+        let seq = SeqTag(0);
+
+        let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTM::new();
+        per_worker.insert(
+            host,
+            vec![Event::Push {
+                dst: w_b,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            }],
+        );
+        per_worker.insert(
+            w_b,
+            vec![Event::Wait {
+                src: host,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            }],
+        );
+
+        // Plan::build needs a transfer_buffer_for_seq entry for every
+        // cross-worker (DataId, SeqTag) pair; no Sync needed.
+        let names = NameTables::default();
+        let mut sidecar = NameSidecar::default();
+        sidecar.transfer_buffer_for_seq.insert(seq, 1);
+
+        let plan = Plan::build(&per_worker, &names, &sidecar)
+            .expect("Plan::build should succeed for 2 workers + 1 ring + 0 barriers");
+
+        assert_eq!(
+            plan.used_workers.len(),
+            2,
+            "fixture precondition: both workers carry events"
+        );
+        assert_eq!(
+            plan.ring_ids.len(),
+            1,
+            "one cross-worker Push/Wait pair => one ring"
+        );
+        assert!(
+            plan.barrier_participants.is_empty(),
+            "no Event::Sync in any worker's events => barrier_participants \
+             must stay empty; got {:?}",
+            plan.barrier_participants
+        );
+    }
+
+    #[test]
+    fn build_asymmetric_participant_barriers_lower_correctly() {
+        // Edge (b): two distinct SyncTags with DIFFERENT participant set
+        // sizes within the same Plan. Mirrors pthreads-sync's
+        // `partial_nonuniform_barrier_multi_worker_lowers_correctly`
+        // (tests/multi_worker.rs:334), proving the docstring claim
+        // "partial / non-uniform barriers lower correctly" for
+        // pthreads-async's Plan too. A regression that synthesised a
+        // UNION participant set across tags (or that pinned one
+        // canonical size) would fail here.
+        //
+        // No Push/Wait: barriers alone are sufficient to exercise the
+        // `collect_barriers_by_tag` walker + the `or_insert_with`
+        // recording rule in Plan::build. Without Push/Wait the sidecar
+        // can stay empty (no transfer_buffer_for_seq lookup happens).
+        use compiler::event::SyncKind;
+        let host = WorkerId(0);
+        let w0 = WorkerId(1);
+        let w1 = WorkerId(2);
+        let tag_a = SyncTag(0);
+        let tag_b = SyncTag(1);
+
+        // Two-participant barrier (tag A): {host, w0}.
+        let parts_a: BTreeSet<WorkerId> = [host, w0].into_iter().collect();
+        // Three-participant barrier (tag B): {host, w0, w1}.
+        let parts_b: BTreeSet<WorkerId> = [host, w0, w1].into_iter().collect();
+
+        // Per TASK-0172's contract: every participant carries the
+        // Event::Sync for the barriers it participates in, with the
+        // SAME participant set. host + w0 carry both; w1 carries only B.
+        let sync_a = Event::Sync {
+            participants: parts_a.clone(),
+            kind: SyncKind::Barrier,
+            sync: tag_a,
+        };
+        let sync_b = Event::Sync {
+            participants: parts_b.clone(),
+            kind: SyncKind::Barrier,
+            sync: tag_b,
+        };
+
+        let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTM::new();
+        per_worker.insert(host, vec![sync_a.clone(), sync_b.clone()]);
+        per_worker.insert(w0, vec![sync_a.clone(), sync_b.clone()]);
+        per_worker.insert(w1, vec![sync_b.clone()]); // only tag B
+
+        let names = NameTables::default();
+        let sidecar = NameSidecar::default(); // no transfers, empty is fine
+
+        let plan = Plan::build(&per_worker, &names, &sidecar)
+            .expect("Plan::build should succeed for 3 workers + 0 rings + 2 barriers");
+
+        assert_eq!(
+            plan.used_workers.len(),
+            3,
+            "fixture precondition: all three workers carry at least one Sync"
+        );
+        assert!(
+            plan.ring_ids.is_empty(),
+            "no Push/Wait in any worker's events => no rings; got {:?}",
+            plan.ring_ids
+        );
+        assert_eq!(
+            plan.barrier_participants.len(),
+            2,
+            "two distinct SyncTags => two entries; got {:?}",
+            plan.barrier_participants
+        );
+
+        let a_parts = plan
+            .barrier_participants
+            .get(&tag_a)
+            .expect("tag A must be recorded");
+        let b_parts = plan
+            .barrier_participants
+            .get(&tag_b)
+            .expect("tag B must be recorded");
+
+        assert_eq!(
+            a_parts.len(),
+            2,
+            "tag A participants: {{host, w0}} => size 2; got {a_parts:?}"
+        );
+        assert_eq!(
+            b_parts.len(),
+            3,
+            "tag B participants: {{host, w0, w1}} => size 3; got {b_parts:?}"
+        );
+        assert_ne!(
+            a_parts.len(),
+            b_parts.len(),
+            "asymmetric barriers must record DIFFERENT participant-set \
+             sizes; A={a_parts:?} B={b_parts:?}"
+        );
+
+        // Exact set identity (not just size): the walker must record
+        // the participant set verbatim from the first Sync sighting,
+        // not a union or canonicalised form.
+        assert_eq!(a_parts, &parts_a, "tag A set identity must match input");
+        assert_eq!(b_parts, &parts_b, "tag B set identity must match input");
+    }
 }
