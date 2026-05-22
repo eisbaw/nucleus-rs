@@ -14,6 +14,13 @@ members = [
     "driver",
     "e2e",
     "mp-tcp-common",
+    # Shared backend codegen crate (TASK-0244 cycle 37): houses the
+    # multi-worker event-walker (TASK-0239), the check_frame emit
+    # templates (TASK-0222), and the RenderCtx + expression/index/
+    # kernel-call/loop-bound/type renderers (TASK-0124 et al.) that
+    # every tier-1 backend consumes identically. Parents all three
+    # backend crates so none has to depend on any other.
+    "backend-common",
     "backends/pthreads-sync",
     "backends/mp-tcp-bufsync",
     # pthreads-async (TASK-0042.01 cycle 16): skeleton only — `emit()`

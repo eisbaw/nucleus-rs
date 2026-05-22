@@ -45,13 +45,14 @@ use std::fmt::Write as _;
 use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
-use pthreads_sync::multi_worker_walker::{
+use backend_common::multi_worker_walker::{
     self as walker, RendezvousId, WalkerCtx,
 };
-use pthreads_sync::{
+use backend_common::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
-    emit_count_static, render_array_init_for, rust_type_of,
+    emit_count_static,
 };
+use backend_common::render::{render_array_init_for, rust_type_of};
 
 use crate::ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
 use crate::{EmitError, NameTables};
@@ -573,8 +574,8 @@ impl<'a> Plan<'a> {
 /// once per UNIQUE ident.
 fn collect_unique_count_check_frames(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
-) -> Vec<pthreads_sync::CountCheckLoop> {
-    let mut by_ident: BTreeMap<String, pthreads_sync::CountCheckLoop> = BTreeMap::new();
+) -> Vec<backend_common::check_frame::CountCheckLoop> {
+    let mut by_ident: BTreeMap<String, backend_common::check_frame::CountCheckLoop> = BTreeMap::new();
     for evs in per_worker.values() {
         for cf in collect_count_check_frames(evs) {
             by_ident.entry(cf.ident.clone()).or_insert(cf);

@@ -1,0 +1,50 @@
+# Shared backend codegen crate (TASK-0244). Houses code that every
+# tier-1 backend (pthreads-sync, pthreads-async, mp-tcp-bufsync)
+# consumes identically:
+#
+#   - multi_worker_walker  — the parameterised per-worker EventList
+#                            walker first extracted in TASK-0239
+#                            (lived in pthreads-sync until this move).
+#   - check_frame          — `Count`/`Log`/`Panic` check_loop emit
+#                            templates first shared in TASK-0222.
+#   - render               — `RenderCtx` + the expression / index /
+#                            kernel-call / loop-bound / type renderers
+#                            that ALL three backends share. The
+#                            cross-backend bit-identical differential
+#                            (PRD §10.1) rests on the fact that there
+#                            is exactly ONE implementation, called
+#                            from every backend's emit() path.
+#
+# Why a separate crate (vs. a `compiler` submodule): the codegen layer
+# is the wrong shape for `compiler` (which owns parse/lower/link/acfg,
+# no string emit). Backends were the natural home but lifting the
+# shared code into one of them (pthreads-sync, cycles 17/22/24/31)
+# created a backwards-pointing dependency arrow that is not
+# semantically real — pthreads-async and mp-tcp-bufsync are siblings
+# of pthreads-sync, not children. backend-common parents all three.
+#
+# What stays per-backend: the project-skeleton renderers
+# (`pthreads_sync::render_cargo_toml` / `render_run_sh`), the
+# single-worker pthreads delegate (`render_single_worker_main`,
+# called by pthreads-async's 0/1-worker arm — the one dependency
+# arrow that remains, and is genuinely a delegation, not a leak), and
+# each backend's `multi_worker::Plan` (whose substrate — Slot vs Ring
+# vs TCP — is the real per-backend variation).
+
+[package]
+name = "backend-common"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "backend_common"
+path = "src/lib.rs"
+
+[dependencies]
+# The only dependency: the compiler crate's contract types
+# (Event/EventList, NameSidecar, NameTables, the inert IrExpr grammar,
+# ResolvedType/ScalarType). No backend dep — backends are CONSUMERS
+# of this crate, and a reverse arrow would cycle.
+compiler = { path = "../compiler" }

@@ -27,6 +27,12 @@ path = "src/lib.rs"
 # those contract types themselves carry. The dep remains for those
 # modules only — no parser/lower/link/acfg internals.
 compiler = { path = "../../compiler" }
+# Shared codegen primitives (TASK-0244 cycle 37): RenderCtx, the
+# expression/index/kernel-call/loop-bound/type renderers, the
+# check_frame emit templates, and the multi-worker event walker.
+# Lifted out of THIS crate by cycle 37 — pthreads-sync is now a
+# consumer of backend-common like the other backends.
+backend-common = { path = "../../backend-common" }
 
 [dev-dependencies]
 # Shared lower-link-inject pipeline boilerplate (TASK-0237). Refactored

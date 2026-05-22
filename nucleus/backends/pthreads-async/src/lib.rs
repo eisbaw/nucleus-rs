@@ -105,13 +105,20 @@ use std::path::{Path, PathBuf};
 // "<backend> codegen error:"). The Display arms in `pthreads-sync`
 // emit the message without a backend literal, so user-visible text
 // from any re-exporter (this crate, mp-tcp-bufsync) reads cleanly.
-pub use pthreads_sync::{EmitError, NameTables};
+pub use backend_common::EmitError;
+pub use compiler::NameTables;
 
 // Shared codegen — the single source of truth for the project skeleton
 // (Cargo.toml + run.sh) AND the single-worker main.rs body. Reusing
 // these IS how the cross-backend differential invariant on naive
 // schedules holds: pthreads-async's emitted artefact is byte-identical
 // to pthreads-sync's for any `used_workers <= 1` input.
+//
+// `render_cargo_toml` / `render_run_sh` / `render_single_worker_main`
+// stay in pthreads-sync (TASK-0244 cycle 37): they are the pthreads-
+// sync-specific project skeleton + straight-line emitter, and the
+// dependency arrow is genuinely a delegation (not a leak of shared
+// codegen, which now lives in backend-common).
 use pthreads_sync::{render_cargo_toml, render_run_sh, render_single_worker_main};
 
 // AlgoIR-free: the only `compiler::*` surface this crate uses is the

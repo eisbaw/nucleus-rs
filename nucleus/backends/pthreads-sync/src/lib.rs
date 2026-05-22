@@ -83,22 +83,35 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
-// AlgoIR-free: the ONLY `compiler::algo` import is the inert
-// expression grammar the EventList itself carries (index / scalar
-// arg / const-bound expressions). No `AlgoIR`, no `LinkedIR`, no
-// `ResolvedKernel`, no statement walk. ResolvedType/ScalarType come
-// exclusively from the NameSidecar.
-use compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
-use compiler::event::{
-    ArgBinding, DataId, DataSlice, Event, IterVar, KernelId, ViolationKind, WorkerId,
-};
+// AlgoIR-free: this crate is now AlgoIR-FREE — every type used here
+// comes through `backend_common::render` (which re-exports from
+// `compiler::algo` where needed for its OWN typed signatures).
+use compiler::event::{DataId, Event, IterVar, ViolationKind, WorkerId};
 use compiler::sidecar::NameSidecar;
 
+// Shared codegen primitives (TASK-0244 cycle 37). The expression /
+// index / kernel-call / loop-bound / type renderers, the check_frame
+// emit templates, and the per-worker multi-worker event walker all
+// live in backend-common — every backend (this one, pthreads-async,
+// mp-tcp-bufsync) consumes the SAME implementation, no drift.
+use backend_common::check_frame::{
+    collect_count_check_frames, emit_count_branch, emit_count_guard_local,
+    emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,
+};
+use backend_common::render::{
+    data_name, render_const_expr, render_fire_args, render_fire_output_assign, render_loop_bounds,
+    RenderCtx,
+};
+// Re-export the codegen-time error type so downstream callers (the
+// driver, tests, other backends that delegate to this crate's
+// single-worker emitter) continue to spell it `pthreads_sync::
+// EmitError`. The canonical definition lives in backend-common since
+// every backend re-exports it identically.
+pub use backend_common::render::EmitError;
+
 mod multi_worker;
-pub mod multi_worker_walker;
 
 // --------------------------------------------------------------------
 // Public surface
@@ -131,59 +144,10 @@ pub struct EmitResult {
     pub run_sh: PathBuf,
 }
 
-/// Errors that can stop a codegen run.
-#[derive(Debug)]
-pub enum EmitError {
-    /// Failed to read the user's `kernels.rs`.
-    KernelsReadFailed { path: PathBuf, source: io::Error },
-    /// Failed to create `out_dir` or any sub-directory.
-    OutputCreateFailed { path: PathBuf, source: io::Error },
-    /// Failed to write a generated file.
-    WriteFailed { path: PathBuf, source: io::Error },
-    /// The EventList asks for something this backend cannot emit
-    /// (nested call in argument position, identity-copy shape, …).
-    UnsupportedFeature(String),
-    /// The `(EventList, NameSidecar, name tables)` contract did not
-    /// carry a fact the backend needs to emit valid code (a `DataId`
-    /// with no sidecar type, a `KernelId` with no name, …). This is
-    /// the fail-loud seam for a contract regression — NEVER paper
-    /// over it with a default (CLAUDE.md: no workarounds).
-    ContractGap(String),
-}
-
-impl std::fmt::Display for EmitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EmitError::KernelsReadFailed { path, source } => {
-                write!(f, "failed to read kernels.rs at {}: {}", path.display(), source)
-            }
-            EmitError::OutputCreateFailed { path, source } => write!(
-                f,
-                "failed to create output directory {}: {}",
-                path.display(),
-                source
-            ),
-            EmitError::WriteFailed { path, source } => {
-                write!(f, "failed to write {}: {}", path.display(), source)
-            }
-            // TASK-0230: the per-backend prefix is owned by the driver
-            // dispatch site (`driver/src/main.rs:406/426/448`), which
-            // wraps every Display with "<backend> codegen error:". The
-            // inner "pthreads-sync:" literal that lived here was a
-            // cosmetic lie when surfaced from mp-tcp-bufsync or
-            // pthreads-async (both re-export `EmitError`). Dropped so
-            // every backend's user-visible error text reads cleanly.
-            EmitError::UnsupportedFeature(msg) => {
-                write!(f, "unsupported feature: {msg}")
-            }
-            EmitError::ContractGap(msg) => {
-                write!(f, "EventList/sidecar contract gap: {msg}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for EmitError {}
+// EmitError moved to backend-common (TASK-0244). The canonical type
+// is `backend_common::render::EmitError`; this crate re-exports it at
+// the top of this file (`pub use backend_common::render::EmitError`)
+// so historic `pthreads_sync::EmitError` paths keep working.
 
 /// Emit a runnable Cargo project from the per-worker EventList.
 ///
@@ -345,234 +309,14 @@ pub fn render_run_sh() -> String {
 // --------------------------------------------------------------------
 // EventList -> main.rs codegen (single-worker / straight-line)
 // --------------------------------------------------------------------
-
-// --------------------------------------------------------------------
-// Count-on-violation helpers (TASK-0052.04).
 //
-// Shared by `render_main_rs` (single-worker) and the
-// per-Count-loop emit inside `render_event`. The mp-tcp-bufsync
-// backend mirrors the SAME emit string shape (see its
-// `render_worker_program`); both are exercised by integration tests
-// that pin the emit string, so a drift between backends is caught.
-//
-// The `loop_var` sanitizer is defensive: today every schedule's
-// loop-var name is `[A-Za-z_][A-Za-z0-9_]*` (chumsky-grammar enforced
-// at parse), so the sanitizer is a no-op on every realistic input.
-// It's here so a future grammar change doesn't silently emit invalid
-// Rust identifiers (e.g. UTF-8 idents, `-`, leading digits).
-// --------------------------------------------------------------------
-
-/// One Count check loop, materialised for codegen. Public so the
-/// mp-tcp-bufsync backend can reuse the SAME collector and emit the
-/// SAME shape — single implementation, no drift, the cross-backend
-/// differential property holds.
-#[derive(Debug, Clone)]
-pub struct CountCheckLoop {
-    /// Sanitized identifier suffix — appears in the static name
-    /// `NUC_CHECK_COUNT_<ident>` and the guard local
-    /// `_nuc_check_reporter_<ident>`.
-    pub ident: String,
-    /// Original loop variable name (carried verbatim into the
-    /// stderr summary so the user sees the directive they wrote).
-    pub loop_var: String,
-    /// Threshold in nanoseconds (post-unit-normalisation, same as
-    /// `CheckFrame::latency_max_ns`).
-    pub latency_max_ns: u64,
-}
-
-/// Replace any non-`[A-Za-z0-9_]` byte with `_`; if the resulting
-/// first byte is a digit, prefix `_`. Pure-ASCII; idempotent. Two
-/// loop_vars that differ only outside the alphabet (e.g. `a-1` vs
-/// `a_1`) collide post-sanitization — but the parser would already
-/// have rejected the first form, so this is an unreachable contract
-/// position in practice; documenting it here rather than guarding it
-/// with a runtime check.
-pub fn sanitize_loop_var(name: &str) -> String {
-    let mut s: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-        .collect();
-    if s.is_empty() {
-        s.push('_');
-    }
-    if s.as_bytes()[0].is_ascii_digit() {
-        s.insert(0, '_');
-    }
-    s
-}
-
-/// Walk `events` recursively; collect every Count check_frame in
-/// EventList order. Deterministic order is the EventList walk
-/// order (which is itself deterministic across builds — same
-/// guarantee the rest of codegen relies on).
-pub fn collect_count_check_frames(events: &[Event]) -> Vec<CountCheckLoop> {
-    let mut out = Vec::new();
-    fn walk(events: &[Event], out: &mut Vec<CountCheckLoop>) {
-        for e in events {
-            if let Event::Loop { body, check_frame, .. } = e {
-                if let Some(frame) = check_frame {
-                    if matches!(frame.on_violation, ViolationKind::Count) {
-                        out.push(CountCheckLoop {
-                            ident: sanitize_loop_var(&frame.loop_var),
-                            loop_var: frame.loop_var.clone(),
-                            latency_max_ns: frame.latency_max_ns,
-                        });
-                    }
-                }
-                walk(body, out);
-            }
-        }
-    }
-    walk(events, &mut out);
-    out
-}
-
-/// Emit the file-scope Drop-guard struct + its `Drop` impl. Called
-/// from `render_main_rs` only when at least one Count check loop is
-/// present. The summary message is gated by `n > 0` so a clean run
-/// (zero violations) prints NOTHING to stderr — keeping stderr quiet
-/// on the happy path is what makes the cross-backend differential
-/// indifferent to Count's presence in the schedule.
-pub fn emit_count_reporter_struct(out: &mut String) {
-    writeln!(
-        out,
-        "// TASK-0052.04: per-`check loop` Count summary guard.\n\
-         struct NucCheckCountReporter {{\n\
-         \x20\x20\x20\x20counter: &'static std::sync::atomic::AtomicU64,\n\
-         \x20\x20\x20\x20loop_var: &'static str,\n\
-         \x20\x20\x20\x20threshold_ns: u64,\n\
-         }}\n\
-         impl Drop for NucCheckCountReporter {{\n\
-         \x20\x20\x20\x20fn drop(&mut self) {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20let n = self.counter.load(std::sync::atomic::Ordering::Relaxed);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20if n > 0 {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20eprintln!(\"check loop `{{}}` violated latency_max={{}} ns: {{}} occurrence(s)\", self.loop_var, self.threshold_ns, n);\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
-         \x20\x20\x20\x20}}\n\
-         }}"
-    )
-    .ok();
-}
-
-// --------------------------------------------------------------------
-// TASK-0222: Shared check_frame emit templates.
-//
-// The four templates below were previously verbatim-duplicated between
-// pthreads-sync (single-worker + multi-worker codegen) and
-// mp-tcp-bufsync (8 inline sites total: 2 backends × 4 templates).
-// pthreads-async's multi-worker arm (TASK-0228 Wave B-2) becomes the
-// third tier-1 consumer. Two-readers-can-hold-it-in-their-head no
-// longer holds; extract the templates into `pub fn` helpers so a
-// single edit propagates to every backend by construction (drift
-// detection becomes structural prevention, not test-as-tripwire).
-//
-// Each helper takes `out: &mut String` and writes ONE emit unit
-// (one Rust statement / declaration). The caller owns indentation,
-// loop iteration, and the surrounding context — these helpers are
-// the smallest unit of shared template, not a wrapper for the whole
-// codegen flow.
-// --------------------------------------------------------------------
-
-/// Emit the file-scope `static NUC_CHECK_COUNT_<ident>: AtomicU64`
-/// declaration for a Count check_loop. One line + trailing newline.
-///
-/// Caller wraps this in a `for cf in count_frames` loop after
-/// [`emit_count_reporter_struct`], and emits a blank `writeln!(out)`
-/// after the loop. Mirrors the pre-extraction pthreads-sync site at
-/// lib.rs:551-559 and mp-tcp-bufsync at lib.rs:463-471 (TASK-0052.04).
-pub fn emit_count_static(out: &mut String, ident: &str) {
-    writeln!(
-        out,
-        "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
-         std::sync::atomic::AtomicU64::new(0);",
-    )
-    .ok();
-}
-
-/// Emit the per-Count-loop Drop guard local inside `fn main()`. A
-/// five-line block: `let _nuc_check_reporter_<ident> = NucCheckCountReporter { ... };`.
-///
-/// Caller iterates `for cf in count_frames`, and emits a blank line
-/// after the loop if `!count_frames.is_empty()`. Mirrors the
-/// pre-extraction pthreads-sync site at lib.rs:572-583 and
-/// mp-tcp-bufsync at lib.rs:588-600 (TASK-0052.04).
-///
-/// The four-space leading indent is HARDCODED to match the
-/// `fn main()`-level scope all callers emit into. If a future
-/// codegen path needs nested-scope emission, add a `pad: &str`
-/// parameter.
-pub fn emit_count_guard_local(
-    out: &mut String,
-    ident: &str,
-    loop_var: &str,
-    latency_max_ns: u64,
-) {
-    writeln!(
-        out,
-        "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
-         \x20\x20\x20\x20}};",
-        ns = latency_max_ns,
-    )
-    .ok();
-}
-
-/// Emit the Log on-violation branch — one inline conditional that
-/// runs at the bottom of an outer-loop iteration after `_check_elapsed`
-/// has been computed. The branch prints to stderr (NOT stdout, so the
-/// cross-backend differential on output.bin remains stable; PRD §6.3.5
-/// 'Log fires sparingly').
-///
-/// `body_pad` is the caller's indentation string (e.g. `"        "`
-/// for two nested fors). `loop_var` appears verbatim in the
-/// `\`check loop \`<lv>\`\`` backticks of the user-visible message.
-/// `latency_max_ns` appears twice: in the threshold compare and in
-/// the printed line. Mirrors pre-extraction pthreads-sync at
-/// lib.rs:991-997 and mp-tcp-bufsync at lib.rs:809-815 (TASK-0052.04).
-pub fn emit_log_branch(
-    out: &mut String,
-    body_pad: &str,
-    loop_var: &str,
-    latency_max_ns: u64,
-) {
-    writeln!(
-        out,
-        "{body_pad}if _check_elapsed > {ns}_u128 {{ \
-         eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
-        ns = latency_max_ns,
-        lv = loop_var,
-    )
-    .ok();
-}
-
-/// Emit the Count on-violation branch — one inline conditional that
-/// atomically increments the file-scope `NUC_CHECK_COUNT_<id>` counter
-/// (Relaxed ordering is sufficient; see pthreads-sync's pre-extraction
-/// comment at lib.rs:1010-1018 for the memory-ordering rationale).
-///
-/// `body_pad` is the caller's indentation string. `id` is the
-/// SANITIZED ident (call [`sanitize_loop_var`] before passing here —
-/// this helper does NOT sanitize because the multi-worker path needs
-/// a per-thread-pre-sanitised value, and the call-site already has
-/// it). Mirrors pre-extraction pthreads-sync at lib.rs:1020-1026 and
-/// mp-tcp-bufsync at lib.rs:827-833 (TASK-0052.04).
-pub fn emit_count_branch(
-    out: &mut String,
-    body_pad: &str,
-    sanitized_ident: &str,
-    latency_max_ns: u64,
-) {
-    writeln!(
-        out,
-        "{body_pad}if _check_elapsed > {ns}_u128 {{ \
-         NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
-        ns = latency_max_ns,
-        id = sanitized_ident,
-    )
-    .ok();
-}
+// The check_frame emit templates (CountCheckLoop, sanitize_loop_var,
+// collect_count_check_frames, emit_count_reporter_struct,
+// emit_count_static, emit_count_guard_local, emit_log_branch,
+// emit_count_branch) lived inline here through TASK-0052.04 and
+// TASK-0222. TASK-0244 (cycle 37) moved them into
+// `backend_common::check_frame` so every backend imports the SAME
+// implementation — no second copy exists to drift.
 
 /// Render `main.rs` from a single worker's `EventList`.
 ///
@@ -671,27 +415,15 @@ fn render_main_rs(
     // each `Event::Loop.block_tag` (TASK-0180), not from a
     // program-global occurrence count — so there is no longer a
     // pre-walk to classify inner-block vars here.
-    let ctx = RenderCtx {
-        names,
-        sidecar,
-        abs_subst: BTreeMap::new(),
-    };
+    //
+    // `RenderCtx` lives in `backend_common::render` as of TASK-0244;
+    // its `abs_subst` map starts empty and is grown per-occurrence in
+    // `render_event` when a strip-mined `block_tag` arrives.
+    let ctx = RenderCtx::new(names, sidecar);
     render_events(events, &mut out, 1, &ctx)?;
 
     writeln!(out, "}}").ok();
     Ok(out)
-}
-
-struct RenderCtx<'a> {
-    names: &'a NameTables,
-    sidecar: &'a NameSidecar,
-    /// Active absolute-index substitutions: an inner-block loop
-    /// variable name -> the `(LO + tile*N + inner)` Rust expression
-    /// it must expand to at every *body* use site. Empty for every
-    /// non-blocked program, so non-blocked codegen is byte-identical
-    /// to the pre-TASK-0124 backend (the map is consulted only by
-    /// `render_int_expr`/`render_const_expr` on an `Ident`).
-    abs_subst: BTreeMap<String, String>,
 }
 
 // `divisible_inner_block_vars` (the program-global `counts==1`
@@ -761,7 +493,9 @@ fn walk_fire_outputs(
 
 /// `vec![<zero>; product(dims)]` for an array, or the scalar zero
 /// literal for a scalar — sized + typed ENTIRELY from the sidecar
-/// (no AlgoIR). Mirrors the old `render_array_init`.
+/// (no AlgoIR). Local wrapper that adds a named-DataId contract-gap
+/// error around `backend_common::render::render_array_init_for`
+/// (TASK-0244 single source of truth for the string shape).
 fn render_array_init(
     did: DataId,
     sidecar: &NameSidecar,
@@ -773,25 +507,16 @@ fn render_array_init(
              (build_sidecar should carry every ACFG data symbol)"
         ))
     })?;
-    if ty.is_scalar() {
-        Ok(rust_scalar_zero(&ty.scalar).to_string())
-    } else {
-        let total: usize = ty.dims.iter().copied().product();
-        let zero = rust_scalar_zero(&ty.scalar);
-        Ok(format!("vec![{zero}; {total}]"))
-    }
+    Ok(backend_common::render::render_array_init_for(ty))
 }
 
-/// The Rust literal for "zero" of a scalar type.
-fn rust_scalar_zero(t: &ScalarType) -> &'static str {
-    match t {
-        ScalarType::Usize | ScalarType::Isize => "0",
-        ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => "0",
-        ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => "0",
-        ScalarType::F32 | ScalarType::F64 => "0.0",
-        ScalarType::Bool => "false",
-    }
-}
+// `rust_scalar_zero`, `bin_op_str`, `render_int_expr`,
+// `render_const_expr`, `render_loop_bounds`, `render_flat_index`,
+// `classify_data_slice`, `SliceForm`, `render_fire_arg`,
+// `render_fire_args`, `render_fire_output_assign`, `data_name`,
+// `rust_scalar_type`, and `RenderCtx` all moved to
+// `backend_common::render` (TASK-0244). They are imported at the top
+// of this file from there.
 
 // --------------------------------------------------------------------
 // Event rendering
@@ -1114,546 +839,19 @@ fn render_event(
     }
 }
 
-/// Resolve a `DataId` to its source name, failing loud on a gap.
-fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
-    ctx.names
-        .data
-        .get(&did)
-        .cloned()
-        .ok_or_else(|| EmitError::ContractGap(format!("data id {did:?} has no name in NameTables")))
-}
+// `data_name` moved to `backend_common::render` (TASK-0244).
 
-/// Render one indexed-assignment statement (an `Event::Fire` with a
-/// non-empty `bindings.output.indices`). The caller supplies the RHS
-/// EXPRESSION (typically `kernels::<callee>(<args>)`) — no trailing
-/// semicolon, no leading indent. We return the full Rust statement
-/// ending in `;`. The two shapes (TASK-0209):
-///
-/// - **Scalar** (full rank): `D[idx] = <rhs>;` — single slot, byte-
-///   identical to the pre-TASK-0209 emission for examples 01..07.
-/// - **Sub-array** (partial prefix rank): the emitted code binds the
-///   RHS to a local, runtime-asserts the length against `sub_len`
-///   with a fail-loud-with-context message naming the slot, then
-///   `D[start..start+sub_len].copy_from_slice(&_rhs);`. The
-///   length-assert exists because the LHS `sub_len` derives from the
-///   declared shape (sidecar) while the RHS length depends on the
-///   kernel author's implementation. Without it, `copy_from_slice`
-///   would panic with std's terse `source slice length (N) does not
-///   match destination slice length (M)` message; the assert turns
-///   that into a diagnostic naming the slot and expected length
-///   (MPED fail-loud-with-context discipline; review-gate finding
-///   cycle-2 TASK-0209). Note the assert fires AFTER the RHS is
-///   evaluated, so behaviour for valid input is byte-identical when
-///   kernels honour their declared return shape.
-///
-/// Sharing this site between the single-worker `render_main_rs`, the
-/// multi-worker pthreads renderer, and the mp-tcp-bufsync renderer
-/// keeps the three Fire-output sites byte-identical — no codegen
-/// drift between backends, which is what the cross-backend
-/// differential (PRD §10.1) ultimately rests on.
-fn render_fire_output_assign(
-    o: &DataSlice,
-    rhs: &str,
-    ctx: &RenderCtx<'_>,
-) -> Result<String, EmitError> {
-    let name = data_name(o.data, ctx)?;
-    match classify_data_slice(o, ctx)? {
-        SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}] = {rhs};")),
-        SliceForm::SubArray { start, sub_len } => Ok(format!(
-            "{{ let _rhs = {rhs}; \
-             assert_eq!(_rhs.len(), {sub_len}usize, \
-             \"kernel result for `{name}` slot returned {{}} elements, declared shape requires {{}}\", \
-             _rhs.len(), {sub_len}usize); \
-             {name}[{start}..{start} + {sub_len}usize].copy_from_slice(&_rhs); }}"
-        )),
-    }
-}
-
-/// Render a kernel call's argument list from its [`FireBinding`]
-/// inputs. `Data` → indexed/whole-array read; `Scalar` → integer
-/// expression with a param-type cast decided via the SIDECAR's
-/// kernel signature (TASK-0169, AlgoIR-free); `Nested` → rejected
-/// (tier-1 backends do not lower a nested call in argument position).
-fn render_fire_args(
-    kernel: KernelId,
-    inputs: &[ArgBinding],
-    ctx: &RenderCtx<'_>,
-) -> Result<String, EmitError> {
-    // Per-param types come from the sidecar's kernel signature, NOT
-    // `algo.kernels` (AC#2). Absent only if the contract regressed.
-    let sig = ctx.sidecar.kernel_sig(kernel);
-    let mut parts = Vec::with_capacity(inputs.len());
-    for (i, arg) in inputs.iter().enumerate() {
-        let param_ty = sig.and_then(|s| s.params.get(i));
-        parts.push(render_fire_arg(arg, param_ty, ctx)?);
-    }
-    Ok(parts.join(", "))
-}
-
-fn render_fire_arg(
-    arg: &ArgBinding,
-    param_ty: Option<&ResolvedType>,
-    ctx: &RenderCtx<'_>,
-) -> Result<String, EmitError> {
-    match arg {
-        ArgBinding::Data(s) => {
-            if s.indices.is_empty() {
-                // Whole-array argument (passed by move per
-                // single-assignment). If the param is scalar this is
-                // a program bug; emit the bare name and let rustc
-                // catch it loudly (same as the old backend).
-                data_name(s.data, ctx)
-            } else {
-                // Classify scalar vs sub-array based on rank match
-                // (TASK-0209). Sidecar `dims` is the single source of
-                // truth for the data's declared shape — fewer indices
-                // than dims = a contiguous trailing sub-array, NOT a
-                // scalar. The old code emitted `name[idx]` (scalar)
-                // unconditionally; for a rank-4 `f32[B][C0][H][W]`
-                // accessed with one outer index this passed `f32`
-                // where the kernel signature expected `Vec<f32>` and
-                // cargo build failed E0308 (example 13 reproducer).
-                let name = data_name(s.data, ctx)?;
-                match classify_data_slice(s, ctx)? {
-                    SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}]")),
-                    SliceForm::SubArray { start, sub_len } => {
-                        // Owned `Vec<T>` matches `rust_type_of` for an
-                        // aggregate kernel param (`Vec<T>`); the call
-                        // moves it, consistent with the whole-array
-                        // case above. PRD §6.2.1 single-assignment
-                        // permits the move semantics.
-                        //
-                        // The literal `{sub_len}usize` makes the upper
-                        // bound a `usize` so the `start..start+sub_len`
-                        // range typechecks (`start` is already `as
-                        // usize` from `classify_data_slice`).
-                        Ok(format!(
-                            "{name}[{start}..{start} + {sub_len}usize].to_vec()"
-                        ))
-                    }
-                }
-            }
-        }
-        ArgBinding::Scalar(e) => {
-            let rendered = render_int_expr(e, ctx)?;
-            // Iter-var-derived scalars are typed i64; a scalar kernel
-            // param needs a cast. Param type from the sidecar.
-            if let Some(pty) = param_ty {
-                if pty.is_scalar() {
-                    return Ok(format!("({rendered}) as {}", rust_scalar_type(&pty.scalar)));
-                }
-            }
-            Ok(rendered)
-        }
-        ArgBinding::Nested { .. } => Err(EmitError::UnsupportedFeature(
-            "nested kernel call inside an argument expression".to_string(),
-        )),
-    }
-}
-
-/// The two shapes an indexed [`DataSlice`] lowers to in the flat-Vec
-/// layout (TASK-0209). Row-major: a PREFIX of the dims being indexed
-/// leaves a CONTIGUOUS trailing region — that's a sub-array. Equal
-/// rank between indices and dims is a single scalar slot.
-///
-/// Non-prefix partial access (e.g. fix the inner dim, leave the outer
-/// free) is NOT contiguous in row-major and cannot be produced by the
-/// current grammar — `IndexedLValue.indices` (`algo/ast.rs`) is a
-/// positional `Vec<SpExpr>` with no skip-marker, and the parser
-/// grammar `IDENT ('[' EXPR ']')*` always indexes outer dims first.
-/// `classify_data_slice` trusts that grammar floor and does not
-/// defensively reject; if a future IR or surface-syntax change adds
-/// skip-indexing, the classifier must be extended with a
-/// non-contiguous gather emission path (review-gate finding,
-/// cycle-2 TASK-0209).
-enum SliceForm {
-    /// Full-rank access — single slot in the flat `Vec<T>`.
-    Scalar(String),
-    /// Partial-prefix access — contiguous sub-slice
-    /// `[start .. start + sub_len]` of the flat `Vec<T>`.
-    SubArray { start: String, sub_len: usize },
-}
-
-/// Decide whether an indexed [`DataSlice`] is a scalar (full rank) or
-/// a contiguous prefix sub-array (partial rank), and render the
-/// flat-Vec coordinates.
-///
-/// Caller is responsible for `s.indices.is_empty() == false` (a
-/// whole-array reference has no index expression to lower — its
-/// argument-site rendering is the bare name).
-///
-/// The classification uses the sidecar `dims` ONLY: it is the single
-/// source of truth for declared shape (AlgoIR-free path; AC#2 of
-/// TASK-0124 still holds — no `algo.data` lookup).
-fn classify_data_slice(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<SliceForm, EmitError> {
-    debug_assert!(!s.indices.is_empty(), "classify_data_slice requires indices");
-    let name = data_name(s.data, ctx)?;
-    let ty = ctx.sidecar.data_type(s.data).ok_or_else(|| {
-        EmitError::ContractGap(format!(
-            "data `{name}` ({:?}) used with a {}-D index has no ResolvedType \
-             in the NameSidecar",
-            s.data,
-            s.indices.len()
-        ))
-    })?;
-    let dims = &ty.dims;
-    if s.indices.len() > dims.len() {
-        // Over-indexed: a real bug upstream of the backend (the
-        // contract pass should reject this). Fail LOUD with context.
-        return Err(EmitError::UnsupportedFeature(format!(
-            "data `{name}` over-indexed (sidecar dims={dims:?}, \
-             indices={}); contract pass should have rejected",
-            s.indices.len()
-        )));
-    }
-    if dims.is_empty() {
-        // Scalar data with at least one index — also a contract bug.
-        return Err(EmitError::UnsupportedFeature(format!(
-            "scalar data `{name}` indexed with {} expressions",
-            s.indices.len()
-        )));
-    }
-    // Special-case `indices.len() == 1`: the pre-TASK-0209
-    // `render_flat_index` 1D fast-path emitted `({i0}) as usize` (one
-    // paren level, no stride factor since `stride == dims[1..].prod()`).
-    // Preserve that exact spelling for examples 01..07 (load-bearing
-    // for byte-identical determinism on the existing matrix); the
-    // partial-rank-1 case (rank-1 index on rank>=2 data, e.g. example
-    // 13's `input[n]`) ALSO uses this scalar `(i0)` form for the start
-    // expression, with `sub_len = product(dims[1..])` carrying the
-    // trailing extent.
-    if s.indices.len() == 1 {
-        let i0 = render_int_expr(&s.indices[0], ctx)?;
-        let expr = format!("({i0}) as usize");
-        return if dims.len() == 1 {
-            Ok(SliceForm::Scalar(expr))
-        } else {
-            // Partial outer index into rank-N data (N>=2). The flat
-            // start is `i0 * product(dims[1..])`; reuse the scalar
-            // spelling for the index expression and multiply by the
-            // sub_len when emitting the range. To keep the start
-            // expression cheap and byte-identical to a hand-multiply,
-            // bake the stride into `start` here.
-            let sub_len: usize = dims[1..].iter().copied().product();
-            let start = if sub_len == 1 {
-                expr
-            } else {
-                format!("(({i0}) * {sub_len}) as usize")
-            };
-            Ok(SliceForm::SubArray { start, sub_len })
-        };
-    }
-    // Multi-dim case (indices.len() >= 2). Row-major stride for the
-    // full or partial PREFIX: index k contributes
-    // `(i_k) * (D_{k+1} * .. * D_{n-1})`. For partial rank, sub_len
-    // is `product(dims[indices.len()..])`. For full rank, sub_len's
-    // product is 1 (empty product) and the sum is the scalar flat
-    // index — byte-identical to the pre-TASK-0209 `render_flat_index`
-    // multi-dim path.
-    let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
-    for (k, idx_expr) in s.indices.iter().enumerate() {
-        let stride: usize = dims[k + 1..].iter().copied().product();
-        let rendered = render_int_expr(idx_expr, ctx)?;
-        if stride == 1 {
-            terms.push(format!("({rendered})"));
-        } else {
-            terms.push(format!("({rendered}) * {stride}"));
-        }
-    }
-    let expr = format!("({}) as usize", terms.join(" + "));
-    if s.indices.len() == dims.len() {
-        Ok(SliceForm::Scalar(expr))
-    } else {
-        let sub_len: usize = dims[s.indices.len()..].iter().copied().product();
-        Ok(SliceForm::SubArray {
-            start: expr,
-            sub_len,
-        })
-    }
-}
-
-/// Render a flat (row-major) index for a 1D `Vec<T>` of an
-/// N-dimensional shape. 1D → `(i0) as usize`. Higher rank → strides
-/// from the sidecar's `dims` (NOT `algo.data`): `(i0*D1*D2 + i1*D2 +
-/// i2) as usize`. Mirrors the old `render_flat_index` exactly.
-fn render_flat_index(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
-    if s.indices.is_empty() {
-        return Err(EmitError::UnsupportedFeature(
-            "render_flat_index called on a non-indexed reference".to_string(),
-        ));
-    }
-    if s.indices.len() == 1 {
-        let i0 = render_int_expr(&s.indices[0], ctx)?;
-        return Ok(format!("({i0}) as usize"));
-    }
-    let name = data_name(s.data, ctx)?;
-    let ty = ctx.sidecar.data_type(s.data).ok_or_else(|| {
-        EmitError::ContractGap(format!(
-            "data `{name}` ({:?}) used with a {}-D index has no ResolvedType \
-             in the NameSidecar",
-            s.data,
-            s.indices.len()
-        ))
-    })?;
-    let dims = &ty.dims;
-    if dims.len() != s.indices.len() {
-        return Err(EmitError::UnsupportedFeature(format!(
-            "data `{name}` rank/shape mismatch with index list \
-             (sidecar dims={dims:?}, indices={})",
-            s.indices.len()
-        )));
-    }
-    // Row-major: i0 * D1*D2*..*Dn + i1 * D2*..*Dn + ... + i_{n-1}.
-    let mut terms: Vec<String> = Vec::with_capacity(s.indices.len());
-    for (k, idx_expr) in s.indices.iter().enumerate() {
-        let stride: usize = dims[k + 1..].iter().copied().product();
-        let rendered = render_int_expr(idx_expr, ctx)?;
-        if stride == 1 {
-            terms.push(format!("({rendered})"));
-        } else {
-            terms.push(format!("({rendered}) * {stride}"));
-        }
-    }
-    Ok(format!("({}) as usize", terms.join(" + ")))
-}
-
-/// Render an integer-valued index/scalar expression as Rust.
-///
-/// Identifier resolution priority (highest first):
-///   1. `ctx.abs_subst` — an active strip-mined absolute-index
-///      rebinding (`inner_var` → `(LO + tile*N + inner)`). The map
-///      is empty for every non-blocked program.
-///   2. `ctx.sidecar.consts` — a declared `const` in the source
-///      algorithm (e.g. `const N : usize = 32;` referenced as `N`
-///      inside an `IndexExpr` such as `grid[t][(i+N-1) % N]`).
-///      Grammar §1 line 91-93 explicitly allows consts inside an
-///      IndexExpr; PRD §6.2.1 forbids iter-var shadowing a const, so
-///      the two namespaces never collide.
-///   3. Bare ident — an iteration variable in scope. Emitted as the
-///      verbatim Rust identifier; Rust's type-checker is responsible
-///      for confirming it is in scope (mirrors the prior backend).
-///
-/// The const-resolution path (step 2) is the fix for the IndexExpr-
-/// const bug discovered while landing example 11-game-of-life
-/// (cycle 35 / TASK-0042.04). Prior to that, an IndexExpr like
-/// `(t + ITERS) % (ITERS + 1)` rendered as `((t + ITERS) % (ITERS +
-/// 1))` — emitting bare `ITERS` as a Rust identifier, which is not
-/// in scope in the generated host source (the codegen does not
-/// declare a Rust `const ITERS` mirroring the Nuc const). Loop
-/// BOUNDS already resolve consts via `render_const_expr` (step 2 in
-/// that function), so `for t : 0 .. ITERS+1` worked; the asymmetry
-/// was the bug. Examples 01..09/13 only used loop variables in
-/// `IndexExpr`, so the bug was inert in the existing matrix.
-fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
-    match e {
-        IrExpr::IntLit(v) => Ok(format!("{v}")),
-        IrExpr::Ident(n) => {
-            if let Some(repl) = ctx.abs_subst.get(n) {
-                Ok(repl.clone())
-            } else if let Some(c) = ctx.sidecar.consts.get(n) {
-                Ok(format!("{}", c.value))
-            } else {
-                Ok(n.clone())
-            }
-        }
-        IrExpr::Neg(inner) => Ok(format!("-({})", render_int_expr(inner, ctx)?)),
-        IrExpr::BinOp(op, l, r) => {
-            let ls = render_int_expr(l, ctx)?;
-            let rs = render_int_expr(r, ctx)?;
-            Ok(format!("({ls} {} {rs})", bin_op_str(op)))
-        }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
-            "data-ref / call inside an integer index expression".to_string(),
-        )),
-    }
-}
-
-/// The `(lo, hi)` source strings for an `Event::Loop`.
-///
-/// If the iter var has a `sidecar.loop_bounds` entry it is a SOURCE
-/// `for` loop — render the *unevaluated* bound through
-/// `render_const_expr` + `sidecar.consts` so `for y : 1 .. H-1`
-/// (H=16) becomes `1_i64 .. (16_i64 - 1_i64)`, byte-identical to the
-/// old AlgoIR-walking backend.
-///
-/// If there is NO `loop_bounds` entry the loop is a
-/// `block_transform`-synthesised tile loop with no source form — use
-/// the concrete `Event::Loop.range`, rendered `{n}_i64` (matching the
-/// old backend, which rendered the ACFG `Repeat.range` literals for
-/// synthesised loops the same way).
-fn render_loop_bounds(
-    iter_var: IterVar,
-    range: &std::ops::Range<i64>,
-    ctx: &RenderCtx<'_>,
-) -> Result<(String, String), EmitError> {
-    match ctx.sidecar.loop_bounds.get(&iter_var) {
-        Some(b) => {
-            let lo = render_const_expr(&b.lo, ctx)?;
-            let hi = render_const_expr(&b.hi, ctx)?;
-            Ok((lo, hi))
-        }
-        None => {
-            // Synthesised tile loop: concrete folded range, same
-            // spelling as an integer literal const bound.
-            Ok((format!("{}_i64", range.start), format!("{}_i64", range.end)))
-        }
-    }
-}
-
-/// Render a *constant* loop-bound expression, resolving const idents
-/// to their value via the SIDECAR's const table (NOT `algo.consts`,
-/// AC#2). Mirrors the old `render_const_expr` spelling exactly:
-/// `IntLit(v)` → `{v}_i64`, a const ident → `{value}_i64`, an
-/// outer-loop iter var → bare name, `BinOp` → `({l} op {r})`.
-fn render_const_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
-    match e {
-        IrExpr::IntLit(v) => Ok(format!("{v}_i64")),
-        IrExpr::Ident(n) => {
-            if let Some(c) = ctx.sidecar.consts.get(n) {
-                Ok(format!("{}_i64", c.value))
-            } else if let Some(repl) = ctx.abs_subst.get(n) {
-                // A rebound strip-mined outer iter var referenced in
-                // an inner loop bound: use its absolute expression.
-                // (Empty for every non-blocked program -> the old
-                // bare-name behaviour, byte-identical.)
-                Ok(repl.clone())
-            } else {
-                // An outer loop's iter var: render as-is, rely on
-                // Rust to type-check (mirrors the old backend).
-                Ok(n.clone())
-            }
-        }
-        IrExpr::Neg(inner) => Ok(format!("-({})", render_const_expr(inner, ctx)?)),
-        IrExpr::BinOp(op, l, r) => {
-            let ls = render_const_expr(l, ctx)?;
-            let rs = render_const_expr(r, ctx)?;
-            Ok(format!("({ls} {} {rs})", bin_op_str(op)))
-        }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
-            "data-ref / call inside a const expression (loop bound)".to_string(),
-        )),
-    }
-}
-
-fn bin_op_str(op: &IrBinOp) -> &'static str {
-    match op {
-        IrBinOp::Add => "+",
-        IrBinOp::Sub => "-",
-        IrBinOp::Mul => "*",
-        IrBinOp::Div => "/",
-        IrBinOp::Mod => "%",
-    }
-}
-
-/// Rust spelling of a Nuc `ScalarType`. Shared with multi_worker.
-pub(crate) fn rust_scalar_type(t: &ScalarType) -> &'static str {
-    match t {
-        ScalarType::Usize => "usize",
-        ScalarType::Isize => "isize",
-        ScalarType::U8 => "u8",
-        ScalarType::U16 => "u16",
-        ScalarType::U32 => "u32",
-        ScalarType::U64 => "u64",
-        ScalarType::I8 => "i8",
-        ScalarType::I16 => "i16",
-        ScalarType::I32 => "i32",
-        ScalarType::I64 => "i64",
-        ScalarType::F32 => "f32",
-        ScalarType::F64 => "f64",
-        ScalarType::Bool => "bool",
-    }
-}
-
-// --------------------------------------------------------------------
-// Crate-internal re-exports for the multi_worker module
-// --------------------------------------------------------------------
-//
-// The multi-worker emitter shares the EXACT same expression / call /
-// index / bound rendering as the single-worker emitter so the two
-// paths cannot drift (the byte-identical invariant must hold for both
-// 02-naive single-worker and 02-split multi-worker). Rather than
-// duplicate the renderers (the pre-TASK-0124 code had two divergent
-// copies), `multi_worker` calls these thin `pub(crate)` shims over
-// the single private implementations above.
-
-/// `RenderCtx` re-exported under a crate-visible name for
-/// `multi_worker` AND for sibling EventList-consuming backends
-/// (`mp-tcp-bufsync`, TASK-0036). Exposing this `pub` (was
-/// `pub(crate)`) is deliberate: it is the *single shared
-/// implementation* of expression / index / kernel-call / loop-bound
-/// rendering. The drift risk TASK-0124 flagged ("two divergent
-/// copies of the renderers") is structurally prevented by having the
-/// second backend call THESE shims rather than re-mirror them. The
-/// single-worker emitter ([`render_main_rs`]) is also `pub` for the
-/// same reason: a multi-process backend running a 0/1-worker schedule
-/// emits a byte-identical single process.
-///
-/// These pub shims (`render_fire_args_pub` / `render_flat_index_pub`
-/// / `render_const_expr_pub`) render expressions / indices / bounds
-/// with an EMPTY `abs_subst`: they are used by `multi_worker` /
-/// `mp-tcp-bufsync` only for the worker-loop scaffolding (slot types,
-/// barrier-free bound rendering) where no strip-mine rebinding is in
-/// scope. The single-worker `render_single_worker_main` path (which
-/// BOTH backends use for a 0/1-worker schedule — see
-/// `mp-tcp-bufsync::emit`) does the per-occurrence `Event::Loop`
-/// rebinding from `block_tag` via the full `RenderCtx`, so a blocked
-/// single-host schedule (04/05/06/07) is correct on both backends
-/// through that shared path. A blocked *multi*-worker schedule would
-/// thread the same tag-driven rebinding (the renderers are shared —
-/// one implementation, no drift); none exists in the tier-1 set.
-pub struct RenderCtxPub<'a> {
-    pub names: &'a NameTables,
-    pub sidecar: &'a NameSidecar,
-}
-
-impl<'a> RenderCtxPub<'a> {
-    pub fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
-        RenderCtxPub { names, sidecar }
-    }
-
-    fn inner(&self) -> RenderCtx<'_> {
-        RenderCtx {
-            names: self.names,
-            sidecar: self.sidecar,
-            abs_subst: BTreeMap::new(),
-        }
-    }
-}
-
-pub fn render_fire_args_pub(
-    kernel: KernelId,
-    inputs: &[ArgBinding],
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
-    render_fire_args(kernel, inputs, &ctx.inner())
-}
-
-pub fn render_flat_index_pub(
-    s: &DataSlice,
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
-    render_flat_index(s, &ctx.inner())
-}
-
-/// Public shim for the shared Fire-output assignment renderer
-/// (TASK-0209). `mp-tcp-bufsync` and the pthreads-sync multi-worker
-/// path call through this so all three indexed-assignment sites use
-/// ONE implementation — no codegen drift between backends, which the
-/// cross-backend bit-identical differential (PRD §10.1) depends on.
-pub fn render_fire_output_assign_pub(
-    o: &DataSlice,
-    rhs: &str,
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
-    render_fire_output_assign(o, rhs, &ctx.inner())
-}
-
-pub fn render_const_expr_pub(
-    e: &IrExpr,
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
-    render_const_expr(e, &ctx.inner())
-}
+// `render_fire_output_assign`, `render_fire_args`, `render_fire_arg`,
+// `SliceForm`, `classify_data_slice`, `render_flat_index`,
+// `render_int_expr`, `render_loop_bounds`, `render_const_expr`,
+// `bin_op_str`, `rust_scalar_type`, plus the `RenderCtxPub` shim
+// surface (`render_fire_args_pub`, `render_flat_index_pub`,
+// `render_fire_output_assign_pub`, `render_const_expr_pub`,
+// `render_array_init_for`, `rust_type_of`, `rust_scalar_type_pub`)
+// all moved to `backend_common::render` in cycle 37 (TASK-0244).
+// Backends that imported them via `pthreads_sync::*` now import
+// from `backend_common::render::*`. The drift-prevention property
+// is unchanged — one implementation, called from every backend.
 
 /// Render a single worker's straight-line `main.rs` body — the SAME
 /// renderer the single-process pthreads-sync path uses. A
@@ -1670,39 +868,9 @@ pub fn render_single_worker_main(
     render_main_rs(events, names, sidecar)
 }
 
-/// `vec![<zero>; product(dims)]` (array) or the scalar zero literal,
-/// sized + typed entirely from the sidecar `ResolvedType`. Shared so
-/// the mp-tcp pre-init allocation matches pthreads-sync exactly.
-pub fn render_array_init_for(ty: &ResolvedType) -> String {
-    if ty.is_scalar() {
-        rust_scalar_zero(&ty.scalar).to_string()
-    } else {
-        let total: usize = ty.dims.iter().copied().product();
-        let zero = rust_scalar_zero(&ty.scalar);
-        format!("vec![{zero}; {total}]")
-    }
-}
-
-/// Rust surface type for a `ResolvedType`: scalars natural, arrays
-/// flatten to `Vec<T>`. Shared with mp-tcp so slot/buffer typing
-/// cannot drift from pthreads-sync.
-pub fn rust_type_of(ty: &ResolvedType) -> String {
-    if ty.is_scalar() {
-        rust_scalar_type(&ty.scalar).to_string()
-    } else {
-        format!("Vec<{}>", rust_scalar_type(&ty.scalar))
-    }
-}
-
-/// Public spelling of the Rust scalar type (was `pub(crate)`).
-pub fn rust_scalar_type_pub(t: &ScalarType) -> &'static str {
-    rust_scalar_type(t)
-}
-
-// (No `render_int_expr_pub`: `multi_worker` renders args/indices via
-// the higher-level `render_fire_args_pub` / `render_flat_index_pub`
-// shims, which call the shared `render_int_expr` internally — one
-// implementation, no second copy to drift.)
+// `render_array_init_for`, `rust_type_of`, `rust_scalar_type_pub`
+// moved to `backend_common::render` (TASK-0244). See the consolidated
+// move-note comment above `render_single_worker_main`.
 
 // --------------------------------------------------------------------
 // File-write helper

@@ -62,9 +62,10 @@ use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, ViolationKind, W
 use compiler::NameTables;
 use compiler::sidecar::NameSidecar;
 
-use crate::{
-    emit_count_branch, emit_log_branch, render_const_expr_pub, render_fire_args_pub,
-    render_fire_output_assign_pub, sanitize_loop_var, EmitError, RenderCtxPub,
+use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
+use crate::render::{
+    render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub, EmitError,
+    RenderCtxPub,
 };
 
 /// Stable identifier for one rendezvous channel (slot or ring) keyed

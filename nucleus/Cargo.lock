@@ -21,6 +21,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "backend-common"
+version = "0.0.0"
+dependencies = [
+ "compiler",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -103,6 +110,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 name = "mp-tcp-bufsync"
 version = "0.0.0"
 dependencies = [
+ "backend-common",
  "compiler",
  "mp-tcp-common",
  "pthreads-sync",
@@ -142,6 +150,7 @@ dependencies = [
 name = "pthreads-async"
 version = "0.0.0"
 dependencies = [
+ "backend-common",
  "compiler",
  "pthreads-sync",
  "test-common",
@@ -151,6 +160,7 @@ dependencies = [
 name = "pthreads-sync"
 version = "0.0.0"
 dependencies = [
+ "backend-common",
  "compiler",
  "test-common",
 ]

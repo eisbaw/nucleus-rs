@@ -75,15 +75,26 @@ use std::path::{Path, PathBuf};
 use compiler::event::{DataId, Event, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
-// Shared codegen — the SINGLE implementation of expression/index/
-// call/single-worker rendering. Re-exported so callers (driver,
-// tests) build `NameTables` once and feed both backends.
-pub use pthreads_sync::{EmitError, NameTables};
-use pthreads_sync::{
-    collect_count_check_frames, emit_count_branch, emit_count_guard_local, emit_count_reporter_struct,
-    emit_count_static, emit_log_branch, render_array_init_for, render_const_expr_pub,
-    render_fire_args_pub, render_single_worker_main, rust_type_of, RenderCtxPub,
+// Shared codegen primitives (TASK-0244 cycle 37) — the SINGLE
+// implementation of expression / index / call / loop-bound rendering,
+// plus the check_frame emit templates. Backend-common parents every
+// tier-1 backend. The single-worker delegate
+// `render_single_worker_main` still lives in pthreads-sync (it is the
+// pthreads-sync-specific straight-line main.rs emitter — pthreads-
+// async and mp-tcp-bufsync DELEGATE to it for 0/1-used-worker emit so
+// the per-backend single-worker code is byte-identical to pthreads-
+// sync's, the cross-backend differential invariant on the
+// single-worker path).
+pub use backend_common::EmitError;
+pub use compiler::NameTables;
+use backend_common::check_frame::{
+    collect_count_check_frames, emit_count_branch, emit_count_guard_local,
+    emit_count_reporter_struct, emit_count_static, emit_log_branch,
 };
+use backend_common::render::{
+    render_array_init_for, render_const_expr_pub, render_fire_args_pub, rust_type_of, RenderCtxPub,
+};
+use pthreads_sync::render_single_worker_main;
 
 /// Paths to the files [`emit`] wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,7 +678,7 @@ impl<'a> Plan<'a> {
                             // the cross-backend bit-identical
                             // differential (PRD §10.1) depends on.
                             let rhs = format!("kernels::{callee}({args})");
-                            let stmt = pthreads_sync::render_fire_output_assign_pub(o, &rhs, ctx)?;
+                            let stmt = backend_common::render::render_fire_output_assign_pub(o, &rhs, ctx)?;
                             writeln!(out, "{pad}{stmt}").ok();
                         }
                     }
@@ -804,7 +815,7 @@ impl<'a> Plan<'a> {
                                 // Drop-time load both happen on the
                                 // worker process's main thread.
                                 // TASK-0222: shared template — see emit_count_branch.
-                                let id = pthreads_sync::sanitize_loop_var(&frame.loop_var);
+                                let id = backend_common::check_frame::sanitize_loop_var(&frame.loop_var);
                                 emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
                             }
                         }
@@ -1126,7 +1137,7 @@ fn encode_expr(name: &str, ty: &compiler::algo::ResolvedType) -> Result<String, 
         // `bool` has no `to_le_bytes`; dedicated 1-byte-per-element.
         Ok(format!("wire::enc_vec_bool(&{name})"))
     } else {
-        let rs = pthreads_sync::rust_scalar_type_pub(&ty.scalar);
+        let rs = backend_common::render::rust_scalar_type_pub(&ty.scalar);
         Ok(format!("wire::enc_vec(&{name}, {rs}::to_le_bytes)"))
     }
 }
@@ -1140,7 +1151,7 @@ fn decode_expr(ty: &compiler::algo::ResolvedType) -> Result<String, EmitError> {
     } else if ty.scalar == Bool {
         Ok("wire::dec_vec_bool(&__buf)".to_string())
     } else {
-        let rs = pthreads_sync::rust_scalar_type_pub(&ty.scalar);
+        let rs = backend_common::render::rust_scalar_type_pub(&ty.scalar);
         Ok(format!("wire::dec_vec(&__buf, {rs}::from_le_bytes)"))
     }
 }

@@ -29,17 +29,24 @@ path = "src/lib.rs"
 
 [dependencies]
 compiler = { path = "../../compiler" }
-# Shared codegen (single source of truth for expression/index/call
-# rendering + single-worker emitter) — prevents renderer drift.
+# Shared codegen primitives (TASK-0244 cycle 37): RenderCtx, the
+# expression/index/kernel-call/loop-bound/type renderers, the
+# check_frame emit templates, and the multi-worker event walker.
+# This is the single source of truth that prevents renderer drift
+# across pthreads-sync / pthreads-async / mp-tcp-bufsync.
+backend-common = { path = "../../backend-common" }
+# pthreads-sync provides `render_single_worker_main` (the straight-
+# line pthreads-sync main.rs emitter) which mp-tcp-bufsync DELEGATES
+# to for the 0/1-used-worker case. Mp-tcp emits multi-process Cargo
+# projects for >=2 workers; the single-worker arm reduces to a
+# pthreads-sync-style single binary so the cross-backend differential
+# is byte-identical on examples 01..09/13 naive schedules. This is
+# the one semantic inter-backend arrow that survives TASK-0244.
 pthreads-sync = { path = "../pthreads-sync" }
 # Wire protocol v0 source text, copied verbatim into generated
 # projects (single source of truth with the protocol's own tests).
 mp-tcp-common = { path = "../../mp-tcp-common" }
 
 [dev-dependencies]
-# The pingpong differential test (AC#5) drives the full pipeline and
-# byte-compares mp-tcp-bufsync vs pthreads-sync on identical inputs.
-# `compiler` is already a normal dependency; `pthreads-sync` is too
-# (shared renderers) but the test also calls its `emit` directly.
 # Shared lower-link-inject pipeline boilerplate (TASK-0237).
 test-common = { path = "../../test-common" }
