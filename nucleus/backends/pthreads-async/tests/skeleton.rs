@@ -200,12 +200,22 @@ fn lower_example_01_naive() -> (
         std::fs::read_to_string(ex.join("schedules/naive.sched.nuc")).expect("01 sched");
 
     // TASK-0237 (cycle 24): pipeline boilerplate moved to test_common.
-    // Single-worker naive schedule needs neither partition_workers nor
-    // inject_check_frames — default opts.
+    // 01-elementwise-add/naive is single-worker so no partition_workers
+    // or inject_check_frames. Cycle-24 review-gate A.2: explicitly set
+    // apply_block_transforms=false to restore the pre-cycle-24
+    // byte-faithful behaviour (the original helper at cycle 17 did
+    // NOT run block_transforms; on naive it's a no-op so neither
+    // value matters at runtime, but the explicit false documents the
+    // historical contract for any future schedule that would NOT be
+    // a no-op).
     let r = test_common::lower_for_test(
         &algo_src,
         &sched_src,
-        &test_common::LowerForTestOpts::default(),
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
     );
     let names = NameTables {
         data: r.name_data,

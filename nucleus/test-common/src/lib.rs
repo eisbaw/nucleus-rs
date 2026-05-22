@@ -30,8 +30,26 @@
 //! NameTables lives in `pthreads-sync`. test-common cannot depend on
 //! pthreads-sync (would create a circular arrow: pthreads-sync
 //! dev-dep test-common → test-common deps pthreads-sync). Returning
-//! the raw maps lets every backend's test compose its own NameTables
-//! type — and Wave B-2's pthreads-async tests will do the same.
+//! the raw maps lets every backend's test compose the SAME
+//! `pthreads_sync::NameTables` type from its 5-line literal block
+//! at the call site. Cycle-24 review-gate B.1 flagged that
+//! NameTables is a `compiler::event`-typed struct with zero
+//! pthreads-sync-specific content — moving it to `compiler` would
+//! dissolve the circular-dep constraint and eliminate the 3-site
+//! literal block (filed as TASK-0238).
+//!
+//! # Scope vs the driver's pipeline
+//!
+//! `lower_for_test` runs the IR-stage subsequence the driver runs:
+//! parse → lower → link → build_acfg → [apply_block_transforms] →
+//! [apply_partition_workers] → inject_syncs → inject_transfers →
+//! acfg_to_events → [inject_check_frames] → build_sidecar. Bracketed
+//! stages are gated by `LowerForTestOpts` (cycle-24 review-gate A.2).
+//!
+//! The driver ALSO runs `check_kernels_contract` (warning-only, no IR
+//! effect) between lower and link. test-common does NOT (it's a
+//! diagnostic surface a test doesn't exercise). This is therefore not
+//! a strict mirror of the driver — it's an IR-shape mirror.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,16 +58,44 @@ use compiler::sidecar::NameSidecar;
 
 /// Toggles for optional pipeline stages.
 ///
+/// `apply_block_transforms` — run `compiler::apply_block_transforms`
+/// (needed for any schedule that uses `loop X : block=N`). **Default
+/// true** to match the driver's unconditional behaviour. Tests that
+/// want to reproduce the pre-cycle-24 byte-faithful behaviour of a
+/// helper that DIDN'T call this pass (e.g. cycle-17 pthreads-async
+/// `lower_example_01_naive`) can set this false, but the modern
+/// expectation is `true` — block_transform is a no-op on schedules
+/// with no `block=N` directives, so the default is safe for naive
+/// schedules.
+///
 /// `apply_partition_workers` — run `compiler::apply_partition_workers`
 /// (needed for any schedule that uses `loop X : partition=workers`).
+/// **Default false.**
 ///
 /// `inject_check_frames` — run `compiler::inject_check_frames` on the
 /// per-worker event lists (needed for any schedule with `check loop V`
-/// directives).
-#[derive(Debug, Clone, Copy, Default)]
+/// directives). **Default false.**
+#[derive(Debug, Clone, Copy)]
 pub struct LowerForTestOpts {
+    pub apply_block_transforms: bool,
     pub apply_partition_workers: bool,
     pub inject_check_frames: bool,
+}
+
+impl Default for LowerForTestOpts {
+    fn default() -> Self {
+        // `apply_block_transforms` defaults to TRUE to match the
+        // driver's unconditional behaviour (cycle-24 review-gate A.2
+        // finding: leaving block_transforms unconditional was the
+        // pthreads-async skeleton's silent drift; now opt-in by
+        // default but explicitly settable false to restore
+        // pre-cycle-24 behaviour).
+        Self {
+            apply_block_transforms: true,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        }
+    }
 }
 
 /// Result of [`lower_for_test`]: the per-worker EventList + sidecar +
@@ -77,13 +123,16 @@ pub struct LowerForTestResult {
     pub inner_block_iter_vars: BTreeSet<IterVar>,
 }
 
-/// Run the full lower-link-inject pipeline for a (algo_src, sched_src)
-/// pair, returning the contract inputs every backend test consumes.
+/// Run the lower-link-inject IR-stage pipeline for a (algo_src,
+/// sched_src) pair, returning the contract inputs every backend test
+/// consumes.
 ///
-/// Mirrors the driver's pre-emit pipeline at
-/// `nucleus/driver/src/main.rs` so backend tests exercise the SAME
-/// shape the driver feeds them — no test-only shortcuts that drift
-/// from production behaviour.
+/// Runs the IR-stage subsequence of the driver's pre-emit pipeline at
+/// `nucleus/driver/src/main.rs`. The driver also runs
+/// `check_kernels_contract` (a warning-only diagnostic with no IR
+/// effect) — this helper does NOT, since tests don't need the
+/// diagnostic surface. Backend tests exercise the SAME IR shape the
+/// driver feeds them via this helper.
 ///
 /// # Panics
 ///
@@ -111,7 +160,11 @@ pub fn lower_for_test(
         lower_sched(&parse_sched(sched_src).expect("parse_sched")).expect("lower_sched");
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = apply_block_transforms(&linked, acfg).expect("apply_block_transforms");
+    let acfg = if opts.apply_block_transforms {
+        apply_block_transforms(&linked, acfg).expect("apply_block_transforms")
+    } else {
+        acfg
+    };
     let acfg = if opts.apply_partition_workers {
         apply_partition_workers(&linked, acfg).expect("apply_partition_workers")
     } else {
@@ -213,8 +266,13 @@ schedule for "anything.algo.nuc" {
     }
 
     #[test]
-    fn opts_default_is_off_off() {
+    fn opts_default_block_transforms_on_others_off() {
         let opts = LowerForTestOpts::default();
+        assert!(
+            opts.apply_block_transforms,
+            "apply_block_transforms defaults TRUE to match driver behaviour \
+             (cycle-24 review-gate A.2)"
+        );
         assert!(!opts.apply_partition_workers);
         assert!(!opts.inject_check_frames);
     }

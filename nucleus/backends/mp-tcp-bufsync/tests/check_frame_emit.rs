@@ -385,6 +385,7 @@ fn build_per_worker_partitioned(
         algo_src,
         sched_src,
         &test_common::LowerForTestOpts {
+            apply_block_transforms: true,
             apply_partition_workers: true,
             inject_check_frames: true,
         },
