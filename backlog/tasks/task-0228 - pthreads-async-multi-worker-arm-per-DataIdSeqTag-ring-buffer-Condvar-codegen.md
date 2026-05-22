@@ -3,10 +3,10 @@ id: TASK-0228
 title: >-
   pthreads-async multi-worker arm + per-(DataId,SeqTag) ring buffer + Condvar
   codegen
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-22 07:43'
+updated_date: '2026-05-22 09:11'
 labels:
   - M4
   - backend
@@ -36,7 +36,7 @@ Read the TASK-0052.05 forward-carry on TASK-0042.01 for the multi-worker check_f
 - [x] #2 Per (DataId, SeqTag) Arc<Ring<T>> instance sized N=buffer (the transfer's buffer=N directive); ring starts EMPTY (no pre-fill, per post-TASK-0213 contract).
 - [x] #3 Same-worker transfer carveout: producer + consumer on the same worker emit no ring/Push/Wait (mirror transfer_inject's src==dst skip + TASK-0214 link-layer carveout).
 - [x] #4 Per worker, a thread::spawn with that worker's EventList rendered to Rust; Event::Push and Event::Wait dispatch into the ring instance keyed by (DataId, SeqTag).
-- [ ] #5 Multi-worker check_frame: file-scope shared static AtomicU64 deduped by sanitized ident; Drop guard on host thread (TASK-0052.05 forward-carry). The shared helpers from pthreads-sync (sanitize_loop_var, collect_count_check_frames, emit_count_reporter_struct, CountCheckLoop) ARE used after TASK-0222 extracts the four emit-string templates into shared form.
+- [x] #5 Multi-worker check_frame: file-scope shared static AtomicU64 deduped by sanitized ident; Drop guard on host thread (TASK-0052.05 forward-carry). The shared helpers from pthreads-sync (sanitize_loop_var, collect_count_check_frames, emit_count_reporter_struct, CountCheckLoop) ARE used after TASK-0222 extracts the four emit-string templates into shared form.
 - [x] #6 Per-fan-out-pair sizing (TASK-0216 forward-carry): if a data symbol fans out to multiple workers, one ring per producer-consumer pair (each sized N).
 - [x] #7 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (e2e cells land in TASK-0229 separately).
 - [x] #8 Codegen-string assertion tests at nucleus/backends/pthreads-async/tests/multi_worker_codegen.rs pin the Ring<T> struct shape + a representative push/wait pair.
