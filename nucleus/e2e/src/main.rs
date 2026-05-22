@@ -2906,14 +2906,21 @@ fn cell_result_to_json(out: &mut String, r: &CellResult) {
 }
 
 /// Render the full `Vec<CellResult>` to a JSON document with a
-/// top-level `{"cells": [...]}` object. Cells appear in planned
+/// top-level `{"mode": "run", "cells": [...]}` object. Cells appear in planned
 /// (deterministic) order — `execute_cells_parallel` re-sorts results
 /// to planned order before returning. Newlines between objects so a
 /// quick `grep` can scan one cell per line, but no trailing newline
 /// inside the array (keeps the document compact).
 fn render_timings_json(results: &[CellResult]) -> String {
     let mut out = String::with_capacity(results.len() * 256);
-    out.push_str("{\n  \"cells\": [\n");
+    // TASK-0023.03.03 cycle-57: explicit top-level `"mode": "run"` so a
+    // downstream consumer can branch RUN vs DETERMINISM schema (they
+    // differ on per-cell payload: phase_times_ms here vs files_compared
+    // / det_mismatch / single elapsed_ms in the det emitter). Cycle-55's
+    // hand-rolled `parse_baseline_json` silently skips unknown top-level
+    // keys via `skip_value`, so this is backward-compatible with any
+    // baseline written before this cycle.
+    out.push_str("{\n  \"mode\": \"run\",\n  \"cells\": [\n");
     for (i, r) in results.iter().enumerate() {
         out.push_str("    ");
         cell_result_to_json(&mut out, r);
@@ -2985,6 +2992,168 @@ fn write_timings_json(path: &std::path::Path, results: &[CellResult]) -> Result<
             tmp.display()
         )
     })?;
+    drop(f);
+    fs::rename(&tmp, path).map_err(|e| {
+        format!(
+            "--emit-timings: rename `{}` -> `{}`: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+// --------------------------------------------------------------------
+// TASK-0023.03.03 Stage 1.5 — `--emit-timings` under `--check-determinism`.
+//
+// Schema notes (intentionally DIFFERENT from RUN mode, branched by the
+// top-level `"mode"` key):
+//
+//   * RUN mode (cell_result_to_json) — phase_times_ms{compile,build,run}
+//     + total_ms, plus status-specific fail_phase/skip_reason.
+//   * DETERMINISM mode (det_cell_result_to_json) — single elapsed_ms
+//     (det has one Duration, not three phases). PASS carries
+//     files_compared; FAIL carries a det_mismatch object mirroring
+//     the DetMismatch Display impl; SKIPPED carries skip_reason and
+//     elapsed_ms = null (manifest pre-skips short-circuit before any
+//     compile, so the duration is uninformative — null is honest).
+//
+// Why two emitters instead of one polymorphic: the source structs
+// (CellResult vs DetCellResult) are intentionally disjoint, no shared
+// trait — collapsing them would force a lossy intermediate and obscure
+// the per-mode contract. Cheaper to keep them parallel.
+
+/// Serialize a single `DetCellResult` to a JSON object appended to
+/// `out`. Mirrors `cell_result_to_json` shape but emits the det-mode
+/// payload (see module-level note above for schema differences).
+///
+/// `required` is included for parity with RUN-mode (downstream
+/// regression / dashboards branch on it the same way in both modes).
+fn det_cell_result_to_json(out: &mut String, r: &DetCellResult) {
+    out.push('{');
+    out.push_str("\"example\":");
+    json_escape_str(out, &r.cell.example);
+    out.push_str(",\"schedule\":");
+    json_escape_str(out, &r.cell.schedule);
+    out.push_str(",\"backend\":");
+    json_escape_str(out, &r.cell.backend);
+    out.push_str(",\"required\":");
+    out.push_str(if r.required { "true" } else { "false" });
+
+    out.push_str(",\"status\":");
+    match &r.status {
+        DetCellStatus::Pass { .. } => out.push_str("\"PASS\""),
+        DetCellStatus::Failed(_) => out.push_str("\"FAIL\""),
+        DetCellStatus::Skipped { .. } => out.push_str("\"SKIPPED\""),
+    }
+
+    // Status-specific payload + elapsed_ms. PASS/FAIL carry a real
+    // wall-clock; SKIPPED is null on purpose — see module-level note.
+    match &r.status {
+        DetCellStatus::Pass { files_compared } => {
+            use std::fmt::Write as _;
+            let _ = write!(out, ",\"files_compared\":{files_compared}");
+            let _ = write!(out, ",\"elapsed_ms\":{}", r.elapsed.as_millis());
+        }
+        DetCellStatus::Failed(m) => {
+            // det_mismatch mirrors the four DetMismatch fields. `kind`
+            // is the Display impl of DetMismatchKind (stable lowercase
+            // phrase, also visible in --format=junit XML — keeping
+            // the two stable surfaces in lockstep).
+            out.push_str(",\"det_mismatch\":{");
+            out.push_str("\"relative_path\":");
+            json_escape_str(out, &m.relative_path.display().to_string());
+            out.push_str(",\"kind\":");
+            json_escape_str(out, &m.kind.to_string());
+            {
+                use std::fmt::Write as _;
+                let _ = write!(out, ",\"offset\":{}", m.offset);
+            }
+            out.push_str(",\"detail\":");
+            json_escape_str(out, &m.detail);
+            out.push('}');
+            {
+                use std::fmt::Write as _;
+                let _ = write!(out, ",\"elapsed_ms\":{}", r.elapsed.as_millis());
+            }
+        }
+        DetCellStatus::Skipped { reason } => {
+            out.push_str(",\"skip_reason\":");
+            json_escape_str(out, reason);
+            // null (not 0) — the duration of a pre-compile manifest
+            // skip carries no signal; emitting it as a number would
+            // bait a downstream consumer into averaging meaningless 0s.
+            out.push_str(",\"elapsed_ms\":null");
+        }
+    }
+
+    // perturbed is observable in det-mode only and only ever true
+    // under NUC_NONDET_TEST=1; emit it so a future regression script
+    // can correlate JSON output with the NUC_NONDET_PERTURBED_CELLS
+    // line on STDOUT (TASK-0188).
+    out.push_str(",\"perturbed\":");
+    out.push_str(if r.perturbed { "true" } else { "false" });
+    out.push('}');
+}
+
+/// Render the full `Vec<DetCellResult>` to a JSON document with a
+/// top-level `{"mode": "determinism", "cells": [...]}` object. Cells
+/// appear in planned order (the parallel executor re-sorts results
+/// before returning).
+fn render_det_timings_json(results: &[DetCellResult]) -> String {
+    let mut out = String::with_capacity(results.len() * 256);
+    out.push_str("{\n  \"mode\": \"determinism\",\n  \"cells\": [\n");
+    for (i, r) in results.iter().enumerate() {
+        out.push_str("    ");
+        det_cell_result_to_json(&mut out, r);
+        if i + 1 < results.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+/// Write the det-mode timings JSON to `path`. Same atomic
+/// tmp+fsync+rename contract as `write_timings_json` — a power-loss
+/// during write must NEVER leave a partial JSON survivor that a
+/// downstream consumer might mistake for a clean baseline.
+fn write_det_timings_json(
+    path: &std::path::Path,
+    results: &[DetCellResult],
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "--emit-timings: cannot create parent dir `{}`: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let doc = render_det_timings_json(results);
+    let tmp = match path.file_name() {
+        Some(name) => {
+            let mut tmp_name = name.to_os_string();
+            tmp_name.push(".tmp");
+            path.with_file_name(tmp_name)
+        }
+        None => {
+            return Err(format!(
+                "--emit-timings: path `{}` has no file name component",
+                path.display()
+            ));
+        }
+    };
+    use std::io::Write as _;
+    let mut f = fs::File::create(&tmp)
+        .map_err(|e| format!("--emit-timings: create `{}`: {e}", tmp.display()))?;
+    f.write_all(doc.as_bytes())
+        .map_err(|e| format!("--emit-timings: write `{}`: {e}", tmp.display()))?;
+    f.sync_all()
+        .map_err(|e| format!("--emit-timings: fsync `{}`: {e}", tmp.display()))?;
     drop(f);
     fs::rename(&tmp, path).map_err(|e| {
         format!(
@@ -3935,17 +4104,11 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     }
 
     if args.check_determinism {
-        // TASK-0023.03 Stage 1 scope: `--emit-timings` is RUN-mode only.
-        // Determinism-mode timings are a follow-up — be loud, never
-        // silent, so a developer who set both flags is not left
-        // expecting a file that never appears.
-        if args.emit_timings.is_some() {
-            eprintln!(
-                "nucleus-e2e: WARNING: --emit-timings is RUN-mode only \
-                 (TASK-0023.03 Stage 1 scope); ignored under \
-                 --check-determinism. Filed as a follow-up."
-            );
-        }
+        // TASK-0023.03.03 Stage 1.5 (cycle-57): `--emit-timings` is now
+        // wired into determinism mode too, with a distinct top-level
+        // schema (`"mode": "determinism"`). The actual write is plumbed
+        // AFTER the summary runs (see below), so it is no longer a
+        // loud noop here.
         if args.baseline.is_some() {
             eprintln!(
                 "nucleus-e2e: WARNING: --baseline is RUN-mode only \
@@ -4003,6 +4166,24 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
             Format::Text => print_determinism_summary(&det_results),
             Format::Junit => print_determinism_summary_junit(&det_results),
         }
+
+        // TASK-0023.03.03 Stage 1.5 (cycle-57): persist per-cell det-mode
+        // timings JSON when `--emit-timings PATH` is set. Done AFTER the
+        // summary so a late-failing write surfaces loud but does not
+        // block the human-facing summary the developer is staring at,
+        // AND BEFORE the NUC_NONDET_TEST zero-perturbation guard below
+        // (which has an early `return Ok(0)` path) — placing the emit
+        // here means BOTH return paths get the JSON, so a falsifier
+        // regression run can still be diffed against a clean baseline.
+        if let Some(path) = args.emit_timings.as_deref() {
+            write_det_timings_json(path, &det_results)?;
+            eprintln!(
+                "nucleus-e2e: wrote per-cell determinism timings ({} cell(s)) to {}",
+                det_results.len(),
+                path.display()
+            );
+        }
+
         let any_failed = det_results
             .iter()
             .any(|r| matches!(r.status, DetCellStatus::Failed(_)));
@@ -5813,7 +5994,13 @@ mystery = 42
         // to a real JSON parser here (no new dep budget); instead
         // we assert byte-substrings unique enough to catch the
         // shape regressions Stage 2/3 will rely on.
-        assert!(doc.starts_with("{\n  \"cells\": ["), "leading brace + cells array missing: {doc}");
+        // Cycle-57: the leading object now carries a `"mode": "run"`
+        // key before `"cells"` for forward-compat with the det-mode
+        // emitter (the consumer branches on top-level `mode`).
+        assert!(
+            doc.starts_with("{\n  \"mode\": \"run\",\n  \"cells\": ["),
+            "leading brace + mode + cells array missing: {doc}"
+        );
         assert!(doc.trim_end().ends_with("]\n}"), "trailing close missing: {doc}");
 
         // Ordering: ex-a appears before ex-b before ex-c. A simple
@@ -5892,6 +6079,153 @@ mystery = 42
 
         // .tmp sibling must NOT survive — rename consumed it.
         let tmp_sibling = path.with_file_name("timings.json.tmp");
+        assert!(
+            !tmp_sibling.exists(),
+            ".tmp sibling leaked: {}",
+            tmp_sibling.display()
+        );
+
+        let _ = fs::remove_dir_all(&tmp_root);
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0023.03.03 Stage 1.5 (cycle-57) — det-mode emitter
+    // ----------------------------------------------------------------
+
+    fn synth_det_cell_result(
+        example: &str,
+        schedule: &str,
+        backend: &str,
+        status: DetCellStatus,
+        elapsed_ms: u64,
+    ) -> DetCellResult {
+        DetCellResult {
+            cell: Cell {
+                example: example.into(),
+                schedule: schedule.into(),
+                backend: backend.into(),
+            },
+            required: true,
+            status,
+            elapsed: Duration::from_millis(elapsed_ms),
+            perturbed: false,
+        }
+    }
+
+    #[test]
+    fn render_det_timings_json_emits_three_status_variants_with_distinct_payloads() {
+        // Schema-shape pin: mode=determinism + cells array; PASS carries
+        // files_compared + elapsed_ms; FAIL carries det_mismatch + elapsed_ms;
+        // SKIPPED carries skip_reason + elapsed_ms=null. Cells appear in
+        // planned (input) order.
+        let results = vec![
+            synth_det_cell_result(
+                "ex-a",
+                "naive",
+                "pthreads-sync",
+                DetCellStatus::Pass { files_compared: 7 },
+                120,
+            ),
+            synth_det_cell_result(
+                "ex-b",
+                "tiled",
+                "mp-tcp-bufsync",
+                DetCellStatus::Skipped { reason: "no capabilities.toml".into() },
+                0,
+            ),
+            synth_det_cell_result(
+                "ex-c",
+                "naive",
+                "pthreads-sync",
+                DetCellStatus::Failed(DetMismatch {
+                    relative_path: PathBuf::from("src/main.rs"),
+                    kind: DetMismatchKind::BytesDiffer,
+                    offset: 42,
+                    detail: "A=foo\nB=bar".into(),
+                }),
+                250,
+            ),
+        ];
+        let doc = render_det_timings_json(&results);
+
+        // Top-level shape: distinct mode key (consumer branches on this).
+        assert!(
+            doc.starts_with("{\n  \"mode\": \"determinism\",\n  \"cells\": ["),
+            "leading mode + cells missing: {doc}"
+        );
+        assert!(doc.trim_end().ends_with("]\n}"), "trailing close missing: {doc}");
+
+        // Planned order preserved.
+        let a = doc.find("\"ex-a\"").expect("ex-a present");
+        let b = doc.find("\"ex-b\"").expect("ex-b present");
+        let c = doc.find("\"ex-c\"").expect("ex-c present");
+        assert!(a < b && b < c, "planned order broken: {a}, {b}, {c}");
+
+        // PASS: files_compared + elapsed_ms, no skip_reason / det_mismatch.
+        let pass = &doc[a..b];
+        assert!(pass.contains("\"status\":\"PASS\""), "PASS status: {pass}");
+        assert!(pass.contains("\"files_compared\":7"), "files_compared: {pass}");
+        assert!(pass.contains("\"elapsed_ms\":120"), "elapsed_ms: {pass}");
+        assert!(!pass.contains("skip_reason"), "PASS must not carry skip_reason: {pass}");
+        assert!(!pass.contains("det_mismatch"), "PASS must not carry det_mismatch: {pass}");
+
+        // SKIPPED: skip_reason + elapsed_ms null; no files_compared.
+        let skip = &doc[b..c];
+        assert!(skip.contains("\"status\":\"SKIPPED\""), "SKIPPED status: {skip}");
+        assert!(skip.contains("\"skip_reason\":\"no capabilities.toml\""), "reason: {skip}");
+        assert!(skip.contains("\"elapsed_ms\":null"), "null elapsed: {skip}");
+        assert!(!skip.contains("files_compared"), "SKIPPED must not carry files_compared: {skip}");
+
+        // FAIL: det_mismatch object with all four fields + elapsed_ms.
+        let fail = &doc[c..];
+        assert!(fail.contains("\"status\":\"FAIL\""), "FAIL status: {fail}");
+        assert!(fail.contains("\"det_mismatch\":{"), "det_mismatch present: {fail}");
+        assert!(fail.contains("\"relative_path\":\"src/main.rs\""), "relpath: {fail}");
+        assert!(fail.contains("\"kind\":\"bytes differ\""), "kind: {fail}");
+        assert!(fail.contains("\"offset\":42"), "offset: {fail}");
+        // Escaped newline proves json_escape_str ran on the detail.
+        assert!(fail.contains("\"detail\":\"A=foo\\nB=bar\""), "escaped detail: {fail}");
+        assert!(fail.contains("\"elapsed_ms\":250"), "elapsed_ms: {fail}");
+    }
+
+    #[test]
+    fn write_det_timings_json_round_trips_and_creates_parents_atomically() {
+        // Atomic-write contract for the det-mode emitter mirrors the
+        // RUN-mode one (write_timings_json_creates_parents_and_writes_atomically):
+        // fresh parent created on demand; .tmp sibling consumed by
+        // rename. Body must contain the cell identity triple + the
+        // top-level mode marker so a consumer can branch on it.
+        let tmp_root = std::env::temp_dir().join(format!(
+            "nucleus-e2e-emit-det-timings-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+
+        let path = tmp_root.join("nested").join("dir").join("det-timings.json");
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists(), "parent must not pre-exist");
+
+        let results = vec![synth_det_cell_result(
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            DetCellStatus::Pass { files_compared: 3 },
+            42,
+        )];
+        write_det_timings_json(&path, &results).expect("write");
+
+        assert!(path.exists(), "output JSON must exist after write");
+        let body = fs::read_to_string(&path).expect("read back");
+        assert!(body.contains("\"mode\": \"determinism\""), "mode marker: {body}");
+        assert!(body.contains("\"ex-a\""), "round-trip body: {body}");
+        assert!(body.contains("\"files_compared\":3"), "files_compared: {body}");
+        assert!(body.contains("\"elapsed_ms\":42"), "elapsed_ms: {body}");
+
+        let tmp_sibling = path.with_file_name("det-timings.json.tmp");
         assert!(
             !tmp_sibling.exists(),
             ".tmp sibling leaked: {}",
