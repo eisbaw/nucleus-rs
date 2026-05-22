@@ -50,7 +50,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use compiler::event::{DataId, Event, IterTile, SeqTag, WorkerId};
+use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
 use crate::{EmitError, NameTables};
@@ -66,12 +66,21 @@ pub(crate) type RingId = usize;
 ///
 /// Mirrors `pthreads_sync::multi_worker::Plan` field-for-field where
 /// the underlying semantics match (workers, host election, pair
-/// collection, tiles), and substitutes `ring_*` for `slot_*` where the
-/// async-specific ring buffer replaces the sync-specific single-slot
-/// rendezvous. The pthreads-sync `barrier_participants` field is
-/// omitted: async transfers use ring buffers, not barriers; any
-/// `Event::Sync` reaching this backend is currently an unsupported
-/// schedule shape (Wave B-2 will surface this as a typed ContractGap).
+/// collection, tiles, barriers), and substitutes `ring_*` for `slot_*`
+/// where the async-specific ring buffer replaces the sync-specific
+/// single-slot rendezvous.
+///
+/// **Barriers + rings are orthogonal** (cycle-21 TASK-0234 decision —
+/// option (b) from the cycle-20 review-gate A.1 finding): async
+/// transfers replace the sync single-slot Push/Wait with a bounded
+/// ring buffer, but `Event::Sync` barriers — used by `inject_syncs`
+/// to fence cross-worker writes — are independent of transfer
+/// semantics. A pipelined async schedule with cross-worker writes
+/// (e.g. 13-cnn-inference/pipeline_parallel) needs BOTH ring buffers
+/// (for the transfers) AND barriers (for the writes), so `Plan`
+/// carries `barrier_participants` in lockstep with pthreads-sync. Wave
+/// B-2 emits `std::sync::Barrier` from the same `barrier_participants`
+/// shape pthreads-sync already proves works.
 #[derive(Debug)]
 pub(crate) struct Plan<'a> {
     pub(crate) per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
@@ -94,6 +103,16 @@ pub(crate) struct Plan<'a> {
     /// tile names the iteration-axis slice this pair is responsible
     /// for. Wave B-2 codegen consumes this for fan-out gather (TASK-0117).
     pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    /// `SyncTag` -> participants. Keyed directly by the contract barrier
+    /// identity (TASK-0172). The projection clones the same participant
+    /// set into every participant's `Event::Sync`, so recording the set
+    /// the first time a tag is seen is exact; no uniform-barrier
+    /// validation is needed (and a partial/non-uniform barrier is fine
+    /// — every tag is independent). Mirrors pthreads-sync's
+    /// `multi_worker::Plan::barrier_participants` field-for-field —
+    /// Wave B-2 emits `std::sync::Barrier::new(N)` keyed by `SyncTag`
+    /// the same way pthreads-sync does (TASK-0172).
+    pub(crate) barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
 }
 
 impl<'a> Plan<'a> {
@@ -200,6 +219,22 @@ impl<'a> Plan<'a> {
             ring_caps.insert((*data, *seq), cap);
         }
 
+        // Barrier identity by the contract-carried `SyncTag` (TASK-0172).
+        // Same shape as pthreads-sync's `multi_worker::Plan::build` at
+        // multi_worker.rs:215-222: walk each used worker's events,
+        // record the participant set the first time a SyncTag is seen.
+        // Distinct tags are independent barriers, so partial/non-uniform
+        // is fine without validation.
+        let mut barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>> =
+            BTreeMap::new();
+        for w in &used_workers {
+            collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
+                barrier_participants
+                    .entry(tag)
+                    .or_insert_with(|| parts.clone());
+            });
+        }
+
         // Defensive site-local assertion (cycle-20 review-gate A.5):
         // ring_ids and ring_caps must be in 1:1 correspondence.
         // A divergence here would indicate that the (seq -> cap) join
@@ -226,6 +261,7 @@ impl<'a> Plan<'a> {
             ring_ids,
             ring_caps,
             pair_tiles,
+            barrier_participants,
         })
     }
 
@@ -254,13 +290,12 @@ impl<'a> Plan<'a> {
 /// is `.or_insert_with` a no-op since the tile is identical on both
 /// endpoints (transfer_inject invariant).
 ///
-/// **Event::Sync is SKIPPED silently** (cycle-20 review-gate A.1 +
-/// E.1): a multi-worker schedule with barriers will reach Wave B-2
-/// without the Plan recording any barrier participants. Wave B-2 must
-/// either (a) reject `Event::Sync` with a typed ContractGap, or (b)
-/// extend the Plan with `barrier_participants` (matching
-/// pthreads-sync's field) and emit `std::sync::Barrier` like
-/// pthreads-sync does. Filed as TASK-0234 for Wave B-2 entry-criterion.
+/// **Event::Sync is intentionally not handled by this walker** — it's
+/// collected by the separate `collect_barriers_by_tag` walker (cycle 21,
+/// TASK-0234 closed with option (b)). The two walkers are independent
+/// because the data shapes are different (Push/Wait fall through a
+/// pair-tile join; Sync is a flat (tag -> participants) map). Calling
+/// both in `Plan::build` produces the full Plan in one read.
 fn collect_xfer_pairs(
     events: &[Event],
     out: &mut BTreeMap<(DataId, SeqTag), IterTile>,
@@ -277,6 +312,36 @@ fn collect_xfer_pairs(
                     .or_insert_with(|| tile.clone());
             }
             Event::Loop { body, .. } => collect_xfer_pairs(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// Sync visitor (cycle 21, TASK-0234 option b): invoke `f(sync_tag,
+/// participants)` for each `Event::Sync`, descending into `Event::Loop`
+/// bodies. Barrier identity is the contract-carried [`SyncTag`]
+/// (TASK-0172) — no running index, no fallibility (every tag is
+/// independent, so partial/non-uniform barriers lower correctly).
+///
+/// Mirrors `pthreads_sync::multi_worker::collect_barriers_by_tag`
+/// (multi_worker.rs:1051). The two backends now share the SAME barrier
+/// projection shape — when Wave B-2 emits `std::sync::Barrier`, the
+/// per-barrier participant size is read from `barrier_participants[tag].len()`
+/// exactly like pthreads-sync (multi_worker.rs ~lines 380-390).
+fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
+where
+    F: FnMut(SyncTag, &BTreeSet<WorkerId>),
+{
+    for e in events {
+        match e {
+            Event::Sync {
+                participants,
+                sync,
+                ..
+            } => {
+                f(*sync, participants);
+            }
+            Event::Loop { body, .. } => collect_barriers_by_tag(body, f),
             _ => {}
         }
     }
@@ -515,6 +580,72 @@ mod tests {
         assert_eq!(
             union, all_rings,
             "union of per-worker ring touches must equal the full ring set"
+        );
+    }
+
+    #[test]
+    fn build_populates_barrier_participants_for_multi_worker_sync_schedule() {
+        // Cycle 21 / TASK-0234 option (b): the Plan now carries a
+        // barrier_participants map populated by walking Event::Sync.
+        // 02-split-add/split is a 2-worker schedule whose
+        // inject_syncs pass produces cross-worker barriers; the map
+        // must be non-empty after Plan::build.
+        let (per_worker, names, sidecar) = lower("02-split-add", "schedules/split.sched.nuc");
+        let plan = Plan::build(&per_worker, &names, &sidecar).expect("Plan::build");
+
+        assert!(
+            !plan.barrier_participants.is_empty(),
+            "02-split-add/split has cross-worker writes; inject_syncs \
+             produces Event::Sync barriers; Plan must record them. \
+             Got: {:?}",
+            plan.barrier_participants
+        );
+
+        // Every barrier's participant set is a subset of used_workers
+        // (a barrier never names a non-participating worker).
+        let used: BTreeSet<WorkerId> = plan.used_workers.iter().copied().collect();
+        for (tag, parts) in &plan.barrier_participants {
+            assert!(
+                parts.is_subset(&used),
+                "barrier {tag:?} names a worker not in used_workers; \
+                 parts={parts:?}, used={used:?}"
+            );
+            assert!(
+                !parts.is_empty(),
+                "barrier {tag:?} has empty participant set; \
+                 inject_syncs invariant violated"
+            );
+        }
+    }
+
+    #[test]
+    fn build_records_one_entry_per_unique_sync_tag() {
+        // The walker uses `.or_insert_with` on first sighting, so even
+        // if multiple workers each carry an Event::Sync with the same
+        // SyncTag (= they're ALL participants of one barrier), the
+        // barrier_participants map has exactly ONE entry per unique
+        // tag. Verify this against 13-cnn-inference/pipeline_parallel,
+        // which has multi-stage barriers shared across workers.
+        let (per_worker, names, sidecar) =
+            lower("13-cnn-inference", "schedules/pipeline_parallel.sched.nuc");
+        let plan = Plan::build(&per_worker, &names, &sidecar).expect("Plan::build");
+
+        // Independent count: walk every Event::Sync directly + collect
+        // unique sync tags. Compare with barrier_participants.len().
+        let mut all_tags: BTreeSet<SyncTag> = BTreeSet::new();
+        for evs in per_worker.values() {
+            collect_barriers_by_tag(evs, &mut |tag, _| {
+                all_tags.insert(tag);
+            });
+        }
+        assert_eq!(
+            plan.barrier_participants.len(),
+            all_tags.len(),
+            "barrier_participants should have ONE entry per unique \
+             SyncTag (not N entries per N participants). Got map={}, \
+             unique tags={}",
+            plan.barrier_participants.len(),
+            all_tags.len()
         );
     }
 

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 23:52'
+updated_date: '2026-05-22 00:09'
 labels:
   - M4
   - backend
@@ -177,4 +177,14 @@ To make wave progress legible — AC structure stays as filed; each AC's wave as
 - C.1 (per-item dead_code allows): when Wave B-2 removes the module-level allow, audit each unused item then.
 - C.2 (pair_tiles consumer hypothetical): Wave B-2 must consume or delete. Documented as Wave B-2 must-decide.
 - A.2 (guard message conflates n==0/n==1): nice-to-have polish in Wave B-2 commit.
+
+## Cycle 21 (2026-05-22) — TASK-0234 closed Done: barrier_participants in Plan
+
+The Plan struct now carries barrier_participants: BTreeMap[SyncTag, BTreeSet[WorkerId]] populated by walking Event::Sync. Mirrors pthreads-sync's multi_worker::Plan field-for-field. Wave B-2 emits std::sync::Barrier from this shape exactly like pthreads-sync.
+
+Two new tests: build_populates_barrier_participants_for_multi_worker_sync_schedule + build_records_one_entry_per_unique_sync_tag.
+
+Wave B-2's two preconditions: TASK-0234 (Event::Sync) Done; TASK-0222 (template extraction for AC#5) still To Do.
+
+Updated Wave deliverables map: AC#4 (per-worker thread::spawn) now has barrier_participants ready for emit; the remaining Wave B-2 work for that AC is the actual code emission. AC#5 (multi-worker check_frame) still blocks on TASK-0222.
 <!-- SECTION:NOTES:END -->
