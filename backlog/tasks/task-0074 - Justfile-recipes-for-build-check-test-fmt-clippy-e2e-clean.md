@@ -1,10 +1,10 @@
 ---
 id: TASK-0074
 title: Justfile recipes for build/check/test/fmt/clippy/e2e/clean
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 23:31'
-updated_date: '2026-05-19 04:48'
+updated_date: '2026-05-22 20:56'
 labels:
   - M0
   - infra
@@ -23,3 +23,9 @@ Add a top-level justfile per PRD §12.3 reference shape: build, test, check, fmt
 <!-- SECTION:NOTES:BEGIN -->
 Forward-carried from TASK-0186 (decision-0002, accepted): the justfile clippy recipe already exists and is cargo clippy --workspace --all-targets -- -D warnings (not the bare -- -D warnings reference shape). If this task revisits/normalises the recipe set, preserve the --all-targets scope on clippy; do not regress to default targets. The justfile lives at repo ROOT and recipes cd into nucleus/ (nix flake is at repo root) — this resolves the "pick one and document" ask in this task description.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 59 tracker hygiene (2026-05-22). justfile carries all 8 recipes (build, test, check, fmt, clippy, e2e, e2e-milestone M, clean). All structurally met by pre-session work. Anti-bloat rule per PRD §12.3 honored: no example/schedule/backend-specific recipes (those are flags on nucleus-e2e). Closing the task as tracker hygiene.
+<!-- SECTION:FINAL_SUMMARY:END -->

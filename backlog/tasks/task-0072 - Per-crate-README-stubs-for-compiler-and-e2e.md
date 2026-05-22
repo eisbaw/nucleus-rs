@@ -1,9 +1,10 @@
 ---
 id: TASK-0072
 title: Per-crate README stubs for compiler/ and e2e/
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 23:31'
+updated_date: '2026-05-22 20:56'
 labels:
   - M0
   - docs
