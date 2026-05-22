@@ -166,25 +166,9 @@ fn two_worker_pingpong_compiles_and_runs() {
     // build sidecar + reverse name tables, exactly as the driver.
     let per_worker = acfg_to_events(&acfg);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
-    let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
+    // TASK-0238 (cycle 25): the 5-field NameTables literal collapsed
+    // to the centralized constructor.
+    let names = NameTables::from_acfg(&acfg);
     let result =
         emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir).expect("emit succeeded");
 
@@ -370,25 +354,9 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
 
     let per_worker = acfg_to_events(&acfg);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
-    let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
+    // TASK-0238 (cycle 25): the 5-field NameTables literal collapsed
+    // to the centralized constructor.
+    let names = NameTables::from_acfg(&acfg);
 
     // --- Contract-level checks (TASK-0172 AC#1/#6): the SyncTag is a
     //     genuine cross-worker join key. ---
@@ -677,25 +645,9 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
     let per_worker =
         inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
-    let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
+    // TASK-0238 (cycle 25): the 5-field NameTables literal collapsed
+    // to the centralized constructor.
+    let names = NameTables::from_acfg(&acfg);
 
     let out_dir = scratch.join("gen");
     let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)

@@ -44,25 +44,9 @@ fn build_per_worker_with_names(
     let per_worker =
         inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
-    let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
-    };
+    // TASK-0238 (cycle 25): 5-field NameTables literal collapsed to
+    // the centralized constructor.
+    let names = NameTables::from_acfg(&acfg);
     (per_worker, names, sidecar)
 }
 
