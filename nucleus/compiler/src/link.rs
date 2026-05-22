@@ -327,7 +327,11 @@ impl std::fmt::Display for LinkError {
                 consumer_worker,
             } => write!(
                 f,
-                "data symbol `{data}` flows from {producer_worker} to {consumer_worker} but the schedule declares no `transfer {data} : ...` directive"
+                "data symbol `{data}` flows from {producer_worker} to \
+                 {consumer_worker} but the schedule declares no \
+                 `transfer {data} : ...` directive. \
+                 Add `transfer {data} : sync;` \
+                 (or `async`/`buffer=N` for buffered transports)."
             ),
             LinkError::PipelineExceedsBuffer {
                 loop_var,

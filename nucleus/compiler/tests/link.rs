@@ -645,6 +645,117 @@ schedule for \"a.algo.nuc\" {
 }
 
 #[test]
+fn negative_missing_cross_worker_transfer_message_is_actionable() {
+    // TASK-0055 AC#2 + AC#6: the Display string must name the data
+    // symbol, the producer and consumer workers, AND propose a fix
+    // (the user can't possibly guess the right transport mode from
+    // first principles — the compiler refuses to default and instead
+    // suggests `sync` as the minimum-semantic baseline).
+    let algo = algo_from_str(
+        "\
+const N : usize = 4;
+data x : f32[N];
+data y : f32[N];
+kernel make_x : () -> f32[N] pure;
+kernel use_x : (f32[N]) -> f32[N] pure;
+x <-- make_x();
+y <-- use_x(x);
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0 };
+    place make_x on host;
+    place use_x  on w0;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    let msg = errs
+        .iter()
+        .find_map(|e| match e {
+            LinkError::MissingCrossWorkerTransfer { .. } => Some(e.to_string()),
+            _ => None,
+        })
+        .expect("must have a MissingCrossWorkerTransfer");
+    // Names the data symbol, both worker entities, and the actionable fix.
+    assert!(msg.contains("`x`"), "missing data name in {msg:?}");
+    assert!(msg.contains("{host}"), "missing producer in {msg:?}");
+    assert!(msg.contains("{w0}"), "missing consumer in {msg:?}");
+    assert!(
+        msg.contains("Add `transfer x : sync;`"),
+        "missing actionable fix in {msg:?}"
+    );
+    assert!(
+        msg.contains("async") && msg.contains("buffer=N"),
+        "missing buffered-transport hint in {msg:?}"
+    );
+}
+
+#[test]
+fn negative_multi_missing_cross_worker_transfer_surfaces_all() {
+    // TASK-0055 AC#4 / TASK-0092: a single link call reports EVERY
+    // missing cross-worker transfer, not just the first. Three
+    // disjoint data symbols each cross a worker boundary with no
+    // matching transfer directive — all three must appear in the
+    // returned error vector. This pins the multi-error contract
+    // for this specific variant (it's easy to regress to fail-fast
+    // when the inner loop is refactored).
+    let algo = algo_from_str(
+        "\
+const N : usize = 4;
+data x : f32[N];
+data y : f32[N];
+data z : f32[N];
+data sx : f32[N];
+data sy : f32[N];
+data sz : f32[N];
+kernel make_x : () -> f32[N] pure;
+kernel make_y : () -> f32[N] pure;
+kernel make_z : () -> f32[N] pure;
+kernel use_x : (f32[N]) -> f32[N] pure;
+kernel use_y : (f32[N]) -> f32[N] pure;
+kernel use_z : (f32[N]) -> f32[N] pure;
+x <-- make_x();
+y <-- make_y();
+z <-- make_z();
+sx <-- use_x(x);
+sy <-- use_y(y);
+sz <-- use_z(z);
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0 };
+    place make_x on host;
+    place make_y on host;
+    place make_z on host;
+    place use_x  on w0;
+    place use_y  on w0;
+    place use_z  on w0;
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("must fail");
+    // Collect the data names from MissingCrossWorkerTransfer variants.
+    let mut missing: Vec<&str> = errs
+        .iter()
+        .filter_map(|e| match e {
+            LinkError::MissingCrossWorkerTransfer { data, .. } => Some(data.as_str()),
+            _ => None,
+        })
+        .collect();
+    missing.sort();
+    assert_eq!(
+        missing,
+        vec!["x", "y", "z"],
+        "expected all three cross-worker dataflows to surface; got {errs:?}"
+    );
+}
+
+#[test]
 fn no_transfer_required_within_same_worker() {
     // Sanity: a producer and consumer on the SAME worker need no
     // transfer directive.
