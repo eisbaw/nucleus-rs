@@ -1,9 +1,10 @@
 ---
 id: TASK-0210
 title: 'Example 13 pipeline_parallel: deferred until tier-2 async+buffer+event backend'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-20 20:13'
+updated_date: '2026-05-22 21:08'
 labels:
   - M5
   - examples
@@ -67,3 +68,18 @@ pipeline_parallel honestly deferred.
 - [ ] #1 Determination: pipeline_parallel.sched.nuc is NOT promoted to required on any tier-1 backend; the schedule file remains shipped.
 - [ ] #2 When an async + buffer + event-capable backend lands, this task is closed by adding pipeline_parallel as a required cell on that backend with a bit-identical reference.bin match.
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 60e tracker hygiene (2026-05-22). The task's premise was OBSOLETED by pthreads-async (cycles 26-27) — a TIER-1 backend that declares supports_async=true + supports_buffer=true + notify=['event']. The task assumed pipeline_parallel needed a tier-2 backend; that assumption proved wrong.
+
+Current state (verified e2e baseline 88/70/0/18):
+- 13-cnn-inference/pipeline_parallel × pthreads-async: [[required]] at M4 (cycle 27 / TASK-0229). Bit-identical to reference.bin (sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861).
+- 13-cnn-inference/pipeline_parallel × {pthreads-sync, mp-tcp-bufsync}: [[skip]] — capability mismatch (sync/single-buffer/barrier-only) is REAL for those backends. Skip reasons updated cycle 27 to drop the stale TASK-0226 citation.
+- 13-cnn-inference/pipeline_parallel × mp-tcp-event: [[skip]] — Stage 3 (TASK-0042.05) deferred. Will move to [[required]] when Stage 3 lands.
+
+Tracker's 'DO NOT add a [[required]] entry on any tier-1 backend' guidance is now OBSOLETE — pthreads-async IS the tier-1 backend with the right capability surface, and the [[required]] entry IS correct. Cycle 27 superseded that guidance with a precise capability-aware comment block in e2e-matrix.toml.
+
+Closing as obsolete-by-implementation. No source changes.
+<!-- SECTION:FINAL_SUMMARY:END -->
