@@ -117,6 +117,16 @@ struct RequiredEntry {
     /// the manifest header) is "the milestone whose acceptance task
     /// owns this cell" per PRD §11.
     milestone: String,
+    /// Optional per-cell perf-regression gate (TASK-0023.03.02, Stage 3).
+    /// When `--baseline` is set AND this is `Some(N)`, a current-vs-
+    /// baseline relative-pct delta exceeding `N%` flips the cell into a
+    /// REGRESSION row AND (because this is a `[[required]]` entry) hard-
+    /// fails the harness exit code. `None` (default — `#[serde(default)]`
+    /// so absent in TOML is byte-identical to today) ⇒ no gate, the
+    /// delta is informational only. Relative-pct chosen over absolute-ms
+    /// for the first cut; absolute is a follow-on if needed.
+    #[serde(default)]
+    perf_threshold_pct: Option<f64>,
 }
 
 impl RequiredEntry {
@@ -143,6 +153,15 @@ struct SkipEntry {
     /// the required cells it exempts (a skip for an M3-only cell must
     /// not exempt anything under `--milestone M1`).
     milestone: String,
+    /// Optional per-cell perf-regression gate (TASK-0023.03.02, Stage 3).
+    /// Same semantics as on `[[required]]`, EXCEPT a breach on a
+    /// `[[skip]]` cell is informational only (no exit-code impact) — a
+    /// skipped cell did not run a meaningful payload, so timings are
+    /// noise; gating off them would be a false-positive. The field
+    /// exists on `[[skip]]` purely so a future un-skip flip preserves
+    /// the threshold without a separate edit.
+    #[serde(default)]
+    perf_threshold_pct: Option<f64>,
 }
 
 impl SkipEntry {
@@ -935,6 +954,27 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
     // coverage obligation either — see `required_coverage_gaps`).
     let required_map = manifest.required_milestones()?;
     let skip_map = manifest.skip_table()?;
+    // Per-cell perf threshold lookup (TASK-0023.03.02 Stage 3). Built
+    // by walking BOTH `[[required]]` and `[[skip]]`. Precedence: a
+    // `[[required]]` entry's threshold wins over a `[[skip]]` entry's
+    // on the same identity triple (the required declaration is what
+    // actually gates exit; a skip threshold is informational either way,
+    // so this is the conservative tie-break — but no legitimate manifest
+    // should have both). Cell-not-in-map ⇒ no threshold ⇒ no gate.
+    let mut perf_threshold_map: std::collections::BTreeMap<Cell, f64> =
+        std::collections::BTreeMap::new();
+    for s in &manifest.skip {
+        if let Some(t) = s.perf_threshold_pct {
+            perf_threshold_map.insert(s.cell(), t);
+        }
+    }
+    for r in &manifest.required {
+        if let Some(t) = r.perf_threshold_pct {
+            // Required overwrites any prior skip-side entry on the same
+            // triple — see precedence note above.
+            perf_threshold_map.insert(r.cell(), t);
+        }
+    }
 
     for ex in &manifest.runnable_examples {
         if let Some(want) = &args.example {
@@ -1015,10 +1055,12 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                 let pre_skip = skip_m.and_then(|(reason, m)| {
                     milestone_in_gate(*m, args.milestone).then(|| reason.clone())
                 });
+                let perf_threshold_pct = perf_threshold_map.get(&cell).copied();
                 planned.push(PlannedCell {
                     cell,
                     required,
                     pre_skip,
+                    perf_threshold_pct,
                 });
             }
         }
@@ -1034,6 +1076,14 @@ struct PlannedCell {
     cell: Cell,
     required: bool,
     pre_skip: Option<String>,
+    /// Per-cell perf-regression threshold (TASK-0023.03.02). Plumbed
+    /// through from the manifest's `RequiredEntry`/`SkipEntry`. `None`
+    /// (the default for cells with no declaration AND for declarations
+    /// that omit the key) means "no gate" — the comparator emits an
+    /// informational delta row only. `Some(N)` only gates the exit code
+    /// when the cell is `required = true`; a breach on a skip-band cell
+    /// is informational (see `SkipEntry::perf_threshold_pct`).
+    perf_threshold_pct: Option<f64>,
 }
 
 /// Return `true` iff `cell` passes the active CLI narrowing flags
@@ -3314,6 +3364,22 @@ struct DeltaRow {
     /// `current / baseline - 1`; rounded to one decimal in output.
     /// Sentinel `None` means "(new)" or "(removed)".
     delta_pct: Option<f64>,
+    /// Per-cell perf-regression threshold, plumbed from
+    /// `PlannedCell::perf_threshold_pct` (TASK-0023.03.02 Stage 3).
+    /// `None` ⇒ no gate; an absent baseline match (the cell wasn't in
+    /// this run's planned set, e.g. "(removed)" rows) also surfaces as
+    /// `None`. Honest: rows the planner never produced cannot be gated.
+    perf_threshold_pct: Option<f64>,
+    /// `true` iff this cell is `required` in the active milestone band.
+    /// Drives the exit-code wiring: a threshold breach only flips the
+    /// harness exit code when `required && regression`.
+    required: bool,
+    /// Set once at row-construction time. `true` iff
+    /// `(threshold, delta_pct) = (Some(t), Some(p))` AND `p > t`.
+    /// Computing this here (not in the renderer) keeps the rendering
+    /// path side-effect-free and the exit-code wiring a simple
+    /// `rows.iter().any(...)`.
+    regression: bool,
 }
 
 impl DeltaRow {
@@ -3337,10 +3403,19 @@ impl DeltaRow {
 }
 
 /// Build the delta table by joining current results to the baseline on
-/// the identity triple. Order of returned rows is sorted by
-/// `DeltaRow::sort_key` — largest regression first; new/removed cells
-/// land at the bottom.
-fn compute_delta_rows(baseline: &[BaselineCell], current: &[CellResult]) -> Vec<DeltaRow> {
+/// the identity triple. `planned` is an optional carrier of per-cell
+/// metadata (perf threshold, required flag) joined on the same triple
+/// (TASK-0023.03.02 Stage 3). Pass an empty slice to disable gating
+/// (the cycle-55 informational-only behaviour: every row's `regression`
+/// flag will be `false` and `required` defaults to `false`).
+///
+/// Order of returned rows is sorted by `DeltaRow::sort_key` — largest
+/// regression first; new/removed cells land at the bottom.
+fn compute_delta_rows(
+    baseline: &[BaselineCell],
+    current: &[CellResult],
+    planned: &[PlannedCell],
+) -> Vec<DeltaRow> {
     use std::collections::HashMap;
     type Key = (String, String, String);
     let key_for_baseline = |b: &BaselineCell| -> Key {
@@ -3349,10 +3424,52 @@ fn compute_delta_rows(baseline: &[BaselineCell], current: &[CellResult]) -> Vec<
     let key_for_current = |r: &CellResult| -> Key {
         (r.cell.example.clone(), r.cell.schedule.clone(), r.cell.backend.clone())
     };
+    let key_for_planned = |p: &PlannedCell| -> Key {
+        (p.cell.example.clone(), p.cell.schedule.clone(), p.cell.backend.clone())
+    };
     let base_map: HashMap<Key, &BaselineCell> =
         baseline.iter().map(|b| (key_for_baseline(b), b)).collect();
     let cur_map: HashMap<Key, &CellResult> =
         current.iter().map(|r| (key_for_current(r), r)).collect();
+    // Plan-side metadata: threshold + required flag. Cell-not-in-map
+    // ⇒ no threshold AND not-required (defensive default), so a stray
+    // row (e.g. a "(removed)" cell only in the baseline) cannot ever
+    // gate the exit code by accident.
+    let plan_map: HashMap<Key, &PlannedCell> =
+        planned.iter().map(|p| (key_for_planned(p), p)).collect();
+
+    // Build one row. Centralised so the threshold/regression rule is
+    // applied identically to current-cell rows and (defensively) removed
+    // rows. A removed cell has `delta_pct = None`, so `regression` is
+    // unconditionally `false` there — a vanished cell is not a perf bite.
+    let mk_row = |example: String,
+                  schedule: String,
+                  backend: String,
+                  baseline_ms: Option<u64>,
+                  current_ms: Option<u64>,
+                  delta_pct: Option<f64>|
+     -> DeltaRow {
+        let k: Key = (example.clone(), schedule.clone(), backend.clone());
+        let (perf_threshold_pct, required) = match plan_map.get(&k) {
+            Some(p) => (p.perf_threshold_pct, p.required),
+            None => (None, false),
+        };
+        let regression = matches!(
+            (perf_threshold_pct, delta_pct),
+            (Some(t), Some(p)) if p > t
+        );
+        DeltaRow {
+            example,
+            schedule,
+            backend,
+            baseline_ms,
+            current_ms,
+            delta_pct,
+            perf_threshold_pct,
+            required,
+            regression,
+        }
+    };
 
     let mut rows: Vec<DeltaRow> = Vec::new();
     // First, every current cell — flagged as "(new)" if absent in
@@ -3382,24 +3499,24 @@ fn compute_delta_rows(baseline: &[BaselineCell], current: &[CellResult]) -> Vec<
                             * 100.0,
                     )
                 };
-                rows.push(DeltaRow {
-                    example: r.cell.example.clone(),
-                    schedule: r.cell.schedule.clone(),
-                    backend: r.cell.backend.clone(),
-                    baseline_ms: Some(baseline_ms),
-                    current_ms: Some(current_ms),
+                rows.push(mk_row(
+                    r.cell.example.clone(),
+                    r.cell.schedule.clone(),
+                    r.cell.backend.clone(),
+                    Some(baseline_ms),
+                    Some(current_ms),
                     delta_pct,
-                });
+                ));
             }
             None => {
-                rows.push(DeltaRow {
-                    example: r.cell.example.clone(),
-                    schedule: r.cell.schedule.clone(),
-                    backend: r.cell.backend.clone(),
-                    baseline_ms: None,
-                    current_ms: Some(current_ms),
-                    delta_pct: None,
-                });
+                rows.push(mk_row(
+                    r.cell.example.clone(),
+                    r.cell.schedule.clone(),
+                    r.cell.backend.clone(),
+                    None,
+                    Some(current_ms),
+                    None,
+                ));
             }
         }
     }
@@ -3407,14 +3524,14 @@ fn compute_delta_rows(baseline: &[BaselineCell], current: &[CellResult]) -> Vec<
     for b in baseline {
         let k = key_for_baseline(b);
         if !cur_map.contains_key(&k) {
-            rows.push(DeltaRow {
-                example: b.example.clone(),
-                schedule: b.schedule.clone(),
-                backend: b.backend.clone(),
-                baseline_ms: Some(b.total_ms),
-                current_ms: None,
-                delta_pct: None,
-            });
+            rows.push(mk_row(
+                b.example.clone(),
+                b.schedule.clone(),
+                b.backend.clone(),
+                Some(b.total_ms),
+                None,
+                None,
+            ));
         }
     }
     rows.sort_by_key(|r| r.sort_key());
@@ -3431,12 +3548,22 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
     const DIM: &str = "\x1b[2m";
     const RESET: &str = "\x1b[0m";
 
+    // Bright red for required-cell regressions (exit-code-impacting,
+    // demands attention); a dim red for informational threshold breaches
+    // on skip-band cells (signal, not blocker).
+    const BRIGHT_RED: &str = "\x1b[1;31m";
+
     let mut out = String::new();
     let _ = writeln!(
         out,
         "--- baseline diff ({} row(s)) ---",
         rows.len()
     );
+    // Header is preserved verbatim from cycle 55 so a bare `--baseline`
+    // invocation (no thresholds in the matrix yet) renders byte-identical
+    // to cycle 55. The optional "[threshold=…]" / "[REGRESSION …]" suffix
+    // is only appended per-row when a threshold was actually plumbed
+    // through, so an absent-threshold run stays a no-op on output.
     let _ = writeln!(
         out,
         "  example | schedule | backend | baseline_ms -> current_ms (Δ%)"
@@ -3480,7 +3607,34 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
             }
             (None, None, _) => "- -> -".to_string(),
         };
-        let _ = writeln!(out, "{cell_id}{body}");
+        // Threshold/REGRESSION suffix (TASK-0023.03.02 Stage 3). Three
+        // visual tiers:
+        //   * required-cell breach     -> "[REGRESSION threshold=N%]" in
+        //                                 BRIGHT RED (exit-code-impacting)
+        //   * skip-band-cell breach    -> "[regression threshold=N%]" in
+        //                                 dim red (informational only)
+        //   * threshold set, no breach -> "[threshold=N%]" dim text
+        //                                 (so a reviewer can see the gate
+        //                                 was active and the cell stayed
+        //                                 under it)
+        //   * no threshold             -> nothing appended (byte-identical
+        //                                 to cycle 55 output)
+        let suffix = match (r.perf_threshold_pct, r.regression, r.required) {
+            (Some(t), true, true) => {
+                let s = format!(" [REGRESSION threshold={:+.1}%]", t);
+                if color { format!("{BRIGHT_RED}{s}{RESET}") } else { s }
+            }
+            (Some(t), true, false) => {
+                let s = format!(" [regression threshold={:+.1}%]", t);
+                if color { format!("{RED}{DIM}{s}{RESET}") } else { s }
+            }
+            (Some(t), false, _) => {
+                let s = format!(" [threshold={:+.1}%]", t);
+                if color { format!("{DIM}{s}{RESET}") } else { s }
+            }
+            (None, _, _) => String::new(),
+        };
+        let _ = writeln!(out, "{cell_id}{body}{suffix}");
     }
     out
 }
@@ -3495,7 +3649,8 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
 fn compare_against_baseline(
     path: &std::path::Path,
     current: &[CellResult],
-) -> Result<(), String> {
+    planned: &[PlannedCell],
+) -> Result<usize, String> {
     let src = fs::read_to_string(path).map_err(|e| {
         format!("--baseline: cannot read `{}`: {e}", path.display())
     })?;
@@ -3504,7 +3659,7 @@ fn compare_against_baseline(
         // names the flag so the developer knows which file to look at.
         format!("{e} in `{}`", path.display())
     })?;
-    let rows = compute_delta_rows(&baseline, current);
+    let rows = compute_delta_rows(&baseline, current, planned);
     let use_color = {
         use std::io::IsTerminal as _;
         std::io::stderr().is_terminal()
@@ -3514,8 +3669,20 @@ fn compare_against_baseline(
     // a trailing newline per row, so an extra newline would double-
     // space the output.
     eprint!("{table}");
+    // Count required-cell threshold breaches. Returned to the caller so
+    // it can flip the exit code without re-running the join (TASK-
+    // 0023.03.02 AC#3 — required-cell regression = HARD FAIL). Skip-row
+    // regressions are deliberately NOT counted here: they're flagged
+    // visually but exit-code-neutral.
+    let required_regressions = rows.iter().filter(|r| r.regression && r.required).count();
+    if required_regressions > 0 {
+        eprintln!(
+            "nucleus-e2e: --baseline: {required_regressions} required-cell \
+             perf threshold breach(es) — HARD FAIL"
+        );
+    }
     let _ = std::io::stderr().flush();
-    Ok(())
+    Ok(required_regressions)
 }
 
 // --------------------------------------------------------------------
@@ -4005,9 +4172,18 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // against a previous one (the canonical "did this change move the
     // needle" workflow). Output routes to STDERR specifically so
     // `--format=junit` XML on STDOUT stays clean.
-    if let Some(path) = args.baseline.as_deref() {
-        compare_against_baseline(path, &results)?;
-    }
+    // TASK-0023.03.02 Stage 3: `compare_against_baseline` returns the
+    // count of required-cell threshold breaches. Folded into the same
+    // late-stage exit-code variable as `required_failed` below so the
+    // existing single-return-point at the bottom of `run_inner` remains
+    // the SOLE exit-code authority (no early `return Ok(1)` here — the
+    // NUC_XBACKEND_NEGATIVE branch BELOW this call still needs to run on
+    // every invocation, and short-circuiting would skip it).
+    let perf_regressions = if let Some(path) = args.baseline.as_deref() {
+        compare_against_baseline(path, &results, &planned)?
+    } else {
+        0
+    };
 
     // NUC_XBACKEND_NEGATIVE explicit-signal contract + zero-corruption
     // guard. Two distinct, both gate-only, both on STDOUT:
@@ -4109,7 +4285,12 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     let required_failed = results
         .iter()
         .any(|r| r.required && matches!(r.status, Status::Failed { .. }));
-    Ok(if required_failed { 1 } else { 0 })
+    // Combined exit code: a required-cell test FAILED *or* a required-
+    // cell perf threshold was breached. Either is a HARD FAIL. The two
+    // are disjoint signals (one is correctness, one is perf) but share
+    // a single exit-code channel — the table on STDERR + the explicit
+    // "HARD FAIL" line in `compare_against_baseline` disambiguate.
+    Ok(if required_failed || perf_regressions > 0 { 1 } else { 0 })
 }
 
 fn main() -> ExitCode {
@@ -4227,6 +4408,7 @@ mod tests {
             },
             required: false,
             pre_skip: Some("manifest says skip".to_string()),
+            perf_threshold_pct: None,
         };
         let r = check_cell_determinism(&paths, &pc);
         match r.status {
@@ -4249,6 +4431,7 @@ mod tests {
             },
             required: false,
             pre_skip: None,
+            perf_threshold_pct: None,
         };
         let r = check_cell_determinism(&paths, &pc);
         match r.status {
@@ -4560,6 +4743,7 @@ mystery = 42
                 schedule: "naive".to_string(),
                 backend: "pthreads-sync".to_string(),
                 milestone: "M1".to_string(),
+                perf_threshold_pct: None,
             }],
             skip: vec![],
         };
@@ -4600,6 +4784,7 @@ mystery = 42
             cell: cell(ex, sc, be),
             required: true,
             pre_skip: None,
+            perf_threshold_pct: None,
         }
     }
 
@@ -4612,6 +4797,7 @@ mystery = 42
             schedule: sc.to_string(),
             backend: be.to_string(),
             milestone: ms.to_string(),
+            perf_threshold_pct: None,
         }
     }
 
@@ -4622,6 +4808,7 @@ mystery = 42
             backend: be.to_string(),
             reason: reason.to_string(),
             milestone: ms.to_string(),
+            perf_threshold_pct: None,
         }
     }
 
@@ -4998,6 +5185,7 @@ mystery = 42
             },
             required: false,
             pre_skip: Some("test fixture".to_string()),
+            perf_threshold_pct: None,
         };
         let r = run_cell(&paths, &pc);
         match r.status {
@@ -5847,7 +6035,7 @@ mystery = 42
                 None, Some(2000), None,
             ),
         ];
-        let rows = compute_delta_rows(&baseline, &current);
+        let rows = compute_delta_rows(&baseline, &current, &[]);
         assert_eq!(rows.len(), 2);
         // Largest regression first.
         assert_eq!(rows[0].example, "ex-a");
@@ -5892,7 +6080,7 @@ mystery = 42
                 None, Some(300), None,
             ),
         ];
-        let rows = compute_delta_rows(&baseline, &current);
+        let rows = compute_delta_rows(&baseline, &current, &[]);
         assert_eq!(rows.len(), 3, "rows: {rows:?}");
 
         // Find each row by example. ex-a is real delta (tier 0,
@@ -5935,11 +6123,13 @@ mystery = 42
                 example: "ex-a".into(), schedule: "n".into(), backend: "p".into(),
                 baseline_ms: Some(100), current_ms: Some(150),
                 delta_pct: Some(50.0),
+                perf_threshold_pct: None, required: false, regression: false,
             },
             DeltaRow {
                 example: "ex-b".into(), schedule: "n".into(), backend: "p".into(),
                 baseline_ms: Some(100), current_ms: Some(50),
                 delta_pct: Some(-50.0),
+                perf_threshold_pct: None, required: false, regression: false,
             },
         ];
         let table = render_delta_table(&rows, true);
@@ -5986,7 +6176,7 @@ mystery = 42
         // baseline must NOT silently no-op.
         let src = fs::read_to_string(&path).expect("read");
         let parsed = parse_baseline_json(&src).expect("parse");
-        let rows = compute_delta_rows(&parsed, &current_results);
+        let rows = compute_delta_rows(&parsed, &current_results, &[]);
         let table = render_delta_table(&rows, false);
         assert!(
             table.contains("ex-a") && table.contains("+50.0%"),
@@ -5994,5 +6184,199 @@ mystery = 42
         );
 
         let _ = fs::remove_dir_all(&tmp_root);
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0023.03.02 (Stage 3) — per-cell perf threshold gating tests.
+    // The contract per AC#5: a matrix entry with threshold=50,
+    // baseline=200ms, current=350ms (75% slower) MUST fail; current=
+    // 250ms (25% slower) MUST pass. The other two pin the negative-
+    // path (required vs skip-band cells) and the serde-default
+    // byte-identicality property.
+    // ----------------------------------------------------------------
+
+    /// Helper: build a `PlannedCell` with a perf threshold set and the
+    /// required flag explicit. The three-string identity triple matches
+    /// the `synth_cell_result` calls below so the comparator join lines
+    /// up correctly.
+    fn planned_with_threshold(
+        ex: &str,
+        sc: &str,
+        be: &str,
+        required: bool,
+        threshold: Option<f64>,
+    ) -> PlannedCell {
+        PlannedCell {
+            cell: Cell {
+                example: ex.into(),
+                schedule: sc.into(),
+                backend: be.into(),
+            },
+            required,
+            pre_skip: None,
+            perf_threshold_pct: threshold,
+        }
+    }
+
+    #[test]
+    fn perf_threshold_breach_on_required_cell_is_regression() {
+        // AC#5 fail case: threshold=50%, baseline=200ms, current=350ms
+        // (delta = +75%). Required cell -> regression flag MUST set,
+        // and `compute_delta_rows` must surface it for the exit-code
+        // wiring to bite.
+        let baseline = vec![BaselineCell {
+            example: "ex-a".into(), schedule: "naive".into(),
+            backend: "pthreads-sync".into(), total_ms: 200,
+        }];
+        let current = vec![synth_cell_result(
+            "ex-a", "naive", "pthreads-sync", Status::Pass,
+            None, None, Some(350),
+        )];
+        let planned = vec![planned_with_threshold(
+            "ex-a", "naive", "pthreads-sync", true, Some(50.0),
+        )];
+        let rows = compute_delta_rows(&baseline, &current, &planned);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.perf_threshold_pct, Some(50.0));
+        assert!(r.required, "required flag must round-trip");
+        let pct = r.delta_pct.expect("real delta");
+        assert!((pct - 75.0).abs() < 0.01, "expected +75%, got {pct}");
+        assert!(r.regression, "75% > 50% must flag regression");
+        // The rendered table must carry the REGRESSION token so the
+        // human reviewer + grep-based CI checks can spot it.
+        let table = render_delta_table(&rows, false);
+        assert!(
+            table.contains("REGRESSION") && table.contains("threshold=+50.0%"),
+            "expected REGRESSION + threshold tags in: {table}",
+        );
+    }
+
+    #[test]
+    fn perf_under_threshold_does_not_flag_regression() {
+        // AC#5 pass case: threshold=50%, baseline=200ms, current=250ms
+        // (delta = +25%). Required cell, BUT 25% < 50% so no regression.
+        // Threshold tag is still rendered (so a reviewer sees the gate
+        // was active), the exit-code-impacting REGRESSION is NOT.
+        let baseline = vec![BaselineCell {
+            example: "ex-a".into(), schedule: "naive".into(),
+            backend: "pthreads-sync".into(), total_ms: 200,
+        }];
+        let current = vec![synth_cell_result(
+            "ex-a", "naive", "pthreads-sync", Status::Pass,
+            None, None, Some(250),
+        )];
+        let planned = vec![planned_with_threshold(
+            "ex-a", "naive", "pthreads-sync", true, Some(50.0),
+        )];
+        let rows = compute_delta_rows(&baseline, &current, &planned);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        let pct = r.delta_pct.expect("real delta");
+        assert!((pct - 25.0).abs() < 0.01, "expected +25%, got {pct}");
+        assert!(
+            !r.regression,
+            "25% under 50% threshold must NOT flag regression"
+        );
+        let table = render_delta_table(&rows, false);
+        assert!(
+            table.contains("[threshold=+50.0%]"),
+            "expected threshold tag (informational) in: {table}",
+        );
+        assert!(
+            !table.contains("REGRESSION"),
+            "must NOT emit REGRESSION when under threshold: {table}",
+        );
+    }
+
+    #[test]
+    fn perf_threshold_breach_on_skip_band_cell_is_informational_only() {
+        // A `[[skip]]`-band cell with a threshold that genuinely
+        // breached: the row's `regression` flag must be set (so the
+        // table can dim-flag it for a reviewer), BUT `required` must
+        // be `false` so the exit-code-impacting count (filtered by
+        // `regression && required` in `compare_against_baseline`) stays
+        // at zero — a skip-band breach is signal, not blocker.
+        let baseline = vec![BaselineCell {
+            example: "ex-skip".into(), schedule: "naive".into(),
+            backend: "pthreads-sync".into(), total_ms: 100,
+        }];
+        let current = vec![synth_cell_result(
+            "ex-skip", "naive", "pthreads-sync", Status::Pass,
+            None, None, Some(500),
+        )];
+        let planned = vec![planned_with_threshold(
+            "ex-skip", "naive", "pthreads-sync",
+            /* required = */ false,
+            Some(10.0),
+        )];
+        let rows = compute_delta_rows(&baseline, &current, &planned);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert!(r.regression, "+400% > 10% must flag regression");
+        assert!(!r.required, "skip-band cell must not be required");
+        // The exit-code-impacting filter must yield zero.
+        let exit_count = rows.iter().filter(|r| r.regression && r.required).count();
+        assert_eq!(
+            exit_count, 0,
+            "skip-band breach must NOT contribute to exit-code count",
+        );
+    }
+
+    #[test]
+    fn perf_threshold_absent_serde_default_byte_identical() {
+        // Matrix toml without the new key MUST deserialize unchanged,
+        // and the resulting PlannedCell must carry `perf_threshold_pct
+        // = None` so no gate fires. This is the load-bearing byte-
+        // identicality contract for the cycle: existing manifests
+        // (and the bare `just e2e` run) cannot regress.
+        let toml_src = r#"
+runnable_examples = ["01-elementwise-add"]
+backends = ["pthreads-sync"]
+
+[[required]]
+example = "01-elementwise-add"
+schedule = "naive"
+backend = "pthreads-sync"
+milestone = "M1"
+
+[[skip]]
+example = "01-elementwise-add"
+schedule = "tiled"
+backend = "pthreads-sync"
+reason = "not yet"
+milestone = "M2"
+"#;
+        let m: Manifest = toml::from_str(toml_src).expect("parse");
+        assert_eq!(m.required.len(), 1);
+        assert_eq!(m.skip.len(), 1);
+        assert!(
+            m.required[0].perf_threshold_pct.is_none(),
+            "absent threshold must serde-default to None",
+        );
+        assert!(
+            m.skip[0].perf_threshold_pct.is_none(),
+            "absent threshold on skip must serde-default to None",
+        );
+    }
+
+    #[test]
+    fn perf_threshold_parsed_from_toml_when_present() {
+        // Symmetric positive: when the key IS set, it parses to the
+        // expected f64. Together with the previous test this pins the
+        // serde shape — absence is None, presence is f64.
+        let toml_src = r#"
+runnable_examples = ["01-elementwise-add"]
+backends = ["pthreads-sync"]
+
+[[required]]
+example = "01-elementwise-add"
+schedule = "naive"
+backend = "pthreads-sync"
+milestone = "M1"
+perf_threshold_pct = 50.0
+"#;
+        let m: Manifest = toml::from_str(toml_src).expect("parse");
+        assert_eq!(m.required[0].perf_threshold_pct, Some(50.0));
     }
 }
