@@ -481,6 +481,20 @@ pub enum SchedLowerErrorKind {
     /// at sched-lower with a precise diagnostic so the user picks
     /// ONE of (block, pipeline) for now (TASK-0215).
     BlockPipelineConflict { var: String },
+    /// `loop V : block=N, unroll=M` where `M` does not divide `N`
+    /// (TASK-0144 Stage 2). PRD §6.3.3: "bad combinations rejected at
+    /// compile time, not at runtime." `block=N` strip-mines the loop
+    /// into outer/inner tiles of length `N`; `unroll=M` then asks the
+    /// backend to unroll the (intra-tile) iter count by `M`. If `M`
+    /// does not divide `N`, the tail of every full tile is the
+    /// remainder `N % M` iterations — i.e. the schedule author wrote
+    /// two integer constants that disagree at compile time, before any
+    /// loop bound is known. The cleanest answer is to refuse the
+    /// schedule: there is no honest, range-independent unroll factor.
+    /// Both integers are static, so the check is purely on the option
+    /// payloads. `var` is the loop variable; `unroll` and `block` are
+    /// the literal values written.
+    UnrollNotDivisibleByBlock { var: String, unroll: u64, block: u64 },
     /// `loop V : block=N;` + `check loop V : latency_max=T;` — the
     /// loop V has both a strip-mine directive AND a latency check.
     /// `block_transform` tiles V into outer/inner; the inner Event::Loop
@@ -672,6 +686,12 @@ impl std::fmt::Display for SchedLowerErrorKind {
                  ambiguous semantics (per-tile vs per-iteration pipelining) and is not \
                  yet supported. Pick ONE: drop `block=N` to pipeline the full loop, or \
                  drop `pipeline=D` to tile without pipelining. PRD §6.3.3 (TASK-0215)."
+            ),
+            SchedLowerErrorKind::UnrollNotDivisibleByBlock { var, unroll, block } => write!(
+                f,
+                "loop `{var}` has `unroll={unroll}, block={block}` but `unroll` must divide \
+                 `block` (got {unroll}\u{2224}{block}); pick an unroll factor that divides the \
+                 tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
             ),
             SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
                 f,

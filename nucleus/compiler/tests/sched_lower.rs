@@ -720,6 +720,32 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_unroll_not_divisible_by_block_is_rejected() {
+    // TASK-0144 Stage 2: `block=N, unroll=M` with M not dividing N
+    // is a compile-time bad combination (PRD §6.3.3). Both values
+    // are static integers; the check is purely on option payloads.
+    // `block=6, unroll=4`: 6 % 4 == 2 != 0 — refused at sched-lower.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop n : block=6, unroll=4;
+}
+";
+    let err = lower_str(src)
+        .expect_err("unroll not dividing block must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnrollNotDivisibleByBlock {
+            var: "n".into(),
+            unroll: 4,
+            block: 6,
+        }
+    );
+}
+
+#[test]
 fn negative_check_on_strip_mined_loop_is_rejected() {
     // TASK-0052.02 review-gate finding #3: `loop V : block=N;` +
     // `check loop V : latency_max=T;` would silently drop the check

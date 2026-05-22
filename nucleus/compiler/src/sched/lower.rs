@@ -160,6 +160,7 @@ use super::ir::{
 /// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
+/// | `UnrollNotDivisibleByBlock`            | Independent | yes               | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -965,6 +966,35 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
             SchedLowerErrorKind::BlockPipelineConflict { var: var.clone() },
             var_span.clone(),
         ));
+    }
+
+    // TASK-0144 Stage 2: reject `block=N + unroll=M` where `M ∤ N`.
+    // PRD §6.3.3: "bad combinations rejected at compile time". Both
+    // option values are static integers, so this is purely a check on
+    // the option payloads — no need to know the loop bound. The
+    // remainder `N % M != 0` means the schedule author wrote two
+    // constants that disagree at compile time; refuse with a precise
+    // diagnostic rather than silently emit a misaligned tail.
+    let block_n = options.iter().find_map(|opt| match opt {
+        ResolvedLoopOption::Block(n) => Some(*n),
+        _ => None,
+    });
+    let unroll_m = options.iter().find_map(|opt| match opt {
+        ResolvedLoopOption::Unroll(m) => Some(*m),
+        _ => None,
+    });
+    if let (Some(n), Some(m)) = (block_n, unroll_m) {
+        // `m` is post-`positive(...)`, so m >= 1; `n % m` is well-defined.
+        if n % m != 0 {
+            return Err(SchedLowerError::at(
+                SchedLowerErrorKind::UnrollNotDivisibleByBlock {
+                    var: var.clone(),
+                    unroll: m,
+                    block: n,
+                },
+                var_span.clone(),
+            ));
+        }
     }
 
     ir.loops.insert(
