@@ -9,3 +9,8 @@ __pycache__/
 # Rust / Cargo build artefacts.
 target/
 Cargo.lock.bak
+
+# Per-user backlog-CLI local state (TASK-0085 cycle 46): the backlog
+# CLI writes a local email-preferences file when a task is --assignee'd.
+# Per-user local state, not part of project history.
+backlog/email-preferences.json
