@@ -1,19 +1,25 @@
 //! Skeleton + single-worker smoke tests for the pthreads-async backend.
 //!
-//! TASK-0042.01 cycle 17 (2026-05-22): the single-worker arm
-//! (TASK-0226) is implemented; multi-worker (TASK-0228) is still a
-//! typed ContractGap. These tests pin both edges:
+//! Cycle history:
+//! - **TASK-0226 (cycle 17):** single-worker arm implemented (delegates
+//!   to `pthreads_sync::render_single_worker_main`). The byte-identical-
+//!   to-pthreads-sync invariant on naive schedules holds by
+//!   construction (same delegated renderer).
+//! - **TASK-0228 Wave B-2 (cycle 26):** multi-worker arm landed. The
+//!   former aspirational ContractGap test has been replaced by a real
+//!   smoke test (`multi_worker_emit_for_02_split_succeeds`) that
+//!   exercises the actual emit path on a 2-worker fixture.
 //!
-//! 1. Multi-worker `emit()` rejects with `EmitError::ContractGap`
-//!    whose message names the backend AND forward-links TASK-0228 —
-//!    the precise next-step pointer the next implementer hits when
-//!    they wire up the ring-buffer + Condvar arm.
+//! What these tests pin:
+//!
+//! 1. Multi-worker `emit()` for a real 2-worker fixture succeeds and
+//!    produces a `main.rs` containing the Ring<T> substrate +
+//!    per-(DataId,SeqTag) ring allocations + at least one barrier +
+//!    per-worker `thread::spawn` body.
 //!
 //! 2. Single-worker `emit()` succeeds for an empty event-list (the
 //!    smallest legal input) AND produces a `main.rs` byte-identical
-//!    to `pthreads_sync::emit`'s on the same input — the
-//!    cross-backend differential invariant on naive schedules holds
-//!    by construction (same delegated renderer).
+//!    to `pthreads_sync::emit`'s on the same input.
 //!
 //! 3. The `EmitResult` shape is the single-binary five-field shape
 //!    (mirrors pthreads-sync). Compile-time only: if a later cycle
@@ -25,69 +31,93 @@ use std::path::PathBuf;
 
 use compiler::event::{Event, WorkerId};
 use compiler::sidecar::NameSidecar;
-use pthreads_async::{emit, EmitError, EmitResult, NameTables};
+use pthreads_async::{emit, EmitResult, NameTables};
 
-/// Build a 2-worker `per_worker` map of empty event lists. Useful for
-/// hitting the multi-worker dispatch arm without actually emitting any
-/// Event variants. WorkerId values are constructed via the public
-/// constructor (compiler::event::WorkerId is `pub`).
-fn two_workers_empty() -> BTreeMap<WorkerId, Vec<Event>> {
-    let mut m: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    // Empty event lists trip the used_workers filter (it requires
-    // non-empty). Add ONE no-op Event::Alloc per worker so they count
-    // as "used" — Alloc is the safest variant because the single-worker
-    // emitter explicitly ignores it (pthreads-sync lib.rs:1030).
-    use compiler::event::{DataId, IterTile, Region};
-    let a = Event::Alloc {
-        data: DataId(0),
-        tile: IterTile::default(),
-        region: Region(0),
-    };
-    let b = Event::Alloc {
-        data: DataId(1),
-        tile: IterTile::default(),
-        region: Region(0),
-    };
-    m.insert(WorkerId(0), vec![a]);
-    m.insert(WorkerId(1), vec![b]);
-    m
-}
-
+/// Wave B-2 smoke test: the multi-worker emit path actually produces
+/// a `main.rs` for a real 2-worker fixture (02-split-add/split). Pins
+/// the four shape invariants Wave B-2 guarantees:
+///
+/// 1. `emit()` returns Ok (no ContractGap, no Plan::build error).
+/// 2. The emitted `main.rs` contains the file-scope `Ring<T>` struct
+///    via `emit_ring_struct_decl` (the substrate is wired).
+/// 3. At least one `let ring_<id>: Arc<Ring<T>>` allocation appears
+///    in `fn main` (the per-pair instances are emitted).
+/// 4. At least one `bar_<id>: Arc<Barrier>` appears (02-split-add has
+///    cross-worker writes, so `inject_syncs` injects barriers).
+/// 5. At least one `_handle = thread::spawn(move || {` appears (the
+///    non-host worker is spawned).
+///
+/// This is a UNIT test on the emit path — it does NOT cargo-build the
+/// generated `main.rs`. End-to-end build/run/differential is TASK-0229.
 #[test]
-fn multi_worker_emit_returns_contract_gap_with_task_0228_forward_link() {
-    let per_worker = two_workers_empty();
-    let names = NameTables::default();
-    let sidecar = NameSidecar::default();
-    // Bogus paths — multi-worker arm short-circuits before any I/O.
-    let kernels = PathBuf::from("/does-not-exist/kernels.rs");
-    let out = PathBuf::from("/does-not-exist/out");
+fn multi_worker_emit_for_02_split_succeeds() {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).expect("02 split sched");
 
-    let res = emit(&per_worker, &names, &sidecar, &kernels, &out);
+    // 02-split-add/split is a 2-worker schedule (host + w_b) with
+    // sync transfers (buffer=1). No partition=workers, no check_loop.
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts::default(),
+    );
 
-    match res {
-        Err(EmitError::ContractGap(msg)) => {
-            assert!(
-                msg.contains("pthreads-async"),
-                "multi-worker ContractGap message must name the backend: {msg}"
-            );
-            assert!(
-                msg.contains("TASK-0228"),
-                "multi-worker ContractGap message must forward-link TASK-0228 \
-                 (the ring-buffer/Condvar/Plan headline work): {msg}"
-            );
-            assert!(
-                msg.contains("multi-worker") || msg.contains("ring buffer"),
-                "multi-worker ContractGap message must declare its scope: {msg}"
-            );
-        }
-        Err(other) => panic!(
-            "expected EmitError::ContractGap from multi-worker arm, got: {other:?}"
-        ),
-        Ok(result) => panic!(
-            "multi-worker emit() must Err; got Ok({result:?}). Did TASK-0228 \
-             land without removing this test? Delete it as part of that cycle."
-        ),
-    }
+    let scratch = root
+        .join("nucleus/target/pthreads-async-test-scratch/multi_worker_02_split");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let result = emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &ex.join("kernels.rs"),
+        &scratch,
+    )
+    .expect("multi-worker emit must succeed on 02-split-add/split");
+
+    let main_rs = std::fs::read_to_string(&result.main_rs).expect("read main.rs");
+
+    // (1) The Ring<T> substrate is present.
+    assert!(
+        main_rs.contains("struct Ring<T> {"),
+        "multi-worker main.rs must contain the file-scope Ring<T> struct:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("fn push(&self, v: T) {"),
+        "Ring<T> push method must be emitted:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("fn wait(&self) -> T {"),
+        "Ring<T> wait method must be emitted:\n{main_rs}"
+    );
+
+    // (2) At least one per-pair Arc<Ring<T>> allocation.
+    assert!(
+        main_rs.contains("let ring_0: std::sync::Arc<Ring<"),
+        "multi-worker main.rs must allocate at least one ring \
+         (ring_0); not found in:\n{main_rs}"
+    );
+
+    // (3) At least one barrier allocation (02-split has cross-worker
+    //     writes, so `inject_syncs` produces barriers).
+    assert!(
+        main_rs.contains(": Arc<Barrier> = Arc::new(Barrier::new("),
+        "multi-worker main.rs must allocate at least one Barrier:\n{main_rs}"
+    );
+
+    // (4) At least one thread::spawn for the non-host worker.
+    assert!(
+        main_rs.contains("_handle = thread::spawn(move || {"),
+        "multi-worker main.rs must spawn the non-host worker:\n{main_rs}"
+    );
+
+    // (5) The host joins every worker handle at fn main exit.
+    assert!(
+        main_rs.contains("_handle.join().expect("),
+        "multi-worker main.rs must join every spawned handle:\n{main_rs}"
+    );
 }
 
 #[test]

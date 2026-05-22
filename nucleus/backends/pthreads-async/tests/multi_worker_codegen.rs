@@ -30,7 +30,7 @@
 //! NOT break these tests; a cycle that changes the struct shape
 //! SHOULD.
 
-use pthreads_async::{emit_ring_instance_decl, emit_ring_struct_decl};
+use pthreads_async::{emit, emit_ring_instance_decl, emit_ring_struct_decl};
 
 #[test]
 fn ring_struct_decl_pins_documented_shape() {
@@ -278,5 +278,225 @@ fn ring_struct_decl_has_exactly_four_fields() {
         "Ring<T> must have EXACTLY 4 fields (mu, cap, not_empty, not_full); \
          adding a 5th is a design change that should update this test in \
          lockstep. Counted {field_count} fields in:\n{out}"
+    );
+}
+
+// --------------------------------------------------------------------
+// Wave B-2 (cycle 26, TASK-0228) — emit-string pins for the
+// MULTI-WORKER emit path (Plan::emit + render_main_rs_multi). The
+// substrate tests above cover the helpers; these tests pin the
+// integrated emit through `pthreads_async::emit` on a real fixture
+// (02-split-add/split — 2 workers, sync transfers, no partition).
+//
+// File-scope shape (cycle 26 baseline):
+// - One Ring<T> struct definition (the helper is called once).
+// - Three Arc<Ring<T>> instances sized cap=1 (02-split's 3 transfers).
+// - Three Barriers (inject_syncs produces 3 cross-worker barriers).
+// - One spawned non-host worker (w0).
+// - One ring_<id>.push(...) and one ring_<id>.wait() at least.
+// --------------------------------------------------------------------
+
+fn repo_root() -> std::path::PathBuf {
+    let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .expect("three ancestors above pthreads-async crate")
+        .to_path_buf()
+}
+
+/// Emit 02-split-add/split through `pthreads_async::emit` and return
+/// the main.rs body. Centralised here so every Wave B-2 pin reuses one
+/// emit invocation (one scratch dir, one lower_for_test run).
+fn emit_02_split_main_rs() -> String {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).expect("02 split sched");
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts::default(),
+    );
+    let scratch = root
+        .join("nucleus/target/pthreads-async-test-scratch/wave_b2_codegen_pins");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let result = emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &ex.join("kernels.rs"),
+        &scratch,
+    )
+    .expect("Wave B-2 emit must succeed for 02-split-add/split");
+    std::fs::read_to_string(&result.main_rs).expect("read main.rs")
+}
+
+#[test]
+fn wave_b2_multi_emit_contains_ring_struct_exactly_once() {
+    // The file-scope Ring<T> definition must appear EXACTLY once
+    // (the helper is documented as "idempotent at the caller layer";
+    // emitting twice would compile but is a codegen defect — a future
+    // refactor that accidentally calls the helper inside the per-pair
+    // loop would multiply the struct, this test catches it).
+    let main_rs = emit_02_split_main_rs();
+    let count = main_rs.matches("struct Ring<T> {").count();
+    assert_eq!(
+        count, 1,
+        "Ring<T> struct definition must appear exactly ONCE in the \
+         emitted main.rs; got {count}. main.rs:\n{main_rs}"
+    );
+}
+
+#[test]
+fn wave_b2_multi_emit_ring_alloc_uses_cap_from_sidecar() {
+    // 02-split-add/split has 3 cross-worker transfers, all default
+    // buffer=1 (sync). The emit must allocate 3 rings each sized 1.
+    let main_rs = emit_02_split_main_rs();
+    for rid in 0..3 {
+        let needle = format!(
+            "let ring_{rid}: std::sync::Arc<Ring<Vec<i32>>> = \
+             std::sync::Arc::new(Ring::new(1));"
+        );
+        assert!(
+            main_rs.contains(&needle),
+            "ring_{rid} allocation must be cap=1 (the 02-split-add/split \
+             transfers have default buffer=1). Expected:\n  {needle}\n\
+             in main.rs:\n{main_rs}"
+        );
+    }
+    // And no 4th ring (regression catch if the Plan over-allocates).
+    assert!(
+        !main_rs.contains("let ring_3:"),
+        "02-split-add/split must produce EXACTLY 3 rings (ring_0,1,2); \
+         a 4th would mean the Plan ring_id counter drifted:\n{main_rs}"
+    );
+}
+
+#[test]
+fn wave_b2_multi_emit_push_wait_pair_uses_ring_prefix() {
+    // Pin the Push/Wait emit-string shape: ring_<id>.push(name.clone());
+    // and `name = ring_<id>.wait();`. The send/recv comment names the
+    // peer worker — drift-detection on the format string.
+    let main_rs = emit_02_split_main_rs();
+    // Producer side (host pushes input arrays to w0; w0 pushes result
+    // back to host). At minimum one push from host and one from w0.
+    assert!(
+        main_rs.contains(".push(a.clone()); // send `a` to "),
+        "host-side push of `a` must use ring_<id>.push(a.clone()) with \
+         the documented send-comment shape:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains(".push(c.clone()); // send `c` to host"),
+        "w0-side push of `c` must use ring_<id>.push(c.clone()) targeting \
+         host:\n{main_rs}"
+    );
+    // Consumer side: w0 waits on a, b; host waits on c.
+    assert!(
+        main_rs.contains("w0_ring_0.wait(); // recv `a` from "),
+        "w0-side wait on `a` must use w0_ring_0.wait() with recv-comment \
+         shape:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("c = ring_2.wait(); // recv `c` from w0"),
+        "host-side wait on `c` must use bare `ring_2.wait()` (host has \
+         no closure prefix):\n{main_rs}"
+    );
+}
+
+#[test]
+fn wave_b2_multi_emit_barriers_match_sync_tags() {
+    // 02-split-add/split has 3 distinct cross-worker barriers; each
+    // emits one `let bar_<tag>: Arc<Barrier> = Arc::new(Barrier::new(N));`
+    // with N = participant count. Both workers ({host,w0}) participate
+    // in every barrier here, so every Barrier::new(2).
+    let main_rs = emit_02_split_main_rs();
+    let bar_count = main_rs
+        .matches(": Arc<Barrier> = Arc::new(Barrier::new(2));")
+        .count();
+    assert!(
+        bar_count >= 3,
+        "02-split-add/split must allocate ≥3 2-party Barriers (one per \
+         distinct SyncTag); got {bar_count}. main.rs:\n{main_rs}"
+    );
+}
+
+#[test]
+fn wave_b2_multi_emit_spawns_non_host_workers_with_arc_clones() {
+    // For every non-host worker, the emit must:
+    // - clone every ring the worker touches into `<wname>_ring_<id>`,
+    // - clone every barrier the worker participates in into `<wname>_bar_<tag>`,
+    // - spawn the closure with `let <wname>_handle = thread::spawn(move || {`,
+    // - join with `<wname>_handle.join().expect("worker thread panicked");`.
+    let main_rs = emit_02_split_main_rs();
+    assert!(
+        main_rs.contains("let w0_ring_0 = Arc::clone(&ring_0);"),
+        "w0 must Arc-clone the rings it touches into closure-locals:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("let w0_bar_0 = Arc::clone(&bar_0);"),
+        "w0 must Arc-clone every barrier it participates in:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("let w0_handle = thread::spawn(move || {"),
+        "w0 must be spawned as `let w0_handle = thread::spawn(move || {{`:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("w0_handle.join().expect(\"worker thread panicked\");"),
+        "host must join w0 with the documented panic-propagating .expect:\n{main_rs}"
+    );
+}
+
+#[test]
+fn wave_b2_multi_emit_compiles() {
+    // The strongest pin: not "does the emit string contain X" but
+    // "does cargo accept the emitted project". A future cycle that
+    // introduces a syntax error in render_worker_events (e.g. unbalanced
+    // braces in a Loop body, a missing semicolon after a Fire call)
+    // would silently pass the substring tests above but FAIL here.
+    //
+    // Uses a DEDICATED scratch dir (not the shared `wave_b2_codegen_pins`
+    // path the substring pins use) so a parallel test that wipes the
+    // shared dir doesn't race the cargo invocation here. Slow-ish
+    // (~5s for a clean build, ~0.5s incremental).
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).expect("02 split sched");
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts::default(),
+    );
+    let scratch = root.join("nucleus/target/pthreads-async-test-scratch/wave_b2_compile_check");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let _ = emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &ex.join("kernels.rs"),
+        &scratch,
+    )
+    .expect("emit must succeed before the cargo compile check");
+
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--quiet", "--offline"])
+        .current_dir(&scratch)
+        .status();
+    let Ok(status) = status else {
+        // Cargo invocation failed entirely (e.g. cargo not on PATH).
+        // Skip rather than spuriously fail — CI runs tests under
+        // `nix develop -c just test` so cargo IS on PATH there.
+        return;
+    };
+    assert!(
+        status.success(),
+        "Wave B-2 emitted main.rs must compile under `cargo build`. \
+         A compile failure here means the render_worker_events walk \
+         produced invalid Rust (unbalanced braces, missing semicolons, \
+         type mismatch). Scratch project: {}",
+        scratch.display(),
     );
 }

@@ -134,14 +134,13 @@ use compiler::sidecar::NameSidecar;
 pub mod ring_buffer;
 pub use ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
 
-// Multi-worker Plan (TASK-0228 Wave B-1, cycle 20).
-// Data structure capturing every fact a Wave B-2 `emit()` needs to
-// produce a multi-worker binary: used_workers, host election,
-// ring_ids per (DataId, SeqTag), ring_caps from the sidecar.
-// The Plan is `pub(crate)` because no out-of-crate caller needs it
-// today; Wave B-2 will keep it that way and expose only the
-// `render_main_rs_multi` entry point (mirroring pthreads-sync).
+// Multi-worker codegen (TASK-0228 Waves B-1 + B-2, cycles 20-26).
+// Wave B-1 landed the Plan data structure; Wave B-2 lands the
+// `render_main_rs_multi` entry point + the per-worker thread::spawn
+// emission. The Plan stays `pub(crate)`; the entry point is the
+// only multi-worker symbol consumed below.
 mod multi_worker;
+use multi_worker::render_main_rs_multi;
 
 // --------------------------------------------------------------------
 // Public surface
@@ -211,26 +210,57 @@ pub fn emit(
         .collect();
 
     if used_workers.len() >= 2 {
-        // ---- Multi-worker arm: not yet implemented. ----
+        // ---- Multi-worker arm (TASK-0228 Wave B-2). ----
         //
-        // FAIL-LOUD: the capability check already accepted this
-        // backend (capabilities.toml declares supports_async +
-        // supports_buffer); the multi-worker arm is the ring-buffer
-        // + Condvar + thread/Plan work tracked under TASK-0228 — the
-        // actual headline. Until it lands, schedules whose `used_workers
-        // >= 2` get a typed ContractGap, NEVER a silent fallback.
-        // CLAUDE.md: no workarounds — the next implementer rips this
-        // multi-worker branch out as part of TASK-0228 and replaces
-        // it with the real codegen.
-        return Err(EmitError::ContractGap(format!(
-            "pthreads-async multi-worker codegen ({used} used workers): \
-             per-(DataId,SeqTag) ring buffer + Condvar + thread/Plan \
-             structure not yet implemented. See TASK-0228 for the actual \
-             multi-worker arm. Single-worker schedules ARE supported on \
-             this backend; for now use pthreads-sync or mp-tcp-bufsync \
-             for multi-worker workloads.",
-            used = used_workers.len(),
-        )));
+        // Emit the file-scope Ring<T> substrate + per-pair Arc<Ring<T>>
+        // instances sized from `transfer_buffer_for_seq` (TASK-0233),
+        // plus per-worker `thread::spawn` bodies whose Push/Wait
+        // dispatch into `ring_<id>.push(v)` / `ring_<id>.wait()`. The
+        // structural shape (barriers, Fire, Loop, Sync, check_frame
+        // instrumentation, Wait gather) mirrors pthreads-sync's
+        // multi-worker emit byte-for-byte modulo the slot→ring
+        // substitution. TASK-0239 covers the de-dup follow-up.
+        let kernels_src =
+            fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
+                path: kernels_rs_path.to_path_buf(),
+                source: e,
+            })?;
+
+        let src_dir = out_dir.join("src");
+        fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
+            path: src_dir.clone(),
+            source: e,
+        })?;
+
+        let cargo_toml = out_dir.join("Cargo.toml");
+        let main_rs = src_dir.join("main.rs");
+        let kernels_rs = src_dir.join("kernels.rs");
+        let run_sh = out_dir.join("run.sh");
+
+        let main_rs_src = render_main_rs_multi(per_worker, names, sidecar)?;
+
+        write_file(&cargo_toml, &render_cargo_toml())?;
+        write_file(&kernels_rs, &kernels_src)?;
+        write_file(&main_rs, &main_rs_src)?;
+        write_file(&run_sh, &render_run_sh())?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&run_sh) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&run_sh, perms);
+            }
+        }
+
+        return Ok(EmitResult {
+            project_dir: out_dir.to_path_buf(),
+            cargo_toml,
+            main_rs,
+            kernels_rs,
+            run_sh,
+        });
     }
 
     // ---- Single-worker arm (TASK-0226). ----
