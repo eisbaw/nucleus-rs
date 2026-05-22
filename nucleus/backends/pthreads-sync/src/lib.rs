@@ -98,6 +98,7 @@ use compiler::event::{
 use compiler::sidecar::NameSidecar;
 
 mod multi_worker;
+pub mod multi_worker_walker;
 
 // --------------------------------------------------------------------
 // Public surface

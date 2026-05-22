@@ -23,24 +23,34 @@
 //!   Arc::new(Slot::new());`. Everything else (per-worker
 //!   thread::spawn, barriers, Fire/Loop/Sync/Wait gather,
 //!   check_frame instrumentation) is structurally the same emit-string
-//!   shape — the Wait gather even reuses the leading-axis slice-paste
-//!   logic mirroring pthreads-sync. Code duplication between this
-//!   module and `pthreads_sync::multi_worker` is deliberate;
-//!   factoring the shared event-walk into a parameterised helper is
-//!   tracked as TASK-0239 (de-dup follow-up).
+//!   shape — the Wait gather reuses the leading-axis slice-paste
+//!   logic mirroring pthreads-sync.
+//! - **Cycle 31 (TASK-0239 de-dup)**: the shared event walker
+//!   (`render_worker_events` + `render_wait_assign` + `leading_axis_
+//!   slice` + `collect_pre_init_sets` + `collect_xfer_pairs` +
+//!   `collect_barriers_by_tag` + `collect_worker_rendezvous` +
+//!   `LeadingAxis`) was lifted out of both backends into
+//!   `pthreads_sync::multi_worker_walker`, parameterised by ONE
+//!   string (`rendezvous_prefix: "slot"` for pthreads-sync, `"ring"`
+//!   for pthreads-async). Both backends now route through that
+//!   single source of truth; emission is byte-identical to the
+//!   pre-refactor state. This module retains only the per-backend
+//!   `Plan` shape (ring sizing from `transfer_buffer_for_seq`) and
+//!   the `Plan::emit` orchestration (substrate decl + per-pair
+//!   instance alloc + per-thread spawn).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use compiler::algo::ResolvedType;
-use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, ViolationKind, WorkerId};
+use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
+use pthreads_sync::multi_worker_walker::{
+    self as walker, RendezvousId, WalkerCtx,
+};
 use pthreads_sync::{
-    collect_count_check_frames, emit_count_branch, emit_count_guard_local, emit_count_reporter_struct,
-    emit_count_static, emit_log_branch, render_const_expr_pub, render_fire_args_pub,
-    render_fire_output_assign_pub, render_array_init_for, rust_type_of, sanitize_loop_var,
-    RenderCtxPub,
+    collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
+    emit_count_static, render_array_init_for, rust_type_of,
 };
 
 use crate::ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
@@ -62,8 +72,11 @@ pub(crate) fn render_main_rs_multi(
 
 /// Stable identifier for one ring buffer (the `(DataId, SeqTag)`
 /// pair's runtime channel). Same shape as pthreads-sync's `SlotId` —
-/// a `usize` keyed by `(DataId, SeqTag)` ordered ascending.
-pub(crate) type RingId = usize;
+/// a `usize` keyed by `(DataId, SeqTag)` ordered ascending. As of
+/// TASK-0239 this is an alias for the shared
+/// `multi_worker_walker::RendezvousId`; the two backends use the
+/// same map type for their per-pair rendezvous index.
+pub(crate) type RingId = RendezvousId;
 
 /// Data structure capturing every fact a Wave B-2 emit() needs to
 /// produce a multi-worker pthreads-async binary, derived purely from
@@ -189,7 +202,7 @@ impl<'a> Plan<'a> {
         // collect_xfer_pairs in multi_worker.rs:1007).
         let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
         for evs in per_worker.values() {
-            collect_xfer_pairs(evs, &mut pair_tiles);
+            walker::collect_xfer_pairs(evs, &mut pair_tiles);
         }
 
         // Deterministic ring_id assignment: ascending by (DataId, SeqTag).
@@ -233,7 +246,7 @@ impl<'a> Plan<'a> {
         let mut barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>> =
             BTreeMap::new();
         for w in &used_workers {
-            collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
+            walker::collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
                 barrier_participants
                     .entry(tag)
                     .or_insert_with(|| parts.clone());
@@ -280,7 +293,7 @@ impl<'a> Plan<'a> {
     pub(crate) fn worker_rings(&self, w: WorkerId) -> BTreeSet<RingId> {
         let mut out: BTreeSet<RingId> = BTreeSet::new();
         if let Some(evs) = self.per_worker.get(&w) {
-            collect_worker_rings(evs, &self.ring_ids, &mut out);
+            walker::collect_worker_rendezvous(evs, &self.ring_ids, &mut out);
         }
         out
     }
@@ -497,223 +510,20 @@ impl<'a> Plan<'a> {
             writeln!(out).ok();
         }
 
-        let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_worker_events(worker, evs, &mut out, base_indent, prefix, &ctx)?;
+        // Dispatch through the shared walker (TASK-0239) — the
+        // rendezvous prefix `"ring"` is the only knob distinguishing
+        // pthreads-async's emit from pthreads-sync's. The Plan
+        // structs differ (this one carries `ring_caps`), but the
+        // per-worker event walk is identical modulo the prefix.
+        let walker_ctx = WalkerCtx {
+            names: self.names,
+            sidecar: self.sidecar,
+            rendezvous_prefix: "ring",
+            rendezvous_ids: &self.ring_ids,
+            pair_tiles: &self.pair_tiles,
+        };
+        walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)
-    }
-
-    /// Recursive event-list walker. Mirrors pthreads-sync's
-    /// `render_worker_events` (multi_worker.rs:531) with two
-    /// substitutions: `slot_<id>` → `ring_<id>` in Push/Wait, and the
-    /// Wait gather routes through this module's `render_wait_assign`
-    /// (which uses `self.pair_tiles` / `self.ring_ids` — pthreads-async
-    /// state, even though the slice-paste arithmetic is identical).
-    fn render_worker_events(
-        &self,
-        worker: WorkerId,
-        events: &[Event],
-        out: &mut String,
-        indent: usize,
-        prefix: &str,
-        ctx: &RenderCtxPub<'_>,
-    ) -> Result<(), EmitError> {
-        let pad = "    ".repeat(indent);
-        for e in events {
-            match e {
-                Event::Fire {
-                    kernel, bindings, ..
-                } => {
-                    let callee = self.names.kernel.get(kernel).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "kernel id {kernel:?} in a Fire has no name in NameTables"
-                        ))
-                    })?;
-                    let args = render_fire_args_pub(*kernel, &bindings.inputs, ctx)?;
-                    match &bindings.output {
-                        None => {
-                            writeln!(out, "{pad}kernels::{callee}({args});").ok();
-                        }
-                        Some(o) if o.indices.is_empty() => {
-                            let name = self.data_name(o.data)?;
-                            writeln!(
-                                out,
-                                "{pad}let mut {name} = kernels::{callee}({args});"
-                            )
-                            .ok();
-                        }
-                        Some(o) => {
-                            let rhs = format!("kernels::{callee}({args})");
-                            let stmt = render_fire_output_assign_pub(o, &rhs, ctx)?;
-                            writeln!(out, "{pad}{stmt}").ok();
-                        }
-                    }
-                }
-                Event::Loop {
-                    iter_var,
-                    range,
-                    body,
-                    block_tag,
-                    check_frame,
-                } => {
-                    let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "iter var {iter_var:?} in Event::Loop has no name in NameTables"
-                        ))
-                    })?;
-                    // Strip-mined multi-worker loops require per-
-                    // occurrence absolute-index rebinding, which only
-                    // lives on the shared single-worker path (TASK-0180);
-                    // no tier-1 schedule blocks a multi-worker loop, so
-                    // refuse to silently emit an un-rebound form. Same
-                    // guard as pthreads-sync (TASK-0181).
-                    if block_tag.is_some() {
-                        return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries a strip-mine \
-                             block_tag inside a MULTI-worker pthreads-async schedule; \
-                             per-occurrence absolute-index rebinding lives only on \
-                             the shared single-worker path (TASK-0180). Refusing to \
-                             emit un-rebound (would double-count). Tracked as TASK-0181."
-                        )));
-                    }
-                    // Defense-in-depth invariant (mirrors pthreads-sync
-                    // multi_worker.rs:636): `inject_check_frames` is
-                    // contracted to populate check_frame only on outer
-                    // source loops (block_tag == None). The block_tag
-                    // guard above already rejected, so this branch is
-                    // structurally unreachable today — but if a future
-                    // refactor weakens the outer guard, this catches
-                    // the projection-layer regression rather than
-                    // silently emitting an un-rebound check_frame.
-                    if check_frame.is_some() && block_tag.is_some() {
-                        return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries BOTH a \
-                             check_frame and a block_tag — `inject_check_frames` is \
-                             contracted to populate check_frame only on outer source \
-                             loops; this is a projection-layer bug (TASK-0052.05 \
-                             multi-worker invariant, pthreads-async mirror)."
-                        )));
-                    }
-                    // Per-worker partition override (TASK-0212): use
-                    // the concrete literal range if the partition pass
-                    // recorded one for this worker on this iter var.
-                    // Otherwise fall through to the source-form
-                    // symbolic / literal precedence.
-                    let partition_slice = self
-                        .sidecar
-                        .partition_worker_ranges
-                        .get(iter_var)
-                        .and_then(|m| m.get(&worker));
-                    let (lo, hi) = match partition_slice {
-                        Some(r) => (
-                            format!("{}_i64", r.start),
-                            format!("{}_i64", r.end),
-                        ),
-                        None => match self.sidecar.loop_bounds.get(iter_var) {
-                            Some(b) => (
-                                render_const_expr_pub(&b.lo, ctx)?,
-                                render_const_expr_pub(&b.hi, ctx)?,
-                            ),
-                            None => (
-                                format!("{}_i64", range.start),
-                                format!("{}_i64", range.end),
-                            ),
-                        },
-                    };
-                    writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    let body_indent = indent + 1;
-                    let body_pad = "    ".repeat(body_indent);
-                    if let Some(frame) = check_frame {
-                        debug_assert_eq!(
-                            var.as_str(),
-                            frame.loop_var.as_str(),
-                            "CheckFrame.loop_var diverged from NameTables.iter_var \
-                             (projection-layer bug; TASK-0221)"
-                        );
-                        writeln!(
-                            out,
-                            "{body_pad}let _check_start = std::time::Instant::now();"
-                        )
-                        .ok();
-                        self.render_worker_events(
-                            worker, body, out, body_indent, prefix, ctx,
-                        )?;
-                        writeln!(
-                            out,
-                            "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
-                        )
-                        .ok();
-                        match frame.on_violation {
-                            ViolationKind::Panic => {
-                                writeln!(
-                                    out,
-                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
-                                    ns = frame.latency_max_ns,
-                                    lv = frame.loop_var,
-                                )
-                                .ok();
-                            }
-                            ViolationKind::Log => {
-                                emit_log_branch(
-                                    out,
-                                    &body_pad,
-                                    &frame.loop_var,
-                                    frame.latency_max_ns,
-                                );
-                            }
-                            ViolationKind::Count => {
-                                let id = sanitize_loop_var(&frame.loop_var);
-                                emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
-                            }
-                        }
-                    } else {
-                        self.render_worker_events(worker, body, out, indent + 1, prefix, ctx)?;
-                    }
-                    writeln!(out, "{pad}}}").ok();
-                }
-                Event::Sync { sync, .. } => {
-                    let bid = sync.0;
-                    writeln!(out, "{pad}{prefix}bar_{bid}.wait();").ok();
-                }
-                Event::Push { data, dst, seq, .. } => {
-                    let rid = self.ring_ids.get(&(*data, *seq)).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "Push of data {data:?} (seq {seq:?}) has no ring id \
-                             (not collected as cross-worker)"
-                        ))
-                    })?;
-                    let name = self.data_name(*data)?;
-                    let to = self.worker_name(*dst);
-                    writeln!(
-                        out,
-                        "{pad}{prefix}ring_{rid}.push({name}.clone()); // send `{name}` to {to}",
-                    )
-                    .ok();
-                }
-                Event::Wait {
-                    data, src, seq, ..
-                } => {
-                    let rid = self.ring_ids.get(&(*data, *seq)).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "Wait of data {data:?} (seq {seq:?}) has no ring id \
-                             (not collected as cross-worker)"
-                        ))
-                    })?;
-                    let name = self.data_name(*data)?;
-                    let from = self.worker_name(*src);
-                    let assign = self.render_wait_assign(
-                        &name,
-                        *data,
-                        *seq,
-                        &format!("{prefix}ring_{rid}.wait()"),
-                    )?;
-                    writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
-                }
-                Event::Alloc { .. } | Event::Free { .. } => {
-                    // RAII Vec storage; no explicit reservation.
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Per-worker pre-init set: cross-worker inputs Waited on + data
@@ -724,7 +534,7 @@ impl<'a> Plan<'a> {
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
-        collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
+        walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
 
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
@@ -742,128 +552,19 @@ impl<'a> Plan<'a> {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
     }
-
-    /// Receiver-side assignment statement for one Wait. Two shapes:
-    ///
-    /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
-    ///   single-pair behaviour; selected when the pair's tile is
-    ///   empty or covers the data's full leading-axis range.
-    /// - **Slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
-    ///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 host-side
-    ///   gather; selected when the tile's outer axis is a strict
-    ///   sub-range of the data's leading axis.
-    ///
-    /// Identical to pthreads-sync's `render_wait_assign` in shape +
-    /// arithmetic; the only difference is which crate's Plan owns
-    /// `pair_tiles` / `ring_ids`. The honest-limit on inner-axis
-    /// partitions documented in pthreads-sync (multi_worker.rs:904
-    /// onward) applies identically here.
-    fn render_wait_assign(
-        &self,
-        name: &str,
-        data: DataId,
-        seq: SeqTag,
-        rhs: &str,
-    ) -> Result<String, EmitError> {
-        let slice = match self.pair_tiles.get(&(data, seq)) {
-            Some(tile) => self.leading_axis_slice(data, tile)?,
-            None => None,
-        };
-        match slice {
-            None => Ok(format!("{name} = {rhs};")),
-            Some(LeadingAxis { lo, hi, stride }) => {
-                let lo_off = lo.saturating_mul(stride);
-                let hi_off = hi.saturating_mul(stride);
-                Ok(format!(
-                    "{{ let _tmp = {rhs}; \
-                     {name}[{lo_off}usize..{hi_off}usize].copy_from_slice(\
-                     &_tmp[{lo_off}usize..{hi_off}usize]); }}"
-                ))
-            }
-        }
-    }
-
-    /// Tile-driven leading-axis slice computation. Mirrors
-    /// pthreads-sync's `leading_axis_slice` (multi_worker.rs:922)
-    /// verbatim. The honest-limit (assumes `tile.bounds[0].iter_var`
-    /// names the data's leading dim) is inherited; for `partition=
-    /// workers` on the leading axis (the in-tree case) this holds.
-    fn leading_axis_slice(
-        &self,
-        data: DataId,
-        tile: &IterTile,
-    ) -> Result<Option<LeadingAxis>, EmitError> {
-        let Some((_iv, range)) = tile.bounds.first() else {
-            return Ok(None);
-        };
-        let ty: &ResolvedType = self.sidecar.data_type(data).ok_or_else(|| {
-            EmitError::ContractGap(format!(
-                "Wait of data {data:?} has no ResolvedType in NameSidecar"
-            ))
-        })?;
-        if ty.dims.is_empty() {
-            return Ok(None);
-        }
-        let leading_dim = ty.dims[0] as i64;
-        if range.start == 0 && range.end == leading_dim {
-            return Ok(None);
-        }
-        if range.start < 0 || range.end > leading_dim || range.start >= range.end {
-            return Err(EmitError::ContractGap(format!(
-                "Wait of data {data:?}: tile leading-axis range {:?} out of \
-                 bounds for data dims {:?} (leading-dim {})",
-                range, ty.dims, leading_dim
-            )));
-        }
-        let stride: usize = ty.dims[1..].iter().product();
-        Ok(Some(LeadingAxis {
-            lo: range.start as usize,
-            hi: range.end as usize,
-            stride,
-        }))
-    }
 }
 
-/// Leading-axis slice descriptor for the host-side gather codegen
-/// (TASK-0117). Same shape as pthreads-sync's `LeadingAxis`; duplicated
-/// here so the slice-paste arithmetic stays a single-crate concern
-/// until TASK-0239 lifts it to a shared backend-common location.
-struct LeadingAxis {
-    lo: usize,
-    hi: usize,
-    /// Product of the data type's inner dims; per-outer-axis stride
-    /// in flat-Vec elements.
-    stride: usize,
-}
-
-/// Visit every `Event::Wait` / `Event::Fire` output to build the
-/// three sets needed for the pre-init computation. Identical to
-/// pthreads-sync's `collect_pre_init_sets`.
-fn collect_pre_init_sets(
-    events: &[Event],
-    waited: &mut BTreeSet<DataId>,
-    whole: &mut BTreeSet<DataId>,
-    indexed: &mut BTreeSet<DataId>,
-) {
-    for e in events {
-        match e {
-            Event::Wait { data, .. } => {
-                waited.insert(*data);
-            }
-            Event::Fire { bindings, .. } => {
-                if let Some(o) = &bindings.output {
-                    if o.indices.is_empty() {
-                        whole.insert(o.data);
-                    } else {
-                        indexed.insert(o.data);
-                    }
-                }
-            }
-            Event::Loop { body, .. } => collect_pre_init_sets(body, waited, whole, indexed),
-            _ => {}
-        }
-    }
-}
+// --------------------------------------------------------------------
+// Walker helpers extracted to `pthreads_sync::multi_worker_walker`
+// (TASK-0239). The shared walker — `render_worker_events`,
+// `render_wait_assign`, `leading_axis_slice` + `LeadingAxis`,
+// `collect_pre_init_sets`, `collect_xfer_pairs`, `collect_barriers_by_tag`,
+// and the per-worker rendezvous-id collector — is the single source
+// of truth across both pthreads-sync (rendezvous_prefix = "slot") and
+// pthreads-async (rendezvous_prefix = "ring"). This module retains
+// only the per-backend `Plan` shape (bounded `Ring<T>` substrate, per-
+// pair capacity from `transfer_buffer_for_seq`) plus the `Plan::emit`
+// orchestration above.
 
 /// Collect unique Count-violation `check_frame` instances across every
 /// worker's event list. Multiple workers can carry the SAME (loop_var,
@@ -871,10 +572,6 @@ fn collect_pre_init_sets(
 /// the same source loop onto N workers); dedup by sanitized ident so
 /// the file-scope `AtomicU64` static + Drop guard are emitted exactly
 /// once per UNIQUE ident.
-///
-/// Lifts pthreads-sync's `collect_unique_count_check_frames` shape
-/// into pthreads-async; the helper there is `pub(crate)` so cannot be
-/// reused directly. TASK-0239 covers de-dup.
 fn collect_unique_count_check_frames(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
 ) -> Vec<pthreads_sync::CountCheckLoop> {
@@ -885,92 +582,6 @@ fn collect_unique_count_check_frames(
         }
     }
     by_ident.into_values().collect()
-}
-
-/// Walk an event list collecting every `(DataId, SeqTag)` pair seen
-/// on a `Push` or `Wait`, paired with the `IterTile` carried at
-/// either endpoint. Descends into `Event::Loop` bodies so a
-/// pipelined transfer rolled inside an outer loop is collected.
-///
-/// One entry per pair: the second sighting (the matching endpoint)
-/// is `.or_insert_with` a no-op since the tile is identical on both
-/// endpoints (transfer_inject invariant).
-///
-/// **Event::Sync is intentionally not handled by this walker** — it's
-/// collected by the separate `collect_barriers_by_tag` walker (cycle 21,
-/// TASK-0234 closed with option (b)). The two walkers are independent
-/// because the data shapes are different (Push/Wait fall through a
-/// pair-tile join; Sync is a flat (tag -> participants) map). Calling
-/// both in `Plan::build` produces the full Plan in one read.
-fn collect_xfer_pairs(
-    events: &[Event],
-    out: &mut BTreeMap<(DataId, SeqTag), IterTile>,
-) {
-    for e in events {
-        match e {
-            Event::Push {
-                data, seq, tile, ..
-            }
-            | Event::Wait {
-                data, seq, tile, ..
-            } => {
-                out.entry((*data, *seq))
-                    .or_insert_with(|| tile.clone());
-            }
-            Event::Loop { body, .. } => collect_xfer_pairs(body, out),
-            _ => {}
-        }
-    }
-}
-
-/// Sync visitor (cycle 21, TASK-0234 option b): invoke `f(sync_tag,
-/// participants)` for each `Event::Sync`, descending into `Event::Loop`
-/// bodies. Barrier identity is the contract-carried [`SyncTag`]
-/// (TASK-0172) — no running index, no fallibility (every tag is
-/// independent, so partial/non-uniform barriers lower correctly).
-///
-/// Mirrors `pthreads_sync::multi_worker::collect_barriers_by_tag`
-/// (multi_worker.rs:1051). The two backends now share the SAME barrier
-/// projection shape — when Wave B-2 emits `std::sync::Barrier`, the
-/// per-barrier participant size is read from `barrier_participants[tag].len()`
-/// exactly like pthreads-sync (multi_worker.rs ~lines 380-390).
-fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
-where
-    F: FnMut(SyncTag, &BTreeSet<WorkerId>),
-{
-    for e in events {
-        match e {
-            Event::Sync {
-                participants,
-                sync,
-                ..
-            } => {
-                f(*sync, participants);
-            }
-            Event::Loop { body, .. } => collect_barriers_by_tag(body, f),
-            _ => {}
-        }
-    }
-}
-
-/// Per-worker visit of Push/Wait events to collect the worker's
-/// ring_id touch set. Descends into `Event::Loop` bodies.
-fn collect_worker_rings(
-    events: &[Event],
-    ring_ids: &BTreeMap<(DataId, SeqTag), RingId>,
-    out: &mut BTreeSet<RingId>,
-) {
-    for e in events {
-        match e {
-            Event::Push { data, seq, .. } | Event::Wait { data, seq, .. } => {
-                if let Some(r) = ring_ids.get(&(*data, *seq)) {
-                    out.insert(*r);
-                }
-            }
-            Event::Loop { body, .. } => collect_worker_rings(body, ring_ids, out),
-            _ => {}
-        }
-    }
 }
 
 // --------------------------------------------------------------------
@@ -1224,7 +835,7 @@ mod tests {
         // unique sync tags. Compare with barrier_participants.len().
         let mut all_tags: BTreeSet<SyncTag> = BTreeSet::new();
         for evs in per_worker.values() {
-            collect_barriers_by_tag(evs, &mut |tag, _| {
+            walker::collect_barriers_by_tag(evs, &mut |tag, _| {
                 all_tags.insert(tag);
             });
         }

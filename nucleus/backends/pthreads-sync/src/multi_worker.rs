@@ -77,13 +77,15 @@ use std::fmt::Write as _;
 // (one slot per cross-worker data symbol — the pre-TASK-0124
 // behaviour), so `SeqTag` is not consulted here; a future
 // per-(seq) slot split (multi-buffer transfers) would use it.
-use compiler::event::{DataId, Event, SeqTag, SyncTag, ViolationKind, WorkerId};
+use compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
+use crate::multi_worker_walker::{
+    self as walker, RendezvousId, WalkerCtx,
+};
 use crate::{
-    collect_count_check_frames, emit_count_branch, emit_count_guard_local, emit_count_reporter_struct,
-    emit_count_static, emit_log_branch, render_const_expr_pub, rust_scalar_type, sanitize_loop_var,
-    CountCheckLoop, EmitError, NameTables, RenderCtxPub,
+    collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
+    emit_count_static, rust_scalar_type, CountCheckLoop, EmitError, NameTables,
 };
 
 // --------------------------------------------------------------------
@@ -121,7 +123,11 @@ pub(crate) fn render_main_rs_multi(
 /// keying degrades to the pre-TASK-0117 1-slot-per-data shape with
 /// stable `slot_X` indices, because the BTreeSet iteration order over
 /// (DataId, SeqTag) ascends by DataId first.
-type SlotId = usize;
+/// `SlotId` is the shared rendezvous-id alias from
+/// [`multi_worker_walker`] — both backends use `usize` keyed by
+/// `(DataId, SeqTag)`. Kept as a local alias so the rest of this
+/// module's local nomenclature ("slot") stays unchanged.
+type SlotId = RendezvousId;
 /// Stable identifier for one barrier — the contract-carried
 /// [`SyncTag`] (TASK-0172). Same value for every participant of the
 /// barrier; distinct between distinct barriers.
@@ -197,7 +203,7 @@ impl<'a> Plan<'a> {
         let mut xfer_pairs: BTreeMap<(DataId, SeqTag), compiler::event::IterTile> =
             BTreeMap::new();
         for evs in per_worker.values() {
-            collect_xfer_pairs(evs, &mut xfer_pairs);
+            walker::collect_xfer_pairs(evs, &mut xfer_pairs);
         }
         let slot_ids: BTreeMap<(DataId, SeqTag), SlotId> = xfer_pairs
             .keys()
@@ -215,7 +221,7 @@ impl<'a> Plan<'a> {
         // barriers, so a partial/non-uniform barrier lowers correctly.
         let mut barrier_participants: BTreeMap<BarrierId, BTreeSet<WorkerId>> = BTreeMap::new();
         for w in &used_workers {
-            collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
+            walker::collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
                 barrier_participants
                     .entry(tag)
                     .or_insert_with(|| parts.clone());
@@ -447,7 +453,7 @@ impl<'a> Plan<'a> {
     /// SlotIds a worker touches (it Pushes or Waits the data).
     fn slots_used_by(&self, w: WorkerId) -> Vec<SlotId> {
         let mut s: BTreeSet<SlotId> = BTreeSet::new();
-        collect_worker_slots(&self.per_worker[&w], &self.slot_ids, &mut s);
+        walker::collect_worker_rendezvous(&self.per_worker[&w], &self.slot_ids, &mut s);
         s.into_iter().collect()
     }
 
@@ -511,298 +517,20 @@ impl<'a> Plan<'a> {
             writeln!(out).ok();
         }
 
-        let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_worker_events(worker, evs, &mut out, base_indent, prefix, &ctx)?;
+        // Dispatch through the shared walker (TASK-0239) — the
+        // rendezvous prefix `"slot"` is the only knob distinguishing
+        // pthreads-sync's emit from pthreads-async's.
+        let walker_ctx = WalkerCtx {
+            names: self.names,
+            sidecar: self.sidecar,
+            rendezvous_prefix: "slot",
+            rendezvous_ids: &self.slot_ids,
+            pair_tiles: &self.pair_tiles,
+        };
+        walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)
     }
 
-    /// Walk a worker's EventList. Barrier identity comes from each
-    /// `Event::Sync`'s contract-carried `SyncTag` (TASK-0172) — no
-    /// running pre-order counter is needed any more.
-    ///
-    /// `worker` is the [`WorkerId`] of the scope being rendered (the
-    /// same one `render_worker_body` was called with — threaded
-    /// verbatim through recursion into nested `Event::Loop` bodies).
-    /// It is consulted at the `Event::Loop` site to apply the
-    /// per-worker partition range from
-    /// [`NameSidecar::partition_worker_ranges`] (TASK-0212), so each
-    /// participating worker emits `for n in (lo)..(hi)` over its own
-    /// exclusive slice rather than the shared source range.
-    fn render_worker_events(
-        &self,
-        worker: WorkerId,
-        events: &[Event],
-        out: &mut String,
-        indent: usize,
-        prefix: &str,
-        ctx: &RenderCtxPub<'_>,
-    ) -> Result<(), EmitError> {
-        let pad = "    ".repeat(indent);
-        for e in events {
-            match e {
-                Event::Fire {
-                    kernel, bindings, ..
-                } => {
-                    let callee = self.names.kernel.get(kernel).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "kernel id {kernel:?} in a Fire has no name in NameTables"
-                        ))
-                    })?;
-                    let args = crate::render_fire_args_pub(*kernel, &bindings.inputs, ctx)?;
-                    match &bindings.output {
-                        None => {
-                            writeln!(out, "{pad}kernels::{callee}({args});").ok();
-                        }
-                        Some(o) if o.indices.is_empty() => {
-                            let name = self.data_name(o.data)?;
-                            writeln!(
-                                out,
-                                "{pad}let mut {name} = kernels::{callee}({args});"
-                            )
-                            .ok();
-                        }
-                        Some(o) => {
-                            // TASK-0209: shared scalar-vs-sub-array
-                            // classifier; the pthreads-sync multi-
-                            // worker path and mp-tcp-bufsync both
-                            // route through `render_fire_output_
-                            // assign_pub` so the three Fire-output
-                            // sites cannot drift.
-                            let rhs = format!("kernels::{callee}({args})");
-                            let stmt = crate::render_fire_output_assign_pub(o, &rhs, ctx)?;
-                            writeln!(out, "{pad}{stmt}").ok();
-                        }
-                    }
-                }
-                Event::Loop {
-                    iter_var,
-                    range,
-                    body,
-                    block_tag,
-                    check_frame,
-                } => {
-                    let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "iter var {iter_var:?} in Event::Loop has no name in NameTables"
-                        ))
-                    })?;
-                    // A `block_tag` here means a strip-mined inner loop
-                    // in a *multi*-worker schedule. That needs the same
-                    // per-occurrence absolute-index rebinding the
-                    // single-worker path does; this multi-worker
-                    // renderer does NOT yet thread it. No tier-1
-                    // schedule is a blocked multi-worker schedule, so
-                    // this is unreachable today — but fail LOUD with
-                    // context (typed error, never silently emit the
-                    // un-rebound loop, which would double-count an
-                    // accumulator exactly like the TASK-0180 bug).
-                    if block_tag.is_some() {
-                        return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries a strip-mine \
-                             block_tag inside a MULTI-worker schedule; per-occurrence \
-                             absolute-index rebinding is implemented only on the \
-                             shared single-worker path (TASK-0180). No tier-1 schedule \
-                             blocks a multi-worker loop; refusing to emit un-rebound \
-                             (would double-count). Tracked as TASK-0181."
-                        )));
-                    }
-                    // TASK-0052.05: real-time `check loop V :
-                    // latency_max=T` codegen on the multi-worker path.
-                    // The shape MIRRORS the single-worker path in
-                    // `lib.rs::render_event` (Event::Loop arm) — same
-                    // `Instant::now()` + `_check_elapsed` + dispatch on
-                    // `on_violation`. The per-thread semantics:
-                    //   * Panic: each worker thread panics
-                    //     independently; the `handle.join().expect(..)`
-                    //     at fn main propagates the panic, exit code 101.
-                    //   * Log: each worker thread's `eprintln!` is
-                    //     atomic per call; multiple threads' lines may
-                    //     interleave on stderr — that is the intended
-                    //     behaviour (the cross-backend differential
-                    //     compares stdout only, per PRD §10.1).
-                    //   * Count: ALL threads `fetch_add(_, Relaxed)`
-                    //     into the SAME file-scope static
-                    //     `NUC_CHECK_COUNT_<ident>` (emitted once per
-                    //     unique ident in `Plan::emit`, NOT per worker).
-                    //     The Drop guard on the host thread aggregates
-                    //     all threads' contributions into ONE summary
-                    //     line at fn main exit — PRD §6.3.5 "tallied".
-                    // Strip-mined invariant: `inject_check_frames`
-                    // populates check_frame only on outer source loops
-                    // (block_tag == None); the `block_tag.is_some()`
-                    // arm above already rejected, so reaching here with
-                    // a check_frame implies block_tag.is_none() — the
-                    // invariant the single-worker path also defends.
-                    if check_frame.is_some() && block_tag.is_some() {
-                        return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries BOTH a check_frame \
-                             and a block_tag — `inject_check_frames` is contracted to \
-                             populate check_frame only on outer source loops; this is a \
-                             projection-layer bug (TASK-0052.05 multi-worker invariant)."
-                        )));
-                    }
-                    // Per-worker partition override (TASK-0212): if the
-                    // partition pass recorded a slice for THIS worker on
-                    // this iter var, render the concrete literal range.
-                    // The symbolic `loop_bounds` entry names the SOURCE
-                    // range, not the partitioned slice, so it is the
-                    // wrong rendering for a partitioned worker. A worker
-                    // not listed in the per-iter-var map (e.g. host,
-                    // which doesn't participate in partition=workers)
-                    // falls through to the source-form symbolic /
-                    // literal precedence exactly as before TASK-0212.
-                    let partition_slice = self
-                        .sidecar
-                        .partition_worker_ranges
-                        .get(iter_var)
-                        .and_then(|m| m.get(&worker));
-                    let (lo, hi) = match partition_slice {
-                        Some(r) => (
-                            format!("{}_i64", r.start),
-                            format!("{}_i64", r.end),
-                        ),
-                        None => match self.sidecar.loop_bounds.get(iter_var) {
-                            Some(b) => (
-                                render_const_expr_pub(&b.lo, ctx)?,
-                                render_const_expr_pub(&b.hi, ctx)?,
-                            ),
-                            None => (
-                                format!("{}_i64", range.start),
-                                format!("{}_i64", range.end),
-                            ),
-                        },
-                    };
-                    writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
-                    let body_indent = indent + 1;
-                    let body_pad = "    ".repeat(body_indent);
-                    if let Some(frame) = check_frame {
-                        // TASK-0221 (a): defensive — `var` (NameTables)
-                        // and `frame.loop_var` (CheckFrame) must name
-                        // the same user-source loop variable. Dev-only
-                        // assert catches future projection divergence.
-                        debug_assert_eq!(
-                            var.as_str(),
-                            frame.loop_var.as_str(),
-                            "CheckFrame.loop_var diverged from NameTables.iter_var \
-                             (projection-layer bug; TASK-0221)"
-                        );
-                        // TASK-0052.05 — mirrors `lib.rs::render_event`
-                        // Event::Loop check_frame arm verbatim (same
-                        // emit strings, same `_check_start` /
-                        // `_check_elapsed` locals, same dispatch).
-                        writeln!(
-                            out,
-                            "{body_pad}let _check_start = std::time::Instant::now();"
-                        )
-                        .ok();
-                        self.render_worker_events(
-                            worker,
-                            body,
-                            out,
-                            body_indent,
-                            prefix,
-                            ctx,
-                        )?;
-                        writeln!(
-                            out,
-                            "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
-                        )
-                        .ok();
-                        match frame.on_violation {
-                            ViolationKind::Panic => {
-                                writeln!(
-                                    out,
-                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
-                                    ns = frame.latency_max_ns,
-                                    lv = frame.loop_var,
-                                )
-                                .ok();
-                            }
-                            ViolationKind::Log => {
-                                // TASK-0222: shared template — see emit_log_branch.
-                                emit_log_branch(out, &body_pad, &frame.loop_var, frame.latency_max_ns);
-                            }
-                            ViolationKind::Count => {
-                                // SHARED file-scope static (one per
-                                // unique sanitized ident; emitted by
-                                // `Plan::emit`). All worker threads
-                                // `fetch_add(Relaxed)` into the same
-                                // global. Relaxed is sufficient: the
-                                // host-thread Drop guard's
-                                // `load(Relaxed)` runs AFTER every
-                                // `handle.join()` (synchronises-with
-                                // its panicking-or-clean termination),
-                                // so all preceding fetch_adds happen-
-                                // before the load on the host thread.
-                                // TASK-0222: shared template — see emit_count_branch.
-                                let id = sanitize_loop_var(&frame.loop_var);
-                                emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
-                            }
-                        }
-                    } else {
-                        self.render_worker_events(worker, body, out, indent + 1, prefix, ctx)?;
-                    }
-                    writeln!(out, "{pad}}}").ok();
-                }
-                Event::Sync { sync, .. } => {
-                    // Barrier identity is the contract-carried SyncTag
-                    // (TASK-0172): every participant of this barrier
-                    // carries the same tag, so all participants
-                    // .wait() on the same `bar_<tag>` with no
-                    // pre-order-index recovery.
-                    let bid = sync.0;
-                    writeln!(out, "{pad}{prefix}bar_{bid}.wait();").ok();
-                }
-                Event::Push { data, dst, seq, .. } => {
-                    let sid = self.slot_ids.get(&(*data, *seq)).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "Push of data {data:?} (seq {seq:?}) has no slot id \
-                             (not collected as cross-worker)"
-                        ))
-                    })?;
-                    let name = self.data_name(*data)?;
-                    let to = self.worker_name(*dst);
-                    writeln!(
-                        out,
-                        "{pad}{prefix}slot_{sid}.push({name}.clone()); // send `{name}` to {to}",
-                    )
-                    .ok();
-                }
-                Event::Wait {
-                    data, src, seq, ..
-                } => {
-                    let sid = self.slot_ids.get(&(*data, *seq)).ok_or_else(|| {
-                        EmitError::ContractGap(format!(
-                            "Wait of data {data:?} (seq {seq:?}) has no slot id \
-                             (not collected as cross-worker)"
-                        ))
-                    })?;
-                    let name = self.data_name(*data)?;
-                    let from = self.worker_name(*src);
-                    // TASK-0117 host-side gather: when the pair's tile
-                    // names a strict sub-slice of the data's leading
-                    // axis, the producer worker pushed its whole local
-                    // buffer with only its slice populated; the host
-                    // must slice-paste that slice into its own whole
-                    // `name` buffer (so the union of 4 workers'
-                    // contributions covers the source range). When the
-                    // tile is empty or covers the source range, fall
-                    // back to the pre-TASK-0117 whole-array assign.
-                    let assign = self.render_wait_assign(
-                        &name,
-                        *data,
-                        *seq,
-                        &format!("{prefix}slot_{sid}.wait()"),
-                    )?;
-                    writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
-                }
-                Event::Alloc { .. } | Event::Free { .. } => {
-                    // RAII Vec storage; no explicit reservation.
-                }
-            }
-        }
-        Ok(())
-    }
 
     /// Pre-init set for a worker: cross-worker inputs it Waits on +
     /// data it writes via an indexed Fire output and never
@@ -812,7 +540,7 @@ impl<'a> Plan<'a> {
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
-        collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
+        walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
 
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
@@ -831,239 +559,18 @@ impl<'a> Plan<'a> {
         Ok(out)
     }
 
-    /// Render the receiver-side assignment statement for one Wait
-    /// event. Returns one statement (no trailing newline).
-    ///
-    /// Two shapes:
-    /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
-    ///   single-pair behaviour. Selected when the pair's tile is
-    ///   empty (no enclosing iteration nest, e.g. a top-level
-    ///   load_input ⇒ host transfer), OR when the leading axis of
-    ///   the tile covers the data's full leading-axis range (i.e. the
-    ///   producer sent the whole array on this pair).
-    /// - **Slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
-    ///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 host-side
-    ///   gather. Selected when the tile's outer axis is a strict
-    ///   sub-range of the data's leading axis. The producer pushed
-    ///   its whole local buffer with only its tile-slice populated;
-    ///   the receiver copies that slice into its own whole buffer.
-    ///   The byte/element stride per outer-axis element is the
-    ///   product of the data's inner dims.
-    ///
-    /// Why receiver-side slice-paste (not producer-side slice-push):
-    /// the producer-worker's local `name` is pre-initialised to the
-    /// full-shape Vec (collect_pre_init logic) with only its tile
-    /// positions filled; pushing the whole Vec keeps the producer
-    /// codegen identical to the single-worker case. Slicing on the
-    /// receiver concentrates the new logic at one site and keeps the
-    /// 1:1 transfers (examples 01..07) byte-identical to before
-    /// because their pair tiles are empty.
-    fn render_wait_assign(
-        &self,
-        name: &str,
-        data: DataId,
-        seq: SeqTag,
-        rhs: &str,
-    ) -> Result<String, EmitError> {
-        let slice = match self.pair_tiles.get(&(data, seq)) {
-            Some(tile) => self.leading_axis_slice(data, tile)?,
-            None => None,
-        };
-        match slice {
-            None => {
-                // Empty tile (or no shape match) — whole-array
-                // assign. The pre-TASK-0117 contract; the 1:1 cases
-                // (examples 01..07) take this path.
-                Ok(format!("{name} = {rhs};"))
-            }
-            Some(LeadingAxis { lo, hi, stride }) => {
-                // Slice-paste: the receiver-side gather half of
-                // TASK-0117. Element offsets are `lo*stride..hi*stride`.
-                let lo_off = lo.saturating_mul(stride);
-                let hi_off = hi.saturating_mul(stride);
-                Ok(format!(
-                    "{{ let _tmp = {rhs}; \
-                     {name}[{lo_off}usize..{hi_off}usize].copy_from_slice(\
-                     &_tmp[{lo_off}usize..{hi_off}usize]); }}"
-                ))
-            }
-        }
-    }
-
-    /// Compute the leading-axis slice for a Wait's tile, returning
-    /// `Some(LeadingAxis { lo, hi, stride })` when the tile's outer
-    /// axis is a strict sub-range of the data's leading axis (the
-    /// slice-paste path), `None` when the tile is empty or the outer
-    /// axis covers the full source range (the whole-array path).
-    ///
-    /// Returns `Err` on a shape mismatch — e.g. the tile's leading
-    /// axis range exceeds the data's leading-dim length; that is a
-    /// compiler-pass invariant violation worth failing loud rather
-    /// than silently emitting an out-of-bounds slice.
-    ///
-    /// **HONEST-PARTIAL ASSUMPTION (TASK-0117 cycle-1 review-gate
-    /// finding):** this gather code assumes `tile.bounds[0].iter_var`
-    /// maps to the DATA's leading dim (axis 0). The `_iv` is
-    /// currently not consulted — only the numerical range is
-    /// validated. For the in-tree `partition=workers` schedules
-    /// (example 13's `loop n : partition=workers` on rank-4 data
-    /// `f32[B][C][H][W]` where `n` IS the leading-axis index), this
-    /// holds. For a hypothetical inner-axis partition
-    /// (`loop k : partition=workers` on `data D : i32[B][K]` where
-    /// `k` is axis 1, NOT axis 0), the slice would silently address
-    /// the WRONG axis. The numerical bounds-check guards against
-    /// out-of-range slices but NOT against wrong-axis selection.
-    /// Tracked as a honest-limit in TASK-0117 final notes (§ "Honest
-    /// limits / not-tested-this-cycle"); a future cycle that exercises
-    /// inner-axis partition must extend this helper to consult
-    /// `_iv → axis` via the data-type metadata. Failing loud with a
-    /// dedicated EmitError variant would be preferable to silent
-    /// wrong-axis slicing; left as a follow-up.
-    fn leading_axis_slice(
-        &self,
-        data: DataId,
-        tile: &compiler::event::IterTile,
-    ) -> Result<Option<LeadingAxis>, EmitError> {
-        // Empty tile ⇒ no per-axis slicing.
-        let Some((_iv, range)) = tile.bounds.first() else {
-            return Ok(None);
-        };
-        let ty = self.sidecar.data_type(data).ok_or_else(|| {
-            EmitError::ContractGap(format!(
-                "Wait of data {data:?} has no ResolvedType in NameSidecar"
-            ))
-        })?;
-        // Scalar data: no slice axes — whole-value transfer.
-        if ty.dims.is_empty() {
-            return Ok(None);
-        }
-        let leading_dim = ty.dims[0] as i64;
-        // Pre-TASK-0117 single-pair: tile covers the full source
-        // range of the leading axis (0..B). No slicing.
-        if range.start == 0 && range.end == leading_dim {
-            return Ok(None);
-        }
-        if range.start < 0 || range.end > leading_dim || range.start >= range.end {
-            return Err(EmitError::ContractGap(format!(
-                "Wait of data {data:?}: tile leading-axis range {:?} out of \
-                 bounds for data dims {:?} (leading-dim {})",
-                range, ty.dims, leading_dim
-            )));
-        }
-        let stride: usize = ty.dims[1..].iter().product();
-        Ok(Some(LeadingAxis {
-            lo: range.start as usize,
-            hi: range.end as usize,
-            stride,
-        }))
-    }
-}
-
-/// Leading-axis slice descriptor for the host-side gather codegen
-/// (TASK-0117).
-struct LeadingAxis {
-    lo: usize,
-    hi: usize,
-    /// Product of the data type's inner dims; the per-outer-axis
-    /// stride in flat-Vec elements.
-    stride: usize,
 }
 
 // --------------------------------------------------------------------
-// Event-walk helpers (recurse into Event::Loop bodies)
-// --------------------------------------------------------------------
-
-/// Collect every (DataId, SeqTag) pair appearing on a Push or Wait
-/// event in `events` (descending into Loop bodies). The map's value is
-/// the pair's tile, copied from the first event sighting; the same
-/// `seq` is carried on both endpoints (Push and Wait) by the
-/// XferPlaceholder construction (TASK-0018) so first-sighting is
-/// well-defined. The tile is retained for later host-side slice-paste
-/// codegen (TASK-0117 gather).
-fn collect_xfer_pairs(
-    events: &[Event],
-    out: &mut BTreeMap<(DataId, SeqTag), compiler::event::IterTile>,
-) {
-    for e in events {
-        match e {
-            Event::Push {
-                data, seq, tile, ..
-            }
-            | Event::Wait {
-                data, seq, tile, ..
-            } => {
-                out.entry((*data, *seq))
-                    .or_insert_with(|| tile.clone());
-            }
-            Event::Loop { body, .. } => collect_xfer_pairs(body, out),
-            _ => {}
-        }
-    }
-}
-
-fn collect_worker_slots(
-    events: &[Event],
-    slot_ids: &BTreeMap<(DataId, SeqTag), SlotId>,
-    out: &mut BTreeSet<SlotId>,
-) {
-    for e in events {
-        match e {
-            Event::Push { data, seq, .. } | Event::Wait { data, seq, .. } => {
-                if let Some(s) = slot_ids.get(&(*data, *seq)) {
-                    out.insert(*s);
-                }
-            }
-            Event::Loop { body, .. } => collect_worker_slots(body, slot_ids, out),
-            _ => {}
-        }
-    }
-}
-
-/// Sync visitor: invoke `f(sync_tag, participants)` for each
-/// `Event::Sync`, descending into Loop bodies. Barrier identity is
-/// the contract-carried [`SyncTag`] (TASK-0172) — no running index,
-/// no fallibility (every tag is an independent barrier, so there is
-/// nothing to validate / reject here any more).
-fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
-where
-    F: FnMut(SyncTag, &BTreeSet<WorkerId>),
-{
-    for e in events {
-        match e {
-            Event::Sync {
-                participants, sync, ..
-            } => f(*sync, participants),
-            Event::Loop { body, .. } => collect_barriers_by_tag(body, f),
-            _ => {}
-        }
-    }
-}
-
-fn collect_pre_init_sets(
-    events: &[Event],
-    waited: &mut BTreeSet<DataId>,
-    whole: &mut BTreeSet<DataId>,
-    indexed: &mut BTreeSet<DataId>,
-) {
-    for e in events {
-        match e {
-            Event::Wait { data, .. } => {
-                waited.insert(*data);
-            }
-            Event::Fire { bindings, .. } => {
-                if let Some(o) = &bindings.output {
-                    if o.indices.is_empty() {
-                        whole.insert(o.data);
-                    } else {
-                        indexed.insert(o.data);
-                    }
-                }
-            }
-            Event::Loop { body, .. } => collect_pre_init_sets(body, waited, whole, indexed),
-            _ => {}
-        }
-    }
-}
+// Event-walk helpers extracted to `multi_worker_walker` (TASK-0239).
+//
+// The shared helpers — `collect_xfer_pairs`, `collect_worker_rendezvous`,
+// `collect_barriers_by_tag`, `collect_pre_init_sets`, the event walker
+// `render_worker_events`, the Wait gather `render_wait_assign`, the
+// `LeadingAxis` slice computation — now live in `multi_worker_walker`
+// so pthreads-async can call them directly. This module retains only
+// the per-backend `Plan` shape (`Slot<T>` substrate, one-shot
+// rendezvous semantics) plus the `Plan::emit` orchestration above.
 
 
 // --------------------------------------------------------------------
