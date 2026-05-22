@@ -409,8 +409,9 @@ fn negative_missing_semicolon() {
 #[test]
 fn negative_unknown_keyword_in_algorithm() {
     // `block = 64;` is a schedule directive, not algorithm syntax.
-    // The parser sees `block` as an ident followed by `=`, which is
-    // not a legal statement start.
+    // TASK-0083: the parser now detects the `<sched_kw> =` shape and
+    // emits a tailored hint message pointing at the offending
+    // keyword instead of the generic "unexpected `=`".
     let src = "\
 const H : usize = 600;
 for y : 1 .. H {
@@ -418,8 +419,78 @@ for y : 1 .. H {
 }
 ";
     let err = expect_err(src);
-    // The `=` is on line 3.
+    // Hint underlines `block` (line 3, col 5), NOT `=`.
     assert_eq!(err.line, 3, "{:?}", err);
+    assert_eq!(err.column, 5, "{:?}", err);
+    assert!(
+        err.message.contains("`block` is a schedule directive"),
+        "expected schedule-directive hint, got: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("*.sched.nuc"),
+        "expected `*.sched.nuc` reference in hint, got: {}",
+        err.message
+    );
+}
+
+/// TASK-0083: schedule directives in algorithm files get a tailored
+/// hint, not a generic "unexpected `=`" / "unexpected ident" error.
+///
+/// Covers every keyword shape promised by `docs/grammar-algo.md` §3:
+/// the `<kw> =` family, plus `place IDENT`, `place_data IDENT`,
+/// `check loop`. Each fixture is a tiny `for { … }` body containing
+/// exactly the offending directive, so the assertion is on the
+/// `(keyword, hint-message)` pair alone.
+#[test]
+fn sched_directive_hint_fires_for_each_keyword() {
+    let cases: &[(&str, &str)] = &[
+        ("block = 64;", "block"),
+        ("buffer = 16;", "buffer"),
+        ("notify = once;", "notify"),
+        ("partition = 4;", "partition"),
+        ("pipeline = 2;", "pipeline"),
+        ("transfer = sync;", "transfer"),
+        ("unroll = 8;", "unroll"),
+        ("vectorize = 4;", "vectorize"),
+        ("place k on host;", "place"),
+        ("place_data x to mem;", "place_data"),
+        ("check loop y : latency_max = 10;", "check"),
+    ];
+    for (directive, kw) in cases {
+        let src = format!("for y : 1 .. 10 {{\n    {directive}\n}}\n");
+        let err = expect_err(&src);
+        assert!(
+            err.message.contains(&format!("`{kw}` is a schedule directive")),
+            "directive `{directive}`: expected hint mentioning `{kw}`, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("*.sched.nuc"),
+            "directive `{directive}`: expected `*.sched.nuc` in hint, got: {}",
+            err.message
+        );
+        // Hint underlines the keyword itself (col 5 inside the
+        // 4-space-indented body), not the trailing `=`/IDENT.
+        assert_eq!(err.line, 2, "directive `{directive}`: line {:?}", err);
+        assert_eq!(err.column, 5, "directive `{directive}`: col {:?}", err);
+    }
+}
+
+/// TASK-0083 disambiguation: a schedule-directive keyword used as a
+/// PLAIN identifier in a valid algorithm statement (e.g. as an LValue
+/// in dataflow or a callee name) must NOT fire the hint. These
+/// keywords are NOT in the algorithm `KEYWORDS` set; they only fire
+/// the hint in the unambiguous `<kw> =` / `place IDENT` / etc shapes.
+#[test]
+fn sched_directive_hint_does_not_break_keyword_as_plain_ident() {
+    // `block` used as a data name + dataflow LValue.
+    let src = "\
+data block : f32[16];
+data src : f32[16];
+block <-- src;
+";
+    parse_algo(src).expect("plain `block` ident must still parse");
 }
 
 #[test]

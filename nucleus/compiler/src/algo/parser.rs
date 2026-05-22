@@ -174,6 +174,32 @@ const KEYWORDS: &[&str] = &[
     "bool",
 ];
 
+/// Schedule-directive reserved words that, when they appear in
+/// statement position of an algorithm file, get an actionable hint
+/// ("did you mean to put it in a `*.sched.nuc` file?") rather than a
+/// generic "unexpected `=`" / "unexpected ident" diagnostic
+/// (TASK-0083; promised by `docs/grammar-algo.md` §3).
+///
+/// These keywords are NOT in [`KEYWORDS`] (the algorithm grammar's
+/// reserved set) — they remain legal as plain identifiers (e.g.
+/// `data block : f32[16];` is still accepted). The hint only fires
+/// when the surrounding shape is unambiguously a schedule directive:
+/// `<kw> =`, `place <ident>`, `place_data <ident>`, or
+/// `check loop`. See [`sched_directive_hint_stmt`].
+///
+/// Sorted lexicographically so the (rare) probe-order is a stable,
+/// human-auditable property of the source — no hash-set iteration.
+const SCHED_RESERVED_EQ: &[&str] = &[
+    "block",
+    "buffer",
+    "notify",
+    "partition",
+    "pipeline",
+    "transfer",
+    "unroll",
+    "vectorize",
+];
+
 /// Builds the top-level `Program ::= TopItem*` parser.
 ///
 /// Wrapped in a function so callers don't depend on chumsky's exact
@@ -681,6 +707,142 @@ fn lvalue_parser() -> impl Parser<char, IndexedLValue, Error = Simple<char>> + C
         .map(|(name, indices)| IndexedLValue { name, indices })
 }
 
+/// Hint probe: detect a schedule-directive shape in algorithm
+/// statement position and emit a tailored
+/// `<kw> is a schedule directive — did you mean to put it in a
+/// *.sched.nuc file?` (TASK-0083, promised by `docs/grammar-algo.md`
+/// §3). Returns a never-succeeding parser (it always fires `Err` on
+/// match); placed FIRST in [`stmt_parser`]'s `choice` so the
+/// further-advanced custom error supersedes the generic "unexpected
+/// `=`" follow-on from the dataflow/bare-call branches.
+///
+/// # Shapes detected
+///
+/// - `<kw> =` for `<kw>` in [`SCHED_RESERVED_EQ`]
+///   (`block`, `buffer`, `notify`, `partition`, `pipeline`,
+///   `transfer`, `unroll`, `vectorize`) — the `kw = N` directive
+///   shape.
+/// - `place <ident>` — the `place IDENT on host;` statement directive.
+/// - `place_data <ident>` — the `place_data IDENT to MEM;` shape.
+/// - `check loop` — the `check loop VAR : ASSERT;` shape.
+///
+/// # Disambiguation against valid algorithm uses
+///
+/// `block`/`place`/etc. are NOT in algorithm [`KEYWORDS`], so they
+/// remain legal as plain identifiers (e.g.
+/// `data block : f32[16]; block <-- foo();`). Detection therefore
+/// requires the FULL shape — `<kw>` alone does not fire; a `<kw>`
+/// followed by `=`/ident/`loop` is needed. Each arm consumes the
+/// whole shape (keyword + follow-on token) before firing, so the
+/// custom error's reported position is strictly past where the
+/// fallback `dataflow`/`bare_call` branches fail — chumsky's
+/// furthest-position error-merge rule selects this hint over the
+/// generic "expected `<--`/`(`" follow-on.
+///
+/// The error span anchors at the **schedule keyword** itself (not at
+/// the `=`) so the diagnostic underlines the offending word, matching
+/// the grammar doc's example.
+fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> + Clone {
+    // `<kw> =` shape. Build one alternative per keyword so each
+    // consumes a tight, distinct prefix; `choice` then picks the
+    // first that matches. We capture the keyword's span via
+    // `map_with_span` BEFORE the trailing `=` is consumed, so the
+    // diagnostic underlines just the offending keyword (matches the
+    // §3 example wording).
+    let eq_shape = {
+        let alts: Vec<_> = SCHED_RESERVED_EQ
+            .iter()
+            .map(|kw| {
+                pad(keyword(kw))
+                    .map_with_span(move |(), span| (*kw, span))
+                    .then_ignore(just('='))
+                    .boxed()
+            })
+            .collect();
+        choice(alts).try_map(|(kw, span), outer_span| {
+            // Span COVERS the keyword + the trailing `=` so the
+            // merged error position is past where `dataflow` (expects
+            // `<--`) and `bare_call` (expects `(`) fail — see
+            // `place_data_shape` for the chumsky furthest-end-position
+            // merge rule that makes this necessary.
+            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+        })
+    };
+
+    // `place_data <ident>` MUST be tried before `place <ident>`
+    // because `place_data` has `place` as a prefix at the keyword
+    // level — the `keyword` helper's trailing alnum/_ rewind correctly
+    // distinguishes them, but probe order makes the intent explicit.
+    //
+    // We CONSUME the follow-on ident (rather than just peeking it via
+    // `rewind`) so the custom error's span ends past where the
+    // fallback `bare_call` branch fails — chumsky 0.9 merges
+    // simultaneous errors by furthest end-position, and a `rewind`
+    // would leave our hint error anchored at `place` (≈9-byte span)
+    // while `bare_call`'s "expected `(`" fails at the start of the
+    // ident (further). Consuming the ident pushes the hint span end
+    // past `bare_call`'s failure point so the hint actually wins.
+    // The error MESSAGE still names the schedule keyword, so the
+    // user-visible diagnostic still reads "`place` is a schedule
+    // directive — did you mean to put it in a *.sched.nuc file?".
+    let ident_chars = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
+        .chain(filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_').repeated())
+        .collect::<String>();
+
+    let place_data_shape = pad(keyword("place_data"))
+        .map_with_span(|(), span| ("place_data", span))
+        .then(ident_chars)
+        .try_map(|((kw, span), _ident), outer_span| {
+            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+        });
+
+    let place_shape = pad(keyword("place"))
+        .map_with_span(|(), span| ("place", span))
+        .then(ident_chars)
+        .try_map(|((kw, span), _ident), outer_span| {
+            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+        });
+
+    let check_loop_shape = pad(keyword("check"))
+        .map_with_span(|(), span| ("check", span))
+        .then_ignore(pad(keyword("loop")))
+        .try_map(|(kw, span), outer_span| {
+            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+        });
+
+    // Order: `place_data` BEFORE `place` (prefix-rule disambiguation
+    // even though `keyword` already enforces a non-alnum boundary —
+    // belt and braces); `check_loop_shape` last because it's the only
+    // one whose lookahead is another full keyword.
+    choice((
+        eq_shape.boxed(),
+        place_data_shape.boxed(),
+        place_shape.boxed(),
+        check_loop_shape.boxed(),
+    ))
+    // The custom-error parsers above NEVER produce an `Ok` value, but
+    // chumsky needs a concrete `Output` for `choice` to type-check.
+    // We declare it as `Stmt` so the parser composes into
+    // [`stmt_parser`]'s `choice` directly; on the (unreachable) `Ok`
+    // path we'd materialise a placeholder `Stmt::Effect` with an
+    // impossible call, but `try_map` always returns `Err`, so this is
+    // a phantom branch in practice — kept only to satisfy the type.
+    .map(|_: ()| Stmt::Effect(Call {
+        callee: Spanned::new("__unreachable_sched_hint__".to_string(), 0..0),
+        args: vec![],
+    }))
+}
+
+/// Build the hint message for a schedule-directive keyword. Kept as
+/// a separate `fn` so the wording lives in one place and so any
+/// future re-skinning (e.g. adding the surrounding source line) is a
+/// single edit.
+fn sched_hint_msg(kw: &str) -> String {
+    format!(
+        "`{kw}` is a schedule directive — did you mean to put it in a `*.sched.nuc` file?"
+    )
+}
+
 /// Statements (dataflow / effect / for).
 fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
     recursive(|stmt: chumsky::recursive::Recursive<char, SpStmt, Simple<char>>| {
@@ -724,10 +886,16 @@ fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
             .then_ignore(just('}'))
             .map(|(((var, lo), hi), body)| Stmt::For { var, lo, hi, body });
 
-        // Order: `for_stmt` first (distinct keyword), then dataflow
+        // Order: schedule-directive hint first (TASK-0083) — it
+        // probes for the unambiguous `<sched_kw> =` / `place IDENT`
+        // / `place_data IDENT` / `check loop` shapes and fires a
+        // tailored hint via `Simple::custom`; on no-match it
+        // consumes nothing and falls through to the real algorithm
+        // grammar. Then `for_stmt` (distinct keyword), then dataflow
         // (uses `<--`), then bare-call as fallback. Span fixed at the
         // bare terminator, then trailing layout consumed off-span.
-        choice((for_stmt, dataflow, bare_call))
+        let hint = sched_directive_hint_stmt();
+        choice((hint, for_stmt, dataflow, bare_call))
             .map_with_span(Spanned::new)
             .then_ignore(comment_or_ws())
     })
