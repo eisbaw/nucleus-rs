@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-22 00:43'
+updated_date: '2026-05-22 00:50'
 labels:
   - M4
   - backend
@@ -199,4 +199,22 @@ Wave B-2 status: zero remaining preconditions in the tracker.
 - TASK-0222 (template extraction) — AC#1/2 done (cycle 22); AC#3 closes with TASK-0228 AC#5 (a new pthreads-async/tests/check_frame_emit.rs test file).
 
 Wave B-2 is now FULLY UNBLOCKED. Estimated 2-4 cycles remaining (mirror pthreads-sync's render_main_rs_multi + per-worker thread::spawn dispatch + compile-check integration test).
+
+## Cycle 22 review-gate corrections (HIGH D.2 + B.1)
+
+HIGH D.2 — TASK-0226 tracker-vs-source drift fixed in lockstep:
+TASK-0226 (single-worker straight-line emit) was implemented in source by cycle 17 (commit 5719897) but its tracker status was never updated. Cycle-22 architect review caught this. TASK-0226 NOW closed Done with 5 of 6 ACs ticked + Final Summary (AC#3 left partial because the literal 'DELETE' instruction was substituted by repurposing the test for multi-worker, which met the intent but not the literal text).
+
+The cycle-22 commit message's claim 'Wave B-2 is now FULLY UNBLOCKED' is therefore now genuinely true (the tracker says so), where previously it relied on source-state.
+
+Wave B-2 preconditions corrected status:
+- TASK-0226 (single-worker arm) — Done (in source since cycle 17; tracker closed cycle 22).
+- TASK-0233 (sidecar buffer-for-seq) — Done (cycle 19).
+- TASK-0234 (Event::Sync handling) — Done (cycle 21).
+- TASK-0222 (template extraction) — AC#1/2 Done (cycle 22); AC#3 closes WITH TASK-0228 AC#5.
+
+HIGH B.1 — test-coverage gap for multi-worker emit paths:
+The shared helpers' byte-transparency is proven by 17/17 single-worker pinning tests. The multi-worker emit paths in pthreads-sync's multi_worker.rs + mp-tcp-bufsync's render_worker_program are byte-transparent ONLY by shared-helper construction (one helper → multiple callers cannot drift relative to each other). This is real protection against template-text drift; it is NOT protection against the call-graph drifting (someone inlining a writeln back). Filed as TASK-0236.
+
+When Wave B-2 lands, the same multi-worker pinning shape should also cover pthreads-async, addressing TASK-0222 AC#3.c by construction.
 <!-- SECTION:NOTES:END -->

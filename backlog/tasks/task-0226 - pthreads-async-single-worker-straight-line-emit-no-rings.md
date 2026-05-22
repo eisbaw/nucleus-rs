@@ -1,10 +1,10 @@
 ---
 id: TASK-0226
 title: pthreads-async single-worker straight-line emit (no rings)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-21 22:09'
+updated_date: '2026-05-22 00:50'
 labels:
   - M4
   - backend
@@ -29,12 +29,12 @@ Read FIRST: backends/mp-tcp-bufsync/src/lib.rs:158-180 (the 'single process: reu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 render_array_init_for / render_const_expr_pub / render_fire_args_pub / render_single_worker_main / rust_type_of are reused from pthreads_sync::* — no expr/index/call renderer is duplicated (drift control).
-- [ ] #2 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (this task does NOT add e2e cells — those are TASK-0229).
+- [x] #1 render_array_init_for / render_const_expr_pub / render_fire_args_pub / render_single_worker_main / rust_type_of are reused from pthreads_sync::* — no expr/index/call renderer is duplicated (drift control).
+- [x] #2 Workspace tests pass, clippy -D warnings clean, just e2e baseline preserved (this task does NOT add e2e cells — those are TASK-0229).
 - [ ] #3 Of the two skeleton smoke tests in nucleus/backends/pthreads-async/tests/skeleton.rs: (a) DELETE skeleton_emit_returns_contract_gap_with_task_0226_forward_link (the ContractGap message is gone once codegen lands). (b) KEEP emit_result_shape_is_single_binary_five_fields (the EmitResult struct still exists; the compile-time shape pin still protects the driver dispatch arm from silent struct drift). Move or rename if desired but do not delete.
-- [ ] #4 pthreads-async emit() detects used_workers.len() <= 1 and emits a runnable Cargo.toml + src/main.rs + src/kernels.rs + run.sh Cargo project by delegating to the SHARED pthreads_sync::render_single_worker_main.
-- [ ] #5 Emitted arithmetic is byte-identical to pthreads-sync for any naive schedule (verifiable by a unit test that builds the same EventList through both backends and string-compares the per-iteration kernel call site).
-- [ ] #6 used_workers.len() >= 2 continues to return EmitError::ContractGap pointing at TASK-0228 (the multi-worker + ring-buffer task), with a precise forward-link.
+- [x] #4 pthreads-async emit() detects used_workers.len() <= 1 and emits a runnable Cargo.toml + src/main.rs + src/kernels.rs + run.sh Cargo project by delegating to the SHARED pthreads_sync::render_single_worker_main.
+- [x] #5 Emitted arithmetic is byte-identical to pthreads-sync for any naive schedule (verifiable by a unit test that builds the same EventList through both backends and string-compares the per-iteration kernel call site).
+- [x] #6 used_workers.len() >= 2 continues to return EmitError::ContractGap pointing at TASK-0228 (the multi-worker + ring-buffer task), with a precise forward-link.
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -52,3 +52,21 @@ Cycle 16 filed TASK-0226 with title 'single-worker ring-buffer + Condvar codegen
 
 Fix (this edit): re-scoped to JUST single-worker straight-line emit (mirrors pthreads-sync; reuses shared helpers). Ring buffer + multi-worker codegen consolidated into corrected TASK-0228 (separate edit). ACs realigned. The post-TASK-0213 ring-EMPTY contract + buffer=N sizing — those forward-carries now belong to TASK-0228, not here.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 17 (2026-05-22, commit 5719897) landed the single-worker arm: pthreads_async::emit delegates to pthreads_sync::render_single_worker_main + render_cargo_toml + render_run_sh. Multi-worker arm continues to ContractGap pointing TASK-0228.
+
+This task was implemented in source but tracker-state never updated. Cycle-22 review-gate D.2 (commit 835c76a + this lockstep) caught the drift; closing now.
+
+AC status:
+- AC#1: shared helpers reused (render_single_worker_main + render_cargo_toml + render_run_sh) — DONE.
+- AC#2: gate green every cycle from 17 onward — DONE.
+- AC#3: skeleton.rs tests — PARTIAL. (a) the ContractGap-message single-worker test was rewritten as multi_worker_emit_returns_contract_gap_with_task_0228_forward_link (the multi-worker arm still ContractGaps, so the test is repurposed not deleted). (b) emit_result_shape_is_single_binary_five_fields KEPT as instructed. The literal AC text said 'DELETE' but the intent (no obsolete test left behind) is met — leaving AC#3 unticked here for honesty.
+- AC#4: single-worker emit() produces runnable Cargo project — DONE (commit 5719897).
+- AC#5: byte-identical witness — DONE (single_worker_real_example_emits_byte_identical_to_pthreads_sync test in skeleton.rs).
+- AC#6: multi-worker still ContractGaps with TASK-0228 forward-link — DONE.
+
+5 of 6 ACs ticked; AC#3 partial-state documented above (the literal-text 'DELETE' was not followed; the intent was met by repurposing the test for multi-worker).
+<!-- SECTION:FINAL_SUMMARY:END -->
