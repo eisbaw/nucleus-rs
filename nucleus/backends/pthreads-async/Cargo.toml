@@ -45,3 +45,8 @@ compiler = { path = "../../compiler" }
 # emit_count_reporter_struct, CountCheckLoop}` shared shape after
 # TASK-0222 extracts the four emit-string templates.
 pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237) — used by
+# tests/skeleton.rs's lower_example_01_naive helper since cycle 24.
+test-common = { path = "../../test-common" }

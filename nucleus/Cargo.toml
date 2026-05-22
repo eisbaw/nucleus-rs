@@ -21,6 +21,10 @@ members = [
     # Condvar codegen. The workspace member is registered so the
     # capability-compat check + driver dispatch work end-to-end.
     "backends/pthreads-async",
+    # Shared test-helper crate (TASK-0237 cycle 24): the parse →
+    # lower → link → ACFG → inject → sidecar pipeline boilerplate
+    # used by every backend's test suite. dev-dependency only.
+    "test-common",
 ]
 
 [workspace.package]

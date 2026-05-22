@@ -27,3 +27,9 @@ path = "src/lib.rs"
 # those contract types themselves carry. The dep remains for those
 # modules only — no parser/lower/link/acfg internals.
 compiler = { path = "../../compiler" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237). Refactored
+# tests/multi_worker.rs's lower_multi_worker_check_schedule to call
+# test_common::lower_for_test in cycle 24.
+test-common = { path = "../../test-common" }

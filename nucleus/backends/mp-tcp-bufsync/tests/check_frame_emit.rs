@@ -367,8 +367,12 @@ schedule for \"a.algo.nuc\" {
 // --------------------------------------------------------------------
 
 /// Variant of build_per_worker that also runs apply_partition_workers
-/// (needed for `partition=workers` schedules; pre-cycle-22 tests in
-/// this file all used single-worker schedules).
+/// plus inject_check_frames (needed for `partition=workers` schedules
+/// with check_loop directives).
+///
+/// TASK-0237 (cycle 24): the lower-link-inject pipeline now lives in
+/// the shared `test_common::lower_for_test` helper. Thin glue here
+/// composes the local NameTables type from the result.
 fn build_per_worker_partitioned(
     algo_src: &str,
     sched_src: &str,
@@ -377,27 +381,22 @@ fn build_per_worker_partitioned(
     NameTables,
     compiler::sidecar::NameSidecar,
 ) {
-    use compiler::{apply_block_transforms, apply_partition_workers};
-    let algo_ir = lower_algo(&parse_algo(algo_src).unwrap()).unwrap();
-    let sched_ir = lower_sched(&parse_sched(sched_src).unwrap()).unwrap();
-    let linked = link(algo_ir, sched_ir).unwrap();
-    let acfg = build_acfg(&linked).unwrap();
-    let acfg = apply_block_transforms(&linked, acfg).unwrap();
-    let acfg = apply_partition_workers(&linked, acfg).unwrap();
-    let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
-    let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
-    let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
+    let r = test_common::lower_for_test(
+        algo_src,
+        sched_src,
+        &test_common::LowerForTestOpts {
+            apply_partition_workers: true,
+            inject_check_frames: true,
+        },
+    );
     let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg.name_kernels.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        worker: acfg.name_workers.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        iter_var: acfg.name_iter_vars.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+        data: r.name_data,
+        kernel: r.name_kernel,
+        worker: r.name_worker,
+        iter_var: r.name_iter_var,
+        inner_block_iter_vars: r.inner_block_iter_vars,
     };
-    (per_worker, names, sidecar)
+    (r.per_worker, names, r.sidecar)
 }
 
 const MULTI_ALGO_SRC: &str = "\

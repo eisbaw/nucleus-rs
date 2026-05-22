@@ -41,3 +41,5 @@ mp-tcp-common = { path = "../../mp-tcp-common" }
 # byte-compares mp-tcp-bufsync vs pthreads-sync on identical inputs.
 # `compiler` is already a normal dependency; `pthreads-sync` is too
 # (shared renderers) but the test also calls its `emit` directly.
+# Shared lower-link-inject pipeline boilerplate (TASK-0237).
+test-common = { path = "../../test-common" }

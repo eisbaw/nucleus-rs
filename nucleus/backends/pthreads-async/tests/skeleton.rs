@@ -193,50 +193,28 @@ fn lower_example_01_naive() -> (
     NameSidecar,
     PathBuf,
 ) {
-    use compiler::{
-        acfg_to_events, build_acfg, build_sidecar,
-        algo::{lower_algo, parse_algo},
-        inject_syncs, inject_transfers, link,
-        sched::{lower_sched, parse_sched},
-    };
-
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/01-elementwise-add");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("01 algo");
     let sched_src =
         std::fs::read_to_string(ex.join("schedules/naive.sched.nuc")).expect("01 sched");
 
-    let algo_ir = lower_algo(&parse_algo(&algo_src).expect("parse_algo")).expect("lower_algo");
-    let sched_ir =
-        lower_sched(&parse_sched(&sched_src).expect("parse_sched")).expect("lower_sched");
-    let linked = link(algo_ir, sched_ir).expect("link");
-    let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
-
-    let per_worker = acfg_to_events(&acfg);
-    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    // TASK-0237 (cycle 24): pipeline boilerplate moved to test_common.
+    // Single-worker naive schedule needs neither partition_workers nor
+    // inject_check_frames — default opts.
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts::default(),
+    );
     let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg
-            .name_kernels
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        worker: acfg
-            .name_workers
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        iter_var: acfg
-            .name_iter_vars
-            .iter()
-            .map(|(n, i)| (*i, n.clone()))
-            .collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+        data: r.name_data,
+        kernel: r.name_kernel,
+        worker: r.name_worker,
+        iter_var: r.name_iter_var,
+        inner_block_iter_vars: r.inner_block_iter_vars,
     };
-
-    (per_worker, names, sidecar, ex.join("kernels.rs"))
+    (r.per_worker, names, r.sidecar, ex.join("kernels.rs"))
 }
 
 /// Non-empty witness for the byte-identical-by-construction claim

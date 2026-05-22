@@ -868,6 +868,11 @@ schedule for "anything.algo.nuc" {
 
 /// Build the (per_worker, names, sidecar, kernels_path, out_dir)
 /// tuple for the multi-worker check_loop schedule variant.
+///
+/// TASK-0237 (cycle 24): the lower-link-inject pipeline now lives in
+/// the shared `test_common::lower_for_test` helper. This function is
+/// thin glue that handles the scratch dir + file writes + the local
+/// NameTables construction.
 fn lower_multi_worker_check_schedule(
     sched_src: &str,
     scratch_name: &str,
@@ -878,7 +883,6 @@ fn lower_multi_worker_check_schedule(
     PathBuf,
     PathBuf,
 ) {
-    use compiler::{apply_block_transforms, apply_partition_workers, inject_check_frames};
     let scratch = scratch_dir(scratch_name);
     let algo_path = scratch.join("prog.algo.nuc");
     let sched_path = scratch.join("prog.sched.nuc");
@@ -887,26 +891,22 @@ fn lower_multi_worker_check_schedule(
     fs::write(&sched_path, sched_src).unwrap();
     fs::write(&kernels_path, CHECK_KERNELS_SRC).unwrap();
 
-    let algo_ir = lower_algo(&parse_algo(CHECK_ALGO_SRC).unwrap()).unwrap();
-    let sched_ir = lower_sched(&parse_sched(sched_src).unwrap()).unwrap();
-    let linked = link(algo_ir, sched_ir).unwrap();
-    let acfg = build_acfg(&linked).unwrap();
-    let acfg = apply_block_transforms(&linked, acfg).unwrap();
-    let acfg = apply_partition_workers(&linked, acfg).unwrap();
-    let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
-    let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
-    let sidecar = build_sidecar(&linked, &acfg).unwrap();
+    let r = test_common::lower_for_test(
+        CHECK_ALGO_SRC,
+        sched_src,
+        &test_common::LowerForTestOpts {
+            apply_partition_workers: true,
+            inject_check_frames: true,
+        },
+    );
     let names = NameTables {
-        data: acfg.name_data.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        kernel: acfg.name_kernels.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        worker: acfg.name_workers.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        iter_var: acfg.name_iter_vars.iter().map(|(n, i)| (*i, n.clone())).collect(),
-        inner_block_iter_vars: acfg.inner_block_iter_vars.clone(),
+        data: r.name_data,
+        kernel: r.name_kernel,
+        worker: r.name_worker,
+        iter_var: r.name_iter_var,
+        inner_block_iter_vars: r.inner_block_iter_vars,
     };
-    (per_worker, names, sidecar, kernels_path, scratch.join("gen"))
+    (r.per_worker, names, r.sidecar, kernels_path, scratch.join("gen"))
 }
 
 #[test]
