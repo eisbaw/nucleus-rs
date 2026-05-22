@@ -344,6 +344,15 @@ struct Args {
     /// gate-signal semantics (required-fail / `NUC_XBACKEND_*` /
     /// `NUC_NONDET_*`) are independent of this choice.
     format: Format,
+    /// Optional path to write per-cell wall-clock timings as JSON
+    /// (TASK-0023.03 Stage 1). When `Some`, after the matrix completes
+    /// the harness writes a JSON document mirroring the planned-order
+    /// `Vec<CellResult>` so a downstream comparator can flag perf
+    /// regressions against a stored baseline. Default `None` =
+    /// byte-identical to the pre-flag harness output. Stage 1 only
+    /// covers RUN-mode results (`run_cell`); `--check-determinism` is
+    /// out of scope for this stage and is filed as a follow-up.
+    emit_timings: Option<PathBuf>,
 }
 
 /// Upper bound on `--jobs N`. See [`Args::jobs`].
@@ -359,6 +368,7 @@ impl Default for Args {
             check_determinism: false,
             jobs: 1,
             format: Format::Text,
+            emit_timings: None,
         }
     }
 }
@@ -438,6 +448,35 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 a.format = Format::parse(&x["--format=".len()..])?;
                 i += 1;
             }
+            "--emit-timings" => {
+                // TASK-0023.03 Stage 1: persist per-cell wall-clock
+                // timings as JSON for offline perf-regression analysis.
+                // The path is captured verbatim (relative or absolute);
+                // it is written ONCE, post-matrix, so a parse-time
+                // error here is loud and we never spend matrix time
+                // just to discover the path was bad.
+                let raw = need_val(i)?;
+                if raw.is_empty() {
+                    return Err(
+                        "flag `--emit-timings` requires a non-empty PATH".to_string()
+                    );
+                }
+                a.emit_timings = Some(PathBuf::from(raw));
+                i += 2;
+            }
+            // TASK-0023.03 Stage 1: `--emit-timings=PATH` (equals form),
+            // mirroring the `--format=` precedent so CI scripts can use
+            // either style.
+            x if x.starts_with("--emit-timings=") => {
+                let raw = &x["--emit-timings=".len()..];
+                if raw.is_empty() {
+                    return Err(
+                        "flag `--emit-timings=` requires a non-empty PATH".to_string()
+                    );
+                }
+                a.emit_timings = Some(PathBuf::from(raw));
+                i += 1;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -454,7 +493,8 @@ fn print_help() {
          \n\
          USAGE:\n    \
              nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] \
-[--milestone ID] [--check-determinism] [--jobs N | -j N] [--format text|junit]\n\
+[--milestone ID] [--check-determinism] [--jobs N | -j N] [--format text|junit] \
+[--emit-timings PATH]\n\
          \n\
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
@@ -489,7 +529,19 @@ fn print_help() {
          (one `<testcase>` per cell, classname=example.schedule,\n\
          name=backend) so GitHub Actions / GitLab Pipelines can surface\n\
          individual cells. Exit code + gate-signal semantics are\n\
-         independent of this choice.\n"
+         independent of this choice.\n\
+         \n\
+         --emit-timings PATH: persist per-cell wall-clock timings as\n\
+         JSON to PATH (TASK-0023.03 Stage 1). Schema:\n\
+           {{ \"cells\": [ {{ \"example\": ..., \"schedule\": ...,\n\
+             \"backend\": ..., \"required\": bool, \"status\":\n\
+             \"PASS|FAIL|SKIPPED\", \"phase_times_ms\": {{ \"compile\":\n\
+             N, \"build\": N, \"run\": N }}, \"total_ms\": N }} ] }}\n\
+         Cells appear in planned (deterministic) order. Written ONCE\n\
+         post-matrix; the human/junit summary and exit-code semantics\n\
+         are unchanged. RUN-mode only — `--check-determinism` is a\n\
+         follow-up (Stage 2/3 too: baseline diff + per-cell\n\
+         perf_threshold_pct in e2e-matrix.toml).\n"
     );
 }
 
@@ -2597,6 +2649,236 @@ fn print_determinism_summary_junit(results: &[DetCellResult]) {
 }
 
 // --------------------------------------------------------------------
+// Per-cell timings JSON (TASK-0023.03 Stage 1)
+// --------------------------------------------------------------------
+
+/// Escape one string for inclusion as a JSON string literal (RFC 8259
+/// §7). We escape the strictly-required set — backslash, double quote,
+/// and the C0 controls (`< 0x20`) — using the short forms for `\b \f \n
+/// \r \t` and `\u00XX` for the rest. Non-ASCII is passed through
+/// unchanged (valid UTF-8 in -> valid UTF-8 out); no need to escape
+/// `/` or non-ASCII chars (the RFC permits but does not require it).
+/// Defensive: cell identifiers + Status payloads come from the
+/// manifest and the driver's `String` error messages, and the latter
+/// can contain arbitrary bytes (compiler panics, OS errors).
+fn json_escape_str(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Serialise a single `CellResult` as one JSON object. Schema:
+///
+/// ```text
+///   { "example": "...", "schedule": "...", "backend": "...",
+///     "required": bool,
+///     "status": "PASS" | "FAIL" | "SKIPPED",
+///     "fail_phase": "compile|build|run|diff"   (FAIL only),
+///     "detail":     "..."                       (FAIL only),
+///     "skip_reason":"..."                       (SKIPPED only),
+///     "phase_times_ms": { "compile": N|null, "build": N|null,
+///                         "run": N|null },
+///     "total_ms": N,
+///     "corrupted": bool }
+/// ```
+///
+/// `phase_times_ms` mirrors the `Timings` struct (compile/build/run);
+/// `null` is emitted where a phase did not execute (e.g. SKIPPED).
+/// Missing-vs-zero matters: a phase that ran in 0 ms is `0`, not
+/// `null`. The PRD-spec key for the JSON consumer is `phase_times_ms`,
+/// keeping in line with the millisecond resolution `Duration::as_millis`
+/// produces. Out-of-range values (>= 2^53) would round-trip lossily in
+/// JS consumers, but per-phase millis are vastly below that.
+///
+/// **Spec-vs-source deviation** (architect review cycle 54): TASK-0023.03
+/// AC#1 names the phases as `{build, run, diff}`. The actual `Timings`
+/// struct in this crate carries `{compile, build, run}` — there is no
+/// separate `diff` phase timer; the diff-check work is folded into the
+/// `run` phase's wall-clock. JSON emission matches the SOURCE struct
+/// rather than the spec phrasing, which is the right call (a `null`
+/// for a phase that doesn't exist in source would be a comment-doc lie).
+/// TASK-0023.03.01 (the Stage-2 baseline comparator follow-up) carries
+/// the precise scope reference if future readers wonder about this.
+fn cell_result_to_json(out: &mut String, r: &CellResult) {
+    out.push('{');
+    out.push_str("\"example\":");
+    json_escape_str(out, &r.cell.example);
+    out.push_str(",\"schedule\":");
+    json_escape_str(out, &r.cell.schedule);
+    out.push_str(",\"backend\":");
+    json_escape_str(out, &r.cell.backend);
+    out.push_str(",\"required\":");
+    out.push_str(if r.required { "true" } else { "false" });
+
+    out.push_str(",\"status\":");
+    match &r.status {
+        Status::Pass => out.push_str("\"PASS\""),
+        Status::Failed { .. } => out.push_str("\"FAIL\""),
+        Status::Skipped { .. } => out.push_str("\"SKIPPED\""),
+    }
+
+    // Status-specific payload, named so the consumer never needs to
+    // pattern-match: presence of `fail_phase` <=> Failed; presence of
+    // `skip_reason` <=> Skipped. PASS carries neither.
+    match &r.status {
+        Status::Pass => {}
+        Status::Failed { phase, detail } => {
+            out.push_str(",\"fail_phase\":");
+            json_escape_str(out, &phase.to_string());
+            out.push_str(",\"detail\":");
+            json_escape_str(out, detail);
+        }
+        Status::Skipped { reason } => {
+            out.push_str(",\"skip_reason\":");
+            json_escape_str(out, reason);
+        }
+    }
+
+    // phase_times_ms with explicit nulls — see fn-doc.
+    out.push_str(",\"phase_times_ms\":{");
+    out.push_str("\"compile\":");
+    match r.timings.compile {
+        Some(d) => {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{}", d.as_millis());
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"build\":");
+    match r.timings.build {
+        Some(d) => {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{}", d.as_millis());
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"run\":");
+    match r.timings.run {
+        Some(d) => {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{}", d.as_millis());
+        }
+        None => out.push_str("null"),
+    }
+    out.push('}');
+
+    {
+        use std::fmt::Write as _;
+        let _ = write!(out, ",\"total_ms\":{}", r.timings.total().as_millis());
+    }
+
+    out.push_str(",\"corrupted\":");
+    out.push_str(if r.corrupted { "true" } else { "false" });
+    out.push('}');
+}
+
+/// Render the full `Vec<CellResult>` to a JSON document with a
+/// top-level `{"cells": [...]}` object. Cells appear in planned
+/// (deterministic) order — `execute_cells_parallel` re-sorts results
+/// to planned order before returning. Newlines between objects so a
+/// quick `grep` can scan one cell per line, but no trailing newline
+/// inside the array (keeps the document compact).
+fn render_timings_json(results: &[CellResult]) -> String {
+    let mut out = String::with_capacity(results.len() * 256);
+    out.push_str("{\n  \"cells\": [\n");
+    for (i, r) in results.iter().enumerate() {
+        out.push_str("    ");
+        cell_result_to_json(&mut out, r);
+        if i + 1 < results.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+/// Write the timings JSON to `path`. Creates parent directories on
+/// demand (a baseline directory under `nucleus/target/` typically
+/// does not pre-exist). Returns a string error mirroring the rest of
+/// the harness's error idiom so the caller can plumb it into the
+/// existing `run() -> Result<i32, String>` top-level.
+///
+/// Failure modes (all surface as `Err`, none silent):
+///   * parent dir is unwritable / not a dir;
+///   * file write fails partway (we write atomically into a sibling
+///     `.tmp` then rename, so a crash never leaves a truncated JSON
+///     that a later `--baseline` would happily compare against).
+fn write_timings_json(path: &std::path::Path, results: &[CellResult]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "--emit-timings: cannot create parent dir `{}`: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let doc = render_timings_json(results);
+    // Atomic write: tmp + rename. Same dir as `path` so rename is
+    // never cross-filesystem (POSIX guarantees atomicity within a fs).
+    let tmp = match path.file_name() {
+        Some(name) => {
+            let mut tmp_name = name.to_os_string();
+            tmp_name.push(".tmp");
+            path.with_file_name(tmp_name)
+        }
+        None => {
+            return Err(format!(
+                "--emit-timings: path `{}` has no file name component",
+                path.display()
+            ));
+        }
+    };
+    // Architect review cycle 54: explicit fsync of the tmp file
+    // before rename so a power-loss can't land the rename before
+    // data hits disk (which would leave a zero-byte JSON
+    // survivor — CI baseline corruption). Belt-and-braces over
+    // POSIX rename atomicity.
+    use std::io::Write as _;
+    let mut f = fs::File::create(&tmp).map_err(|e| {
+        format!("--emit-timings: create `{}`: {e}", tmp.display())
+    })?;
+    f.write_all(doc.as_bytes()).map_err(|e| {
+        format!(
+            "--emit-timings: write `{}`: {e}",
+            tmp.display()
+        )
+    })?;
+    f.sync_all().map_err(|e| {
+        format!(
+            "--emit-timings: fsync `{}`: {e}",
+            tmp.display()
+        )
+    })?;
+    drop(f);
+    fs::rename(&tmp, path).map_err(|e| {
+        format!(
+            "--emit-timings: rename `{}` -> `{}`: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+// --------------------------------------------------------------------
 // Parallel cell execution (TASK-0023.01)
 // --------------------------------------------------------------------
 
@@ -2846,6 +3128,17 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     }
 
     if args.check_determinism {
+        // TASK-0023.03 Stage 1 scope: `--emit-timings` is RUN-mode only.
+        // Determinism-mode timings are a follow-up — be loud, never
+        // silent, so a developer who set both flags is not left
+        // expecting a file that never appears.
+        if args.emit_timings.is_some() {
+            eprintln!(
+                "nucleus-e2e: WARNING: --emit-timings is RUN-mode only \
+                 (TASK-0023.03 Stage 1 scope); ignored under \
+                 --check-determinism. Filed as a follow-up."
+            );
+        }
         eprintln!(
             "nucleus-e2e: determinism check over {} cell(s) from {} \
              (jobs={})",
@@ -3041,6 +3334,22 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     match args.format {
         Format::Text => print_summary(&results),
         Format::Junit => print_summary_junit(&results),
+    }
+
+    // TASK-0023.03 Stage 1: persist per-cell timings as JSON when
+    // `--emit-timings PATH` is set. Done AFTER the summary so a
+    // late-failing write surfaces loud but does not block the human-
+    // facing summary the developer is staring at. Failure is an Err
+    // back to `run`, which turns into a non-zero exit code — a silent
+    // partial write would let a downstream `--baseline` compare
+    // against truncated JSON and report spurious regressions.
+    if let Some(path) = args.emit_timings.as_deref() {
+        write_timings_json(path, &results)?;
+        eprintln!(
+            "nucleus-e2e: wrote per-cell timings ({} cell(s)) to {}",
+            results.len(),
+            path.display()
+        );
     }
 
     // NUC_XBACKEND_NEGATIVE explicit-signal contract + zero-corruption
@@ -4526,5 +4835,224 @@ mystery = 42
         );
 
         let _ = fs::remove_dir_all(&tree);
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0023.03 Stage 1 — per-cell timings JSON
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn arg_parser_accepts_emit_timings_space_form() {
+        let argv: Vec<OsString> = ["--emit-timings", "/tmp/foo.json"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(
+            a.emit_timings.as_deref(),
+            Some(std::path::Path::new("/tmp/foo.json"))
+        );
+    }
+
+    #[test]
+    fn arg_parser_accepts_emit_timings_equals_form() {
+        let argv: Vec<OsString> = vec![OsString::from("--emit-timings=/tmp/bar.json")];
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(
+            a.emit_timings.as_deref(),
+            Some(std::path::Path::new("/tmp/bar.json"))
+        );
+    }
+
+    #[test]
+    fn arg_parser_rejects_empty_emit_timings_path() {
+        // Empty PATH would silently write nothing / surface as a
+        // confusing "is a directory" error post-matrix. Fail LOUD at
+        // arg-parse so the developer fixes it before paying the
+        // matrix cost.
+        let argv_space: Vec<OsString> = ["--emit-timings", ""]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let err = parse_args(&argv_space).unwrap_err();
+        assert!(
+            err.contains("non-empty PATH"),
+            "expected non-empty PATH error, got: {err}"
+        );
+
+        let argv_eq: Vec<OsString> = vec![OsString::from("--emit-timings=")];
+        let err = parse_args(&argv_eq).unwrap_err();
+        assert!(
+            err.contains("non-empty PATH"),
+            "expected non-empty PATH error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn json_escape_str_handles_quote_backslash_newline_and_control() {
+        let mut out = String::new();
+        json_escape_str(&mut out, "a\"b\\c\n\td\x01e");
+        // Expected JSON-escaped output. The control char becomes \u0001.
+        assert_eq!(out, "\"a\\\"b\\\\c\\n\\td\\u0001e\"");
+    }
+
+    fn synth_cell_result(
+        example: &str,
+        schedule: &str,
+        backend: &str,
+        status: Status,
+        compile_ms: Option<u64>,
+        build_ms: Option<u64>,
+        run_ms: Option<u64>,
+    ) -> CellResult {
+        CellResult {
+            cell: Cell {
+                example: example.into(),
+                schedule: schedule.into(),
+                backend: backend.into(),
+            },
+            required: true,
+            status,
+            timings: Timings {
+                compile: compile_ms.map(Duration::from_millis),
+                build: build_ms.map(Duration::from_millis),
+                run: run_ms.map(Duration::from_millis),
+            },
+            corrupted: false,
+        }
+    }
+
+    #[test]
+    fn render_timings_json_emits_three_status_variants_in_planned_order() {
+        // PASS, SKIPPED, FAILED — covers all three Status arms and
+        // their status-specific payloads. The renderer must keep
+        // input order so a downstream comparator can index by
+        // position rather than re-sorting.
+        let results = vec![
+            synth_cell_result(
+                "ex-a",
+                "naive",
+                "pthreads-sync",
+                Status::Pass,
+                Some(100),
+                Some(2000),
+                Some(50),
+            ),
+            synth_cell_result(
+                "ex-b",
+                "tiled",
+                "mp-tcp-bufsync",
+                Status::Skipped {
+                    reason: "no capabilities.toml".into(),
+                },
+                None,
+                None,
+                None,
+            ),
+            synth_cell_result(
+                "ex-c",
+                "naive",
+                "pthreads-sync",
+                Status::Failed {
+                    phase: Phase::Build,
+                    detail: "cargo build failed\nlinker error".into(),
+                },
+                Some(80),
+                Some(500),
+                None,
+            ),
+        ];
+        let doc = render_timings_json(&results);
+
+        // Structural assertions — we deliberately do NOT shell out
+        // to a real JSON parser here (no new dep budget); instead
+        // we assert byte-substrings unique enough to catch the
+        // shape regressions Stage 2/3 will rely on.
+        assert!(doc.starts_with("{\n  \"cells\": ["), "leading brace + cells array missing: {doc}");
+        assert!(doc.trim_end().ends_with("]\n}"), "trailing close missing: {doc}");
+
+        // Ordering: ex-a appears before ex-b before ex-c. A simple
+        // 3-find suffices since cell names are unique.
+        let a = doc.find("\"ex-a\"").expect("ex-a present");
+        let b = doc.find("\"ex-b\"").expect("ex-b present");
+        let c = doc.find("\"ex-c\"").expect("ex-c present");
+        assert!(a < b && b < c, "planned order broken: {a}, {b}, {c}");
+
+        // PASS cell carries `phase_times_ms` with ints, total_ms,
+        // and NO fail_phase/skip_reason key.
+        let pass_block = &doc[a..b];
+        assert!(pass_block.contains("\"status\":\"PASS\""), "PASS status: {pass_block}");
+        assert!(pass_block.contains("\"compile\":100"), "compile ms: {pass_block}");
+        assert!(pass_block.contains("\"build\":2000"), "build ms: {pass_block}");
+        assert!(pass_block.contains("\"run\":50"), "run ms: {pass_block}");
+        assert!(pass_block.contains("\"total_ms\":2150"), "total ms: {pass_block}");
+        assert!(!pass_block.contains("fail_phase"), "PASS must not carry fail_phase");
+        assert!(!pass_block.contains("skip_reason"), "PASS must not carry skip_reason");
+
+        // SKIPPED carries skip_reason and nulls for phase_times_ms.
+        let skip_block = &doc[b..c];
+        assert!(skip_block.contains("\"status\":\"SKIPPED\""), "SKIPPED status: {skip_block}");
+        assert!(skip_block.contains("\"skip_reason\":\"no capabilities.toml\""), "reason: {skip_block}");
+        assert!(skip_block.contains("\"compile\":null"), "null compile: {skip_block}");
+        assert!(skip_block.contains("\"build\":null"), "null build: {skip_block}");
+        assert!(skip_block.contains("\"run\":null"), "null run: {skip_block}");
+        assert!(skip_block.contains("\"total_ms\":0"), "total ms 0: {skip_block}");
+
+        // FAILED carries fail_phase + detail; detail contains an
+        // escaped newline (proving json_escape_str ran).
+        let fail_block = &doc[c..];
+        assert!(fail_block.contains("\"status\":\"FAIL\""), "FAIL status: {fail_block}");
+        assert!(fail_block.contains("\"fail_phase\":\"build\""), "fail_phase: {fail_block}");
+        assert!(
+            fail_block.contains("\"detail\":\"cargo build failed\\nlinker error\""),
+            "escaped detail: {fail_block}"
+        );
+    }
+
+    #[test]
+    fn write_timings_json_creates_parents_and_writes_atomically() {
+        // Atomic-write contract: a fresh parent path is created on
+        // demand; the .tmp sibling does not survive a successful
+        // write. Critical for Stage 2 — a baseline file half-written
+        // by a crashed harness must NEVER be loaded as a baseline.
+        let tmp_root = std::env::temp_dir().join(format!(
+            "nucleus-e2e-emit-timings-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+
+        let path = tmp_root.join("nested").join("dir").join("timings.json");
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists(), "parent must not pre-exist");
+
+        let results = vec![synth_cell_result(
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            Some(1),
+            Some(2),
+            Some(3),
+        )];
+        write_timings_json(&path, &results).expect("write");
+
+        assert!(path.exists(), "output JSON must exist after write");
+        let body = fs::read_to_string(&path).expect("read back");
+        assert!(body.contains("\"ex-a\""), "round-trip body: {body}");
+        assert!(body.contains("\"total_ms\":6"), "total ms 1+2+3=6: {body}");
+
+        // .tmp sibling must NOT survive — rename consumed it.
+        let tmp_sibling = path.with_file_name("timings.json.tmp");
+        assert!(
+            !tmp_sibling.exists(),
+            ".tmp sibling leaked: {}",
+            tmp_sibling.display()
+        );
+
+        let _ = fs::remove_dir_all(&tmp_root);
     }
 }
