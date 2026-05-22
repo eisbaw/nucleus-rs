@@ -306,9 +306,12 @@ fn repo_root() -> std::path::PathBuf {
 }
 
 /// Emit 02-split-add/split through `pthreads_async::emit` and return
-/// the main.rs body. Centralised here so every Wave B-2 pin reuses one
-/// emit invocation (one scratch dir, one lower_for_test run).
-fn emit_02_split_main_rs() -> String {
+/// the main.rs body. Each caller passes its OWN `scratch_name` (the test
+/// function name) so the scratch dirs do NOT collide under cargo's
+/// parallel test runner — a single shared scratch was the cycle-26
+/// race-flake source (`remove_dir_all` of test A racing the emit-then-
+/// read of test B). TASK-0241.
+fn emit_02_split_main_rs(scratch_name: &str) -> String {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/02-split-add");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
@@ -319,8 +322,9 @@ fn emit_02_split_main_rs() -> String {
         &sched_src,
         &test_common::LowerForTestOpts::default(),
     );
-    let scratch = root
-        .join("nucleus/target/pthreads-async-test-scratch/wave_b2_codegen_pins");
+    let scratch = root.join(format!(
+        "nucleus/target/pthreads-async-test-scratch/wave_b2_codegen_pins_{scratch_name}"
+    ));
     let _ = std::fs::remove_dir_all(&scratch);
     let result = emit(
         &r.per_worker,
@@ -340,7 +344,7 @@ fn wave_b2_multi_emit_contains_ring_struct_exactly_once() {
     // emitting twice would compile but is a codegen defect — a future
     // refactor that accidentally calls the helper inside the per-pair
     // loop would multiply the struct, this test catches it).
-    let main_rs = emit_02_split_main_rs();
+    let main_rs = emit_02_split_main_rs("contains_ring_struct_exactly_once");
     let count = main_rs.matches("struct Ring<T> {").count();
     assert_eq!(
         count, 1,
@@ -353,7 +357,7 @@ fn wave_b2_multi_emit_contains_ring_struct_exactly_once() {
 fn wave_b2_multi_emit_ring_alloc_uses_cap_from_sidecar() {
     // 02-split-add/split has 3 cross-worker transfers, all default
     // buffer=1 (sync). The emit must allocate 3 rings each sized 1.
-    let main_rs = emit_02_split_main_rs();
+    let main_rs = emit_02_split_main_rs("ring_alloc_uses_cap_from_sidecar");
     for rid in 0..3 {
         let needle = format!(
             "let ring_{rid}: std::sync::Arc<Ring<Vec<i32>>> = \
@@ -379,7 +383,7 @@ fn wave_b2_multi_emit_push_wait_pair_uses_ring_prefix() {
     // Pin the Push/Wait emit-string shape: ring_<id>.push(name.clone());
     // and `name = ring_<id>.wait();`. The send/recv comment names the
     // peer worker — drift-detection on the format string.
-    let main_rs = emit_02_split_main_rs();
+    let main_rs = emit_02_split_main_rs("push_wait_pair_uses_ring_prefix");
     // Producer side (host pushes input arrays to w0; w0 pushes result
     // back to host). At minimum one push from host and one from w0.
     assert!(
@@ -411,7 +415,7 @@ fn wave_b2_multi_emit_barriers_match_sync_tags() {
     // emits one `let bar_<tag>: Arc<Barrier> = Arc::new(Barrier::new(N));`
     // with N = participant count. Both workers ({host,w0}) participate
     // in every barrier here, so every Barrier::new(2).
-    let main_rs = emit_02_split_main_rs();
+    let main_rs = emit_02_split_main_rs("barriers_match_sync_tags");
     let bar_count = main_rs
         .matches(": Arc<Barrier> = Arc::new(Barrier::new(2));")
         .count();
@@ -429,7 +433,7 @@ fn wave_b2_multi_emit_spawns_non_host_workers_with_arc_clones() {
     // - clone every barrier the worker participates in into `<wname>_bar_<tag>`,
     // - spawn the closure with `let <wname>_handle = thread::spawn(move || {`,
     // - join with `<wname>_handle.join().expect("worker thread panicked");`.
-    let main_rs = emit_02_split_main_rs();
+    let main_rs = emit_02_split_main_rs("spawns_non_host_workers_with_arc_clones");
     assert!(
         main_rs.contains("let w0_ring_0 = Arc::clone(&ring_0);"),
         "w0 must Arc-clone the rings it touches into closure-locals:\n{main_rs}"
