@@ -252,3 +252,105 @@ fn pingpong_matches_pthreads_sync_bit_for_bit() {
          bit-identity contract is violated"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0245 (cycle 36): regression-pin for the cycle-35
+// `render_int_expr` const-in-IndexExpr fix on the mp-tcp-bufsync
+// backend.
+//
+// Background: cycle 35 (commit 894f63f) fixed the PRIVATE
+// `pthreads_sync::render_int_expr` to resolve declared consts (e.g.
+// `ITERS`) when they appear inside an `IndexExpr`. mp-tcp-bufsync
+// consumes ALL of its IndexExpr / arg / output-assign rendering
+// through the pub shims (`render_fire_args_pub`,
+// `render_fire_output_assign_pub`, `render_const_expr_pub`,
+// `render_flat_index_pub`); the cycle-36 audit grep
+// (`grep -rnE "fn render_int_expr|fn render_flat_index|fn
+// render_const_expr" nucleus/backends/mp-tcp-bufsync/`) returned
+// ZERO matches — confirming no parallel private renderer with its
+// own consts gap exists. This test pins that audit STRUCTURALLY: a
+// future cycle that copies a private IndexExpr renderer into this
+// crate without `sidecar.consts` lookup fails the test immediately.
+//
+// What it pins:
+//   1. The IndexExpr arithmetic site in EVERY per-worker `src/bin/
+//      <worker>.rs` contains the resolved const LITERAL (`8`) at the
+//      position `ITERS` occupied in the source.
+//   2. The bare const ident (`ITERS`) does NOT appear anywhere in
+//      ANY per-worker binary's source.
+//
+// Sibling tests for pthreads-sync + pthreads-async live in
+// `pthreads-sync/tests/multi_worker.rs` +
+// `pthreads-async/tests/skeleton.rs`, all driven by the same
+// `test_common::CONST_IN_INDEXEXPR_*` fixture (single source of truth).
+//
+// Emit-string only — no cargo-build. End-to-end correctness is
+// already covered by the e2e gate on example 11 (cycle-35 evidence).
+#[test]
+fn const_in_indexexpr_mp_tcp_bufsync_resolves_to_literal_value() {
+    let scratch = scratch_dir("const_in_indexexpr_mp_tcp");
+    let kernels_path = scratch.join("kernels.rs");
+    fs::write(&kernels_path, "// stub for emit-string test\n").unwrap();
+
+    let r = test_common::lower_for_test(
+        test_common::CONST_IN_INDEXEXPR_ALGO_SRC,
+        test_common::CONST_IN_INDEXEXPR_SCHED_SRC,
+        &test_common::LowerForTestOpts::default(),
+    );
+
+    let out_dir = scratch.join("gen");
+    let result = mp_tcp_bufsync::emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &kernels_path,
+        &out_dir,
+    )
+    .expect("mp-tcp-bufsync emit must succeed on const-in-IndexExpr fixture");
+
+    // mp-tcp-bufsync emits ONE binary per used worker; the fixture's
+    // 2-worker schedule yields TWO files in worker_bins. Both
+    // participate in the IndexExpr (w0 writes `y[ITERS][i]`, host
+    // reads `y[ITERS][0]`), so both must carry the resolved literal.
+    assert!(
+        result.worker_bins.len() >= 2,
+        "expected >=2 per-worker binaries for a 2-worker schedule; got {}",
+        result.worker_bins.len()
+    );
+
+    let iters_val = test_common::CONST_IN_INDEXEXPR_ITERS_VALUE;
+    let resolved_row = format!("({iters_val}) * 4");
+    let bare_ident = test_common::CONST_IN_INDEXEXPR_ITERS_IDENT;
+
+    // At least ONE per-worker file must contain the resolved
+    // IndexExpr fingerprint (the worker that touches `y[ITERS]...` —
+    // i.e. either host or w0; under sync transfer, both rendered
+    // sites carry it).
+    let mut any_has_resolved = false;
+    for bin_path in &result.worker_bins {
+        let src = fs::read_to_string(bin_path).expect("read per-worker bin");
+        if src.contains(&resolved_row) {
+            any_has_resolved = true;
+        }
+        // (2) The bare const ident `ITERS` must NOT appear in ANY
+        // per-worker binary. This is the load-bearing regression
+        // assertion: if the cycle-35 fix were ever lost (or a private
+        // renderer added without consts lookup), `ITERS` would leak
+        // through to one of the per-worker binaries, and Rust would
+        // refuse to compile.
+        assert!(
+            !src.contains(bare_ident),
+            "mp-tcp-bufsync {bin_path:?} must NOT contain the bare const \
+             ident `{bare_ident}` — render_flat_index_pub must resolve it \
+             via sidecar.consts (cycle-35 fix; TASK-0245 audit). \
+             source:\n{src}"
+        );
+    }
+    assert!(
+        any_has_resolved,
+        "expected the resolved `ITERS=8` literal (`{resolved_row}`) in at \
+         least one mp-tcp-bufsync per-worker binary; cycle-35 fix not \
+         reaching this backend's code path. worker_bins: {:?}",
+        result.worker_bins
+    );
+}

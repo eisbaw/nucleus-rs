@@ -180,6 +180,108 @@ pub fn lower_for_test(
     }
 }
 
+// --------------------------------------------------------------------
+// TASK-0245: Const-in-IndexExpr fixture (cycle-36 audit).
+// --------------------------------------------------------------------
+//
+// Cycle 35 (TASK-0042.04 / commit 894f63f) discovered + fixed a bug in
+// `pthreads_sync::render_int_expr`: a bare const ident (e.g. `ITERS`)
+// inside an `IndexExpr` rendered as a bare Rust identifier rather
+// than the const's literal value. That bare identifier is not in
+// scope in the emitted code, so the generated `main.rs` failed to
+// compile. The fix routed `render_int_expr` through `RenderCtx` and
+// added the `sidecar.consts` lookup, matching `render_const_expr`'s
+// precedence (`abs_subst > consts > bare-ident`).
+//
+// Architect review-gate (cycle 35) flagged that the fix lives in a
+// PRIVATE pthreads-sync function. Both other backends (mp-tcp-bufsync,
+// pthreads-async) MUST consume `IndexExpr` rendering ONLY through the
+// pub shims (`render_flat_index_pub`, `render_const_expr_pub` plus
+// the `render_fire_args_pub` / `render_fire_output_assign_pub` that
+// call `render_flat_index` internally). The cycle-36 audit
+// (TASK-0245) verified by `grep -rnE "fn render_int_expr|fn
+// render_flat_index|fn render_const_expr"` on both backends that
+// they declare NO such functions of their own — the shim is the only
+// IndexExpr code path on all three backends.
+//
+// These fixture constants drive a per-backend test (one in each
+// backend's `tests/` directory) that pins the contract STRUCTURALLY:
+// the emitted `main.rs` MUST contain the resolved const value (`8`)
+// at the IndexExpr site, and MUST NOT carry the bare const ident
+// (`ITERS`) anywhere in the rendered source.
+//
+// If a future cycle adds a private parallel renderer in either
+// backend without consulting `sidecar.consts`, the corresponding
+// per-backend test fails immediately — the bug is caught at the
+// emit-string layer, before the (slow, optional) cargo build/run.
+//
+// Fixture shape: a 2-worker schedule with `transfer x : sync`, no
+// `partition=workers`, no `pipeline=`, no `block=` — the minimum
+// shape that exercises (a) cross-worker dataflow on BOTH backends'
+// multi-worker codegen paths and (b) `ITERS` inside an IndexExpr on
+// the writer worker (w0) AND the reader worker (host). The
+// per-backend tests do NOT cargo-build; they assert ONLY the emit-
+// string shape (fast, drift-detection focused — TASK-0245's stated
+// goal). Cycle-35's e2e already proved end-to-end correctness via
+// example 11/pipelined × pthreads-async.
+
+/// Algorithm with a `const ITERS : usize = 8` used inside an
+/// `IndexExpr` — `y[ITERS][i]` writer and `y[ITERS][0]` reader.
+/// `N` is also declared as a const but only used in TYPE positions
+/// (it lowers to a folded literal at link time), so it does NOT
+/// stress the `render_int_expr` Ident arm; `ITERS` does.
+pub const CONST_IN_INDEXEXPR_ALGO_SRC: &str = r#"
+const ITERS : usize = 8;
+const N : usize = 4;
+data x : i32[N];
+data y : i32[ITERS+1][N];
+
+kernel produce  : ()    -> i32[N] effectful;
+kernel id_at    : (i32) -> i32    pure;
+kernel sink_one : (i32) -> ()     effectful;
+
+x <-- produce();
+for i : 0 .. N {
+    y[ITERS][i] <-- id_at(x[i]);
+}
+sink_one(y[ITERS][0]);
+"#;
+
+/// Two-worker schedule with cross-worker sync transfers — the
+/// minimum shape to drive every backend's multi-worker codegen
+/// (mp-tcp-bufsync rejects async / buffered transfers). `w0`
+/// writes `y[ITERS][i]`; `host` reads `y[ITERS][0]`. Both
+/// participate in the `transfer y : sync` cross-worker hop, so
+/// the ITERS literal appears on BOTH worker bodies' rendered
+/// IndexExpr sites.
+pub const CONST_IN_INDEXEXPR_SCHED_SRC: &str = r#"
+schedule for "anything.algo.nuc" {
+    workers = { host, w0 };
+
+    place produce  on host;
+    place id_at    on w0;
+    place sink_one on host;
+
+    transfer x : sync;
+    transfer y : sync;
+}
+"#;
+
+/// The decimal value of `const ITERS` in
+/// [`CONST_IN_INDEXEXPR_ALGO_SRC`]. The render_int_expr cycle-35
+/// fix emits this as `{value}` (NO `_i64` suffix — the IndexExpr
+/// context already casts to `usize` at the slice site). Tests
+/// assert this literal appears at the IndexExpr arithmetic site
+/// in the emitted `main.rs`.
+pub const CONST_IN_INDEXEXPR_ITERS_VALUE: u64 = 8;
+
+/// The bare-ident spelling of `ITERS` — this string MUST NOT
+/// appear in the emitted `main.rs`. If it does, the const was
+/// not resolved by `render_int_expr` and the codegen will fail
+/// to compile (the bug cycle-35 fixed). Tests assert the absence
+/// of this substring as the primary regression-pin.
+pub const CONST_IN_INDEXEXPR_ITERS_IDENT: &str = "ITERS";
+
 #[cfg(test)]
 mod tests {
     use super::*;

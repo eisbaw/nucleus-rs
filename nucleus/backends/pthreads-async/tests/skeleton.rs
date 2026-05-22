@@ -326,3 +326,80 @@ fn emit_result_shape_is_single_binary_five_fields() {
     };
     let _ = _r;
 }
+
+// --------------------------------------------------------------------
+// TASK-0245 (cycle 36): regression-pin for the cycle-35
+// `render_int_expr` const-in-IndexExpr fix on the pthreads-async
+// backend.
+//
+// Background: cycle 35 (commit 894f63f) fixed the PRIVATE
+// `pthreads_sync::render_int_expr` to resolve declared consts (e.g.
+// `ITERS`) when they appear inside an `IndexExpr`. pthreads-async
+// consumes ALL of its multi-worker IndexExpr rendering through the
+// SHARED `pthreads_sync::multi_worker_walker` (cycle 31 / TASK-0239)
+// which routes through the pub shims (`render_fire_args_pub`,
+// `render_const_expr_pub`); single-worker schedules delegate
+// straight to `pthreads_sync::render_single_worker_main`.
+//
+// Cycle-36 audit grep
+// (`grep -rnE "fn render_int_expr|fn render_flat_index|fn
+// render_const_expr" nucleus/backends/pthreads-async/`) returned
+// ZERO matches — confirming no parallel private renderer with its
+// own consts gap exists. The cycle-31 dedup is what makes that
+// audit clean; this test pins it structurally.
+//
+// What it pins:
+//   1. The IndexExpr arithmetic site in the emitted `main.rs`
+//      contains the resolved const LITERAL (`8`).
+//   2. The bare const ident (`ITERS`) does NOT appear anywhere in
+//      the emitted `main.rs`.
+//
+// Sibling tests for pthreads-sync + mp-tcp-bufsync live in
+// `pthreads-sync/tests/multi_worker.rs` + `mp-tcp-bufsync/tests/
+// pingpong.rs`, all driven by the same `test_common::CONST_IN_INDEXEXPR_*`
+// fixture (single source of truth).
+//
+// Emit-string only — no cargo-build. End-to-end correctness is
+// already covered by the e2e gate on example 11 × pthreads-async
+// (cycle-35 PASS bit-identical evidence).
+#[test]
+fn const_in_indexexpr_pthreads_async_resolves_to_literal_value() {
+    let r = test_common::lower_for_test(
+        test_common::CONST_IN_INDEXEXPR_ALGO_SRC,
+        test_common::CONST_IN_INDEXEXPR_SCHED_SRC,
+        &test_common::LowerForTestOpts::default(),
+    );
+
+    let scratch = repo_root()
+        .join("nucleus/target/pthreads-async-test-scratch/const_in_indexexpr_pthreads_async");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernels_path = scratch.join("kernels.rs");
+    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+    std::fs::write(&kernels_path, "// stub for emit-string test\n").unwrap();
+
+    let result = emit(&r.per_worker, &r.names, &r.sidecar, &kernels_path, &scratch.join("gen"))
+        .expect("pthreads-async emit must succeed on const-in-IndexExpr fixture");
+    let main_rs = std::fs::read_to_string(&result.main_rs).expect("read main.rs");
+
+    let iters_val = test_common::CONST_IN_INDEXEXPR_ITERS_VALUE;
+    let resolved_row = format!("({iters_val}) * 4");
+    let bare_ident = test_common::CONST_IN_INDEXEXPR_ITERS_IDENT;
+
+    // (1) The resolved literal `8` appears at the IndexExpr site.
+    assert!(
+        main_rs.contains(&resolved_row),
+        "pthreads-async main.rs must contain the resolved `ITERS=8` literal at \
+         the IndexExpr row-stride site (`{resolved_row}`); cycle-35 fix not \
+         reaching this code path via multi_worker_walker. main.rs:\n{main_rs}"
+    );
+
+    // (2) The bare const ident `ITERS` does NOT appear anywhere in
+    // the emitted main.rs.
+    assert!(
+        !main_rs.contains(bare_ident),
+        "pthreads-async main.rs must NOT contain the bare const ident \
+         `{bare_ident}` — pthreads-async consumes IndexExpr rendering through \
+         pthreads_sync's pub shims (cycle-31 dedup); the cycle-35 fix MUST \
+         reach this backend (TASK-0245 audit). main.rs:\n{main_rs}"
+    );
+}

@@ -957,3 +957,85 @@ fn multi_worker_check_loop_count_emit_pins_static_guard_and_fetch_add_templates(
         "Count emit must NOT include Log template:\n{main_rs}"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0245 (cycle 36): regression-pin for the cycle-35
+// `render_int_expr` const-in-IndexExpr fix.
+//
+// Cycle 35 (commit 894f63f) fixed `pthreads_sync::render_int_expr` to
+// resolve declared consts (e.g. `ITERS`) when they appear inside an
+// `IndexExpr`. Examples 01..09/13 only used iter-vars (NOT consts)
+// inside IndexExprs, so the bug was inert in the existing matrix;
+// example 11's `grid[(t + ITERS) % (ITERS + 1)][i]` was the witness.
+//
+// This test pins the structural contract on the PTHREADS-SYNC backend
+// — the home of the private `render_int_expr` — using the shared
+// fixture from `test_common`. A sibling test for mp-tcp-bufsync lives
+// in `mp-tcp-bufsync/tests/pingpong.rs`; the sibling for pthreads-
+// async lives in `pthreads-async/tests/skeleton.rs`. All three sister
+// tests consume the same `CONST_IN_INDEXEXPR_*` constants in
+// `test_common`, so the fixture is single-sourced.
+//
+// What it pins:
+//   1. The IndexExpr arithmetic site contains the resolved const
+//      LITERAL (`8`) at the position `ITERS` occupied in the source.
+//   2. The bare const ident (`ITERS`) does NOT appear anywhere in the
+//      emitted `main.rs` — Rust does not have `ITERS` in scope; an
+//      unresolved bare ident is the bug.
+//
+// What it does NOT do: it does NOT cargo-build the generated project.
+// The slow build/run coverage already exists end-to-end at the e2e
+// gate (`just e2e`) on example 11. This test's role is FAST
+// drift-detection: a future cycle that copies a private parallel
+// IndexExpr renderer into a backend without the `sidecar.consts`
+// lookup fails this test immediately, before the e2e tally moves.
+#[test]
+fn const_in_indexexpr_pthreads_sync_resolves_to_literal_value() {
+    let scratch = scratch_dir("const_in_indexexpr_pthreads_sync");
+    let kernels_path = scratch.join("kernels.rs");
+    // The kernels.rs file is not consumed by emit's RENDERER (it's
+    // verbatim-copied into the generated project), but `emit()`
+    // reads it from disk and fails fast if missing. A minimal stub
+    // is enough — this test never builds the generated project.
+    fs::write(&kernels_path, "// stub for emit-string test\n").unwrap();
+
+    let r = test_common::lower_for_test(
+        test_common::CONST_IN_INDEXEXPR_ALGO_SRC,
+        test_common::CONST_IN_INDEXEXPR_SCHED_SRC,
+        &test_common::LowerForTestOpts::default(),
+    );
+
+    let out_dir = scratch.join("gen");
+    let result = emit(&r.per_worker, &r.names, &r.sidecar, &kernels_path, &out_dir)
+        .expect("pthreads-sync emit must succeed on const-in-IndexExpr fixture");
+    let main_rs = fs::read_to_string(&result.main_rs).expect("read main.rs");
+
+    // (1) The resolved literal `8` appears at the IndexExpr site. The
+    // fixture writes `y[ITERS][i]` (LHS on w0) and reads `y[ITERS][0]`
+    // (RHS on host). With y typed `i32[ITERS+1][N]` (`ITERS+1=9` rows,
+    // `N=4` cols), the flat-index spelling is `({ITERS}) * 4 + ({i})`
+    // — substring `(8) * 4` is the load-bearing fingerprint of a
+    // resolved const at the row-stride position. If `ITERS` rendered
+    // as a bare ident, the substring would be `(ITERS) * 4` and the
+    // assertion would fail.
+    let iters_val = test_common::CONST_IN_INDEXEXPR_ITERS_VALUE;
+    let resolved_row = format!("({iters_val}) * 4");
+    assert!(
+        main_rs.contains(&resolved_row),
+        "pthreads-sync main.rs must contain the resolved `ITERS=8` literal at \
+         the IndexExpr row-stride site (`{resolved_row}`); cycle-35 fix not \
+         reaching this code path. main.rs:\n{main_rs}"
+    );
+
+    // (2) The bare const ident `ITERS` does NOT appear anywhere in
+    // the emitted main.rs. Rust has no `ITERS` in scope; this is the
+    // primary regression-pin — the bug cycle-35 fixed was precisely
+    // the bare ident leaking through.
+    let bare_ident = test_common::CONST_IN_INDEXEXPR_ITERS_IDENT;
+    assert!(
+        !main_rs.contains(bare_ident),
+        "pthreads-sync main.rs must NOT contain the bare const ident \
+         `{bare_ident}` — render_int_expr must resolve it via sidecar.consts \
+         (cycle-35 fix; TASK-0245 audit). main.rs:\n{main_rs}"
+    );
+}
