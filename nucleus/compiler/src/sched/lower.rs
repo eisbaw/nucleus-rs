@@ -112,6 +112,23 @@ use super::ir::{
 /// suppression rule is forward-looking infrastructure for the day a
 /// sched construct gains expression evaluation.
 ///
+/// **Cascade-aware duplicate detection (TASK-0208, sched parity with
+/// TASK-0206 algo)**: the three pass-1 `Duplicate*` arms
+/// (`DuplicateWorkerClass` / `DuplicateMemoryRegion` /
+/// `DuplicateWorker`) consult [`Accum::failed_decls`] in addition to
+/// the successful symbol table via [`is_failed_sched_decl`]. A
+/// re-declaration of a poisoned name STILL fires the Duplicate* error
+/// — the source-text re-use of the name is the violation, not whether
+/// the first decl evaluated. Behaviour-equivalent to the algo-layer
+/// `K + K*M` rule. On today's variant set the new clause is
+/// unreachable (no decl path populates `failed_decls`), so the
+/// behaviour for every real input is byte-identical to before; the
+/// `#[cfg(test)]` fixture
+/// `cascade_aware_duplicate_fires_when_failed_decls_populated`
+/// pins the wiring structurally so the moment a sched construct
+/// gains a failure path, the duplicate-cascade rule is already
+/// correct (and the dormant gap cannot silently re-open).
+///
 /// Path 2 (`workers_missing`-keyed `UnknownPlaceWorker` suppression)
 /// FIRES TODAY: with no `workers = ...` directive, `ir.workers` stays
 /// empty by construction, and every subsequent `place X on W`
@@ -125,9 +142,9 @@ use super::ir::{
 ///
 /// | Variant                                | Class       | Triggerable today | Suppressed when |
 /// |----------------------------------------|-------------|-------------------|-----------------|
-/// | `DuplicateWorkerClass`                 | Independent | yes               | never (non-poisoning) |
-/// | `DuplicateMemoryRegion`                | Independent | yes               | never |
-/// | `DuplicateWorker`                      | Independent | yes               | never |
+/// | `DuplicateWorkerClass`                 | Independent (cascade-aware: TASK-0208) | yes | never (non-poisoning); FIRES on re-decl of poisoned name (dormant — no live trigger today) |
+/// | `DuplicateMemoryRegion`                | Independent (cascade-aware: TASK-0208) | yes | never; FIRES on re-decl of poisoned name (dormant) |
+/// | `DuplicateWorker`                      | Independent (cascade-aware: TASK-0208) | yes | never; FIRES on re-decl of poisoned name (dormant) |
 /// | `DuplicatePlace`                       | Independent | yes               | never |
 /// | `DuplicatePlaceData`                   | Independent | yes               | never |
 /// | `DuplicateLoop`                        | Independent | yes               | never |
@@ -159,11 +176,48 @@ use super::ir::{
 /// success path reads no span, so the determinism gate stays
 /// byte-identical (positions populate only for errors).
 pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
+    lower_sched_with_accum(ast, Accum::default())
+}
+
+/// True iff `name` has been recorded as a *failed* sched declaration
+/// (decl was seen in source, named, and failed to evaluate — its name
+/// is in [`Accum::failed_decls`]). Used by the duplicate-detection
+/// arms of pass 1 to make duplicate detection **cascade-aware**: a
+/// re-declaration of a poisoned name is the same independent
+/// violation as a re-declaration of a successfully-evaluated name
+/// (TASK-0208 — sched parity with TASK-0206 algo precedent).
+///
+/// On today's variant set this always returns `false` because no
+/// sched decl path populates `failed_decls` (no expression evaluation
+/// at this layer); the helper is structurally wired so when a future
+/// sched construct gains a failure path the duplicate check is
+/// already cascade-aware. The reverse-lookup direction is fine —
+/// `failed_decls` is a `BTreeMap` (deterministic), contains-key is
+/// read-only, so the determinism gate is unaffected.
+fn is_failed_sched_decl(failed_decls: &BTreeMap<String, ()>, name: &str) -> bool {
+    failed_decls.contains_key(name)
+}
+
+/// Lowering body that accepts a caller-supplied [`Accum`]. The public
+/// [`lower_sched`] entry constructs a fresh `Default` Accum; the
+/// `#[cfg(test)]` cascade-aware-duplicate fixture (TASK-0208) uses
+/// this entry to PRE-SEED `failed_decls` with a synthetic poisoned
+/// name and assert that a subsequent re-declaration still fires the
+/// Duplicate* error. No real sched-decl-eval failure path exists
+/// today, so the seam is purely structural; it pins the wiring so a
+/// future poison-source variant cannot silently re-open the dormant
+/// cascade gap.
+fn lower_sched_with_accum(
+    ast: &SchedAst,
+    mut acc: Accum,
+) -> Result<SchedIR, SchedLowerErrors> {
     let mut ir = SchedIR {
         algo_path: ast.algo_path.clone(),
         ..SchedIR::default()
     };
-    let mut acc = Accum::default();
+    // `acc` is supplied by the caller (TASK-0208 test seam); the public
+    // [`lower_sched`] entry passes `Accum::default()` so production
+    // behaviour is byte-identical.
 
     // ----------------------------------------------------------------
     // Pass 1: collect declarations (classes, regions, workers).
@@ -199,7 +253,17 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
     for d in &ast.directives {
         match &d.node {
             Directive::WorkerClass(c) => {
-                if ir.worker_classes.contains_key(&c.name.node) {
+                // Cascade-aware duplicate detection (TASK-0208, parity
+                // with algo TASK-0206): consult `failed_decls` in
+                // addition to the successful symbol table. A
+                // re-declaration of a poisoned name still fires the
+                // error; the source-text re-use is the violation, not
+                // whether the first decl evaluated. Dormant today (no
+                // sched decl path populates `failed_decls`) but
+                // structurally pinned.
+                if ir.worker_classes.contains_key(&c.name.node)
+                    || is_failed_sched_decl(&acc.failed_decls, &c.name.node)
+                {
                     // Duplicate — record (non-poisoning) and skip the
                     // insert (first decl wins, mirrors the algo
                     // precedent where Duplicate* does NOT poison).
@@ -223,7 +287,11 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
                 );
             }
             Directive::MemoryRegion(r) => {
-                if ir.memory_regions.contains_key(&r.name.node) {
+                // Cascade-aware duplicate detection (TASK-0208); see
+                // `Directive::WorkerClass` arm for rationale.
+                if ir.memory_regions.contains_key(&r.name.node)
+                    || is_failed_sched_decl(&acc.failed_decls, &r.name.node)
+                {
                     acc.record_decl_failure(
                         &r.name.node,
                         SchedLowerError::at(
@@ -294,7 +362,15 @@ pub fn lower_sched(ast: &SchedAst) -> Result<SchedIR, SchedLowerErrors> {
                         );
                         continue;
                     }
-                    if ir.workers.contains_key(&entry.name.node) {
+                    // Cascade-aware duplicate detection (TASK-0208):
+                    // a re-declaration of a poisoned worker name fires
+                    // here too, parity with the algo precedent. The
+                    // intra-decl `seen_in_this_decl` check above is
+                    // orthogonal (single-sweep local set, never spans
+                    // prior directives — no cascade interaction).
+                    if ir.workers.contains_key(&entry.name.node)
+                        || is_failed_sched_decl(&acc.failed_decls, &entry.name.node)
+                    {
                         // Cross-decl duplicate: same handling.
                         acc.record_decl_failure(
                             &entry.name.node,
@@ -1135,4 +1211,254 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
         },
     );
     Ok(())
+}
+
+// --------------------------------------------------------------------
+// Unit tests — TASK-0208 cascade-aware duplicate detection
+// --------------------------------------------------------------------
+//
+// These tests live in the same module as `Accum` so they can directly
+// construct an `Accum` with a pre-seeded `failed_decls` map. The
+// integration tests in `tests/sched_lower.rs` cannot do this — `Accum`
+// is private (intentionally), and no public source-level path
+// populates `failed_decls` today (the dormant Path-1 disclosure
+// fixture in `tests/sched_lower.rs` exists precisely to pin that
+// real-input invariant).
+//
+// The fixture is STRUCTURAL: it asserts the cascade-aware-duplicate
+// wiring is live by SIMULATING a poisoned-decl entry. When (if) a
+// future sched-decl variant gains a real failure path, the wiring is
+// already correct; this fixture would still pass and a companion
+// real-source fixture would join it.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sched::parser::parse_sched;
+
+    /// TASK-0208 cascade-aware duplicate detection at sched-lowering:
+    /// pre-seed `Accum::failed_decls` with the names that the source
+    /// will (re-)declare; assert each of the three pass-1 Duplicate*
+    /// arms fires on the re-declaration, even though the seeded names
+    /// are NOT in the `ir.X` symbol table (the production
+    /// successful-decl path).
+    ///
+    /// Today this is the ONLY way to exercise the cascade-aware
+    /// duplicate path at sched-lowering: no real sched-decl-eval
+    /// failure exists, so no `lower_str(real_source)` can populate
+    /// `failed_decls`. The simulated fixture stands as a structural
+    /// regression pin — it WILL trip if a future refactor removes
+    /// the `is_failed_sched_decl(&acc.failed_decls, name)` clause
+    /// from any of the three Duplicate* arms, exactly the latent
+    /// gap TASK-0206 closed at algo-lowering.
+    ///
+    /// Parametric K×M shape: K poisoned names, M re-declarations
+    /// each. Expect K*M Duplicate* errors per source (no roots — the
+    /// root failures were SEEDED, not emitted, so the only errors
+    /// from the lowering pass are the K*M duplicate-of-poisoned
+    /// re-declarations).
+    #[test]
+    fn cascade_aware_duplicate_fires_when_failed_decls_populated() {
+        #[derive(Clone, Copy, Debug)]
+        enum Kind {
+            WorkerClass,
+            MemoryRegion,
+            Worker,
+        }
+
+        /// Render M re-declarations of name `n{i}` of the given kind,
+        /// plus the surrounding `schedule { ... }` boilerplate. The
+        /// re-declarations are well-formed in isolation; the ONLY
+        /// reason they error is the cascade-aware duplicate check
+        /// (TASK-0208) firing against the SEEDED `failed_decls`.
+        fn render_source(kind: Kind, k: usize, m: usize) -> String {
+            let mut src = String::from("schedule for \"../prog.algo.nuc\" {\n");
+            // The Worker kind needs a `workers = ...` directive; the
+            // duplicate-worker check is INSIDE that directive's entry
+            // loop. We render all K*M re-declarations into a single
+            // `workers = { ... }` directive for the Worker kind.
+            match kind {
+                Kind::WorkerClass => {
+                    for i in 0..k {
+                        for _ in 0..m {
+                            src.push_str(&format!(
+                                "    worker_class n{i} {{ simd = none; }};\n"
+                            ));
+                        }
+                    }
+                    // Need a workers decl so the schedule is otherwise
+                    // valid (no MissingWorkersDecl noise).
+                    src.push_str("    workers = { host };\n");
+                }
+                Kind::MemoryRegion => {
+                    for i in 0..k {
+                        for _ in 0..m {
+                            src.push_str(&format!(
+                                "    memory_region n{i} {{ size = 32KB; }};\n"
+                            ));
+                        }
+                    }
+                    src.push_str("    workers = { host };\n");
+                }
+                Kind::Worker => {
+                    src.push_str("    workers = {");
+                    let mut first = true;
+                    for i in 0..k {
+                        for _ in 0..m {
+                            if !first {
+                                src.push(',');
+                            }
+                            // Need DISTINCT positions, all naming the
+                            // same `n{i}`. The per-decl intra-loop
+                            // `seen_in_this_decl` check catches
+                            // textual-twins — but it ONLY fires
+                            // SECOND-onwards within ONE directive, so
+                            // the FIRST occurrence of `n{i}` in the
+                            // workers list is what we want the seeded
+                            // failed_decls to catch. Render one
+                            // occurrence per name; cross-decl across
+                            // the seed is the test.
+                            //
+                            // For M>1 we still get M duplicate hits
+                            // per name because the SECOND-onwards
+                            // occurrences trip the intra-decl `seen_in_this_decl`
+                            // check (also `DuplicateWorker`) — which
+                            // is the existing non-cascade-aware path.
+                            // To keep the assertion clean (K*M errors
+                            // all attributable to the cascade-aware
+                            // arm), we structure the test to put each
+                            // re-decl in a SEPARATE `workers = ...`
+                            // directive — but that triggers the
+                            // `DuplicateWorkersDecl` guard. So for
+                            // Worker kind, only K=any, M=1 is a clean
+                            // cascade-aware-only signal; for M>=2 the
+                            // intra-decl guard contributes too.
+                            //
+                            // Conservative approach: for Worker kind,
+                            // assert at least K*M `DuplicateWorker`
+                            // errors fired, treating the extra
+                            // intra-decl path as a redundant safety
+                            // net (it's the existing behaviour,
+                            // unchanged by TASK-0208).
+                            src.push_str(&format!(" n{i}"));
+                            first = false;
+                        }
+                    }
+                    src.push_str(" };\n");
+                }
+            }
+            src.push_str("}\n");
+            src
+        }
+
+        let kinds = [Kind::WorkerClass, Kind::MemoryRegion, Kind::Worker];
+        let ks = [1usize, 2, 3];
+        // M=1 isolates the cascade-aware-duplicate path cleanly for
+        // all three kinds. M>=2 also includes existing non-cascade
+        // duplicate firing (especially the per-decl intra-loop check
+        // for Worker); we still assert AT LEAST K*M errors fire so
+        // the structural-pin direction (cascade-aware MUST fire) is
+        // load-bearing.
+        let ms = [1usize, 2];
+
+        for kind in kinds {
+            for k in ks {
+                for m in ms {
+                    let src = render_source(kind, k, m);
+                    let ast = parse_sched(&src).expect("source must parse");
+
+                    // SEED: every name `n{i}` is in `failed_decls`,
+                    // simulating a poisoned-first-decl that doesn't
+                    // exist on today's sched-lowering surface.
+                    let mut acc = Accum::default();
+                    for i in 0..k {
+                        acc.failed_decls.insert(format!("n{i}"), ());
+                    }
+
+                    let res = lower_sched_with_accum(&ast, acc);
+                    let errs = res.expect_err(
+                        "cascade-aware duplicate must fire on re-decl of \
+                         seeded-poisoned name",
+                    );
+
+                    // Count duplicates of the EXPECTED kind only.
+                    let dup_count = errs
+                        .errors()
+                        .iter()
+                        .filter(|e| match (kind, &e.kind) {
+                            (Kind::WorkerClass, SchedLowerErrorKind::DuplicateWorkerClass(n))
+                            | (Kind::MemoryRegion, SchedLowerErrorKind::DuplicateMemoryRegion(n))
+                            | (Kind::Worker, SchedLowerErrorKind::DuplicateWorker(n)) => {
+                                n.starts_with('n')
+                            }
+                            _ => false,
+                        })
+                        .count();
+
+                    assert!(
+                        dup_count >= k * m,
+                        "kind={kind:?} K={k} M={m}: expected at least {} \
+                         Duplicate* errors for the K*M re-declarations of \
+                         poisoned names (cascade-aware duplicate detection \
+                         TASK-0208 must fire), got {dup_count} — full \
+                         errors: {:?} — source:\n{src}",
+                        k * m,
+                        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+                    );
+
+                    // Per-name structural guard: every seeded name
+                    // `n{i}` must appear in at least one Duplicate*
+                    // error of the expected kind. Without the
+                    // cascade-aware clause, the FIRST occurrence of
+                    // `n{i}` would silently insert into `ir.X` (since
+                    // `n{i}` is not in `ir.X` from the seed alone),
+                    // and no DuplicateX would fire for it.
+                    for i in 0..k {
+                        let name = format!("n{i}");
+                        let found = errs.errors().iter().any(|e| match (kind, &e.kind) {
+                            (Kind::WorkerClass, SchedLowerErrorKind::DuplicateWorkerClass(n))
+                            | (Kind::MemoryRegion, SchedLowerErrorKind::DuplicateMemoryRegion(n))
+                            | (Kind::Worker, SchedLowerErrorKind::DuplicateWorker(n)) => {
+                                n == &name
+                            }
+                            _ => false,
+                        });
+                        assert!(
+                            found,
+                            "kind={kind:?} K={k} M={m}: seeded-poisoned name \
+                             `{name}` must produce a Duplicate* error on \
+                             re-declaration — cascade-aware duplicate \
+                             detection (TASK-0208) regressed if this fails. \
+                             Errors: {:?} — source:\n{src}",
+                            errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Companion negative-control: with `Accum::default()` (empty
+    /// `failed_decls`), the same source as the M=1 case lowers
+    /// cleanly (no re-declarations exist — each name is declared
+    /// once, no prior occupant of the symbol table). Pins that the
+    /// cascade-aware clause does NOT over-fire on valid input — the
+    /// seam is purely additive.
+    #[test]
+    fn cascade_aware_duplicate_does_not_overfire_with_empty_failed_decls() {
+        let src = "\
+schedule for \"../prog.algo.nuc\" {
+    worker_class n0 { simd = none; };
+    worker_class n1 { simd = none; };
+    memory_region n2 { size = 32KB; };
+    workers = { n3, n4 };
+}
+";
+        let ast = parse_sched(src).expect("source must parse");
+        let ir = lower_sched_with_accum(&ast, Accum::default())
+            .expect("clean source must lower without errors");
+        assert_eq!(ir.worker_classes.len(), 2 + 1, "n0 + n1 + synthetic default");
+        assert_eq!(ir.memory_regions.len(), 1, "n2");
+        assert_eq!(ir.workers.len(), 2, "n3 + n4");
+    }
 }
