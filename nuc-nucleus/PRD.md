@@ -264,9 +264,23 @@ pub fn blur3(
     (a + b + c + d + e + f + g + h + i) * (1.0 / 9.0)
 }
 
-pub fn load_image() -> Box<[[f32; W]; H]> { /* ... */ }
-pub fn save_image(img: &[[f32; W]; H]) { /* ... */ }
+// Shape-typed `T[H][W]` aggregates lower to row-major `Vec<T>` on
+// the Rust side (length = H * W). Nuc-side const sizes (H, W) are
+// the contract on the signature — verified by the contract check
+// pass — they do NOT need to appear as Rust constants in the
+// kernel source. Single source of truth for sizes is `.algo.nuc`;
+// kernel bodies treat the aggregate as a dynamically-sized buffer.
+pub fn load_image() -> Vec<f32> { /* len = H * W */ }
+pub fn save_image(img: Vec<f32>) { /* len = H * W */ }
 ```
+
+The convention: aggregate parameters/returns use `Vec<T>` (row-major
+flattened); scalar parameters/returns use the natural Rust primitive
+(`f32`, `i32`, etc.). This is option (c) of the original
+TASK-0103-era choice (substitution vs duplication vs dynamic shape).
+Compiles standalone as Rust; Nucleus's `check_kernels_contract`
+verifies signature compatibility against the algorithm's declared
+shape.
 
 - `pure` — function has no side effects; reorderable, deduplicable,
   eliminable.
