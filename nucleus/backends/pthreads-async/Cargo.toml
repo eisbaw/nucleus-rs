@@ -32,25 +32,25 @@ path = "src/lib.rs"
 # NameSidecar + inert expr grammar from `compiler`. No parser / lower /
 # link / acfg internals.
 compiler = { path = "../../compiler" }
-# Shared codegen primitives (TASK-0244 cycle 37): RenderCtx, the
-# expression / index / kernel-call / loop-bound / type renderers, the
-# check_frame emit templates, and the multi-worker event walker (the
-# centrepiece TASK-0239 lifted; pthreads-async's multi-worker Plan
-# parameterises the SAME walker with `"ring"` instead of `"slot"`).
-# This is the single source of truth that prevents renderer drift
-# across the three tier-1 backends.
+# Shared codegen primitives (TASK-0244 cycle 37 + TASK-0246 cycle 38):
+# RenderCtx, the expression / index / kernel-call / loop-bound / type
+# renderers, the check_frame emit templates, the multi-worker event
+# walker (the centrepiece TASK-0239 lifted; pthreads-async's multi-
+# worker Plan parameterises the SAME walker with `"ring"` instead of
+# `"slot"`), AND the single-binary project-skeleton renderers
+# (`render_cargo_toml` / `render_run_sh`, moved out of pthreads-sync
+# in cycle 38). This is the single source of truth that prevents
+# renderer drift across the three tier-1 backends.
 backend-common = { path = "../../backend-common" }
-# pthreads-sync provides `render_single_worker_main` (the pthreads-
-# sync-specific straight-line main.rs emitter) plus the project-
-# skeleton renderers `render_cargo_toml` and `render_run_sh` —
-# pthreads-async DELEGATES to all three for the 0/1-used-worker case
-# (TASK-0226), giving byte-identical single-worker emit. This is the
-# one semantic inter-backend arrow that survives TASK-0244: the two
-# single-binary backends genuinely share their project-skeleton +
-# straight-line emit (mp-tcp-bufsync also calls
-# `render_single_worker_main`); pthreads-sync owns those because it
-# was the first single-binary backend, not because the others depend
-# on it for shared codegen (that arrow is broken by backend-common).
+# pthreads-sync provides `render_single_worker_main` — the pthreads-
+# sync-specific straight-line main.rs emitter. pthreads-async
+# DELEGATES to it for the 0/1-used-worker case (TASK-0226), giving
+# byte-identical single-worker emit. This is the ONE semantic inter-
+# backend arrow that survives TASK-0244 + TASK-0246: the project-
+# skeleton renderers (Cargo.toml + run.sh) moved to backend-common in
+# cycle 38, leaving only the straight-line emitter as a genuinely
+# pthreads-sync-owned surface that pthreads-async (and mp-tcp-bufsync's
+# single-process arm) delegate to.
 pthreads-sync = { path = "../pthreads-sync" }
 
 [dev-dependencies]

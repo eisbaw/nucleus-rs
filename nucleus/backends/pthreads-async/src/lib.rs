@@ -11,10 +11,10 @@
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED
 //!   under TASK-0226. Delegates to `pthreads_sync::render_single_worker_main`
-//!   plus the SHARED `pthreads_sync::render_cargo_toml` and
-//!   `pthreads_sync::render_run_sh`, so the emitted artefact is
-//!   byte-identical to pthreads-sync's single-worker output for any
-//!   naive schedule. The cross-backend differential invariant
+//!   plus the SHARED `backend_common::project_skeleton::single_binary::
+//!   {render_cargo_toml, render_run_sh}` (TASK-0246), so the emitted
+//!   artefact is byte-identical to pthreads-sync's single-worker output
+//!   for any naive schedule. The cross-backend differential invariant
 //!   ("same algorithm + same naive schedule -> bit-identical output
 //!   across backends") holds by construction.
 //! - **Multi-worker arm** (`used_workers.len() >= 2`) is NOT YET
@@ -114,12 +114,17 @@ pub use compiler::NameTables;
 // schedules holds: pthreads-async's emitted artefact is byte-identical
 // to pthreads-sync's for any `used_workers <= 1` input.
 //
-// `render_cargo_toml` / `render_run_sh` / `render_single_worker_main`
-// stay in pthreads-sync (TASK-0244 cycle 37): they are the pthreads-
-// sync-specific project skeleton + straight-line emitter, and the
-// dependency arrow is genuinely a delegation (not a leak of shared
-// codegen, which now lives in backend-common).
-use pthreads_sync::{render_cargo_toml, render_run_sh, render_single_worker_main};
+// TASK-0246 (cycle 38) split the surface:
+//   - `render_cargo_toml` / `render_run_sh` live in
+//     `backend_common::project_skeleton::single_binary` (inert string
+//     templates, no pthreads-sync-specific content).
+//   - `render_single_worker_main` stays in pthreads-sync — it is the
+//     pthreads-sync-specific straight-line emitter, and the
+//     dependency arrow is genuinely a delegation (pthreads-async's
+//     0/1-used-worker arm IS pthreads-sync's straight-line main.rs,
+//     byte-identical by construction).
+use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
+use pthreads_sync::render_single_worker_main;
 
 // AlgoIR-free: the only `compiler::*` surface this crate uses is the
 // inert per-worker EventList carrier (`compiler::event::{Event, WorkerId}`)
@@ -191,8 +196,9 @@ pub struct EmitResult {
 /// - `used_workers <= 1` → SINGLE-WORKER (TASK-0226). Delegates to the
 ///   SHARED `pthreads_sync::render_single_worker_main` so the emitted
 ///   `main.rs` is byte-identical to pthreads-sync's. The Cargo.toml
-///   and run.sh come from `pthreads_sync::render_cargo_toml` +
-///   `render_run_sh` for the same reason.
+///   and run.sh come from `backend_common::project_skeleton::
+///   single_binary::{render_cargo_toml, render_run_sh}` (TASK-0246)
+///   for the same reason.
 /// - `used_workers >= 2` → MULTI-WORKER. Returns
 ///   [`EmitError::ContractGap`] pointing at TASK-0228 (the
 ///   ring-buffer + Condvar + thread/Plan headline work).

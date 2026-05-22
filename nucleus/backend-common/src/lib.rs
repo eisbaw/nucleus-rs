@@ -34,9 +34,16 @@
 //!   between pthreads-sync's `multi_worker::Plan::emit`, pthreads-
 //!   async's `multi_worker::Plan::emit`, and (future) any backend
 //!   whose multi-worker substrate is rendezvous-channel-shaped.
+//! - [`project_skeleton`] — Cargo.toml + run.sh string templates for
+//!   the single-binary tier-1 backends (pthreads-sync + pthreads-async).
+//!   TASK-0246 (cycle 38): finishes the cycle-37 extraction by lifting
+//!   the last two non-semantic shared strings out of pthreads-sync.
+//!   mp-tcp-bufsync's multi-process variant stays in mp-tcp-bufsync
+//!   (different signature, different shape).
 
 pub mod check_frame;
 pub mod multi_worker_walker;
+pub mod project_skeleton;
 pub mod render;
 
 // Convenience top-level re-exports. Backends typically import the
@@ -48,6 +55,7 @@ pub use check_frame::{
     emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,
     CountCheckLoop,
 };
+pub use project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 pub use render::{
     data_name, render_array_init_for, render_const_expr, render_const_expr_pub,
     render_fire_args, render_fire_args_pub, render_fire_output_assign,

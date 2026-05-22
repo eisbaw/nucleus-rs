@@ -23,13 +23,17 @@
 # semantically real — pthreads-async and mp-tcp-bufsync are siblings
 # of pthreads-sync, not children. backend-common parents all three.
 #
-# What stays per-backend: the project-skeleton renderers
-# (`pthreads_sync::render_cargo_toml` / `render_run_sh`), the
-# single-worker pthreads delegate (`render_single_worker_main`,
-# called by pthreads-async's 0/1-worker arm — the one dependency
-# arrow that remains, and is genuinely a delegation, not a leak), and
-# each backend's `multi_worker::Plan` (whose substrate — Slot vs Ring
-# vs TCP — is the real per-backend variation).
+# What stays per-backend (post-TASK-0246 cycle 38): the single-worker
+# pthreads-sync straight-line emitter (`render_single_worker_main`,
+# called by pthreads-async's 0/1-worker arm and mp-tcp-bufsync's
+# single-process arm — the ONE dependency arrow that remains, and is
+# genuinely a delegation, not a leak); each backend's
+# `multi_worker::Plan` (whose substrate — Slot vs Ring vs TCP — is the
+# real per-backend variation); and mp-tcp-bufsync's multi-process
+# project-skeleton renderers (`render_cargo_toml(bin_names)` +
+# `render_run_sh_single`), which have a different signature/shape than
+# the single-binary variants now in `backend_common::project_skeleton`
+# (TASK-0246 cycle 38).
 
 [package]
 name = "backend-common"
