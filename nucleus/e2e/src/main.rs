@@ -52,7 +52,7 @@
 //!
 //! TASK-0023.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
@@ -60,6 +60,8 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -284,7 +286,7 @@ impl CapabilitiesSniff {
 // CLI args
 // --------------------------------------------------------------------
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Args {
     example: Option<String>,
     schedule: Option<String>,
@@ -302,6 +304,32 @@ struct Args {
     /// twice per cell into two distinct out dirs and byte-compares
     /// every generated file. See TASK-0033 and PRD §1 / §10.1.
     check_determinism: bool,
+    /// Number of worker threads for parallel cell execution
+    /// (TASK-0023.01). Default 1 = sequential, byte-for-byte identical
+    /// to pre-flag behaviour. Capped at `MAX_JOBS` to avoid pathological
+    /// fork bombs (each concurrent `cargo build --release` of an
+    /// emitted project costs ~200-500MB peak; --jobs 4 on a typical
+    /// 14-core / 30 GB host is comfortable, much higher risks OOM).
+    /// Validated >= 1 at parse time. Each cell's scratch dir is already
+    /// unique-by-construction via TASK-0182's run-id segment, so
+    /// in-process parallel cells do not collide on disk.
+    jobs: usize,
+}
+
+/// Upper bound on `--jobs N`. See [`Args::jobs`].
+const MAX_JOBS: usize = 64;
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            example: None,
+            schedule: None,
+            backend: None,
+            milestone: None,
+            check_determinism: false,
+            jobs: 1,
+        }
+    }
 }
 
 fn parse_args(argv: &[OsString]) -> Result<Args, String> {
@@ -336,6 +364,36 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 a.check_determinism = true;
                 i += 1;
             }
+            "--jobs" | "-j" => {
+                // TASK-0023.01: parallel cell execution.
+                //
+                // Parse + validate eagerly so a bad value fails LOUD at
+                // arg-parse time, not after some cells have already run.
+                // Range: [1, MAX_JOBS]. Zero is rejected (would spawn no
+                // workers and silently never make progress); negative
+                // and non-numeric raw strings are rejected by usize
+                // parse; values above MAX_JOBS are clamped with a loud
+                // error rather than silently truncated (silent truncate
+                // would mask a typo like `--jobs 400`).
+                let raw = need_val(i)?;
+                let n: usize = raw.parse().map_err(|_| {
+                    format!("flag `--jobs` requires a positive integer, got `{raw}`")
+                })?;
+                if n == 0 {
+                    return Err(
+                        "flag `--jobs` must be >= 1 (0 would spawn no workers)".to_string()
+                    );
+                }
+                if n > MAX_JOBS {
+                    return Err(format!(
+                        "flag `--jobs` value {n} exceeds MAX_JOBS={MAX_JOBS}; \
+                         each concurrent cell costs ~200-500MB peak, higher \
+                         values risk OOM"
+                    ));
+                }
+                a.jobs = n;
+                i += 2;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -352,11 +410,21 @@ fn print_help() {
          \n\
          USAGE:\n    \
              nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] \
-[--milestone ID] [--check-determinism]\n\
+[--milestone ID] [--check-determinism] [--jobs N | -j N]\n\
          \n\
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
          matching cells.\n\
+         \n\
+         --jobs N / -j N: parallel cell execution (TASK-0023.01).\n\
+         Default 1 (sequential, byte-for-byte identical to pre-flag\n\
+         behaviour). N >= 2 spawns up to N worker threads that pull\n\
+         from a shared work-queue. Per-cell progress lines emit in\n\
+         COMPLETION order; the summary table is re-sorted to planned\n\
+         order so exit-code + gate signals stay deterministic. Each\n\
+         concurrent `cargo build --release` costs ~200-500MB peak;\n\
+         --jobs 4 on a 14-core / 30 GB host is comfortable. Cells are\n\
+         on-disk-isolated via the per-process run-id (TASK-0182).\n\
          \n\
          --milestone M<k>: CUMULATIVE milestone gate (PRD §11). Runs\n\
          only the required/skip cells tagged at or before M<k>, so\n\
@@ -387,6 +455,10 @@ fn print_help() {
 ///     nuc-nucleus/
 ///       e2e-matrix.toml
 ///       examples/<NN-name>/...
+///
+/// `Clone`: required so `execute_cells_parallel` can stash a snapshot
+/// inside an `Arc` for the worker pool. Cheap — two heap strings.
+#[derive(Clone)]
 struct Paths {
     repo_root: PathBuf,
     /// Per-harness-invocation run id (TASK-0182). Computed exactly ONCE
@@ -782,6 +854,10 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
     Ok(planned)
 }
 
+/// `Clone`: required so `execute_cells_parallel` can snapshot the plan
+/// into an `Arc<Vec<PlannedCell>>` shared across workers. All fields
+/// are already owned data, so the clone is one heap allocation per cell.
+#[derive(Clone)]
 struct PlannedCell {
     cell: Cell,
     required: bool,
@@ -2288,6 +2364,169 @@ fn format_duration(d: Duration) -> String {
 }
 
 // --------------------------------------------------------------------
+// Parallel cell execution (TASK-0023.01)
+// --------------------------------------------------------------------
+
+/// Run `f` against each `PlannedCell` in `planned`, in parallel across
+/// up to `jobs` worker threads (default 1 = strictly sequential).
+///
+/// Contract — invariant for the cross-backend differential gate:
+///
+/// * `jobs == 1` → strictly sequential, in original `planned` order; the
+///   completion line is emitted immediately after each cell returns
+///   (identical to the pre-TASK-0023.01 loop). This MUST be byte-for-
+///   byte identical to the pre-flag behaviour: it is the path bare
+///   `just e2e` takes.
+/// * `jobs >= 2` → `min(jobs, planned.len())` worker threads pull from a
+///   shared `Arc<Mutex<VecDeque<usize>>>` work-queue (cell indices in
+///   original order). Workers run `f` against `paths` + the indexed
+///   `PlannedCell`, send `(idx, result, completion_line)` over an mpsc
+///   to this thread, which prints the completion line immediately (in
+///   COMPLETION order) and stores the result by `idx`. After the join,
+///   results are returned in ORIGINAL `planned` order — so the summary
+///   table, exit code and all downstream gate signals
+///   (`NUC_NONDET_PERTURBED_CELLS`, `NUC_XBACKEND_*`) see a deterministic
+///   ordering regardless of `--jobs`.
+///
+/// Send/Sync rationale (recorded so a future change can re-verify):
+///
+/// * `Paths` = `PathBuf` + `String`. Trivially `Send + Sync`. Wrapped
+///   in `Arc` so workers share one copy.
+/// * `PlannedCell` = `Cell` (three `String`s) + `bool` + `Option<String>`.
+///   Owned data, trivially `Send`. Cloned into each task.
+/// * `R` (CellResult / DetCellResult) = owned data + an `Instant`/
+///   `Duration` snapshot. Trivially `Send`.
+/// * The work `f` itself spawns `cargo` subprocesses against the per-
+///   cell scratch dir already made unique by TASK-0182's process-wide
+///   `run_id`. No two cells share a scratch path, so no two workers
+///   touch the same FS subtree. Cargo's own internal target-dir lock
+///   may briefly serialise back-to-back subprocess start-up but not
+///   the per-cell `cargo build` itself (those run in disjoint trees).
+/// * The negative-gate env reads inside `f` (`NUC_NONDET_TEST`,
+///   `NUC_XBACKEND_NEGATIVE`) are reads against a constant env — safe
+///   from worker threads.
+///
+/// HONEST LIMIT: completion-order progress lines mean a streaming CI
+/// log under `--jobs 4` interleaves cells differently than sequential,
+/// which can confuse a human eyeballing live output. The summary table
+/// is still planned-order; only the live progress lines reorder.
+fn execute_cells_parallel<R, F>(
+    paths: &Paths,
+    planned: &[PlannedCell],
+    jobs: usize,
+    f: F,
+) -> Vec<R>
+where
+    R: Send + 'static,
+    F: Fn(&Paths, &PlannedCell, usize, usize) -> (R, String) + Send + Sync + 'static,
+{
+    // Strictly sequential path (default; bare `just e2e`).
+    //
+    // Kept as a separate branch — NOT routed through the mpsc/worker
+    // machinery — precisely so the default `--jobs 1` execution stays
+    // byte-for-byte identical to the pre-flag loop (no thread spawn,
+    // no channel, no Mutex). The behavioural contract above hinges on
+    // this branch being trivially equivalent to a plain for-loop.
+    if jobs <= 1 {
+        let mut out: Vec<R> = Vec::with_capacity(planned.len());
+        for (i, pc) in planned.iter().enumerate() {
+            let (r, line) = f(paths, pc, i, planned.len());
+            // Sequential: print BEFORE storing so a panic inside the
+            // formatter still shows progress up to that point. (Matches
+            // the original loop's eprint-before-push pattern.)
+            eprintln!("{line}");
+            let _ = std::io::stderr().flush();
+            out.push(r);
+        }
+        return out;
+    }
+
+    // Parallel path. The work-queue is the canonical task list; workers
+    // pull until empty, then exit. We hold the join-handles so we can
+    // block on full completion before returning (no detached threads).
+    let n_workers = jobs.min(planned.len()).max(1);
+    let queue: Arc<Mutex<VecDeque<usize>>> = Arc::new(Mutex::new((0..planned.len()).collect()));
+    let paths_shared = Arc::new(paths.clone());
+    let planned_shared: Arc<Vec<PlannedCell>> = Arc::new(planned.to_vec());
+    let total = planned.len();
+    let f_shared = Arc::new(f);
+
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, R, String)>();
+
+    let mut handles = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let queue = Arc::clone(&queue);
+        let paths_shared = Arc::clone(&paths_shared);
+        let planned_shared = Arc::clone(&planned_shared);
+        let f_shared = Arc::clone(&f_shared);
+        let tx = tx.clone();
+        let h = thread::spawn(move || {
+            loop {
+                // Lock JUST to pop an index — released BEFORE we run
+                // the (long-running) cell. Otherwise workers would
+                // serialise on the queue lock instead of doing work.
+                let next = {
+                    let mut q = queue
+                        .lock()
+                        .expect("execute_cells_parallel: work-queue poisoned");
+                    q.pop_front()
+                };
+                let Some(idx) = next else {
+                    break;
+                };
+                let pc = &planned_shared[idx];
+                let (r, line) = f_shared(&paths_shared, pc, idx, total);
+                // If the receiver is gone, the parent has bailed and
+                // there is nothing useful to do; just drop the result.
+                let _ = tx.send((idx, r, line));
+            }
+        });
+        handles.push(h);
+    }
+    // Drop the parent's sender so `rx` closes once every worker exits.
+    drop(tx);
+
+    // Collect into a sparse Vec<Option<R>> indexed by original `idx`,
+    // so we can return in planned order regardless of completion order.
+    // Print each completion line as it arrives → human gets a live
+    // pulse of progress even under heavy parallelism.
+    let mut slots: Vec<Option<R>> = (0..planned.len()).map(|_| None).collect();
+    while let Ok((idx, r, line)) = rx.recv() {
+        eprintln!("{line}");
+        let _ = std::io::stderr().flush();
+        slots[idx] = Some(r);
+    }
+
+    // Reap every worker to surface a panic (if any) loudly rather than
+    // silently dropping a result. The mpsc would already have hidden a
+    // panicked worker (its tx Drop closes the channel quietly), so
+    // joining is the only point at which a panic propagates here.
+    for h in handles {
+        if let Err(panic_payload) = h.join() {
+            // Surface and re-panic from the main thread — a worker
+            // panic means we cannot trust the result set, and silent
+            // recovery here would invalidate the gate.
+            std::panic::resume_unwind(panic_payload);
+        }
+    }
+
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            slot.unwrap_or_else(|| {
+                panic!(
+                    "execute_cells_parallel: cell idx={i} produced no result \
+                     (worker exited without sending) — this should be \
+                     impossible since workers send before pulling the next \
+                     index. Treat as a logic bug."
+                )
+            })
+        })
+        .collect()
+}
+
+// --------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------
 
@@ -2375,31 +2614,47 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
 
     if args.check_determinism {
         eprintln!(
-            "nucleus-e2e: determinism check over {} cell(s) from {}",
+            "nucleus-e2e: determinism check over {} cell(s) from {} \
+             (jobs={})",
             planned.len(),
-            paths.manifest_path().display()
+            paths.manifest_path().display(),
+            args.jobs
         );
-        let mut det_results: Vec<DetCellResult> = Vec::with_capacity(planned.len());
-        for (i, pc) in planned.iter().enumerate() {
-            eprint!(
-                "  [{:>2}/{:<2}] {} | {} | {} ... ",
-                i + 1,
-                planned.len(),
-                pc.cell.example,
-                pc.cell.schedule,
-                pc.cell.backend
-            );
-            let _ = std::io::stderr().flush();
-            let r = check_cell_determinism(paths, pc);
-            match &r.status {
-                DetCellStatus::Pass { files_compared } => {
-                    eprintln!("PASS ({files_compared} files, {:?})", r.elapsed)
-                }
-                DetCellStatus::Failed(_) => eprintln!("FAIL"),
-                DetCellStatus::Skipped { .. } => eprintln!("SKIPPED"),
-            }
-            det_results.push(r);
-        }
+        // TASK-0023.01: parallel cell execution. With jobs=1 (default)
+        // this is byte-for-byte identical to the original loop; with
+        // jobs>=2 cells run on a worker pool and completion lines emit
+        // in completion order while `det_results` is re-sorted to
+        // planned order before the summary + gate-signal block runs.
+        let det_results: Vec<DetCellResult> = execute_cells_parallel(
+            paths,
+            &planned,
+            args.jobs,
+            |paths, pc, i, total| {
+                let r = check_cell_determinism(paths, pc);
+                // Build the completion line as a STRING rather than
+                // splitting eprint!/eprintln! around the work — that
+                // way the parallel path can defer the print to the
+                // main thread (avoids interleaved cell output across
+                // workers) while staying visually identical to the
+                // sequential pre-flag output.
+                let head = format!(
+                    "  [{:>2}/{:<2}] {} | {} | {} ... ",
+                    i + 1,
+                    total,
+                    pc.cell.example,
+                    pc.cell.schedule,
+                    pc.cell.backend
+                );
+                let tail = match &r.status {
+                    DetCellStatus::Pass { files_compared } => {
+                        format!("PASS ({files_compared} files, {:?})", r.elapsed)
+                    }
+                    DetCellStatus::Failed(_) => "FAIL".to_string(),
+                    DetCellStatus::Skipped { .. } => "SKIPPED".to_string(),
+                };
+                (r, format!("{head}{tail}"))
+            },
+        );
         print_determinism_summary(&det_results);
         let any_failed = det_results
             .iter()
@@ -2502,30 +2757,40 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     }
 
     eprintln!(
-        "nucleus-e2e: running {} cell(s) from {}",
+        "nucleus-e2e: running {} cell(s) from {} (jobs={})",
         planned.len(),
-        paths.manifest_path().display()
+        paths.manifest_path().display(),
+        args.jobs
     );
 
-    let mut results: Vec<CellResult> = Vec::with_capacity(planned.len());
-    for (i, pc) in planned.iter().enumerate() {
-        eprint!(
-            "  [{:>2}/{:<2}] {} | {} | {} ... ",
-            i + 1,
-            planned.len(),
-            pc.cell.example,
-            pc.cell.schedule,
-            pc.cell.backend
-        );
-        let _ = std::io::stderr().flush();
-        let r = run_cell(paths, pc);
-        match &r.status {
-            Status::Pass => eprintln!("PASS ({:?})", r.timings.total()),
-            Status::Failed { phase, .. } => eprintln!("FAIL/{phase}"),
-            Status::Skipped { .. } => eprintln!("SKIPPED"),
-        }
-        results.push(r);
-    }
+    // TASK-0023.01: parallel cell execution. jobs=1 (default) = strict
+    // sequential, byte-for-byte identical to the pre-flag loop and the
+    // path bare `just e2e` takes. jobs>=2 → worker pool, completion
+    // lines emit in completion order, but `results` is returned in
+    // planned order so the summary / required-fail / NUC_XBACKEND_*
+    // gates stay deterministic.
+    let results: Vec<CellResult> = execute_cells_parallel(
+        paths,
+        &planned,
+        args.jobs,
+        |paths, pc, i, total| {
+            let r = run_cell(paths, pc);
+            let head = format!(
+                "  [{:>2}/{:<2}] {} | {} | {} ... ",
+                i + 1,
+                total,
+                pc.cell.example,
+                pc.cell.schedule,
+                pc.cell.backend
+            );
+            let tail = match &r.status {
+                Status::Pass => format!("PASS ({:?})", r.timings.total()),
+                Status::Failed { phase, .. } => format!("FAIL/{phase}"),
+                Status::Skipped { .. } => "SKIPPED".to_string(),
+            };
+            (r, format!("{head}{tail}"))
+        },
+    );
 
     print_summary(&results);
 
@@ -2793,6 +3058,114 @@ mod tests {
         assert!(err.contains("requires a value"), "got: {err}");
     }
 
+    // ---- TASK-0023.01: --jobs / -j parser tests --------------------
+
+    #[test]
+    fn arg_parser_default_jobs_is_one() {
+        // Default sequential behaviour: NO --jobs flag → jobs == 1, the
+        // same byte-for-byte path as before TASK-0023.01. The
+        // execute_cells_parallel helper hangs its sequential-equivalence
+        // guarantee on this default.
+        let argv: Vec<OsString> = Vec::new();
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(a.jobs, 1, "default jobs must be 1 (sequential)");
+    }
+
+    #[test]
+    fn arg_parser_accepts_jobs_long_and_short() {
+        // --jobs N and -j N must be exactly equivalent. The short form
+        // exists because `just e2e-jobs 4` may pass -j and that path
+        // would otherwise diverge from the long form silently.
+        for flag in ["--jobs", "-j"] {
+            let argv: Vec<OsString> =
+                [flag, "4"].iter().map(|s| OsString::from(*s)).collect();
+            let a = parse_args(&argv).expect("parse");
+            assert_eq!(a.jobs, 4, "expected jobs=4 via `{flag} 4`");
+        }
+    }
+
+    #[test]
+    fn arg_parser_jobs_max_bound_accepted() {
+        // MAX_JOBS is the documented ceiling. Exactly MAX_JOBS must be
+        // accepted (off-by-one guard against accidentally tightening
+        // the bound during a refactor).
+        let argv = vec![OsString::from("--jobs"), OsString::from(MAX_JOBS.to_string())];
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(a.jobs, MAX_JOBS);
+    }
+
+    #[test]
+    fn arg_parser_rejects_jobs_zero() {
+        // jobs==0 would spawn no workers; reject loud at parse time
+        // rather than silently never making progress.
+        let argv: Vec<OsString> = ["--jobs", "0"].iter().map(|s| OsString::from(*s)).collect();
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains(">= 1"), "got: {err}");
+    }
+
+    #[test]
+    fn arg_parser_rejects_jobs_non_integer() {
+        let argv: Vec<OsString> = ["--jobs", "four"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let err = parse_args(&argv).unwrap_err();
+        assert!(
+            err.contains("positive integer") && err.contains("four"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn arg_parser_rejects_jobs_negative() {
+        // usize parse rejects the leading minus; we only need to confirm
+        // the error message names the offending value (good UX).
+        let argv: Vec<OsString> = ["--jobs", "-1"].iter().map(|s| OsString::from(*s)).collect();
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("positive integer"), "got: {err}");
+    }
+
+    #[test]
+    fn arg_parser_rejects_jobs_above_max() {
+        let argv = vec![
+            OsString::from("--jobs"),
+            OsString::from((MAX_JOBS + 1).to_string()),
+        ];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(
+            err.contains("MAX_JOBS") || err.contains(&MAX_JOBS.to_string()),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn arg_parser_rejects_jobs_without_value() {
+        let argv = vec![OsString::from("--jobs")];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("requires a value"), "got: {err}");
+    }
+
+    #[test]
+    fn arg_parser_jobs_composes_with_other_flags() {
+        // --jobs must compose with the narrowing flags: a developer
+        // debugging one cell on a parallel host should still get
+        // parallel execution of the narrowed set.
+        let argv: Vec<OsString> = [
+            "--example",
+            "01-elementwise-add",
+            "--jobs",
+            "2",
+            "--check-determinism",
+        ]
+        .iter()
+        .map(|s| OsString::from(*s))
+        .collect();
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(a.jobs, 2);
+        assert_eq!(a.example.as_deref(), Some("01-elementwise-add"));
+        assert!(a.check_determinism);
+    }
+
     #[test]
     fn manifest_roundtrip_minimal() {
         // Smallest valid manifest. The harness must accept zero
@@ -2865,8 +3238,7 @@ mystery = 42
             example: Some("01-elementwise-add".into()),
             schedule: Some("naive".into()),
             backend: Some("pthreads-sync".into()),
-            milestone: None,
-            check_determinism: false,
+            ..Args::default()
         };
         let planned = plan_cells(&paths, &manifest, &args).expect("plan");
         assert_eq!(planned.len(), 1);
