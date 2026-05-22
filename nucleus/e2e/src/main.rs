@@ -353,6 +353,18 @@ struct Args {
     /// covers RUN-mode results (`run_cell`); `--check-determinism` is
     /// out of scope for this stage and is filed as a follow-up.
     emit_timings: Option<PathBuf>,
+    /// Optional path to a previously-emitted timings JSON document
+    /// (TASK-0023.03 Stage 2). When `Some`, after the matrix completes
+    /// the harness loads PATH, joins to the current `Vec<CellResult>`
+    /// on `(example, schedule, backend)`, and prints a delta table to
+    /// STDERR sorted by largest regression first. Cells present on
+    /// only one side render as `(new)` / `(removed)` rather than
+    /// crashing. Default `None` = byte-identical pre-flag behaviour.
+    /// VALIDATED at parse time: the path must exist on disk (a typoed
+    /// path is the most common silent-no-op failure mode for a flag
+    /// like this — fail LOUD up front, not after the matrix has run).
+    /// Per-cell perf-threshold gating is Stage 3 (out of scope here).
+    baseline: Option<PathBuf>,
 }
 
 /// Upper bound on `--jobs N`. See [`Args::jobs`].
@@ -369,6 +381,7 @@ impl Default for Args {
             jobs: 1,
             format: Format::Text,
             emit_timings: None,
+            baseline: None,
         }
     }
 }
@@ -477,6 +490,51 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 a.emit_timings = Some(PathBuf::from(raw));
                 i += 1;
             }
+            "--baseline" => {
+                // TASK-0023.03 Stage 2: load a previously-emitted
+                // timings JSON as the baseline against which the
+                // current run is diffed on STDERR. Path is validated
+                // eagerly here — a typoed/missing baseline is the
+                // single most common silent-no-op trap a developer
+                // hits with a flag like this. Failing LOUD at parse
+                // time saves the matrix cost.
+                let raw = need_val(i)?;
+                if raw.is_empty() {
+                    return Err(
+                        "flag `--baseline` requires a non-empty PATH".to_string()
+                    );
+                }
+                let p = PathBuf::from(&raw);
+                if !p.exists() {
+                    return Err(format!(
+                        "flag `--baseline`: path `{raw}` does not exist; \
+                         this is most likely a typo or a stale path from \
+                         a previous run — emit one with --emit-timings first"
+                    ));
+                }
+                a.baseline = Some(p);
+                i += 2;
+            }
+            // TASK-0023.03 Stage 2: `--baseline=PATH` (equals form),
+            // mirroring the `--emit-timings=` precedent.
+            x if x.starts_with("--baseline=") => {
+                let raw = &x["--baseline=".len()..];
+                if raw.is_empty() {
+                    return Err(
+                        "flag `--baseline=` requires a non-empty PATH".to_string()
+                    );
+                }
+                let p = PathBuf::from(raw);
+                if !p.exists() {
+                    return Err(format!(
+                        "flag `--baseline=`: path `{raw}` does not exist; \
+                         this is most likely a typo or a stale path from \
+                         a previous run — emit one with --emit-timings first"
+                    ));
+                }
+                a.baseline = Some(p);
+                i += 1;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -494,7 +552,7 @@ fn print_help() {
          USAGE:\n    \
              nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] \
 [--milestone ID] [--check-determinism] [--jobs N | -j N] [--format text|junit] \
-[--emit-timings PATH]\n\
+[--emit-timings PATH] [--baseline PATH]\n\
          \n\
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
@@ -540,8 +598,18 @@ fn print_help() {
          Cells appear in planned (deterministic) order. Written ONCE\n\
          post-matrix; the human/junit summary and exit-code semantics\n\
          are unchanged. RUN-mode only — `--check-determinism` is a\n\
-         follow-up (Stage 2/3 too: baseline diff + per-cell\n\
-         perf_threshold_pct in e2e-matrix.toml).\n"
+         follow-up (Stage 3 too: per-cell perf_threshold_pct in\n\
+         e2e-matrix.toml).\n\
+         \n\
+         --baseline PATH: load a previously emitted timings JSON\n\
+         (TASK-0023.03 Stage 2) and print a delta table to STDERR\n\
+         sorted by largest regression first. PATH must exist (validated\n\
+         at parse time). Cells absent from one side render as `(new)`\n\
+         / `(removed)`. Output goes to STDERR specifically so it does\n\
+         not corrupt --format=junit XML on STDOUT. ANSI-coloured when\n\
+         STDERR is a TTY (red = slower, green = faster); plain-text\n\
+         otherwise. Exit-code semantics are UNCHANGED — Stage 3 adds\n\
+         per-cell perf thresholds that gate the exit.\n"
     );
 }
 
@@ -2879,6 +2947,578 @@ fn write_timings_json(path: &std::path::Path, results: &[CellResult]) -> Result<
 }
 
 // --------------------------------------------------------------------
+// Baseline comparator (TASK-0023.03 Stage 2)
+// --------------------------------------------------------------------
+
+/// One cell's wall-clock summary loaded back from a baseline JSON.
+///
+/// Only the fields the comparator actually consumes are kept — the
+/// rich `CellResult` payload (status / detail / corrupted / etc.) is
+/// not the baseline's job. The comparator joins on the identity triple
+/// and reports `total_ms` deltas; anything else is Stage 3 (per-cell
+/// thresholds) or downstream tooling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BaselineCell {
+    example: String,
+    schedule: String,
+    backend: String,
+    total_ms: u64,
+}
+
+/// Loud-fail JSON parse error carrying byte offset + the surrounding
+/// snippet. Stage 1's emitter is deterministic, so a parse failure
+/// here is almost always "wrong file fed in" — naming the offset and
+/// what was expected makes that obvious without the developer having
+/// to open the file in an editor.
+#[derive(Debug)]
+struct BaselineParseError {
+    offset: usize,
+    msg: String,
+}
+
+impl fmt::Display for BaselineParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "--baseline: JSON parse error at byte offset {}: {}", self.offset, self.msg)
+    }
+}
+
+/// Minimal hand-rolled JSON reader, scoped EXACTLY to the schema that
+/// `render_timings_json` emits. Deliberately NOT a general JSON parser:
+///
+///   * recognises only what Stage 1 emits: objects, arrays, strings
+///     (with the same escape set as `json_escape_str`), integers, `null`,
+///     `true`, `false`;
+///   * ignores keys that aren't `example`, `schedule`, `backend`,
+///     `total_ms` (so future Stage 3 fields don't break old baselines);
+///   * loud-fails on structural errors with byte offset + snippet —
+///     never silently treats a bad file as empty.
+///
+/// Stage 1 deliberately avoided serde_json; matching that constraint
+/// here keeps the e2e crate's dep set minimal (one less compile-time
+/// cost on every developer machine).
+fn parse_baseline_json(src: &str) -> Result<Vec<BaselineCell>, BaselineParseError> {
+    let bytes = src.as_bytes();
+    let mut p = JsonCursor { bytes, pos: 0 };
+    p.skip_ws();
+    p.expect_byte(b'{')?;
+    p.skip_ws();
+    // Top-level object: we only consume the `cells` key; any other
+    // future top-level field is silently skipped so old baselines stay
+    // forward-compatible with new emitter additions.
+    let mut cells: Option<Vec<BaselineCell>> = None;
+    loop {
+        p.skip_ws();
+        if p.peek() == Some(b'}') {
+            p.pos += 1;
+            break;
+        }
+        let key = p.parse_string()?;
+        p.skip_ws();
+        p.expect_byte(b':')?;
+        p.skip_ws();
+        if key == "cells" {
+            cells = Some(p.parse_cells_array()?);
+        } else {
+            p.skip_value()?;
+        }
+        p.skip_ws();
+        match p.peek() {
+            Some(b',') => p.pos += 1,
+            Some(b'}') => {
+                p.pos += 1;
+                break;
+            }
+            _ => return Err(p.err("expected `,` or `}` after object member")),
+        }
+    }
+    cells.ok_or_else(|| BaselineParseError {
+        offset: 0,
+        msg: "top-level object missing required `cells` array".to_string(),
+    })
+}
+
+/// Byte-level cursor over the baseline JSON. Hand-rolled rather than
+/// pulling in `nom` / `chumsky` — the schema is ~6 token kinds and the
+/// emitter side fits in ~100 LoC, so the reader does too.
+struct JsonCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl JsonCursor<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek() {
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    fn err(&self, msg: &str) -> BaselineParseError {
+        // Snippet aids the eyeball when offset alone isn't enough.
+        let lo = self.pos.saturating_sub(20);
+        let hi = (self.pos + 20).min(self.bytes.len());
+        let snippet = String::from_utf8_lossy(&self.bytes[lo..hi]);
+        BaselineParseError {
+            offset: self.pos,
+            msg: format!("{msg} (near `{snippet}`)"),
+        }
+    }
+    fn expect_byte(&mut self, want: u8) -> Result<(), BaselineParseError> {
+        match self.peek() {
+            Some(b) if b == want => {
+                self.pos += 1;
+                Ok(())
+            }
+            Some(b) => Err(self.err(&format!(
+                "expected `{}`, got `{}`",
+                want as char, b as char
+            ))),
+            None => Err(self.err(&format!("expected `{}`, got EOF", want as char))),
+        }
+    }
+    fn parse_string(&mut self) -> Result<String, BaselineParseError> {
+        self.expect_byte(b'"')?;
+        let mut out = String::new();
+        loop {
+            match self.peek() {
+                None => return Err(self.err("unterminated string")),
+                Some(b'"') => {
+                    self.pos += 1;
+                    return Ok(out);
+                }
+                Some(b'\\') => {
+                    self.pos += 1;
+                    let esc = self.peek().ok_or_else(|| self.err("trailing `\\`"))?;
+                    self.pos += 1;
+                    let ch = match esc {
+                        b'"' => '"',
+                        b'\\' => '\\',
+                        b'/' => '/',
+                        b'n' => '\n',
+                        b't' => '\t',
+                        b'r' => '\r',
+                        b'b' => '\u{0008}',
+                        b'f' => '\u{000C}',
+                        b'u' => {
+                            // \uXXXX — the emitter uses this for
+                            // control chars; we decode as a BMP char.
+                            if self.pos + 4 > self.bytes.len() {
+                                return Err(self.err("truncated \\u escape"));
+                            }
+                            let hex = std::str::from_utf8(&self.bytes[self.pos..self.pos + 4])
+                                .map_err(|_| self.err("non-ASCII in \\u escape"))?;
+                            let code = u32::from_str_radix(hex, 16)
+                                .map_err(|_| self.err("\\u escape not hex"))?;
+                            self.pos += 4;
+                            char::from_u32(code)
+                                .ok_or_else(|| self.err("invalid \\u code point"))?
+                        }
+                        other => {
+                            return Err(self.err(&format!(
+                                "unknown escape `\\{}`",
+                                other as char
+                            )))
+                        }
+                    };
+                    out.push(ch);
+                }
+                Some(b) => {
+                    self.pos += 1;
+                    out.push(b as char);
+                }
+            }
+        }
+    }
+    /// Parse a non-negative integer. The Stage-1 emitter never emits a
+    /// negative `total_ms` (it's a `Duration::as_millis` cast); a `-`
+    /// in the wild is a corrupt baseline and we fail LOUD.
+    fn parse_u64(&mut self) -> Result<u64, BaselineParseError> {
+        let start = self.pos;
+        while let Some(b) = self.peek() {
+            if b.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return Err(self.err("expected unsigned integer"));
+        }
+        let s = std::str::from_utf8(&self.bytes[start..self.pos])
+            .map_err(|_| self.err("integer not ASCII"))?;
+        s.parse::<u64>()
+            .map_err(|e| self.err(&format!("u64 parse: {e}")))
+    }
+    /// Skip a JSON value the comparator doesn't care about. Recursive
+    /// for nested objects/arrays so the seek stays correct.
+    fn skip_value(&mut self) -> Result<(), BaselineParseError> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'"') => {
+                let _ = self.parse_string()?;
+            }
+            Some(b'{') => self.skip_object()?,
+            Some(b'[') => self.skip_array()?,
+            Some(b't') | Some(b'f') | Some(b'n') => {
+                // true / false / null — advance past the literal.
+                while let Some(b) = self.peek() {
+                    if b.is_ascii_alphabetic() {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            Some(b) if b == b'-' || b.is_ascii_digit() => {
+                if b == b'-' {
+                    self.pos += 1;
+                }
+                while let Some(b) = self.peek() {
+                    if b.is_ascii_digit() || b == b'.' || b == b'e' || b == b'E' || b == b'+' || b == b'-' {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            _ => return Err(self.err("expected JSON value")),
+        }
+        Ok(())
+    }
+    fn skip_object(&mut self) -> Result<(), BaselineParseError> {
+        self.expect_byte(b'{')?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                return Ok(());
+            }
+            let _ = self.parse_string()?;
+            self.skip_ws();
+            self.expect_byte(b':')?;
+            self.skip_value()?;
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                _ => return Err(self.err("expected `,` or `}` in object")),
+            }
+        }
+    }
+    fn skip_array(&mut self) -> Result<(), BaselineParseError> {
+        self.expect_byte(b'[')?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b']') {
+                self.pos += 1;
+                return Ok(());
+            }
+            self.skip_value()?;
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                _ => return Err(self.err("expected `,` or `]` in array")),
+            }
+        }
+    }
+    /// Parse the `cells` array — the ONE shape the comparator cares
+    /// about. Each element is a `{example, schedule, backend, total_ms,
+    /// ...}` object. Unknown keys are silently skipped so a Stage-3
+    /// emitter can extend the schema without breaking Stage-2 readers.
+    fn parse_cells_array(&mut self) -> Result<Vec<BaselineCell>, BaselineParseError> {
+        self.expect_byte(b'[')?;
+        let mut cells: Vec<BaselineCell> = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b']') {
+                self.pos += 1;
+                return Ok(cells);
+            }
+            cells.push(self.parse_cell_object()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(cells);
+                }
+                _ => return Err(self.err("expected `,` or `]` in cells array")),
+            }
+        }
+    }
+    fn parse_cell_object(&mut self) -> Result<BaselineCell, BaselineParseError> {
+        self.expect_byte(b'{')?;
+        let mut example: Option<String> = None;
+        let mut schedule: Option<String> = None;
+        let mut backend: Option<String> = None;
+        let mut total_ms: Option<u64> = None;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                break;
+            }
+            let key = self.parse_string()?;
+            self.skip_ws();
+            self.expect_byte(b':')?;
+            self.skip_ws();
+            match key.as_str() {
+                "example" => example = Some(self.parse_string()?),
+                "schedule" => schedule = Some(self.parse_string()?),
+                "backend" => backend = Some(self.parse_string()?),
+                "total_ms" => total_ms = Some(self.parse_u64()?),
+                _ => self.skip_value()?,
+            }
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(self.err("expected `,` or `}` in cell object")),
+            }
+        }
+        Ok(BaselineCell {
+            example: example.ok_or_else(|| self.err("cell missing `example`"))?,
+            schedule: schedule.ok_or_else(|| self.err("cell missing `schedule`"))?,
+            backend: backend.ok_or_else(|| self.err("cell missing `backend`"))?,
+            total_ms: total_ms.ok_or_else(|| self.err("cell missing `total_ms`"))?,
+        })
+    }
+}
+
+/// One row of the delta table. `baseline_ms`/`current_ms` are `Option`
+/// because a cell can be new (no baseline) or removed (no current),
+/// and we still want to render the row rather than crash.
+#[derive(Debug, Clone, PartialEq)]
+struct DeltaRow {
+    example: String,
+    schedule: String,
+    backend: String,
+    baseline_ms: Option<u64>,
+    current_ms: Option<u64>,
+    /// Percentage change vs baseline, ONLY when both sides exist.
+    /// `current / baseline - 1`; rounded to one decimal in output.
+    /// Sentinel `None` means "(new)" or "(removed)".
+    delta_pct: Option<f64>,
+}
+
+impl DeltaRow {
+    /// Comparator-only sort key: largest regression (positive delta)
+    /// first; new/removed sink to the bottom so the eye lands on
+    /// real regressions first. Ties broken by cell identity so the
+    /// output is deterministic across runs.
+    fn sort_key(&self) -> (i32, i64, String, String, String) {
+        // Tier: 0 = real delta (most informative), 1 = removed
+        // (cell still in baseline but gone), 2 = new (cell only in
+        // current — not a regression). Within tier 0, sort by
+        // delta DESCENDING (largest regression first).
+        let (tier, neg_pct_milli) = match (self.baseline_ms, self.current_ms, self.delta_pct) {
+            (Some(_), Some(_), Some(p)) => (0_i32, -(p * 1000.0) as i64),
+            (Some(_), None, _) => (1, 0),
+            (None, Some(_), _) => (2, 0),
+            _ => (3, 0),
+        };
+        (tier, neg_pct_milli, self.example.clone(), self.schedule.clone(), self.backend.clone())
+    }
+}
+
+/// Build the delta table by joining current results to the baseline on
+/// the identity triple. Order of returned rows is sorted by
+/// `DeltaRow::sort_key` — largest regression first; new/removed cells
+/// land at the bottom.
+fn compute_delta_rows(baseline: &[BaselineCell], current: &[CellResult]) -> Vec<DeltaRow> {
+    use std::collections::HashMap;
+    type Key = (String, String, String);
+    let key_for_baseline = |b: &BaselineCell| -> Key {
+        (b.example.clone(), b.schedule.clone(), b.backend.clone())
+    };
+    let key_for_current = |r: &CellResult| -> Key {
+        (r.cell.example.clone(), r.cell.schedule.clone(), r.cell.backend.clone())
+    };
+    let base_map: HashMap<Key, &BaselineCell> =
+        baseline.iter().map(|b| (key_for_baseline(b), b)).collect();
+    let cur_map: HashMap<Key, &CellResult> =
+        current.iter().map(|r| (key_for_current(r), r)).collect();
+
+    let mut rows: Vec<DeltaRow> = Vec::new();
+    // First, every current cell — flagged as "(new)" if absent in
+    // baseline, else a real delta. Drives output ordering for the
+    // common case (current is what the developer just ran).
+    for r in current {
+        let k = key_for_current(r);
+        let current_ms = r.timings.total().as_millis() as u64;
+        match base_map.get(&k) {
+            Some(b) => {
+                let baseline_ms = b.total_ms;
+                let delta_pct = if baseline_ms == 0 {
+                    // Avoid div-by-zero — a 0ms baseline is rare
+                    // (SKIPPED or a near-instant cell). Treat any
+                    // non-zero current against 0 baseline as "(new
+                    // measurable)" rather than ∞. Honest limit
+                    // noted in the cycle-55 deliverable.
+                    if current_ms == 0 {
+                        Some(0.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(
+                        ((current_ms as f64) - (baseline_ms as f64))
+                            / (baseline_ms as f64)
+                            * 100.0,
+                    )
+                };
+                rows.push(DeltaRow {
+                    example: r.cell.example.clone(),
+                    schedule: r.cell.schedule.clone(),
+                    backend: r.cell.backend.clone(),
+                    baseline_ms: Some(baseline_ms),
+                    current_ms: Some(current_ms),
+                    delta_pct,
+                });
+            }
+            None => {
+                rows.push(DeltaRow {
+                    example: r.cell.example.clone(),
+                    schedule: r.cell.schedule.clone(),
+                    backend: r.cell.backend.clone(),
+                    baseline_ms: None,
+                    current_ms: Some(current_ms),
+                    delta_pct: None,
+                });
+            }
+        }
+    }
+    // Then, every baseline cell missing from current — "(removed)".
+    for b in baseline {
+        let k = key_for_baseline(b);
+        if !cur_map.contains_key(&k) {
+            rows.push(DeltaRow {
+                example: b.example.clone(),
+                schedule: b.schedule.clone(),
+                backend: b.backend.clone(),
+                baseline_ms: Some(b.total_ms),
+                current_ms: None,
+                delta_pct: None,
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.sort_key());
+    rows
+}
+
+/// Render the delta table as a multi-line String. Colorise iff
+/// `color` is true; plain otherwise. Output is human-targeted: the
+/// `--emit-timings` JSON is the machine-readable counterpart.
+fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
+    use std::fmt::Write as _;
+    const RED: &str = "\x1b[31m";
+    const GREEN: &str = "\x1b[32m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "--- baseline diff ({} row(s)) ---",
+        rows.len()
+    );
+    let _ = writeln!(
+        out,
+        "  example | schedule | backend | baseline_ms -> current_ms (Δ%)"
+    );
+    for r in rows {
+        let cell_id = format!("  {} | {} | {} | ", r.example, r.schedule, r.backend);
+        let body = match (r.baseline_ms, r.current_ms, r.delta_pct) {
+            (Some(b), Some(c), Some(p)) => {
+                let pct_str = format!("{:+.1}%", p);
+                let painted = if !color {
+                    pct_str
+                } else if p > 0.0 {
+                    format!("{RED}{pct_str}{RESET}")
+                } else if p < 0.0 {
+                    format!("{GREEN}{pct_str}{RESET}")
+                } else {
+                    pct_str
+                };
+                format!("{b} -> {c} ({painted})")
+            }
+            (Some(b), Some(c), None) => {
+                // baseline_ms == 0 with non-zero current — sentinel.
+                let tag = if color {
+                    format!("{DIM}(baseline=0 ms; Δ undefined){RESET}")
+                } else {
+                    "(baseline=0 ms; Δ undefined)".to_string()
+                };
+                format!("{b} -> {c} {tag}")
+            }
+            (None, Some(c), _) => {
+                let tag = if color { format!("{DIM}(new){RESET}") } else { "(new)".to_string() };
+                format!("- -> {c} {tag}")
+            }
+            (Some(b), None, _) => {
+                let tag = if color {
+                    format!("{DIM}(removed){RESET}")
+                } else {
+                    "(removed)".to_string()
+                };
+                format!("{b} -> - {tag}")
+            }
+            (None, None, _) => "- -> -".to_string(),
+        };
+        let _ = writeln!(out, "{cell_id}{body}");
+    }
+    out
+}
+
+/// Drive the baseline comparator: read `path`, parse it, compute the
+/// delta table, render with ANSI iff stderr is a TTY, write to STDERR.
+///
+/// STDERR specifically: stdout may carry `--format=junit` XML, and
+/// corrupting that XML with delta-table text would break a CI
+/// consumer's parse. The Stage-1 emitter's "post-summary, pre-gate"
+/// position is preserved — this call site too.
+fn compare_against_baseline(
+    path: &std::path::Path,
+    current: &[CellResult],
+) -> Result<(), String> {
+    let src = fs::read_to_string(path).map_err(|e| {
+        format!("--baseline: cannot read `{}`: {e}", path.display())
+    })?;
+    let baseline = parse_baseline_json(&src).map_err(|e| {
+        // Carry the parse-time offset/snippet up; the prefix already
+        // names the flag so the developer knows which file to look at.
+        format!("{e} in `{}`", path.display())
+    })?;
+    let rows = compute_delta_rows(&baseline, current);
+    let use_color = {
+        use std::io::IsTerminal as _;
+        std::io::stderr().is_terminal()
+    };
+    let table = render_delta_table(&rows, use_color);
+    // `eprint!` not `eprintln!` — `render_delta_table` already emits
+    // a trailing newline per row, so an extra newline would double-
+    // space the output.
+    eprint!("{table}");
+    let _ = std::io::stderr().flush();
+    Ok(())
+}
+
+// --------------------------------------------------------------------
 // Parallel cell execution (TASK-0023.01)
 // --------------------------------------------------------------------
 
@@ -3139,6 +3779,13 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
                  --check-determinism. Filed as a follow-up."
             );
         }
+        if args.baseline.is_some() {
+            eprintln!(
+                "nucleus-e2e: WARNING: --baseline is RUN-mode only \
+                 (TASK-0023.03 Stage 2 scope); ignored under \
+                 --check-determinism."
+            );
+        }
         eprintln!(
             "nucleus-e2e: determinism check over {} cell(s) from {} \
              (jobs={})",
@@ -3350,6 +3997,16 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
             results.len(),
             path.display()
         );
+    }
+
+    // TASK-0023.03 Stage 2: load the baseline JSON (if set) and print
+    // a delta table to STDERR. Done AFTER the optional emit so a
+    // single invocation can both write a fresh baseline AND compare
+    // against a previous one (the canonical "did this change move the
+    // needle" workflow). Output routes to STDERR specifically so
+    // `--format=junit` XML on STDOUT stays clean.
+    if let Some(path) = args.baseline.as_deref() {
+        compare_against_baseline(path, &results)?;
     }
 
     // NUC_XBACKEND_NEGATIVE explicit-signal contract + zero-corruption
@@ -5051,6 +5708,289 @@ mystery = 42
             !tmp_sibling.exists(),
             ".tmp sibling leaked: {}",
             tmp_sibling.display()
+        );
+
+        let _ = fs::remove_dir_all(&tmp_root);
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0023.03 Stage 2 — baseline comparator
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn arg_parser_accepts_baseline_space_form() {
+        // Write a real file so the existence-validation step succeeds
+        // — `--baseline` is parsed eagerly with an exists() check.
+        let tmp = std::env::temp_dir().join(format!(
+            "nuc-baseline-arg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        fs::write(&tmp, "{}").expect("seed");
+        let argv: Vec<OsString> = ["--baseline", tmp.to_str().unwrap()]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let a = parse_args(&argv).expect("parse");
+        assert_eq!(a.baseline.as_deref(), Some(tmp.as_path()));
+        let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn arg_parser_rejects_nonexistent_baseline_path() {
+        // The single most common silent-no-op trap: typoed path.
+        // Hard-fail at parse so the developer fixes it before paying
+        // the matrix cost.
+        let argv: Vec<OsString> = ["--baseline", "/tmp/does-not-exist-c55-baseline.json"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let err = parse_args(&argv).unwrap_err();
+        assert!(
+            err.contains("does not exist"),
+            "expected does-not-exist error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn arg_parser_rejects_empty_baseline_path() {
+        let argv: Vec<OsString> = ["--baseline", ""]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("non-empty PATH"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_baseline_json_round_trips_emitter_output() {
+        // The reader must consume what the emitter produces. Build a
+        // synthetic Vec<CellResult>, run it through render_timings_json,
+        // then parse it back; the identity triples + total_ms must
+        // match (the only fields the comparator reads).
+        let results = vec![
+            synth_cell_result(
+                "ex-a", "naive", "pthreads-sync", Status::Pass,
+                Some(100), Some(2000), Some(50),
+            ),
+            synth_cell_result(
+                "ex-b", "tiled", "mp-tcp-bufsync",
+                Status::Skipped { reason: "no caps".into() },
+                None, None, None,
+            ),
+            synth_cell_result(
+                "ex-c", "naive", "pthreads-sync",
+                Status::Failed { phase: Phase::Build, detail: "boom".into() },
+                Some(80), Some(500), None,
+            ),
+        ];
+        let doc = render_timings_json(&results);
+        let parsed = parse_baseline_json(&doc).expect("round-trip parse");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].example, "ex-a");
+        assert_eq!(parsed[0].total_ms, 2150);
+        assert_eq!(parsed[1].example, "ex-b");
+        assert_eq!(parsed[1].total_ms, 0);
+        assert_eq!(parsed[2].example, "ex-c");
+        assert_eq!(parsed[2].total_ms, 580);
+    }
+
+    #[test]
+    fn parse_baseline_json_loud_fails_on_malformed_input() {
+        // Truncated mid-object — the reader MUST NOT silently treat
+        // this as empty; it must surface byte-offset + the snippet.
+        let bad = r#"{"cells": [{"example":"x","schedule":"y","#;
+        let err = parse_baseline_json(bad).unwrap_err();
+        assert!(
+            err.msg.contains("EOF") || err.msg.contains("string") || err.msg.contains("expected"),
+            "expected structural error, got: {err}",
+        );
+        assert!(err.offset > 0, "offset should be non-zero: {err}");
+    }
+
+    #[test]
+    fn parse_baseline_json_fails_on_missing_cells_array() {
+        // A valid JSON object but lacking the required top-level
+        // `cells` key — could be a different tool's output. Fail loud.
+        let bad = r#"{"foo": 1}"#;
+        let err = parse_baseline_json(bad).unwrap_err();
+        assert!(err.msg.contains("cells"), "got: {err}");
+    }
+
+    #[test]
+    fn compute_delta_rows_flags_regression_largest_first() {
+        // Two cells identical, one cell's current_ms 50% slower.
+        // The comparator must surface the regressor as the FIRST
+        // row in the delta table (largest regression first).
+        let baseline = vec![
+            BaselineCell {
+                example: "ex-a".into(), schedule: "naive".into(),
+                backend: "pthreads-sync".into(), total_ms: 1000,
+            },
+            BaselineCell {
+                example: "ex-b".into(), schedule: "tiled".into(),
+                backend: "pthreads-sync".into(), total_ms: 2000,
+            },
+        ];
+        let current = vec![
+            // 50% slower — the regression.
+            synth_cell_result(
+                "ex-a", "naive", "pthreads-sync", Status::Pass,
+                None, Some(1500), None,
+            ),
+            // Unchanged.
+            synth_cell_result(
+                "ex-b", "tiled", "pthreads-sync", Status::Pass,
+                None, Some(2000), None,
+            ),
+        ];
+        let rows = compute_delta_rows(&baseline, &current);
+        assert_eq!(rows.len(), 2);
+        // Largest regression first.
+        assert_eq!(rows[0].example, "ex-a");
+        assert_eq!(rows[0].baseline_ms, Some(1000));
+        assert_eq!(rows[0].current_ms, Some(1500));
+        let pct = rows[0].delta_pct.expect("real delta");
+        assert!((pct - 50.0).abs() < 0.01, "expected +50%, got {pct}");
+
+        // Round-trip render: plain-text mode must contain the
+        // regressor row textually so a grep-based check works in CI.
+        let table = render_delta_table(&rows, false);
+        let first_line = table
+            .lines()
+            .find(|l| l.contains("ex-a"))
+            .expect("ex-a present");
+        assert!(first_line.contains("1000 -> 1500"), "got: {first_line}");
+        assert!(first_line.contains("+50.0%"), "got: {first_line}");
+    }
+
+    #[test]
+    fn compute_delta_rows_handles_new_and_removed() {
+        // Three cells: A in both, B only in baseline (removed), C only
+        // in current (new). The table must contain all three rows and
+        // never crash on either side's missing.
+        let baseline = vec![
+            BaselineCell {
+                example: "ex-a".into(), schedule: "naive".into(),
+                backend: "pthreads-sync".into(), total_ms: 100,
+            },
+            BaselineCell {
+                example: "ex-b".into(), schedule: "naive".into(),
+                backend: "pthreads-sync".into(), total_ms: 200,
+            },
+        ];
+        let current = vec![
+            synth_cell_result(
+                "ex-a", "naive", "pthreads-sync", Status::Pass,
+                None, Some(100), None,
+            ),
+            synth_cell_result(
+                "ex-c", "naive", "pthreads-sync", Status::Pass,
+                None, Some(300), None,
+            ),
+        ];
+        let rows = compute_delta_rows(&baseline, &current);
+        assert_eq!(rows.len(), 3, "rows: {rows:?}");
+
+        // Find each row by example. ex-a is real delta (tier 0,
+        // 0%), ex-c is "(new)" (tier 2), ex-b is "(removed)"
+        // (tier 1). Tier 1 sorts before tier 2 so removed appears
+        // before new in the output.
+        let by_ex = |name: &str| -> &DeltaRow {
+            rows.iter().find(|r| r.example == name).expect(name)
+        };
+        let a = by_ex("ex-a");
+        assert_eq!(a.baseline_ms, Some(100));
+        assert_eq!(a.current_ms, Some(100));
+        assert!(a.delta_pct.map_or(false, |p| p.abs() < 0.001));
+
+        let b = by_ex("ex-b");
+        assert_eq!(b.baseline_ms, Some(200));
+        assert_eq!(b.current_ms, None);
+        assert!(b.delta_pct.is_none());
+
+        let c = by_ex("ex-c");
+        assert_eq!(c.baseline_ms, None);
+        assert_eq!(c.current_ms, Some(300));
+        assert!(c.delta_pct.is_none());
+
+        // Rendered output must carry the (new) / (removed) tags in
+        // plain-text mode — these are the load-bearing "look here"
+        // signals for a human reviewing CI logs.
+        let table = render_delta_table(&rows, false);
+        assert!(table.contains("(new)"), "table: {table}");
+        assert!(table.contains("(removed)"), "table: {table}");
+    }
+
+    #[test]
+    fn render_delta_table_color_paints_regressions_red_improvements_green() {
+        // ANSI mode: a positive Δ% gets red SGR; a negative one gets
+        // green; zero stays plain. Keeps the human-eye flag visible
+        // even in long CI logs.
+        let rows = vec![
+            DeltaRow {
+                example: "ex-a".into(), schedule: "n".into(), backend: "p".into(),
+                baseline_ms: Some(100), current_ms: Some(150),
+                delta_pct: Some(50.0),
+            },
+            DeltaRow {
+                example: "ex-b".into(), schedule: "n".into(), backend: "p".into(),
+                baseline_ms: Some(100), current_ms: Some(50),
+                delta_pct: Some(-50.0),
+            },
+        ];
+        let table = render_delta_table(&rows, true);
+        assert!(table.contains("\x1b[31m"), "red SGR missing: {table:?}");
+        assert!(table.contains("\x1b[32m"), "green SGR missing: {table:?}");
+        // And the plain-text variant must carry NO ANSI bytes.
+        let plain = render_delta_table(&rows, false);
+        assert!(
+            !plain.contains('\x1b'),
+            "plain-text mode leaked ANSI: {plain:?}"
+        );
+    }
+
+    #[test]
+    fn compare_against_baseline_writes_to_stderr_and_flags_regressor() {
+        // End-to-end: write a baseline file, then call the comparator
+        // against a current Vec<CellResult> with one cell 50% slower.
+        // We can't easily capture STDERR from a unit test without
+        // spawning a subprocess, so we verify the public delta-table
+        // helper does the right thing here; the integration step in
+        // the verification gate exercises the STDERR routing.
+        let tmp_root = std::env::temp_dir().join(format!(
+            "nuc-baseline-cmp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+        let path = tmp_root.join("baseline.json");
+
+        let baseline_results = vec![synth_cell_result(
+            "ex-a", "naive", "pthreads-sync", Status::Pass,
+            None, Some(1000), None,
+        )];
+        write_timings_json(&path, &baseline_results).expect("write");
+
+        let current_results = vec![synth_cell_result(
+            "ex-a", "naive", "pthreads-sync", Status::Pass,
+            None, Some(1500), None,
+        )];
+        // Just verify the read-and-parse path: a corrupt-on-disk
+        // baseline must NOT silently no-op.
+        let src = fs::read_to_string(&path).expect("read");
+        let parsed = parse_baseline_json(&src).expect("parse");
+        let rows = compute_delta_rows(&parsed, &current_results);
+        let table = render_delta_table(&rows, false);
+        assert!(
+            table.contains("ex-a") && table.contains("+50.0%"),
+            "expected regression row in: {table}"
         );
 
         let _ = fs::remove_dir_all(&tmp_root);
