@@ -376,18 +376,30 @@ backend  = "mp-tcp-bufsync"
 milestone = "M3"
 
 # Skip `milestone` tag: the milestone band in which this informational
-# skip is *active*. The distributed schedule is M5 work (PRD §11) and
-# none of these triples is a `[[required]]`, so the skip exemption
-# never gates a coverage obligation; the tag's only effect is which
-# milestone runs report the cell as SKIPPED. They are tagged M3 so the
-# full `just e2e` and `--milestone M3` runs report them exactly as
-# before (informational SKIPPED), and `--milestone M1/M2` simply omits
-# them (not a gap — there is no required entry for them).
-[[skip]]
+# skip is *active*. The distributed schedule is M5 work (PRD §11). For
+# the remaining skips, none of the triples is a `[[required]]`, so the
+# skip exemption never gates a coverage obligation; the tag's only
+# effect is which milestone runs report the cell as SKIPPED. They are
+# tagged M3 so the full `just e2e` and `--milestone M3` runs report
+# them exactly as before (informational SKIPPED), and `--milestone
+# M1/M2` simply omits them (not a gap — there is no required entry).
+
+# 03-reduction/distributed × pthreads-sync: PROMOTED to [[required]]
+# in cycle-30 (TASK-0242). The prior SKIP citing TASK-0117 +
+# TASK-0126 was STALE — both upstream gaps (iteration-space
+# partitioning + per-tile transfer codegen) were already closed by
+# the multi-worker emit refactor (TASK-0228 Wave B-2, cycle 26,
+# commit 299e1b0), but no one re-checked this cell. The audit
+# directly removed the SKIP and observed PASS, bit-identical to
+# reference.bin (the e2e harness's Phase::Diff against
+# 03-reduction/reference.bin). Three-way differential now covers
+# 03-reduction/distributed on { pthreads-sync, pthreads-async }
+# (mp-tcp-bufsync remains a fail-loud SKIP for the host-excluding-
+# barrier reason captured below — TASK-0175, not TASK-0117/0172).
+[[required]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "pthreads-sync"
-reason   = "TASK-0117 + TASK-0126: distributed placement + per-tile transfer codegen not yet implemented"
 milestone = "M3"
 
 [[skip]]
@@ -397,26 +409,35 @@ backend  = "pthreads-sync"
 reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"
 milestone = "M3"
 
-# Same two distributed gaps under the second backend. mp-tcp-bufsync
-# inherits the IDENTICAL upstream limitations as pthreads-sync (these
-# are front-pass / contract gaps, NOT transport-specific):
-#   - 03-reduction/distributed: the 5-worker reduction injects a
-#     NON-uniform barrier (host joins only some). Event::Sync carries
-#     no stable cross-worker identity (TASK-0172), so the pre-order
-#     -index recovery cannot byte-identically lower it — the backend
-#     fails LOUD (EmitError::ContractGap) rather than emit a wrong
-#     barrier graph. This is the fail-loud contract working, not a
-#     regression; it is skipped here exactly as for pthreads-sync.
+# Distributed gaps under the mp-tcp-bufsync backend.
+#   - 03-reduction/distributed: cycle-30 audit (TASK-0242) ROUTED THE
+#     REAL FAILURE. The prior SKIP citing TASK-0117 + TASK-0172 was
+#     STALE — pthreads-sync now PASSES this cell (sibling [[required]]
+#     above), so the upstream front-pass / iteration-partitioning gap
+#     is closed. The mp-tcp-bufsync failure mode is a TRANSPORT
+#     limitation, not a front-pass one: the `place accumulate on
+#     {w0..w3}` partition leaves host OUT of the per-partition barrier
+#     (host does load_input, the compute workers join phase-1, host
+#     resumes for the tree combine). mp-tcp-bufsync's one-connection-
+#     per-(host,worker) topology has no worker-to-worker mesh and
+#     thus cannot mediate a host-excluding barrier. Backend fails
+#     LOUD via EmitError::ContractGap with the verbatim text:
+#       "barrier #1 participants {WorkerId(1), WorkerId(2),
+#        WorkerId(3), WorkerId(4)} exclude the host worker;
+#        mp-tcp-bufsync's one-connection-per-(host,worker) topology
+#        requires host as the barrier hub. A host-excluding barrier
+#        needs a worker-to-worker mesh (filed as TASK-0175)."
+#     Promotion blocked on TASK-0175 (worker-to-worker mesh
+#     transport), NOT TASK-0117/0172. Identical root cause to
+#     13-cnn-inference batch_parallel × mp-tcp-bufsync (skip block below).
 #   - 05-stencil/distributed: requests async + buffer=2 + notify=event,
 #     none of which a sync tier-1 backend supports; the capability
 #     check rejects it (correct) before codegen.
-# Both move to [[required]] for mp-tcp-bufsync only when TASK-0117 /
-# TASK-0172 land — same trigger as the pthreads-sync skips above.
 [[skip]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0117 + TASK-0172: distributed placement + non-uniform-barrier identity (fail-loud ContractGap, inherited from the EventList contract; not transport-specific)"
+reason   = "TASK-0175: host-excluding barrier needs worker-to-worker mesh; mp-tcp-bufsync's one-connection-per-(host,worker) topology fails LOUD via EmitError::ContractGap (verbatim message above). NOT TASK-0117 (now closed) and NOT TASK-0172 (now closed); sibling pthreads-sync cell PASSES."
 milestone = "M3"
 
 [[skip]]
@@ -551,14 +572,16 @@ schedule = "naive"
 backend  = "pthreads-async"
 milestone = "M3"
 
-# 03-reduction/distributed × pthreads-async: empirically PASSES and
-# matches reference.bin. The MECHANISM is unclear: pthreads-async's
-# multi-worker emit is a near-verbatim copy of pthreads-sync's (cycle
-# 26 / TASK-0228 Wave B-2), so if the copy succeeds on this cell the
-# original should too — meaning pthreads-sync's SKIP citing TASK-0117
-# + TASK-0126 is plausibly STALE. The pthreads-sync + mp-tcp-bufsync
-# SKIPs above (lines 387, 416) are LEFT IN PLACE this cycle —
-# unblocking them is out of TASK-0229 scope. Audit follow-up: TASK-0242.
+# 03-reduction/distributed × pthreads-async: PASSES and matches
+# reference.bin. Cycle-30 audit (TASK-0242) CONFIRMED the hypothesis
+# from cycle 27: pthreads-async's multi-worker emit being a
+# near-verbatim copy of pthreads-sync's (cycle 26 / TASK-0228 Wave
+# B-2) meant pthreads-sync passed too once the stale SKIP was
+# removed (now [[required]] above). Three-way differential covers
+# {pthreads-sync, pthreads-async} for this cell; mp-tcp-bufsync
+# remains correctly fail-loud SKIPPED on TASK-0175 (host-excluding
+# barrier requires worker-to-worker mesh — transport limitation,
+# not a front-pass gap).
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
