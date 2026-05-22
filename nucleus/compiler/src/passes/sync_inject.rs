@@ -38,13 +38,19 @@
 //!
 //! ## Honest limitations
 //!
-//! - **Over-syncs**. The Sequence rule does not check whether the
-//!   writer's data actually feeds the reader; any pair of stmts on
-//!   different worker sets where one writes and the next reads
-//!   gets a sync. PRD §8 places sync only at "control-flow joins
-//!   where no data crosses"; we err on the side of safety until
-//!   transfer injection (TASK-0018) tells us which dataflow edges
-//!   are already covered by Push/Wait.
+//! - **Over-syncs (partially fixed by TASK-0218).** The Sequence
+//!   rule no longer emits a Sync between two bare
+//!   [`ACFGNode::Operation`] nodes when their dataflow already shares
+//!   a data symbol that crosses the worker boundary — `transfer_inject`
+//!   will emit a Push/Wait pair for that symbol, and the Push/Wait
+//!   pair already supplies the rendezvous the barrier would have
+//!   added. See [`push_wait_pair_covers`] for the exact condition.
+//!   The pre-TASK-0218 over-sync still applies to Sequence boundaries
+//!   where prev/curr are nested (Sequence/Repeat) and to Repeat
+//!   entry/exit barriers — those are more involved to reason about
+//!   safely without consulting the global Push/Wait coverage. PRD §8
+//!   places sync only at "control-flow joins where no data crosses";
+//!   we still err on the side of safety on the nested shapes.
 //! - **No conditionals.** The algorithm grammar has no `if` (PRD
 //!   §6.2.4), so [`ACFGNode`] has no `If` variant; this pass has
 //!   no `If` arm.
@@ -295,7 +301,7 @@ fn inject_in_sequence(
                 let w2 = reading_workers(&child);
                 if !w1.is_empty() && !w2.is_empty() && w1 != w2 {
                     let participants: BTreeSet<WorkerId> = w1.union(&w2).copied().collect();
-                    if participants.len() >= 2 {
+                    if participants.len() >= 2 && !push_wait_pair_covers(prev, &child) {
                         // `sync` is a placeholder here; the real stable
                         // tag is assigned by `assign_sync_tags` in a
                         // deterministic pre-order pass over the final
@@ -313,6 +319,88 @@ fn inject_in_sequence(
     }
 
     out
+}
+
+/// TASK-0218: would the Push/Wait pair `transfer_inject` will later
+/// emit fully cover the rendezvous a Sequence-rule barrier between
+/// `prev` and `curr` would impose?
+///
+/// Returns `true` iff:
+///
+/// 1. Both `prev` and `curr` are bare [`ACFGNode::Operation`] nodes —
+///    NOT Sequence/Repeat. The "Push -> barrier -> Wait" structural
+///    shape the task description identifies (the dependency cycle in
+///    the analysis net) only holds when the Push lands directly after
+///    `prev` and the Wait directly before `curr`. For nested `prev`
+///    or `curr`, transfer_inject inserts Push/Wait deeper inside;
+///    those don't sit immediately around the barrier and the simple
+///    elision argument does not apply.
+///
+/// 2. There exists at least one data symbol `D` such that
+///    `D` is written by `prev` and read by `curr`. transfer_inject
+///    emits one Push/Wait pair per cross-worker dataflow edge per
+///    (src, dst) worker pair (TASK-0117 fan-out across cartesian
+///    product). For bare Operations on disjoint worker sets writing/
+///    reading a shared `D`, the cartesian product of producer × consumer
+///    workers (minus same-worker pairs) covers exactly the barrier's
+///    `W1 ∪ W2` participant set.
+///
+/// When both hold, the future Push/Wait pair provides the rendezvous
+/// the barrier would have provided, and emitting the barrier is
+/// strictly over-synchronisation. Concretely: the per-worker control
+/// chain orders prev_op -> Push -> ... on the producer, and ... ->
+/// Wait -> curr_op on the consumer; the buffer place links Push -> Wait;
+/// the chain prev_op -> Push -> Wait -> curr_op is the rendezvous a
+/// barrier would have added. The barrier on top creates a structural
+/// dependency cycle in the analysis net for pipelined loops (Push
+/// blocked on full buffer, Wait blocked on barrier, barrier blocked
+/// on Push — see [`crate::passes::acfg_to_petri`] module doc
+/// "sync_inject over-syncing forces the path-2 elision").
+///
+/// Honest scope:
+///
+/// - Conservative on nested shapes. Repeat exit syncs (writers in
+///   body span 2+ workers) and Repeat entry syncs (prior_writes vs
+///   body_workers differ) are NOT elided here, even when individual
+///   Push/Wait pairs cover all the dataflow. Those barriers
+///   participants don't map 1:1 to a single Push/Wait pair the way
+///   the bare-Operation case does, and getting the elision condition
+///   right for them needs a separate pass that looks at the global
+///   Push/Wait coverage (TASK-0218 follow-up if a real example
+///   demands it).
+///
+/// - Same-worker shared symbols don't trigger. The outer `w1 != w2`
+///   test already rules out same-worker cases, so this helper only
+///   fires when transfer_inject WILL emit a cross-worker Push/Wait.
+fn push_wait_pair_covers(prev: &ACFGNode, curr: &ACFGNode) -> bool {
+    let (ACFGNode::Operation(prev_op), ACFGNode::Operation(curr_op)) = (prev, curr) else {
+        return false;
+    };
+
+    // Collect `prev`'s written data symbols and `curr`'s read data
+    // symbols, then check for any shared symbol. transfer_inject keys
+    // its Push/Wait emission off the same `(producer_workers,
+    // consumer_workers, data)` triple via `linked.data_producers` /
+    // per-Operation `data_in`; here we don't have `LinkedIR` so we
+    // read the dataflow edges directly. A shared symbol with the
+    // outer `w1 != w2` test means the worker sets differ AND the
+    // dataflow edge crosses workers — exactly what transfer_inject
+    // turns into a Push/Wait pair.
+    let prev_writes: BTreeSet<crate::event::DataId> = prev_op
+        .dataflow
+        .edges
+        .iter()
+        .filter_map(|e| e.data_out)
+        .collect();
+    if prev_writes.is_empty() {
+        return false;
+    }
+    curr_op
+        .dataflow
+        .edges
+        .iter()
+        .flat_map(|e| e.data_in.iter().copied())
+        .any(|d| prev_writes.contains(&d))
 }
 
 /// Apply the Repeat entry and exit rules to `body`. `body` is always

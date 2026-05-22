@@ -112,9 +112,12 @@ fn collect_sync_participants(node: &ACFGNode, out: &mut Vec<BTreeSet<WorkerId>>)
 // --------------------------------------------------------------------
 
 #[test]
-fn sequence_boundary_injects_sync_between_cross_worker_writer_reader() {
-    // op_w0 writes data 0, op_w1 reads data 0. Different workers.
-    // Expect ONE sync between them with participants {w0, w1}.
+fn sequence_boundary_elides_sync_when_push_wait_pair_will_cover() {
+    // TASK-0218: op_w0 writes data 0, op_w1 reads data 0 — the
+    // dataflow edge transfer_inject will later cover with a
+    // Push/Wait pair. The Sequence-rule barrier between them is
+    // therefore redundant (Push -> barrier -> Wait sandwich; the
+    // pair already supplies the rendezvous). Expect ZERO syncs.
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),  // writer on w0
         op(&[1], 101, vec![0], Some(1)), // reader on w1
@@ -123,23 +126,51 @@ fn sequence_boundary_injects_sync_between_cross_worker_writer_reader() {
 
     assert_eq!(
         result.sync_count(),
+        0,
+        "TASK-0218: Push/Wait covers the rendezvous; no Sequence-rule sync"
+    );
+
+    // Structure: Sequence(op, op) — no inserted Sync between them.
+    if let ACFGNode::Sequence(children) = &result.root {
+        assert_eq!(children.len(), 2);
+        assert!(matches!(children[0], ACFGNode::Operation(_)));
+        assert!(matches!(children[1], ACFGNode::Operation(_)));
+    } else {
+        panic!("expected top-level Sequence");
+    }
+}
+
+#[test]
+fn sequence_boundary_injects_sync_when_no_dataflow_between_ops() {
+    // Pre-TASK-0218 the worker-set inequality alone triggered the
+    // Sequence-rule barrier (over-sync). TASK-0218 elides the
+    // barrier only when a shared dataflow symbol exists between
+    // prev.data_out and curr.data_in (Push/Wait will then cover
+    // the rendezvous). When the two ops have NO shared data symbol
+    // — w0 writes data 0; w1 reads UNRELATED data 9 — there is no
+    // Push/Wait pair to lean on, so the barrier is kept.
+    //
+    // The synthetic shape here is a worker-set difference with no
+    // dataflow link: the consumer reads data 9, which no one in this
+    // ACFG produces (the producer side is implicit / off-tree). The
+    // outer Sequence rule still triggers because writing_workers(prev)
+    // = {w0} != reading_workers(curr) = {w1}; the elision condition
+    // fails because data_out(prev) ∩ data_in(curr) = {0} ∩ {9} = ∅.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),  // writes data 0 on w0
+        op(&[1], 101, vec![9], Some(1)), // reads UNRELATED data 9 on w1
+    ]);
+    let result = inject_syncs(empty_acfg(root));
+
+    assert_eq!(
+        result.sync_count(),
         1,
-        "exactly one sync between the two ops"
+        "TASK-0218: barrier kept when no shared data symbol between prev/curr"
     );
 
     let mut parts = Vec::new();
     collect_sync_participants(&result.root, &mut parts);
     assert_eq!(parts, vec![ws(&[0, 1])]);
-
-    // Structure: Sequence(op, sync, op).
-    if let ACFGNode::Sequence(children) = &result.root {
-        assert_eq!(children.len(), 3);
-        assert!(matches!(children[0], ACFGNode::Operation(_)));
-        assert!(matches!(children[1], ACFGNode::Sync(_)));
-        assert!(matches!(children[2], ACFGNode::Operation(_)));
-    } else {
-        panic!("expected top-level Sequence");
-    }
 }
 
 #[test]
@@ -167,20 +198,23 @@ fn sequence_boundary_writer_without_reader_injects_nothing() {
 }
 
 #[test]
-fn sequence_boundary_three_ops_two_syncs() {
-    // w0 writer -> w1 reader -> w2 reader. Two boundaries, two
-    // syncs.
+fn sequence_boundary_three_ops_two_syncs_all_elided_by_dataflow() {
+    // TASK-0218: w0 writes data 0; w1 reads data 0 and writes data 1;
+    // w2 reads data 1. BOTH cross-worker boundaries have a shared
+    // dataflow symbol (Push/Wait will cover each), so BOTH syncs are
+    // elided. Pre-TASK-0218 this produced 2 syncs; post fix it
+    // produces 0.
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![0], Some(1)),
         op(&[2], 102, vec![1], Some(2)),
     ]);
     let result = inject_syncs(empty_acfg(root));
-    assert_eq!(result.sync_count(), 2);
-
-    let mut parts = Vec::new();
-    collect_sync_participants(&result.root, &mut parts);
-    assert_eq!(parts, vec![ws(&[0, 1]), ws(&[1, 2])]);
+    assert_eq!(
+        result.sync_count(),
+        0,
+        "TASK-0218: both cross-worker boundaries covered by future Push/Wait pairs"
+    );
 }
 
 // --------------------------------------------------------------------

@@ -162,7 +162,16 @@ fn run_mp_tcp(scratch: &Path) -> Vec<u8> {
         w0_src.contains("TcpStream::connect"),
         "w0 must be the client"
     );
-    for needle in &["wire::write_msg", "wire::read_msg_expect", "wire::barrier_cross"] {
+    // TASK-0218: this fixture is bare-Operation only (no Repeat), so
+    // after the sync_inject Push/Wait elision lands there are zero
+    // Sync events on the EventList — and therefore no
+    // `wire::barrier_cross` calls in the emitted code. We no longer
+    // assert that needle here. The wire-level barrier_cross helper
+    // has its own unit test in `mp-tcp-common` (`barrier_cross_two_party`)
+    // and is exercised end-to-end by the e2e matrix cells that DO
+    // carry Sync events (02-split-add__split__mp-tcp-bufsync via its
+    // Repeat-entry sync, 05-stencil__blocked__mp-tcp-bufsync, etc.).
+    for needle in &["wire::write_msg", "wire::read_msg_expect"] {
         assert!(
             host_src.contains(needle) || w0_src.contains(needle),
             "generated code missing `{needle}`"

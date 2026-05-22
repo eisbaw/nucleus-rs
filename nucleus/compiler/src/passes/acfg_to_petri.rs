@@ -105,58 +105,44 @@
 //! metadata not currently in the ACFG, and the link-step
 //! `D <= N` check (TASK-0134 AC#3) makes (a) safe for any backend.
 //!
-//! **Coupled to the elision in § "Elision of D head-start pushes"
-//! below.** `ACFG::pipeline_depth_for_seq` is read at TWO sites in
-//! this pass — here, to set `initial_marking = D` on the buffer
-//! place; and in `emit_xfer`, to elide the first D Push transitions'
-//! `TtoP` arcs. Both reads MUST stay in sync: the head-start credit
-//! and the elided pushes are two expressions of the same `D` tokens.
-//! Changing one without the other silently desyncs the analysis net.
+//! ### Path-2 TtoP-arc elision — REVERTED by TASK-0218 AC#2
 //!
-//! ### Elision of D head-start pushes (TASK-0213)
+//! A prior cycle (TASK-0213) elided the buffer-deposit (`TtoP`) arc
+//! for the first D Push transitions per seq when the seq lived
+//! inside a `pipeline=D` loop, treating the buffer's
+//! `initial_marking = D` (TASK-0134) and "the first D pushes" as two
+//! expressions of the same head-start credit. That elision was
+//! structural compensation for `sync_inject`'s over-syncing — it
+//! interposed a barrier between a Push and its matching Wait,
+//! creating a Push -> barrier -> Wait dependency cycle on a bounded
+//! buffer that no marking-aware firing order could break.
 //!
-//! With `initial_marking = D` and capacity `N = D` on the same buffer
-//! place, the *first* Push in the unrolled loop body would overflow
-//! the buffer on firing (the buffer is already at capacity). The
-//! per-worker control chain plus the sync-injector's barrier between
-//! Push and Wait forces Push to fire before Wait, so no marking-aware
-//! firing order can resolve this (path 1 of the TASK-0213 brief — the
-//! recursive consumer closure leads straight back to the producer
-//! through the sync_barrier).
+//! TASK-0218 fixed the root cause: `sync_inject` now elides the
+//! redundant Sequence-rule barrier between two bare Operations whose
+//! dataflow already shares a data symbol (the Push/Wait pair that
+//! will be inserted later supplies the rendezvous on its own — see
+//! [`crate::passes::sync_inject::push_wait_pair_covers`]). With the
+//! structural cycle gone, `boundedness::derive_firing_order`'s
+//! marking-aware reordering (path 1) resolves example-13 directly,
+//! and the path-2 TtoP elision is no longer needed. Every Push now
+//! emits a real `TtoP` arc; the analysis net is once again a
+//! one-to-one trace of runtime token deposits.
 //!
-//! Resolution: treat `initial_marking = D` and "the first D Push
-//! transitions" as TWO EXPRESSIONS OF THE SAME CREDITS (PRD §8.2:
-//! "tokens placed in pipeline-register places by the initial marking
-//! ... schedule keywords lower into different initial markings on the
-//! same kind of place"). Concretely, the first D Push transitions
-//! per seq DO NOT add a `TtoP` arc to the buffer place; their
-//! buffer-side effect is folded into the place's initial marking.
-//! All N pushes still exist as transitions (worker-control chain
-//! intact, EventList projection unchanged, runtime codegen unchanged).
-//! Only the analysis-level buffer arithmetic credits the first D
-//! pushes against the initial marking.
-//!
-//! Net effect on the buffer:
+//! Net effect on the buffer (post TASK-0218 AC#2):
 //!
 //! ```text
 //!  initial = D
-//!  + (N - D) real pushes  (the last N - D)
+//!  + N real pushes
 //!  - N waits
-//!  = 0  (end state)
+//!  = D  (end state: D leftover head-start credits)
 //! ```
 //!
-//! Honest mismatch with runtime semantics: at runtime, all N pushes
-//! deposit into the ring buffer, and consumers drain in parallel —
-//! the buffer never holds more than D items concurrently, but the
-//! *pre-fill* the analysis net models does not actually exist in the
-//! backend's ring buffer. The analysis-net encoding is a *
-//! conservative bound* — if it accepts, the runtime will also be
-//! within capacity. The encoding is not a one-to-one trace of runtime
-//! state. This trade was made deliberately because (i) backends
-//! consume the EventList, not the analysis net, so divergence is
-//! invisible to codegen, and (ii) the alternative IR (interpretation
-//! (b), per-stage decremented markings) requires stage-numbering
-//! metadata that the ACFG does not carry.
+//! The `D` leftover head-start credits at the end of the loop are
+//! the IR's representation of "the pipeline never fully drains in
+//! a single iteration" — perfectly bounded, expected for the
+//! pipelined shape. The runtime buffer drains to empty because the
+//! initial-marking credits are an analysis-only fiction (the runtime
+//! ring buffer starts EMPTY, not pre-filled).
 //!
 //! For Petri-net analysis purposes: an `async, buffer=N` transfer
 //! still has the *same* net shape as `sync` apart from the buffer
@@ -184,9 +170,9 @@
 //! producer's first N real pushes would then deposit on top of an
 //! already-D-full ring and overflow.
 //!
-//! See "Honest mismatch with runtime semantics" above; this paragraph
-//! exists to keep the IR-layer contract and the backend-layer
-//! contract from being read as the same thing. They are not.
+//! This paragraph exists to keep the IR-layer contract (analysis-net
+//! initial marking) and the backend-layer contract (runtime ring
+//! buffer) from being read as the same thing. They are not.
 //!
 //! `reuse` is still a no-op at this layer (filed as a follow-up to
 //! TASK-0134; reuse needs a different ACFG carrier than pipeline
@@ -224,36 +210,23 @@
 //!    slice's identity, not a depth count). Filed as a follow-up to
 //!    TASK-0134.
 //!
-//! - **Analysis net is a conservative bound, not a runtime trace
-//!    (TASK-0213).** The head-start-push elision lets the IR's analysis
-//!    net pass boundedness/deadlock under `pipeline=D` with capacity
-//!    `N=D`; at runtime backends will execute all N real pushes against
-//!    an EMPTY ring of size N. If the analysis accepts, the runtime
-//!    stays within capacity — but the analysis net does NOT model the
-//!    one-to-one runtime token trace. See "Elision of D head-start
-//!    pushes" above. Codegen reads only the EventList, which IS a
-//!    one-to-one trace (every Push/Wait preserved).
+//! - **Analysis net IS a one-to-one runtime token trace (post
+//!    TASK-0218 AC#2).** Every Push emits a real `TtoP` arc; every
+//!    Wait emits a real `PtoT` arc. The `D` head-start credits on a
+//!    pipelined buffer's `initial_marking` are the IR's analysis-level
+//!    way of saying "the producer has D in-flight tokens before the
+//!    consumer needs to drain"; backends still start their ring
+//!    buffer EMPTY at runtime (the initial marking is analysis-only,
+//!    not a runtime pre-fill instruction).
 //!
 //! - **`pipeline=D` with `D > iteration_count`** — RESOLVED by
 //!    TASK-0217: the link step now rejects this combination via
 //!    [`crate::link::LinkError::PipelineExceedsIterationCount`].
-//!    Without that reject, the elision below drops every Push for the
-//!    seq (only `iter_count < D` exist) and the buffer place ends
-//!    with `D - iter_count` leftover initial-marking tokens —
-//!    boundedness still holds (below capacity), but the residue is
-//!    semantically odd. By the time this pass runs, the link step has
-//!    already failed, so the leftover-tokens shape is structurally
-//!    unreachable for compiler-built fixtures.
-//!
-//! - **`sync_inject` over-syncing forces the path-2 elision**
-//!    (TASK-0218). The root reason the analysis net needs the elision
-//!    at all is that `sync_inject` currently interposes a barrier
-//!    between a Push and its matching Wait (the Push/Wait pair already
-//!    supplies the rendezvous; the extra barrier is over-synchronisation).
-//!    A future `sync_inject` fix that elides such barriers would let
-//!    the marking-aware firing-order in `boundedness::derive_firing_order`
-//!    resolve the example-13 fixture directly, making path 2's TtoP-arc
-//!    elision unnecessary. Filed as TASK-0218.
+//!    Pre-TASK-0218 AC#2, the path-2 elision would have dropped every
+//!    Push (since `iter_count < D`) and left `D - iter_count` leftover
+//!    head-start tokens; post AC#2 the leftover-tokens story is
+//!    moot — every Push always emits its `TtoP` arc and the
+//!    leftover-at-end matches D exactly.
 //!
 //! - **Distributed placements treat the set as one entity**. If a
 //!    kernel is placed on `{w0, w1, w2, w3}`, the Operation transition
@@ -333,15 +306,6 @@ struct NetBuilder<'a> {
     /// Useful only for human-readable labels; firing semantics depend
     /// solely on arc structure.
     slot_counters: BTreeMap<WorkerId, u32>,
-    /// TASK-0213: count of Push transitions emitted so far per seq.
-    /// Used to elide the buffer-side `TtoP` arc on the first `D`
-    /// Push transitions when the seq has a pipeline-depth sidecar
-    /// entry (initial_marking = D on its buffer place). The first D
-    /// pushes are represented as already accounted for by the head-
-    /// start initial marking; only the remaining N-D pushes deposit
-    /// new tokens. See the `Elision of D head-start pushes` module-
-    /// doc section above for the full rationale.
-    push_count_per_seq: BTreeMap<SeqTag, u32>,
 }
 
 impl<'a> NetBuilder<'a> {
@@ -370,7 +334,6 @@ impl<'a> NetBuilder<'a> {
             worker_current,
             buffer_places: BTreeMap::new(),
             slot_counters,
-            push_count_per_seq: BTreeMap::new(),
         }
     }
 
@@ -471,56 +434,26 @@ impl<'a> NetBuilder<'a> {
 
         match x.role {
             XferRole::Push => {
-                // TASK-0213: elide the buffer-deposit arc for the
-                // first D pushes per seq when this seq lives inside
-                // a `pipeline=D` loop. The buffer place already
-                // carries `initial_marking = D` (TASK-0134); those
-                // D head-start credits ARE the first D pushes,
-                // expressed as the initial marking. Emitting a real
-                // TtoP arc for them would overflow the capacity-D
-                // buffer on the very first firing (PRD §8.2's
-                // mapping table treats initial marking and producer
-                // firings as alternative encodings of the same
-                // pipeline-depth credit).
+                // Push deposits one token into the buffer place.
                 //
-                // The Push *transition* still exists: it still
-                // threads through the worker's control chain, still
-                // shows up as a `Push` event in the EventList
-                // projection (the EventList is built from the ACFG
-                // by `acfg_to_events`, not the net — see
-                // `petri_to_events.rs`), and still drives runtime
-                // codegen to emit a real Push call. Only the
-                // *buffer-side* effect is folded into the initial
-                // marking.
-                //
-                // Per-seq counter is bumped unconditionally so the
-                // ELIDE/EMIT decision uses the count BEFORE this
-                // push (1-based comparison: push #1..#D elide,
-                // push #(D+1).. emit).
-                //
-                // NOTE (TASK-0217 — closed): when `D > iteration_count`
-                // every push for the seq would be elided, leaving
-                // `D - iter_count` leftover initial-marking tokens in
-                // the buffer place. The link step rejects that
-                // combination via PipelineExceedsIterationCount BEFORE
-                // this pass runs, so the leftover-tokens shape is
-                // structurally unreachable for compiler-built nets.
-                // Hand-built nets fed to this pass directly can still
-                // hit it; boundedness still holds (leftover below
-                // capacity), the residue is just semantically odd.
-                let count = self.push_count_per_seq.entry(x.seq).or_insert(0);
-                *count += 1;
-                let depth = self
-                    .acfg
-                    .pipeline_depth_for_seq
-                    .get(&x.seq)
-                    .map(|d| u32::try_from(d.get()).unwrap_or(u32::MAX))
-                    .unwrap_or(0);
-                if *count > depth {
-                    self.net.add_arc(ArcKind::TtoP, bpid, tid, 1);
-                }
-                // else: this push is a head-start credit; the buffer
-                // initial marking already accounts for it.
+                // History (TASK-0213 path-2; TASK-0218 AC#2 — closed):
+                // a prior cycle elided this TtoP arc for the first D
+                // Push transitions per seq when the seq lived inside
+                // a `pipeline=D` loop, treating the buffer's
+                // `initial_marking = D` (TASK-0134) as the
+                // alternative encoding of those D head-start pushes.
+                // That elision was structural compensation for
+                // `sync_inject` interposing a barrier between a Push
+                // and its matching Wait — a dependency cycle the
+                // marking-aware firing-order pass could not resolve.
+                // With TASK-0218 eliding the redundant Sequence-rule
+                // barrier between bare Operations, the cycle is gone
+                // and `boundedness::derive_firing_order`'s path-1
+                // resolution handles the fixture directly. Every
+                // Push now emits a real TtoP arc; the analysis net
+                // is once again a one-to-one trace of runtime token
+                // deposits.
+                self.net.add_arc(ArcKind::TtoP, bpid, tid, 1);
             }
             XferRole::Wait => {
                 // Wait consumes one token from the buffer place.

@@ -174,11 +174,21 @@ fn two_worker_pingpong_compiles_and_runs() {
 
     // Verify the generated main.rs structurally mentions the
     // expected primitives.
+    //
+    // TASK-0218: the bare-Operation pingpong fixture
+    // (produce_x/y → combine → sink, no Repeat) now has ZERO
+    // sync_inject barriers — every cross-worker Sequence-rule barrier
+    // is between a Push and its matching Wait and is elided. So
+    // `Barrier::new` is no longer expected in the emitted code for
+    // THIS fixture. The pthreads-sync Barrier emission path is
+    // exercised by the partial_nonuniform_barrier_multi_worker test
+    // below (whose fixture KEEPS barriers — see comments there) and
+    // by real e2e cells (02-split-add__split__pthreads-sync via its
+    // Repeat-entry sync, etc.).
     let main_rs = fs::read_to_string(&result.main_rs).unwrap();
     for needle in &[
         "thread::spawn",
         "Slot<Vec<i32>>",
-        "Barrier::new",
         ".wait()",
         ".push(",
         "kernels::produce_x",
@@ -237,20 +247,32 @@ fn two_worker_pingpong_compiles_and_runs() {
 // multi-worker schedule lowers correctly.
 //
 // Three workers (host, w0, w1). The sync-injection Sequence rule puts
-// a barrier between a cross-worker writer and the next reader:
+// a barrier between a cross-worker writer and the next reader. Under
+// the pre-TASK-0218 over-syncing rule there were THREE barriers; with
+// the TASK-0218 elision (between a Push and its matching Wait) only
+// the boundaries WITHOUT a shared dataflow symbol survive:
 //
 //   produce_a/b       on host
-//   pa <-- inc_a(a)   on w0   -- host wrote `a`         => Sync {host,w0}
-//   pb <-- inc_b(b)   on w1   -- w0 wrote pa, w1 reads b => Sync {w0,w1}
-//   sink2(pa, pb)     on host -- w1 wrote pb            => Sync {host,w1}
+//   pa <-- inc_a(a)   on w0   -- prev=produce_b writes `b`;
+//                                inc_a reads `a` (no overlap)
+//                                => Sync {host,w0} survives
+//   pb <-- inc_b(b)   on w1   -- prev=inc_a writes `pa`;
+//                                inc_b reads `b` (no overlap)
+//                                => Sync {w0,w1} survives  (HOST-EXCLUDING)
+//   sink2(pa, pb)     on host -- prev=inc_b writes `pb`;
+//                                sink2 reads `pa, pb` (pb overlaps)
+//                                => future Push/Wait for `pb` covers
+//                                   the rendezvous; barrier ELIDED.
 //
-// Three barriers with THREE DIFFERENT participant sets — {host,w0},
-// {w0,w1}, {host,w1} — a maximally non-uniform / partial barrier set,
-// including one ({w0,w1}) that does NOT involve the host at all.
+// Two barriers with TWO DIFFERENT participant sets — {host,w0},
+// {w0,w1} — a non-uniform / partial barrier set INCLUDING the
+// critical {w0,w1} HOST-EXCLUDING barrier (the case the pre-TASK-0172
+// pre-order-index heuristic mis-aligned).
+//
 // Before TASK-0172 the backend recovered barrier id by per-worker
 // pre-order Sync index: e.g. w0 saw [{host,w0},{w0,w1}] (idx 0,1)
-// while w1 saw [{w0,w1},{host,w1}] (idx 0,1) — w0#0 = {host,w0} but
-// w1#0 = {w0,w1}, a participant-set disagreement at the same index ->
+// while w1 saw [{w0,w1}] (idx 0) — w0#0 = {host,w0} but w1#0 =
+// {w0,w1}, a participant-set disagreement at the same index ->
 // EmitError::ContractGap (the schedule was rejected, not a wrong
 // binary). With the contract-carried SyncTag every participant of one
 // barrier carries the SAME tag, so each barrier resolves
@@ -393,10 +415,12 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
         }
     }
 
-    // The three barriers, with the three different participant sets
-    // this schedule's sync-injection rules produce. If the rules
-    // drift, these lookups fail loudly (the test would otherwise stop
-    // exercising the partial-barrier path).
+    // The two barriers, with the two different participant sets
+    // this schedule's sync-injection rules produce (TASK-0218: the
+    // third {host,w1} barrier is now elided as redundant with the
+    // Push/Wait pair for `pb`; see the module comment block above).
+    // If the rules drift, these lookups fail loudly (the test would
+    // otherwise stop exercising the partial-barrier path).
     let set_hw0: BTreeSet<WorkerId> = [host, w0].into_iter().collect();
     let set_w0w1: BTreeSet<WorkerId> = [w0, w1].into_iter().collect();
     let set_hw1: BTreeSet<WorkerId> = [host, w1].into_iter().collect();
@@ -417,19 +441,29 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
     };
     let tag_hw0 = only_tag(&set_hw0);
     let tag_w0w1 = only_tag(&set_w0w1);
-    let tag_hw1 = only_tag(&set_hw1);
 
-    // Three genuinely distinct barriers => three distinct SyncTags.
-    let tags: BTreeSet<SyncTag> = [tag_hw0, tag_w0w1, tag_hw1].into_iter().collect();
+    // TASK-0218: the {host,w1} barrier is now elided (Push/Wait for
+    // `pb` covers the rendezvous between inc_b and sink2). Assert
+    // its ABSENCE explicitly so a regression that re-introduces it
+    // (or another barrier-emitting bug) shows up here.
+    assert!(
+        !by_tag.values().any(|p| p == &set_hw1),
+        "TASK-0218: {{host,w1}} barrier must be elided (Push/Wait for `pb` \
+         covers inc_b->sink2 rendezvous); by_tag={by_tag:?}"
+    );
+
+    // Two genuinely distinct barriers => two distinct SyncTags.
+    let tags: BTreeSet<SyncTag> = [tag_hw0, tag_w0w1].into_iter().collect();
     assert_eq!(
         tags.len(),
-        3,
-        "three distinct barriers must carry three distinct SyncTags; \
-         got hw0={tag_hw0:?} w0w1={tag_w0w1:?} hw1={tag_hw1:?}"
+        2,
+        "two distinct barriers must carry two distinct SyncTags; \
+         got hw0={tag_hw0:?} w0w1={tag_w0w1:?}"
     );
-    // And it is genuinely non-uniform (participant sets differ).
-    assert!(
-        set_hw0 != set_w0w1 && set_w0w1 != set_hw1 && set_hw0 != set_hw1,
+    // And it is genuinely non-uniform (participant sets differ;
+    // includes the critical host-excluding {w0,w1} case).
+    assert_ne!(
+        set_hw0, set_w0w1,
         "this test must exercise a non-uniform barrier set"
     );
 
@@ -454,14 +488,10 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
         .expect("partial-barrier multi-worker emit must succeed (no ContractGap)");
 
     let main_rs = fs::read_to_string(&result.main_rs).unwrap();
-    // The bar name is the SyncTag value. All three barriers are
-    // 2-party here.
-    let (b_hw0, b_w0w1, b_hw1) = (tag_hw0.0, tag_w0w1.0, tag_hw1.0);
-    for (b, label) in [
-        (b_hw0, "{host,w0}"),
-        (b_w0w1, "{w0,w1}"),
-        (b_hw1, "{host,w1}"),
-    ] {
+    // The bar name is the SyncTag value. Both surviving barriers are
+    // 2-party here. TASK-0218: the {host,w1} barrier is elided.
+    let (b_hw0, b_w0w1) = (tag_hw0.0, tag_w0w1.0);
+    for (b, label) in [(b_hw0, "{host,w0}"), (b_w0w1, "{w0,w1}")] {
         assert!(
             main_rs
                 .contains(&format!("let bar_{b}: Arc<Barrier> = Arc::new(Barrier::new(2))")),
@@ -470,7 +500,7 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
     }
     // Per-worker wiring. Spawned workers clone-capture bars as
     // `w0_bar_<tag>` / `w1_bar_<tag>`; the host uses bare `bar_<tag>`.
-    // w0 participates in {host,w0} and {w0,w1}, NOT {host,w1}.
+    // w0 participates in {host,w0} and {w0,w1}.
     assert!(
         main_rs.contains(&format!("w0_bar_{b_hw0}.wait()")),
         "w0 must barrier on {{host,w0}}:\n{main_rs}"
@@ -479,26 +509,19 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
         main_rs.contains(&format!("w0_bar_{b_w0w1}.wait()")),
         "w0 must barrier on {{w0,w1}}:\n{main_rs}"
     );
-    assert!(
-        !main_rs.contains(&format!("w0_bar_{b_hw1}.wait()")),
-        "w0 must NOT barrier on {{host,w1}}:\n{main_rs}"
-    );
-    // w1 participates in {w0,w1} and {host,w1}, NOT {host,w0}.
+    // w1 participates in {w0,w1} only (TASK-0218: the {host,w1}
+    // barrier is elided; w1 must NOT carry it).
     assert!(
         main_rs.contains(&format!("w1_bar_{b_w0w1}.wait()")),
         "w1 must barrier on {{w0,w1}}:\n{main_rs}"
     );
     assert!(
-        main_rs.contains(&format!("w1_bar_{b_hw1}.wait()")),
-        "w1 must barrier on {{host,w1}}:\n{main_rs}"
-    );
-    assert!(
         !main_rs.contains(&format!("w1_bar_{b_hw0}.wait()")),
         "w1 must NOT barrier on {{host,w0}}:\n{main_rs}"
     );
-    // The host participates in {host,w0} and {host,w1}, NOT {w0,w1}.
-    // (Host body uses bare `bar_<tag>`; assert it does NOT wait the
-    // w0<->w1 barrier — a tighter check than counts alone.)
+    // The host participates in {host,w0} only (TASK-0218: the
+    // {host,w1} barrier is elided). Assert it does NOT wait the
+    // w0<->w1 barrier — a tighter check than counts alone.
     assert!(
         !main_rs.contains(&format!("    bar_{b_w0w1}.wait()")),
         "host must NOT barrier on {{w0,w1}}:\n{main_rs}"

@@ -763,20 +763,17 @@ fn e2e_example_13_pipeline_parallel_is_deterministic() {
 
 #[test]
 fn e2e_example_13_pipeline_parallel_passes_boundedness_and_deadlock() {
-    // TASK-0213: the actual resolution for this fixture is path 2
-    // (acfg_to_petri TtoP-arc elision of the first D Push transitions
-    // per seq). The buffer is pre-marked at D, the first D pushes
-    // are credited against that marking (their TtoP arcs dropped),
-    // and source-order is then a legal firing sequence directly.
+    // TASK-0218 AC#2: with `sync_inject` no longer interposing a
+    // barrier between a Push and its matching Wait (the bare-Operation
+    // Sequence-rule case), the structural dependency cycle that
+    // forced TASK-0213's path-2 elision is gone. Boundedness on this
+    // fixture is now resolved by path-1 alone — the marking-aware
+    // firing-order reorder in `derive_firing_order`. The path-2
+    // TtoP-arc elision in `acfg_to_petri::emit_xfer` has been
+    // reverted (every Push deposits a real token, in lockstep with
+    // the runtime token trace).
     //
-    // The marking-aware logic in `derive_firing_order` (path 1) is
-    // defense-in-depth for nets whose source-order isn't legal even
-    // after path-2 elision — currently no fixture exercises it; see
-    // TASK-0218 (sync_inject over-syncing) for why path 1 alone is
-    // not sufficient here.
-    //
-    // Both boundedness and deadlock-freedom hold under the combined
-    // path-2 + path-1 stack.
+    // Both boundedness and deadlock-freedom hold under path-1 alone.
     let net = pipeline_to_net(
         "13-cnn-inference/prog.algo.nuc",
         "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
