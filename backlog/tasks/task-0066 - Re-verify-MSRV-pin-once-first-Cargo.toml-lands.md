@@ -1,9 +1,10 @@
 ---
 id: TASK-0066
 title: Re-verify MSRV pin once first Cargo.toml lands
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 23:24'
+updated_date: '2026-05-22 21:28'
 labels:
   - M0
   - infra
@@ -20,7 +21,17 @@ TASK-0001 pinned rustc to 1.83.0 in flake.nix as a conservative pre-Cargo guess.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Cargo.toml has no rust-version field
-- [ ] #2 cargo build of the first nucleus crate succeeds under the flake-pinned toolchain
+- [x] #1 Cargo.toml has no rust-version field
+- [x] #2 cargo build of the first nucleus crate succeeds under the flake-pinned toolchain
 - [ ] #3 If bumped: flake.nix rustChannel + sha256 updated; commit message states which dep forced the bump
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 62b tracker hygiene (2026-05-22). Both ACs structurally met:
+- AC#1: nucleus/Cargo.toml does NOT carry a rust-version field. The workspace defers to the flake (flake.nix:8 'MUST NOT re-declare rust-version; the flake is the single source of truth'). Verified by grep.
+- AC#2: cargo build succeeds under the flake-pinned toolchain. Continuously verified across 43 cycles in 2026-05-22 (e2e 88/70/0/18, just test 0 FAILED).
+
+No source changes; no gate impact.
+<!-- SECTION:FINAL_SUMMARY:END -->
