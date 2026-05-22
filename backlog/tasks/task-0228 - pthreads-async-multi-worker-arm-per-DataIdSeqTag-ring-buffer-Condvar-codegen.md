@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-21 21:49'
-updated_date: '2026-05-22 00:09'
+updated_date: '2026-05-22 00:43'
 labels:
   - M4
   - backend
@@ -187,4 +187,16 @@ Two new tests: build_populates_barrier_participants_for_multi_worker_sync_schedu
 Wave B-2's two preconditions: TASK-0234 (Event::Sync) Done; TASK-0222 (template extraction for AC#5) still To Do.
 
 Updated Wave deliverables map: AC#4 (per-worker thread::spawn) now has barrier_participants ready for emit; the remaining Wave B-2 work for that AC is the actual code emission. AC#5 (multi-worker check_frame) still blocks on TASK-0222.
+
+## Cycle 22 (2026-05-22) — TASK-0222 helpers landed (AC#1/2)
+
+The 4 emit-string templates are extracted into pthreads-sync as pub helpers (emit_count_static, emit_count_guard_local, emit_log_branch, emit_count_branch). Two backends (pthreads-sync + mp-tcp-bufsync) consume them; pthreads-async will consume in Wave B-2.
+
+TASK-0228 AC#5 unblocked: the multi-worker check_frame work can now reuse the same 4 templates that pthreads-sync's multi_worker.rs uses (it already migrated to the helpers in cycle 22).
+
+Wave B-2 status: zero remaining preconditions in the tracker.
+- TASK-0234 (Event::Sync) — Done (cycle 21).
+- TASK-0222 (template extraction) — AC#1/2 done (cycle 22); AC#3 closes with TASK-0228 AC#5 (a new pthreads-async/tests/check_frame_emit.rs test file).
+
+Wave B-2 is now FULLY UNBLOCKED. Estimated 2-4 cycles remaining (mirror pthreads-sync's render_main_rs_multi + per-worker thread::spawn dispatch + compile-check integration test).
 <!-- SECTION:NOTES:END -->

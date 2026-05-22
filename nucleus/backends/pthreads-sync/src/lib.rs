@@ -499,6 +499,126 @@ pub fn emit_count_reporter_struct(out: &mut String) {
     .ok();
 }
 
+// --------------------------------------------------------------------
+// TASK-0222: Shared check_frame emit templates.
+//
+// The four templates below were previously verbatim-duplicated between
+// pthreads-sync (single-worker + multi-worker codegen) and
+// mp-tcp-bufsync (8 inline sites total: 2 backends × 4 templates).
+// pthreads-async's multi-worker arm (TASK-0228 Wave B-2) becomes the
+// third tier-1 consumer. Two-readers-can-hold-it-in-their-head no
+// longer holds; extract the templates into `pub fn` helpers so a
+// single edit propagates to every backend by construction (drift
+// detection becomes structural prevention, not test-as-tripwire).
+//
+// Each helper takes `out: &mut String` and writes ONE emit unit
+// (one Rust statement / declaration). The caller owns indentation,
+// loop iteration, and the surrounding context — these helpers are
+// the smallest unit of shared template, not a wrapper for the whole
+// codegen flow.
+// --------------------------------------------------------------------
+
+/// Emit the file-scope `static NUC_CHECK_COUNT_<ident>: AtomicU64`
+/// declaration for a Count check_loop. One line + trailing newline.
+///
+/// Caller wraps this in a `for cf in count_frames` loop after
+/// [`emit_count_reporter_struct`], and emits a blank `writeln!(out)`
+/// after the loop. Mirrors the pre-extraction pthreads-sync site at
+/// lib.rs:551-559 and mp-tcp-bufsync at lib.rs:463-471 (TASK-0052.04).
+pub fn emit_count_static(out: &mut String, ident: &str) {
+    writeln!(
+        out,
+        "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
+         std::sync::atomic::AtomicU64::new(0);",
+    )
+    .ok();
+}
+
+/// Emit the per-Count-loop Drop guard local inside `fn main()`. A
+/// five-line block: `let _nuc_check_reporter_<ident> = NucCheckCountReporter { ... };`.
+///
+/// Caller iterates `for cf in count_frames`, and emits a blank line
+/// after the loop if `!count_frames.is_empty()`. Mirrors the
+/// pre-extraction pthreads-sync site at lib.rs:572-583 and
+/// mp-tcp-bufsync at lib.rs:588-600 (TASK-0052.04).
+///
+/// The four-space leading indent is HARDCODED to match the
+/// `fn main()`-level scope all callers emit into. If a future
+/// codegen path needs nested-scope emission, add a `pad: &str`
+/// parameter.
+pub fn emit_count_guard_local(
+    out: &mut String,
+    ident: &str,
+    loop_var: &str,
+    latency_max_ns: u64,
+) {
+    writeln!(
+        out,
+        "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
+         \x20\x20\x20\x20}};",
+        ns = latency_max_ns,
+    )
+    .ok();
+}
+
+/// Emit the Log on-violation branch — one inline conditional that
+/// runs at the bottom of an outer-loop iteration after `_check_elapsed`
+/// has been computed. The branch prints to stderr (NOT stdout, so the
+/// cross-backend differential on output.bin remains stable; PRD §6.3.5
+/// 'Log fires sparingly').
+///
+/// `body_pad` is the caller's indentation string (e.g. `"        "`
+/// for two nested fors). `loop_var` appears verbatim in the
+/// `\`check loop \`<lv>\`\`` backticks of the user-visible message.
+/// `latency_max_ns` appears twice: in the threshold compare and in
+/// the printed line. Mirrors pre-extraction pthreads-sync at
+/// lib.rs:991-997 and mp-tcp-bufsync at lib.rs:809-815 (TASK-0052.04).
+pub fn emit_log_branch(
+    out: &mut String,
+    body_pad: &str,
+    loop_var: &str,
+    latency_max_ns: u64,
+) {
+    writeln!(
+        out,
+        "{body_pad}if _check_elapsed > {ns}_u128 {{ \
+         eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
+        ns = latency_max_ns,
+        lv = loop_var,
+    )
+    .ok();
+}
+
+/// Emit the Count on-violation branch — one inline conditional that
+/// atomically increments the file-scope `NUC_CHECK_COUNT_<id>` counter
+/// (Relaxed ordering is sufficient; see pthreads-sync's pre-extraction
+/// comment at lib.rs:1010-1018 for the memory-ordering rationale).
+///
+/// `body_pad` is the caller's indentation string. `id` is the
+/// SANITIZED ident (call [`sanitize_loop_var`] before passing here —
+/// this helper does NOT sanitize because the multi-worker path needs
+/// a per-thread-pre-sanitised value, and the call-site already has
+/// it). Mirrors pre-extraction pthreads-sync at lib.rs:1020-1026 and
+/// mp-tcp-bufsync at lib.rs:827-833 (TASK-0052.04).
+pub fn emit_count_branch(
+    out: &mut String,
+    body_pad: &str,
+    sanitized_ident: &str,
+    latency_max_ns: u64,
+) {
+    writeln!(
+        out,
+        "{body_pad}if _check_elapsed > {ns}_u128 {{ \
+         NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
+        ns = latency_max_ns,
+        id = sanitized_ident,
+    )
+    .ok();
+}
+
 /// Render `main.rs` from a single worker's `EventList`.
 ///
 /// Strategy (mirrors the old AlgoIR walk one-for-one so the output
@@ -549,13 +669,8 @@ fn render_main_rs(
     if !count_frames.is_empty() {
         emit_count_reporter_struct(&mut out);
         for cf in &count_frames {
-            writeln!(
-                out,
-                "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
-                 std::sync::atomic::AtomicU64::new(0);",
-                ident = cf.ident,
-            )
-            .ok();
+            // TASK-0222: shared template — see emit_count_static.
+            emit_count_static(&mut out, &cf.ident);
         }
         writeln!(out).ok();
     }
@@ -569,18 +684,8 @@ fn render_main_rs(
     // keeping the binding alive until `fn main` returns. The Drop on
     // the guard fires there, printing the final tally to stderr.
     for cf in &count_frames {
-        writeln!(
-            out,
-            "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
-             \x20\x20\x20\x20}};",
-            ident = cf.ident,
-            loop_var = cf.loop_var,
-            ns = cf.latency_max_ns,
-        )
-        .ok();
+        // TASK-0222: shared template — see emit_count_guard_local.
+        emit_count_guard_local(&mut out, &cf.ident, &cf.loop_var, cf.latency_max_ns);
     }
     if !count_frames.is_empty() {
         writeln!(out).ok();
@@ -988,13 +1093,8 @@ fn render_event(
                         // of when this fires is non-deterministic
                         // (clock-dependent), but that does not perturb
                         // the byte-identical comparison.
-                        writeln!(
-                            out,
-                            "{body_pad}if _check_elapsed > {ns}_u128 {{ eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
-                            ns = frame.latency_max_ns,
-                            lv = frame.loop_var,
-                        )
-                        .ok();
+                        // TASK-0222: shared template — see emit_log_branch.
+                        emit_log_branch(out, &body_pad, &frame.loop_var, frame.latency_max_ns);
                     }
                     ViolationKind::Count => {
                         // TASK-0052.04. Atomic fetch_add per violation.
@@ -1016,14 +1116,9 @@ fn render_event(
                         // returns. (Multi-worker pthreads-sync wires
                         // the same shape with a SHARED static across
                         // worker threads — TASK-0052.05.)
+                        // TASK-0222: shared template — see emit_count_branch.
                         let id = sanitize_loop_var(&frame.loop_var);
-                        writeln!(
-                            out,
-                            "{body_pad}if _check_elapsed > {ns}_u128 {{ NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
-                            ns = frame.latency_max_ns,
-                            id = id,
-                        )
-                        .ok();
+                        emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
                     }
                 }
             } else {

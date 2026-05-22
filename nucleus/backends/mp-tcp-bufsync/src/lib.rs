@@ -80,9 +80,9 @@ use compiler::sidecar::NameSidecar;
 // tests) build `NameTables` once and feed both backends.
 pub use pthreads_sync::{EmitError, NameTables};
 use pthreads_sync::{
-    collect_count_check_frames, emit_count_reporter_struct, render_array_init_for,
-    render_const_expr_pub, render_fire_args_pub, render_single_worker_main, rust_type_of,
-    RenderCtxPub,
+    collect_count_check_frames, emit_count_branch, emit_count_guard_local, emit_count_reporter_struct,
+    emit_count_static, emit_log_branch, render_array_init_for, render_const_expr_pub,
+    render_fire_args_pub, render_single_worker_main, rust_type_of, RenderCtxPub,
 };
 
 /// Paths to the files [`emit`] wrote.
@@ -461,13 +461,8 @@ impl<'a> Plan<'a> {
         if !count_frames.is_empty() {
             emit_count_reporter_struct(&mut out);
             for cf in &count_frames {
-                writeln!(
-                    out,
-                    "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
-                     std::sync::atomic::AtomicU64::new(0);",
-                    ident = cf.ident,
-                )
-                .ok();
+                // TASK-0222: shared template — see emit_count_static.
+                emit_count_static(&mut out, &cf.ident);
             }
             writeln!(out).ok();
         }
@@ -586,18 +581,8 @@ impl<'a> Plan<'a> {
         // stderr summary line. SAME shape as pthreads-sync — single
         // codegen implementation.
         for cf in &count_frames {
-            writeln!(
-                out,
-                "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
-                 \x20\x20\x20\x20\x20\x20\x20\x20counter: &NUC_CHECK_COUNT_{ident},\n\
-                 \x20\x20\x20\x20\x20\x20\x20\x20loop_var: \"{loop_var}\",\n\
-                 \x20\x20\x20\x20\x20\x20\x20\x20threshold_ns: {ns},\n\
-                 \x20\x20\x20\x20}};",
-                ident = cf.ident,
-                loop_var = cf.loop_var,
-                ns = cf.latency_max_ns,
-            )
-            .ok();
+            // TASK-0222: shared template — see emit_count_guard_local.
+            emit_count_guard_local(&mut out, &cf.ident, &cf.loop_var, cf.latency_max_ns);
         }
         if !count_frames.is_empty() {
             writeln!(out).ok();
@@ -806,13 +791,8 @@ impl<'a> Plan<'a> {
                                 // cross-backend differential test pins
                                 // this in
                                 // `mp_tcp_bufsync_emit_includes_log_eprintln_on_check_loop`.
-                                writeln!(
-                                    out,
-                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ eprintln!(\"warning: check loop `{lv}` violated latency_max={ns} ns: iteration took {{}} ns\", _check_elapsed); }}",
-                                    ns = frame.latency_max_ns,
-                                    lv = frame.loop_var,
-                                )
-                                .ok();
+                                // TASK-0222: shared template — see emit_log_branch.
+                                emit_log_branch(out, &body_pad, &frame.loop_var, frame.latency_max_ns);
                             }
                             compiler::event::ViolationKind::Count => {
                                 // TASK-0052.04. The static counter +
@@ -823,14 +803,9 @@ impl<'a> Plan<'a> {
                                 // sufficient: the fetch_add and the
                                 // Drop-time load both happen on the
                                 // worker process's main thread.
+                                // TASK-0222: shared template — see emit_count_branch.
                                 let id = pthreads_sync::sanitize_loop_var(&frame.loop_var);
-                                writeln!(
-                                    out,
-                                    "{body_pad}if _check_elapsed > {ns}_u128 {{ NUC_CHECK_COUNT_{id}.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }}",
-                                    ns = frame.latency_max_ns,
-                                    id = id,
-                                )
-                                .ok();
+                                emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
                             }
                         }
                     } else {
