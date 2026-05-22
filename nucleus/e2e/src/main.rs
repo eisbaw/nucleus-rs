@@ -3208,16 +3208,26 @@ mystery = 42
     }
 
     /// The shipped manifest must have ZERO coverage gaps at EVERY
-    /// milestone tier (no flag, M1, M2, M3) — the durable per-tier
+    /// milestone tier (no flag, M1, M2, M3, M4) — the durable per-tier
     /// guard. A future manifest edit that typo's or strands a
     /// milestone-tagged required cell turns the relevant tier (and its
     /// CI job) red.
+    ///
+    /// M4 was added when TASK-0042.03 landed the first M4-tagged
+    /// required cell (09-producer-consumer/pipelined × pthreads-async,
+    /// the async + buffer>1 + notify=event headline).
     #[test]
     fn real_manifest_has_no_coverage_gaps_at_every_milestone() {
         let paths = Paths::discover().expect("discover repo root");
         let src = fs::read_to_string(paths.manifest_path()).expect("read manifest");
         let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
-        for gate in [None, Some(Milestone(1)), Some(Milestone(2)), Some(Milestone(3))] {
+        for gate in [
+            None,
+            Some(Milestone(1)),
+            Some(Milestone(2)),
+            Some(Milestone(3)),
+            Some(Milestone(4)),
+        ] {
             let args = Args {
                 milestone: gate,
                 ..Args::default()
@@ -3234,8 +3244,15 @@ mystery = 42
 
     /// The required set genuinely DIFFERS per milestone (the whole
     /// point of AC#3 — the CI jobs must not be identical). Pins the
-    /// cumulative monotone: |M1| < |M2| < |M3| == |full|, and M1 ⊆ M2
-    /// ⊆ M3 by construction of the gate.
+    /// cumulative monotone: |M1| < |M2| < |M3| < |M4| == |full|, and
+    /// M1 ⊆ M2 ⊆ M3 ⊆ M4 by construction of the gate.
+    ///
+    /// M4 entered the chain when TASK-0042.03 landed the first
+    /// M4-tagged required cell (the producer-consumer pipelined ×
+    /// pthreads-async headline). With ≥1 M4 cell present, |M3| < |M4|
+    /// is now strict; the chain remains strict across all four tiers.
+    /// If a future cycle introduces an M5 tier, the strict M4 < M5
+    /// extension must be added here in lockstep.
     #[test]
     fn required_counts_strictly_grow_per_milestone() {
         let paths = Paths::discover().expect("discover repo root");
@@ -3255,15 +3272,17 @@ mystery = 42
         let m1 = count(Some(Milestone(1)));
         let m2 = count(Some(Milestone(2)));
         let m3 = count(Some(Milestone(3)));
+        let m4 = count(Some(Milestone(4)));
         let full = count(None);
         assert!(
-            m1 < m2 && m2 < m3,
-            "milestone subsets must strictly grow: M1={m1} M2={m2} M3={m3}"
+            m1 < m2 && m2 < m3 && m3 < m4,
+            "milestone subsets must strictly grow: \
+             M1={m1} M2={m2} M3={m3} M4={m4}"
         );
         assert_eq!(
-            m3, full,
-            "M3 is the current top tier ⇒ its required set == the full set \
-             (M1={m1} M2={m2} M3={m3} full={full})"
+            m4, full,
+            "M4 is the current top tier ⇒ its required set == the full set \
+             (M1={m1} M2={m2} M3={m3} M4={m4} full={full})"
         );
     }
 

@@ -1,0 +1,95 @@
+// Producer/consumer pipe — the smallest fixture for the M4
+// capability set (async + buffer>1 + notify=event + pipeline=D).
+//
+// Two pure kernels in a one-dimensional dataflow chain:
+//   produce(seed)    : i32 -> i32   — first stage
+//   transform(rec)   : i32 -> i32   — second stage
+//
+// The algorithm is one loop with two single-assignments per iteration:
+//
+//   stream[n] <-- produce(seeds[n]);
+//   result[n] <-- transform(stream[n]);
+//
+// What this example demonstrates
+// ------------------------------
+//   - The smallest two-stage dataflow chain that can be pipelined
+//     across two compute workers: each iteration has a producer-side
+//     write to `stream[n]` and a consumer-side read of `stream[n]`,
+//     i.e. one cross-worker data symbol that crosses every iteration.
+//   - Stage parallelism via the pipelined schedule
+//     (`loop n : pipeline=4`, `transfer stream : async, buffer=4,
+//     notify=event`). Sample n is on the consumer side computing
+//     `transform` while sample n+1 is on the producer side computing
+//     `produce` — exactly the capability surface PRD §9 row 9 calls
+//     out ("pipelining, buffer depth, async transfer").
+//   - That the SAME `prog.algo.nuc` compiles under a single-worker
+//     `naive` schedule (smoke test, runs on every tier-1 backend) AND
+//     a two-compute-worker `pipelined` schedule (only the async-capable
+//     backend, `pthreads-async`, can run it). The algorithm/schedule
+//     split (PRD §2) survives the capability spread.
+//
+// What this example does NOT demonstrate
+// --------------------------------------
+//   - Halo regions, accumulation, or any cross-iteration data
+//     dependency (each `result[n]` depends only on `seeds[n]`).
+//     Those surfaces live in examples 3, 4, 5, 6.
+//   - More than two pipeline stages, or a fan-out / fan-in pattern.
+//     A linear two-stage chain is the smallest fixture that exhibits
+//     buffered streaming between two compute workers.
+//   - Reduction, sort, or any non-deterministic-under-reorder
+//     operation. Each `result[n]` is a function of `seeds[n]` alone;
+//     order does not affect the final bytes.
+//
+// Numeric type: i32 throughout (PRD §13, docs/reference-impl-policy.md
+// §5). All arithmetic uses `wrapping_*` in `kernels.rs` and the
+// independent reference; the committed input stays inside the i32
+// range and never trips the wrap.
+//
+// N choice: 16. Small enough to inspect by hand (input.bin and
+// reference.bin are 64 bytes each, full hexdump fits on one screen),
+// large enough that `pipeline=4` and `buffer=4` actually exercise the
+// steady-state of the pipeline (4 full iterations of fill / drain +
+// 8 iterations of steady-state stage parallelism).
+
+const N : usize = 16;     // 16 * 4 bytes per array = 64 bytes per file
+
+// Whole-program input, intermediate stream, output. Each is assigned
+// exactly once at the data-symbol level (PRD §6.2.1) — the single
+// `for n` loop is the sole assigner of `stream` and the sole assigner
+// of `result`.
+data seeds  : i32[N];
+data stream : i32[N];
+data result : i32[N];
+
+
+// Stage 1: produce one record from one seed. Pure: reorderable,
+// deduplicable, eliminable. Signature `(i32) -> i32` — explicitly
+// scalar so the contract pass (TASK-0012) accepts it without
+// aggregate machinery.
+kernel produce   : (i32) -> i32 pure;
+
+// Stage 2: transform one stream record into one output record. Same
+// scalar shape as `produce`.
+kernel transform : (i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated. Same
+// `Vec<i32>`-on-the-Rust-side convention as examples 01..07
+// (TASK-0103 is the open question for aggregate-type matching).
+kernel load_input  : ()       -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+
+
+// Dataflow. Three top-level statements plus one for-loop. The loop
+// contains TWO single-assignments per iteration — this is the
+// load-bearing shape: `stream[n]` written by the producer and read
+// by the consumer in the SAME iteration of `n` is the cross-worker
+// edge that a pipelined schedule streams as an async, buffered
+// channel.
+seeds <-- load_input();
+
+for n : 0 .. N {
+    stream[n] <-- produce(seeds[n]);
+    result[n] <-- transform(stream[n]);
+}
+
+save_output(result);

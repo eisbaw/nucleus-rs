@@ -62,7 +62,7 @@
 # landed once TASK-0209 cleared the partial-sub-array codegen
 # blocker). Example 14 still pending its own kernels.rs / reference /
 # fixture trio.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "13-cnn-inference"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "09-producer-consumer", "13-cnn-inference"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -685,4 +685,66 @@ schedule = "distributed"
 backend  = "pthreads-async"
 reason   = "TASK-0181: multi-worker strip-mine per-occurrence rebinding lives only on the shared single-worker path. pthreads-async fails LOUD with ContractGap rather than emit un-rebound double-counting code (correct fail-loud behaviour, not a regression)."
 milestone = "M3"
+
+# ---- Example 09 producer-consumer (TASK-0042.03) --------------------
+#
+# The smallest fixture for the M4 capability set (async + buffer>1 +
+# notify=event + pipeline=D). PRD §9 row 9: "Producer/consumer pipe —
+# pipelining, buffer depth, async transfer".
+#
+# - naive: single-worker (host) smoke test; every tier-1 backend must
+#   produce bit-identical output. pthreads-async's single-worker arm
+#   delegates to the shared single-worker renderer, so the three
+#   backends' outputs are byte-identical by construction.
+# - pipelined: 3 workers (host, producer, consumer), `transfer stream :
+#   async, buffer=4, notify=event`, `loop n : pipeline=4`. Only
+#   pthreads-async's capability surface (supports_async=true,
+#   supports_buffer=true, notify=["event"]) satisfies this schedule.
+#   The two sync backends are SKIPPED with the verbatim capability
+#   mismatch cited — same pattern as 13/pipeline_parallel.
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M3"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M3"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M3"
+
+# The M4 headline cell for this example: 3-worker pipeline with
+# `transfer stream : async, buffer=4, notify=event`. Wave B-2
+# multi-worker emit (TASK-0228) carries `stream` as the inter-stage
+# Ring<T> channel; the host-side `transfer seeds : sync` and
+# `transfer result : sync` hop outside the pipelined loop. Pinned
+# byte-identical against reference.bin
+# (sha256 354988c3e7d44caf339c24cbfa11ef1534e337751d99d7a4475202f2d6ccc86e).
+[[required]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "pthreads-async"
+milestone = "M4"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "pthreads-sync"
+reason   = "TASK-0042: capability mismatch — async + buffer=4 + notify=event not supported by pthreads-sync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] above)."
+milestone = "M4"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0042: capability mismatch — async + buffer=4 + notify=event not supported by mp-tcp-bufsync (sync, single-buffer, barrier/blocking only). pthreads-async carries this schedule's required column (see [[required]] above)."
+milestone = "M4"
 

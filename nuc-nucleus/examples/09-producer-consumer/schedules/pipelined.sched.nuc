@@ -1,0 +1,86 @@
+// Pipelined schedule: producer and consumer stages on different
+// workers, async/buffered streaming between them.
+//
+// Three workers:
+//   host      -- runs the effectful I/O kernels (load_input,
+//                save_output). Owns the file system.
+//   producer  -- runs `produce` (stage 1).
+//   consumer  -- runs `transform` (stage 2).
+//
+// The load-bearing cross-worker edge is `stream` (producer -> consumer);
+// it is the only data symbol the pipelined `for n` loop produces on
+// one worker and consumes on another. `seeds` and `result` are
+// fan-in/fan-out edges that touch the host outside the pipelined loop.
+//
+// Capability surface exercised (PRD §9 row 9, M4):
+//   - `transfer stream : async, buffer=4, notify=event`
+//     The async-streaming channel. Buffer=4 = pipeline depth so a
+//     fast producer doesn't block the consumer at steady state.
+//     notify=event = condvar-style readiness notification (not a
+//     barrier-style sync), which only the async backend supports.
+//   - `loop n : pipeline=4`
+//     Sample n on the consumer side computing `transform` while
+//     sample n+1 is on the producer side computing `produce`.
+//
+// Why three workers, not two
+// --------------------------
+// The task spec says "two workers (producer, consumer); place produce
+// on producer; place transform on consumer". Placing `produce` on
+// `producer` and `transform` on `consumer` exercises the cross-worker
+// `stream` edge. The host is implicit in the schedule the same way it
+// is in 02-split-add/split and 13-cnn-inference/pipeline_parallel:
+// effectful I/O kernels need somewhere to live, and the host is the
+// only worker that owns the file system. Calling out the three
+// workers explicitly in `workers = { ... }` is the project convention
+// (see 13/pipeline_parallel.sched.nuc).
+//
+// Why this schedule cannot run on pthreads-sync / mp-tcp-bufsync
+// -------------------------------------------------------------
+// Both backends' capabilities.toml declare `supports_async = false`,
+// `supports_buffer = false`, `notify = ["polled"|"barrier"]`. The
+// `transfer stream` clause here requires all three (async + buffer>1 +
+// notify=event), so the capability check rejects this schedule on
+// those backends BEFORE codegen. The e2e harness reports the
+// corresponding cells as [[skip]] with the cited capability mismatch;
+// see e2e-matrix.toml. pthreads-async (TASK-0228 / TASK-0229) is the
+// tier-1 backend whose capability surface satisfies this schedule.
+//
+// What's intentionally NOT here
+// -----------------------------
+//   - No `block=`, no `vectorize=`. The pipeline transform is the
+//     only loop transform on `n`.
+//   - No distributed placement (`place produce on { p0, p1, ... }`).
+//     A single producer and a single consumer is the smallest fixture
+//     for the pipelined capability surface.
+//   - No further partitioning of `seeds` or `result`. Whole-symbol
+//     transfer is the simplest cross-worker dataflow that this
+//     example needs.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, producer, consumer };
+
+    // I/O on host (owns the file system).
+    place load_input  on host;
+    place save_output on host;
+
+    // Stage 1 on producer, stage 2 on consumer.
+    place produce   on producer;
+    place transform on consumer;
+
+    // Sample n on consumer while sample n+1 is on producer — four
+    // samples in flight at steady state.
+    loop n : pipeline=4;
+
+    // The inter-stage edge. async + buffer=4 + notify=event is the M4
+    // capability set; only pthreads-async satisfies it.
+    transfer stream : async, buffer=4, notify=event;
+
+    // Fan-in / fan-out hops to/from host. `load_input(seeds)` and
+    // `save_output(result)` both run OUTSIDE the pipelined loop, so
+    // the producer-/consumer-side Push/Wait pairs hoist to per-loop
+    // granularity. Sync is correct here (TASK-0134 link-step gate
+    // requires the consumer to ALSO sit inside the pipelined loop
+    // for the buffered async surface to apply).
+    transfer seeds  : sync;
+    transfer result : sync;
+}
