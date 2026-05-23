@@ -1,11 +1,11 @@
 ---
 id: TASK-0253
 title: 'Migrate mp-tcp-bufsync''s Event::Loop arm onto the shared multi_worker_walker'
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-23 18:14'
-updated_date: '2026-05-23 19:41'
+updated_date: '2026-05-23 19:43'
 labels:
   - backend
   - M3
@@ -35,11 +35,11 @@ Until then: the cross-backend bit-identical differential is the safety net. The 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 #1 #1 mp-tcp-bufsync's `render_events` `Event::Loop` `block_tag` arm exists in exactly ONE place across the codebase (either consumed via `multi_worker_walker` or via a shared `pub fn render_block_tag_loop(...)` helper in backend-common). No duplicate arithmetic.
-- [ ] #2 #2 #2 The migration commit's emitted host source for any blocked multi-worker cell (if one exists) is byte-identical to pre-migration emit (regression guard).
-- [ ] #3 #3 #3 mp-tcp-bufsync gains direct unit-test coverage of the rebinding arm — either transitively (via the walker tests once migrated) OR a fresh `mp_tcp_bufsync_blocked_rebind` test constructed via the public `emit` API (closes the TASK-0181 AC#2 "both backends" gap honestly).
-- [ ] #4 #4 #4 pthreads-sync / pthreads-async multi-worker e2e cells stay byte-identical (non-regression).
-- [ ] #5 #5 #5 The 4 existing `backend-common/tests/multi_worker_blocked_rebind.rs` tests stay green.
+- [x] #1 #1 #1 #1 #1 mp-tcp-bufsync's `render_events` `Event::Loop` `block_tag` arm exists in exactly ONE place across the codebase (either consumed via `multi_worker_walker` or via a shared `pub fn render_block_tag_loop(...)` helper in backend-common). No duplicate arithmetic.
+- [x] #2 #2 #2 #2 #2 The migration commit's emitted host source for any blocked multi-worker cell (if one exists) is byte-identical to pre-migration emit (regression guard).
+- [x] #3 #3 #3 #3 #3 mp-tcp-bufsync gains direct unit-test coverage of the rebinding arm — either transitively (via the walker tests once migrated) OR a fresh `mp_tcp_bufsync_blocked_rebind` test constructed via the public `emit` API (closes the TASK-0181 AC#2 "both backends" gap honestly).
+- [x] #4 #4 #4 #4 #4 pthreads-sync / pthreads-async multi-worker e2e cells stay byte-identical (non-regression).
+- [x] #5 #5 #5 #5 #5 The 4 existing `backend-common/tests/multi_worker_blocked_rebind.rs` tests stay green.
 
 ## Dependencies
 
@@ -77,6 +77,49 @@ Tests:
 
 Byte-identical proof (AC#2 — the load-bearing guard): snapshotted all 172 generated .rs files BEFORE migration to /tmp/nuc-pre-task253, ran fresh post-migration e2e and snapshotted to /tmp/nuc-post-task253, `diff -r` returned 0 changes (zero diff). Every emitted file is byte-identical pre vs post.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-0253 done. The strip-mined inner-block loop HEADER + abs_subst-construction arithmetic (cycle-73 line-for-line duplicate across multi_worker_walker.rs and mp-tcp-bufsync/lib.rs) now lives in exactly one place: backend_common::multi_worker_walker::render_block_tag_loop_header. Both call sites delegate; the per-occurrence rebinding cannot drift across backends by construction.
+
+WHAT LANDED (commits 3b1ecf2, a577f69, d8e5c77):
+1. New pub fn render_block_tag_loop_header in backend-common::multi_worker_walker. 9 params (allow(too_many_arguments), same as sibling render_worker_events_inner). Owns: lo_src lookup, abs expression construction (full + partial branches), typed EmitError::ContractGap on missing enclosing tile, abs_subst child build, loop-header writeln!. Returns RenderCtxPub child carrying the extended abs_subst.
+2. Walker arm refactored to delegate (was ~95 LoC, now ~30 LoC).
+3. mp-tcp-bufsync Plan::render_events block_tag arm refactored to delegate (was ~85 LoC, now ~25 LoC).
+4. 4 new direct unit tests in backend-common/tests/block_tag_loop_header.rs pin the helper's surface contract: full-nest header + abs_subst (loaded-bearing exact-format-string assertion), partial constant base (proves enclosing is unused on partial path), missing-enclosing-tile typed ContractGap (with header-bytes-NOT-emitted assertion on error path), zero-LO fallback for synthesised tiles.
+5. Doc-comment audit: walker module preamble references shared helper + TASK-0253; RenderCtxPub docstring updated (was 'the walker extends a child copy' — now names render_block_tag_loop_header); mp-tcp-bufsync pre-arm doc-block rewritten from 'intentionally duplicates this arm' (cycle 73) to delegation description; TASK-0181 notes appended pointing at TASK-0253 so future readers don't conclude the duplicate persists.
+
+AC STATUS:
+- AC#1 PASS — the arithmetic exists in exactly ONE place (the shared helper). Both render_worker_events_inner and Plan::render_events call render_block_tag_loop_header; neither builds the rebinding expression locally.
+- AC#2 PASS — byte-identical emit verified. Snapshotted all 172 generated .rs files BEFORE migration to /tmp/nuc-pre-task253, ran fresh post-migration e2e, snapshotted to /tmp/nuc-post-task253. `diff -r` returned 0 differences. Every emitted file unchanged across the migration commit.
+- AC#3 PASS — mp-tcp-bufsync gains coverage transitively: the helper IS the path mp-tcp-bufsync now takes; the 4 existing multi_worker_blocked_rebind tests exercise it via the walker, and the 4 new block_tag_loop_header tests pin the helper's surface contract directly. The proposed alternative (a synthetic 2-worker EventList via the public mp_tcp_bufsync::emit API) was deemed redundant — the migration itself consolidates the path, and the direct helper tests are the cleaner surface-level verification.
+- AC#4 PASS — pthreads-sync / pthreads-async multi-worker e2e cells byte-identical (the entire 172-file diff is zero; pthreads-sync 28 .rs files + pthreads-async 49 .rs files all unchanged).
+- AC#5 PASS — the 4 existing multi_worker_blocked_rebind tests stay green (verified post-migration).
+
+GATE RESULTS (all green, inside nix develop):
+- just check: clean
+- just clippy (--workspace --all-targets -- -D warnings): clean
+- just test (workspace, incl. 4 existing + 4 new helper tests): all green
+- just e2e: 88 total / 70 pass / 0 fail / 18 skipped (UNCHANGED baseline)
+- just determinism-check: 88/70/0/18, every cell byte-identical across two builds
+- just determinism-check-negative: NUC_NONDET_PERTURBED_CELLS=70, gate bit (correct)
+- just xbackend-check-negative: 16 corrupted, 1 detected, gate bit (correct)
+- just required-coverage-check-negative: gap detected, gate bit (correct)
+- just port-stress-check 20: 20/20 pass (no SO_REUSEADDR / port-handshake regressions; grep confirms no reintroduction)
+
+FORWARD-CARRY:
+- Future block_tag changes (e.g. when TASK-0250 lands a real blocked multi-worker schedule, or TASK-0042.05 mp-tcp-event Stage 3 inherits multi-worker codegen via the shared walker) now have exactly one place to update.
+- The helper's contract (header + abs_subst owned; body recursion + closing brace caller-owned) is the template for any future per-backend variation: extract the genuinely-shared portion, leave the substrate-specific recursion at the per-backend call site.
+- The doc-lie audit (recurring failure class per cycles 73 + 74) was specifically attended to here: the cycle-73 'intentionally DUPLICATES' decision in TASK-0181's notes is now flagged as superseded so future readers don't trust the stale framing.
+
+LIMITS HONESTLY STATED:
+- No e2e fixture for a real blocked multi-worker schedule — same limit TASK-0181 honestly stated, unchanged by this consolidation. The unit tests are still the targeted lower-bound proof; the cross-backend bit-identical differential is the safety net for whenever such a schedule lands.
+<!-- SECTION:FINAL_SUMMARY:END -->
+
+<!-- AC:END -->
+
+<!-- AC:END -->
 
 <!-- AC:END -->
 
