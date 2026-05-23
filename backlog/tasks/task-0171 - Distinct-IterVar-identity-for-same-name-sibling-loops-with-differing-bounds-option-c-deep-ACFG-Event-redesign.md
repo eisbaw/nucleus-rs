@@ -3,9 +3,10 @@ id: TASK-0171
 title: >-
   Distinct IterVar identity for same-name sibling loops with differing bounds
   (option c, deep ACFG/Event redesign)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-18 23:33'
+updated_date: '2026-05-23 22:02'
 labels:
   - M2
   - compiler
@@ -28,3 +29,9 @@ Follow-up from TASK-0170 (option c, the deep long-term fix). TASK-0170 made a sa
 - [ ] #3 The same-name-diff-bounds program from TASK-0170's characterisation test now COMPILES and produces correct per-loop bounds (test flipped from expect-error to expect-success)
 - [ ] #4 e2e + determinism-check + determinism-check-negative unchanged; clippy clean
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-no-driver (orchestrator-direct, cycle 78 sweep). TASK-0171 fixes 'same-name distinct-bound sibling loops collapse to one IterVar' so such programs COMPILE rather than erroring. Investigation: grep over all 11 in-tree algo files shows zero same-name-DIFFERENT-bounds sibling-loop pairs. The closest case is 04-prefix-sum which re-uses the  loop var across 3 passes with SAME bounds (0..BS) — that pattern is the TASK-0180 'accumulator double-count' case, which has been FIXED (cycle ~50, per-occurrence BlockTag rebinding on every backend). TASK-0170 (the immediate dependency) made the same-name-DIFFERENT-bounds case a typed SidecarError instead of a panic, so the rare program that DOES write 'for i : 0..N { ... } for i : 0..M { ... }' fails fast+verbose. The deeper fix (give each occurrence distinct IterVar identity so such programs compile) is a deep ACFG/Event/sidecar identity-redesign substrate change that ripples into acfg_to_petri + Repeat + backend layers — substantive deep refactor matching the loop spec's 'warrant fresh context' stop signal. Reopen when (a) a real example uses same-name-different-bounds sibling loops AND (b) the loud-error SidecarError diagnostic is insufficient. Same DEFERRED-no-driver pattern as the cycle-77 sweep + the cycle-78 ADDRESSED-IN-LARGE-PART closures (TASK-0161/0088).
+<!-- SECTION:FINAL_SUMMARY:END -->
