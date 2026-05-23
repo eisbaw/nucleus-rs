@@ -1,10 +1,10 @@
 ---
 id: TASK-0137
 title: 'petri_to_events: emit Alloc/Free events and resolve Region'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-18 03:50'
-updated_date: '2026-05-23 14:27'
+updated_date: '2026-05-23 21:26'
 labels:
   - compiler
   - M3
@@ -37,3 +37,9 @@ Open design Q: do Alloc/Free live in the ACFG (so multiple passes can see them) 
 <!-- SECTION:NOTES:BEGIN -->
 Forward-carried from TASK-0107 cycle 67: this task is the upstream producer for the currently-LATENT invariants (4) OverlappingAlloc and (5) FreeWithoutAlloc in `nucleus/compiler/src/event_validate.rs`. petri_to_events.rs:113 documents 'Event::Alloc / Event::Free are NOT emitted' today, so the validator paths for (4) and (5) are only exercised by synthetic tests. When this task lands and emits real Alloc/Free events, the debug_assert at petri_to_events.rs:238 will exercise (4)/(5) on real input for the first time — that is the moment a real Alloc/Free bug would surface. Also: the validator's current Loop-recursion handling flattens nested events without modeling multi-iteration replay; for a Loop body that allocates without freeing inside the body, multi-iteration backend replay would alias on the second iteration but the validator only walks the body once. Re-examine that semantic when Alloc/Free codegen lands (see event_validate.rs:480-484 comment).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-no-current-driver (orchestrator-direct, cycle 77 sweep). Same pattern as TASK-0138 (closed cycle 77): every tier-1 backend explicitly SKIPS Alloc/Free events ('Event::Alloc { .. } | Event::Free { .. } => { /* skip */ }' at pthreads-sync/src/lib.rs:797, mp-tcp-bufsync/src/lib.rs:1070, backend-common/multi_worker_walker.rs:585). The v2 design uses on-stack allocation universally — no backend NEEDS Alloc/Free synthesis (PRD §8.3 specifies the events but tier-1 doesn't consume them). Step 1 of the task ('plumb place_data through SchedIR -> LinkedIR -> ACFG') is ALSO gated on place_data having a real tier-3 consumer (TASK-0051 closed cycle 77 as DEFERRED-to-M9 for the same reason). The Region naming gap that TASK-0104 (closed cycle 77) noted would be handled here is therefore ALSO deferred. Reopen at M9/tier-3 entry when the first MCU backend needs explicit Alloc/Free + Region semantics for TCM-vs-shared-SRAM placement. Same deferred-no-driver / deferred-to-M9 pattern as the cycle-77 sweep.
+<!-- SECTION:FINAL_SUMMARY:END -->
