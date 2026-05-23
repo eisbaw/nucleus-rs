@@ -4,6 +4,7 @@ title: 'petri_to_events: emit Alloc/Free events and resolve Region'
 status: To Do
 assignee: []
 created_date: '2026-05-18 03:50'
+updated_date: '2026-05-23 14:27'
 labels:
   - compiler
   - M3
@@ -30,3 +31,9 @@ Open design Q: do Alloc/Free live in the ACFG (so multiple passes can see them) 
 - [ ] #2 Region is derived from schedule directives (place_data D in MEMORY_REGION); when absent, the backend's default region is used.
 - [ ] #3 Tests cover the Alloc/Free positions in a multi-worker schedule with explicit place_data.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0107 cycle 67: this task is the upstream producer for the currently-LATENT invariants (4) OverlappingAlloc and (5) FreeWithoutAlloc in `nucleus/compiler/src/event_validate.rs`. petri_to_events.rs:113 documents 'Event::Alloc / Event::Free are NOT emitted' today, so the validator paths for (4) and (5) are only exercised by synthetic tests. When this task lands and emits real Alloc/Free events, the debug_assert at petri_to_events.rs:238 will exercise (4)/(5) on real input for the first time — that is the moment a real Alloc/Free bug would surface. Also: the validator's current Loop-recursion handling flattens nested events without modeling multi-iteration replay; for a Loop body that allocates without freeing inside the body, multi-iteration backend replay would alias on the second iteration but the validator only walks the body once. Re-examine that semantic when Alloc/Free codegen lands (see event_validate.rs:480-484 comment).
+<!-- SECTION:NOTES:END -->
