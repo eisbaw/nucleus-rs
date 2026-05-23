@@ -1,9 +1,10 @@
 ---
 id: TASK-0223
 title: 'AC#3 scope-split for TASK-0064: example .resc script + UART capture harness'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-21 17:07'
+updated_date: '2026-05-23 20:58'
 labels:
   - M10
   - infra
@@ -46,3 +47,9 @@ Acceptance:
   - [ ] #4 The recipe fails LOUD on UART mismatch (no silent skip)
   - [ ] #5 README / TASK-0048 notes updated to point at the recipe
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-to-M10 (orchestrator-direct, cycle 77 sweep). Labeled M10, embedded, renode, scope-split. The description explicitly says 'AC#3 deferred because it requires a sizeable design pass that does NOT fit the same 30-min cycle' — and it depends on TASK-0064 (Renode flake addition) which is in_progress. The .resc script + UART capture harness can only be designed once a real embedded target is in play (M10). Reopen at M10 entry when the example .resc script + UART harness become the actual M10 acceptance demo. Same deferred-closure pattern as TASK-0164/0165.
+<!-- SECTION:FINAL_SUMMARY:END -->
