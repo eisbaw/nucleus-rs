@@ -58,7 +58,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, ViolationKind, WorkerId};
+use compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, SyncTag, ViolationKind, WorkerId};
 use compiler::NameTables;
 use compiler::sidecar::NameSidecar;
 
@@ -144,13 +144,18 @@ impl WalkerCtx<'_> {
 /// is exactly `ctx.rendezvous_prefix` (the variable-name prefix on
 /// `{prefix}_<id>.push(...)` / `{prefix}_<id>.wait()`).
 ///
-/// # Strip-mine guard (TASK-0181)
+/// # Strip-mine rebinding (TASK-0181)
 ///
-/// A `block_tag.is_some()` `Event::Loop` inside a multi-worker schedule
-/// fails LOUD: per-occurrence absolute-index rebinding lives only on
-/// the shared single-worker path. No tier-1 schedule blocks a
-/// multi-worker loop today; refusing to silently emit an un-rebound
-/// loop prevents the TASK-0180 double-count bug from reappearing.
+/// A `block_tag.is_some()` `Event::Loop` is per-occurrence absolute-
+/// index rebound exactly as the single-worker path does (TASK-0180).
+/// The rebinding map is threaded through `RenderCtxPub.abs_subst` so
+/// it reaches every Fire arg / index / const-expr render site, not
+/// just the loop header (the subtle TASK-0181 review-gate finding:
+/// substituting only at the header would leave Fire body uses un-
+/// rebound, re-introducing the accumulator double-count TASK-0180
+/// closed). No tier-1 multi-worker schedule blocks today, so this
+/// path is structurally unreachable from the e2e matrix; the rebinding
+/// is exercised by unit tests in `backend-common/tests/`.
 ///
 /// # Per-worker partition override (TASK-0212)
 ///
@@ -158,14 +163,17 @@ impl WalkerCtx<'_> {
 /// worker on this iter var (`sidecar.partition_worker_ranges`), the
 /// loop renders the concrete literal range. Otherwise the source-form
 /// symbolic / literal precedence from `sidecar.loop_bounds` applies.
+/// The strip-mine path above renders the concrete folded range
+/// instead and skips the partition-slice check (the strip-mined inner
+/// loop iterates `0..N`, not the partitioned source slice).
 ///
 /// # check_frame defense
 ///
 /// `check_frame.is_some() && block_tag.is_some()` is an
 /// `inject_check_frames`-layer invariant violation (frames attach
-/// only to outer source loops). The strip-mine guard above already
-/// rejects, so this branch is structurally unreachable today, but
-/// catches a future projection-layer regression.
+/// only to outer source loops). The strip-mine path above returns
+/// early before reaching this branch, so the defense is structurally
+/// unreachable today, but catches a future projection-layer regression.
 pub fn render_worker_events(
     ctx: &WalkerCtx<'_>,
     worker: WorkerId,
@@ -175,9 +183,20 @@ pub fn render_worker_events(
     prefix: &str,
 ) -> Result<(), EmitError> {
     let render_ctx = ctx.render_ctx();
-    render_worker_events_inner(ctx, worker, events, out, indent, prefix, &render_ctx)
+    render_worker_events_inner(ctx, worker, events, out, indent, prefix, &render_ctx, None)
 }
 
+/// `enclosing` is the iter-var of the immediately-enclosing
+/// `Event::Loop` (the tile loop, when the child is a strip-mined
+/// inner-block loop with `block_tag.is_partial == false`). `None` at
+/// top level. Mirrors the single-worker `render_events_in` /
+/// `render_event` parameter (TASK-0180).
+///
+/// Eight params is one over clippy's `too_many_arguments` threshold;
+/// the alternative (a single bundle struct) would be a synthetic
+/// container with no semantic content — the parameters are the
+/// genuine inputs to one stateless event-walk step. Local allow.
+#[allow(clippy::too_many_arguments)]
 fn render_worker_events_inner(
     ctx: &WalkerCtx<'_>,
     worker: WorkerId,
@@ -186,6 +205,7 @@ fn render_worker_events_inner(
     indent: usize,
     prefix: &str,
     render_ctx: &RenderCtxPub<'_>,
+    enclosing: Option<IterVar>,
 ) -> Result<(), EmitError> {
     let pad = "    ".repeat(indent);
     let rendezvous_prefix = ctx.rendezvous_prefix;
@@ -235,27 +255,107 @@ fn render_worker_events_inner(
                         "iter var {iter_var:?} in Event::Loop has no name in NameTables"
                     ))
                 })?;
-                // Strip-mined multi-worker loops require per-occurrence
-                // absolute-index rebinding, which lives only on the
-                // shared single-worker path (TASK-0180). No tier-1
-                // schedule blocks a multi-worker loop, so refuse to
-                // silently emit un-rebound. Tracked as TASK-0181.
-                if block_tag.is_some() {
-                    return Err(EmitError::ContractGap(format!(
-                        "Event::Loop for iter var `{var}` carries a strip-mine \
-                         block_tag inside a MULTI-worker schedule; per-occurrence \
-                         absolute-index rebinding is implemented only on the \
-                         shared single-worker path (TASK-0180). No tier-1 schedule \
-                         blocks a multi-worker loop; refusing to emit un-rebound \
-                         (would double-count). Tracked as TASK-0181."
-                    )));
+
+                // Per-occurrence absolute-index rebinding (TASK-0181;
+                // mirrors TASK-0180 on the single-worker path).
+                //
+                // A strip-mined inner-block loop reuses the SOURCE iter
+                // var and iterates `0..inner_len` (NOT `LO..HI`), so
+                // its loop variable must be expanded to the ABSOLUTE
+                // source value at every body use site. The tag is set
+                // per-occurrence by `block_transform` (the only site
+                // that knows N / num_full / full-vs-partial) and
+                // threaded through `Event::Loop.block_tag`. The
+                // `abs_subst` map lives on `RenderCtxPub` and is
+                // consulted by `render_int_expr` / `render_const_expr`
+                // — so Fire args, indexed assignments, and inner loop
+                // bounds all see the rebound expression, not just the
+                // loop header.
+                //
+                //   * full / divisible nest (`is_partial == false`):
+                //         abs = LO + tile*N + inner
+                //     where `tile` is the enclosing tile-loop variable
+                //     (its iteration count is `num_full`).
+                //   * trailing partial tile (`is_partial == true`):
+                //         abs = LO + num_full*N + inner
+                //     its own tile loop is `0..1`, so `tile*N` would
+                //     be 0 (the wrong base) — the constant
+                //     `num_full*N` offset is used instead.
+                //
+                // `LO` lives in `sidecar.loop_bounds` keyed by the
+                // (reused) IterVar — single source of truth, not
+                // duplicated into the tag.
+                if let Some(tag) = block_tag {
+                    let lo_src = ctx
+                        .sidecar
+                        .loop_bounds
+                        .get(iter_var)
+                        .map(|b| render_const_expr_pub(&b.lo, render_ctx))
+                        .transpose()?
+                        .unwrap_or_else(|| "0_i64".to_string());
+                    let n = tag.block_n;
+                    let abs = if tag.is_partial {
+                        // Constant base: the partial tile's own tile
+                        // loop is `0..1`, so a `tile*N` term is always
+                        // 0.
+                        format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+                    } else {
+                        // Variable base from the enclosing tile loop.
+                        // A tagged full nest ALWAYS has an enclosing
+                        // tile loop (block_transform emits `tile -> seq
+                        // -> inner`); missing one is a malformed
+                        // EventList — fail loud with context (typed
+                        // error, not panic).
+                        let tile_iv = enclosing.ok_or_else(|| {
+                            EmitError::ContractGap(format!(
+                                "strip-mined full-tile inner loop {iter_var:?} \
+                                 (block_tag is_partial=false) has no enclosing tile \
+                                 loop — block_transform always wraps it; malformed \
+                                 EventList"
+                            ))
+                        })?;
+                        let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
+                            EmitError::ContractGap(format!(
+                                "tile iter var {tile_iv:?} has no name in NameTables"
+                            ))
+                        })?;
+                        format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+                    };
+                    let mut child_subst = render_ctx.abs_subst.clone();
+                    child_subst.insert(var.clone(), abs);
+                    let child = render_ctx.with_abs_subst(child_subst);
+                    // Loop header uses the concrete folded range
+                    // (`{start}_i64..{end}_i64`) — NOT the source-form
+                    // bound (would re-introduce the full range) and
+                    // NOT the partition slice (the strip-mined inner
+                    // loop iterates over the tile, not the worker's
+                    // partition slice).
+                    writeln!(
+                        out,
+                        "{pad}for {var} in ({}_i64)..({}_i64) {{",
+                        range.start, range.end
+                    )
+                    .ok();
+                    render_worker_events_inner(
+                        ctx,
+                        worker,
+                        body,
+                        out,
+                        indent + 1,
+                        prefix,
+                        &child,
+                        Some(*iter_var),
+                    )?;
+                    writeln!(out, "{pad}}}").ok();
+                    continue;
                 }
+
                 // Defense-in-depth invariant
                 // (`inject_check_frames` is contracted to populate
                 // check_frame only on outer source loops; block_tag ==
-                // None). The block_tag guard above already rejects,
-                // so this branch is structurally unreachable today,
-                // but catches a future projection-layer regression.
+                // None). The strip-mine path above returns early, so
+                // reaching here with both set is a projection-layer
+                // bug.
                 if check_frame.is_some() && block_tag.is_some() {
                     return Err(EmitError::ContractGap(format!(
                         "Event::Loop for iter var `{var}` carries BOTH a check_frame \
@@ -321,6 +421,7 @@ fn render_worker_events_inner(
                         body_indent,
                         prefix,
                         render_ctx,
+                        Some(*iter_var),
                     )?;
                     writeln!(
                         out,
@@ -361,6 +462,7 @@ fn render_worker_events_inner(
                         indent + 1,
                         prefix,
                         render_ctx,
+                        Some(*iter_var),
                     )?;
                 }
                 writeln!(out, "{pad}}}").ok();

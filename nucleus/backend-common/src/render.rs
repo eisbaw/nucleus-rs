@@ -21,13 +21,15 @@
 //!   constructs it directly to drive per-occurrence rebinding from
 //!   `Event::Loop.block_tag`.
 //!
-//! - The thin `RenderCtxPub` is for callers (multi-worker codegen
-//!   paths in pthreads-sync, pthreads-async, mp-tcp-bufsync) that
-//!   render expressions outside any strip-mine inner block — the
-//!   `abs_subst` map is always empty for those sites, so a smaller
-//!   constructor avoids leaking the implementation detail. The
-//!   `_pub` variants are pass-throughs that fill `abs_subst` with an
-//!   empty BTreeMap.
+//! - The thin `RenderCtxPub` is for multi-worker / cross-backend
+//!   callers (pthreads-sync multi-worker, pthreads-async multi-worker,
+//!   mp-tcp-bufsync host + worker). It carries the SAME `abs_subst`
+//!   map as `RenderCtx` so per-occurrence strip-mine rebinding works
+//!   on the shared multi-worker walker too (TASK-0181). The map is
+//!   empty for every non-blocked program — which is every tier-1
+//!   multi-worker schedule today — so non-blocked codegen is byte-
+//!   identical to the pre-TASK-0181 emission. The `_pub` variants
+//!   stay thin pass-throughs.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -138,28 +140,68 @@ impl<'a> RenderCtx<'a> {
     }
 }
 
-/// Thin context for callers that render outside any strip-mine inner
-/// block — multi-worker codegen sites, in particular. The `_pub`
-/// rendering wrappers below construct a full `RenderCtx` with an
-/// empty `abs_subst`; multi-worker codegen does not encounter
-/// strip-mined inner blocks (block_transform runs before projection
-/// and its inner-block tags appear only on outer source loops, which
-/// the multi-worker walker treats as a unit).
+/// Thin context for multi-worker / cross-backend callers. Carries
+/// the SAME `abs_subst` map as the private [`RenderCtx`] so the
+/// per-occurrence absolute-index rebinding (TASK-0180) reaches the
+/// `_pub` render helpers too. Pre-TASK-0181 this struct held only
+/// `(names, sidecar)` because the multi-worker walker hard-rejected
+/// any `Event::Loop.block_tag.is_some()` (the TASK-0181 fail-loud
+/// guard) — so the map was guaranteed empty. TASK-0181 replaces that
+/// guard with the actual rebinding logic on the shared
+/// [`multi_worker_walker`](crate::multi_worker_walker), which means
+/// the `_pub` helpers MUST consult `abs_subst` or the substitution
+/// would silently stop at the loop header and never reach Fire arg /
+/// const-expr / output-assign sites (the exact accumulator
+/// double-count failure mode TASK-0180 closed for the single-worker
+/// path).
+///
+/// Default-constructed empty via [`Self::new`]; the walker extends a
+/// child copy per strip-mined inner-loop occurrence via
+/// [`Self::with_abs_subst`].
 pub struct RenderCtxPub<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
+    /// See [`RenderCtx::abs_subst`]. Empty for every non-blocked
+    /// multi-worker program (which is every tier-1 schedule today, so
+    /// the existing 88/70/0/18 e2e matrix renders byte-identically).
+    pub abs_subst: BTreeMap<String, String>,
 }
 
 impl<'a> RenderCtxPub<'a> {
+    /// Fresh context, empty `abs_subst`. Existing call sites that
+    /// pre-date TASK-0181 keep working — they were already passing an
+    /// implicit empty map.
     pub fn new(names: &'a NameTables, sidecar: &'a NameSidecar) -> Self {
-        RenderCtxPub { names, sidecar }
+        RenderCtxPub {
+            names,
+            sidecar,
+            abs_subst: BTreeMap::new(),
+        }
     }
 
+    /// Build a child context sharing `(names, sidecar)` with this one
+    /// but carrying the supplied `abs_subst`. Used by the shared
+    /// multi-worker walker to introduce a per-occurrence strip-mine
+    /// rebinding inside one `Event::Loop` body without mutating the
+    /// parent context (mirrors the `RenderCtx { abs_subst: child, .. }`
+    /// pattern in the single-worker path).
+    pub fn with_abs_subst(&self, abs_subst: BTreeMap<String, String>) -> RenderCtxPub<'a> {
+        RenderCtxPub {
+            names: self.names,
+            sidecar: self.sidecar,
+            abs_subst,
+        }
+    }
+
+    /// Internal lowering to the private `RenderCtx` the underlying
+    /// helpers consume. Clones the `abs_subst` map (cheap — the map
+    /// holds at most one entry per active strip-mine nesting depth,
+    /// which is bounded by source loop nesting).
     fn inner(&self) -> RenderCtx<'_> {
         RenderCtx {
             names: self.names,
             sidecar: self.sidecar,
-            abs_subst: BTreeMap::new(),
+            abs_subst: self.abs_subst.clone(),
         }
     }
 }
