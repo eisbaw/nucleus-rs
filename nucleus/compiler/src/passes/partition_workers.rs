@@ -43,8 +43,10 @@
 //!   (TASK-0249). Only `partition=workers` reaches this pass; the
 //!   other two policies have no downstream consumer, so accepting
 //!   them would be a silent no-op (PRD §6.3.3 forbids). Real sibling
-//!   passes for row-band / 2D-block partition policies are filed as
-//!   follow-ups to TASK-0249 if/when their semantics are decided.
+//!   passes for row-band / 2D-block partition policies are NOT
+//!   filed today — TASK-0249's rejection is the closing move; a
+//!   future consumer pass would need a fresh task (no placeholder
+//!   filed to avoid a doc-lie about what is "in flight").
 //! - **No interaction with `block=`.** A user combining
 //!   `loop n : block=N, partition=workers;` on the same loop would
 //!   confuse: `block_transform` splits the loop into tile + inner with

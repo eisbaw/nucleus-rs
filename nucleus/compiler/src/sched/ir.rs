@@ -557,10 +557,12 @@ pub enum SchedLowerErrorKind {
     /// directive that does nothing is the silent-default sibling of a
     /// bad combination).
     ///
-    /// Until sibling partition passes land (filed as the follow-up to
-    /// TASK-0249 — distinct from this rejection), the schedule author
-    /// must either use `partition=workers` (which has real semantics)
-    /// or omit the directive. Mirrors the fail-fast precedent of
+    /// Until sibling partition passes for row-band / 2D-block policies
+    /// land (no such task is filed today — TASK-0249's rejection is the
+    /// closing move; a future consumer pass would need a fresh task),
+    /// the schedule author must either use `partition=workers` (which
+    /// has real semantics) or omit the directive. Mirrors the
+    /// fail-fast precedent of
     /// [`SchedLowerErrorKind::UnitPipelineOption`] and
     /// [`SchedLowerErrorKind::UnrollNotDivisibleByBlock`].
     ///
