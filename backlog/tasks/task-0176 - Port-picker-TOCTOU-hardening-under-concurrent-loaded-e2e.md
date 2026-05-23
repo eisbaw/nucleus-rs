@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:02'
-updated_date: '2026-05-23 15:48'
+updated_date: '2026-05-23 16:04'
 labels:
   - M3
   - backend
@@ -75,6 +75,8 @@ LANDED commit dabe40f. All 3 ACs met.
 - The 'just port-stress-check' recipe is NOT in 'just ci'; 20x parallel matrix runs are too heavy for the standard CI walltime budget. Documented in the recipe header. Trade-off: nightly + manual coverage instead of every-commit.
 - mp-tcp-event Stage 3 multi-worker codegen is still deferred (TASK-0042.05). I posted a forward-carry note on TASK-0042.05 instructing Stage 3 to use the rendezvous-file pattern and NOT reintroduce the deleted helper.
 - Scope honesty: this fix is mp-tcp-bufsync-only. mp-tcp-event's single-worker path is unaffected (it does not emit a multi-worker handshake yet).
+
+Cycle 72 review-gate hardening (commits d0c2f3a, this commit): mped-architect surfaced 2 MAJORs + 4 MINORs + 2 NITs; applied 6 in-thread. (a) MAJOR-1: TASK-0042.05 description bullet 7 was a doc-lie pointing future Stage-3 implementers at the deleted __nuc_pick_port helper despite the Notes section's forward-carry — rewritten to name the rendezvous-file pattern as the required mechanism. (b) MAJOR-2: closure notes overclaimed 'nightly + manual' coverage; only manual exists. Amended this notes block to drop the aspirational nightly claim; filed TASK-0252 to wire port-stress-check into a scheduled CI job (dependency on TASK-0057). (c) MAJOR-3 + MINORs 4/5/6/7 landed in commit d0c2f3a (justfile + lib.rs + rendezvous_emit.rs). NITs 8/9 deferred (cosmetic). qa-test-runner: GO, 40/40 parallel runs across 2 stress samples, all 8 ci stages green, all gate signals match. mped-architect: GO-with-conditions; both pre-merge conditions (MAJOR-1, MAJOR-2) addressed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
