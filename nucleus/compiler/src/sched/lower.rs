@@ -161,6 +161,7 @@ use super::ir::{
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
 /// | `UnrollNotDivisibleByBlock`            | Independent | yes               | never |
+/// | `VectorizeNotDivisibleByBlock`         | Independent | yes               | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -990,6 +991,35 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
                 SchedLowerErrorKind::UnrollNotDivisibleByBlock {
                     var: var.clone(),
                     unroll: m,
+                    block: n,
+                },
+                var_span.clone(),
+            ));
+        }
+    }
+
+    // TASK-0144.01 Stage 3: reject `block=N + vectorize=M` where `M ∤ N`.
+    // PRD §6.3.3: "bad combinations rejected at compile time". Mirrors
+    // the unroll∤block rule above: `block=N` strip-mines into N-tiles;
+    // `vectorize=M` asks the backend for width-M vector instructions on
+    // the intra-tile body; if `M` does not divide `N` every full tile
+    // has an `N % M` scalar tail, i.e. the schedule author wrote two
+    // static integer constants that disagree at compile time. Backend
+    // codegen does not currently consume `vectorize=` (see
+    // `passes::block_transform`), so this sched-lower check is the
+    // first line of defense — the PRD rejection is required regardless
+    // of backend support.
+    let vectorize_m = options.iter().find_map(|opt| match opt {
+        ResolvedLoopOption::Vectorize(m) => Some(*m),
+        _ => None,
+    });
+    if let (Some(n), Some(m)) = (block_n, vectorize_m) {
+        // `m` is post-`positive(...)`, so m >= 1; `n % m` is well-defined.
+        if n % m != 0 {
+            return Err(SchedLowerError::at(
+                SchedLowerErrorKind::VectorizeNotDivisibleByBlock {
+                    var: var.clone(),
+                    vectorize: m,
                     block: n,
                 },
                 var_span.clone(),

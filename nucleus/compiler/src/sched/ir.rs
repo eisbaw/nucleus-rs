@@ -495,6 +495,30 @@ pub enum SchedLowerErrorKind {
     /// payloads. `var` is the loop variable; `unroll` and `block` are
     /// the literal values written.
     UnrollNotDivisibleByBlock { var: String, unroll: u64, block: u64 },
+    /// `loop V : block=N, vectorize=M` where `M` does not divide `N`
+    /// (TASK-0144.01 Stage 3). PRD §6.3.3: "bad combinations rejected
+    /// at compile time, not at runtime." `block=N` strip-mines the loop
+    /// into outer/inner tiles of length `N`; `vectorize=M` asks the
+    /// backend to emit width-`M` vector instructions for the intra-tile
+    /// body. If `M` does not divide `N`, every full tile has a tail of
+    /// `N % M` scalar iterations — the schedule author wrote two
+    /// static integer constants that disagree at compile time, before
+    /// the loop bound is known. The cleanest answer is to refuse the
+    /// schedule: there is no honest, range-independent vector width.
+    /// Both integers are static, so the check is purely on the option
+    /// payloads. `var` is the loop variable; `vectorize` and `block`
+    /// are the literal values written. Note: backend codegen does not
+    /// yet consume `vectorize=` (see
+    /// `passes::block_transform` header: "Only `block=` is handled"),
+    /// so this sched-lower check is the first (and currently only)
+    /// line of defense — backends ignoring vectorize today does not
+    /// make the check unnecessary; the PRD requires the rejection
+    /// regardless of backend support.
+    VectorizeNotDivisibleByBlock {
+        var: String,
+        vectorize: u64,
+        block: u64,
+    },
     /// `loop V : block=N;` + `check loop V : latency_max=T;` — the
     /// loop V has both a strip-mine directive AND a latency check.
     /// `block_transform` tiles V into outer/inner; the inner Event::Loop
@@ -692,6 +716,16 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 "loop `{var}` has `unroll={unroll}, block={block}` but `unroll` must divide \
                  `block` (got {unroll}\u{2224}{block}); pick an unroll factor that divides the \
                  tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
+            ),
+            SchedLowerErrorKind::VectorizeNotDivisibleByBlock {
+                var,
+                vectorize,
+                block,
+            } => write!(
+                f,
+                "loop `{var}` has `vectorize={vectorize}, block={block}` but `vectorize` must \
+                 divide `block` (got {vectorize}\u{2224}{block}); pick a vector width that \
+                 divides the tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
             ),
             SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
                 f,
