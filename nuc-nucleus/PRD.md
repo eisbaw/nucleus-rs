@@ -745,7 +745,10 @@ projection of a transition firing onto the worker that owns it:
 
 ```rust
 enum Event {
-    // TODO: We must elaborate these more
+    // Sketch shape. The canonical, elaborated definition lives in
+    // `nucleus/nucleus-compiler/src/event.rs` (TASK-0015 Done; later
+    // extended with `FireBinding`/TASK-0156, `BlockTag`/TASK-0180,
+    // `CheckFrame`/TASK-0052, `SyncTag`/TASK-0172).
     Fire   { kernel: KernelId, tile: IterTile },
     Alloc  { data: DataId, tile: IterTile, region: Region },
     Push   { dst: WorkerId, data: DataId, tile: IterTile, seq: SeqTag },
@@ -1186,7 +1189,9 @@ What the justfile is **not**:
 - **Bit-identical output across backends.** Trivial for integer
   algorithms; non-trivial once floating-point reductions enter (sum
   order matters). Either restrict examples to integer/deterministic
-  FP, or compare with epsilon. Leaning toward integer-only for v2.
+  FP, or compare with epsilon. v2 currently uses integer-only
+  examples; the formal decision (integer-only-forever vs add a tier
+  with epsilon-tolerant comparison) is tracked as TASK-0060.
 - **Greedy schedule quality.** Greedy linearisation may produce
   obviously-bad schedules for some examples. Acceptable for v2 as long
   as the resulting net is bounded and deadlock-free. Performance is
