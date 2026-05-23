@@ -1,10 +1,10 @@
 ---
 id: TASK-0144
 title: 'block=N: reject bad combinations with other loop options'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-18 04:25'
-updated_date: '2026-05-22 21:35'
+updated_date: '2026-05-23 21:32'
 labels:
   - M3
   - compiler
@@ -58,3 +58,9 @@ Gate (cycle 63): just test 0 FAILED + new test pass; just clippy clean; just e2e
 
 Review-gate: QA GO. Architect review skipped (small additive check, single-test pin).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as COMPLETE (orchestrator-direct, cycle 77 sweep). Umbrella task for 'reject bad block= combinations' is structurally complete via its subtasks + Stage 2 fold-in: (1) block=N + unroll=M-not-divisible: cycle 63 commit 58dab97 'compiler: reject unroll-not-divisible-by-block in sched-lower (TASK-0144 cycle 63, Stage 2)'; (2) vectorize=M with block=N-not-divisible: TASK-0144.01 Done cycle 65; (3) partition=blocks2d on non-2D nest: TASK-0144.02 Done cycle 70 as SUPERSEDED-by-TASK-0249 (PartitionKind::Blocks2d rejected universally at sched-lower); (4) pipeline=D >= num_tiles: TASK-0144.03 Done cycle 77 as DEFERRED-while-BlockPipelineConflict-broad-rejects. Each of the 4 bad combinations enumerated in the task description either has a typed SchedLowerError reject OR is covered by a broader reject. The parent umbrella has no residual work.
+<!-- SECTION:FINAL_SUMMARY:END -->
