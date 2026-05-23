@@ -19,7 +19,9 @@
 //! (`"slot"` for pthreads-sync, `"ring"` for pthreads-async). Everything
 //! else (Fire / Loop / Sync / Wait gather, check_frame instrumentation,
 //! per-worker partition range override, per-occurrence strip-mine
-//! block_tag rebinding (TASK-0181),
+//! block_tag rebinding (TASK-0181; the header + abs_subst-construction
+//! half is the shared [`render_block_tag_loop_header`] helper that
+//! mp-tcp-bufsync ALSO consumes — TASK-0253),
 //! barrier identity via `SyncTag`, slice-paste leading-axis arithmetic)
 //! is shared verbatim across both backends — there is no second axis
 //! of variation worth a trait abstraction.
@@ -59,7 +61,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, SyncTag, ViolationKind, WorkerId};
+use compiler::event::{
+    BlockTag, DataId, Event, IterTile, IterVar, SeqTag, SyncTag, ViolationKind, WorkerId,
+};
 use compiler::NameTables;
 use compiler::sidecar::NameSidecar;
 
@@ -136,6 +140,118 @@ impl WalkerCtx<'_> {
             EmitError::ContractGap(format!("data id {d:?} has no name in NameTables"))
         })
     }
+}
+
+/// Emit the strip-mined inner-block loop HEADER and build the
+/// per-occurrence absolute-index rebinding context, shared between
+/// every backend's multi-worker `Event::Loop` walker (TASK-0253).
+///
+/// # What this helper owns
+///
+/// 1. Lookup of `lo_src` from `sidecar.loop_bounds[iter_var]` (single
+///    source of truth — the LO is keyed off the (reused) IterVar, not
+///    duplicated into the tag).
+/// 2. Construction of the rebound absolute-index expression:
+///    - full nest (`is_partial == false`): `LO + tile*N + inner`,
+///      where `tile` is the immediately-enclosing tile-loop's iter var
+///      (its name resolved from `names.iter_var`); missing one is a
+///      malformed EventList and returns [`EmitError::ContractGap`].
+///    - trailing partial (`is_partial == true`): `LO + num_full*N +
+///      inner` (constant base — the partial's own `0..1` tile loop
+///      would always contribute 0).
+/// 3. Construction of the child [`RenderCtxPub`] carrying the extended
+///    `abs_subst` so every body use site (Fire arg, indexed assign,
+///    inner-loop bound) sees the rebound expression — NOT just the
+///    loop header (the load-bearing TASK-0181 review-gate finding).
+/// 4. Emit of the loop header `for {var} in ({start}_i64)..({end}_i64)
+///    {{` (concrete folded range; NOT the source-form bound and NOT a
+///    partition slice — the strip-mined inner iterates the tile).
+///
+/// # What the CALLER owns
+///
+/// - Recursion into the loop body using the returned child context
+///   (each backend has its own per-event walker — the walker recurses
+///   through `bar_<tag>` / `{prefix}_<id>` Push/Wait, mp-tcp-bufsync
+///   recurses through `sock_<peer>` Push/Wait — extracting that axis
+///   was deemed not worth the trait abstraction, see the walker's
+///   design doc above).
+/// - Emit of the closing `}` after the body.
+///
+/// Cycles 73 + 75: TASK-0181 landed the rebinding logic by COPYING it
+/// into both the walker and mp-tcp-bufsync; TASK-0253 (this helper)
+/// consolidates that duplication into ONE place. The two callers now
+/// produce byte-identical emitted bytes for the strip-mined header +
+/// rebound child context BY CONSTRUCTION — no future drift possible.
+///
+/// Nine params is two over clippy's `too_many_arguments` threshold;
+/// the alternative (a `BlockTagHeaderCtx` bundle struct) would be
+/// synthetic ceremony — every parameter is a genuine input to the
+/// stateless one-occurrence header emit, and the same local allow is
+/// used on the sibling `render_worker_events_inner`. Local allow.
+#[allow(clippy::too_many_arguments)]
+pub fn render_block_tag_loop_header<'a>(
+    out: &mut String,
+    indent: usize,
+    iter_var: IterVar,
+    range: &std::ops::Range<i64>,
+    tag: &BlockTag,
+    enclosing: Option<IterVar>,
+    ctx: &RenderCtxPub<'a>,
+    names: &NameTables,
+    sidecar: &NameSidecar,
+) -> Result<RenderCtxPub<'a>, EmitError> {
+    let pad = "    ".repeat(indent);
+    let var = names.iter_var.get(&iter_var).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "iter var {iter_var:?} in Event::Loop has no name in NameTables"
+        ))
+    })?;
+    let lo_src = sidecar
+        .loop_bounds
+        .get(&iter_var)
+        .map(|b| render_const_expr_pub(&b.lo, ctx))
+        .transpose()?
+        .unwrap_or_else(|| "0_i64".to_string());
+    let n = tag.block_n;
+    let abs = if tag.is_partial {
+        // Constant base: the partial tile's own tile loop is `0..1`,
+        // so a `tile*N` term is always 0.
+        format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+    } else {
+        // Variable base from the enclosing tile loop. A tagged full
+        // nest ALWAYS has an enclosing tile loop (block_transform
+        // emits `tile -> seq -> inner`); missing one is a malformed
+        // EventList — fail loud with context (typed error, not panic).
+        let tile_iv = enclosing.ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "strip-mined full-tile inner loop {iter_var:?} \
+                 (block_tag is_partial=false) has no enclosing tile \
+                 loop — block_transform always wraps it; malformed \
+                 EventList"
+            ))
+        })?;
+        let tile_name = names.iter_var.get(&tile_iv).ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "tile iter var {tile_iv:?} has no name in NameTables"
+            ))
+        })?;
+        format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+    };
+    let mut child_subst = ctx.abs_subst.clone();
+    child_subst.insert(var.clone(), abs);
+    let child = ctx.with_abs_subst(child_subst);
+    // Loop header uses the concrete folded range
+    // (`{start}_i64..{end}_i64`) — NOT the source-form bound (would
+    // re-introduce the full range) and NOT the partition slice (the
+    // strip-mined inner loop iterates over the tile, not the worker's
+    // partition slice).
+    writeln!(
+        out,
+        "{pad}for {var} in ({}_i64)..({}_i64) {{",
+        range.start, range.end
+    )
+    .ok();
+    Ok(child)
 }
 
 /// Walk one worker's EventList, emitting Rust statements into `out`.
@@ -259,84 +375,28 @@ fn render_worker_events_inner(
 
                 // Per-occurrence absolute-index rebinding (TASK-0181;
                 // mirrors TASK-0180 on the single-worker path).
-                //
-                // A strip-mined inner-block loop reuses the SOURCE iter
-                // var and iterates `0..inner_len` (NOT `LO..HI`), so
-                // its loop variable must be expanded to the ABSOLUTE
-                // source value at every body use site. The tag is set
-                // per-occurrence by `block_transform` (the only site
-                // that knows N / num_full / full-vs-partial) and
-                // threaded through `Event::Loop.block_tag`. The
-                // `abs_subst` map lives on `RenderCtxPub` and is
-                // consulted by `render_int_expr` / `render_const_expr`
-                // — so Fire args, indexed assignments, and inner loop
-                // bounds all see the rebound expression, not just the
-                // loop header.
-                //
-                //   * full / divisible nest (`is_partial == false`):
-                //         abs = LO + tile*N + inner
-                //     where `tile` is the enclosing tile-loop variable
-                //     (its iteration count is `num_full`).
-                //   * trailing partial tile (`is_partial == true`):
-                //         abs = LO + num_full*N + inner
-                //     its own tile loop is `0..1`, so `tile*N` would
-                //     be 0 (the wrong base) — the constant
-                //     `num_full*N` offset is used instead.
-                //
-                // `LO` lives in `sidecar.loop_bounds` keyed by the
-                // (reused) IterVar — single source of truth, not
-                // duplicated into the tag.
+                // Delegates to [`render_block_tag_loop_header`] in this
+                // module — the SAME helper mp-tcp-bufsync's Plan calls
+                // (TASK-0253), so the strip-mined inner loop header
+                // and rebound child context are byte-identical across
+                // every backend by construction. The CALLER (this
+                // walker) still owns the body recursion + closing `}`;
+                // its recursion substrate (`bar_<tag>` / Push/Wait on
+                // `{prefix}_<id>` for the Slot/Ring rendezvous) is the
+                // walker-specific axis the helper deliberately does
+                // not abstract over.
                 if let Some(tag) = block_tag {
-                    let lo_src = ctx
-                        .sidecar
-                        .loop_bounds
-                        .get(iter_var)
-                        .map(|b| render_const_expr_pub(&b.lo, render_ctx))
-                        .transpose()?
-                        .unwrap_or_else(|| "0_i64".to_string());
-                    let n = tag.block_n;
-                    let abs = if tag.is_partial {
-                        // Constant base: the partial tile's own tile
-                        // loop is `0..1`, so a `tile*N` term is always
-                        // 0.
-                        format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
-                    } else {
-                        // Variable base from the enclosing tile loop.
-                        // A tagged full nest ALWAYS has an enclosing
-                        // tile loop (block_transform emits `tile -> seq
-                        // -> inner`); missing one is a malformed
-                        // EventList — fail loud with context (typed
-                        // error, not panic).
-                        let tile_iv = enclosing.ok_or_else(|| {
-                            EmitError::ContractGap(format!(
-                                "strip-mined full-tile inner loop {iter_var:?} \
-                                 (block_tag is_partial=false) has no enclosing tile \
-                                 loop — block_transform always wraps it; malformed \
-                                 EventList"
-                            ))
-                        })?;
-                        let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
-                            EmitError::ContractGap(format!(
-                                "tile iter var {tile_iv:?} has no name in NameTables"
-                            ))
-                        })?;
-                        format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
-                    };
-                    let mut child_subst = render_ctx.abs_subst.clone();
-                    child_subst.insert(var.clone(), abs);
-                    let child = render_ctx.with_abs_subst(child_subst);
-                    // Loop header uses the concrete folded range
-                    // (`{start}_i64..{end}_i64`) — NOT the source-form
-                    // bound (would re-introduce the full range) and
-                    // NOT the partition slice (the strip-mined inner
-                    // loop iterates over the tile, not the worker's
-                    // partition slice).
-                    writeln!(
+                    let child = render_block_tag_loop_header(
                         out,
-                        "{pad}for {var} in ({}_i64)..({}_i64) {{",
-                        range.start, range.end
-                    )
-                    .ok();
+                        indent,
+                        *iter_var,
+                        range,
+                        tag,
+                        enclosing,
+                        render_ctx,
+                        ctx.names,
+                        ctx.sidecar,
+                    )?;
                     render_worker_events_inner(
                         ctx,
                         worker,

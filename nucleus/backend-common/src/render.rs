@@ -155,9 +155,14 @@ impl<'a> RenderCtx<'a> {
 /// double-count failure mode TASK-0180 closed for the single-worker
 /// path).
 ///
-/// Default-constructed empty via [`Self::new`]; the walker extends a
-/// child copy per strip-mined inner-loop occurrence via
-/// [`Self::with_abs_subst`].
+/// Default-constructed empty via [`Self::new`]; the shared
+/// `render_block_tag_loop_header` helper
+/// ([`crate::multi_worker_walker::render_block_tag_loop_header`])
+/// extends a child copy per strip-mined inner-loop occurrence via
+/// [`Self::with_abs_subst`], and every multi-worker walker
+/// (pthreads-sync, pthreads-async, mp-tcp-bufsync) consumes the
+/// returned child (TASK-0253 — was duplicated per-backend pre-TASK-
+/// 0253 / cycle 73).
 pub struct RenderCtxPub<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
