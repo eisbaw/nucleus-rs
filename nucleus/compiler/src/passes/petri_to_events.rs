@@ -212,6 +212,35 @@ pub fn acfg_to_events(acfg: &ACFG) -> BTreeMap<WorkerId, Vec<Event>> {
     }
 
     walk(&acfg.root, &mut out, &acfg.partition_worker_ranges);
+
+    // Contract-internal gate (TASK-0107). The strictly per-worker
+    // invariants of the EventList contract — no self-push, non-empty
+    // Sync participants, Alloc/Free pairing — must hold immediately
+    // at the projection boundary; a regression in this pass or in any
+    // upstream injector (`sync_inject`, `transfer_inject`,
+    // `block_transform`, `partition_workers`) that violates them is a
+    // bug.
+    //
+    // Why ONLY the strictly per-worker invariants and not the full
+    // [`validate_event_lists`] (which also checks invariant (2),
+    // Push/Wait pair matching): `transfer_inject` has a known
+    // cross-scope splicing limitation that leaves legitimate
+    // EventLists with unmatched Wait events for currently-shipping
+    // programs (see lines 162-175 of this module's docs). Asserting
+    // (2) here would crash debug builds on real input; that's a
+    // separate task (`transfer_inject` fix), not silencing the
+    // validator. Invariant (2) is exposed via
+    // [`crate::event_validate::validate_event_lists`] for callers
+    // past that gap (backend codegen) to opt in.
+    //
+    // Release builds: the `debug_assert!` is compiled out entirely.
+    // The validator has zero cost in production compilation.
+    debug_assert!(
+        crate::event_validate::validate_event_lists_strict_per_worker(&out).is_ok(),
+        "acfg_to_events produced EventLists that violate the per-worker contract: {:?}",
+        crate::event_validate::validate_event_lists_strict_per_worker(&out).err()
+    );
+
     out
 }
 

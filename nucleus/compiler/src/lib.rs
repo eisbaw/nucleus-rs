@@ -15,6 +15,7 @@ pub mod capabilities;
 pub mod contract;
 pub mod error;
 pub mod event;
+pub mod event_validate;
 pub mod link;
 pub mod name_tables;
 pub mod passes;
@@ -45,6 +46,9 @@ pub use error::{ParseError, ParseErrorKind, ParseErrors};
 pub use event::{
     ArgBinding, CheckFrame, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
     Region, SeqTag, SyncKind, SyncTag, ViolationKind, WorkerId,
+};
+pub use event_validate::{
+    validate_event_lists, validate_event_lists_strict_per_worker, EventValidationError,
 };
 pub use link::{link, LinkError, LinkedIR, WorkerEntity};
 // Petri-net IR (PRD §8). `Arc` is intentionally NOT re-exported at the
