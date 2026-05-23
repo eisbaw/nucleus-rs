@@ -182,13 +182,14 @@ ci:
 # concurrent mp-tcp cells flake-free under load (8 sequential samples
 # was insufficient evidence per AC#2).
 #
-# Not wired anywhere automated yet: 20x parallel `nucleus-e2e`
-# invocations are too heavy for the standard CI walltime budget. Run
-# manually after any change touching the port handshake (mp-tcp-bufsync
-# emit, run.sh generation, wire::apply_sock_buf). Filed TASK-0252 to
-# wire this into a nightly/scheduled CI job; until then "AC#2 is
-# satisfied as a steady-state guarantee" relies on the developer
-# remembering to run this recipe.
+# Wired into a NIGHTLY scheduled CI job at .github/workflows/ci.yml's
+# `port-stress` job (cron: '0 4 * * *'), gated by event_name in
+# {schedule, workflow_dispatch} so per-PR walltime is unaffected
+# (TASK-0252, closing TASK-0176 AC#2 as a steady-state guarantee, not
+# a one-shot reading). Per-push / per-PR runs still skip the recipe
+# because 20× parallel `nucleus-e2e` is too heavy for the standard
+# walltime budget. Run manually anytime after touching the port
+# handshake (mp-tcp-bufsync emit, run.sh generation, wire::apply_sock_buf).
 #
 # Each e2e invocation uses a unique per-RUN run-id (pid+nanos,
 # TASK-0182) so scratch dirs do not collide; the per-cell run.sh uses

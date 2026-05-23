@@ -3,10 +3,10 @@ id: TASK-0252
 title: >-
   Wire just port-stress-check into a nightly/scheduled CI job (TASK-0176 AC#2
   steady-state guarantee)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-23 16:00'
-updated_date: '2026-05-23 16:00'
+updated_date: '2026-05-23 21:37'
 labels:
   - infra
   - tooling
@@ -41,12 +41,25 @@ The implementer-correct call was to NOT bundle CI wiring into the TASK-0176 fix 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 #1 A scheduled CI run invokes `just port-stress-check` on a cadence ≤ 7 days against current HEAD.
-- [ ] #2 #2 A flake in that scheduled run is loud (CI failure with the failing child log in the artifact / output).
-- [ ] #3 #3 The `port-stress-check` recipe header comment in `justfile` names the scheduled invocation site (no more aspirational "or on a nightly schedule").
+- [x] #1 #1 A scheduled CI run invokes `just port-stress-check` on a cadence ≤ 7 days against current HEAD.
+- [x] #2 #2 A flake in that scheduled run is loud (CI failure with the failing child log in the artifact / output).
+- [x] #3 #3 The `port-stress-check` recipe header comment in `justfile` names the scheduled invocation site (no more aspirational "or on a nightly schedule").
 
 ## Dependencies
 
 - Practical: depends on TASK-0057 (CI matrix runner) — schedule cron has to live somewhere.
 <!-- SECTION:DESCRIPTION:END -->
+
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed orchestrator-direct (cycle 77 continuation). Implementation: added 'port-stress' job to .github/workflows/ci.yml that runs 'just port-stress-check' on cron '0 4 * * *' (nightly 04:00 UTC, quiet hours) + workflow_dispatch (manual). 'if: github.event_name in {schedule, workflow_dispatch}' guard scopes the heavy 20-way-parallel job AWAY from per-push/per-PR runs so walltime stays bounded for normal contributor traffic. Job mirrors the existing 'gate' job's Nix + Cargo cache shape so cold-start cost is bounded. Justfile port-stress-check recipe header comment updated from 'Not wired anywhere automated yet... Filed TASK-0252' to 'Wired into a NIGHTLY scheduled CI job at .github/workflows/ci.yml's port-stress job' — closing the doc-lie that this cycle's filing itself created.
+
+AC#1 ('scheduled CI run invokes just port-stress-check on cadence ≤ 7 days against current HEAD'): MET via cron '0 4 * * *' (daily).
+AC#2 ('a flake in that scheduled run is loud'): MET — the recipe itself dumps all 20 child logs on failure (TASK-0176 cycle-72 MINOR-7 hardening); CI's natural fail-on-nonzero-exit + scheduled-job failure notifications surface the loud signal.
+AC#3 ('port-stress-check recipe header comment names the scheduled invocation site'): MET — header now names the cron schedule + the workflow path explicitly.
+
+Cannot CI-run-test from this environment (no GitHub remote per CLAUDE.md). YAML structural sanity verified (5 anchor lines = 1 on: + 1 jobs: + 3 job names). The scheduled job first fires when (a) the repo gets a GitHub remote AND (b) GitHub Actions enables on the repo. The cron trigger is otherwise dormant. TASK-0166 (configure branch protection) is the partner maintainer-side task that activates the gating-on-required-status-check side; this task only adds the job + its trigger.
+<!-- SECTION:FINAL_SUMMARY:END -->

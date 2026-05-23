@@ -51,6 +51,13 @@ on:
   # tier-1 gate today. When tier-2/3 land, the matrix `include` rows
   # below switch the extra tiers on for the relevant milestones.
   workflow_dispatch:
+  # Nightly schedule (TASK-0252) for the heavy `port-stress` job that
+  # would bloat per-PR walltime. 04:00 UTC = quiet hours across most
+  # contributor timezones. The port-stress job's `if:` guard scopes it
+  # to schedule + workflow_dispatch only, so push / pull_request runs
+  # are unaffected (gate + milestone matrix continue as before).
+  schedule:
+    - cron: '0 4 * * *'
 
 # A failing job fails the workflow (AC#2): GitHub Actions marks the
 # workflow run failed if any job exits non-zero, and required status
@@ -168,3 +175,48 @@ jobs:
       # milestone-tagged required cell still hard-fails its tier).
       - name: just e2e-milestone ${{ matrix.milestone }}
         run: nix develop -c just e2e-milestone ${{ matrix.milestone }}
+
+  # Nightly mp-tcp-bufsync port-handshake stress (TASK-0252 closes
+  # TASK-0176 AC#2 as a STEADY-STATE guarantee, not a one-shot reading
+  # at landing time). Runs `just port-stress-check` (20 parallel
+  # `nucleus-e2e --backend mp-tcp-bufsync` invocations per recipe). Any
+  # flake — even 1-in-20 — fails the job loud with all child logs
+  # dumped (justfile recipe behaviour).
+  #
+  # `if:` guard scopes to schedule + manual dispatch only: a 20-way
+  # parallel e2e is too heavy for per-push/PR walltime; gate + milestone
+  # jobs above continue to run on every push/PR unchanged. Reproduce
+  # the same outcome locally with `nix develop -c just port-stress-check`.
+  #
+  # Mirrors the gate job's Nix + Cargo cache shape so cold-start cost
+  # is bounded.
+  port-stress:
+    name: nightly port-stress (mp-tcp-bufsync, 20x parallel)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nucleus/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: just port-stress-check (TASK-0176 AC#2 / TASK-0252)
+        run: nix develop -c just port-stress-check
