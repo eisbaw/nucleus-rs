@@ -166,11 +166,16 @@
 //!   does NOT re-derive `seq` to be the same — the original
 //!   placeholder is left in place. Tests cover this.
 //!
-//! - **No conflict detection between `sync` and `async` options on
-//!   one directive.** If the schedule wrote `transfer D : sync, async;`,
-//!   the last option in source order wins for the `synchronous` flag.
-//!   The schedule lowering pass already flags this as a follow-up
-//!   linker concern (grammar §2 note 7); we mirror that choice here.
+//! - **Conflict detection happens upstream at sched-lower.** A schedule
+//!   writing `transfer D : sync, async;` is rejected by `lower_transfer`
+//!   in `crate::sched::lower` as `SchedLowerErrorKind::ConflictingTransferMode`
+//!   (TASK-0193 / TASK-0119) BEFORE this pass runs. So the
+//!   `policy_from_directive` helper here is reached only with at most
+//!   one mode flag set — the last-option-wins shape is a legacy of when
+//!   the conflict check lived only in this pass; the upstream reject
+//!   makes it dead-code defensive. Pinned by
+//!   `negative_mutually_exclusive_transfer_sync_async` in
+//!   `nucleus-compiler/tests/sched_lower.rs`.
 //!
 //! - **Capability check deferred.** Per the task spec, the backend
 //!   isn't chosen at this point. We carry the schedule's stated
