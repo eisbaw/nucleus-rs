@@ -79,7 +79,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use compiler::event::{DataId, Event, SyncTag, WorkerId};
+use compiler::event::{DataId, Event, IterVar, SyncTag, WorkerId};
 use compiler::sidecar::NameSidecar;
 
 // Shared codegen primitives (TASK-0244 cycle 37) — the SINGLE
@@ -711,7 +711,7 @@ impl<'a> Plan<'a> {
         }
 
         let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_events(&self.per_worker[&worker], &mut out, 1, worker, is_host, &ctx)?;
+        self.render_events(&self.per_worker[&worker], &mut out, 1, worker, is_host, &ctx, None)?;
 
         writeln!(out, "}}").ok();
         Ok(out)
@@ -727,6 +727,18 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// `enclosing` is the iter-var of the immediately-enclosing
+    /// `Event::Loop` (the tile loop, when the child is a strip-mined
+    /// inner-block loop with `block_tag.is_partial == false`). `None`
+    /// at top level. Mirrors the pthreads-sync single-worker
+    /// `render_events_in` parameter (TASK-0180 / TASK-0181).
+    ///
+    /// Eight params is one over clippy's `too_many_arguments`
+    /// threshold; bundling them into a struct would be synthetic
+    /// container ceremony for what is a stateless event-walk step
+    /// with genuine per-call inputs. Local allow (same rationale as
+    /// the shared `multi_worker_walker::render_worker_events_inner`).
+    #[allow(clippy::too_many_arguments)]
     fn render_events(
         &self,
         events: &[Event],
@@ -735,6 +747,7 @@ impl<'a> Plan<'a> {
         worker: WorkerId,
         is_host: bool,
         ctx: &RenderCtxPub<'_>,
+        enclosing: Option<IterVar>,
     ) -> Result<(), EmitError> {
         let pad = "    ".repeat(indent);
         for e in events {
@@ -787,24 +800,87 @@ impl<'a> Plan<'a> {
                             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
                         ))
                     })?;
-                    // A strip-mine `block_tag` in this MULTI-process
-                    // renderer means a blocked multi-worker schedule.
-                    // Per-occurrence absolute-index rebinding (TASK-0180)
-                    // is implemented only on the shared single-worker
-                    // path (which a 0/1-worker schedule — incl. all
-                    // tier-1 blocked schedules 04/05/06/07 — already
-                    // routes through). No tier-1 schedule blocks a
-                    // multi-worker loop; fail LOUD rather than silently
-                    // emit the un-rebound loop (accumulator
-                    // double-count, the exact TASK-0180 defect class).
-                    if block_tag.is_some() {
-                        return Err(EmitError::ContractGap(format!(
-                            "Event::Loop for iter var `{var}` carries a strip-mine \
-                             block_tag inside a MULTI-process schedule; per-occurrence \
-                             rebinding is single-worker-path only (TASK-0180). No \
-                             tier-1 schedule blocks a multi-worker loop; refusing to \
-                             emit un-rebound. Tracked as TASK-0181."
-                        )));
+
+                    // Per-occurrence absolute-index rebinding (TASK-0181;
+                    // mirrors pthreads-sync single-worker TASK-0180 and the
+                    // shared multi_worker_walker arm). A strip-mined inner-
+                    // block loop reuses the SOURCE iter var and iterates
+                    // `0..inner_len`; codegen must expand the loop var to
+                    // its absolute source value at every body use site. The
+                    // tag carries `(block_n, num_full, is_partial)`; the
+                    // walker reads `lo_src` from
+                    // `sidecar.loop_bounds[iter_var]` (single source of
+                    // truth — same LO for every reused occurrence).
+                    //
+                    // The rebinding is threaded through
+                    // `RenderCtxPub.abs_subst` so `render_int_expr` /
+                    // `render_const_expr` substitute at every Fire arg /
+                    // index / inner-bound site — NOT just the loop header
+                    // (the subtle TASK-0181 review-gate finding: header-
+                    // only substitution would leave Fire bodies un-rebound
+                    // and re-introduce the accumulator double-count
+                    // TASK-0180 closed). NB: mp-tcp-bufsync intentionally
+                    // duplicates this arm rather than migrating onto the
+                    // shared `multi_worker_walker` — its substrate (TCP
+                    // sockets, `ctrl_<peer>` / `sock_<peer>` barriers, host
+                    // vs worker dispatch) is structurally different from
+                    // the walker's Slot/Ring rendezvous and is out of scope
+                    // for this cycle. The rebinding *logic* is byte-
+                    // identical between the two arms; any future divergence
+                    // is a bug per the cross-backend bit-identical
+                    // differential (PRD §10.1).
+                    if let Some(tag) = block_tag {
+                        let lo_src = self
+                            .sidecar
+                            .loop_bounds
+                            .get(iter_var)
+                            .map(|b| render_const_expr_pub(&b.lo, ctx))
+                            .transpose()?
+                            .unwrap_or_else(|| "0_i64".to_string());
+                        let n = tag.block_n;
+                        let abs = if tag.is_partial {
+                            format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+                        } else {
+                            let tile_iv = enclosing.ok_or_else(|| {
+                                EmitError::ContractGap(format!(
+                                    "strip-mined full-tile inner loop {iter_var:?} \
+                                     (block_tag is_partial=false) has no enclosing tile \
+                                     loop — block_transform always wraps it; malformed \
+                                     EventList"
+                                ))
+                            })?;
+                            let tile_name = self.names.iter_var.get(&tile_iv).ok_or_else(|| {
+                                EmitError::ContractGap(format!(
+                                    "tile iter var {tile_iv:?} has no name in NameTables"
+                                ))
+                            })?;
+                            format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+                        };
+                        let mut child_subst = ctx.abs_subst.clone();
+                        child_subst.insert(var.clone(), abs);
+                        let child_ctx = ctx.with_abs_subst(child_subst);
+                        // Loop header uses the CONCRETE folded range —
+                        // NOT the source-form bound (would re-introduce
+                        // the full range) and NOT a partition slice
+                        // (the strip-mined inner iterates the tile, not
+                        // the worker's partition slice).
+                        writeln!(
+                            out,
+                            "{pad}for {var} in ({}_i64)..({}_i64) {{",
+                            range.start, range.end
+                        )
+                        .ok();
+                        self.render_events(
+                            body,
+                            out,
+                            indent + 1,
+                            worker,
+                            is_host,
+                            &child_ctx,
+                            Some(*iter_var),
+                        )?;
+                        writeln!(out, "{pad}}}").ok();
+                        continue;
                     }
                     // Per-worker partition override (TASK-0212): if the
                     // partition pass recorded a slice for THIS worker on
@@ -871,7 +947,15 @@ impl<'a> Plan<'a> {
                             "{body_pad}let _check_start = std::time::Instant::now();"
                         )
                         .ok();
-                        self.render_events(body, out, body_indent, worker, is_host, ctx)?;
+                        self.render_events(
+                            body,
+                            out,
+                            body_indent,
+                            worker,
+                            is_host,
+                            ctx,
+                            Some(*iter_var),
+                        )?;
                         writeln!(
                             out,
                             "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
@@ -912,7 +996,15 @@ impl<'a> Plan<'a> {
                             }
                         }
                     } else {
-                        self.render_events(body, out, body_indent, worker, is_host, ctx)?;
+                        self.render_events(
+                            body,
+                            out,
+                            body_indent,
+                            worker,
+                            is_host,
+                            ctx,
+                            Some(*iter_var),
+                        )?;
                     }
                     writeln!(out, "{pad}}}").ok();
                 }
