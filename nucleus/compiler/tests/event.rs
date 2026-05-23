@@ -9,10 +9,14 @@
 //!   order compare equal; reordering breaks equality.
 //!
 //! What this file does NOT cover:
-//! - Trait surface exhaustiveness (e.g. checking `Send + Sync` or
-//!   that every newtype implements `Ord`). Filed as a follow-up.
 //! - Semantic validity of events (e.g. `Push.dst != self`, matched
-//!   `seq`). The event types are a contract, not a validator.
+//!   `seq`). The event types are a contract, not a validator —
+//!   `event_validate::validate_event_lists` (TASK-0107) is the
+//!   runtime validator.
+//!
+//! Trait-surface exhaustiveness — `Send + Sync` on the event types,
+//! `Ord` on each newtype id, `Default` on `IterTile` — IS covered as
+//! of TASK-0108 (compile-time assertions at the end of this file).
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -275,6 +279,61 @@ fn itertile_reordered_bounds_compare_unequal() {
     let a = IterTile::new(vec![(IterVar(0), 0..16), (IterVar(1), 0..32)]);
     let b = IterTile::new(vec![(IterVar(1), 0..32), (IterVar(0), 0..16)]);
     assert_ne!(a, b);
+}
+
+// --------------------------------------------------------------------
+// Trait-surface exhaustiveness (TASK-0108)
+//
+// The Event types form a long-lived contract (PRD §8.3). A future
+// derive deletion that silently drops `Send`/`Sync` on `Event` would
+// break every backend's ability to move EventLists across thread
+// boundaries; dropping `Ord` from a newtype id would break the
+// `BTreeMap` ordering the determinism story (PRD §10.1) relies on.
+// These checks compile-time-fail if the corresponding trait impl
+// disappears.
+// --------------------------------------------------------------------
+
+const fn assert_send<T: Send>() {}
+const fn assert_sync<T: Sync>() {}
+const fn assert_ord<T: Ord>() {}
+const fn assert_default<T: Default>() {}
+
+#[test]
+fn event_types_are_send_and_sync() {
+    assert_send::<Event>();
+    assert_sync::<Event>();
+    assert_send::<IterTile>();
+    assert_sync::<IterTile>();
+    assert_send::<FireBinding>();
+    assert_sync::<FireBinding>();
+    assert_send::<ArgBinding>();
+    assert_sync::<ArgBinding>();
+    assert_send::<DataSlice>();
+    assert_sync::<DataSlice>();
+    assert_send::<SyncKind>();
+    assert_sync::<SyncKind>();
+}
+
+#[test]
+fn newtype_ids_are_ord() {
+    // Determinism (PRD §10.1) requires BTreeMap-key correctness.
+    assert_ord::<KernelId>();
+    assert_ord::<DataId>();
+    assert_ord::<WorkerId>();
+    assert_ord::<IterVar>();
+    assert_ord::<SeqTag>();
+    assert_ord::<SyncTag>();
+    assert_ord::<Region>();
+}
+
+#[test]
+fn itertile_is_default() {
+    // `Default` is required for test/builder ergonomics (an empty
+    // `IterTile` represents a non-iterated firing). Auditable as a
+    // contract because `Event::Fire { tile, .. }` accepts the
+    // defaulted-empty form.
+    assert_default::<IterTile>();
+    assert_eq!(IterTile::default().bounds.len(), 0);
 }
 
 #[test]
