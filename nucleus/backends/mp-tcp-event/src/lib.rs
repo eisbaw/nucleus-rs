@@ -155,8 +155,12 @@ pub struct EmitResult {
     pub cargo_toml: PathBuf,
     /// Per-worker `src/bin/<worker>.rs` paths. Single-worker emit:
     /// exactly one entry (`nuc-generated.rs`). Multi-worker emit
-    /// (Stage 3, not yet landed): one entry per used worker plus
-    /// the `__nuc_pick_port` helper.
+    /// (Stage 3, not yet landed — TASK-0042.05): one entry per used
+    /// worker. The handshake will use the rendezvous-file pattern
+    /// landed by TASK-0176 in mp-tcp-bufsync (host binds 127.0.0.1:0
+    /// itself + writes the port to `$NUC_RENDEZVOUS_DIR/<w>.port`;
+    /// non-host worker polls + reads + connects) — do NOT reintroduce
+    /// the close-then-rebind `__nuc_pick_port` helper.
     pub worker_bins: Vec<PathBuf>,
     /// Path to the emitted `src/kernels.rs`.
     pub kernels_rs: PathBuf,
