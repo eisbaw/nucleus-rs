@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 02:04'
-updated_date: '2026-05-23 18:16'
+updated_date: '2026-05-23 18:24'
 labels: []
 dependencies:
   - TASK-0180
@@ -217,6 +217,8 @@ AC STATUS:
 FOLLOW-UPS FILED:
 - TASK-0253 — Migrate mp-tcp-bufsync's Event::Loop arm onto the
   shared multi_worker_walker (the duplication this cycle accepted).
+
+Cycle 73 review-gate hardening (commit below): mped-architect surfaced 3 MAJORs + 2 MINORs + 1 NIT, applied all 3 MAJORs in-thread. (a) MAJOR-1: module docstring at multi_worker_walker.rs:21 still said 'strip-mine block_tag guards' — the recurring doc-lie failure class. Updated to 'per-occurrence strip-mine block_tag rebinding (TASK-0181)' so the module preamble matches the function docstring 130 lines below. (b) MAJOR-2: TASK-0253 (mp-tcp-bufsync walker migration) was filed as a bare description-only skeleton. Fleshed out with 5 concrete ACs (one-place arithmetic, byte-identical migration, test-coverage parity, single-worker non-regression, walker-tests stay green). (c) MAJOR-3: AC#2 'both backends' was satisfied only against the walker; mp-tcp-bufsync mirror has no direct test (only line-for-line arithmetic equivalence + reactive cross-backend differential). Folded the mp-tcp-bufsync test-coverage gap into TASK-0253 AC#3 explicitly — when the migration lands, the walker tests transitively cover mp-tcp-bufsync; if migration is deferred, AC#3 demands a synthetic mp-tcp-bufsync test independently. MINORs (check_frame defense is dead code; DataSlice _force_use smell; loose absence-check) deferred — first two are pre-existing patterns, third is acceptable. qa-test-runner: GO (all 7 claims re-verified, 88/70/0/18 baseline preserved, 20/20 stress sample 2 non-flaky). mped-architect: conditional GO; both conditions addressed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

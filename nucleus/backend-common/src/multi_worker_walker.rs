@@ -18,7 +18,8 @@
 //! truth parameterised by ONE string: the rendezvous variable prefix
 //! (`"slot"` for pthreads-sync, `"ring"` for pthreads-async). Everything
 //! else (Fire / Loop / Sync / Wait gather, check_frame instrumentation,
-//! per-worker partition range override, strip-mine block_tag guards,
+//! per-worker partition range override, per-occurrence strip-mine
+//! block_tag rebinding (TASK-0181),
 //! barrier identity via `SyncTag`, slice-paste leading-axis arithmetic)
 //! is shared verbatim across both backends — there is no second axis
 //! of variation worth a trait abstraction.
