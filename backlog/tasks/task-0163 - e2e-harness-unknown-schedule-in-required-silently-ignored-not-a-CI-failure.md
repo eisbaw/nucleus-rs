@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 22:15'
-updated_date: '2026-05-18 22:34'
+updated_date: '2026-05-23 15:21'
 labels:
   - infra
   - tooling
@@ -56,6 +56,16 @@ Gate (nix develop -c): clippy --workspace -D warnings clean; just test 0 failed 
 Proof it bites: transiently typo'd first required schedule naive->naiv in real manifest; just e2e exited 1 with error naming (example=01-elementwise-add, schedule=naiv, backend=pthreads-sync); manifest reverted, git diff/status clean. Durable guard is the unit test, not the manifest mutation.
 
 ORCHESTRATOR REVIEW GATE (phase3-ralph): qa-test-runner GO + mped-architect GO, both read-only, run by orchestrator. Numbers RE-RUN by reviewers this cycle (not transcribed from implementer): just test all green (e2e crate unit 18/0/0, +5 incl. all 5 named coverage tests); just e2e total 10/pass 8/fail 0/skip 2/required-fail 0 (UNCHANGED — no happy-path regression); just determinism-check 8/0 byte-identical; determinism-check-negative bites 2/2 (non-flaky); clippy --workspace -D warnings clean. Bite reproduced END TO END by QA: naive->naiv typo in real e2e-matrix.toml -> just e2e exit 1 naming (example=01-elementwise-add, schedule=naiv, backend=pthreads-sync) before any build; file restored bit-identical (sha256 match, git clean). Architect confirmed skip-exemption correct, CLI-filter scoping does NOT re-hide the bug (bare just e2e/CI uses unfiltered Args::default), determinism-mode coverage is desirable not over-reach, tests pin the bite. One follow-up filed: TASK-0168 (standing wired-path negative gate). No AI credit in 5195ea9. TASK-0163 Done is honest: all 3 ACs genuinely met + independently verified + both reviews GO.
+
+Forward-carry from TASK-0168 (cycle 71): standing wired-path negative gate now LIVE.
+
+just required-coverage-check-negative was added (mirroring determinism-check-negative / xbackend-check-negative) and wired into just ci. NUC_REQUIRED_COVERAGE_NEGATIVE=1 deterministically injects a synthetic [[required]] entry with a non-existent schedule into the in-memory Manifest; the harness then exits non-zero naming the synthetic triple. The recipe asserts the new machine-checkable NUC_REQUIRED_COVERAGE_GAP_DETECTED=<n> stdout signal is present AND n>=1 IN ADDITION to the exit-code inversion (TASK-0188 belt-and-suspenders).
+
+Net effect on TASK-0163: trust in required_coverage_gaps no longer rests SOLELY on the 5 in-isolation unit tests (which would all stay green if a future refactor dropped the `if !gaps.is_empty() { return Err }` wiring in run_inner). The wired-path bite is now standing-tested every just ci run.
+
+Manual AC#3 proof: temporarily replaced the wiring with `if false`, harness ran to completion 88/70/0/18 required-fail 0 (the exact TASK-0163 silent-vanish pattern), recipe correctly FAILed loud, wiring restored.
+
+Files: nucleus/e2e/src/main.rs (maybe_inject_required_coverage_negative + stdout signal in run_inner), justfile (required-coverage-check-negative recipe + ci wire). Commits 061b6c7 and 226a030.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
