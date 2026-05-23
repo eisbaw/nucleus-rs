@@ -203,6 +203,37 @@ port-stress-check N="20":
     cd nucleus && cargo build --release --bin nucleus-e2e --quiet
     cd nucleus && fail=0; for i in $(seq 1 {{N}}); do ./target/release/nucleus-e2e --backend mp-tcp-bufsync >/tmp/nuc-port-stress-$$-$i.log 2>&1 & done; for j in $(jobs -p); do wait "$j" || fail=$((fail+1)); done; if [ "$fail" -gt 0 ]; then echo "FAIL: $fail of {{N}} parallel mp-tcp-bufsync e2e runs failed (TASK-0176 AC#2). Dumping all {{N}} child logs:"; for log in /tmp/nuc-port-stress-$$-*.log; do echo "===== $log ====="; tail -40 "$log"; done; exit 1; fi; rm -f /tmp/nuc-port-stress-$$-*.log; echo "OK: {{N}}/{{N}} parallel mp-tcp-bufsync e2e runs passed (TASK-0176 AC#2)"
 
+# Regenerate every example's reference.bin via its standalone
+# reference impl (docs/reference-impl-policy.md §3, §4). Maintainers
+# run this when a kernel body changes and references must move in
+# lockstep with the algorithm. Glob-discovers
+# `nuc-nucleus/examples/*/reference/Cargo.toml` so a new example with
+# a reference impl is picked up automatically — no per-example recipe
+# bloat (PRD §12.3 anti-bloat rule).
+#
+# Two regen shapes are handled: most examples take the existing
+# committed input.bin via --in/--out; examples 04-prefix-sum and
+# 06-separable-filter also support --gen-input. This recipe regenerates
+# ONLY reference.bin and uses the existing input.bin — that is the
+# common maintenance flow when a kernel changes. To also regenerate
+# input.bin (e.g. changing the test fixture shape) run the per-example
+# `--gen-input` command from the Cargo.toml's header comment manually.
+#
+# Fails LOUD on first non-zero exit. Does NOT commit results — review
+# diffs and commit yourself (TASK-0077: 'human review step'). 14-
+# hearing-aid currently has no reference impl (M11; TASK-0054) so the
+# glob skips it naturally.
+regen-references:
+    @set -e; for cargo_toml in nuc-nucleus/examples/*/reference/Cargo.toml; do \
+        ex_dir=$(dirname $(dirname "$cargo_toml")); \
+        ex_name=$(basename "$ex_dir"); \
+        echo "=== regenerating $ex_name/reference.bin ==="; \
+        cargo run --release --manifest-path "$cargo_toml" -- \
+            --in  "$ex_dir/input.bin" \
+            --out "$ex_dir/reference.bin"; \
+    done; \
+    echo "OK: all reference.bin files regenerated. Review with 'git diff' before committing (TASK-0077)."
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean
