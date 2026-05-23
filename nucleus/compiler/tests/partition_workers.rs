@@ -334,6 +334,8 @@ fn non_divisible_range_is_rejected() {
         ResolvedLoopDirective {
             var: "n".to_string(),
             options: vec![ResolvedLoopOption::Partition(PartitionKind::Workers)],
+            // TASK-0099: hand-built test fixture has no source text.
+            var_span: None,
         },
     );
     let sched = SchedIR {

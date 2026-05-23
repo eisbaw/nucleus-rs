@@ -858,6 +858,10 @@ fn lower_place(p: &super::ast::PlaceDirective, ir: &mut SchedIR) -> Result<(), S
         ResolvedPlacement {
             kernel: kernel.clone(),
             target,
+            // TASK-0099: thread the schedule-source `place K on ...`
+            // kernel-identifier byte range through to the link step so
+            // `UnknownKernel` underlines the offending token.
+            kernel_span: Some(p.kernel.span.clone()),
         },
     );
     Ok(())
@@ -916,6 +920,10 @@ fn lower_place_data(
         ResolvedPlaceData {
             data: data.clone(),
             region: region.clone(),
+            // TASK-0099: thread the schedule-source `place_data D in R`
+            // data-identifier byte range through to the link step so
+            // `UnknownData` underlines the offending token.
+            data_span: Some(pd.data.span.clone()),
         },
     );
     Ok(())
@@ -1033,6 +1041,12 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
         ResolvedLoopDirective {
             var: var.clone(),
             options,
+            // TASK-0099: thread the schedule-source `loop V : ...`
+            // loop-variable identifier byte range through to the link
+            // step so `UnknownLoop` / `PipelineExceedsBuffer` /
+            // `PipelineExceedsIterationCount` underline the offending
+            // token.
+            var_span: Some(var_span.clone()),
         },
     );
     Ok(())
@@ -1184,6 +1198,10 @@ fn lower_transfer(
         ResolvedTransferDirective {
             data: data.clone(),
             options,
+            // TASK-0099: thread the schedule-source `transfer D : ...`
+            // data-identifier byte range through to the link step so
+            // `UnknownTransferData` underlines the offending token.
+            data_span: Some(data_span.clone()),
         },
     );
     Ok(())
@@ -1292,6 +1310,11 @@ fn lower_check(c: &super::ast::CheckDirective, ir: &mut SchedIR) -> Result<(), S
         ResolvedCheckDirective {
             var: var.clone(),
             asserts,
+            // TASK-0099: thread the schedule-source `check loop V : ...`
+            // loop-variable identifier byte range through to the link
+            // step so `UnknownLoop` (which is raised for both `loop` and
+            // `check loop` directives) underlines the offending token.
+            var_span: Some(c.var.span.clone()),
         },
     );
     Ok(())

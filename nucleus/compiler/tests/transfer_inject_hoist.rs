@@ -632,6 +632,8 @@ fn block_transform_marks_inner_iter_var() {
         ResolvedLoopDirective {
             var: "i".to_string(),
             options: vec![ResolvedLoopOption::Block(128)],
+            // TASK-0099: hand-built test fixture has no source text.
+            var_span: None,
         },
     );
     let linked: LinkedIR = link::link(algo, sched).expect("link");

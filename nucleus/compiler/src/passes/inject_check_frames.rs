@@ -292,6 +292,8 @@ mod tests {
             ResolvedCheckDirective {
                 var: "n".to_string(),
                 asserts: vec![ResolvedCheckAssert::LatencyMax(ms(10))],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         )]
         .into_iter()
@@ -330,6 +332,8 @@ mod tests {
             ResolvedCheckDirective {
                 var: "x".to_string(),
                 asserts: vec![ResolvedCheckAssert::LatencyMax(ms(10))],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         )]
         .into_iter()
@@ -371,6 +375,8 @@ mod tests {
             ResolvedCheckDirective {
                 var: "n".to_string(),
                 asserts: vec![ResolvedCheckAssert::LatencyMax(ms(10))],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         )]
         .into_iter()
@@ -412,6 +418,8 @@ mod tests {
                     ResolvedCheckAssert::LatencyMax(ms(5)),
                     ResolvedCheckAssert::OnViolation(AstViolationKind::Log),
                 ],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         )]
         .into_iter()
@@ -452,6 +460,8 @@ mod tests {
                     original_unit: TimeUnit::Ms,
                     original_value: 1,
                 })],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         )]
         .into_iter()

@@ -109,6 +109,8 @@ fn fixture_sched() -> SchedIR {
         ResolvedPlaceData {
             data: "img".to_string(),
             region: "heap".to_string(),
+            // TASK-0099: hand-built test fixture has no source text.
+            data_span: None,
         },
     );
 
@@ -118,6 +120,8 @@ fn fixture_sched() -> SchedIR {
         ResolvedTransferDirective {
             data: "img".to_string(),
             options: vec![ResolvedTransferOption::Sync],
+            // TASK-0099: hand-built test fixture has no source text.
+            data_span: None,
         },
     );
 

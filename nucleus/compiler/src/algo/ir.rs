@@ -112,13 +112,43 @@ pub struct ResolvedData {
 /// `kernel NAME : SIG PURITY`. The signature uses resolved shapes —
 /// kernel parameters and return types are subject to the same const
 /// evaluation as data declarations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # `name_span` (TASK-0099)
+///
+/// Byte range of the algorithm-source `kernel NAME : ...` *identifier*
+/// token, threaded through `algo/lower.rs::lower_kernel` for the link
+/// step's `UnplacedKernel` diagnostic (`UnplacedKernel` is raised when
+/// an algorithm-side kernel decl has no schedule-side `place`
+/// directive; the offending token lives on the algorithm side). `None`
+/// for manually-constructed test instances. **Excluded from value
+/// identity** (hand-written `PartialEq` forwards to the data fields
+/// only) — same rationale as [`crate::span::Spanned`] /
+/// [`crate::algo::ir::LowerError`]: position is informational, not
+/// part of *which kernel this is*.
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedKernel {
     pub name: String,
     pub params: Vec<ResolvedType>,
     /// `None` for unit return; `Some(t)` for a typed return.
     pub ret: Option<ResolvedType>,
     pub purity: Purity,
+    /// Byte range of the algorithm-source kernel-identifier token (the
+    /// `kernel K : ...` `K`). `None` for manually-constructed test
+    /// instances. See type docs.
+    pub name_span: Option<Range<usize>>,
+}
+
+// Hand-written: forward to data fields, EXCLUDE `name_span` from
+// identity (TASK-0099, mirroring TASK-0090 / TASK-0082). Deriving
+// would fold the span in and break `AlgoIR` equality tests that
+// don't populate spans on hand-built expected trees.
+impl PartialEq for ResolvedKernel {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.params == other.params
+            && self.ret == other.ret
+            && self.purity == other.purity
+    }
 }
 
 /// Indexed reference to a data symbol. Indices are kept as IR

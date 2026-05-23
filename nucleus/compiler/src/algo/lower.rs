@@ -490,6 +490,11 @@ fn lower_kernel(
             params,
             ret,
             purity: k.purity,
+            // TASK-0099: thread the algorithm-source `kernel K : ...`
+            // identifier byte range through to the link step so
+            // `UnplacedKernel` (raised when no schedule `place` covers
+            // this kernel) underlines the offending decl token.
+            name_span: Some(k.name.span.clone()),
         },
     );
     Ok(())

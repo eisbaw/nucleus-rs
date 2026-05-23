@@ -88,6 +88,8 @@ fn synthetic_one_loop(h: i64, with_block: Option<u64>) -> (LinkedIR, ACFG) {
             ResolvedLoopDirective {
                 var: "i".to_string(),
                 options: vec![ResolvedLoopOption::Block(n)],
+                // TASK-0099: hand-built test fixture has no source text.
+                var_span: None,
             },
         );
     }
@@ -406,6 +408,8 @@ fn block_rejects_unknown_loop_var() {
         ResolvedLoopDirective {
             var: "no_such_var".to_string(),
             options: vec![ResolvedLoopOption::Block(8)],
+            // TASK-0099: hand-built test fixture has no source text.
+            var_span: None,
         },
     );
     // The link pass would normally reject this; we bypass it by

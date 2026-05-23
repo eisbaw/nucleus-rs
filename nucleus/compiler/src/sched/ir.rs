@@ -137,10 +137,38 @@ pub struct ResolvedWorker {
 /// task spec scopes link-time checks (kernel resolution) for later
 /// anyway. We DO at least require that the named workers are declared,
 /// because a `place X on bogus_worker;` is a clear schedule-side bug.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # `kernel_span` (TASK-0099)
+///
+/// Byte range of the schedule's `place K on ...` *kernel identifier*
+/// token (`PlaceDirective.kernel.span`), threaded through `lower_place`
+/// for use by the link step. Populated by `sched/lower.rs`; `None` if
+/// this `ResolvedPlacement` was constructed manually in a test that has
+/// no source text to point at. Used by [`crate::link::LinkError`]
+/// (`UnknownKernel`) to underline the offending identifier in the
+/// schedule. **Excluded from value identity** (hand-written `PartialEq`
+/// forwards to `kernel` + `target` only) — same rationale as
+/// [`crate::span::Spanned`] / [`crate::algo::ir::LowerError`]: positions
+/// are informational-for-humans, not part of *which placement this is*.
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedPlacement {
     pub kernel: String,
     pub target: ResolvedPlaceTarget,
+    /// Byte range of the schedule-source kernel identifier token (the
+    /// `place K on ...` `K`). `None` for manually-constructed test
+    /// instances. See type docs.
+    pub kernel_span: Option<Range<usize>>,
+}
+
+// Hand-written: forward to `kernel` + `target`, EXCLUDE `kernel_span`
+// from identity (TASK-0099, mirroring TASK-0090 / TASK-0082). Deriving
+// would fold the span in and (a) break the manual-test struct
+// `assert_eq!`s that don't populate spans, (b) make two
+// otherwise-identical placements parsed from different sources unequal.
+impl PartialEq for ResolvedPlacement {
+    fn eq(&self, other: &Self) -> bool {
+        self.kernel == other.kernel && self.target == other.target
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,10 +182,27 @@ pub enum ResolvedPlaceTarget {
 /// The `region` field has been validated to refer to a declared
 /// [`ResolvedMemoryRegion`]. The `data` field is a textual symbol
 /// kept for the link step to cross-check against `AlgoIR::data`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # `data_span` (TASK-0099)
+///
+/// Byte range of the schedule's `place_data D in R` *data identifier*
+/// token, threaded through `lower_place_data` for the link step's
+/// `UnknownData` diagnostic. See [`ResolvedPlacement`] for the
+/// equality/identity rationale (excluded from `PartialEq`).
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedPlaceData {
     pub data: String,
     pub region: String,
+    /// Byte range of the schedule-source data identifier token (the
+    /// `place_data D in R` `D`). `None` for manually-constructed test
+    /// instances.
+    pub data_span: Option<Range<usize>>,
+}
+
+impl PartialEq for ResolvedPlaceData {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.region == other.region
+    }
 }
 
 // --------------------------------------------------------------------
@@ -177,10 +222,27 @@ pub struct ResolvedPlaceData {
 /// real example does. The AST stores options as a `Vec`, and we
 /// preserve that order so the conflict-detection follow-up has the
 /// information available.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// # `var_span` (TASK-0099)
+///
+/// Byte range of the schedule's `loop V : ...` *loop-variable
+/// identifier* token, threaded through `lower_loop` for the link step's
+/// `UnknownLoop` / `PipelineExceedsBuffer` /
+/// `PipelineExceedsIterationCount` diagnostics. See [`ResolvedPlacement`]
+/// for the equality/identity rationale (excluded from `PartialEq`).
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedLoopDirective {
     pub var: String,
     pub options: Vec<ResolvedLoopOption>,
+    /// Byte range of the schedule-source loop-variable identifier token
+    /// (the `loop V : ...` `V`). `None` for manually-constructed test
+    /// instances.
+    pub var_span: Option<Range<usize>>,
+}
+
+impl PartialEq for ResolvedLoopDirective {
+    fn eq(&self, other: &Self) -> bool {
+        self.var == other.var && self.options == other.options
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,10 +271,26 @@ pub enum ResolvedLoopOption {
 /// been validated (`buffer=N` > 0). Sync/Async conflict and duplicate
 /// options are linker concerns (grammar §2 note 7); the AST order is
 /// preserved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// # `data_span` (TASK-0099)
+///
+/// Byte range of the schedule's `transfer D : ...` *data identifier*
+/// token, threaded through `lower_transfer` for the link step's
+/// `UnknownTransferData` diagnostic. See [`ResolvedPlacement`] for the
+/// equality/identity rationale (excluded from `PartialEq`).
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedTransferDirective {
     pub data: String,
     pub options: Vec<ResolvedTransferOption>,
+    /// Byte range of the schedule-source data identifier token (the
+    /// `transfer D : ...` `D`). `None` for manually-constructed test
+    /// instances.
+    pub data_span: Option<Range<usize>>,
+}
+
+impl PartialEq for ResolvedTransferDirective {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.options == other.options
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,10 +311,27 @@ pub enum ResolvedTransferOption {
 /// The `var` is a loop-variable name in the algorithm; whether the
 /// algorithm actually has a loop with that variable is a link-step
 /// check. Asserts inherit parser-side enum validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// # `var_span` (TASK-0099)
+///
+/// Byte range of the schedule's `check loop V : ...` *loop-variable
+/// identifier* token, threaded through `lower_check` for the link
+/// step's `UnknownLoop` diagnostic (which is raised for both `loop` and
+/// `check loop` directives). See [`ResolvedPlacement`] for the
+/// equality/identity rationale (excluded from `PartialEq`).
+#[derive(Debug, Clone, Eq)]
 pub struct ResolvedCheckDirective {
     pub var: String,
     pub asserts: Vec<ResolvedCheckAssert>,
+    /// Byte range of the schedule-source loop-variable identifier token
+    /// (the `check loop V : ...` `V`). `None` for manually-constructed
+    /// test instances.
+    pub var_span: Option<Range<usize>>,
+}
+
+impl PartialEq for ResolvedCheckDirective {
+    fn eq(&self, other: &Self) -> bool {
+        self.var == other.var && self.asserts == other.asserts
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
