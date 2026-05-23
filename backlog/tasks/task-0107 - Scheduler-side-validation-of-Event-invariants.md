@@ -1,11 +1,11 @@
 ---
 id: TASK-0107
 title: Scheduler-side validation of Event invariants
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-18 01:15'
-updated_date: '2026-05-23 14:11'
+updated_date: '2026-05-23 14:12'
 labels:
   - M1
   - events
@@ -22,7 +22,7 @@ TASK-0015 deliberately left validation out of the type module. The scheduler mus
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Scheduler rejects an EventList that violates any documented Event invariant;each invariant has a typed error variant and a negative test
+- [x] #1 Scheduler rejects an EventList that violates any documented Event invariant;each invariant has a typed error variant and a negative test
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -130,3 +130,34 @@ Invariant (2) Push/Wait pair matching is implemented but EXPLICITLY NOT asserted
 - The validator does NOT check cross-worker Sync participant agreement (TASK-0172's SyncTag join). Filed for follow-up at the module header. Today's invariant (3) only checks per-event non-emptiness.
 - IterTile well-formedness (start<end, no duplicate IterVar axes) is out of scope per TASK-0015 honest limitation #6.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 67 (commit b63a05c) — DONE. Full delivery summary:
+
+Files (5 changed, +984 / -2):
+- nucleus/compiler/src/event_validate.rs (NEW, 493 LoC)
+- nucleus/compiler/tests/event_validate.rs (NEW, 348 LoC)
+- nucleus/compiler/src/lib.rs (+4 LoC)
+- nucleus/compiler/src/passes/petri_to_events.rs (+29 LoC — debug_assert wiring)
+- backlog/tasks/task-0107 ... .md (notes)
+
+Per-AC status:
+1. EventValidationError enum with 6 variants + Display + std::error::Error — DONE.
+2. validate_event_lists pure function, Result<(), Vec<...>>, deterministic order — DONE.
+3. debug_assert at acfg_to_events output (using strict-per-worker subset; rationale in module header AND wire-site comment — transfer_inject cross-scope splicing limitation makes invariant (2) unsafe-to-assert today) — DONE.
+4. 6 negative tests + 1 positive smoke + 1 Loop-recursion test (8 total — exceeds AC) — DONE.
+5. Gate green: 88/70/0/18 unchanged; clippy clean; determinism + xbackend negative both OK — DONE.
+6. Doc comments accurate re LATENT (4)/(5) and CARVE-OUT (2). Module header, per-variant docs, AND tests all reflect honestly — DONE.
+7. Notes record latency + carve-out + IterTile-not-Ord gotcha — DONE.
+
+Wire site: passes::petri_to_events::acfg_to_events end-of-function debug_assert!. Strict subset chosen because invariant (2) would crash debug builds on legitimate 02-split-add (see module-header rationale in event_validate.rs).
+
+No new follow-up tasks filed — the carve-out for invariant (2) is naturally subsumed by the EXISTING transfer_inject cross-scope splicing limitation (already documented in petri_to_events.rs lines 162-175); upgrading the debug_assert to validate_event_lists is the natural follow-up there, no new tracker needed.
+
+Honest gotchas for next implementer:
+- If transfer_inject limitation is fixed in a future cycle, upgrade the debug_assert from validate_event_lists_strict_per_worker to validate_event_lists.
+- The validator does NOT cross-validate Sync participant agreement across workers (TASK-0172 SyncTag join). Today only the per-event non-empty check fires. Filed in event_validate.rs module header as a noted gap (no new tracker — the SyncTag thread is already complete per TASK-0172 close).
+- IterTile contains Range<i64> which doesn't impl Ord; the module uses a TileKey canonicalisation to BTreeMap-key on it. Any future field added to IterTile must be reflected in tile_key() — there is a comment at the helper to remind callers.
+<!-- SECTION:FINAL_SUMMARY:END -->
