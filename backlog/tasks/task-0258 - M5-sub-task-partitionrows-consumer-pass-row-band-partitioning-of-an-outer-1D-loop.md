@@ -4,8 +4,10 @@ title: >-
   M5 sub-task: partition=rows consumer pass (row-band partitioning of an outer
   1D loop)
 status: To Do
-assignee: []
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
+updated_date: '2026-05-23 23:56'
 labels:
   - M5
   - compiler
@@ -38,3 +40,20 @@ Add nucleus/nucleus-compiler/src/passes/partition_rows.rs as a sibling to passes
 ## Forward-carry from TASK-0249
 The reject site at sched/lower.rs::lower_loop_option (the PartitionKind::Rows arm of UnsupportedPartitionKind) must be REMOVED when this consumer lands; otherwise the schedule never reaches the partition_rows pass. Same surgical edit pattern partition_workers used when it landed.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+DESCRIPTION CORRECTION + clarification (orchestrator cycle 79b, pre-implementer): the original description said 'row-band partitioning of an outer 1D loop'. PRD §6.3.3 line 519 is explicit: 'partition=rows on a 1D iteration' is a BAD COMBINATION rejected at compile time. partition=rows is specifically for the OUTER of a 2D nest — it row-bands the outer (y) loop, leaving the inner (x) loop intact per worker. This is the original 05-stencil/distributed use case TASK-0249 surfaced (the inert  directive on a 2D y/x nest).
+
+Refined scope for the implementer:
+1. partition_rows pass applies ONLY when the partition=rows directive is on the OUTER loop of a 2D nest (Repeat-of-Repeat in the ACFG, on the same worker entity). Reject otherwise at sched-lower OR at the pass entry, with a typed UnsupportedPartitionKindFor1DLoop variant (NOT the existing UnsupportedPartitionKind blanket reject — that becomes too coarse).
+2. Semantics: row-band the outer-loop range across the placement workers (same algorithm partition_workers uses for 1D, but applied to the outer of the 2D); inner loop body executes unchanged per worker.
+3. Output: NameSidecar.partition_worker_ranges[outer_iv][worker_id] = row_band_range, exactly as partition_workers populates today. No NEW sidecar field needed — transfer_inject + the backend walker already consume partition_worker_ranges and apply per-worker slice handling (host-side gather via render_wait_assign).
+4. The reject site at sched/lower.rs::lower_loop_option's PartitionKind::Rows arm: REMOVE the UnsupportedPartitionKind reject for Rows (keep for Blocks2d until TASK-0259 lands). Replace with an accept-and-route-to-consumer arm.
+5. The NEW reject site (typed UnsupportedPartitionKindFor1DLoop or similar) fires when partition=rows is applied to a non-outer-of-2D context. Test both negative paths.
+
+This is mostly a 'wire partition=rows through the existing partition_workers infra' task; the heavy lifting (per-worker range -> sidecar -> emit) already exists. Estimated scope: ~150-250 LoC including tests, mostly mechanical.
+
+Halo inference (TASK-0260) is a SIBLING task — partition_rows alone does NOT solve the stencil halo problem; without halo widths, a row-band-partitioned stencil produces wrong output at the band boundaries. Plan ahead: when this task lands and an e2e cell is added, ensure either (a) the cell's algorithm has no halo (the cell verifies partition=rows mechanism only), or (b) the cell SKIPS until TASK-0260 lands. Pure partition=rows without halo will produce incorrect output on stencils — do NOT mark the cell [[required]] until halo inference is also wired.
+<!-- SECTION:NOTES:END -->
