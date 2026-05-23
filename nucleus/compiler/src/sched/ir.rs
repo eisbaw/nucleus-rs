@@ -551,11 +551,13 @@ pub enum SchedLowerErrorKind {
     /// ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
     /// `Blocks2d` parse, lower to [`ResolvedLoopOption::Partition`],
     /// and are then **never read by any pass** — accepting them
-    /// emitted code as if the directive were absent, the exact
-    /// silent-default failure mode PRD §6.3.3 forbids ("Bad
-    /// combinations rejected at compile time, not at runtime"; a
-    /// directive that does nothing is the silent-default sibling of a
-    /// bad combination).
+    /// emitted code as if the directive were absent (a silent
+    /// no-op). PRD §6.3.3 mandates compile-time rejection of bad
+    /// loop-option combinations ("Bad combinations rejected at
+    /// compile time, not at runtime"); this variant extends the
+    /// same fail-fast discipline to single options that parse but
+    /// have no downstream consumer — same harm class as a bad
+    /// combination, same fix.
     ///
     /// Until sibling partition passes for row-band / 2D-block policies
     /// land (no such task is filed today — TASK-0249's rejection is the

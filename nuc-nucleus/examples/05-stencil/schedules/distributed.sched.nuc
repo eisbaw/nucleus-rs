@@ -16,9 +16,10 @@ schedule for "../prog.algo.nuc" {
     // but `partition=rows` has no downstream consumer (only
     // `partition=workers` lowers to real per-worker bounds, via
     // TASK-0212 / passes/partition_workers.rs). Accepting it silently
-    // emitted code as if the directive were absent — the silent-default
-    // failure mode PRD §6.3.3 forbids. TASK-0249 made `partition=rows`
-    // and `partition=blocks2d` reject at sched-lower as
+    // emitted code as if the directive were absent — a silent no-op
+    // extending the fail-fast class PRD §6.3.3 already applies to bad
+    // loop-option combinations. TASK-0249 made `partition=rows` and
+    // `partition=blocks2d` reject at sched-lower as
     // SchedLowerErrorKind::UnsupportedPartitionKind. The directive is
     // removed here to keep the schedule valid; the multi-worker
     // distribution today is carried by `place blur3 on { w0..w3 }`

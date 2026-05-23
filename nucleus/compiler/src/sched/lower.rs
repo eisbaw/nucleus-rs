@@ -1096,9 +1096,11 @@ fn lower_loop_option(
         // TASK-0249: only `partition=workers` has a downstream consumer
         // ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
         // `Blocks2d` parse and would lower to a [`ResolvedLoopOption`]
-        // that NO pass reads — a silent no-op that PRD §6.3.3 forbids
-        // ("Bad combinations rejected at compile time, not at
-        // runtime"). Reject loudly with the typed
+        // that NO pass reads — a silent no-op. PRD §6.3.3 rejects bad
+        // loop-option combinations at compile time ("Bad combinations
+        // rejected at compile time, not at runtime"); we extend that
+        // fail-fast discipline to options with no downstream consumer.
+        // Reject loudly with the typed
         // [`SchedLowerErrorKind::UnsupportedPartitionKind`]. The
         // `Workers` arm continues to lower unchanged.
         LoopOption::Partition(k) => match k {
