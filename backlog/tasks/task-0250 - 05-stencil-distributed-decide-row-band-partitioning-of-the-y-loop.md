@@ -1,10 +1,10 @@
 ---
 id: TASK-0250
 title: '05-stencil/distributed: decide row-band partitioning of the y-loop'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-23 14:45'
-updated_date: '2026-05-23 15:02'
+updated_date: '2026-05-23 18:26'
 labels:
   - compiler
   - partition
@@ -44,7 +44,13 @@ This task captures the open question; it is NOT a blocker for TASK-0249.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 #1 Decision recorded.
+- [x] #1 #1 Decision recorded.
 - [ ] #2 #2 If (a) or (c), schedule change lands and any cell promotion / regression is reported with bit-identical evidence.
-- [ ] #3 #3 If (b), this task closes with the rationale captured in the schedule's header comment.
+- [x] #3 #3 If (b), this task closes with the rationale captured in the schedule's header comment.
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Orchestrator-direct cycle (no implementer). Resolution: option (b) — leave the y-loop unpartitioned at the schedule layer. Rationale recorded in distributed.sched.nuc header comment (this cycle's edit): today's cell is SKIPPED across all 4 tier-1 backends (TASK-0117 + halo on pthreads-sync/mp-tcp-bufsync; pthreads-async via TASK-0181 now closed but capability mismatch still gates; mp-tcp-event Stage 3 deferred to TASK-0042.05). Switching to partition=workers would change IR + generated-code shape (per-worker loop-bound rewrite via TASK-0212) without unblocking any required cell, so it's a no-op risk today. When the cell becomes [[required]] on at least one backend, revisit with option (a) (promote to partition=workers) if the emitted shape needs the explicit y-band; the place blur3 on {w0..w3} directive + per-worker transfers carry the multi-worker shape implicitly in the meantime. AC#2 N/A (only fires under options (a)/(c)). Gate: zero behaviour change — comment-only edit; e2e/determinism/negative gates unchanged from TASK-0181 cycle 73 baseline.
+<!-- SECTION:FINAL_SUMMARY:END -->
