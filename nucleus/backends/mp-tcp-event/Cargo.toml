@@ -68,3 +68,11 @@ mp-tcp-common = { path = "../../mp-tcp-common" }
 # multi-worker emit tests (tests/multi_worker_emit.rs) route through
 # this for the fixture build-up step.
 test-common = { path = "../../test-common" }
+# mio is a regular dep in the *generated* multi-worker project's
+# Cargo.toml (multi_worker.rs::render_cargo_toml). Here it is also a
+# dev-dep so the host crate can `#[cfg(test)] mod runtime_src;` to
+# compile-check the runtime substrate via `cargo test --workspace`
+# (instead of only via running a generated project). Keeps the
+# `runtime_src.rs` source-of-truth file from rotting silently between
+# Stage-3 cycles — the architect-review finding F1 of TASK-0042.05.
+mio = { version = "0.8", features = ["os-poll", "net"] }

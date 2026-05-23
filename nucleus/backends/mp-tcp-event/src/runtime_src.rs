@@ -57,11 +57,34 @@ use mio::{Events, Interest, Poll, Token};
 // header invariant, so we re-state it here as a file-local constant
 // with a cross-reference. If the wire protocol ever bumps versions
 // (currently v0; see docs/wire-protocol-v0.md), BOTH this constant
-// and `mp_tcp_common::wire_runtime`'s `HEADER_LEN` change together
-// — a single test in `mp-tcp-common` and a build-time check in this
-// crate pin that pair. Drift here would surface immediately as a
-// framing mis-parse on the first cross-worker push.
+// and `mp_tcp_common::wire_runtime`'s `HEADER_LEN` change together.
+// HEADER_LEN drift between THIS file and the wire codec is pinned by
+// the `runtime_src_compile_check::header_len_matches_wire_runtime`
+// test below (architect-review F1 of TASK-0042.05). Framing
+// mis-parse on the first cross-worker push is then prevented at the
+// host crate's `cargo test` gate, not deferred to a generated-project
+// e2e cell.
 const HEADER_LEN: usize = 16;
+
+/// Parse the `NUC_REACTOR_DEADLOCK_TIMEOUT_S` env value into a
+/// `pump_once` poll timeout. Pulled into a free function so the parse
+/// path is unit-testable without process-env mutation (set_var is
+/// thread-unsafe; see Rust 2024 edition note). Semantics:
+/// - `None` (env unset): default 30 s.
+/// - `Some("0")`: watchdog disabled (None -> blocking poll).
+/// - `Some(n)` where `n` parses as u64 > 0: that many seconds.
+/// - `Some(garbage)`: default 30 s (silent fallback; env-knob abuse
+///   should not crash the worker).
+fn parse_deadlock_timeout(raw: Option<&str>) -> Option<Duration> {
+    match raw {
+        Some(s) => match s.parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(Duration::from_secs(30)),
+        },
+        None => Some(Duration::from_secs(30)),
+    }
+}
 
 // ---------------------------------------------------------------------
 // Reactor: the per-process mio Poll wrapper.
@@ -140,6 +163,15 @@ pub struct Reactor {
     /// non-empty the queue's head is "in-flight" but not yet ACKed by
     /// the kernel.
     outbound: BTreeMap<(u64, usize), VecDeque<Vec<u8>>>,
+    /// Deadlock-watchdog timeout passed to `poll(timeout)`. If poll
+    /// returns with zero readiness events, the reactor panics with a
+    /// deadlock diagnostic. Default 30 s; configurable via
+    /// `NUC_REACTOR_DEADLOCK_TIMEOUT_S` (env, read once at `new()`).
+    /// Set to 0 to disable the watchdog entirely (the poll will then
+    /// block indefinitely; useful for kernels whose single iteration
+    /// genuinely exceeds 30 s and where a true deadlock is detected
+    /// by an outer harness). Architect-review F2 of TASK-0042.05.
+    deadlock_timeout: Option<Duration>,
 }
 
 impl Reactor {
@@ -160,12 +192,23 @@ impl Reactor {
                 });
             wrapped.push(PeerSock::new(sock, token, name));
         }
+        // Read NUC_REACTOR_DEADLOCK_TIMEOUT_S once at construction
+        // (a missing / malformed env var falls back to default 30 s;
+        // 0 disables the watchdog — None -> blocking poll). Routed
+        // through `parse_deadlock_timeout` so the parse path is unit-
+        // testable without touching process env.
+        let deadlock_timeout = parse_deadlock_timeout(
+            std::env::var("NUC_REACTOR_DEADLOCK_TIMEOUT_S")
+                .ok()
+                .as_deref(),
+        );
         Reactor {
             poll,
             events,
             peers: wrapped,
             inbound: BTreeMap::new(),
             outbound: BTreeMap::new(),
+            deadlock_timeout,
         }
     }
 
@@ -238,22 +281,43 @@ impl Reactor {
 
     /// One reactor turn: poll for readiness then drain socket events.
     ///
-    /// We use a small timeout (rather than indefinite) so a buggy
-    /// schedule can't park the process forever — though steady-state
-    /// the loopback is always ready when we have outstanding work.
+    /// Uses `self.deadlock_timeout` (read from
+    /// `NUC_REACTOR_DEADLOCK_TIMEOUT_S` at `Reactor::new`, default 30
+    /// s; 0 disables the watchdog). Steady-state the loopback is
+    /// always ready when we have outstanding work — a timeout is
+    /// genuinely deadlock evidence (or a crashed peer), but a kernel
+    /// that legitimately holds the producer for > timeout seconds
+    /// without pushing intermediate frames would also trip it. Bump
+    /// the env var for those cases; set it to 0 if the deadlock
+    /// surface is owned by an outer harness.
     fn pump_once(&mut self) {
         // Always swap to a fresh events buffer to avoid lingering
         // unprocessed events; `Events` clear themselves before poll.
         self.poll
-            .poll(&mut self.events, Some(Duration::from_secs(30)))
+            .poll(&mut self.events, self.deadlock_timeout)
             .unwrap_or_else(|e| panic!("mp-tcp-event: poll() failed: {e}"));
         if self.events.is_empty() {
-            // Liveness watchdog: 30 s with no readiness on a loopback
-            // schedule is a deadlock (or the peer crashed). Fail loud.
+            if self.deadlock_timeout.is_none() {
+                // Watchdog disabled (NUC_REACTOR_DEADLOCK_TIMEOUT_S=0).
+                // A blocking poll returning zero events is impossible
+                // unless the kernel/mio API misbehaved — treat as a
+                // hard internal error rather than silently looping.
+                panic!(
+                    "mp-tcp-event: blocking poll() returned zero events; \
+                     mio API contract violated."
+                );
+            }
+            let secs = self.deadlock_timeout.unwrap().as_secs();
+            // Liveness watchdog: zero readiness on a loopback schedule
+            // within `secs` is a deadlock (or the peer crashed). Fail
+            // loud naming the env knob so an operator can extend it.
             panic!(
                 "mp-tcp-event: reactor poll timed out — no readiness on \
-                 any peer within 30s. Either the schedule is dead-locked \
-                 or a peer worker exited unexpectedly."
+                 any peer within {secs}s. Either the schedule is dead-locked, \
+                 a peer worker exited unexpectedly, or a Fire-side kernel \
+                 legitimately exceeds {secs}s without intermediate Push. \
+                 Bump NUC_REACTOR_DEADLOCK_TIMEOUT_S to extend (0 = \
+                 disable; default 30)."
             );
         }
         // Snapshot the events into a local Vec so we can mutate
@@ -546,5 +610,118 @@ impl<T> Chan<T> {
     pub fn wait(&self) -> T {
         let buf = self.reactor.borrow_mut().wait(self.seq);
         (self.decode)(&buf)
+    }
+}
+
+// =====================================================================
+// Host-side compile-check tests (architect-review F1 of TASK-0042.05).
+// =====================================================================
+//
+// These only build under the host crate's `#[cfg(test)] mod
+// runtime_src;` declaration in `lib.rs`. The generated project's copy
+// of this file (`src/runtime.rs` in the emitted Cargo project) is NOT
+// compiled with `cfg(test)`, so these tests do not bleed into emitted
+// code — they exist purely to give `cargo test --workspace` real
+// coverage of the reactor source, instead of the previous deferred-
+// to-runtime-of-a-generated-project story.
+
+// Test-only accessors. Gated behind `cfg(test)` so the emitted
+// `src/runtime.rs` in a generated project does NOT export these — they
+// are host-test-only and would otherwise widen the reactor's public
+// surface unnecessarily. Declared BEFORE `mod tests` per
+// clippy::items-after-test-module.
+#[cfg(test)]
+impl Reactor {
+    fn peers_is_empty(&self) -> bool {
+        self.peers.is_empty()
+    }
+    fn inbound_is_empty(&self) -> bool {
+        self.inbound.is_empty()
+    }
+    fn outbound_is_empty(&self) -> bool {
+        self.outbound.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HEADER_LEN;
+
+    /// HEADER_LEN drift between THIS file's reactor and
+    /// `mp_tcp_common::wire_runtime`'s codec is the load-bearing
+    /// invariant the file-top comment promises. The wire-runtime
+    /// constant is private (file-local), so we re-derive it by
+    /// scanning the public `WIRE_RUNTIME_SRC` string for the
+    /// authoritative declaration. The pair MUST stay in lockstep; if
+    /// the wire protocol bumps versions, both sites change together.
+    #[test]
+    fn header_len_matches_wire_runtime() {
+        let needle = "const HEADER_LEN: usize = ";
+        let src = mp_tcp_common::WIRE_RUNTIME_SRC;
+        let i = src
+            .find(needle)
+            .expect("wire_runtime.rs lost its `const HEADER_LEN: usize = ` declaration");
+        let rest = &src[i + needle.len()..];
+        let end = rest
+            .find(';')
+            .expect("wire_runtime.rs HEADER_LEN declaration missing terminator");
+        let wire_header_len: usize = rest[..end]
+            .trim()
+            .parse()
+            .expect("wire_runtime.rs HEADER_LEN value did not parse as usize");
+        assert_eq!(
+            wire_header_len, HEADER_LEN,
+            "wire-codec HEADER_LEN (={wire_header_len}) and reactor HEADER_LEN (={HEADER_LEN}) \
+             drifted. Bump both together; see wire-protocol-v0.md."
+        );
+    }
+
+    /// `Reactor::new` builds with zero peers and exposes an empty
+    /// inbound + outbound map. Compile-checks the public construction
+    /// path under host test (the file's main use-site is the emitted
+    /// `src/runtime.rs` of a generated project, which won't be
+    /// exercised at host test time).
+    #[test]
+    fn reactor_new_empty_compiles_and_runs() {
+        let r = super::Reactor::new(Vec::new());
+        // Nothing to poll; we don't call `pump_once` because that has
+        // a deadlock watchdog and zero peers would trip it. The mere
+        // fact that `Reactor::new(vec![])` compiles + executes
+        // exercises mio's `Poll::new` + `Events::with_capacity` paths
+        // without a generated project in the loop.
+        assert!(r.peers_is_empty());
+        assert!(r.inbound_is_empty());
+        assert!(r.outbound_is_empty());
+    }
+
+    /// `NUC_REACTOR_DEADLOCK_TIMEOUT_S` parse path semantics
+    /// (architect-review F2 of TASK-0042.05). Tests the helper
+    /// directly so we don't have to mutate process env — `set_var`
+    /// is thread-unsafe and being marked `unsafe fn` in Rust 2024.
+    #[test]
+    fn deadlock_timeout_parse_paths() {
+        use std::time::Duration;
+        // Default: env unset -> 30 s watchdog.
+        assert_eq!(
+            super::parse_deadlock_timeout(None),
+            Some(Duration::from_secs(30))
+        );
+        // 0 -> disabled (blocking poll).
+        assert_eq!(super::parse_deadlock_timeout(Some("0")), None);
+        // Valid positive integer -> Some(secs).
+        assert_eq!(
+            super::parse_deadlock_timeout(Some("120")),
+            Some(Duration::from_secs(120))
+        );
+        // Malformed -> silent fallback to default 30 s (don't crash
+        // the worker on env-knob abuse).
+        assert_eq!(
+            super::parse_deadlock_timeout(Some("not-a-number")),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            super::parse_deadlock_timeout(Some("")),
+            Some(Duration::from_secs(30))
+        );
     }
 }

@@ -142,9 +142,10 @@ use pthreads_sync::render_single_worker_main;
 // Multi-worker codegen (TASK-0042.05). The mio reactor + per-(seq,
 // peer) outbound queue + per-seq inbound queue substrate lives in
 // `runtime_src.rs` as a SINGLE SOURCE OF TRUTH (same precedent as
-// `mp_tcp_common::WIRE_RUNTIME_SRC` — one file the compile-time tests
-// of THIS crate compile, AND the generated project includes verbatim
-// as `src/runtime.rs`). The Plan + per-worker emitter live in
+// `mp_tcp_common::WIRE_RUNTIME_SRC` — one file the host crate's
+// `cargo test` build compiles AND the generated project includes
+// verbatim as `src/runtime.rs`; see the `#[cfg(test)] mod
+// runtime_src` below). The Plan + per-worker emitter live in
 // `multi_worker.rs`.
 mod multi_worker;
 use multi_worker::Plan;
@@ -154,6 +155,20 @@ use multi_worker::Plan;
 /// generated multi-process project as `src/runtime.rs`. Same single-
 /// source-of-truth pattern as `mp_tcp_common::WIRE_RUNTIME_SRC`.
 pub const RUNTIME_SRC: &str = include_str!("runtime_src.rs");
+
+/// Host-side compile-check of `runtime_src.rs`. The file is otherwise
+/// only `include_str!`'d as a string (above); without this `mod`
+/// declaration the host crate's `cargo test` would never compile the
+/// reactor at all, and a typo / mio API break / `HEADER_LEN` drift
+/// against `mp_tcp_common::wire_runtime` would surface only on the
+/// first e2e cell that runs a generated project. Architect-review
+/// finding F1 of TASK-0042.05: the previous "build-time check"
+/// comment was a doc-lie (no such check existed); this declaration
+/// makes it true. `mio` is a dev-dependency so this compiles under
+/// `cargo test --workspace` but not under a downstream consumer of
+/// `mp-tcp-event` that doesn't want the mio dep transitively.
+#[cfg(test)]
+mod runtime_src;
 
 // --------------------------------------------------------------------
 // Public surface
