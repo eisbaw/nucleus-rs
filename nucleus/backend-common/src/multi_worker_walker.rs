@@ -179,15 +179,27 @@ impl WalkerCtx<'_> {
 ///
 /// Cycles 73 + 75: TASK-0181 landed the rebinding logic by COPYING it
 /// into both the walker and mp-tcp-bufsync; TASK-0253 (this helper)
-/// consolidates that duplication into ONE place. The two callers now
-/// produce byte-identical emitted bytes for the strip-mined header +
-/// rebound child context BY CONSTRUCTION — no future drift possible.
+/// consolidates that duplication into ONE place ACROSS THE MULTI-WORKER
+/// BACKENDS (walker is consumed by pthreads-sync + pthreads-async;
+/// mp-tcp-bufsync delegates here directly). A separate sibling copy of
+/// the same arithmetic survives on the pthreads-sync SINGLE-worker
+/// render path (`pthreads-sync/src/lib.rs` `Event::Loop` arm of
+/// `render_events_in`), which uses the backend-private `RenderCtx` (vs
+/// this helper's `RenderCtxPub`); unifying those two flavours requires
+/// a separate `RenderCtx` ↔ `RenderCtxPub` refactor and is filed
+/// downstream of TASK-0253 — do not claim "exactly one place" in the
+/// codebase as a whole. The two MULTI-worker callers now produce
+/// byte-identical emitted bytes for the strip-mined header + rebound
+/// child context BY CONSTRUCTION — no future drift possible between
+/// THEM.
 ///
-/// Nine params is two over clippy's `too_many_arguments` threshold;
-/// the alternative (a `BlockTagHeaderCtx` bundle struct) would be
-/// synthetic ceremony — every parameter is a genuine input to the
-/// stateless one-occurrence header emit, and the same local allow is
-/// used on the sibling `render_worker_events_inner`. Local allow.
+/// Seven params is over clippy's `too_many_arguments` threshold; the
+/// alternative (a `BlockTagHeaderCtx` bundle struct) would be synthetic
+/// ceremony for a one-call-site-per-backend stateless emit, and the
+/// same local allow is used on the sibling `render_worker_events_inner`.
+/// `names` and `sidecar` are sourced from `ctx.names` / `ctx.sidecar`
+/// (RenderCtxPub holds the same borrows; passing them separately would
+/// duplicate the bundle — review-MAJOR-2 cycle 75). Local allow.
 #[allow(clippy::too_many_arguments)]
 pub fn render_block_tag_loop_header<'a>(
     out: &mut String,
@@ -197,16 +209,15 @@ pub fn render_block_tag_loop_header<'a>(
     tag: &BlockTag,
     enclosing: Option<IterVar>,
     ctx: &RenderCtxPub<'a>,
-    names: &NameTables,
-    sidecar: &NameSidecar,
 ) -> Result<RenderCtxPub<'a>, EmitError> {
     let pad = "    ".repeat(indent);
-    let var = names.iter_var.get(&iter_var).ok_or_else(|| {
+    let var = ctx.names.iter_var.get(&iter_var).ok_or_else(|| {
         EmitError::ContractGap(format!(
             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
         ))
     })?;
-    let lo_src = sidecar
+    let lo_src = ctx
+        .sidecar
         .loop_bounds
         .get(&iter_var)
         .map(|b| render_const_expr_pub(&b.lo, ctx))
@@ -230,7 +241,7 @@ pub fn render_block_tag_loop_header<'a>(
                  EventList"
             ))
         })?;
-        let tile_name = names.iter_var.get(&tile_iv).ok_or_else(|| {
+        let tile_name = ctx.names.iter_var.get(&tile_iv).ok_or_else(|| {
             EmitError::ContractGap(format!(
                 "tile iter var {tile_iv:?} has no name in NameTables"
             ))
@@ -394,8 +405,6 @@ fn render_worker_events_inner(
                         tag,
                         enclosing,
                         render_ctx,
-                        ctx.names,
-                        ctx.sidecar,
                     )?;
                     render_worker_events_inner(
                         ctx,

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-23 18:14'
-updated_date: '2026-05-23 19:43'
+updated_date: '2026-05-23 19:59'
 labels:
   - backend
   - M3
@@ -35,11 +35,11 @@ Until then: the cross-backend bit-identical differential is the safety net. The 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 #1 #1 #1 #1 mp-tcp-bufsync's `render_events` `Event::Loop` `block_tag` arm exists in exactly ONE place across the codebase (either consumed via `multi_worker_walker` or via a shared `pub fn render_block_tag_loop(...)` helper in backend-common). No duplicate arithmetic.
-- [x] #2 #2 #2 #2 #2 The migration commit's emitted host source for any blocked multi-worker cell (if one exists) is byte-identical to pre-migration emit (regression guard).
-- [x] #3 #3 #3 #3 #3 mp-tcp-bufsync gains direct unit-test coverage of the rebinding arm — either transitively (via the walker tests once migrated) OR a fresh `mp_tcp_bufsync_blocked_rebind` test constructed via the public `emit` API (closes the TASK-0181 AC#2 "both backends" gap honestly).
-- [x] #4 #4 #4 #4 #4 pthreads-sync / pthreads-async multi-worker e2e cells stay byte-identical (non-regression).
-- [x] #5 #5 #5 #5 #5 The 4 existing `backend-common/tests/multi_worker_blocked_rebind.rs` tests stay green.
+- [x] #1 #1 #1 #1 #1 #1 mp-tcp-bufsync's `render_events` `Event::Loop` `block_tag` arm exists in exactly ONE place across the codebase (either consumed via `multi_worker_walker` or via a shared `pub fn render_block_tag_loop(...)` helper in backend-common). No duplicate arithmetic.
+- [x] #2 #2 #2 #2 #2 #2 The migration commit's emitted host source for any blocked multi-worker cell (if one exists) is byte-identical to pre-migration emit (regression guard).
+- [x] #3 #3 #3 #3 #3 #3 mp-tcp-bufsync gains direct unit-test coverage of the rebinding arm — either transitively (via the walker tests once migrated) OR a fresh `mp_tcp_bufsync_blocked_rebind` test constructed via the public `emit` API (closes the TASK-0181 AC#2 "both backends" gap honestly).
+- [x] #4 #4 #4 #4 #4 #4 pthreads-sync / pthreads-async multi-worker e2e cells stay byte-identical (non-regression).
+- [x] #5 #5 #5 #5 #5 #5 The 4 existing `backend-common/tests/multi_worker_blocked_rebind.rs` tests stay green.
 
 ## Dependencies
 
@@ -76,6 +76,16 @@ Tests:
 - AC#3: mp-tcp-bufsync now transitively shares the walker tests (the helper is the same code path); plus the new direct tests pin the surface. No mp-tcp-bufsync-specific public-API test was needed — the migration itself closes the AC.
 
 Byte-identical proof (AC#2 — the load-bearing guard): snapshotted all 172 generated .rs files BEFORE migration to /tmp/nuc-pre-task253, ran fresh post-migration e2e and snapshotted to /tmp/nuc-post-task253, `diff -r` returned 0 changes (zero diff). Every emitted file is byte-identical pre vs post.
+
+Cycle 75 review-hardening (MAJOR-1): the Final Summary above (AC#1 'exactly one place') was an OVERCLAIM — applies only across the MULTI-WORKER backends. A separate sibling copy of the same arithmetic survives on the pthreads-sync SINGLE-worker render path (lib.rs:602-654, backend-private RenderCtx vs the helper's RenderCtxPub). The two flavours are byte-for-byte equal today but structurally CAN drift since they don't share an implementation. The helper docstring (multi_worker_walker.rs:180-184) has been amended to carve out the single-worker copy honestly. Filed TASK-0254 for the full RenderCtx <-> RenderCtxPub unification or sibling-helper extraction.
+
+Cycle 75 review-hardening (MAJOR-2): the helper signature dropped 2 redundant args (names, sidecar) that were already on RenderCtxPub. Saves the '#[allow(clippy::too_many_arguments)]' justification from being itself a doc-lie. 9-arg -> 7-arg.
+
+Cycle 75 review-hardening (MAJOR-3): deleted cruft in tests/block_tag_loop_header.rs (unused std::collections::BTreeMap import + _force_use_btreemap workaround). 6-line deletion.
+
+Cycle 75 review-hardening (MAJOR-4): appended supersession note to TASK-0181's LIMITATIONS bullet about the mp-tcp-bufsync mirror.
+
+qa-test-runner GO; mped-architect GO-with-4-MAJORs; all 4 MAJORs applied in-thread + 1 follow-up filed (TASK-0254).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
@@ -116,6 +126,8 @@ FORWARD-CARRY:
 LIMITS HONESTLY STATED:
 - No e2e fixture for a real blocked multi-worker schedule — same limit TASK-0181 honestly stated, unchanged by this consolidation. The unit tests are still the targeted lower-bound proof; the cross-backend bit-identical differential is the safety net for whenever such a schedule lands.
 <!-- SECTION:FINAL_SUMMARY:END -->
+
+<!-- AC:END -->
 
 <!-- AC:END -->
 

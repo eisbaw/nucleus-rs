@@ -26,8 +26,6 @@
 //!    back to `0_i64` as LO and the rebinding still emits a well-
 //!    formed expression.
 
-use std::collections::BTreeMap;
-
 use compiler::algo::IrExpr;
 use compiler::event::{BlockTag, IterVar};
 use compiler::sidecar::{LoopBound, NameSidecar};
@@ -88,8 +86,6 @@ fn header_full_nest_emits_concrete_range_and_extends_abs_subst() {
         &tag,
         Some(tile_iv),
         &parent,
-        &names,
-        &sidecar,
     )
     .expect("full-nest header emit must succeed");
 
@@ -140,8 +136,6 @@ fn header_partial_nest_uses_constant_base_in_abs_subst() {
         &tag,
         None,
         &parent,
-        &names,
-        &sidecar,
     )
     .expect("partial-nest header emit must succeed");
 
@@ -189,8 +183,6 @@ fn missing_enclosing_tile_returns_typed_contract_gap() {
         &tag,
         None,
         &parent,
-        &names,
-        &sidecar,
     );
     // `RenderCtxPub` does not implement Debug (its `names`/`sidecar`
     // borrows are opaque), so `.expect_err` would fail to compile —
@@ -246,8 +238,6 @@ fn missing_loop_bounds_falls_back_to_zero_lo() {
         &tag,
         Some(tile_iv),
         &parent,
-        &names,
-        &sidecar,
     )
     .expect("no-loop-bounds fallback emit must succeed");
 
@@ -258,10 +248,3 @@ fn missing_loop_bounds_falls_back_to_zero_lo() {
         .expect("child abs_subst must contain rebound for `inner`");
     assert_eq!(rebound, "(0_i64 + (tile * 4_i64) + inner)");
 }
-
-// Suppress the unused-import warning on BTreeMap if the body of any
-// future helper drops it; today every test reads abs_subst directly so
-// the import is in use. Kept as a NIT — Rust will warn if it goes
-// unused.
-#[allow(dead_code)]
-fn _force_use_btreemap(_m: BTreeMap<String, String>) {}

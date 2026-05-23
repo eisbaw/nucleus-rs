@@ -817,9 +817,15 @@ impl<'a> Plan<'a> {
                     // `ctrl_<peer>` / `sock_<peer>` barriers + host-vs-
                     // worker dispatch in `render_worker_program`) and the
                     // closing `}`. The previous arrangement (TASK-0181
-                    // cycle 73) duplicated the rebinding arithmetic across
-                    // two files; with this delegation, the arithmetic
-                    // lives in exactly one place and cannot drift.
+                    // cycle 73) duplicated the rebinding arithmetic
+                    // across two files; with this delegation, the
+                    // arithmetic lives in exactly one place across all
+                    // MULTI-worker backends (cycle-75 review hardening:
+                    // a separate sibling copy persists on the
+                    // pthreads-sync SINGLE-worker render path, which
+                    // uses backend-private RenderCtx — see the helper's
+                    // doc-comment for the RenderCtx <-> RenderCtxPub
+                    // unification note).
                     if let Some(tag) = block_tag {
                         let child_ctx = backend_common::multi_worker_walker::render_block_tag_loop_header(
                             out,
@@ -829,8 +835,6 @@ impl<'a> Plan<'a> {
                             tag,
                             enclosing,
                             ctx,
-                            self.names,
-                            self.sidecar,
                         )?;
                         self.render_events(
                             body,

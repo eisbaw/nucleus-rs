@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 02:04'
-updated_date: '2026-05-23 19:41'
+updated_date: '2026-05-23 19:58'
 labels: []
 dependencies:
   - TASK-0180
@@ -221,6 +221,8 @@ FOLLOW-UPS FILED:
 Cycle 73 review-gate hardening (commit below): mped-architect surfaced 3 MAJORs + 2 MINORs + 1 NIT, applied all 3 MAJORs in-thread. (a) MAJOR-1: module docstring at multi_worker_walker.rs:21 still said 'strip-mine block_tag guards' — the recurring doc-lie failure class. Updated to 'per-occurrence strip-mine block_tag rebinding (TASK-0181)' so the module preamble matches the function docstring 130 lines below. (b) MAJOR-2: TASK-0253 (mp-tcp-bufsync walker migration) was filed as a bare description-only skeleton. Fleshed out with 5 concrete ACs (one-place arithmetic, byte-identical migration, test-coverage parity, single-worker non-regression, walker-tests stay green). (c) MAJOR-3: AC#2 'both backends' was satisfied only against the walker; mp-tcp-bufsync mirror has no direct test (only line-for-line arithmetic equivalence + reactive cross-backend differential). Folded the mp-tcp-bufsync test-coverage gap into TASK-0253 AC#3 explicitly — when the migration lands, the walker tests transitively cover mp-tcp-bufsync; if migration is deferred, AC#3 demands a synthetic mp-tcp-bufsync test independently. MINORs (check_frame defense is dead code; DataSlice _force_use smell; loose absence-check) deferred — first two are pre-existing patterns, third is acceptable. qa-test-runner: GO (all 7 claims re-verified, 88/70/0/18 baseline preserved, 20/20 stress sample 2 non-flaky). mped-architect: conditional GO; both conditions addressed.
 
 Cycle 75 / TASK-0253: the 'mp-tcp-bufsync intentionally DUPLICATES the rebinding logic' decision documented above is now SUPERSEDED. TASK-0253 lifted the BlockTag header + abs_subst-construction half into a shared backend_common::multi_worker_walker::render_block_tag_loop_header helper; both the walker (this task's main consumer) and mp-tcp-bufsync's Plan::render_events delegate to it. The arithmetic lives in exactly one place; the cross-backend bit-identical differential's drift hazard is closed by construction. The 4 unit tests this task landed (multi_worker_blocked_rebind.rs) still cover the helper transitively; TASK-0253 added 4 more (block_tag_loop_header.rs) pinning the helper's surface directly. Byte-identical post-migration emit verified by diff against pre snapshot — every emitted file unchanged.
+
+Cycle 75 review-hardening (MAJOR-4): the prior LIMITATIONS bullet 'No mp-tcp-bufsync-specific unit test — its render_events is private and ... the mp-tcp-bufsync mirror is line-equivalent' is SUPERSEDED. After TASK-0253 cycle 75, there is no mp-tcp-bufsync mirror to reason about — both walker and mp-tcp-bufsync delegate to the shared backend_common::multi_worker_walker::render_block_tag_loop_header helper. The 4 backend-common helper-direct tests + the 4 walker-transitive tests cover both code paths through ONE implementation. (The LIMITATIONS section text itself wasn't rewritten in cycle 73, only marked-superseded here — it remains as a historical record of the cycle-73 design choice, with this note signalling the post-cycle-75 state.)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
