@@ -12,6 +12,7 @@
 # a schedule directive (docs/capabilities-toml.md), it is documentary
 # + drives the harness's multi-process run path.
 
+schema_version  = 1
 name            = "mp-tcp-bufsync"
 tier            = 1
 transport       = "tcp"

@@ -24,6 +24,7 @@
 # meaningful at M4 examples 9 / 11 — TASK-0226 may raise this if
 # the e2e cells justify it.
 
+schema_version  = 1
 name            = "pthreads-async"
 tier            = 1
 transport       = "shared-memory"

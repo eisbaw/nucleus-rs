@@ -56,6 +56,7 @@ memory_regions  = ["heap"]
 
 fn example_caps() -> Capabilities {
     Capabilities {
+        schema_version: 1,
         name: "mp-tcp-event".to_string(),
         tier: 1,
         transport: Transport::Tcp,
@@ -304,6 +305,54 @@ fn negative_io_missing_file() {
     assert!(
         matches!(err, CapError::Io { .. }),
         "unexpected error: {err:?}",
+    );
+}
+
+#[test]
+fn task_0120_schema_version_defaults_to_1_when_missing() {
+    // Pre-TASK-0120 capabilities.toml files have no schema_version
+    // field. The loader must accept them (backward-compat) and assign
+    // schema_version=1 — the only version that ever existed.
+    let src = EXAMPLE_TOML; // EXAMPLE_TOML has no schema_version line
+    assert!(
+        !src.contains("schema_version"),
+        "EXAMPLE_TOML fixture must NOT contain schema_version for this test \
+         to exercise the default — fixture drift broke the test"
+    );
+    let f = write_tmp(src);
+    let caps = load_capabilities(f.path())
+        .expect("missing schema_version must deserialise to default=1");
+    assert_eq!(
+        caps.schema_version, 1,
+        "missing schema_version must default to 1 (TASK-0120 backward-compat); got {}",
+        caps.schema_version
+    );
+}
+
+#[test]
+fn task_0120_schema_version_explicit_1_parses() {
+    // Going forward, capabilities.toml SHOULD declare schema_version=1
+    // explicitly. Verify the explicit form parses identically.
+    let src = format!("schema_version  = 1\n{EXAMPLE_TOML}");
+    let f = write_tmp(&src);
+    let caps = load_capabilities(f.path())
+        .expect("explicit schema_version = 1 must parse cleanly");
+    assert_eq!(caps.schema_version, 1);
+}
+
+#[test]
+fn task_0120_negative_unsupported_schema_version() {
+    // A future-schema capabilities.toml that this build can't
+    // interpret must fail LOUD with UnsupportedSchemaVersion, not
+    // ParseFailed or silent acceptance. Version 999 is well outside
+    // SUPPORTED_SCHEMA_VERSIONS.
+    let src = format!("schema_version  = 999\n{EXAMPLE_TOML}");
+    let f = write_tmp(&src);
+    let err = load_capabilities(f.path())
+        .expect_err("schema_version=999 must fail loud (not in SUPPORTED_SCHEMA_VERSIONS)");
+    assert!(
+        matches!(err, CapError::UnsupportedSchemaVersion { found: 999, ref supported } if supported == &vec![1]),
+        "expected UnsupportedSchemaVersion {{found: 999, supported: [1]}}, got {err:?}"
     );
 }
 

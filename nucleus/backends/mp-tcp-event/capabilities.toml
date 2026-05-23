@@ -22,6 +22,7 @@
 # pipelined examples 9 / 11 / 13 first; the same headlines pthreads-
 # async carries), Stage 3 of TASK-0042.02 may revisit.
 
+schema_version  = 1
 name            = "mp-tcp-event"
 tier            = 1
 transport       = "tcp"

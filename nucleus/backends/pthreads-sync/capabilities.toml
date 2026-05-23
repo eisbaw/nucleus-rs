@@ -3,6 +3,7 @@
 # PRD §7.1: tier-1 CPU backend, std::thread + std::sync::Condvar,
 # shared memory, sync only.
 
+schema_version  = 1
 name            = "pthreads-sync"
 tier            = 1
 transport       = "shared-memory"

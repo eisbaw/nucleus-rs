@@ -24,9 +24,11 @@
 //!
 //! - `deny_unknown_fields` on the top-level struct. Unknown keys are
 //!   loud errors, so a forward-incompatible field addition surfaces
-//!   instead of being silently ignored. Trade-off captured in the
-//!   schema doc: a future `schema_version` field is needed before we
-//!   can relax this.
+//!   instead of being silently ignored. TASK-0120 (cycle 77) added the
+//!   `schema_version: u32` field as the version-gating substrate; the
+//!   current `deny_unknown_fields` remains in effect for v1, and a
+//!   future field addition will rev `SUPPORTED_SCHEMA_VERSIONS` and
+//!   per-version-gate the unknown-field handling at that point.
 //!
 //! - The check is *batched*. PRD §13 explicitly calls for "all errors
 //!   at once" reporting; same single-pass-collect-all-errors policy
@@ -114,6 +116,22 @@ impl From<NotifyKind> for NotifyMode {
     }
 }
 
+/// Supported `schema_version` values. The loader rejects any value
+/// not in this list with [`CapError::UnsupportedSchemaVersion`].
+/// Currently `&[1]`; a future schema revision appends a new version
+/// here and gates the changed parsing rules on it (TASK-0120).
+pub const SUPPORTED_SCHEMA_VERSIONS: &[u32] = &[1];
+
+/// Default `schema_version` for older `capabilities.toml` files that
+/// pre-date TASK-0120. Backward-compat: missing field deserialises to
+/// v1 (the only version that ever existed pre-this-task), so existing
+/// backend crates parse unchanged. Going forward, every new
+/// `capabilities.toml` SHOULD declare `schema_version = N` explicitly
+/// — the default exists only to avoid breaking older files.
+fn default_schema_version() -> u32 {
+    1
+}
+
 /// The capability matrix declared by a single backend.
 ///
 /// One-to-one with `capabilities.toml`. The serde-derived
@@ -122,6 +140,15 @@ impl From<NotifyKind> for NotifyMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
+    /// Schema version of THIS `capabilities.toml` file (TASK-0120).
+    /// Currently always `1`. Defaults to `1` if the field is missing
+    /// (backward-compat with pre-TASK-0120 files). When future
+    /// capability fields are added, they will be gated on
+    /// `schema_version >= N`, and the loader will reject older files
+    /// only if they need a feature not available in their declared
+    /// version.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     /// Backend identifier; matches the crate name.
     pub name: String,
     /// Target tier (1, 2, or 3). Validated post-deserialise via
@@ -153,6 +180,12 @@ impl Capabilities {
     /// (tier range; duplicate elements in lists are NOT flagged, only
     /// folded for membership testing).
     fn validate(&self) -> Result<(), CapError> {
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&self.schema_version) {
+            return Err(CapError::UnsupportedSchemaVersion {
+                found: self.schema_version,
+                supported: SUPPORTED_SCHEMA_VERSIONS.to_vec(),
+            });
+        }
         if !matches!(self.tier, 1..=3) {
             return Err(CapError::InvalidTier(self.tier));
         }
@@ -433,6 +466,12 @@ pub enum CapError {
     UnknownField(String),
     /// `tier` is outside the allowed range `1..=3`.
     InvalidTier(u8),
+    /// `schema_version` is not in [`SUPPORTED_SCHEMA_VERSIONS`]
+    /// (TASK-0120). The file declares a version this build does not
+    /// know how to interpret — most likely a newer file vs an older
+    /// nucleus-compiler. `found` is the value in the source;
+    /// `supported` is the list this build accepts.
+    UnsupportedSchemaVersion { found: u32, supported: Vec<u32> },
 }
 
 impl fmt::Display for CapError {
@@ -453,6 +492,12 @@ impl fmt::Display for CapError {
                 write!(f, "unknown field `{name}` in capabilities.toml")
             }
             CapError::InvalidTier(t) => write!(f, "`tier = {t}` is invalid (allowed: 1, 2, 3)"),
+            CapError::UnsupportedSchemaVersion { found, supported } => write!(
+                f,
+                "`schema_version = {found}` is not supported by this nucleus-compiler \
+                 build (supported: {supported:?}) — most likely a capabilities.toml \
+                 written for a newer schema; upgrade nucleus-compiler or downgrade the file"
+            ),
         }
     }
 }
