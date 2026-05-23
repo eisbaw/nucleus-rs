@@ -19,7 +19,7 @@
 
 use compiler::algo::{lower_algo, parse_algo};
 use compiler::sched::{lower_sched, parse_sched};
-use compiler::{link, LinkError};
+use compiler::{link, LinkError, LinkErrorKind};
 
 /// Reads a source file at a workspace-relative path. Panics on IO
 /// failure — these tests are environment-dependent by design (mirrors
@@ -159,8 +159,8 @@ schedule for \"../prog.algo.nuc\" {
     let errs = link(algo, sched).expect_err("dropped transfer must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::MissingCrossWorkerTransfer { data, .. } if data == "c"
+            &e.kind,
+            LinkErrorKind::MissingCrossWorkerTransfer { data, .. } if data == "c"
         )),
         "expected MissingCrossWorkerTransfer(c); got {errs:?}"
     );
@@ -345,15 +345,20 @@ schedule for \"a.algo.nuc\" {
     // TASK-0096: `bar` vs the sole declared kernel `foo` is distance 3
     // (b→f, a→o, r→o), bound = max(1, 3/3) = 1 → NO suggestion. This
     // pins the "don't suggest nonsense for an unrelated name" half.
+    // TASK-0099 migration: LinkError is now {kind, span, source}; the
+    // hand-written PartialEq forwards to .kind only (mirroring
+    // Spanned/LowerError), so LinkError::new(K{..}) compares equal to
+    // any positioned LinkError carrying that same kind. Payload
+    // assertion strength unchanged.
     assert!(
-        errs.contains(&LinkError::UnknownKernel {
+        errs.contains(&LinkError::new(LinkErrorKind::UnknownKernel {
             name: "bar".into(),
             suggestion: None,
-        }),
+        })),
         "want UnknownKernel{{bar, None}} in {errs:?}"
     );
     assert!(
-        errs.contains(&LinkError::UnplacedKernel("foo".into())),
+        errs.contains(&LinkError::new(LinkErrorKind::UnplacedKernel("foo".into()))),
         "want UnplacedKernel(foo) in {errs:?}"
     );
 }
@@ -384,10 +389,10 @@ schedule for \"a.algo.nuc\" {
     );
     let errs = link(algo, sched).expect_err("must fail");
     assert!(
-        errs.contains(&LinkError::UnknownKernel {
+        errs.contains(&LinkError::new(LinkErrorKind::UnknownKernel {
             name: "fooo".into(),
             suggestion: Some("foo".into()),
-        }),
+        })),
         "want UnknownKernel{{fooo, Some(foo)}} in {errs:?}"
     );
     // Display surfaces the hint.
@@ -422,7 +427,10 @@ schedule for \"a.algo.nuc\" {
 ",
     );
     let errs = link(algo, sched).expect_err("must fail");
-    assert_eq!(errs, vec![LinkError::UnplacedKernel("b".into())]);
+    assert_eq!(
+        errs,
+        vec![LinkError::new(LinkErrorKind::UnplacedKernel("b".into()))]
+    );
 }
 
 #[test]
@@ -451,10 +459,10 @@ schedule for \"a.algo.nuc\" {
     // suggestion field to the asserted value (AC#3).
     assert_eq!(
         errs,
-        vec![LinkError::UnknownData {
+        vec![LinkError::new(LinkErrorKind::UnknownData {
             name: "ghost".into(),
             suggestion: None,
-        }]
+        })]
     );
 }
 
@@ -483,10 +491,10 @@ schedule for \"a.algo.nuc\" {
     // `weight` vs `weights`: distance 1; bound = max(1, 6/3) = 2 → Some.
     assert_eq!(
         errs,
-        vec![LinkError::UnknownData {
+        vec![LinkError::new(LinkErrorKind::UnknownData {
             name: "weight".into(),
             suggestion: Some("weights".into()),
-        }]
+        })]
     );
 }
 
@@ -512,10 +520,10 @@ schedule for \"a.algo.nuc\" {
     // No `for` loop in the algorithm → no loop-var candidates → None.
     assert_eq!(
         errs,
-        vec![LinkError::UnknownLoop {
+        vec![LinkError::new(LinkErrorKind::UnknownLoop {
             name: "y".into(),
             suggestion: None,
-        }]
+        })]
     );
 }
 
@@ -541,10 +549,10 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     assert_eq!(
         errs,
-        vec![LinkError::UnknownLoop {
+        vec![LinkError::new(LinkErrorKind::UnknownLoop {
             name: "n".into(),
             suggestion: None,
-        }]
+        })]
     );
 }
 
@@ -574,10 +582,10 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     assert_eq!(
         errs,
-        vec![LinkError::UnknownLoop {
+        vec![LinkError::new(LinkErrorKind::UnknownLoop {
             name: "j".into(),
             suggestion: Some("i".into()),
-        }]
+        })]
     );
 }
 
@@ -602,10 +610,10 @@ schedule for \"a.algo.nuc\" {
     // No data declared → no candidate → None.
     assert_eq!(
         errs,
-        vec![LinkError::UnknownTransferData {
+        vec![LinkError::new(LinkErrorKind::UnknownTransferData {
             name: "phantom".into(),
             suggestion: None,
-        }]
+        })]
     );
 }
 
@@ -636,11 +644,11 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     assert_eq!(
         errs,
-        vec![LinkError::MissingCrossWorkerTransfer {
+        vec![LinkError::new(LinkErrorKind::MissingCrossWorkerTransfer {
             data: "x".into(),
             producer_worker: "{host}".into(),
             consumer_worker: "{w0}".into(),
-        }]
+        })]
     );
 }
 
@@ -674,8 +682,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     let msg = errs
         .iter()
-        .find_map(|e| match e {
-            LinkError::MissingCrossWorkerTransfer { .. } => Some(e.to_string()),
+        .find_map(|e| match &e.kind {
+            LinkErrorKind::MissingCrossWorkerTransfer { .. } => Some(e.to_string()),
             _ => None,
         })
         .expect("must have a MissingCrossWorkerTransfer");
@@ -742,8 +750,8 @@ schedule for \"a.algo.nuc\" {
     // Collect the data names from MissingCrossWorkerTransfer variants.
     let mut missing: Vec<&str> = errs
         .iter()
-        .filter_map(|e| match e {
-            LinkError::MissingCrossWorkerTransfer { data, .. } => Some(data.as_str()),
+        .filter_map(|e| match &e.kind {
+            LinkErrorKind::MissingCrossWorkerTransfer { data, .. } => Some(data.as_str()),
             _ => None,
         })
         .collect();
@@ -834,16 +842,16 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     // Expect UnplacedKernel(b), UnknownTransferData(phantom),
     // UnknownLoop(z) all reported together.
-    assert!(errs.contains(&LinkError::UnplacedKernel("b".into())));
+    assert!(errs.contains(&LinkError::new(LinkErrorKind::UnplacedKernel("b".into()))));
     // No data / no loop vars declared → both suggestions None.
-    assert!(errs.contains(&LinkError::UnknownTransferData {
+    assert!(errs.contains(&LinkError::new(LinkErrorKind::UnknownTransferData {
         name: "phantom".into(),
         suggestion: None,
-    }));
-    assert!(errs.contains(&LinkError::UnknownLoop {
+    })));
+    assert!(errs.contains(&LinkError::new(LinkErrorKind::UnknownLoop {
         name: "z".into(),
         suggestion: None,
-    }));
+    })));
     assert!(
         errs.len() >= 3,
         "expected ≥3 errors in one pass, got {errs:?}"
@@ -925,8 +933,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("D=4 > buffer=3 must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::PipelineExceedsBuffer {
+            &e.kind,
+            LinkErrorKind::PipelineExceedsBuffer {
                 loop_var,
                 data,
                 depth: 4,
@@ -1037,8 +1045,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("default buffer=1 vs pipeline=3 must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::PipelineExceedsBuffer {
+            &e.kind,
+            LinkErrorKind::PipelineExceedsBuffer {
                 loop_var,
                 data,
                 depth: 3,
@@ -1081,8 +1089,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("two defects must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::PipelineExceedsBuffer {
+            &e.kind,
+            LinkErrorKind::PipelineExceedsBuffer {
                 loop_var, data, depth: 4, buffer: 3
             } if loop_var == "n" && data == "stage1"
         )),
@@ -1091,8 +1099,8 @@ schedule for \"a.algo.nuc\" {
     );
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::UnknownLoop { name, .. } if name == "unknown_loop"
+            &e.kind,
+            LinkErrorKind::UnknownLoop { name, .. } if name == "unknown_loop"
         )),
         "expected UnknownLoop(unknown_loop) reported in the same pass; got {:?}",
         errs
@@ -1127,8 +1135,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     let msg = errs
         .iter()
-        .find_map(|e| match e {
-            err @ LinkError::PipelineExceedsBuffer { .. } => Some(format!("{err}")),
+        .find_map(|e| match &e.kind {
+            LinkErrorKind::PipelineExceedsBuffer { .. } => Some(format!("{e}")),
             _ => None,
         })
         .expect("PipelineExceedsBuffer present");
@@ -1188,8 +1196,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("D=3 > iter_count=2 must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::PipelineExceedsIterationCount {
+            &e.kind,
+            LinkErrorKind::PipelineExceedsIterationCount {
                 loop_var,
                 depth: 3,
                 iteration_count: 2,
@@ -1221,8 +1229,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("must fail");
     let msg = errs
         .iter()
-        .find_map(|e| match e {
-            err @ LinkError::PipelineExceedsIterationCount { .. } => Some(format!("{err}")),
+        .find_map(|e| match &e.kind {
+            LinkErrorKind::PipelineExceedsIterationCount { .. } => Some(format!("{e}")),
             _ => None,
         })
         .expect("PipelineExceedsIterationCount present");
@@ -1319,8 +1327,8 @@ schedule for \"a.algo.nuc\" {
     let errs = link(algo, sched).expect_err("cross-worker D=4 > N=1 must fail");
     assert!(
         errs.iter().any(|e| matches!(
-            e,
-            LinkError::PipelineExceedsBuffer {
+            &e.kind,
+            LinkErrorKind::PipelineExceedsBuffer {
                 loop_var,
                 data,
                 depth: 4,
@@ -1330,4 +1338,337 @@ schedule for \"a.algo.nuc\" {
         "expected PipelineExceedsBuffer for cross-worker (n, stage1, 4, 1); got {:?}",
         errs
     );
+}
+
+// --------------------------------------------------------------------
+// TASK-0099: located-error spans on LinkError
+// --------------------------------------------------------------------
+//
+// These tests pin the `LinkError.span` byte range and its
+// `LinkError.source` tag against ground truth computed via
+// `compiler::error::offset_to_line_col` over the crafted source. Same
+// pattern as TASK-0090's `located_errors_carry_correct_line_col` for
+// `LowerError`. The driver-facing `display_with_src` form is also
+// pinned end-to-end on one representative variant.
+
+/// Helper: 1-based (line, column) for the (first occurrence of) `needle`
+/// in `src`. Mirrors the test-side approach taken for TASK-0090
+/// (algorithm-side LowerError); here `src` may be either source string.
+fn line_col_of(src: &str, needle: &str) -> (usize, usize) {
+    let offset = src
+        .find(needle)
+        .unwrap_or_else(|| panic!("needle {needle:?} not in source"));
+    compiler::error::offset_to_line_col(src, offset)
+}
+
+#[test]
+fn task_0099_unknown_kernel_carries_correct_line_col() {
+    // The schedule's `place bogus_kernel on host;` token is the
+    // offending source node; span tag is Schedule.
+    let algo_src = "\
+kernel foo : () -> () effectful;
+foo();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place bogus_kernel on host;
+    place foo on host;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unknown kernel must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnknownKernel { name, .. } if name == "bogus_kernel"))
+        .expect("UnknownKernel(bogus_kernel) present");
+    let span = e.span.as_ref().expect("UnknownKernel must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let expected = line_col_of(sched_src, "bogus_kernel");
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected, "span points at the offending token");
+    // End-to-end: the driver-facing render carries `at L:C`.
+    let rendered = e.display_with_src(algo_src, sched_src);
+    assert!(
+        rendered.ends_with(&format!(" at {}:{}", expected.0, expected.1)),
+        "located render: got {rendered:?}"
+    );
+}
+
+#[test]
+fn task_0099_unknown_data_carries_correct_line_col() {
+    // `place_data ghost in r;` — `ghost` is the offending token.
+    let algo_src = "\
+kernel k : () -> () effectful;
+k();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    memory_region r { size = 4KB; };
+    workers = { host };
+    place k on host;
+    place_data ghost in r;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unknown data must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnknownData { name, .. } if name == "ghost"))
+        .expect("UnknownData(ghost) present");
+    let span = e.span.as_ref().expect("UnknownData must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let expected = line_col_of(sched_src, "ghost");
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected);
+}
+
+#[test]
+fn task_0099_unknown_transfer_data_carries_correct_line_col() {
+    // `transfer phantom : sync;` — `phantom` is the offending token.
+    let algo_src = "\
+kernel k : () -> () effectful;
+k();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    transfer phantom : sync;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unknown transfer data must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnknownTransferData { name, .. } if name == "phantom"))
+        .expect("UnknownTransferData(phantom) present");
+    let span = e.span.as_ref().expect("UnknownTransferData must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let expected = line_col_of(sched_src, "phantom");
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected);
+}
+
+#[test]
+fn task_0099_unknown_loop_carries_correct_line_col() {
+    // `loop bogus_var : block=64;` — `bogus_var` is the offending token.
+    let algo_src = "\
+kernel k : () -> () effectful;
+k();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    loop bogus_var : block=64;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unknown loop must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnknownLoop { name, .. } if name == "bogus_var"))
+        .expect("UnknownLoop(bogus_var) present");
+    let span = e.span.as_ref().expect("UnknownLoop must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let expected = line_col_of(sched_src, "bogus_var");
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected);
+}
+
+#[test]
+fn task_0099_unknown_loop_via_check_carries_correct_line_col() {
+    // The OTHER surface for UnknownLoop: `check loop V : ...`. Span
+    // comes from `ResolvedCheckDirective.var_span`, not the loop dir.
+    let algo_src = "\
+kernel k : () -> () effectful;
+k();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    check loop bogus_var : latency_max = 10ms;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unknown loop via check must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnknownLoop { name, .. } if name == "bogus_var"))
+        .expect("UnknownLoop(bogus_var) present");
+    let span = e.span.as_ref().expect("UnknownLoop via check must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let expected = line_col_of(sched_src, "bogus_var");
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected);
+}
+
+#[test]
+fn task_0099_unplaced_kernel_span_points_at_algo_source() {
+    // `kernel orphan : () -> () effectful;` in the algorithm has no
+    // matching `place` in the schedule. The span points at the
+    // algorithm-side decl identifier — `LinkErrorSource::Algorithm`,
+    // and `display_with_src` resolves against `algo_src` (the
+    // separation between algorithm/schedule sources is the TASK-0099
+    // wrinkle on the TASK-0090 template).
+    let algo_src = "\
+kernel placed : () -> () effectful;
+kernel orphan : () -> () effectful;
+placed();
+orphan();
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host };
+    place placed on host;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("unplaced kernel must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::UnplacedKernel(n) if n == "orphan"))
+        .expect("UnplacedKernel(orphan) present");
+    let span = e
+        .span
+        .as_ref()
+        .expect("UnplacedKernel must carry a span (kernel decl identifier)");
+    assert_eq!(
+        e.source,
+        compiler::LinkErrorSource::Algorithm,
+        "UnplacedKernel is the SOLE variant whose span is into algorithm source"
+    );
+    let expected = line_col_of(algo_src, "orphan");
+    let (line, col) = compiler::error::offset_to_line_col(algo_src, span.start);
+    assert_eq!((line, col), expected, "span points at the algo-side decl");
+    // End-to-end: rendering with the algorithm source picks up the
+    // right line:col despite the schedule source being shorter.
+    let rendered = e.display_with_src(algo_src, sched_src);
+    assert!(
+        rendered.ends_with(&format!(" at {}:{}", expected.0, expected.1)),
+        "located render: got {rendered:?}"
+    );
+}
+
+#[test]
+fn task_0099_pipeline_exceeds_buffer_carries_correct_line_col() {
+    // `loop n : pipeline=5;` is the offending directive; span comes
+    // from `ResolvedLoopDirective.var_span` — the `n` token.
+    let algo_src = TWO_STAGE_PIPELINE_ALGO;
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=5;
+    transfer input  : async, buffer=5, notify=event;
+    transfer stage1 : async, buffer=2, notify=event;
+    transfer stage2 : sync;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("pipeline > buffer must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::PipelineExceedsBuffer { loop_var, .. } if loop_var == "n"))
+        .expect("PipelineExceedsBuffer(n) present");
+    let span = e
+        .span
+        .as_ref()
+        .expect("PipelineExceedsBuffer must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    // The `loop n :` `n` token — must NOT trip on the `loop_n` in
+    // `for n : ...`-equivalent text; the schedule's first `loop n` is
+    // unambiguous: search for that exact prefix.
+    let needle = "loop n :";
+    let offset = sched_src.find(needle).expect("loop n directive present");
+    // The span should point at the `n` (i.e. offset + len("loop "))
+    let expected_offset = offset + "loop ".len();
+    let expected = compiler::error::offset_to_line_col(sched_src, expected_offset);
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected, "span points at the loop-var token");
+}
+
+#[test]
+fn task_0099_missing_cross_worker_transfer_is_position_less() {
+    // The SOLE position-less LinkError variant by design: the error
+    // is derived from joining algorithm dataflow + schedule placements
+    // + the *absence* of a transfer directive; no single offending
+    // source token (the actionable fix is "add a transfer directive",
+    // not "fix this token"). A documented missing position is honest;
+    // a fabricated one is not.
+    let algo_src = "\
+const N : usize = 4;
+data x : f32[N];
+data y : f32[N];
+kernel make_x : () -> f32[N] pure;
+kernel use_x : (f32[N]) -> f32[N] pure;
+x <-- make_x();
+y <-- use_x(x);
+";
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0 };
+    place make_x on host;
+    place use_x  on w0;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("missing cross-worker transfer must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::MissingCrossWorkerTransfer { data, .. } if data == "x"))
+        .expect("MissingCrossWorkerTransfer(x) present");
+    assert!(
+        e.span.is_none(),
+        "MissingCrossWorkerTransfer is position-less by design; got span = {:?}",
+        e.span
+    );
+    // display_with_src must NOT fabricate a location for a span-less
+    // error — fallback to the bare kind message.
+    let rendered = e.display_with_src(algo_src, sched_src);
+    assert!(
+        !rendered.contains(" at "),
+        "no fabricated location for position-less variant; got {rendered:?}"
+    );
+    assert_eq!(rendered, e.kind.to_string());
+}
+
+#[test]
+fn task_0099_partialeq_ignores_span_and_source() {
+    // Pins the load-bearing equality semantics (mirrors TASK-0090
+    // `LowerError` equality test): a `LinkError` constructed with no
+    // span (LinkError::new) compares EQUAL to one constructed with a
+    // real span and either source, as long as `kind` matches. This is
+    // what keeps every existing LinkErrorKind-asserting test valid
+    // through the TASK-0099 wrapper migration.
+    let a = LinkError::new(LinkErrorKind::UnplacedKernel("k".into()));
+    let b = LinkError::at(
+        LinkErrorKind::UnplacedKernel("k".into()),
+        7..12,
+        compiler::LinkErrorSource::Schedule,
+    );
+    let c = LinkError::at(
+        LinkErrorKind::UnplacedKernel("k".into()),
+        99..104,
+        compiler::LinkErrorSource::Algorithm,
+    );
+    assert_eq!(a, b, "span ignored in PartialEq");
+    assert_eq!(a, c, "source ignored in PartialEq");
+    assert_eq!(b, c, "different span/source still equal when kind matches");
+    // Different payload -> not equal.
+    let d = LinkError::new(LinkErrorKind::UnplacedKernel("other".into()));
+    assert_ne!(a, d);
 }

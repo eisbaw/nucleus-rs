@@ -295,11 +295,20 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         }
     }
 
+    // `link` collects ALL cross-reference / coverage / cross-worker /
+    // pipeline violations in one pass (PRD §12, no fail-fast). Surface
+    // every one — each carries its own byte span PLUS a
+    // `LinkErrorSource` tag identifying whether the span indexes into
+    // the algorithm or schedule source string (TASK-0099; the link
+    // step takes both IRs, so its diagnostics can point at either
+    // side). `display_with_src` resolves the byte offset to `line:col`
+    // against the right source, mirroring how `LowerError` /
+    // `SchedLowerError` are surfaced (TASK-0090 / TASK-0196).
     let linked = link(algo_ir, sched_ir).map_err(|errs| {
         let mut s = format!("link error(s) ({}):", errs.len());
         for e in &errs {
             s.push_str("\n  - ");
-            s.push_str(&e.to_string());
+            s.push_str(&e.display_with_src(&algo_src, &sched_src));
         }
         s
     })?;

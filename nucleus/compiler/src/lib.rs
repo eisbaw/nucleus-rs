@@ -50,7 +50,7 @@ pub use event::{
 pub use event_validate::{
     validate_event_lists, validate_event_lists_strict_per_worker, EventValidationError,
 };
-pub use link::{link, LinkError, LinkedIR, WorkerEntity};
+pub use link::{link, LinkError, LinkErrorKind, LinkErrorSource, LinkedIR, WorkerEntity};
 // Petri-net IR (PRD §8). `Arc` is intentionally NOT re-exported at the
 // crate root to avoid shadowing `std::sync::Arc` for downstream code;
 // reach for it via `compiler::petri::Arc` when you actually need it.

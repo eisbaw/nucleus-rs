@@ -59,6 +59,7 @@
 //! - Detect data symbols that have no producer at all (could be a
 //!   genuine bug; not in the spec for this task).
 
+use core::ops::Range;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt};
@@ -146,14 +147,16 @@ pub struct LinkedIR {
     pub data_consumers: BTreeMap<String, BTreeSet<WorkerEntity>>,
 }
 
-/// Errors produced by the link pass.
+/// The semantic-violation *kind* produced by the link pass.
 ///
 /// Each variant names a single contract violation between the
-/// algorithm and schedule. As with [`crate::algo::ir::LowerError`] and
-/// [`crate::sched::ir::SchedLowerError`], byte positions are not
-/// tracked: the link step consumes span-free AlgoIR/SchedIR (spans are
-/// out of scope for TASK-0096; they would have to be threaded onto the
-/// IRs first).
+/// algorithm and schedule and carries the payload a diagnostic needs
+/// (the offending name, the owning declaration, etc.). The *source
+/// position* of the violation is NOT here — it is carried separately
+/// on [`LinkError`] so that adding positions did not change any
+/// variant's payload shape (TASK-0099, mirroring TASK-0090 verbatim).
+/// Equality / Display of a located error forward to this kind; see
+/// [`LinkError`] for why position is excluded from value identity.
 ///
 /// # The four unknown-name variants carry a did-you-mean suggestion
 ///
@@ -165,26 +168,21 @@ pub struct LinkedIR {
 /// `MissingCrossWorkerTransfer` are unaffected (no single offending
 /// *unknown* name to fuzzy-match — the named entities exist), so a
 /// per-variant struct widening is used rather than a `{kind,
-/// suggestion}` wrapper: only four of six variants gain the field, and
-/// the wrapper TASK-0090 used for `LowerError` was justified by a
-/// *uniform* span on every variant, which is not the case here.
+/// suggestion}` wrapper: only four of six variants gain the field.
 ///
-/// # Equality includes the suggestion (deliberately — diverges from `LowerError`)
+/// # Equality includes the suggestion (deliberately — kind-level)
 ///
-/// `PartialEq`/`Eq` are **derived**, so the `suggestion` field IS part
-/// of value identity. This is the opposite choice from
-/// [`crate::algo::ir::LowerError`], which hand-excludes its `span`, and
-/// the divergence is intentional: a `span` is informational-for-humans
-/// and an artefact of *where* the source happened to sit, so two
-/// equal-meaning errors can differ in span. A `suggestion`, by
-/// contrast, is a deterministic pure function of `(offending name,
-/// in-hand symbol table)` — two `LinkError`s that are equal in name AND
-/// arose against the same table necessarily have an equal suggestion,
-/// so folding it into equality cannot spuriously split equal errors. It
-/// is part of *which diagnostic this is*, not noise. The negative tests
-/// therefore assert the suggestion as part of the expected value (AC#3).
+/// `PartialEq`/`Eq` are **derived** on `LinkErrorKind`, so the
+/// `suggestion` field IS part of kind identity. A `suggestion` is a
+/// deterministic pure function of `(offending name, in-hand symbol
+/// table)`, so two `LinkErrorKind`s that are equal in name AND arose
+/// against the same table necessarily have an equal suggestion;
+/// folding it into kind equality cannot spuriously split equal errors.
+/// The position-noise rule (TASK-0099, mirroring TASK-0082 / TASK-0090)
+/// applies one level up at [`LinkError`]: the *wrapper* hand-excludes
+/// `span` from value identity, the *kind* keeps every payload field.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkError {
+pub enum LinkErrorKind {
     /// The algorithm declares a kernel that no `place` directive
     /// names. PRD §6.3.2: "Every kernel referenced in the algorithm
     /// must have exactly one `place`. An unplaced kernel is a
@@ -286,42 +284,42 @@ fn write_suggestion(
     }
 }
 
-impl std::fmt::Display for LinkError {
+impl std::fmt::Display for LinkErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkError::UnplacedKernel(name) => write!(
+            LinkErrorKind::UnplacedKernel(name) => write!(
                 f,
                 "kernel `{name}` is declared in the algorithm but has no `place` directive in the schedule"
             ),
-            LinkError::UnknownKernel { name, suggestion } => {
+            LinkErrorKind::UnknownKernel { name, suggestion } => {
                 write!(
                     f,
                     "schedule places kernel `{name}` but no such kernel is declared in the algorithm"
                 )?;
                 write_suggestion(f, suggestion)
             }
-            LinkError::UnknownData { name, suggestion } => {
+            LinkErrorKind::UnknownData { name, suggestion } => {
                 write!(
                     f,
                     "schedule references data symbol `{name}` in `place_data` but no such data is declared in the algorithm"
                 )?;
                 write_suggestion(f, suggestion)
             }
-            LinkError::UnknownLoop { name, suggestion } => {
+            LinkErrorKind::UnknownLoop { name, suggestion } => {
                 write!(
                     f,
                     "schedule references loop variable `{name}` but no `for {name} : ...` exists in the algorithm"
                 )?;
                 write_suggestion(f, suggestion)
             }
-            LinkError::UnknownTransferData { name, suggestion } => {
+            LinkErrorKind::UnknownTransferData { name, suggestion } => {
                 write!(
                     f,
                     "schedule has `transfer {name}` but no such data is declared in the algorithm"
                 )?;
                 write_suggestion(f, suggestion)
             }
-            LinkError::MissingCrossWorkerTransfer {
+            LinkErrorKind::MissingCrossWorkerTransfer {
                 data,
                 producer_worker,
                 consumer_worker,
@@ -333,7 +331,7 @@ impl std::fmt::Display for LinkError {
                  Add `transfer {data} : sync;` \
                  (or `async`/`buffer=N` for buffered transports)."
             ),
-            LinkError::PipelineExceedsBuffer {
+            LinkErrorKind::PipelineExceedsBuffer {
                 loop_var,
                 data,
                 depth,
@@ -344,7 +342,7 @@ impl std::fmt::Display for LinkError {
                  `transfer {data} : buffer={buffer}` cannot hold {depth} in-flight \
                  tokens (pipeline depth must be <= buffer capacity; PRD §8.2)"
             ),
-            LinkError::PipelineExceedsIterationCount {
+            LinkErrorKind::PipelineExceedsIterationCount {
                 loop_var,
                 depth,
                 iteration_count,
@@ -356,6 +354,187 @@ impl std::fmt::Display for LinkError {
                  fewer iterations). TASK-0217."
             ),
         }
+    }
+}
+
+/// Which source string [`LinkError::span`] indexes into. Tracked
+/// because link errors can originate from EITHER the schedule source
+/// (most located variants — `place`/`place_data`/`transfer`/`loop`/
+/// `check loop` directives) OR the algorithm source
+/// (`UnplacedKernel`, whose offending token is the `kernel K : ...`
+/// decl in the algorithm). The driver holds both source strings and
+/// uses this tag to pick the right one when rendering `at L:C`.
+///
+/// Position-less errors ([`LinkError::span`] is `None`) ignore this
+/// tag — they render the kind alone, with no fabricated location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkErrorSource {
+    /// The byte span indexes into the schedule source string.
+    Schedule,
+    /// The byte span indexes into the algorithm source string. Only
+    /// [`LinkErrorKind::UnplacedKernel`] uses this today.
+    Algorithm,
+}
+
+/// A link error: a [`LinkErrorKind`] plus, where a single offending
+/// source node exists, the byte [`Range`] it was parsed from and which
+/// source (`source`) it indexes into (TASK-0099, mirroring the
+/// algorithm-side TASK-0090 [`crate::algo::ir::LowerError`] with the
+/// added `source` tag because link spans can come from either source).
+///
+/// # Why a struct wrapping a kind (not `(line, column)` fields per
+/// variant)
+///
+/// Same design decision as TASK-0090: putting a position on a *wrapper*
+/// instead of widening every variant means no variant payload shape
+/// changed. The existing negative tests still pattern-match
+/// `LinkErrorKind::X { payload }` with the same payload, only through
+/// `err.kind`. The byte range — not `(line, column)` — is stored
+/// because the link step takes `&AlgoIR` + `&SchedIR` only and has no
+/// source string; the driver (which holds both source strings)
+/// converts via [`crate::error::offset_to_line_col`] at display time
+/// through [`LinkError::display_with_src`], exactly as
+/// [`crate::error::ParseError`] / [`crate::algo::ir::LowerError`] /
+/// [`crate::sched::ir::SchedLowerError`] are surfaced.
+///
+/// # `span` is `Option` (honest-partial per variant — TASK-0099)
+///
+/// Most variants name a single offending schedule-AST identifier (the
+/// offending `place K on ...` kernel token, `transfer D : ...` data
+/// token, `loop V : ...` var token) — `source = Schedule`. The
+/// `UnplacedKernel` variant points at the algorithm-AST `kernel K`
+/// decl — `source = Algorithm`. The byte spans for all of these were
+/// plumbed onto the resolved IR in the prep commit. Exactly one
+/// variant is genuinely position-less:
+/// [`LinkErrorKind::MissingCrossWorkerTransfer`] — the error is
+/// *derived* from joining algorithm dataflow + schedule placements +
+/// the *absence* of a transfer directive; there is no single offending
+/// source token (the actionable fix is "add a transfer directive", not
+/// "fix this token"). A documented missing position is honest; a
+/// fabricated one is not.
+///
+/// # Equality semantics (load-bearing — mirrors `Spanned` / `LowerError`)
+///
+/// [`PartialEq`] / [`Eq`] are **hand-written to forward to `kind`
+/// only**; `span` AND `source` are deliberately EXCLUDED from value
+/// identity (they are jointly the positional-noise metadata). Same
+/// decision, same rationale as [`crate::span::Spanned`] (TASK-0082) and
+/// [`crate::algo::ir::LowerError`] (TASK-0090): position is
+/// informational-for-humans, not part of *which semantic error this is*.
+/// Excluding both keeps every existing `LinkErrorKind`-asserting
+/// negative test valid (they assert the semantic kind + payload, never
+/// the byte offset); dedicated tests assert the position separately.
+/// `#[derive(PartialEq)]` would (wrongly) fold span + source into
+/// equality.
+#[derive(Debug, Clone)]
+pub struct LinkError {
+    /// The semantic violation.
+    pub kind: LinkErrorKind,
+    /// Byte range into the source identified by `source`, when a
+    /// single offending node exists. `None` only for the genuinely
+    /// multi-site [`LinkErrorKind::MissingCrossWorkerTransfer`] (see
+    /// type docs). Feed `span.start` to
+    /// [`crate::error::offset_to_line_col`] for a 1-based
+    /// `(line, column)`.
+    pub span: Option<Range<usize>>,
+    /// Which source the `span` indexes into. Defaults to
+    /// [`LinkErrorSource::Schedule`] when `span` is `None`; the value
+    /// is unused in that case (it never reaches `display_with_src`'s
+    /// indexing path).
+    pub source: LinkErrorSource,
+}
+
+impl LinkError {
+    /// A link error with no source position (the multi-site
+    /// `MissingCrossWorkerTransfer` — see type docs). Prefer
+    /// [`LinkError::at`] whenever a single offending span is in scope.
+    pub fn new(kind: LinkErrorKind) -> Self {
+        Self {
+            kind,
+            span: None,
+            source: LinkErrorSource::Schedule,
+        }
+    }
+
+    /// A link error located at `span` — the byte range of the
+    /// offending source node, indexing into `source` — typically read
+    /// off one of the span-bearing resolved IR fields
+    /// (`ResolvedPlacement.kernel_span`, `ResolvedPlaceData.data_span`,
+    /// `ResolvedLoopDirective.var_span`,
+    /// `ResolvedTransferDirective.data_span`,
+    /// `ResolvedCheckDirective.var_span`, `ResolvedKernel.name_span`).
+    pub fn at(kind: LinkErrorKind, span: Range<usize>, source: LinkErrorSource) -> Self {
+        Self {
+            kind,
+            span: Some(span),
+            source,
+        }
+    }
+
+    /// A link error located at `span_opt` if it is `Some` — the common
+    /// path through link.rs, where the IR carries `Option<Range<usize>>`
+    /// directly. `None` collapses to [`LinkError::new`] (no fabricated
+    /// position when the upstream lowering had no source to point at —
+    /// e.g. a hand-built test fixture; honest-partial per
+    /// [`crate::span::Spanned`] semantics). `source` is unused when
+    /// `span_opt` is `None`.
+    pub fn maybe_at(
+        kind: LinkErrorKind,
+        span_opt: Option<Range<usize>>,
+        source: LinkErrorSource,
+    ) -> Self {
+        match span_opt {
+            Some(span) => Self::at(kind, span, source),
+            None => Self::new(kind),
+        }
+    }
+
+    /// Render the error with a source location resolved against the
+    /// appropriate source string. The driver passes BOTH source
+    /// strings; `display_with_src` picks the one matching `self.source`
+    /// and feeds its span offset to
+    /// [`crate::error::offset_to_line_col`]. Mirrors how
+    /// [`crate::algo::ir::LowerError::display_with_src`] is surfaced
+    /// (the extra `source`-tagged dispatch is the link-step bit — link
+    /// errors can point into either source). When the variant has no
+    /// position (see type docs), the message is the kind alone, with
+    /// no fabricated location.
+    pub fn display_with_src(&self, algo_src: &str, sched_src: &str) -> String {
+        match &self.span {
+            Some(span) => {
+                let src = match self.source {
+                    LinkErrorSource::Schedule => sched_src,
+                    LinkErrorSource::Algorithm => algo_src,
+                };
+                let offset = span.start.min(src.len());
+                let (line, col) = crate::error::offset_to_line_col(src, offset);
+                format!("{} at {line}:{col}", self.kind)
+            }
+            None => self.kind.to_string(),
+        }
+    }
+}
+
+// Hand-written: forward to `kind`, EXCLUDE `span` from identity
+// (TASK-0099, mirroring TASK-0082 / TASK-0090). Deriving would fold
+// the span in and break every existing `LinkErrorKind`-asserting
+// negative test (and the dedup-via-format-debug in `link()` would
+// over-split equal-meaning errors that happened to be at different
+// offsets).
+impl PartialEq for LinkError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for LinkError {}
+
+// Span-free Display: library callers / tests without source text get
+// the semantic message unchanged. The located form is
+// `display_with_src` (driver-side).
+impl std::fmt::Display for LinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
     }
 }
 
@@ -396,37 +575,56 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
 
     for placement in sched.places.values() {
         if !algo.kernels.contains_key(&placement.kernel) {
-            errors.push(LinkError::UnknownKernel {
-                name: placement.kernel.clone(),
-                suggestion: crate::error::suggest(
-                    &placement.kernel,
-                    algo.kernels.keys().map(String::as_str),
-                ),
-            });
+            // TASK-0099: span comes from the offending `place K on ...`
+            // schedule kernel token (`PlaceDirective.kernel.span` ->
+            // ResolvedPlacement.kernel_span). `maybe_at` keeps the
+            // hand-built-test path (kernel_span: None) producing an
+            // honest position-less error rather than a fabricated 0:0.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnknownKernel {
+                    name: placement.kernel.clone(),
+                    suggestion: crate::error::suggest(
+                        &placement.kernel,
+                        algo.kernels.keys().map(String::as_str),
+                    ),
+                },
+                placement.kernel_span.clone(),
+                LinkErrorSource::Schedule,
+            ));
         }
     }
 
     for pd in sched.place_data.values() {
         if !algo.data.contains_key(&pd.data) {
-            errors.push(LinkError::UnknownData {
-                name: pd.data.clone(),
-                suggestion: crate::error::suggest(
-                    &pd.data,
-                    algo.data.keys().map(String::as_str),
-                ),
-            });
+            // TASK-0099: span from `place_data D in R` data token.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnknownData {
+                    name: pd.data.clone(),
+                    suggestion: crate::error::suggest(
+                        &pd.data,
+                        algo.data.keys().map(String::as_str),
+                    ),
+                },
+                pd.data_span.clone(),
+                LinkErrorSource::Schedule,
+            ));
         }
     }
 
     for tx in sched.transfers.values() {
         if !algo.data.contains_key(&tx.data) {
-            errors.push(LinkError::UnknownTransferData {
-                name: tx.data.clone(),
-                suggestion: crate::error::suggest(
-                    &tx.data,
-                    algo.data.keys().map(String::as_str),
-                ),
-            });
+            // TASK-0099: span from `transfer D : ...` data token.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnknownTransferData {
+                    name: tx.data.clone(),
+                    suggestion: crate::error::suggest(
+                        &tx.data,
+                        algo.data.keys().map(String::as_str),
+                    ),
+                },
+                tx.data_span.clone(),
+                LinkErrorSource::Schedule,
+            ));
         }
     }
 
@@ -435,34 +633,54 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
     let loop_vars = collect_loop_vars(&algo);
     for loop_dir in sched.loops.values() {
         if !loop_vars.contains(&loop_dir.var) {
-            errors.push(LinkError::UnknownLoop {
-                name: loop_dir.var.clone(),
-                suggestion: crate::error::suggest(
-                    &loop_dir.var,
-                    loop_vars.iter().map(String::as_str),
-                ),
-            });
+            // TASK-0099: span from `loop V : ...` loop-var token.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnknownLoop {
+                    name: loop_dir.var.clone(),
+                    suggestion: crate::error::suggest(
+                        &loop_dir.var,
+                        loop_vars.iter().map(String::as_str),
+                    ),
+                },
+                loop_dir.var_span.clone(),
+                LinkErrorSource::Schedule,
+            ));
         }
     }
     for check in sched.checks.values() {
         if !loop_vars.contains(&check.var) {
             // Same diagnostic — the `check loop VAR` and `loop VAR`
             // both name the same algorithm-side variable.
-            errors.push(LinkError::UnknownLoop {
-                name: check.var.clone(),
-                suggestion: crate::error::suggest(
-                    &check.var,
-                    loop_vars.iter().map(String::as_str),
-                ),
-            });
+            // TASK-0099: span from `check loop V : ...` loop-var token.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnknownLoop {
+                    name: check.var.clone(),
+                    suggestion: crate::error::suggest(
+                        &check.var,
+                        loop_vars.iter().map(String::as_str),
+                    ),
+                },
+                check.var_span.clone(),
+                LinkErrorSource::Schedule,
+            ));
         }
     }
 
     // --- 5: coverage — every kernel has a place ---
 
-    for kernel_name in algo.kernels.keys() {
+    for (kernel_name, kernel_decl) in algo.kernels.iter() {
         if !sched.places.contains_key(kernel_name) {
-            errors.push(LinkError::UnplacedKernel(kernel_name.clone()));
+            // TASK-0099: span comes from the algorithm-side
+            // `kernel K : ...` decl identifier — this is the only
+            // located link variant whose span is into the ALGORITHM
+            // source (not the schedule). The `LinkErrorSource::Algorithm`
+            // tag tells `display_with_src` to resolve against the
+            // algorithm source string at render time.
+            errors.push(LinkError::maybe_at(
+                LinkErrorKind::UnplacedKernel(kernel_name.clone()),
+                kernel_decl.name_span.clone(),
+                LinkErrorSource::Algorithm,
+            ));
         }
     }
 
@@ -492,11 +710,19 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
         if let Some(consumers) = data_consumers.get(data) {
             for consumer in consumers.iter() {
                 if consumer != producer && !sched.transfers.contains_key(data) {
-                    errors.push(LinkError::MissingCrossWorkerTransfer {
+                    // TASK-0099: `MissingCrossWorkerTransfer` is the
+                    // sole genuinely position-less variant. The error
+                    // joins algorithm dataflow + schedule placements +
+                    // the *absence* of a transfer directive; there is
+                    // no single offending source token (the actionable
+                    // fix is "add a transfer directive", not "fix this
+                    // token"). A documented missing position is
+                    // honest; a fabricated one is not. See type docs.
+                    errors.push(LinkError::new(LinkErrorKind::MissingCrossWorkerTransfer {
                         data: data.clone(),
                         producer_worker: producer.display(),
                         consumer_worker: consumer.display(),
-                    });
+                    }));
                 }
             }
         }
@@ -523,7 +749,20 @@ pub fn link(algo: AlgoIR, sched: SchedIR) -> Result<LinkedIR, Vec<LinkError>> {
     // "MissingCrossWorkerTransfer" if the loop above visited them as
     // separate entries (it won't, BTreeSet collapses; but defensive).
     // Also catches the degenerate "report each kind once" pattern.
-    errors.sort_by_key(|e| format!("{e:?}"));
+    //
+    // TASK-0099: sort by `e.kind` debug-format, NOT by `e` debug-format.
+    // After the LinkError{kind,span,source} restructure, deriving Debug
+    // on the wrapper folds span+source into `{e:?}`, which (a) would
+    // sort two same-kind errors at different offsets into different
+    // sort buckets (non-determinism leaking via the byte-offset jitter
+    // a future test refactor could introduce), and (b) would break
+    // `errors.dedup()`: dedup uses our hand-written `PartialEq` (kind
+    // only — span+source EXCLUDED), so two same-kind errors are equal
+    // by `==` but would be non-adjacent under the wrapper-debug sort,
+    // letting the dup survive. Sorting by `.kind` Debug only keeps the
+    // pre-TASK-0099 invariant: same-kind errors are adjacent, dedup
+    // collapses them.
+    errors.sort_by_key(|e| format!("{:?}", e.kind));
     errors.dedup();
 
     if errors.is_empty() {
@@ -772,11 +1011,18 @@ fn check_pipeline_buffer_constraints(
         // is an independent check that doesn't cascade.
         if let Some(iter_count) = find_loop_iter_count(&algo.stmts, &loop_dir.var, &algo.consts) {
             if (depth as i64) > iter_count {
-                errors.push(LinkError::PipelineExceedsIterationCount {
-                    loop_var: loop_dir.var.clone(),
-                    depth,
-                    iteration_count: iter_count,
-                });
+                // TASK-0099: span from `loop V : pipeline=D` loop-var
+                // token — the offending pipeline=D lives on this loop
+                // directive.
+                errors.push(LinkError::maybe_at(
+                    LinkErrorKind::PipelineExceedsIterationCount {
+                        loop_var: loop_dir.var.clone(),
+                        depth,
+                        iteration_count: iter_count,
+                    },
+                    loop_dir.var_span.clone(),
+                    LinkErrorSource::Schedule,
+                ));
                 // Do NOT continue — if both D > iter_count AND D > buffer,
                 // report BOTH. They name different problems with
                 // different actionable fixes (raise buffer vs reduce D vs
@@ -823,12 +1069,24 @@ fn check_pipeline_buffer_constraints(
                 // PRD §6.3.4 row `buffer=N`).
                 .unwrap_or(1);
             if depth > buffer {
-                errors.push(LinkError::PipelineExceedsBuffer {
-                    loop_var: loop_dir.var.clone(),
-                    data: data_name.clone(),
-                    depth,
-                    buffer,
-                });
+                // TASK-0099: span from `loop V : pipeline=D` loop-var
+                // token. Two source tokens are involved (the loop
+                // pipeline=D and the transfer buffer=N); we point at
+                // the loop because the depth value is what the link
+                // pass primarily complains about, mirroring the
+                // diagnostic text ("loop `V` has `pipeline=D` but ...").
+                // The transfer span is reachable via `tx.data_span` if
+                // a future task wants secondary highlighting.
+                errors.push(LinkError::maybe_at(
+                    LinkErrorKind::PipelineExceedsBuffer {
+                        loop_var: loop_dir.var.clone(),
+                        data: data_name.clone(),
+                        depth,
+                        buffer,
+                    },
+                    loop_dir.var_span.clone(),
+                    LinkErrorSource::Schedule,
+                ));
             }
         }
     }
