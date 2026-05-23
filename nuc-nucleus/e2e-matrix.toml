@@ -857,16 +857,15 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-# 02-split-add/split × mp-tcp-event: SKIPPED until Stage 3 of
-# TASK-0042.02 lands the multi-worker codegen. Distinct from
-# mp-tcp-bufsync/pthreads-async, which BOTH run this 2-worker sync
-# schedule today; mp-tcp-event will too once the mio reactor + ring
-# buffer arm is implemented.
-[[skip]]
+# 02-split-add/split × mp-tcp-event: TASK-0042.05 (Stage 3 of
+# TASK-0042.02) landed cycle 79 — multi-worker codegen with mio
+# reactor + per-(seq, peer) outbound queue + per-seq inbound queue
+# over TCP loopback. This 2-worker sync schedule runs bit-identical
+# against reference.bin (verified cycle 79).
+[[required]]
 example  = "02-split-add"
 schedule = "split"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. Single-worker schedules on mp-tcp-event ARE wired (see [[required]] cells above) and byte-identical to mp-tcp-bufsync (same multi-process layout family — shared renderer); the arithmetic body is byte-identical to all three shipped tier-1 backends."
 milestone = "M3"
 
 [[required]]
@@ -879,7 +878,7 @@ milestone = "M3"
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. Single-worker schedules on mp-tcp-event ARE wired (see [[required]] cells above) and byte-identical to mp-tcp-bufsync (same multi-process layout family — shared renderer); the arithmetic body is byte-identical to all three shipped tier-1 backends."
+reason   = "TASK-0175 (worker-to-worker mesh): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Same transport limitation mp-tcp-bufsync has. TASK-0042.05 (Stage 3 of TASK-0042.02) — the mio reactor + per-(seq,peer) outbound queue — LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175."
 milestone = "M3"
 
 [[required]]
@@ -916,7 +915,7 @@ milestone = "M3"
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. Single-worker schedules on mp-tcp-event ARE wired (see [[required]] cells above) and byte-identical to mp-tcp-bufsync (same multi-process layout family — shared renderer); the arithmetic body is byte-identical to all three shipped tier-1 backends."
+reason   = "TASK-0181 (multi-worker strip-mine rebinding): the `distributed` schedule's Event::Loop for the per-worker iter var carries a block_tag whose source-pair (Wait without matching Push) the mp-tcp-event Plan::build catches as malformed projection. Same blocker pthreads-async hits on this cell. TASK-0042.05 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap."
 milestone = "M3"
 
 [[required]]
@@ -949,16 +948,23 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-# 09/pipelined × mp-tcp-event: SAME schedule (async + buffer=4 +
-# notify=event) that pthreads-async carries. mp-tcp-event's
-# capabilities.toml satisfies the surface, but Stage 3 (mio + ring
-# buffer codegen) is the gate. Will become [[required]] when Stage 3
-# lands (this is the M4 headline pipelined cell over TCP loopback).
+# 09/pipelined × mp-tcp-event: BLOCKED by TASK-0175 (worker-to-worker
+# mesh). The producer/consumer pair on this schedule (workers 0 and
+# 2, both non-host) need a barrier between them excluding host, AND
+# the cross-worker `stream` transfer is producer->consumer
+# (worker-to-worker, not host-mediated). mp-tcp-event's one-(DATA,
+# CTRL)-pair-per-(host,worker) star topology cannot lower either.
+# Same blocker mp-tcp-bufsync's `13/batch_parallel` once hit before
+# TASK-0117 closed the host-mediated gather direction; the
+# fundamental worker-to-worker channel is still missing. TASK-0042.05
+# Stage 3 LANDED cycle 79 (mio reactor + ring buffer codegen); this
+# cell now reaches Plan::build then correctly fail-loud with a typed
+# ContractGap forward-linking TASK-0175.
 [[skip]]
 example  = "09-producer-consumer"
 schedule = "pipelined"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. mp-tcp-event's capability surface satisfies async + buffer=4 + notify=event, so this cell will become [[required]] when Stage 3 lands — same M4 headline shape as the pthreads-async required cell above."
+reason   = "TASK-0175 (worker-to-worker mesh): the pipelined producer/consumer pair (workers 0 and 2, both non-host) need a barrier between them excluding host, AND the cross-worker `stream` transfer is worker-to-worker. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower either. Same transport limitation mp-tcp-bufsync has on similar cells. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175."
 milestone = "M4"
 
 [[required]]
@@ -967,11 +973,17 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-[[skip]]
+# 11/pipelined × mp-tcp-event: TASK-0042.05 (Stage 3) landed cycle 79.
+# Verified bit-identical against reference.bin sha256
+# f2c2069c773a5cfe7242d3f406ee210dbc9cfd0482f83d8982b18e116ff01a52
+# (AC#3 of TASK-0042.05). The mio reactor + per-(seq, peer) outbound
+# queue + per-seq inbound queue lower the async/buffered M4
+# pipelined surface over TCP loopback bit-identical to the
+# pthreads-async (shared-memory) column.
+[[required]]
 example  = "11-game-of-life"
 schedule = "pipelined"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. mp-tcp-event's capability surface satisfies async + buffer=2 + notify=event, so this cell will become [[required]] when Stage 3 lands — same M4 headline shape as the pthreads-async required cell above."
 milestone = "M4"
 
 [[required]]
@@ -980,23 +992,39 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-[[skip]]
+# 13/batch_parallel × mp-tcp-event: TASK-0042.05 (Stage 3) landed
+# cycle 79. Verified bit-identical against reference.bin sha256
+# d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
+# (same oracle 13/pipeline_parallel uses — same example, different
+# schedule). Four-way bit-identical differential against
+# pthreads-sync, pthreads-async, mp-tcp-bufsync columns of THIS
+# schedule.
+[[required]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. Single-worker schedules on mp-tcp-event ARE wired (see [[required]] cells above) and byte-identical to mp-tcp-bufsync (same multi-process layout family — shared renderer); the arithmetic body is byte-identical to all three shipped tier-1 backends."
 milestone = "M3"
 
-# 13/pipeline_parallel × mp-tcp-event: THE M4 headline that
-# TASK-0042.02 AC#4 names (mp-tcp-event × pipelined bit-identical).
-# Will become [[required]] when Stage 3 (mio + ring buffer codegen)
-# lands; today returns ContractGap. Same shape as the existing
-# pthreads-async required cell above — the four-way bit-identical
-# differential against reference.bin will hold once codegen lands.
+# 13/pipeline_parallel × mp-tcp-event: BLOCKED by TASK-0175
+# (worker-to-worker mesh). The pipeline_parallel schedule places
+# `conv_block_1`, `conv_block_2`, `classifier` on three distinct
+# non-host workers, with barriers among them excluding host. The
+# mp-tcp-event one-(DATA,CTRL)-pair-per-(host,worker) star topology
+# cannot lower a host-excluding barrier (the same TASK-0175
+# transport limitation mp-tcp-bufsync has). Codegen reaches
+# Plan::build then correctly fail-loud with a typed ContractGap
+# forward-linking TASK-0175. The capability surface IS satisfiable
+# (async + buffer=3 + notify=event); only the topology gates.
+# This is the AC#4 cell of TASK-0042.05; resolution requires
+# TASK-0175 (worker-to-worker channel mesh) to land first. The
+# four-way bit-identical differential against reference.bin sha256
+# d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
+# is therefore CARRIED as [[skip]]-with-blocker, not as a regression
+# of TASK-0042.05.
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-event"
-reason   = "TASK-0042.02 Stage 3: mp-tcp-event multi-worker codegen (mio reactor + per-(src,dst) ring buffer over TCP loopback) is not yet implemented. The Stages 1+2 emit returns ContractGap on used_workers >= 2. mp-tcp-event's capability surface satisfies async + buffer=3 + notify=event, so this cell will become [[required]] when Stage 3 lands — same M4 headline shape as the pthreads-async required cell above. This is the AC#4 cell of TASK-0042.02."
+reason   = "TASK-0175 (worker-to-worker mesh): pipeline_parallel places conv_block_1/conv_block_2/classifier on three distinct non-host workers with barriers excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175. AC#4 of TASK-0042.05 is blocked on TASK-0175 — same blocker mp-tcp-bufsync has on this and similar w-only barriers."
 milestone = "M3"
 

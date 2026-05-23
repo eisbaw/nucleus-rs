@@ -14,21 +14,17 @@
 # (async + buffered + notify=event) but over the multi-process TCP
 # loopback transport instead of shared memory.
 #
-# ## Current status: SKELETON (Stages 1+2, TASK-0042.02 cycle 41).
+# ## Current status: LANDED Stages 1+2+3 (TASK-0042.05 cycle 79).
 #
-# The crate, capabilities.toml, public `emit(...)` entry point,
-# workspace registration, and driver dispatch arm are wired. The 0/1
-# used-worker arm DELEGATES to pthreads_sync::render_single_worker_main
-# + the shared `backend_common::project_skeleton::single_binary`
-# renderers, so the emitted artefact is byte-identical to pthreads-sync's
-# (and to mp-tcp-bufsync's / pthreads-async's) single-worker output —
-# the cross-backend bit-identical differential holds on this path by
-# construction.
-#
-# The MULTI-worker arm is the deferred head: codegen with a mio reactor
-# multiplexing inbound transfers + per-(src,dst) outbound ring buffer.
-# `emit()` returns `EmitError::ContractGap` with a precise forward-link
-# on the multi-worker path until that lands.
+# Stages 1+2 (skeleton + single-worker delegation): TASK-0042.02
+# cycle 41. The 0/1 used-worker arm DELEGATES to
+# `pthreads_sync::render_single_worker_main`, so the emitted artefact
+# is byte-identical to pthreads-sync's / mp-tcp-bufsync's /
+# pthreads-async's single-worker output. Stage 3 (multi-worker mio
+# reactor + per-(seq, peer) outbound queue + per-seq inbound queue):
+# TASK-0042.05 cycle 79; verified bit-identical against reference.bin
+# on 3 cells. AC#2/AC#4 of TASK-0042.05 (09/pipelined,
+# 13/pipeline_parallel) blocked on TASK-0175 (worker-to-worker mesh).
 
 [package]
 name = "mp-tcp-event"
@@ -48,10 +44,10 @@ path = "src/lib.rs"
 nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives: RenderCtx, the expression/index/kernel-call/
 # loop-bound/type renderers, the check_frame emit templates, and the
-# multi-worker event walker (TASK-0244 / TASK-0239 / TASK-0246). When
-# multi-worker codegen lands, the walker will parameterise with
-# `rendezvous_prefix = "chan"` (cf. pthreads-async's `"ring"`,
-# pthreads-sync's `"slot"`).
+# multi-worker event walker (TASK-0244 / TASK-0239 / TASK-0246). The
+# walker is parameterised with `rendezvous_prefix = "chan"` (cf.
+# pthreads-async's `"ring"`, pthreads-sync's `"slot"`); see
+# multi_worker.rs.
 backend-common = { path = "../../backend-common" }
 # pthreads-sync provides `render_single_worker_main` — the straight-
 # line single-worker main.rs emitter. mp-tcp-event DELEGATES to it for
@@ -68,7 +64,7 @@ pthreads-sync = { path = "../pthreads-sync" }
 mp-tcp-common = { path = "../../mp-tcp-common" }
 
 [dev-dependencies]
-# Shared lower-link-inject pipeline boilerplate (TASK-0237) — when
-# multi-worker tests are added (Stage 3+), they will route through
+# Shared lower-link-inject pipeline boilerplate (TASK-0237) — the
+# multi-worker emit tests (tests/multi_worker_emit.rs) route through
 # this for the fixture build-up step.
 test-common = { path = "../../test-common" }

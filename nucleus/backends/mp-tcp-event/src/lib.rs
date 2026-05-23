@@ -16,93 +16,103 @@
 //! beyond the inert `IrExpr` / `ResolvedType` grammar the EventList
 //! carries.
 //!
-//! ## Implementation status (TASK-0042.02 cycle 41 — Stages 1+2)
+//! ## Implementation status (TASK-0042.05 cycle 79 — Stages 1+2+3 LANDED)
 //!
-//! - **Single-worker arm** (`used_workers.len() <= 1`): IMPLEMENTED.
-//!   Delegates to `pthreads_sync::render_single_worker_main` so the
-//!   emitted arithmetic is byte-identical to pthreads-sync's (and to
+//! - **Single-worker arm** (`used_workers.len() <= 1`): IMPLEMENTED
+//!   (TASK-0042.02 Stages 1+2 cycle 41). Delegates to
+//!   `pthreads_sync::render_single_worker_main` so the emitted
+//!   arithmetic is byte-identical to pthreads-sync's (and to
 //!   pthreads-async's / mp-tcp-bufsync's) single-worker output.
-//!   Project skeleton mirrors mp-tcp-bufsync's `src/bin/<name>.rs`
-//!   layout because the multi-worker arm (Stage 3) will also use it
-//!   — that keeps `EmitResult::worker_bins` semantically uniform
-//!   across both mp-tcp-* backends. The wire.rs sidecar file is
-//!   emitted byte-identical to mp_tcp_common::WIRE_RUNTIME_SRC (same
-//!   single-source-of-truth precedent as mp-tcp-bufsync) so the
-//!   multi-worker arm landing later does not have to re-touch the
-//!   single-worker artefact.
+//!   Project skeleton uses the multi-process `src/bin/<name>.rs`
+//!   layout so the `EmitResult::worker_bins` shape stays uniform
+//!   with the multi-worker arm. The wire.rs sidecar file is
+//!   byte-identical to `mp_tcp_common::WIRE_RUNTIME_SRC`.
 //!
-//! - **Multi-worker arm** (`used_workers.len() >= 2`): NOT YET
-//!   IMPLEMENTED. Returns [`EmitError::ContractGap`] with a precise
-//!   forward-link to TASK-0042.05 (Stage 3 of TASK-0042.02). The blocker is the mio
-//!   reactor + per-(src,dst) ring-buffer codegen — the bulk of the
-//!   work. Single-worker e2e cells in this cycle exercise the Stage
-//!   1+2 surface (driver dispatch + capability-compat + delegated
-//!   single-worker emit). Multi-worker e2e cells (09/pipelined,
-//!   11/pipelined, 13/pipeline_parallel × mp-tcp-event) wait on
-//!   Stage 3.
+//! - **Multi-worker arm** (`used_workers.len() >= 2`): IMPLEMENTED
+//!   (TASK-0042.05 / Stage 3 cycle 79). Emits one
+//!   `src/bin/<wname>.rs` per used worker plus a shared
+//!   `src/runtime.rs` (the mio reactor + `Chan<T>`; verbatim from
+//!   [`RUNTIME_SRC`] — same single-source-of-truth precedent as
+//!   `mp_tcp_common::WIRE_RUNTIME_SRC`). The shared event-walker
+//!   [`backend_common::multi_worker_walker::render_worker_events`]
+//!   drives Push/Wait/Loop/Fire with `rendezvous_prefix = "chan"`;
+//!   barriers go through a per-worker `Bar<bid>` shim on the
+//!   synchronous CTRL channel (`wire::barrier_cross`, same as
+//!   mp-tcp-bufsync). The rendezvous-file handshake (TASK-0176)
+//!   replaces the deleted close-then-rebind `__nuc_pick_port` helper.
 //!
-//! ## Why split single-worker vs multi-worker into separate cycles
+//! ## Topology + runtime substrate (cycle-79 LANDED)
 //!
-//! Single-worker mp-tcp-event has NO cross-worker Push/Wait events
-//! (the shared single-worker emitter `ContractGap`s on either; same
-//! pattern inherited via delegation). The mio reactor + ring buffer
-//! only fires across two or more workers. Splitting the single-worker
-//! arm off as Stages 1+2 keeps it a mechanical-delegation unit and
-//! quarantines the multi-cycle mio + ring-buffer headline work under
-//! Stage 3 — the EXACT discipline pthreads-async followed in cycle
-//! 16 (TASK-0226 single-worker) vs cycle 26 (TASK-0228 multi-worker).
+//! 1. **Two sockets per (host, worker) pair**: DATA (mio-managed,
+//!    non-blocking) for Push/Wait; CTRL (`std::net::TcpStream`,
+//!    blocking) for barriers. Mirrors mp-tcp-bufsync's DATA+CTRL
+//!    split — both backends need it because producer/consumer
+//!    barrier-vs-data ordering can differ on each side of a
+//!    `(host,worker)` pair, and a single FIFO would corrupt frame
+//!    demuxing. mp-tcp-event additionally demultiplexes DATA by
+//!    `seq` (per-seq inbound queue), not by arrival order; the CTRL
+//!    channel keeps its own ordered semantics.
 //!
-//! ## Forward-carried context for Stage 3 (multi-worker)
+//! 2. **Per-(seq, peer) outbound queues** sized from
+//!    `sidecar.transfer_buffer_for_seq[seq]` (TASK-0233 contract).
+//!    `Chan<T>::push(v)` enqueues then opportunistically drains
+//!    non-blockingly (so producer can move on without parking the
+//!    consumer); blocks on the back-pressure point when
+//!    `queue.len() >= cap`. The reactor's `pump_once` services
+//!    READABLE + WRITABLE readiness via `mio::Poll`.
 //!
-//! 1. **Topology**: one TCP connection per `(host, worker)` ordered
-//!    pair, same as mp-tcp-bufsync; the reactor multiplexes inbound
-//!    readiness on EVERY socket via epoll (mio's `Poll` + `Events`).
-//!    Outbound writes go through a per-pair `VecDeque<Vec<u8>>` ring
-//!    buffer drained on writable readiness.
-//! 2. **Ring buffer contract** (post-TASK-0213): one
-//!    `BoundedFrameRing` per `(DataId, SeqTag, src_worker,
-//!    dst_worker)` tuple. Capacity = `transfer DATA : buffer=N`.
-//!    Ring STARTS EMPTY (D is the analysis-only sizing invariant,
-//!    NOT a runtime pre-fill).
-//! 3. **Reuse the shared walker**: the multi-worker codegen body
-//!    will route through `backend_common::multi_worker_walker::
-//!    render_worker_events` with `rendezvous_prefix = "chan"` (or a
-//!    chosen alternative — `"ring"` would collide with pthreads-
-//!    async if the emitted Rust binaries are ever side-by-side
-//!    diff'd, hence the distinct prefix). Same SHARED check_frame
-//!    instrumentation as the other tier-1 backends.
-//! 4. **Wire codec**: copy `mp_tcp_common::WIRE_RUNTIME_SRC`
-//!    verbatim, as mp-tcp-bufsync does. The wire FORMAT is the same
-//!    across the two mp-tcp-* backends; only the reactor that pumps
-//!    it differs.
-//! 5. **mio dependency** (Stage 3): `mio = "0.8"` is the one
-//!    well-known crate allowance per PRD §12 ("one well-known crate"
-//!    rule). Pure epoll-readiness multiplexer, no async runtime, no
-//!    tokio, no futures. The honest limitation note belongs in the
-//!    Stage-3 PR: mio polling adds per-Push/Wait reactor-trip
-//!    overhead (~µs) above raw TCP send/recv; mp-tcp-bufsync's
-//!    blocking sync path has lower latency but cannot satisfy the
-//!    async/buffered capability surface.
+//! 3. **Per-seq inbound queues**. The reactor reads framed messages
+//!    on every peer DATA socket and routes by `seq` into
+//!    `inbound[seq]`; `Chan<T>::wait()` blocks polling until the
+//!    matching queue has at least one element. Two Pushes from
+//!    different peers cannot collide on the same `seq` because
+//!    `(DataId, SeqTag)` uniquely identifies one Push/Wait pair.
+//!
+//! 4. **Host-mediated barrier topology** (TASK-0175 limit): same as
+//!    mp-tcp-bufsync. Every barrier must include the host worker
+//!    because there is only one CTRL stream per `(host, worker)`
+//!    pair; a worker-to-worker barrier needs a w↔w mesh that the
+//!    star topology lacks. Fail-loud with a typed `ContractGap`
+//!    forward-linking TASK-0175 — never a wrong binary.
+//!
+//! ## mio dependency
+//!
+//! The emitted Cargo.toml declares `mio = { version = "0.8",
+//! default-features = false, features = ["os-poll", "net"] }` —
+//! the PRD §12 "one well-known crate" allowance. Pure
+//! epoll-readiness multiplexer, no async runtime, no tokio, no
+//! futures.
 //!
 //! ## Honest limitations
 //!
-//! - Multi-worker codegen is `ContractGap` (Stage 3). Until Stage 3
-//!   lands, the *only* schedules this backend runs end-to-end are
-//!   those whose used-worker count is 0 or 1 — which is already
-//!   covered by the three shipped tier-1 backends. Single-worker
-//!   mp-tcp-event is therefore a *capability-check gateway*
-//!   (capability surface satisfiable) more than a new runtime
-//!   transport — the real value lands when Stage 3 ships the
-//!   mio + ring-buffer multi-worker arm and Stage 4 wires
-//!   09/pipelined, 11/pipelined, 13/pipeline_parallel ×
-//!   mp-tcp-event into e2e-matrix.toml.
-//!
-//! - The `transport = "tcp"` capability differs from pthreads-async's
-//!   `"shared-memory"`, so a schedule whose capability surface (via
-//!   docs/capabilities-toml.md) is satisfied by pthreads-async is
-//!   ALSO satisfied by mp-tcp-event once Stage 3 lands. The two are
-//!   independent columns of the differential matrix on the same
+//! - **mio reactor-trip overhead**: every Push/Wait that crosses
+//!   the reactor incurs a `poll()` round-trip when the socket would
+//!   block. On loopback for steady-state pipelines (small frames,
+//!   kernel accepts immediately) this is negligible; under
+//!   back-pressure it adds ~µs per blocked push. mp-tcp-bufsync's
+//!   blocking-sync path has lower latency on the contended case but
+//!   cannot satisfy the async/buffered capability surface — these
+//!   two backends are the trade-off column for TCP-transport
 //!   pipelined schedules.
+//!
+//! - **Worker-to-worker channel**: cycle-79 still leaves
+//!   `mp-tcp-event` constrained to the host-mediated star topology
+//!   for both DATA and CTRL. Schedules with worker-to-worker Push
+//!   pairs OR host-excluding barriers fail-loud with a
+//!   `ContractGap` naming TASK-0175. AC#2 (09/pipelined) and AC#4
+//!   (13/pipeline_parallel) of TASK-0042.05 are therefore blocked
+//!   on TASK-0175, not a regression of this cycle — same blocker
+//!   mp-tcp-bufsync has on the same w↔w surface.
+//!
+//! - **Determinism boundary**: the wire frame ORDER per pair is
+//!   schedule-determined (the projection emits Pushes in event-list
+//!   order, and the reactor enqueues + drains in BTreeMap-sorted
+//!   `(seq, peer)` order). Cross-pair interleaving on a single peer
+//!   socket is determined by ascending `seq` for any one drain
+//!   sweep — deterministic by construction; the loopback kernel
+//!   does not reorder TCP bytes. Verified bit-identical against
+//!   reference.bin on 3 cells cycle 79 (02-split-add/split,
+//!   11-game-of-life/pipelined, 13-cnn-inference/batch_parallel).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -128,6 +138,22 @@ use nucleus_compiler::sidecar::NameSidecar;
 // `backend_common::project_skeleton`, but the straight-line emitter
 // is genuinely pthreads-sync-owned.
 use pthreads_sync::render_single_worker_main;
+
+// Multi-worker codegen (TASK-0042.05). The mio reactor + per-(seq,
+// peer) outbound queue + per-seq inbound queue substrate lives in
+// `runtime_src.rs` as a SINGLE SOURCE OF TRUTH (same precedent as
+// `mp_tcp_common::WIRE_RUNTIME_SRC` — one file the compile-time tests
+// of THIS crate compile, AND the generated project includes verbatim
+// as `src/runtime.rs`). The Plan + per-worker emitter live in
+// `multi_worker.rs`.
+mod multi_worker;
+use multi_worker::Plan;
+
+/// The mp-tcp-event runtime: mio reactor + per-(seq, peer) outbound
+/// queue + per-seq inbound queue. Emitted verbatim into every
+/// generated multi-process project as `src/runtime.rs`. Same single-
+/// source-of-truth pattern as `mp_tcp_common::WIRE_RUNTIME_SRC`.
+pub const RUNTIME_SRC: &str = include_str!("runtime_src.rs");
 
 // --------------------------------------------------------------------
 // Public surface
@@ -155,12 +181,12 @@ pub struct EmitResult {
     pub cargo_toml: PathBuf,
     /// Per-worker `src/bin/<worker>.rs` paths. Single-worker emit:
     /// exactly one entry (`nuc-generated.rs`). Multi-worker emit
-    /// (Stage 3, not yet landed — TASK-0042.05): one entry per used
-    /// worker. The handshake will use the rendezvous-file pattern
-    /// landed by TASK-0176 in mp-tcp-bufsync (host binds 127.0.0.1:0
-    /// itself + writes the port to `$NUC_RENDEZVOUS_DIR/<w>.port`;
-    /// non-host worker polls + reads + connects) — do NOT reintroduce
-    /// the close-then-rebind `__nuc_pick_port` helper.
+    /// (TASK-0042.05 cycle 79, LANDED): one entry per used worker.
+    /// The handshake uses the rendezvous-file pattern landed by
+    /// TASK-0176 in mp-tcp-bufsync (host binds 127.0.0.1:0 itself +
+    /// writes the port to `$NUC_RENDEZVOUS_DIR/<w>.port`; non-host
+    /// worker polls + reads + connects) — never reintroduce the
+    /// close-then-rebind `__nuc_pick_port` helper.
     pub worker_bins: Vec<PathBuf>,
     /// Path to the emitted `src/kernels.rs`.
     pub kernels_rs: PathBuf,
@@ -170,6 +196,12 @@ pub struct EmitResult {
     /// single-worker artefact; the single-worker binary does not
     /// reference it.
     pub wire_rs: PathBuf,
+    /// Path to the emitted `src/runtime.rs` (the mio reactor + ring
+    /// buffer + chan substrate). Only present on the multi-worker
+    /// emit path (TASK-0042.05); single-worker emit skips this file
+    /// because the delegated single-worker renderer has no
+    /// cross-worker Push/Wait.
+    pub runtime_rs: Option<PathBuf>,
     /// Path to the emitted `run.sh`.
     pub run_sh: PathBuf,
 }
@@ -187,11 +219,18 @@ pub struct EmitResult {
 ///   `pthreads_sync::render_single_worker_main` so the emitted
 ///   arithmetic is byte-identical to pthreads-sync's. Project skeleton
 ///   uses the mp-tcp-bufsync-style `src/bin/nuc-generated.rs` layout
-///   (so the result shape is uniform with the Stage-3 multi-worker
-///   arm).
-/// - `used_workers >= 2` -> MULTI-WORKER. Returns
-///   [`EmitError::ContractGap`] pointing at TASK-0042.05 (Stage 3 of TASK-0042.02)
-///   (the mio reactor + per-(src,dst) ring-buffer codegen).
+///   so the result shape is uniform with the multi-worker arm.
+/// - `used_workers >= 2` -> MULTI-WORKER (TASK-0042.05 / Stage 3
+///   landed cycle 79). Emits one `src/bin/<wname>.rs` per used
+///   worker + shared `src/runtime.rs` (mio reactor + `Chan<T>`,
+///   verbatim from [`RUNTIME_SRC`]) + `src/wire.rs` + run.sh. Push
+///   sites lower to `chan_<rid>.push(name.clone())`, Wait sites to
+///   `chan_<rid>.wait()`, barriers via per-worker `Bar<bid>` shims
+///   over the synchronous CTRL channel. Returns
+///   [`EmitError::ContractGap`] only when the schedule needs a
+///   worker-to-worker channel (host-excluding barrier OR
+///   worker-to-worker Push) — same transport limit mp-tcp-bufsync
+///   has (filed as TASK-0175).
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -260,28 +299,47 @@ pub fn emit(
             worker_bins: vec![bin_path],
             kernels_rs,
             wire_rs,
+            runtime_rs: None,
             run_sh,
         });
     }
 
-    // Multi-worker arm (Stage 3, not yet landed). The capability-
-    // compat check has already verified the schedule's surface IS
-    // satisfiable by this backend (capabilities.toml declares
-    // supports_async + supports_buffer + notify=event); the runtime
-    // gap is in CODEGEN only — fail LOUD with a precise forward-link
-    // so a user targeting this backend with a multi-worker schedule
-    // sees a typed error, not a panic or a wrong binary.
-    Err(EmitError::ContractGap(format!(
-        "mp-tcp-event multi-worker codegen is not yet implemented \
-         (used_workers = {n}). The single-worker arm (used_workers <= 1) \
-         is functional and delegates to the shared single-worker \
-         renderer; the multi-worker arm (mio reactor + per-(src,dst) \
-         ring buffer over TCP loopback) is tracked under TASK-0042.05 \
-         (TASK-0042.05 (Stage 3 of TASK-0042.02)). Use pthreads-async for now if your \
-         schedule needs the async/buffered capability surface on \
-         >=2 workers.",
-        n = used_workers.len(),
-    )))
+    // ---- Multi-worker arm (TASK-0042.05). ----
+    //
+    // Emit the runtime substrate (mio reactor + Chan<T>) verbatim
+    // from `RUNTIME_SRC`, then one `src/bin/<wname>.rs` per used
+    // worker via the per-worker renderer in `multi_worker.rs`. The
+    // shared event walker drives Push/Wait/Loop/Fire; Sync goes
+    // through a barrier shim emitted per worker (CTRL-channel
+    // wire::barrier_cross, same as mp-tcp-bufsync).
+    let runtime_rs_path = src_dir.join("runtime.rs");
+    write_file(&runtime_rs_path, RUNTIME_SRC)?;
+
+    let plan = Plan::build(per_worker, names, sidecar)?;
+    let mut bin_names: Vec<String> = Vec::new();
+    let mut worker_bins: Vec<PathBuf> = Vec::new();
+    for w in &plan.used_workers {
+        let wname = plan.worker_name(*w);
+        let body = plan.render_worker_program(*w)?;
+        let bin_path = bin_dir.join(format!("{wname}.rs"));
+        write_file(&bin_path, &body)?;
+        bin_names.push(wname);
+        worker_bins.push(bin_path);
+    }
+
+    write_file(&cargo_toml, &multi_worker::render_cargo_toml(&bin_names))?;
+    write_file(&run_sh, &multi_worker::render_run_sh(&plan)?)?;
+    mark_executable(&run_sh);
+
+    Ok(EmitResult {
+        project_dir: out_dir.to_path_buf(),
+        cargo_toml,
+        worker_bins,
+        kernels_rs,
+        wire_rs,
+        runtime_rs: Some(runtime_rs_path),
+        run_sh,
+    })
 }
 
 // --------------------------------------------------------------------

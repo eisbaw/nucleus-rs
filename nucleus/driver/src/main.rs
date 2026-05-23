@@ -35,13 +35,15 @@
 //! `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
 //! TASK-0036), `pthreads-async` (M4, shared-memory + per-(DataId,
 //! SeqTag) ring buffer + Condvar — TASK-0042.01), and `mp-tcp-event`
-//! (M4, OS processes + TCP loopback + mio reactor + per-(src,dst) ring
-//! buffer — TASK-0042.02; Stages 1+2 only in cycle 41, multi-worker
-//! codegen Stage 3 returns ContractGap). All four consume the
-//! identical EventList contract; the cross-backend differential (same
-//! source -> bit-identical output.bin) is the M3 headline (two-way
-//! today) and the M4 headline (four-way once Stage 3 of TASK-0042.02
-//! lands the mp-tcp-event multi-worker codegen).
+//! (M4, OS processes + TCP loopback + mio reactor + per-(seq, peer)
+//! outbound queue + per-seq inbound queue — TASK-0042.05 / Stage 3
+//! of TASK-0042.02 landed cycle 79). All four consume the identical
+//! EventList contract; the cross-backend differential (same source
+//! -> bit-identical output.bin) is the M3 headline (four-way) and
+//! the M4 headline (three-way today; the AC#4 fourth column,
+//! 13/pipeline_parallel × mp-tcp-event, is blocked on TASK-0175
+//! (worker-to-worker mesh) — same transport limit mp-tcp-bufsync
+//! has on similar host-excluding-barrier cells).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -89,9 +91,7 @@ fn print_help() {
              pthreads-sync   shared-memory threads (tier 1)\n    \
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
-             mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n                     \
-                             (Stages 1+2 — multi-worker codegen Stage 3\n                     \
-                             of TASK-0042.02; ContractGap on >=2 workers)\n"
+             mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n"
     );
 }
 
@@ -466,20 +466,21 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
-        // Fourth tier-1 backend (TASK-0042.02): OS processes + TCP
-        // loopback + mio reactor + per-(src,dst) ring buffer. SYNC
-        // -> ASYNC upgrade of mp-tcp-bufsync (same shape as
-        // pthreads-async / pthreads-sync). Stages 1+2 in cycle 41 —
-        // 0/1-used-worker emit DELEGATES to the shared single-worker
-        // renderer (byte-identical to the three shipped tier-1
-        // backends); multi-worker emit returns ContractGap until
-        // Stage 3 lands the mio + ring-buffer codegen. The
-        // user-facing error from this arm carries the precise
-        // forward-link.
+        // Fourth tier-1 backend (TASK-0042.02 / TASK-0042.05): OS
+        // processes + TCP loopback + mio reactor + per-(seq, peer)
+        // outbound queue + per-seq inbound queue. SYNC -> ASYNC
+        // upgrade of mp-tcp-bufsync (same shape pthreads-async is to
+        // pthreads-sync). Stages 1+2 (skeleton + single-worker
+        // delegation) landed cycle 41; Stage 3 (multi-worker mio
+        // reactor + Chan<T>) landed cycle 79 — verified bit-identical
+        // against reference.bin on 3 cells. Host-excluding barriers /
+        // worker-to-worker Pushes still fail-loud with a typed
+        // ContractGap forward-linking TASK-0175 (same transport limit
+        // mp-tcp-bufsync has). The user-facing error from this arm
+        // carries the precise forward-link.
         "mp-tcp-event" => {
-            let result =
-                mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
-                    .map_err(|e| format!("mp-tcp-event codegen error: {e}"))?;
+            let result = mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                .map_err(|e| format!("mp-tcp-event codegen error: {e}"))?;
             println!("nucleus: ok");
             println!("project_dir = {}", result.project_dir.display());
             println!("cargo_toml  = {}", result.cargo_toml.display());
@@ -488,6 +489,9 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             }
             println!("kernels_rs  = {}", result.kernels_rs.display());
             println!("wire_rs     = {}", result.wire_rs.display());
+            if let Some(r) = &result.runtime_rs {
+                println!("runtime_rs  = {}", r.display());
+            }
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
