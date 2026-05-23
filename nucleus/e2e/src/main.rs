@@ -2177,6 +2177,108 @@ fn maybe_corrupt_wire_for_xbackend(tree: &std::path::Path) -> Result<bool, Strin
     Ok(true)
 }
 
+/// Sentinel schedule name used by `maybe_inject_required_coverage_negative`.
+/// MUST NOT match any real `examples/<example>/schedules/<schedule>.sched.nuc`
+/// file — its purpose is to be unfindable by `plan_cells`, so the synthetic
+/// `[[required]]` entry below cannot be planned and therefore appears as a
+/// gap from `required_coverage_gaps`. Used to attribute gaps to THIS injection
+/// (and not to any unrelated gap that might appear for other reasons) when
+/// computing `NUC_REQUIRED_COVERAGE_GAP_DETECTED` in `run_inner`.
+///
+/// Renaming this constant is a contract change: justfile's
+/// `required-coverage-check-negative` recipe parses the harness output by the
+/// stdout key, not by this string, but `run_inner`'s attribution filter does
+/// compare against this exact value — keep the two in lockstep.
+const REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE: &str = "__nuc_typo_negative_schedule__";
+
+/// Negative-gate hook for `required-coverage-check-negative` (TASK-0168).
+/// Sibling of `maybe_perturb_for_nondet_test` (NUC_NONDET_TEST) and
+/// `maybe_corrupt_wire_for_xbackend` (NUC_XBACKEND_NEGATIVE); identical
+/// discipline.
+///
+/// When `NUC_REQUIRED_COVERAGE_NEGATIVE=1`, append a single synthetic
+/// `[[required]]` entry to the in-memory `Manifest` whose `schedule` is the
+/// `REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE` sentinel — a name that
+/// cannot match any discovered `*.sched.nuc` file. The synthetic entry's
+/// `example`, `backend`, and `milestone` are taken from `manifest.required[0]`
+/// (the first real required entry) so:
+///   * `example` is in `runnable_examples` (otherwise `plan_cells` would not
+///     iterate over it and the cell would silently leave the coverage scope),
+///   * `backend` is in `manifest.backends` (same reasoning),
+///   * `milestone` lies in any `--milestone` band that includes at least one
+///     real required cell (bare `just e2e` has no milestone filter, so any
+///     value is fine; the recipe runs without `--milestone`, but mirroring an
+///     existing entry keeps the injection robust against future CI matrices).
+///
+/// Fallback (no real `[[required]]` entries in the manifest): pick
+/// `runnable_examples[0]`, `backends[0]`, milestone "M1". This is purely
+/// defensive — today's `e2e-matrix.toml` has 18+ required entries — but it
+/// avoids a NEW failure mode (panic / Err) on an exotic manifest. If the
+/// manifest is truly degenerate (no examples OR no backends), Err loud
+/// rather than silently no-op.
+///
+/// CRITICAL — does NOT mutate existing entries. AC#2 of TASK-0168 demands
+/// "no committed broken manifest"; appending one synthetic entry at
+/// runtime, after the on-disk file has been parsed, satisfies that contract
+/// exactly the way `maybe_perturb_for_nondet_test` and
+/// `maybe_corrupt_wire_for_xbackend` do for their respective gates (the env
+/// flag is the perturbation seam; the on-disk artefact stays clean).
+///
+/// Returns `Ok(true)` if the manifest was actually mutated, `Ok(false)` if
+/// the env gate was unset/other (a strict no-op — the function does not
+/// read or touch the manifest, keeping bare `just e2e` byte-for-byte
+/// unaffected), `Err` if the gate was set but the manifest is too degenerate
+/// to inject into. Deterministic by construction: same input manifest plus
+/// same env state = identical injection (no clock/PID/RNG).
+fn maybe_inject_required_coverage_negative(manifest: &mut Manifest) -> Result<bool, String> {
+    if std::env::var("NUC_REQUIRED_COVERAGE_NEGATIVE").as_deref() != Ok("1") {
+        return Ok(false);
+    }
+    eprintln!(
+        "nucleus-e2e: WARNING: NUC_REQUIRED_COVERAGE_NEGATIVE=1 — injecting a \
+         synthetic [[required]] entry with a non-existent schedule \
+         (`{REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE}`) into the in-memory \
+         manifest ON PURPOSE to test the TASK-0163 required-coverage guard. \
+         This run is NOT a real build and is expected to exit non-zero. Never \
+         set this in a real build (TASK-0168)."
+    );
+
+    // Pick (example, backend, milestone) from the first real required entry
+    // so the synthetic cell survives `cell_matches_filters` and the active
+    // milestone gate. Fallback path is only relevant on a degenerate manifest
+    // — see docstring.
+    let (example, backend, milestone) = if let Some(first) = manifest.required.first() {
+        (
+            first.example.clone(),
+            first.backend.clone(),
+            first.milestone.clone(),
+        )
+    } else {
+        let example = manifest.runnable_examples.first().cloned().ok_or_else(|| {
+            "NUC_REQUIRED_COVERAGE_NEGATIVE=1 but manifest has no \
+             runnable_examples to anchor a synthetic required entry against \
+             (degenerate manifest)"
+                .to_string()
+        })?;
+        let backend = manifest.backends.first().cloned().ok_or_else(|| {
+            "NUC_REQUIRED_COVERAGE_NEGATIVE=1 but manifest has no \
+             backends to anchor a synthetic required entry against \
+             (degenerate manifest)"
+                .to_string()
+        })?;
+        (example, backend, "M1".to_string())
+    };
+
+    manifest.required.push(RequiredEntry {
+        example,
+        schedule: REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE.to_string(),
+        backend,
+        milestone,
+        perf_threshold_pct: None,
+    });
+    Ok(true)
+}
+
 /// Invoke `nucleus build` for one cell into `out_dir`. Returns Err
 /// with a short tail of the compiler's stderr on failure.
 fn run_nucleus_build(
@@ -4093,8 +4195,20 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
             paths.manifest_path().display()
         )
     })?;
-    let manifest: Manifest =
+    let mut manifest: Manifest =
         toml::from_str(&manifest_src).map_err(|e| format!("manifest parse error: {e}"))?;
+
+    // TASK-0168 negative-gate injection seam. Strict no-op unless
+    // NUC_REQUIRED_COVERAGE_NEGATIVE=1; under the gate, appends a single
+    // synthetic [[required]] entry whose schedule cannot match any
+    // discovered *.sched.nuc file, so the downstream `required_coverage_gaps`
+    // call BELOW produces a gap — exactly the silent-vanish failure mode
+    // TASK-0163 closed for the wired path. Placed AFTER parse and BEFORE
+    // `plan_cells` / `required_coverage_gaps`, mirroring the
+    // `maybe_perturb_for_nondet_test` / `maybe_corrupt_wire_for_xbackend`
+    // discipline (the env flag is the seam; the on-disk manifest stays
+    // clean). Sibling of those two functions in this file.
+    let required_coverage_injected = maybe_inject_required_coverage_negative(&mut manifest)?;
 
     if let Some(m) = &args.milestone {
         // PRD §11 milestone gate, now genuine (TASK-0167): the
@@ -4122,6 +4236,69 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // gate runs in both run-mode and determinism-mode because both
     // trust the required matrix.
     let gaps = required_coverage_gaps(&manifest, &planned, &args)?;
+
+    // TASK-0168 — EXPLICIT MACHINE-CHECKABLE SIGNAL for the negative arm.
+    //
+    // Stable key (do not rename without updating justfile's
+    // `required-coverage-check-negative` recipe):
+    //
+    //     NUC_REQUIRED_COVERAGE_GAP_DETECTED=<n>
+    //
+    // n = number of coverage gaps whose schedule equals the synthetic
+    // sentinel `REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE`. The
+    // attribution filter is precise on purpose: an unrelated coverage
+    // gap caused by some other manifest mistake must NOT satisfy this
+    // signal, otherwise the recipe would print OK off a different bug
+    // and the falsifier-bit would be a false positive — the exact
+    // partial-silent-neuter lesson TASK-0187 captured for
+    // determinism-check-negative.
+    //
+    // Emitted on STDOUT (println!, not eprintln!) so it is a parseable
+    // RESULT line; human-facing diagnostics stay on stderr. Printed
+    // UNCONDITIONALLY under the gate (n==0 in the zero-injection arm
+    // below, n>=1 in the genuine-bite arm) so the recipe can always
+    // find the line and assert n>=1.
+    //
+    // Mirrors `NUC_NONDET_PERTURBED_CELLS=<n>` (justfile:78) and
+    // `NUC_XBACKEND_CORRUPTED_DETECTED=<n>` (justfile:101) — same
+    // belt-and-suspenders contract (TASK-0188): if a future refactor
+    // drops the `if !gaps.is_empty() { return Err }` wiring below, the
+    // recipe's exit-code inversion alone is no longer load-bearing —
+    // the count assertion still fails loud.
+    //
+    // Gated on NUC_REQUIRED_COVERAGE_NEGATIVE=1: it does NOT appear
+    // under bare `just e2e`, so that path stays byte-identical /
+    // unaffected.
+    if required_coverage_injected {
+        let attributed = gaps
+            .iter()
+            .filter(|c| c.schedule == REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE)
+            .count();
+        println!("NUC_REQUIRED_COVERAGE_GAP_DETECTED={attributed}");
+
+        if attributed == 0 {
+            eprintln!(
+                "nucleus-e2e: FATAL: NUC_REQUIRED_COVERAGE_NEGATIVE=1 but ZERO \
+                 injection-attributable coverage gaps were detected — the \
+                 required-coverage falsifier did not bite. Forcing a CLEAN \
+                 exit so `required-coverage-check-negative` reports its loud \
+                 FAIL (the gate did NOT detect the synthetic typo) instead \
+                 of inverting a no-op into a false OK (TASK-0168 mirroring \
+                 TASK-0187 AC#2). Likely causes: a CLI filter (--example / \
+                 --schedule / --backend / --milestone) scoped the synthetic \
+                 entry out of the coverage check, or the injection function \
+                 picked an anchor outside the active gate."
+            );
+            // Exit 0 on purpose: the recipe inverts this into its
+            // "FAIL: did NOT detect" branch (exit 1). The explicit
+            // NUC_REQUIRED_COVERAGE_GAP_DETECTED=0 line above is the
+            // redundant machine-checkable backstop (TASK-0188): even if
+            // a refactor breaks the inversion, the recipe's count
+            // assertion still fails loud.
+            return Ok(0);
+        }
+    }
+
     if !gaps.is_empty() {
         let listed = gaps
             .iter()
@@ -6750,5 +6927,152 @@ perf_threshold_pct = 50.0
 "#;
         let m: Manifest = toml::from_str(toml_src).expect("parse");
         assert_eq!(m.required[0].perf_threshold_pct, Some(50.0));
+    }
+
+    // ---- TASK-0168: required-coverage negative-gate injection. ----
+    //
+    // `NUC_REQUIRED_COVERAGE_NEGATIVE` is process-global; serialise
+    // env-sensitive cases under one mutex so set_var/remove_var cannot
+    // interleave on Rust's parallel test runner. These are the ONLY
+    // tests (and `maybe_inject_required_coverage_negative` the only
+    // code) that touch this var, so the mutex is a complete fence.
+    fn req_cov_neg_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn sample_manifest_with_one_required() -> Manifest {
+        Manifest {
+            runnable_examples: vec!["01-elementwise-add".to_string()],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
+            skip: vec![],
+        }
+    }
+
+    #[test]
+    fn req_cov_inject_is_strict_noop_when_env_unset() {
+        // AC#1 / AC#2: the function must NOT mutate the manifest when
+        // the env gate is unset — this is what keeps bare `just e2e`
+        // byte-identical and the shipped manifest clean.
+        let _guard = req_cov_neg_env_lock();
+        std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
+        let mut m = sample_manifest_with_one_required();
+        let before_len = m.required.len();
+        let injected = maybe_inject_required_coverage_negative(&mut m);
+        assert_eq!(
+            injected,
+            Ok(false),
+            "env unset must report no injection"
+        );
+        assert_eq!(
+            m.required.len(),
+            before_len,
+            "env unset must leave manifest unchanged"
+        );
+    }
+
+    #[test]
+    fn req_cov_inject_appends_synthetic_required_when_env_set() {
+        // AC#1: with the gate set, exactly ONE synthetic entry is
+        // appended whose schedule is the sentinel and whose example /
+        // backend / milestone are taken from the first real required
+        // entry (so cell_matches_filters and milestone_in_gate accept
+        // it in the bare run). Existing required entries are NOT
+        // mutated — AC#2's append-not-mutate discipline.
+        let _guard = req_cov_neg_env_lock();
+        let mut m = sample_manifest_with_one_required();
+        let original_first = m.required[0].clone();
+        let original_len = m.required.len();
+
+        std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
+        let injected = maybe_inject_required_coverage_negative(&mut m);
+        std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
+
+        assert_eq!(injected, Ok(true), "gate=1 must report an injection");
+        assert_eq!(
+            m.required.len(),
+            original_len + 1,
+            "exactly one synthetic entry must have been appended"
+        );
+        // Append, not in-place mutate: the original first entry is
+        // byte-identical (preserves AC#2).
+        assert_eq!(m.required[0].example, original_first.example);
+        assert_eq!(m.required[0].schedule, original_first.schedule);
+        assert_eq!(m.required[0].backend, original_first.backend);
+        assert_eq!(m.required[0].milestone, original_first.milestone);
+        // The new last entry carries the sentinel schedule.
+        let last = m.required.last().expect("injected entry");
+        assert_eq!(last.schedule, REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE);
+        // example / backend / milestone mirror the anchor so filters
+        // accept it.
+        assert_eq!(last.example, original_first.example);
+        assert_eq!(last.backend, original_first.backend);
+        assert_eq!(last.milestone, original_first.milestone);
+    }
+
+    #[test]
+    fn req_cov_inject_then_gap_detected_end_to_end() {
+        // End-to-end seam: after injection, `required_coverage_gaps`
+        // (the pure function the wired path delegates to) must surface
+        // the synthetic cell as a gap because the synthetic schedule
+        // does not appear in `planned`. This pins the precise contract
+        // that the new `NUC_REQUIRED_COVERAGE_GAP_DETECTED` stdout key
+        // in `run_inner` reads off of.
+        let _guard = req_cov_neg_env_lock();
+        let mut m = sample_manifest_with_one_required();
+        // Plan only contains the REAL `naive` cell — the planner could
+        // not have discovered the synthetic schedule on disk.
+        let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+
+        std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
+        let _ = maybe_inject_required_coverage_negative(&mut m).expect("inject");
+        std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
+
+        let gaps = required_coverage_gaps(&m, &plan, &Args::default()).expect("ok");
+        // Exactly the synthetic cell, attributable by sentinel schedule.
+        assert_eq!(
+            gaps.len(),
+            1,
+            "synthetic typo'd required must surface as a gap (got {gaps:?})"
+        );
+        assert_eq!(gaps[0].schedule, REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE);
+        // The attribution filter `run_inner` uses must select exactly
+        // this gap — pin it here so a future refactor of either side
+        // (the filter or the sentinel) fails LOUD instead of silently
+        // dropping the count to zero (which would then force the
+        // negative recipe into its FATAL Ok(0) arm and the recipe
+        // would FAIL — desirable, but the unit-test signal arrives
+        // earlier and is cheaper).
+        let attributed = gaps
+            .iter()
+            .filter(|c| c.schedule == REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE)
+            .count();
+        assert_eq!(attributed, 1);
+    }
+
+    #[test]
+    fn req_cov_inject_errs_loud_on_degenerate_manifest() {
+        // Defensive: if the manifest has no runnable_examples (a manifest
+        // shape that should never occur in this project but is permitted
+        // by the type), the injection must Err loud rather than silently
+        // succeed by picking nothing. Mirror discipline of the
+        // determinism / xbackend hooks: a silently uncorrupted build
+        // would be a false-PASS for the negative arm.
+        let _guard = req_cov_neg_env_lock();
+        let mut m = Manifest {
+            runnable_examples: vec![],
+            backends: vec!["pthreads-sync".to_string()],
+            required: vec![],
+            skip: vec![],
+        };
+        std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
+        let r = maybe_inject_required_coverage_negative(&mut m);
+        std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
+        assert!(
+            r.is_err(),
+            "degenerate manifest (no runnable_examples and no required) \
+             must surface a loud Err, got {r:?}"
+        );
     }
 }
