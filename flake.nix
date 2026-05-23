@@ -68,6 +68,13 @@
         ];
       in
       {
+        # Tier-1 dev shell (PRD §12.1). DELIBERATELY MINIMAL — only the
+        # toolchain + just + git. Tier-specific heavy closures live in
+        # opt-in sibling shells: `.#renode` (tier-3 runtime, M10),
+        # `.#embedded` (tier-3 cross-compile, M9), and a future `.#mpi`
+        # (tier-2, M7, TASK-0063). Do NOT pile MPI / Renode / embedded
+        # toolchains into this shell — every contributor would then
+        # download hundreds of MB they don't need (TASK-0068).
         devShells.default = pkgs.mkShell {
           packages = basePackages;
 
