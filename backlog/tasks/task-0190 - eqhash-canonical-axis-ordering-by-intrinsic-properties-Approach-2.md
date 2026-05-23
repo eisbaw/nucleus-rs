@@ -1,9 +1,10 @@
 ---
 id: TASK-0190
 title: 'eqhash: canonical axis ordering by intrinsic properties (Approach 2)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-19 13:58'
+updated_date: '2026-05-23 21:34'
 labels:
   - eqhash
   - research
@@ -62,3 +63,9 @@ When two axes have identical bounds (both 0..N), Option A produces identical can
 - [ ] #4 Existing alpha-renaming and iter-space rebase tests still pass
 - [ ] #5 Honest comparison with Approach 1 documented
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as OUT-OF-SCOPE-of-Nucleus (orchestrator-direct, cycle 77 sweep). Same as TASK-0189: this is one of 3 alternative approaches for the equivalence-by-hashing/ research subproject (Python prototype, separate from the Nucleus Rust workspace). Per memory 'project-eqhash-subproject', not Nucleus loop work. Reopen within a dedicated eqhash tracker if formal task tracking is wanted there.
+<!-- SECTION:FINAL_SUMMARY:END -->

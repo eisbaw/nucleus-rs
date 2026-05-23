@@ -1,9 +1,10 @@
 ---
 id: TASK-0191
 title: 'eqhash: factored domain-shape x access-pattern (Approach 3)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-19 13:58'
+updated_date: '2026-05-23 21:34'
 labels:
   - eqhash
   - research
@@ -63,3 +64,9 @@ Options for dependent bounds:
 - [ ] #4 Existing alpha-renaming and iter-space rebase tests still pass
 - [ ] #5 Honest comparison with Approaches 1 and 2 documented
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as OUT-OF-SCOPE-of-Nucleus (orchestrator-direct, cycle 77 sweep). Same as TASK-0189/0190: third of 3 alternative approaches for the equivalence-by-hashing/ research subproject. Per memory 'project-eqhash-subproject', not Nucleus M-line work. Reopen within a dedicated eqhash tracker if formal task tracking is wanted there.
+<!-- SECTION:FINAL_SUMMARY:END -->

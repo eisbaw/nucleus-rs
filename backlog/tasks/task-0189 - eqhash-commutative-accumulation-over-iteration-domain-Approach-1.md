@@ -1,9 +1,10 @@
 ---
 id: TASK-0189
 title: 'eqhash: commutative accumulation over iteration domain (Approach 1)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-19 13:58'
+updated_date: '2026-05-23 21:34'
 labels:
   - eqhash
   - research
@@ -64,3 +65,9 @@ These require geometric reasoning beyond algebraic hashing.
 - [ ] #5 Negative cases: different bodies, different bounds still hash unequal
 - [ ] #6 Tiling and skewing honestly documented as out-of-scope
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as OUT-OF-SCOPE-of-Nucleus (orchestrator-direct, cycle 77 sweep). Per memory note 'project-eqhash-subproject': equivalence-by-hashing/ is a separate research track, NOT Nucleus M-line work. TASK-0189/0190/0191 are 3 alternative approaches for the eqhash research effort that happen to be filed in Nucleus's backlog but track work in equivalence-by-hashing/loops.py (Python prototype outside the Nucleus Rust workspace). The eqhash research has its own progression independent of Nucleus's M-line milestones; mixing them in the same To-Do list is a category error that obscures both. Reopen WITHIN A DEDICATED eqhash tracker if the research effort wants formal task tracking — Nucleus's backlog is not the right venue. The python work in equivalence-by-hashing/ is not affected by this closure.
+<!-- SECTION:FINAL_SUMMARY:END -->
