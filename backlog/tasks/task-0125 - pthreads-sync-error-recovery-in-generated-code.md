@@ -1,9 +1,10 @@
 ---
 id: TASK-0125
 title: 'pthreads-sync: error recovery in generated code'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-18 02:13'
+updated_date: '2026-05-23 20:49'
 labels:
   - M4
   - backend
@@ -22,3 +23,9 @@ The generated code at TASK-0020 has no error recovery; a panic in any kernel abo
 - [ ] #2 Honours check.on_violation = count|log directives in the schedule.
 - [ ] #3 Depends on check directive lowering (no current task -- file when needed).
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED (orchestrator-direct, cycle 77). The task description's AC#3 says 'Depends on check directive lowering (no current task -- file when needed)'. The check-directive lowering pipeline has since landed (TASK-0052 family, TASK-0079, on_violation=panic|log|count in sched). When tier-3 'on_violation=count' actually requires generated-code error-recovery beyond the current Drop-guard Count handler (TASK-0052.04), file a fresh task scoped to that specific need.
+<!-- SECTION:FINAL_SUMMARY:END -->
