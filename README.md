@@ -33,8 +33,8 @@ deliberately out of scope for v2.
   impl + an `input.bin` + an expected `reference.bin`.
 - **[`docs/`](docs/)** — grammar documents and the reference-impl
   policy.
-- **[`nucleus/`](nucleus/)** — the Rust workspace: `compiler/` (parser
-  + IR + passes), `backends/` (pthreads-sync, mp-tcp-bufsync, …),
+- **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`
+  (parser + IR + passes), `backends/` (pthreads-sync, mp-tcp-bufsync, …),
   `driver/` (the `nucleus` CLI), and `e2e/` (the differential matrix).
 - **[`backlog/`](backlog/)** — task tracker (`backlog` CLI). Tasks
   carry plans, notes, and dependencies; decisions live under

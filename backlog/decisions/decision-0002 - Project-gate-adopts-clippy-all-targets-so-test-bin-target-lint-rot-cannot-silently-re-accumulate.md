@@ -12,15 +12,15 @@ The `clippy` justfile recipe (which `just ci` calls) ran
 `cargo clippy --workspace -- -D warnings`. Without `--all-targets`,
 clippy lints **only the default targets**: the `lib` and `bin`
 targets. It does *not* lint integration-test crates
-(`compiler/tests/*.rs`), `#[cfg(test)]` modules compiled as test
+(`nucleus-compiler/tests/*.rs`), `#[cfg(test)]` modules compiled as test
 binaries (e.g. `e2e/src/main.rs`'s test cfg), benches, or examples.
 
 Consequence observed at the TASK-0154 review gate: lint rot
 accumulated in test targets entirely invisible to `just ci`, which
 stayed green the whole time. `cargo clippy --workspace --all-targets
 -- -D warnings` failed with 6 pre-existing lints on clean master
-(4× `clippy::len_zero` in `compiler/tests/acfg_to_petri.rs`, 1×
-`clippy::type_complexity` in `compiler/tests/petri_to_events.rs`, 1×
+(4× `clippy::len_zero` in `nucleus-compiler/tests/acfg_to_petri.rs`, 1×
+`clippy::type_complexity` in `nucleus-compiler/tests/petri_to_events.rs`, 1×
 `clippy::empty_line_after_doc_comments` in `e2e/src/main.rs`'s test
 cfg). TASK-0186 AC#1 cleared all 6 at root cause; AC#3 is whether the
 gate itself should adopt `--all-targets` so this class of rot cannot

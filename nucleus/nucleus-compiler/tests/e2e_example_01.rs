@@ -6,13 +6,13 @@
 //!
 //! Bit-identical output is non-negotiable (PRD §10.1).
 //!
-//! Why this test lives in `compiler/tests/` rather than the
+//! Why this test lives in `nucleus-compiler/tests/` rather than the
 //! pthreads-sync backend crate's tests: at M1 the backend crate
-//! depends on `compiler`, but the e2e flow drives the full pipeline
-//! including the binary (`nucleus`) in the `driver` crate. Tests in
-//! either backend or driver would create awkward dev-dependency
-//! cycles. The compiler crate is the common ancestor; the test
-//! invokes the `nucleus` binary via `cargo run`.
+//! depends on `nucleus-compiler`, but the e2e flow drives the full
+//! pipeline including the binary (`nucleus`) in the `driver` crate.
+//! Tests in either backend or driver would create awkward dev-
+//! dependency cycles. The nucleus-compiler crate is the common
+//! ancestor; the test invokes the `nucleus` binary via `cargo run`.
 //!
 //! NB: this is a CI-friendly test in the sense that it only assumes
 //! the workspace is on disk and `cargo` is on PATH (true inside

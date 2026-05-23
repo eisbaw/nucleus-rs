@@ -9,7 +9,7 @@
 //!
 //! The codegen arm (Instant::now + panic) is exercised by the
 //! pthreads-sync backend reconstruction tests (under
-//! `nucleus/compiler/tests/petri_to_events.rs` etc.) and by the
+//! `nucleus/nucleus-compiler/tests/petri_to_events.rs` etc.) and by the
 //! positive/negative compile-and-run tests in this file.
 
 use std::collections::BTreeMap;

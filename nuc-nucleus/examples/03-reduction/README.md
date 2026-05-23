@@ -179,7 +179,7 @@ change; the matcher learns to accept `Vec<i32>` (or whatever) as
 - `naive.sched.nuc` — single worker (`host`), every kernel placed
   there. No loop transforms, no transfers. **Required** for tier-1
   conformance on this example; the e2e gate
-  (`compiler/tests/e2e_example_03.rs`) verifies bit-identity against
+  (`nucleus/nucleus-compiler/tests/e2e_example_03.rs`) verifies bit-identity against
   `reference.bin`.
 
 ## Stretch schedules

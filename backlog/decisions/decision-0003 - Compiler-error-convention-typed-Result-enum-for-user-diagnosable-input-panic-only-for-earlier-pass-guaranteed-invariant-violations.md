@@ -18,12 +18,12 @@ TASK-0155): the driver pipeline mixes two conventions in adjacent
 calls.
 
 - `apply_block_transforms`
-  (`compiler/src/passes/block_transform.rs`) returns
+  (`nucleus-compiler/src/passes/block_transform.rs`) returns
   `Result<_, BlockTransformError>` — a `pub enum` whose variants carry
   enough context for a user-facing diagnostic — surfaced by the driver
   as a clean `nucleus: error:` stderr line, no backtrace.
 - `inject_transfers`
-  (`compiler/src/passes/transfer_inject.rs:299` and `:1356`) `panic!`s
+  (`nucleus-compiler/src/passes/transfer_inject.rs:299` and `:1356`) `panic!`s
   with full context when a cross-worker `Wait` escapes the whole ACFG
   with no producing `Operation` — a broken **cross-pass invariant**
   (`build_acfg` lowers the producing kernel for every symbol the
@@ -36,7 +36,7 @@ pass is buggy. The defect is not either call site — it is that the
 selection rule existed only in reviewers' heads.
 
 This is the same shape the codebase already standardised on. The
-canonical written precedent is `compiler/src/acfg.rs:620-624`: a doc
+canonical written precedent is `nucleus-compiler/src/acfg.rs:620-624`: a doc
 comment on `BuildAcfgError` explicitly states that the *other* `panic!`s
 reachable from `build_acfg` (kernel with no placement at `:887`,
 `.expect("kernel id assigned during pre-pass; link guarantees
