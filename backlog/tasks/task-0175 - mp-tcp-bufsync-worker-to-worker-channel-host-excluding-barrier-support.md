@@ -1,9 +1,10 @@
 ---
 id: TASK-0175
 title: 'mp-tcp-bufsync: worker-to-worker channel / host-excluding barrier support'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-19 00:52'
+updated_date: '2026-05-23 21:30'
 labels: []
 dependencies:
   - TASK-0036
@@ -21,3 +22,9 @@ mp-tcp-bufsync (TASK-0036) uses a one-(data,ctrl)-connection-pair-per-(host,work
 - [ ] #2 Barriers whose participants exclude host lower correctly (mesh or relayed), not ContractGap
 - [ ] #3 A distributed-placement example (e.g. 03-reduction/distributed) is differentially green under mp-tcp-bufsync once TASK-0117 lands
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-until-TASK-0117 (orchestrator-direct, cycle 77 sweep). AC#3 explicit: 'A distributed-placement example (e.g. 03-reduction/distributed) is differentially green under mp-tcp-bufsync once TASK-0117 lands.' TASK-0117 (distributed placement consumer) — not currently in active development; 03-reduction/distributed is SKIPPED across all 4 tier-1 backends per memory. The current ContractGap fail-loud behavior is correct: it refuses to silently mis-route a worker-to-worker Push/Wait through the host star topology. Reopen when TASK-0117 lands AND a distributed schedule actually needs worker-to-worker mesh under mp-tcp-bufsync. Same deferred-until-prerequisite pattern as TASK-0114/0184.
+<!-- SECTION:FINAL_SUMMARY:END -->
