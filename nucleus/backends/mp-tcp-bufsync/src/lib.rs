@@ -532,6 +532,19 @@ impl<'a> Plan<'a> {
             )
             .ok();
             writeln!(out, "    let _ = &rendezvous_dir; // referenced below per-worker").ok();
+            // Sequential per-worker bind → publish → accept. For
+            // every non-host worker this host serves we bind first,
+            // then accept(). The order means worker N+1's port file
+            // is not published until worker N has completed BOTH its
+            // accepts, so worker N+1 is blocked on the rendezvous
+            // poll while host accepts N — the 6s poll bound is shared
+            // by all workers, not budgeted per-worker. Today's tier-1
+            // mp-tcp-bufsync set is 2-party (host + 1 worker) so this
+            // is invisible. When TASK-0175 introduces worker-to-worker
+            // mesh / >2-party host topologies, restructure to
+            // publish-all-port-files-first, then accept-all in a
+            // second pass (or accept on per-worker threads). Filed:
+            // TASK-0176 closure notes carry this forward.
             for nw in self.non_host_workers() {
                 let nwn = self.worker_name(nw);
                 writeln!(
@@ -551,6 +564,14 @@ impl<'a> Plan<'a> {
                 // to <name>.port. POSIX rename within the same dir is
                 // atomic, so a polling worker either sees nothing or
                 // sees the full integer — never a partial write.
+                // Atomic publish: write the port to <name>.port.tmp,
+                // drop the file, rename to <name>.port. POSIX rename
+                // within a single directory is atomic — the polling
+                // worker either sees nothing or sees the full integer,
+                // never a partial write. No `sync_all`: the rendezvous
+                // file is process-local-loopback ephemeral state, not
+                // durable storage; the page cache is visible across
+                // processes immediately.
                 writeln!(
                     out,
                     "    {{\n\
@@ -560,7 +581,6 @@ impl<'a> Plan<'a> {
                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: create rendezvous tmp `{{}}` for {nwn} failed: {{e}}\", rdv_tmp.display()));\n\
                      \x20\x20\x20\x20\x20\x20\x20\x20write!(f, \"{{}}\", port_{nwn})\n\
                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: write port {{}} to rendezvous tmp `{{}}` for {nwn} failed: {{e}}\", port_{nwn}, rdv_tmp.display()));\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20f.sync_all().ok();\n\
                      \x20\x20\x20\x20\x20\x20\x20\x20drop(f);\n\
                      \x20\x20\x20\x20\x20\x20\x20\x20fs::rename(&rdv_tmp, &rdv_final)\n\
                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: rename rendezvous `{{}}` -> `{{}}` for {nwn} failed: {{e}}\", rdv_tmp.display(), rdv_final.display()));\n\

@@ -217,6 +217,30 @@ fn mp_tcp_bufsync_emit_uses_rendezvous_file_handshake_not_env_port() {
          (TASK-0176: helper deleted). Got:\n{cargo_toml}"
     );
 
+    // ----- ORDERING: bind -> publish (rename) -> accept. The TOCTOU
+    // fix depends on the listener being held continuously from bind
+    // through accept (no close in between), with the rendezvous-file
+    // publish in the middle. A future refactor that wrote the port
+    // file BEFORE binding, or split bind into a side process that
+    // exits before accept, would reintroduce the window even with the
+    // presence/absence assertions above passing. Pin the ordering.
+    let bind_pos = host_src
+        .find("TcpListener::bind(\"127.0.0.1:0\")")
+        .expect("bind site already asserted present above");
+    let rename_pos = host_src
+        .find("fs::rename(")
+        .expect("rename site already asserted present above");
+    let accept_pos = host_src
+        .find(".accept()")
+        .expect("host always accepts at least one connection (multi-process is multi-worker)");
+    assert!(
+        bind_pos < rename_pos && rename_pos < accept_pos,
+        "host must bind -> publish (rename) -> accept in that order \
+         (TASK-0176: listener held continuously across the publish to \
+         eliminate the close-then-rebind TOCTOU). Got bind@{bind_pos}, \
+         rename@{rename_pos}, accept@{accept_pos}.\n{host_src}"
+    );
+
     // Sanity: the worker_bins set is exactly {host, w0}, no picker.
     let bin_filenames: Vec<String> = result
         .worker_bins

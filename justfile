@@ -182,19 +182,26 @@ ci:
 # concurrent mp-tcp cells flake-free under load (8 sequential samples
 # was insufficient evidence per AC#2).
 #
-# Not in `just ci`: 20x parallel `nucleus-e2e` invocations are too
-# heavy for the standard CI walltime budget. Run manually after any
-# change touching the port handshake (mp-tcp-bufsync emit, run.sh
-# generation, wire::apply_sock_buf), or on a nightly schedule.
+# Not wired anywhere automated yet: 20x parallel `nucleus-e2e`
+# invocations are too heavy for the standard CI walltime budget. Run
+# manually after any change touching the port handshake (mp-tcp-bufsync
+# emit, run.sh generation, wire::apply_sock_buf). Filed TASK-0252 to
+# wire this into a nightly/scheduled CI job; until then "AC#2 is
+# satisfied as a steady-state guarantee" relies on the developer
+# remembering to run this recipe.
 #
 # Each e2e invocation uses a unique per-RUN run-id (pid+nanos,
-# TASK-0182) so scratch dirs do not collide; the per-cell run.sh
-# uses its own pid-suffixed rendezvous dir so the port-handshake
-# files do not collide either. Pre-builds the workspace once so the
-# 20 parallel invocations do not serialise on the cargo build lock.
+# TASK-0182) so scratch dirs do not collide; the per-cell run.sh uses
+# its own pid-suffixed rendezvous dir so the port-handshake files do
+# not collide either. Invokes the prebuilt `target/release/nucleus-e2e`
+# binary directly (NOT `cargo run`) so the 20 parallel invocations do
+# not contend on the per-package cargo build lock at all — pre-build
+# once below to make sure the binary exists. On failure dumps EVERY
+# child log (not just `head -1`), so the failing invocation's stderr
+# is always in the tail output.
 port-stress-check N="20":
     cd nucleus && cargo build --release --bin nucleus-e2e --quiet
-    cd nucleus && fail=0; for i in $(seq 1 {{N}}); do cargo run --release --quiet --bin nucleus-e2e -- --backend mp-tcp-bufsync >/tmp/nuc-port-stress-$$-$i.log 2>&1 & done; for j in $(jobs -p); do wait "$j" || fail=$((fail+1)); done; if [ "$fail" -gt 0 ]; then echo "FAIL: $fail of {{N}} parallel mp-tcp-bufsync e2e runs failed (TASK-0176 AC#2). Last failing log tail:"; ls /tmp/nuc-port-stress-$$-*.log | head -1 | xargs tail -40; exit 1; fi; rm -f /tmp/nuc-port-stress-$$-*.log; echo "OK: {{N}}/{{N}} parallel mp-tcp-bufsync e2e runs passed (TASK-0176 AC#2)"
+    cd nucleus && fail=0; for i in $(seq 1 {{N}}); do ./target/release/nucleus-e2e --backend mp-tcp-bufsync >/tmp/nuc-port-stress-$$-$i.log 2>&1 & done; for j in $(jobs -p); do wait "$j" || fail=$((fail+1)); done; if [ "$fail" -gt 0 ]; then echo "FAIL: $fail of {{N}} parallel mp-tcp-bufsync e2e runs failed (TASK-0176 AC#2). Dumping all {{N}} child logs:"; for log in /tmp/nuc-port-stress-$$-*.log; do echo "===== $log ====="; tail -40 "$log"; done; exit 1; fi; rm -f /tmp/nuc-port-stress-$$-*.log; echo "OK: {{N}}/{{N}} parallel mp-tcp-bufsync e2e runs passed (TASK-0176 AC#2)"
 
 # Remove build artefacts.
 clean:
