@@ -2211,11 +2211,16 @@ const REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE: &str = "__nuc_typo_negative_
 ///     existing entry keeps the injection robust against future CI matrices).
 ///
 /// Fallback (no real `[[required]]` entries in the manifest): pick
-/// `runnable_examples[0]`, `backends[0]`, milestone "M1". This is purely
-/// defensive — today's `e2e-matrix.toml` has 18+ required entries — but it
-/// avoids a NEW failure mode (panic / Err) on an exotic manifest. If the
-/// manifest is truly degenerate (no examples OR no backends), Err loud
-/// rather than silently no-op.
+/// `runnable_examples[0]`, `backends[0]`, milestone `"M1"` (hard-coded —
+/// best-effort, NOT robust to a future scheme that retires `M1` from
+/// `Milestone::parse`'s accepted set; if that ever happens, this branch
+/// returns a milestone string that `Milestone::parse` would reject
+/// downstream, making the recipe FAIL loud rather than silently
+/// no-op). This branch is purely defensive — today's `e2e-matrix.toml`
+/// has 18+ required entries so the anchored path always wins — but it
+/// avoids a NEW failure mode (panic / Err) on an exotic manifest. If
+/// the manifest is truly degenerate (no examples OR no backends), Err
+/// loud rather than silently no-op.
 ///
 /// CRITICAL — does NOT mutate existing entries. AC#2 of TASK-0168 demands
 /// "no committed broken manifest"; appending one synthetic entry at
@@ -4259,9 +4264,11 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // below, n>=1 in the genuine-bite arm) so the recipe can always
     // find the line and assert n>=1.
     //
-    // Mirrors `NUC_NONDET_PERTURBED_CELLS=<n>` (justfile:78) and
-    // `NUC_XBACKEND_CORRUPTED_DETECTED=<n>` (justfile:101) — same
-    // belt-and-suspenders contract (TASK-0188): if a future refactor
+    // Mirrors `NUC_NONDET_PERTURBED_CELLS=<n>` emitted by the
+    // `determinism-check-negative` recipe and
+    // `NUC_XBACKEND_CORRUPTED_DETECTED=<n>` emitted by the
+    // `xbackend-check-negative` recipe — same belt-and-suspenders
+    // contract (TASK-0188): if a future refactor
     // drops the `if !gaps.is_empty() { return Err }` wiring below, the
     // recipe's exit-code inversion alone is no longer load-bearing —
     // the count assertion still fails loud.
