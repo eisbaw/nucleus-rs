@@ -802,74 +802,36 @@ impl<'a> Plan<'a> {
                     })?;
 
                     // Per-occurrence absolute-index rebinding (TASK-0181;
-                    // mirrors pthreads-sync single-worker TASK-0180 and the
-                    // shared multi_worker_walker arm). A strip-mined inner-
-                    // block loop reuses the SOURCE iter var and iterates
-                    // `0..inner_len`; codegen must expand the loop var to
-                    // its absolute source value at every body use site. The
-                    // tag carries `(block_n, num_full, is_partial)`; the
-                    // walker reads `lo_src` from
-                    // `sidecar.loop_bounds[iter_var]` (single source of
-                    // truth — same LO for every reused occurrence).
-                    //
-                    // The rebinding is threaded through
-                    // `RenderCtxPub.abs_subst` so `render_int_expr` /
-                    // `render_const_expr` substitute at every Fire arg /
-                    // index / inner-bound site — NOT just the loop header
-                    // (the subtle TASK-0181 review-gate finding: header-
-                    // only substitution would leave Fire bodies un-rebound
-                    // and re-introduce the accumulator double-count
-                    // TASK-0180 closed). NB: mp-tcp-bufsync intentionally
-                    // duplicates this arm rather than migrating onto the
-                    // shared `multi_worker_walker` — its substrate (TCP
-                    // sockets, `ctrl_<peer>` / `sock_<peer>` barriers, host
-                    // vs worker dispatch) is structurally different from
-                    // the walker's Slot/Ring rendezvous and is out of scope
-                    // for this cycle. The rebinding *logic* is byte-
-                    // identical between the two arms; any future divergence
-                    // is a bug per the cross-backend bit-identical
-                    // differential (PRD §10.1).
+                    // mirrors pthreads-sync single-worker TASK-0180). Now
+                    // delegates to the SHARED
+                    // `backend_common::multi_worker_walker::
+                    // render_block_tag_loop_header` (TASK-0253) — the same
+                    // helper the pthreads-sync / pthreads-async multi-worker
+                    // walker calls. The strip-mined inner loop HEADER and
+                    // the rebound child `RenderCtxPub` (with `abs_subst`
+                    // extended so every Fire arg / index / inner-bound site
+                    // substitutes — NOT just the header; the load-bearing
+                    // TASK-0181 review-gate finding) are emitted by the
+                    // helper. This arm owns only the body recursion through
+                    // mp-tcp-bufsync's per-backend substrate (TCP
+                    // `ctrl_<peer>` / `sock_<peer>` barriers + host-vs-
+                    // worker dispatch in `render_worker_program`) and the
+                    // closing `}`. The previous arrangement (TASK-0181
+                    // cycle 73) duplicated the rebinding arithmetic across
+                    // two files; with this delegation, the arithmetic
+                    // lives in exactly one place and cannot drift.
                     if let Some(tag) = block_tag {
-                        let lo_src = self
-                            .sidecar
-                            .loop_bounds
-                            .get(iter_var)
-                            .map(|b| render_const_expr_pub(&b.lo, ctx))
-                            .transpose()?
-                            .unwrap_or_else(|| "0_i64".to_string());
-                        let n = tag.block_n;
-                        let abs = if tag.is_partial {
-                            format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
-                        } else {
-                            let tile_iv = enclosing.ok_or_else(|| {
-                                EmitError::ContractGap(format!(
-                                    "strip-mined full-tile inner loop {iter_var:?} \
-                                     (block_tag is_partial=false) has no enclosing tile \
-                                     loop — block_transform always wraps it; malformed \
-                                     EventList"
-                                ))
-                            })?;
-                            let tile_name = self.names.iter_var.get(&tile_iv).ok_or_else(|| {
-                                EmitError::ContractGap(format!(
-                                    "tile iter var {tile_iv:?} has no name in NameTables"
-                                ))
-                            })?;
-                            format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
-                        };
-                        let mut child_subst = ctx.abs_subst.clone();
-                        child_subst.insert(var.clone(), abs);
-                        let child_ctx = ctx.with_abs_subst(child_subst);
-                        // Loop header uses the CONCRETE folded range —
-                        // NOT the source-form bound (would re-introduce
-                        // the full range) and NOT a partition slice
-                        // (the strip-mined inner iterates the tile, not
-                        // the worker's partition slice).
-                        writeln!(
+                        let child_ctx = backend_common::multi_worker_walker::render_block_tag_loop_header(
                             out,
-                            "{pad}for {var} in ({}_i64)..({}_i64) {{",
-                            range.start, range.end
-                        )
-                        .ok();
+                            indent,
+                            *iter_var,
+                            range,
+                            tag,
+                            enclosing,
+                            ctx,
+                            self.names,
+                            self.sidecar,
+                        )?;
                         self.render_events(
                             body,
                             out,
