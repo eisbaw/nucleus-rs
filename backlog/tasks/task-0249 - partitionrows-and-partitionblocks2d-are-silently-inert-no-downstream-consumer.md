@@ -7,7 +7,7 @@ status: Done
 assignee:
   - mark
 created_date: '2026-05-23 07:40'
-updated_date: '2026-05-23 14:50'
+updated_date: '2026-05-23 15:04'
 labels:
   - compiler
   - partition
@@ -49,11 +49,11 @@ TASK-0144.02 ("partition=blocks2d on non-2D loop nest: reject at sched-lower") p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 #1 #1 Decision recorded: (a), (b), or (c).
-- [x] #2 #2 #2 Implementation lands per the chosen path with a precise typed signal (no silent acceptance).
-- [x] #3 #3 #3 05-stencil/distributed handled (either migrated, deprecated, or its `partition=rows` made effective).
-- [x] #4 #4 #4 sched_lower or sibling-pass test asserts the new behaviour (positive AND negative cases).
-- [x] #5 #5 #5 PRD §6.3.3 cited; partition_workers.rs:40 caveat-comment updated to reflect the new state.
+- [x] #1 #1 #1 #1 Decision recorded: (a), (b), or (c).
+- [x] #2 #2 #2 #2 Implementation lands per the chosen path with a precise typed signal (no silent acceptance).
+- [x] #3 #3 #3 #3 05-stencil/distributed handled (either migrated, deprecated, or its `partition=rows` made effective).
+- [x] #4 #4 #4 #4 sched_lower or sibling-pass test asserts the new behaviour (positive AND negative cases).
+- [x] #5 #5 #5 #5 PRD §6.3.3 cited; partition_workers.rs:40 caveat-comment updated to reflect the new state.
 
 ## Dependencies
 
@@ -141,6 +141,8 @@ Honest limits / surprises:
   When any of those gaps closes and the cell becomes [[required]],
   TASK-0250's decision will determine whether the y-loop directive
   returns (as `partition=workers`) before bit-identical comparison.
+
+Cycle 70 review-gate hardening (commit 13a1ab7): tightened PRD §6.3.3 framing in 3 doc-comment sites (sched/ir.rs UnsupportedPartitionKind variant doc, sched/lower.rs reject-site comment, 05-stencil/distributed.sched.nuc rationale comment) to say 'extends the same fail-fast discipline' rather than 'PRD §6.3.3 forbids' — PRD §6.3.3 literally addresses bad option *combinations*, not unimplemented single options. Doc-lie failure class (memory feedback-comment-doc-lie-recurring). Also fixed TASK-0250 description: said '3 tier-1 backends' but there are 4 (added mp-tcp-event row with Stage 3 / TASK-0042.05 skip reason). Reviews: qa-test-runner GO (full just ci green, 88/70/0/18, negative gates correctly bit, 2× non-flaky); mped-architect GO (zero blockers, zero majors, MINORs 1+2 applied).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
@@ -160,6 +162,8 @@ captures the open question of whether the y-loop should be
 explicitly partitioned via `partition=workers` once the multi-
 worker backend gaps close. Lands cycle 70.
 <!-- SECTION:FINAL_SUMMARY:END -->
+
+<!-- AC:END -->
 
 <!-- AC:END -->
 
