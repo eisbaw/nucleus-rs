@@ -24,7 +24,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "backend-common"
 version = "0.0.0"
 dependencies = [
- "compiler",
+ "nucleus-compiler",
 ]
 
 [[package]]
@@ -40,18 +40,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eebd66744a15ded14960ab4ccdbfb51ad3b81f51f3f04a80adac98c985396c9"
 dependencies = [
  "hashbrown 0.14.5",
-]
-
-[[package]]
-name = "compiler"
-version = "0.0.0"
-dependencies = [
- "chumsky",
- "quote",
- "serde",
- "serde_json",
- "syn",
- "toml",
 ]
 
 [[package]]
@@ -111,8 +99,8 @@ name = "mp-tcp-bufsync"
 version = "0.0.0"
 dependencies = [
  "backend-common",
- "compiler",
  "mp-tcp-common",
+ "nucleus-compiler",
  "pthreads-sync",
  "test-common",
 ]
@@ -126,8 +114,8 @@ name = "mp-tcp-event"
 version = "0.0.0"
 dependencies = [
  "backend-common",
- "compiler",
  "mp-tcp-common",
+ "nucleus-compiler",
  "pthreads-sync",
  "test-common",
 ]
@@ -136,11 +124,23 @@ dependencies = [
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
- "compiler",
  "mp-tcp-bufsync",
  "mp-tcp-event",
+ "nucleus-compiler",
  "pthreads-async",
  "pthreads-sync",
+]
+
+[[package]]
+name = "nucleus-compiler"
+version = "0.0.0"
+dependencies = [
+ "chumsky",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "toml",
 ]
 
 [[package]]
@@ -163,7 +163,7 @@ name = "pthreads-async"
 version = "0.0.0"
 dependencies = [
  "backend-common",
- "compiler",
+ "nucleus-compiler",
  "pthreads-sync",
  "test-common",
 ]
@@ -173,7 +173,7 @@ name = "pthreads-sync"
 version = "0.0.0"
 dependencies = [
  "backend-common",
- "compiler",
+ "nucleus-compiler",
  "test-common",
 ]
 
@@ -248,7 +248,7 @@ dependencies = [
 name = "test-common"
 version = "0.0.0"
 dependencies = [
- "compiler",
+ "nucleus-compiler",
 ]
 
 [[package]]

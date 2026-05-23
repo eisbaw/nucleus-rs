@@ -20,7 +20,7 @@
 
 use std::fmt::Write as _;
 
-use compiler::event::{Event, ViolationKind};
+use nucleus_compiler::event::{Event, ViolationKind};
 
 /// One Count check loop, materialised for codegen. Public so every
 /// backend (pthreads-sync, pthreads-async multi-worker, mp-tcp-bufsync)

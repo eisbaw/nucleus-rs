@@ -36,7 +36,7 @@ is not used in v2.
 
 Reference implementations MUST NOT depend on:
 
-- The Nucleus compiler crate.
+- The Nucleus `nucleus-compiler` crate.
 - Any Nuc-generated source file (anything under `out/` or anything
   produced by `nucleus build`).
 - Any backend crate (`pthreads-sync`, `mp-tcp-event`, `mpi-blocking`,

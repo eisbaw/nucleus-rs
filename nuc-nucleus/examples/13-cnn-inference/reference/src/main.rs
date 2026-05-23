@@ -8,7 +8,7 @@
 //!
 //! Independent of Nucleus per docs/reference-impl-policy.md §2:
 //! depends on `std` only; does not share any code with kernels.rs or
-//! the compiler. The shape constants, weight formulae and arithmetic
+//! the nucleus-compiler crate. The shape constants, weight formulae and arithmetic
 //! contract are RE-IMPLEMENTED here — same algorithm, different
 //! source. A bug in one file is not automatically duplicated in the
 //! other (policy §2 rationale: "all backends wrong the same way").

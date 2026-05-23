@@ -30,13 +30,13 @@
 
 use std::collections::BTreeMap;
 
-use compiler::algo::{IrExpr, ResolvedType, ScalarType};
-use compiler::event::{
+use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::event::{
     ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
     WorkerId,
 };
-use compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
-use compiler::NameTables;
+use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
+use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::{render_worker_events, WalkerCtx};
 
@@ -89,8 +89,8 @@ fn make_minimal_tables(
     (names, sidecar)
 }
 
-type RendezvousIds = BTreeMap<(DataId, compiler::event::SeqTag), usize>;
-type PairTiles = BTreeMap<(DataId, compiler::event::SeqTag), IterTile>;
+type RendezvousIds = BTreeMap<(DataId, nucleus_compiler::event::SeqTag), usize>;
+type PairTiles = BTreeMap<(DataId, nucleus_compiler::event::SeqTag), IterTile>;
 
 /// Empty maps that the walker requires but the synthetic test has no
 /// Push/Wait pairs to populate. Returning by value keeps the test

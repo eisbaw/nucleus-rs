@@ -1,0 +1,87 @@
+# The `nucleus` pre-compiler library + `nucleus` driver bin support
+# crate. See PRD §1, §5, §12.2.
+#
+# At M0 this is the parser foundation. Subsequent milestones will add
+# typechecking, ACFG/Petri-net lowering, and per-backend codegen.
+#
+# (TASK-0084 cycle 76: renamed from `compiler` to `nucleus-compiler`.
+# The bin binary name remains `nucleus` so users keep typing
+# `nucleus build ...`.)
+
+[package]
+name = "nucleus-compiler"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "nucleus_compiler"
+path = "src/lib.rs"
+
+# The `nucleus` driver binary moved to `nucleus/driver/` at TASK-0020
+# so that backend crates can depend on `nucleus-compiler` without
+# circularity. See `nucleus/driver/Cargo.toml` for the rationale.
+
+[dependencies]
+# Parser combinator library. See nucleus/nucleus-compiler/src/algo/parser.rs
+# for the choice rationale (TASK-0007 notes). Pinned minor for
+# reproducibility.
+# spill-stack pulls `stacker` -> `psm` -> a build-dep on
+# `ar_archive_writer` which requires Cargo edition2024 (>1.83). Disable
+# spill-stack to keep us on the pinned MSRV. ahash is also off because
+# its transitive deps drift fast and we don't need its hashing speed
+# for a small DSL parser.
+chumsky = { version = "=0.9.3", default-features = false, features = ["std"] }
+
+# Rust source parser. Used by `crate::contract` to extract `pub fn`
+# signatures from a user's adjacent kernels.rs and match them against
+# the algorithm's declared kernels (TASK-0012). `full` enables item
+# parsing (incl. `fn`, attributes, generics — we don't use generics
+# but the feature set is one knob). Minor version pinned for
+# reproducibility; major 2 has been stable since 2023.
+syn = { version = "=2.0.117", default-features = false, features = ["full", "parsing", "printing"] }
+
+# `quote::ToTokens` for syn::Type -> String rendering. Same author as
+# syn; pulled in transitively but listed explicitly so the rendering
+# path doesn't accidentally pick up a different version.
+quote = { version = "=1.0.40", default-features = false }
+
+# Serde derives. Used in two places:
+# - The EventList contract (PRD §8.3, TASK-0015) — events are the
+#   inter-stage wire format and the format of golden-test fixtures.
+# - The capability matrix parser (TASK-0019) — capabilities.toml
+#   deserialises into a typed struct via serde::Deserialize.
+# Non-optional because capability parsing is part of the core pipeline
+# from M1 onward (PRD §7.4, TASK-0118). The earlier optional gate has
+# been removed; "size-constrained build without serde" is no longer a
+# supported configuration.
+serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"] }
+
+# TOML parser for backends' `capabilities.toml` sibling files
+# (TASK-0019, PRD §7.4). 0.7.8 is the most recent release that builds
+# under the MSRV pinned in flake.nix (1.83); newer toml depends on
+# indexmap that requires edition2024. Pinned exact for reproducibility.
+toml = { version = "=0.7.8", default-features = false, features = ["parse", "display"] }
+
+[features]
+# `serde` was previously optional (a build knob for size-constrained
+# downstream consumers). It is now always pulled in because the
+# capability matrix parser depends on it. The feature name is kept
+# so that `#[cfg(feature = "serde")]` gates inside the crate (event
+# module, ACFG transfer policy types) continue to compile unchanged.
+# Always-on; not user-toggleable in practice.
+default = ["serde"]
+serde = []
+
+[dev-dependencies]
+# JSON round-trip tests for the Event types. Same minor-version pin
+# discipline as the runtime serde dep.
+serde_json = "=1.0.140"
+
+# (TASK-0225 — closed) nucleus-compiler/Cargo.toml previously dev-dep'd
+# pthreads-sync for `check_frame_codegen.rs`. That test moved to
+# `nucleus/backends/pthreads-sync/tests/check_frame_codegen.rs`
+# where it can use pthreads-sync as a sibling (own crate), closing
+# the backwards dev-dep arrow. The nucleus-compiler library + test
+# suite is now genuinely backend-independent.

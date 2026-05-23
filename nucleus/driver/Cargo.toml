@@ -1,7 +1,8 @@
 # `nucleus` driver binary. See TASK-0020 (the binary previously stubbed
-# in `compiler/src/main.rs` was promoted to its own crate so that
-# backend crates can depend on `compiler` without creating a circular
-# dependency between `compiler` and its registered backends).
+# in `nucleus-compiler/src/main.rs` was promoted to its own crate so
+# that backend crates can depend on `nucleus-compiler` without
+# creating a circular dependency between `nucleus-compiler` and its
+# registered backends).
 #
 # The crate is bin-only. It registers backends by linking them in as
 # dependencies and dispatching by name. Adding a new backend at M3+
@@ -24,7 +25,7 @@ name = "nucleus"
 path = "src/main.rs"
 
 [dependencies]
-compiler = { path = "../compiler" }
+nucleus-compiler = { path = "../nucleus-compiler" }
 pthreads-sync = { path = "../backends/pthreads-sync" }
 mp-tcp-bufsync = { path = "../backends/mp-tcp-bufsync" }
 # pthreads-async — third tier-1 backend, skeleton (TASK-0042.01 cycle 16);

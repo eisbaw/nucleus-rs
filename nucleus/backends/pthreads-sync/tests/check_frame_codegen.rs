@@ -15,15 +15,15 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use compiler::acfg_to_events;
-use compiler::algo::{lower_algo, parse_algo};
-use compiler::event::{Event, WorkerId};
-use compiler::sched::{lower_sched, parse_sched};
-use compiler::{
+use nucleus_compiler::acfg_to_events;
+use nucleus_compiler::algo::{lower_algo, parse_algo};
+use nucleus_compiler::event::{Event, WorkerId};
+use nucleus_compiler::sched::{lower_sched, parse_sched};
+use nucleus_compiler::{
     apply_block_transforms, apply_partition_workers, build_acfg, build_sidecar,
     inject_check_frames, inject_syncs, inject_transfers, link,
 };
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::NameSidecar;
 use pthreads_sync::NameTables;
 
 fn build_per_worker_with_names(

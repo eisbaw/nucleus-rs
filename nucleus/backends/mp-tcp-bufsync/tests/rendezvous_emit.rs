@@ -31,7 +31,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use compiler::{
+use nucleus_compiler::{
     acfg_to_events,
     algo::{lower_algo, parse_algo},
     build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
@@ -86,8 +86,8 @@ schedule for \"a.algo.nuc\" {
 fn lower(scratch: &Path) -> (
     PathBuf,
     NameTables,
-    compiler::sidecar::NameSidecar,
-    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>,
+    nucleus_compiler::sidecar::NameSidecar,
+    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
 ) {
     let kernels_path = scratch.join("kernels.rs");
     fs::write(

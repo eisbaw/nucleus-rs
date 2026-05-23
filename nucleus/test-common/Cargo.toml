@@ -7,13 +7,13 @@
 # emit-string tests) calls the same helper rather than introducing a
 # fourth duplicate.
 #
-# Why a separate crate (vs. a `compiler` test-utils module): keeps
-# compiler's public surface free of test-only types AND avoids
-# circular deps (test-common cannot depend on pthreads-sync because
-# pthreads-sync dev-deps test-common). test-common returns the raw 5
-# reverse-name-table BTreeMaps; each backend test composes its own
-# `pthreads_sync::NameTables` from them (5-line local block, identical
-# across backends but isolated to call sites).
+# Why a separate crate (vs. a `nucleus-compiler` test-utils module):
+# keeps nucleus-compiler's public surface free of test-only types AND
+# avoids circular deps (test-common cannot depend on pthreads-sync
+# because pthreads-sync dev-deps test-common). test-common returns the
+# raw 5 reverse-name-table BTreeMaps; each backend test composes its
+# own `pthreads_sync::NameTables` from them (5-line local block,
+# identical across backends but isolated to call sites).
 
 [package]
 name = "test-common"
@@ -27,7 +27,8 @@ name = "test_common"
 path = "src/lib.rs"
 
 [dependencies]
-# Compiler types + the full lower-link-inject pipeline functions are
-# the only dependency. No backend deps — avoids the circular arrow
-# (backends dev-dep test-common → test-common deps backend = cycle).
-compiler = { path = "../compiler" }
+# nucleus-compiler types + the full lower-link-inject pipeline
+# functions are the only dependency. No backend deps — avoids the
+# circular arrow (backends dev-dep test-common → test-common deps
+# backend = cycle).
+nucleus-compiler = { path = "../nucleus-compiler" }

@@ -35,10 +35,10 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
-use compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
-use compiler::event::{ArgBinding, DataId, DataSlice, IterVar, KernelId};
-use compiler::sidecar::NameSidecar;
-use compiler::NameTables;
+use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, IterVar, KernelId};
+use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::NameTables;
 
 // --------------------------------------------------------------------
 // EmitError — the codegen-time error type

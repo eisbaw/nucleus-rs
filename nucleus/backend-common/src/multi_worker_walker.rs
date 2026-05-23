@@ -61,11 +61,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use compiler::event::{
+use nucleus_compiler::event::{
     BlockTag, DataId, Event, IterTile, IterVar, SeqTag, SyncTag, ViolationKind, WorkerId,
 };
-use compiler::NameTables;
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::NameTables;
+use nucleus_compiler::sidecar::NameSidecar;
 
 use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
 use crate::render::{

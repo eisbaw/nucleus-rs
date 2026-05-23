@@ -28,8 +28,9 @@
 //!
 //! Why the result returns a pre-built NameTables:
 //! TASK-0238 (cycle 25) moved NameTables from `pthreads-sync` to
-//! `compiler`. test-common can therefore depend on compiler and
-//! return a pre-built `compiler::NameTables` directly in
+//! `nucleus-compiler` (then named `compiler`; renamed in TASK-0084
+//! cycle 76). test-common can therefore depend on nucleus-compiler
+//! and return a pre-built `nucleus_compiler::NameTables` directly in
 //! [`LowerForTestResult`] — eliminating the 5-field literal block
 //! that previously lived at every call site (3 backend tests + the
 //! driver; cycle-24 close).
@@ -49,13 +50,13 @@
 
 use std::collections::BTreeMap;
 
-use compiler::event::{Event, WorkerId};
-use compiler::sidecar::NameSidecar;
-use compiler::NameTables;
+use nucleus_compiler::event::{Event, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::NameTables;
 
 /// Toggles for optional pipeline stages.
 ///
-/// `apply_block_transforms` — run `compiler::apply_block_transforms`
+/// `apply_block_transforms` — run `nucleus_compiler::apply_block_transforms`
 /// (needed for any schedule that uses `loop X : block=N`). **Default
 /// true** to match the driver's unconditional behaviour. Tests that
 /// want to reproduce the pre-cycle-24 byte-faithful behaviour of a
@@ -65,11 +66,11 @@ use compiler::NameTables;
 /// with no `block=N` directives, so the default is safe for naive
 /// schedules.
 ///
-/// `apply_partition_workers` — run `compiler::apply_partition_workers`
+/// `apply_partition_workers` — run `nucleus_compiler::apply_partition_workers`
 /// (needed for any schedule that uses `loop X : partition=workers`).
 /// **Default false.**
 ///
-/// `inject_check_frames` — run `compiler::inject_check_frames` on the
+/// `inject_check_frames` — run `nucleus_compiler::inject_check_frames` on the
 /// per-worker event lists (needed for any schedule with `check loop V`
 /// directives). **Default false.**
 #[derive(Debug, Clone, Copy)]
@@ -99,7 +100,7 @@ impl Default for LowerForTestOpts {
 /// pre-built NameTables (built from the post-pass ACFG via
 /// [`NameTables::from_acfg`]). Cycle-25 / TASK-0238 collapsed the
 /// previous 5-raw-map shape into the canonical NameTables struct,
-/// which is now part of `compiler`'s public API.
+/// which is now part of `nucleus-compiler`'s public API.
 #[derive(Debug, Clone)]
 pub struct LowerForTestResult {
     /// The per-worker EventList projection that `acfg_to_events`
@@ -128,7 +129,7 @@ pub struct LowerForTestResult {
 ///
 /// This helper is for TESTS. It panics (via `.expect`) on any
 /// pipeline-stage failure, with a context message naming the stage —
-/// production code in `compiler` returns typed errors instead.
+/// production code in `nucleus-compiler` returns typed errors instead.
 /// Calling `lower_for_test` with malformed source is a test-author
 /// bug, not a runtime concern.
 pub fn lower_for_test(
@@ -136,7 +137,7 @@ pub fn lower_for_test(
     sched_src: &str,
     opts: &LowerForTestOpts,
 ) -> LowerForTestResult {
-    use compiler::{
+    use nucleus_compiler::{
         acfg_to_events, apply_block_transforms, apply_partition_workers, build_acfg,
         build_sidecar,
         algo::{lower_algo, parse_algo},

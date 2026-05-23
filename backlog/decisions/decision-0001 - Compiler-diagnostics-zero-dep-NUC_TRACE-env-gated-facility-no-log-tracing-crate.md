@@ -10,7 +10,8 @@ status: accepted
 
 Several tasks want traceable compiler debug output (TASK-0151 AC#2:
 "cross-scope finalisation deferred for block-governed seq N"; future
-diagnostics tasks). The `compiler` crate deliberately carries only four
+diagnostics tasks). The `nucleus-compiler` crate (renamed from
+`compiler` by TASK-0084 cycle 76) deliberately carries only four
 dependencies (chumsky / syn / quote / serde), each pulling its weight,
 with the MSRV pinned in the Nix flake (PRD §12.1, *not* in Cargo.toml)
 and a hard no-spam ethos (PRD §12.3; `~/.claude/CLAUDE.md`).
@@ -24,8 +25,9 @@ driver.
 ## Decision
 
 Adopt (d): a zero-dependency `nuc_trace!` macro in
-`nucleus/compiler/src/trace.rs`, **silent unless the `NUC_TRACE`
-environment variable is set to a non-empty value**, writing to stderr.
+`nucleus/nucleus-compiler/src/trace.rs`, **silent unless the
+`NUC_TRACE` environment variable is set to a non-empty value**,
+writing to stderr.
 
 Rationale, argued against PRD §12 explicitly:
 
@@ -56,7 +58,7 @@ Rationale, argued against PRD §12 explicitly:
 
 ## Consequences
 
-- New module `nucleus/compiler/src/trace.rs` exporting the
+- New module `nucleus/nucleus-compiler/src/trace.rs` exporting the
   `#[macro_export] nuc_trace!` macro; zero new crate dependency; zero
   MSRV surface added.
 - **Default path is byte-silent.** `NUC_TRACE` unset ⇒ the macro guard

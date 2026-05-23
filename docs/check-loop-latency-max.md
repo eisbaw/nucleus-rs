@@ -225,7 +225,7 @@ variants:
 
 - **`jitter_max = T`** — per-iteration deviation from the running
   mean (or from a declared period). Implementation shape: a second
-  field on `compiler::event::CheckFrame`; the `let _check_elapsed`
+  field on `nucleus_compiler::event::CheckFrame`; the `let _check_elapsed`
   bookkeeping in `check_frame.rs` extends to maintain an EWMA or
   Welford running variance; one more `match` arm.
 - **`throughput_min = R`** — iterations per second floor. Shape:

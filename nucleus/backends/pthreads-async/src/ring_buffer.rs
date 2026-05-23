@@ -140,8 +140,8 @@ pub fn emit_ring_struct_decl(out: &mut String) {
 ///
 /// `cap` is the `transfer DATA : buffer=N` value. Two upstream gates
 /// jointly establish the invariant `cap >= max(1, D)` at codegen time:
-/// `compiler::sched::ir::SchedLowerErrorKind::ZeroBufferOption`
-/// rejects `buffer=0` at sched-lower; `compiler::link::LinkErrorKind::
+/// `nucleus_compiler::sched::ir::SchedLowerErrorKind::ZeroBufferOption`
+/// rejects `buffer=0` at sched-lower; `nucleus_compiler::link::LinkErrorKind::
 /// PipelineExceedsBuffer` rejects `D > buffer` at link. So the
 /// runtime ring is sized to hold every concurrent in-flight token
 /// without producer-side blocking under steady state, AND it is

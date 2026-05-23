@@ -10,7 +10,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "compiler",
+    # TASK-0084 cycle 76: renamed from `compiler` to disambiguate from
+    # the generic English word "compiler" and from the bin name `nucleus`.
+    # The bin name in `driver/Cargo.toml` is intentionally still `nucleus`.
+    "nucleus-compiler",
     "driver",
     "e2e",
     "mp-tcp-common",

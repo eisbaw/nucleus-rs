@@ -4,9 +4,10 @@
 //!
 //! Independent of Nucleus per docs/reference-impl-policy.md §2:
 //! depends on `std` only; does not share any code with kernels.rs or
-//! the compiler. The point of the reference is to be a second, hand-
-//! audited witness — if a backend matches the reference bit-for-bit,
-//! we have evidence the compiler is not "wrong in the same way".
+//! the nucleus-compiler crate. The point of the reference is to be a
+//! second, hand-audited witness — if a backend matches the reference
+//! bit-for-bit, we have evidence the compiler is not "wrong in the
+//! same way".
 //!
 //! Input format (`input.bin`):
 //!   - bytes [0       ..   4*N) — array `a`, N i32 little-endian words.

@@ -10,14 +10,15 @@
 //!   the dataflow walk actually emitted calls).
 //!
 //! The actual bit-identical end-to-end test (compile + run + diff
-//! reference.bin) lives at `nucleus/compiler/tests/e2e_example_01.rs`
-//! to keep this crate's test load light.
+//! reference.bin) lives at
+//! `nucleus/nucleus-compiler/tests/e2e_example_01.rs` to keep this
+//! crate's test load light.
 //!
 //! Multi-worker codegen (TASK-0122) is now in place. A synthetic
 //! two-worker pingpong test lives in `tests/multi_worker.rs`. The
 //! load-bearing end-to-end test (example 02 split.sched.nuc against
 //! `reference.bin`) lives at
-//! `nucleus/compiler/tests/e2e_example_02.rs`.
+//! `nucleus/nucleus-compiler/tests/e2e_example_02.rs`.
 //!
 //! At this layer (the unit-test surface of the backend) we keep:
 //! - The single-worker happy-path tests below (example 01 × naive).
@@ -32,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
 
-use compiler::{
+use nucleus_compiler::{
     acfg_to_events, build_acfg, build_sidecar,
     algo::{lower_algo, parse_algo},
     inject_syncs, inject_transfers, link,
@@ -45,12 +46,12 @@ use pthreads_sync::{emit, NameTables};
 /// that previously called `emit(&acfg, &linked, ...)` now go through
 /// this so they exercise the real TASK-0124 contract path.
 fn contract_inputs(
-    linked: &compiler::link::LinkedIR,
-    acfg: &compiler::ACFG,
+    linked: &nucleus_compiler::link::LinkedIR,
+    acfg: &nucleus_compiler::ACFG,
 ) -> (
-    BTreeMap<compiler::WorkerId, Vec<compiler::event::Event>>,
+    BTreeMap<nucleus_compiler::WorkerId, Vec<nucleus_compiler::event::Event>>,
     NameTables,
-    compiler::NameSidecar,
+    nucleus_compiler::NameSidecar,
 ) {
     let per_worker = acfg_to_events(acfg);
     let sidecar = build_sidecar(linked, acfg).expect("build_sidecar");
@@ -80,7 +81,7 @@ fn scratch_dir(name: &str) -> PathBuf {
 }
 
 /// Load + link example 01 with the naive schedule. Shared helper.
-fn link_example_01_naive() -> (compiler::link::LinkedIR, compiler::ACFG, PathBuf) {
+fn link_example_01_naive() -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG, PathBuf) {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/01-elementwise-add");
     let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
@@ -101,7 +102,7 @@ fn link_example_01_naive() -> (compiler::link::LinkedIR, compiler::ACFG, PathBuf
 /// pipeline (incl. `apply_block_transforms`) so a blocked schedule
 /// gets the tile rewrite. Returns `(linked, post-pass acfg, kernels
 /// path)`.
-fn link_example(ex_rel: &str, sched_rel: &str) -> (compiler::link::LinkedIR, compiler::ACFG, PathBuf) {
+fn link_example(ex_rel: &str, sched_rel: &str) -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG, PathBuf) {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples").join(ex_rel);
     let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
@@ -110,16 +111,17 @@ fn link_example(ex_rel: &str, sched_rel: &str) -> (compiler::link::LinkedIR, com
     let sched_ir = lower_sched(&parse_sched(&sched_src).unwrap()).unwrap();
     let linked = link(algo_ir, sched_ir).unwrap();
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = compiler::apply_block_transforms(&linked, acfg).unwrap();
+    let acfg = nucleus_compiler::apply_block_transforms(&linked, acfg).unwrap();
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     (linked, acfg, ex.join("kernels.rs"))
 }
 
 /// Finding (7) reconciliation (TASK-0124): the sidecar sufficiency
-/// tests in `compiler/tests/petri_to_events.rs` HAND-MIRROR the
-/// backend's bound/type/zero spelling (they cannot call the real
-/// backend — `compiler` must not depend on `pthreads-sync`). Now
+/// tests in `nucleus-compiler/tests/petri_to_events.rs` HAND-MIRROR
+/// the backend's bound/type/zero spelling (they cannot call the real
+/// backend — `nucleus-compiler` must not depend on `pthreads-sync`).
+/// Now
 /// that the backend actually consumes the sidecar, pin the EXACT
 /// load-bearing strings via the REAL `emit()` codegen here, at the
 /// backend layer, so any spelling drift fails loudly against real
@@ -395,5 +397,5 @@ pub fn classifier(_x: Vec<i32>) -> Vec<i32> { vec![0; N_CLASSES] }
 // synthetic ACFG/LinkedIR test here would therefore test a
 // responsibility the backend no longer has. The two-worker codegen
 // path itself stays covered end-to-end by `tests/multi_worker.rs`
-// (synthetic pingpong) and `compiler/tests/e2e_example_02.rs`
+// (synthetic pingpong) and `nucleus-compiler/tests/e2e_example_02.rs`
 // (example 02 `split.sched.nuc`).

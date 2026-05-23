@@ -1,7 +1,7 @@
 # Standalone reference implementation for example 05-stencil.
 #
 # Independent of Nucleus per docs/reference-impl-policy.md §2: no
-# dependency on the compiler crate, on any backend crate, or on any
+# dependency on the nucleus-compiler crate, on any backend crate, or on any
 # Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
 # workspace (no `[workspace]` link).
 #

@@ -106,7 +106,7 @@ use std::path::{Path, PathBuf};
 // emit the message without a backend literal, so user-visible text
 // from any re-exporter (this crate, mp-tcp-bufsync) reads cleanly.
 pub use backend_common::EmitError;
-pub use compiler::NameTables;
+pub use nucleus_compiler::NameTables;
 
 // Shared codegen — the single source of truth for the project skeleton
 // (Cargo.toml + run.sh) AND the single-worker main.rs body. Reusing
@@ -126,15 +126,15 @@ pub use compiler::NameTables;
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use pthreads_sync::render_single_worker_main;
 
-// AlgoIR-free: the only `compiler::*` surface this crate uses is the
-// inert per-worker EventList carrier (`compiler::event::{Event, WorkerId}`)
-// + the NameSidecar (`compiler::sidecar`). When TASK-0228 lands the
+// AlgoIR-free: the only `nucleus_compiler::*` surface this crate uses is the
+// inert per-worker EventList carrier (`nucleus_compiler::event::{Event, WorkerId}`)
+// + the NameSidecar (`nucleus_compiler::sidecar`). When TASK-0228 lands the
 // multi-worker ring-buffer codegen, it will additionally import the
-// inert expression grammar (`compiler::algo::{IrExpr, IrBinOp,
+// inert expression grammar (`nucleus_compiler::algo::{IrExpr, IrBinOp,
 // ResolvedType, ScalarType}`) the EventList already carries — exactly
 // the surface pthreads-sync + mp-tcp-bufsync consume.
-use compiler::event::{Event, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{Event, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 // Multi-worker runtime substrate emitters (TASK-0228 Wave A, cycle 18).
 // Pure-function emit helpers; NOT YET integrated into `emit()` —

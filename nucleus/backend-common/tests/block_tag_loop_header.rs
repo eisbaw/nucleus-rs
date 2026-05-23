@@ -26,10 +26,10 @@
 //!    back to `0_i64` as LO and the rebinding still emits a well-
 //!    formed expression.
 
-use compiler::algo::IrExpr;
-use compiler::event::{BlockTag, IterVar};
-use compiler::sidecar::{LoopBound, NameSidecar};
-use compiler::NameTables;
+use nucleus_compiler::algo::IrExpr;
+use nucleus_compiler::event::{BlockTag, IterVar};
+use nucleus_compiler::sidecar::{LoopBound, NameSidecar};
+use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::render_block_tag_loop_header;
 use backend_common::render::{EmitError, RenderCtxPub};

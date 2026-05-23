@@ -29,9 +29,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # Post-TASK-0124 the backend consumes only the per-worker EventList +
-# NameSidecar + inert expr grammar from `compiler`. No parser / lower /
-# link / acfg internals.
-compiler = { path = "../../compiler" }
+# NameSidecar + inert expr grammar from `nucleus-compiler`. No parser
+# / lower / link / acfg internals.
+nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives (TASK-0244 cycle 37 + TASK-0246 cycle 38):
 # RenderCtx, the expression / index / kernel-call / loop-bound / type
 # renderers, the check_frame emit templates, the multi-worker event

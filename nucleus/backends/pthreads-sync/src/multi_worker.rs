@@ -11,7 +11,7 @@
 //!
 //! This module reads ONLY the per-worker `EventList`, the
 //! [`NameTables`], and the [`NameSidecar`]. It does **not** touch
-//! `compiler::algo` / `compiler::link`:
+//! `nucleus_compiler::algo` / `nucleus_compiler::link`:
 //!
 //! - Slot allocation: derived from the [`Event::Push`] /
 //!   [`Event::Wait`] events themselves (the set of cross-worker
@@ -77,8 +77,8 @@ use std::fmt::Write as _;
 // (one slot per cross-worker data symbol — the pre-TASK-0124
 // behaviour), so `SeqTag` is not consulted here; a future
 // per-(seq) slot split (multi-buffer transfers) would use it.
-use compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::multi_worker_walker::{
     self as walker, RendezvousId, WalkerCtx,
@@ -156,7 +156,7 @@ struct Plan<'a> {
     /// gather half of TASK-0117 fan-out). Empty tile (no iteration
     /// nest) means "whole-array transfer"; the receiver-side
     /// `name = slot.wait();` path is taken.
-    pair_tiles: BTreeMap<(DataId, SeqTag), compiler::event::IterTile>,
+    pair_tiles: BTreeMap<(DataId, SeqTag), nucleus_compiler::event::IterTile>,
     /// `SyncTag` -> participants. Keyed directly by the contract
     /// barrier identity (TASK-0172). The projection clones the same
     /// participant set into every participant's `Event::Sync`, so
@@ -202,7 +202,7 @@ impl<'a> Plan<'a> {
         // (01..07: every cross-worker transfer is host↔single-worker)
         // map to one slot each at slot indices 0..N-1, preserving the
         // pre-TASK-0117 stable layout.
-        let mut xfer_pairs: BTreeMap<(DataId, SeqTag), compiler::event::IterTile> =
+        let mut xfer_pairs: BTreeMap<(DataId, SeqTag), nucleus_compiler::event::IterTile> =
             BTreeMap::new();
         for evs in per_worker.values() {
             walker::collect_xfer_pairs(evs, &mut xfer_pairs);
@@ -591,7 +591,7 @@ impl<'a> Plan<'a> {
 /// Map a `ResolvedType` to the Rust surface type: arrays flatten to
 /// `Vec<T>`, scalars use the natural spelling. Mirrors the old
 /// `rust_type_of`.
-fn rust_type_of(ty: &compiler::algo::ResolvedType) -> String {
+fn rust_type_of(ty: &nucleus_compiler::algo::ResolvedType) -> String {
     if ty.is_scalar() {
         rust_scalar_type(&ty.scalar).to_string()
     } else {
@@ -599,7 +599,7 @@ fn rust_type_of(ty: &compiler::algo::ResolvedType) -> String {
     }
 }
 
-fn render_array_init(ty: &compiler::algo::ResolvedType) -> String {
+fn render_array_init(ty: &nucleus_compiler::algo::ResolvedType) -> String {
     if ty.is_scalar() {
         rust_scalar_zero(&ty.scalar).to_string()
     } else {
@@ -609,8 +609,8 @@ fn render_array_init(ty: &compiler::algo::ResolvedType) -> String {
     }
 }
 
-fn rust_scalar_zero(t: &compiler::algo::ScalarType) -> &'static str {
-    use compiler::algo::ScalarType::*;
+fn rust_scalar_zero(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
+    use nucleus_compiler::algo::ScalarType::*;
     match t {
         F32 | F64 => "0.0",
         Bool => "false",

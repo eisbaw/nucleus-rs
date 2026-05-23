@@ -4,7 +4,8 @@
 //! Why this file exists: the implementer's main commit `d2bbf76`
 //! wired identical Instant-now-then-duration-check-then-panic codegen
 //! into the mp-tcp-bufsync `Event::Loop` arm to mirror pthreads-sync
-//! (`nucleus/compiler/tests/check_frame_codegen.rs`), but there was
+//! (`nucleus/backends/pthreads-sync/tests/check_frame_codegen.rs`),
+//! but there was
 //! no test pinning the mp-tcp emit string. AC number 1 of TASK-0052.02
 //! lists BOTH backends as required and the cross-backend claim was
 //! untested until this file landed (architect review finding number 2
@@ -47,9 +48,9 @@ fn build_per_worker(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>,
+    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
     NameTables,
-    compiler::sidecar::NameSidecar,
+    nucleus_compiler::sidecar::NameSidecar,
 ) {
     // Cycle-25 follow-on (cycle-24 review-gate A.3 LOW closed): the
     // pre-cycle-24 single-worker variant of this helper was NOT
@@ -364,9 +365,9 @@ fn build_per_worker_partitioned(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>,
+    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
     NameTables,
-    compiler::sidecar::NameSidecar,
+    nucleus_compiler::sidecar::NameSidecar,
 ) {
     let r = test_common::lower_for_test(
         algo_src,

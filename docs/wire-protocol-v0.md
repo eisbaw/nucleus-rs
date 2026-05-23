@@ -20,7 +20,7 @@ Every cross-worker message is exactly:
 
 - `length` — number of payload bytes that follow the 16-byte header,
   little-endian `u64`.
-- `seq_tag` — the `compiler::event::SeqTag` value the projection
+- `seq_tag` — the `nucleus_compiler::event::SeqTag` value the projection
   attached to the matched `Event::Push` / `Event::Wait` pair, copied
   verbatim, little-endian `u64`. It is **not** interpreted by the
   transport; it travels so a receiver can assert it received the

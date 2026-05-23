@@ -7,8 +7,9 @@
 # output.bin on TWO independent backends (pthreads-sync is #1).
 #
 # AlgoIR/LinkedIR/ACFG-free, exactly like pthreads-sync: it consumes
-# only the per-worker EventList (compiler::event), the NameSidecar
-# (compiler::sidecar) + the inert IrExpr grammar those carry.
+# only the per-worker EventList (nucleus_compiler::event), the
+# NameSidecar (nucleus_compiler::sidecar) + the inert IrExpr grammar
+# those carry.
 #
 # Drift control (TASK-0124 carried caveat): expression / index /
 # kernel-call / single-worker rendering is NOT re-implemented here —
@@ -28,7 +29,7 @@ name = "mp_tcp_bufsync"
 path = "src/lib.rs"
 
 [dependencies]
-compiler = { path = "../../compiler" }
+nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives (TASK-0244 cycle 37): RenderCtx, the
 # expression/index/kernel-call/loop-bound/type renderers, the
 # check_frame emit templates, and the multi-worker event walker.

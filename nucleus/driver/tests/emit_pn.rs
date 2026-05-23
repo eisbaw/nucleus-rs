@@ -141,7 +141,7 @@ fn emit_pn_writes_a_dot_file_with_expected_structure() {
         "missing per-worker cluster in:\n{dot}"
     );
     // The styled serialiser always picks a palette colour from
-    // `compiler::petri::WORKER_PALETTE`. The first entry is
+    // `nucleus_compiler::petri::WORKER_PALETTE`. The first entry is
     // `lightblue`; example 01 has a single worker which the lowering
     // pass assigns id 0 (deterministically), so `lightblue` must
     // appear. If the palette is ever reordered, this assertion

@@ -6,7 +6,8 @@
 //! binary -> diff its output against an expected value.
 //!
 //! The driving algorithm here is *not* example 02 (that lives in
-//! `nucleus/compiler/tests/e2e_example_02.rs`); we use a smaller,
+//! `nucleus/nucleus-compiler/tests/e2e_example_02.rs`); we use a
+//! smaller,
 //! purpose-built two-worker case that fits in a unit-test file so
 //! the multi-worker rejection / codegen path can be exercised in
 //! isolation from the example matrix.
@@ -26,7 +27,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use compiler::{
+use nucleus_compiler::{
     acfg_to_events,
     algo::{lower_algo, parse_algo},
     build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
@@ -354,7 +355,7 @@ const PARTIAL_EXPECTED_SUM: i32 = 124;
 
 #[test]
 fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
-    use compiler::event::{Event, SyncTag, WorkerId};
+    use nucleus_compiler::event::{Event, SyncTag, WorkerId};
     use std::collections::{BTreeMap, BTreeSet};
 
     let scratch = scratch_dir("partial_nonuniform_barrier");
@@ -645,7 +646,7 @@ pub fn save_output(y: Vec<i32>) {
 
 #[test]
 fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
-    use compiler::{apply_block_transforms, apply_partition_workers, inject_check_frames};
+    use nucleus_compiler::{apply_block_transforms, apply_partition_workers, inject_check_frames};
     let scratch = scratch_dir("multi_worker_check_loop_panic");
     let algo_path = scratch.join("prog.algo.nuc");
     let sched_path = scratch.join("prog.sched.nuc");
@@ -852,9 +853,9 @@ fn lower_multi_worker_check_schedule(
     sched_src: &str,
     scratch_name: &str,
 ) -> (
-    std::collections::BTreeMap<compiler::WorkerId, Vec<compiler::event::Event>>,
+    std::collections::BTreeMap<nucleus_compiler::WorkerId, Vec<nucleus_compiler::event::Event>>,
     NameTables,
-    compiler::NameSidecar,
+    nucleus_compiler::NameSidecar,
     PathBuf,
     PathBuf,
 ) {

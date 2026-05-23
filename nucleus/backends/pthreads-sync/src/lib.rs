@@ -31,7 +31,7 @@
 //!
 //! With `(EventList, name tables, NameSidecar)` the codegen path is
 //! **fully AlgoIR-/LinkedIR-free** (AC#2): this module imports
-//! neither `compiler::algo` nor `compiler::link` for code emission.
+//! neither `nucleus_compiler::algo` nor `nucleus_compiler::link` for code emission.
 //! `IrExpr` is used only as the inert index/scalar-expression grammar
 //! the EventList already carries (it is the single source of truth
 //! for "what an index is"; no pass evaluates it here).
@@ -87,9 +87,9 @@ use std::path::{Path, PathBuf};
 
 // AlgoIR-free: this crate is now AlgoIR-FREE — every type used here
 // comes through `backend_common::render` (which re-exports from
-// `compiler::algo` where needed for its OWN typed signatures).
-use compiler::event::{DataId, Event, IterVar, ViolationKind, WorkerId};
-use compiler::sidecar::NameSidecar;
+// `nucleus_compiler::algo` where needed for its OWN typed signatures).
+use nucleus_compiler::event::{DataId, Event, IterVar, ViolationKind, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 // Shared codegen primitives (TASK-0244 cycle 37). The expression /
 // index / kernel-call / loop-bound / type renderers, the check_frame
@@ -118,16 +118,18 @@ mod multi_worker;
 // Public surface
 // --------------------------------------------------------------------
 
-// NameTables moved to `compiler` as of TASK-0238 (cycle 25). Re-exported
-// here so historic `pthreads_sync::NameTables` paths continue to work
-// (mp-tcp-bufsync's `pub use pthreads_sync::NameTables` + pthreads-
-// async's same re-export are unchanged; both transitively re-export
-// the now-`compiler::NameTables` definition). Cycle-24 review-gate
-// B.1 found that the struct holds zero pthreads-sync-specific content,
-// and its prior home prevented the cross-backend test-helper crate
-// `test-common` from depending on pthreads-sync (would cycle). Moving
-// to compiler dissolves both constraints.
-pub use compiler::NameTables;
+// NameTables moved to `nucleus-compiler` as of TASK-0238 (cycle 25;
+// crate previously named `compiler`, renamed in TASK-0084 cycle 76).
+// Re-exported here so historic `pthreads_sync::NameTables` paths
+// continue to work (mp-tcp-bufsync's `pub use pthreads_sync::NameTables`
+// + pthreads-async's same re-export are unchanged; both transitively
+// re-export the now-`nucleus_compiler::NameTables` definition).
+// Cycle-24 review-gate B.1 found that the struct holds zero
+// pthreads-sync-specific content, and its prior home prevented the
+// cross-backend test-helper crate `test-common` from depending on
+// pthreads-sync (would cycle). Moving to nucleus-compiler dissolves
+// both constraints.
+pub use nucleus_compiler::NameTables;
 
 /// Paths to the files [`emit`] wrote, returned for callers that want
 /// to inspect or invoke them.

@@ -12,7 +12,7 @@
 //! Identical `emit()` signature and consumed contract as the three
 //! shipped tier-1 backends: `(per_worker, names, sidecar,
 //! kernels_rs_path, out_dir) -> Result<EmitResult, EmitError>`. No
-//! `compiler::algo` / `compiler::link` / `compiler::acfg` access
+//! `nucleus_compiler::algo` / `nucleus_compiler::link` / `nucleus_compiler::acfg` access
 //! beyond the inert `IrExpr` / `ResolvedType` grammar the EventList
 //! carries.
 //!
@@ -115,10 +115,10 @@ use std::path::{Path, PathBuf};
 // identical NameTables input across every backend — they are built
 // ONCE by the driver and fed to every backend's emit().
 pub use backend_common::EmitError;
-pub use compiler::NameTables;
+pub use nucleus_compiler::NameTables;
 
-use compiler::event::{Event, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{Event, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 // Single-worker emit delegate. The shared single-worker renderer
 // lives in pthreads-sync (the pthreads-sync-specific straight-line

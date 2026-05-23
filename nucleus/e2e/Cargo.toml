@@ -22,11 +22,12 @@ path = "src/main.rs"
 [dependencies]
 # Serde derives for the matrix manifest (`e2e-matrix.toml`) and the
 # backend `capabilities.toml` files. Pinned to the same versions the
-# compiler crate uses — keeps cargo's dep resolver from pulling in
-# two different versions and bloating build times.
+# nucleus-compiler crate uses — keeps cargo's dep resolver from
+# pulling in two different versions and bloating build times.
 serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"] }
 
 # TOML parser for the matrix manifest and capabilities files. Pinned
 # to the version compatible with the MSRV declared in flake.nix — see
-# `nucleus/compiler/Cargo.toml` for the version-rationale comment.
+# `nucleus/nucleus-compiler/Cargo.toml` for the version-rationale
+# comment.
 toml = { version = "=0.7.8", default-features = false, features = ["parse"] }

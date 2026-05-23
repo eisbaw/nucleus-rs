@@ -14,8 +14,8 @@
 //! pthreads-sync: `(per_worker: &BTreeMap<WorkerId,Vec<Event>>,
 //! names: &NameTables, sidecar: &NameSidecar, kernels_rs_path,
 //! out_dir) -> Result<EmitResult, EmitError>`. It imports neither
-//! `compiler::algo` (beyond the inert `IrExpr`/type grammar the
-//! EventList carries) nor `compiler::link`/`acfg`.
+//! `nucleus_compiler::algo` (beyond the inert `IrExpr`/type grammar the
+//! EventList carries) nor `nucleus_compiler::link`/`acfg`.
 //!
 //! ## No renderer drift (TASK-0124 flagged risk, addressed)
 //!
@@ -52,7 +52,7 @@
 //! Barriers are host-mediated: every barrier in the tier-1 set is
 //! `{host, w0}` (2-party); the general N-party barrier is a star
 //! through host. Barrier identity is the contract-carried
-//! [`compiler::event::SyncTag`] on `Event::Sync` (TASK-0172): host
+//! [`nucleus_compiler::event::SyncTag`] on `Event::Sync` (TASK-0172): host
 //! and every worker key the wire `barrier_cross` token by that tag,
 //! which is the same value for every participant by construction —
 //! so partial / non-uniform barriers (participant sets that differ
@@ -79,8 +79,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use compiler::event::{DataId, Event, IterVar, SyncTag, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{DataId, Event, IterVar, SyncTag, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 // Shared codegen primitives (TASK-0244 cycle 37) — the SINGLE
 // implementation of expression / index / call / loop-bound rendering,
@@ -93,7 +93,7 @@ use compiler::sidecar::NameSidecar;
 // sync's, the cross-backend differential invariant on the
 // single-worker path).
 pub use backend_common::EmitError;
-pub use compiler::NameTables;
+pub use nucleus_compiler::NameTables;
 use backend_common::check_frame::{
     collect_count_check_frames, emit_count_branch, emit_count_guard_local,
     emit_count_reporter_struct, emit_count_static, emit_log_branch,
@@ -928,7 +928,7 @@ impl<'a> Plan<'a> {
                         )
                         .ok();
                         match frame.on_violation {
-                            compiler::event::ViolationKind::Panic => {
+                            nucleus_compiler::event::ViolationKind::Panic => {
                                 writeln!(
                                     out,
                                     "{body_pad}if _check_elapsed > {ns}_u128 {{ panic!(\"latency budget violated on `check loop {lv}`: iteration took {{}} ns, max {ns} ns\", _check_elapsed); }}",
@@ -937,7 +937,7 @@ impl<'a> Plan<'a> {
                                 )
                                 .ok();
                             }
-                            compiler::event::ViolationKind::Log => {
+                            nucleus_compiler::event::ViolationKind::Log => {
                                 // TASK-0052.04. eprintln per violation;
                                 // execution continues. Mirrors the
                                 // pthreads-sync emit verbatim — the
@@ -947,7 +947,7 @@ impl<'a> Plan<'a> {
                                 // TASK-0222: shared template — see emit_log_branch.
                                 emit_log_branch(out, &body_pad, &frame.loop_var, frame.latency_max_ns);
                             }
-                            compiler::event::ViolationKind::Count => {
+                            nucleus_compiler::event::ViolationKind::Count => {
                                 // TASK-0052.04. The static counter +
                                 // Drop guard are emitted at file scope
                                 // by `render_worker_program` above
@@ -1270,8 +1270,8 @@ impl<'a> Plan<'a> {
     }
 }
 
-fn scalar_width(t: &compiler::algo::ScalarType) -> usize {
-    use compiler::algo::ScalarType::*;
+fn scalar_width(t: &nucleus_compiler::algo::ScalarType) -> usize {
+    use nucleus_compiler::algo::ScalarType::*;
     match t {
         I8 | U8 | Bool => 1,
         I16 | U16 => 2,
@@ -1285,8 +1285,8 @@ fn scalar_width(t: &compiler::algo::ScalarType) -> usize {
 /// `wire::enc_*` / `wire::enc_vec(...)` call for a value named `name`
 /// of resolved type `ty`. Encoder is fixed at compile time from the
 /// sidecar (TASK-0037 AC#3) — sender/receiver agree by construction.
-fn encode_expr(name: &str, ty: &compiler::algo::ResolvedType) -> Result<String, EmitError> {
-    use compiler::algo::ScalarType::Bool;
+fn encode_expr(name: &str, ty: &nucleus_compiler::algo::ResolvedType) -> Result<String, EmitError> {
+    use nucleus_compiler::algo::ScalarType::Bool;
     let s = scalar_fn_suffix(&ty.scalar);
     if ty.is_scalar() {
         Ok(format!("wire::enc_{s}({name})"))
@@ -1300,8 +1300,8 @@ fn encode_expr(name: &str, ty: &compiler::algo::ResolvedType) -> Result<String, 
 }
 
 /// Expression that decodes `__buf` back into the value's Rust type.
-fn decode_expr(ty: &compiler::algo::ResolvedType) -> Result<String, EmitError> {
-    use compiler::algo::ScalarType::Bool;
+fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<String, EmitError> {
+    use nucleus_compiler::algo::ScalarType::Bool;
     let s = scalar_fn_suffix(&ty.scalar);
     if ty.is_scalar() {
         Ok(format!("wire::dec_{s}(&__buf)"))
@@ -1313,8 +1313,8 @@ fn decode_expr(ty: &compiler::algo::ResolvedType) -> Result<String, EmitError> {
     }
 }
 
-fn scalar_fn_suffix(t: &compiler::algo::ScalarType) -> &'static str {
-    use compiler::algo::ScalarType::*;
+fn scalar_fn_suffix(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
+    use nucleus_compiler::algo::ScalarType::*;
     match t {
         I8 => "i8",
         I16 => "i16",

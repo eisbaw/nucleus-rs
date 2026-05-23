@@ -20,7 +20,7 @@
 //!
 //! Independent of Nucleus per docs/reference-impl-policy.md §2:
 //! depends on `std` only; does not share any code with kernels.rs or
-//! the compiler.
+//! the nucleus-compiler crate.
 //!
 //! Input format (`input.bin`):
 //!   - bytes [0      ..   4*N) — array `seeds`, N i32 LE words.

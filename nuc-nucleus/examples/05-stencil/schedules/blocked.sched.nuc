@@ -32,7 +32,7 @@
 //
 // End-to-end status: this `blocked` cell is ACTIVE (not ignored) in
 // both the `nucleus/e2e` matrix (a required cell) and the in-crate
-// `nucleus/compiler/tests/e2e_example_05.rs`. It compiles, builds,
+// `nucleus/nucleus-compiler/tests/e2e_example_05.rs`. It compiles, builds,
 // runs, and is bit-identical to `reference.bin`. Honest scope:
 // 05-stencil is single-`host`, so the backend emits from the
 // algorithm source (not the block-transformed ACFG) — this cell

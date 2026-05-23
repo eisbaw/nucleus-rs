@@ -271,8 +271,8 @@ impl Manifest {
 }
 
 /// Subset of a backend's `capabilities.toml`. The harness sniffs that
-/// the file *parses as TOML* — the compiler's `load_capabilities` is
-/// the authoritative schema validator and the driver invokes it on
+/// the file *parses as TOML* — `nucleus-compiler`'s `load_capabilities`
+/// is the authoritative schema validator and the driver invokes it on
 /// every compile — PLUS the one field that changes how the *harness*
 /// itself runs the artefact: `transport`. A `shared-memory` backend
 /// emits one `nuc-generated` binary; a `tcp` (or other multi-process)
@@ -1232,9 +1232,10 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         };
     }
 
-    // Capabilities sniff: the harness does not duplicate the
-    // compiler's capability matcher (that's `check_schedule_compat`,
-    // and the driver invokes it for us). We only check that the
+    // Capabilities sniff: the harness does not duplicate
+    // nucleus-compiler's capability matcher (that's
+    // `check_schedule_compat`, and the driver invokes it for us).
+    // We only check that the
     // backend's `capabilities.toml` exists and parses; if it doesn't
     // exist, the cell is SKIPPED (capability) — likely a missing
     // backend crate. The full schedule/backend compat check is the
@@ -5133,8 +5134,9 @@ mystery = 42
     /// it up exactly once. This exercises the harness's plumbing
     /// (manifest decode + plan_cells + paths discovery) without
     /// running cargo on the cell — the cell *execution* itself is
-    /// covered by `compiler/tests/e2e_example_0{1,2,3}.rs`, which
-    /// remain authoritative regression catchers per the task brief.
+    /// covered by `nucleus-compiler/tests/e2e_example_0{1,2,3}.rs`,
+    /// which remain authoritative regression catchers per the task
+    /// brief.
     #[test]
     fn plan_picks_required_cell_when_filtered() {
         let paths = Paths::discover().expect("discover");

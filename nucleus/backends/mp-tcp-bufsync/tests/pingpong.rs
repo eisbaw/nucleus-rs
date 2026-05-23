@@ -22,7 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use compiler::{
+use nucleus_compiler::{
     acfg_to_events,
     algo::{lower_algo, parse_algo},
     build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
@@ -119,8 +119,8 @@ pub fn sink(z: Vec<i32>) {
 
 /// Build the post-injection ACFG + sidecar + reverse name tables
 /// (exactly what the driver feeds every EventList backend).
-fn pipeline(scratch: &Path) -> (PathBuf, NameTables, compiler::sidecar::NameSidecar,
-    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>) {
+fn pipeline(scratch: &Path) -> (PathBuf, NameTables, nucleus_compiler::sidecar::NameSidecar,
+    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>) {
     let kernels_path = scratch.join("kernels.rs");
     fs::write(&kernels_path, KERNELS_SRC).unwrap();
 

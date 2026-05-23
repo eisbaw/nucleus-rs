@@ -47,7 +47,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use compiler::{
+use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_workers, build_acfg,
     build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
     inject_syncs, inject_transfers, link, load_capabilities,
@@ -189,7 +189,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // broken program sees every error at once rather than one
     // recompile per error. (TASK-0092 lowering multi-error will reuse
     // this surfacing template.)
-    let algo_ast = compiler::algo::parse_algo(&algo_src).map_err(|errs| {
+    let algo_ast = nucleus_compiler::algo::parse_algo(&algo_src).map_err(|errs| {
         let mut s = format!(
             "algorithm parse error(s) in {} ({}):",
             algo_path.display(),
@@ -208,7 +208,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // one-line-per-error shape, so a user fixing a syntactically
     // broken schedule sees every error at once rather than one
     // recompile per error.
-    let sched_ast = compiler::sched::parse_sched(&sched_src).map_err(|errs| {
+    let sched_ast = nucleus_compiler::sched::parse_sched(&sched_src).map_err(|errs| {
         let mut s = format!(
             "schedule parse error(s) in {} ({}):",
             sched_path.display(),
@@ -232,7 +232,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // `parse_algo` / link / contract paths use, so a user fixing a
     // semantically broken program sees every error at once rather than
     // one recompile per error.
-    let algo_ir = compiler::algo::lower_algo(&algo_ast).map_err(|errs| {
+    let algo_ir = nucleus_compiler::algo::lower_algo(&algo_ast).map_err(|errs| {
         let mut s = format!(
             "algorithm lower error(s) in {} ({}):",
             algo_path.display(),
@@ -257,7 +257,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // / `parse_sched` / `lower_algo` / link / contract paths use, so a
     // user fixing a semantically broken schedule sees every error at
     // once rather than one recompile per error.
-    let sched_ir = compiler::sched::lower_sched(&sched_ast).map_err(|errs| {
+    let sched_ir = nucleus_compiler::sched::lower_sched(&sched_ast).map_err(|errs| {
         let mut s = format!(
             "schedule lower error(s) in {} ({}):",
             sched_path.display(),
@@ -409,7 +409,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // cross-backend differential requires identical inputs).
     // TASK-0238 (cycle 25): the 5-field composition collapsed into
     // the centralized constructor.
-    let names = compiler::NameTables::from_acfg(&acfg);
+    let names = nucleus_compiler::NameTables::from_acfg(&acfg);
 
     match backend.as_str() {
         "pthreads-sync" => {

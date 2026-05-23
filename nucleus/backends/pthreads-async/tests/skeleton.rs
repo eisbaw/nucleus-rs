@@ -29,8 +29,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use compiler::event::{Event, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{Event, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 use pthreads_async::{emit, EmitResult, NameTables};
 
 /// Wave B-2 smoke test: the multi-worker emit path actually produces

@@ -1,0 +1,1070 @@
+//! Integration tests for the transfer-injection pass (TASK-0018).
+//!
+//! Strategy:
+//!
+//! - **Synthetic positive cases**: hand-built tiny ACFGs paired with
+//!   minimal `LinkedIR`s that exercise the core invariants (matched
+//!   Push/Wait pair, unique SeqTag, fresh policy attached).
+//!
+//! - **Policy combinations**: four schedule snippets covering sync,
+//!   async, async+buffer=2, async+buffer=2+notify=event. The
+//!   resulting [`TransferPolicy`] on every `XferPlaceholder` must
+//!   reflect the schedule.
+//!
+//! - **Idempotence**: calling `inject_transfers` twice yields the
+//!   same ACFG as calling it once.
+//!
+//! - **End-to-end against real examples**: build the ACFG from
+//!   example 1 (no cross-worker dataflow -> 0 xfers), example 13
+//!   naive (no cross-worker -> 0), and example 14 naive (no
+//!   cross-worker -> 0). Structural assertions only — no snapshots
+//!   of the full tree.
+//!
+//! What this file does NOT test:
+//! - Snapshot of the full tree — structural assertions are preferred.
+//! - Capability mismatch errors — by task spec, capability checks are
+//!   deferred to codegen-time (TASK-0019+).
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use nucleus_compiler::acfg::{
+    build_acfg, ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, TransferPolicy,
+    XferPlaceholder, XferRole, ACFG,
+};
+use nucleus_compiler::algo::{lower_algo, parse_algo};
+use nucleus_compiler::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
+use nucleus_compiler::link::{self, LinkedIR, WorkerEntity};
+use nucleus_compiler::passes::transfer_inject::inject_transfers;
+use nucleus_compiler::sched::{lower_sched, parse_sched};
+
+// --------------------------------------------------------------------
+// Synthetic-ACFG helpers
+// --------------------------------------------------------------------
+
+fn ws(ids: &[u64]) -> BTreeSet<WorkerId> {
+    ids.iter().copied().map(WorkerId).collect()
+}
+
+fn op(workers: &[u64], kernel: u64, data_in: Vec<u64>, data_out: Option<u64>) -> ACFGNode {
+    let kid = KernelId(kernel);
+    ACFGNode::Operation(Operation {
+        kernel: kid,
+        workers: ws(workers),
+        dataflow: DataflowDag {
+            edges: vec![DataflowEdge::new(
+                data_in.into_iter().map(DataId).collect(),
+                kid,
+                data_out.map(DataId),
+            )],
+        },
+    })
+}
+
+/// Build a synthetic `LinkedIR` carrying just enough info for
+/// `inject_transfers` to consult:
+/// - `data_producers`: map data symbol name -> single-worker entity.
+/// - `sched.transfers`: per-data transfer policy in textual schedule form.
+///
+/// Other LinkedIR fields are left empty/default — the transfer-inject
+/// pass does not look at them.
+fn synthetic_linked_ir(
+    name_data: &BTreeMap<String, DataId>,
+    name_workers: &BTreeMap<String, WorkerId>,
+    producers: &[(&str, &[&str])],
+    transfers_src: &str,
+) -> LinkedIR {
+    let _ = name_data;
+    let _ = name_workers;
+
+    let mut data_producers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
+    for (data_name, worker_names) in producers {
+        let entity = WorkerEntity(worker_names.iter().map(|s| (*s).to_string()).collect());
+        data_producers.insert((*data_name).to_string(), entity);
+    }
+
+    // We embed the transfer directives by parsing a minimal schedule
+    // file that declares one worker and the transfers. Hand-writing
+    // SchedIR fields is brittle; using the real parser keeps us
+    // honest to the surface syntax.
+    let sched_src = format!(
+        r#"schedule for "../prog.algo.nuc" {{
+    workers = {{ host }};
+    {transfers_src}
+}}"#
+    );
+    let sched_ast = parse_sched(&sched_src).expect("synthetic sched parses");
+    let sched = lower_sched(&sched_ast).expect("synthetic sched lowers");
+
+    LinkedIR {
+        algo: Default::default(),
+        sched,
+        placements: Default::default(),
+        kernel_workers: Default::default(),
+        data_producers,
+        data_consumers: Default::default(),
+    }
+}
+
+fn synthetic_acfg(
+    root: ACFGNode,
+    name_data_pairs: &[(&str, u64)],
+    name_workers_pairs: &[(&str, u64)],
+) -> ACFG {
+    let name_data: BTreeMap<String, DataId> = name_data_pairs
+        .iter()
+        .map(|(n, i)| ((*n).to_string(), DataId(*i)))
+        .collect();
+    let name_workers: BTreeMap<String, WorkerId> = name_workers_pairs
+        .iter()
+        .map(|(n, i)| ((*n).to_string(), WorkerId(*i)))
+        .collect();
+    ACFG {
+        root,
+        name_kernels: Default::default(),
+        name_data,
+        name_workers,
+        name_iter_vars: Default::default(),
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: Default::default(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+    }
+}
+
+// --------------------------------------------------------------------
+// Core: two-worker producer/consumer
+// --------------------------------------------------------------------
+
+#[test]
+fn two_worker_producer_consumer_yields_matched_push_wait() {
+    // op_p on worker w0 produces data 0 (named "d").
+    // op_c on worker w1 reads data 0.
+    // Expect: ONE Push after op_p, ONE Wait before op_c, both
+    // carrying the same SeqTag, src=w0, dst=w1, data=0, sync policy.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),  // producer on w0
+        op(&[1], 101, vec![0], Some(1)), // consumer on w1
+    ]);
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w0"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    // Exactly one Push and one Wait.
+    assert_eq!(result.push_count(), 1, "exactly one Push");
+    assert_eq!(result.wait_count(), 1, "exactly one Wait");
+
+    // Both share the same seq tag.
+    let xfers = result.root.collect_xfers();
+    assert_eq!(xfers.len(), 2);
+    assert_eq!(xfers[0].seq, xfers[1].seq, "matched Push/Wait share seq");
+
+    // Push appears before Wait in source order (producer Op comes
+    // before consumer Op).
+    assert_eq!(xfers[0].role, XferRole::Push);
+    assert_eq!(xfers[1].role, XferRole::Wait);
+
+    // Endpoints make sense.
+    for x in &xfers {
+        assert_eq!(x.src, WorkerId(0));
+        assert_eq!(x.dst, WorkerId(1));
+        assert_eq!(x.data, DataId(0));
+    }
+
+    // Sequence structure: [op_p, Push, op_c_wait_then_op] ->
+    // [op_p, Push, Wait, op_c].
+    if let ACFGNode::Sequence(children) = &result.root {
+        assert_eq!(children.len(), 4);
+        assert!(matches!(children[0], ACFGNode::Operation(_)));
+        assert!(matches!(&children[1], ACFGNode::Xfer(x) if x.role == XferRole::Push));
+        assert!(matches!(&children[2], ACFGNode::Xfer(x) if x.role == XferRole::Wait));
+        assert!(matches!(children[3], ACFGNode::Operation(_)));
+    } else {
+        panic!("expected top-level Sequence");
+    }
+}
+
+#[test]
+fn same_worker_producer_consumer_yields_no_transfers() {
+    // Both ops on worker 0 -> no cross-worker edge -> no transfer.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[0], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0)]);
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w0"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+    assert_eq!(result.xfer_count(), 0);
+}
+
+#[test]
+fn seq_tags_unique_per_pair() {
+    // Three cross-worker edges in sequence; expect 3 Push and 3 Wait,
+    // all six with distinct sequence values within {Push} and {Wait}
+    // and the same seq within each matched pair.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),  // produces d0 on w0
+        op(&[1], 101, vec![0], Some(1)), // reads d0 on w1; produces d1
+        op(&[2], 102, vec![1], Some(2)), // reads d1 on w2; produces d2
+        op(&[0], 103, vec![2], None),    // reads d2 on w0
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d0", 0), ("d1", 1), ("d2", 2)],
+        &[("w0", 0), ("w1", 1), ("w2", 2)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d0", &["w0"]), ("d1", &["w1"]), ("d2", &["w2"])],
+        "transfer d0 : sync; transfer d1 : sync; transfer d2 : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.push_count(), 3);
+    assert_eq!(result.wait_count(), 3);
+
+    let xfers = result.root.collect_xfers();
+    let seqs: Vec<SeqTag> = xfers.iter().map(|x| x.seq).collect();
+    let unique: BTreeSet<SeqTag> = seqs.iter().copied().collect();
+    // Three matched pairs -> 3 distinct seq values, each appearing
+    // twice.
+    assert_eq!(unique.len(), 3, "three distinct sequence tags");
+
+    // Verify every Push has a matching Wait by seq.
+    let pushes: BTreeSet<SeqTag> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Push)
+        .map(|x| x.seq)
+        .collect();
+    let waits: BTreeSet<SeqTag> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait)
+        .map(|x| x.seq)
+        .collect();
+    assert_eq!(pushes, waits, "Push and Wait seq sets match");
+}
+
+// --------------------------------------------------------------------
+// Schedule policy combinations
+// --------------------------------------------------------------------
+
+fn policy_after_inject(transfers_src: &str) -> TransferPolicy {
+    // Same two-op shape as the very first test; we just vary the
+    // schedule's transfer directive and read the policy back off
+    // the placeholders.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w0"])],
+        transfers_src,
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    assert!(!xfers.is_empty(), "expected at least one transfer");
+    let p = xfers[0].policy;
+    // All endpoints of a pair must agree on the policy.
+    for x in &xfers {
+        assert_eq!(x.policy, p);
+    }
+    p
+}
+
+#[test]
+fn policy_sync() {
+    let p = policy_after_inject("transfer d : sync;");
+    assert_eq!(
+        p,
+        TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        }
+    );
+}
+
+#[test]
+fn policy_async() {
+    let p = policy_after_inject("transfer d : async;");
+    assert_eq!(
+        p,
+        TransferPolicy {
+            synchronous: false,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        }
+    );
+}
+
+#[test]
+fn policy_async_buffer_2() {
+    let p = policy_after_inject("transfer d : async, buffer=2;");
+    assert_eq!(
+        p,
+        TransferPolicy {
+            synchronous: false,
+            buffer: 2,
+            notify: NotifyMode::Default,
+        }
+    );
+}
+
+#[test]
+fn policy_async_buffer_2_notify_event() {
+    let p = policy_after_inject("transfer d : async, buffer=2, notify=event;");
+    assert_eq!(
+        p,
+        TransferPolicy {
+            synchronous: false,
+            buffer: 2,
+            notify: NotifyMode::Event,
+        }
+    );
+}
+
+// --------------------------------------------------------------------
+// Idempotence
+// --------------------------------------------------------------------
+
+#[test]
+fn idempotent_on_synthetic_two_worker_case() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w0"])],
+        "transfer d : async, buffer=2, notify=event;",
+    );
+    let once = inject_transfers(&linked, acfg.clone());
+    let twice = inject_transfers(&linked, once.clone());
+
+    // Same structure: same Push/Wait counts, same positions, same
+    // (data, src, dst, tile, policy) tuples. We do NOT require seq
+    // equality on re-run (the second pass leaves placeholders intact
+    // by structural skip, so seq is preserved).
+    assert_eq!(once.push_count(), twice.push_count());
+    assert_eq!(once.wait_count(), twice.wait_count());
+
+    let xs1 = once.root.collect_xfers();
+    let xs2 = twice.root.collect_xfers();
+    assert_eq!(xs1.len(), xs2.len());
+    for (a, b) in xs1.iter().zip(xs2.iter()) {
+        assert_eq!(a.role, b.role);
+        assert_eq!(a.src, b.src);
+        assert_eq!(a.dst, b.dst);
+        assert_eq!(a.data, b.data);
+        assert_eq!(a.tile, b.tile);
+        assert_eq!(a.policy, b.policy);
+        assert_eq!(a.seq, b.seq);
+    }
+
+    // Full ACFG equality: tree structure preserved (no extra
+    // placeholders).
+    assert_eq!(once, twice, "inject_transfers must be idempotent");
+}
+
+// --------------------------------------------------------------------
+// End-to-end against real examples
+// --------------------------------------------------------------------
+
+fn read_example(relpath: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let full = repo_root.join("nuc-nucleus").join("examples").join(relpath);
+    std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", full.display(), e))
+}
+
+fn linked_from_paths(algo_rel: &str, sched_rel: &str) -> LinkedIR {
+    let algo_ast = parse_algo(&read_example(algo_rel)).expect("algo parse");
+    let algo = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(&read_example(sched_rel)).expect("sched parse");
+    let sched = lower_sched(&sched_ast).expect("sched lower");
+    link::link(algo, sched).expect("link must succeed")
+}
+
+#[test]
+fn example_1_naive_has_no_transfers() {
+    // Single-worker schedule -> no cross-worker edges -> no xfers.
+    let linked = linked_from_paths(
+        "01-elementwise-add/prog.algo.nuc",
+        "01-elementwise-add/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let result = inject_transfers(&linked, acfg);
+    assert_eq!(result.xfer_count(), 0);
+}
+
+#[test]
+fn example_13_naive_has_no_transfers() {
+    // Naive places everything on host -> no cross-worker edges.
+    let linked = linked_from_paths(
+        "13-cnn-inference/prog.algo.nuc",
+        "13-cnn-inference/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let result = inject_transfers(&linked, acfg);
+    assert_eq!(result.xfer_count(), 0);
+}
+
+#[test]
+fn example_14_naive_has_no_transfers() {
+    let linked = linked_from_paths(
+        "14-hearing-aid/prog.algo.nuc",
+        "14-hearing-aid/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let result = inject_transfers(&linked, acfg);
+    assert_eq!(result.xfer_count(), 0);
+}
+
+#[test]
+fn structural_pairing_holds_for_synthetic_multi_edge() {
+    // Re-use the three-hop synthetic case and assert structural
+    // properties: every Push has a Wait with the same seq, src, dst,
+    // data, tile, and policy.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1], 101, vec![0], Some(1)),
+        op(&[2], 102, vec![1], Some(2)),
+        op(&[0], 103, vec![2], None),
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d0", 0), ("d1", 1), ("d2", 2)],
+        &[("w0", 0), ("w1", 1), ("w2", 2)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d0", &["w0"]), ("d1", &["w1"]), ("d2", &["w2"])],
+        "transfer d0 : sync; transfer d1 : async, buffer=2; transfer d2 : async, buffer=2, notify=event;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    let mut by_seq: BTreeMap<SeqTag, Vec<&XferPlaceholder>> = BTreeMap::new();
+    for x in &xfers {
+        by_seq.entry(x.seq).or_default().push(x);
+    }
+    for (seq, group) in &by_seq {
+        assert_eq!(
+            group.len(),
+            2,
+            "seq {:?} should appear on exactly one Push and one Wait",
+            seq
+        );
+        let push = group
+            .iter()
+            .find(|x| x.role == XferRole::Push)
+            .expect("push present");
+        let wait = group
+            .iter()
+            .find(|x| x.role == XferRole::Wait)
+            .expect("wait present");
+        assert_eq!(push.src, wait.src);
+        assert_eq!(push.dst, wait.dst);
+        assert_eq!(push.data, wait.data);
+        assert_eq!(push.tile, wait.tile);
+        assert_eq!(push.policy, wait.policy);
+    }
+}
+
+#[test]
+fn inject_transfers_preserves_name_tables() {
+    // Sanity: name tables forwarded unchanged.
+    let linked = linked_from_paths(
+        "01-elementwise-add/prog.algo.nuc",
+        "01-elementwise-add/schedules/naive.sched.nuc",
+    );
+    let before = build_acfg(&linked).expect("build_acfg");
+    let after = inject_transfers(&linked, before.clone());
+    assert_eq!(before.name_kernels, after.name_kernels);
+    assert_eq!(before.name_data, after.name_data);
+    assert_eq!(before.name_workers, after.name_workers);
+    assert_eq!(before.name_iter_vars, after.name_iter_vars);
+}
+
+#[test]
+fn inject_transfers_preserves_operation_count_on_real_examples() {
+    for (algo, sched) in [
+        (
+            "01-elementwise-add/prog.algo.nuc",
+            "01-elementwise-add/schedules/naive.sched.nuc",
+        ),
+        (
+            "13-cnn-inference/prog.algo.nuc",
+            "13-cnn-inference/schedules/naive.sched.nuc",
+        ),
+        (
+            "14-hearing-aid/prog.algo.nuc",
+            "14-hearing-aid/schedules/naive.sched.nuc",
+        ),
+    ] {
+        let linked = linked_from_paths(algo, sched);
+        let before = build_acfg(&linked).expect("build_acfg");
+        let after = inject_transfers(&linked, before.clone());
+        assert_eq!(
+            before.operation_count(),
+            after.operation_count(),
+            "operation count must be preserved (algo={algo}, sched={sched})"
+        );
+        assert_eq!(
+            before.repeat_count(),
+            after.repeat_count(),
+            "repeat count must be preserved (algo={algo}, sched={sched})"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0117 fan-out
+// --------------------------------------------------------------------
+
+/// 1:N broadcast (one host producer, N compute consumers) emits N
+/// Push/Wait pairs with distinct `seq` tags.
+#[test]
+fn fanout_one_to_n_emits_n_pairs() {
+    // host produces d0; {w1,w2,w3,w4} consumes d0.
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),                // host
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),      // {w1..w4}
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    // 4 destination workers -> 4 Push/Wait pairs.
+    assert_eq!(result.push_count(), 4, "one Push per destination worker");
+    assert_eq!(result.wait_count(), 4, "one Wait per destination worker");
+
+    let xfers = result.root.collect_xfers();
+    // Distinct seqs.
+    let seqs: BTreeSet<SeqTag> = xfers.iter().map(|x| x.seq).collect();
+    assert_eq!(seqs.len(), 4, "four distinct seq tags");
+
+    // Each Push has src=host(0) and dst in {1,2,3,4}; each Wait has
+    // matching src=host(0) and the same dst.
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Push)
+        .collect();
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait)
+        .collect();
+    let push_dsts: BTreeSet<WorkerId> = pushes.iter().map(|x| x.dst).collect();
+    let wait_dsts: BTreeSet<WorkerId> = waits.iter().map(|x| x.dst).collect();
+    assert_eq!(
+        push_dsts,
+        BTreeSet::from([WorkerId(1), WorkerId(2), WorkerId(3), WorkerId(4)]),
+        "Push dsts cover every consumer worker"
+    );
+    assert_eq!(push_dsts, wait_dsts);
+    for x in &xfers {
+        assert_eq!(x.src, WorkerId(0));
+        assert_eq!(x.data, DataId(0));
+    }
+}
+
+/// N:1 gather (N compute producers, one host consumer) emits N
+/// Push/Wait pairs with distinct `seq` tags.
+///
+/// Producers are multiple workers writing the same single-assignment
+/// data symbol; build_acfg models this as one Operation with
+/// `workers: {w0..w3}`. (Outside this synthetic shape — in real
+/// schedules — distributed placement is the source.)
+#[test]
+fn fanout_n_to_one_emits_n_pairs() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[1, 2, 3, 4], 100, vec![], Some(0)), // producer on {w1..w4}
+        op(&[0], 101, vec![0], Some(1)),         // consumer on host
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w1", "w2", "w3", "w4"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.push_count(), 4, "one Push per producer worker");
+    assert_eq!(result.wait_count(), 4, "one Wait per producer worker");
+
+    let xfers = result.root.collect_xfers();
+    let seqs: BTreeSet<SeqTag> = xfers.iter().map(|x| x.seq).collect();
+    assert_eq!(seqs.len(), 4);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Push)
+        .collect();
+    let push_srcs: BTreeSet<WorkerId> = pushes.iter().map(|x| x.src).collect();
+    assert_eq!(
+        push_srcs,
+        BTreeSet::from([WorkerId(1), WorkerId(2), WorkerId(3), WorkerId(4)]),
+        "Push srcs cover every producer worker"
+    );
+    for x in &xfers {
+        assert_eq!(x.dst, WorkerId(0));
+        assert_eq!(x.data, DataId(0));
+    }
+}
+
+/// The 1:1 host↔single-worker case (examples 01..07 shape) emits
+/// exactly ONE pair after fan-out, with no spurious replication; this
+/// is the no-regression guard for the pre-TASK-0117 contract on those
+/// cells.
+#[test]
+fn fanout_one_to_one_unchanged() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)), // host
+        op(&[1], 101, vec![0], Some(1)), // w0
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w0", 1)],
+    );
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    assert_eq!(result.push_count(), 1);
+    assert_eq!(result.wait_count(), 1);
+}
+
+/// Determinism: the fan-out ordering is a deterministic function of
+/// (producer_workers, consumer_workers). Re-running the pass on the
+/// same input produces structurally identical XferPlaceholders with
+/// the same seq tags (the State::next_seq counter is monotonic and
+/// the BTreeSet iteration is sorted).
+#[test]
+fn fanout_is_deterministic_across_runs() {
+    let mk_acfg = || {
+        let root = ACFGNode::Sequence(vec![
+            op(&[0], 100, vec![], Some(0)),
+            op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+        ]);
+        synthetic_acfg(
+            root,
+            &[("d", 0), ("c", 1)],
+            &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+        )
+    };
+    let linked = synthetic_linked_ir(
+        &mk_acfg().name_data,
+        &mk_acfg().name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let r1 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
+    let r2 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
+    assert_eq!(r1.len(), r2.len());
+    for (a, b) in r1.iter().zip(r2.iter()) {
+        assert_eq!(a.role, b.role);
+        assert_eq!(a.src, b.src);
+        assert_eq!(a.dst, b.dst);
+        assert_eq!(a.data, b.data);
+        assert_eq!(a.seq, b.seq, "seq tags reproduce across runs");
+    }
+}
+
+/// With a `partition_worker_ranges` sidecar populated, fan-out
+/// rewrites each pair's tile to the compute worker's slice. Tests
+/// the 1:N input direction at the {host}→{w1..w4} shape over an
+/// iter-var with B=8 split 4 ways.
+#[test]
+fn fanout_per_worker_tile_for_input_direction() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    // Register iter-var "n" against IterVar(7) and populate the
+    // partition sidecar: source range 0..8 split across {w1..w4} so
+    // each worker owns a 2-element slice.
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    // Each pair's tile must carry the dst-worker's partition slice.
+    for x in &xfers {
+        // The compute worker for a (host, w_i) pair is w_i.
+        let expected_range: std::ops::Range<i64> = match x.dst.0 {
+            1 => 0..2,
+            2 => 2..4,
+            3 => 4..6,
+            4 => 6..8,
+            _ => panic!("unexpected dst worker {:?}", x.dst),
+        };
+        assert_eq!(
+            x.tile.bounds,
+            vec![(IterVar(7), expected_range)],
+            "pair {:?}->{:?} tile must be the dst worker's partition slice",
+            x.src,
+            x.dst
+        );
+    }
+}
+
+/// Same per-worker tile assignment in the N:1 gather direction
+/// (workers→host). The compute worker for each pair is the src.
+#[test]
+fn fanout_per_worker_tile_for_output_direction() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[1, 2, 3, 4], 100, vec![], Some(0)),
+        op(&[0], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["w1", "w2", "w3", "w4"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    for x in &xfers {
+        let expected_range: std::ops::Range<i64> = match x.src.0 {
+            1 => 0..2,
+            2 => 2..4,
+            3 => 4..6,
+            4 => 6..8,
+            _ => panic!("unexpected src worker {:?}", x.src),
+        };
+        assert_eq!(
+            x.tile.bounds,
+            vec![(IterVar(7), expected_range)],
+            "pair {:?}->{:?} tile must be the src worker's partition slice",
+            x.src,
+            x.dst
+        );
+    }
+}
+
+/// Empty `partition_worker_ranges` (the pre-TASK-0212 / non-partitioned
+/// case) leaves the pair tiles untouched at the construction-site
+/// enclosing tile. No regression for examples 01..07 which never set
+// --------------------------------------------------------------------
+// TASK-0134: pipeline-depth sidecar
+// --------------------------------------------------------------------
+
+#[test]
+fn pipeline_depth_populated_for_inter_stage_transfers() {
+    // TASK-0134 AC#1: the sidecar carries SeqTag -> D for every
+    // Push/Wait pair created inside a pipelined loop body.
+    //
+    // Real fixture: example 13 with pipeline_parallel schedule.
+    // `loop n : pipeline=3`; feat1 / feat2 transfers have producer
+    // AND consumer inside the loop, so their seqs MUST be in the
+    // sidecar with value 3. input / output cross the loop boundary
+    // and are hoisted out -> no entry expected.
+    use nucleus_compiler::algo::{lower_algo, parse_algo};
+    use nucleus_compiler::sched::{lower_sched, parse_sched};
+
+    let algo_ast =
+        parse_algo(&read_example("13-cnn-inference/prog.algo.nuc")).expect("algo parse");
+    let algo = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(&read_example(
+        "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
+    ))
+    .expect("sched parse");
+    let sched = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
+    let acfg = nucleus_compiler::passes::sync_inject::inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    assert!(
+        !acfg.pipeline_depth_for_seq.is_empty(),
+        "expected at least one pipeline-depth annotation; got empty"
+    );
+
+    // Find the data_id for feat1, feat2, input, output.
+    let id_of = |name: &str| acfg.name_data.get(name).copied();
+    let feat1_id = id_of("feat1").expect("feat1");
+    let feat2_id = id_of("feat2").expect("feat2");
+    let input_id = id_of("input").expect("input");
+    let output_id = id_of("output").expect("output");
+
+    // Walk the ACFG and collect (seq, data) for every Xfer node.
+    fn walk(node: &nucleus_compiler::acfg::ACFGNode, out: &mut Vec<(SeqTag, DataId)>) {
+        match node {
+            nucleus_compiler::acfg::ACFGNode::Xfer(x) => out.push((x.seq, x.data)),
+            nucleus_compiler::acfg::ACFGNode::Sequence(cs) => cs.iter().for_each(|c| walk(c, out)),
+            nucleus_compiler::acfg::ACFGNode::Repeat { body, .. } => walk(body, out),
+            _ => {}
+        }
+    }
+    let mut xfers: Vec<(SeqTag, DataId)> = Vec::new();
+    walk(&acfg.root, &mut xfers);
+
+    // Group by data_id.
+    let mut seqs_for: BTreeMap<DataId, BTreeSet<SeqTag>> = BTreeMap::new();
+    for (s, d) in xfers {
+        seqs_for.entry(d).or_default().insert(s);
+    }
+
+    // Sanity: feat1 has at least one Push/Wait pair.
+    assert!(!seqs_for.get(&feat1_id).unwrap_or(&BTreeSet::new()).is_empty());
+    assert!(!seqs_for.get(&feat2_id).unwrap_or(&BTreeSet::new()).is_empty());
+
+    let expect_depth = std::num::NonZeroU64::new(3).unwrap();
+    for s in seqs_for.get(&feat1_id).unwrap() {
+        assert_eq!(
+            acfg.pipeline_depth_for_seq.get(s),
+            Some(&expect_depth),
+            "feat1 seq {:?} must carry pipeline depth 3",
+            s
+        );
+    }
+    for s in seqs_for.get(&feat2_id).unwrap() {
+        assert_eq!(
+            acfg.pipeline_depth_for_seq.get(s),
+            Some(&expect_depth),
+            "feat2 seq {:?} must carry pipeline depth 3",
+            s
+        );
+    }
+
+    // input / output get hoisted out of the loop (producer or
+    // consumer outside); the post-hoist tile drops the `n` axis, so
+    // they have NO pipeline-depth entry.
+    for s in seqs_for.get(&input_id).unwrap_or(&BTreeSet::new()) {
+        assert!(
+            !acfg.pipeline_depth_for_seq.contains_key(s),
+            "input seq {:?} must NOT carry pipeline depth (hoisted out of loop)",
+            s
+        );
+    }
+    for s in seqs_for.get(&output_id).unwrap_or(&BTreeSet::new()) {
+        assert!(
+            !acfg.pipeline_depth_for_seq.contains_key(s),
+            "output seq {:?} must NOT carry pipeline depth (consumed outside loop)",
+            s
+        );
+    }
+}
+
+#[test]
+fn pipeline_depth_empty_for_non_pipelined_schedules() {
+    // Regression guard: a schedule WITHOUT `pipeline=` must leave
+    // `pipeline_depth_for_seq` empty. Pre-TASK-0134 behaviour
+    // preserved for every existing example.
+    use nucleus_compiler::algo::{lower_algo, parse_algo};
+    use nucleus_compiler::sched::{lower_sched, parse_sched};
+
+    let algo_ast = parse_algo(&read_example("02-split-add/prog.algo.nuc")).expect("algo");
+    let algo = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ast = parse_sched(&read_example("02-split-add/schedules/split.sched.nuc"))
+        .expect("sched");
+    let sched = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
+    let acfg = nucleus_compiler::passes::sync_inject::inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+
+    assert!(
+        acfg.pipeline_depth_for_seq.is_empty(),
+        "no pipeline= in schedule must leave the sidecar empty; got {:?}",
+        acfg.pipeline_depth_for_seq
+    );
+}
+
+#[test]
+fn fanout_empty_partition_sidecar_preserves_construction_tile() {
+    // No partition_worker_ranges entries; the 1:1 case keeps the
+    // pre-TASK-0117 tile (empty top-level for a flat sequence).
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1], 101, vec![0], Some(1)),
+    ]);
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w0", 1)],
+    );
+    // partition_worker_ranges left empty by `synthetic_acfg`.
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    for x in &xfers {
+        assert!(
+            x.tile.bounds.is_empty(),
+            "no partition sidecar => no partition rewrite => empty tile"
+        );
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0216: partition=workers + pipeline=D combination
+// --------------------------------------------------------------------
+
+/// Synthetic fixture: partition_worker_ranges + pipeline=D on the
+/// SAME loop variable. Asserts (AC#1) that pipeline_depth_for_seq is
+/// populated correctly for each per-worker fan-out pair.
+///
+/// Setup mirrors `fanout_per_worker_tile_for_input_direction` but
+/// adds a `loop n : pipeline=2;` schedule directive. The post-pass
+/// `annotate_pipeline_depth_for_seq` walks each Xfer's `tile.bounds`
+/// in `.rev()` order looking for an iter-var with a pipeline depth;
+/// for the single-iter-var tile produced by partition-rewrite, the
+/// .rev() walk finds IterVar(7) on the first step and reads D=2.
+///
+/// Latency: the architect's id-order-vs-nest-order concern was that
+/// `rewrite_partition_tiles_inner` iterates `partition_ranges`
+/// (BTreeMap<IterVar, ...>) in IterVar id order, NOT nest order; for
+/// MULTIPLE partitioned iter-vars in nested fashion these can diverge
+/// theoretically. For real schedules with a single partitioned
+/// iter-var (the only shape any in-tree example uses) `bounds` has
+/// length 1 and ordering is trivial. This test pins that case;
+/// nested-multi-partitioned coverage is deferred to TASK-0216.01 if
+/// it ever becomes a real shape.
+#[test]
+fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    per_worker.insert(WorkerId(1), 0..2);
+    per_worker.insert(WorkerId(2), 2..4);
+    per_worker.insert(WorkerId(3), 4..6);
+    per_worker.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        // Pipeline directive on the partitioned loop. The synthetic
+        // sched-lower path doesn't require the loop var to exist in
+        // an algorithm — it's a sched-side declaration.
+        "loop n : pipeline=2;\n    transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    assert!(!xfers.is_empty(), "expected fan-out xfers; got none");
+
+    let expect_depth = std::num::NonZeroU64::new(2).expect("D=2 nonzero");
+
+    // Every fan-out pair's seq must carry pipeline_depth_for_seq[seq] = D.
+    for x in &xfers {
+        assert_eq!(
+            x.tile.bounds.len(),
+            1,
+            "single-iter-var partition produces a 1-element bounds vec; \
+             got {:?}",
+            x.tile.bounds
+        );
+        assert_eq!(x.tile.bounds[0].0, IterVar(7));
+        assert_eq!(
+            result.pipeline_depth_for_seq.get(&x.seq),
+            Some(&expect_depth),
+            "pair seq {:?} must carry pipeline depth 2 (the post-pass \
+             reads IterVar(7) from the tile and resolves pipeline_depth_for_iter_var[IterVar(7)]=2)",
+            x.seq
+        );
+    }
+
+    // Cross-check: the sidecar has one entry per UNIQUE seq (Push
+    // and Wait of a pair share one seq, so 4 fan-out pairs = 4 seqs
+    // = 4 annotations, NOT 8 xfers).
+    let unique_seqs: std::collections::BTreeSet<_> =
+        xfers.iter().map(|x| x.seq).collect();
+    let annotated_count = result.pipeline_depth_for_seq.len();
+    assert_eq!(
+        annotated_count,
+        unique_seqs.len(),
+        "pipeline_depth_for_seq must have one entry per UNIQUE seq \
+         (Push+Wait share a seq); got {} annotated vs {} unique seqs",
+        annotated_count,
+        unique_seqs.len()
+    );
+}

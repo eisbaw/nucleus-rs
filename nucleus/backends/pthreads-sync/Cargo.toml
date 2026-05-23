@@ -21,12 +21,13 @@ path = "src/lib.rs"
 
 [dependencies]
 # Post-TASK-0124 the backend is AlgoIR/LinkedIR/ACFG-free: it consumes
-# only the per-worker EventList (compiler::event), the NameSidecar
-# (compiler::sidecar), and the inert expr-grammar/scalar types
-# (compiler::algo::{IrExpr,IrBinOp,ResolvedType,ScalarType}) that
-# those contract types themselves carry. The dep remains for those
-# modules only — no parser/lower/link/acfg internals.
-compiler = { path = "../../compiler" }
+# only the per-worker EventList (nucleus_compiler::event), the
+# NameSidecar (nucleus_compiler::sidecar), and the inert
+# expr-grammar/scalar types
+# (nucleus_compiler::algo::{IrExpr,IrBinOp,ResolvedType,ScalarType})
+# that those contract types themselves carry. The dep remains for
+# those modules only — no parser/lower/link/acfg internals.
+nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives (TASK-0244 cycle 37): RenderCtx, the
 # expression/index/kernel-call/loop-bound/type renderers, the
 # check_frame emit templates, and the multi-worker event walker.

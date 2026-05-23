@@ -195,7 +195,7 @@ Same shape as examples 01 / 02 / 03:
   Intended behaviour at TASK-0012's scope, not a bug in the example.
 
 The matching aggregate-pinning test in
-`nucleus/compiler/tests/contract.rs` pins exactly this behaviour for
+`nucleus/nucleus-compiler/tests/contract.rs` pins exactly this behaviour for
 this example's `kernels.rs`.
 
 ## End-to-end status (HONEST)
@@ -203,7 +203,7 @@ this example's `kernels.rs`.
 - **`naive` × `pthreads-sync`** — passes bit-identically against
   `reference.bin`. Carries the correctness gate for this example.
   Wired into `nuc-nucleus/e2e-matrix.toml` and into
-  `nucleus/compiler/tests/e2e_example_05.rs`.
+  `nucleus/nucleus-compiler/tests/e2e_example_05.rs`.
 
 - **`blocked` × `pthreads-sync`** — `#[ignore]`'d, with a TODO
   reference to TASK-0142 (trailing remainder tiles) + TASK-0143

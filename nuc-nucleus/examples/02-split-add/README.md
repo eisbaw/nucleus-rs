@@ -223,7 +223,7 @@ What this example DOES contribute today:
   multi-worker case — it verifies that the `transfer` directives
   satisfy the cross-worker dataflow requirement (omitting one is a
   compile error per PRD §6.3.4). Pinning tests in
-  `nucleus/compiler/tests/{algo_parser, algo_lower, sched_parser,
+  `nucleus/nucleus-compiler/tests/{algo_parser, algo_lower, sched_parser,
   sched_lower, link, contract}.rs` enforce all of this.
 - The reference impl and committed `reference.bin` are ready for
   TASK-0122 to flip the e2e test from `#[ignore]` to active without

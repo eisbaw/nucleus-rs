@@ -137,7 +137,7 @@ aggregate-type matching. Until it lands, aggregate kernel I/O uses
 
 ## Contract-check limitation
 
-The contract pass [`check_kernels_contract`](../../../nucleus/compiler/src/contract.rs)
+The contract pass [`check_kernels_contract`](../../../nucleus/nucleus-compiler/src/contract.rs)
 (TASK-0012) is scalar-only at present. Running it against this
 example produces:
 

@@ -10,8 +10,9 @@
 //! TASK-0033 AC #4. The positive arm (deterministic codegen produces
 //! PASS) lives here; a true negative arm (deliberately introduce
 //! HashMap iteration into codegen and verify the check fails) is
-//! deferred — it would require either a patched compiler crate or a
-//! synthetic codegen-with-nondeterminism fixture, both of which are
+//! deferred — it would require either a patched nucleus-compiler
+//! crate or a synthetic codegen-with-nondeterminism fixture, both of
+//! which are
 //! larger than the bite-test buys. The check's bite is already
 //! ensured by the byte-by-byte file diff: any file divergence,
 //! anywhere, is hard FAIL — there is no silent path.

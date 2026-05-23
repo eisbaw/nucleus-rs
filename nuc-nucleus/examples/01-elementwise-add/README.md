@@ -152,7 +152,7 @@ When aggregate matching lands, the example does not need to change;
 the matcher must learn to accept `Vec<i32>` (or whatever convention
 TASK-0103 picks) as a valid Rust spelling of Nuc `i32[N]`.
 
-[contract]: ../../../nucleus/compiler/src/contract.rs
+[contract]: ../../../nucleus/nucleus-compiler/src/contract.rs
 
 ## Required schedules
 

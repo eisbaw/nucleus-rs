@@ -42,8 +42,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
-use compiler::sidecar::NameSidecar;
+use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::multi_worker_walker::{
     self as walker, RendezvousId, WalkerCtx,
@@ -619,7 +619,7 @@ mod tests {
         ex_rel: &str,
         sched_rel: &str,
     ) -> (BTreeMap<WorkerId, Vec<Event>>, NameTables, NameSidecar) {
-        use compiler::{
+        use nucleus_compiler::{
             acfg_to_events, apply_block_transforms, build_acfg, build_sidecar,
             algo::{lower_algo, parse_algo},
             inject_syncs, inject_transfers, link,
@@ -896,7 +896,7 @@ mod tests {
         // a phantom tag for non-Sync events (e.g. confusing a Push with
         // a barrier) would pass every existing test — this one pins
         // that the map stays empty when the input has no Sync.
-        use compiler::event::{DataId, SeqTag};
+        use nucleus_compiler::event::{DataId, SeqTag};
         let host = WorkerId(0);
         let w_b = WorkerId(1);
         let data = DataId(0);
@@ -964,7 +964,7 @@ mod tests {
         // `collect_barriers_by_tag` walker + the `or_insert_with`
         // recording rule in Plan::build. Without Push/Wait the sidecar
         // can stay empty (no transfer_buffer_for_seq lookup happens).
-        use compiler::event::SyncKind;
+        use nucleus_compiler::event::SyncKind;
         let host = WorkerId(0);
         let w0 = WorkerId(1);
         let w1 = WorkerId(2);

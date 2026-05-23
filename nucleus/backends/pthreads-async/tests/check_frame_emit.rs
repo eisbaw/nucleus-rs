@@ -90,9 +90,9 @@ fn build_per_worker_partitioned(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<compiler::event::WorkerId, Vec<compiler::event::Event>>,
+    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
     NameTables,
-    compiler::sidecar::NameSidecar,
+    nucleus_compiler::sidecar::NameSidecar,
 ) {
     let r = test_common::lower_for_test(
         algo_src,
