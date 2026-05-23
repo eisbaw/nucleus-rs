@@ -157,6 +157,7 @@ use super::ir::{
 /// | `ConflictingTransferMode`              | Independent | yes               | never |
 /// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               | never |
 /// | `UnitPipelineOption`                   | Independent | yes               | never |
+/// | `UnsupportedPartitionKind`             | Independent | yes               | never |
 /// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
@@ -1092,7 +1093,28 @@ fn lower_loop_option(
             ResolvedLoopOption::Pipeline(d)
         }
         LoopOption::Reuse => ResolvedLoopOption::Reuse,
-        LoopOption::Partition(k) => ResolvedLoopOption::Partition(*k),
+        // TASK-0249: only `partition=workers` has a downstream consumer
+        // ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
+        // `Blocks2d` parse and would lower to a [`ResolvedLoopOption`]
+        // that NO pass reads — a silent no-op that PRD §6.3.3 forbids
+        // ("Bad combinations rejected at compile time, not at
+        // runtime"). Reject loudly with the typed
+        // [`SchedLowerErrorKind::UnsupportedPartitionKind`]. The
+        // `Workers` arm continues to lower unchanged.
+        LoopOption::Partition(k) => match k {
+            super::ast::PartitionKind::Workers => {
+                ResolvedLoopOption::Partition(super::ast::PartitionKind::Workers)
+            }
+            kind @ (super::ast::PartitionKind::Rows | super::ast::PartitionKind::Blocks2d) => {
+                return Err(SchedLowerError::at(
+                    SchedLowerErrorKind::UnsupportedPartitionKind {
+                        var: var.to_string(),
+                        kind: *kind,
+                    },
+                    var_span.clone(),
+                ));
+            }
+        },
     })
 }
 

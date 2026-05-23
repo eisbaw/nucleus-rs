@@ -241,7 +241,13 @@ fn parses_05_stencil_distributed() {
     let ast = parse_sched(&src).expect("05-stencil/distributed must parse");
     assert_eq!(ast.count_workers(), 1);
     assert_eq!(ast.count_places(), 3);
-    assert_eq!(ast.count_loops(), 2);
+    // TASK-0249: was 2 (loops x and y), now 1 (only loop x). The
+    // inert `loop y : partition=rows;` directive was removed because
+    // `partition=rows` has no downstream consumer; see the schedule
+    // file's header comment for the full rationale. Follow-up
+    // TASK-0250 captures the open question of whether the y-loop
+    // should be explicitly partitioned via `partition=workers`.
+    assert_eq!(ast.count_loops(), 1);
     assert_eq!(ast.count_transfers(), 2);
 
     // Spot-check: the distributed place is on a 4-worker set.

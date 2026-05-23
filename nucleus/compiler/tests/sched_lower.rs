@@ -207,7 +207,18 @@ fn lowers_05_stencil_distributed() {
 
     assert_eq!(ir.workers.len(), 5);
     assert_eq!(ir.places.len(), 3);
-    assert_eq!(ir.loops.len(), 2);
+    // TASK-0249: was 2 (loops x and y), now 1 (only loop x). The
+    // inert `loop y : partition=rows;` directive was removed because
+    // `partition=rows` has no downstream consumer (now a typed reject
+    // at sched-lower; see SchedLowerErrorKind::UnsupportedPartitionKind).
+    // The y-loop's source-level appearance is preserved as a comment
+    // in the .sched.nuc file; follow-up TASK-0250 captures whether
+    // it should be re-introduced as `partition=workers`.
+    assert_eq!(ir.loops.len(), 1);
+    assert!(
+        !ir.loops.contains_key("y"),
+        "y-loop directive is intentionally absent after TASK-0249"
+    );
     assert_eq!(ir.transfers.len(), 2);
 
     // The distributed place targets four compute workers.
@@ -221,13 +232,6 @@ fn lowers_05_stencil_distributed() {
     assert!(loop_x.options.contains(&ResolvedLoopOption::Block(64)));
     assert!(loop_x.options.contains(&ResolvedLoopOption::Vectorize(8)));
     assert!(loop_x.options.contains(&ResolvedLoopOption::Reuse));
-
-    // loop y : partition=rows
-    let loop_y = &ir.loops["y"];
-    assert_eq!(
-        loop_y.options,
-        vec![ResolvedLoopOption::Partition(PartitionKind::Rows)]
-    );
 
     // transfer img_in : async, buffer=2, notify=event
     let img_in = &ir.transfers["img_in"];
@@ -888,6 +892,93 @@ schedule for \"../prog.algo.nuc\" {
 ";
     let ir = lower_str(src).expect("pipeline=2 must lower");
     assert_eq!(ir.loops.len(), 1);
+}
+
+#[test]
+fn negative_partition_rows_is_rejected() {
+    // TASK-0249: `partition=rows` has no downstream consumer. Only
+    // `partition=workers` lowers to real per-worker bounds (via
+    // TASK-0212 / passes/partition_workers). Accepting `rows` would
+    // silently emit code as if the directive were absent — the
+    // silent-default failure mode PRD §6.3.3 forbids. Reject at
+    // sched-lower with UnsupportedPartitionKind.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop y : partition=rows;
+}
+";
+    let err = lower_str(src)
+        .expect_err("partition=rows must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnsupportedPartitionKind {
+            var: "y".into(),
+            kind: PartitionKind::Rows,
+        }
+    );
+    // The message names the loop var, the rejected keyword, and the
+    // actionable fix.
+    let msg = format!("{}", err.kind);
+    assert!(msg.contains("partition=rows"), "msg should name partition=rows: {msg}");
+    assert!(
+        msg.contains("partition=workers"),
+        "msg should point to partition=workers as the only implemented policy: {msg}"
+    );
+    assert!(msg.contains("TASK-0249"), "msg should cite TASK-0249: {msg}");
+}
+
+#[test]
+fn negative_partition_blocks2d_is_rejected() {
+    // TASK-0249: same as the `rows` rejection above. `blocks2d`
+    // parses, lowers, and is never consumed by any pass — silent
+    // no-op. Reject with the typed UnsupportedPartitionKind.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop y : partition=blocks2d;
+}
+";
+    let err = lower_str(src)
+        .expect_err("partition=blocks2d must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::UnsupportedPartitionKind {
+            var: "y".into(),
+            kind: PartitionKind::Blocks2d,
+        }
+    );
+    let msg = format!("{}", err.kind);
+    assert!(msg.contains("partition=blocks2d"), "msg should name partition=blocks2d: {msg}");
+    assert!(
+        msg.contains("partition=workers"),
+        "msg should point to partition=workers as the only implemented policy: {msg}"
+    );
+}
+
+#[test]
+fn positive_partition_workers_still_lowers() {
+    // TASK-0249 regression guard: `partition=workers` is the one
+    // implemented policy (TASK-0212) and MUST keep lowering after
+    // the Rows/Blocks2d rejection lands. Mirrors the
+    // `positive_pipeline_two_lowers_ok` shape.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    loop n : partition=workers;
+}
+";
+    let ir = lower_str(src).expect("partition=workers must lower");
+    assert_eq!(ir.loops.len(), 1);
+    let loop_n = &ir.loops["n"];
+    assert_eq!(
+        loop_n.options,
+        vec![ResolvedLoopOption::Partition(PartitionKind::Workers)]
+    );
 }
 
 #[test]

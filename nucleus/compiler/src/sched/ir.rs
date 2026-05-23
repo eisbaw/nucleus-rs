@@ -545,6 +545,33 @@ pub enum SchedLowerErrorKind {
     /// `var` is the loop variable carrying the option.
     UnitPipelineOption { var: String },
 
+    /// `partition=rows` or `partition=blocks2d` on a loop (TASK-0249).
+    /// Of the three [`PartitionKind`] variants only
+    /// [`PartitionKind::Workers`] has a downstream consumer
+    /// ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
+    /// `Blocks2d` parse, lower to [`ResolvedLoopOption::Partition`],
+    /// and are then **never read by any pass** — accepting them
+    /// emitted code as if the directive were absent, the exact
+    /// silent-default failure mode PRD §6.3.3 forbids ("Bad
+    /// combinations rejected at compile time, not at runtime"; a
+    /// directive that does nothing is the silent-default sibling of a
+    /// bad combination).
+    ///
+    /// Until sibling partition passes land (filed as the follow-up to
+    /// TASK-0249 — distinct from this rejection), the schedule author
+    /// must either use `partition=workers` (which has real semantics)
+    /// or omit the directive. Mirrors the fail-fast precedent of
+    /// [`SchedLowerErrorKind::UnitPipelineOption`] and
+    /// [`SchedLowerErrorKind::UnrollNotDivisibleByBlock`].
+    ///
+    /// `var` is the loop variable carrying the option; `kind` is the
+    /// rejected partition policy (`Rows` or `Blocks2d`). The
+    /// `Workers` variant is unreachable here (it lowers normally) but
+    /// is encoded in the type for exhaustiveness — any future
+    /// `PartitionKind` extension makes this match site fail to
+    /// compile rather than silently fall through to acceptance.
+    UnsupportedPartitionKind { var: String, kind: PartitionKind },
+
     // ----- Multiple workers decls -----
     /// More than one `workers = ...` directive in a single schedule.
     /// Grammar §1 phrases the workers decl as a single declaration;
@@ -687,6 +714,26 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
                  (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
             ),
+            SchedLowerErrorKind::UnsupportedPartitionKind { var, kind } => {
+                // Map the AST variant to its source-level keyword (the
+                // parser at sched/parser.rs:573-575 binds these three
+                // keywords to these variants — keep in sync). The
+                // `Workers` arm is unreachable from the lower call site
+                // but is encoded so a future PartitionKind addition
+                // fails to compile rather than silently producing an
+                // empty message.
+                let keyword = match kind {
+                    PartitionKind::Rows => "rows",
+                    PartitionKind::Blocks2d => "blocks2d",
+                    PartitionKind::Workers => "workers",
+                };
+                write!(
+                    f,
+                    "loop `{var}` has `partition={keyword}`; only `partition=workers` is implemented today \
+                     (TASK-0249). Use `partition=workers` or omit the directive — `partition={keyword}` has no \
+                     downstream consumer and would silently lower to a no-op. PRD §6.3.3."
+                )
+            }
             SchedLowerErrorKind::ZeroLatencyMax { var } => write!(
                 f,
                 "`check loop {var} : latency_max = 0...` is rejected; \

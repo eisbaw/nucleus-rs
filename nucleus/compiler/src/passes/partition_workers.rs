@@ -38,7 +38,13 @@
 //!   like `block_transform`'s trailing partial) is filed as the
 //!   follow-up to this task per the task description.
 //! - **1D partition axis only.** `partition=rows` / `partition=blocks2d`
-//!   are orthogonal grammars handled by sibling passes (not yet filed).
+//!   are rejected at sched-lower as
+//!   [`crate::sched::SchedLowerErrorKind::UnsupportedPartitionKind`]
+//!   (TASK-0249). Only `partition=workers` reaches this pass; the
+//!   other two policies have no downstream consumer, so accepting
+//!   them would be a silent no-op (PRD §6.3.3 forbids). Real sibling
+//!   passes for row-band / 2D-block partition policies are filed as
+//!   follow-ups to TASK-0249 if/when their semantics are decided.
 //! - **No interaction with `block=`.** A user combining
 //!   `loop n : block=N, partition=workers;` on the same loop would
 //!   confuse: `block_transform` splits the loop into tile + inner with

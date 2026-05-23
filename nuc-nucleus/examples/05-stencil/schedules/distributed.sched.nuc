@@ -11,12 +11,20 @@ schedule for "../prog.algo.nuc" {
     place save_image on host;
     place blur3      on { w0, w1, w2, w3 };
 
-    // Outer loop partitioned by row-bands across the four compute workers.
-    // The compiler reads blur3's access pattern on img_in in the algorithm
-    // (offsets of -1, 0, +1 in both dimensions) and infers a halo of 1
-    // around each worker's row-band automatically. Halo is not part of
-    // the schedule surface.
-    loop y : partition=rows;
+    // NOTE (TASK-0249): the outer y-loop previously carried
+    //   `loop y : partition=rows;`
+    // but `partition=rows` has no downstream consumer (only
+    // `partition=workers` lowers to real per-worker bounds, via
+    // TASK-0212 / passes/partition_workers.rs). Accepting it silently
+    // emitted code as if the directive were absent — the silent-default
+    // failure mode PRD §6.3.3 forbids. TASK-0249 made `partition=rows`
+    // and `partition=blocks2d` reject at sched-lower as
+    // SchedLowerErrorKind::UnsupportedPartitionKind. The directive is
+    // removed here to keep the schedule valid; the multi-worker
+    // distribution today is carried by `place blur3 on { w0..w3 }`
+    // plus the per-worker transfers below. Whether the y-loop should
+    // be explicitly partitioned (via `partition=workers`) once the
+    // sibling backend gaps close is TASK-0250.
 
     // Inner loop: SIMD-friendly, with the reuse pattern that was the
     // unshipped piece in the 2013 thesis (slide a 3-wide window in x,
