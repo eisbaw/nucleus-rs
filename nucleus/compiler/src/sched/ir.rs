@@ -498,22 +498,23 @@ pub enum SchedLowerErrorKind {
     /// `loop V : block=N, vectorize=M` where `M` does not divide `N`
     /// (TASK-0144.01 Stage 3). PRD §6.3.3: "bad combinations rejected
     /// at compile time, not at runtime." `block=N` strip-mines the loop
-    /// into outer/inner tiles of length `N`; `vectorize=M` asks the
-    /// backend to emit width-`M` vector instructions for the intra-tile
-    /// body. If `M` does not divide `N`, every full tile has a tail of
-    /// `N % M` scalar iterations — the schedule author wrote two
+    /// into outer/inner tiles of length `N`; `vectorize=M` is defined
+    /// by PRD §6.3.3 as "Unroll inner body M-way; expects SIMD-friendly
+    /// ops" — i.e. M-way unrolling of the intra-tile body with a
+    /// SIMD-friendly grouping hint (no hard width-M vector-instruction
+    /// promise). If `M` does not divide `N`, every full tile has a tail
+    /// of `N % M` ungrouped iterations — the schedule author wrote two
     /// static integer constants that disagree at compile time, before
     /// the loop bound is known. The cleanest answer is to refuse the
-    /// schedule: there is no honest, range-independent vector width.
+    /// schedule: there is no honest, range-independent grouping factor.
     /// Both integers are static, so the check is purely on the option
     /// payloads. `var` is the loop variable; `vectorize` and `block`
     /// are the literal values written. Note: backend codegen does not
-    /// yet consume `vectorize=` (see
-    /// `passes::block_transform` header: "Only `block=` is handled"),
-    /// so this sched-lower check is the first (and currently only)
-    /// line of defense — backends ignoring vectorize today does not
-    /// make the check unnecessary; the PRD requires the rejection
-    /// regardless of backend support.
+    /// yet consume `vectorize=` (see `passes::block_transform` header:
+    /// "Only `block=` is handled"), so this sched-lower check is the
+    /// first (and currently only) line of defense — backends ignoring
+    /// vectorize today does not make the check unnecessary; the PRD
+    /// requires the rejection regardless of backend support.
     VectorizeNotDivisibleByBlock {
         var: String,
         vectorize: u64,
