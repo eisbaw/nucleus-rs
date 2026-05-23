@@ -1,9 +1,10 @@
 ---
 id: TASK-0050
 title: Worker classes and memory regions language extension
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 23:09'
+updated_date: '2026-05-23 21:22'
 labels:
   - language
   - compiler
@@ -28,3 +29,9 @@ Extend schedule grammar with worker_class and memory_region declarations. Needed
 - [ ] #7 Implementation notes record design questions (e.g. should worker_class capabilities be extensible by backend, or fixed in language).
 - [ ] #8 Implementation notes record honest limitations (no per-worker overrides within a class at v2; whole-class settings only).
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-to-M9 (orchestrator-direct, cycle 77 sweep). Labeled language, compiler, M9. The worker_class and memory_region declarations are tier-3 (embedded MCU) extensions; today the project is at M3/M4 (tier-1 CPU). The schedule grammar already parses these declarations (TASK-0019 cycle ~17 — ResolvedWorkerClass, ResolvedMemoryRegion, DEFAULT_WORKER_CLASS synthesised for simple-form workers) but the BACKEND consumers (tier-3 MCU codegen) don't exist. Without a consumer the language extension is half-implemented in a way that creates landmines (silent-drop or panic if a backend doesn't know what to do with a non-default class). Reopen at M9 entry when the first tier-3 backend needs to read worker_class semantics. Same deferred-to-milestone pattern as TASK-0054.
+<!-- SECTION:FINAL_SUMMARY:END -->

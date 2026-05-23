@@ -1,9 +1,10 @@
 ---
 id: TASK-0054
 title: Example 14 (hearing aid) kernels and reference impl
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 23:09'
+updated_date: '2026-05-23 21:22'
 labels:
   - examples
   - M6
@@ -28,3 +29,9 @@ Complete example 14: kernels.rs with denoise (FFT-based), mix2, peripheral-IO st
 - [ ] #6 Implementation notes record design questions (e.g. choice of FFT impl for determinism; whether to use rustfft, microfft, or hand-rolled fixed-point).
 - [ ] #7 Implementation notes record honest limitations (denoise is a toy implementation; not deployable; v2 is about the dataflow shape, not the audio quality).
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as DEFERRED-to-M6/M11 (orchestrator-direct, cycle 77 sweep). Labeled examples, M6, M11. The hearing-aid example requires FFT-based denoise + mix2 + peripheral-IO stubs reading canned binaries — substantive kernel work that only becomes meaningful once M6 (full tier-1 backend matrix) provides a credible compile target AND M11 (multi-MCU Renode co-simulation) provides the deployment substrate. The 14-hearing-aid example directory exists today with prog.algo.nuc + embedded_multimcu.sched.nuc (parsed cleanly per TASK-0079) but no kernels.rs or reference/ — TASK-0192 (closed cycle 77 as DEFERRED-to-M11) tracks bringing the example into the test matrix. This task is the kernels-and-reference half of the same M11 entry. Reopen at M6/M11 entry. Same deferred-to-milestone pattern as TASK-0192/0164/0165.
+<!-- SECTION:FINAL_SUMMARY:END -->
