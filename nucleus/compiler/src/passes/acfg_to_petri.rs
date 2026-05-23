@@ -221,7 +221,7 @@
 //!
 //! - **`pipeline=D` with `D > iteration_count`** — RESOLVED by
 //!    TASK-0217: the link step now rejects this combination via
-//!    [`crate::link::LinkError::PipelineExceedsIterationCount`].
+//!    [`crate::link::LinkErrorKind::PipelineExceedsIterationCount`].
 //!    Pre-TASK-0218 AC#2, the path-2 elision would have dropped every
 //!    Push (since `iter_count < D`) and left `D - iter_count` leftover
 //!    head-start tokens; post AC#2 the leftover-tokens story is

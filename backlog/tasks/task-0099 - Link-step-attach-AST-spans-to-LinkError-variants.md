@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 00:42'
-updated_date: '2026-05-23 19:05'
+updated_date: '2026-05-23 19:17'
 labels:
   - compiler
   - link
@@ -23,10 +23,10 @@ TASK-0011's LinkError variants carry only the offending name (kernel, data, loop
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Diagnosable LinkError variants (UnknownKernel/UnknownData/UnknownLoop/UnknownTransferData/UnplacedKernel/PipelineExceedsBuffer/PipelineExceedsIterationCount) carry a source position populated at the error site from the spanned resolved IR field (kernel_span/data_span/var_span/name_span); Display renders 'at line:col' via display_with_src
-- [ ] #2 The driver surfaces the located error (nucleus: error: link error(s) (N): - ... at L:C); surface stays source-compatible, typed-Result preserved, NO panic (decision-0003)
-- [ ] #3 Tests feed representative bad programs (one per spanned variant) and assert the LinkError carries the CORRECT line:col validated against the crafted source via error::offset_to_line_col
-- [ ] #4 A decision on LinkError equality (span+source informational-and-ignored-in-PartialEq, mirroring TASK-0082 Spanned + TASK-0090 LowerError) is made + documented; existing LinkErrorKind-asserting tests updated mechanically (Err(LinkError::X{..}) -> Err(LinkError::new(LinkErrorKind::X{..})) constructor migration + match e -> match &e.kind for pattern arms; honest expected scope, not hidden)
-- [ ] #5 Zero behaviour change for VALID input: just test green, e2e 88/70/0/18 unchanged, determinism byte-identical x2, clippy --workspace --all-targets clean, ci exit 0, all 3 negative gates bite (positions populate only on the Err path)
+- [x] #2 The driver surfaces the located error (nucleus: error: link error(s) (N): - ... at L:C); surface stays source-compatible, typed-Result preserved, NO panic (decision-0003)
+- [x] #3 Tests feed representative bad programs (one per spanned variant) and assert the LinkError carries the CORRECT line:col validated against the crafted source via error::offset_to_line_col
+- [x] #4 A decision on LinkError equality (span+source informational-and-ignored-in-PartialEq, mirroring TASK-0082 Spanned + TASK-0090 LowerError) is made + documented; existing LinkErrorKind-asserting tests updated mechanically (Err(LinkError::X{..}) -> Err(LinkError::new(LinkErrorKind::X{..})) constructor migration + match e -> match &e.kind for pattern arms; honest expected scope, not hidden)
+- [x] #5 Zero behaviour change for VALID input: just test green, e2e 88/70/0/18 unchanged, determinism byte-identical x2, clippy --workspace --all-targets clean, ci exit 0, all 3 negative gates bite (positions populate only on the Err path)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -161,6 +161,8 @@ GOTCHAS / LESSONS (feed-forward, subagents stateless):
 (5) `pd.region.span` is also available but NOT used today (the UnknownMemoryRegion variant lives on SchedLowerError, not LinkError — TASK-0196 handles it; LinkError only sees post-lowered IRs where region resolution has already succeeded). Mention only in case a future link-level region check is added.
 
 PROCESS LIMITATION (honest): the global mandated qa-test-runner + mped-architect sub-agent review could not run (those sub-agents are not surfaced as tools in this environment). Performed a thorough manual self-review instead — full mechanical gate (check/clippy/test/e2e/determinism×2/3 negatives/ci) all green; comment-honesty audited per the recurring doc-lie failure class (the per-variant audit list above IS the verified source of truth; no overclaiming "every variant located" — MissingCrossWorkerTransfer is honestly position-less); real-driver evidence collected for both source-tag paths. Re-run the sub-agents post-hoc on commits 45edcae + 2ae11c3 if available.
+
+Cycle 74 review-gate hardening (commit below): mped-architect surfaced 3 MAJORs + 3 NITs, applied all 3 MAJORs in-thread. (a) MAJOR-1: 4 stale 'LinkError::<Variant>' doc-refs after the enum→struct restructure (1 rustdoc warning at acfg_to_petri.rs:224, 3 silent doc-rot). Fixed all 4 to LinkErrorKind::<Variant>. Doc-lie failure class (memory feedback-comment-doc-lie-recurring). (b) MAJOR-2: AC checkbox state showed only #1 checked while close commit claimed 'All ACs (1-5) checked' — checked ACs 2,3,4,5 honestly (each met per qa-test-runner GO + mped-architect verification). (c) MAJOR-3 / MINOR-1: AC#3 strict 'one test per spanned variant' reading required a dedicated PipelineExceedsIterationCount line:col test; added task_0099_pipeline_exceeds_iteration_count_carries_correct_line_col mirroring the PipelineExceedsBuffer sibling. TASK-0099 tests now 10/0/0 (was 9). NITs (defensive clamp redundancy, LinkErrorSource::Schedule default for position-less, doc-comment dispatch confirmation) deferred — all design-intentional + pinned by tests. qa-test-runner GO; mped-architect GO-with-conditions; both conditions addressed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -250,7 +250,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // we translate once via `name_iter_vars`. Loops not in
     // `name_iter_vars` (e.g. a `loop x : pipeline=N` referencing a
     // var the algorithm doesn't have) are already a link-step error
-    // (LinkError::UnknownLoop), so we silently skip them here —
+    // (LinkErrorKind::UnknownLoop), so we silently skip them here —
     // build_acfg will not have reached us if link rejected.
     let pipeline_depth_for_iter_var: BTreeMap<IterVar, NonZeroU64> = linked
         .sched

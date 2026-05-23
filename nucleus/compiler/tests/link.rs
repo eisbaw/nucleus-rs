@@ -1601,6 +1601,47 @@ schedule for \"a.algo.nuc\" {
 }
 
 #[test]
+fn task_0099_pipeline_exceeds_iteration_count_carries_correct_line_col() {
+    // Cycle-74 review MINOR-1: AC#3 strict reading requires a dedicated
+    // line:col test per spanned variant. `PipelineExceedsIterationCount`
+    // is wired identically to `PipelineExceedsBuffer` (both via
+    // `ResolvedLoopDirective.var_span`, both `LinkErrorSource::Schedule`),
+    // but the AC's "one per variant" wording demands the explicit test.
+    let algo_src = SMALL_LOOP_PIPELINE_ALGO;
+    let sched_src = "\
+schedule for \"a.algo.nuc\" {
+    workers = { host, w0, w1 };
+    place load_input  on host;
+    place save_output on host;
+    place f1 on w0;
+    place f2 on w1;
+    loop n : pipeline=3;
+    transfer input  : async, buffer=3, notify=event;
+    transfer stage1 : async, buffer=3, notify=event;
+    transfer stage2 : sync;
+}
+";
+    let algo = algo_from_str(algo_src);
+    let sched = sched_from_str(sched_src);
+    let errs = link(algo, sched).expect_err("D=3 > iter_count=2 must fail");
+    let e = errs
+        .iter()
+        .find(|e| matches!(&e.kind, LinkErrorKind::PipelineExceedsIterationCount { loop_var, .. } if loop_var == "n"))
+        .expect("PipelineExceedsIterationCount(n) present");
+    let span = e
+        .span
+        .as_ref()
+        .expect("PipelineExceedsIterationCount must carry a span");
+    assert_eq!(e.source, compiler::LinkErrorSource::Schedule);
+    let needle = "loop n :";
+    let offset = sched_src.find(needle).expect("loop n directive present");
+    let expected_offset = offset + "loop ".len();
+    let expected = compiler::error::offset_to_line_col(sched_src, expected_offset);
+    let (line, col) = compiler::error::offset_to_line_col(sched_src, span.start);
+    assert_eq!((line, col), expected, "span points at the loop-var token");
+}
+
+#[test]
 fn task_0099_missing_cross_worker_transfer_is_position_less() {
     // The SOLE position-less LinkError variant by design: the error
     // is derived from joining algorithm dataflow + schedule placements

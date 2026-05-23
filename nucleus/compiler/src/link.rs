@@ -931,7 +931,7 @@ fn collect_dataref_consumers(
 // TASK-0134: pipeline-depth vs buffer-capacity constraint
 // --------------------------------------------------------------------
 
-/// Append [`LinkError::PipelineExceedsBuffer`] for each `loop V :
+/// Append [`LinkErrorKind::PipelineExceedsBuffer`] for each `loop V :
 /// pipeline=D` whose body contains a cross-worker Push/Wait pair
 /// (both producer kernel and consumer kernel inside the loop) for a
 /// data symbol with `transfer DATA : buffer=N` where `D > N`.
