@@ -717,9 +717,20 @@ fn fanout_is_deterministic_across_runs() {
 /// iter-var with B=8 split 4 ways.
 #[test]
 fn fanout_per_worker_tile_for_input_direction() {
+    // Real partition_workers-shaped ACFG: the partitioned Repeat node
+    // for IterVar(7) actually wraps the consumer op (TASK-0224 — the
+    // partition-rewrite walks the ACFG topology, so the Repeat must
+    // be present, mirroring what the partition_workers pass would
+    // have produced for a `for n : partition=workers;` schedule).
+    let body = ACFGNode::Sequence(vec![op(&[1, 2, 3, 4], 101, vec![0], Some(1))]);
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),
-        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..8,
+            body: Box::new(body),
+            block_tag: None,
+        },
     ]);
     let mut acfg = synthetic_acfg(
         root,
@@ -770,8 +781,18 @@ fn fanout_per_worker_tile_for_input_direction() {
 /// (workers→host). The compute worker for each pair is the src.
 #[test]
 fn fanout_per_worker_tile_for_output_direction() {
+    // Real partition_workers-shaped ACFG (see input-direction sibling
+    // for the TASK-0224 rationale): producer op runs inside the
+    // partitioned Repeat, gather happens at top-level on host.
+    let producer_body =
+        ACFGNode::Sequence(vec![op(&[1, 2, 3, 4], 100, vec![], Some(0))]);
     let root = ACFGNode::Sequence(vec![
-        op(&[1, 2, 3, 4], 100, vec![], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..8,
+            body: Box::new(producer_body),
+            block_tag: None,
+        },
         op(&[0], 101, vec![0], Some(1)),
     ]);
     let mut acfg = synthetic_acfg(
@@ -1001,9 +1022,21 @@ fn fanout_empty_partition_sidecar_preserves_construction_tile() {
 /// it ever becomes a real shape.
 #[test]
 fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
+    // Real partition_workers-shaped ACFG: the partitioned Repeat node
+    // for IterVar(7) actually exists in the tree and wraps the
+    // consumer op (TASK-0224: the rewrite walks the ACFG topology to
+    // derive partition-axis nest order, so the Repeat must really be
+    // present — the partition_workers pass guarantees this invariant
+    // in non-synthetic flows).
+    let body = ACFGNode::Sequence(vec![op(&[1, 2, 3, 4], 101, vec![0], Some(1))]);
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),
-        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..8,
+            body: Box::new(body),
+            block_tag: None,
+        },
     ]);
     let mut acfg = synthetic_acfg(
         root,
@@ -1067,4 +1100,222 @@ fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
         annotated_count,
         unique_seqs.len()
     );
+}
+
+// --------------------------------------------------------------------
+// TASK-0224: rewrite_partition_tiles bounds must be in NEST order
+// (outer-to-inner), not BTreeMap-key order (IterVar-id ascending).
+// --------------------------------------------------------------------
+
+/// Synthetic fixture exercising 2 nested partitioned iter-vars whose
+/// IterVar ids run COUNTER to nest order: outer Repeat uses IterVar(7),
+/// inner Repeat uses IterVar(3). Both iter-vars have a
+/// `partition_worker_ranges` entry for the same worker set.
+///
+/// `IterTile::bounds`'s outer-to-inner convention is load-bearing for
+/// the post-pass `annotate_pipeline_depth_for_seq` `.rev()` walk
+/// (innermost-wins). Before TASK-0224 `rewrite_partition_tiles_inner`
+/// iterated `partition_ranges: BTreeMap<IterVar, ...>` in key-ascending
+/// order — which is IterVar-id ascending order. For schedules where
+/// id-order COINCIDES with nest order (every in-tree example today)
+/// that produces correct bounds; for schedules where it DIVERGES (this
+/// test) the bounds vec ends up reversed and the convention silently
+/// breaks. TASK-0224 fixes this by walking the enclosing Repeat stack
+/// instead.
+///
+/// The assertion: bounds must be `[(IterVar(7), 0..2), (IterVar(3),
+/// 0..3)]` — OUTER-FIRST — for a fan-out pair landing on WorkerId(1),
+/// not the reversed `[(IterVar(3), ...), (IterVar(7), ...)]`.
+#[test]
+fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
+    // Outer Repeat: IterVar(7) range 0..4, partitioned across w1/w2.
+    // Inner Repeat: IterVar(3) range 0..6, partitioned across w1/w2.
+    // Inside inner body: op on {w1, w2} reads `d` (produced by host).
+    // Fan-out triggers cross-worker Push/Wait per (host -> w_i) pair.
+    let inner_body = ACFGNode::Sequence(vec![op(&[1, 2], 101, vec![0], Some(1))]);
+    let outer_body = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: IterVar(3),
+        range: 0..6,
+        body: Box::new(inner_body),
+        block_tag: None,
+    }]);
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..4,
+            body: Box::new(outer_body),
+            block_tag: None,
+        },
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2)],
+    );
+    // Name both iter-vars so the schedule loop-name resolution would
+    // work if a future schedule wanted to refer to them; not strictly
+    // required for this test since we set partition_worker_ranges by
+    // hand below.
+    acfg.name_iter_vars.insert("n".to_string(), IterVar(7));
+    acfg.name_iter_vars.insert("k".to_string(), IterVar(3));
+
+    // OUTER partition: IterVar(7) -> {w1: 0..2, w2: 2..4}
+    let mut outer_per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    outer_per_worker.insert(WorkerId(1), 0..2);
+    outer_per_worker.insert(WorkerId(2), 2..4);
+    acfg.partition_worker_ranges.insert(IterVar(7), outer_per_worker);
+    // INNER partition: IterVar(3) -> {w1: 0..3, w2: 3..6}
+    let mut inner_per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    inner_per_worker.insert(WorkerId(1), 0..3);
+    inner_per_worker.insert(WorkerId(2), 3..6);
+    acfg.partition_worker_ranges.insert(IterVar(3), inner_per_worker);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    // Collect Wait xfers grouped by dst worker; for each dst, the tile
+    // bounds must be in OUTER-to-INNER nest order — IterVar(7) first,
+    // IterVar(3) second — with each axis carrying the per-worker
+    // partition slice for that dst.
+    let xfers = result.root.collect_xfers();
+    let waits: Vec<&XferPlaceholder> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait)
+        .collect();
+    assert!(
+        !waits.is_empty(),
+        "expected fan-out Wait xfers from the nested-partitioned op; got none"
+    );
+    for w in &waits {
+        assert_eq!(
+            w.tile.bounds.len(),
+            2,
+            "two enclosing partitioned iter-vars => bounds.len()==2; \
+             got {:?}",
+            w.tile.bounds
+        );
+        // Position 0: outer IterVar(7); position 1: inner IterVar(3).
+        // BEFORE TASK-0224 the order was reversed (IterVar-id ascending
+        // = (3, 7)); AFTER the fix it follows nest order.
+        assert_eq!(
+            w.tile.bounds[0].0,
+            IterVar(7),
+            "bounds[0] must be the OUTER iter-var (IterVar(7)) per the \
+             outer-to-inner convention; got {:?} (TASK-0224: rewrite \
+             must walk enclosing-Repeat stack, not partition_ranges \
+             BTreeMap keys)",
+            w.tile.bounds[0].0
+        );
+        assert_eq!(
+            w.tile.bounds[1].0,
+            IterVar(3),
+            "bounds[1] must be the INNER iter-var (IterVar(3)); got \
+             {:?}",
+            w.tile.bounds[1].0
+        );
+        // Cross-check the per-worker slice survived the refactor (the
+        // load-bearing semantic the cycle-45 attempt broke).
+        let expected_outer = match w.dst {
+            WorkerId(1) => 0..2,
+            WorkerId(2) => 2..4,
+            other => panic!("unexpected fan-out dst {other:?}"),
+        };
+        let expected_inner = match w.dst {
+            WorkerId(1) => 0..3,
+            WorkerId(2) => 3..6,
+            other => panic!("unexpected fan-out dst {other:?}"),
+        };
+        assert_eq!(
+            w.tile.bounds[0].1, expected_outer,
+            "outer slice for dst {:?} must be the per-worker partition \
+             range from IterVar(7)'s sidecar entry",
+            w.dst
+        );
+        assert_eq!(
+            w.tile.bounds[1].1, expected_inner,
+            "inner slice for dst {:?} must be the per-worker partition \
+             range from IterVar(3)'s sidecar entry",
+            w.dst
+        );
+    }
+}
+
+/// Three-level non-monotonic nest. Outer IterVar(9), middle IterVar(2),
+/// inner IterVar(5). All three are partitioned across the same worker
+/// set. Asserts the full 3-element bounds vec is in nest order
+/// `[9, 2, 5]`, not IterVar-id ascending `[2, 5, 9]` and not
+/// IterVar-id descending `[9, 5, 2]`. Catches a fix that merely sorts
+/// instead of walking the actual enclosing stack.
+#[test]
+fn rewrite_partition_tiles_three_level_nest_order() {
+    let innermost_body = ACFGNode::Sequence(vec![op(&[1, 2], 101, vec![0], Some(1))]);
+    let middle_body = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: IterVar(5),
+        range: 0..4,
+        body: Box::new(innermost_body),
+        block_tag: None,
+    }]);
+    let outer_body = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: IterVar(2),
+        range: 0..4,
+        body: Box::new(middle_body),
+        block_tag: None,
+    }]);
+    let root = ACFGNode::Sequence(vec![
+        op(&[0], 100, vec![], Some(0)),
+        ACFGNode::Repeat {
+            iter_var: IterVar(9),
+            range: 0..4,
+            body: Box::new(outer_body),
+            block_tag: None,
+        },
+    ]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2)],
+    );
+    for (name, iv) in [("n", 9), ("k", 2), ("m", 5)] {
+        acfg.name_iter_vars.insert(name.to_string(), IterVar(iv));
+    }
+    for iv_id in [9, 2, 5] {
+        let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+        per_worker.insert(WorkerId(1), 0..2);
+        per_worker.insert(WorkerId(2), 2..4);
+        acfg.partition_worker_ranges
+            .insert(IterVar(iv_id), per_worker);
+    }
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+
+    let xfers = result.root.collect_xfers();
+    let waits: Vec<&XferPlaceholder> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait)
+        .collect();
+    assert!(!waits.is_empty(), "expected fan-out Waits");
+    for w in &waits {
+        let order: Vec<IterVar> = w.tile.bounds.iter().map(|(iv, _)| *iv).collect();
+        assert_eq!(
+            order,
+            vec![IterVar(9), IterVar(2), IterVar(5)],
+            "three-level nest bounds must be OUTER-to-INNER (9, 2, 5); \
+             got {:?} — IterVar-id ascending would be (2, 5, 9), \
+             id-descending (9, 5, 2); only a true Repeat-stack walk \
+             yields (9, 2, 5)",
+            order
+        );
+    }
 }

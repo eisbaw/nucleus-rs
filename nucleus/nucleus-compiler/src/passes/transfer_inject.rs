@@ -425,12 +425,11 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
 /// documented convention (event.rs ~line 227): "Outer-most iteration
 /// variable first." Walking `bounds.iter().rev()` therefore visits
 /// innermost-to-outermost, and `find_map` stops at the first
-/// (= innermost) pipelined iter-var. Construction sites that build
-/// `bounds` in non-nest order would silently break this — currently
-/// only the partition-rewrite path (`rewrite_partition_tiles_inner`)
-/// builds bounds in `IterVar` id order instead of nest order; that
-/// path is not exercised together with `pipeline=D` today and is
-/// tracked as a follow-up (TASK-0216, partition + pipeline coverage).
+/// (= innermost) pipelined iter-var. All construction sites build
+/// `bounds` in nest order — the enclosing-tile stack in
+/// `inject_in_sequence`, the fan-out path, and (since TASK-0224) the
+/// partition-rewrite path, which walks the enclosing `Repeat` stack
+/// directly rather than relying on `IterVar` id ordering.
 ///
 /// Why we use the Xfer's `tile` (not the live walk's enclosing-tile
 /// stack): after `hoist_invariant_waits` runs, a Wait may live at a
@@ -1587,9 +1586,44 @@ fn splice_pushes_global(
 /// - Else: no partition involvement — leave the tile unchanged
 ///   (the 1:1 host↔single-worker shape from examples 01..07).
 ///
-/// The new tile is `[(iv, partition_ranges[iv][compute_worker])]`
-/// for each iv where compute_worker has an entry; BTreeMap iteration
-/// keeps the axis order deterministic.
+/// The new tile is built by iterating the partitioned iter-vars in
+/// NEST ORDER (outer-to-inner) and appending
+/// `(iv, partition_ranges[iv][compute_worker])` for each iv where the
+/// compute worker has a partition entry. The nest order itself is
+/// derived from the ACFG topology via a single DFS pre-order pass over
+/// the `Repeat` nodes — outer Repeats are visited before their
+/// children — restricted to iter-vars that have a `partition_ranges`
+/// entry. The resulting `bounds` is naturally OUTER-to-INNER, the
+/// convention load-bearing for downstream passes
+/// (`annotate_pipeline_depth_for_seq` walks `bounds.iter().rev()` for
+/// "innermost wins").
+///
+/// TASK-0224 replaced an earlier per-Xfer `for (iv, ...) in
+/// partition_ranges` loop that iterated in BTreeMap key-ascending =
+/// IterVar-id ascending order. That coincided with nest order for
+/// schedules where outer-loop iter-vars happened to have lower ids
+/// (every in-tree schedule today) but is not guaranteed by the
+/// `IterTile::bounds` convention. Pinned by
+/// `rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order`
+/// and `rewrite_partition_tiles_three_level_nest_order` (synthetic
+/// fixtures with non-monotonic IterVar ids).
+///
+/// Why we derive nest order from the ACFG rather than from the live
+/// "enclosing-Repeat stack" at the Xfer's current position: by the
+/// time this pass runs, `hoist_invariant_waits` has already moved
+/// loop-invariant whole-symbol Waits OUT of their birth-position
+/// Repeats (TASK-0151). For a fan-out broadcast like `host -> {w1..w4}`
+/// over a partitioned `for n`, the Wait now sits at top-level, with an
+/// empty live-stack — but we still want the per-worker partition slice
+/// of `for n` recorded in its tile (the test
+/// `transfer_fanout_composes_with_partition_sidecar` pins exactly
+/// that). The Repeat node still exists in the ACFG, just at a sibling
+/// position; a DFS pre-order over `Repeat::iter_var` captures the
+/// program-wide nest order regardless of where any one Xfer happens
+/// to have been hoisted to.
+///
+/// Determinism: DFS pre-order is a pure function of the ACFG; the
+/// resulting `partition_axis_order` is the same for the same input.
 ///
 /// We do this AFTER `hoist_invariant_waits` + `splice_pushes_global`
 /// rather than at `build_waits_for_op` time because the hoist
@@ -1604,12 +1638,58 @@ fn rewrite_partition_tiles(
     if partition_ranges.is_empty() {
         return node;
     }
-    rewrite_partition_tiles_inner(node, partition_ranges)
+    // Derive the program-wide nest order of partitioned iter-vars via
+    // a DFS pre-order over `Repeat::iter_var`, filtered to those in
+    // `partition_ranges`. Outer Repeats appear before their children,
+    // so the resulting Vec is OUTER-to-INNER. The same iter-var
+    // appearing twice (e.g. via `block_transform` strip-mining that
+    // reuses an IterVar across a full/partial split) is recorded only
+    // on its first visit — the partition slice is keyed per iter-var,
+    // and a second copy at deeper nest would double the bounds entry
+    // for the same logical axis.
+    let mut partition_axis_order: Vec<IterVar> = Vec::new();
+    collect_partitioned_iter_var_nest_order(&node, partition_ranges, &mut partition_axis_order);
+    rewrite_partition_tiles_inner(node, partition_ranges, &partition_axis_order)
 }
 
+/// DFS pre-order walk of the ACFG recording each `Repeat::iter_var`
+/// that has a `partition_ranges` entry, OUTER-to-INNER. Each iter-var
+/// is recorded at most once even if a `Repeat` for the same `IterVar`
+/// appears multiple times (e.g. strip-mined full/partial split sharing
+/// one `IterVar`); first-occurrence wins, which is the outermost
+/// occurrence under DFS pre-order.
+fn collect_partitioned_iter_var_nest_order(
+    node: &ACFGNode,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    out: &mut Vec<IterVar>,
+) {
+    match node {
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            if partition_ranges.contains_key(iter_var) && !out.contains(iter_var) {
+                out.push(*iter_var);
+            }
+            collect_partitioned_iter_var_nest_order(body, partition_ranges, out);
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_partitioned_iter_var_nest_order(c, partition_ranges, out);
+            }
+        }
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
+/// Recursive worker for [`rewrite_partition_tiles`].
+///
+/// `partition_axis_order` is the OUTER-to-INNER nest-order vec of
+/// partitioned iter-vars precomputed by the caller; we consult it to
+/// keep `IterTile::bounds` in nest order regardless of where the Xfer
+/// currently sits in the tree (post-hoist Xfers may live outside their
+/// birth-position Repeats — see [`rewrite_partition_tiles`] doc).
 fn rewrite_partition_tiles_inner(
     node: ACFGNode,
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    partition_axis_order: &[IterVar],
 ) -> ACFGNode {
     match node {
         ACFGNode::Xfer(mut x) => {
@@ -1628,23 +1708,19 @@ fn rewrite_partition_tiles_inner(
                 None
             };
             if let Some(w) = compute_worker {
+                // Iterate the precomputed OUTER-to-INNER nest-order
+                // axis vec and append the per-worker partition slice
+                // for each axis where this compute worker has an
+                // entry. Replaces a pre-TASK-0224 BTreeMap-key-order
+                // iteration that coincidentally produced nest order
+                // only because every in-tree schedule's outer
+                // iter-vars happened to have lower IterVar ids.
                 let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
-                // TASK-0216: this iteration order is BTreeMap<IterVar, ...>
-                // key-ascending, i.e. IterVar id order. For real schedules
-                // in this codebase that coincides with nest order (outer
-                // loops are walked first during ACFG construction, so
-                // their IterVars get LOWER ids). For multiple nested
-                // partitioned iter-vars under a future schedule the
-                // distinction could matter — see IterTile::bounds doc on
-                // outer-to-inner being load-bearing for the path-1
-                // annotate_pipeline_depth_for_seq reorder. The deeper
-                // fix (walk the enclosing Repeat stack instead) is
-                // TASK-0224; not exercised today (single-partitioned-
-                // iter-var schedules give a 1-element bounds vec).
-                // Test coverage: `partition_with_pipeline_populates_pipeline_depth_per_fanout_pair`.
-                for (iv, per_worker) in partition_ranges {
-                    if let Some(range) = per_worker.get(&w) {
-                        bounds.push((*iv, range.clone()));
+                for iv in partition_axis_order {
+                    if let Some(per_worker) = partition_ranges.get(iv) {
+                        if let Some(range) = per_worker.get(&w) {
+                            bounds.push((*iv, range.clone()));
+                        }
                     }
                 }
                 if !bounds.is_empty() {
@@ -1656,7 +1732,7 @@ fn rewrite_partition_tiles_inner(
         ACFGNode::Sequence(children) => ACFGNode::Sequence(
             children
                 .into_iter()
-                .map(|c| rewrite_partition_tiles_inner(c, partition_ranges))
+                .map(|c| rewrite_partition_tiles_inner(c, partition_ranges, partition_axis_order))
                 .collect(),
         ),
         ACFGNode::Repeat {
@@ -1667,7 +1743,11 @@ fn rewrite_partition_tiles_inner(
         } => ACFGNode::Repeat {
             iter_var,
             range,
-            body: Box::new(rewrite_partition_tiles_inner(*body, partition_ranges)),
+            body: Box::new(rewrite_partition_tiles_inner(
+                *body,
+                partition_ranges,
+                partition_axis_order,
+            )),
             block_tag,
         },
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
