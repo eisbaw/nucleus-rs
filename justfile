@@ -100,6 +100,33 @@ determinism-check-negative:
 xbackend-check-negative:
     cd nucleus && out=$(mktemp) && trap 'rm -f "$out"' EXIT && { if NUC_XBACKEND_NEGATIVE=1 cargo run --release --bin nucleus-e2e >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE '^NUC_XBACKEND_CORRUPTED_DETECTED=[0-9]+' "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_XBACKEND_CORRUPTED_DETECTED signal MISSING — cannot prove the differential detected injected corruption (TASK-0188; harness/recipe contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_XBACKEND_CORRUPTED_DETECTED=$n — the cross-backend differential detected NO injected mp-tcp corruption (TASK-0188)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: cross-backend differential did NOT detect injected mp-tcp corruption"; exit 1; else echo "OK: cross-backend differential correctly bit on injected mp-tcp corruption"; fi
 
+# Prove the [[required]]-coverage guard actually BITES on the WIRED
+# `run_inner` path (TASK-0168 / TASK-0163 AC#3 negative arm). TASK-0163
+# added `required_coverage_gaps`, but its 5 unit tests cover the pure
+# function in isolation — none of them prove that `run_inner` still
+# returns Err on a non-empty gap set. A future refactor could drop the
+# `if !gaps.is_empty() { return Err }` wiring, all 5 unit tests would
+# stay green, and `just ci` would not catch the silent re-introduction
+# of the TASK-0163 false-negative. This recipe closes that gap by
+# running the full harness with NUC_REQUIRED_COVERAGE_NEGATIVE=1, which
+# deterministically appends ONE synthetic [[required]] entry whose
+# schedule cannot match any discovered *.sched.nuc file. The wired
+# `required_coverage_gaps` then yields a gap, `run_inner` returns Err
+# naming the synthetic triple, and the harness exits non-zero. SUCCEEDS
+# iff the harness correctly FAILS — a green `e2e` is only meaningful
+# because this one is too. Mirrors `determinism-check-negative` /
+# `xbackend-check-negative` exactly (env-flag seam, no committed broken
+# manifest — AC#2; loud stderr WARNING at injection time;
+# deterministic, non-flaky).
+# TASK-0188 belt-and-suspenders contract: the harness emits
+# `NUC_REQUIRED_COVERAGE_GAP_DETECTED=<n>` where n = gaps attributable
+# to the injection (filtered by the sentinel schedule). This recipe
+# asserts the line is present AND n>=1 IN ADDITION to the exit-code
+# inversion, so a recipe refactor dropping the inversion fails LOUD
+# rather than silently re-neutering the falsifier.
+required-coverage-check-negative:
+    cd nucleus && out=$(mktemp) && trap 'rm -f "$out"' EXIT && { if NUC_REQUIRED_COVERAGE_NEGATIVE=1 cargo run --release --bin nucleus-e2e >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE '^NUC_REQUIRED_COVERAGE_GAP_DETECTED=[0-9]+' "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED signal MISSING — cannot prove the required-coverage guard detected the injected typo (TASK-0188; harness/recipe contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED=$n — the required-coverage guard detected NO injection-attributable gap (TASK-0188)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: required-coverage guard did NOT exit non-zero on injected typo'd required cell (TASK-0168 wired path silently re-neutered)"; exit 1; else echo "OK: required-coverage guard correctly bit on injected typo'd required cell"; fi
+
 # TASK-0174 (B) / TASK-0038 AC#5: the REAL end-to-end reproduction of
 # "an OS cap below the schedule requirement makes run.sh fail LOUD".
 # Tries `unshare -Urn` + in-netns `sysctl -w net.core.wmem_max=4096`,
@@ -144,6 +171,7 @@ ci:
     just determinism-check
     just determinism-check-negative
     just xbackend-check-negative
+    just required-coverage-check-negative
 
 # Remove build artefacts.
 clean:
