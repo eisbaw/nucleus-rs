@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-18 22:34'
-updated_date: '2026-05-23 15:20'
+updated_date: '2026-05-23 15:29'
 labels:
   - infra
   - tooling
@@ -72,6 +72,8 @@ Subtleties / gotchas worth recording for future cycles:
 - Rejected alternatives: (a) committed broken fixture would violate AC#2; (b) more unit tests on required_coverage_gaps would not prove the wired run() exit-code path bites — the entire point of the task.
 
 Forward-carry: appended note to TASK-0163 (the source task).
+
+Cycle 71 review-gate hardening (commit 74a79de): mped-architect MINOR-1 (wire-site comment cross-file line numbers → name references), MINOR-2 (docstring overclaim on M1 fallback robustness → named the assumption explicitly), MINOR-3 (latent cross-test env-mutex hazard → filed TASK-0251 with explicit trigger conditions, deferred since today's hazard is dormant). qa-test-runner verdict GO (full just ci green, 88/70/0/18, new recipe deterministic across 2 samples NUC_REQUIRED_COVERAGE_GAP_DETECTED=1 both times). mped-architect verdict GO (zero blockers, zero majors, 3 MINORs applied/deferred).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
