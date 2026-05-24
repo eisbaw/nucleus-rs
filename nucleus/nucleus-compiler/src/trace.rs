@@ -1,5 +1,37 @@
 //! Zero-dependency, env-gated compiler trace facility.
 //!
+//! # Decision (TASK-0280, cycle 108): KEEP + preserved-as-convention
+//!
+//! TASK-0280 audited this facility after TASK-0267 (cycle 101) removed
+//! `transfer_inject::trace_block_deferral`, which had been the only
+//! in-source consumer at the time. As of cycle 108 the production
+//! consumer set is:
+//!
+//! - `nucleus/driver/src/main.rs:399` — emits halo_inference
+//!   advisory errors (PartitionAware mode; non-fatal when the
+//!   affected iv has no `partition=` directive in scope, so the
+//!   transfer_inject halo consumer would not fire on it).
+//!
+//! Decision: preserve the facility per PRD §12 / CLAUDE.md
+//! `decision-0001` (zero-dep, env-gated, do NOT add `log`/`tracing`).
+//! It is the established convention for "advisory diagnostics on a
+//! pass that does not fail-loud". Future passes (sync_inject,
+//! petri_to_events, partition_*) that gain advisory-error paths
+//! follow the same pattern — calling `nuc_trace!(...)` from the
+//! driver where the per-pass advisory bucket is collected.
+//!
+//! ## Known dead code in this module
+//!
+//! The `TraceCapture` RAII guard + `TRACE_SINK` thread-local +
+//! `test_sink_active()` helper exist to let TESTS capture trace lines
+//! without scraping process stderr. As of cycle 108, NO test in the
+//! workspace uses `TraceCapture` — `grep -rn "TraceCapture"` returns
+//! only this file. The subsystem is preserved as a future-test escape
+//! hatch (cheap to keep — RAII drop is the only behavioural surface
+//! and it tested correct by the type system), but a prune is filed as
+//! TASK-0285 (cycle 108 follow-up) so the next person revisiting this
+//! facility makes the prune-or-use call deliberately.
+//!
 //! # Why not `log` + `env_logger` / `tracing`? (TASK-0154 AC#1)
 //!
 //! The nucleus-compiler crate deliberately carries only four dependencies
@@ -100,7 +132,12 @@ pub fn emit(line: std::fmt::Arguments<'_>) {
 /// disabled path.
 ///
 /// ```ignore
-/// nuc_trace!("transfer_inject: deferred {} seq {}", sym, seq);
+/// // Driver halo_inference advisory pattern (the live cycle-108
+/// // consumer; see `nucleus/driver/src/main.rs:399`):
+/// nuc_trace!(
+///     "halo_inference: advisory (no `partition=` directive in scope, transfer_inject \
+///      halo consumer will not fire on the affected iv — lowering proceeds): {e}"
+/// );
 /// ```
 #[macro_export]
 macro_rules! nuc_trace {

@@ -3,10 +3,11 @@ id: TASK-0280
 title: >-
   NUC_TRACE facility now orphaned — decide: repurpose or remove (TASK-0267
   follow-up)
-status: To Do
+status: Done
 assignee:
-  - '@mark'
+  - '@mped-orchestrator'
 created_date: '2026-05-24 13:43'
+updated_date: '2026-05-24 17:33'
 labels:
   - infra
   - tooling
@@ -63,3 +64,46 @@ Acceptance criteria:
   `NUC_TRACE` output help diagnose a future regression in this
   pass?" and added or skipped consciously.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## CYCLE-108 LANDING (orchestrator-led, 2026-05-24)
+
+TASK-0280 closed. Decision: option (1) KEEP + preserved-as-convention.
+
+### Audit at cycle 108
+
+Re-grepped all in-source nuc_trace!/NUC_TRACE/trace_enabled references. Production consumer set is NOT empty (the task brief's 'zero in-source callers' claim was correct AT FILING TIME — cycle 101 right after TASK-0267 removed transfer_inject::trace_block_deferral — but cycles 96/101 introduced/preserved):
+
+- nucleus/driver/src/main.rs:399 — emits halo_inference advisory errors (PartitionAware mode; non-fatal when the affected iv has no partition= directive in scope, so the transfer_inject halo consumer would not fire on it). Landed cycle 96 (TASK-0275 (B) partition-policy-aware promotion).
+
+### Implementation
+
+trace.rs module docs updated to:
+1. Reflect the live consumer set (the driver halo_inference advisory site).
+2. Document the decision: preserve per PRD section 12 + CLAUDE.md decision-0001 (zero-dep, env-gated, do NOT add log/tracing).
+3. Update the stale doctest example at trace.rs:103 (was 'transfer_inject: deferred {} seq {}' from the cycle-101-removed call site; now uses the live halo_inference advisory pattern).
+4. Surface a separate observation: TraceCapture + TRACE_SINK + test_sink_active are dead code (no test in the workspace uses them). Filed as TASK-0285 for prune-or-use decision.
+
+### Why option (1) not (2) or (3)
+
+Option (2) REMOVE was a candidate when the facility was fully orphaned. With 1 live caller it's no longer orphaned; the alternative would be inlining eprintln! at that one site + ripping the macro. Not worth it: the convention is established (PRD section 12 decision-0001), and a second/third caller is likely as more passes gain advisory-error buckets. Option (3) REPURPOSE (add more call sites proactively) was rejected per the task brief — should be a deliberate cycle of its own, not piggy-backed on the decision artefact.
+
+### Gate post-decision
+
+- cargo test --workspace: 818 / 0 / 3 (unchanged; doc-only change).
+- cargo clippy: clean.
+- e2e + determinism not re-run (doc-only diff cannot affect emit).
+
+### ACs MET
+
+- Decision made and recorded in a code comment at nucleus/nucleus-compiler/src/trace.rs:3-30: MET.
+- Option (1): facility preserved as convention; module docs document the current state + decision rationale: MET.
+
+### Follow-up filed
+
+TASK-0285 (LOW): prune or use TraceCapture. Today it has zero in-source users; the prune is ~30 LoC removal of dead RAII machinery. Independent of TASK-0280's KEEP decision (KEEP is about nuc_trace! the macro; TraceCapture is about its test-side sink helper).
+
+Status: Done. Commit pending.
+<!-- SECTION:NOTES:END -->
