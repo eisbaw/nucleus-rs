@@ -59,6 +59,7 @@ pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 pub use passes::inject_check_frames::inject_check_frames;
+pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError};
 pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};
 pub use passes::partition_workers::{apply_partition_workers, PartitionError};
 pub use passes::petri_to_events::{acfg_to_events, petri_to_events};

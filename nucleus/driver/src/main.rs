@@ -50,8 +50,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_rows,
-    apply_partition_workers, build_acfg, build_sidecar, check_kernels_contract,
+    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_blocks2d,
+    apply_partition_rows, apply_partition_workers, build_acfg, build_sidecar,
+    check_kernels_contract,
     check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
     load_capabilities,
 };
@@ -344,6 +345,19 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // after apply_partition_workers for diagnostic clarity.
     let acfg =
         apply_partition_rows(&linked, acfg).map_err(|e| format!("partition-rows error: {e}"))?;
+    // Partition-blocks2d 2D-grid rewrite (TASK-0259): consume any
+    // `loop X : partition=blocks2d` directive whose outer-of-2D-nest
+    // body is multi-worker. Writes TWO entries into
+    // `partition_worker_ranges` (one under the outer iter_var for the
+    // per-worker y-band, one under the inner iter_var for the per-
+    // worker x-band) — the walker's independent per-iter_var lookup
+    // applies each on the appropriate Repeat. Order between the three
+    // partition passes is observationally irrelevant (grammar accepts
+    // at most one `partition=` per loop → disjoint IterVar keys). This
+    // call sits immediately after apply_partition_rows for diagnostic
+    // clarity.
+    let acfg = apply_partition_blocks2d(&linked, acfg)
+        .map_err(|e| format!("partition-blocks2d error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

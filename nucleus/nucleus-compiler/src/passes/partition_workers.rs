@@ -38,13 +38,13 @@
 //!   like `block_transform`'s trailing partial) is filed as the
 //!   follow-up to this task per the task description.
 //! - **1D partition axis only.** This pass consumes `partition=workers`
-//!   directives. `partition=rows` is now consumed by the sibling
-//!   [`crate::passes::partition_rows`] pass (TASK-0258), which adds the
-//!   "outer-of-2D nest" structural pre-condition on top of the same
-//!   row-band slicing algorithm this pass uses. `partition=blocks2d`
-//!   remains rejected at sched-lower as
-//!   [`crate::sched::SchedLowerErrorKind::UnsupportedPartitionKind`]
-//!   (TASK-0249); its consumer is filed as TASK-0259.
+//!   directives. All three [`crate::sched::PartitionKind`] variants now
+//!   have consumers: `partition=workers` (this pass, TASK-0212),
+//!   `partition=rows` (TASK-0258, [`crate::passes::partition_rows`] —
+//!   outer-of-2D row-band), and `partition=blocks2d` (TASK-0259,
+//!   [`crate::passes::partition_blocks2d`] — 2D grid of worker blocks
+//!   on a Repeat-of-Repeat). Sched-lower no longer rejects any
+//!   `PartitionKind` variant.
 //! - **No interaction with `block=`.** A user combining
 //!   `loop n : block=N, partition=workers;` on the same loop would
 //!   confuse: `block_transform` splits the loop into tile + inner with

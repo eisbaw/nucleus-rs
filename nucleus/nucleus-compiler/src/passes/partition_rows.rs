@@ -36,27 +36,38 @@
 //! This is intentional: the "extra validation" partition=rows adds is
 //! captured by the pass entry, not by the downstream IR shape.
 //!
-//! ## Why not share a helper with `partition_workers`?
+//! ## Helper sharing with `partition_blocks2d`
 //!
-//! Tempting to extract a shared `compute_row_band_ranges(range, workers)`
-//! helper from both passes. Deliberately NOT doing it in this cycle for
-//! two reasons:
+//! TASK-0259 (cycle 80) lifted [`find_outer_of_2d`], [`contains_repeat`]
+//! and [`collect_op_workers`] to `pub(crate)` so the
+//! [`crate::passes::partition_blocks2d`] sibling consumes the same
+//! helpers without triple-duplication. The structural pre-condition
+//! (outer-of-2D Repeat-of-Repeat with a multi-worker inner body) is
+//! byte-identical between `partition_rows` and `partition_blocks2d`;
+//! only the per-worker range computation diverges (1D row-bands vs 2D
+//! grid-block decomposition).
 //!
-//! 1. The two passes diverge in their structural pre-condition (outer-
-//!    of-2D vs any-multi-worker-body) and their error types
-//!    ([`PartitionRowsError`] vs `PartitionError`). The genuinely shared
-//!    bytes are the row-band arithmetic (~6 lines) PLUS the
-//!    `collect_op_workers` helper (~18 lines, byte-identical between
-//!    the two pass files) — total ~24 LoC of straight duplication. The
-//!    deliberate non-extraction is a one-cycle bisect-locality bet
-//!    (cycle-79c review-finding F1 / TASK-0259's sibling will compound
-//!    this to 3-way duplication, at which point the lift becomes
-//!    warranted — flag for TASK-0259 + TASK-0244 follow-up).
-//! 2. A refactor that touches both pass files would also touch the
-//!    `partition_workers.rs` invariants pinned by TASK-0212's 9 tests;
-//!    that consolidation belongs to a future cleanup task
-//!    (`backend-common` style — see memory: project-backend-common-crate)
-//!    so a regression bisects to that commit, not to TASK-0258.
+//! The byte-identical [`collect_op_workers`] in
+//! [`crate::passes::partition_workers`] (TASK-0212) remains as a third
+//! local copy. Lifting it across all three passes belongs to the
+//! TASK-0244 backend-common-style cleanup track — touching
+//! `partition_workers.rs` would also touch the 9 TASK-0212 tests its
+//! invariants pin, and a regression should bisect to that consolidation
+//! commit, not to a partition-policy task.
+//!
+//! ## Why not share the row-band arithmetic between passes
+//!
+//! The row-band slicing math (~6 lines: `slice = len / n; lo + i * slice
+//! .. lo + (i+1) * slice`) is byte-identical between
+//! [`apply_partition_workers`](crate::passes::partition_workers::apply_partition_workers)
+//! and [`apply_partition_rows`]; [`crate::passes::partition_blocks2d`]
+//! adds a 2D variant of the same arithmetic on both axes. Extracting
+//! the arithmetic across three different error types
+//! ([`PartitionRowsError`], `PartitionError`,
+//! `PartitionBlocks2dError`) is the smaller cleanup the TASK-0244 track
+//! will consolidate. Deliberately NOT done in this cycle: the
+//! arithmetic is six lines, and the error-type divergence would force a
+//! refactor that touches all three passes plus their tests.
 //!
 //! ## Honest limitations (first cut)
 //!
@@ -74,11 +85,15 @@
 //!   bit-identical to reference.bin. See the task brief for the
 //!   carry-over: 05-stencil/distributed is restored to carry the
 //!   directive but the cell remains [[skip]] for sibling reasons.
-//! - **`partition=blocks2d` still rejects at sched-lower** as
+//! - **`partition=blocks2d` is the 2D-grid sibling.** TASK-0259
+//!   (cycle 80) landed [`crate::passes::partition_blocks2d`], which
+//!   uses the same outer-of-2D structural check as this pass but
+//!   partitions BOTH axes across a 2D grid of workers. After
+//!   TASK-0259, sched-lower no longer rejects any
+//!   [`crate::sched::PartitionKind`] variant; the
 //!   [`crate::sched::SchedLowerErrorKind::UnsupportedPartitionKind`]
-//!   (TASK-0259 owns landing its consumer). The TASK-0249 closing-move
-//!   pattern (typed reject for unimplemented partition policies) is
-//!   preserved for Blocks2d.
+//!   variant is retained for exhaustiveness against future
+//!   `PartitionKind` extensions.
 //!
 //! ## Pipeline placement
 //!
@@ -318,7 +333,13 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
 ///
 /// Returns `None` if no Repeat with `iter_var == target` exists in the
 /// subtree.
-fn find_outer_of_2d(
+///
+/// `pub(crate)` so the sibling pass [`crate::passes::partition_blocks2d`]
+/// (TASK-0259) shares the same outer-of-2D structural check without
+/// duplicating the walk. The byte-identical helper would otherwise be a
+/// three-way duplication; lifting to `pub(crate)` is the smallest
+/// consolidation that pays back at the second consumer.
+pub(crate) fn find_outer_of_2d(
     node: &ACFGNode,
     target: IterVar,
 ) -> Option<(std::ops::Range<i64>, bool, BTreeSet<WorkerId>)> {
@@ -356,7 +377,10 @@ fn find_outer_of_2d(
 /// Walks through `Sequence` children and into a `Repeat` directly
 /// (returning `true` the moment any Repeat is hit). Conservative —
 /// extra-deep nests still satisfy the 2D-or-deeper precondition.
-fn contains_repeat(node: &ACFGNode) -> bool {
+///
+/// `pub(crate)` for the same TASK-0259 sharing reason as
+/// [`find_outer_of_2d`].
+pub(crate) fn contains_repeat(node: &ACFGNode) -> bool {
     match node {
         ACFGNode::Repeat { .. } => true,
         ACFGNode::Sequence(children) => children.iter().any(contains_repeat),
@@ -366,7 +390,13 @@ fn contains_repeat(node: &ACFGNode) -> bool {
 
 /// Union the `Operation.workers` sets across every Operation reachable
 /// in this subtree. Read-only walk.
-fn collect_op_workers(node: &ACFGNode, out: &mut BTreeSet<WorkerId>) {
+///
+/// `pub(crate)` so [`crate::passes::partition_blocks2d`] (TASK-0259)
+/// shares the helper instead of triple-duplicating it. The
+/// byte-identical copy in [`crate::passes::partition_workers`] (TASK-
+/// 0212) remains for now — that consolidation belongs to the TASK-0244
+/// backend-common-style cleanup track.
+pub(crate) fn collect_op_workers(node: &ACFGNode, out: &mut BTreeSet<WorkerId>) {
     match node {
         ACFGNode::Operation(op) => {
             for w in &op.workers {

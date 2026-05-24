@@ -922,50 +922,40 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
-fn negative_partition_blocks2d_is_rejected() {
-    // TASK-0249 + TASK-0258 update: `partition=rows` now lowers (it
-    // has a consumer; see `positive_partition_rows_now_lowers`).
-    // `partition=blocks2d` is the only remaining unimplemented
-    // partition policy and still parses, lowers, would never be
-    // consumed by any pass — silent no-op. TASK-0259 will land its
-    // consumer. Until then we keep the typed reject with
-    // UnsupportedPartitionKind so the silent-drop landmine stays
-    // closed.
+fn positive_partition_blocks2d_now_lowers() {
+    // TASK-0259 (cycle 80): `partition=blocks2d` now has a downstream
+    // consumer ([`crate::passes::partition_blocks2d`]) — the
+    // TASK-0249-era reject at sched-lower is removed. All three
+    // `PartitionKind` variants now lower cleanly. The STRUCTURAL pre-
+    // condition (outer-of-2D nest, multi-worker body, divisible y/x
+    // axes, non-degenerate grid) is checked at the pass entry, not
+    // at sched-lower — the AST shape needed is only available after
+    // `build_acfg`. So this test pins the *lowering* surface:
+    // `partition=blocks2d` lowers cleanly to
+    // `ResolvedLoopOption::Partition(Blocks2d)`, exactly as
+    // `partition=workers` (TASK-0212) and `partition=rows` (TASK-0258)
+    // already do.
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
     loop y : partition=blocks2d;
 }
 ";
-    let err = lower_str(src)
-        .expect_err("partition=blocks2d must fail")
-        .first()
-        .clone();
+    let ir = lower_str(src).expect("partition=blocks2d must lower (TASK-0259)");
+    assert_eq!(ir.loops.len(), 1);
+    let loop_y = &ir.loops["y"];
     assert_eq!(
-        err.kind,
-        SchedLowerErrorKind::UnsupportedPartitionKind {
-            var: "y".into(),
-            kind: PartitionKind::Blocks2d,
-        }
-    );
-    let msg = format!("{}", err.kind);
-    assert!(msg.contains("partition=blocks2d"), "msg should name partition=blocks2d: {msg}");
-    assert!(
-        msg.contains("partition=workers"),
-        "msg should suggest partition=workers as one implemented policy: {msg}"
-    );
-    assert!(
-        msg.contains("partition=rows"),
-        "msg should also suggest partition=rows (TASK-0258 sibling policy): {msg}"
+        loop_y.options,
+        vec![ResolvedLoopOption::Partition(PartitionKind::Blocks2d)]
     );
 }
 
 #[test]
 fn positive_partition_workers_still_lowers() {
-    // TASK-0249 regression guard: `partition=workers` is the original
+    // TASK-0259 regression guard: `partition=workers` is the original
     // implemented policy (TASK-0212) and MUST keep lowering after
-    // the Rows acceptance (TASK-0258) and the Blocks2d rejection
-    // (TASK-0259-pending) land. Mirrors the
+    // the Rows acceptance (TASK-0258) and the Blocks2d acceptance
+    // (TASK-0259) land. Mirrors the
     // `positive_pipeline_two_lowers_ok` shape.
     let src = "\
 schedule for \"../prog.algo.nuc\" {
