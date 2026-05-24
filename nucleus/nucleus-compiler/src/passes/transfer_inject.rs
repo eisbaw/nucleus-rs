@@ -190,7 +190,7 @@ use std::num::NonZeroU64;
 use crate::acfg::{
     ACFGNode, NotifyMode, Operation, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
-use crate::event::{DataId, IterTile, IterVar, SeqTag, WorkerId};
+use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransferOption};
 
@@ -222,10 +222,13 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // the populator), but tests may inject their own values
         // before calling us — preserve them.
         pipeline_depth_for_seq: pre_existing_pipeline_depth,
-        // TASK-0260: transfer_inject currently DOES NOT read the
-        // halo-widths sidecar — Stage 2 (TASK-0263) is the wiring
-        // cycle. Forward verbatim. (Tests that inject pre-existing
-        // halo entries to validate forwarding are preserved.)
+        // TASK-0263 Stage 2: transfer_inject consumes halo_widths to
+        // extend per-tile transfer ranges by the inferred stencil
+        // halo widths. The sidecar is read below at the
+        // `extend_xfer_tiles_for_halo` step and forwarded verbatim
+        // afterwards — it remains the single source of truth (the
+        // pass does not rewrite or invalidate halo entries; it only
+        // applies them to Xfer tiles).
         halo_widths,
         // TASK-0261: transfer_inject currently DOES NOT read the
         // reuse-widths sidecar — Stage 2 (TASK-0265, backend walker
@@ -377,7 +380,16 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // neither endpoint is partitioned (the 1:1 host↔single-worker
         // shape from examples 01..07) survive unchanged because the
         // map has no entry for either side.
-        rewrite_partition_tiles(spliced, &partition_worker_ranges)
+        let partitioned = rewrite_partition_tiles(spliced, &partition_worker_ranges);
+        // TASK-0263 Stage 2 halo extension. For each XferPlaceholder
+        // whose tile axis carries a non-zero halo entry (the data
+        // symbol's consumer kernel's halo widths along that
+        // iter-var), extend the axis range by halo on both sides.
+        // Clamp against the iter-var's algorithm source range
+        // expanded by halo — i.e. the data extent the (unpartitioned)
+        // loop would have read. No-op when halo_widths is empty
+        // (every pre-Stage-2 example).
+        extend_xfer_tiles_for_halo(partitioned, &halo_widths)
     };
 
     // TASK-0134 — populate the pipeline-depth sidecar AFTER all the
@@ -1748,6 +1760,239 @@ fn rewrite_partition_tiles_inner(
                 *body,
                 partition_ranges,
                 partition_axis_order,
+            )),
+            block_tag,
+        },
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0263 Stage 2 halo extension
+// --------------------------------------------------------------------
+
+/// Extend each [`XferPlaceholder`]'s `tile` axis range by the halo
+/// width inferred for `(consumer_kernel, iter_var)` along that axis
+/// (TASK-0263 Stage 2).
+///
+/// ### Why this is the right sink for halo widths
+///
+/// By the time `rewrite_partition_tiles` has run, every Xfer's tile
+/// reflects the COMPUTE worker's partition slice (or the source range
+/// when no partition applies). The halo is an additive correction:
+/// "the kernel reading the slice ALSO reads `halo` rows of
+/// neighbouring data". Applied here, the halo extension composes with
+/// any partition policy (rows/blocks2d/workers) without each policy
+/// having to know about halo.
+///
+/// ### Sidecar shape and the (DataId -> consumer KernelIds) join
+///
+/// `halo_widths` is keyed by `(KernelId, IterVar) -> u64`. An
+/// XferPlaceholder carries `(DataId, IterVar)` in its tile. We bridge
+/// the two by walking the ACFG once to collect, for each `DataId`, the
+/// set of kernel ids that READ it (the `data_in` of every
+/// `DataflowEdge`). The halo on a `(DataId, IterVar)` is then the
+/// MAX of `halo_widths[kid][iv]` across all consumer kids — the union
+/// of every reader's halo requirement. This is the only sound merge:
+/// each transfer is one slice, used by every consumer at the
+/// destination; the slice must cover the union of reads.
+///
+/// In practice every in-tree example has at most one consumer kernel
+/// per data symbol; the max-across-consumers reduces to the single
+/// entry. The variant is documented for correctness when a future
+/// algorithm reads the same symbol from two different kernels.
+///
+/// ### Clamp policy
+///
+/// Extension is `lo' = lo - halo, hi' = hi + halo`. We clamp against
+/// the iter-var's algorithm-source loop range expanded by halo —
+/// `[source_lo - halo, source_hi + halo)`. That bounds the legitimate
+/// data extent the loop would read in absence of partitioning. For
+/// schedules where the per-worker band already abuts the source range
+/// (the corner workers), the clamp is a no-op; for non-corner workers
+/// it is always a no-op (the extension stays strictly inside the source
+/// range expanded by halo).
+///
+/// Why not clamp against the data symbol's `ResolvedType::dims`: that
+/// is the right semantic for a STRICTER clamp (don't read beyond data
+/// extent), and is a natural follow-up. For every in-tree example, the
+/// algorithm declares data wide enough that the (loop range ± halo)
+/// stays within the data extent, so the looser clamp here is correct.
+/// Filed as a future tightening on TASK-0263.
+///
+/// ### Bare-iv halo = 0 contract (forward-carry from TASK-0260)
+///
+/// `halo_widths` records an explicit `0` entry for every
+/// `(kernel, iv)` the detector inspected with a bare-iv index. We
+/// treat `0` as "no extension needed" (the natural arithmetic
+/// identity). This honours the TASK-0260 Stage 1 lenient contract.
+///
+/// ### No-op when `halo_widths` is empty
+///
+/// An empty sidecar — every pre-Stage-2 example — short-circuits at
+/// the top: no walk, no allocation, the input is returned unchanged.
+fn extend_xfer_tiles_for_halo(
+    node: ACFGNode,
+    halo_widths: &BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
+) -> ACFGNode {
+    if halo_widths.is_empty() {
+        return node;
+    }
+    // Build the (DataId -> Set<KernelId>) consumer index by walking
+    // the ACFG once. Operations' DataflowEdge::data_in lists every
+    // DataId the edge.kernel reads.
+    let mut consumers: BTreeMap<DataId, BTreeSet<KernelId>> = BTreeMap::new();
+    collect_data_consumers(&node, &mut consumers);
+
+    // Build the (IterVar -> source-loop-range) index by walking the
+    // ACFG's Repeat nodes. The first occurrence wins (matches
+    // `rewrite_partition_tiles`'s nest-order convention); a future
+    // strip-mined inner Repeat that reuses the same IterVar would not
+    // overwrite the outer source range.
+    let mut source_ranges: BTreeMap<IterVar, std::ops::Range<i64>> = BTreeMap::new();
+    collect_iter_var_source_ranges(&node, &mut source_ranges);
+
+    extend_xfer_tiles_inner(node, halo_widths, &consumers, &source_ranges)
+}
+
+/// Walk `node` and union every `Operation`'s `data_in` into the
+/// `(DataId -> KernelId)` consumer index. Read-only walk.
+///
+/// The kernel id we attribute to a read is the EDGE's kernel
+/// (`edge.kernel`), not the enclosing `Operation.kernel` — they are
+/// the same in the M1 single-edge-per-Operation shape, but explicit
+/// is safer if a future multi-edge DAG lands.
+fn collect_data_consumers(node: &ACFGNode, out: &mut BTreeMap<DataId, BTreeSet<KernelId>>) {
+    match node {
+        ACFGNode::Operation(op) => {
+            for edge in &op.dataflow.edges {
+                for d in &edge.data_in {
+                    out.entry(*d).or_default().insert(edge.kernel);
+                }
+            }
+        }
+        ACFGNode::Repeat { body, .. } => collect_data_consumers(body, out),
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_data_consumers(c, out);
+            }
+        }
+        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
+/// Walk `node` and record, for each `Repeat::iter_var`, its source
+/// `range`. First occurrence wins. Read-only walk.
+///
+/// "First" is the outermost occurrence under DFS pre-order. A future
+/// `block_transform` strip-mine that reuses an IterVar across full +
+/// partial split would land its inner-tile Repeats deeper in the tree;
+/// taking the outer occurrence keeps the halo clamp anchored on the
+/// SOURCE loop range (the algorithm's `for y : 1..H-1`), not on a
+/// downstream-synthesised inner-tile range.
+fn collect_iter_var_source_ranges(
+    node: &ACFGNode,
+    out: &mut BTreeMap<IterVar, std::ops::Range<i64>>,
+) {
+    match node {
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            ..
+        } => {
+            out.entry(*iter_var).or_insert_with(|| range.clone());
+            collect_iter_var_source_ranges(body, out);
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_iter_var_source_ranges(c, out);
+            }
+        }
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
+/// Recursive worker for [`extend_xfer_tiles_for_halo`].
+fn extend_xfer_tiles_inner(
+    node: ACFGNode,
+    halo_widths: &BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
+    consumers: &BTreeMap<DataId, BTreeSet<KernelId>>,
+    source_ranges: &BTreeMap<IterVar, std::ops::Range<i64>>,
+) -> ACFGNode {
+    match node {
+        ACFGNode::Xfer(mut x) => {
+            // Look up the consumer kernels for this data symbol. If
+            // none recorded (the data is never read in the ACFG —
+            // e.g. an output written but not re-consumed), no halo
+            // applies. Skip.
+            let Some(kernel_ids) = consumers.get(&x.data) else {
+                return ACFGNode::Xfer(x);
+            };
+            let mut new_bounds: Vec<(IterVar, std::ops::Range<i64>)> =
+                Vec::with_capacity(x.tile.bounds.len());
+            for (iv, range) in &x.tile.bounds {
+                // Max halo across consumer kernels for this iv.
+                let halo: u64 = kernel_ids
+                    .iter()
+                    .filter_map(|kid| halo_widths.get(kid))
+                    .filter_map(|per_iv| per_iv.get(iv))
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                if halo == 0 {
+                    new_bounds.push((*iv, range.clone()));
+                    continue;
+                }
+                // halo is u64; convert to i64. For all in-tree
+                // examples halo widths are small (1 to a few), so the
+                // overflow path is academic — we still guard with
+                // try_into + saturating fallback to keep the function
+                // total.
+                let halo_i: i64 = halo.try_into().unwrap_or(i64::MAX);
+                // Extend.
+                let ext_lo = range.start.saturating_sub(halo_i);
+                let ext_hi = range.end.saturating_add(halo_i);
+                // Clamp to the iter-var's source loop range expanded by
+                // halo. (See module docs for the rationale on this
+                // looser clamp vs the data-extent clamp.)
+                let (clamp_lo, clamp_hi) = match source_ranges.get(iv) {
+                    Some(src) => (
+                        src.start.saturating_sub(halo_i),
+                        src.end.saturating_add(halo_i),
+                    ),
+                    // No source range recorded for this iv — happens
+                    // if an Xfer carries an iv that has no Repeat in
+                    // the ACFG (synthetic test fixtures). Skip the
+                    // clamp; the extension is still applied.
+                    None => (i64::MIN, i64::MAX),
+                };
+                let new_lo = ext_lo.max(clamp_lo);
+                let new_hi = ext_hi.min(clamp_hi);
+                new_bounds.push((*iv, new_lo..new_hi));
+            }
+            x.tile = IterTile::new(new_bounds);
+            ACFGNode::Xfer(x)
+        }
+        ACFGNode::Sequence(children) => ACFGNode::Sequence(
+            children
+                .into_iter()
+                .map(|c| extend_xfer_tiles_inner(c, halo_widths, consumers, source_ranges))
+                .collect(),
+        ),
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            block_tag,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(extend_xfer_tiles_inner(
+                *body,
+                halo_widths,
+                consumers,
+                source_ranges,
             )),
             block_tag,
         },

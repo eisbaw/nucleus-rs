@@ -1303,3 +1303,230 @@ fn rewrite_partition_tiles_three_level_nest_order() {
         );
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0263 Stage 2: halo extension on per-tile transfer ranges
+// --------------------------------------------------------------------
+
+/// Build a synthetic ACFG matching the 05-stencil/distributed shape:
+/// outer y-loop over `1..15` partitioned across 4 workers; inner x-loop
+/// (1..15); body's Operation reads data `d` (DataId 0) with kernel
+/// `blur3` (KernelId 100). Returns the ACFG with the halo_widths sidecar
+/// pre-populated as `halo_widths[blur3][y] = halo_y, [x] = halo_x`.
+fn build_stencil_like_acfg(halo_y: u64, halo_x: u64) -> (ACFG, LinkedIR) {
+    // Body: blur3 on {w1, w2, w3, w4} reads `d`.
+    let body_op = op(&[1, 2, 3, 4], 100, vec![0], Some(1));
+    let inner = ACFGNode::Repeat {
+        iter_var: IterVar(8), // x
+        range: 1..15,
+        body: Box::new(ACFGNode::Sequence(vec![body_op])),
+        block_tag: None,
+    };
+    let outer = ACFGNode::Repeat {
+        iter_var: IterVar(7), // y
+        range: 1..15,
+        body: Box::new(ACFGNode::Sequence(vec![inner])),
+        block_tag: None,
+    };
+    // Producer of `d` is host (worker 0) — outside the y-loop.
+    let root = ACFGNode::Sequence(vec![op(&[0], 99, vec![], Some(0)), outer]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("y".to_string(), IterVar(7));
+    acfg.name_iter_vars.insert("x".to_string(), IterVar(8));
+    acfg.name_kernels
+        .insert("blur3".to_string(), KernelId(100));
+
+    // Floor-with-spillover partition for y on 4 workers, range 1..15:
+    // first 2 get 4 rows, last 2 get 3.
+    let mut y_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    y_bands.insert(WorkerId(1), 1..5);
+    y_bands.insert(WorkerId(2), 5..9);
+    y_bands.insert(WorkerId(3), 9..12);
+    y_bands.insert(WorkerId(4), 12..15);
+    acfg.partition_worker_ranges.insert(IterVar(7), y_bands);
+
+    // Halo: blur3 reads grid[y+/-1] → halo_widths[blur3][y] = halo_y.
+    let mut blur3_halo: BTreeMap<IterVar, u64> = BTreeMap::new();
+    if halo_y > 0 {
+        blur3_halo.insert(IterVar(7), halo_y);
+    }
+    if halo_x > 0 {
+        blur3_halo.insert(IterVar(8), halo_x);
+    }
+    if !blur3_halo.is_empty() {
+        acfg.halo_widths.insert(KernelId(100), blur3_halo);
+    }
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : async, buffer=2, notify=event;",
+    );
+    (acfg, linked)
+}
+
+/// Halo=1 along y, no halo on x — the 05-stencil case. After
+/// transfer_inject, each Wait's tile axis along y must be extended by
+/// 1 on each side. The (partition × halo) composition:
+///   w1: y in 1..5  → 0..6  (extended ±1, clamped to source 1..15 + halo 0..16)
+///   w2: y in 5..9  → 4..10
+///   w3: y in 9..12 → 8..13
+///   w4: y in 12..15 → 11..16
+#[test]
+fn halo_extends_partition_tile_05_stencil_shape() {
+    let (acfg, linked) = build_stencil_like_acfg(/*halo_y=*/ 1, /*halo_x=*/ 0);
+    let result = inject_transfers(&linked, acfg);
+
+    // Expect one Wait per (host, w_i) pair across the 4 workers.
+    let waits: Vec<XferPlaceholder> = result
+        .root
+        .collect_xfers()
+        .into_iter()
+        .filter(|x| x.role == XferRole::Wait && x.data == DataId(0))
+        .collect();
+    assert_eq!(waits.len(), 4, "one Wait per fan-out destination");
+
+    // Each Wait's tile carries y-axis as ONLY partitioned axis with the
+    // extended range.
+    let expect: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::from([
+        (WorkerId(1), 0..6),
+        (WorkerId(2), 4..10),
+        (WorkerId(3), 8..13),
+        (WorkerId(4), 11..16),
+    ]);
+    for w in &waits {
+        let bounds = &w.tile.bounds;
+        assert_eq!(bounds.len(), 1, "only y is partitioned → 1 axis");
+        let (iv, range) = &bounds[0];
+        assert_eq!(*iv, IterVar(7));
+        let want = expect
+            .get(&w.dst)
+            .unwrap_or_else(|| panic!("unexpected dst worker {:?}", w.dst));
+        assert_eq!(
+            range, want,
+            "worker {:?} Wait tile y-range should extend partition band by halo=1; \
+             got {range:?}, expected {want:?}",
+            w.dst
+        );
+    }
+}
+
+/// Empty halo_widths sidecar → no-op. The Wait tiles match the
+/// partition bands verbatim (no halo extension), i.e. the pre-Stage-2
+/// behaviour is preserved when the algo's kernels carry no halo.
+#[test]
+fn halo_empty_sidecar_is_identity() {
+    let (acfg, linked) = build_stencil_like_acfg(/*halo_y=*/ 0, /*halo_x=*/ 0);
+    assert!(
+        acfg.halo_widths.is_empty(),
+        "fixture must produce empty sidecar"
+    );
+    let result = inject_transfers(&linked, acfg);
+    let waits: Vec<XferPlaceholder> = result
+        .root
+        .collect_xfers()
+        .into_iter()
+        .filter(|x| x.role == XferRole::Wait && x.data == DataId(0))
+        .collect();
+    assert_eq!(waits.len(), 4);
+    let expect: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::from([
+        (WorkerId(1), 1..5),
+        (WorkerId(2), 5..9),
+        (WorkerId(3), 9..12),
+        (WorkerId(4), 12..15),
+    ]);
+    for w in &waits {
+        let bounds = &w.tile.bounds;
+        assert_eq!(bounds.len(), 1);
+        let (iv, range) = &bounds[0];
+        assert_eq!(*iv, IterVar(7));
+        assert_eq!(range, expect.get(&w.dst).expect("worker entry"));
+    }
+}
+
+/// Symmetric halo on both axes for a hypothetical 2D-blocks2d
+/// partition. Verifies that ALL axes in the tile get extended, not just
+/// the first. This is forward-compatible with TASK-0259 partition=blocks2d
+/// when block-pair recovery (TASK-0264) lands.
+#[test]
+fn halo_extends_multiple_axes_when_both_partitioned() {
+    // Build a synthetic 2D-partitioned ACFG: both y and x partitioned
+    // across 2x2 = 4 workers. Halo=1 on both axes.
+    let body_op = op(&[1, 2, 3, 4], 100, vec![0], Some(1));
+    let inner = ACFGNode::Repeat {
+        iter_var: IterVar(8), // x
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![body_op])),
+        block_tag: None,
+    };
+    let outer = ACFGNode::Repeat {
+        iter_var: IterVar(7), // y
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![inner])),
+        block_tag: None,
+    };
+    let root = ACFGNode::Sequence(vec![op(&[0], 99, vec![], Some(0)), outer]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c", 1)],
+        &[("host", 0), ("w1", 1), ("w2", 2), ("w3", 3), ("w4", 4)],
+    );
+    acfg.name_iter_vars.insert("y".to_string(), IterVar(7));
+    acfg.name_iter_vars.insert("x".to_string(), IterVar(8));
+    acfg.name_kernels.insert("blur3".to_string(), KernelId(100));
+    // 2x2 partition: w1=(0..4, 0..4), w2=(0..4, 4..8), w3=(4..8, 0..4),
+    // w4=(4..8, 4..8). Use partition_worker_ranges per axis (the
+    // pre-rewrite-partition-tiles map keys per IterVar).
+    let mut y_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    y_bands.insert(WorkerId(1), 0..4);
+    y_bands.insert(WorkerId(2), 0..4);
+    y_bands.insert(WorkerId(3), 4..8);
+    y_bands.insert(WorkerId(4), 4..8);
+    let mut x_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    x_bands.insert(WorkerId(1), 0..4);
+    x_bands.insert(WorkerId(2), 4..8);
+    x_bands.insert(WorkerId(3), 0..4);
+    x_bands.insert(WorkerId(4), 4..8);
+    acfg.partition_worker_ranges.insert(IterVar(7), y_bands);
+    acfg.partition_worker_ranges.insert(IterVar(8), x_bands);
+
+    let mut blur3_halo: BTreeMap<IterVar, u64> = BTreeMap::new();
+    blur3_halo.insert(IterVar(7), 1);
+    blur3_halo.insert(IterVar(8), 1);
+    acfg.halo_widths.insert(KernelId(100), blur3_halo);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("d", &["host"])],
+        "transfer d : sync;",
+    );
+    let result = inject_transfers(&linked, acfg);
+    let waits: Vec<XferPlaceholder> = result
+        .root
+        .collect_xfers()
+        .into_iter()
+        .filter(|x| x.role == XferRole::Wait && x.data == DataId(0))
+        .collect();
+    assert_eq!(waits.len(), 4);
+    // w1's tile: y in 0..4 → -1..5 clamped to source 0..8+halo (-1..9) → -1..5;
+    // x in 0..4 → -1..5 clamped to -1..9 → -1..5. (The negative bound
+    // is a halo-into-margin; the kernel handles the boundary.)
+    let w1 = waits.iter().find(|w| w.dst == WorkerId(1)).unwrap();
+    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> =
+        w1.tile.bounds.iter().map(|(iv, r)| (*iv, r.clone())).collect();
+    assert_eq!(bounds.get(&IterVar(7)), Some(&(-1..5)));
+    assert_eq!(bounds.get(&IterVar(8)), Some(&(-1..5)));
+    // w4 (the diagonally-opposite corner): y in 4..8 → 3..9; x in
+    // 4..8 → 3..9.
+    let w4 = waits.iter().find(|w| w.dst == WorkerId(4)).unwrap();
+    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> =
+        w4.tile.bounds.iter().map(|(iv, r)| (*iv, r.clone())).collect();
+    assert_eq!(bounds.get(&IterVar(7)), Some(&(3..9)));
+    assert_eq!(bounds.get(&IterVar(8)), Some(&(3..9)));
+}
