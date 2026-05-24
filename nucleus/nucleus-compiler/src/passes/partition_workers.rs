@@ -30,13 +30,32 @@
 //!    existing pattern-match keeps compiling. The cost is a small
 //!    BTreeMap lookup at the one consumer site.
 //!
-//! ## Honest limitations (first cut)
+//! ## Honest limitations (cycle 83+)
 //!
-//! - **Exact-divisible split only.** `(hi - lo) % N != 0` is reported
-//!   as a typed error (`PartitionError::NonDivisible`). A non-divisible
-//!   policy (last-worker-gets-remainder, or remainder-tile sibling
-//!   like `block_transform`'s trailing partial) is filed as the
-//!   follow-up to this task per the task description.
+//! - **Floor-with-spillover remainder policy (TASK-0262).** For source
+//!   length `L = hi - lo` and `N` workers:
+//!       - First `(L % N)` workers get `floor(L / N) + 1` rows each
+//!         (the "spillover" workers, one extra row each).
+//!       - The remaining workers get `floor(L / N)` rows each.
+//!
+//!   This is numpy.array_split-style. Chosen for maximum-imbalance
+//!   minimisation: the slowest worker carries at most one extra row vs
+//!   its peers, irrespective of `N` and `L`. Alternatives
+//!   ("last-worker-gets-remainder" — option (a); "trailing-partial-tile
+//!   sibling" — option (c)) leave the last worker carrying the entire
+//!   residue (e.g. 14 rows / 4 workers under (a) is 3,3,3,5; under (b)
+//!   it is 4,4,3,3). See [`crate::passes::common::compute_partition_bands`]
+//!   for the full rationale. The `L % N == 0` divisible case reduces to
+//!   the pre-TASK-0262 exact-split behaviour (no spillover); cells like
+//!   13-cnn-inference/batch_parallel that hit the divisible path are
+//!   byte-identical pre/post TASK-0262.
+//! - **Insufficient-work category error retained.** When `L < N` (fewer
+//!   rows than workers), even spillover cannot give every worker at
+//!   least one row; that stays a hard reject as
+//!   [`PartitionError::InsufficientWork`]. This is genuinely
+//!   undecidable — assigning a worker zero rows would silently strip
+//!   it from the iteration, which is the kind of magic the codegen
+//!   discipline rejects.
 //! - **1D partition axis only.** This pass consumes `partition=workers`
 //!   directives. All three [`crate::sched::PartitionKind`] variants now
 //!   have consumers: `partition=workers` (this pass, TASK-0212),
@@ -90,6 +109,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::acfg::{ACFGNode, ACFG};
 use crate::event::{IterVar, WorkerId};
 use crate::link::LinkedIR;
+use crate::passes::common::{compute_partition_bands, PartitionBandError};
 use crate::sched::{PartitionKind, ResolvedLoopOption};
 
 // --------------------------------------------------------------------
@@ -105,11 +125,17 @@ pub enum PartitionError {
     /// the pass fails closed on an inconsistently-constructed
     /// `(LinkedIR, ACFG)` pair.
     UnknownLoopVar { var: String },
-    /// The loop's range length is not evenly divisible by the worker
-    /// count. First-cut policy is to refuse compile; a remainder
-    /// policy (last-worker-gets-tail, or trailing partial sibling) is
-    /// a follow-up filed by the task description.
-    NonDivisible {
+    /// The loop's range length is strictly less than the worker count
+    /// (TASK-0262). Even the floor-with-spillover remainder policy
+    /// cannot give every worker at least one row in this case, so it
+    /// stays a hard reject (silent zero-row assignment would strip
+    /// workers from the iteration with no diagnostic).
+    ///
+    /// Replaces the pre-TASK-0262 `NonDivisible` variant: the
+    /// "non-divisible but L >= N" case is now ACCEPTED with the
+    /// spillover policy; only "not enough work to go around" is left
+    /// to reject.
+    InsufficientWork {
         var: String,
         lo: i64,
         hi: i64,
@@ -131,16 +157,17 @@ impl std::fmt::Display for PartitionError {
                 "schedule has `loop {var} : partition=workers` but the ACFG contains no loop \
                  with variable `{var}` (linker-pass invariant violation)"
             ),
-            PartitionError::NonDivisible {
+            PartitionError::InsufficientWork {
                 var,
                 lo,
                 hi,
                 workers,
             } => write!(
                 f,
-                "loop `{var}` has range {lo}..{hi} (length {len}) not evenly divisible across \
-                 {workers} workers (TASK-0212 first cut: exact-divisible only; a remainder \
-                 policy is a follow-up)",
+                "loop `{var}` has range {lo}..{hi} (length {len}) which is strictly less than \
+                 {workers} workers — the floor-with-spillover remainder policy (TASK-0262) \
+                 cannot give every worker at least one row. Either reduce the worker count \
+                 (placement) to at most {len}, or widen the loop range.",
                 len = hi - lo
             ),
             PartitionError::NoMultiWorkerBody { var, workers } => write!(
@@ -214,15 +241,14 @@ pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Pa
                 workers: body_workers.len(),
             });
         }
-        let len = range.end - range.start;
-        let n = body_workers.len() as i64;
-        if len % n != 0 {
-            return Err(PartitionError::NonDivisible {
-                var: var.clone(),
-                lo: range.start,
-                hi: range.end,
-                workers: body_workers.len(),
-            });
+        // TASK-0262: pre-validate via the shared band helper so the
+        // L<N category error surfaces here BEFORE we commit any
+        // sidecar entries. The actual band computation runs again
+        // below at commit time — the helper is pure, so doing it
+        // twice is fine and lets the loop above stay "validate then
+        // commit" with no partial state.
+        if let Err(e) = compute_partition_bands(range.start, range.end, body_workers.len()) {
+            return Err(map_band_error(var, range.start, range.end, body_workers.len(), e));
         }
         to_record.push((var.clone(), iter_var, range, body_workers));
     }
@@ -249,17 +275,19 @@ pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Pa
     } = acfg;
 
     for (_var, iter_var, range, body_workers) in to_record {
-        let len = range.end - range.start;
-        let n = body_workers.len() as i64;
-        let slice = len / n; // already validated divisible
+        // TASK-0262: shared floor-with-spillover band computation.
+        // Already validated above; the only failure mode (L < N) was
+        // caught at pre-validate, so an Err here would be a
+        // pre-validate/commit divergence — fail loud, do not silently
+        // skip.
+        let bands = compute_partition_bands(range.start, range.end, body_workers.len())
+            .expect("pre-validated; band helper must succeed");
         let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
         // `BTreeSet<WorkerId>` iterates in numeric order; assign the
-        // first worker the first slice, etc. This is a deterministic
+        // first worker the first band, etc. This is a deterministic
         // function of (range, body_workers).
-        for (i, wid) in body_workers.iter().enumerate() {
-            let lo = range.start + (i as i64) * slice;
-            let hi = lo + slice;
-            per_worker.insert(*wid, lo..hi);
+        for (wid, (lo, hi)) in body_workers.iter().zip(bands.iter()) {
+            per_worker.insert(*wid, *lo..*hi);
         }
         partition_worker_ranges.insert(iter_var, per_worker);
     }
@@ -318,6 +346,38 @@ fn find_loop(
             None
         }
         ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => None,
+    }
+}
+
+/// Map a [`PartitionBandError`] (from the shared band-computation
+/// helper) onto this pass's typed error, carrying the loop variable
+/// name. Today the only band-helper variant that the partition_workers
+/// pre-validate can actually surface is `InsufficientWork` (L < N) —
+/// `ZeroWorkers` is caught upstream by the `NoMultiWorkerBody` check
+/// (workers.len() < 2 ⇒ already rejected); `InvalidRange` (hi < lo) is
+/// caught by the link step's `eval_const` invariant before reaching us.
+///
+/// We map the latter two to a defensive `InsufficientWork` with the
+/// same (len, workers) payload to keep the error surface narrow; the
+/// diagnostic is still actionable (it forward-links to widening the
+/// range or shrinking the worker count). If a future link-step bug
+/// lets an inverted range through, the band helper still fails closed.
+fn map_band_error(
+    var: &str,
+    lo: i64,
+    hi: i64,
+    workers: usize,
+    e: PartitionBandError,
+) -> PartitionError {
+    match e {
+        PartitionBandError::InsufficientWork { .. }
+        | PartitionBandError::ZeroWorkers
+        | PartitionBandError::InvalidRange { .. } => PartitionError::InsufficientWork {
+            var: var.to_string(),
+            lo,
+            hi,
+            workers,
+        },
     }
 }
 

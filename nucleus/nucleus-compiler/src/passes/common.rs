@@ -73,6 +73,143 @@ use std::collections::BTreeMap;
 
 use crate::algo::{IrBinOp, IrExpr, ResolvedConst};
 
+// --------------------------------------------------------------------
+// Partition-band arithmetic (TASK-0262)
+// --------------------------------------------------------------------
+
+/// Per-worker iteration band shape returned by
+/// [`compute_partition_bands`].
+///
+/// Each entry is `(lo, hi)` of the worker's half-open iteration slice.
+/// The vector is ordered by worker index (`bands[i]` = the i-th
+/// worker), and the bands' union covers the source `range` exactly once
+/// (no gap, no overlap) — that is the partition contract.
+///
+/// `Range<i64>` would be the natural element type, but `Range` is not
+/// `Copy` and the bands are commonly consumed multiple times by the
+/// caller (write to sidecar AND emit a diagnostic). `(i64, i64)` is
+/// `Copy` and ergonomic; the caller materialises a `Range` when needed.
+pub(crate) type PartitionBand = (i64, i64);
+
+/// Errors produced by [`compute_partition_bands`].
+///
+/// Distinct from the per-pass `PartitionError` / `PartitionRowsError` /
+/// `PartitionBlocks2dError` enums because the partition-band math is a
+/// shared helper across THREE callers; each caller wraps these into its
+/// own typed variant for the pass-level diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PartitionBandError {
+    /// `(hi - lo) < n_workers` — the source range has fewer rows than
+    /// workers. Even the floor-with-spillover policy (TASK-0262) cannot
+    /// give every worker at least one row in this case, so it is a
+    /// genuinely-undecidable category error: refuse compile.
+    ///
+    /// Distinct from "non-divisible": non-divisible (`len > N`,
+    /// `len % N != 0`) is now ACCEPTED with the spillover policy; the
+    /// only category left to reject is "not enough work to go around".
+    InsufficientWork {
+        len: i64,
+        workers: usize,
+    },
+    /// `n_workers == 0`. A no-op input — the caller should pre-check
+    /// the worker set is non-empty and surface a pass-specific
+    /// `NoMultiWorkerBody` error before reaching here. Defensive guard
+    /// only.
+    ZeroWorkers,
+    /// `hi < lo`. The source range is degenerate (empty or inverted).
+    /// All in-tree examples produce `hi >= lo` from the link step's
+    /// `eval_const`, so this is a defensive guard against a malformed
+    /// synthetic ACFG; not reachable from valid user input.
+    InvalidRange { lo: i64, hi: i64 },
+}
+
+/// Compute per-worker partition bands using the numpy.array_split-style
+/// **floor-with-spillover** policy (TASK-0262 decision option (b)).
+///
+/// For a source range of length `L = hi - lo` across `N` workers:
+///
+/// - Each of the first `(L % N)` workers gets `(L / N) + 1` rows
+///   (the "spillover" workers, one extra row each).
+/// - The remaining workers each get `(L / N)` rows.
+///
+/// The returned vector has exactly `N` entries; element `i` is the i-th
+/// worker's `(lo_i, hi_i)` half-open band. Bands are contiguous and
+/// non-overlapping; their union is `[lo, hi)` exactly.
+///
+/// ### Why option (b) over option (a) "last-worker-gets-remainder"
+///
+/// (a) leaves N-1 workers idle at the maximum imbalance (e.g. 14 rows
+/// across 4 workers under (a): 3,3,3,5 — the last worker carries 67%
+/// more work than its peers). (b) gives 4,4,3,3 — maximum imbalance is
+/// one row, irrespective of `N` or `L`. The wall-clock-bound axis is
+/// the slowest worker, so minimising the per-worker max is the right
+/// objective.
+///
+/// ### Why option (b) over option (c) "trailing-partial-tile"
+///
+/// (c) would introduce a synthetic "remainder repeat" on the last
+/// worker, mirroring the block_transform full + partial split
+/// (TASK-0142). That has the same imbalance as (a) (the partial worker
+/// carries the residue) AND adds a structural variant for downstream
+/// passes to recognise — a maintenance tax with no win.
+///
+/// ### What about the leftover-zero-band corner
+///
+/// `L % N == 0` reduces to the pre-TASK-0262 exact-split behaviour:
+/// every worker gets `L / N` rows, no spillover. Equivalent in output
+/// to the old policy for every divisible cell (13-cnn-inference
+/// batch_parallel exact-split is unchanged).
+///
+/// ### Determinism
+///
+/// The function is a pure deterministic function of `(lo, hi,
+/// n_workers)`. No hashing, no floating-point arithmetic; integer
+/// division by definition. Same input ⇒ byte-identical output across
+/// runs.
+///
+/// ### Failure modes
+///
+/// Returns [`PartitionBandError::InsufficientWork`] when `L < N` —
+/// even spillover cannot give every worker one row, so this stays a
+/// hard reject. Callers should wrap as a pass-specific typed error
+/// (e.g. `PartitionError::InsufficientWork`).
+pub(crate) fn compute_partition_bands(
+    lo: i64,
+    hi: i64,
+    n_workers: usize,
+) -> Result<Vec<PartitionBand>, PartitionBandError> {
+    if n_workers == 0 {
+        return Err(PartitionBandError::ZeroWorkers);
+    }
+    if hi < lo {
+        return Err(PartitionBandError::InvalidRange { lo, hi });
+    }
+    let len = hi - lo;
+    let n = n_workers as i64;
+    if len < n {
+        return Err(PartitionBandError::InsufficientWork {
+            len,
+            workers: n_workers,
+        });
+    }
+    let base = len / n;
+    let extras = len % n; // first `extras` workers get base+1
+    let mut bands: Vec<PartitionBand> = Vec::with_capacity(n_workers);
+    let mut cursor = lo;
+    for i in 0..n_workers {
+        let width = if (i as i64) < extras { base + 1 } else { base };
+        let band_lo = cursor;
+        let band_hi = cursor + width;
+        bands.push((band_lo, band_hi));
+        cursor = band_hi;
+    }
+    debug_assert_eq!(
+        cursor, hi,
+        "partition bands must cover [{lo}, {hi}) exactly; cursor={cursor}",
+    );
+    Ok(bands)
+}
+
 /// Try to decompose `e` as `coefficient * iv + offset` where `iv` is the
 /// given iter-var name and both `coefficient` and `offset` const-fold to
 /// integers. Returns `Some((coeff, offset))` on success; `None` if the
@@ -334,5 +471,84 @@ mod tests {
             indices: vec![ir_id("y")],
         });
         assert!(!expr_mentions(&e, "y"));
+    }
+
+    // -----------------------------------------------------------------
+    // compute_partition_bands (TASK-0262)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn bands_exact_divisible_matches_old_policy() {
+        // 16 rows across 4 workers: 4, 4, 4, 4 — same as the
+        // pre-TASK-0262 exact-split policy.
+        let bands = compute_partition_bands(0, 16, 4).expect("divisible OK");
+        assert_eq!(bands, vec![(0, 4), (4, 8), (8, 12), (12, 16)]);
+    }
+
+    #[test]
+    fn bands_non_divisible_spillover_05_stencil_shape() {
+        // The 05-stencil/distributed case: y-loop walks 1..15
+        // (length 14), 4 workers. Floor = 3, extras = 14 % 4 = 2 → first
+        // 2 workers get 4 rows, last 2 get 3. Spillover bands
+        // contiguous from lo=1.
+        let bands = compute_partition_bands(1, 15, 4).expect("non-divisible accepted");
+        assert_eq!(bands, vec![(1, 5), (5, 9), (9, 12), (12, 15)]);
+        // Union of bands covers [1, 15) exactly:
+        assert_eq!(
+            bands.iter().map(|(lo, hi)| hi - lo).sum::<i64>(),
+            14,
+            "bands total width equals source length"
+        );
+    }
+
+    #[test]
+    fn bands_17_across_3_returns_6_6_5() {
+        // 17 rows, 3 workers. Floor=5, extras=17%3=2 → 6,6,5.
+        let bands = compute_partition_bands(0, 17, 3).expect("non-divisible accepted");
+        assert_eq!(bands, vec![(0, 6), (6, 12), (12, 17)]);
+    }
+
+    #[test]
+    fn bands_negative_origin_supported() {
+        // The lo can be negative (no in-tree example uses this, but the
+        // helper must not assume lo >= 0). 5 rows from -2..3 across 2
+        // workers: floor=2, extras=1 → 3,2.
+        let bands = compute_partition_bands(-2, 3, 2).expect("negative origin OK");
+        assert_eq!(bands, vec![(-2, 1), (1, 3)]);
+    }
+
+    #[test]
+    fn bands_insufficient_work_rejects() {
+        // 3 rows across 4 workers — even spillover can't give every
+        // worker one row. Hard reject.
+        let err = compute_partition_bands(0, 3, 4).expect_err("L<N must reject");
+        assert_eq!(
+            err,
+            PartitionBandError::InsufficientWork {
+                len: 3,
+                workers: 4
+            }
+        );
+    }
+
+    #[test]
+    fn bands_equal_to_workers_one_each() {
+        // L == N → 1 row per worker, no spillover.
+        let bands = compute_partition_bands(0, 4, 4).expect("L==N OK");
+        assert_eq!(bands, vec![(0, 1), (1, 2), (2, 3), (3, 4)]);
+    }
+
+    #[test]
+    fn bands_zero_workers_rejects() {
+        let err = compute_partition_bands(0, 16, 0).expect_err("0 workers must reject");
+        assert_eq!(err, PartitionBandError::ZeroWorkers);
+    }
+
+    #[test]
+    fn bands_inverted_range_rejects() {
+        // Defensive — link step's eval_const produces hi >= lo for
+        // valid user input; this guards a malformed synthetic.
+        let err = compute_partition_bands(10, 5, 2).expect_err("inverted range must reject");
+        assert_eq!(err, PartitionBandError::InvalidRange { lo: 10, hi: 5 });
     }
 }

@@ -13,9 +13,12 @@
 //! - **Negative 2 (single-worker body)**: the directive needs a
 //!   multi-worker body to be meaningful → `NoMultiWorkerBody`. Mirrors
 //!   `PartitionError::NoMultiWorkerBody`.
-//! - **Negative 3 (non-divisible)**: the row-count must split exactly
-//!   across the worker count → `NonDivisible`. First-cut policy
-//!   matching `partition_workers`.
+//! - **Positive 2 (non-divisible spillover)**: TASK-0262 floor-with-
+//!   spillover policy — first `(L % N)` workers get one extra row each.
+//!   The 05-stencil/distributed shape (range 1..15 over 4 workers)
+//!   yields bands (1..5, 5..9, 9..12, 12..15).
+//! - **Negative 3 (insufficient work)**: when L < N (fewer rows than
+//!   workers) even spillover fails — typed `InsufficientWork`.
 //! - **Determinism**: two runs of the pass produce byte-identical
 //!   sidecar contents (BTreeMap discipline).
 //!
@@ -248,18 +251,47 @@ fn negative_single_worker_body_is_rejected() {
     }
 }
 
-/// Negative 3: `partition=rows` on a 2D nest whose outer range does
-/// not evenly divide across the worker count → `NonDivisible`. First-
-/// cut policy, mirrors `PartitionError::NonDivisible`.
+/// TASK-0262: a non-divisible (length, N) outer range no longer
+/// rejects. Floor-with-spillover policy: 14 rows across 4 workers →
+/// floor=3, extras=14%4=2 → first 2 workers get 4 rows, last 2 get 3.
+/// Pin the exact per-worker bands so the policy choice is regression-
+/// locked. This is the 05-stencil/distributed y-loop shape (1..15
+/// after lower).
 #[test]
-fn negative_non_divisible_range_is_rejected() {
-    // 17 outer rows across 4 workers — not divisible.
-    let acfg = build_2d_acfg("y", 7, 0..17, "x", 8, 0..32, &[1, 2, 3, 4]);
+fn non_divisible_outer_range_spillover_policy() {
+    // 14 outer rows (1..15) across 4 workers; mirrors the 05-stencil
+    // y-loop after const-folding `1..H-1` with H=16.
+    let acfg = build_2d_acfg("y", 7, 1..15, "x", 8, 1..15, &[1, 2, 3, 4]);
     let linked = linked_with_rows_directive("y");
 
-    let err = apply_partition_rows(&linked, acfg).expect_err("non-divisible must be rejected");
+    let after = apply_partition_rows(&linked, acfg).expect("non-divisible now lowers");
+    let per = after
+        .partition_worker_ranges
+        .get(&IterVar(7))
+        .expect("outer iter_var must have an override");
+    assert_eq!(per.len(), 4);
+    assert_eq!(per.get(&WorkerId(1)), Some(&(1..5)), "w1 gets 4 rows");
+    assert_eq!(per.get(&WorkerId(2)), Some(&(5..9)), "w2 gets 4 rows");
+    assert_eq!(per.get(&WorkerId(3)), Some(&(9..12)), "w3 gets 3 rows");
+    assert_eq!(per.get(&WorkerId(4)), Some(&(12..15)), "w4 gets 3 rows");
+    // Bands cover [1, 15) exactly.
+    let total: i64 = per.values().map(|r| r.end - r.start).sum();
+    assert_eq!(total, 14);
+}
+
+/// Negative 3: when L < N (fewer rows than workers) the row-count cannot
+/// be partitioned with the spillover policy either — typed
+/// `InsufficientWork` error.
+#[test]
+fn insufficient_work_outer_range_is_rejected() {
+    // 3 outer rows across 4 workers — even with spillover, no policy
+    // can give every worker one row.
+    let acfg = build_2d_acfg("y", 7, 0..3, "x", 8, 0..32, &[1, 2, 3, 4]);
+    let linked = linked_with_rows_directive("y");
+
+    let err = apply_partition_rows(&linked, acfg).expect_err("L<N must reject");
     match err {
-        PartitionRowsError::NonDivisible {
+        PartitionRowsError::InsufficientWork {
             var,
             lo,
             hi,
@@ -267,10 +299,10 @@ fn negative_non_divisible_range_is_rejected() {
         } => {
             assert_eq!(var, "y");
             assert_eq!(lo, 0);
-            assert_eq!(hi, 17);
+            assert_eq!(hi, 3);
             assert_eq!(workers, 4);
         }
-        other => panic!("expected NonDivisible, got {other:?}"),
+        other => panic!("expected InsufficientWork, got {other:?}"),
     }
 }
 

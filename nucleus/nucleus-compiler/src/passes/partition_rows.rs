@@ -69,13 +69,19 @@
 //! arithmetic is six lines, and the error-type divergence would force a
 //! refactor that touches all three passes plus their tests.
 //!
-//! ## Honest limitations (first cut)
+//! ## Honest limitations (cycle 83+)
 //!
-//! - **Exact-divisible split only.** Same first-cut policy
-//!   `partition_workers` enforces. `(hi - lo) % N != 0` is rejected as
-//!   [`PartitionRowsError::NonDivisible`]. A remainder policy is a
-//!   shared follow-up with `partition_workers`'s remainder-policy task
-//!   (not filed here; same harm class, same fix shape).
+//! - **Floor-with-spillover remainder policy (TASK-0262).** Same policy
+//!   `partition_workers` enforces — first `(L % N)` workers get
+//!   `floor(L / N) + 1` rows, the rest get `floor(L / N)`. The 05-stencil
+//!   y-loop (1..15, length 14) on 4 workers yields bands 1..5, 5..9,
+//!   9..12, 12..15 (4,4,3,3 rows respectively). The divisible case
+//!   reduces to exact-split — no observational change for any
+//!   pre-TASK-0262 cell.
+//! - **Insufficient-work category error retained.** `L < N` (fewer rows
+//!   than workers) is rejected as
+//!   [`PartitionRowsError::InsufficientWork`]; spillover cannot give
+//!   every worker one row in that case.
 //! - **Halo inference is NOT part of this pass.** Row-band partitioning
 //!   of a stencil produces WRONG output at the band boundaries because
 //!   each worker reads neighbours it does not own. Halo widths must be
@@ -119,6 +125,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::acfg::{ACFGNode, ACFG};
 use crate::event::{IterVar, WorkerId};
 use crate::link::LinkedIR;
+use crate::passes::common::{compute_partition_bands, PartitionBandError};
 use crate::sched::{PartitionKind, ResolvedLoopOption};
 
 // --------------------------------------------------------------------
@@ -150,10 +157,12 @@ pub enum PartitionRowsError {
     /// `PartitionError::NoMultiWorkerBody` (mirrors the
     /// `partition_workers` precedent).
     NoMultiWorkerBody { var: String, workers: usize },
-    /// The outer loop's range length is not evenly divisible by the
-    /// worker count. First-cut policy: refuse compile. A remainder
-    /// policy is a follow-up shared with `partition_workers`.
-    NonDivisible {
+    /// The outer loop's range length is strictly less than the worker
+    /// count (TASK-0262). Even the floor-with-spillover remainder
+    /// policy cannot give every worker at least one row; refuse
+    /// compile rather than silently strip workers from the iteration.
+    /// Mirrors `PartitionError::InsufficientWork` exactly.
+    InsufficientWork {
         var: String,
         lo: i64,
         hi: i64,
@@ -183,16 +192,17 @@ impl std::fmt::Display for PartitionRowsError {
                  on {workers} worker(s); `partition=rows` requires a multi-worker body to be \
                  meaningful (row-banding across one worker collapses to the source range)"
             ),
-            PartitionRowsError::NonDivisible {
+            PartitionRowsError::InsufficientWork {
                 var,
                 lo,
                 hi,
                 workers,
             } => write!(
                 f,
-                "loop `{var}` has range {lo}..{hi} (length {len}) not evenly divisible across \
-                 {workers} workers (TASK-0258 first cut: exact-divisible only; remainder policy \
-                 is a shared follow-up with partition_workers)",
+                "loop `{var}` has range {lo}..{hi} (length {len}) which is strictly less than \
+                 {workers} workers — the floor-with-spillover remainder policy (TASK-0262) \
+                 cannot give every worker at least one row. Either reduce the worker count \
+                 (placement) to at most {len}, or widen the outer loop range.",
                 len = hi - lo
             ),
         }
@@ -262,15 +272,17 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
                 workers: body_workers.len(),
             });
         }
-        let len = range.end - range.start;
-        let n = body_workers.len() as i64;
-        if len % n != 0 {
-            return Err(PartitionRowsError::NonDivisible {
-                var: var.clone(),
-                lo: range.start,
-                hi: range.end,
-                workers: body_workers.len(),
-            });
+        // TASK-0262: pre-validate via the shared band helper so the
+        // L<N category error surfaces here BEFORE we commit any
+        // sidecar entries. Mirrors partition_workers exactly.
+        if let Err(e) = compute_partition_bands(range.start, range.end, body_workers.len()) {
+            return Err(map_band_error(
+                var,
+                range.start,
+                range.end,
+                body_workers.len(),
+                e,
+            ));
         }
         to_record.push((iter_var, range, body_workers));
     }
@@ -297,14 +309,15 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
     } = acfg;
 
     for (iter_var, range, body_workers) in to_record {
-        let len = range.end - range.start;
-        let n = body_workers.len() as i64;
-        let slice = len / n; // already validated divisible
+        // TASK-0262: shared floor-with-spillover band computation.
+        // Pre-validated above; the only failure mode (L < N) was
+        // caught at pre-validate, so an Err here would be a
+        // pre-validate/commit divergence — fail loud.
+        let bands = compute_partition_bands(range.start, range.end, body_workers.len())
+            .expect("pre-validated; band helper must succeed");
         let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
-        for (i, wid) in body_workers.iter().enumerate() {
-            let lo = range.start + (i as i64) * slice;
-            let hi = lo + slice;
-            per_worker.insert(*wid, lo..hi);
+        for (wid, (lo, hi)) in body_workers.iter().zip(bands.iter()) {
+            per_worker.insert(*wid, *lo..*hi);
         }
         partition_worker_ranges.insert(iter_var, per_worker);
     }
@@ -376,6 +389,32 @@ pub(crate) fn find_outer_of_2d(
             None
         }
         ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => None,
+    }
+}
+
+/// Map a [`PartitionBandError`] (from the shared band-computation
+/// helper) onto this pass's typed error. Mirrors
+/// [`crate::passes::partition_workers::map_band_error`] exactly — the
+/// L<N case surfaces as `InsufficientWork`; the defensive variants
+/// (ZeroWorkers / InvalidRange) also map to `InsufficientWork` to keep
+/// the error surface narrow at this layer (they're guarded upstream
+/// anyway).
+fn map_band_error(
+    var: &str,
+    lo: i64,
+    hi: i64,
+    workers: usize,
+    e: PartitionBandError,
+) -> PartitionRowsError {
+    match e {
+        PartitionBandError::InsufficientWork { .. }
+        | PartitionBandError::ZeroWorkers
+        | PartitionBandError::InvalidRange { .. } => PartitionRowsError::InsufficientWork {
+            var: var.to_string(),
+            lo,
+            hi,
+            workers,
+        },
     }
 }
 

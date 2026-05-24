@@ -207,17 +207,19 @@ fn lowers_05_stencil_distributed() {
 
     assert_eq!(ir.workers.len(), 5);
     assert_eq!(ir.places.len(), 3);
-    // TASK-0249: was 2 (loops x and y), now 1 (only loop x). The
-    // inert `loop y : partition=rows;` directive was removed because
-    // `partition=rows` has no downstream consumer (now a typed reject
-    // at sched-lower; see SchedLowerErrorKind::UnsupportedPartitionKind).
-    // The y-loop's source-level appearance is preserved as a comment
-    // in the .sched.nuc file; follow-up TASK-0250 captures whether
-    // it should be re-introduced as `partition=workers`.
-    assert_eq!(ir.loops.len(), 1);
-    assert!(
-        !ir.loops.contains_key("y"),
-        "y-loop directive is intentionally absent after TASK-0249"
+    // History: TASK-0249 (cycle 70) removed the inert
+    // `loop y : partition=rows;` directive; TASK-0258 (cycle 79c) landed
+    // the consumer; TASK-0262 (cycle 83) landed the remainder policy
+    // and the directive was RESTORED. Two loops now (x and y); y carries
+    // partition=rows lowering to ResolvedLoopOption::Partition(Rows).
+    assert_eq!(ir.loops.len(), 2);
+    let loop_y = ir
+        .loops
+        .get("y")
+        .expect("y-loop restored after TASK-0262 remainder policy");
+    assert_eq!(
+        loop_y.options,
+        vec![ResolvedLoopOption::Partition(PartitionKind::Rows)]
     );
     assert_eq!(ir.transfers.len(), 2);
 

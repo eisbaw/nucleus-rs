@@ -308,25 +308,16 @@ fn naive_schedule_records_no_partition_ranges() {
     );
 }
 
-/// Honest-partial first cut: a non-divisible (length, N) reports
-/// `PartitionError::NonDivisible` instead of silently producing an
-/// unequal split. Build a synthetic LinkedIR-equivalent via the
-/// manual ACFG plus the schedule directive only — we exercise the
-/// pass via its public entry point, but with a hand-crafted LinkedIR
-/// is awkward; instead, populate the sidecar by hand and verify the
-/// pass's helper (find_loop) and the error path through the public
-/// signature using a unit-style call. The error condition is also
-/// exercised end-to-end here by directly constructing the needed
-/// `SchedIR` minimum.
+/// TASK-0262: a non-divisible (length, N) range no longer rejects.
+/// Floor-with-spillover policy: 17 rows across 3 workers → floor=5,
+/// extras=17%3=2 → first 2 workers get 6 rows, last gets 5. Pin the
+/// exact per-worker bands so the policy choice is regression-locked.
 #[test]
-fn non_divisible_range_is_rejected() {
+fn non_divisible_range_spillover_policy() {
     use nucleus_compiler::sched::{
         PartitionKind, ResolvedLoopDirective, ResolvedLoopOption, SchedIR,
     };
 
-    // Manually build a LinkedIR whose `sched.loops` carries the
-    // partition=workers directive on var `n`. The pass reads only
-    // `linked.sched.loops`; other fields can stay at their `Default`.
     let mut loops = BTreeMap::new();
     loops.insert(
         "n".to_string(),
@@ -351,9 +342,6 @@ fn non_divisible_range_is_rejected() {
         data_consumers: Default::default(),
     };
 
-    // 17-element range across 3 workers — not divisible (17/3 == 5
-    // remainder 2). The pass refuses to compile per the first-cut
-    // policy.
     let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
     name_workers.insert("w0".to_string(), WorkerId(1));
     name_workers.insert("w1".to_string(), WorkerId(2));
@@ -379,9 +367,79 @@ fn non_divisible_range_is_rejected() {
         reuse_widths: std::collections::BTreeMap::new(),
     };
 
-    let err = apply_partition_workers(&linked, acfg).expect_err("non-divisible should error");
+    let after = apply_partition_workers(&linked, acfg).expect("non-divisible now lowers");
+    let bands = after
+        .partition_worker_ranges
+        .get(&IterVar(7))
+        .expect("partition entry recorded");
+    assert_eq!(bands.len(), 3);
+    // Spillover: w1, w2 each get +1 row; w3 gets the floor.
+    assert_eq!(bands[&WorkerId(1)], 0..6);
+    assert_eq!(bands[&WorkerId(2)], 6..12);
+    assert_eq!(bands[&WorkerId(3)], 12..17);
+}
+
+/// TASK-0262: when L < N (fewer rows than workers), the pass still
+/// rejects with the renamed `InsufficientWork` variant — spillover
+/// cannot give every worker at least one row. 3 rows across 4 workers.
+#[test]
+fn insufficient_work_range_is_rejected() {
+    use nucleus_compiler::sched::{
+        PartitionKind, ResolvedLoopDirective, ResolvedLoopOption, SchedIR,
+    };
+
+    let mut loops = BTreeMap::new();
+    loops.insert(
+        "n".to_string(),
+        ResolvedLoopDirective {
+            var: "n".to_string(),
+            options: vec![ResolvedLoopOption::Partition(PartitionKind::Workers)],
+            var_span: None,
+        },
+    );
+    let sched = SchedIR {
+        loops,
+        ..Default::default()
+    };
+
+    let linked = nucleus_compiler::link::LinkedIR {
+        algo: Default::default(),
+        sched,
+        placements: Default::default(),
+        kernel_workers: Default::default(),
+        data_producers: Default::default(),
+        data_consumers: Default::default(),
+    };
+
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("w0".to_string(), WorkerId(1));
+    name_workers.insert("w1".to_string(), WorkerId(2));
+    name_workers.insert("w2".to_string(), WorkerId(3));
+    name_workers.insert("w3".to_string(), WorkerId(4));
+    let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+    name_iter_vars.insert("n".to_string(), IterVar(7));
+
+    let acfg = ACFG {
+        root: ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IterVar(7),
+            range: 0..3,
+            body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2, 3, 4])])),
+            block_tag: None,
+        }]),
+        name_kernels: Default::default(),
+        name_data: Default::default(),
+        name_workers,
+        name_iter_vars,
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
+        reuse_widths: std::collections::BTreeMap::new(),
+    };
+
+    let err = apply_partition_workers(&linked, acfg).expect_err("L<N must reject");
     match err {
-        PartitionError::NonDivisible {
+        PartitionError::InsufficientWork {
             var,
             lo,
             hi,
@@ -389,10 +447,10 @@ fn non_divisible_range_is_rejected() {
         } => {
             assert_eq!(var, "n");
             assert_eq!(lo, 0);
-            assert_eq!(hi, 17);
-            assert_eq!(workers, 3);
+            assert_eq!(hi, 3);
+            assert_eq!(workers, 4);
         }
-        other => panic!("expected NonDivisible, got {other:?}"),
+        other => panic!("expected InsufficientWork, got {other:?}"),
     }
 }
 
