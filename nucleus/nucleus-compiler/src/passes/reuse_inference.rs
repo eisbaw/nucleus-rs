@@ -74,18 +74,25 @@
 //! Mirrors [`crate::passes::halo_inference`]:
 //!
 //! - [`apply_reuse_inference`] is the strict variant — first error
-//!   returned as `Err`.
+//!   returned as `Err`. **The driver consumes this entry point**
+//!   (TASK-0271 promotion, post TASK-0265 Tier 1).
 //! - [`apply_reuse_inference_advisory`] is the lenient variant — every
 //!   error collected, partial sidecar committed for unaffected loops.
+//!   Retained for in-pass tests + direct callers that want to inspect
+//!   the full error vector; NOT called from the driver.
 //!
-//! Stage 1 driver policy: lenient. No downstream pass yet reads
-//! `reuse_widths` (Stage 2 / TASK-0265 is the consumer), so a typed
-//! rejection here is purely advisory until that consumer wiring lands.
-//! The driver emits a `nuc_trace!` for each advisory error (visible
-//! under `NUC_TRACE=1`). When Stage 2 lands, the driver will either
-//! switch to the strict variant or check the errors against the
-//! `partition` policy before swallowing them (same forward path as
-//! halo Stage 2 / TASK-0263).
+//! Stage 2 driver policy (TASK-0271, cycle 88): **strict**. The Tier 1
+//! landing of TASK-0265 (cycle 87) wired a walker-side marker consumer
+//! at the `Event::Loop` emit site, so every recognised slot is consumed
+//! by the backend today. A typed `ReuseInferenceError` therefore now
+//! corresponds to a `loop V : reuse;` directive the user wrote that
+//! the backend will silently ignore — exactly the surprising silent
+//! failure mode the strict promotion eliminates.
+//!
+//! The sibling [`crate::passes::halo_inference`] driver call is still
+//! lenient (TASK-0263 owns its promotion when the halo Stage 2
+//! consumer in `transfer_inject` is wired). The promotion pattern set
+//! here is the precedent for that sibling task.
 //!
 //! ## Honest limitations (first cut)
 //!
@@ -411,20 +418,21 @@ pub fn apply_reuse_inference(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Reus
 /// slot, and returns every typed error it would have raised so the
 /// caller decides whether each shape is fatal.
 ///
-/// ## Stage 1 driver policy (TASK-0261)
+/// ## Driver policy (TASK-0271, cycle 88)
 ///
-/// The driver consumes the lenient variant in Stage 1: no downstream
-/// pass yet reads `reuse_widths`, so a non-affine index inside a
-/// `reuse`-tagged loop is only advisory until Stage 2 (TASK-0265,
-/// backend walker delay-line emit) makes the consumer concrete. The
-/// driver emits a `nuc_trace!` line per returned error (visible under
-/// `NUC_TRACE=1`); the e2e baseline stays byte-identical because no
-/// cell's emitted bytes change.
+/// The driver no longer calls this entry point — it was promoted to
+/// the strict [`apply_reuse_inference`] once the TASK-0265 Tier 1
+/// marker consumer landed at the backend walker `Event::Loop` emit
+/// site. A typed error there now corresponds to a `loop V : reuse;`
+/// directive whose body the backend would silently fail to optimise,
+/// which is the surprising-silent-failure mode the strict promotion
+/// closes.
 ///
-/// Stage 2 will either (a) move the driver back to the strict variant
-/// once the consumer wiring is in place, or (b) check the errors vec
-/// against whether a `reuse` directive is actually present on a given
-/// loop and only treat them as fatal when reuse is asked for.
+/// This advisory entry point is retained for in-pass tests + direct
+/// callers that want to inspect the FULL error vector (e.g. the
+/// `advisory_collects_all_errors_strict_short_circuits` determinism
+/// pin in this module). Do NOT route the driver through this function
+/// without re-deciding the policy in TASK-0271's spirit.
 pub fn apply_reuse_inference_advisory(
     linked: &LinkedIR,
     acfg: ACFG,

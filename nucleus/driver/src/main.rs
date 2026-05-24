@@ -52,7 +52,7 @@ use std::process::ExitCode;
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_advisory,
     apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
-    apply_reuse_inference_advisory, build_acfg, build_sidecar, check_kernels_contract,
+    apply_reuse_inference, build_acfg, build_sidecar, check_kernels_contract,
     check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
     load_capabilities,
 };
@@ -388,36 +388,53 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             "halo_inference: advisory (Stage 1, not yet consumed by transfer_inject): {e}"
         );
     }
-    // Reuse loop-option inference (TASK-0261 Stage 1): walk every
-    // `for V : reuse;` loop in `linked.algo.stmts` and infer
-    // per-(IterVar, DataId, axis) delay-line slots from affine
-    // `iv + b` DataRef accesses. Pure + observationally-inert in
-    // Stage 1 — populates `ACFG::reuse_widths` for Stage 2 (TASK-0265,
-    // backend walker delay-line emit) to consume.
+    // Reuse loop-option inference (TASK-0261 Stage 1 + TASK-0271
+    // promotion): walk every `for V : reuse;` loop in
+    // `linked.algo.stmts` and infer per-(IterVar, DataId, axis)
+    // delay-line slots from affine `iv + b` DataRef accesses. Populates
+    // `ACFG::reuse_widths` for the Tier 1 marker consumer (TASK-0265
+    // cycle 87) and the forthcoming circular-buffer codegen (TASK-0269
+    // pthreads-sync + TASK-0270 multi-worker walker).
     //
-    // STAGE 1 DRIVER POLICY (mirrors halo_inference): a non-affine /
-    // strided / data-dependent / non-contiguous index inside a
-    // `reuse`-tagged loop body is a typed `ReuseInferenceError` per
-    // PRD §13 ("reuse / halo on data-dependent strides is rejected at
-    // compile time"). But that rejection is only CORRECT to surface
-    // when delay-line synthesis is actually required — i.e. when
-    // Stage 2 needs the slot and the missing one would produce wrong
-    // (or merely sub-optimal — Stage 2 is a perf hint, not a
-    // correctness one) output. TASK-0265 Tier 1 (cycle 87) landed a
-    // walker-side MARKER consumer (`render_reuse_marker_comment` emits
-    // a `//` comment line per slot); real circular-buffer codegen is
-    // TASK-0269 (pthreads-sync) + TASK-0270 (multi-worker walker).
-    // Until those land the silent-swallow stays — a non-affine reuse
-    // body produces NO marker line, silently. Promotion of THIS driver
-    // call to strict / partition-policy-aware: TASK-0271.
-    let (acfg, reuse_errors) = apply_reuse_inference_advisory(&linked, acfg);
-    for e in &reuse_errors {
-        nucleus_compiler::nuc_trace!(
-            "reuse_inference: advisory (Stage 1; Tier 1 marker-only walker consumer \
-             landed in TASK-0265, real codegen deferred to TASK-0269 + TASK-0270, \
-             driver promotion deferred to TASK-0271): {e}"
-        );
-    }
+    // STAGE 2 DRIVER POLICY (TASK-0271): STRICT. The cycle-87 Tier 1
+    // landing wired a walker-side marker consumer at the `Event::Loop`
+    // emit site (`render_reuse_marker_comment`), so EVERY recognised
+    // slot is consumed by the backend today. The cost-of-silent-swallow
+    // is therefore real: a non-affine `loop V : reuse;` body produces
+    // no marker line (and tomorrow no buffer code) without warning,
+    // surprising the user who wrote `reuse;`. We promote to the strict
+    // entry point — any typed `ReuseInferenceError` is a fatal compile
+    // error, surfaced via the existing `Display` impl (variant docs at
+    // `passes::reuse_inference::ReuseInferenceError`).
+    //
+    // Why strict over partition-policy-aware (option B in TASK-0271):
+    // every reuse slot already has a consumer (the Tier 1 marker), so
+    // the (B) predicate "is this slot consumed?" is trivially TRUE for
+    // every slot — (B) degenerates into (A). The narrower (B) rule
+    // "iv carries partition=" would still silently drop non-affine
+    // reuse on non-partitioned loops (exactly the 05-stencil/reuse
+    // shape), recreating the silent-failure mode. Strict closes both.
+    //
+    // E2E impact at promotion: 92/77/0/15/0 byte-identical. The only
+    // shipped non-skipped reuse loop (`05-stencil/reuse`, single-host
+    // 3x3 stencil over `img_in[y±1][x±1]`) is fully affine and lowers
+    // cleanly. `05-stencil/distributed` also carries `reuse;` but is
+    // SKIP across all backends per TASK-0267/TASK-0268 (unrelated to
+    // reuse codegen); when those clear, its `blur3` body is the same
+    // affine shape and will lower cleanly too.
+    //
+    // The sibling halo driver call above (line 385,
+    // `apply_halo_inference_advisory`) intentionally remains advisory;
+    // its strict promotion is TASK-0263's responsibility (the halo
+    // Stage 2 consumer in transfer_inject is not yet wired, so the
+    // promotion criterion — "the silent error is now wrong output" —
+    // is not yet met for halo). When TASK-0263 lands, the same
+    // strict-promotion pattern set here should be applied; if both
+    // drivers persist in producing typed errors at the same surface,
+    // a `passes::common::iv_diag_policy` helper may be worth lifting
+    // (see TASK-0272 cosmetic).
+    let acfg = apply_reuse_inference(&linked, acfg)
+        .map_err(|e| format!("reuse-inference error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

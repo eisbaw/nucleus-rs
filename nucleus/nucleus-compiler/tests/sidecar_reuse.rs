@@ -565,6 +565,211 @@ fn defensive_unknown_data_in_ref_returns_typed_err() {
 }
 
 // ----------------------------------------------------------------------
+// TASK-0271 driver-promotion strict policy pins
+// ----------------------------------------------------------------------
+//
+// The driver was promoted from `apply_reuse_inference_advisory` (Stage 1)
+// to `apply_reuse_inference` (strict, TASK-0271 cycle 88) once the
+// TASK-0265 cycle-87 Tier 1 marker consumer landed. A typed
+// `ReuseInferenceError` now corresponds to a `loop V : reuse;`
+// directive whose body the backend would silently fail to consume —
+// the strict promotion makes that silent failure a fatal compile error.
+//
+// The two pins below cover the only two flight envelopes the driver
+// promotion is responsible for:
+//
+//   - NEGATIVE: a non-affine `loop V : reuse;` body must surface a
+//     typed `ReuseInferenceError` from the strict entry point (so the
+//     driver's `?` propagates it as a compile error). This pins that
+//     the strict path RAISES; the absence of this pin would let the
+//     strict variant silently accept (e.g. if some future refactor
+//     deletes the affine check).
+//
+//   - POSITIVE: every shipped reuse-tagged schedule must lower
+//     cleanly through the strict path (so the strict promotion does
+//     not break the e2e matrix). Today the only such schedule is
+//     `05-stencil/reuse`; this pin re-loads it and asserts
+//     `apply_reuse_inference(...).is_ok()`. If a future shipped
+//     schedule introduces a non-affine reuse body, the pin will
+//     fail in unit-test time before the e2e matrix turns red,
+//     pointing the implementer at this file as the contract.
+
+#[test]
+fn task0271_strict_rejects_non_affine_reuse_body() {
+    // Synthetic body: `for V in 0..16 { out[V] = K(grid[V*2]) }` with
+    // `loop V : reuse;`. The `V*2` index has coefficient 2 (not +1),
+    // so `apply_reuse_inference` must return
+    // `Err(ReuseInferenceError::StridedAccessNotSupported{ coefficient: 2, .. })`.
+    // This is the exact failure mode the driver promotion to strict
+    // (TASK-0271) is responsible for surfacing instead of swallowing.
+    use nucleus_compiler::algo::{
+        AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, Purity, ResolvedData, ResolvedKernel,
+        ResolvedType, ScalarType,
+    };
+    use nucleus_compiler::sched::{
+        ResolvedLoopDirective, ResolvedLoopOption, ResolvedPlaceTarget, ResolvedPlacement,
+        ResolvedWorker, SchedIR, DEFAULT_WORKER_CLASS,
+    };
+
+    let mut data = BTreeMap::new();
+    data.insert(
+        "grid".to_string(),
+        ResolvedData {
+            name: "grid".to_string(),
+            ty: ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![64],
+            },
+        },
+    );
+    data.insert(
+        "out".to_string(),
+        ResolvedData {
+            name: "out".to_string(),
+            ty: ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![16],
+            },
+        },
+    );
+    let mut kernels = BTreeMap::new();
+    kernels.insert(
+        "K".to_string(),
+        ResolvedKernel {
+            name: "K".to_string(),
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+            purity: Purity::Pure,
+            name_span: None,
+        },
+    );
+    let stmts = vec![IrStmt::For {
+        var: "V".to_string(),
+        lo: IrExpr::IntLit(0),
+        hi: IrExpr::IntLit(16),
+        body: vec![IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "out".to_string(),
+                indices: vec![IrExpr::Ident("V".to_string())],
+            },
+            rhs: IrExpr::Call {
+                callee: "K".to_string(),
+                args: vec![IrExpr::DataRef(IndexedRef {
+                    name: "grid".to_string(),
+                    // V * 2 — coefficient 2, NOT +1 → rejected as
+                    // StridedAccessNotSupported.
+                    indices: vec![IrExpr::BinOp(
+                        IrBinOp::Mul,
+                        Box::new(IrExpr::Ident("V".to_string())),
+                        Box::new(IrExpr::IntLit(2)),
+                    )],
+                })],
+            },
+        }],
+    }];
+    let algo = AlgoIR {
+        consts: BTreeMap::new(),
+        data,
+        kernels,
+        stmts,
+    };
+
+    let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();
+    workers.insert(
+        "w0".to_string(),
+        ResolvedWorker {
+            name: "w0".to_string(),
+            class: DEFAULT_WORKER_CLASS.to_string(),
+        },
+    );
+    let mut places: BTreeMap<String, ResolvedPlacement> = BTreeMap::new();
+    places.insert(
+        "K".to_string(),
+        ResolvedPlacement {
+            kernel: "K".to_string(),
+            target: ResolvedPlaceTarget::One("w0".to_string()),
+            kernel_span: None,
+        },
+    );
+    let mut loops: BTreeMap<String, ResolvedLoopDirective> = BTreeMap::new();
+    loops.insert(
+        "V".to_string(),
+        ResolvedLoopDirective {
+            var: "V".to_string(),
+            options: vec![ResolvedLoopOption::Reuse],
+            var_span: None,
+        },
+    );
+    let sched = SchedIR {
+        algo_path: String::new(),
+        worker_classes: BTreeMap::new(),
+        memory_regions: BTreeMap::new(),
+        workers,
+        places,
+        place_data: BTreeMap::new(),
+        loops,
+        transfers: BTreeMap::new(),
+        checks: BTreeMap::new(),
+    };
+    let linked = link(algo, sched).expect("link must succeed");
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let err = apply_reuse_inference(&linked, acfg)
+        .expect_err("strict reuse inference must reject `grid[V*2]` under `loop V : reuse;`");
+    match err {
+        ReuseInferenceError::StridedAccessNotSupported {
+            iter_var,
+            ref_name,
+            coefficient,
+            ..
+        } => {
+            assert_eq!(iter_var, "V");
+            assert_eq!(ref_name, "grid");
+            assert_eq!(
+                coefficient, 2,
+                "the strided coefficient must be surfaced in the typed error"
+            );
+        }
+        other => panic!("expected StridedAccessNotSupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn task0271_strict_accepts_shipped_05_stencil_reuse_schedule() {
+    // Regression pin for the strict driver promotion (TASK-0271): the
+    // only shipped non-skipped reuse-tagged schedule today is
+    // `05-stencil/reuse` (single-host 3x3 blur with `loop x : reuse;`).
+    // Its body — `img_in[y±1][x-1]`, `img_in[y±1][x]`, `img_in[y±1][x+1]`
+    // — is fully affine on `x`, so the strict entry point MUST lower it
+    // cleanly. If a future change to the example introduces a non-
+    // affine `x`-axis access, this pin fails BEFORE the e2e matrix turns
+    // red, pointing the implementer at the driver promotion contract.
+    //
+    // The full pipeline coverage (link + ACFG + block + partition +
+    // strict reuse) lives in `lower_with_reuse` at the top of this
+    // file; that helper already routes through `apply_reuse_inference`
+    // (strict). The pin below is therefore a one-line invocation of
+    // the helper plus an `is_ok`-style assertion via `expect`.
+    let (_linked, acfg) = lower_with_reuse("05-stencil", "schedules/reuse.sched.nuc");
+    // Spot-check that the expected slot landed (the per-axis assertion
+    // is fully covered by `stencil_3x3_reuse_on_x_records_length_3_axis1_slot_on_img_in`
+    // above; here we only need to know the strict path didn't panic
+    // or return Err — which `lower_with_reuse`'s internal `.expect()`
+    // already enforces). Touch `acfg` so dead-code-elim doesn't drop
+    // the call.
+    assert!(
+        !acfg.reuse_widths.is_empty(),
+        "strict pipeline must populate reuse_widths for the shipped 05-stencil/reuse schedule"
+    );
+}
+
+// ----------------------------------------------------------------------
 // IterVar / DataId imports
 // ----------------------------------------------------------------------
 //
