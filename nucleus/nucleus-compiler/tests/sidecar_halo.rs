@@ -356,13 +356,19 @@ fn build_linked_for_partition_test(
 }
 
 #[test]
-fn task0275_partition_aware_rejects_non_affine_under_partitioned_iv() {
+fn task0275_partition_aware_rejects_strided_under_partitioned_iv() {
     // Body: `for y in 0..16 { out[y] = K(grid[y*2]) }` with
     // `loop y : partition=workers;`. The `y*2` index is StridedAccess
-    // (coefficient 2, not +1). Under (B), the y-loop carries a
-    // `partition=` directive → transfer_inject's halo consumer would
+    // (coefficient 2, not +1) — strictly *affine* but the first-cut
+    // detector rejects coefficient != 1. Under (B), the y-loop carries
+    // a `partition=` directive → transfer_inject's halo consumer would
     // fire and need the halo width, which the walker cannot recover.
     // The partition-aware entry point MUST return Err on this case.
+    //
+    // See `task0275_partition_aware_rejects_non_affine_under_partitioned_iv`
+    // below for the matching `NonAffineIndex` (Mod-shape) variant —
+    // that pin closes the AC#3 literal "non-affine halo on a
+    // partitioned iv → FATAL" wording (example-11 shape).
     use nucleus_compiler::algo::{IrBinOp, IrExpr};
     use nucleus_compiler::sched::PartitionKind;
 
@@ -375,7 +381,7 @@ fn task0275_partition_aware_rejects_non_affine_under_partitioned_iv() {
     let acfg = build_acfg(&linked).expect("acfg build");
 
     let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
-        "partition-aware must reject non-affine kernel-arg index when the enclosing iv is \
+        "partition-aware must reject strided kernel-arg index when the enclosing iv is \
          partitioned (transfer_inject would silently emit wrong tiles)",
     );
     match err {
@@ -394,41 +400,80 @@ fn task0275_partition_aware_rejects_non_affine_under_partitioned_iv() {
 }
 
 #[test]
+fn task0275_partition_aware_rejects_non_affine_under_partitioned_iv() {
+    // Body: `for y in 0..16 { out[y] = K(grid[y % 4]) }` with
+    // `loop y : partition=workers;`. The `y % 4` index is the genuine
+    // `NonAffineIndex` shape — it mentions `y` but `affine_decompose`
+    // rejects `Mod` (and `Div`) unconditionally (see `passes::common`
+    // contract). This is structurally the example-11
+    // (`11-game-of-life`) `step_or_seed` shape that motivated TASK-0275
+    // in the first place: `grid[(t + ITERS) % (ITERS + 1)]`. Pins the
+    // literal AC#3 "non-affine halo on a partitioned iv → FATAL"
+    // wording — sibling `_rejects_strided_` above covers the
+    // coefficient!=1 arm.
+    use nucleus_compiler::algo::{IrBinOp, IrExpr};
+    use nucleus_compiler::sched::PartitionKind;
+
+    let mod_idx = IrExpr::BinOp(
+        IrBinOp::Mod,
+        Box::new(IrExpr::Ident("y".to_string())),
+        Box::new(IrExpr::IntLit(4)),
+    );
+    let linked = build_linked_for_partition_test(mod_idx, Some(PartitionKind::Workers));
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+        "partition-aware must reject NonAffineIndex (Mod-shape) when the enclosing iv is \
+         partitioned (this is the example-11 step_or_seed shape under a hypothetical \
+         partition= — transfer_inject would silently emit wrong tiles)",
+    );
+    match err {
+        HaloInferenceError::NonAffineIndex {
+            kernel, ref_name, ..
+        } => {
+            assert_eq!(kernel, "K");
+            assert_eq!(ref_name, "grid");
+        }
+        other => panic!("expected NonAffineIndex, got {other:?}"),
+    }
+}
+
+#[test]
 fn task0275_partition_aware_accepts_non_affine_under_unpartitioned_iv() {
-    // Same body shape as the rejection arm above (`grid[y*2]` —
-    // StridedAccess), but the `y` loop has NO `partition=` directive
-    // (mirrors the example-11 `step_or_seed` shape: schedule carries
-    // zero partition= on the iv whose body the affine detector cannot
-    // fold). Under (B), this is ADVISORY: transfer_inject does not
-    // fire on un-partitioned ivs, so the missing halo entry is
+    // Same Mod-shape body as the matching rejection arm above
+    // (`grid[y % 4]` — genuine `NonAffineIndex`), but the `y` loop has
+    // NO `partition=` directive. This precisely mirrors the example-11
+    // (`11-game-of-life`) `step_or_seed` shape: schedule carries zero
+    // `partition=` on the iv whose index the affine detector cannot
+    // fold (Mod). Under (B), this is ADVISORY: transfer_inject does
+    // not fire on un-partitioned ivs, so the missing halo entry is
     // harmless. The partition-aware entry point returns Ok and routes
     // the typed error into the advisory bucket. This is the
     // load-bearing case that distinguishes (B) from a naive (A) strict
-    // mirror — the latter would newly-reject the example.
+    // mirror — the latter would newly-reject example 11's two cells.
     use nucleus_compiler::algo::{IrBinOp, IrExpr};
 
-    let stride_idx = IrExpr::BinOp(
-        IrBinOp::Mul,
+    let mod_idx = IrExpr::BinOp(
+        IrBinOp::Mod,
         Box::new(IrExpr::Ident("y".to_string())),
-        Box::new(IrExpr::IntLit(2)),
+        Box::new(IrExpr::IntLit(4)),
     );
-    let linked = build_linked_for_partition_test(stride_idx, None);
+    let linked = build_linked_for_partition_test(mod_idx, None);
     let acfg = build_acfg(&linked).expect("acfg build");
 
     let (acfg_out, advisory) = apply_halo_inference_partition_aware(&linked, acfg).expect(
-        "partition-aware must NOT reject non-affine kernel-arg index when the enclosing iv is \
-         un-partitioned (transfer_inject won't fire — the missing halo is harmless)",
+        "partition-aware must NOT reject NonAffineIndex when the enclosing iv is un-partitioned \
+         (transfer_inject won't fire — the missing halo is harmless; this is the example-11 \
+         contract preserved)",
     );
     assert_eq!(
         advisory.len(),
         1,
-        "the single StridedAccess error must surface in the advisory bucket; got {advisory:?}"
+        "the single NonAffineIndex error must surface in the advisory bucket; got {advisory:?}"
     );
     match &advisory[0] {
-        HaloInferenceError::StridedAccessNotSupported {
-            coefficient: 2, ..
-        } => {}
-        other => panic!("expected advisory StridedAccessNotSupported coeff=2, got {other:?}"),
+        HaloInferenceError::NonAffineIndex { .. } => {}
+        other => panic!("expected advisory NonAffineIndex, got {other:?}"),
     }
     // The walker recovered no widths for this body (the only index was
     // rejected); the committed sidecar therefore has an empty
@@ -480,5 +525,33 @@ fn task0275_partition_aware_accepts_clean_affine_under_partitioned_iv() {
             .copied(),
         Some(1),
         "recovered halo width for K[y] must be 1 (offset +1)"
+    );
+}
+
+#[test]
+fn task0275_partition_aware_rejects_strided_under_partition_rows() {
+    // Same shape as `_rejects_strided_under_partitioned_iv` but with
+    // `PartitionKind::Rows` instead of `Workers`. Pins that
+    // `iv_is_partitioned` treats every `ResolvedLoopOption::Partition(_)`
+    // variant as escalating — a regression that narrowed the match arm
+    // to only `Partition(Workers)` would silently let a partition=rows
+    // schedule produce wrong tiles on a non-affine body.
+    use nucleus_compiler::algo::{IrBinOp, IrExpr};
+    use nucleus_compiler::sched::PartitionKind;
+
+    let stride_idx = IrExpr::BinOp(
+        IrBinOp::Mul,
+        Box::new(IrExpr::Ident("y".to_string())),
+        Box::new(IrExpr::IntLit(2)),
+    );
+    let linked = build_linked_for_partition_test(stride_idx, Some(PartitionKind::Rows));
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+        "partition-aware must escalate on any PartitionKind, not just Workers",
+    );
+    assert!(
+        matches!(err, HaloInferenceError::StridedAccessNotSupported { .. }),
+        "expected StridedAccessNotSupported under partition=rows, got {err:?}"
     );
 }

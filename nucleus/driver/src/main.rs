@@ -395,7 +395,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // `blur3` body is fully affine; example 11's two cells stay PASS
     // because no `partition=` is attached to the Mod-indexed iv.
     let (acfg, halo_errors_advisory) = apply_halo_inference_partition_aware(&linked, acfg)
-        .map_err(|e| format!("halo-inference error: {e}"))?;
+        .map_err(|e| format!("halo-inference error (under partitioned iv): {e}"))?;
     for e in &halo_errors_advisory {
         nucleus_compiler::nuc_trace!(
             "halo_inference: advisory (no `partition=` directive in scope, transfer_inject \
