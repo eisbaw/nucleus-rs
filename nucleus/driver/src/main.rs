@@ -51,8 +51,8 @@ use std::process::ExitCode;
 
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_advisory,
-    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, build_acfg,
-    build_sidecar, check_kernels_contract,
+    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
+    apply_reuse_inference_advisory, build_acfg, build_sidecar, check_kernels_contract,
     check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
     load_capabilities,
 };
@@ -386,6 +386,31 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     for e in &halo_errors {
         nucleus_compiler::nuc_trace!(
             "halo_inference: advisory (Stage 1, not yet consumed by transfer_inject): {e}"
+        );
+    }
+    // Reuse loop-option inference (TASK-0261 Stage 1): walk every
+    // `for V : reuse;` loop in `linked.algo.stmts` and infer
+    // per-(IterVar, DataId, axis) delay-line slots from affine
+    // `iv + b` DataRef accesses. Pure + observationally-inert in
+    // Stage 1 — populates `ACFG::reuse_widths` for Stage 2 (TASK-0265,
+    // backend walker delay-line emit) to consume.
+    //
+    // STAGE 1 DRIVER POLICY (mirrors halo_inference): a non-affine /
+    // strided / data-dependent / non-contiguous index inside a
+    // `reuse`-tagged loop body is a typed `ReuseInferenceError` per
+    // PRD §13 ("reuse / halo on data-dependent strides is rejected at
+    // compile time"). But that rejection is only CORRECT to surface
+    // when delay-line synthesis is actually required — i.e. when
+    // Stage 2 / TASK-0265 needs the slot and the missing one would
+    // produce wrong (or merely sub-optimal — Stage 2 is a perf hint,
+    // not a correctness one) output. Stage 1 has no downstream
+    // consumer wired, so we swallow the typed error and emit a
+    // `nuc_trace!` line for visibility under `NUC_TRACE=1`. Stage 2 is
+    // where the policy moves out of advisory.
+    let (acfg, reuse_errors) = apply_reuse_inference_advisory(&linked, acfg);
+    for e in &reuse_errors {
+        nucleus_compiler::nuc_trace!(
+            "reuse_inference: advisory (Stage 1, not yet consumed by backend walker): {e}"
         );
     }
     let acfg = inject_syncs(acfg);

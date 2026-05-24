@@ -100,6 +100,10 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         // widths sidecar; forward verbatim. halo_inference populates it;
         // Stage 2 (TASK-0263) makes transfer_inject the consumer.
         halo_widths,
+        // TASK-0261: sync_inject does not consult or mutate the reuse-
+        // widths sidecar; forward verbatim. reuse_inference populates
+        // it; Stage 2 (TASK-0265) makes the backend walker the consumer.
+        reuse_widths,
     } = acfg;
 
     // The set of iter-vars that the partition-workers pass (TASK-0212)
@@ -168,6 +172,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     }
 }
 

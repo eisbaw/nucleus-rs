@@ -289,6 +289,12 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         // entry keyed by the original inner IterVar would need
         // re-binding to the new pair, which is a Stage 2/3 concern.)
         halo_widths,
+        // TASK-0261: block_transform runs BEFORE reuse_inference; same
+        // pre-populator forwarding stance as halo_widths. (And the same
+        // forward-carry hazard: if the pass order ever moves reuse
+        // earlier, an IterVar-keyed reuse entry would need re-binding
+        // to the synthesised outer-tile / intra-tile pair.)
+        reuse_widths,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -332,6 +338,7 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     })
 }
 

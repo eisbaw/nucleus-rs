@@ -707,6 +707,46 @@ pub struct ACFG {
     /// wire payload (no field) deserialises as empty.
     #[cfg_attr(feature = "serde", serde(default))]
     pub halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
+
+    /// Per-(IterVar, DataId, axis) delay-line slot inferred from the
+    /// loop body's affine-stride DataRef accesses when the schedule
+    /// carries `loop V : reuse;` (TASK-0261, Stage 1). Populated by
+    /// [`crate::passes::reuse_inference::apply_reuse_inference`]. The
+    /// slot value names a circular buffer of `length` slots indexed by
+    /// an offset in `[min_offset .. min_offset + length)` from the
+    /// current iv value; the backend (Stage 2 / TASK-0265) consumes
+    /// this to rewrite `grid[iv + b]` reads as
+    /// `buf[(iv + b - min_offset) % length]` and load each row of the
+    /// underlying array exactly once.
+    ///
+    /// Empty for algorithms whose schedule carries no `reuse`
+    /// directives OR whose `reuse` loop body's iv-bearing offsets are
+    /// length-1 (degenerate, dropped silently). serde-default so an
+    /// older wire payload (no field) deserialises as empty — same
+    /// additive contract as `halo_widths` (TASK-0260).
+    ///
+    /// ### Shape rationale: triple-nested map
+    ///
+    /// `BTreeMap<IterVar, BTreeMap<DataId, BTreeMap<u64 /* axis */,
+    /// ReuseSlot>>>` — three levels of `BTreeMap` keyed by `u64`-like
+    /// newtypes / a plain `u64` axis index. The deep-nest shape is
+    /// load-bearing for serde-JSON: a flat tuple-keyed `BTreeMap<(IterVar,
+    /// DataId, u64), ReuseSlot>` would not round-trip (tuples cannot
+    /// be JSON map keys). The nested form mirrors
+    /// [`Self::halo_widths`] and `Self::partition_worker_ranges` (both
+    /// nested for the same reason).
+    ///
+    /// Independent of partition policy: a delay line lives inside one
+    /// worker's tile; partitioning bounds the iv-range each worker
+    /// covers but the per-iteration reuse rewrite is unaffected.
+    ///
+    /// Determinism: nested `BTreeMap`s; iteration in numeric order at
+    /// every level. No `HashMap` / `HashSet` on the emit path.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub reuse_widths: BTreeMap<
+        IterVar,
+        BTreeMap<DataId, BTreeMap<u64, crate::passes::reuse_inference::ReuseSlot>>,
+    >,
 }
 
 // --------------------------------------------------------------------
@@ -891,6 +931,12 @@ pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
         // codegen behaviour, since Stage 2 (transfer_inject extension)
         // is what would observe these.
         halo_widths: BTreeMap::new(),
+        // Populated by `passes::reuse_inference` (TASK-0261 Stage 1).
+        // `build_acfg` is reuse-directive-unaware; empty means "no
+        // reuse loop detected yet" — equivalent to the pre-TASK-0261
+        // codegen behaviour, since Stage 2 (backend walker delay-line
+        // emit, TASK-0265) is what would observe these.
+        reuse_widths: BTreeMap::new(),
     })
 }
 

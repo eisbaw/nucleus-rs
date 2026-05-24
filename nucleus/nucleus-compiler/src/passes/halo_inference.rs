@@ -442,6 +442,10 @@ fn commit_halo_widths(acfg: ACFG, halo: BTreeMap<KernelId, BTreeMap<IterVar, u64
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths: _existing,
+        // TASK-0261: halo_inference does not consult or mutate the
+        // reuse-widths sidecar; forward verbatim. reuse_inference runs
+        // separately and writes its own field.
+        reuse_widths,
     } = acfg;
 
     ACFG {
@@ -454,6 +458,7 @@ fn commit_halo_widths(acfg: ACFG, halo: BTreeMap<KernelId, BTreeMap<IterVar, u64
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths: halo,
+        reuse_widths,
     }
 }
 

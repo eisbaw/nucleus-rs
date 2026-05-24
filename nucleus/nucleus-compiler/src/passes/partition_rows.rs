@@ -291,6 +291,9 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
         // partition_rows does not consult or mutate the halo-widths
         // sidecar (TASK-0260); forward verbatim.
         halo_widths,
+        // partition_rows does not consult or mutate the reuse-widths
+        // sidecar (TASK-0261); forward verbatim.
+        reuse_widths,
     } = acfg;
 
     for (iter_var, range, body_workers) in to_record {
@@ -316,6 +319,7 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     })
 }
 

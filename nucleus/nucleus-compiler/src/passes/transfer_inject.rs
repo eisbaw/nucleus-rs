@@ -227,6 +227,10 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // cycle. Forward verbatim. (Tests that inject pre-existing
         // halo entries to validate forwarding are preserved.)
         halo_widths,
+        // TASK-0261: transfer_inject currently DOES NOT read the
+        // reuse-widths sidecar — Stage 2 (TASK-0265, backend walker
+        // delay-line emit) is the wiring cycle. Forward verbatim.
+        reuse_widths,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -418,6 +422,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     }
 }
 

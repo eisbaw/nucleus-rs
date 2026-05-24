@@ -243,6 +243,9 @@ pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Pa
         // TASK-0260: partition_workers does not consult or mutate the
         // halo-widths sidecar; forward verbatim.
         halo_widths,
+        // TASK-0261: partition_workers does not consult or mutate the
+        // reuse-widths sidecar; forward verbatim.
+        reuse_widths,
     } = acfg;
 
     for (_var, iter_var, range, body_workers) in to_record {
@@ -271,6 +274,7 @@ pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Pa
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     })
 }
 

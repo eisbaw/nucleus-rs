@@ -391,6 +391,11 @@ pub fn apply_partition_blocks2d(
         // a DIFFERENT join (worker -> neighbour grid cell), not a
         // mutation of `halo_widths` itself.
         halo_widths,
+        // partition_blocks2d does not consult or mutate reuse widths
+        // (TASK-0261); forward verbatim. Reuse is independent of
+        // partition policy (the delay-line lives within ONE worker's
+        // tile; partitioning bounds the iv-range each worker covers).
+        reuse_widths,
     } = acfg;
 
     for plan in to_record {
@@ -425,6 +430,7 @@ pub fn apply_partition_blocks2d(
         partition_worker_ranges,
         pipeline_depth_for_seq,
         halo_widths,
+        reuse_widths,
     })
 }
 

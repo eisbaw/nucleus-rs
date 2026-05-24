@@ -264,6 +264,41 @@ pub struct NameSidecar {
     /// Determinism: nested `BTreeMap`s, iteration in numeric order.
     #[cfg_attr(feature = "serde", serde(default))]
     pub halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
+
+    /// Per-(IterVar, DataId, axis) delay-line slot inferred from
+    /// `reuse`-tagged loop bodies (TASK-0261, Stage 1). Mirrors
+    /// [`crate::acfg::ACFG::reuse_widths`] verbatim — the codegen
+    /// contract surface for that ACFG sidecar.
+    ///
+    /// A backend (Stage 2 — TASK-0265 — backend walker / Plan
+    /// delay-line emit) joins this map with the iv-iteration it is
+    /// projecting and rewrites each `grid[iv + b]` read inside the
+    /// loop body into a circular-buffer lookup. STAGE 1 lands the
+    /// fact; no current backend / pass observes it yet, so emitted
+    /// code is byte-identical to pre-TASK-0261.
+    ///
+    /// Empty for algorithms whose schedules carry no `reuse` loop
+    /// directives, and (silently) for reuse loops whose body's
+    /// iv-bearing offsets are degenerate (length 1 — a no-op delay
+    /// line). serde-default so an older wire payload (no field)
+    /// deserialises as empty — same backward-compat contract as
+    /// `halo_widths` (TASK-0260), `transfer_buffer_for_seq`
+    /// (TASK-0233), and `partition_worker_ranges` (TASK-0212).
+    ///
+    /// ### Shape
+    ///
+    /// `BTreeMap<IterVar, BTreeMap<DataId, BTreeMap<u64 /* axis */,
+    /// ReuseSlot>>>` — triple-nested maps; the deep nest is
+    /// load-bearing for serde-JSON (tuple keys are not JSON map
+    /// keys). See [`crate::acfg::ACFG::reuse_widths`] docs for the
+    /// rationale.
+    ///
+    /// Determinism: nested `BTreeMap`s, iteration in numeric order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub reuse_widths: BTreeMap<
+        IterVar,
+        BTreeMap<DataId, BTreeMap<u64, crate::passes::reuse_inference::ReuseSlot>>,
+    >,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -551,6 +586,16 @@ pub fn build_sidecar(
     //     ownership reason `partition_worker_ranges` clones above.
     let halo_widths = acfg.halo_widths.clone();
 
+    // (h) Per-(IterVar, DataId, axis) reuse widths (TASK-0261 Stage 1).
+    //     Forwarded verbatim from the ACFG sidecar `reuse_widths`,
+    //     which the `passes::reuse_inference` pass populated by walking
+    //     every `reuse`-tagged loop's body for affine `iv + b` DataRef
+    //     accesses + asserting contiguous offset sets. Empty for ACFGs
+    //     whose schedules carry no `reuse` directives. A `.clone()` for
+    //     the same independent-ownership reason `partition_worker_ranges`
+    //     clones above.
+    let reuse_widths = acfg.reuse_widths.clone();
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -559,6 +604,7 @@ pub fn build_sidecar(
         partition_worker_ranges,
         transfer_buffer_for_seq,
         halo_widths,
+        reuse_widths,
     })
 }
 

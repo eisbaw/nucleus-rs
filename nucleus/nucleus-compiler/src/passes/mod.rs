@@ -31,6 +31,13 @@ pub mod deadlock;
 // observationally-inert in Stage 1: writes `ACFG::halo_widths` for
 // Stage 2 (transfer_inject extension, TASK-0263) to consume.
 pub mod halo_inference;
+// TASK-0261 Stage 1: reuse loop-option inference (PRD §6.3.3 + §13).
+// For each `for V : reuse;` loop, walk the body's kernel-arg
+// `IrExpr::DataRef` indices, classify their affine `(coeff, offset)` in
+// V, and persist a per-(IterVar, DataId, axis) delay-line slot into
+// `ACFG::reuse_widths`. Pure + observationally-inert in Stage 1: the
+// backend walker / codegen consumer is Stage 2 (TASK-0265).
+pub mod reuse_inference;
 // TASK-0052.02: real-time `check loop V : latency_max=T` projection.
 // Runs AFTER `petri_to_events`, BEFORE backend codegen — see module
 // docstring for the dependency rationale.
