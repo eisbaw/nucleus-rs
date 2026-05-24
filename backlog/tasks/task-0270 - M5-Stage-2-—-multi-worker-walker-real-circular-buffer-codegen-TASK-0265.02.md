@@ -1,10 +1,11 @@
 ---
 id: TASK-0270
 title: M5 Stage 2 — multi-worker walker real circular-buffer codegen (TASK-0265.02)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 15:48'
+updated_date: '2026-05-24 16:16'
 labels:
   - M5
   - codegen
@@ -52,6 +53,39 @@ A loop carrying BOTH a halo entry AND a reuse entry needs both code paths active
 3. just e2e + just determinism-check stay GREEN on all 4 tier-1 backends.
 4. cargo test --workspace stays GREEN; unit + integration tests cover the rewrite.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Multi-worker walker real circular-buffer codegen (TASK-0265 Stage 2 Tier 3, sibling of TASK-0269).
+
+Builder choice: (a) - add RenderCtxPub::with_abs_subst_and_reuse_active for the strip-mine arm (single-call site builder; closest sibling pattern to existing with_abs_subst). The regular arm uses a fresh builder with_reuse_active.
+
+Marker decision: keep 'reuse_widths_pending' marker substring INTACT (load-bearing across 4 grep tests; the multi-worker sites now do emit real codegen below it just like pthreads-sync after TASK-0269). Tweak the parenthetical from 'on pthreads-sync — TASK-0269' to '— TASK-0269 (single-worker) + TASK-0270 (multi-worker)' so the marker text is no longer a doc-lie on multi-worker call sites. The new __reuse_buf_<data>_a<axis> + rem_euclid(L_i64) substrings are the second-layer codegen canary added to multi_worker_reuse_marker.rs.
+
+Render.rs changes:
+1. Add render_reuse_buf_decls_pub(out, indent, iter_var, iter_var_name, lo_expr_rs, body, ctx: &RenderCtxPub) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError> (delegates to private fn via ctx.inner()).
+2. Add render_reuse_per_iter_update_pub(out, indent, groups, iv_expr_rs, ctx: &RenderCtxPub) -> Result<(), EmitError>.
+3. Add RenderCtxPub::with_abs_subst_and_reuse_active(abs_subst, reuse_active) -> RenderCtxPub<'a>.
+4. Add RenderCtxPub::with_reuse_active(reuse_active) -> RenderCtxPub<'a>.
+5. Update render_reuse_marker_comment parenthetical text to be backend-agnostic.
+
+multi_worker_walker.rs changes:
+1. Extend render_block_tag_loop_header to return (RenderCtxPub<'a>, String) where the String is the structural strip_lo_expr built from same (lo_src, tile_name, n, is_partial, num_full) components - NO textual abs.replace().
+2. In Event::Loop strip-mine arm (lines 395-424): after calling render_block_tag_loop_header, emit render_reuse_buf_decls_pub at the OUTER indent (before the for-header — wait, the helper already wrote the for-header). RESTRUCTURE: split header helper so the buffer decls land BEFORE the for line. Simpler restructure: helper now returns (child, strip_lo_expr) WITHOUT emitting the for-header; the caller emits buf_decls_pub at indent THEN the for-header at indent THEN the marker + per_iter_update at indent+1, then recurse, then closing.
+3. In Event::Loop regular arm (lines 449-485): symmetric - call render_reuse_buf_decls_pub with per-worker lo BEFORE writing for-header.
+
+Tests:
+- backend-common/tests/multi_worker_reuse_marker.rs: extend test 3 (strip-mine arm) with a Fire body carrying a reuse-axis DataRef (mirroring pthreads-sync/tests/reuse_marker.rs::pthreads_sync_strip_mine_arm_emits_real_buffer_codegen). Assert __reuse_buf_img_in_a1, rem_euclid(3_i64), and 'x__tile' name-overlap regression. Add NEW test for regular arm codegen with same Fire body shape.
+
+Verification gates:
+- nix develop --command bash -c 'cd nucleus && cargo test --workspace' - expect 808+/0/3
+- nix develop --command just clippy - clean
+- nix develop --command just e2e - target: 92/79/0/13/0 preserved
+- nix develop --command bash -c 'cd nucleus && cargo run --release --bin nucleus-e2e -- --check-determinism' - 92/79/0/13
+
+Bonus possibility: 05-stencil/distributed × pthreads-async + mp-tcp-event currently PROMOTED bit-identical via marker-only. They MUST remain bit-identical after real codegen lands (reuse is a perf rewrite). If they regress that is a hard fail.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -119,4 +153,85 @@ In multi_worker_walker.rs::Event::Loop arm (BOTH strip-mine path at line 404 and
 - backend-common/tests/multi_worker_reuse_marker.rs (3 multi-worker marker pins — TASK-0270 should ADD a buffer-shape assert here once codegen lands).
 
 Forward-carried from TASK-0269 cycle-103 architect review (P2.1): when multi-worker walker landing replaces the marker-only emit with real circular-buffer codegen on the multi-worker path, the marker substring's parenthetical 'circular-buffer codegen below on pthreads-sync — TASK-0269' becomes a doc-lie on the multi-worker sites (it claims real codegen follows, but only the single-worker sites do). UPDATE THE MARKER TEXT IN LOCKSTEP with the multi-worker codegen landing — either branch the marker per-call-site (different text for the multi-worker arms), or rename the marker entirely to a backend-agnostic substring (e.g. 'reuse_buf_decl') and update all 4 grep tests + the test docstrings in lockstep. The grep tests carrying the substring are: nucleus/nucleus-compiler/tests/e2e_example_05.rs (5 asserts), nucleus/backends/pthreads-sync/tests/reuse_marker.rs (2 asserts + 1 new strip-mine codegen assertion as of cycle 103 hardening commit cd2310c), nucleus/backend-common/tests/multi_worker_reuse_marker.rs. This is now a HARD AC of TASK-0270, not optional.
+
+## Cycle 104 landing (TASK-0270 Done — commit bab57cc)
+
+### What landed (commit bab57cc)
+
+Real circular-buffer codegen on the shared multi-worker walker (`backend-common::multi_worker_walker::render_worker_events_inner` Event::Loop arm). Both the strip-mine and regular arms now emit the per-(data, axis) `Vec<T>` decl + initial-fill prologue + per-iter rotate + DataRef rewrite. Consumers: pthreads-async + mp-tcp-event + pthreads-sync (multi-worker).
+
+### Substrate added in backend-common::render
+
+1. `RenderCtxPub::with_reuse_active(reuse_active)` — regular-arm builder preserving parent abs_subst.
+2. `RenderCtxPub::with_abs_subst_and_reuse_active(abs_subst, reuse_active)` — strip-mine arm joint builder (one pass, no chain-clone overhead).
+3. `render_reuse_buf_decls_pub(out, indent, iter_var, iter_var_name, lo_expr_rs, body, ctx)` — `_pub` shim layer matching the existing `render_fire_args_pub` / `render_const_expr_pub` precedent (delegates via `ctx.inner()`).
+4. `render_reuse_per_iter_update_pub(out, indent, groups, iv_expr_rs, ctx)` — same shape.
+
+### Walker changes
+
+1. NEW pure helper `compute_block_tag_abs_exprs(iter_var, tag, enclosing, ctx) -> Result<(String, String), EmitError>` returning `(abs, strip_lo_expr)`. Both expressions built STRUCTURALLY from the same components — NO textual `abs.replace(var, "0_i64")` step. Mirrors the cycle-103 P1.1 architect fix on pthreads-sync.
+2. `render_block_tag_loop_header` API unchanged — it now delegates to `compute_block_tag_abs_exprs` internally then writes the header (existing tests + mp-tcp-bufsync caller untouched).
+3. Strip-mine arm: uses `compute_block_tag_abs_exprs`, emits buf decls + prologue at OUTER pad with `strip_lo_expr` as the prologue's lo argument, writes for-header, builds child via `with_abs_subst_and_reuse_active`, emits marker + per-iter update, recurses, closes.
+4. Regular arm: emits buf decls + prologue at OUTER pad with the per-worker partition-projected lo (correct source-array index for the prologue fill when `partition_worker_ranges` recorded a slice), writes for-header, emits marker, emits per-iter update with bare var, builds child via `with_reuse_active`, recurses through both check_frame branches.
+
+### Marker text update
+
+`reuse_widths_pending` substring PRESERVED (load-bearing across 4 grep tests: e2e_example_05 5+ asserts, pthreads-sync/tests/reuse_marker.rs 2 asserts, backend-common/tests/multi_worker_reuse_marker.rs 3+ asserts). Parenthetical updated from "on pthreads-sync — TASK-0269" to "TASK-0269 single-worker + TASK-0270 multi-worker" so the marker is no longer a doc-lie on the multi-worker emission sites.
+
+### Tests added
+
+- `multi_worker_walker_regular_arm_emits_real_buffer_codegen` (multi_worker_reuse_marker.rs) — pins buffer decl + `vec![0; 3usize]` + `rem_euclid(3_i64)` on the non-strip-mine arm with a Fire body carrying a reuse-axis DataRef.
+- `multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen` — same for strip-mine arm + load-bearing P1.1 name-overlap regression (tile="x__tile" must appear intact; "0_i64__tile" must NOT appear).
+
+### Per-AC status
+
+- **AC#1** (multi_worker_walker emits Vec<T> circular buffer + rewrite for any Event::Loop carrying reuse_widths): **DONE**. Both regular + strip-mine arms emit. Verified by spot-check on 05-stencil/distributed × {pthreads-async, mp-tcp-event}.
+- **AC#2** (multi-worker e2e fixture bit-identical to reference): **DONE**. 05-stencil/distributed × pthreads-async + mp-tcp-event remain PROMOTED [[required]] M5 bit-identical to reference.bin (reuse is a perf rewrite, not semantic).
+- **AC#3** (just e2e + just determinism-check stay GREEN on all 4 tier-1 backends): **DONE**. Both at 92/79/0/13.
+- **AC#4** (cargo test --workspace stays GREEN; unit + integration tests cover the rewrite): **DONE**. 808/0/3 (up 2 from 806 — two new codegen tests).
+
+### Gate numbers (cycle 104 post-TASK-0270)
+
+- cargo test --workspace: 808 / 0 / 3
+- just clippy: clean
+- just e2e: 92 / 79 / 0 / 13 / 0
+- just determinism-check: 92 / 79 / 0 / 13
+
+### Spot-check confirmation
+
+05-stencil/distributed × pthreads-async (src/main.rs):
+```
+let mut __reuse_buf_img_in_a1: Vec<i32> = vec![0; 3usize];
+__reuse_buf_img_in_a1[(((((1_i64 + (0_i64 * 64_i64) + 0_i64)) + (-1_i64) - (-1_i64)).rem_euclid(3_i64)) as usize)] = img_in[...];
+__reuse_buf_img_in_a1[(((((1_i64 + (0_i64 * 64_i64) + 0_i64)) + (0_i64) - (-1_i64)).rem_euclid(3_i64)) as usize)] = img_in[...];
+for x in (0_i64)..(64_i64) {
+    // reuse_widths_pending: iv=x data=img_in axis=1 length=3 min_offset=-1 (Stage 2 active; circular-buffer codegen below — TASK-0269 single-worker + TASK-0270 multi-worker)
+    __reuse_buf_img_in_a1[((((1_i64 + (0_i64 * 64_i64) + x)) + (1_i64) - (-1_i64)).rem_euclid(3_i64)) as usize] = img_in[...];
+    img_out[...] = kernels::blur3(__reuse_buf_img_in_a1[...], __reuse_buf_img_in_a1[...], __reuse_buf_img_in_a1[...], img_in[...], img_in[...], img_in[...], img_in[...], img_in[...], img_in[...]);
+```
+
+Note the 3 axis-1 reads are rewritten to `__reuse_buf_img_in_a1[...]`; the 6 outer-axis reads (y-1, y+1 rows) stay verbatim. This is the TASK-0269 narrow-rewrite-cut applied here (also forward-carries to TASK-0282).
+
+05-stencil/distributed × mp-tcp-event: each worker bin (w0..w3) carries 5 `__reuse_buf_img_in_a1` occurrences; host.rs (no blur3) carries 0.
+
+### Honest limitations / gotchas forward-carried
+
+1. **mp-tcp-bufsync's strip-mine arm**: still routes through `render_block_tag_loop_header` and does NOT emit reuse codegen on multi-worker. NOT a regression (it never did pre-TASK-0270); 05-stencil/distributed × mp-tcp-bufsync is SKIPPED on capability mismatch (async + buffer + notify=event). A follow-up task can wire reuse on mp-tcp-bufsync's per-event walker when a multi-worker reuse cell lands on a sync-capability schedule.
+2. **Narrow-rewrite-cut from TASK-0269 applies here too**: only DataRefs matching the FIRST discovered outer-axes pattern per (data, axis) get rewritten. The 6 of 9 reads with different outer axes stay verbatim. TASK-0282 (multi-outer-coord generalisation) remains the filed follow-up.
+3. **Order-sensitive emit**: buffer decl + prologue MUST land BEFORE the for-header (the buffer must persist across iterations). This is why `render_block_tag_loop_header` was split — the original helper wrote the header inline, so the walker had to grow its own header emit logic when buf decls had to land first. The pure `compute_block_tag_abs_exprs` helper keeps the structural-expression construction in one place across walker + mp-tcp-bufsync (via `render_block_tag_loop_header` continuing to use it).
+4. **Substring overlap regression (P1.1)**: the multi-worker walker is now also immune to the `abs.replace(var, "0_i64")` substring-overlap defect. Both `abs` and `strip_lo_expr` are built structurally from `(lo_src, tile_name | num_full, n, var)` — no textual replace anywhere. Pinned by the new `multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen` test.
+
+### Forward-carry to TASK-0282 (multi-outer-coord generalisation)
+
+The narrow-rewrite-cut applies on both the single-worker (TASK-0269) and multi-worker (TASK-0270) emission paths. TASK-0282's lift will need to touch BOTH `render_reuse_buf_decls` (in render.rs — used by both paths) AND any helper that derives groups per-coord-variation. The substrate (`ReuseRewriteGroup` + `reuse_active` BTreeMap + `try_rewrite_reuse_arg`) already supports multiple groups per DataId; the missing piece is the discovery walker (`discover_reuse_groups` + `walk_event_for_reuse`) collecting all coord-variations rather than just the first.
+
+### Symmetric closure with TASK-0269
+
+Both TASK-0269 (pthreads-sync single-worker, cycle 103) and TASK-0270 (multi-worker walker, cycle 104) are now Done. The reuse codegen path is closed on all 4 tier-1 backends:
+- pthreads-sync single-worker: TASK-0269.
+- pthreads-sync multi-worker: TASK-0270 (this task, via the shared walker).
+- pthreads-async multi-worker: TASK-0270.
+- mp-tcp-event multi-worker: TASK-0270.
+
+mp-tcp-bufsync strip-mine arm remains marker-only on multi-worker reuse, but no shipped cell exercises it (capability mismatch on 05-stencil/distributed).
 <!-- SECTION:NOTES:END -->
