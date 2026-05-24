@@ -321,9 +321,12 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_bloc
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
 
     // Inner strip-mined loop: 0..4, tagged full-nest, empty body
-    // (marker emits at body entry BEFORE recursion). The src_iv
-    // re-uses the "x" name via NameTables (per the strip-mine
-    // contract: inner iv reuses the source loop's variable name).
+    // (marker emits at body entry BEFORE recursion). The src_iv has
+    // the user-source name "x" via NameTables; the production strip-
+    // mine projection reuses the source loop's IterVar id directly
+    // (same name + same id), whereas this synthetic fixture only
+    // models the rendering invariant (distinct ids, distinct names).
+    // The marker assertion `iv=x` confirms the path that matters.
     let inner_loop = Event::Loop {
         iter_var: src_iv,
         range: 0..4,
