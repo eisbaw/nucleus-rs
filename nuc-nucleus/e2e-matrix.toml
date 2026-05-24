@@ -406,7 +406,7 @@ milestone = "M3"
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "pthreads-sync"
-reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions not yet implemented"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which pthreads-sync supports (sync, single-buffer, barrier/blocking only). Driver rejects at capability check before codegen, verbatim: `backend pthreads-sync cannot satisfy this schedule: transfer img_in requests async ... requests buffer=2 ... requests notify=event`. pthreads-async carries this schedule's required column (see [[skip]] below — currently also skipped on TASK-0268 BUG 2, NOT on capability)."
 milestone = "M3"
 
 # Distributed gaps under the mp-tcp-bufsync backend.
@@ -444,7 +444,7 @@ milestone = "M3"
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0117 + halo synthesis: distributed placement + halo regions; also async/buffer=2/notify=event exceed the sync tier-1 capability surface (same as pthreads-sync)"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-bufsync supports (sync, single-buffer, barrier/blocking only). Driver rejects at capability check before codegen with the same verbatim text pthreads-sync emits. Same blocker as pthreads-sync sibling cell (above)."
 milestone = "M3"
 
 # Example 13 batch_parallel × pthreads-sync: the partition=workers
@@ -928,7 +928,7 @@ milestone = "M3"
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0181 (multi-worker strip-mine rebinding): the `distributed` schedule's Event::Loop for the per-worker iter var carries a block_tag whose source-pair (Wait without matching Push) the mp-tcp-event Plan::build catches as malformed projection. Same blocker pthreads-async hits on this cell. TASK-0042.05 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap."
+reason   = "TASK-0175 (worker-to-worker mesh): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Backend rejects at codegen with verbatim ContractGap: `mp-tcp-event barrier #1 participants {WorkerId(1)..WorkerId(4)} exclude the host worker; the one-CTRL-stream-per-(host,worker) topology requires host as the barrier hub`. The TASK-0181 (block_tag malformed projection) skip reason that previously stood here was stale — TASK-0267 (cycle 101) removed the upstream Wait-without-matching-Push artifact; the mp-tcp-event blocker now surfaces precisely as TASK-0175."
 milestone = "M3"
 
 [[required]]

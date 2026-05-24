@@ -370,28 +370,43 @@ fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
     let main_rs =
         fs::read_to_string(out.join("src/main.rs")).expect("read main.rs (distributed build)");
 
-    // The distributed schedule places `blur3` on { w0, w1, w2, w3 }.
-    // The host's `main` MUST push `img_in` into the matching ring once
-    // per worker. Pre-fix this set was empty (zero matches).
-    let mut push_count = 0;
-    for worker in 0..4 {
-        // Hash-stable ring naming: `ring_<N>` where N is the SeqTag
-        // assigned at fan-out time. We don't pin which ring goes to
-        // which worker (the SeqTag-to-worker mapping is an internal
-        // detail), but we DO require that the host fires exactly four
-        // distinct `ring_N.push(img_in.clone())` invocations.
-        let needle = format!("ring_{worker}.push(img_in.clone())");
-        if main_rs.contains(&needle) {
-            push_count += 1;
-        }
-    }
+    // The distributed schedule places `blur3` on { w0, w1, w2, w3 }. The
+    // host's `main` MUST push `img_in` into FOUR distinct rings (one per
+    // worker). Pre-fix this set was empty (zero matches).
+    //
+    // Counting by structural substring rather than enumerating literal
+    // `ring_0..ring_3`: the `ring_<N>` suffix is the SeqTag-allocation
+    // order, not a worker id. If a future change inserted other Xfers
+    // with smaller SeqTags before the host-fanout pushes, the literal
+    // enumeration would FALSELY claim the gate was resurrected when
+    // really the seq ids merely shifted. Counting `ring_\d+.push(img_in.clone())`
+    // occurrences is robust to such re-ordering: what TASK-0267 actually
+    // pins is "the host emits one push of img_in per worker", regardless
+    // of how the seq ids land.
+    let push_count = main_rs
+        .lines()
+        .filter(|line| {
+            // Each emit line is `    ring_<N>.push(img_in.clone()); ...`.
+            // Trim leading whitespace, then check for the ring_<digits>
+            // prefix and the `.push(img_in.clone())` substring.
+            let trimmed = line.trim_start();
+            trimmed.starts_with("ring_")
+                && trimmed.contains(".push(img_in.clone())")
+                && trimmed[5..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .next()
+                    .is_some()
+        })
+        .count();
     assert_eq!(
         push_count, 4,
         "TASK-0267: host main() MUST contain one `ring_<N>.push(img_in.clone())` \
-         per worker (4 workers ⇒ 4 pushes). Got {push_count}.\n\n\
-         If this regresses to 0, the `contains_block_inner` opacity gate \
-         (or equivalent) has been resurrected in transfer_inject's Pass A / \
-         Pass B and host-side fan-out Push synthesis is stranded again.\n\n\
+         per worker (4 workers ⇒ 4 distinct pushes). Got {push_count}.\n\n\
+         A push_count below 4 (especially zero) indicates the \
+         `contains_block_inner` opacity gate (or equivalent) has been \
+         resurrected in transfer_inject's Pass A / Pass B and host-side \
+         fan-out Push synthesis is stranded again.\n\n\
          Emitted main.rs:\n{main_rs}"
     );
 }

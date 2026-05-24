@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:02'
+updated_date: '2026-05-24 13:46'
 labels:
   - M5
   - bug
@@ -77,3 +78,73 @@ Memory entries that bear:
 - project_event-sync-synctag (Event::Sync SyncTag substrate is already join-key-aware; participant-aware extension is the natural next step).
 - project_partition-silent-drop (partition_rows + partition_workers consumers are new; sync_inject has not been audited for the new semantics).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Forward-carried from TASK-0267 (cycle 101, 2026-05-24) ===
+
+TASK-0267 (BUG 1 — host-Push synthesis drop under block-governed
+enclosing Repeat) LANDED in commit 336836f. The 05-stencil/
+distributed × pthreads-async emit now correctly contains:
+  ring_0..3.push(img_in.clone())  // 4 host-side Pushes at top of main()
+(verified by `distributed_pthreads_async_host_pushes_img_in_to_every_worker`
+in nucleus-compiler/tests/e2e_example_05.rs).
+
+This task (BUG 2) is now the SOLE remaining blocker before the
+05-stencil/distributed × pthreads-async cell can promote to
+[[required]] bit-identical. The e2e-matrix.toml skip reason at
+the cell (lines 695-699) was updated to cite TASK-0268 only.
+
+Reproduction recipe (post-TASK-0267):
+```
+cd nucleus && nix develop --command bash -c '
+  cargo run --release --bin nucleus -- \
+    build --algo ../nuc-nucleus/examples/05-stencil/prog.algo.nuc \
+          --sched ../nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc \
+          --backend pthreads-async \
+          --kernels ../nuc-nucleus/examples/05-stencil/kernels.rs \
+          --out /tmp/probe-bug2 &&
+  cd /tmp/probe-bug2 && cargo build --release --quiet &&
+  cp ../mark_thesis/nuc-nucleus/examples/05-stencil/input.bin input.bin &&
+  timeout 30 env NUC_INPUT_PATH=input.bin NUC_OUTPUT_PATH=/tmp/out.bin \
+    ./target/release/nuc-generated
+'
+```
+Expected: hang. The 4 workers wait on `wX_ring_X.wait()` for
+img_in (which is now correctly pushed by host — post-TASK-0267),
+load their slice, and start iterating y. w0/w1 do 4 iterations
+(rows 1..5 / 5..9); w2/w3 do 3 (9..12 / 12..15). At the 4th
+iteration of w0/w1, bar_1/bar_2 fires — but w2/w3 have already
+exited the loop. Workers w0/w1 block on the empty barrier.
+
+Inspection: look at the emitted main.rs's per-worker sections
+and grep for `bar_<N>.wait()` calls. They're inside the y-loop
+body (each iteration), with 4 participants required — but the
+loop range differs per worker, so the participant set at
+iteration 4 is {w0, w1} not {w0..w3}.
+
+Recommended fix option (per cycle-85 analysis): option (B)
+trailing-partial-tile policy — emit one Repeat for the
+divisible portion (12 rows = 4 × 3) and a separate trailing
+Repeat for the remainder (2 rows), each with its own
+worker-aware barrier participant set. Mirrors block_transform's
+discipline. Option (D) participant-aware barriers is the deeper
+generalisation; (B) is the principled middle-ground.
+
+TASK-0267 pin to preserve (do NOT regress):
+`distributed_pthreads_async_host_pushes_img_in_to_every_worker`
+asserts the host emits 4 distinct `ring_<N>.push(img_in.clone())`
+lines in main(). When you change sync_inject's barrier emit, the
+host-Push synthesis MUST remain intact — the pin will fire LOUD
+if you accidentally break Pass A's per-Wait classification.
+
+Lesson from TASK-0267: when a deferral facility (here:
+contains_block_inner opacity gate) blocks an M5 capstone, audit
+whether the deferral predates a newer machinery (halo_widths,
+partition_worker_ranges) that makes the deferral redundant.
+Apply the same audit to sync_inject's barrier emit: does it
+predate partition_worker_ranges (TASK-0212)? If yes, the
+per-worker iteration count IS available — the fix is to consume
+it at barrier emit time, not to add per-iteration probes.
+<!-- SECTION:NOTES:END -->
