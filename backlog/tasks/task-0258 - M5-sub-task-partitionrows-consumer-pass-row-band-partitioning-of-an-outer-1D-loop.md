@@ -3,11 +3,11 @@ id: TASK-0258
 title: >-
   M5 sub-task: partition=rows consumer pass (row-band partitioning of an outer
   1D loop)
-status: To Do
+status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-23 23:56'
+updated_date: '2026-05-24 00:01'
 labels:
   - M5
   - compiler
@@ -56,4 +56,65 @@ Refined scope for the implementer:
 This is mostly a 'wire partition=rows through the existing partition_workers infra' task; the heavy lifting (per-worker range -> sidecar -> emit) already exists. Estimated scope: ~150-250 LoC including tests, mostly mechanical.
 
 Halo inference (TASK-0260) is a SIBLING task — partition_rows alone does NOT solve the stencil halo problem; without halo widths, a row-band-partitioned stencil produces wrong output at the band boundaries. Plan ahead: when this task lands and an e2e cell is added, ensure either (a) the cell's algorithm has no halo (the cell verifies partition=rows mechanism only), or (b) the cell SKIPS until TASK-0260 lands. Pure partition=rows without halo will produce incorrect output on stencils — do NOT mark the cell [[required]] until halo inference is also wired.
+
+Implementation Plan (cycle 79c — implementer):
+
+1. NEW pass file: nucleus/nucleus-compiler/src/passes/partition_rows.rs
+   - Mirrors partition_workers.rs shape: `apply_partition_rows(&LinkedIR, ACFG) -> Result<ACFG, PartitionRowsError>`.
+   - Errors: PartitionRowsError with 4 variants:
+       UnknownLoopVar  (linker-invariant)
+       NotOuterOf2DNest  (PRD §6.3.3 'partition=rows on 1D iteration': category error)
+       NoMultiWorkerBody (mirrors PartitionError)
+       NonDivisible      (mirrors PartitionError)
+   - Algorithm: walk ACFG, find Repeat with ResolvedLoopOption::Partition(PartitionKind::Rows). Verify body contains an inner Repeat structurally (Repeat-of-Repeat via find_outer_with_inner_repeat helper, peeking through Sequence). Verify that inner-Repeat body's worker union >= 2. Apply row-band slicing (same divisible/round-robin algorithm partition_workers uses on the outer iter_var). Write into ACFG.partition_worker_ranges[outer_iv][worker_id].
+
+2. Wire into nucleus/driver/src/main.rs: import `apply_partition_rows`; call IMMEDIATELY after apply_partition_workers (line 332). Both consume + return ACFG; pure sequential composition.
+
+3. nucleus/nucleus-compiler/src/passes/mod.rs: add `pub mod partition_rows;` next to `partition_workers`.
+
+4. nucleus/nucleus-compiler/src/lib.rs: add `pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};` next to the partition_workers export.
+
+5. sched-lower change in nucleus/nucleus-compiler/src/sched/lower.rs:1120-1133:
+   - Remove the `PartitionKind::Rows` arm from the alternation; only Blocks2d rejects now.
+   - Update doc-comment to reflect that Rows now lowers and routes to the partition_rows consumer.
+   - Display message in src/sched/ir.rs:816..835 updated: when kind == Rows, this is unreachable (won't fire) but encoded for exhaustiveness — keep the message accurate by keeping the keyword mapping; remove 'rows' from the actionable suggestion (replace with 'omit the directive').
+
+6. Test files:
+   (a) nucleus/nucleus-compiler/tests/partition_rows.rs — new file. Mirror partition_workers.rs tests shape:
+       - positive: synthetic 2D Repeat-of-Repeat, partition=rows on outer over 4-worker body. Per-worker ranges 0..4, 4..8, 8..12, 12..16 for source range 0..16.
+       - negative_1d_iter_rejected: synthetic 1D Repeat (no inner Repeat in body) → NotOuterOf2DNest.
+       - negative_single_worker_body: synthetic 2D Repeat-of-Repeat with single-worker body → NoMultiWorkerBody.
+       - negative_non_divisible: synthetic 2D Repeat-of-Repeat, range 0..17 across 4 workers → NonDivisible.
+       - positive_deterministic_two_runs: byte-identical between two runs (BTreeMap discipline).
+   (b) nucleus/nucleus-compiler/tests/sched_lower.rs: 
+       - rename existing `negative_partition_rows_is_rejected` → `positive_partition_rows_now_lowers` and flip the assertion: lowers ok, includes ResolvedLoopOption::Partition(PartitionKind::Rows).
+       - keep `negative_partition_blocks2d_is_rejected` unchanged (Blocks2d still rejects).
+       - keep `positive_partition_workers_still_lowers` unchanged.
+
+7. nucleus/nucleus-compiler/tests/sched_parser.rs + tests/sched_lower.rs: `parses_05_stencil_distributed` and `lowers_05_stencil_distributed` expect count_loops()/loops.len() == 1 today. After restoring the y-directive: count is 2 and the y-loop options include ResolvedLoopOption::Partition(PartitionKind::Rows). Update comment to cite TASK-0258 (consumer landed) instead of TASK-0249 (silent-drop closed).
+
+8. nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc:
+   - Re-introduce `loop y : partition=rows;` after the algo's outer y loop.
+   - Rewrite header NOTE block: TASK-0249 removed the directive because no consumer existed; TASK-0258 restored it now that partition_rows lands. Cell remains [[skip]] (TASK-0117 / TASK-0042.05 / halo are sibling gates). 
+   - Footer note: halo inference (TASK-0260) is the remaining barrier to a bit-identical stencil cell.
+
+9. Update partition_workers.rs:40 caveat comment: 'partition=rows now consumed by passes/partition_rows.rs (TASK-0258)'. Keep `Blocks2d rejects at sched-lower as UnsupportedPartitionKind`.
+
+10. Verification gate (run via nix develop -c just <recipe>):
+    a. just test
+    b. just clippy (cargo clippy --workspace --all-targets -- -D warnings)
+    c. cd nucleus && cargo fmt --check -p nucleus-compiler
+    d. just e2e (88/?/0/? — must preserve 0 required-fail and 0 failures)
+    e. just determinism-check
+    f. just determinism-check-negative
+    g. just xbackend-check-negative
+
+11. Commits in 2-3 logical units:
+    a. passes/partition_rows.rs + mod.rs + lib.rs export + driver wire-up
+    b. sched/lower.rs + sched/ir.rs accept-Rows update + tests update
+    c. 05-stencil/distributed.sched.nuc restoration + parser/lower tests update
+
+12. Out of scope (will file follow-ups on commit):
+    - Halo inference (TASK-0260 already filed)
+    - Stencil e2e cell exercising partition=rows + halo bit-identical to reference.bin (blocked-on TASK-0260)
 <!-- SECTION:NOTES:END -->

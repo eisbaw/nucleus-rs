@@ -11,34 +11,62 @@ schedule for "../prog.algo.nuc" {
     place save_image on host;
     place blur3      on { w0, w1, w2, w3 };
 
-    // NOTE (TASK-0249): the outer y-loop previously carried
-    //   `loop y : partition=rows;`
-    // but `partition=rows` has no downstream consumer (only
-    // `partition=workers` lowers to real per-worker bounds, via
-    // TASK-0212 / passes/partition_workers.rs). Accepting it silently
-    // emitted code as if the directive were absent — a silent no-op
-    // extending the fail-fast class PRD §6.3.3 already applies to bad
-    // loop-option combinations. TASK-0249 made `partition=rows` and
-    // `partition=blocks2d` reject at sched-lower as
-    // SchedLowerErrorKind::UnsupportedPartitionKind. The directive is
-    // removed here to keep the schedule valid; the multi-worker
-    // distribution today is carried by `place blur3 on { w0..w3 }`
-    // plus the per-worker transfers below.
+    // Outer y-loop: the original `loop y : partition=rows;` directive
+    // is HELD BACK (commented below) — TASK-0258 landed the consumer
+    // (passes/partition_rows.rs, this cycle) but the algo's y-loop
+    // walks 1..H-1 = 1..15 (length 14), which is NOT divisible by 4
+    // workers (14 / 4 = 3 rem 2). partition_rows's first-cut policy
+    // rejects non-divisible ranges with PartitionRowsError::NonDivisible
+    // (same precedent as partition_workers — TASK-0212). Restoring the
+    // directive verbatim today would make every `nucleus build` of
+    // this schedule fail at compile time, which is the right behaviour
+    // for fail-fast but the wrong default for an example schedule that
+    // is meant to demonstrate the distributed shape.
     //
-    // DECISION (TASK-0250, option b): leave the y-loop unpartitioned at
-    // the schedule layer. Rationale: today's cell is SKIPPED across all
-    // 4 tier-1 backends (TASK-0117 + halo on pthreads-sync /
-    // mp-tcp-bufsync; TASK-0181 multi-worker strip-mine rebinding now
-    // landed but the cell's capability mismatch is still the gate;
-    // mp-tcp-event Stage 3 deferred to TASK-0042.05). Switching to
-    // `partition=workers` would change the IR + generated-code shape
-    // (per-worker loop-bound rewrite via TASK-0212) without unblocking
-    // any required cell, so it's a no-op risk today. When the cell
-    // becomes [[required]] on at least one backend, revisit: if the
-    // emitted multi-worker shape needs the explicit per-worker y-band,
-    // promote to `partition=workers` then. The `place blur3 on {w0..w3}`
-    // directive plus the per-worker transfers carry the multi-worker
-    // shape implicitly in the meantime.
+    // History:
+    //   - Pre-cycle-70: `loop y : partition=rows;` was inert — parsed
+    //     and lowered, but no downstream pass consumed it (silent
+    //     no-op).
+    //   - TASK-0249 (cycle 70) closed the silent-drop by making
+    //     partition=rows reject at sched-lower as
+    //     SchedLowerErrorKind::UnsupportedPartitionKind. The directive
+    //     was removed from this file to keep the schedule lowering.
+    //   - TASK-0250 (cycle 76, decision option b) deferred the
+    //     partition-policy choice until either a consumer landed or
+    //     the cell became [[required]].
+    //   - TASK-0258 (this cycle) lands the consumer; partition=rows
+    //     now lowers cleanly at sched-lower and the partition_rows
+    //     pass row-bands the outer axis of a 2D nest across the place
+    //     set's workers. But the H=16 / y-loop=1..15 = length-14
+    //     divisibility constraint blocks restoration of the directive
+    //     as-is.
+    //
+    // Unblockers (any of):
+    //   (a) Remainder policy for partition_rows (shared follow-up with
+    //       partition_workers — both passes hit the same first-cut
+    //       limit). Filed as TASK-0258 follow-up (last-worker-gets-
+    //       remainder, or trailing-partial sibling to block_transform).
+    //   (b) Halo inference (TASK-0260): when halo widths land, the
+    //       schedule needs to be reworked anyway to carry halo
+    //       transfers, and the divisibility choice can be revisited.
+    //   (c) Shrinking the place set to a divisor of 14 (e.g. {w0, w1};
+    //       14 / 2 = 7 exact) — would lose the four-way distributed
+    //       shape this example is meant to demonstrate.
+    //
+    // Once one of those unblockers lands, uncomment the directive
+    // below:
+    //
+    //     loop y : partition=rows;
+    //
+    // Cell remains [[skip]] across all 4 tier-1 backends regardless,
+    // for the sibling gaps the e2e-matrix.toml entries cite (TASK-0117
+    // + halo on pthreads-sync / mp-tcp-bufsync; TASK-0181 capability
+    // mismatch on pthreads-async; TASK-0042.05 multi-worker codegen on
+    // mp-tcp-event). When any of those gaps closes and the cell
+    // becomes [[required]], TASK-0260 (halo inference) is the
+    // dominant blocker before bit-identical comparison is possible —
+    // pure partition=rows without halo synthesis produces wrong output
+    // at row-band boundaries.
 
     // Inner loop: SIMD-friendly, with the reuse pattern that was the
     // unshipped piece in the 2013 thesis (slide a 3-wide window in x,
