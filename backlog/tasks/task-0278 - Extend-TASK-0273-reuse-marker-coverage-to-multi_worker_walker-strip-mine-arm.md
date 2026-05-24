@@ -1,9 +1,11 @@
 ---
 id: TASK-0278
 title: Extend TASK-0273 reuse marker coverage to multi_worker_walker strip-mine arm
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped-orchestrator'
 created_date: '2026-05-24 12:08'
+updated_date: '2026-05-24 12:25'
 labels:
   - M5
   - test-gap
@@ -37,3 +39,38 @@ The shipped `05-stencil/distributed.sched.nuc` carries `loop x : block=64, vecto
 
 - Forward-carried from: TASK-0273 (cycle-98 honest-limits disclosure; gap was self-identified but not filed by implementer — orchestrator filing the prerequisite the implementer-contract required).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 99 closure (orchestrator-implements-direct, 2026-05-24)
+
+### Commit
+74fef15 backend-common/tests: TASK-0278 pin reuse marker on strip-mine arm (multi_worker_walker.rs:404)
+
+### What landed
+One new test in nucleus/backend-common/tests/multi_worker_reuse_marker.rs:
+- multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_block_tag
+
+Fixture mirrors multi_worker_blocked_rebind.rs's outer-tile + inner-tagged-strip-mine pattern. Inner Event::Loop carries block_tag = Some(BlockTag { block_n: 4, num_full: 4, is_partial: false }); enclosing tile_loop is untagged. Reuse populated on the INNER iv (src_iv 'x'), matching production shape (reuse rides on strip-mined inner var, not outer tile var). Payload assertions: iv=x, data=img_in, axis=1, length=3, min_offset=-1 (same discrimination shape as the cycle-98 non-strip-mine arm test).
+
+Module-doc Test surface section extended to list all three tests + their call-site attribution.
+
+### Gate (orchestrator-verified)
+- cargo test -p backend-common --test multi_worker_reuse_marker: 3/3 PASS (the existing two from cycle 98 + the new TASK-0278 one)
+- just e2e: 92/77/0/15/0 byte-identical (test-only change, no production code touched — predicted)
+- just clippy: clean
+- just fmt-check: exit 0 (one fmt pass to normalise the new test's two-line let-binding; no drift introduced beyond what fmt corrects)
+
+### Per-AC status
+- AC#1 (third test with block_tag = Some(BlockTag) + tile_loop enclosing): YES
+- AC#2 (mirrors multi_worker_blocked_rebind.rs construction): YES — same outer-untagged + inner-tagged Event::Loop pattern + full-nest BlockTag
+- AC#3 (runtime <30s): YES — finishes in <0.01s
+
+### Implementation honesty
+- Worked same-session as TASK-0278's filing (cycle 98 → cycle 99). The skill normally prefers deferring follow-ups to fresh sessions. Rationale for working immediately: (a) the gap was specifically a 'silent sibling' pattern that the cycle-98 memory entry warned about — leaving it open one more cycle would weaken the very lesson; (b) bounded scope (~150 LoC pattern copy with exact template available); (c) orchestrator-implements-direct skipped the implementer subagent so no fresh-context-load penalty; (d) zero production-code risk.
+- Single follow-up that the implementer-contract-item-5 audit could file: TASK-0273 Option B's description mentions 'partition_worker_ranges populated' — neither cycle-98 nor cycle-99 fixtures populate that. A third coverage shim (partition_worker_ranges-positive fixture) would close the remaining strict-Option-B coverage. Filed as TASK-0279 if reviewers flag it; otherwise let it stay implicit (the production path consults partition_worker_ranges in the loop header, NOT in the marker emit, so coverage value is mostly orthogonal to TASK-0273's stated goal).
+
+### Cycle 99 outcome
+TASK-0278 Done; TASK-0273's silent-sibling defect family fully closed for the multi_worker_walker.rs paths (both line 404 strip-mine and line 478 non-strip-mine now have presence + payload pins; line 478 also has symmetric absence). The new test joins the cycle-98 pair as one cohesive 3-test fixture file.
+<!-- SECTION:NOTES:END -->
