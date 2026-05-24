@@ -37,16 +37,14 @@
 //!   policy (last-worker-gets-remainder, or remainder-tile sibling
 //!   like `block_transform`'s trailing partial) is filed as the
 //!   follow-up to this task per the task description.
-//! - **1D partition axis only.** `partition=rows` / `partition=blocks2d`
-//!   are rejected at sched-lower as
+//! - **1D partition axis only.** This pass consumes `partition=workers`
+//!   directives. `partition=rows` is now consumed by the sibling
+//!   [`crate::passes::partition_rows`] pass (TASK-0258), which adds the
+//!   "outer-of-2D nest" structural pre-condition on top of the same
+//!   row-band slicing algorithm this pass uses. `partition=blocks2d`
+//!   remains rejected at sched-lower as
 //!   [`crate::sched::SchedLowerErrorKind::UnsupportedPartitionKind`]
-//!   (TASK-0249). Only `partition=workers` reaches this pass; the
-//!   other two policies have no downstream consumer, so accepting
-//!   them would be a silent no-op (PRD §6.3.3 forbids). Real sibling
-//!   passes for row-band / 2D-block partition policies are NOT
-//!   filed today — TASK-0249's rejection is the closing move; a
-//!   future consumer pass would need a fresh task (no placeholder
-//!   filed to avoid a doc-lie about what is "in flight").
+//!   (TASK-0249); its consumer is filed as TASK-0259.
 //! - **No interaction with `block=`.** A user combining
 //!   `loop n : block=N, partition=workers;` on the same loop would
 //!   confuse: `block_transform` splits the loop into tile + inner with

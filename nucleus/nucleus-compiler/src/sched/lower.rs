@@ -1107,21 +1107,31 @@ fn lower_loop_option(
             ResolvedLoopOption::Pipeline(d)
         }
         LoopOption::Reuse => ResolvedLoopOption::Reuse,
-        // TASK-0249: only `partition=workers` has a downstream consumer
-        // ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
-        // `Blocks2d` parse and would lower to a [`ResolvedLoopOption`]
-        // that NO pass reads — a silent no-op. PRD §6.3.3 rejects bad
-        // loop-option combinations at compile time ("Bad combinations
-        // rejected at compile time, not at runtime"); we extend that
-        // fail-fast discipline to options with no downstream consumer.
-        // Reject loudly with the typed
-        // [`SchedLowerErrorKind::UnsupportedPartitionKind`]. The
-        // `Workers` arm continues to lower unchanged.
+        // Partition-policy admission.
+        //
+        // - `partition=workers`: TASK-0212 consumer
+        //   ([`crate::passes::partition_workers`]). 1D compiler-choice
+        //   row-band over the loop carrying the directive.
+        // - `partition=rows`: TASK-0258 consumer
+        //   ([`crate::passes::partition_rows`]). Explicit row-band on
+        //   the OUTER loop of a 2D nest; the pass enforces the
+        //   structural pre-condition (outer-of-2D + multi-worker
+        //   body). Non-outer-of-2D contexts are rejected at the pass
+        //   entry, NOT here (the AST shape needed for that check is
+        //   only available after `build_acfg`).
+        // - `partition=blocks2d`: TASK-0259 will land its consumer.
+        //   Until then we keep the typed reject from TASK-0249 so the
+        //   directive can never silently lower to a no-op (PRD §6.3.3
+        //   forbids silent acceptance of unimplemented options; same
+        //   fail-fast discipline TASK-0249 established).
         LoopOption::Partition(k) => match k {
             super::ast::PartitionKind::Workers => {
                 ResolvedLoopOption::Partition(super::ast::PartitionKind::Workers)
             }
-            kind @ (super::ast::PartitionKind::Rows | super::ast::PartitionKind::Blocks2d) => {
+            super::ast::PartitionKind::Rows => {
+                ResolvedLoopOption::Partition(super::ast::PartitionKind::Rows)
+            }
+            kind @ super::ast::PartitionKind::Blocks2d => {
                 return Err(SchedLowerError::at(
                     SchedLowerErrorKind::UnsupportedPartitionKind {
                         var: var.to_string(),

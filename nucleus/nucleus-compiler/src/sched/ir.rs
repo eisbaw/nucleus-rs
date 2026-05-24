@@ -640,35 +640,36 @@ pub enum SchedLowerErrorKind {
     /// `var` is the loop variable carrying the option.
     UnitPipelineOption { var: String },
 
-    /// `partition=rows` or `partition=blocks2d` on a loop (TASK-0249).
-    /// Of the three [`PartitionKind`] variants only
-    /// [`PartitionKind::Workers`] has a downstream consumer
-    /// ([`crate::passes::partition_workers`], TASK-0212). `Rows` and
-    /// `Blocks2d` parse, lower to [`ResolvedLoopOption::Partition`],
-    /// and are then **never read by any pass** — accepting them
-    /// emitted code as if the directive were absent (a silent
-    /// no-op). PRD §6.3.3 mandates compile-time rejection of bad
-    /// loop-option combinations ("Bad combinations rejected at
-    /// compile time, not at runtime"); this variant extends the
-    /// same fail-fast discipline to single options that parse but
-    /// have no downstream consumer — same harm class as a bad
-    /// combination, same fix.
+    /// `partition=blocks2d` on a loop (TASK-0249 + TASK-0258 update).
+    /// Of the three [`PartitionKind`] variants two now have downstream
+    /// consumers:
     ///
-    /// Until sibling partition passes for row-band / 2D-block policies
-    /// land (no such task is filed today — TASK-0249's rejection is the
-    /// closing move; a future consumer pass would need a fresh task),
-    /// the schedule author must either use `partition=workers` (which
-    /// has real semantics) or omit the directive. Mirrors the
+    /// - [`PartitionKind::Workers`] —
+    ///   [`crate::passes::partition_workers`] (TASK-0212).
+    /// - [`PartitionKind::Rows`] —
+    ///   [`crate::passes::partition_rows`] (TASK-0258, this cycle).
+    ///
+    /// Only `Blocks2d` remains unimplemented; TASK-0259 will land its
+    /// consumer. Until then accepting it would emit code as if the
+    /// directive were absent (a silent no-op). PRD §6.3.3 mandates
+    /// compile-time rejection of bad loop-option combinations ("Bad
+    /// combinations rejected at compile time, not at runtime"); this
+    /// variant extends the same fail-fast discipline to options that
+    /// parse but have no downstream consumer.
+    ///
+    /// The schedule author must use `partition=workers` (1D compiler-
+    /// choice row-band), `partition=rows` (explicit row-band on the
+    /// outer of a 2D nest), or omit the directive. Mirrors the
     /// fail-fast precedent of
     /// [`SchedLowerErrorKind::UnitPipelineOption`] and
     /// [`SchedLowerErrorKind::UnrollNotDivisibleByBlock`].
     ///
     /// `var` is the loop variable carrying the option; `kind` is the
-    /// rejected partition policy (`Rows` or `Blocks2d`). The
-    /// `Workers` variant is unreachable here (it lowers normally) but
-    /// is encoded in the type for exhaustiveness — any future
-    /// `PartitionKind` extension makes this match site fail to
-    /// compile rather than silently fall through to acceptance.
+    /// rejected partition policy. Today only `Blocks2d` reaches this
+    /// variant; the `Workers` and `Rows` arms in the kind field exist
+    /// so the type encodes any future PartitionKind addition as a
+    /// match-exhaustiveness failure at the reject site rather than
+    /// silently falling through to acceptance.
     UnsupportedPartitionKind { var: String, kind: PartitionKind },
 
     // ----- Multiple workers decls -----
@@ -816,11 +817,17 @@ impl std::fmt::Display for SchedLowerErrorKind {
             SchedLowerErrorKind::UnsupportedPartitionKind { var, kind } => {
                 // Map the AST variant to its source-level keyword (the
                 // parser at sched/parser.rs:573-575 binds these three
-                // keywords to these variants — keep in sync). The
-                // `Workers` arm is unreachable from the lower call site
-                // but is encoded so a future PartitionKind addition
-                // fails to compile rather than silently producing an
-                // empty message.
+                // keywords to these variants — keep in sync).
+                //
+                // TASK-0258 update: `Rows` and `Workers` are now both
+                // accepted at sched-lower and routed to their consumer
+                // passes ([`crate::passes::partition_rows`] /
+                // [`crate::passes::partition_workers`]). They cannot
+                // reach this Display path from the live lower call
+                // site; the variants exist so a future
+                // `PartitionKind` extension fails to compile at the
+                // reject site rather than silently producing an empty
+                // message.
                 let keyword = match kind {
                     PartitionKind::Rows => "rows",
                     PartitionKind::Blocks2d => "blocks2d",
@@ -828,9 +835,11 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 };
                 write!(
                     f,
-                    "loop `{var}` has `partition={keyword}`; only `partition=workers` is implemented today \
-                     (TASK-0249). Use `partition=workers` or omit the directive — `partition={keyword}` has no \
-                     downstream consumer and would silently lower to a no-op. PRD §6.3.3."
+                    "loop `{var}` has `partition={keyword}`; `partition=blocks2d` has no \
+                     downstream consumer today and would silently lower to a no-op (TASK-0249). \
+                     Use `partition=workers` (1D compiler-choice row-band) or `partition=rows` \
+                     (explicit row-band on the outer of a 2D nest, TASK-0258), or omit the \
+                     directive. PRD §6.3.3."
                 )
             }
             SchedLowerErrorKind::ZeroLatencyMax { var } => write!(

@@ -22,6 +22,7 @@ pub mod deadlock;
 // Runs AFTER `petri_to_events`, BEFORE backend codegen — see module
 // docstring for the dependency rationale.
 pub mod inject_check_frames;
+pub mod partition_rows;
 pub mod partition_workers;
 pub mod petri_to_events;
 pub mod sync_inject;

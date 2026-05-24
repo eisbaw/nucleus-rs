@@ -50,9 +50,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_workers, build_acfg,
-    build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
-    inject_syncs, inject_transfers, link, load_capabilities,
+    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_rows,
+    apply_partition_workers, build_acfg, build_sidecar, check_kernels_contract,
+    check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
+    load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -331,6 +332,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // consult the sidecar — order is for diagnostic clarity).
     let acfg = apply_partition_workers(&linked, acfg)
         .map_err(|e| format!("partition-workers error: {e}"))?;
+    // Partition-rows row-band rewrite (TASK-0258): consume any
+    // `loop X : partition=rows` directive whose outer-of-2D-nest body
+    // is multi-worker. Writes into the SAME sidecar field
+    // `partition_worker_ranges` as apply_partition_workers — downstream
+    // consumers (sync_inject, petri_to_events, the backend walkers)
+    // do not distinguish which directive produced the per-worker
+    // range. The two passes target disjoint IterVar keys by grammar
+    // construction (at most one `partition=` option per loop), so
+    // order is observationally irrelevant; this call sits immediately
+    // after apply_partition_workers for diagnostic clarity.
+    let acfg =
+        apply_partition_rows(&linked, acfg).map_err(|e| format!("partition-rows error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

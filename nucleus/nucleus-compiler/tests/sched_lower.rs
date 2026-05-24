@@ -895,46 +895,42 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
-fn negative_partition_rows_is_rejected() {
-    // TASK-0249: `partition=rows` has no downstream consumer. Only
-    // `partition=workers` lowers to real per-worker bounds (via
-    // TASK-0212 / passes/partition_workers). Accepting `rows` would
-    // silently emit code as if the directive were absent — the
-    // silent-default failure mode PRD §6.3.3 forbids. Reject at
-    // sched-lower with UnsupportedPartitionKind.
+fn positive_partition_rows_now_lowers() {
+    // TASK-0258 (this cycle): `partition=rows` now has a downstream
+    // consumer ([`crate::passes::partition_rows`]) — the
+    // TASK-0249-era reject at sched-lower is removed for the `Rows`
+    // arm; only `Blocks2d` (TASK-0259) still rejects here. The
+    // STRUCTURAL pre-condition (outer-of-2D nest, multi-worker body)
+    // is checked at the pass entry, not at sched-lower — the AST
+    // shape needed is only available after `build_acfg`. So this
+    // test pins the *lowering* surface: `partition=rows` lowers
+    // cleanly to `ResolvedLoopOption::Partition(Rows)`, exactly as
+    // `partition=workers` does (TASK-0212).
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
     loop y : partition=rows;
 }
 ";
-    let err = lower_str(src)
-        .expect_err("partition=rows must fail")
-        .first()
-        .clone();
+    let ir = lower_str(src).expect("partition=rows must lower (TASK-0258)");
+    assert_eq!(ir.loops.len(), 1);
+    let loop_y = &ir.loops["y"];
     assert_eq!(
-        err.kind,
-        SchedLowerErrorKind::UnsupportedPartitionKind {
-            var: "y".into(),
-            kind: PartitionKind::Rows,
-        }
+        loop_y.options,
+        vec![ResolvedLoopOption::Partition(PartitionKind::Rows)]
     );
-    // The message names the loop var, the rejected keyword, and the
-    // actionable fix.
-    let msg = format!("{}", err.kind);
-    assert!(msg.contains("partition=rows"), "msg should name partition=rows: {msg}");
-    assert!(
-        msg.contains("partition=workers"),
-        "msg should point to partition=workers as the only implemented policy: {msg}"
-    );
-    assert!(msg.contains("TASK-0249"), "msg should cite TASK-0249: {msg}");
 }
 
 #[test]
 fn negative_partition_blocks2d_is_rejected() {
-    // TASK-0249: same as the `rows` rejection above. `blocks2d`
-    // parses, lowers, and is never consumed by any pass — silent
-    // no-op. Reject with the typed UnsupportedPartitionKind.
+    // TASK-0249 + TASK-0258 update: `partition=rows` now lowers (it
+    // has a consumer; see `positive_partition_rows_now_lowers`).
+    // `partition=blocks2d` is the only remaining unimplemented
+    // partition policy and still parses, lowers, would never be
+    // consumed by any pass — silent no-op. TASK-0259 will land its
+    // consumer. Until then we keep the typed reject with
+    // UnsupportedPartitionKind so the silent-drop landmine stays
+    // closed.
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
@@ -956,15 +952,20 @@ schedule for \"../prog.algo.nuc\" {
     assert!(msg.contains("partition=blocks2d"), "msg should name partition=blocks2d: {msg}");
     assert!(
         msg.contains("partition=workers"),
-        "msg should point to partition=workers as the only implemented policy: {msg}"
+        "msg should suggest partition=workers as one implemented policy: {msg}"
+    );
+    assert!(
+        msg.contains("partition=rows"),
+        "msg should also suggest partition=rows (TASK-0258 sibling policy): {msg}"
     );
 }
 
 #[test]
 fn positive_partition_workers_still_lowers() {
-    // TASK-0249 regression guard: `partition=workers` is the one
+    // TASK-0249 regression guard: `partition=workers` is the original
     // implemented policy (TASK-0212) and MUST keep lowering after
-    // the Rows/Blocks2d rejection lands. Mirrors the
+    // the Rows acceptance (TASK-0258) and the Blocks2d rejection
+    // (TASK-0259-pending) land. Mirrors the
     // `positive_pipeline_two_lowers_ok` shape.
     let src = "\
 schedule for \"../prog.algo.nuc\" {
