@@ -227,7 +227,10 @@ pub fn emit(
     // its bind-print-exit shape opened a close-then-rebind TOCTOU
     // window between the picker exiting and the host re-binding.
 
-    write_file(&cargo_toml, &multi_binary::render_cargo_toml(&bin_names, None))?;
+    write_file(
+        &cargo_toml,
+        &multi_binary::render_cargo_toml(&bin_names, None),
+    )?;
     write_file(&run_sh, &plan.render_run_sh()?)?;
     mark_executable(&run_sh);
 

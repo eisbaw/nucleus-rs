@@ -220,9 +220,14 @@ pub mod multi_binary {
     /// worker) on any failure.
     ///
     /// `host_name`: stable name of the host worker (launched first).
-    /// `non_host_names`: stable names of the non-host workers, in
-    /// plan-order (deterministic). The launch loop respects the
-    /// host-first → non-host order.
+    /// `non_host_names_plan_order`: stable names of the non-host
+    /// workers, in plan-order (deterministic). The launch loop emits
+    /// them in the supplied order — host first, then this slice in
+    /// order — and the wait loop names each worker for failure
+    /// diagnostics in the same order. The parameter name carries
+    /// the order-sensitivity contract; passing a hashset-shuffled or
+    /// sorted slice from a future call site would be a silent
+    /// determinism regression (TASK-0257 cycle-112 architect P2.3).
     /// `so_buf_bytes`: derived per-backend from the largest cross-
     /// worker payload (sync sizing for mp-tcp-bufsync; wire-frame
     /// sizing for mp-tcp-event since application-ring buffering
@@ -231,14 +236,29 @@ pub mod multi_binary {
     /// `so_buf_comment_block`: full multi-line comment text above
     /// the `export NUC_SO_BUF=...` line — each backend explains its
     /// sizing rationale (`sync=1 msg` for mp-tcp-bufsync; the wire-
-    /// vs-ring distinction for mp-tcp-event). Lines must be prefixed
-    /// with `#` by the caller; this function emits them verbatim.
+    /// vs-ring distinction for mp-tcp-event). Every line must be
+    /// blank or `#`-prefixed; a debug-assertion enforces this so a
+    /// future caller cannot silently break the shell-comment shape
+    /// (TASK-0257 cycle-112 architect P2.2 hardening — the invariant
+    /// was previously documented but not type-/assert-enforced).
     pub fn render_run_sh_multi(
         host_name: &str,
-        non_host_names: &[String],
+        non_host_names_plan_order: &[String],
         so_buf_bytes: usize,
         so_buf_comment_block: &str,
     ) -> String {
+        // TASK-0257 P2.2: the `so_buf_comment_block` contract is
+        // "every line is a shell comment". Catch a non-comment line
+        // BEFORE it ships in the emit; the lift's whole point is to
+        // make the per-backend SO_BUF rationale a documented parameter,
+        // and an un-prefixed line would silently break the shell
+        // semantics (treated as a bare command on `bash run.sh`).
+        debug_assert!(
+            so_buf_comment_block
+                .lines()
+                .all(|l| l.is_empty() || l.starts_with('#')),
+            "render_run_sh_multi: every line of `so_buf_comment_block` MUST be blank or `#`-prefixed (shell comment). Got: {so_buf_comment_block:?}"
+        );
         let mut s = String::new();
         writeln!(s, "#!/usr/bin/env bash").ok();
         writeln!(
@@ -296,7 +316,7 @@ pub mod multi_binary {
              PID_{host_name}=$!"
         )
         .ok();
-        for nwn in non_host_names {
+        for nwn in non_host_names_plan_order {
             writeln!(
                 s,
                 "NUC_INPUT_PATH=\"$input_bin\" NUC_OUTPUT_PATH=\"$output_bin\" \\\n\
@@ -310,7 +330,7 @@ pub mod multi_binary {
         // fails. `wait <pid>` returns that child's status.
         writeln!(s, "rc=0").ok();
         let mut all = vec![host_name.to_string()];
-        all.extend(non_host_names.iter().cloned());
+        all.extend(non_host_names_plan_order.iter().cloned());
         for n in &all {
             writeln!(
                 s,
@@ -463,12 +483,23 @@ mod multi_binary_tests {
 
     /// Multi-process run.sh launches host first, then non-host
     /// workers in supplied order. The wait loop names each worker
-    /// for failure diagnostics.
+    /// for failure diagnostics in the same order.
+    ///
+    /// TASK-0257 cycle-112 architect P2.3 hardening: the test passes
+    /// a DELIBERATELY non-sorted slice (`w1` before `w0`) and
+    /// asserts the emitted PID assignment order matches the SUPPLIED
+    /// order, not lexicographic / numeric / sorted. A future caller
+    /// that hashed or sorted the workers before calling would silently
+    /// change the emit order; this test bites such a caller AND would
+    /// also bite a refactor that internally sorts within
+    /// `render_run_sh_multi`. The contract surface is `_plan_order`.
     #[test]
     fn run_sh_multi_launches_host_then_non_host_in_order() {
         let s = render_run_sh_multi(
             "host",
-            &[String::from("w0"), String::from("w1")],
+            // Deliberately not sorted: w1 BEFORE w0. Plan-order
+            // discipline says we emit them in the supplied order.
+            &[String::from("w1"), String::from("w0")],
             65536,
             "# test SO_BUF commentary\n",
         );
@@ -476,18 +507,30 @@ mod multi_binary_tests {
         // Host PID assignment appears before any non-host PID
         // assignment.
         let host_pid_pos = s.find("PID_host=$!").expect("host PID assignment present");
-        let w0_pid_pos = s.find("PID_w0=$!").expect("w0 PID assignment present");
         let w1_pid_pos = s.find("PID_w1=$!").expect("w1 PID assignment present");
-        assert!(host_pid_pos < w0_pid_pos);
-        assert!(w0_pid_pos < w1_pid_pos);
+        let w0_pid_pos = s.find("PID_w0=$!").expect("w0 PID assignment present");
+        assert!(host_pid_pos < w1_pid_pos);
+        // The supplied non-sorted order MUST be preserved: w1 first,
+        // w0 second.
+        assert!(
+            w1_pid_pos < w0_pid_pos,
+            "render_run_sh_multi MUST preserve the supplied `non_host_names_plan_order` slice order. \
+             A future refactor that internally sorts the slice would silently change emit order \
+             and bite the determinism gate at a distance. Got w0 before w1 in:\n{s}"
+        );
         // Each worker has a wait + fail-named-worker line.
-        for n in &["host", "w0", "w1"] {
+        for n in &["host", "w1", "w0"] {
             assert!(
                 s.contains(&format!("if ! wait \"$PID_{n}\"")),
                 "missing wait loop for worker {n} in:\n{s}"
             );
             assert!(s.contains(&format!("worker '{n}' failed")));
         }
+        // Wait-loop also preserves supplied order: wait for w1 before
+        // waiting for w0 (host wait still first).
+        let wait_w1_pos = s.find("wait \"$PID_w1\"").expect("w1 wait line present");
+        let wait_w0_pos = s.find("wait \"$PID_w0\"").expect("w0 wait line present");
+        assert!(wait_w1_pos < wait_w0_pos);
     }
 
     /// `so_buf_comment_block` is interpolated verbatim before the
@@ -503,11 +546,29 @@ mod multi_binary_tests {
             "so_buf_comment_block MUST appear verbatim before NUC_SO_BUF; got:\n{s}"
         );
         let comment_end = s.find(comment).unwrap() + comment.len();
-        let nuc_so_buf_pos = s.find("export NUC_SO_BUF=12345").expect("NUC_SO_BUF present");
+        let nuc_so_buf_pos = s
+            .find("export NUC_SO_BUF=12345")
+            .expect("NUC_SO_BUF present");
         assert!(
             comment_end <= nuc_so_buf_pos,
             "so_buf_comment_block MUST precede the NUC_SO_BUF export"
         );
+    }
+
+    /// TASK-0257 cycle-112 architect P2.2 hardening: a non-comment
+    /// line in `so_buf_comment_block` would silently break the shell
+    /// semantics on `bash run.sh` (the line would be treated as a
+    /// bare command). The debug-assert in `render_run_sh_multi`
+    /// catches the contract violation; this test verifies the bite.
+    ///
+    /// Runs in debug only (debug_assert).
+    #[test]
+    #[should_panic(expected = "every line of `so_buf_comment_block`")]
+    fn run_sh_multi_debug_asserts_so_buf_comment_lines_are_shell_comments() {
+        // Second line is a bare command — would be a shell defect if
+        // it ever shipped. The debug-assert MUST bite this in debug.
+        let bad_comment = "# legitimate\nthis-is-not-a-comment\n";
+        let _ = render_run_sh_multi("host", &[], 1, bad_comment);
     }
 
     /// Rendezvous directory + EXIT trap (TASK-0176 contract) emit

@@ -1002,8 +1002,7 @@ fn scalar_width(t: &ScalarType) -> usize {
 /// so the SO_*BUF sizing here is the WIRE frame size, not the ring
 /// depth — a different rationale than mp-tcp-bufsync's sync-one-msg
 /// sizing, hence the per-backend comment.
-const SO_BUF_COMMENT_EVENT: &str =
-    "# Socket buffer requirement from the schedule's per-channel\n\
+const SO_BUF_COMMENT_EVENT: &str = "# Socket buffer requirement from the schedule's per-channel\n\
      # buffer needs (largest single transfer payload). Same shape\n\
      # as mp-tcp-bufsync — mp-tcp-event additionally buffers up to\n\
      # `transfer DATA : buffer=N` frames per (seq, peer) IN THE\n\
