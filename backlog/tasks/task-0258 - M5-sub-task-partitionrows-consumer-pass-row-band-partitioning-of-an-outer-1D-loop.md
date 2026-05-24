@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:21'
+updated_date: '2026-05-24 00:30'
 labels:
   - M5
   - compiler
@@ -183,6 +183,41 @@ Status remains In Progress. AC#5 (new e2e cell exercising partition=rows + bit-i
 The mechanism (partition=rows lowers + the pass writes correct per-worker row-bands + the sidecar surface integrates with all downstream consumers) is COMPLETE and pinned by tests. The 'bit-identical e2e cell' that would close AC#5 cannot land until halo inference (TASK-0260) is wired AND the remainder policy (TASK-0262) handles the 05-stencil row-count.
 
 Per implementer-contract rule 5 ('mark Done only if every AC is genuinely met'), this task stays In Progress until TASK-0260 + TASK-0262 land and the joint e2e cell becomes bit-identical. When that happens, this task can be closed with a final-summary referencing those commits.
+
+REVIEW-GATE LANDED (cycle 79c orchestrator hardening, commit 042565f).
+
+Parallel read-only review of cycle-79c implementer commits (ef85b99 + 5e4acc9 + 3b0310e) returned GO from both qa-test-runner and mped-architect. Two P2 doc-honesty findings applied in-thread; the codegen/pass work is unchanged.
+
+## In-thread fixes (commit 042565f)
+
+F1 (architect): docstring line 43 claimed '~6 lines of arithmetic' shared with partition_workers. Actual byte-identical duplication is ~24 LoC (6-line row-band math + 18-line collect_op_workers helper). Corrected; named the 3-way-warning for TASK-0259 + TASK-0244 follow-up consolidation.
+
+F2 (architect): docstring line 23 said 'Repeat-of-Repeat on the same worker entity', but code (collect_op_workers + inner-body union) does NOT enforce same-worker. Corrected: row-band is sliced across the inner body's worker union; same-worker is typical-not-pinned.
+
+## Gate (post-hardening, this cycle)
+
+- cargo test nucleus-compiler: 527 / 0.
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 88 / 73 / 0 / 15 / 0 required-fail (preserved; behaviour-unchanged hardening).
+- Workspace test count post-cycle: 700 / 0 / 3 (claimed + measured by qa-test-runner; +10 vs baseline 690 — 4 unit + 6 integration tests pinning positive + 4 negative arms).
+- just determinism-check + determinism-check-negative + xbackend-check-negative: all PASS / bite correctly. 2x non-flaky on e2e + determinism.
+
+## P2 forward-carry findings (NOT closed in this cycle)
+
+- Test gap: sibling Repeat in the same enclosing Sequence is unpinned (find_outer_of_2d would correctly route, but no test). 3D Repeat-of-Repeat-of-Repeat behaviour is implicit 'first match wins' but unpinned. Mixed worker entities between outer and inner is currently accepted via the inner-body worker-union route. These are forward-carry to TASK-0259's structural-check tests — if Blocks2d needs to differentiate any of these, file explicit pinning tests in BOTH passes.
+- ~24 LoC partition_workers/partition_rows duplication: explicitly DEFERRED to the TASK-0244 backend-common-style consolidation, with the 3-way warning embedded in TASK-0259 forward-carry.
+- collect_op_workers helper is currently byte-identical across passes/partition_workers.rs and passes/partition_rows.rs. When TASK-0259 lands and the duplication becomes 3-way, the lift to a shared passes/partition_common.rs becomes warranted.
+
+## Review-gate decision
+
+Status stays In Progress. The codegen/pass WORK is COMPLETE and review-GO. Of the 5 ACs:
+- AC#1 (pass exists, in canonical pass order): GREEN.
+- AC#2 (synthetic 2D Repeat-of-Repeat with partition=rows → per-worker row-band ranges): GREEN.
+- AC#3 (partition=rows on non-outer-of-2D → typed error): GREEN-WITH-CORRECTION (located at pass entry, not sched-lower — sched-lower has no algo-nest visibility per lower_sched signature; correction documented).
+- AC#4 (UnsupportedPartitionKind for Rows REMOVED from sched-lower): GREEN.
+- AC#5 (new e2e cell exercising partition=rows + bit-identical reference.bin): BLOCKED-NOT-FAILED on TASK-0260 (halo inference: stencil cells produce wrong output at row-band boundaries without halo synthesis) AND TASK-0262 (remainder policy: the existing 05-stencil/distributed 14-row range is non-divisible by 4 workers).
+
+Honest reading: AC#5 cannot close until BOTH TASK-0260 (halo) AND TASK-0262 (remainder policy) land. Same closure-deferred-on-sibling-blocker pattern as TASK-0042.05's AC#2/AC#4 (blocked on TASK-0175). When those land in lockstep, the 05-stencil/distributed [[skip]] cell promotes to [[required]] with bit-identical reference.bin, closing AC#5 + TASK-0258 simultaneously.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
