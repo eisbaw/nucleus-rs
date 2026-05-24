@@ -3,9 +3,10 @@ id: TASK-0277
 title: >-
   sched/ast.rs:67-68 doc-lie: claims a non-existent path resolver for schedule
   `algo_path`
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-24 10:07'
+updated_date: '2026-05-24 10:22'
 labels:
   - doc-lie
   - sched
@@ -66,3 +67,24 @@ If the long-term intent IS to add a resolver (e.g. so the schedule can be invoke
 Forward-carried from: TASK-0274 cycle-92 architect P2-1 finding.
 Related memory: \`feedback-comment-doc-lie-recurring\`.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 93, commit 87fb23a: doc-lie fixed + contract pin landed.
+
+Changes:
+1. nucleus/nucleus-compiler/src/sched/ast.rs: docstring on `SchedAst::algo_path` rewritten. Old text claimed driver resolution against schedule-file directory + cited "grammar §2 note 9" (non-existent — PRD.md only has notes up to §2 note 5). New text states actual semantics: stored EXACTLY verbatim, NOT consumed by driver, --algo CLI is source of truth, field exists for human readers + future tooling.
+
+2. nucleus/nucleus-compiler/tests/sched_parser.rs: new test `task_0277_algo_path_stored_verbatim_no_resolution` uses `{{not-a-path:::!!!}}` as the fixture — a string that would never round-trip through any path resolver. Proves by construction that the parser does NOT touch the bytes; if a future refactor adds resolution at parse time the test fails loud.
+
+Gate: cargo test workspace 0 failed (sched_parser 33 passed including the new one); cargo clippy -D warnings clean.
+
+Acceptance:
+- AC#1 (rewrite docstring): MET.
+- AC#2 (drop grammar §2 note 9 reference): MET (also confirmed §2 note 9 does not exist in PRD).
+- AC#3 (verbatim-storage contract pin): MET via new test.
+- AC#4 (workspace tests + clippy stay green): MET.
+
+Honest scope holds: behaviour did not change; only the doc lies were fixed and the contract codified.
+<!-- SECTION:FINAL_SUMMARY:END -->
