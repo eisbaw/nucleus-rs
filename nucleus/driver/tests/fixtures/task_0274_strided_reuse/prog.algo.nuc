@@ -17,9 +17,11 @@ kernel pass     : (i32)     -> i32    pure;
 
 src <-- load_src();
 
-// v iterates 0..2 so v*2 stays in-bounds (0, 2 are both < N=4).
-// The strided index is the only point of this fixture; everything
-// else is the minimal scaffolding needed to reach the inference pass.
+// The strided index `v * 2` is the only point of this fixture; build
+// fails at the reuse_inference pass (TASK-0271 strict promotion)
+// BEFORE any runtime, so iteration bounds + array-size correctness
+// are irrelevant — the IR-level affine-decomposition rejection is
+// what fires.
 for v : 0 .. 2 {
     dst[v] <-- pass(src[v * 2]);
 }

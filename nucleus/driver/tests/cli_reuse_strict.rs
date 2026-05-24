@@ -1,8 +1,11 @@
 //! Integration test for TASK-0274: pin the driver-level wrapping of
-//! `ReuseInferenceError` (TASK-0271 cycle 88 promoted
-//! `apply_reuse_inference_advisory` → `apply_reuse_inference` at
-//! `driver/src/main.rs:413` and wrapped the typed error via
-//! `.map_err(|e| format!("reuse-inference error: {e}"))?`).
+//! `ReuseInferenceError` (TASK-0271 cycle 88 promoted the driver's
+//! `apply_reuse_inference_advisory` call to `apply_reuse_inference`
+//! and wrapped the typed error via
+//! `.map_err(|e| format!("reuse-inference error: {e}"))?` —
+//! grep `driver/src/main.rs` for `apply_reuse_inference` to find the
+//! current call site; using a symbol grep rather than a line number
+//! so this test docstring does not rot on the next refactor).
 //!
 //! The pass-level pin
 //! `nucleus-compiler/tests/sidecar_reuse.rs::task0271_strict_rejects_non_affine_reuse_body`
@@ -105,8 +108,9 @@ fn nucleus_build_fails_loud_on_strided_reuse_with_wrapped_diagnostic() {
     assert!(
         combined.contains("strided"),
         "expected variant Display substring `strided` in CLI output \
-         (ReuseInferenceError::StridedAccessNotSupported, see \
-         reuse_inference.rs:322).\nstdout:\n{stdout}\nstderr:\n{stderr}"
+         (from ReuseInferenceError::StridedAccessNotSupported Display \
+         impl; grep `reuse_inference.rs` for that variant).\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         combined.contains("coefficient 2"),
