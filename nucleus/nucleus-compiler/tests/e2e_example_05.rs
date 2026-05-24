@@ -167,3 +167,139 @@ fn blocked_pthreads_sync_bit_identical() {
         "example_05_blocked_pthreads_sync",
     );
 }
+
+/// Reuse schedule e2e (active since TASK-0265 cycle 87): the single-
+/// host `reuse.sched.nuc` carries `loop x : reuse;`. Stage 1
+/// (TASK-0261) populates `reuse_widths[x_iv][img_in][1] = ReuseSlot
+/// {min=-1, length=3}`; Stage 2 Tier 1 (TASK-0265) wires the backend-
+/// walker consumer that emits a `reuse_widths_pending` marker comment
+/// at the inner-loop body entry. Real circular-buffer codegen is
+/// forward-carried to TASK-0265.01..03; the marker is the AC#4
+/// "emitted code contains a marker" half. Output stays bit-identical
+/// to reference.bin (the marker is a comment).
+#[test]
+fn reuse_pthreads_sync_bit_identical() {
+    run_example_05(
+        "schedules/reuse.sched.nuc",
+        "example_05_reuse_pthreads_sync",
+    );
+}
+
+/// AC#4 marker-detection: the emitted main.rs for the `reuse` schedule
+/// MUST contain the `reuse_widths_pending` marker substring at LEAST
+/// once. Detection is grep-based, identical to how the broader
+/// codegen test crates assert specific emit shapes (e.g.
+/// `eventlist_alone_reconstructs_stencil_kernel_call`). If a future
+/// refactor drops `render_reuse_marker_comment`, this test fires
+/// LOUD instead of silently re-introducing the Stage-1 ⇒ Stage-2
+/// reuse-widths blind spot.
+///
+/// Symmetric ABSENCE check: the `naive` schedule (no reuse directive)
+/// MUST NOT contain the marker — guards against an over-eager emit
+/// that fires the marker when no reuse slot exists.
+#[test]
+fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
+    // Reuse schedule: marker must appear at least once on the inner
+    // x-loop. (We rely on `run_example_05` having just run via
+    // `reuse_pthreads_sync_bit_identical`; but that ordering is not
+    // guaranteed by cargo test, so re-run the build here to get a
+    // fresh main.rs we can grep.)
+    let reuse_dir = scratch_dir("example_05_reuse_marker_check");
+    let ex = example_dir();
+    let nuc_ws = repo_root().join("nucleus");
+
+    let reuse_build = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("nucleus")
+        .arg("--")
+        .arg("build")
+        .arg("--algo")
+        .arg(ex.join("prog.algo.nuc"))
+        .arg("--sched")
+        .arg(ex.join("schedules/reuse.sched.nuc"))
+        .arg("--kernels")
+        .arg(ex.join("kernels.rs"))
+        .arg("--backend")
+        .arg("pthreads-sync")
+        .arg("--out")
+        .arg(&reuse_dir)
+        .current_dir(&nuc_ws)
+        .output()
+        .expect("nucleus build on reuse schedule");
+    assert!(
+        reuse_build.status.success(),
+        "nucleus build (reuse) failed:\n{}",
+        String::from_utf8_lossy(&reuse_build.stderr)
+    );
+    let reuse_main = fs::read_to_string(reuse_dir.join("src/main.rs"))
+        .expect("read main.rs (reuse build)");
+    let reuse_count = reuse_main.matches("reuse_widths_pending").count();
+    assert!(
+        reuse_count >= 1,
+        "TASK-0265 AC#4: reuse schedule's emitted main.rs MUST contain at \
+         least one `reuse_widths_pending` marker; got {reuse_count}.\n\
+         If this firing dropped, render_reuse_marker_comment regressed."
+    );
+    // Pin the exact slot the inference recovered:
+    //   x_iv carries reuse; img_in[y][x±1] reads ⇒ length=3, min_offset=-1.
+    assert!(
+        reuse_main.contains("iv=x"),
+        "marker must name iv=x (the only reuse-tagged loop)"
+    );
+    assert!(
+        reuse_main.contains("data=img_in"),
+        "marker must name data=img_in (the only DataRef whose x-axis offsets are non-degenerate)"
+    );
+    assert!(
+        reuse_main.contains("axis=1"),
+        "marker must name axis=1 (x is the inner axis of img_in[y][x])"
+    );
+    assert!(
+        reuse_main.contains("length=3"),
+        "marker must name length=3 (offsets {{-1, 0, +1}} ⇒ length 3)"
+    );
+    assert!(
+        reuse_main.contains("min_offset=-1"),
+        "marker must name min_offset=-1 (smallest offset is -1)"
+    );
+
+    // Naive schedule: marker MUST NOT appear (no reuse directive).
+    let naive_dir = scratch_dir("example_05_naive_marker_absent_check");
+    let naive_build = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("nucleus")
+        .arg("--")
+        .arg("build")
+        .arg("--algo")
+        .arg(ex.join("prog.algo.nuc"))
+        .arg("--sched")
+        .arg(ex.join("schedules/naive.sched.nuc"))
+        .arg("--kernels")
+        .arg(ex.join("kernels.rs"))
+        .arg("--backend")
+        .arg("pthreads-sync")
+        .arg("--out")
+        .arg(&naive_dir)
+        .current_dir(&nuc_ws)
+        .output()
+        .expect("nucleus build on naive schedule");
+    assert!(
+        naive_build.status.success(),
+        "nucleus build (naive) failed:\n{}",
+        String::from_utf8_lossy(&naive_build.stderr)
+    );
+    let naive_main = fs::read_to_string(naive_dir.join("src/main.rs"))
+        .expect("read main.rs (naive build)");
+    let naive_count = naive_main.matches("reuse_widths_pending").count();
+    assert_eq!(
+        naive_count, 0,
+        "naive schedule has no `reuse` directive ⇒ marker MUST NOT appear; \
+         got {naive_count} occurrence(s). Symmetric ABSENCE check guards \
+         against an over-eager render_reuse_marker_comment that fires when \
+         no slot exists."
+    );
+}

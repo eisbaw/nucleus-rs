@@ -785,3 +785,83 @@ pub fn write_file(path: &std::path::Path, contents: &str) -> Result<(), EmitErro
         source: e,
     })
 }
+
+// --------------------------------------------------------------------
+// Reuse-widths marker emit — TASK-0265 Tier 1 Stage 2 wiring
+// --------------------------------------------------------------------
+
+/// Emit a Rust comment line at an `Event::Loop` body's entry naming
+/// every (data, axis, ReuseSlot) the sidecar carries for this iv —
+/// the FIRST consumer of `NameSidecar::reuse_widths` (Stage 1 ⇒
+/// Stage 2 handoff, TASK-0265).
+///
+/// # Stage 2 status (Tier 1 wiring; cycle 87)
+///
+/// This is the LOOKUP scaffolding step. The walker reads
+/// `sidecar.reuse_widths.get(iter_var)`, iterates `(DataId, axis,
+/// ReuseSlot)` triples in deterministic order (`BTreeMap` keys are
+/// `u64`-newtype / `u64`), and writes ONE comment line per slot
+/// naming `data=<symbol> axis=<n> length=<L> min_offset=<M>`. The
+/// `reuse_widths_pending` marker substring is grep-able by the e2e
+/// test crate to assert the consumer ran (AC#4 of TASK-0265 — the
+/// "emitted code contains 'circular' / 'delay_line' / similar
+/// marker" half).
+///
+/// Tier 2 / Tier 3 of TASK-0265 (per-backend circular-buffer emit)
+/// is forward-carried — the actual delay-line `Vec<T>` declaration,
+/// initial-fill prologue, per-iteration rotate, and `grid[iv + b]`
+/// → `buf[(iv + b - min_offset) % length]` index rewrite live on
+/// each backend's `Plan::emit` and are filed as TASK-0265.01..03.
+///
+/// # Determinism
+///
+/// `BTreeMap` iteration on every level. The comment lines emit in
+/// (DataId, axis) order — identical inputs produce identical outputs.
+/// Empty-input path is a true no-op: when `reuse_widths.get(iter_var)`
+/// is `None` (no reuse on this iv) NOTHING is written, preserving
+/// byte-identicality with the pre-TASK-0265 emit for every shipped
+/// schedule that does not carry `reuse`.
+///
+/// # Determinism in name lookup
+///
+/// Data symbol name comes from the `NameTables` reverse map keyed by
+/// `DataId`. A missing entry falls back to `d<id>` (defensive — the
+/// invariant is that `name_data` covers every DataId in the
+/// sidecar, and an absent name in a non-empty reuse map would be a
+/// projection-layer bug; we emit the id-form so the marker still
+/// fires and downstream tests can see it without an emit hard-fail).
+pub fn render_reuse_marker_comment(
+    out: &mut String,
+    indent: usize,
+    iter_var: IterVar,
+    iter_var_name: &str,
+    sidecar: &NameSidecar,
+    names: &NameTables,
+) {
+    use std::fmt::Write as _;
+    let Some(per_data) = sidecar.reuse_widths.get(&iter_var) else {
+        return;
+    };
+    if per_data.is_empty() {
+        return;
+    }
+    let pad = "    ".repeat(indent);
+    for (data_id, per_axis) in per_data {
+        let data_name = names
+            .data
+            .get(data_id)
+            .cloned()
+            .unwrap_or_else(|| format!("d{}", data_id.0));
+        for (axis, slot) in per_axis {
+            // Marker substring `reuse_widths_pending` is load-bearing
+            // for AC#4 of TASK-0265 — the e2e marker-detection test
+            // greps for it. Do NOT rename without updating the test.
+            let _ = writeln!(
+                out,
+                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 marker; circular-buffer emit forward-carried to TASK-0265.01..03)",
+                length = slot.length,
+                min_offset = slot.min_offset,
+            );
+        }
+    }
+}

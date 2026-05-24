@@ -69,8 +69,8 @@ use nucleus_compiler::sidecar::NameSidecar;
 
 use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
 use crate::render::{
-    render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub, EmitError,
-    RenderCtxPub,
+    render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
+    render_reuse_marker_comment, EmitError, RenderCtxPub,
 };
 
 /// Stable identifier for one rendezvous channel (slot or ring) keyed
@@ -406,6 +406,19 @@ fn render_worker_events_inner(
                         enclosing,
                         render_ctx,
                     )?;
+                    // TASK-0265 Tier 1 wiring: a strip-mined inner
+                    // loop CAN carry reuse (cf. 05-stencil/distributed
+                    // `loop x : block=64, vectorize=8, reuse;`). Emit
+                    // the marker at body entry of the inner-block
+                    // loop, same as the non-strip-mine path below.
+                    render_reuse_marker_comment(
+                        out,
+                        indent + 1,
+                        *iter_var,
+                        var,
+                        ctx.sidecar,
+                        ctx.names,
+                    );
                     render_worker_events_inner(
                         ctx,
                         worker,
@@ -467,6 +480,23 @@ fn render_worker_events_inner(
                 writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                 let body_indent = indent + 1;
                 let body_pad = "    ".repeat(body_indent);
+                // TASK-0265 Tier 1 Stage 2 wiring: read reuse_widths
+                // for THIS iv and emit a per-slot marker comment at
+                // body-entry. NO-OP when the iv carries no reuse
+                // (every shipped schedule pre-cycle 87) — preserves
+                // byte-identicality on the existing matrix. The
+                // marker substring `reuse_widths_pending` is what AC#4
+                // of TASK-0265 greps for. Per-backend circular-buffer
+                // emit (the real rewrite) is forward-carried to
+                // TASK-0265.01..03.
+                render_reuse_marker_comment(
+                    out,
+                    body_indent,
+                    *iter_var,
+                    var,
+                    ctx.sidecar,
+                    ctx.names,
+                );
                 if let Some(frame) = check_frame {
                     // TASK-0221 defensive — `var` (NameTables) and
                     // `frame.loop_var` (CheckFrame) must name the same

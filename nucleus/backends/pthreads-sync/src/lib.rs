@@ -103,7 +103,7 @@ use backend_common::check_frame::{
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use backend_common::render::{
     data_name, render_const_expr, render_fire_args, render_fire_output_assign, render_loop_bounds,
-    RenderCtx,
+    render_reuse_marker_comment, RenderCtx,
 };
 // Re-export the codegen-time error type so downstream callers (the
 // driver, tests, other backends that delegate to this crate's
@@ -650,6 +650,18 @@ fn render_event(
                     range.start, range.end
                 )
                 .ok();
+                // TASK-0265 Tier 1: strip-mined inner loop CAN carry
+                // reuse (e.g. `loop x : block=64, reuse;`). Emit the
+                // marker comment at body entry with the rebound child
+                // RenderCtx — matches the non-tagged path below.
+                render_reuse_marker_comment(
+                    out,
+                    indent + 1,
+                    *iter_var,
+                    var,
+                    ctx.sidecar,
+                    ctx.names,
+                );
                 render_events_in(body, out, indent + 1, &child, Some(*iter_var))?;
                 writeln!(out, "{pad}}}").ok();
                 return Ok(());
@@ -657,6 +669,21 @@ fn render_event(
 
             let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
             writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
+            // TASK-0265 Tier 1: regular (non-strip-mined) loop —
+            // marker comment at body entry. NO-OP when the iv carries
+            // no reuse (every shipped schedule pre-cycle 87) so the
+            // existing matrix stays byte-identical. Stage 2 codegen
+            // (circular-buffer emit) is forward-carried to TASK-0265
+            // sub-tasks.
+            let body_indent_for_marker = indent + 1;
+            render_reuse_marker_comment(
+                out,
+                body_indent_for_marker,
+                *iter_var,
+                var,
+                ctx.sidecar,
+                ctx.names,
+            );
             // Real-time `check loop V : latency_max=T` (TASK-0052.02 /
             // PRD §6.3.5). The projection pass `inject_check_frames`
             // populates `check_frame` ONLY on outer source loops
