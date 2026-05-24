@@ -253,7 +253,12 @@ pub mod multi_binary {
         // make the per-backend SO_BUF rationale a documented parameter,
         // and an un-prefixed line would silently break the shell
         // semantics (treated as a bare command on `bash run.sh`).
-        debug_assert!(
+        //
+        // `assert!` (not `debug_assert!`) so the bite is profile-agnostic
+        // — closing TASK-0291. The check is a single linear scan of a
+        // ~few-line static comment string at codegen time, nowhere near
+        // a hot loop, so the runtime cost is irrelevant.
+        assert!(
             so_buf_comment_block
                 .lines()
                 .all(|l| l.is_empty() || l.starts_with('#')),
@@ -558,13 +563,15 @@ mod multi_binary_tests {
     /// TASK-0257 cycle-112 architect P2.2 hardening: a non-comment
     /// line in `so_buf_comment_block` would silently break the shell
     /// semantics on `bash run.sh` (the line would be treated as a
-    /// bare command). The debug-assert in `render_run_sh_multi`
-    /// catches the contract violation; this test verifies the bite.
+    /// bare command). The `assert!` in `render_run_sh_multi` catches
+    /// the contract violation; this test verifies the bite.
     ///
-    /// Runs in debug only (debug_assert).
+    /// TASK-0291 cycle: was previously a `debug_assert!` + this test
+    /// failed under `cargo test --release` (debug_asserts stripped);
+    /// converted to `assert!` so the bite is profile-agnostic.
     #[test]
     #[should_panic(expected = "every line of `so_buf_comment_block`")]
-    fn run_sh_multi_debug_asserts_so_buf_comment_lines_are_shell_comments() {
+    fn run_sh_multi_asserts_so_buf_comment_lines_are_shell_comments() {
         // Second line is a bare command — would be a shell defect if
         // it ever shipped. The debug-assert MUST bite this in debug.
         let bad_comment = "# legitimate\nthis-is-not-a-comment\n";

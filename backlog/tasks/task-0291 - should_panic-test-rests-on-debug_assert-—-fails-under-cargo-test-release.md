@@ -1,9 +1,10 @@
 ---
 id: TASK-0291
 title: should_panic test rests on debug_assert! — fails under cargo test --release
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-24 21:13'
+updated_date: '2026-05-24 21:52'
 labels:
   - backend-common
   - tests
@@ -39,3 +40,9 @@ LOW priority. Discovered TASK-0289 cycle 114a review-hardening by orchestrator w
 
 Option (a) is the cleanest — convert to `assert!`. The check is one regex per line of a small comment string at codegen time; it does not bite a hot loop. Replacing `debug_assert!` with `assert!` removes the dev-vs-release skew permanently. Also tighten `just test` (or add a `just test-release` recipe) so this profile is gate-visible going forward.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed in orchestrator-direct cycle by replacing debug_assert! with assert! in render_run_sh_multi (backend-common/src/project_skeleton.rs:256). The check (single linear scan over a few-line static comment string at codegen time) costs nothing in any realistic loop; profile-agnostic bite. Test renamed run_sh_multi_asserts_so_buf_comment_lines_are_shell_comments. Verified PASS under both dev (cargo test) and release (cargo test --release) profiles. just test-release now wired into just ci alongside the four-cheap-structural-wins thread.
+<!-- SECTION:NOTES:END -->
