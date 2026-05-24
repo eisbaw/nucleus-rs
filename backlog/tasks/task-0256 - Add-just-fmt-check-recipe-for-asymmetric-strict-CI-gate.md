@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-23 23:36'
-updated_date: '2026-05-24 09:52'
+updated_date: '2026-05-24 09:54'
 labels:
   - infra
   - tooling
@@ -40,4 +40,6 @@ Cycle 91, commit dbeba6a: added `just fmt-check` recipe (5 lines + 5-line commen
 GOTCHA discovered: first run BITES on ~330 lines of accumulated rustfmt drift across many crates in nucleus/. NOT a cycle-90 regression — pre-existing project-wide drift accumulated over many cycles before the gate existed. Filed as TASK-0276 (bulk fmt cleanup) for a separate clean cycle (large mechanical diff deserves its own session with a full gate re-run). The gate doing exactly what it's designed to do.
 
 Acceptance: recipe exists with comment, runs from nucleus/, returns non-zero on drift — all met. Closes architect F-P2 of TASK-0042.05 cycle 79.
+
+CYCLE-91 REVIEW DISCLOSURE (architect P3-b, 2026-05-24): repo IS NOT rustfmt-clean as of this commit. The new gate is currently a DISCOVERY tool (a developer running it can see drift); bulk apply + enforcement is deferred to TASK-0276. `just ci` does NOT yet invoke fmt-check, so the strict-asymmetry F-P2 of TASK-0042.05 is closed at the RECIPE level but the enforcement asymmetry remains until TASK-0276 lands + a decision is made about CI inclusion.
 <!-- SECTION:FINAL_SUMMARY:END -->
