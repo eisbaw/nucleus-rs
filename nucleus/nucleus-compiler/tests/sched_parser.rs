@@ -1201,7 +1201,7 @@ loop i : block=8;
 /// test fails loud (the resolver would error on the invalid path or
 /// rewrite it).
 #[test]
-fn task_0277_algo_path_stored_verbatim_no_resolution() {
+fn algo_path_stored_verbatim_no_resolution() {
     let weird = "{{not-a-path:::!!!}}";
     let src = format!(
         r#"schedule for "{weird}" {{
@@ -1215,6 +1215,38 @@ fn task_0277_algo_path_stored_verbatim_no_resolution() {
         "TASK-0277 contract: parser MUST store the `schedule for \"...\"` \
          string verbatim. Got `{}`, expected `{weird}`.",
         ast.algo_path
+    );
+}
+
+/// Closes architect cycle-93 P2: a no-op pass-through resolver could
+/// bypass `algo_path_stored_verbatim_no_resolution` (the silly fixture
+/// is technically a valid POSIX filename). This test rules out a
+/// QUIETER resolver that joins with the schedule-file's parent dir —
+/// the SAME source parsed via parse_sched (which has no file-system
+/// context at all) MUST produce the SAME `algo_path` regardless of
+/// where the bytes notionally came from. Any future resolver that
+/// reaches up to a directory context would have to thread an
+/// additional argument through `parse_sched`, breaking compilation.
+#[test]
+fn algo_path_invariant_under_schedule_file_directory() {
+    let body = r#"schedule for "../prog.algo.nuc" {
+    workers = { host };
+}
+"#;
+    // parse_sched(&str) accepts a source string only; there is no
+    // hidden directory context. Parse the SAME source twice and
+    // assert the field is byte-identical (a resolver injecting a
+    // parent dir would either need the dir at parse time — breaking
+    // this signature — or would produce identical output, which is
+    // exactly the contract we want).
+    let ast1 = parse_sched(body).expect("parse #1");
+    let ast2 = parse_sched(body).expect("parse #2");
+    assert_eq!(ast1.algo_path, "../prog.algo.nuc");
+    assert_eq!(ast2.algo_path, "../prog.algo.nuc");
+    assert_eq!(
+        ast1.algo_path, ast2.algo_path,
+        "TASK-0277 contract: parse_sched is a pure function of source bytes; \
+         no parent-dir resolution possible."
     );
 }
 

@@ -363,10 +363,15 @@ pub enum ResolvedCheckAssert {
 /// declarative; order within a kind is informational only).
 ///
 /// The `algo_path` is forwarded from the AST verbatim. The build
-/// driver resolves it relative to the schedule file.
+/// driver does NOT consume this string — see
+/// [`crate::sched::ast::SchedAst::algo_path`] for the contract
+/// (TASK-0277 contract-pinned by
+/// `algo_path_stored_verbatim_no_resolution` in
+/// `tests/sched_parser.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SchedIR {
     /// Path to the algorithm file, verbatim from the source.
+    /// Forwarded unchanged from [`crate::sched::ast::SchedAst::algo_path`].
     pub algo_path: String,
     /// Resolved worker classes, keyed by class name. Includes the
     /// synthetic [`DEFAULT_WORKER_CLASS`] entry iff any worker uses
