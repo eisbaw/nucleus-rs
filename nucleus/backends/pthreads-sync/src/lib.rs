@@ -606,10 +606,27 @@ fn render_event(
                     .transpose()?
                     .unwrap_or_else(|| "0_i64".to_string());
                 let n = tag.block_n;
-                let abs = if tag.is_partial {
+                // Build `abs` (the rebound absolute iv expression at
+                // body sites) AND its `iv=0` counterpart `strip_lo_expr`
+                // (the absolute coordinate of the strip-mined loop's
+                // first iteration, used by the reuse-prologue) from the
+                // SAME structural components. The previous shape used
+                // `abs.replace(var, "0_i64")` to derive the prologue lo
+                // — that is unsafe whenever `var` is a substring of the
+                // sibling `tile_name`: `block_transform` constructs
+                // `tile_name = format!("{var}__tile")`, so for iv="x"
+                // the `abs.replace("x", "0_i64")` step corrupted the
+                // enclosing `x__tile` token into `0_i64__tile` (review
+                // P1.1, cycle 103 architect NO-GO). Structural
+                // construction is safe regardless of name overlap and
+                // keeps the two expressions trivially consistent.
+                let (abs, strip_lo_expr) = if tag.is_partial {
                     // Constant base: the partial tile's own tile loop
                     // is `0..1`, so a `tile*N` term is always 0.
-                    format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+                    (
+                        format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full),
+                        format!("({lo_src} + ({}_i64 * {n}_i64) + 0_i64)", tag.num_full),
+                    )
                 } else {
                     // Variable base from the enclosing tile loop. A
                     // tagged full nest ALWAYS has an enclosing tile
@@ -628,7 +645,10 @@ fn render_event(
                             "tile iter var {tile_iv:?} has no name in NameTables"
                         ))
                     })?;
-                    format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+                    (
+                        format!("({lo_src} + ({tile_name} * {n}_i64) + {var})"),
+                        format!("({lo_src} + ({tile_name} * {n}_i64) + 0_i64)"),
+                    )
                 };
                 let mut child_subst = ctx.abs_subst.clone();
                 child_subst.insert(var.clone(), abs.clone());
@@ -638,22 +658,9 @@ fn render_event(
                 // lives at the OUTER pad above the for header (so it
                 // persists across the inner-loop's iterations). For
                 // the prologue's reuse-axis "lo" we use the rebound
-                // ABSOLUTE expression (`LO + tile*N + 0`-equivalent)
+                // ABSOLUTE expression at iv=0 (`LO + tile*N + 0`)
                 // because the strip-mined loop's lexical range is
                 // `0..inner_len`, not `LO..HI`.
-                //
-                // The strip-mined inner loop's first iteration has
-                // `var == 0`, so the absolute lo expression is
-                // `(LO + tile*N + 0)`. We get that by substituting
-                // `0` for var into the abs expression, but a simpler
-                // shape is to pass the prologue the OUTER pad's
-                // expression for the iv at lo-time. For 05-stencil/
-                // distributed: LO=1, so lo expr is `(1 + tile*N)`.
-                //
-                // Pragmatic: for the strip-mined arm, render the lo
-                // expression by replacing `var` with `0_i64` in the
-                // abs expression we already computed.
-                let strip_lo_expr = abs.replace(var.as_str(), "0_i64");
                 let reuse_groups =
                     render_reuse_buf_decls(out, indent, *iter_var, var, &strip_lo_expr, body, ctx)?;
                 let mut child_reuse = ctx.reuse_active.clone();

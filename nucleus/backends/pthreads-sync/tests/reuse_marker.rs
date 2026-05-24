@@ -47,8 +47,10 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
-use nucleus_compiler::event::{BlockTag, DataId, Event, IterVar, KernelId};
+use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::event::{
+    ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
+};
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 
@@ -179,5 +181,168 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
     assert!(
         out.contains("min_offset=-1"),
         "marker must name min_offset=-1; got:\n{out}",
+    );
+}
+
+/// TASK-0269 cycle 103 review-hardening (architect P1.1 + P1.2): pin
+/// the strip-mine arm's REAL circular-buffer codegen, with an iv name
+/// that is a substring of the enclosing tile name. The cycle-103 first
+/// landing constructed the prologue `lo` expression via
+/// `abs.replace(var, "0_i64")` — when `block_transform` produces the
+/// canonical `tile_name = format!("{var}__tile")`, the textual replace
+/// corrupts the enclosing token into `0_i64__tile`, emitting broken
+/// Rust. The architect P1.1 fix rebuilds the lo expression structurally.
+///
+/// This test would have caught that defect: the cycle-103 first landing
+/// (P1.1 site `abs.replace(var.as_str(), "0_i64")`) would emit
+/// `(1_i64 + (0_i64__tile * 4_i64) + 0_i64)` in the prologue source
+/// index — a string this assertion forbids — while the structural fix
+/// emits the correctly-named `(1_i64 + (x__tile * 4_i64) + 0_i64)`.
+///
+/// The cycle-103 first landing also had no direct codegen test on the
+/// strip-mine arm (P1.2 — the marker test above uses an empty body, so
+/// `discover_reuse_groups` returns empty and `render_reuse_buf_decls`
+/// is a no-op). This test fills that gap by carrying a Fire with a
+/// DataRef on the reuse axis so the discovery succeeds.
+#[test]
+fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
+    // Fixture: outer tile loop `x__tile` 0..4, inner strip-mined loop
+    // `x` 0..4 carrying BlockTag{block_n=4, num_full=4, is_partial=false},
+    // body Fire reads `img_in[y][x+(-1)]` — a reuse-axis DataRef the
+    // discovery walker can canonicalise. (`y` is a free outer-axis ident
+    // — the rewrite cut treats it as a constant outer coord, which is
+    // fine for this codegen pin.)
+    let src_iv = IterVar(11); // strip-mined inner var "x"
+    let tile_iv = IterVar(20); // enclosing tile loop var "x__tile"
+    let data = DataId(42);
+    let kernel = KernelId(7);
+
+    let mut names = NameTables::default();
+    names.iter_var.insert(src_iv, "x".to_string());
+    // CRITICAL: tile name CONTAINS `x` as a substring. This is the
+    // exact shape `block_transform` produces (`format!("{var}__tile")`),
+    // and is the substring overlap that broke the cycle-103 first
+    // landing's textual `abs.replace(var, "0_i64")` step.
+    names.iter_var.insert(tile_iv, "x__tile".to_string());
+    names.data.insert(data, "img_in".to_string());
+    names.kernel.insert(kernel, "k".to_string());
+
+    let mut sidecar = NameSidecar::default();
+    sidecar.loop_bounds.insert(
+        src_iv,
+        LoopBound {
+            lo: IrExpr::IntLit(1),
+            hi: IrExpr::IntLit(15),
+        },
+    );
+    // The reuse buffer decl needs `data_type(img_in)`. 2D for the
+    // reuse-axis-1 split (axis 0 outer, axis 1 inner = reuse).
+    sidecar.data_types.insert(
+        data,
+        ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![16, 16],
+        },
+    );
+    sidecar.kernel_sigs.insert(
+        kernel,
+        KernelSig {
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: None,
+        },
+    );
+
+    // Populate reuse on the inner iv (src_iv): axis=1, length=3, min=-1.
+    let mut per_axis: BTreeMap<u64, ReuseSlot> = BTreeMap::new();
+    per_axis.insert(
+        1,
+        ReuseSlot {
+            length: 3,
+            min_offset: -1,
+        },
+    );
+    let mut per_data: BTreeMap<DataId, BTreeMap<u64, ReuseSlot>> = BTreeMap::new();
+    per_data.insert(data, per_axis);
+    sidecar.reuse_widths.insert(src_iv, per_data);
+
+    // Body Fire: img_in[y][x-1]. Outer-axis is the free ident `y`
+    // (constant for the inner-x walk); inner index is `x + (-1)` (= the
+    // reuse-axis offset b=-1, the smallest of the slot's offsets).
+    // One DataRef suffices for `discover_reuse_groups` to pin the
+    // canonical outer-axes pattern `[y]`.
+    let inner_idx = IrExpr::BinOp(
+        IrBinOp::Add,
+        Box::new(IrExpr::Ident("x".to_string())),
+        Box::new(IrExpr::IntLit(-1)),
+    );
+    let outer_idx = IrExpr::Ident("y".to_string());
+    let fire = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![outer_idx, inner_idx],
+            })],
+            output: None,
+        },
+    };
+
+    let inner_loop = Event::Loop {
+        iter_var: src_iv,
+        range: 0..4,
+        body: vec![fire],
+        block_tag: Some(BlockTag {
+            block_n: 4,
+            num_full: 4,
+            is_partial: false,
+        }),
+        check_frame: None,
+    };
+
+    let tile_loop = Event::Loop {
+        iter_var: tile_iv,
+        range: 0..4,
+        body: vec![inner_loop],
+        block_tag: None,
+        check_frame: None,
+    };
+
+    let out = render_single_worker_main(&[tile_loop], &names, &sidecar)
+        .expect("synthetic strip-mine main.rs emit must succeed");
+
+    // CODEGEN PRESENCE (P1.2 coverage gap closed):
+    assert!(
+        out.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
+        "TASK-0269: strip-mine arm MUST emit the buffer decl when the \
+         iv carries reuse + body has a reuse-axis DataRef; got:\n{out}",
+    );
+    assert!(
+        out.contains("rem_euclid(3_i64)"),
+        "TASK-0269: strip-mine arm MUST emit the circular-buffer slot \
+         expression `rem_euclid(3_i64)`; got:\n{out}",
+    );
+
+    // P1.1 NAME-OVERLAP REGRESSION: the prologue lo expression must
+    // contain `x__tile` (the enclosing tile name) intact AND must NOT
+    // contain `0_i64__tile` (the artefact of the cycle-103-first-landing
+    // textual replace). The same applies to the per-iter update path
+    // — both share the `abs` expression family.
+    assert!(
+        out.contains("x__tile"),
+        "TASK-0269 P1.1 regression: the enclosing tile name `x__tile` \
+         MUST appear intact in the rebound abs expression and the \
+         prologue lo expression. If only `0_i64__tile` or `__tile` \
+         appears, the textual-replace defect re-emerged; got:\n{out}",
+    );
+    assert!(
+        !out.contains("0_i64__tile"),
+        "TASK-0269 P1.1 regression: the corrupted token `0_i64__tile` \
+         (the artefact of `abs.replace(var, \"0_i64\")` when var is a \
+         substring of the tile name) MUST NOT appear. Use structural \
+         lo-expr construction instead. Got:\n{out}",
     );
 }
