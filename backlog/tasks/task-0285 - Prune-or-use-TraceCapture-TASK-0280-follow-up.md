@@ -1,9 +1,11 @@
 ---
 id: TASK-0285
 title: Prune or use TraceCapture (TASK-0280 follow-up)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped-orchestrator'
 created_date: '2026-05-24 17:32'
+updated_date: '2026-05-24 17:38'
 labels:
   - infra
   - tooling
@@ -41,3 +43,55 @@ This is dead-code hygiene. The codebase is correct without it; the prune is pure
 ## Dependencies
 - TASK-0280 (Done; decision made, dead code identified).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## CYCLE-109 LANDING (orchestrator-led, 2026-05-24)
+
+TASK-0285 closed. Pruned the unused TraceCapture machinery (option 1 PRUNE per the task brief recommendation).
+
+### Removed
+
+- TraceCapture struct (RAII guard).
+- TraceCapture::start() + TraceCapture::lines() + Drop impl.
+- TRACE_SINK thread_local (RefCell<Option<Vec<String>>>).
+- test_sink_active() helper.
+- The 'captured' branch of emit() (just stderr now if trace_enabled).
+- 'std::cell::RefCell' import (no longer needed).
+- The 'use std::cell::RefCell' line.
+- The test-sink-active check in the nuc_trace! macro (now just trace_enabled()).
+
+### Kept
+
+- nuc_trace! macro itself (production caller at driver/main.rs:399).
+- trace_enabled() function.
+- emit() function (now just the stderr write).
+- Module-level docs (updated to reflect cycle-109 prune; previous 'Known dead code' section folded into the Decision block, now describes the cycle-109 removal).
+
+### Diff metrics
+
+- nucleus/nucleus-compiler/src/trace.rs: -86 lines, +20 lines (net -66).
+- Total module shrink: ~50% reduction.
+
+### Gate post-prune
+
+- cargo test --workspace: 818 / 0 / 3 (unchanged; no test depended on the removed symbols, as expected — that was the reason to prune).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- e2e + determinism not re-run (no codegen path touched; the production nuc_trace! emission shape is identical).
+
+### Honest scope
+
+This was dead-code hygiene with zero codebase touchpoint outside trace.rs itself. The removal is reversible — if a future test needs trace capture, the RefCell<Option<Vec<String>>> + RAII guard pattern is ~30 LoC to re-introduce. Per the cycle-108 module-doc commentary, the prune is documented so the next person revisiting this facility makes the re-introduce-or-stderr-scrape call deliberately.
+
+### ACs MET
+
+- TraceCapture struct removed: MET.
+- TRACE_SINK thread_local removed: MET.
+- test_sink_active() removed: MET.
+- nuc_trace! macro simplifies to single trace_enabled() check: MET.
+- trace.rs module doc updated to remove 'Known dead code' section: MET (folded into the cycle-109 prune note in the Decision block).
+- All tests pass: MET (818/0/3 unchanged).
+
+Status: Done.
+<!-- SECTION:NOTES:END -->
