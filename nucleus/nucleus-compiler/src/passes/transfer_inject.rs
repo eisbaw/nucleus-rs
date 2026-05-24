@@ -131,33 +131,32 @@
 //!   a full tile where a halo strip would suffice, never
 //!   under-synchronise).
 //!
-//! - **Block-entangled non-block transfers are stranded (TASK-0151
-//!   over-approximation).** The cross-scope finaliser (Pass A / Pass
-//!   B) skips a Repeat subtree as soon as it *contains* a
-//!   `block`-inner loop (`contains_block_inner`), not just the
-//!   block-inner loop itself. So a genuinely loop-invariant,
-//!   non-block cross-worker Wait that lives **inside or under** a
-//!   Repeat that also encloses a block nest is NOT finalised: it
-//!   keeps no whole-symbol Push and will deadlock unless TASK-0149
-//!   (per-tile cross-scope Push) covers it. Only transfers that are
-//!   *structurally disjoint* from every block nest (e.g. a sibling
-//!   plain `for` loop — see
-//!   `mixed_block_and_nonblock_program_pairs_the_nonblock_transfer`)
-//!   are paired here. This is a deliberate conservative choice: it
-//!   never *collapses* a per-tile halo transfer (no 05/07-blocked
-//!   regression), but it *defers* an entangled non-block transfer.
-//!   The deferral is **traceable, not invisible**: each skipped
-//!   symbol/seq is reported via the `NUC_TRACE`-gated `nuc_trace!`
-//!   facility (TASK-0154, closes TASK-0151 AC#2) at both skip sites
-//!   (Pass A's opaque-Repeat arm and Pass B's `collect_waits`
-//!   exclusion). It is silent on the default path — setting
-//!   `NUC_TRACE=1` surfaces every deferred `(symbol, seq)`. No
-//!   example schedule hits the entangled shape today (single-`block=`
-//!   programs put the block nest and any plain loop as siblings). The
-//!   precise per-Wait classification needs TASK-0150 (index-based
-//!   invariance); the deferral is owned by TASK-0149. Pinned by
-//!   `block_nested_in_plain_loop_strands_the_invariant_wait`;
-//!   trace coverage by `block_deferral_is_traceable_under_nuc_trace`.
+//! - **Block-entangled non-block transfers — per-Wait classification
+//!   (TASK-0267).** Pass A / Pass B used to treat any Repeat whose
+//!   subtree contained a `block`-inner loop as opaque (the original
+//!   TASK-0151 over-approximation). The conservative gate predates
+//!   TASK-0263's halo-aware tile rewrite; once tiles carry the
+//!   partition slice (`rewrite_partition_tiles`) + halo widths
+//!   (`extend_xfer_tiles_for_halo`), the per-Wait stay-vs-bubble logic
+//!   already in the recursive arms is sufficient. The rule is now
+//!   per-Wait: a Wait whose `data` is produced INSIDE the enclosing
+//!   Repeat's subtree stays inside (per-iteration rendezvous); a Wait
+//!   whose `data` is produced OUTSIDE bubbles up and gets a
+//!   whole-symbol Push spliced after the producer, regardless of
+//!   whether some sibling block-inner loop coexists. This unblocks
+//!   the M5 stencil/distributed shape (host-loaded `img_in`,
+//!   partition=rows + inner `block=N`): the row-band slice carried in
+//!   `tile` is the right amount to transfer, the inner block tile
+//!   does not change what `img_in` data the worker needs, so hoisting
+//!   the Wait past the block-governed outer Repeat is correct. Pinned
+//!   by `block_nested_in_plain_loop_pairs_the_invariant_wait` and
+//!   `mixed_block_and_nonblock_program_pairs_the_nonblock_transfer`.
+//!   A future per-block-tile slice (the original TASK-0149/TASK-0158
+//!   territory) — where a Repeat iteration genuinely needs a
+//!   different sub-region per tile — is not exercised today by any
+//!   shipped schedule; when it lands, `extend_xfer_tiles_for_halo`
+//!   would need a per-tile counterpart or the Wait would need to
+//!   refuse the hoist by inspecting `dataflow_edge.data_in_access`.
 //!
 //! - **Idempotence by structural skip.** Re-running the pass detects
 //!   that a Wait already precedes the consumer Operation (and a Push
@@ -324,27 +323,22 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // outside it — the dual case, e.g. `c` produced inside `for i` and
     // read by `save_output` after the loop).
     //
-    // Scope: PER-SUBTREE (TASK-0151). `block=N` per-tile transfers are
-    // sliced sub-regions, not loop-invariant whole symbols; the
-    // existing TASK-0143 HoistSink owns that path and the matching
-    // per-tile Push is TASK-0149/TASK-0150 follow-up territory
-    // (precise index-based invariance). Running Pass A/B inside a
-    // block-governed Repeat nest would wrongly collapse per-tile halo
-    // transfers into one. So Pass A treats any Repeat whose subtree
-    // contains a `block`-inner loop as OPAQUE (no hoist across it),
-    // and Pass B excludes Waits living inside such a nest — while
-    // still finalising every non-blocked cross-scope transfer
-    // elsewhere in the same program. This is strictly more precise
-    // than the previous whole-program gate (which did nothing if any
-    // block loop existed anywhere): a program mixing a block=N loop
-    // with an unrelated non-blocked cross-worker `for` no longer
-    // silently re-deadlocks on the non-blocked part. When
-    // `inner_block_iter_vars` is empty, `contains_block_inner` is
-    // always false, so behaviour is identical to the non-blocked
-    // M2-acceptance path (example 02-split).
+    // Scope: PER-WAIT (TASK-0267). Pass A's stay-vs-bubble decision is
+    // already keyed on whether the Wait's `data` is produced inside
+    // the enclosing Repeat's subtree, so a block-governed nest does
+    // not need a separate opacity gate: a host-loaded image (producer
+    // outside) bubbles up and gets a whole-symbol Push at the
+    // producer's scope, while an in-loop produced datum (producer
+    // inside the loop body) stays for per-iteration rendezvous. The
+    // per-worker partition slice is added later by
+    // `rewrite_partition_tiles` (TASK-0117/TASK-0212) and halo widths
+    // by `extend_xfer_tiles_for_halo` (TASK-0263), so the Wait carries
+    // the right slice regardless of which Repeat it crossed. A future
+    // per-block-tile slice (the original TASK-0149/TASK-0158
+    // territory) would need a per-tile counterpart to halo extension;
+    // no shipped schedule exercises that shape today.
     let new_root = {
-        let (hoisted, escaped_at_root) =
-            hoist_invariant_waits(new_root, &[], &inner_block_iter_vars, &name_data);
+        let (hoisted, escaped_at_root) = hoist_invariant_waits(new_root, &[]);
         // A Wait that bubbled all the way out of the tree had no
         // producing scope anywhere (its data is produced by no
         // Operation in the whole ACFG). For a well-formed ACFG this
@@ -368,7 +362,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
                 w.data, w.seq, w.src, w.dst
             );
         }
-        let spliced = splice_pushes_global(hoisted, &inner_block_iter_vars, &name_data);
+        let spliced = splice_pushes_global(hoisted, &name_data);
         // TASK-0117 per-worker tile finalisation. The hoist + splice
         // passes above may rewrite a Wait/Push tile to the
         // post-hoist enclosing tile (e.g. a loop-invariant `input`
@@ -1000,81 +994,6 @@ fn produced_data_set(node: &ACFGNode, acc: &mut BTreeSet<DataId>) {
     }
 }
 
-/// True if `node`'s subtree contains a `block`-inner Repeat (its own
-/// iter-var, or any descendant Repeat's, is in `block_inner`). Such a
-/// Repeat nest is owned by the TASK-0143 HoistSink / TASK-0149 per-tile
-/// path; the whole-symbol passes treat it as opaque (TASK-0151).
-fn contains_block_inner(node: &ACFGNode, block_inner: &BTreeSet<IterVar>) -> bool {
-    match node {
-        ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => false,
-        ACFGNode::Repeat { iter_var, body, .. } => {
-            block_inner.contains(iter_var) || contains_block_inner(body, block_inner)
-        }
-        ACFGNode::Sequence(children) => children
-            .iter()
-            .any(|c| contains_block_inner(c, block_inner)),
-    }
-}
-
-/// Resolve a `DataId` back to its source symbol name for diagnostics.
-/// Mirrors the existing reverse-lookup idiom used by the TASK-0152
-/// escaped-Wait panic. `<unknown>` only if the id is absent from the
-/// name table (a malformed ACFG, not normal input).
-fn data_symbol(name_data: &BTreeMap<String, DataId>, id: DataId) -> &str {
-    name_data
-        .iter()
-        .find_map(|(n, d)| (*d == id).then_some(n.as_str()))
-        .unwrap_or("<unknown>")
-}
-
-/// Collect every Xfer placeholder (Push or Wait) inside an *opaque*
-/// block-governed subtree, so the cross-scope finaliser can name what
-/// it is deferring instead of skipping it invisibly (TASK-0154 /
-/// TASK-0151 AC#2). This walks the whole subtree (including nested
-/// Repeats) because the deferral applies to the entire opaque nest.
-fn collect_deferred_xfers(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
-    match node {
-        ACFGNode::Xfer(x) => out.push(x.clone()),
-        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
-        ACFGNode::Repeat { body, .. } => collect_deferred_xfers(body, out),
-        ACFGNode::Sequence(children) => {
-            for c in children {
-                collect_deferred_xfers(c, out);
-            }
-        }
-    }
-}
-
-/// Emit one `NUC_TRACE` line per Xfer placeholder left for the
-/// TASK-0149/0150 per-tile path by an opaque block-governed subtree.
-/// Silent unless `NUC_TRACE` is set (zero output on the default path —
-/// determinism/e2e safe). Worded as a deliberate deferral, not an
-/// error: the per-tile Push/Wait is owned by TASK-0149's per-tile
-/// finalisation, not a bug in this pass.
-fn trace_block_deferral(pass: &str, subtree: &ACFGNode, name_data: &BTreeMap<String, DataId>) {
-    // Cheap structural guard mirrors the macro guard: skip the walk
-    // entirely on the default (silent) path.
-    if !(crate::trace::trace_enabled() || crate::trace::test_sink_active()) {
-        return;
-    }
-    let mut xfers = Vec::new();
-    collect_deferred_xfers(subtree, &mut xfers);
-    for x in xfers {
-        crate::nuc_trace!(
-            "transfer_inject({pass}): cross-scope finalisation deferred for \
-             block-governed symbol `{}` (data {:?}, seq {:?}, {:?}, {:?} -> \
-             {:?}) — per-tile Push/Wait is owned by TASK-0149/0150, not \
-             skipped in error",
-            data_symbol(name_data, x.data),
-            x.data,
-            x.seq,
-            x.role,
-            x.src,
-            x.dst
-        );
-    }
-}
-
 /// Number of Operations in the subtree that write `data`. Used only
 /// by a debug-assert guarding the single-assignment invariant
 /// (TASK-0153); not on the release hot path.
@@ -1090,12 +1009,6 @@ fn count_producers(node: &ACFGNode, data: DataId) -> usize {
 fn hoist_invariant_waits(
     node: ACFGNode,
     enclosing_tile: &[(IterVar, std::ops::Range<i64>)],
-    block_inner: &BTreeSet<IterVar>,
-    // Threaded purely for the deferral trace (TASK-0154): the skip
-    // decision is the only place that knows *what* is being deferred,
-    // so the trace is emitted at the decision site (fail/trace where
-    // the choice is made), not reconstructed elsewhere.
-    name_data: &BTreeMap<String, DataId>,
 ) -> (ACFGNode, Vec<XferPlaceholder>) {
     match node {
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => (leaf, Vec::new()),
@@ -1103,17 +1016,6 @@ fn hoist_invariant_waits(
         // builder, but if it does we cannot decide invariance without
         // its sibling context — leave it in place.
         leaf @ ACFGNode::Xfer(_) => (leaf, Vec::new()),
-        // Block-governed Repeat nest: opaque to whole-symbol hoisting
-        // (TASK-0151). The TASK-0143 HoistSink already positioned its
-        // per-tile Waits during `inject_in_node`; lifting them further
-        // would collapse per-tile sub-region transfers into one. Leave
-        // it untouched; nothing escapes. The deferral is *traceable*
-        // via NUC_TRACE (TASK-0154, closes TASK-0151 AC#2) — silent on
-        // the default path, so determinism/e2e output is unchanged.
-        node @ ACFGNode::Repeat { .. } if contains_block_inner(&node, block_inner) => {
-            trace_block_deferral("hoist/PassA", &node, name_data);
-            (node, Vec::new())
-        }
         ACFGNode::Repeat {
             iter_var,
             range,
@@ -1122,7 +1024,7 @@ fn hoist_invariant_waits(
         } => {
             let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
-            let (body2, escaped) = hoist_invariant_waits(*body, &nested, block_inner, name_data);
+            let (body2, escaped) = hoist_invariant_waits(*body, &nested);
 
             let mut produced = BTreeSet::new();
             produced_data_set(&body2, &mut produced);
@@ -1183,8 +1085,7 @@ fn hoist_invariant_waits(
                         slots.push((Slot::Wait(x), Vec::new()));
                     }
                     other => {
-                        let (c2, esc) =
-                            hoist_invariant_waits(other, enclosing_tile, block_inner, name_data);
+                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile);
                         slots.push((Slot::Node(c2), esc));
                     }
                 }
@@ -1427,47 +1328,33 @@ fn collect_push_seqs(node: &ACFGNode, seqs: &mut BTreeSet<u64>) {
     }
 }
 
-/// Collect Waits eligible for whole-symbol Push finalisation. Waits
-/// inside a block-governed Repeat nest are excluded (TASK-0151): their
-/// per-tile Push is TASK-0149's job, not this pass's.
-fn collect_waits(
-    node: &ACFGNode,
-    block_inner: &BTreeSet<IterVar>,
-    name_data: &BTreeMap<String, DataId>,
-    out: &mut Vec<XferPlaceholder>,
-) {
+/// Collect Waits eligible for whole-symbol Push finalisation.
+/// TASK-0267: per-Wait classification — every Wait in the tree is
+/// eligible; the per-Wait stay-vs-bubble decision in Pass A
+/// (`hoist_invariant_waits`) has already placed each Wait at the
+/// scope where its `data` becomes producer-relative, so Pass B's
+/// producer-path / wait-path cut handles all shapes uniformly.
+fn collect_waits(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
     match node {
         ACFGNode::Xfer(x) if x.role == XferRole::Wait => out.push(x.clone()),
         ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
         ACFGNode::Repeat { body, .. } => {
-            if contains_block_inner(node, block_inner) {
-                // Opaque block nest — TASK-0149 owns its Pushes. The
-                // exclusion is traceable via NUC_TRACE (TASK-0154,
-                // closes TASK-0151 AC#2): silent by default so the
-                // determinism/e2e snapshot is byte-unchanged.
-                trace_block_deferral("collect_waits/PassB", node, name_data);
-                return;
-            }
-            collect_waits(body, block_inner, name_data, out);
+            collect_waits(body, out);
         }
         ACFGNode::Sequence(children) => {
             for c in children {
-                collect_waits(c, block_inner, name_data, out);
+                collect_waits(c, out);
             }
         }
     }
 }
 
-fn splice_pushes_global(
-    mut root: ACFGNode,
-    block_inner: &BTreeSet<IterVar>,
-    name_data: &BTreeMap<String, DataId>,
-) -> ACFGNode {
+fn splice_pushes_global(mut root: ACFGNode, name_data: &BTreeMap<String, DataId>) -> ACFGNode {
     let mut have_seqs: BTreeSet<u64> = BTreeSet::new();
     collect_push_seqs(&root, &mut have_seqs);
 
     let mut waits: Vec<XferPlaceholder> = Vec::new();
-    collect_waits(&root, block_inner, name_data, &mut waits);
+    collect_waits(&root, &mut waits);
 
     for w in waits {
         // Idempotence keyed on `seq` ALONE — deliberately not on

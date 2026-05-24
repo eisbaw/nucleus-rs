@@ -314,3 +314,84 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
          no slot exists."
     );
 }
+
+/// TASK-0267: real-pipeline regression pin for the host-side Push
+/// synthesis under `partition=rows` + inner `block=N` + async transfer.
+///
+/// Pre-TASK-0267 the `contains_block_inner` opacity gate in
+/// `transfer_inject.rs` (Pass A / Pass B) stranded the host's Push for
+/// `img_in` whenever the outer Repeat contained a block-inner subtree.
+/// Workers waited forever on `ring_X.wait()` and the cell deadlocked.
+/// This test builds 05-stencil/distributed × pthreads-async via the
+/// real driver pipeline and asserts the host `main()` contains a
+/// `ring_<N>.push(img_in.clone())` line for EVERY worker (4 of them).
+///
+/// HONEST SCOPE: this asserts the BUG 1 / TASK-0267 fix only. The
+/// runtime still deadlocks on BUG 2 (sync_inject barrier under unequal
+/// per-worker iter counts; TASK-0268), so the e2e cell stays [[skip]]
+/// in the matrix until TASK-0268 lands. This test pins the
+/// transfer_inject ACFG-shape — a future regression that resurrects
+/// the `contains_block_inner` opacity (or otherwise drops the
+/// host-side Push synthesis for partitioned consumers under inner
+/// block) fires here LOUDLY rather than silently re-introducing the
+/// deadlock.
+#[test]
+fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
+    let out = scratch_dir("example_05_distributed_pthreads_async_host_push_check");
+    let ex = example_dir();
+    let nuc_ws = repo_root().join("nucleus");
+
+    let build = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("nucleus")
+        .arg("--")
+        .arg("build")
+        .arg("--algo")
+        .arg(ex.join("prog.algo.nuc"))
+        .arg("--sched")
+        .arg(ex.join("schedules/distributed.sched.nuc"))
+        .arg("--kernels")
+        .arg(ex.join("kernels.rs"))
+        .arg("--backend")
+        .arg("pthreads-async")
+        .arg("--out")
+        .arg(&out)
+        .current_dir(&nuc_ws)
+        .output()
+        .expect("nucleus build on distributed × pthreads-async");
+    assert!(
+        build.status.success(),
+        "nucleus build (distributed × pthreads-async) failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let main_rs =
+        fs::read_to_string(out.join("src/main.rs")).expect("read main.rs (distributed build)");
+
+    // The distributed schedule places `blur3` on { w0, w1, w2, w3 }.
+    // The host's `main` MUST push `img_in` into the matching ring once
+    // per worker. Pre-fix this set was empty (zero matches).
+    let mut push_count = 0;
+    for worker in 0..4 {
+        // Hash-stable ring naming: `ring_<N>` where N is the SeqTag
+        // assigned at fan-out time. We don't pin which ring goes to
+        // which worker (the SeqTag-to-worker mapping is an internal
+        // detail), but we DO require that the host fires exactly four
+        // distinct `ring_N.push(img_in.clone())` invocations.
+        let needle = format!("ring_{worker}.push(img_in.clone())");
+        if main_rs.contains(&needle) {
+            push_count += 1;
+        }
+    }
+    assert_eq!(
+        push_count, 4,
+        "TASK-0267: host main() MUST contain one `ring_<N>.push(img_in.clone())` \
+         per worker (4 workers ⇒ 4 pushes). Got {push_count}.\n\n\
+         If this regresses to 0, the `contains_block_inner` opacity gate \
+         (or equivalent) has been resurrected in transfer_inject's Pass A / \
+         Pass B and host-side fan-out Push synthesis is stranded again.\n\n\
+         Emitted main.rs:\n{main_rs}"
+    );
+}

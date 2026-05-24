@@ -671,25 +671,32 @@ backend  = "pthreads-async"
 milestone = "M3"
 
 # 05-stencil/distributed × pthreads-async: M5 capstone candidate cell.
-# TASK-0262 (cycle 83) landed the floor-with-spillover remainder
-# policy so the y-loop (1..15 across 4 workers) now lowers. TASK-0263
-# (cycle 83) wired halo widths into transfer_inject so each per-worker
-# tile carries the halo strips. TASK-0181 multi-worker block-tag
-# rebinding landed earlier. PROBE-FAILED in cycle 83: promoting to
-# [[required]] caused the generated binary to HANG indefinitely (no
-# progress past 30 minutes; killed at PID 3309558 in the cycle-83
-# attempt). The new blocker is filed as TASK-0266 — runtime exhibits
-# either circular Push/Wait dependency under Condvar coordination,
-# off-by-one in tile-with-halo boundary arithmetic, or a missing
-# halo-strip Push at the partition seam. The Stage-2 plumbing (halo
-# inferred + extended-tile arithmetic) is correct in isolation; the
-# remaining gap is the runtime semantic of the synthesised halo
-# transfers. Cell stays [[skip]] until TASK-0266 closes.
+# Diagnostic history:
+#   - TASK-0262 (cycle 83) floor-with-spillover remainder policy: y=1..15
+#     across 4 workers lowers as 4/4/3/3 bands.
+#   - TASK-0263 (cycle 83) wired halo widths into transfer_inject.
+#   - TASK-0181 multi-worker block-tag rebinding landed earlier.
+#   - Cycle-83 [[required]] promotion HUNG (>30min); TASK-0266 filed.
+#   - Cycle-83..85 diagnosis (Petri-net diff under partition policies +
+#     emit inspection) split TASK-0266 into TWO independent bugs:
+#       BUG 1 (TASK-0267): transfer_inject's contains_block_inner
+#       opacity stranded host-side Push synthesis under inner block /
+#       async transfer / partition=rows.
+#       BUG 2 (TASK-0268): sync_inject per-iteration barriers deadlock
+#       under unequal per-worker iteration counts (4/4/3/3 bands).
+#   - TASK-0267 LANDED: contains_block_inner opacity gate removed;
+#     Pass A's per-Wait classification subsumes the gate. Pinned by
+#     `distributed_pthreads_async_host_pushes_img_in_to_every_worker`
+#     (nucleus-compiler/tests/e2e_example_05.rs) and by the updated
+#     synthetic shape tests in transfer_inject_hoist.rs.
+# Remaining blocker is BUG 2 (TASK-0268). Cell stays [[skip]] until
+# the per-iteration barrier deadlock under partition_{rows,workers}
+# unequal-iter counts is resolved.
 [[skip]]
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "pthreads-async"
-reason   = "TASK-0266: cycle-83 [[required]] promotion attempt hung past 30min on the emitted pthreads-async halo-wired binary. TASK-0262 (remainder policy) + TASK-0263 (transfer_inject halo extension) lower cleanly and codegen succeeds, but the runtime deadlocks. New Stage-2 follow-up filed; cell stays [[skip]] honestly rather than required-fail."
+reason   = "TASK-0268: per-iteration sync_inject barriers deadlock under partition=rows 4/4/3/3 (floor-with-spillover) unequal per-worker iteration counts. TASK-0267 (BUG 1: host-Push synthesis drop under block-governed enclosing Repeat) was the upstream blocker — LANDED; the host now emits ring_<N>.push(img_in.clone()) per worker. Promotion to [[required]] still requires TASK-0268 closure."
 milestone = "M3"
 
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------

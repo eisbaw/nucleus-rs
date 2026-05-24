@@ -228,28 +228,22 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
 
     // ---- Assertion 1: exactly one Wait globally.
     // Before hoisting we would have seen one Wait per intra-tile
-    // iteration (one Wait inside the inner Repeat body). Hoisting
-    // collapses that to one Wait at per-tile granularity.
-    //
-    // Push count is NOT asserted: the existing transfer-injection
-    // pass only splices Pushes when the producer Op lives in the
-    // same Sequence as the Wait (see transfer_inject.rs
-    // `splice_pushes_for_waits`). With the consumer hoisted out of
-    // the inner body and the producer at top level, the Push is left
-    // un-spliced -- which matches the pre-TASK-0143 baseline for any
-    // example where producer and consumer sit in different
-    // sequences (e.g. example 02). Filed as a separate follow-up
-    // (cross-sequence Push splicing); the pthreads-sync codegen
-    // doesn't consume Push placeholders today.
+    // iteration (one Wait inside the inner Repeat body). The TASK-0143
+    // HoistSink first lifts it to the per-tile body sequence, then
+    // TASK-0267's per-Wait classification in `hoist_invariant_waits`
+    // recognises `d` as loop-invariant w.r.t. the outer Repeat (data
+    // produced outside) and lifts the Wait one further level to the
+    // top-level Sequence where the producer lives.
     assert_eq!(
         result.wait_count(),
         1,
         "exactly one Wait (hoisted out of intra-tile body)"
     );
 
-    // ---- Assertion 2: the Wait is in the per-tile body sequence,
-    // NOT in the intra-tile body sequence.
-    let (_top_seq, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
+    // ---- Assertion 2: post-TASK-0267 the Wait lands at TOP LEVEL
+    // (sibling of the producer), not in the per-tile body sequence.
+    // No Waits remain in the intra-tile body NOR in the per-tile body.
+    let (top_seq, per_tile_seq, intra_tile_seq) = split_blocked_shape(&result.root);
     assert_eq!(
         xfers_directly_in_seq(intra_tile_seq, XferRole::Wait),
         0,
@@ -257,13 +251,19 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
     );
     assert_eq!(
         xfers_directly_in_seq(per_tile_seq, XferRole::Wait),
+        0,
+        "TASK-0267: Wait hoists past the per-tile body sequence to top \
+         level when its data is produced outside the outer Repeat"
+    );
+    assert_eq!(
+        xfers_directly_in_seq(top_seq, XferRole::Wait),
         1,
-        "exactly one Wait in the per-tile (outer-tile body) sequence"
+        "exactly one Wait in the top-level sequence (whole-symbol position)"
     );
 
-    // ---- Assertion 3: the hoisted Wait's tile does NOT mention the
-    // inner intra-tile iter var (IterVar(0)). It may still mention
-    // the outer tile var (IterVar(1)).
+    // ---- Assertion 3: the hoisted Wait's tile does NOT mention
+    // EITHER the inner intra-tile iter var (IterVar(0)) NOR the outer
+    // tile iter var (IterVar(1)) — both have been hoisted past.
     let xfers = result.root.collect_xfers();
     let wait = xfers
         .iter()
@@ -275,7 +275,28 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
             IterVar(0),
             "hoisted Wait tile must not name the block-inner iter var"
         );
+        assert_ne!(
+            *iv,
+            IterVar(1),
+            "TASK-0267: top-level Wait tile must not name the outer Repeat \
+             iter var (data produced outside the loop ⇒ whole-symbol)"
+        );
     }
+
+    // ---- Assertion 4 (TASK-0267): the matching Push IS now spliced
+    // at top level after the producer. Pre-TASK-0267 this was
+    // documented as a known gap because Pass B's `collect_waits`
+    // refused to enumerate Waits inside a `contains_block_inner`
+    // subtree; with the gate removed, splice_pushes_global finalises
+    // the pair.
+    let push = xfers
+        .iter()
+        .find(|x| x.role == XferRole::Push)
+        .expect("TASK-0267: cross-sequence Push must now be spliced");
+    assert_eq!(
+        push.seq, wait.seq,
+        "Push/Wait must be a matched pair (same seq)"
+    );
 }
 
 // --------------------------------------------------------------------
@@ -865,19 +886,28 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
         "e Push/Wait must be a matched pair"
     );
 
-    // The block-governed transfer `d` (DataId 0) is left to TASK-0149:
-    // Pass B must NOT have collapsed/finalised it (no whole-symbol
-    // Push spliced for d). It still has its HoistSink-placed Wait.
+    // TASK-0267: the block-governed transfer `d` (DataId 0) is now ALSO
+    // paired. Pass A's per-Wait classification recognises `d` as
+    // loop-invariant w.r.t. the tile_loop (data produced by load_d at
+    // top level) and bubbles the Wait up; Pass B splices the whole-
+    // symbol Push after load_d. Pre-TASK-0267 this transfer was
+    // stranded by the `contains_block_inner` opacity gate.
+    let d_wait = xs
+        .iter()
+        .find(|x| x.role == XferRole::Wait && x.data == DataId(0))
+        .expect("d's Wait must still be present");
+    let d_push = xs
+        .iter()
+        .find(|x| x.role == XferRole::Push && x.data == DataId(0));
     assert!(
-        xs.iter()
-            .any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
-        "d's block-path Wait must still be present"
+        d_push.is_some(),
+        "TASK-0267: block-governed d must get a whole-symbol Push (was stranded \
+         pre-fix by the contains_block_inner opacity gate)"
     );
-    assert!(
-        !xs.iter()
-            .any(|x| x.role == XferRole::Push && x.data == DataId(0)),
-        "Pass B must NOT splice a whole-symbol Push for the block-governed d \
-         (that is TASK-0149's per-tile job)"
+    assert_eq!(
+        d_push.unwrap().seq,
+        d_wait.seq,
+        "d Push/Wait must be a matched pair"
     );
 }
 
@@ -923,17 +953,16 @@ fn malformed_acfg_wait_without_producer_op_panics() {
 }
 
 #[test]
-fn block_nested_in_plain_loop_strands_the_invariant_wait() {
-    // PINNING TEST for the documented TASK-0151 over-approximation
-    // ("Block-entangled non-block transfers are stranded" in the
-    // module docs). `contains_block_inner` taints a Repeat as soon as
-    // its subtree CONTAINS a block-inner loop, so a non-block,
-    // genuinely loop-invariant cross-worker Wait that lives inside the
-    // SAME plain loop as a block nest is left unpaired (no whole-symbol
-    // Push) — it falls to TASK-0149. This asserts the CURRENT
-    // conservative behaviour on purpose: when TASK-0149/0150 makes the
-    // classification per-Wait, this test must visibly flip (d gets a
-    // Push) and should be updated then.
+fn block_nested_in_plain_loop_pairs_the_invariant_wait() {
+    // TASK-0267: a non-block, loop-invariant cross-worker Wait that
+    // lives inside the SAME plain loop as a block nest is paired by
+    // the per-Wait stay-vs-bubble logic (see module docs, "Block-
+    // entangled non-block transfers — per-Wait classification"). Pre-
+    // TASK-0267 the `contains_block_inner` opacity gate tainted the
+    // enclosing Repeat and left the Wait unpaired (stranded). This
+    // test pins the FIXED behaviour: d's data (produced by load_d at
+    // top level) bubbles up past the plain_loop and gets a whole-
+    // symbol Push spliced after load_d.
     //
     //   Sequence(top)
     //     load_d on host                       (writes d=0)
@@ -998,20 +1027,27 @@ fn block_nested_in_plain_loop_strands_the_invariant_wait() {
     let result = inject_transfers(&linked, acfg);
     let xs = result.root.collect_xfers();
 
-    // d's Wait exists but is STRANDED (no whole-symbol Push) because
-    // the enclosing plain loop is tainted by the block nest. Pinned
-    // limitation — see module docs.
+    // TASK-0267: d's Wait IS now paired with a whole-symbol Push,
+    // because Pass A's per-Wait classification (data produced outside
+    // → bubble) lets the Wait bubble past the plain_loop+block_nest
+    // and Pass B splices the Push at top level after load_d.
+    let d_wait = xs
+        .iter()
+        .find(|x| x.role == XferRole::Wait && x.data == DataId(0))
+        .expect("d's Wait must be present");
+    let d_push = xs
+        .iter()
+        .find(|x| x.role == XferRole::Push && x.data == DataId(0));
     assert!(
-        xs.iter()
-            .any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
-        "d's Wait should still be present (emitted, just not finalised)"
+        d_push.is_some(),
+        "TASK-0267 (per-Wait classification): d's Wait MUST now be paired \
+         with a whole-symbol Push. If this regresses, the contains_block_inner \
+         opacity gate has been resurrected — see module docs."
     );
-    assert!(
-        !xs.iter()
-            .any(|x| x.role == XferRole::Push && x.data == DataId(0)),
-        "TASK-0151 over-approximation: d is block-entangled so Pass B does \
-         NOT pair it. If this flips, TASK-0149/0150 improved the gate — \
-         update this pinning test."
+    assert_eq!(
+        d_push.unwrap().seq,
+        d_wait.seq,
+        "d Push/Wait must be a matched pair"
     );
 }
 
@@ -1111,145 +1147,12 @@ fn whole_symbol_finalisation_is_structurally_idempotent() {
 }
 
 // --------------------------------------------------------------------
-// TASK-0154 / TASK-0151 AC#2: the block-governed deferral is traceable
-// via the NUC_TRACE-gated facility, and byte-silent by default.
+// TASK-0267 superseded TASK-0154 / TASK-0151 AC#2: the
+// `contains_block_inner` opacity gate (and its deferral-traceable
+// wording) was removed when Pass A's per-Wait classification was
+// shown to subsume the gate's role. The corresponding deferral-trace
+// tests are deleted along with the gate; the FIXED behaviour is
+// pinned by `block_nested_in_plain_loop_pairs_the_invariant_wait`
+// (the `d` arm) and by `mixed_block_and_nonblock_program_pairs_
+// the_nonblock_transfer` (now also pinning d's Push).
 // --------------------------------------------------------------------
-
-/// Build the mixed block + non-block program from
-/// `block_nested_in_plain_loop_strands_the_invariant_wait`: a plain
-/// loop containing both a stranded non-block Wait (`d`) and a
-/// block-inner nest (`e`). The cross-scope finaliser treats the plain
-/// loop as opaque (it *contains* a block-inner loop), deferring both
-/// `d` and `e`'s placeholders to the TASK-0149 per-tile path.
-fn mixed_block_nonblock_program() -> (ACFG, LinkedIR) {
-    let load_d = op(&[0], 100, vec![], Some(0));
-    let load_e = op(&[0], 101, vec![], Some(1));
-    let consume_d = op(&[1], 102, vec![0], Some(2));
-    let consume_e = op(&[1], 103, vec![1], Some(3));
-
-    let inner_block = ACFGNode::Repeat {
-        iter_var: IterVar(3),
-        range: 0..2,
-        body: Box::new(ACFGNode::Sequence(vec![consume_e])),
-        block_tag: None,
-    };
-    let tile_loop = ACFGNode::Repeat {
-        iter_var: IterVar(2),
-        range: 0..2,
-        body: Box::new(ACFGNode::Sequence(vec![inner_block])),
-        block_tag: None,
-    };
-    let plain_loop = ACFGNode::Repeat {
-        iter_var: IterVar(5),
-        range: 0..4,
-        body: Box::new(ACFGNode::Sequence(vec![consume_d, tile_loop])),
-        block_tag: None,
-    };
-    let root = ACFGNode::Sequence(vec![load_d, load_e, plain_loop]);
-
-    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
-    name_data.insert("d".into(), DataId(0));
-    name_data.insert("e".into(), DataId(1));
-    name_data.insert("f".into(), DataId(2));
-    name_data.insert("g".into(), DataId(3));
-    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
-    name_workers.insert("host".into(), WorkerId(0));
-    name_workers.insert("w0".into(), WorkerId(1));
-    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
-    inner_block_iter_vars.insert(IterVar(3));
-
-    let acfg = ACFG {
-        root,
-        name_kernels: BTreeMap::new(),
-        name_data,
-        name_workers,
-        name_iter_vars: BTreeMap::new(),
-        inner_block_iter_vars,
-        partition_worker_ranges: std::collections::BTreeMap::new(),
-        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
-        halo_widths: std::collections::BTreeMap::new(),
-        reuse_widths: std::collections::BTreeMap::new(),
-    };
-    let linked = synthetic_linked_ir(
-        &[("d", &["host"]), ("e", &["host"])],
-        "transfer d : sync;\n    transfer e : sync;",
-    );
-    (acfg, linked)
-}
-
-#[test]
-fn block_deferral_is_traceable_under_nuc_trace() {
-    // GATE ON: install a thread-local capture sink (no env-var race,
-    // no real-stderr scrape) and assert the deferral is reported,
-    // naming the deferred symbol. Both skip sites (Pass A's opaque
-    // Repeat arm and Pass B's collect_waits exclusion) fire on this
-    // shape, so the symbol must appear at least once.
-    let (acfg, linked) = mixed_block_nonblock_program();
-    let cap = nucleus_compiler::trace::TraceCapture::start();
-    let _ = inject_transfers(&linked, acfg);
-    let lines = cap.lines();
-    drop(cap);
-
-    assert!(
-        !lines.is_empty(),
-        "NUC_TRACE deferral trace must fire for a mixed block+non-block \
-         program (got zero lines)"
-    );
-    assert!(
-        lines.iter().any(|l| l.contains("PassA")),
-        "Pass A opaque-Repeat arm must emit a deferral trace; got: {lines:?}"
-    );
-    assert!(
-        lines.iter().any(|l| l.contains("PassB")),
-        "Pass B collect_waits exclusion must emit a deferral trace; got: {lines:?}"
-    );
-    // The message must NAME the deferred symbol/seq (TASK-0151 AC#2),
-    // not just say "something was skipped".
-    assert!(
-        lines.iter().any(|l| l.contains("symbol `d`"))
-            || lines.iter().any(|l| l.contains("symbol `e`")),
-        "trace must name the deferred data symbol; got: {lines:?}"
-    );
-    assert!(
-        lines.iter().all(|l| l.contains("seq ")),
-        "every deferral trace line must name the seq; got: {lines:?}"
-    );
-    // Worded as a deliberate per-tile deferral, not an error.
-    assert!(
-        lines.iter().all(|l| l.contains("TASK-0149")),
-        "deferral wording must point at TASK-0149/0150, not read as an \
-         error; got: {lines:?}"
-    );
-}
-
-#[test]
-fn deferral_trace_is_silent_by_default() {
-    // GATE OFF: no capture sink installed and (in CI) NUC_TRACE unset.
-    // We cannot portably scrape this process's own stderr, but we CAN
-    // assert the macro guard short-circuits: with no sink and the env
-    // gate respecting `trace_enabled()`, `test_sink_active()` is false
-    // and the formatting/collection path is never taken. The behaviour
-    // contract (default path emits nothing) is what protects the
-    // determinism/e2e snapshot; this asserts the guard predicate that
-    // enforces it.
-    assert!(
-        !nucleus_compiler::trace::test_sink_active(),
-        "no capture sink must be active outside an explicit TraceCapture"
-    );
-    // Run the pass with no sink: it must not panic and must produce
-    // the same tree as the pinning test expects (behaviour unchanged
-    // whether or not tracing is on).
-    let (acfg, linked) = mixed_block_nonblock_program();
-    let result = inject_transfers(&linked, acfg);
-    let xs = result.root.collect_xfers();
-    assert!(
-        xs.iter()
-            .any(|x| x.role == XferRole::Wait && x.data == DataId(0)),
-        "tracing must not change pass behaviour: d's Wait still present"
-    );
-    assert!(
-        !xs.iter()
-            .any(|x| x.role == XferRole::Push && x.data == DataId(0)),
-        "tracing must not change pass behaviour: d still unpaired"
-    );
-}
