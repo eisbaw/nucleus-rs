@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:20'
+updated_date: '2026-05-24 00:57'
 labels:
   - M5
   - compiler
@@ -51,4 +51,26 @@ Forward-carried from TASK-0258 (cycle 79c, partition_rows consumer landed): halo
 3. **05-stencil/distributed**: TASK-0258 left the schedule's 'loop y : partition=rows;' directive in commented form because the algo's y=1..15 length-14 doesn't divide by 4 workers. TASK-0262 (remainder policy) is the unblocker for restoration; once landed AND your halo inference lands, the cell can finally become [[required]] and bit-identical to reference.bin.
 
 4. **e2e cell is YOUR task's deliverable**: TASK-0258 AC#5 (new e2e cell exercising partition=rows + bit-identical reference.bin) is explicitly BLOCKED-ON-TASK-0260. When you land halo inference, this becomes a joint deliverable: 05-stencil/distributed × at-least-one-tier-1-backend bit-identical to reference.bin. Acceptance for that cell crosses TASK-0258 / TASK-0260 / TASK-0262. Pure partition=rows without halo produces wrong output at row-band boundaries; no e2e cell can pass without halo synthesis.
+
+FORWARD-CARRY from TASK-0259 cycle-80 review (architect P2):
+
+CRITICAL: Option A's hidden cost surfaces in halo inference. The partition_blocks2d sidecar shape (TASK-0259) writes TWO entries into ACFG::partition_worker_ranges — one per iter_var, with the same WorkerId keyset — but does NOT carry block-pair metadata. From the halo-inference vantage point:
+
+1. **Block-pair recovery problem**: a halo pass cannot tell from the sidecar alone whether two iter_var->Range maps come from ONE partition=blocks2d directive (paired axes — both halos coordinated; worker w_i owns the (y_i, x_i) rectangle) OR from TWO independent partition=rows directives on unrelated loops (no axis coupling). The sidecar shape is identical in both cases. Halo inference MUST distinguish them to compute neighbour rectangles correctly.
+
+   Two recovery paths:
+   - (a) Re-derive pairing by walking linked.sched.loops: for each ResolvedLoopOption::Partition(PartitionKind::Blocks2d) directive, pair the carrying iter_var with its inner Repeat's iter_var via the ACFG nest structure (the same find_outer_of_2d / find_first_inner_repeat traversal partition_blocks2d uses).
+   - (b) Add a side-channel ACFG.partition_pairs: BTreeMap<IterVar, IterVar> (outer -> inner) populated by partition_blocks2d.
+
+   Recommendation: (a) keeps the sidecar shape minimal but couples halo to partition_blocks2d's choice of helpers. (b) requires a sidecar schema bump (serde-default backward-compat). Pick consciously.
+
+2. **Worker -> (row, col) inverse problem**: partition_blocks2d's pass discards the (row, col) coordinates after computing per-worker bands. For halo:
+   - w_i needs the NORTH neighbour of (row_i, col_i) = (row_i - 1, col_i), which is some w_j where j = (row_i - 1) * C + col_i. The grid shape (R, C) is NOT carried on the sidecar.
+   - Either expose partition_blocks2d::decompose_grid as pub(crate), or re-derive grid shape from worker count + worker-band assignment, or add a sidecar.grid_shape_for_outer_iv: BTreeMap<IterVar, (u32, u32)> field. Pick consciously.
+
+3. **Sibling-Repeat + 3D-nest unpinned across both partition_rows AND partition_blocks2d** (architect-review P2 of cycle-79c + cycle-80): if halo widens the contract to 'what counts as a 2D iteration nest', these silent-acceptance shapes (Sequence[Repeat_a, Repeat_b] in body; 3D Repeat-of-Repeat-of-Repeat) will produce wrong-but-non-faulting partitioning. File a reject-shape task that covers both passes before TASK-0260 lands its halo, otherwise halo will paper over the structural ambiguity.
+
+4. **Helper consolidation**: collect_op_workers is byte-identical across partition_workers + partition_rows; partition_blocks2d imports from partition_rows. partition_workers.rs is the last byte-identical copy. TASK-0244 owns the lift; if TASK-0260 needs to add halo-related sidecar entries via a new helper, consider routing through a shared passes::partition_common.rs at that time.
+
+These are non-blocking forward-carries; TASK-0260's halo design must consciously resolve (1) and (2) before implementation.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:48'
+updated_date: '2026-05-24 00:57'
 labels:
   - M5
   - compiler
@@ -241,4 +241,31 @@ sched_lower:
 Tracker stays In Progress because AC#6 (bit-identical e2e cell on >=1 tier-1 backend) is BLOCKED-NOT-FAILED on TASK-0260 + TASK-0262 — same closure-deferred-on-sibling-blocker pattern as TASK-0258 AC#5. AC#1, AC#2 (positive), AC#3 (positive with corrected reject site), AC#4 (TASK-0144.02 closure pattern uniform), AC#5 (sched-lower reject removed) all GREEN.
 
 When TASK-0260 (halo) and TASK-0262 (remainder policy) land in lockstep, an e2e cell exercising partition=blocks2d on a 2D stencil can ship bit-identical, closing AC#6 + this task simultaneously. Until then, the consumer pass MECHANISM is COMPLETE + pinned by tests.
+
+REVIEW-GATE LANDED (cycle 80 orchestrator hardening, commit 7af2bb9).
+
+Parallel read-only review of cycle-80 implementer commit a71e803 + tracker commit f0bb450 returned GO from both qa-test-runner and mped-architect. One P1 doc-honesty finding applied in-thread.
+
+## In-thread fix (commit 7af2bb9)
+
+F1 (architect): SchedLowerErrorKind::UnsupportedPartitionKind was documented as 'retained for exhaustiveness' implying it enforces something. The actual exhaustiveness mechanism is the exhaustive match in lower_loop_option (variant Workers | Rows | Blocks2d), NOT the variant. Doc tightened in ir.rs (variant docstring + Display arm comment) and lower.rs (in-line comment). Now describes the variant as 'structurally dead today; ready-to-use diagnostic shape for any future PartitionKind without a consumer'. No behaviour change.
+
+## P2 findings filed as forward-carry to TASK-0260
+
+CRITICAL forward-carry to halo inference (TASK-0260): Option A's hidden cost. partition_blocks2d's sidecar shape (two entries in partition_worker_ranges, one per iter_var) does NOT carry block-pair metadata. Halo inference cannot distinguish 'paired-by-one-blocks2d-directive' from 'two-independent-rows-directives' by reading the sidecar alone. TASK-0260 must consciously resolve:
+- Block-pair recovery: re-derive from linked.sched.loops OR add ACFG.partition_pairs side-channel.
+- Worker -> (row, col) inverse: expose decompose_grid OR add sidecar.grid_shape_for_outer_iv.
+- Sibling-Repeat + 3D-nest still unpinned across both passes; reject before halo, not after.
+
+These are documented as forward-carries on TASK-0260's notes (cycle-80 append). No new tasks filed — TASK-0260 owns the design choice.
+
+## Gate (post-hardening)
+
+- cargo test nucleus-compiler: 549 / 0.
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- Behaviour-unchanged hardening; e2e/determinism/negative gates preserved from cycle-80 baseline (verified by qa-test-runner before this in-thread edit).
+
+## Review-gate decision
+
+Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258. All 6 ACs met EXCEPT AC#6 (bit-identical e2e cell), which is blocked-not-failed on TASK-0260 (halo inference) AND TASK-0262 (remainder policy). When those land in lockstep, the e2e cell exercising partition=blocks2d (likely 07-matmul or a new 2D-grid example) becomes possible.
 <!-- SECTION:NOTES:END -->
