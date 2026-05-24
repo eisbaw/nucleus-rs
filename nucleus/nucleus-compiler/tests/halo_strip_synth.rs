@@ -624,6 +624,59 @@ fn positive_placement_after_producing_op() {
             c
         );
     }
+
+    // Per-pair STRUCTURAL invariants (TASK-0290 cycle 114b architect P1.1
+    // hardening): the cardinality + outer-edge checks above are
+    // necessary but not sufficient — a regression that swapped Push/Wait,
+    // mis-routed neighbour ids, or corrupted strip tile bounds while
+    // preserving the count would slip past. Mirror
+    // `positive_2x2_halo_1_corner_pair_shapes` and pin (a) per-worker
+    // pair count = 2 for every worker in the 2x2 grid, (b) exact
+    // (src, dst, data, tile) for both pairs of two opposite corners
+    // (w1 = (row=0, col=0) and w4 = (row=1, col=1)). 16 Xfer nodes
+    // (8 pairs * 2 = 16) is the structural envelope, but the
+    // per-strip-shape pins detect mis-routing.
+    assert_eq!(after.push_count(), 8, "8 Push (4 workers * 2 pairs)");
+    assert_eq!(after.wait_count(), 8, "8 Wait (4 workers * 2 pairs)");
+    assert_eq!(after.xfer_count(), 16);
+    for w in 1..=4 {
+        assert_eq!(
+            count_pairs_for_worker(&after, WorkerId(w)),
+            2,
+            "w{w} corner gets 2 pairs"
+        );
+    }
+    // y-slice = 8, x-slice = 8 (2x2 grid over 0..16 x 0..16). Halo = 1.
+    // w1 = (row=0, col=0): owns y in [0..8), x in [0..8). S-strip
+    // received FROM w3 = (row=1, col=0): y ∈ [8..9), x ∈ [0..8).
+    // E-strip received FROM w2 = (row=0, col=1): y ∈ [0..8), x ∈ [8..9).
+    let s_w1 = unique_wait_tile(&after, WorkerId(3), WorkerId(1), data_id);
+    assert_eq!(
+        s_w1.bounds,
+        vec![(outer_iv, 8..9), (inner_iv, 0..8)],
+        "w1 S-strip tile from w3"
+    );
+    let e_w1 = unique_wait_tile(&after, WorkerId(2), WorkerId(1), data_id);
+    assert_eq!(
+        e_w1.bounds,
+        vec![(outer_iv, 0..8), (inner_iv, 8..9)],
+        "w1 E-strip tile from w2"
+    );
+    // w4 = (row=1, col=1): owns y in [8..16), x in [8..16). N-strip from
+    // w2 = (row=0, col=1): y ∈ [7..8), x ∈ [8..16). W-strip from
+    // w3 = (row=1, col=0): y ∈ [8..16), x ∈ [7..8).
+    let n_w4 = unique_wait_tile(&after, WorkerId(2), WorkerId(4), data_id);
+    assert_eq!(
+        n_w4.bounds,
+        vec![(outer_iv, 7..8), (inner_iv, 8..16)],
+        "w4 N-strip tile from w2"
+    );
+    let w_w4 = unique_wait_tile(&after, WorkerId(3), WorkerId(4), data_id);
+    assert_eq!(
+        w_w4.bounds,
+        vec![(outer_iv, 8..16), (inner_iv, 7..8)],
+        "w4 W-strip tile from w3"
+    );
 }
 
 // IDEMPOTENCE / RE-RUN CAVEAT (forward-carried to TASK-0290):

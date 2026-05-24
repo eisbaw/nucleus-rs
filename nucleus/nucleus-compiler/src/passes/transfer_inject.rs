@@ -2578,17 +2578,36 @@ fn prepend_strip_pairs(
             // and producer-index computation reads only the
             // top-level shape (Operation/Repeat at this Sequence
             // level), so the pre-recursion scan is safe.
+            //
+            // Recursion MUST preserve per-child arity (every
+            // ACFGNode::{Sequence,Repeat,Operation,Sync,Xfer} arm in
+            // `prepend_strip_pairs` returns exactly one node), so the
+            // post-recursion `rewritten_children.len()` equals the
+            // pre-recursion `children.len()` — keeping the
+            // `last_producer_idx` indices stable across phases. If a
+            // future variant of this walker ever inserted at a child
+            // level the indices would silently shift; the
+            // `debug_assert!` below pins the invariant
+            // (TASK-0290 cycle 114b architect P1.2 hardening).
+            let n_existing = children.len();
             let rewritten_children: Vec<ACFGNode> = children
                 .into_iter()
                 .map(|c| prepend_strip_pairs(c, to_insert))
                 .collect();
+            debug_assert_eq!(
+                rewritten_children.len(),
+                n_existing,
+                "prepend_strip_pairs phase-2 recursion must preserve per-child arity \
+                 (every ACFGNode arm returns exactly one node); if this fires, a future \
+                 variant has begun inserting at a child level and last_producer_idx is \
+                 now stale"
+            );
             // Phase 3: assemble the output Sequence, splicing each
             // group's Xfers in at its computed `insert_pos`. We walk
             // children in order; before emitting the child at index
             // `k`, we drain any groups whose insert_pos == k. After
             // the last child, drain any groups whose insert_pos ==
-            // children.len() (appended at the tail).
-            let n_existing = rewritten_children.len();
+            // n_existing (appended at the tail).
             let n_inserted: usize = groups_at.values().map(|v| v.len()).sum();
             let mut out: Vec<ACFGNode> = Vec::with_capacity(n_inserted + n_existing);
             for (k, child) in rewritten_children.into_iter().enumerate() {
