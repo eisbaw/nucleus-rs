@@ -1129,10 +1129,14 @@ fn lower_loop_option(
         //   pass-entry reject discipline.
         //
         // sched-lower no longer rejects any `PartitionKind` variant;
-        // [`SchedLowerErrorKind::UnsupportedPartitionKind`] is retained
-        // in the type for exhaustiveness against future variant
-        // additions (a new variant added to `PartitionKind` will fail
-        // to compile here and force its consumer + reject decision).
+        // the exhaustiveness guard is THIS match below, NOT
+        // [`SchedLowerErrorKind::UnsupportedPartitionKind`] — that
+        // variant is structurally dead and merely RESERVED as a
+        // ready-to-use diagnostic shape for the next `PartitionKind`
+        // addition that lands without a consumer (architect-review F1
+        // of TASK-0259 cycle 80: the in-line "retained for
+        // exhaustiveness" framing overclaimed the variant's role; the
+        // exhaustive match IS the exhaustiveness mechanism).
         LoopOption::Partition(k) => match k {
             super::ast::PartitionKind::Workers => {
                 ResolvedLoopOption::Partition(super::ast::PartitionKind::Workers)

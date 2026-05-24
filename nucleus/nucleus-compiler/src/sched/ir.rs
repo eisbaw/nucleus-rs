@@ -640,9 +640,12 @@ pub enum SchedLowerErrorKind {
     /// `var` is the loop variable carrying the option.
     UnitPipelineOption { var: String },
 
-    /// Unimplemented `partition=` policy on a loop. Retained as an
-    /// exhaustiveness placeholder for future [`PartitionKind`]
-    /// variant additions.
+    /// Unimplemented `partition=` policy on a loop. **Structurally
+    /// dead today** — kept as a ready-to-use diagnostic shape, NOT a
+    /// load-bearing exhaustiveness mechanism (architect-review F1 of
+    /// TASK-0259 cycle 80: the exhaustiveness guarantee comes from
+    /// the exhaustive `match k { Workers | Rows | Blocks2d }` in
+    /// `lower_loop_option`, not from this variant).
     ///
     /// After TASK-0259 (cycle 80) all three current variants have
     /// downstream consumers:
@@ -654,20 +657,19 @@ pub enum SchedLowerErrorKind {
     /// - [`PartitionKind::Blocks2d`] —
     ///   [`crate::passes::partition_blocks2d`] (TASK-0259).
     ///
-    /// **No live code path reaches this variant today** — the match
-    /// arm in `lower_loop_option` accepts all three variants. The
-    /// variant is preserved as a typed slot for any FUTURE
-    /// [`PartitionKind`] addition: a new variant added to the enum
-    /// will fail to compile at the lower-step match (the type system
-    /// forces a decision — accept-with-consumer or reject-with-this-
-    /// variant). Same fail-fast discipline TASK-0249 established,
-    /// kept available for the next policy.
+    /// **No live code path constructs this variant today.** When a
+    /// 4th `PartitionKind` lands without a consumer, the implementer
+    /// adds a new match arm in `lower_loop_option` constructing this
+    /// variant — the Display arm is already wired. Until then this is
+    /// pure decoration; the compiler's exhaustive-match check is what
+    /// enforces "decide on every variant".
     ///
     /// PRD §6.3.3 mandates compile-time rejection of bad loop-option
     /// combinations ("Bad combinations rejected at compile time, not
-    /// at runtime"). When the next `PartitionKind` lands without a
-    /// consumer, the lower-step arm reroutes through this variant —
-    /// same pattern, same diagnostic.
+    /// at runtime"). The pattern this variant captures: variant added
+    /// to `PartitionKind` → match arm in `lower_loop_option` → either
+    /// route to a real consumer pass OR construct this variant for a
+    /// typed reject.
     ///
     /// `var` is the loop variable carrying the option; `kind` is the
     /// rejected partition policy.
@@ -820,16 +822,14 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 // parser at sched/parser.rs:573-575 binds these three
                 // keywords to these variants — keep in sync).
                 //
-                // TASK-0259 update: all three current `PartitionKind`
-                // variants are accepted at sched-lower and routed to
-                // their consumer passes ([`crate::passes::partition_workers`]
-                // / [`crate::passes::partition_rows`] /
-                // [`crate::passes::partition_blocks2d`]). NO live code
-                // path constructs this variant today; the Display arm
-                // is preserved for a future `PartitionKind` extension
-                // that lands without a consumer (the type-system arm
-                // would route through this Display path, same fail-
-                // fast diagnostic shape).
+                // Structurally dead since TASK-0259 cycle 80; no live
+                // constructor reaches this Display arm. Preserved as a
+                // ready-to-use diagnostic shape for any future
+                // `PartitionKind` variant that lands without a consumer
+                // (architect-review F1 of TASK-0259: doc tightened to
+                // remove the "exhaustiveness placeholder" overclaim —
+                // the exhaustive match in lower_loop_option is what
+                // enforces exhaustiveness, not this variant).
                 let keyword = match kind {
                     PartitionKind::Rows => "rows",
                     PartitionKind::Blocks2d => "blocks2d",
