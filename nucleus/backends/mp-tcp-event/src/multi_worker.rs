@@ -111,6 +111,15 @@ impl<'a> Plan<'a> {
             .map(|(w, _)| *w)
             .collect();
 
+        // CHECK-ORDER NOTE (TASK-0255 cycle 90): the ContractGap checks
+        // below are A (used_workers<2) -> B (Wait/no-Push) -> C (missing
+        // sidecar buffer) -> host-excluding-barrier -> D (worker-to-
+        // worker Push). This order is load-bearing for the negative-
+        // path test fixtures in this file's `#[cfg(test)] mod tests` and
+        // in `tests/multi_worker_emit.rs` — each test must NOT trip any
+        // EARLIER check to exercise its target branch. A new check
+        // inserted between branches may silently invalidate a bypass-
+        // fixture; if you reorder/add, update the fixtures together.
         if used_workers.len() < 2 {
             return Err(EmitError::ContractGap(format!(
                 "mp-tcp-event Plan::build requires used_workers.len() >= 2; \
