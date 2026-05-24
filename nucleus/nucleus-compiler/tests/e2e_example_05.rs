@@ -351,6 +351,18 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
         "TASK-0269 absence: naive schedule has no `reuse` directive ⇒ \
          no `__reuse_buf` identifier may appear in the emit. Got:\n{naive_main}"
     );
+    // TASK-0269 cycle-103 review-hardening (QA P2.2): the circular-buffer
+    // slot expression `rem_euclid(3` is the second structural fingerprint
+    // of an active reuse rewrite. Pin its absence under naive so a future
+    // regression that emits the modulo arithmetic without a `__reuse_buf`
+    // identifier (e.g. a partial refactor that splits the decl from the
+    // index rewrite) still fails this gate.
+    assert!(
+        !naive_main.contains("rem_euclid(3"),
+        "TASK-0269 absence: naive schedule has no `reuse` directive ⇒ \
+         no `rem_euclid(3` slot-wrap expression may appear in the emit. \
+         Got:\n{naive_main}"
+    );
 }
 
 /// TASK-0267: real-pipeline regression pin for the host-side Push

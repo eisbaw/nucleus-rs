@@ -1063,19 +1063,46 @@ fn try_reuse_axis_offset(e: &IrExpr, iv_name: &str) -> Option<i64> {
 /// Returns `BTreeMap<DataId, Vec<ReuseRewriteGroup>>` ordered by
 /// `DataId` then by axis (determinism via `BTreeMap` + sorted axis
 /// iteration).
+///
+/// Fail-loud on a missing `name_data` entry for any reuse-active
+/// `DataId`: the buffer identifier `__reuse_buf_<data_name>_a<axis>`
+/// requires a real symbol name and an absent one is a projection-layer
+/// gap, NOT a silent fallback to `d<id>` (TASK-0269 cycle-103 review
+/// architect P2.3 — siblings like [`data_name`] in this module are
+/// already fail-loud; the reuse-discovery path now matches).
 fn discover_reuse_groups(
     body: &[Event],
     iv_name: &str,
     per_data: &BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>,
     names: &NameTables,
-) -> BTreeMap<DataId, Vec<ReuseRewriteGroup>> {
+) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError> {
     let mut out: BTreeMap<DataId, Vec<ReuseRewriteGroup>> = BTreeMap::new();
     for (data_id, per_axis) in per_data {
+        // Eagerly resolve the data name once per (data, ...) pair —
+        // fail-loud if absent, matching `data_name`'s discipline. A
+        // missing entry would still be caught later by `data_name` in
+        // `render_reuse_buf_decls`, but only AFTER the silent `d<id>`
+        // fallback shaped the `buf_ident` carried in the group. Hoist
+        // the lookup so the group is built with the real name or not
+        // at all.
+        let data_name_resolved = names.data.get(data_id).cloned().ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "reuse-active data id {data_id:?} has no name in NameTables \
+                 (TASK-0269 — buffer ident requires a real symbol name)"
+            ))
+        })?;
         // Collect already-found axes so the walk can skip past once
         // every axis on this data has a canonical pattern.
         let mut found: BTreeMap<u64, ReuseRewriteGroup> = BTreeMap::new();
         for ev in body {
-            walk_event_for_reuse(ev, *data_id, iv_name, per_axis, &mut found, names);
+            walk_event_for_reuse(
+                ev,
+                *data_id,
+                &data_name_resolved,
+                iv_name,
+                per_axis,
+                &mut found,
+            );
             if found.len() == per_axis.len() {
                 break;
             }
@@ -1085,26 +1112,26 @@ fn discover_reuse_groups(
             out.insert(*data_id, groups);
         }
     }
-    out
+    Ok(out)
 }
 
 fn walk_event_for_reuse(
     ev: &Event,
     data_id: DataId,
+    data_name: &str,
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
     found: &mut BTreeMap<u64, ReuseRewriteGroup>,
-    names: &NameTables,
 ) {
     match ev {
         Event::Fire { bindings, .. } => {
             for arg in &bindings.inputs {
-                walk_arg_for_reuse(arg, data_id, iv_name, per_axis, found, names);
+                walk_arg_for_reuse(arg, data_id, data_name, iv_name, per_axis, found);
             }
         }
         Event::Loop { body, .. } => {
             for child in body {
-                walk_event_for_reuse(child, data_id, iv_name, per_axis, found, names);
+                walk_event_for_reuse(child, data_id, data_name, iv_name, per_axis, found);
             }
         }
         // Sync / Push / Wait / Alloc / Free carry no Fire-arg DataRefs.
@@ -1115,10 +1142,10 @@ fn walk_event_for_reuse(
 fn walk_arg_for_reuse(
     arg: &ArgBinding,
     data_id: DataId,
+    data_name: &str,
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
     found: &mut BTreeMap<u64, ReuseRewriteGroup>,
-    names: &NameTables,
 ) {
     match arg {
         ArgBinding::Data(s) => {
@@ -1150,11 +1177,6 @@ fn walk_arg_for_reuse(
                     .enumerate()
                     .filter_map(|(i, e)| if i == ax_idx { None } else { Some(e.clone()) })
                     .collect();
-                let data_name = names
-                    .data
-                    .get(&data_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("d{}", data_id.0));
                 let buf_ident = format!("__reuse_buf_{}_a{}", data_name, axis);
                 found.insert(
                     *axis,
@@ -1170,7 +1192,7 @@ fn walk_arg_for_reuse(
         }
         ArgBinding::Nested { args, .. } => {
             for inner in args {
-                walk_arg_for_reuse(inner, data_id, iv_name, per_axis, found, names);
+                walk_arg_for_reuse(inner, data_id, data_name, iv_name, per_axis, found);
             }
         }
         ArgBinding::Scalar(_) => {}
@@ -1216,7 +1238,7 @@ pub fn render_reuse_buf_decls(
     if per_data.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let groups = discover_reuse_groups(body, iter_var_name, per_data, ctx.names);
+    let groups = discover_reuse_groups(body, iter_var_name, per_data, ctx.names)?;
     let pad = "    ".repeat(indent);
     for (data_id, gs) in &groups {
         let data_name = data_name(*data_id, ctx)?;
