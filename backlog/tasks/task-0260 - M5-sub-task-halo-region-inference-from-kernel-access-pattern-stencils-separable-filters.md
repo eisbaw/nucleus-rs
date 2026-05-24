@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 01:58'
+updated_date: '2026-05-24 10:56'
 labels:
   - M5
   - compiler
@@ -148,4 +148,6 @@ F-P2 (architect): module docs line 53 said 'iv by itself … no entry written' b
 ## Review-gate decision
 
 Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258 + TASK-0259. AC#1/AC#2/AC#3 GREEN. AC#4 (transfer_inject consumer) explicitly DEFERRED to TASK-0263 Stage 2 per the task brief. AC#5 (e2e cell bit-identical) DEFERRED to TASK-0263 + TASK-0262 lockstep landing.
+
+[CYCLE-95 UPDATE, 2026-05-24]: halo_inference's UnknownIterVarInScope was renamed to UnknownLoopVar in commit f8a3267 (TASK-0272 scope-A). The reference at line 132 above is historical — at the time of architect F-P1 (cycle 81) the variant was named UnknownIterVarInScope; it is now UnknownLoopVar matching the convention of 5 sibling passes. The architectural intent is unchanged.
 <!-- SECTION:NOTES:END -->

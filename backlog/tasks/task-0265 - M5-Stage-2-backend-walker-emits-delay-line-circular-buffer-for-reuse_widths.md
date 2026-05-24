@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 02:33'
-updated_date: '2026-05-24 08:49'
+updated_date: '2026-05-24 10:56'
 labels:
   - M5
   - compiler
@@ -144,4 +144,6 @@ QA's non-blocking note: e2e-matrix.toml was NOT modified (my brief incorrectly s
 Post-hardening gate: `just e2e` 92/77/0/15/0; `just determinism-check` GREEN; `cargo test --workspace` 0 failed; `cargo clippy` clean.
 
 **Cycle-87 keystone status**: Tier 1 LANDED, hardened, GO. Tier 2/3/4 + multi-worker marker coverage = TASK-0269/0270/0271/0272/0273. TASK-0265 itself stays In Progress with AC#1/AC#4 MET, AC#2/AC#3/AC#5 DEFERRED to those follow-ups.
+
+[CYCLE-95 UPDATE, 2026-05-24]: forward-carry review items 2 + 4 at lines 79 + 83 above reference the halo/reuse naming discrepancy and a hypothetical UnknownIterVarInScope variant. Item 2 is now PARTIALLY RESOLVED: cycle 95 commit f8a3267 landed TASK-0272 scope-A (halo renamed to UnknownLoopVar matching reuse); the passes::common lift remains deferred. Item 4's reference to 'halo's UnknownIterVarInScope' is now stale — read as UnknownLoopVar. The defensive-belt test gap described in item 4 is still open (no test pins HaloInferenceError::UnknownLoopVar; sibling test exists for ReuseInferenceError at sidecar_reuse.rs:381).
 <!-- SECTION:NOTES:END -->

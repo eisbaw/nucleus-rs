@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:54'
-updated_date: '2026-05-24 02:43'
+updated_date: '2026-05-24 10:56'
 labels:
   - M5
   - compiler
@@ -202,6 +202,8 @@ These are filed as forward-carry notes on TASK-0265 (not new tasks).
 Status: same closure-deferred-on-Stage-2 pattern as TASK-0260. AC#1 (parsed-but-unconsumed produces artefact) ✓ MET. AC#3 (reject data-dependent strides) ✓ MET. AC#5 (honest limitations recorded) ✓ MET. AC#2 (backend emits delay line) + AC#4 (e2e bit-identical + smaller working-set) DEFERRED to TASK-0265 Stage 2.
 
 M5 keystone status (TASK-0043): all FOUR sub-tasks (TASK-0258 partition_rows + TASK-0259 partition_blocks2d + TASK-0260 halo_inference Stage 1 + this TASK-0261 reuse_inference Stage 1) have code on disk and review-GO. The Stage 2 deferred follow-ups (TASK-0263 halo consumer, TASK-0264 blocks2d block-pair, TASK-0265 reuse codegen) define the rest of the M5 implementation surface and close in lockstep as their downstream consumers wire.
+
+[CYCLE-95 UPDATE, 2026-05-24]: cross-pass consistency note at line 193 above is now RESOLVED. The halo/reuse naming discrepancy (reuse=UnknownLoopVar, halo=UnknownIterVarInScope) was closed in commit f8a3267 (TASK-0272 scope-A) — halo now also uses UnknownLoopVar. The passes::common::IvScopeError lift (scope B) remains deferred.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -3,10 +3,10 @@ id: TASK-0272
 title: >-
   passes::common — unify IvScopeError between reuse_inference + halo_inference
   (TASK-0265.05)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-24 08:33'
-updated_date: '2026-05-24 10:39'
+updated_date: '2026-05-24 10:56'
 labels:
   - M5
   - passes
@@ -59,3 +59,17 @@ Recommendation: do scope A in a single fresh cycle with thorough grep discipline
 
 STAYS To Do at LOW priority. The scope-A path is the precise next-implementer cycle.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 95, commit f8a3267 + ecf191b (cycle-95 review-hardening to be added): scope-A LANDED. Halo's UnknownIterVarInScope renamed to UnknownLoopVar matching the convention of 5 sibling passes (partition_workers, partition_blocks2d, partition_rows, block_transform, reuse_inference). 3 sites changed in halo_inference.rs + 1 doc-cross-ref in reuse_inference.rs. Gate: cargo build + just test (0 failed) + just e2e 92/77/0/15/0 + just determinism-check green + clippy -D warnings clean.
+
+Scope-B (lift to passes::common::IvScopeError shared across all 6 passes) explicitly DEFERRED per cycle-94 scope-refinement: real cross-pass refactor warranting fresh session. Refile as separate task if/when the variant duplication accumulates enough drift to justify the lift (the 6 passes currently agree on shape; the principled fix has clear cost but no urgent forcing function).
+
+CYCLE-95 REVIEW-HARDENING (architect NO-GO repeat of cycle-93 sibling-grep failure mode): the in-source rename was clean (zero residual references in nucleus/) BUT my commit-message claim of "full-tree grep" missed 4 forward-carry references in backlog/. Architect's parallel review caught it — exactly the cycle-93 lesson firing TWICE. Cycle-95 closure notes appended to TASK-0260, TASK-0261, TASK-0265 marking those stale references as resolved-via-scope-A (commits to follow).
+
+The recurring pattern is now confirmed: the loop's "review-gate-caught-overconfidence" stop signal has fired in TWO consecutive cycles (93 + 95) on the same sibling-grep failure mode. This is a HARD stop signal for the session. Future sessions should treat any "comprehensive grep" claim with heightened scrutiny and scope grep beyond src/ explicitly.
+
+Defensive-test gap for HaloInferenceError::UnknownLoopVar (no direct test pin; sibling exists for ReuseInferenceError at sidecar_reuse.rs:381) is filed in TASK-0265's notes as still-open; could become its own follow-up if a future cycle wants to close it.
+<!-- SECTION:FINAL_SUMMARY:END -->
