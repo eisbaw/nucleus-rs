@@ -462,16 +462,18 @@ fn render_fire_arg(
                 // catch it loudly (same as the old backend).
                 data_name(s.data, ctx)
             } else {
-                // TASK-0269 Stage 2 codegen: if a reuse group is
-                // active on this `(data, axis)` AND the outer axes
-                // match the canonical pattern AND the reuse-axis
-                // index decodes as `iv + b` for the recorded iv,
-                // rewrite the read into a buffer slot lookup. The
-                // restrictive cut keeps the first-cut landing narrow
-                // (only 1 of 3 outer-coord variations in 05-stencil/
-                // reuse hits the rewrite); a more general rewrite
-                // (one buffer per outer-coord variation) is a
-                // follow-up.
+                // TASK-0269 + TASK-0282 reuse codegen: if a reuse
+                // group is active on this `(data, axis)` AND the
+                // DataRef's outer axes match one of the discovered
+                // groups verbatim AND the reuse-axis index decodes as
+                // `iv + b` for the recorded iv, rewrite the read into
+                // a buffer slot lookup. TASK-0282 generalised the
+                // rewrite from "first matching outer-axes pattern
+                // only" (cycle 103) to "every unique outer-axes
+                // pattern gets its own buffer" (cycle 110) — in
+                // 05-stencil/reuse every one of the 9 `img_in[...]`
+                // reads in the blur3 call now rewrites (3 buffers
+                // covering y-1, y, y+1 rows).
                 if let Some(rewrite) = try_rewrite_reuse_arg(s, ctx) {
                     return Ok(rewrite);
                 }
@@ -1066,32 +1068,32 @@ pub fn render_reuse_marker_comment(
             // for AC#4 of TASK-0265 — the e2e marker-detection test
             // greps for it. Do NOT rename without updating the test.
             //
-            // TASK-0269 (cycle 103) + TASK-0270 (cycle 104): the marker
-            // comment now precedes the real circular-buffer codegen on
-            // BOTH the pthreads-sync single-worker path AND the shared
-            // `multi_worker_walker::render_worker_events_inner`. The
-            // shared walker is consumed by pthreads-sync (multi-worker),
-            // pthreads-async, and mp-tcp-event. **mp-tcp-bufsync has its
-            // OWN per-event walker** (`backends/mp-tcp-bufsync/src/lib.rs::
-            // Plan::render_events`) that delegates to the shared
-            // `render_block_tag_loop_header` for the strip-mine inner
-            // header but does NOT call `render_worker_events_inner` —
-            // so the reuse-buffer codegen is silently absent on
-            // mp-tcp-bufsync. Tracked as the cycle-104 silent-sibling
-            // follow-up; no shipped mp-tcp-bufsync cell exercises reuse
-            // today (05-stencil/distributed × mp-tcp-bufsync is SKIP on
-            // a separate async+buffer capability mismatch). The marker
-            // substring is preserved as a regression canary above the
-            // buffer decl — the `__reuse_buf_<data>_a<axis>_g<group_idx>`
-            // + `rem_euclid(L_i64)` strings below are the second-layer
-            // codegen canary (TASK-0282 made `_g<group_idx>` uniform —
-            // single-group cases carry `_g0`), pinned per-arm by the
-            // tests in
+            // TASK-0269 (cycle 103) + TASK-0270 (cycle 104) + TASK-0284
+            // (cycle 107) + TASK-0282 (cycle 110): the marker comment
+            // now precedes the real circular-buffer codegen on ALL FOUR
+            // tier-1 backends:
+            //   - pthreads-sync single-worker path (private `RenderCtx`
+            //     via direct calls in `backends/pthreads-sync/src/lib.rs`).
+            //   - The shared `multi_worker_walker::render_worker_events_inner`
+            //     (consumed by pthreads-sync multi-worker, pthreads-async,
+            //     and mp-tcp-event via the `_pub` shims).
+            //   - mp-tcp-bufsync's own `Plan::render_events` (TASK-0284
+            //     cycle 107 lifted the reuse codegen calls onto its
+            //     per-event walker too — `_g0` buffer naming verified by
+            //     `backends/mp-tcp-bufsync/tests/reuse_codegen_emit.rs`).
+            // The marker substring is preserved as a regression canary
+            // above the buffer decl — the
+            // `__reuse_buf_<data>_a<axis>_g<group_idx>` +
+            // `rem_euclid(L_i64)` strings below are the second-layer
+            // codegen canary (TASK-0282 cycle 110 made `_g<group_idx>`
+            // uniform — single-group cases carry `_g0`; multi-outer-coord
+            // shapes like 05-stencil/reuse carry `_g0/_g1/_g2`), pinned
+            // per-arm by the tests in
             // `nucleus/backend-common/tests/multi_worker_reuse_marker.rs`
-            // (regular + strip-mine).
+            // (regular + strip-mine) and the per-backend reuse tests.
             let _ = writeln!(
                 out,
-                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below — TASK-0269 single-worker + TASK-0270 multi-worker)",
+                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below — multi-outer-coord rewrite landed cycles 103/104/107/110 on all 4 tier-1 backends)",
                 length = slot.length,
                 min_offset = slot.min_offset,
             );
