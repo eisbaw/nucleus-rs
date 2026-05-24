@@ -353,6 +353,25 @@ fn inject_in_sequence(
         // participants. The cross-worker data the Sequence boundary
         // would guard is already covered by the Push/Wait pair
         // (TASK-0117 fan-out around the partitioned loop boundary).
+        //
+        // ENVELOPE LIMIT — TASK-0281: this skip is UNCONDITIONAL
+        // inside a partitioned scope; `push_wait_pair_covers` is not
+        // consulted. Today the skip is sound because all shipped
+        // partitioned schedules satisfy PRD §6.2.1 single-assignment
+        // AND every cross-worker dataflow edge crossing the
+        // partitioned-loop boundary is already covered by the
+        // TASK-0117 fan-out Push/Wait pairs (verified: 03-reduction's
+        // distributed reduction lives OUTSIDE the partitioned scope;
+        // 05-stencil's blur3 is single-assignment per-output-cell).
+        // A future M6+ schedule that nests a cross-partition reducer
+        // (an inner Sequence writing to a shared output region placed
+        // on a worker set DIFFERENT from the partition's inner-body
+        // worker set, NOT covered by Push/Wait) would silently lose
+        // synchronisation. Filed as TASK-0281 — if an M6 schedule
+        // exercises this shape, replace the unconditional skip with
+        // `push_wait_pair_covers || partitioned_scope_covers` (the
+        // latter is the deeper participants-aware check option D
+        // from cycle-85 analysis).
         if !inside_partition {
             if let Some(prev) = out.last() {
                 if !matches!(prev, ACFGNode::Sync(_)) && !matches!(child, ACFGNode::Sync(_)) {

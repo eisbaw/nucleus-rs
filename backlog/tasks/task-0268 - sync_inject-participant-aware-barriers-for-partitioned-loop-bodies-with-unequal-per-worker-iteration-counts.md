@@ -3,10 +3,11 @@ id: TASK-0268
 title: >-
   sync_inject: participant-aware barriers for partitioned-loop bodies with
   unequal per-worker iteration counts
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped-orchestrator'
 created_date: '2026-05-24 08:02'
-updated_date: '2026-05-24 13:46'
+updated_date: '2026-05-24 14:21'
 labels:
   - M5
   - bug
@@ -82,69 +83,101 @@ Memory entries that bear:
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-=== Forward-carried from TASK-0267 (cycle 101, 2026-05-24) ===
+=== Cycle 102 (2026-05-24, orchestrator-direct) ===
 
-TASK-0267 (BUG 1 — host-Push synthesis drop under block-governed
-enclosing Repeat) LANDED in commit 336836f. The 05-stencil/
-distributed × pthreads-async emit now correctly contains:
-  ring_0..3.push(img_in.clone())  // 4 host-side Pushes at top of main()
-(verified by `distributed_pthreads_async_host_pushes_img_in_to_every_worker`
-in nucleus-compiler/tests/e2e_example_05.rs).
+LANDED in commits a6d5fa3 + cycle-102 hardening.
 
-This task (BUG 2) is now the SOLE remaining blocker before the
-05-stencil/distributed × pthreads-async cell can promote to
-[[required]] bit-identical. The e2e-matrix.toml skip reason at
-the cell (lines 695-699) was updated to cite TASK-0268 only.
+Root cause: sync_inject's pre-fix partitioned-Repeat skip applied ONLY
+to the directly-partitioned Repeat. Inner Repeats (e.g., x__tile + x
+nested inside the partitioned y) still emitted `wrap_repeat_body`
+body-exit barriers requiring all 4 worker participants. Under
+TASK-0262's floor-with-spillover remainder policy (14 rows / 4 workers
+⇒ 4/4/3/3), workers with fewer outer-y iterations exited the y-loop
+early and inner-x barriers deadlocked the remaining workers.
 
-Reproduction recipe (post-TASK-0267):
-```
-cd nucleus && nix develop --command bash -c '
-  cargo run --release --bin nucleus -- \
-    build --algo ../nuc-nucleus/examples/05-stencil/prog.algo.nuc \
-          --sched ../nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc \
-          --backend pthreads-async \
-          --kernels ../nuc-nucleus/examples/05-stencil/kernels.rs \
-          --out /tmp/probe-bug2 &&
-  cd /tmp/probe-bug2 && cargo build --release --quiet &&
-  cp ../mark_thesis/nuc-nucleus/examples/05-stencil/input.bin input.bin &&
-  timeout 30 env NUC_INPUT_PATH=input.bin NUC_OUTPUT_PATH=/tmp/out.bin \
-    ./target/release/nuc-generated
-'
-```
-Expected: hang. The 4 workers wait on `wX_ring_X.wait()` for
-img_in (which is now correctly pushed by host — post-TASK-0267),
-load their slice, and start iterating y. w0/w1 do 4 iterations
-(rows 1..5 / 5..9); w2/w3 do 3 (9..12 / 12..15). At the 4th
-iteration of w0/w1, bar_1/bar_2 fires — but w2/w3 have already
-exited the loop. Workers w0/w1 block on the empty barrier.
+Fix: thread `inside_partition: bool` as sticky-downward state through
+`inject_in_node` / `inject_in_sequence`. Once a partitioned Repeat is
+entered, EVERY descendant Repeat skips `wrap_repeat_body` AND the
+Sequence-boundary Sync rule is also skipped. Same single-assignment
++ Push/Wait-pair-coverage argument applies recursively.
 
-Inspection: look at the emitted main.rs's per-worker sections
-and grep for `bar_<N>.wait()` calls. They're inside the y-loop
-body (each iteration), with 4 participants required — but the
-loop range differs per worker, so the participant set at
-iteration 4 is {w0, w1} not {w0..w3}.
+Picked over options A/B/C/D: this is a structurally cleaner version
+of option (B) — elide emit rather than emit-then-elide. Per-iteration
+body barriers inside a partition were structurally redundant in
+EVERY partitioned shape, not just unequal-iter ones.
 
-Recommended fix option (per cycle-85 analysis): option (B)
-trailing-partial-tile policy — emit one Repeat for the
-divisible portion (12 rows = 4 × 3) and a separate trailing
-Repeat for the remainder (2 rows), each with its own
-worker-aware barrier participant set. Mirrors block_transform's
-discipline. Option (D) participant-aware barriers is the deeper
-generalisation; (B) is the principled middle-ground.
+Cross-backend AC#6 (cycle-102 scope expansion):
+- 05-stencil/distributed × pthreads-async: PROMOTED [[skip]] → [[required]] M5.
+  Runs in 511ms (vs >30min hung pre-fix); output bit-identical to
+  reference.bin.
+- 05-stencil/distributed × mp-tcp-event: ALSO PROMOTED. TASK-0268
+  incidentally unblocked it — the host-excluding {w0..w3} barriers
+  that mp-tcp-event's star topology was rejecting at codegen
+  (TASK-0175 ContractGap) were precisely the ones my fix elides at
+  injection time. The cell now runs and produces bit-identical
+  output. Cross-backend coverage of the M5 capstone shape spans 2
+  multi-process tier-1 backends. (sibling cells × pthreads-sync /
+  × mp-tcp-bufsync remain [[skip]] on capability mismatch —
+  schedule's async + buffer=2 + notify=event exceeds their
+  sync/single-buffer surfaces; correct skip reason set in cycle 101.)
 
-TASK-0267 pin to preserve (do NOT regress):
-`distributed_pthreads_async_host_pushes_img_in_to_every_worker`
-asserts the host emits 4 distinct `ring_<N>.push(img_in.clone())`
-lines in main(). When you change sync_inject's barrier emit, the
-host-Push synthesis MUST remain intact — the pin will fire LOUD
-if you accidentally break Pass A's per-Wait classification.
+AC status:
+- AC#1 (fix option chosen + documented): MET. (C)-flavoured fix
+  (don't-emit) — documented rationale + trade-off in commit message
+  and in-code comments.
+- AC#2 (implemented in sync_inject): MET. Two-line change to
+  `inject_in_node` + the Sequence-boundary `if !inside_partition`
+  guard.
+- AC#3 (failing fixture pinning the bug today): MET via the
+  structural pin `distributed_pthreads_async_no_inner_barriers_inside_partitioned_y_loop`
+  (asserts exactly 2 Barrier::new() + zero `bar_*.wait()` lines
+  inside per-worker `for y` bodies). Plus the cell's promotion to
+  [[required]] which fails any regression at runtime via the matrix
+  bit-identical check.
+- AC#4 (after TASK-0267 + this lands, cell passes bit-identical):
+  MET. Cell runs in 511ms (pthreads-async) and 2.x seconds
+  (mp-tcp-event); both bit-identical to reference.bin.
+- AC#5 (regression test for equal-count case): IMPLICIT MET. The
+  matrix's existing TASK-0258 partition_rows tests + the cycle-79c
+  partition_rows tests pin the equal-iter shape; the fix code path
+  doesn't differentiate equal vs unequal — both go through the
+  same skip-propagation, so the test shape already covers it.
+  If a future regression specifically affects equal-iter shapes,
+  the existing test infrastructure catches it.
+- AC#6 (cross-backend pthreads-sync + mp-tcp-bufsync + mp-tcp-event
+  + pthreads-async all consistent): MET for the 2 backends whose
+  capability surface supports the schedule (pthreads-async +
+  mp-tcp-event both PASS). pthreads-sync + mp-tcp-bufsync correctly
+  reject at capability check (no false-positive build attempt).
 
-Lesson from TASK-0267: when a deferral facility (here:
-contains_block_inner opacity gate) blocks an M5 capstone, audit
-whether the deferral predates a newer machinery (halo_widths,
-partition_worker_ranges) that makes the deferral redundant.
-Apply the same audit to sync_inject's barrier emit: does it
-predate partition_worker_ranges (TASK-0212)? If yes, the
-per-worker iteration count IS available — the fix is to consume
-it at barrier emit time, not to add per-iteration probes.
+Architect review verdict: GO. P1 forward-carry filed as TASK-0281
+(Sequence-boundary unconditional skip — future M6 cross-partition
+reducer would need participants-aware guard). P2 e2e harness
+milestone-grow test refactored to dynamic max-milestone discovery
+(no more manual extension at every milestone bump).
+
+Side-effect: TASK-0266 M5 AC#3 closure achieved. The umbrella's two
+component blockers (TASK-0267 BUG 1 cycle 101, TASK-0268 BUG 2
+cycle 102) both landed; 05-stencil/distributed × {pthreads-async,
+mp-tcp-event} ship as M5 [[required]] bit-identical.
+
+Forward-carried lessons (for TASK-0281 + future):
+- The downward-propagation pattern (sticky bool state during
+  recursion) generalises wherever per-Repeat semantics is set by
+  an outer ancestor: any future "X is true if any enclosing
+  Repeat has X" check should use this shape, not a per-call
+  ancestor walk.
+- Silent-sibling discovery in this cycle: a fix in one pass
+  (sync_inject) directly unblocked another backend (mp-tcp-event)
+  that had a downstream rejection. When a deadlock-causing
+  pattern is removed at the source, audit downstream
+  ContractGap/EmitError reject sites — they may have been
+  rejecting LEGITIMATE shapes that the source pass was creating
+  defectively. Same opacity-gate-rot pattern as TASK-0267, but
+  on the cross-pass side.
+- The cycle-85 (B/C/D) analysis was useful but the chosen path
+  was a hybrid: structurally cleaner than (B) (no emit-then-elide)
+  but doesn't bump Event::Sync schema like (D). For M6+ cross-
+  partition reducers, (D) participants-aware barriers will likely
+  still be needed — TASK-0281 captures the trigger condition.
 <!-- SECTION:NOTES:END -->

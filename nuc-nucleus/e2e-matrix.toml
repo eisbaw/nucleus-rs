@@ -925,12 +925,23 @@ schedule = "blocked"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-[[skip]]
+# 05-stencil/distributed × mp-tcp-event: PROMOTED cycle 102 alongside
+# pthreads-async (TASK-0268 cross-backend AC#6). Pre-TASK-0268 this
+# cell was [[skip]]ped on TASK-0175 (host-excluding {w0..w3} barriers
+# that mp-tcp-event's one-CTRL-stream-per-(host,worker) star topology
+# cannot lower). TASK-0268 INCIDENTALLY removed those barriers
+# entirely (they were sync_inject emitting per-iteration body barriers
+# inside the partitioned y-loop; the downward skip propagation now
+# elides them at injection time, not at backend codegen). The
+# loop-boundary barriers that remain ({host,w0..w3} 5-way joins) ARE
+# inclusive of the host, so mp-tcp-event's topology can lower them
+# without the host-excluding ContractGap. The cell now runs
+# bit-identical to reference.bin.
+[[required]]
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0175 (worker-to-worker mesh): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Backend rejects at codegen with verbatim ContractGap: `mp-tcp-event barrier #1 participants {WorkerId(1)..WorkerId(4)} exclude the host worker; the one-CTRL-stream-per-(host,worker) topology requires host as the barrier hub`. The TASK-0181 (block_tag malformed projection) skip reason that previously stood here was stale — TASK-0267 (cycle 101) removed the upstream Wait-without-matching-Push artifact; the mp-tcp-event blocker now surfaces precisely as TASK-0175."
-milestone = "M3"
+milestone = "M5"
 
 [[required]]
 example  = "06-separable-filter"

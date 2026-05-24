@@ -5545,15 +5545,18 @@ mystery = 42
 
     /// The required set genuinely DIFFERS per milestone (the whole
     /// point of AC#3 — the CI jobs must not be identical). Pins the
-    /// cumulative monotone: |M1| < |M2| < |M3| < |M4| == |full|, and
-    /// M1 ⊆ M2 ⊆ M3 ⊆ M4 by construction of the gate.
+    /// cumulative monotone: |M_k| < |M_{k+1}| for every adjacent pair
+    /// of milestones present in the manifest, and |M_top| == |full|.
     ///
-    /// M4 entered the chain when TASK-0042.03 landed the first
-    /// M4-tagged required cell (the producer-consumer pipelined ×
-    /// pthreads-async headline). With ≥1 M4 cell present, |M3| < |M4|
-    /// is now strict; the chain remains strict across all four tiers.
-    /// If a future cycle introduces an M5 tier, the strict M4 < M5
-    /// extension must be added here in lockstep.
+    /// TASK-0268 (cycle 102) refactored from hardcoded M1..M4 / M5 to
+    /// matrix-driven milestone discovery — the architect P2 review
+    /// noted that the previous hardcoded form required a manual code
+    /// edit at every milestone bump (M3<M4 → M3<M4<M5 → M3<M4<M5<M6
+    /// ...). Now the test reads ALL milestones referenced by
+    /// `[[required]]` rows in the manifest, finds the max, and
+    /// asserts strict monotonicity from M1 up to the discovered top.
+    /// New milestones are picked up automatically when their first
+    /// `[[required]]` cell lands.
     #[test]
     fn required_counts_strictly_grow_per_milestone() {
         let paths = Paths::discover().expect("discover repo root");
@@ -5570,25 +5573,52 @@ mystery = 42
                 .filter(|c| c.required)
                 .count()
         };
-        let m1 = count(Some(Milestone(1)));
-        let m2 = count(Some(Milestone(2)));
-        let m3 = count(Some(Milestone(3)));
-        let m4 = count(Some(Milestone(4)));
-        let m5 = count(Some(Milestone(5)));
+
+        // Discover the top milestone from manifest `[[required]]`
+        // rows. Skip-only milestones don't count: a milestone whose
+        // ONLY cells are `[[skip]]`s has zero required at any gate
+        // band, breaking strict-monotonicity. The gate semantics is
+        // "required count", so the discovery must match.
+        let top: Milestone = manifest
+            .required
+            .iter()
+            .map(|r| {
+                Milestone::parse(&r.milestone).expect("manifest milestone tags must parse")
+            })
+            .max()
+            .expect("manifest must contain at least one [[required]] cell");
+
+        // Count required cells at each gate band from M1 up to top.
+        let counts: Vec<(Milestone, usize)> = (1..=top.0)
+            .map(|k| {
+                let m = Milestone(k);
+                (m, count(Some(m)))
+            })
+            .collect();
         let full = count(None);
-        // TASK-0268 (cycle 102) added the first M5-tagged required cell
-        // (05-stencil/distributed × pthreads-async). M4 → M5 is now a
-        // STRICT subset relationship; promoting more M5 cells preserves
-        // it. When M6 cells land, extend this assertion the same way.
-        assert!(
-            m1 < m2 && m2 < m3 && m3 < m4 && m4 < m5,
-            "milestone subsets must strictly grow: \
-             M1={m1} M2={m2} M3={m3} M4={m4} M5={m5}"
-        );
+
+        // Strict monotonicity: every adjacent pair (M_k, M_{k+1}) has
+        // count(M_k) < count(M_{k+1}). A non-strict pair indicates a
+        // milestone with zero new [[required]] cells beyond the
+        // previous tier — that's an empty gate, which by PRD §11 is
+        // not a tier-1 milestone (each tier MUST have new acceptance
+        // cells).
+        for win in counts.windows(2) {
+            let (m_lo, c_lo) = win[0];
+            let (m_hi, c_hi) = win[1];
+            assert!(
+                c_lo < c_hi,
+                "milestone subsets must strictly grow: \
+                 |{m_lo:?}|={c_lo} not < |{m_hi:?}|={c_hi} (all counts: {counts:?})"
+            );
+        }
+
+        // Top tier covers the full required set.
+        let (_top_milestone, top_count) = *counts.last().expect("non-empty counts");
         assert_eq!(
-            m5, full,
-            "M5 is the current top tier ⇒ its required set == the full set \
-             (M1={m1} M2={m2} M3={m3} M4={m4} M5={m5} full={full})"
+            top_count, full,
+            "top milestone ({top:?}) required set must equal the full \
+             required set (top_count={top_count}, full={full}, all={counts:?})"
         );
     }
 
