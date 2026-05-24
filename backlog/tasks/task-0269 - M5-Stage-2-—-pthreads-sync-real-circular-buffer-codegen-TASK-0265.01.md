@@ -4,7 +4,7 @@ title: M5 Stage 2 — pthreads-sync real circular-buffer codegen (TASK-0265.01)
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:31'
-updated_date: '2026-05-24 11:22'
+updated_date: '2026-05-24 12:04'
 labels:
   - M5
   - codegen
@@ -47,4 +47,6 @@ Single-worker path (pthreads-sync render_event Event::Loop arm; also delegated t
 When pthreads-sync circular-buffer codegen consumes reuse_widths, note that the reuse driver is already STRICT (TASK-0271 cycle 88, no advisory bucket). That is the right shape for THIS task — every reuse slot is universally consumed by the Tier 1 marker today, and your real codegen will only strengthen that. Do NOT mirror the halo (B) partition-policy-aware shape here; the two pass siblings are asymmetric on purpose (transfer_inject is conditional on partition=, reuse marker is universal).
 
 Implementation lesson: if you need to thread additional context into the walker errors (the TASK-0275 refactor changed the halo walker return to `Vec<(Error, Vec<String>)>` to pair errors with their enclosing scope), introduce a type alias EARLY — clippy::type_complexity fires on the bare tuple+vec shape (1 error on first attempt; saved by `type HaloErrorWithScope = (HaloInferenceError, Vec<String>);`).
+
+**Forward-carried from TASK-0273 (cycle 98)**: when real circular-buffer codegen lands here on pthreads-sync's single-worker path, the `reuse_widths_pending` marker substring at render.rs:867 will rename (likely `reuse_buf_decl`) or be subsumed entirely by a `let __reuse_buf_<data>: Vec<...>` declaration. The grep assertions in `nucleus/nucleus-compiler/tests/e2e_example_05.rs::reuse_marker_present_on_reuse_schedule_absent_on_naive` (5 payload-field asserts: iv=x, data=img_in, axis=1, length=3, min_offset=-1) MUST be updated in lockstep — do NOT silently drop the marker without replacing the assertion shape.
 <!-- SECTION:NOTES:END -->

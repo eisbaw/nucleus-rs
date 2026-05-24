@@ -4,7 +4,7 @@ title: M5 Stage 2 — multi-worker walker real circular-buffer codegen (TASK-026
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 11:22'
+updated_date: '2026-05-24 12:04'
 labels:
   - M5
   - codegen
@@ -65,4 +65,6 @@ Multi-worker walker reuse codegen lands AFTER TASK-0269 (pthreads-sync first). T
 1. The reuse driver is STRICT (TASK-0271), not (B) partition-policy-aware like halo (TASK-0275). The reason: reuse marker is universally consumed across every recognised slot; halo's transfer_inject consumer is conditional on partition=. Do not transplant the halo (B) shape here.
 
 2. If you extend reuse_inference's walker to thread additional context (e.g. partition= for multi-worker scope checks), introduce a type alias for the paired-Vec return EARLY — clippy::type_complexity fires on the bare `Vec<(Error, Vec<String>)>` shape. See halo_inference.rs `HaloErrorWithScope` for the pattern.
+
+**Forward-carried from TASK-0273 (cycle 98)**: when real circular-buffer codegen lands here on the multi_worker_walker (covering pthreads-async + mp-tcp-bufsync + mp-tcp-event), the `reuse_widths_pending` marker substring at render.rs:867 will rename (likely `reuse_buf_decl`) or be subsumed by a real `let __reuse_buf_<data>` declaration. The NEW test file `nucleus/backend-common/tests/multi_worker_reuse_marker.rs` (cycle 98) asserts the marker substring + 5 payload fields (iv=x, data=img_in, axis=1, length=3, min_offset=-1) on BOTH presence and absence arms. The test file already embeds a top-level module doc-comment warning the next implementer; update assertion shape in lockstep with the codegen change here — do NOT silently drop.
 <!-- SECTION:NOTES:END -->

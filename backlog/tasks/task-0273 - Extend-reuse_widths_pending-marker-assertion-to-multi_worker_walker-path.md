@@ -1,11 +1,11 @@
 ---
 id: TASK-0273
 title: Extend reuse_widths_pending marker assertion to multi_worker_walker path
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:46'
-updated_date: '2026-05-24 12:00'
+updated_date: '2026-05-24 12:04'
 labels:
   - M5
   - test-gap
@@ -80,4 +80,38 @@ Path-verified facts:
 - The line-478 call site fires the marker AFTER writing 'for {var} in (lo)..(hi) {', so an empty body is fine.
 
 No production code changes.
+
+## Final summary (cycle 98 — TASK-0273 Done)
+
+**Commit**: 1e62b4b — `backend-common/tests: TASK-0273 pin reuse marker via multi_worker_walker (Option B)`.
+
+**Approach**: Option B (standalone synthetic fixture) chosen over Option A (waiting on TASK-0267 + TASK-0268). Decouples coverage from those still-open runtime-bug tasks; future e2e cell on 05-stencil/distributed will provide complementary integration coverage when those land.
+
+**Deliverable**: `nucleus/backend-common/tests/multi_worker_reuse_marker.rs` (new, 252 lines). Two tests:
+1. `multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated` — presence + 5 payload-field assertions (iv, data, axis, length, min_offset). The 5-field payload coverage exceeds the single-worker e2e test's pin shape and catches a subtler regression class (payload-stripping refactor).
+2. `multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty` — symmetric absence (`assert_eq!(count, 0)`).
+
+**Per-AC**:
+- AC#1 (test exists, asserts marker substring + multi_worker_walker call site): YES — both tests route through `backend_common::multi_worker_walker::render_worker_events`, hitting the non-strip-mine `Event::Loop` body-entry call site at multi_worker_walker.rs:478.
+- AC#2 (symmetric absence): YES — test 2 asserts `out.matches(...).count() == 0`.
+- AC#3 (<30s, no full cargo build): YES — direct walker invocation; both tests complete in <0.01s per cargo test output.
+
+**Gate** (cycle-98 baseline preserved):
+- `cargo test -p backend-common --test multi_worker_reuse_marker`: 2 passed; 0 failed; finished in 0.00s.
+- `just test`: 0 failures across workspace (20 crates).
+- `just e2e`: total: 92   pass: 77   fail: 0   skipped: 15   required-fail: 0.
+- `just determinism-check`: total: 92   pass: 77   fail: 0   skipped: 15.
+- `just clippy`: clean (`-D warnings`).
+- `just fmt-check`: clean (initial draft tripped one let-binding line-break; `cargo fmt --all -- backend-common/tests/multi_worker_reuse_marker.rs` normalised, re-checked clean).
+
+**Lessons forward-carried**:
+- `ReuseSlot` import path: `nucleus_compiler::passes::reuse_inference::ReuseSlot` (NOT `nucleus_compiler::sidecar::ReuseSlot` — sidecar only mentions it by qualified path in its field type). The `pub use` re-export at lib.rs:72 also exposes it as `nucleus_compiler::ReuseSlot`; either works.
+- `sidecar.reuse_widths` axis key type is `u64`, not `usize` as the task description suggested. Verified at sidecar.rs:298.
+- The non-strip-mine `Event::Loop` arm (block_tag=None) is the simpler call site to exercise — empty body still emits the marker because `render_reuse_marker_comment` fires at body-entry BEFORE recursing into `body`. No need to construct a populated `Fire` body for the marker contract test (would only add ceremony).
+- TASK-0269 + TASK-0270 forward-link: when real circular-buffer codegen lands, the `reuse_widths_pending` substring will rename/subsume. The new test file embeds a module-level forward-carry warning to the next implementer; same warning appended to TASK-0269 + TASK-0270 notes.
+
+**No follow-up tasks filed**: production code untouched; no defects discovered.
+
+**Honest limits**:
+- This is an OPTION-B coverage shim, NOT a full integration test. Once TASK-0267 + TASK-0268 land and 05-stencil/distributed unskips, the resulting end-to-end build-and-grep would provide a stronger guarantee (real ACFG + real partition + real walker). Option B's value is that it pins the contract WITHOUT waiting on those — but it cannot catch a regression in the upstream ACFG `reuse_widths` population (only in the walker's consumption of it). The single-worker e2e test still provides that upstream coverage on the `reuse.sched.nuc` single-host path.
 <!-- SECTION:NOTES:END -->
