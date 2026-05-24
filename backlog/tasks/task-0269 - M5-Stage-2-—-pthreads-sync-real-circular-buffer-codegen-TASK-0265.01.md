@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:31'
-updated_date: '2026-05-24 15:25'
+updated_date: '2026-05-24 15:49'
 labels:
   - M5
   - codegen
@@ -218,6 +218,55 @@ for y in (1_i64)..((16_i64 - 1_i64)) {
 - Same first-matching-DataRef discovery; same narrow rewrite cut.
 - Per-worker partition slices already drive the loop bounds in multi_worker_walker — the reuse buffer decl + prologue use the per-worker partition slice's lo (not the source lo). The current discover_reuse_groups walks the worker's body events which already carry the partition-projected shape.
 - mp-tcp-bufsync host emit doesn't share render_event with the multi_worker_walker — TASK-0270 needs to verify whether host-side single-worker-style emit ALSO needs the buffer decl (when host carries a reuse-tagged loop it lowers through pthreads-sync's render_single_worker_main, which already has the fix from this task).
+
+## CYCLE-103 REVIEW-HARDENING (orchestrator, 2026-05-24)
+
+Parallel read-only review gate on commits e21d75e + 5d6e061:
+
+**QA: GO** — 805/0/3 tests, clippy clean, 92/79/0/13/0 e2e across 2 runs (no flake), determinism + xbackend falsifiers both bite, reuse cell bit-identical to reference.bin. 2 P2 follow-ups, no P1.
+
+**Architect: NO-GO** — 2 P1 findings against the strip-mine arm:
+- **P1.1** — render_event strip-mine arm computed prologue lo via abs.replace(var, '0_i64'). block_transform produces tile_name = format!('{var}__tile'), so for iv='x' the replace corrupted 'x__tile' into '0_i64__tile' — broken Rust. Latent today (05-stencil/distributed × pthreads-sync is [[skip]] on TASK-0042 capability), but real defect.
+- **P1.2** — pthreads-sync/tests/reuse_marker.rs strip-mine fixture used body: vec![], so discover_reuse_groups returned empty and render_reuse_buf_decls was an unexercised no-op. The new codegen path on the strip-mine arm had zero direct test coverage.
+
+Both blockers fixed in commit **cd2310c**:
+- Replaced abs.replace with structural construction: hoisted the (abs, strip_lo_expr) pair into a single if/else returning both expressions built from the same (lo_src, tile_name, n) components with var vs 0_i64 respectively. Safe regardless of name overlap.
+- New test pthreads_sync_strip_mine_arm_emits_real_buffer_codegen uses iv='x', tile='x__tile' (the exact name-overlap shape block_transform produces) with a body Fire reading img_in[y][x-1]. Asserts: __reuse_buf_img_in_a1: Vec<i32> decl present, rem_euclid(3_i64) present, x__tile intact, 0_i64__tile NEVER appears. Verified to BITE the defect: with cd2310c reverted via git stash, the test fails with the corrupted token visible in the emitted prologue lines.
+
+**P2 findings**:
+- Architect P2.1 (marker text 'circular-buffer codegen below on pthreads-sync' is a partial lie under multi-worker emission) → forward-carried as HARD AC to TASK-0270 (lockstep update or rename when multi-worker codegen lands).
+- Architect P2.2 (narrow rewrite cut documented loosely) → already filed as TASK-0282 (multi-outer-coord generalisation).
+- Architect P2.3 (silent fallback to 'd<id>' in walk_arg_for_reuse buffer-ident construction) → fixed in commit **bd74a5e**. Hoisted data_name resolution to the per-data loop in discover_reuse_groups; fail-loud with EmitError::ContractGap if absent. Walker signatures shrank (no longer thread &NameTables); discover_reuse_groups returns Result<...>, propagated through render_reuse_buf_decls. Structurally unreachable for link-valid input (data_name in render_reuse_buf_decls would have errored anyway) — hygiene match to MPED fail-loud discipline.
+- Architect P2.4 (.expect('outer_axes length matches') unreachable but typed wrong) → cosmetic, deferred.
+- Architect P2.5 (try_reuse_axis_offset duplicates affine_decompose) → filed as TASK-0283.
+- QA P2.1 (strip-mine arm coverage gap) → fixed by cd2310c's new test.
+- QA P2.2 (naive absence check only on __reuse_buf, missing rem_euclid) → fixed in commit **bd74a5e**: added !naive_main.contains('rem_euclid(3') symmetric absence assertion.
+- QA P3 (docstring overclaim) → cosmetic, deferred.
+
+## Gate post-hardening (this cycle)
+
+- cargo test --workspace: **806 / 0 / 3** (+1 vs cycle-103 baseline 805 — the new strip-mine codegen test).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: **92 / 79 / 0 / 13 / 0** required-fail (preserved).
+- just determinism-check: **92 / 79 / 0 / 13** (GREEN).
+
+## Review-gate decision
+
+**GO** for Done. All 4 ACs GREEN:
+- AC#1 (buffer decl + initial-fill prologue): MET, strip-mine + regular both pinned by tests.
+- AC#2 (per-iter most-distant element load): MET, math verified by hand for first iterations.
+- AC#3 (rewrite reads via reuse buffer): MET (narrow first-cut; TASK-0282 filed for multi-outer-coord generalisation).
+- AC#4 (05-stencil/reuse bit-identical + marker grep-able): MET.
+
+The strip-mine codegen arm now has DIRECT regression coverage (P1.2 closed), so the cycle-103 first-landing's latent-defect concern is structurally addressed even though the shipped exerciser (05-stencil/distributed) remains [[skip]] on tier-1 unrelated to reuse codegen.
+
+## Final commits for TASK-0269
+
+- e21d75e — pthreads-sync real circular-buffer codegen (the substantive Tier 2 landing).
+- 5d6e061 — tracker: cycle-103 Done attempt + TASK-0282 filed + TASK-0270 forward-carry.
+- cd2310c — cycle-103 review-hardening 1/3 (architect P1.1 + P1.2): structural lo-expr + strip-mine codegen test.
+- bd74a5e — cycle-103 review-hardening 2/3 (architect P2.3 + QA P2.2): fail-loud buffer-ident + rem_euclid absence.
+- (this commit) — cycle-103 review-hardening 3/3: tracker close-out + TASK-0283 + TASK-0270 hard AC.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

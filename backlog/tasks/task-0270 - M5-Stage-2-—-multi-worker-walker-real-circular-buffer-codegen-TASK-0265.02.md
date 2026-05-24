@@ -4,7 +4,7 @@ title: M5 Stage 2 — multi-worker walker real circular-buffer codegen (TASK-026
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 15:25'
+updated_date: '2026-05-24 15:48'
 labels:
   - M5
   - codegen
@@ -117,4 +117,6 @@ In multi_worker_walker.rs::Event::Loop arm (BOTH strip-mine path at line 404 and
 - nucleus-compiler/tests/e2e_example_05.rs::reuse_marker_present_on_reuse_schedule_absent_on_naive — 5 marker grep + 3 buffer-shape asserts + 1 symmetric absence on naive.
 - pthreads-sync/tests/reuse_marker.rs (synthetic strip-mine marker pin).
 - backend-common/tests/multi_worker_reuse_marker.rs (3 multi-worker marker pins — TASK-0270 should ADD a buffer-shape assert here once codegen lands).
+
+Forward-carried from TASK-0269 cycle-103 architect review (P2.1): when multi-worker walker landing replaces the marker-only emit with real circular-buffer codegen on the multi-worker path, the marker substring's parenthetical 'circular-buffer codegen below on pthreads-sync — TASK-0269' becomes a doc-lie on the multi-worker sites (it claims real codegen follows, but only the single-worker sites do). UPDATE THE MARKER TEXT IN LOCKSTEP with the multi-worker codegen landing — either branch the marker per-call-site (different text for the multi-worker arms), or rename the marker entirely to a backend-agnostic substring (e.g. 'reuse_buf_decl') and update all 4 grep tests + the test docstrings in lockstep. The grep tests carrying the substring are: nucleus/nucleus-compiler/tests/e2e_example_05.rs (5 asserts), nucleus/backends/pthreads-sync/tests/reuse_marker.rs (2 asserts + 1 new strip-mine codegen assertion as of cycle 103 hardening commit cd2310c), nucleus/backend-common/tests/multi_worker_reuse_marker.rs. This is now a HARD AC of TASK-0270, not optional.
 <!-- SECTION:NOTES:END -->
