@@ -229,6 +229,48 @@ impl<'a> RenderCtxPub<'a> {
         }
     }
 
+    /// Build a child context sharing `(names, sidecar)` with this one
+    /// but carrying the supplied `reuse_active` map. Used by the shared
+    /// multi-worker walker to seed a per-occurrence reuse-buffer rewrite
+    /// group into the body recursion (TASK-0270 multi-worker codegen
+    /// landing). Parent's `abs_subst` is preserved verbatim — the
+    /// regular (non-strip-mine) loop arm does not introduce an
+    /// abs_subst rebinding (only the strip-mine arm does, and it uses
+    /// [`Self::with_abs_subst_and_reuse_active`] which carries both at
+    /// once).
+    pub fn with_reuse_active(
+        &self,
+        reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
+    ) -> RenderCtxPub<'a> {
+        RenderCtxPub {
+            names: self.names,
+            sidecar: self.sidecar,
+            abs_subst: self.abs_subst.clone(),
+            reuse_active,
+        }
+    }
+
+    /// Build a child context carrying BOTH a new `abs_subst` map AND a
+    /// new `reuse_active` map. Used by the shared multi-worker walker's
+    /// strip-mine arm where one `Event::Loop` simultaneously introduces
+    /// the per-occurrence absolute-index rebinding (TASK-0181) AND a
+    /// reuse-buffer rewrite group (TASK-0270 multi-worker codegen).
+    /// Chaining `with_abs_subst().with_reuse_active()` would also work
+    /// but doubles the BTreeMap clone — this builder does both in one
+    /// pass.
+    pub fn with_abs_subst_and_reuse_active(
+        &self,
+        abs_subst: BTreeMap<String, String>,
+        reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
+    ) -> RenderCtxPub<'a> {
+        RenderCtxPub {
+            names: self.names,
+            sidecar: self.sidecar,
+            abs_subst,
+            reuse_active,
+        }
+    }
+
     /// Internal lowering to the private `RenderCtx` the underlying
     /// helpers consume. Clones the `abs_subst` map (cheap — the map
     /// holds at most one entry per active strip-mine nesting depth,
@@ -877,6 +919,50 @@ pub fn render_const_expr_pub(e: &IrExpr, ctx: &RenderCtxPub<'_>) -> Result<Strin
     render_const_expr(e, &ctx.inner())
 }
 
+/// Public shim for [`render_reuse_buf_decls`] consumed by the shared
+/// multi-worker walker (TASK-0270). Delegates to the private impl via
+/// `ctx.inner()`, mirroring the rest of the `_pub` shim layer (see
+/// [`render_fire_args_pub`], [`render_flat_index_pub`], etc.).
+///
+/// Returns the per-(DataId, axis) [`ReuseRewriteGroup`] map the caller
+/// seeds into the child [`RenderCtxPub`] it recurses into the body
+/// with (via [`RenderCtxPub::with_reuse_active`] or
+/// [`RenderCtxPub::with_abs_subst_and_reuse_active`]).
+pub fn render_reuse_buf_decls_pub(
+    out: &mut String,
+    indent: usize,
+    iter_var: IterVar,
+    iter_var_name: &str,
+    lo_expr_rs: &str,
+    body: &[Event],
+    ctx: &RenderCtxPub<'_>,
+) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError> {
+    render_reuse_buf_decls(
+        out,
+        indent,
+        iter_var,
+        iter_var_name,
+        lo_expr_rs,
+        body,
+        &ctx.inner(),
+    )
+}
+
+/// Public shim for [`render_reuse_per_iter_update`] consumed by the
+/// shared multi-worker walker (TASK-0270). Delegates to the private
+/// impl via `ctx.inner()`. Called at body entry, AFTER the loop header
+/// and BEFORE recursing into the body, so the buffer slot is current
+/// when any Fire arg reads it.
+pub fn render_reuse_per_iter_update_pub(
+    out: &mut String,
+    indent: usize,
+    groups: &BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
+    iv_expr_rs: &str,
+    ctx: &RenderCtxPub<'_>,
+) -> Result<(), EmitError> {
+    render_reuse_per_iter_update(out, indent, groups, iv_expr_rs, &ctx.inner())
+}
+
 // Helper used by callers (pthreads-sync's single-worker emit) that
 // need to write a fail-loud emit error to disk.
 pub fn write_file(path: &std::path::Path, contents: &str) -> Result<(), EmitError> {
@@ -961,15 +1047,17 @@ pub fn render_reuse_marker_comment(
             // for AC#4 of TASK-0265 — the e2e marker-detection test
             // greps for it. Do NOT rename without updating the test.
             //
-            // TASK-0269 (cycle 103): the marker comment now precedes
-            // the real circular-buffer codegen on pthreads-sync's
-            // single-worker path. The substring is preserved as a
-            // regression canary above the buffer decl — Tier 2 + Tier 3
-            // landings can subsume it (TASK-0270 multi-worker remains
-            // marker-only).
+            // TASK-0269 (cycle 103) + TASK-0270 (cycle 104): the marker
+            // comment now precedes the real circular-buffer codegen on
+            // BOTH the pthreads-sync single-worker path AND the shared
+            // multi-worker walker (used by pthreads-async +
+            // mp-tcp-bufsync + mp-tcp-event). The substring is preserved
+            // as a regression canary above the buffer decl — the
+            // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)` strings
+            // below are the second-layer codegen canary.
             let _ = writeln!(
                 out,
-                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below on pthreads-sync — TASK-0269)",
+                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below — TASK-0269 single-worker + TASK-0270 multi-worker)",
                 length = slot.length,
                 min_offset = slot.min_offset,
             );

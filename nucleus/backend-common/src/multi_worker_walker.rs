@@ -70,7 +70,8 @@ use nucleus_compiler::NameTables;
 use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
 use crate::render::{
     render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
-    render_reuse_marker_comment, EmitError, RenderCtxPub,
+    render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
+    EmitError, RenderCtxPub,
 };
 
 /// Stable identifier for one rendezvous channel (slot or ring) keyed
@@ -216,6 +217,72 @@ pub fn render_block_tag_loop_header<'a>(
             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
         ))
     })?;
+    let (abs, _strip_lo_expr) = compute_block_tag_abs_exprs(iter_var, tag, enclosing, ctx)?;
+    let mut child_subst = ctx.abs_subst.clone();
+    child_subst.insert(var.clone(), abs);
+    let child = ctx.with_abs_subst(child_subst);
+    // Loop header uses the concrete folded range
+    // (`{start}_i64..{end}_i64`) — NOT the source-form bound (would
+    // re-introduce the full range) and NOT the partition slice (the
+    // strip-mined inner loop iterates over the tile, not the worker's
+    // partition slice).
+    writeln!(
+        out,
+        "{pad}for {var} in ({}_i64)..({}_i64) {{",
+        range.start, range.end
+    )
+    .ok();
+    Ok(child)
+}
+
+/// Compute the strip-mined-loop rebound absolute-index expression `abs`
+/// AND its `iv=0` counterpart `strip_lo_expr` (the absolute coordinate
+/// of the strip-mined loop's FIRST iteration). Both expressions are
+/// built from the same structural components — STRUCTURAL not textual,
+/// so a tile-name that overlaps the inner var name (e.g. iv="x" and
+/// tile_name="x__tile" from `block_transform`'s canonical
+/// `format!("{var}__tile")`) does NOT corrupt the rebound expression
+/// (cycle 103 architect P1.1 review-gate finding on the single-worker
+/// path; mirrored here for TASK-0270 because the multi-worker walker's
+/// strip-mine arm now ALSO needs both expressions for the reuse
+/// prologue's `lo` argument).
+///
+/// Pure computation — no writes to `out`, no side effects on the
+/// parent context. The caller is responsible for inserting `abs` into
+/// the child `RenderCtxPub::abs_subst`, writing the loop header, and
+/// passing `strip_lo_expr` to [`crate::render::render_reuse_buf_decls_pub`]
+/// when the iv carries reuse.
+///
+/// # Returned shape
+///
+/// - `abs`: the rebound absolute-index expression at body sites
+///   (`(LO + tile*N + inner)` for full-nest; `(LO + num_full*N +
+///   inner)` for trailing-partial).
+/// - `strip_lo_expr`: the `iv=0` counterpart used as the reuse
+///   prologue's lo argument (substitutes `inner` with `0_i64` in the
+///   `abs` template).
+///
+/// # Errors
+///
+/// - [`EmitError::ContractGap`] when a full-nest `BlockTag` (`is_partial
+///   == false`) has no `enclosing` tile loop — `block_transform`
+///   contracts to always emit the tile, so a missing one is a malformed
+///   EventList.
+/// - [`EmitError::ContractGap`] when the enclosing tile var has no name
+///   in `NameTables`.
+/// - [`EmitError::ContractGap`] when `iter_var` has no name in
+///   `NameTables`.
+pub fn compute_block_tag_abs_exprs(
+    iter_var: IterVar,
+    tag: &BlockTag,
+    enclosing: Option<IterVar>,
+    ctx: &RenderCtxPub<'_>,
+) -> Result<(String, String), EmitError> {
+    let var = ctx.names.iter_var.get(&iter_var).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "iter var {iter_var:?} in Event::Loop has no name in NameTables"
+        ))
+    })?;
     let lo_src = ctx
         .sidecar
         .loop_bounds
@@ -224,10 +291,20 @@ pub fn render_block_tag_loop_header<'a>(
         .transpose()?
         .unwrap_or_else(|| "0_i64".to_string());
     let n = tag.block_n;
-    let abs = if tag.is_partial {
+    let (abs, strip_lo_expr) = if tag.is_partial {
         // Constant base: the partial tile's own tile loop is `0..1`,
-        // so a `tile*N` term is always 0.
-        format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full)
+        // so a `tile*N` term is always 0. Build BOTH `abs` and
+        // `strip_lo_expr` structurally from the same components — the
+        // strip_lo_expr is `abs` evaluated at iv=0 (substitute `var`
+        // with `0_i64`), which we construct directly, not via textual
+        // `abs.replace(var, "0_i64")` (that defect is filed in
+        // memory `feedback-textual-replace-codegen-unsafe`: when `var`
+        // is a substring of any other token, the replace corrupts the
+        // sibling — cycle 103 architect P1.1).
+        (
+            format!("({lo_src} + ({}_i64 * {n}_i64) + {var})", tag.num_full),
+            format!("({lo_src} + ({}_i64 * {n}_i64) + 0_i64)", tag.num_full),
+        )
     } else {
         // Variable base from the enclosing tile loop. A tagged full
         // nest ALWAYS has an enclosing tile loop (block_transform
@@ -246,23 +323,12 @@ pub fn render_block_tag_loop_header<'a>(
                 "tile iter var {tile_iv:?} has no name in NameTables"
             ))
         })?;
-        format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
+        (
+            format!("({lo_src} + ({tile_name} * {n}_i64) + {var})"),
+            format!("({lo_src} + ({tile_name} * {n}_i64) + 0_i64)"),
+        )
     };
-    let mut child_subst = ctx.abs_subst.clone();
-    child_subst.insert(var.clone(), abs);
-    let child = ctx.with_abs_subst(child_subst);
-    // Loop header uses the concrete folded range
-    // (`{start}_i64..{end}_i64`) — NOT the source-form bound (would
-    // re-introduce the full range) and NOT the partition slice (the
-    // strip-mined inner loop iterates over the tile, not the worker's
-    // partition slice).
-    writeln!(
-        out,
-        "{pad}for {var} in ({}_i64)..({}_i64) {{",
-        range.start, range.end
-    )
-    .ok();
-    Ok(child)
+    Ok((abs, strip_lo_expr))
 }
 
 /// Walk one worker's EventList, emitting Rust statements into `out`.
@@ -381,26 +447,91 @@ fn render_worker_events_inner(
                 })?;
 
                 // Per-occurrence absolute-index rebinding (TASK-0181;
-                // mirrors TASK-0180 on the single-worker path).
-                // Delegates to [`render_block_tag_loop_header`] in this
-                // module — the SAME helper mp-tcp-bufsync's Plan calls
-                // (TASK-0253), so the strip-mined inner loop header
-                // and rebound child context are byte-identical across
-                // every backend by construction. The CALLER (this
-                // walker) still owns the body recursion + closing `}`;
-                // its recursion substrate (`bar_<tag>` / Push/Wait on
-                // `{prefix}_<id>` for the Slot/Ring rendezvous) is the
-                // walker-specific axis the helper deliberately does
-                // not abstract over.
+                // mirrors TASK-0180 on the single-worker path) AND
+                // reuse circular-buffer codegen (TASK-0270, mirrors
+                // TASK-0269 strip-mine arm on the single-worker path).
+                //
+                // Pre-TASK-0270 this arm delegated wholesale to
+                // [`render_block_tag_loop_header`] (which writes the
+                // for-header and returns the rebound child). With the
+                // reuse-buffer landing the order matters: the buffer
+                // decl + initial-fill prologue MUST live OUTSIDE the
+                // for-header so the buffer persists across iterations.
+                // We therefore split the helper into the pure
+                // [`compute_block_tag_abs_exprs`] (returns abs +
+                // strip_lo_expr) + an inline header write, so the
+                // walker can interpose `render_reuse_buf_decls_pub`
+                // between them.
+                //
+                // `strip_lo_expr` is the `iv=0` counterpart of `abs`
+                // built STRUCTURALLY (NOT via textual
+                // `abs.replace(var, "0_i64")` — that defect is filed
+                // in memory `feedback-textual-replace-codegen-unsafe`,
+                // cycle 103 architect P1.1 on the single-worker path,
+                // mirrored here).
                 if let Some(tag) = block_tag {
-                    let child = render_block_tag_loop_header(
-                        out, indent, *iter_var, range, tag, enclosing, render_ctx,
+                    let (abs, strip_lo_expr) =
+                        compute_block_tag_abs_exprs(*iter_var, tag, enclosing, render_ctx)?;
+                    // TASK-0270 strip-mine arm reuse-buffer decl +
+                    // prologue. Emitted at the OUTER pad above the
+                    // for-header so the buffer persists across the
+                    // inner loop's iterations. The prologue's
+                    // reuse-axis "lo" uses the rebound ABSOLUTE
+                    // expression at iv=0 (`LO + tile*N + 0`) because
+                    // the strip-mined loop's lexical range is
+                    // `0..inner_len`, not `LO..HI`. NO-OP when the iv
+                    // carries no reuse (every shipped non-blocked
+                    // schedule).
+                    let reuse_groups = render_reuse_buf_decls_pub(
+                        out,
+                        indent,
+                        *iter_var,
+                        var,
+                        &strip_lo_expr,
+                        body,
+                        render_ctx,
                     )?;
-                    // TASK-0265 Tier 1 wiring: a strip-mined inner
-                    // loop CAN carry reuse (cf. 05-stencil/distributed
-                    // `loop x : block=64, vectorize=8, reuse;`). Emit
-                    // the marker at body entry of the inner-block
-                    // loop, same as the non-strip-mine path below.
+                    // Build the child context carrying BOTH the
+                    // strip-mine abs rebinding AND the reuse-active
+                    // groups. Parent's reuse_active is preserved (so
+                    // nested reuse loops compose); new groups OVERRIDE
+                    // on data_id collision.
+                    let mut child_subst = render_ctx.abs_subst.clone();
+                    child_subst.insert(var.clone(), abs.clone());
+                    let mut child_reuse = render_ctx.reuse_active.clone();
+                    for (data_id, gs) in reuse_groups.clone() {
+                        child_reuse.insert(data_id, gs);
+                    }
+                    let child = render_ctx
+                        .with_abs_subst_and_reuse_active(child_subst, child_reuse);
+                    // Header line: concrete folded range
+                    // (`{start}_i64..{end}_i64`) — NOT the source-form
+                    // bound (would re-introduce the full range) and
+                    // NOT the partition slice (the strip-mined inner
+                    // loop iterates over the tile, not the worker's
+                    // partition slice). Inlined here because the buf
+                    // decls above had to land BEFORE the for-header;
+                    // the regular `render_block_tag_loop_header`
+                    // wrapper is unchanged and continues to be used by
+                    // mp-tcp-bufsync's strip-mine arm (which does not
+                    // emit reuse codegen on this cycle).
+                    writeln!(
+                        out,
+                        "{pad}for {var} in ({}_i64)..({}_i64) {{",
+                        range.start, range.end
+                    )
+                    .ok();
+                    // TASK-0265 Tier 1 marker (preserved): a
+                    // strip-mined inner loop CAN carry reuse (cf.
+                    // 05-stencil/distributed `loop x : block=64,
+                    // vectorize=8, reuse;`). Emit the marker at body
+                    // entry of the inner-block loop, same as the
+                    // non-strip-mine path below. The marker substring
+                    // `reuse_widths_pending` is preserved as a
+                    // regression canary above the buffer decls (which
+                    // landed above the for-header) — the
+                    // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)`
+                    // strings are the second-layer codegen canary.
                     render_reuse_marker_comment(
                         out,
                         indent + 1,
@@ -409,6 +540,19 @@ fn render_worker_events_inner(
                         ctx.sidecar,
                         ctx.names,
                     );
+                    // TASK-0270 per-iter update: load the most-distant
+                    // element into the buffer slot before any Fire arg
+                    // reads it. Iv expression here is the rebound
+                    // ABSOLUTE expression (so the source-array index
+                    // reflects the strip-mined coordinate), NOT the
+                    // bare `var`.
+                    render_reuse_per_iter_update_pub(
+                        out,
+                        indent + 1,
+                        &reuse_groups,
+                        &abs,
+                        &child,
+                    )?;
                     render_worker_events_inner(
                         ctx,
                         worker,
@@ -461,20 +605,37 @@ fn render_worker_events_inner(
                         None => (format!("{}_i64", range.start), format!("{}_i64", range.end)),
                     },
                 };
+                // TASK-0270 regular (non-strip-mine) arm: emit reuse-
+                // buffer decl + initial-fill prologue at OUTER pad
+                // BEFORE the for-header (the buffer must persist
+                // across iterations). The prologue's reuse-axis "lo"
+                // is the PER-WORKER lo computed above — when
+                // `partition_worker_ranges` recorded a slice, the
+                // prologue uses that worker's first-iteration absolute
+                // coordinate, which is the correct source-array index
+                // for the prologue fill. NO-OP when the iv carries no
+                // reuse (every shipped multi-worker schedule pre-
+                // TASK-0270).
+                let reuse_groups = render_reuse_buf_decls_pub(
+                    out,
+                    indent,
+                    *iter_var,
+                    var,
+                    &lo,
+                    body,
+                    render_ctx,
+                )?;
                 writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                 let body_indent = indent + 1;
                 let body_pad = "    ".repeat(body_indent);
-                // TASK-0265 Tier 1 Stage 2 wiring: read reuse_widths
-                // for THIS iv and emit a per-slot marker comment at
-                // body-entry. NO-OP when the iv carries no reuse
-                // (every shipped schedule pre-cycle 87) — preserves
-                // byte-identicality on the existing matrix. The
-                // marker substring `reuse_widths_pending` is what AC#4
-                // of TASK-0265 greps for. Real circular-buffer rewrite
-                // forward-carried: TASK-0269 (pthreads-sync single-worker
-                // emit, .01) + TASK-0270 (multi-worker walker, this
-                // file, .02 — covers pthreads-async + mp-tcp-bufsync +
-                // mp-tcp-event). Driver promotion: TASK-0271 (.04).
+                // TASK-0265 Tier 1 marker (preserved): regular (non-
+                // strip-mined) loop — marker comment at body entry.
+                // The substring `reuse_widths_pending` is the first-
+                // layer canary (grep-able for AC#4 of TASK-0265). The
+                // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)`
+                // strings the buf_decls above emit are the second-
+                // layer codegen canary. NO-OP when the iv carries no
+                // reuse.
                 render_reuse_marker_comment(
                     out,
                     body_indent,
@@ -483,6 +644,31 @@ fn render_worker_events_inner(
                     ctx.sidecar,
                     ctx.names,
                 );
+                // Build the body's child RenderCtxPub carrying the
+                // newly-active reuse groups. Parent's abs_subst is
+                // preserved (non-strip-mine arm does NOT introduce a
+                // rebinding — only the strip-mine arm above does);
+                // new reuse groups OVERRIDE on data_id collision (a
+                // hypothetical inner-loop reuse on the SAME data; not
+                // exercised by 05-stencil/distributed but BTreeMap
+                // semantics are well-defined). Per-iter-update +
+                // recursion both consume this child.
+                let mut child_reuse = render_ctx.reuse_active.clone();
+                for (data_id, gs) in reuse_groups.clone() {
+                    child_reuse.insert(data_id, gs);
+                }
+                let body_ctx = render_ctx.with_reuse_active(child_reuse);
+                // TASK-0270 per-iter update: load the most-distant
+                // element into the buffer slot before any Fire arg
+                // reads it. Iv expression here is the bare var (no
+                // abs_subst rebinding on this non-strip-mine path).
+                render_reuse_per_iter_update_pub(
+                    out,
+                    body_indent,
+                    &reuse_groups,
+                    var,
+                    &body_ctx,
+                )?;
                 if let Some(frame) = check_frame {
                     // TASK-0221 defensive — `var` (NameTables) and
                     // `frame.loop_var` (CheckFrame) must name the same
@@ -506,7 +692,7 @@ fn render_worker_events_inner(
                         out,
                         body_indent,
                         prefix,
-                        render_ctx,
+                        &body_ctx,
                         Some(*iter_var),
                     )?;
                     writeln!(
@@ -542,7 +728,7 @@ fn render_worker_events_inner(
                         out,
                         indent + 1,
                         prefix,
-                        render_ctx,
+                        &body_ctx,
                         Some(*iter_var),
                     )?;
                 }
