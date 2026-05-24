@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-23 23:54'
-updated_date: '2026-05-24 00:21'
+updated_date: '2026-05-24 01:40'
 labels:
   - M5
   - compiler
@@ -39,11 +39,9 @@ At codegen time, when a Dataflow's kernel arg indices reveal loop-carried OVERLA
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Forward-carry from TASK-0258 (cycle 79c, partition_rows landed): this task is ORTHOGONAL — 'reuse' is a sliding-window optimisation, not a worker-distribution policy. Not blocked on TASK-0258, TASK-0259, TASK-0260, or TASK-0262. However:
+Forward-carry from TASK-0260 cycle 81 (halo inference Stage 1 landed):
 
-1. **Reuse + partition_rows interaction**: a stencil schedule with both 'loop x : block=64, reuse;' (sliding-window across X) AND 'loop y : partition=rows;' (row-band across Y) is the original 05-stencil/distributed shape. The two directives compose along orthogonal axes: reuse on X (intra-worker, intra-row), partition=rows on Y (cross-worker). Verify the composition does not double-bind any sidecar field when reuse lands.
+Both halo (TASK-0260) and reuse (this task) require the SAME affine-stride prerequisite per PRD §13. The halo-inference pass already lands an affine detector in nucleus-compiler/src/passes/halo_inference.rs — specifically the affine_decompose helper (accepts iv+b with b a const-foldable integer; rejects non-affine, strided, multi-iter-var, and DataRef-inside-index). When TASK-0261 (reuse codegen) lands, lift the affine_decompose helper to a shared pub(crate) location (likely passes/affine.rs or similar) so both halo and reuse share one detector. The HaloInferenceError enum has variants (DataDependentStride, StridedAccessNotSupported, MultipleIterVarsInIndex, NonAffineIndex) that reuse-side errors should mirror in shape.
 
-2. **Pass order**: reuse's consumer pass should sit AFTER block_transform (consumes the strip-mined inner iter_var) and is independent of partition_workers / partition_rows. Driver pipeline order in nucleus/driver/src/main.rs around line 332 is the integration point; choose a position relative to the other consumers that matches the dependency graph.
-
-3. **TASK-0258 template applies**: typed errors at pass entry (mirror PartitionRowsError pattern), sidecar (likely new field for sliding-window state), structural pre-condition checks lived in the PASS not at sched-lower.
+Stage 1 driver policy worth carrying: the lenient apply_halo_inference_advisory variant exists so that pre-Stage-2, the rejection is advisory only (no e2e baseline regression). Reuse will need the same stance until its codegen is wired — record affine facts but do not fail compilation on non-affine reuse-tagged loops until the codegen consumes them.
 <!-- SECTION:NOTES:END -->
