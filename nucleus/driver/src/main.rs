@@ -401,16 +401,21 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // PRD §13 ("reuse / halo on data-dependent strides is rejected at
     // compile time"). But that rejection is only CORRECT to surface
     // when delay-line synthesis is actually required — i.e. when
-    // Stage 2 / TASK-0265 needs the slot and the missing one would
-    // produce wrong (or merely sub-optimal — Stage 2 is a perf hint,
-    // not a correctness one) output. Stage 1 has no downstream
-    // consumer wired, so we swallow the typed error and emit a
-    // `nuc_trace!` line for visibility under `NUC_TRACE=1`. Stage 2 is
-    // where the policy moves out of advisory.
+    // Stage 2 needs the slot and the missing one would produce wrong
+    // (or merely sub-optimal — Stage 2 is a perf hint, not a
+    // correctness one) output. TASK-0265 Tier 1 (cycle 87) landed a
+    // walker-side MARKER consumer (`render_reuse_marker_comment` emits
+    // a `//` comment line per slot); real circular-buffer codegen is
+    // TASK-0269 (pthreads-sync) + TASK-0270 (multi-worker walker).
+    // Until those land the silent-swallow stays — a non-affine reuse
+    // body produces NO marker line, silently. Promotion of THIS driver
+    // call to strict / partition-policy-aware: TASK-0271.
     let (acfg, reuse_errors) = apply_reuse_inference_advisory(&linked, acfg);
     for e in &reuse_errors {
         nucleus_compiler::nuc_trace!(
-            "reuse_inference: advisory (Stage 1, not yet consumed by backend walker): {e}"
+            "reuse_inference: advisory (Stage 1; Tier 1 marker-only walker consumer \
+             landed in TASK-0265, real codegen deferred to TASK-0269 + TASK-0270, \
+             driver promotion deferred to TASK-0271): {e}"
         );
     }
     let acfg = inject_syncs(acfg);

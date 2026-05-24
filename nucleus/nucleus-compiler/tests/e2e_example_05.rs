@@ -197,6 +197,17 @@ fn reuse_pthreads_sync_bit_identical() {
 /// Symmetric ABSENCE check: the `naive` schedule (no reuse directive)
 /// MUST NOT contain the marker — guards against an over-eager emit
 /// that fires the marker when no reuse slot exists.
+///
+/// HONEST SCOPE: this test exercises pthreads-sync ONLY. The
+/// `reuse.sched.nuc` schedule is single-host, so the emit path is
+/// `render_event` (the single-worker arm in `pthreads-sync/src/lib.rs`).
+/// `multi_worker_walker.rs`'s sibling call site (used by
+/// pthreads-async / mp-tcp-bufsync / mp-tcp-event under multi-worker
+/// schedules) is NOT covered by this grep; a regression dropping that
+/// call site without dropping `render_event`'s would not fail here.
+/// Multi-worker reuse marker coverage is filed as TASK-0273
+/// (currently blocked: the only shipped multi-worker reuse schedule is
+/// 05-stencil/distributed, [[skip]]ped on TASK-0267/0268).
 #[test]
 fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
     // Reuse schedule: marker must appear at least once on the inner

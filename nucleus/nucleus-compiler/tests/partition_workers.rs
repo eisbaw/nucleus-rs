@@ -618,10 +618,10 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
         ]),
         name_iter_vars: BTreeMap::from([("n".to_string(), IterVar(7))]),
         inner_block_iter_vars: Default::default(),
-        partition_worker_ranges: std::collections::BTreeMap::new(), // empty — no partition
-        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
-        halo_widths: std::collections::BTreeMap::new(),
-        reuse_widths: std::collections::BTreeMap::new(),
+        partition_worker_ranges: BTreeMap::new(), // empty — no partition
+        pipeline_depth_for_seq: BTreeMap::new(),
+        halo_widths: BTreeMap::new(),
+        reuse_widths: BTreeMap::new(),
     };
 
     let after = inject_syncs(acfg);

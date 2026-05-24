@@ -811,7 +811,11 @@ pub fn write_file(path: &std::path::Path, contents: &str) -> Result<(), EmitErro
 /// is forward-carried — the actual delay-line `Vec<T>` declaration,
 /// initial-fill prologue, per-iteration rotate, and `grid[iv + b]`
 /// → `buf[(iv + b - min_offset) % length]` index rewrite live on
-/// each backend's `Plan::emit` and are filed as TASK-0265.01..03.
+/// each backend's `Plan::emit` and are filed as TASK-0269 (pthreads-sync,
+/// .01) + TASK-0270 (multi_worker_walker, .02 — covers pthreads-async +
+/// mp-tcp-bufsync + mp-tcp-event). Driver promotion strict /
+/// partition-policy-aware: TASK-0271 (.04). IvScopeError unification
+/// with halo_inference: TASK-0272 (.05).
 ///
 /// # Determinism
 ///
@@ -858,7 +862,7 @@ pub fn render_reuse_marker_comment(
             // greps for it. Do NOT rename without updating the test.
             let _ = writeln!(
                 out,
-                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 marker; circular-buffer emit forward-carried to TASK-0265.01..03)",
+                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 marker; circular-buffer emit forward-carried to TASK-0269 + TASK-0270)",
                 length = slot.length,
                 min_offset = slot.min_offset,
             );

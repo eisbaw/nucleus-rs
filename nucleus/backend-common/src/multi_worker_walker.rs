@@ -486,9 +486,11 @@ fn render_worker_events_inner(
                 // (every shipped schedule pre-cycle 87) — preserves
                 // byte-identicality on the existing matrix. The
                 // marker substring `reuse_widths_pending` is what AC#4
-                // of TASK-0265 greps for. Per-backend circular-buffer
-                // emit (the real rewrite) is forward-carried to
-                // TASK-0265.01..03.
+                // of TASK-0265 greps for. Real circular-buffer rewrite
+                // forward-carried: TASK-0269 (pthreads-sync single-worker
+                // emit, .01) + TASK-0270 (multi-worker walker, this
+                // file, .02 — covers pthreads-async + mp-tcp-bufsync +
+                // mp-tcp-event). Driver promotion: TASK-0271 (.04).
                 render_reuse_marker_comment(
                     out,
                     body_indent,
