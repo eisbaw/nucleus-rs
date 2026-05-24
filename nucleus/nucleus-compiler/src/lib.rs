@@ -58,6 +58,7 @@ pub use name_tables::NameTables;
 pub use passes::acfg_to_petri::acfg_to_net;
 pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
+pub use passes::common::affine_decompose;
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 pub use passes::halo_inference::{
     apply_halo_inference, apply_halo_inference_advisory, apply_halo_inference_partition_aware,

@@ -35,7 +35,8 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
-use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::affine_decompose;
+use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedConst, ResolvedType, ScalarType};
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, Event, IterVar, KernelId};
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
 use nucleus_compiler::sidecar::NameSidecar;
@@ -423,7 +424,12 @@ fn try_rewrite_reuse_arg(s: &DataSlice, ctx: &RenderCtx<'_>) -> Option<String> {
         if !outer_match {
             continue;
         }
-        let b = try_reuse_axis_offset(&s.indices[ax_idx], &g.iv_name)?;
+        // TASK-0283: convert sidecar.consts (BTreeMap<String, ConstValue>)
+        // to BTreeMap<String, ResolvedConst> the shared affine
+        // decomposition consumes. Per-call materialisation is cheap
+        // (consts table is small, bounded by program declarations).
+        let consts_resolved = sidecar_consts_to_resolved(ctx.sidecar);
+        let b = try_reuse_axis_offset(&s.indices[ax_idx], &g.iv_name, &consts_resolved)?;
         // Render the iv via render_int_expr on a synthetic
         // `IrExpr::Ident(iv_name)` so any active `abs_subst`
         // substitution (strip-mined inner loop) reaches the rewrite
@@ -1135,32 +1141,62 @@ pub struct ReuseRewriteGroup {
     pub iv_name: String,
 }
 
-/// Try to decompose an affine `iv + b` index. Returns `Some(b)` iff
-/// the expression is one of the shapes
-/// [`affine_decompose`](nucleus_compiler::passes::common::affine_decompose)
-/// accepts with coefficient 1 (the only coefficient Stage 1 records;
-/// any other has already been rejected by `apply_reuse_inference`).
-/// Pure-integer expressions (no iv mention) return `None` — they're
-/// out-of-pattern for a reuse-axis index.
+/// Convert the sidecar's [`ConstValue`](nucleus_compiler::sidecar::ConstValue)
+/// table to the [`ResolvedConst`] table shape
+/// [`affine_decompose`](nucleus_compiler::affine_decompose) consumes.
+/// They carry the same `(ty, value)` data; `ResolvedConst` additionally
+/// names itself. Trivial O(n) materialise on a small per-program table.
+fn sidecar_consts_to_resolved(sidecar: &NameSidecar) -> BTreeMap<String, ResolvedConst> {
+    sidecar
+        .consts
+        .iter()
+        .map(|(name, cv)| {
+            (
+                name.clone(),
+                ResolvedConst {
+                    name: name.clone(),
+                    ty: cv.ty.clone(),
+                    value: cv.value,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Try to decompose an affine `iv + b` index for the reuse-axis
+/// rewrite. Returns `Some(b)` iff
+/// [`nucleus_compiler::affine_decompose`] accepts the expression with
+/// coefficient 1 (the only coefficient Stage 1
+/// [`nucleus_compiler::apply_reuse_inference`] records — any other has
+/// already been rejected at inference time).
 ///
-/// This is a tiny inlined re-impl of the iv+constant shapes —
-/// [`nucleus_compiler::passes::common::affine_decompose`] is
-/// `pub(crate)` so codegen cannot call it directly. The shapes we
-/// recognise here MUST stay a subset of Stage 1's; mismatch would
-/// mean we'd rewrite reads that Stage 1 didn't count (or vice versa).
-fn try_reuse_axis_offset(e: &IrExpr, iv_name: &str) -> Option<i64> {
-    match e {
-        IrExpr::Ident(n) if n == iv_name => Some(0),
-        IrExpr::BinOp(IrBinOp::Add, lhs, rhs) => match (lhs.as_ref(), rhs.as_ref()) {
-            (IrExpr::Ident(n), IrExpr::IntLit(v)) if n == iv_name => Some(*v),
-            (IrExpr::IntLit(v), IrExpr::Ident(n)) if n == iv_name => Some(*v),
-            _ => None,
-        },
-        IrExpr::BinOp(IrBinOp::Sub, lhs, rhs) => match (lhs.as_ref(), rhs.as_ref()) {
-            (IrExpr::Ident(n), IrExpr::IntLit(v)) if n == iv_name => Some(-*v),
-            _ => None,
-        },
-        _ => None,
+/// Pure-integer expressions (no iv mention) return `None` — they're
+/// out-of-pattern for a reuse-axis index (no rewrite needed).
+///
+/// TASK-0283 cycle 105: the cycle-103 first landing inlined a tiny
+/// re-impl of the iv+const shapes because `affine_decompose` was
+/// `pub(crate)`. That created a cross-pass divergence risk: if the
+/// affine grammar widened in Stage 1 (e.g. constant Mod folding for
+/// example 11 game-of-life), the codegen re-impl here would silently
+/// reject reads that Stage 1 accepted — marker fires, rewrite skips,
+/// silent codegen mismatch. Lifting both stages onto the same function
+/// makes the divergence structurally impossible.
+///
+/// `consts` is the algorithm's const table (passed pre-converted from
+/// `NameSidecar::consts` via [`sidecar_consts_to_resolved`] at the
+/// per-discover-or-render boundary); it lets the affine decomposition
+/// fold const-named offsets like `iv + OFFSET` when `const OFFSET = 1`
+/// was declared.
+fn try_reuse_axis_offset(
+    e: &IrExpr,
+    iv_name: &str,
+    consts: &BTreeMap<String, ResolvedConst>,
+) -> Option<i64> {
+    let (coeff, offset) = affine_decompose(e, iv_name, consts)?;
+    if coeff == 1 {
+        Some(offset)
+    } else {
+        None
     }
 }
 
@@ -1192,7 +1228,15 @@ fn discover_reuse_groups(
     iv_name: &str,
     per_data: &BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>,
     names: &NameTables,
+    sidecar: &NameSidecar,
 ) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError> {
+    // TASK-0283: materialise the consts table ONCE for the whole walk
+    // (instead of converting per Fire-arg) — the affine-decomposition
+    // function `affine_decompose` consumes `BTreeMap<String, ResolvedConst>`
+    // while the sidecar carries `BTreeMap<String, ConstValue>`. Same
+    // value semantics, slightly different shapes; this conversion
+    // is the boundary.
+    let consts_resolved = sidecar_consts_to_resolved(sidecar);
     let mut out: BTreeMap<DataId, Vec<ReuseRewriteGroup>> = BTreeMap::new();
     for (data_id, per_axis) in per_data {
         // Eagerly resolve the data name once per (data, ...) pair —
@@ -1219,6 +1263,7 @@ fn discover_reuse_groups(
                 iv_name,
                 per_axis,
                 &mut found,
+                &consts_resolved,
             );
             if found.len() == per_axis.len() {
                 break;
@@ -1232,6 +1277,7 @@ fn discover_reuse_groups(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_event_for_reuse(
     ev: &Event,
     data_id: DataId,
@@ -1239,16 +1285,19 @@ fn walk_event_for_reuse(
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
     found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    consts: &BTreeMap<String, ResolvedConst>,
 ) {
     match ev {
         Event::Fire { bindings, .. } => {
             for arg in &bindings.inputs {
-                walk_arg_for_reuse(arg, data_id, data_name, iv_name, per_axis, found);
+                walk_arg_for_reuse(arg, data_id, data_name, iv_name, per_axis, found, consts);
             }
         }
         Event::Loop { body, .. } => {
             for child in body {
-                walk_event_for_reuse(child, data_id, data_name, iv_name, per_axis, found);
+                walk_event_for_reuse(
+                    child, data_id, data_name, iv_name, per_axis, found, consts,
+                );
             }
         }
         // Sync / Push / Wait / Alloc / Free carry no Fire-arg DataRefs.
@@ -1256,6 +1305,7 @@ fn walk_event_for_reuse(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_arg_for_reuse(
     arg: &ArgBinding,
     data_id: DataId,
@@ -1263,6 +1313,7 @@ fn walk_arg_for_reuse(
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
     found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    consts: &BTreeMap<String, ResolvedConst>,
 ) {
     match arg {
         ArgBinding::Data(s) => {
@@ -1283,7 +1334,7 @@ fn walk_arg_for_reuse(
                 // body if NO DataRef matched, so we're guaranteed at
                 // least one match per axis (else `per_axis` wouldn't
                 // contain `axis`).
-                if try_reuse_axis_offset(&s.indices[ax_idx], iv_name).is_none() {
+                if try_reuse_axis_offset(&s.indices[ax_idx], iv_name, consts).is_none() {
                     continue;
                 }
                 // Build the OUTER axes (all axes except the reuse one),
@@ -1309,7 +1360,7 @@ fn walk_arg_for_reuse(
         }
         ArgBinding::Nested { args, .. } => {
             for inner in args {
-                walk_arg_for_reuse(inner, data_id, data_name, iv_name, per_axis, found);
+                walk_arg_for_reuse(inner, data_id, data_name, iv_name, per_axis, found, consts);
             }
         }
         ArgBinding::Scalar(_) => {}
@@ -1355,7 +1406,7 @@ pub fn render_reuse_buf_decls(
     if per_data.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let groups = discover_reuse_groups(body, iter_var_name, per_data, ctx.names)?;
+    let groups = discover_reuse_groups(body, iter_var_name, per_data, ctx.names, ctx.sidecar)?;
     let pad = "    ".repeat(indent);
     for (data_id, gs) in &groups {
         let data_name = data_name(*data_id, ctx)?;

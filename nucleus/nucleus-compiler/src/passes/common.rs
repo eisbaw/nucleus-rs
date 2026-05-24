@@ -216,7 +216,16 @@ pub(crate) fn compute_partition_bands(
 ///
 /// `consts` is the algorithm's const-folding table; it lets a bound
 /// like `OFFSET - 1` fold when `const OFFSET = 1` was declared.
-pub(crate) fn affine_decompose(
+///
+/// Visibility: `pub` (TASK-0283 cycle 105). The backend-common crate's
+/// codegen-side `try_reuse_axis_offset` reads this directly, so the
+/// two-stage affine-shape recognition (Stage 1 inference in
+/// `passes::reuse_inference` + Stage 2 codegen rewrite in
+/// `backend_common::render`) shares one definition of "what does
+/// `iv + b` look like". Pre-TASK-0283 this function was `pub(crate)`
+/// and codegen had a hand-inlined subset that could silently diverge
+/// from the inference side when the grammar widened.
+pub fn affine_decompose(
     e: &IrExpr,
     iv: &str,
     consts: &BTreeMap<String, ResolvedConst>,

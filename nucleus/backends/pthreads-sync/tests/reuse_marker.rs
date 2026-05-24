@@ -52,7 +52,7 @@ use nucleus_compiler::event::{
     ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
 };
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
-use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
+use nucleus_compiler::sidecar::{ConstValue, KernelSig, LoopBound, NameSidecar};
 
 use pthreads_sync::{render_single_worker_main, NameTables};
 
@@ -344,5 +344,149 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
          (the artefact of `abs.replace(var, \"0_i64\")` when var is a \
          substring of the tile name) MUST NOT appear. Use structural \
          lo-expr construction instead. Got:\n{out}",
+    );
+}
+
+
+/// TASK-0283 cycle 105 (cross-pass agreement): the codegen rewrite
+/// site must recognise an `iv + STRIDE` reuse-axis index when
+/// `const STRIDE = 1` is declared in the sidecar consts table. Pre-
+/// TASK-0283 the codegen had an inlined re-impl of the iv+const
+/// shapes that only matched `Ident(iv) + IntLit(v)` — Ident-Ident on
+/// the RHS was silently rejected. Stage 1 inference DID recognise
+/// this shape (via the broader `affine_decompose`), so a `for V :
+/// reuse` body reading `data[iv + STRIDE]` produced: marker fires,
+/// buffer declared and filled, but body-read rewrite SKIPS — leaving
+/// the raw `data[iv + STRIDE]` access verbatim. Silent codegen
+/// mismatch.
+///
+/// Lifting `try_reuse_axis_offset` onto the shared
+/// `nucleus_compiler::affine_decompose` makes this divergence
+/// structurally impossible. This test pins the agreement.
+#[test]
+fn codegen_recognises_const_named_offset_via_affine_decompose() {
+    let iv = IterVar(11);
+    let data = DataId(42);
+    let kernel = KernelId(7);
+
+    let mut names = NameTables::default();
+    names.iter_var.insert(iv, "x".to_string());
+    names.data.insert(data, "img_in".to_string());
+    names.kernel.insert(kernel, "k".to_string());
+
+    let mut sidecar = NameSidecar::default();
+    sidecar.loop_bounds.insert(
+        iv,
+        LoopBound {
+            lo: IrExpr::IntLit(0),
+            hi: IrExpr::IntLit(16),
+        },
+    );
+    // CRITICAL: const STRIDE = 1 in the sidecar.
+    sidecar.consts.insert(
+        "STRIDE".to_string(),
+        ConstValue {
+            ty: ScalarType::I64,
+            value: 1,
+        },
+    );
+    sidecar.data_types.insert(
+        data,
+        ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![16],
+        },
+    );
+    sidecar.kernel_sigs.insert(
+        kernel,
+        KernelSig {
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: None,
+        },
+    );
+
+    // Reuse on iv: axis=0, length=2, min_offset=0 → active offsets
+    // {0, +1}. The body reads data[iv + STRIDE] (= data[iv + 1])
+    // which decodes via affine_decompose + const-folding STRIDE → 1.
+    // Stage 1 records offset +1; Stage 2 (post-TASK-0283) must agree.
+    let mut per_axis: BTreeMap<u64, ReuseSlot> = BTreeMap::new();
+    per_axis.insert(
+        0,
+        ReuseSlot {
+            length: 2,
+            min_offset: 0,
+        },
+    );
+    let mut per_data: BTreeMap<DataId, BTreeMap<u64, ReuseSlot>> = BTreeMap::new();
+    per_data.insert(data, per_axis);
+    sidecar.reuse_widths.insert(iv, per_data);
+
+    // Body Fire: data[iv + STRIDE] (Ident-Ident — the pre-cycle-105
+    // narrow matcher would NOT recognise this shape).
+    let inner_idx = IrExpr::BinOp(
+        IrBinOp::Add,
+        Box::new(IrExpr::Ident("x".to_string())),
+        Box::new(IrExpr::Ident("STRIDE".to_string())),
+    );
+    let fire = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![inner_idx],
+            })],
+            output: None,
+        },
+    };
+
+    let loop_ev = Event::Loop {
+        iter_var: iv,
+        range: 0..16,
+        body: vec![fire],
+        block_tag: None,
+        check_frame: None,
+    };
+
+    let out = render_single_worker_main(&[loop_ev], &names, &sidecar)
+        .expect("synthetic single-worker emit must succeed");
+
+    // Buffer must be declared (independent of shape recognition).
+    assert!(
+        out.contains("let mut __reuse_buf_img_in_a0: Vec<i32>"),
+        "TASK-0283: expected reuse buffer decl for iv x axis 0; got:\n{out}",
+    );
+
+    // CRITICAL: the body-read rewrite MUST fire. Pre-TASK-0283 the
+    // narrow shape matcher would have left the raw img_in[(x +
+    // STRIDE)] read verbatim inside kernels::k(...).
+    let kernels_call_start = out
+        .find("kernels::k(")
+        .expect("emit must contain kernels::k call");
+    let kernels_call_end = out[kernels_call_start..]
+        .find(");")
+        .expect("kernels::k call must close")
+        + kernels_call_start;
+    let kernels_call_text = &out[kernels_call_start..kernels_call_end];
+    assert!(
+        kernels_call_text.contains("__reuse_buf_img_in_a0["),
+        "TASK-0283: kernels::k call MUST contain the rewritten reuse \
+         buffer read (data[iv + STRIDE] should rewrite to \
+         __reuse_buf_img_in_a0[...]). Pre-TASK-0283 the narrow shape \
+         matcher only handled `Ident(iv) + IntLit(v)`, so `iv + \
+         STRIDE` (Ident-Ident) was silently skipped. Got:\n{kernels_call_text}\n\
+         Full emit:\n{out}",
+    );
+
+    // Symmetric absence: kernels::k MUST NOT contain a raw img_in[...]
+    // read on the reuse axis (the rewrite would have silently skipped).
+    assert!(
+        !kernels_call_text.contains("img_in["),
+        "TASK-0283: kernels::k call MUST NOT contain raw img_in[...] \
+         reads — they should all be rewritten to __reuse_buf_img_in_a0[...]. \
+         Got:\n{kernels_call_text}",
     );
 }
