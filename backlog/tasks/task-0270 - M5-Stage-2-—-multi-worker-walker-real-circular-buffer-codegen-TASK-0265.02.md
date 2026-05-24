@@ -4,7 +4,7 @@ title: M5 Stage 2 — multi-worker walker real circular-buffer codegen (TASK-026
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 12:04'
+updated_date: '2026-05-24 15:25'
 labels:
   - M5
   - codegen
@@ -67,4 +67,54 @@ Multi-worker walker reuse codegen lands AFTER TASK-0269 (pthreads-sync first). T
 2. If you extend reuse_inference's walker to thread additional context (e.g. partition= for multi-worker scope checks), introduce a type alias for the paired-Vec return EARLY — clippy::type_complexity fires on the bare `Vec<(Error, Vec<String>)>` shape. See halo_inference.rs `HaloErrorWithScope` for the pattern.
 
 **Forward-carried from TASK-0273 (cycle 98)**: when real circular-buffer codegen lands here on the multi_worker_walker (covering pthreads-async + mp-tcp-bufsync + mp-tcp-event), the `reuse_widths_pending` marker substring at render.rs:867 will rename (likely `reuse_buf_decl`) or be subsumed by a real `let __reuse_buf_<data>` declaration. The NEW test file `nucleus/backend-common/tests/multi_worker_reuse_marker.rs` (cycle 98) asserts the marker substring + 5 payload fields (iv=x, data=img_in, axis=1, length=3, min_offset=-1) on BOTH presence and absence arms. The test file already embeds a top-level module doc-comment warning the next implementer; update assertion shape in lockstep with the codegen change here — do NOT silently drop.
+
+## Forward-carried from TASK-0269 (cycle 103, commit e21d75e)
+
+TASK-0269 landed real pthreads-sync single-worker circular-buffer codegen. The substrate is in backend-common/src/render.rs ready for the multi-worker landing:
+
+### Already in place (for TASK-0270 to consume)
+
+- `ReuseRewriteGroup` struct + `reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>` field on RenderCtx + RenderCtxPub (with_abs_subst preserves it; inner() copies it across the Pub→private bridge).
+- `render_reuse_buf_decls(out, indent, iter_var, var, lo_expr_rs, body, ctx) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError>` — walks body to discover first matching DataRef per (data_id, axis); emits Vec<T> decl + unrolled prologue; returns the reuse_active map. Calls into render_flat_index which works through RenderCtx (private side).
+- `render_reuse_per_iter_update(out, indent, groups, iv_expr_rs, ctx)` — per-iter most-distant slot fill.
+- `try_rewrite_reuse_arg` inside render_fire_arg — consults ctx.reuse_active automatically for any ArgBinding::Data.
+
+### What TASK-0270 needs to add
+
+In multi_worker_walker.rs::Event::Loop arm (BOTH strip-mine path at line 404 and regular path at line 478):
+
+1. Before writing the for-header, call render_reuse_buf_decls — but the helper takes RenderCtx (private) and the walker has RenderCtxPub. Two options:
+   - (a) Add render_reuse_buf_decls_pub + render_reuse_per_iter_update_pub _pub shims that take RenderCtxPub and delegate to ctx.inner() (the existing _pub-shim precedent at the bottom of render.rs).
+   - (b) Pull the private RenderCtx out of the walker's RenderCtxPub via a (yet-to-add) accessor.
+   Option (a) is the cleaner sibling — matches render_fire_args_pub / render_flat_index_pub / render_const_expr_pub.
+
+2. After populating the reuse_groups, build a child RenderCtxPub via with_abs_subst (the existing builder needs to also accept reuse_active OR a NEW with_reuse_active builder). Currently with_abs_subst sets reuse_active from self.reuse_active.clone(); a child with both new abs_subst AND new reuse_active needs a longer-form builder.
+
+3. lo_expr_rs derivation: the walker's regular arm computes (lo, hi) via per-worker partition_worker_ranges fallback to sidecar.loop_bounds. The 'lo' string passed to render_reuse_buf_decls should match — the partition-projected lo (not the source-range lo) when partitioned. For 05-stencil/distributed × pthreads-async: w0/w1 get range 1..4 + 4..7 etc; the buffer prologue's source-array reads should use the per-worker lo (1, 4, 7, 10 respectively).
+
+4. Determinism: render_reuse_buf_decls walks body in source order, BTreeMap iteration. Multi-worker emits per-worker bodies — each worker's body has only the projected events (this worker's). So each worker's discover_reuse_groups sees its OWN subset. Per-worker buffer + prologue is correct.
+
+### Likely AC for TASK-0270 (forward-suggestion)
+
+1. 05-stencil/distributed × pthreads-async (the shipped multi-worker reuse cell) becomes [[required]] M5 bit-identical to reference.bin. Cell is currently SKIP via TASK-0042 capability mismatch on pthreads-sync; the pthreads-async / mp-tcp-event variants would land first (TASK-0267 + TASK-0268 already closed cycle 101-102).
+2. Marker substring `reuse_widths_pending` preserved.
+3. New e2e assertions on the multi-worker emit verifying `__reuse_buf_img_in_a1` and `vec![0; 3usize]` and `rem_euclid(3_i64)` appear in per-worker code blocks.
+
+### Honest limitations TASK-0269 carried forward (DO NOT regress)
+
+- Narrow rewrite cut: only DataRefs matching the FIRST discovered outer-axes pattern get rewritten (the per-(data, axis) buffer is per-outer-coord-variation-1). The 6 of 9 reads with different outer axes stay verbatim. **TASK-0282 (multi-outer-coord generalisation) is filed as the follow-up that lifts this restriction.**
+- Strip-mine arm uses textual replace `abs.replace(var, '0_i64')` to derive the prologue's lo expression. TASK-0270 should mirror or refactor.
+
+### Cycle 103 e2e gate post-TASK-0269 (TASK-0270 should preserve)
+
+- cargo test --workspace: 805 / 0 / 3
+- just clippy: clean
+- just e2e: 92 / 79 / 0 / 13 / 0
+- just determinism-check: 92 / 79 / 0 / 13
+
+### Tests pinning the contract (TASK-0270 must keep firing)
+
+- nucleus-compiler/tests/e2e_example_05.rs::reuse_marker_present_on_reuse_schedule_absent_on_naive — 5 marker grep + 3 buffer-shape asserts + 1 symmetric absence on naive.
+- pthreads-sync/tests/reuse_marker.rs (synthetic strip-mine marker pin).
+- backend-common/tests/multi_worker_reuse_marker.rs (3 multi-worker marker pins — TASK-0270 should ADD a buffer-shape assert here once codegen lands).
 <!-- SECTION:NOTES:END -->

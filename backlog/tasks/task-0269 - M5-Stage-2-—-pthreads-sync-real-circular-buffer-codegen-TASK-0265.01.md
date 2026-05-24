@@ -1,11 +1,11 @@
 ---
 id: TASK-0269
 title: M5 Stage 2 — pthreads-sync real circular-buffer codegen (TASK-0265.01)
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:31'
-updated_date: '2026-05-24 15:23'
+updated_date: '2026-05-24 15:25'
 labels:
   - M5
   - codegen
@@ -219,3 +219,41 @@ for y in (1_i64)..((16_i64 - 1_i64)) {
 - Per-worker partition slices already drive the loop bounds in multi_worker_walker — the reuse buffer decl + prologue use the per-worker partition slice's lo (not the source lo). The current discover_reuse_groups walks the worker's body events which already carry the partition-projected shape.
 - mp-tcp-bufsync host emit doesn't share render_event with the multi_worker_walker — TASK-0270 needs to verify whether host-side single-worker-style emit ALSO needs the buffer decl (when host carries a reuse-tagged loop it lowers through pthreads-sync's render_single_worker_main, which already has the fix from this task).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 103 LANDED in commit e21d75e (reuse: TASK-0269 pthreads-sync real circular-buffer codegen).
+
+Per-AC final:
+- AC#1 (Vec<T> decl + initial-fill prologue at loop entry): MET. `let mut __reuse_buf_img_in_a1: Vec<i32> = vec![0; 3usize]` declares the buffer above the for-x header; 2 prologue fills (offsets -1, 0) precede the for line.
+- AC#2 (per-iter most-distant element update at body entry): MET. Body's first emit line loads the rightmost slot via `__reuse_buf_img_in_a1[((x + 1 - (-1)).rem_euclid(3)) as usize] = img_in[(y-1)*16 + (x+1)]`.
+- AC#3 (rewrite img_in[y][x+b] reads to buf[...]): PARTIAL (narrow first-cut per task brief). 3 of 9 `img_in[...]` reads in the blur3 call are rewritten — those whose outer axis-0 matches the canonical pattern (img_in[y-1][...]). The other 6 reads (rows y and y+1) stay verbatim. Follow-up TASK-0282 filed for the multi-outer-coord generalisation (one buffer per (data, axis, outer-coord variation)).
+- AC#4 (bit-identical to reference.bin + marker grep-able): MET. `just e2e` reuse_pthreads_sync_bit_identical PASS; marker substring `reuse_widths_pending` preserved; 3 new buffer-shape grep asserts pin the codegen substance.
+
+Gate (post-commit):
+- cargo test --workspace: 805 / 0 / 3 (no test count change; existing tests + 4 new asserts in e2e_example_05.rs)
+- cargo clippy --workspace --all-targets -- -D warnings: clean
+- just e2e: 92 / 79 / 0 / 13 / 0 (baseline preserved; reuse cell stays bit-identical)
+- just determinism-check: 92 / 79 / 0 / 13 (all green)
+
+Files touched:
+- nucleus/backend-common/src/render.rs (+~500 lines): ReuseRewriteGroup struct, reuse_active field on RenderCtx + RenderCtxPub, render_reuse_buf_decls + render_reuse_per_iter_update helpers, try_rewrite_reuse_arg consulted by render_fire_arg, marker-comment text update.
+- nucleus/backends/pthreads-sync/src/lib.rs (+~85 lines): wired the new helpers at BOTH Event::Loop arms (regular + strip-mined); body recursion uses child RenderCtx with reuse_active populated.
+- nucleus/nucleus-compiler/tests/e2e_example_05.rs (+38 lines): 3 presence asserts on reuse cell (buffer decl + vec init + rem_euclid wrap); 1 symmetric absence assert on naive.
+
+Follow-ups filed:
+- TASK-0282 (multi-outer-coord generalisation): emit ONE buffer per (data, axis, outer-coord-tuple) so all 9 reads in 05-stencil/reuse get the buffer treatment.
+- TASK-0270 forward-carry appended: the substrate is ready for multi-worker walker landing (RenderCtxPub already carries reuse_active; with_abs_subst preserves it; render_reuse_buf_decls + render_reuse_per_iter_update are ready to be _pub-shimmed).
+
+Honest limitations recorded:
+1. Narrow rewrite cut: 1 buffer per (data, axis), not per outer-coord variation. Perf rewrite is INCOMPLETE but correct.
+2. Strip-mine arm uses textual replace 'var -> 0_i64' to derive prologue lo. 05-stencil/reuse is single-host (no strip-mine on the reuse iv) so this branch isn't exercised by the e2e cell; pthreads-sync/tests/reuse_marker.rs covers the marker side. 05-stencil/distributed (still SKIP on TASK-0042 capability for pthreads-sync) would exercise this branch live.
+3. Multi-worker walker (TASK-0270) NOT touched — Tier 3 lands separately.
+
+Gotchas + lessons for the next implementer:
+- Prologue buffer-slot index formula MUST mirror the body's read formula evaluated at iv = lo. Initial wrong cut used `buf[(b - min_offset) % L]` (forgot the lo term); cells produced subtly wrong output (off-by-one in second column). Correct formula: `buf[((lo + b) - min_offset).rem_euclid(L) as usize]` — emit as a runtime expression so symbolic-const lo (`H-1`) doesn't need const-folding at codegen time.
+- The 'find first matching DataRef in body' pattern walks Event::Fire arg bindings AND Event::Loop bodies recursively. Skipping Sync/Push/Wait/Alloc/Free is fine (no Fire-arg DataRefs inside them).
+- RenderCtx threading: cloning reuse_active across child contexts is cheap (BTreeMap of small Vecs). The strip-mine arm builds a RenderCtx with BOTH abs_subst AND reuse_active populated — the body recursion needs the abs_subst rebinding to reach the rewrite (so the iv in the rewritten expression becomes the rebound absolute, not the bare strip-mine var).
+- render_reuse_marker_comment was kept as-is (substring 'reuse_widths_pending' preserved) — the 5 e2e payload-field asserts + the 2 multi_worker_walker tests + the strip-mine pthreads-sync test all keep firing without modification. The trailing parenthetical text was updated to reflect the new codegen below (cosmetic only).
+<!-- SECTION:FINAL_SUMMARY:END -->
