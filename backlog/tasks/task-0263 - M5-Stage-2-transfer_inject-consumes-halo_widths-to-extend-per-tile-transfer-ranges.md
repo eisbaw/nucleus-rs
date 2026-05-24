@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 09:10'
+updated_date: '2026-05-24 09:21'
 labels:
   - M5
   - compiler
@@ -15,7 +15,7 @@ labels:
   - transfer
   - stage-2
 dependencies:
-  - TASK-0260
+  - TASK-0275
 priority: medium
 ---
 
@@ -79,4 +79,33 @@ TASK-0271 promoted the reuse_inference driver call to STRICT (apply_reuse_infere
 4. **CAVEAT — example 11 game-of-life**: per the cycle-82 doc-comment in halo_inference.rs the strict promotion may newly-reject example 11's step_or_seed kernel which reads grid[(t + ITERS) % (ITERS + 1)] (constant modulo wrap that the affine detector cannot fold). VERIFY at promotion time: either (a) the schedule never carries a partition= directive that would activate transfer_inject Stage 2 consumption of halo_widths for the affected iv, in which case strict still passes (no widths needed), OR (b) the affine detector needs to be taught about constant-mod folding, OR (c) the example needs a code change. This is the one shipped corner where (A) strict is NOT obviously safe and (B) partition-policy-aware may be necessary.
 
 5. **DO NOT delete apply_halo_inference_advisory** after promotion — it's the test escape-hatch (mirrors how cycle-88 preserved apply_reuse_inference_advisory for the advisory_collects_all_errors_strict_short_circuits pin in reuse_inference.rs).
+
+CYCLE-89 VERIFICATION (orchestrator, 2026-05-24): the TASK-0271 forward-carry caveat (example 11 step_or_seed Mod-indexed read) is CONFIRMED reachable today.
+
+**Code path verified**: `nucleus/nucleus-compiler/src/passes/halo_inference.rs:361-367` `apply_halo_inference` walks `linked.algo.stmts` UNCONDITIONALLY (no gate on schedule directives, no gate on "is this iv partitioned"). The strict variant short-circuits on the first error from `infer_halo_widths` (line 412).
+
+**Example 11 confirmation**: `nuc-nucleus/examples/11-game-of-life/prog.algo.nuc:156-158` shows `step_or_seed(grid[(t + ITERS) % (ITERS + 1)][(i + N - 1) % N], ...)`. Both `naive.sched.nuc` AND `pipelined.sched.nuc` carry zero `halo`/`partition`/`reuse` directives — the only schedule comment found that mentions partition is at pipelined.sched.nuc:87-88: "No `partition=workers` on the inner `i` loop. The grid is small (N=32) and partitioning the spatial axis is example future scope."
+
+**Conclusion**: a naive TASK-0271 mirror (replace `apply_halo_inference_advisory` with `apply_halo_inference` + `.map_err(...)?`) WOULD newly-reject example 11, breaking the e2e matrix on both example-11 cells. (A) strict for halo is NOT safe today.
+
+## Updated path forward for AC#4 (lenient → strict driver toggle)
+
+The cycle-88 TASK-0271 forward-carry was prescient — the choice for halo IS (B) partition-policy-aware, NOT (A) strict. Specifically:
+
+**Proposed (B) rule**: a `HaloInferenceError` for `(kernel, iv)` is FATAL iff the iv at the kernel-call site carries a `partition=` directive in the schedule that would activate transfer_inject's halo-extending consumer (cf. TASK-0263's cf2f9ac). Otherwise advisory (current behaviour).
+
+The per-error decision needs the call-site-to-iv-scope mapping (which Repeat encloses this OpId) crossed with `LinkedIR.sched.loops` `partition=` lookup.
+
+## AC#4 refinement
+
+AC#4 (lenient → strict driver toggle) now precisely depends on either:
+1. **TASK-0275** (to be filed if/when this work starts): implement (B) partition-policy-aware fatality for halo_inference at the driver call site. Per-error scope lookup + partition= check.
+2. **TASK-0263.bis** (alternative): teach the affine detector constant-modulo folding (`(x + K) % M` where both K, M are compile-time constants → bounded scope). Would let strict pass on example 11 without policy lift. Likely 100-200 LoC of detector work + tests.
+3. **(C)** narrow change to example 11: refactor `step_or_seed` to not use Mod-indexing. Smallest code change but loses the kernel's expressiveness; example 11's whole point is exercising a cyclic-buffer access pattern.
+
+Recommendation: option 1 ((B) partition-policy-aware) — the principled fix, scales to other future cases where the strict promotion would over-eagerly reject affine-detector-defeating shapes that no schedule actually depends on. File TASK-0275 when this work starts.
+
+UNTIL AC#4 lands, the cf2f9ac transfer_inject extension (cycle 83) is good code with its consumer halo_widths populated by the lenient driver. The e2e 92/77/0/15/0 baseline is preserved.
+
+The cycle-87 review item 1 (driver promotion for halo) is REFINED: do NOT mirror TASK-0271's (A) strict pattern; halo genuinely needs (B). TASK-0271's rationale was specific to reuse (Tier 1 marker consumer makes every slot consumed).
 <!-- SECTION:NOTES:END -->
