@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_advisory,
+    acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
     apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
     apply_reuse_inference, build_acfg, build_sidecar, check_kernels_contract,
     check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
@@ -358,34 +358,48 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // clarity.
     let acfg = apply_partition_blocks2d(&linked, acfg)
         .map_err(|e| format!("partition-blocks2d error: {e}"))?;
-    // Halo-region inference (TASK-0260 Stage 1): walk `linked.algo.stmts`
-    // and infer per-(KernelId, IterVar) halo widths from affine kernel-
-    // arg DataRef indices. Pure + observationally-inert in Stage 1 —
-    // populates `ACFG::halo_widths` for Stage 2 (transfer_inject
-    // extension, TASK-0263) to consume.
+    // Halo-region inference (TASK-0260 Stage 1 + TASK-0275 promotion):
+    // walk `linked.algo.stmts` and infer per-(KernelId, IterVar) halo
+    // widths from affine kernel-arg DataRef indices. Populates
+    // `ACFG::halo_widths` for the transfer_inject consumer (TASK-0263,
+    // cycle 83, commit cf2f9ac) to extend per-tile transfer ranges.
     //
-    // STAGE 1 DRIVER POLICY (load-bearing): a non-affine / strided /
-    // data-dependent index inside a kernel arg is a typed
-    // `HaloInferenceError` per PRD §13 ("reuse / halo on data-dependent
-    // strides is rejected at compile time"). But that rejection is only
-    // CORRECT to surface when halo synthesis is actually required —
-    // i.e. when a downstream consumer (transfer_inject, Stage 2 /
-    // TASK-0263) needs the halo widths and the missing one would
-    // produce wrong output. Stage 1 has no downstream consumer wired,
-    // so a kernel like example 11's `step_or_seed` (which reads
-    // `grid[(t + ITERS) % (ITERS + 1)]` — a constant modulo wrap, not
-    // truly data-dependent in the runtime sense) would otherwise
-    // newly-reject an example that compiles cleanly today. We
-    // therefore swallow the typed error in Stage 1 and emit a
-    // `nuc_trace!` line so the diagnostic remains visible under
-    // `NUC_TRACE=1`. Stage 2 (TASK-0263) is where the rejection moves
-    // out of advisory — at that point a consumer-required halo on a
-    // non-affine index is a real compile error, and we promote the
-    // trace to a fatal `Err`.
-    let (acfg, halo_errors) = apply_halo_inference_advisory(&linked, acfg);
-    for e in &halo_errors {
+    // DRIVER POLICY (TASK-0275): (B) PARTITION-POLICY-AWARE. For each
+    // typed `HaloInferenceError` the walker raises, the entry point
+    // looks at the enclosing-loop scope at the error-push site. If
+    // ANY iv in that scope carries a `partition=` directive in the
+    // schedule, the error is FATAL — the transfer_inject consumer
+    // would otherwise silently emit wrong-output tiles (missing halo
+    // strips on a partition boundary). Otherwise the error goes to an
+    // advisory bucket and lowering proceeds; the walker's partial halo
+    // widths for unaffected kernels stay committed.
+    //
+    // Why (B) and NOT (A) strict (the TASK-0271 reuse precedent):
+    // the transfer_inject halo consumer is CONDITIONAL on the iv being
+    // partitioned. The reuse Tier 1 marker (TASK-0265) by contrast
+    // fires for EVERY recognised slot regardless of partition, so for
+    // reuse the (B) predicate "is this slot consumed?" was trivially
+    // true and (B) degenerated into (A). For halo it does not — the
+    // example-11 `step_or_seed` body reads
+    // `grid[(t + ITERS) % (ITERS + 1)]` (a constant Mod wrap the
+    // affine detector cannot fold), and the schedule carries ZERO
+    // `partition=` directives. A naive (A) strict mirror would
+    // newly-reject example 11; (B) keeps the cells PASS while still
+    // failing loud on the cases where backend output would be wrong.
+    // The decision context is TASK-0263 cycle-89 verification +
+    // TASK-0275's full reasoning.
+    //
+    // E2E impact at promotion: 92/77/0/15/0 byte-identical. The only
+    // shipped halo-affecting partition= directive is
+    // `05-stencil/distributed`'s y-loop (`partition=workers`) whose
+    // `blur3` body is fully affine; example 11's two cells stay PASS
+    // because no `partition=` is attached to the Mod-indexed iv.
+    let (acfg, halo_errors_advisory) = apply_halo_inference_partition_aware(&linked, acfg)
+        .map_err(|e| format!("halo-inference error: {e}"))?;
+    for e in &halo_errors_advisory {
         nucleus_compiler::nuc_trace!(
-            "halo_inference: advisory (Stage 1, not yet consumed by transfer_inject): {e}"
+            "halo_inference: advisory (no `partition=` directive in scope, transfer_inject \
+             halo consumer will not fire on the affected iv — lowering proceeds): {e}"
         );
     }
     // Reuse loop-option inference (TASK-0261 Stage 1 + TASK-0271
@@ -423,18 +437,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // reuse codegen); when those clear, its `blur3` body is the same
     // affine shape and will lower cleanly too.
     //
-    // The sibling halo driver call above (line 385,
-    // `apply_halo_inference_advisory`) intentionally remains advisory;
-    // its strict promotion is TASK-0263's responsibility (transfer_inject
-    // halo Stage 2 already landed cycle 83 commit cf2f9ac, but the
-    // promotion needs a recheck against example 11's `step_or_seed`
-    // Mod-indexed kernel — see the forward-carried caveat appended to
-    // TASK-0263 by TASK-0271). When TASK-0263's driver call promotes,
-    // mirror the exact 5-line shape here: same `apply_X(...).map_err(
-    // |e| format!("...: {e}"))?` pattern, no shared-helper lift
-    // anticipated since each driver call is one line of `?`-propagation
-    // (the speculative `iv_diag_policy` helper from cycle-87 review
-    // turned out to have no real substance).
+    // The sibling halo driver call above was promoted to (B)
+    // partition-policy-aware in TASK-0275 (cycle 96), NOT to (A) strict
+    // as this reuse call. The asymmetry is intentional: halo's
+    // `transfer_inject` consumer is conditional on the iv being
+    // partitioned, so naive (A) strict would newly-reject example 11
+    // (Mod-indexed `step_or_seed` with no partition= in scope). Reuse's
+    // Tier 1 marker fires on every recognised slot, so for reuse (B)
+    // degenerated into (A). The two driver calls' five-line shapes are
+    // similar (`apply_X(...).map_err(|e| ...)?`) but the entry-point
+    // names + the role of any returned advisory bucket differ — the
+    // speculative `iv_diag_policy` helper from cycle-87 review still
+    // has no real substance to lift.
     let acfg = apply_reuse_inference(&linked, acfg)
         .map_err(|e| format!("reuse-inference error: {e}"))?;
     let acfg = inject_syncs(acfg);
