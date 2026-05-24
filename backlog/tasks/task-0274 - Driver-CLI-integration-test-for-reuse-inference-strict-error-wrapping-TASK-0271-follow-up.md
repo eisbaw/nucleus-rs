@@ -3,9 +3,10 @@ id: TASK-0274
 title: >-
   Driver-CLI integration test for reuse-inference strict-error wrapping
   (TASK-0271 follow-up)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-24 09:16'
+updated_date: '2026-05-24 10:01'
 labels:
   - M5
   - test-gap
@@ -53,3 +54,19 @@ LOW priority. The current pass-level pin already proves the strict variant bites
 - Forward-carried from: TASK-0271 (cycle-88 architect P3 review item).
 - Related: TASK-0273 (multi-worker marker coverage gap; both are coverage-gap follow-ups from cycle-87/88).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 92, commit 411d334: landed driver-CLI integration test pinning the reuse-inference strict-error wrapping (TASK-0271 cycle-88 architect P3 follow-up).
+
+New files:
+- nucleus/driver/tests/cli_reuse_strict.rs (single test `nucleus_build_fails_loud_on_strided_reuse_with_wrapped_diagnostic`).
+- nucleus/driver/tests/fixtures/task_0274_strided_reuse/ — minimal in-bounds strided-index algorithm (`src[v * 2]` for v in 0..2 with N=4) + reuse-tagged single-host schedule + scaffolding kernels.
+
+Test asserts: non-zero exit + "reuse-inference error:" prefix (driver wrap) + "strided" + "coefficient 2" (StridedAccessNotSupported Display). All 3 fire on real CLI subprocess invocation via CARGO_BIN_EXE_nucleus (mirrors tests/emit_pn.rs pattern).
+
+Gate: cargo test workspace 0 failed; cargo clippy -D warnings clean. Test passes on first compile.
+
+A future refactor that drops the "reuse-inference error:" prefix, swaps format!() for to_string(), removes the `?` propagation, or changes the StridedAccessNotSupported Display text now fails LOUD instead of silently changing the user-visible diagnostic.
+<!-- SECTION:FINAL_SUMMARY:END -->
