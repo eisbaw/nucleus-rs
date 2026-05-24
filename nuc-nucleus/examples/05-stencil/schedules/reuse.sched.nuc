@@ -1,0 +1,62 @@
+// Reuse schedule: single host, `reuse` hint on the inner x-loop.
+//
+// TASK-0265 Stage 2 (this cycle): a single-`host` variant that carries
+// the reuse loop directive WITHOUT any partition= or async transfer
+// machinery. Lets reuse Stage 2 wiring (TASK-0265) make its first
+// landing on a clean cell — no halo/partition/transfer entanglement,
+// no async/buffer/notify capability matrix, and no skip-list cells.
+//
+// The original `reuse` use site is `05-stencil/distributed`'s
+// `loop x : block=64, vectorize=8, reuse;` — but that cell is
+// currently SKIPPED on every backend due to TASK-0267 (host-Push drop
+// under partitioned consumers + async transfer) and TASK-0268
+// (sync_inject barrier deadlock on unequal-iter partitioned bodies),
+// neither of which has any relation to reuse codegen. This single-host
+// schedule isolates the reuse hint so its codegen can be exercised
+// e2e independently.
+//
+// What reuse_inference Stage 1 (TASK-0261) records for THIS schedule:
+//   For the inner `for x : 1..W-1` loop body, `blur3` reads
+//   `img_in[y±1][x-1]`, `img_in[y±1][x]`, `img_in[y±1][x+1]` — the
+//   axis-1 (x) offset set is {-1, 0, +1} on `img_in`. With
+//   `loop x : reuse;` in scope, the inference pass writes:
+//
+//     ACFG::reuse_widths[x_iv][img_in_id][1] =
+//         ReuseSlot { min_offset: -1, length: 3 }
+//
+//   The y-axis (axis 0) carries offsets {-1, 0, +1} too but `y` does
+//   not carry `reuse`, so no entry is recorded under y_iv.
+//
+// What Stage 2 (this task) wires:
+//   At loop-entry of the `x` `Event::Loop`, the backend walker reads
+//   `sidecar.reuse_widths.get(x_iv)` and either (a) emits a
+//   circular-buffer prologue + per-iteration rewrite of every
+//   `img_in[y][x+b]` read inside the body, or (b) emits a
+//   `nuc_trace!`-only advisory log naming the would-be buffer slot
+//   (Tier 1 — keeps emitted bytes byte-identical to non-reuse blocked
+//   baseline; Stage 2 real circular-buffer emit forward-carried).
+//
+// E2E expectation:
+//   - Tier 1 (advisory-log only): cell PASS, bit-identical to a
+//     `loop x : block=N;` baseline (no reuse).
+//   - Tier 2/3 (real buffer emit): cell PASS, still bit-identical to
+//     `reference.bin` (reuse is a perf rewrite, not a semantic one).
+//     Emitted code contains a 'reuse_buf' / 'circular' marker that the
+//     test crate can grep for.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on host;
+
+    // No block= on y — reuse is the only loop-option this schedule
+    // exercises, so the cell isolates the reuse codegen path without
+    // strip-mine confound.
+    //
+    // Inner x-loop carries the `reuse` hint. Stage 1 (TASK-0261)
+    // populates the reuse_widths sidecar; Stage 2 (TASK-0265) is the
+    // consumer.
+    loop x : reuse;
+}
