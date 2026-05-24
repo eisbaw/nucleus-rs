@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 09:21'
-updated_date: '2026-05-24 11:21'
+updated_date: '2026-05-24 11:35'
 labels:
   - M5
   - driver
@@ -161,4 +161,40 @@ Cleanest path = (a) from AC#1: new pass-side wrapper that pairs errors with scop
 **Closes:** TASK-0263 AC#4 (lenient → strict driver toggle).
 
 **No new follow-up tasks filed** — the partition-aware policy is end-state for the halo driver promotion; the remaining halo work (block-pair recovery TASK-0264, the 05-stencil/distributed deadlock TASK-0266) is unrelated to the lenient/strict policy choice.
+
+## Cycle 96 review-hardening summary (orchestrator, 2026-05-24)
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) on commits 36eb387/7b71fd6: both **GO**.
+
+### Architect P2 (material): test-name vs AC#3 literal
+Two of three original pins (`_rejects_non_affine_under_partitioned_iv` and `_accepts_non_affine_under_unpartitioned_iv`) used `y*2` — that is *strided* (coefficient != 1, technically affine), not `NonAffineIndex`. The AC#3 wording AND the example-11 motivation are about `NonAffineIndex` (Mod-shape the affine detector unconditionally rejects per `passes::common` contract).
+
+**Fix landed in commit 1cdf345**: rename strided pins to `_strided_*` + add true `_non_affine_*` pins using `y % 4` (the example-11 `step_or_seed` shape under a hypothetical partition=). Both arms (FATAL under partition=, ADVISORY without) pinned.
+
+### Architect P3 (cheap): partition= variant coverage
+`iv_is_partitioned` matches `Partition(_)` (every `PartitionKind` variant) but only `Workers` was test-covered. A regression that narrowed the arm to `Workers`-only would silently let `partition=rows` schedules emit wrong tiles.
+
+**Fix landed in commit 1cdf345**: `task0275_partition_aware_rejects_strided_under_partition_rows` pin locks the every-variant contract.
+
+### Architect P3 + QA observation: driver error string
+`"halo-inference error: {e}"` does not name the (B) policy that made the error fatal; users would have to read the 30-line driver-comment block to understand why their formerly-advisory body is now a compile error.
+
+**Fix landed in commit 1cdf345**: rewritten to `"halo-inference error (under partitioned iv): {e}"`.
+
+### Gate after hardening (1cdf345 + the cycle-96 pair)
+- `cargo test -p nucleus-compiler --test sidecar_halo`: **9/9 PASS** (5 TASK-0275 pins + 4 prior halo tests)
+- `just e2e`: **total: 92  pass: 77  fail: 0  skipped: 15  required-fail: 0** byte-identical
+- `just determinism-check`: **total: 92  pass: 77  fail: 0  skipped: 15** GREEN
+- `just clippy`: clean
+
+### Findings deferred (not actionable now)
+- QA P3: `apply_halo_inference_advisory` remains a public re-export but driver no longer calls it. Retained per cycle-88 pattern (test escape hatch); future dead-public-API sweep can revisit.
+- Architect P3: `apply_halo_inference_partition_aware` returns Err on the first scope-fatal error, discarding any already-collected advisory errors. Consistent with strict variant's first-error contract; documented if a multi-error mode is needed later.
+- Architect P3: 5 backlog md files reference `UnknownIterVarInScope` (the cycle-95 rename target), each annotated `[CYCLE-95 UPDATE]` — historical, not load-bearing. Skipping.
+
+### Cycle 96 outcome
+TASK-0275 (B) partition-policy-aware halo driver promotion: **Done, review-GO**.
+- TASK-0263 AC#4 (lenient → strict driver toggle): CLOSED.
+- Commit chain: 36eb387 (pass-side + 3 pins) → 7b71fd6 (driver promotion) → 4bb5db6 (tracker Done + forward-carry) → 1cdf345 (review-hardening: rename strided pins + add genuine non-affine pins + partition=rows pin + enriched error string).
+- Forward-carried lessons to TASK-0263, TASK-0269, TASK-0270 confirmed accurate by reviewer.
 <!-- SECTION:NOTES:END -->
