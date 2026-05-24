@@ -17,6 +17,13 @@
 pub mod acfg_to_petri;
 pub mod block_transform;
 pub mod boundedness;
+// TASK-0261 cycle 82 (prerequisite): shared affine-stride helpers
+// (`affine_decompose`, `eval_const_int`, `expr_mentions`) used by both
+// `halo_inference` (TASK-0260 Stage 1) and `reuse_inference` (TASK-0261
+// Stage 1). Lifted from `halo_inference` per cycle-81 review forward-
+// carry; `pub(crate)` so out-of-crate callers cannot bypass the
+// pass-level validation that wraps them.
+pub mod common;
 pub mod deadlock;
 // TASK-0260 Stage 1: halo region inference from kernel access patterns.
 // Runs AFTER `apply_partition_blocks2d` (driver pass order), AFTER

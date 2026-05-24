@@ -170,9 +170,16 @@
 use std::collections::BTreeMap;
 
 use crate::acfg::ACFG;
-use crate::algo::{IndexedRef, IrBinOp, IrExpr, IrStmt, ResolvedConst};
+use crate::algo::{IndexedRef, IrExpr, IrStmt, ResolvedConst};
 use crate::event::{IterVar, KernelId};
 use crate::link::LinkedIR;
+// Shared affine-stride helpers — see [`crate::passes::common`] module
+// docs. The lift in cycle 82 is single-use today but the second
+// consumer (TASK-0261 reuse_inference) is landing in the same series
+// (cycle-81 review forward-carry, F-P1). Halo inference uses only
+// `affine_decompose`; `eval_const_int` / `expr_mentions` are reachable
+// through that call and not re-imported here.
+use crate::passes::common::affine_decompose;
 
 // --------------------------------------------------------------------
 // Errors
@@ -703,9 +710,7 @@ fn classify_index(
             // constructed `(LinkedIR, ACFG)` pair fails closed with a
             // typed error rather than panicking (cycle-81 architect
             // review F-P1).
-            errors.push(HaloInferenceError::UnknownIterVarInScope {
-                iter_var: iv_name,
-            });
+            errors.push(HaloInferenceError::UnknownIterVarInScope { iter_var: iv_name });
             return;
         }
     };
@@ -761,143 +766,11 @@ fn expr_contains_dataref_or_call(e: &IrExpr) -> bool {
     }
 }
 
-/// Try to decompose `e` as `coefficient * iv + offset` where `iv` is the
-/// given iter-var name and both `coefficient` and `offset` const-fold to
-/// integers. Returns `Some((coeff, offset))` on success; `None` if the
-/// expression is not affine in `iv` in the recognised shape.
-///
-/// The shapes accepted are:
-/// - `iv` → `(1, 0)`
-/// - `-iv` → `(-1, 0)`
-/// - `iv + c` / `c + iv` → `(1, c)`
-/// - `iv - c` → `(1, -c)`
-/// - `c - iv` → `(-1, c)`
-/// - `c * iv` / `iv * c` → `(c, 0)`
-/// - And one level of composition: `c * iv + d`, `c * iv - d`,
-///   `d + c * iv`, `d - c * iv` → `(c [or -c], d [or -d])`.
-///
-/// Any deeper composition (`(a + b) * iv`, `iv + iv`, etc.) returns
-/// `None`. The detector is intentionally conservative — the caller
-/// raises a typed error on `None` rather than guessing.
-///
-/// `consts` lets a bound like `OFFSET - 1` fold when `const OFFSET = 1`.
-fn affine_decompose(
-    e: &IrExpr,
-    iv: &str,
-    consts: &BTreeMap<String, ResolvedConst>,
-) -> Option<(i64, i64)> {
-    // Base cases.
-    match e {
-        IrExpr::Ident(name) if name == iv => return Some((1, 0)),
-        IrExpr::Neg(inner) => {
-            // `-iv` → (-1, 0). `-(iv + c)` → (-1, -c). `-(c)` is a
-            // constant and is handled in `eval_const_int` below.
-            if let Some((c, d)) = affine_decompose(inner, iv, consts) {
-                return Some((-c, -d));
-            }
-            // Pure-constant `-c` reaches here only if `inner` is
-            // iv-independent (no Ident == iv). Try const-folding the
-            // whole expression as a constant offset.
-            if let Some(k) = eval_const_int(e, consts) {
-                return Some((0, k));
-            }
-            return None;
-        }
-        _ => {}
-    }
-
-    // Const-foldable constants → (0, k). Catches IntLit, Ident-of-const,
-    // and any composition that doesn't mention iv.
-    if !expr_mentions(e, iv) {
-        return eval_const_int(e, consts).map(|k| (0, k));
-    }
-
-    // BinOp cases.
-    if let IrExpr::BinOp(op, lhs, rhs) = e {
-        let lhs_aff = if expr_mentions(lhs, iv) {
-            affine_decompose(lhs, iv, consts)
-        } else {
-            eval_const_int(lhs, consts).map(|k| (0_i64, k))
-        };
-        let rhs_aff = if expr_mentions(rhs, iv) {
-            affine_decompose(rhs, iv, consts)
-        } else {
-            eval_const_int(rhs, consts).map(|k| (0_i64, k))
-        };
-        let (l, r) = (lhs_aff?, rhs_aff?);
-        match op {
-            IrBinOp::Add => return Some((l.0.checked_add(r.0)?, l.1.checked_add(r.1)?)),
-            IrBinOp::Sub => return Some((l.0.checked_sub(r.0)?, l.1.checked_sub(r.1)?)),
-            IrBinOp::Mul => {
-                // c * iv / iv * c only — at most ONE side mentions iv.
-                // (Both sides mentioning iv ⇒ iv*iv ⇒ not affine.)
-                match (l.0, r.0) {
-                    (0, _) => {
-                        // l is pure constant l.1, r is c*iv + d → scale r.
-                        return Some((l.1.checked_mul(r.0)?, l.1.checked_mul(r.1)?));
-                    }
-                    (_, 0) => {
-                        return Some((r.1.checked_mul(l.0)?, r.1.checked_mul(l.1)?));
-                    }
-                    _ => return None,
-                }
-            }
-            // Div / Mod with iv on either side are not affine in iv.
-            IrBinOp::Div | IrBinOp::Mod => return None,
-        }
-    }
-
-    None
-}
-
-/// Does `e` syntactically contain an `Ident(iv)` anywhere in its tree?
-fn expr_mentions(e: &IrExpr, iv: &str) -> bool {
-    match e {
-        IrExpr::Ident(n) => n == iv,
-        IrExpr::IntLit(_) => false,
-        IrExpr::Neg(inner) => expr_mentions(inner, iv),
-        IrExpr::BinOp(_, lhs, rhs) => expr_mentions(lhs, iv) || expr_mentions(rhs, iv),
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => false,
-    }
-}
-
-/// Try to evaluate `e` as an integer constant. Returns `None` if `e`
-/// references any non-const identifier (an iter-var or unknown name) or
-/// contains a DataRef / Call / overflow / div-by-zero. Mirrors the
-/// minimum subset of `algo::lower::eval_const` needed for halo offset
-/// recovery — we deliberately keep this local + small so the pass has
-/// no upstream coupling beyond the `consts` table.
-fn eval_const_int(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Option<i64> {
-    match e {
-        IrExpr::IntLit(v) => Some(*v),
-        IrExpr::Ident(name) => consts.get(name).map(|c| c.value),
-        IrExpr::Neg(inner) => eval_const_int(inner, consts).and_then(i64::checked_neg),
-        IrExpr::BinOp(op, lhs, rhs) => {
-            let l = eval_const_int(lhs, consts)?;
-            let r = eval_const_int(rhs, consts)?;
-            match op {
-                IrBinOp::Add => l.checked_add(r),
-                IrBinOp::Sub => l.checked_sub(r),
-                IrBinOp::Mul => l.checked_mul(r),
-                IrBinOp::Div => {
-                    if r == 0 {
-                        None
-                    } else {
-                        l.checked_div(r)
-                    }
-                }
-                IrBinOp::Mod => {
-                    if r == 0 {
-                        None
-                    } else {
-                        l.checked_rem(r)
-                    }
-                }
-            }
-        }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => None,
-    }
-}
+// NOTE: `affine_decompose`, `expr_mentions`, and `eval_const_int` were
+// moved to [`crate::passes::common`] in cycle 82 (TASK-0261 prerequisite)
+// so the reuse-inference pass can share one definition. The semantic
+// contract is unchanged; only the call site moved. See the `common`
+// module docs for the recognised affine shapes.
 
 // --------------------------------------------------------------------
 // Unit tests
@@ -907,8 +780,8 @@ fn eval_const_int(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Optio
 mod tests {
     use super::*;
     use crate::algo::{
-        AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, Purity, ResolvedConst, ResolvedData,
-        ResolvedKernel, ResolvedType, ScalarType,
+        AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, Purity, ResolvedData, ResolvedKernel,
+        ResolvedType, ScalarType,
     };
     use crate::link::link;
     use crate::sched::{ResolvedPlaceTarget, ResolvedPlacement, ResolvedWorker, SchedIR};
@@ -1031,66 +904,13 @@ mod tests {
         }
     }
 
-    // ---- Direct affine-decomposer tests (no LinkedIR) ----
-
-    #[test]
-    fn affine_decompose_iv_plus_one() {
-        let e = ir_add(ir_id("y"), ir_int(1));
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((1, 1)));
-    }
-
-    #[test]
-    fn affine_decompose_iv_minus_one() {
-        let e = ir_sub(ir_id("y"), ir_int(1));
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((1, -1)));
-    }
-
-    #[test]
-    fn affine_decompose_const_plus_iv() {
-        let e = ir_add(ir_int(2), ir_id("y"));
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((1, 2)));
-    }
-
-    #[test]
-    fn affine_decompose_bare_iv() {
-        let e = ir_id("y");
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((1, 0)));
-    }
-
-    #[test]
-    fn affine_decompose_negated_iv() {
-        let e = IrExpr::Neg(Box::new(ir_id("y")));
-        // coefficient -1 — recognised but caller rejects.
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((-1, 0)));
-    }
-
-    #[test]
-    fn affine_decompose_strided_two_iv() {
-        let e = ir_mul(ir_int(2), ir_id("y"));
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), Some((2, 0)));
-    }
-
-    #[test]
-    fn affine_decompose_iv_squared_is_none() {
-        let e = ir_mul(ir_id("y"), ir_id("y"));
-        assert_eq!(affine_decompose(&e, "y", &BTreeMap::new()), None);
-    }
-
-    #[test]
-    fn affine_decompose_uses_const_table() {
-        // const STRIDE = 2; index = y + STRIDE → (1, 2).
-        let mut consts = BTreeMap::new();
-        consts.insert(
-            "STRIDE".to_string(),
-            ResolvedConst {
-                name: "STRIDE".to_string(),
-                ty: ScalarType::I32,
-                value: 2,
-            },
-        );
-        let e = ir_add(ir_id("y"), ir_id("STRIDE"));
-        assert_eq!(affine_decompose(&e, "y", &consts), Some((1, 2)));
-    }
+    // ---- Direct affine-decomposer tests ----
+    //
+    // Moved to [`crate::passes::common`] tests in cycle 82 (TASK-0261
+    // prerequisite). Halo inference still exercises the helper
+    // transitively via the full-pipeline tests below; keeping the
+    // helper-level coverage in the helper's own module avoids a
+    // duplicate test surface that would skew the per-pass test count.
 
     // ---- Full-pipeline tests via apply_halo_inference ----
 
