@@ -19,10 +19,13 @@
 //!   example 05's algorithm currently fails to parse (TASK-0078).
 //!   Once that lands, the AC #3 "EventList Push covers a 64-row
 //!   band" assertion goes here.
-//! - Interaction with `vectorize=`, `unroll=`, `reuse`, `pipeline=`,
-//!   `partition=` — those transforms don't exist yet (their tasks
-//!   are open). Once they land, this file gains
-//!   "block + <other>" combination tests.
+//! - Interaction with `unroll=`, `reuse`, `pipeline=`, `partition=`
+//!   — most of those transforms have landed since this file was
+//!   written; `unroll=` itself is filed as TASK-0293 (future work).
+//!   `vectorize=` was deliberately removed from the language
+//!   (TASK-0292, 2026-05-25) — SIMD is delegated to the host Rust
+//!   compiler. Once `unroll=` lands, this file gains
+//!   "block + unroll" combination tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 

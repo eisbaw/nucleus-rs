@@ -123,9 +123,10 @@ const KEYWORDS: &[&str] = &[
     "size",
     "accessible_by",
     "per_worker",
-    // loop options
+    // loop options. `vectorize` was removed (TASK-0292, 2026-05-25
+    // decision: SIMD delegated to host Rust compiler + LLVM
+    // auto-vectorisation; see PRD §6.3.3).
     "block",
-    "vectorize",
     "unroll",
     "pipeline",
     "reuse",
@@ -581,7 +582,6 @@ fn loop_option() -> impl Parser<char, LoopOption, Error = Simple<char>> + Clone 
 
     choice((
         with_int("block", LoopOption::Block),
-        with_int("vectorize", LoopOption::Vectorize),
         with_int("unroll", LoopOption::Unroll),
         with_int("pipeline", LoopOption::Pipeline),
         partition,

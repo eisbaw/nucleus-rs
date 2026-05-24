@@ -13,7 +13,7 @@
 //! - Validates that every `class` named on a worker entry has a
 //!   matching [`ResolvedWorkerClass`] declaration; same for every
 //!   [`ResolvedMemoryRegion`] referenced from `place_data`.
-//! - Validates numeric option ranges: `block=N`/`vectorize=N`/
+//! - Validates numeric option ranges: `block=N`/
 //!   `unroll=N`/`pipeline=N` on loops, `buffer=N` on transfers, all
 //!   must be strictly positive. The parser accepts any `u64` because
 //!   zero-or-positive is a semantic constraint, not a lexical one.
@@ -249,8 +249,9 @@ impl PartialEq for ResolvedLoopDirective {
 pub enum ResolvedLoopOption {
     /// `block=N`, N > 0.
     Block(u64),
-    /// `vectorize=N`, N > 0.
-    Vectorize(u64),
+    // `Vectorize(u64)` removed (TASK-0292, 2026-05-25). SIMD
+    // vectorisation is delegated to the host Rust compiler + LLVM. See
+    // PRD §6.3.3.
     /// `unroll=N`, N > 0.
     Unroll(u64),
     /// `pipeline=N`, N > 0.
@@ -537,7 +538,7 @@ pub enum SchedLowerErrorKind {
     ConflictingTransferMode { data: String },
 
     // ----- Option-value validation -----
-    /// `block=0`, `vectorize=0`, `unroll=0`, `pipeline=0` — strictly
+    /// `block=0`, `unroll=0`, `pipeline=0` — strictly
     /// positive required. `option` is the keyword as written, `var`
     /// is the owning loop variable.
     ZeroLoopOption { var: String, option: String },
@@ -599,31 +600,10 @@ pub enum SchedLowerErrorKind {
         unroll: u64,
         block: u64,
     },
-    /// `loop V : block=N, vectorize=M` where `M` does not divide `N`
-    /// (TASK-0144.01 Stage 3). PRD §6.3.3: "bad combinations rejected
-    /// at compile time, not at runtime." `block=N` strip-mines the loop
-    /// into outer/inner tiles of length `N`; `vectorize=M` is defined
-    /// by PRD §6.3.3 as "Unroll inner body M-way; expects SIMD-friendly
-    /// ops" — i.e. M-way unrolling of the intra-tile body with a
-    /// SIMD-friendly grouping hint (no hard width-M vector-instruction
-    /// promise). If `M` does not divide `N`, every full tile has a tail
-    /// of `N % M` ungrouped iterations — the schedule author wrote two
-    /// static integer constants that disagree at compile time, before
-    /// the loop bound is known. The cleanest answer is to refuse the
-    /// schedule: there is no honest, range-independent grouping factor.
-    /// Both integers are static, so the check is purely on the option
-    /// payloads. `var` is the loop variable; `vectorize` and `block`
-    /// are the literal values written. Note: backend codegen does not
-    /// yet consume `vectorize=` (see `passes::block_transform` header:
-    /// "Only `block=` is handled"), so this sched-lower check is the
-    /// first (and currently only) line of defense — backends ignoring
-    /// vectorize today does not make the check unnecessary; the PRD
-    /// requires the rejection regardless of backend support.
-    VectorizeNotDivisibleByBlock {
-        var: String,
-        vectorize: u64,
-        block: u64,
-    },
+    // `VectorizeNotDivisibleByBlock` removed (TASK-0292, 2026-05-25).
+    // The `vectorize=M` directive was dropped from the grammar; this
+    // validation rule (TASK-0144.01 Stage 3) is dead with no
+    // producer.
     /// `loop V : block=N;` + `check loop V : latency_max=T;` — the
     /// loop V has both a strip-mine directive AND a latency check.
     /// `block_transform` tiles V into outer/inner; the inner Event::Loop
@@ -882,16 +862,6 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 "loop `{var}` has `unroll={unroll}, block={block}` but `unroll` must divide \
                  `block` (got {unroll}\u{2224}{block}); pick an unroll factor that divides the \
                  tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
-            ),
-            SchedLowerErrorKind::VectorizeNotDivisibleByBlock {
-                var,
-                vectorize,
-                block,
-            } => write!(
-                f,
-                "loop `{var}` has `vectorize={vectorize}, block={block}` but `vectorize` must \
-                 divide `block` (got {vectorize}\u{2224}{block}); pick a vector width that \
-                 divides the tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
             ),
             SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
                 f,

@@ -453,7 +453,9 @@ fn sched_directive_hint_fires_for_each_keyword() {
         ("pipeline = 2;", "pipeline"),
         ("transfer = sync;", "transfer"),
         ("unroll = 8;", "unroll"),
-        ("vectorize = 4;", "vectorize"),
+        // `vectorize = 4;` removed 2026-05-25 (TASK-0292) — vectorize
+        // is no longer a schedule directive; the algo parser no
+        // longer emits a hint for it.
         ("place k on host;", "place"),
         ("place_data x to mem;", "place_data"),
         ("check loop y : latency_max = 10;", "check"),

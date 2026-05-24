@@ -7,7 +7,8 @@
 // no async/buffer/notify capability matrix, and no skip-list cells.
 //
 // The original `reuse` use site is `05-stencil/distributed`'s
-// `loop x : block=64, vectorize=8, reuse;` — but that cell is
+// `loop x : block=64, reuse;` (was `block=64, vectorize=8, reuse`
+// pre-2026-05-25; TASK-0292 dropped vectorize). That cell is
 // currently SKIPPED on every backend due to TASK-0267 (host-Push drop
 // under partitioned consumers + async transfer) and TASK-0268
 // (sync_inject barrier deadlock on unequal-iter partitioned bodies),

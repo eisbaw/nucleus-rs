@@ -34,10 +34,13 @@ schedule for "../prog.algo.nuc" {
     //     worker's blur3 needs grid[y-1] and grid[y+1] at the seam).
     loop y : partition=rows;
 
-    // Inner loop: SIMD-friendly, with the reuse pattern that was the
-    // unshipped piece in the 2013 thesis (slide a 3-wide window in x,
-    // recycle 2 of 3 reads each step).
-    loop x : block=64, vectorize=8, reuse;
+    // Inner loop: blocked + reuse (the reuse pattern was the
+    // unshipped piece in the 2013 thesis — slide a 3-wide window in
+    // x, recycle 2 of 3 reads each step). SIMD vectorisation is
+    // delegated to the host Rust compiler + LLVM (TASK-0292
+    // 2026-05-25; the 2013-era `vectorize=8` directive was dropped
+    // from the v2 grammar — see PRD §6.3.3).
+    loop x : block=64, reuse;
 
     // host -> workers: pipelined async streaming, two row-bands in flight.
     // Event-driven notification (the backend must support it; a sync-only

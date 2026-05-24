@@ -277,7 +277,8 @@ pub struct LoopDirective {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopOption {
     Block(u64),
-    Vectorize(u64),
+    // Vectorize removed (TASK-0292, 2026-05-25). SIMD vectorisation is
+    // delegated to the host Rust compiler + LLVM. See PRD §6.3.3.
     Unroll(u64),
     Pipeline(u64),
     Reuse,

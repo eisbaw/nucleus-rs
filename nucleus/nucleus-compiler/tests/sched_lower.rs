@@ -229,10 +229,10 @@ fn lowers_05_stencil_distributed() {
         other => panic!("expected Many target for blur3, got {:?}", other),
     }
 
-    // loop x : block=64, vectorize=8, reuse
+    // loop x : block=64, reuse  (was `block=64, vectorize=8, reuse`
+    // pre-2026-05-25; TASK-0292 dropped vectorize from the grammar.)
     let loop_x = &ir.loops["x"];
     assert!(loop_x.options.contains(&ResolvedLoopOption::Block(64)));
-    assert!(loop_x.options.contains(&ResolvedLoopOption::Vectorize(8)));
     assert!(loop_x.options.contains(&ResolvedLoopOption::Reuse));
 
     // transfer img_in : async, buffer=2, notify=event
@@ -640,7 +640,7 @@ fn negative_duplicate_loop_for_same_var() {
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
     loop y : block=64;
-    loop y : vectorize=8;
+    loop y : unroll=8;
 }
 ";
     let err = lower_str(src)
@@ -812,34 +812,12 @@ schedule for \"../prog.algo.nuc\" {
     );
 }
 
-#[test]
-fn negative_vectorize_not_divisible_by_block_is_rejected() {
-    // TASK-0144.01 Stage 3: `block=N, vectorize=M` with M not dividing
-    // N is a compile-time bad combination (PRD §6.3.3). Both values
-    // are static integers; the check is purely on option payloads.
-    // `block=6, vectorize=4`: 6 % 4 == 2 != 0 — refused at sched-lower.
-    // The positive divisor case (block=64, vectorize=8) is exercised
-    // by the existing 05-stencil/distributed lower test and the
-    // `positive_reordered_distinct_loop_options_still_lower` smoke.
-    let src = "\
-schedule for \"../prog.algo.nuc\" {
-    workers = { host };
-    loop n : block=6, vectorize=4;
-}
-";
-    let err = lower_str(src)
-        .expect_err("vectorize not dividing block must fail")
-        .first()
-        .clone();
-    assert_eq!(
-        err.kind,
-        SchedLowerErrorKind::VectorizeNotDivisibleByBlock {
-            var: "n".into(),
-            vectorize: 4,
-            block: 6,
-        }
-    );
-}
+// `negative_vectorize_not_divisible_by_block_is_rejected` REMOVED
+// 2026-05-25 (TASK-0292): the `vectorize=M` directive was dropped
+// from the grammar; the `VectorizeNotDivisibleByBlock` error variant
+// + check went with it. The unroll-divisibility sibling
+// (`negative_unroll_not_divisible_by_block_is_rejected` above) still
+// pins the `block + unroll-not-divisible` rule.
 
 #[test]
 fn negative_check_on_strip_mined_loop_is_rejected() {
@@ -1052,26 +1030,11 @@ schedule for \"../prog.algo.nuc\" {
     );
 }
 
-#[test]
-fn negative_zero_vectorize_loop_option() {
-    let src = "\
-schedule for \"../prog.algo.nuc\" {
-    workers = { host };
-    loop y : vectorize=0;
-}
-";
-    let err = lower_str(src)
-        .expect_err("vectorize=0 must fail")
-        .first()
-        .clone();
-    assert_eq!(
-        err.kind,
-        SchedLowerErrorKind::ZeroLoopOption {
-            var: "y".into(),
-            option: "vectorize".into()
-        }
-    );
-}
+// `negative_zero_vectorize_loop_option` REMOVED 2026-05-25 (TASK-0292):
+// the `vectorize=N` directive was dropped from the grammar; the zero-
+// rejection sibling (`negative_zero_block_loop_option` /
+// `negative_zero_unroll_loop_option`) still pins the ZeroLoopOption
+// rule on the remaining numeric options.
 
 #[test]
 fn negative_zero_buffer_transfer_option() {
@@ -1236,7 +1199,7 @@ fn positive_reordered_distinct_loop_options_still_lower() {
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
-    loop x : reuse, vectorize=8, block=64;
+    loop x : reuse, unroll=8, block=64;
 }
 ";
     let ir = lower_str(src).expect("distinct reordered options must lower");

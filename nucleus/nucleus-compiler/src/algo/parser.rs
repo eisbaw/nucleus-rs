@@ -197,7 +197,9 @@ const SCHED_RESERVED_EQ: &[&str] = &[
     "pipeline",
     "transfer",
     "unroll",
-    "vectorize",
+    // `vectorize` removed 2026-05-25 (TASK-0292). It is no longer a
+    // schedule directive — SIMD is delegated to the host Rust
+    // compiler.
 ];
 
 /// Builds the top-level `Program ::= TopItem*` parser.
@@ -722,8 +724,8 @@ fn lvalue_parser() -> impl Parser<char, IndexedLValue, Error = Simple<char>> + C
 ///
 /// - `<kw> =` for `<kw>` in [`SCHED_RESERVED_EQ`]
 ///   (`block`, `buffer`, `notify`, `partition`, `pipeline`,
-///   `transfer`, `unroll`, `vectorize`) — the `kw = N` directive
-///   shape.
+///   `transfer`, `unroll`) — the `kw = N` directive shape. (Was
+///   also `vectorize` pre-2026-05-25; TASK-0292 dropped it.)
 /// - `place <ident>` — the `place IDENT on host;` statement directive.
 /// - `place_data <ident>` — the `place_data IDENT to MEM;` shape.
 /// - `check loop` — the `check loop VAR : ASSERT;` shape.

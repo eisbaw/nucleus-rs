@@ -32,9 +32,8 @@ README reflects the v2 surface.
   on TASK-0117 (iteration-space partitioning for distributed
   placement) and on halo synthesis on top of that.
 - `reuse` (sliding-window 3-wide recycle). Listed in
-  `distributed.sched.nuc` as `loop x : block=64, vectorize=8, reuse;`
-  for parse-coverage; the `reuse` semantics is not yet wired
-  end-to-end.
+  `distributed.sched.nuc` as `loop x : block=64, reuse;` for
+  parse-coverage; the `reuse` semantics is not yet wired end-to-end.
 - Multi-iteration stencils. That's example 11 (Game of Life).
 - Floating-point arithmetic. PRD §10.1: integer for bit-identity.
 
@@ -251,10 +250,10 @@ this example's `kernels.rs`.
    blocked cell is `#[ignore]`'d.
 
 4. **`reuse` is parser-coverage only.** The `distributed.sched.nuc`
-   declares `loop x : block=64, vectorize=8, reuse;` for the
-   structural pinning tests, but the `reuse` semantics (sliding-
-   window register-reuse across consecutive iterations of `x`) is
-   not yet wired into the compiler. Filed as a follow-up.
+   declares `loop x : block=64, reuse;` for the structural pinning
+   tests, but the `reuse` semantics (sliding-window register-reuse
+   across consecutive iterations of `x`) is not yet wired into the
+   compiler. Filed as a follow-up.
 
 5. **No `f32` variant**, even though the original 2013 thesis
    example was float. PRD §12 narrows to integer arithmetic for v2

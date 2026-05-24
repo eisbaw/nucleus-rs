@@ -262,7 +262,9 @@ fn parses_05_stencil_distributed() {
         other => panic!("expected Many, got {:?}", other),
     }
 
-    // Spot-check: loop x has three options.
+    // Spot-check: loop x has two options. (Was three pre-2026-05-25
+    // with `vectorize=8`; TASK-0292 dropped vectorize from the
+    // grammar.)
     let loop_x = ast
         .directives
         .iter()
@@ -271,9 +273,8 @@ fn parses_05_stencil_distributed() {
             _ => None,
         })
         .expect("loop x");
-    assert_eq!(loop_x.options.len(), 3);
+    assert_eq!(loop_x.options.len(), 2);
     assert!(loop_x.options.contains(&LoopOption::Block(64)));
-    assert!(loop_x.options.contains(&LoopOption::Vectorize(8)));
     assert!(loop_x.options.contains(&LoopOption::Reuse));
 }
 

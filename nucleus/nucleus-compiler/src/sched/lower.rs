@@ -162,7 +162,6 @@ use super::ir::{
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
 /// | `UnrollNotDivisibleByBlock`            | Independent | yes               | never |
-/// | `VectorizeNotDivisibleByBlock`         | Independent | yes               | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -998,34 +997,10 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
         }
     }
 
-    // TASK-0144.01 Stage 3: reject `block=N + vectorize=M` where `M ∤ N`.
-    // PRD §6.3.3: "bad combinations rejected at compile time". Mirrors
-    // the unroll∤block rule above: `block=N` strip-mines into N-tiles;
-    // `vectorize=M` asks the backend for width-M vector instructions on
-    // the intra-tile body; if `M` does not divide `N` every full tile
-    // has an `N % M` scalar tail, i.e. the schedule author wrote two
-    // static integer constants that disagree at compile time. Backend
-    // codegen does not currently consume `vectorize=` (see
-    // `passes::block_transform`), so this sched-lower check is the
-    // first line of defense — the PRD rejection is required regardless
-    // of backend support.
-    let vectorize_m = options.iter().find_map(|opt| match opt {
-        ResolvedLoopOption::Vectorize(m) => Some(*m),
-        _ => None,
-    });
-    if let (Some(n), Some(m)) = (block_n, vectorize_m) {
-        // `m` is post-`positive(...)`, so m >= 1; `n % m` is well-defined.
-        if n % m != 0 {
-            return Err(SchedLowerError::at(
-                SchedLowerErrorKind::VectorizeNotDivisibleByBlock {
-                    var: var.clone(),
-                    vectorize: m,
-                    block: n,
-                },
-                var_span.clone(),
-            ));
-        }
-    }
+    // TASK-0144.01 Stage 3 (vectorize-divisibility check) REMOVED
+    // 2026-05-25 alongside the `vectorize=M` grammar drop (TASK-0292).
+    // SIMD is delegated to the host Rust compiler + LLVM
+    // auto-vectorisation; see PRD §6.3.3.
 
     ir.loops.insert(
         var.clone(),
@@ -1050,7 +1025,6 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
 fn loop_option_keyword(opt: &LoopOption) -> Option<&'static str> {
     match opt {
         LoopOption::Block(_) => Some("block"),
-        LoopOption::Vectorize(_) => Some("vectorize"),
         LoopOption::Unroll(_) => Some("unroll"),
         LoopOption::Pipeline(_) => Some("pipeline"),
         LoopOption::Partition(_) => Some("partition"),
@@ -1079,7 +1053,6 @@ fn lower_loop_option(
 
     Ok(match opt {
         LoopOption::Block(n) => ResolvedLoopOption::Block(positive(*n, "block")?),
-        LoopOption::Vectorize(n) => ResolvedLoopOption::Vectorize(positive(*n, "vectorize")?),
         LoopOption::Unroll(n) => ResolvedLoopOption::Unroll(positive(*n, "unroll")?),
         // pipeline=D rejects BOTH D=0 (via `positive`) and D=1 (TASK-0134).
         // D=1 is a no-op pipeline that would silently lower to

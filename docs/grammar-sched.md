@@ -92,11 +92,23 @@ LoopStmt       ::= 'loop' Ident ':' LoopOptList ';' ;
 LoopOptList    ::= LoopOpt (',' LoopOpt)* ;
 
 LoopOpt        ::= 'block'     '=' IntLit
-                 | 'vectorize' '=' IntLit
                  | 'unroll'    '=' IntLit
                  | 'pipeline'  '=' IntLit
                  | 'reuse'
                  | 'partition' '=' PartitionKind ;
+
+(* ---------- on what is intentionally NOT in this list ---------- *)
+
+(* `vectorize=N` is NOT a Nucleus directive. SIMD vectorisation is
+   delegated to the host Rust compiler + LLVM auto-vectorisation. PRD
+   §6.3.3 + TASK-0292 carry the decision record. The 2013 thesis had a
+   `vectorize=N` directive; v2 deliberately removed it.
+
+   `unroll=N` is accepted by the grammar but has no consumer pass
+   today; the IR rewrite is filed as TASK-0293 (future work). LLVM
+   unrolls aggressively at the host build step; the DSL-side value of
+   a *deterministic* unroll factor is real but not load-bearing for
+   the thesis story today. *)
 
 PartitionKind  ::= 'rows' | 'blocks2d' | 'workers' ;
 
@@ -216,12 +228,12 @@ parser accepts; later passes reject.
    others (e.g. `mp-tcp-bufsync`) honour `buffer=N` even under sync
    semantics. See §5.4.
 7. **Loop option composition order is not significant.** `loop x :
-   block=64, vectorize=8, reuse;` and `loop x : reuse, vectorize=8,
+   block=64, unroll=4, reuse;` and `loop x : reuse, unroll=4,
    block=64;` parse to the same set. Semantic conflicts (e.g.
    `block=64, block=128` on the same loop) are rejected by the
    SchedIR lowering pass (TASK-0093): each value-bearing option
-   keyword (`block`, `vectorize`, `unroll`, `pipeline`, `partition`;
-   for transfers `buffer`, `notify`) may appear at most once. The
+   keyword (`block`, `unroll`, `pipeline`, `partition`; for transfers
+   `buffer`, `notify`) may appear at most once. The
    bare flag `reuse` is idempotent — a repeated `reuse` is harmless
    redundancy, not the value conflict this note targets, so it is
    *not* rejected. The transfer-mode flags `sync`/`async` are the one
@@ -316,7 +328,7 @@ contrasting semantics.
 | 10      | `place load_image on host;`                            | `PlaceStmt` with `PlaceTarget = Ident` |
 | 12      | `place blur3 on { w0, w1, w2, w3 };`                   | `PlaceStmt` with `PlaceTarget = '{' IdentList '}'` |
 | 19      | `loop y : partition=rows;`                             | `LoopStmt`, `LoopOpt = 'partition' '=' 'rows'` |
-| 24      | `loop x : block=64, vectorize=8, reuse;`               | `LoopStmt`, three `LoopOpt`s — `block=IntLit`, `vectorize=IntLit`, bare `reuse` |
+| 24      | `loop x : block=64, reuse;`                            | `LoopStmt`, two `LoopOpt`s — `block=IntLit`, bare `reuse` |
 | 29      | `transfer img_in : async, buffer=2, notify=event;`     | `TransferStmt`, three `XferOpt`s — bare `async`, `buffer=IntLit`, `notify=event` |
 | 33      | `transfer img_out : sync;`                             | `TransferStmt`, one `XferOpt = 'sync'` |
 
@@ -379,8 +391,8 @@ Documented for the record; resolutions are baked into the EBNF above.
 ### 5.1 Composition order of loop options
 
 `LoopOptList` is comma-separated without ordering constraints. The
-grammar treats `loop x : block=64, vectorize=8, reuse` and `loop x :
-reuse, vectorize=8, block=64` as equally well-formed. The schedule's
+grammar treats `loop x : block=64, unroll=4, reuse` and `loop x :
+reuse, unroll=4, block=64` as equally well-formed. The schedule's
 *meaning* — what transforms apply in what order — is determined by
 the compiler's lowering pass, not by source order.
 
@@ -391,7 +403,7 @@ post-parse. Detection is a one-pass check at link time; not a
 grammar concern.
 
 Rejected alternative: enforce a canonical order
-(`block`, `unroll`, `vectorize`, `pipeline`, `partition`, `reuse`).
+(`block`, `unroll`, `pipeline`, `partition`, `reuse`).
 Buys nothing for users; adds a reformatter task for no payoff.
 
 ### 5.2 Is `check` grammatically tied to a `loop=` directive?
@@ -529,7 +541,7 @@ could canonicalise; the grammar does not.
    is `schedule`, `for`, `worker_class`, `memory_region`, `workers`,
    `place`, `place_data`, `on`, `in`, `loop`, `transfer`, `check`,
    `simd`, `memory`, `size`, `accessible_by`, `per_worker`, plus the
-   option keywords (`block`, `vectorize`, `unroll`, `pipeline`,
+   option keywords (`block`, `unroll`, `pipeline`,
    `reuse`, `partition`, `sync`, `async`, `buffer`, `notify`,
    `latency_max`, `on_violation`) and the value-side atoms (`none`,
    `shared`, `event`, `poll`, `rows`, `blocks2d`, `workers`, `panic`,

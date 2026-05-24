@@ -339,7 +339,8 @@ compiler disambiguates by scope.
 #### 6.2.4 What is intentionally not in the algorithm
 
 - No worker names. No `w0::`, no `host::`.
-- No `block=`, `vectorize=`, `unroll=`, `pipeline=`, `reuse`.
+- No `block=`, `unroll=`, `pipeline=`, `reuse`. (No `vectorize=` either —
+  SIMD is delegated to the host Rust compiler, see §6.3.3.)
 - No `transfer=`, `buffer=`, `notify=`.
 - No conditionals across worker boundaries.
 - No recursion, no closures, no higher-order ops, no generics.
@@ -423,7 +424,7 @@ schedule for "stencil.algo.nuc" {
     place blur3       on { w0, w1, w2, w3 };   // distributed
 
     loop y : block=64;
-    loop x : vectorize=8, reuse;
+    loop x : reuse;
 
     transfer img_in   : async, buffer=2, notify=event;
     transfer img_out  : sync;
@@ -509,15 +510,36 @@ loop VAR : option [ , option ]* ;
 | Option          | Meaning                                                    |
 | --------------- | ---------------------------------------------------------- |
 | `block=N`       | Tile iteration into chunks of N; transfers happen per tile |
-| `vectorize=M`   | Unroll inner body M-way; expects SIMD-friendly ops         |
 | `reuse`         | Identify and reuse loop-carried slices (the 2013 gap)      |
 | `pipeline=D`    | Software-pipeline with depth D (replaces double-buffering) |
-| `unroll=N`      | Plain unrolling, no vector grouping                        |
+| `unroll=N`      | Plain unrolling — *deferred / future work, see TASK-0293*  |
 | `partition=...` | Policy for distributed placement (e.g. `rows`, `blocks2d`) |
 
 Loop options are orthogonal where possible. Bad combinations
-(`vectorize` on a divergent loop, `partition=rows` on a 1D iteration,
+(`partition=rows` on a 1D iteration, `pipeline=D` with `D >= num_tiles`,
 etc.) are rejected at compile time, not at runtime.
+
+**On vectorisation (deliberate omission).** The 2013 thesis had a
+`vectorize=N` directive; Nucleus v2 does not. Vectorisation is
+delegated to the host Rust compiler + LLVM auto-vectorisation. PRD
+§6.2.2's kernel-body opacity rule ("Nucleus does not substitute text
+into kernel bodies") is load-bearing: a real `vectorize=M` consumer
+would require either a kernel-variant resolution mechanism (kernels
+declare both scalar and lane-M forms; the directive selects between
+them — a real language extension) or substituting SIMD code at the
+call site (impossible under the opacity rule). For the i32-arithmetic
+stencils in the shipped example set, LLVM auto-vectorises competently
+already; prescribing a SIMD width in the schedule would force every
+backend to honour it, conflicting with the bit-identical-across-
+backends guarantee. See TASK-0292 for the closing decision record.
+
+**On unroll=N.** Accepted by the grammar; no consumer pass exists
+today. The `Repeat` IR can be rewritten to N body-copies (a sibling
+of `block_transform`), but LLVM already unrolls aggressively in the
+host build; the DSL-side value (deterministic unroll factor for
+pedagogy + reproducibility) is real but not load-bearing for the
+thesis story. Implementation deferred to TASK-0293; reopened on
+concrete evidence of LLVM-vs-DSL-prescribed-unroll divergence.
 
 #### 6.3.4 Transfer / IO semantics
 

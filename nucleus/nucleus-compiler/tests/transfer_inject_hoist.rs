@@ -60,8 +60,10 @@
 //! ----------------------------
 //! - Real example 05/07 byte-for-byte assertions; the e2e files cover
 //!   those.
-//! - Mixed `block=` and `vectorize=` or `unroll=`; those transforms
-//!   don't exist yet.
+//! - Mixed `block=` and `unroll=`; the `unroll=` consumer is filed
+//!   as TASK-0293 (future work). `vectorize=` was deliberately
+//!   dropped from the language (TASK-0292, 2026-05-25 — SIMD is
+//!   delegated to the host Rust compiler).
 
 use std::collections::{BTreeMap, BTreeSet};
 
