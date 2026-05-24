@@ -1,10 +1,11 @@
 ---
 id: TASK-0265
 title: 'M5 Stage 2: backend walker emits delay-line / circular buffer for reuse_widths'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-24 02:33'
-updated_date: '2026-05-24 02:43'
+updated_date: '2026-05-24 08:34'
 labels:
   - M5
   - compiler
@@ -44,6 +45,28 @@ A loop that carries BOTH a halo entry AND a reuse entry needs both code paths ac
 - The actual circular-buffer Rust template is per-backend (pthreads-sync vs pthreads-async vs mp-tcp-* will share most of it but the worker-init prologue differs). Plan structure choice — shared helper in backend-common vs per-backend duplication — to be determined when the work starts.
 <!-- SECTION:DESCRIPTION:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Tier 1 — minimum-deep landing:
+
+(a) Forward-carry item #3: serde JSON round-trip golden test for ACFG.reuse_widths (triple-nested BTreeMap<IterVar, BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>>). Pins wire shape before any Stage-2 consumer is wired.
+
+(b) Forward-carry item #4: defensive variant tests for ReuseInferenceError::UnknownLoopVar and UnknownDataInRef — each can only fire on inconsistent (LinkedIR, ACFG) pairs, so the test builds the pair by hand bypassing link.
+
+(c) Forward-carry item #5: tests/partition_workers.rs:624 cosmetic normalisation BTreeMap::new() -> std::collections::BTreeMap::new().
+
+(d) Walker-side LOOKUP wiring at Event::Loop emit site (both single-worker render_events_in in pthreads-sync AND backend-common multi_worker_walker), bit-identical safe: look up sidecar.reuse_widths.get(iter_var), iterate (DataId, axis) slots in determinism order, emit a NUC_TRACE-only advisory log naming each slot. No emitted-byte change. Lays the consumer-site scaffold for Tier 2/3.
+
+Tier 2 (attempt if Tier 1 clean): new nuc-nucleus/examples/05-stencil/schedules/reuse.sched.nuc (single-host, loop x : block=4, reuse;) + e2e cell. Initially the cell will be PASS (bit-identical to non-reuse blocked baseline) precisely BECAUSE Stage 2 emit is still a no-op. AC#4 marker-detection requirement (emitted code contains 'circular' / 'delay_line') is NOT achievable in Tier 1; that part deferred to Tier 3.
+
+Tier 3-4 follow-ups filed as TASK-0265.01..03 + TASK-0265.04 (driver-promotion).
+
+Gate: just e2e baseline 88/73/0/15/0 must hold. just determinism-check stays green. cargo test --workspace stays green.
+
+Honest expectation: Tier 1 + Tier 2-PASS-as-no-op cell is the realistic landing this cycle. Per-backend real circular-buffer emit is forward-carried.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
@@ -60,4 +83,48 @@ When Stage 2 wiring lands (backend walker delay-line codegen):
 4. **Defensive variants UnknownLoopVar + UnknownDataInRef have NO direct test** — only 6 of 8 ReuseInferenceError variants pinned. Cross-module invariant guards merit one test each (parity with halo's UnknownIterVarInScope, also untested as a defensive belt).
 
 5. **Cosmetic normalisation**: tests/partition_workers.rs:566 has bare 'reuse_widths: BTreeMap::new()' while other fixtures use fully-qualified 'std::collections::BTreeMap::new()'. One-line normalisation when Stage 2 touches the test crate.
+
+## Cycle 87 (TASK-0265) — Tier 1 landing summary
+
+### What landed
+- Tier 1a (cycle-82 review #3): serde JSON round-trip golden test for ACFG.reuse_widths triple-nested map. tests/sidecar_reuse.rs::reuse_widths_serde_roundtrip + reuse_widths_serde_default_on_missing_field. Pins wire shape BEFORE Stage 2 codegen consumes it.
+- Tier 1b (cycle-82 review #4): defensive variant tests for ReuseInferenceError::UnknownLoopVar + UnknownDataInRef. tests/sidecar_reuse.rs::defensive_unknown_loop_var_returns_typed_err + defensive_unknown_data_in_ref_returns_typed_err. Test fixtures bypass link to construct the inconsistent (LinkedIR, ACFG) pair.
+- Tier 1c (cycle-82 review #5): tests/partition_workers.rs:624 normalised BTreeMap::new() to std::collections::BTreeMap::new() for parity with sibling struct members.
+- New 05-stencil/schedules/reuse.sched.nuc: single-host schedule carrying loop x : reuse; (no partition/async/distributed entanglement). Stage 1 records (x_iv, img_in, axis=1) = ReuseSlot{min=-1, length=3}.
+- Tier 1d (walker-side LOOKUP scaffold): backend-common/render::render_reuse_marker_comment + wired into BOTH the multi-worker walker (multi_worker_walker.rs Event::Loop arm: strip-mined AND regular paths) AND the single-worker render path (pthreads-sync/src/lib.rs render_event Event::Loop arm: strip-mined AND regular paths). Marker substring reuse_widths_pending grep-able; emit-time NO-OP when iv carries no reuse (every shipped schedule pre-cycle 87 is in this set so existing matrix stays byte-identical).
+- New e2e cell on all 4 backends: 05-stencil/reuse × {pthreads-sync, mp-tcp-bufsync, pthreads-async, mp-tcp-event} all PASS bit-identical to reference.bin (comments are inert).
+- New AC#4 marker-presence + symmetric-absence test: tests/e2e_example_05.rs::reuse_marker_present_on_reuse_schedule_absent_on_naive.
+
+### Commits
+- 3e27c78: sidecar_reuse + new schedule + cosmetic normalisation (Tier 1 a/b/c).
+- 7d03606: walker-side scaffold + AC#4 marker test (Tier 1d).
+
+### Per-AC status
+- AC#1 (walker reads reuse_widths at Event::Loop emit site): MET. Both single-worker (pthreads-sync render_event) and multi-worker (backend-common multi_worker_walker) sites read sidecar.reuse_widths.get(iter_var) and iterate slots deterministically.
+- AC#2 (circular-buffer decl + initial-fill + per-iter update): DEFERRED to TASK-0269 + TASK-0270. Tier 1 emits a comment-only marker; real circular-buffer codegen forward-carried.
+- AC#3 (rewrite every grid[iv+b] DataRef in body): DEFERRED — same as AC#2. Rewrite site is render_fire_arg in backend-common/render.rs; requires threading reuse-active slots through RenderCtx.
+- AC#4 (new e2e cell + marker substring): MET. e2e cell 05-stencil/reuse on 4 backends PASS bit-identical. Marker substring reuse_widths_pending pinned by e2e_example_05::reuse_marker_present_on_reuse_schedule_absent_on_naive (both presence + absence directions).
+- AC#5 (driver promotion strict OR partition-policy-aware): DEFERRED to TASK-0271. Stage 1 driver still uses apply_reuse_inference_advisory; promotion needs the partition-policy decision.
+
+### Gate at cycle close
+- just e2e: 92 / 77 / 0 / 15 / 0 (baseline 88/73 + 4 new informational cells; required-fail preserved at 0).
+- just determinism-check: 92 / 77 / 0 / 15 (byte-identical re-emit on all cells including new reuse cell).
+- cargo test --workspace: all crates green; new tests sidecar_reuse (6) + e2e_example_05 (2 new) added.
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+
+### Follow-ups filed
+- TASK-0269 (TASK-0265.01): pthreads-sync real circular-buffer codegen (Tier 2 single-worker).
+- TASK-0270 (TASK-0265.02): multi-worker walker real circular-buffer codegen (Tier 3, covers pthreads-async/mp-tcp-bufsync/mp-tcp-event via shared walker).
+- TASK-0271 (TASK-0265.04): driver promotion strict / partition-policy-aware (review item #1).
+- TASK-0272 (TASK-0265.05): passes::common variant unification (review item #2; low priority cosmetic).
+
+### Forward-carry memory (for the next implementer)
+- The render_reuse_marker_comment helper is the consumer-site SCAFFOLD. Tier 2/3 implementers should REPLACE its body with the real Vec<T> decl + initial-fill + per-iter rotate (NOT add a sibling helper). The grep test asserts the marker SUBSTRING reuse_widths_pending must still appear OR the test should be updated to grep for the new substring (e.g. reuse_buf_decl).
+- The render_fire_arg rewrite (AC#3) is THE tricky piece — it needs a reuse-active-slots side table threaded via RenderCtx. The cleanest shape is probably ctx.reuse_active: Option<&BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>> that the Event::Loop arm sets for the duration of its body recursion. This requires touching RenderCtx + RenderCtxPub symmetrically.
+- 05-stencil/reuse is the smallest fixture: 1D reuse on axis 1 of a 2D array. After single-worker codegen lands, add a 1D-array fixture (just for(x) { out[x] = K(grid[x-1], grid[x], grid[x+1]); }) to e2e to pin the corner.
+- The strip-mined path (block_tag.is_some) ALSO emits the marker. 05-stencil/distributed has loop x : block=64, vectorize=8, reuse; but is SKIP today on TASK-0267 + TASK-0268. When those clear, the strip-mine + reuse combination becomes an integration test for free.
+- Determinism: BTreeMap iteration on every level is load-bearing. Any HashMap in the rewrite path will perturb determinism-check.
+
+### Limit / status
+Status remains In Progress on this task. Tier 1 substantively closes the consumer-site scaffolding contract (AC#1 met + AC#4 met + 3 of 5 forward-carry review items closed); AC#2/AC#3/AC#5 deferred to filed follow-ups with precise scope + AC. Could ALTERNATIVELY mark Done if the policy is to treat each Tier as a separate task — but the cycle-82 review items were attached HERE, so leaving In Progress until Tier 2/3 land (TASK-0269/0270) is the more honest read of the task's original scope.
 <!-- SECTION:NOTES:END -->
