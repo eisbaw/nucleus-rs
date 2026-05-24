@@ -1184,3 +1184,37 @@ loop i : block=8;
     );
 }
 
+// --------------------------------------------------------------------
+// TASK-0277: SchedAst::algo_path is stored verbatim — no resolution
+// --------------------------------------------------------------------
+
+/// Contract pin: the parser stores `schedule for "<path>"` EXACTLY as
+/// it appears in source. No normalisation, no canonicalisation, no
+/// directory resolution against the schedule file. The build driver
+/// uses `--algo` (CLI arg) as the source of truth; this field exists
+/// for human readers + future tooling.
+///
+/// Fixture uses a deliberately silly path string (`{{not-a-path:::!!!}}`)
+/// that would never round-trip through a path resolver — proving by
+/// construction that the parser does NOT touch the bytes between the
+/// quotes. If a future refactor adds resolution at parse time, this
+/// test fails loud (the resolver would error on the invalid path or
+/// rewrite it).
+#[test]
+fn task_0277_algo_path_stored_verbatim_no_resolution() {
+    let weird = "{{not-a-path:::!!!}}";
+    let src = format!(
+        r#"schedule for "{weird}" {{
+    workers = {{ host }};
+}}
+"#
+    );
+    let ast = parse_sched(&src).expect("schedule with weird algo_path must still parse");
+    assert_eq!(
+        ast.algo_path, weird,
+        "TASK-0277 contract: parser MUST store the `schedule for \"...\"` \
+         string verbatim. Got `{}`, expected `{weird}`.",
+        ast.algo_path
+    );
+}
+

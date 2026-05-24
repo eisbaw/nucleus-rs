@@ -64,8 +64,18 @@ pub type SpDirective = Spanned<Directive>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchedAst {
     /// Path-string from `schedule for "<algo_path>" { ... }`. Stored
-    /// verbatim; the build driver resolves it relative to the
-    /// schedule file (grammar §2 note 9).
+    /// EXACTLY as it appears in source — no normalisation, no
+    /// canonicalisation, no resolution against the schedule file's
+    /// directory. The string is NOT consumed by the build driver:
+    /// `nucleus build` takes the algorithm path from `--algo` as the
+    /// source of truth (see `driver/src/main.rs`, first use of
+    /// `a.algo`). This field exists for human readers + future
+    /// tooling (IDE jump-to-source, schedule-vs-algo coherence audits)
+    /// — TASK-0277 contract-pinned by the
+    /// `algo_path_stored_verbatim_no_resolution` test in
+    /// `tests/sched_parser.rs`. If a driver-side resolver lands later
+    /// it MUST be a deliberate, separately-tracked feature, not a
+    /// silent semantics shift.
     pub algo_path: String,
     /// In source order. Order is informational; semantic passes
     /// enforce "declare before reference" but not stylistic ordering.
