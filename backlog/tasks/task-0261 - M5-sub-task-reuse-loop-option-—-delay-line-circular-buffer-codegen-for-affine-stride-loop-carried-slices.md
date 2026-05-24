@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:54'
-updated_date: '2026-05-24 02:34'
+updated_date: '2026-05-24 02:43'
 labels:
   - M5
   - compiler
@@ -170,6 +170,38 @@ FORWARD-CARRIED LESSONS to record against TASK-0265 (Stage 2):
 - Halo Stage 2 (TASK-0263) and reuse Stage 2 (TASK-0265) touch the SAME backend emit site at Event::Loop. Schedule independently; the per-feature integrations don't conflict (halo widens transfer tiles; reuse rewrites read patterns inside a tile).
 
 CONFIRMED: affine_decompose was lifted to passes::common (commit 76db68d) and halo_inference imports from there. All 12 halo integration tests + the 4 sidecar_halo tests still pass post-lift, verifying behaviour preservation.
+
+REVIEW-GATE LANDED (cycle 82 orchestrator hardening, commit 086d396).
+
+Parallel read-only review of cycle-82 implementer commits (76db68d + 005e92b + ef998c6) returned GO from both qa-test-runner and mped-architect.
+
+## In-thread fix (commit 086d396)
+
+F-P1-A (architect): two .expect('non-empty set') calls in finalise_accum's per-axis loop, two lines after an is_empty() guard. Structurally unreachable today, but recurring panic-not-diagnostic feedback says to avoid in-method .expect() on local invariants (they erode at edits). Fix: replace with a single match (offsets.iter().next(), offsets.iter().next_back()) routing Some/Some to (lo, hi) and _ to continue — same behaviour, zero panic surface, no degenerate-empty guard needed (the match handles it directly).
+
+## Gate (post-hardening)
+
+- cargo test nucleus-compiler: 592 / 0 (no change in test count — refactor only).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- Workspace tests (qa-verified pre-hardening): 765 / 0 / 3.
+- e2e/determinism/negative gates: 88/73/0/15/0 required-fail; PASS / bite (verified by qa-test-runner cycle-82).
+
+## Other P1+P2 findings filed as forward-carry to TASK-0265
+
+The architect surfaced five forward-carry items for TASK-0265 (Stage 2 backend walker codegen):
+1. Promote driver from lenient apply_reuse_inference_advisory to strict before TASK-0265 codegen consumer lands (silent failures become wrong output).
+2. Variant rename for cross-pass consistency: reuse uses UnknownLoopVar, halo uses UnknownIterVarInScope. Stage 2 may want shared passes::common::IvScopeError.
+3. Sidecar serde round-trip golden test before codegen consumes the triple-nested form.
+4. Defensive variants UnknownLoopVar / UnknownDataInRef untested directly (only 6 of 8 reuse-error variants pinned).
+5. tests/partition_workers.rs:566 has 'reuse_widths: BTreeMap::new()' (bare) vs other fixtures' 'std::collections::BTreeMap::new()' (qualified). Cosmetic normalisation when Stage 2 touches the test crate.
+
+These are filed as forward-carry notes on TASK-0265 (not new tasks).
+
+## Review-gate decision
+
+Status: same closure-deferred-on-Stage-2 pattern as TASK-0260. AC#1 (parsed-but-unconsumed produces artefact) ✓ MET. AC#3 (reject data-dependent strides) ✓ MET. AC#5 (honest limitations recorded) ✓ MET. AC#2 (backend emits delay line) + AC#4 (e2e bit-identical + smaller working-set) DEFERRED to TASK-0265 Stage 2.
+
+M5 keystone status (TASK-0043): all FOUR sub-tasks (TASK-0258 partition_rows + TASK-0259 partition_blocks2d + TASK-0260 halo_inference Stage 1 + this TASK-0261 reuse_inference Stage 1) have code on disk and review-GO. The Stage 2 deferred follow-ups (TASK-0263 halo consumer, TASK-0264 blocks2d block-pair, TASK-0265 reuse codegen) define the rest of the M5 implementation surface and close in lockstep as their downstream consumers wire.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

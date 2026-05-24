@@ -4,6 +4,7 @@ title: 'M5 Stage 2: backend walker emits delay-line / circular buffer for reuse_
 status: To Do
 assignee: []
 created_date: '2026-05-24 02:33'
+updated_date: '2026-05-24 02:43'
 labels:
   - M5
   - compiler
@@ -42,3 +43,21 @@ A loop that carries BOTH a halo entry AND a reuse entry needs both code paths ac
 - Performance NOT a Stage 2 acceptance criterion — only correctness + bit-identity. Quantified perf is M6+ scope (PRD §11).
 - The actual circular-buffer Rust template is per-backend (pthreads-sync vs pthreads-async vs mp-tcp-* will share most of it but the worker-init prologue differs). Plan structure choice — shared helper in backend-common vs per-backend duplication — to be determined when the work starts.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+FORWARD-CARRY from TASK-0261 cycle-82 review (architect 5 items):
+
+When Stage 2 wiring lands (backend walker delay-line codegen):
+
+1. **Promote driver from lenient apply_reuse_inference_advisory to strict.** Once codegen reads reuse_widths, a silently-swallowed typed error becomes wrong output. Pick partition-policy-aware fatality (same pattern Stage 2 of TASK-0260 needs to apply for halo).
+
+2. **Variant rename for cross-pass consistency**: reuse_inference uses ReuseInferenceError::UnknownLoopVar { var }; halo_inference uses HaloInferenceError::UnknownIterVarInScope { iter_var }. Stage 2 may want one shared passes::common::IvScopeError when both pass diagnostics surface in the same driver pass. Consider rename for parity at the lift cycle.
+
+3. **Sidecar serde round-trip golden test**: reuse_widths is a TRIPLE-NESTED BTreeMap<IterVar, BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>>. Non-trivial to deserialise from JSON. Add a serde round-trip golden test pinning the JSON shape BEFORE Stage 2 codegen consumes the format.
+
+4. **Defensive variants UnknownLoopVar + UnknownDataInRef have NO direct test** — only 6 of 8 ReuseInferenceError variants pinned. Cross-module invariant guards merit one test each (parity with halo's UnknownIterVarInScope, also untested as a defensive belt).
+
+5. **Cosmetic normalisation**: tests/partition_workers.rs:566 has bare 'reuse_widths: BTreeMap::new()' while other fixtures use fully-qualified 'std::collections::BTreeMap::new()'. One-line normalisation when Stage 2 touches the test crate.
+<!-- SECTION:NOTES:END -->
