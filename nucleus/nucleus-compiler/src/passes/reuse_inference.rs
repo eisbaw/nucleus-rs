@@ -711,12 +711,17 @@ fn finalise_accum(
         let data_name =
             data_name_for_id(ctx.name_data, did).unwrap_or_else(|| format!("<DataId({})>", did.0));
         for (ax_idx, offsets) in per_axis {
-            if offsets.is_empty() {
-                continue;
-            }
             // BTreeSet iterates in sorted order — first/last are min/max.
-            let lo = *offsets.iter().next().expect("non-empty set");
-            let hi = *offsets.iter().next_back().expect("non-empty set");
+            // The pair is `Some/Some` iff the set is non-empty; treat the
+            // None/None case as the no-offsets degenerate (continue,
+            // exactly as the previous `is_empty` guard did) WITHOUT
+            // routing through `.expect()` on an in-method invariant —
+            // recurring panic-not-diagnostic feedback (cycle-82
+            // architect-review F-P1-A).
+            let (lo, hi) = match (offsets.iter().next(), offsets.iter().next_back()) {
+                (Some(&lo), Some(&hi)) => (lo, hi),
+                _ => continue,
+            };
             let hull = (hi - lo) as i128 + 1;
             let used = offsets.len() as i128;
             if hull != used {
