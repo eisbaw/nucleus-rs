@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:35'
-updated_date: '2026-05-24 09:38'
+updated_date: '2026-05-24 09:44'
 labels:
   - M4
   - backend
@@ -50,4 +50,16 @@ Cycle 90 (commit eba3f7d): landed 5 new tests covering all 4 brief branches:
 - Branch D: worker_to_worker_push_is_typed_contract_gap (integration; TASK-0175 forward-link substring asserted).
 Gotcha: Branch A is unreachable from emit() because lib.rs:290 dispatch routes used_workers.len() <= 1 to the single-worker arm BEFORE Plan::build. The branch is in effect a dispatch-regression detector; tested by calling pub(crate) Plan::build directly from a #[cfg(test)] mod inside src/multi_worker.rs (the same pattern pthreads-async uses for the same constraint). Branches B/C/D are all reachable from emit() on 2+ worker fixtures and follow the existing host_excluding_barrier_is_typed_contract_gap pattern.
 Gate: cargo test -p mp-tcp-event = 5 lib + 7 integration (was 3 + 4) all pass; just e2e = 92/77/0/15/0; just determinism-check = 92/77/0/15; cargo clippy --workspace --all-targets -D warnings = clean.
+
+CYCLE-90 REVIEW-HARDENING (orchestrator, 2026-05-24, commit 218cdf9):
+
+Parallel review gate post-landing:
+- **qa-test-runner GO**: lib 5 passed (was 3, +2 Branch-A unit tests); integration 7 passed (was 4, +3 Branch B/C/D); no flake on 2nd integration run; just e2e 92/77/0/15/0; just determinism-check green; clippy clean; no undisclosed `#[allow]`.
+- **mped-architect GO with 1 P3 nit**: the check-order in Plan::build (A->B->C->barrier->D) is load-bearing for the negative-path test fixtures but was only documented in tracker notes — a future inserted check between branches could silently invalidate a bypass-fixture (e.g. Branch D's fixture inserts a sidecar entry to bypass Branch C).
+
+P3 FIXED in-thread (commit 218cdf9): 9-line CHECK-ORDER NOTE block at multi_worker.rs:114 pointing future maintainers at both fixture sites so check-order changes get fixture updates in lockstep.
+
+Positive findings verified by architect: Branch A's `#[cfg(test)] mod tests` placement mirrors pthreads-async parallel pattern at multi_worker.rs:598; 5th bonus test (`zero_worker_input`) pulls its weight (different production substring asserted: "got 0"); scratch dirs unique per test; BTreeMap determinism preserved; three-arm match style consistent with line-222 precedent.
+
+TASK-0255 stays Done. Cycle 90 closed cleanly.
 <!-- SECTION:NOTES:END -->
