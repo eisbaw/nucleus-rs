@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:54'
-updated_date: '2026-05-24 02:32'
+updated_date: '2026-05-24 02:34'
 labels:
   - M5
   - compiler
@@ -146,4 +146,34 @@ FORWARD-CARRIED LESSONS (for TASK-0265 / Stage 2):
 - Forward-carried from cycle-81 review: 'multi-error fixture exercises both strict AND advisory paths'. SATISFIED — the advisory_collects_all_errors_strict_short_circuits test does exactly this.
 
 NEXT TASK FILED: TASK-0265 (Stage 2 — backend walker delay-line / circular-buffer codegen).
+
+FINAL SUMMARY (cycle 82, TASK-0261):
+
+Commits:
+- 76db68d: passes: lift affine_decompose to passes::common (TASK-0261 prerequisite)
+- 005e92b: passes: reuse_inference Stage 1 (TASK-0261) — affine-stride delay-line inference + sidecar persistence
+
+Per-AC status:
+- AC#1 ('parsed but unconsumed reuse now produces a codegen artefact'): SATISFIED in Stage 1 by the sidecar field; CODEGEN consumer is Stage 2 (TASK-0265 filed).
+- AC#2 ('per affine-stride pattern, backend emits a delay line'): DEFERRED to TASK-0265 — Stage 1 only persists the slot shape; backend walker integration is a separate cycle.
+- AC#3 ('reuse semantics restricted to affine strides; data-dependent rejected'): SATISFIED — typed ReuseInferenceError::DataDependentStride, NonAffineIndex, StridedAccessNotSupported all in place + tested.
+- AC#4 ('new e2e cell with reuse showing bit-identical output + measurably smaller working set'): DEFERRED to TASK-0265 — requires backend consumer to land first.
+- AC#5 ('implementation notes record the honest limitation'): SATISFIED — module docs spell out 'reuse rejected on data-dependent strides; user must restructure', plus the additional limitations (coeff=+1 only; single iv; contiguous-only; length-1 dropped).
+
+This task closes the INFERENCE half of the reuse loop. Stage 2 (TASK-0265) closes the CODEGEN half. AC#1, #3, #5 closed in this cycle; #2, #4 explicitly deferred and tracked.
+
+FORWARD-CARRIED LESSONS to record against TASK-0265 (Stage 2):
+- ReuseSlot has min_offset (signed) + length. Backend's per-iteration loop rewrite: buf[(iv + b - min_offset) % length]. Initial-fill prologue needed when min_offset < 0 (the loop entry must pre-populate the slots that 'look back').
+- Multiple slots on one loop (e.g. 5-point + 3-point stencil sharing iv i but on different data) require multiple delay-line variables, declared at loop entry, named by (data, axis) or a Stage-2-defined scheme.
+- The 'one walk per reuse iv' shape generalises: Stage 2 looks up reuse_widths.get(iter_var) at Event::Loop emit and iterates the per-(DataId, axis) slots independently. The slots don't entangle.
+- Shared affine_decompose now lives at passes::common — Stage 2 doesn't need it (the affine work is done; Stage 2 consumes slots, not IrExpr trees), but if Stage 2 needs to RE-CLASSIFY a slot at emit time (e.g. to recover the per-DataRef offset for the rewrite), the helper is one import away.
+- Halo Stage 2 (TASK-0263) and reuse Stage 2 (TASK-0265) touch the SAME backend emit site at Event::Loop. Schedule independently; the per-feature integrations don't conflict (halo widens transfer tiles; reuse rewrites read patterns inside a tile).
+
+CONFIRMED: affine_decompose was lifted to passes::common (commit 76db68d) and halo_inference imports from there. All 12 halo integration tests + the 4 sidecar_halo tests still pass post-lift, verifying behaviour preservation.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-0261 Stage 1 LANDED in commits 76db68d (affine_decompose lift to passes::common) + 005e92b (reuse_inference pass + ACFG/sidecar fields + driver wire). Gate: 765/0/3 tests, clippy clean, e2e 88/73/0/15/0 (unchanged), determinism PASS + bites. Closes AC#1/#3/#5; defers AC#2/#4 to TASK-0265 (Stage 2: backend walker delay-line emit) — filed.
+<!-- SECTION:FINAL_SUMMARY:END -->
