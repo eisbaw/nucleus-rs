@@ -17,9 +17,18 @@ default:
 build:
     cd nucleus && cargo build --workspace
 
-# Run unit tests.
+# Run unit tests (dev profile — debug_asserts active).
 test:
     cd nucleus && cargo test --workspace
+
+# Run unit tests under --release. debug_assert! is stripped in
+# release, so any `#[should_panic]` test that pins a debug_assert
+# bite (or any other code path conditioned on debug_assertions) will
+# diverge between profiles. Wired into `just ci` after `just test` so
+# this skew is gate-visible (TASK-0291). Cost: a second cargo test
+# build of the workspace.
+test-release:
+    cd nucleus && cargo test --workspace --release
 
 # Fast type-check without codegen.
 check:
@@ -175,6 +184,9 @@ ci:
     just check
     just clippy
     just test
+    just test-release
+    just check-textual-replace-on-codegen
+    just check-include-str-coverage
     just e2e
     just determinism-check
     just determinism-check-negative
@@ -242,6 +254,75 @@ regen-references:
             --out "$ex_dir/reference.bin"; \
     done; \
     echo "OK: all reference.bin files regenerated. Review with 'git diff' before committing (TASK-0077)."
+
+# Catch the textual-replace-on-codegen-string defect class
+# (memory: feedback-textual-replace-codegen-unsafe). Concrete prior
+# instance: TASK-0269 P1.1 (cycle 103) — `abs.replace(iv_name,
+# "0_i64")` corrupted sibling identifiers (`{iv}__tile`, `{iv}_partial`)
+# because they contain the iv as a substring. The rule: never `String::
+# replace` on a rendered Rust expression; build derived expressions
+# structurally.
+#
+# Current baseline (TASK-0289 cycle-114a-orchestrator-hardening):
+# 4 occurrences in source, all inside `//` comments cross-referencing
+# the filed defect. Zero actual code uses. This check rg's the
+# compiler/backend source tree and fails if any non-comment `.replace(`
+# survives.
+#
+# False-positive policy: a legitimate `String::replace` on a known-safe
+# input (e.g. a path component, a constant key) should be annotated
+# with the comment `// ALLOW textual replace: <reason>` on the same
+# line; the check exempts those.
+check-textual-replace-on-codegen:
+    @echo "checking for textual .replace( on codegen strings..."
+    @hits=$(rg -nH --type rust '\.replace\(' \
+        nucleus/nucleus-compiler/src/ \
+        nucleus/backend-common/src/ \
+        nucleus/backends/*/src/ \
+        | grep -v '^[^:]*:[^:]*:\s*//' \
+        | grep -v 'ALLOW textual replace' \
+        || true); \
+    if [ -n "$hits" ]; then \
+        echo "FAIL: unannotated String::replace in compiler/backend code (memory: feedback-textual-replace-codegen-unsafe):"; \
+        echo "$hits"; \
+        echo ""; \
+        echo "Build the derived expression structurally, or annotate the line with '// ALLOW textual replace: <reason>'."; \
+        exit 1; \
+    fi; \
+    echo "OK: no textual .replace on codegen strings."
+
+# Catch the include_str! compile-coverage defect class (memory:
+# feedback-include-str-compile-coverage). Concrete prior instance:
+# any `pub const X_SRC: &str = include_str!("foo.rs")` where `foo.rs`
+# is NOT also referenced by `mod foo;` or `include!("foo.rs")` in the
+# same crate ships uncompiled source — a rename or syntax error in
+# foo.rs is invisible until a downstream user includes the const into
+# their build.
+#
+# Today (TASK-0289 cycle-114a-orchestrator-hardening): 2 sites in
+# source, both with coverage — mp-tcp-event's `runtime_src.rs` via
+# `mod runtime_src;`, and mp-tcp-common's `wire_runtime.rs` via
+# `pub mod wire { include!("wire_runtime.rs") }`.
+check-include-str-coverage:
+    @echo "checking include_str! compile coverage..."
+    @set -e; fail=0; \
+    while IFS= read -r line; do \
+        file=$(echo "$line" | cut -d: -f1); \
+        target=$(echo "$line" | grep -oE 'include_str!\([^)]*\)' | head -1 | sed -E 's/include_str!\("([^"]+)"\)/\1/'); \
+        base=$(basename "$target" .rs); \
+        crate_dir=$(dirname "$file"); \
+        if ! rg -q "mod ${base}\b" "$crate_dir" && \
+           ! rg -q "include!\(\"${target}\"\)" "$crate_dir"; then \
+            echo "FAIL: $file include_str!(\"$target\") has no matching 'mod ${base};' or 'include!(\"$target\")' in $crate_dir"; \
+            fail=1; \
+        fi; \
+    done < <(rg -nH --type rust 'include_str!' nucleus/nucleus-compiler/src/ nucleus/backend-common/src/ nucleus/backends/*/src/ nucleus/mp-tcp-common/src/ 2>/dev/null || true); \
+    if [ $fail -ne 0 ]; then \
+        echo ""; \
+        echo "(memory: feedback-include-str-compile-coverage — bare include_str! does not compile the file content; add 'mod <name>;' or 'include!(\"<path>\");' in the same crate so 'cargo test' compiles it)"; \
+        exit 1; \
+    fi; \
+    echo "OK: every include_str! has compile coverage."
 
 # Remove build artefacts.
 clean:
