@@ -1050,11 +1050,24 @@ pub fn render_reuse_marker_comment(
             // TASK-0269 (cycle 103) + TASK-0270 (cycle 104): the marker
             // comment now precedes the real circular-buffer codegen on
             // BOTH the pthreads-sync single-worker path AND the shared
-            // multi-worker walker (used by pthreads-async +
-            // mp-tcp-bufsync + mp-tcp-event). The substring is preserved
-            // as a regression canary above the buffer decl — the
-            // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)` strings
-            // below are the second-layer codegen canary.
+            // `multi_worker_walker::render_worker_events_inner`. The
+            // shared walker is consumed by pthreads-sync (multi-worker),
+            // pthreads-async, and mp-tcp-event. **mp-tcp-bufsync has its
+            // OWN per-event walker** (`backends/mp-tcp-bufsync/src/lib.rs::
+            // Plan::render_events`) that delegates to the shared
+            // `render_block_tag_loop_header` for the strip-mine inner
+            // header but does NOT call `render_worker_events_inner` —
+            // so the reuse-buffer codegen is silently absent on
+            // mp-tcp-bufsync. Tracked as the cycle-104 silent-sibling
+            // follow-up; no shipped mp-tcp-bufsync cell exercises reuse
+            // today (05-stencil/distributed × mp-tcp-bufsync is SKIP on
+            // a separate async+buffer capability mismatch). The marker
+            // substring is preserved as a regression canary above the
+            // buffer decl — the `__reuse_buf_<data>_a<axis>` +
+            // `rem_euclid(L_i64)` strings below are the second-layer
+            // codegen canary, pinned per-arm by the tests in
+            // `nucleus/backend-common/tests/multi_worker_reuse_marker.rs`
+            // (regular + strip-mine).
             let _ = writeln!(
                 out,
                 "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below — TASK-0269 single-worker + TASK-0270 multi-worker)",
@@ -1066,8 +1079,13 @@ pub fn render_reuse_marker_comment(
 }
 
 // --------------------------------------------------------------------
-// Reuse circular-buffer codegen — TASK-0269 Stage 2 Tier 2
-// (pthreads-sync single-worker path)
+// Reuse circular-buffer codegen — TASK-0269 (cycle 103) +
+// TASK-0270 (cycle 104). Consumed by BOTH the pthreads-sync
+// single-worker path (private RenderCtx via direct calls) AND the
+// shared `multi_worker_walker::render_worker_events_inner` (RenderCtxPub
+// via the `_pub` shims below). mp-tcp-bufsync's per-event Plan walker
+// does NOT yet consume these helpers — see the doc-comment block
+// above `render_reuse_marker_comment` for the silent-sibling caveat.
 // --------------------------------------------------------------------
 
 /// One reuse rewrite group: the circular buffer that backs every
