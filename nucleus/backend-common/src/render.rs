@@ -1217,6 +1217,59 @@ fn try_reuse_axis_offset(
     }
 }
 
+/// Canonicalise a single outer-axis index expression by folding
+/// additive and multiplicative identity-element subtrees (`e + 0`,
+/// `0 + e`, `e - 0`, `e * 1`, `1 * e` → `e`). Used by
+/// [`walk_arg_for_reuse`] to normalise the dedupe key on
+/// [`ReuseRewriteGroup::outer_axes`] (TASK-0286 P2.1 hardening of
+/// TASK-0282).
+///
+/// Risk model: `IrExpr` `PartialEq` is structural equality on the AST.
+/// Two semantically-equal outer-axes that arrive at the dedupe site in
+/// different ASTs (e.g. `y` from one upstream pass, `Add(y, IntLit(0))`
+/// from another) would compare unequal and produce two redundant
+/// circular buffers. The AC#4 `<= 3` verbatim-read grep on the for-x
+/// body does NOT detect this — it bounds verbatim reads, not buffer
+/// count. Today every shipped fixture emits already-canonical outer
+/// axes, so this is pre-emptive defence; the unit test pins the
+/// invariant so a future upstream non-canonical emit fails this
+/// regression instead of silently bloating the emitted code.
+///
+/// Bottom-up walk: child subtrees are canonicalised first, then the
+/// parent node's identity-element fold is applied to the rewritten
+/// children. Idempotent (applying twice yields the same expression).
+/// Out of scope: constant folding of pure-int subtrees (`1 + 1 → 2`),
+/// associativity reassociation (`(y + 1) + 1 → y + 2`), or
+/// `Add(e, IntLit(neg)) → Sub(e, IntLit(-neg))`. Those would require a
+/// full canonicalisation pass and are deferred until a real shipped
+/// fixture triggers a divergence.
+fn canonicalise_outer_axis(e: &IrExpr) -> IrExpr {
+    match e {
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => e.clone(),
+        IrExpr::Neg(inner) => IrExpr::Neg(Box::new(canonicalise_outer_axis(inner))),
+        IrExpr::BinOp(op, l, r) => {
+            let lc = canonicalise_outer_axis(l);
+            let rc = canonicalise_outer_axis(r);
+            match (op, &lc, &rc) {
+                (IrBinOp::Add, _, IrExpr::IntLit(0)) => lc,
+                (IrBinOp::Add, IrExpr::IntLit(0), _) => rc,
+                (IrBinOp::Sub, _, IrExpr::IntLit(0)) => lc,
+                (IrBinOp::Mul, _, IrExpr::IntLit(1)) => lc,
+                (IrBinOp::Mul, IrExpr::IntLit(1), _) => rc,
+                _ => IrExpr::BinOp(*op, Box::new(lc), Box::new(rc)),
+            }
+        }
+        // `IrExpr::DataRef` / `IrExpr::Call` are documented as legal
+        // only at the top level of a kernel arg (see ir.rs:180-186),
+        // not nested inside another DataSlice index expression. They
+        // therefore should not appear inside an outer-axis subtree.
+        // Pass through unchanged (rebuilding rather than cloning would
+        // pull in the `IndexedRef` import for zero observable gain on
+        // any legal input).
+        IrExpr::DataRef(_) | IrExpr::Call { .. } => e.clone(),
+    }
+}
+
 /// Walk an `Event` tree looking for EVERY unique
 /// `(data_id, axis, outer_axes_tuple)` matching a reuse slot.
 /// "Matching" means: the `ArgBinding::Data`'s `DataSlice` has enough
@@ -1362,17 +1415,32 @@ fn walk_arg_for_reuse(
                     continue;
                 }
                 // Build the OUTER axes (all axes except the reuse one),
-                // source-order preserved.
+                // source-order preserved. TASK-0286 canonicalises each
+                // outer-axis IrExpr before the dedupe key is taken —
+                // additive/multiplicative identity folds (`y + 0`,
+                // `y - 0`, `y * 1`) become the bare operand so two
+                // semantically-equal-but-structurally-distinct outer
+                // axes from upstream passes coalesce into one group.
                 let outer_axes: Vec<IrExpr> = s
                     .indices
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, e)| if i == ax_idx { None } else { Some(e.clone()) })
+                    .filter_map(|(i, e)| {
+                        if i == ax_idx {
+                            None
+                        } else {
+                            Some(canonicalise_outer_axis(e))
+                        }
+                    })
                     .collect();
                 // TASK-0282 dedupe: skip if a group with this exact
                 // `(axis, outer_axes)` already exists. `IrExpr` carries
                 // `PartialEq` (structural equality on the AST), so the
-                // dedupe is direct.
+                // dedupe is direct. Both stored and search-key sides
+                // pass through `canonicalise_outer_axis` (TASK-0286),
+                // so semantically-equal outer axes from upstream
+                // canonical-form drift cannot over-emit a redundant
+                // buffer.
                 if found
                     .iter()
                     .any(|g| g.axis == *axis && g.outer_axes == outer_axes)

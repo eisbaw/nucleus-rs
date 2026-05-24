@@ -707,3 +707,171 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
          Got:\n{out}",
     );
 }
+
+/// TASK-0286 (P2.1 hardening of TASK-0282): two Fire events whose
+/// outer-axes are SEMANTICALLY equal but STRUCTURALLY distinct
+/// (`Ident("y")` vs `Add(Ident("y"), IntLit(0))`) MUST dedupe to ONE
+/// reuse group, not two.
+///
+/// Pre-TASK-0286 dedupe was `IrExpr::PartialEq` on the raw outer-axes
+/// clones, so the `_g0` (outer=[y]) and `_g1` (outer=[y+0]) buffers
+/// would both materialise. The AC#4 `<= 3` verbatim-read grep in
+/// `nucleus-compiler/tests/e2e_example_05.rs` does NOT bite this:
+/// over-emission grows buffer count but NOT verbatim-read count.
+///
+/// Today every shipped fixture emits already-canonical outer axes, so
+/// canonicalisation is a no-op on every e2e cell. This test is the
+/// regression pin: a future upstream affine pass that emits
+/// `Add(_, IntLit(0))` in an outer-axis position would silently bloat
+/// the buffer count without this canonicalisation, and bite here.
+#[test]
+fn multi_worker_walker_dedupes_canonical_outer_axes_add_zero() {
+    use nucleus_compiler::sidecar::ConstValue;
+
+    let iv = IterVar(11); // reuse axis: x
+    let outer_iv = IterVar(20); // y — bound to provide `y` as in-scope ident
+    let data = DataId(42);
+    let kernel = KernelId(7);
+
+    let mut names = NameTables::default();
+    names.iter_var.insert(iv, "x".to_string());
+    names.iter_var.insert(outer_iv, "y".to_string());
+    names.data.insert(data, "img_in".to_string());
+    names.kernel.insert(kernel, "k".to_string());
+
+    let mut sidecar = NameSidecar::default();
+    sidecar.loop_bounds.insert(
+        iv,
+        LoopBound {
+            lo: IrExpr::IntLit(0),
+            hi: IrExpr::IntLit(16),
+        },
+    );
+    sidecar.loop_bounds.insert(
+        outer_iv,
+        LoopBound {
+            lo: IrExpr::IntLit(0),
+            hi: IrExpr::IntLit(16),
+        },
+    );
+    sidecar.data_types.insert(
+        data,
+        ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![16, 16],
+        },
+    );
+    sidecar.kernel_sigs.insert(
+        kernel,
+        KernelSig {
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: None,
+        },
+    );
+    // ReuseSlot covers x-1..x+1 (length 3, min_offset -1). Two Fire
+    // events below pick offsets -1 and 0, both inside the slot.
+    let mut per_axis: BTreeMap<u64, ReuseSlot> = BTreeMap::new();
+    per_axis.insert(
+        1,
+        ReuseSlot {
+            length: 3,
+            min_offset: -1,
+        },
+    );
+    let mut per_data: BTreeMap<DataId, BTreeMap<u64, ReuseSlot>> = BTreeMap::new();
+    per_data.insert(data, per_axis);
+    sidecar.reuse_widths.insert(iv, per_data);
+
+    // Avoid the consts-table edge case: no consts needed for the
+    // canonical-form fold; affine_decompose runs against an empty
+    // consts table for Ident(iv) and Ident(iv)+IntLit constant shapes.
+    let _: ConstValue; // sanity import-keeper
+
+    // Fire 1: outer-axes = [Ident("y")]. Reuse-axis index x - 1.
+    let fire1 = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![
+                    IrExpr::Ident("y".to_string()),
+                    IrExpr::BinOp(
+                        IrBinOp::Sub,
+                        Box::new(IrExpr::Ident("x".to_string())),
+                        Box::new(IrExpr::IntLit(1)),
+                    ),
+                ],
+            })],
+            output: None,
+        },
+    };
+    // Fire 2: outer-axes = [Add(Ident("y"), IntLit(0))] — semantically
+    // equal to Fire 1's outer, but structurally distinct pre-canonical.
+    // Reuse-axis index x (offset 0).
+    let fire2 = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![
+                    IrExpr::BinOp(
+                        IrBinOp::Add,
+                        Box::new(IrExpr::Ident("y".to_string())),
+                        Box::new(IrExpr::IntLit(0)),
+                    ),
+                    IrExpr::Ident("x".to_string()),
+                ],
+            })],
+            output: None,
+        },
+    };
+
+    let loop_ev = Event::Loop {
+        iter_var: iv,
+        range: 0..16,
+        body: vec![fire1, fire2],
+        block_tag: None,
+        check_frame: None,
+    };
+
+    let (rendezvous_ids, pair_tiles) = empty_walker_maps();
+    let ctx = WalkerCtx {
+        names: &names,
+        sidecar: &sidecar,
+        rendezvous_prefix: "chan",
+        rendezvous_ids: &rendezvous_ids,
+        pair_tiles: &pair_tiles,
+    };
+
+    let mut out = String::new();
+    render_worker_events(&ctx, WorkerId(0), &[loop_ev], &mut out, 0, "")
+        .expect("synthetic canonicalisation-fixture emit must succeed");
+
+    // POSITIVE: the `_g0` buffer fires for the (canonicalised) outer
+    // axes [y].
+    assert!(
+        out.contains("let mut __reuse_buf_img_in_a1_g0: Vec<i32>"),
+        "TASK-0286: the first (canonical) outer-axes group MUST emit \
+         the `_g0` buffer; got:\n{out}",
+    );
+    // NEGATIVE: NO `_g1` (or higher) buffer — the second Fire's
+    // `Add(y, IntLit(0))` outer-axes canonicalises to the same `y`
+    // tuple as Fire 1, so the dedupe coalesces them into ONE group.
+    // Pre-TASK-0286 the raw `IrExpr::PartialEq` would compare
+    // `Ident(y)` vs `Add(Ident(y), IntLit(0))` as unequal and emit two
+    // groups — this assertion would FAIL.
+    assert!(
+        !out.contains("__reuse_buf_img_in_a1_g1"),
+        "TASK-0286 regression bit: outer-axes `Add(Ident(y), IntLit(0))` \
+         must canonicalise to `Ident(y)` before the dedupe key is \
+         taken. The emit MUST NOT contain `__reuse_buf_img_in_a1_g1` — \
+         that identifier appearing here means the canonicalisation \
+         silently regressed and a redundant buffer was emitted. \
+         Got:\n{out}",
+    );
+}
