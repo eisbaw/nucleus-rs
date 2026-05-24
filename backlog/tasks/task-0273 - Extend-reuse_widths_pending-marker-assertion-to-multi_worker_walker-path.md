@@ -1,9 +1,11 @@
 ---
 id: TASK-0273
 title: Extend reuse_widths_pending marker assertion to multi_worker_walker path
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-24 08:46'
+updated_date: '2026-05-24 12:00'
 labels:
   - M5
   - test-gap
@@ -51,3 +53,31 @@ The only shipped multi-worker reuse schedule is `nuc-nucleus/examples/05-stencil
 - Option B: standalone.
 - Related: TASK-0269 (when real circular-buffer codegen lands on the walker, the marker substring may rename to `reuse_buf_decl` or similar — update test in lockstep).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Implementation Plan (cycle 98)
+
+Option B (standalone synthetic). Clone fixture shape from `nucleus/backend-common/tests/multi_worker_blocked_rebind.rs`.
+
+New file: `nucleus/backend-common/tests/multi_worker_reuse_marker.rs`.
+
+Two tests:
+1. `multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated`:
+   - WalkerCtx fixture with sidecar.reuse_widths[iv][data][axis=0] = ReuseSlot{length=3, min_offset=-1}.
+   - Event::Loop(iv, 0..16, body=[]) — non-strip-mine arm (block_tag: None), hits the line-478 call site.
+   - Assert: contains 'reuse_widths_pending' substring; also iv name, data name, length, min_offset payload (catches drop-marker AND drop-payload regressions).
+2. `multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty`:
+   - Same fixture but reuse_widths empty.
+   - Assert !contains('reuse_widths_pending').
+
+Path-verified facts:
+- ReuseSlot at `nucleus_compiler::passes::reuse_inference::ReuseSlot` (re-exported from `nucleus_compiler` per lib.rs line 72: `apply_reuse_inference, apply_reuse_inference_advisory, ReuseInferenceError, ReuseSlot`).
+- backend-common's only dep is nucleus-compiler — direct import works.
+- Map shape: `BTreeMap<IterVar, BTreeMap<DataId, BTreeMap<u64 /* axis */, ReuseSlot>>>` (axis is u64, not usize).
+- WalkerCtx fields: names, sidecar, rendezvous_prefix, rendezvous_ids, pair_tiles.
+- The line-478 call site fires the marker AFTER writing 'for {var} in (lo)..(hi) {', so an empty body is fine.
+
+No production code changes.
+<!-- SECTION:NOTES:END -->
