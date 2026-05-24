@@ -1,0 +1,99 @@
+// Distributed 2D-grid schedule: 4 compute workers in a 2x2 grid via
+// `partition=blocks2d`, async input streaming, sync output.
+//
+// This is the FIRST e2e cell exercising the halo-strip Push/Wait
+// synthesis pass (TASK-0289 cycle 114a + TASK-0290 cycle 114b's
+// placement fix). Currently [[skip]]ped in e2e-matrix.toml on
+// TASK-0294: backend-common's `leading_axis_slice` (HONEST-PARTIAL
+// ASSUMPTION from TASK-0117) ignores the inner axis of 2D partition
+// tiles, so the host gather pastes each worker's 2D rectangle as a
+// 1D y-band slice, overwriting adjacent workers' columns with
+// default-zero values. Bit-identical against the existing
+// 05-stencil/reference.bin would hold if the 2D slice-paste path
+// landed (TASK-0294) — a SINGLE-PASS box blur is invariant under
+// the partition SHAPE, so the same reference oracle applies
+// regardless of whether the partition is 1D row-band
+// (`distributed.sched.nuc`, partition=rows) or 2D grid (this file,
+// partition=blocks2d).
+//
+// What this cell PROVES:
+//   - partition=blocks2d lowers end-to-end on a tier-1 backend
+//     (pthreads-async).
+//   - The halo-strip Push/Wait synthesis pass (TASK-0289 AC#1) does
+//     not break existing behaviour on a structurally-redundant
+//     case — for a single-pass stencil with host-broadcast img_in,
+//     the halo strips carry data the host broadcast already
+//     provides (each worker's img_in tile is extended by halo via
+//     `extend_xfer_tiles_for_halo` already in TASK-0263).
+//   - TASK-0290 cycle 114b placement fix: the synthesised pairs
+//     land in the root Sequence AFTER the host's `load_image`
+//     Operation, so the per-worker EventList orders the halo-strip
+//     Wait AFTER the host has produced the data.
+//
+// What this cell does NOT prove (deferred to TASK-0294):
+//   - Multi-pass / iterative-stencil halo exchange where each
+//     worker owns its tile across timesteps and the cross-worker
+//     halo strips carry semantically-unique data.
+//   - Halo-strip placement INSIDE a time-step Repeat body (the
+//     current placement is once, at the root Sequence level).
+//
+// Image dimensions + 2x2-grid divisibility (load-bearing math):
+//   - 05-stencil/prog.algo.nuc: H = W = 16; the compute loops walk
+//     y in 1..H-1 = 1..15 (length 14) and x in 1..W-1 = 1..15
+//     (length 14).
+//   - decompose_grid(4) returns (rows=2, cols=2); 14 / 2 = 7 rows
+//     and 7 cols per worker. 14 % 2 == 0 ⇒ exact-divisible on both
+//     axes (no spillover policy invoked).
+//   - Per-worker assignment (row-major over BTreeSet numeric
+//     WorkerId order — matches partition_blocks2d.rs's `for (i,
+//     wid) in body_workers.iter().enumerate() { row = i / cols;
+//     col = i % cols }`):
+//       w0 (0,0): y=1..8,  x=1..8     w1 (0,1): y=1..8,  x=8..15
+//       w2 (1,0): y=8..15, x=1..8     w3 (1,1): y=8..15, x=8..15
+//   - halo_y = halo_x = 1 (inferred from blur3's 3x3 access).
+//
+// Backends:
+//   - pthreads-async: [[required]] in e2e-matrix.toml. The
+//     capability surface (async + buffer + notify=event) matches
+//     the `transfer img_in` directive below.
+//   - pthreads-sync + mp-tcp-bufsync: SKIP on capability mismatch
+//     (no async/buffer/event), same as today's distributed
+//     schedule sibling.
+//   - mp-tcp-event: SKIP on TASK-0175 lineage (w↔w mesh required
+//     for the halo strips' worker-to-worker transfers, which
+//     mp-tcp-event's host-star topology cannot lower). NOTE this
+//     differs from `distributed.sched.nuc` where mp-tcp-event was
+//     ultimately promoted in cycle 102 (TASK-0268) because the
+//     row-band partition's halo strips happen to land in the
+//     existing host-broadcast extension and need no genuine w↔w
+//     transfer; the 2x2-grid partition does need real worker-to-
+//     worker E/W strips between (row, 0) and (row, 1) which the
+//     mp-tcp-event star cannot mediate.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on { w0, w1, w2, w3 };
+
+    // 2x2-grid partition over the outer y-loop. The directive pairs
+    // the outer y-loop with the inner x-loop via the partition_pairs
+    // sidecar (TASK-0264 cycle 113); the halo-strip synthesis pass
+    // (TASK-0289 cycle 114a) reads partition_pairs +
+    // grid_shape_for_outer_iv + halo_widths to emit one Push/Wait
+    // pair per (neighbour, data, axis) for the 4 cardinal neighbours
+    // (N/S/W/E; corners are out-of-scope per TASK-0264's task
+    // brief).
+    loop y : partition=blocks2d;
+
+    // host -> workers: async streaming, two row-bands in flight.
+    // Same shape as distributed.sched.nuc's `img_in` directive —
+    // forces this cell onto the pthreads-async backend exclusively
+    // (the two sync backends reject at capability check).
+    transfer img_in  : async, buffer=2, notify=event;
+
+    // workers -> host: simple blocking write-back. Host waits for
+    // all workers to finish before save_image runs.
+    transfer img_out : sync;
+}

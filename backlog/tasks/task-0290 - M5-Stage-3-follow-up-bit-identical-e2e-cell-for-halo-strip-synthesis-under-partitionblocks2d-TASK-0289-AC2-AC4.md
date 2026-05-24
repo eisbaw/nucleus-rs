@@ -3,10 +3,11 @@ id: TASK-0290
 title: >-
   M5 Stage 3 follow-up: bit-identical e2e cell for halo-strip synthesis under
   partition=blocks2d (TASK-0289 AC#2 + AC#4)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-24 20:24'
-updated_date: '2026-05-24 21:14'
+updated_date: '2026-05-24 23:42'
 labels:
   - M5
   - compiler
@@ -50,6 +51,83 @@ TASK-0289 splits naturally into two sub-cycles. Cycle A (this task's parent, TAS
 
 Filed at TASK-0289 implementer briefing time to bound cycle A's scope. The parent's task brief already prescribes the design picks for AC#1; this task only needs to drive them through a real fixture.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Scope this cycle (cycle 114b): placement fix + single-pass distributed-2d e2e cell
+
+This cycle does TWO things tightly coupled (each forces verification of the other):
+
+1. **Placement fix** for `prepend_strip_pairs` (architect P1 from cycle 114a). Option (i) from the forward-carried notes: walk the parent Sequence's children, find the index of the producing `Operation` for the halo data symbol, insert the synthesised pairs AFTER that Operation (before the outer Repeat).
+2. **New e2e cell**: `05-stencil/distributed-2d.sched.nuc` with `partition=blocks2d` on the outer y-loop, 4 workers in a 2x2 grid. Reuses the existing `05-stencil/reference.bin` (bit-identical per forward-carried lesson #5 — a single-pass stencil with host-broadcast img_in produces the same output whether halo strips fire or not, because each worker already has the full image via the existing `extend_xfer_tiles_for_halo` path).
+
+The meaningful-halo / multi-pass / time-step stencil (where the halo strips carry unique semantic value) is **SPLIT to a new follow-up TASK-0294** — that requires a new example or substantially modified 05-stencil with a time-step loop + the multi-pass placement extension (forward-carried lesson #2).
+
+## Per-AC mapping
+
+- **AC#1** (synthesis pass + N/S/E/W neighbour resolution + corners excluded): **already DONE** in cycle 114a.
+- **AC#2** (bit-identical e2e cell + reference oracle): **THIS CYCLE** via the distributed-2d schedule. Reference oracle = the existing 05-stencil/reference.bin (single-pass equivalence per forward-carried lesson #5; THE REFERENCE IS THE SAME — only the partition shape differs, the algorithm output is identical).
+- **AC#3** (existing matrix green): **THIS CYCLE** must hold across placement fix.
+- **AC#4** (baseline bump): **THIS CYCLE** — 92/79/0/13/0 → 93/80/0/13/0.
+
+## Work breakdown
+
+### Step 1 — placement fix
+
+Edit `prepend_strip_pairs` in `nucleus/nucleus-compiler/src/passes/transfer_inject.rs` (currently lines ~2480-2537). Instead of prepending the synthesised `Xfer` placeholders BEFORE any direct-child Repeat whose iter_var matches, INSERT them AFTER the FIRST direct-child Operation whose `dataflow.edges` produces the halo data symbol. The data symbol is known per-strip (each synthesised XferPlaceholder carries `data: DataId`).
+
+Algorithmic shape:
+- For each direct-child position, scan for Operations producing each halo data symbol in the group.
+- For each halo data symbol, find the LAST producer index in the children (so we insert AFTER ALL producers).
+- Group the synthesised pairs by their target insert-position, then splice them in.
+
+Edge case: if NO producer is found in the immediate parent Sequence, fall back to today's prepend behaviour (with a comment explaining). This handles synthetic test fixtures where the data is implicitly provided.
+
+### Step 2 — update existing unit tests
+
+The unit tests in `tests/halo_strip_synth.rs` use a synthetic ACFG with NO producer Operation (cycle-114a-hardening removed the dead `load_op`). They WILL fall through the fallback prepend path. Add a NEW unit test `positive_placement_after_producing_op` that builds a fixture WITH a producer Operation and asserts the synthesised pairs land AFTER it.
+
+### Step 3 — new schedule + matrix wiring
+
+Create `nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc`:
+
+```
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+    place load_image on host;
+    place save_image on host;
+    place blur3      on { w0, w1, w2, w3 };
+
+    // 2x2 grid. y range 1..H-1 = 1..15, divisibility:
+    // decompose_grid(4) = (2, 2); 14 % 2 == 0 on both axes ⇒
+    // each worker owns a 7x7 cell.
+    loop y : partition=blocks2d;
+
+    transfer img_in  : sync;
+    transfer img_out : sync;
+}
+```
+
+Wire into `nuc-nucleus/e2e-matrix.toml` as a `[[required]]` cell on `pthreads-async` (M5). `pthreads-sync` is optional informational. `mp-tcp-bufsync` + `mp-tcp-event` SKIP on the same w↔w-mesh lineage as today's 05-stencil/distributed (TASK-0175). Document SKIP reasons inline.
+
+### Step 4 — verify bit-identical against reference.bin
+
+The new cell must produce output byte-identical to `05-stencil/reference.bin`. If it doesn't, that's either a placement-fix bug, a synthesis bug, or a real semantic gap — diagnose, don't ship.
+
+### Step 5 — gate + tracker + memory
+
+- `just ci` green (92 → 93 total; 79 → 80 pass).
+- Per-AC notes on TASK-0290 + final summary.
+- File TASK-0294 for the multi-pass / meaningful-halo cell.
+- TASK-0289 can finally close (AC#1+3 cycle 114a + AC#2+4 this cycle).
+
+## Honest limits
+
+- The new cell is "structurally passes" rather than "semantically meaningful" — the halo strips carry data the host broadcast already provides, so the bit-identical reference is degenerate. THIS IS DOCUMENTED in commit + matrix comment + TASK-0294's brief. The cell still proves: (a) partition=blocks2d lowers end-to-end, (b) synthesis doesn't BREAK existing behaviour, (c) the placement fix is correct.
+- The idempotence break (cycle 114a forward-carried lesson #4) is NOT addressed this cycle. Single inject_transfers call per build = unobservable in practice. Defer to TASK-0294 or beyond.
+- The multi-pass placement extension (forward-carried lesson #2) is NOT addressed this cycle. Deferred to TASK-0294 which needs it for meaningful-halo testing.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -130,4 +208,46 @@ Also REFINEMENT of forward-carried lesson #4 (idempotence break):
 The cycle-114a hardening also confirmed the architect's earlier static trace was correct: the `load_op` in the cycle-114a test fixture (`tests/halo_strip_synth.rs`) was UNNECESSARY for any panic the implementer described. It has been REMOVED in the hardening commit; the fixture is now minimal. The empirical check pinning this (running the 5 tests without `load_op` and observing all green) is also documented in-line in the test file.
 
 Forward-carried tactical note: the hoist-escape panic site in `transfer_inject.rs` (~line 358, ~line 1451) IS still a real panic-on-valid-input risk for any FUTURE schedule where the halo data symbol has no top-level producing Operation; that risk should be ruled out (or converted to a typed error) when TASK-0290's e2e cell lands.
+
+## Cycle 114b implementer notes (2026-05-25)
+
+### Outcome summary
+- AC#1 (synthesis pass): DONE in cycle 114a (inherited; verified green via halo_strip_synth's 5 existing tests).
+- AC#2 (bit-identical e2e cell + reference oracle): **NOT achieved as bit-identical PASS**; cell is SKIP'd on TASK-0294 prerequisite. Schedule + matrix wiring landed.
+- AC#3 (existing matrix green): DONE — e2e baseline 92/79/0/13/0 -> 96/79/0/17/0 (+4 total, all 4 are new SKIPs; zero pre-existing cells regressed).
+- AC#4 (baseline bump to 93/80/0/13/0): **NOT achieved**; baseline is 96/79/0/17/0 instead. The +1 to total/pass that AC#4 anticipated did not materialize because the new cell SKIPs on TASK-0294 (semantic codegen gap discovered during this cycle).
+
+### What WAS achieved structurally
+- Placement fix for prepend_strip_pairs landed (architect P1 from cycle 114a): synthesised halo-strip Push/Wait pairs now place AFTER the last producing Operation in the parent Sequence, not at index 0. Fallback to index 0 preserved for synthetic fixtures with no top-level producer. Unit test positive_placement_after_producing_op pins the new behaviour; 5 existing halo_strip_synth tests stay green via the fallback path.
+- New schedule file nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc with partition=blocks2d on a 2x2 grid landed.
+- New matrix entries: pthreads-async SKIP'd on TASK-0294; pthreads-sync + mp-tcp-bufsync SKIP'd on capability (same as row-band sibling); mp-tcp-event SKIP'd on TASK-0175+0294.
+
+### What FAILED bit-identical and why (honest diagnosis)
+Running the cell in isolation reveals real semantic divergence at byte 68 (element 17 = row 1, col 1 = first compute pixel). Root cause: backend-common's leading_axis_slice (HONEST-PARTIAL ASSUMPTION from TASK-0117) ignores the inner axis of 2D partition tiles. Each worker's per-tile transfer for img_out has bounds [(y, y_lo..y_hi), (x, x_lo..x_hi)] but the host gather lowers as a 1D y-band slice — worker w0 (y=1..8, x=1..8) pastes its WHOLE row 1..8 buffer (including unwritten x=8..15 columns of default-zero) over the image, then w1 (y=1..8, x=8..15) overwrites with its WHOLE row 1..8 buffer (including default-zero x=0..8). Net: each worker's actual rectangle gets clobbered. Forward-carried lesson #5 (single-pass equivalence) was correct in SEMANTICS but wrong about CODEGEN — a real 2D slice-paste codegen path is needed.
+
+### Prerequisite filed
+TASK-0294 'extend leading_axis_slice (or design 2D slice-paste) to handle partition=blocks2d's 2D per-worker tiles' captures the root cause + diagnostic evidence + AC's needed to promote the cell.
+
+### Gate numbers (this run)
+- just build: OK
+- just clippy: OK (zero warnings under -D warnings)
+- just test (dev): all green; 6/6 halo_strip_synth tests including the new positive_placement_after_producing_op.
+- just test-release: all green.
+- just check-textual-replace-on-codegen: OK.
+- just check-include-str-coverage: OK.
+- just e2e: 96/79/0/17/0 (was 92/79/0/13/0; +4 total +4 SKIPs from the 4 new entries).
+- determinism check: 96/79/0/17 green.
+
+### Honest gotchas / forward-carried to TASK-0294 (or the next cycle)
+1. The placement fix is correct AND verified, BUT in this cycle it only fires in the new SKIP'd cell — its e2e benefit is only realised once TASK-0294 unblocks the bit-identical promotion. The existing 05-stencil/distributed cell (partition=rows) has empty partition_pairs so the placement fix never fires there.
+2. The placement fix walks all DataflowEdges to find producers (not just edges[0]); this generalises beyond output_data()'s 'first edge' helper. Documented in the doc comment.
+3. The matrix entry for distributed-2d × mp-tcp-event cites BOTH TASK-0175 and TASK-0294 — the w↔w mesh AND the 2D slice-paste are both required for promotion. The 2D codegen comes first chronologically (you can run it on pthreads-async with TASK-0294 alone; mp-tcp-event needs both).
+4. The cycle 114a re-run / idempotence break (forward-carried lesson #4) is NOT addressed this cycle. Single-call-per-build means it's still unobservable in production.
+5. Multi-pass / time-step stencil for true meaningful-halo testing is NOT filed in this cycle — leave to the orchestrator to decide whether to file as a separate task or fold into TASK-0294's follow-up.
+
+### Closure status
+TASK-0290 stays In Progress pending TASK-0294. AC#1+#3 closed; AC#2+#4 blocked on TASK-0294. TASK-0289 umbrella stays In Progress for the same reason.
+
+### Architect-review-mark
+Per the architect's cycle 114a forward-carried review note: the placement defect was real (sibling worker reads halo-strip data before host has produced it) AND now verifiably fixed. The new cell's emitted main.rs (target/e2e-matrix scratch) shows the host's load_image() call BEFORE the host's ring_*.push(img_in.clone()) broadcasts to the workers — the correct producer-then-broadcast order. Pre-fix this would have been reversed.
 <!-- SECTION:NOTES:END -->

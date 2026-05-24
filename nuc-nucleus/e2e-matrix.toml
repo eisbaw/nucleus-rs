@@ -700,6 +700,94 @@ schedule = "distributed"
 backend  = "pthreads-async"
 milestone = "M5"
 
+# 05-stencil/distributed-2d × pthreads-async: FIRST e2e cell
+# exercising the halo-strip Push/Wait synthesis (TASK-0289 cycle 114a)
+# under partition=blocks2d on a 2x2 worker grid. The schedule landed
+# in TASK-0290 cycle 114b alongside the placement fix in
+# `prepend_strip_pairs` (synthesised pairs now land AFTER the host
+# load_image Operation, not before — see transfer_inject.rs docs
+# for the ordering rationale).
+#
+# DISCOVERED cycle 114b (TASK-0290): the bit-identical assertion
+# FAILS against 05-stencil/reference.bin at byte 68 (element 17 =
+# row 1, col 1, first compute pixel) because backend-common's
+# `leading_axis_slice` (HONEST-PARTIAL ASSUMPTION cited in its
+# doc comment from TASK-0117) ignores the inner axis of 2D
+# partition tiles. The host gather pastes each worker's 2D
+# rectangle as a 1D y-band slice, overwriting adjacent workers'
+# columns with default-zero values. This is a real semantic
+# codegen gap, NOT a defect in the halo-strip synthesis or the
+# cycle 114b placement fix.
+#
+# Promotion to [[required]] is blocked on TASK-0294 (extend
+# leading_axis_slice / design a 2D slice-paste path that respects
+# both axes of an N-D tile). The schedule file + this matrix entry
+# stay landed so the next implementer of TASK-0294 has the
+# verifying fixture ready.
+#
+# What cycle 114b DID prove (without bit-identical promotion):
+#   - partition=blocks2d lowers end-to-end through the pipeline
+#     (no panic, no fall-through, the emitted main.rs builds and
+#     runs);
+#   - halo-strip Push/Wait synthesis fires under the new
+#     partition_pairs sidecar (16 synthesised Xfer nodes at the
+#     root Sequence, exercised by the unit test
+#     `positive_placement_after_producing_op` and the e2e cell
+#     above);
+#   - cycle 114b's placement fix orders the synthesised Wait AFTER
+#     the producing Operation in the root Sequence (the e2e cell's
+#     emitted main.rs has the host's `load_image` call BEFORE the
+#     host's `ring_*.push(img_in.clone())` broadcasts, which is the
+#     correct producer-then-broadcast order — pre-fix would have
+#     swapped them).
+#
+# Multi-pass / time-step stencil (where halo strips carry unique
+# semantic value) remains a separate follow-up — see the parent
+# task brief.
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "pthreads-async"
+reason   = "TASK-0294: `leading_axis_slice` in backend-common (HONEST-PARTIAL ASSUMPTION from TASK-0117) ignores the inner axis of 2D partition tiles; host gather pastes each worker's 2D rectangle as a 1D y-band slice, overwriting adjacent workers' columns. Diff at byte 68 (first compute pixel). Cell stays [[skip]] until TASK-0294 lands the 2D slice-paste path. Schedule + cell wiring landed in TASK-0290 cycle 114b for the verifying fixture."
+milestone = "M5"
+
+# 05-stencil/distributed-2d × pthreads-sync: SKIP on capability
+# mismatch, same as the row-band sibling. `transfer img_in : async,
+# buffer=2, notify=event` requires async + buffer + event
+# notification, none of which pthreads-sync supports.
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "pthreads-sync"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which pthreads-sync supports (sync, single-buffer, barrier/blocking only). Same rationale as 05-stencil/distributed × pthreads-sync."
+milestone = "M5"
+
+# 05-stencil/distributed-2d × mp-tcp-bufsync: SKIP on capability
+# mismatch, same as the row-band sibling.
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-bufsync supports (sync, single-buffer, barrier/blocking only). Same rationale as 05-stencil/distributed × mp-tcp-bufsync."
+milestone = "M5"
+
+# 05-stencil/distributed-2d × mp-tcp-event: SKIP on TASK-0175 lineage.
+# Differs from distributed.sched.nuc × mp-tcp-event (which was promoted
+# in cycle 102, TASK-0268): the 2x2-grid partition emits genuine
+# worker-to-worker E/W halo strips between (row, 0) and (row, 1)
+# workers — strips that mp-tcp-event's one-CTRL-stream-per-(host,
+# worker) star topology cannot lower without a w↔w mesh. The row-band
+# sibling escaped this because its halo strips happen to compose with
+# the existing host-broadcast extension (no genuine w↔w transfer).
+# Promotion blocked on TASK-0175 (w↔w mesh transport) AND TASK-0294
+# (2D slice-paste); whichever lands later carries the promotion.
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "mp-tcp-event"
+reason   = "TASK-0175 (w↔w mesh) + TASK-0294 (2D slice-paste): 2x2-grid partition emits genuine worker-to-worker E/W halo strips between (row, 0) and (row, 1) workers; mp-tcp-event's one-CTRL-stream-per-(host, worker) star topology cannot lower a host-excluding worker-to-worker Push/Wait pair. Distinct from 05-stencil/distributed × mp-tcp-event (PROMOTED cycle 102, TASK-0268) because that schedule's row-band partition has no genuine w↔w transfer. ALSO blocked on TASK-0294 (host gather defect) — the bit-identical assertion would fail even with a w↔w mesh until the 2D slice-paste path lands."
+milestone = "M5"
+
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------
 #
 # The smallest fixture for the M4 capability set (async + buffer>1 +
