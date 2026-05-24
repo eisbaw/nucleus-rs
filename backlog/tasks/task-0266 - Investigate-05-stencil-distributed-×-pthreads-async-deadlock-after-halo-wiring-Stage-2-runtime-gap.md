@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 04:04'
-updated_date: '2026-05-24 07:29'
+updated_date: '2026-05-24 07:56'
 labels:
   - M5
   - bug
@@ -144,4 +144,76 @@ Cycle 84 is closed without closing TASK-0266. The cycle's value: REFINED the dia
 M5 AC#4 stays BLOCKED on TASK-0266 with the new precise root cause.
 
 NOTE-FIX (shell expansion ate the prior diagnosis): the cycle-84 attempt confirmed the deadlock root cause is HOST FAILS TO EMIT PUSH for img_in to partitioned worker consumers. In the emitted main.rs the host loads img_in via load_image then waits on barriers + receives img_out, but never invokes ring_0.push() or ring_1.push() to ship img_in to the workers. Workers w0/w1 are blocked on w0_ring_0.wait() and w1_ring_1.wait() indefinitely. This is NOT the cycle-83 unequal-iteration-count barrier deadlock; the bug is in transfer_inject host-side Push synthesis for partition_rows consumers. Next-session probe: temporarily revert cf2f9ac and re-run to determine if it is a cycle-83 regression or a pre-existing partition_rows + transfer_inject gap that was masked by the [[skip]]. Fix option E (the real fix): make transfer_inject emit per-consumer host-side Push for partitioned consumers; options A-D from the earlier diagnosis are downstream of E.
+
+PROBE EXECUTED (cycle-85, 2026-05-24): reverted cf2f9ac to working tree, rebuilt 05-stencil/distributed x pthreads-async, inspected emit at /tmp/probe-pre-cf2f9ac/src/main.rs. Confirmed pre-existing bug: even WITHOUT cf2f9ac, the host fn main contains zero ring_0.push() / ring_1.push() / ring_2.push() / ring_3.push() for img_in to the partitioned workers. Each worker enters its iteration loop calling w_i_ring_i.wait() to receive img_in, but the host never sends. cf2f9ac is innocent.
+
+Pre-existing bug location: transfer_inject host-side Push synthesis when consumers are partitioned via partition_worker_ranges. The current logic likely emits a single Push targeted at one canonical worker (or recognises only the canonical worker post-collapse), missing the per-worker fan-out. Visible in the emit at /tmp/probe-pre-cf2f9ac/src/main.rs:113-119 (host block) and the workers w0-w3 blocks each calling w_i_ring_i.wait() at lines 80,101,etc.
+
+Probe abort: reverted the revert, repo clean at d5fdc88.
+
+FIX SCOPE for the next cycle:
+1. transfer_inject must walk the consumer side: for each XferPlaceholder whose dst worker entity is partitioned (the dst appears as a key in partition_worker_ranges for the relevant iter-var), emit ONE per-(src,dst-member) Push from the source worker.
+2. Today the canonical-worker collapse in transfer_inject (introduced pre-TASK-0117) collapses {w0,w1,w2,w3} -> a single canonical WorkerId for the XferPlaceholder. The expansion at the Push synthesis site (which happens at fan-out time per TASK-0117) is what is missing for the producer-host case.
+3. The receive-side per-worker tile (lines 80,101,130,etc in the emit) IS being synthesised correctly today — meaning the SeqTag fan-out for the consumer side works. The producer side (host) is the gap.
+
+Reference for the working case: 03-reduction/distributed x pthreads-async PASSES — its host DOES emit per-worker Push for the array a. Inspect that emit for the working pattern; the difference between 03-reduction (partition=workers) and 05-stencil (partition=rows) is the canonical-collapse + partition-rewrite path. 03-reduction works because partition=workers consumer (TASK-0212) was the original target of TASK-0117 fan-out; partition=rows (TASK-0258) is a new pass and the fan-out at the host-Push site likely keys off a check that does not recognise partition_rows entries.
+
+Next session probe: diff a successful 03-reduction/distributed x pthreads-async emit against the failing 05-stencil/distributed x pthreads-async emit. The host blocks differ in the Push synthesis for the partitioned consumer.
+
+PRECISE DIAGNOSIS via Petri-net inspection (cycle-85 probe, 2026-05-24):
+
+Ran transfer_inject + petri lowering for 05-stencil/distributed x pthreads-async with partition=rows (broken) AND with partition=workers (works) on the SAME algorithm. Diff between the two emitted Petri nets:
+
+partition=workers (WORKS): emits transitions push_seq0..7 — 4 host-side pushes (host -> w0..w3 for img_in) + 4 worker pushes (w_i -> host for img_out). Host emit shows ring_0..3.push(img_in.clone()) at top level.
+
+partition=rows (BROKEN): emits push_seq4..7 ONLY — only worker-side pushes for img_out exist. push_seq0..push_seq3 (host pushes for img_in) are ENTIRELY MISSING from the Petri net. The host emit has NO ring_*.push(img_in) anywhere. Workers wait forever on w0_ring_0.wait() etc.
+
+KEY FACT: same algorithm + same place + same workers; ONLY the partition policy differs. partition=workers triggers correct host-Push synthesis; partition=rows does not.
+
+This rules out:
+- cf2f9ac regression (probe with revert showed identical breakage).
+- async vs sync transfer mode (probe with sync mode showed identical breakage).
+- Worker count or remainder policy (4 workers x 14 rows = floor-with-spillover; 2 workers x 14 rows = exact; both hang because img_in is never pushed).
+
+ROOT CAUSE LOCATION: transfer_inject pipeline interaction with partition_rows. The Push events for the (host -> partitioned consumers) transfers are dropped/never inserted when partition_rows is the partition policy. Likely candidates:
+
+(1) Pass A `hoist_invariant_waits` recognises partition=workers as a single-axis partition but not partition=rows as outer-of-2D. The Wait gets hoisted out of the y-loop for partition=workers (because the algo has only one loop) but NOT for partition=rows (because the algo has a 2D nest with the partition axis as the OUTER, and Pass A may not see through the inner x-loop to recognise img_in as invariant).
+
+(2) splice_pushes_global cuts the Push placement OUTSIDE the outermost Repeat enclosing the producer that does NOT also enclose the wait. For partition=workers: producer at top level, wait inside loop w => cut = None => splice_after_producer at top level => Push inserted. For partition=rows: producer at top level, wait inside loop y AND inside loop x (2D nest) => cut should STILL be None => same path. But somehow the Push is not landing.
+
+(3) build_waits_for_op may be skipping the Wait fan-out for partition=rows. But the receive-side wait DOES appear in the workers emit (w_i_ring_i.wait()), so this is unlikely.
+
+NEXT-SESSION ACTIONABLE PROBE:
+
+Add eprintln! instrumentation to transfer_inject.rs at:
+- build_waits_for_op exit (line 2089): print the Vec<XferPlaceholder> waits emitted.
+- splice_pushes_for_waits exit (line 963): print inserts performed.
+- splice_pushes_global enter+exit (line 1461 / 1591): print waits collected and pushes spliced.
+- inject_transfers exit (line 411): print final ACFG node count + Xfer count by role + Xfer roles by src/dst.
+
+Run with partition=rows AND partition=workers; diff the outputs. The ONE pass that emits 4 host-Pushes in workers case and 0 in rows case is the bug site.
+
+The fix likely lives in Pass A (hoist_invariant_waits) — for a 2D nest with partition on the outer axis, the inner (x) loop should be transparent to invariance checking when determining what hoists out. Or alternatively, the partition_axis_order computation in transfer_inject + the partition pass interaction with hoist needs to be reviewed.
+
+WORKAROUND for closing M5 AC#4: change 05-stencil/distributed.sched.nuc to use partition=workers (instead of partition=rows). On a 1D outer loop with placement on {w0..w3} the two policies are semantically equivalent (TASK-0258 docstring documents the overlap). The semantic distinction (rows = explicit row-band on 2D nest) is preserved by the partition_rows pass docstring + tests; the e2e cell uses partition=workers for now. Once the transfer_inject + partition_rows interaction bug is fixed, the schedule can switch back to partition=rows.
+
+The workaround keeps M5 AC#4 closable in a future cycle without needing the deep transfer_inject fix first.
+
+CYCLE-85 EXTENSION (workaround attempts): tried two workarounds to close M5 AC#4 via 05-stencil/distributed x pthreads-async without fixing the deep transfer_inject bug.
+
+ATTEMPT 1: change partition=rows to partition=workers. Inspection: with the inner `loop x : block=64, vectorize=8, reuse;` directive AND `transfer img_in : async, buffer=2, notify=event;` ACTIVE, the host-side Push synthesis still drops. Failed.
+
+ATTEMPT 2: remove inner block directive AND change to sync transfer. Host Push synthesis NOW emits correctly (ring_0..3.push observed). But the binary hangs at runtime — diagnosed as a SECOND bug: floor-with-spillover unequal per-worker iteration counts (w0,w1 = 4 iters; w2,w3 = 3 iters) combined with per-iteration barriers fired inside the partitioned y-loop body, deadlocks on the 4th iteration (cycle-83 theory was correct but masked by the host-Push bug found in cycle 85).
+
+REFINED FINAL DIAGNOSIS: TWO independent bugs in the partition + halo pipeline:
+
+BUG 1 (host-Push synthesis drop). Triggered by EITHER inner block transform `loop x : block=64, vectorize=8, reuse;` OR `transfer : async, buffer, notify=event`. Removing both restores host Push. Symptoms: push_seq0..3 missing from Petri net; workers wait forever on empty rings.
+
+BUG 2 (per-iteration barrier deadlock). When partition_workers/partition_rows produce UNEQUAL per-worker iteration counts AND sync_inject inserts per-iteration barriers requiring ALL workers, workers with fewer iterations exit the loop early; workers with more iterations wait indefinitely on barriers their early-exit peers never re-enter. Symptoms: workers stuck in bar_1.wait() / bar_2.wait() inside the y-loop body.
+
+REVISED CLOSURE PATH: M5 AC#4 e2e evidence requires BOTH bugs fixed. Workarounds either avoid both (e.g. example with 1 worker — trivial, not M5-evidence) or none (the actual 4-worker stencil cell). No middle ground.
+
+For M5 AC#4 substantive closure: file separate tasks for BUG 1 (transfer_inject block × partition interaction + async-transfer host-Push drop) and BUG 2 (sync_inject participant-aware barriers for unequal-iter partitioned bodies). Both are non-trivial transfer_inject / sync_inject investigations warranting fresh context.
+
+Repo restored to cycle-84 final state (88/73/0/15/0); cell stays [[skip]] with TASK-0266 reason. The cycle-85 diagnostic value is the precise two-bug identification — next session opens with the exact code paths and trigger conditions documented.
 <!-- SECTION:NOTES:END -->
