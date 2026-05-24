@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 04:07'
+updated_date: '2026-05-24 09:10'
 labels:
   - M5
   - compiler
@@ -59,4 +59,24 @@ Cycle 83: transfer_inject extension landed (commit cf2f9ac). For each XferPlaceh
 The codegen is CORRECT. The runtime deadlock that surfaced when the cell was promoted to [[required]] is NOT a transfer_inject bug; it's the partition_rows × sync_inject seam (unequal per-worker iteration counts vs per-iteration barriers — diagnosed under TASK-0266).
 
 Status: In Progress. AC#1/2 met (sidecar consumed; tiles extended). AC#3 (new e2e cell bit-identical) BLOCKED on TASK-0266. AC#4 (lenient → strict driver toggle) DEFERRED — Stage-1 lenient stance preserved for cycle 83 since strict promotion is meaningless until TASK-0266 unblocks.
+
+## Forward-carried from TASK-0271 (cycle 88, 2026-05-24)
+
+TASK-0271 promoted the reuse_inference driver call to STRICT (apply_reuse_inference vs apply_reuse_inference_advisory). The promotion pattern is the precedent for halo when this task closes:
+
+1. **Trigger condition**: promote halo's driver call (currently at nucleus/driver/src/main.rs:385 apply_halo_inference_advisory) to apply_halo_inference once the transfer_inject Stage 2 halo consumer lands. At that point a silently-swallowed typed HaloInferenceError corresponds to a partition-required halo that the backend would silently emit a wrong-output tile for.
+
+2. **5-line shape** (mirror TASK-0271 commit 0a74bea exactly):
+   - replace 'apply_halo_inference_advisory' in the use-statement with 'apply_halo_inference'.
+   - replace 'let (acfg, halo_errors) = apply_halo_inference_advisory(&linked, acfg); for e in &halo_errors { nucleus_compiler::nuc_trace!(...) }' with 'let acfg = apply_halo_inference(&linked, acfg).map_err(|e| format!("halo-inference error: {e}"))?;'.
+   - rewrite the surrounding multi-line comment block to reflect strict policy + cross-link TASK-0263 + TASK-0271 as the reuse precedent.
+   - Update halo_inference.rs module docs ('Strict vs advisory entry points') to name the driver as strict consumer; rewrite apply_halo_inference_advisory doc-comment as test-only.
+
+3. **Add two parallel pins** in nucleus/nucleus-compiler/tests/sidecar_halo.rs mirroring tests/sidecar_reuse.rs cycle-88 tail:
+   - task0263_strict_rejects_non_affine_halo_body — synthetic non-affine kernel-arg DataRef under a partitioned loop → typed HaloInferenceError.
+   - task0263_strict_accepts_shipped_05_stencil_distributed_schedule (or whichever shipped halo-tagged schedule remains valid at promotion time).
+
+4. **CAVEAT — example 11 game-of-life**: per the cycle-82 doc-comment in halo_inference.rs the strict promotion may newly-reject example 11's step_or_seed kernel which reads grid[(t + ITERS) % (ITERS + 1)] (constant modulo wrap that the affine detector cannot fold). VERIFY at promotion time: either (a) the schedule never carries a partition= directive that would activate transfer_inject Stage 2 consumption of halo_widths for the affected iv, in which case strict still passes (no widths needed), OR (b) the affine detector needs to be taught about constant-mod folding, OR (c) the example needs a code change. This is the one shipped corner where (A) strict is NOT obviously safe and (B) partition-policy-aware may be necessary.
+
+5. **DO NOT delete apply_halo_inference_advisory** after promotion — it's the test escape-hatch (mirrors how cycle-88 preserved apply_reuse_inference_advisory for the advisory_collects_all_errors_strict_short_circuits pin in reuse_inference.rs).
 <!-- SECTION:NOTES:END -->
