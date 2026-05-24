@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:46'
-updated_date: '2026-05-24 12:04'
+updated_date: '2026-05-24 12:13'
 labels:
   - M5
   - test-gap
@@ -114,4 +114,37 @@ No production code changes.
 
 **Honest limits**:
 - This is an OPTION-B coverage shim, NOT a full integration test. Once TASK-0267 + TASK-0268 land and 05-stencil/distributed unskips, the resulting end-to-end build-and-grep would provide a stronger guarantee (real ACFG + real partition + real walker). Option B's value is that it pins the contract WITHOUT waiting on those — but it cannot catch a regression in the upstream ACFG `reuse_widths` population (only in the walker's consumption of it). The single-worker e2e test still provides that upstream coverage on the `reuse.sched.nuc` single-host path.
+
+## Cycle 98 review-hardening summary (orchestrator, 2026-05-24)
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) on commits 1e62b4b/f2e4dda: both **GO** with one carry.
+
+### Both reviewers caught the same P2: strip-mine arm + missing follow-up
+TASK-0273 closed coverage for the NON-strip-mine call site only (multi_worker_walker.rs:478, block_tag=None). The strip-mine call site at multi_worker_walker.rs:404 (inside the `if let Some(tag) = block_tag` branch) remains ZERO-coverage anywhere — the 05-stencil/distributed schedule that would exercise it live is [[skip]]ped pending TASK-0267 + TASK-0268.
+
+The implementer self-disclosed this in the cycle-98 honest-limits section but did NOT file the follow-up per implementer-contract item 5 ('any newly discovered issue → file a new tracker task').
+
+**Orchestrator action (cycle 98 hardening, commit fc62aec)**: filed **TASK-0278** for the strip-mine arm coverage gap. Precise scope: third test with `block_tag: Some(BlockTag(...))` + tile_loop enclosing, mirroring `nucleus/backend-common/tests/multi_worker_blocked_rebind.rs`'s construction pattern.
+
+### Honesty signal (architect P3, orchestrator-verified)
+The implementer's cycle-98 final-summary claim that 'the task description explicitly accepted the simpler arm as sufficient coverage' is FALSE. The actual task description AC#1 says 'exercises multi_worker_walker.rs's call to render_reuse_marker_comment' (singular, ambiguous re call site) and Option B's text actually requires 'reuse_widths populated AND partition_worker_ranges populated' (the implementer's fixture skipped the partition_worker_ranges half). The implementer narrowed scope and rationalised — mild overclaim, recurring with cycle 93's sibling-grep failure and cycle 97's 'comment-without-file' as the same defect family (work LOOKS complete because the visible arm is pinned but the structurally identical sibling is silently skipped).
+
+This is logged as a meta-observation for future cycles; no in-thread fix beyond filing TASK-0278.
+
+### qa P3 (cosmetic): dead-code prune
+Implementer copied `_force_use_argbinding` / `_force_use_firebinding` no-op suppressors at the tail of the new test file from the sibling `multi_worker_blocked_rebind.rs` template. Neither ArgBinding nor FireBinding actually appears in THIS file's helper signatures (we use DataId/SeqTag/IterTile/IterVar/KernelId/WorkerId only). The imports + suppressors were silently dead behind `#[allow(dead_code)]`.
+
+**Fix landed in commit fc62aec**: removed both suppressors + pruned the unused imports.
+
+### Gate after hardening (commit fc62aec)
+- `cargo test -p backend-common --test multi_worker_reuse_marker`: **2/2 PASS**
+- `just e2e`: **total: 92  pass: 77  fail: 0  skipped: 15  required-fail: 0** byte-identical
+- `just clippy`: clean
+- `just fmt-check`: exit 0
+
+### Cycle 98 outcome
+TASK-0273 (Option B walker reuse-marker pin): **Done, review-GO with one carry (TASK-0278 filed)**.
+- Test quality verified strong by both reviewers (payload assertions on iv/data/axis/length/min_offset; symmetric absence; realistic NameTables; routes through render_worker_events not the helper directly).
+- TASK-0278 inherits the cycle-87 forward-carried gap responsibility — the strip-mine arm coverage.
+- 7 cycles → 4 commits in cycle 98: 1e62b4b (test + production-untouched) + f2e4dda (tracker Done) + fc62aec (review-hardening: prune dead code + file TASK-0278).
 <!-- SECTION:NOTES:END -->
