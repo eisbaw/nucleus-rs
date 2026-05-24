@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 02:33'
-updated_date: '2026-05-24 08:34'
+updated_date: '2026-05-24 08:49'
 labels:
   - M5
   - compiler
@@ -127,4 +127,21 @@ When Stage 2 wiring lands (backend walker delay-line codegen):
 
 ### Limit / status
 Status remains In Progress on this task. Tier 1 substantively closes the consumer-site scaffolding contract (AC#1 met + AC#4 met + 3 of 5 forward-carry review items closed); AC#2/AC#3/AC#5 deferred to filed follow-ups with precise scope + AC. Could ALTERNATIVELY mark Done if the policy is to treat each Tier as a separate task — but the cycle-82 review items were attached HERE, so leaving In Progress until Tier 2/3 land (TASK-0269/0270) is the more honest read of the task's original scope.
+
+CYCLE-87 REVIEW-HARDENING (orchestrator, 2026-05-24, commit 38a3ddf):
+
+Parallel read-only review gate ran post-Tier-1 landing. **qa-test-runner GO** (numbers verified across 2 e2e runs, no flake: 92/77/0/15/0; determinism + tests + clippy clean). **mped-architect NO-GO** with 2 P1 doc-lies + 2 P2 deferrals + 1 P3. All hardening applied in-thread:
+
+- **P1-1 (doc-lie)**: `reuse.sched.nuc` docstring claimed Tier 1 emits `nuc_trace!`-advisory log. Actual is `//` comment marker. Rewritten — feedback-comment-doc-lie memory entry strikes again, this project's recurring failure mode.
+- **P1-2 (TASK-id drift)**: code referenced `TASK-0265.01..03` (3 contiguous sub-IDs); actually-filed set is `.01/.02/.04/.05` ⇒ TASK-0269/0270/0271/0272. Future grep for `0265.03` would find nothing. Rewritten in render.rs + multi_worker_walker.rs to name TASK-0269 + TASK-0270 directly.
+- **P2-1 (overclaim)**: commit 7d03606 body claimed "AC#4 marker test on all 4 backends" — actual test exercises pthreads-sync only (single-host schedule routes through render_event, not multi_worker_walker). Honest-scope disclosure added to test docstring. Multi-worker marker coverage filed as **TASK-0273** (LOW — blocked-or-Option-B).
+- **P2-2 (undisclosed deferral)**: driver/src/main.rs:410 had no TASK-0271 marker at the `apply_reuse_inference_advisory` call site; the surrounding nuc_trace! string said "not yet consumed by backend walker" which is now stale (Tier 1 marker IS a consumer). Both tightened.
+- **P3-1 (cosmetic rationale hollow)**: implementer's "normalize" on partition_workers.rs:621 went the wrong direction — file imports `BTreeMap` at line 17, so bare `BTreeMap::new()` IS the file convention; the implementer's `std::collections::BTreeMap` made line 621 the inconsistent one. Reverted.
+- **P3-2 (skip)**: optional NUC_TRACE observable when walker fires — deferred (low value, save for the real codegen cycle).
+
+QA's non-blocking note: e2e-matrix.toml was NOT modified (my brief incorrectly said it was). Cells appear via auto-discovery (`runnable_examples × backends × schedules/*.sched.nuc`). They're INFORMATIONAL (no `[[required]]` row), not required. Honest for Tier 1 scaffold scope — when Tier 2/3 lands they should be promoted to required.
+
+Post-hardening gate: `just e2e` 92/77/0/15/0; `just determinism-check` GREEN; `cargo test --workspace` 0 failed; `cargo clippy` clean.
+
+**Cycle-87 keystone status**: Tier 1 LANDED, hardened, GO. Tier 2/3/4 + multi-worker marker coverage = TASK-0269/0270/0271/0272/0273. TASK-0265 itself stays In Progress with AC#1/AC#4 MET, AC#2/AC#3/AC#5 DEFERRED to those follow-ups.
 <!-- SECTION:NOTES:END -->
