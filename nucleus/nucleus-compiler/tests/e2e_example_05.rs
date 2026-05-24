@@ -278,8 +278,10 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
 
     // TASK-0269 cycle 103: real circular-buffer codegen landed on
     // pthreads-sync. The emit MUST now contain:
-    //   1. A per-(data, axis) buffer declaration of the right type +
-    //      length. The buffer name is `__reuse_buf_<data>_a<axis>`.
+    //   1. A per-(data, axis, group_idx) buffer declaration of the right
+    //      type + length. The buffer name is
+    //      `__reuse_buf_<data>_a<axis>_g<group_idx>` (TASK-0282 made
+    //      `_g<group_idx>` uniform — single-group cases carry `_g0`).
     //   2. A `rem_euclid(3_i64)` indexing op (the circular wrap on
     //      length-3 slots).
     // These are structural fingerprints; together with the marker
@@ -289,10 +291,20 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
     // A regression dropping the buffer decl (reverting to marker-only)
     // would still pass the marker substring assertions above; THIS
     // test pins the codegen difference.
+    //
+    // TASK-0282 multi-outer-coord generalisation: `05-stencil/reuse`
+    // produces THREE buffers on `(img_in, axis=1)` — one each for outer
+    // axes `[y-1]`, `[y]`, `[y+1]` — so the emit contains
+    // `__reuse_buf_img_in_a1_g0`, `_g1`, `_g2`. The presence assertion
+    // below checks the `_g0` group (the first-discovered outer-axes
+    // tuple); the multi-group count assertion further below pins all
+    // three groups via grep counts.
     assert!(
-        reuse_main.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
-        "TASK-0269 AC#1: emit MUST contain a `let mut __reuse_buf_img_in_a1: Vec<i32>` \
-         declaration for the (img_in, axis=1) reuse slot (length=3 elements). Got:\n{reuse_main}"
+        reuse_main.contains("let mut __reuse_buf_img_in_a1_g0: Vec<i32>"),
+        "TASK-0269/TASK-0282 AC#1: emit MUST contain a `let mut \
+         __reuse_buf_img_in_a1_g0: Vec<i32>` declaration for the \
+         first-discovered (img_in, axis=1, outer=[y-1]) reuse group \
+         (length=3 elements). Got:\n{reuse_main}"
     );
     assert!(
         reuse_main.contains("vec![0; 3usize]"),
@@ -303,6 +315,76 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
         reuse_main.contains("rem_euclid(3_i64)"),
         "TASK-0269 AC#3: emit MUST contain a `rem_euclid(3_i64)` circular \
          wrap on the length-3 buffer. Got:\n{reuse_main}"
+    );
+
+    // TASK-0282 AC#1: multi-outer-coord generalisation. The blur3
+    // call reads 9 cells (3 rows x 3 cols around (y, x)) and the
+    // reuse axis is x (inner). Three unique outer-axes patterns
+    // exist on `(img_in, axis=1)`: [y-1], [y], [y+1]. Discover MUST
+    // emit ALL THREE buffer decls — the narrow first-cut (pre-
+    // TASK-0282) would only emit the first.
+    assert!(
+        reuse_main.contains("let mut __reuse_buf_img_in_a1_g1: Vec<i32>"),
+        "TASK-0282 AC#1: emit MUST contain `let mut __reuse_buf_img_in_a1_g1: \
+         Vec<i32>` for the second outer-axes group (img_in, axis=1, outer=[y]). \
+         A regression to the pre-TASK-0282 narrow first-cut would only emit \
+         `_g0` and stop. Got:\n{reuse_main}"
+    );
+    assert!(
+        reuse_main.contains("let mut __reuse_buf_img_in_a1_g2: Vec<i32>"),
+        "TASK-0282 AC#1: emit MUST contain `let mut __reuse_buf_img_in_a1_g2: \
+         Vec<i32>` for the third outer-axes group (img_in, axis=1, outer=[y+1]). \
+         Got:\n{reuse_main}"
+    );
+    // TASK-0282 AC#2 (group_idx in source-order): the body walks the
+    // blur3 call's 9 args in source order — img_in[y-1][...] are args
+    // 1..=3 (g0), img_in[y][...] are args 4..=6 (g1), img_in[y+1][...]
+    // are args 7..=9 (g2). The naming reflects the discovery order.
+    // Pinned by grepping all three identifiers above.
+
+    // TASK-0282 AC#4: every `img_in[...]` read INSIDE the inner
+    // for-x body must be rewritten to a buffer read. The body
+    // contains:
+    //   - 3 per-iter updates: one fill of each buffer's most-distant
+    //     slot from `img_in[(y +/- 1) * 16 + (x + 1)]`.
+    //   - 9 buffer reads inside the blur3 call (after TASK-0282
+    //     rewrite — pre-TASK-0282 only 3 were rewritten, leaving 6
+    //     verbatim).
+    // So `img_in[` appears at most 4 times inside the for-x body
+    // (3 per-iter updates + 1 pre-existing `img_in.iter()` or load
+    // helper if any). The actual lower bound: 3 per-iter update
+    // RHS reads. The assertion below extracts the for-x body and
+    // counts.
+    let for_x_start = reuse_main
+        .find("for x in")
+        .expect("emit must contain a `for x in` header");
+    let for_x_open_brace = reuse_main[for_x_start..]
+        .find('{')
+        .expect("`for x in` header must open a body")
+        + for_x_start
+        + 1;
+    // The matching closing `}` is the next-line `}` at the for-x
+    // body indent (4 spaces of inner-x indent + 4 of outer-y indent
+    // = 8 spaces). Search forward for `\n        }` (8 spaces then
+    // close brace). This is robust against nested braces inside
+    // expressions (none of which start at col 8).
+    let for_x_close = reuse_main[for_x_open_brace..]
+        .find("\n        }")
+        .expect("for-x body must close with `\\n        }`")
+        + for_x_open_brace;
+    let for_x_body = &reuse_main[for_x_open_brace..for_x_close];
+    let verbatim_img_in_reads = for_x_body.matches("img_in[").count();
+    assert!(
+        verbatim_img_in_reads <= 3,
+        "TASK-0282 AC#4: every `img_in[...]` read inside the for-x body \
+         MUST be either (a) a per-iter buffer-fill update (RHS of \
+         `__reuse_buf_img_in_a1_gN[...] = img_in[...]`) or (b) rewritten \
+         to a buffer read. Pre-TASK-0282 the narrow first-cut left 6 \
+         verbatim `img_in[...]` reads inside the blur3 call (the y and \
+         y+1 rows) — those should now be buffer reads. Got \
+         {verbatim_img_in_reads} `img_in[` occurrences in for-x body \
+         (expected at most 3 — the per-iter updates):\n\n--- for-x \
+         body start ---\n{for_x_body}\n--- for-x body end ---"
     );
 
     // Naive schedule: marker MUST NOT appear (no reuse directive).

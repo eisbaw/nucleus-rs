@@ -710,12 +710,13 @@ fn render_event(
             // OUTSIDE the for-header (the buffer must persist across
             // iterations), so we emit them BEFORE writing the for
             // line. `render_reuse_buf_decls` walks the body to
-            // discover the canonical outer-axes pattern per (data,
-            // axis), emits the Vec<T> decl + unrolled prologue, and
-            // returns the per-(data, axis) ReuseRewriteGroup map the
-            // child RenderCtx threads into the body recursion. Empty
-            // when the iv carries no reuse slot — byte-identical no-
-            // op for every pre-TASK-0269 schedule.
+            // discover EVERY unique outer-axes pattern per (data,
+            // axis) (TASK-0282 multi-outer-coord generalisation),
+            // emits one Vec<T> decl + unrolled prologue PER GROUP, and
+            // returns the per-DataId Vec<ReuseRewriteGroup> the child
+            // RenderCtx threads into the body recursion. Empty when
+            // the iv carries no reuse slot — byte-identical no-op for
+            // every pre-TASK-0269 schedule.
             let reuse_groups =
                 render_reuse_buf_decls(out, indent, *iter_var, var, &lo_s, body, ctx)?;
             writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();

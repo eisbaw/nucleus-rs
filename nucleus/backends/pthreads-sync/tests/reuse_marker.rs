@@ -316,9 +316,11 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
 
     // CODEGEN PRESENCE (P1.2 coverage gap closed):
     assert!(
-        out.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
+        out.contains("let mut __reuse_buf_img_in_a1_g0: Vec<i32>"),
         "TASK-0269: strip-mine arm MUST emit the buffer decl when the \
-         iv carries reuse + body has a reuse-axis DataRef; got:\n{out}",
+         iv carries reuse + body has a reuse-axis DataRef. Buffer name \
+         carries `_g0` suffix uniformly post-TASK-0282 (group_idx in \
+         source-order). Got:\n{out}",
     );
     assert!(
         out.contains("rem_euclid(3_i64)"),
@@ -455,9 +457,13 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
         .expect("synthetic single-worker emit must succeed");
 
     // Buffer must be declared (independent of shape recognition).
+    // Buffer name carries `_g0` suffix uniformly post-TASK-0282
+    // (group_idx in source-order; this synthetic fixture has a single
+    // outer-axes pattern — the empty tuple — so only g0 is emitted).
     assert!(
-        out.contains("let mut __reuse_buf_img_in_a0: Vec<i32>"),
-        "TASK-0283: expected reuse buffer decl for iv x axis 0; got:\n{out}",
+        out.contains("let mut __reuse_buf_img_in_a0_g0: Vec<i32>"),
+        "TASK-0283: expected reuse buffer decl for iv x axis 0 \
+         (`_g0` group); got:\n{out}",
     );
 
     // CRITICAL: the body-read rewrite MUST fire. Pre-TASK-0283 the
@@ -472,10 +478,10 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
         + kernels_call_start;
     let kernels_call_text = &out[kernels_call_start..kernels_call_end];
     assert!(
-        kernels_call_text.contains("__reuse_buf_img_in_a0["),
+        kernels_call_text.contains("__reuse_buf_img_in_a0_g0["),
         "TASK-0283: kernels::k call MUST contain the rewritten reuse \
          buffer read (data[iv + STRIDE] should rewrite to \
-         __reuse_buf_img_in_a0[...]). Pre-TASK-0283 the narrow shape \
+         __reuse_buf_img_in_a0_g0[...]). Pre-TASK-0283 the narrow shape \
          matcher only handled `Ident(iv) + IntLit(v)`, so `iv + \
          STRIDE` (Ident-Ident) was silently skipped. Got:\n{kernels_call_text}\n\
          Full emit:\n{out}",
@@ -486,7 +492,7 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
     assert!(
         !kernels_call_text.contains("img_in["),
         "TASK-0283: kernels::k call MUST NOT contain raw img_in[...] \
-         reads — they should all be rewritten to __reuse_buf_img_in_a0[...]. \
+         reads — they should all be rewritten to __reuse_buf_img_in_a0_g0[...]. \
          Got:\n{kernels_call_text}",
     );
 }

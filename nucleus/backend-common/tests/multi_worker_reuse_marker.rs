@@ -520,9 +520,12 @@ fn multi_worker_walker_regular_arm_emits_real_buffer_codegen() {
     render_worker_events(&ctx, WorkerId(0), &[loop_ev], &mut out, 0, "")
         .expect("synthetic regular-arm emit must succeed");
 
-    // CODEGEN PRESENCE: buffer decl fires.
+    // CODEGEN PRESENCE: buffer decl fires. Buffer name carries `_g0`
+    // suffix uniformly post-TASK-0282 (single outer-axes pattern in
+    // this synthetic fixture — the `[y]` tuple — so only g0 is
+    // emitted).
     assert!(
-        out.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
+        out.contains("let mut __reuse_buf_img_in_a1_g0: Vec<i32>"),
         "TASK-0270: regular arm MUST emit the buffer decl when the iv \
          carries reuse + body has a reuse-axis DataRef; got:\n{out}",
     );
@@ -667,9 +670,11 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
         .expect("synthetic strip-mine arm emit must succeed");
 
     // CODEGEN PRESENCE: buffer decl + rem_euclid fire on the strip-
-    // mine path too.
+    // mine path too. Buffer name carries `_g0` suffix uniformly
+    // post-TASK-0282 (single outer-axes pattern in this synthetic
+    // fixture — the `[y]` tuple — so only g0 is emitted).
     assert!(
-        out.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
+        out.contains("let mut __reuse_buf_img_in_a1_g0: Vec<i32>"),
         "TASK-0270: strip-mine arm MUST emit the buffer decl; got:\n{out}",
     );
     assert!(

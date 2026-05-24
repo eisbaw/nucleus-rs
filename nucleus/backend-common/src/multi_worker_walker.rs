@@ -530,8 +530,10 @@ fn render_worker_events_inner(
                     // `reuse_widths_pending` is preserved as a
                     // regression canary above the buffer decls (which
                     // landed above the for-header) — the
-                    // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)`
-                    // strings are the second-layer codegen canary.
+                    // `__reuse_buf_<data>_a<axis>_g<group_idx>` +
+                    // `rem_euclid(L_i64)` strings are the second-layer
+                    // codegen canary (TASK-0282: `_g<group_idx>` is
+                    // uniform; single-group cases carry `_g0`).
                     render_reuse_marker_comment(
                         out,
                         indent + 1,
@@ -632,10 +634,11 @@ fn render_worker_events_inner(
                 // strip-mined) loop — marker comment at body entry.
                 // The substring `reuse_widths_pending` is the first-
                 // layer canary (grep-able for AC#4 of TASK-0265). The
-                // `__reuse_buf_<data>_a<axis>` + `rem_euclid(L_i64)`
-                // strings the buf_decls above emit are the second-
-                // layer codegen canary. NO-OP when the iv carries no
-                // reuse.
+                // `__reuse_buf_<data>_a<axis>_g<group_idx>` +
+                // `rem_euclid(L_i64)` strings the buf_decls above emit
+                // are the second-layer codegen canary (TASK-0282:
+                // `_g<group_idx>` is uniform; single-group cases carry
+                // `_g0`). NO-OP when the iv carries no reuse.
                 render_reuse_marker_comment(
                     out,
                     body_indent,

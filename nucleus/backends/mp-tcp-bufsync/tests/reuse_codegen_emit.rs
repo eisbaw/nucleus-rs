@@ -141,9 +141,11 @@ fn mp_tcp_bufsync_worker_emit_contains_reuse_buffer_codegen() {
     // PRESENCE: the worker bin MUST contain the reuse buffer
     // declaration. Pre-TASK-0284 mp-tcp-bufsync's Plan::render_events
     // skipped the call entirely on both arms; the emit had no
-    // `__reuse_buf` substring at all.
+    // `__reuse_buf` substring at all. Buffer name carries `_g0` suffix
+    // uniformly post-TASK-0282 (single outer-axes pattern in this 1D
+    // fixture — the empty outer tuple — so only g0 is emitted).
     assert!(
-        w0_src.contains("let mut __reuse_buf_x_a0: Vec<i32>"),
+        w0_src.contains("let mut __reuse_buf_x_a0_g0: Vec<i32>"),
         "TASK-0284: mp-tcp-bufsync's w0 emit MUST contain the reuse \
          buffer declaration for x on axis 0 (the schedule carries \
          `loop n : reuse;` and the worker body reads x[n-1], x[n], \
@@ -169,13 +171,13 @@ fn mp_tcp_bufsync_worker_emit_contains_reuse_buffer_codegen() {
     );
 
     // PRESENCE: the blur3 call inside the body MUST read at least one
-    // arg via the buffer (the narrow-rewrite-cut from TASK-0269 picks
-    // the FIRST-encountered outer-axes pattern; here all three reads
-    // x[n±1] share the empty outer-axes set, so ALL three should
-    // rewrite to the buffer). Asserts the rewrite path is reached
+    // arg via the buffer. All three reads x[n±1] share the empty
+    // outer-axes set, so post-TASK-0282 all three rewrite to the same
+    // `_g0` buffer (the empty outer tuple is a single unique pattern,
+    // hence a single group). Asserts the rewrite path is reached
     // inside Fire args.
     assert!(
-        w0_src.contains("kernels::blur3(__reuse_buf_x_a0["),
+        w0_src.contains("kernels::blur3(__reuse_buf_x_a0_g0["),
         "TASK-0284: mp-tcp-bufsync's blur3 call MUST contain reuse-buffer \
          reads (the rewrite path in `try_rewrite_reuse_arg` consults \
          ctx.reuse_active which is populated by the cycle-107 wiring). \

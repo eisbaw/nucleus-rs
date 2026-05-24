@@ -941,10 +941,12 @@ pub fn render_const_expr_pub(e: &IrExpr, ctx: &RenderCtxPub<'_>) -> Result<Strin
 /// `ctx.inner()`, mirroring the rest of the `_pub` shim layer (see
 /// [`render_fire_args_pub`], [`render_flat_index_pub`], etc.).
 ///
-/// Returns the per-(DataId, axis) [`ReuseRewriteGroup`] map the caller
+/// Returns the per-`DataId` [`ReuseRewriteGroup`] vector the caller
 /// seeds into the child [`RenderCtxPub`] it recurses into the body
 /// with (via [`RenderCtxPub::with_reuse_active`] or
-/// [`RenderCtxPub::with_abs_subst_and_reuse_active`]).
+/// [`RenderCtxPub::with_abs_subst_and_reuse_active`]). The vector
+/// holds one entry per UNIQUE `(axis, outer_axes_tuple)` discovered
+/// in the body (TASK-0282 multi-outer-coord generalisation).
 pub fn render_reuse_buf_decls_pub(
     out: &mut String,
     indent: usize,
@@ -1080,9 +1082,11 @@ pub fn render_reuse_marker_comment(
             // today (05-stencil/distributed × mp-tcp-bufsync is SKIP on
             // a separate async+buffer capability mismatch). The marker
             // substring is preserved as a regression canary above the
-            // buffer decl — the `__reuse_buf_<data>_a<axis>` +
-            // `rem_euclid(L_i64)` strings below are the second-layer
-            // codegen canary, pinned per-arm by the tests in
+            // buffer decl — the `__reuse_buf_<data>_a<axis>_g<group_idx>`
+            // + `rem_euclid(L_i64)` strings below are the second-layer
+            // codegen canary (TASK-0282 made `_g<group_idx>` uniform —
+            // single-group cases carry `_g0`), pinned per-arm by the
+            // tests in
             // `nucleus/backend-common/tests/multi_worker_reuse_marker.rs`
             // (regular + strip-mine).
             let _ = writeln!(
@@ -1109,22 +1113,30 @@ pub fn render_reuse_marker_comment(
 /// matching DataRef read of a single `(DataId, axis)` slot whose
 /// OUTER axes match the canonical `outer_axes` pattern verbatim.
 ///
-/// Populated by [`render_reuse_buf_decls`] when a body's first
-/// matching DataRef is discovered; consumed by [`render_fire_arg`] at
-/// every Fire-arg read site to rewrite a matching DataRef into a
+/// Populated by [`render_reuse_buf_decls`] when a body's matching
+/// DataRefs are discovered; consumed by [`render_fire_arg`] at every
+/// Fire-arg read site to rewrite a matching DataRef into a
 /// `buf[(iv + b - min_offset).rem_euclid(L) as usize]` lookup.
 ///
-/// The first-cut narrowing (TASK-0269): only DataRefs whose OUTER
-/// axes match `outer_axes` exactly (PartialEq on `IrExpr`) are
-/// rewritten. In 05-stencil/reuse this means the 3 reads at
-/// `img_in[y][x-1..=x+1]` get rewritten; the 6 reads at `img_in[y-1]`
-/// and `img_in[y+1]` stay verbatim. A more general rewrite (one
-/// buffer per outer-coord variation) is filed as a follow-up.
+/// TASK-0282 generalisation: there is ONE group per UNIQUE
+/// `(data_id, axis, outer_axes_tuple)`. In 05-stencil/reuse the
+/// `blur3(img_in[y-1][...], img_in[y][...], img_in[y+1][...])` call
+/// produces three groups on `(img_in, axis=1)` — one each for outer
+/// axes `[y-1]`, `[y]`, `[y+1]` — disambiguated by
+/// [`Self::group_idx`] in source-discovery order. All 9 of the
+/// `img_in` reads in the for-x body rewrite to the matching buffer.
 #[derive(Debug, Clone)]
 pub struct ReuseRewriteGroup {
     /// The reuse-axis index inside the DataRef (`axis` key from the
     /// sidecar's `reuse_widths` triple-nested map).
     pub axis: u64,
+    /// Disambiguates groups that share `(data_id, axis)` but differ
+    /// on [`Self::outer_axes`]. Assigned in source-discovery order
+    /// during the body walk (TASK-0282). With one group per
+    /// `(data_id, axis)` (the pre-TASK-0282 narrowing) every group
+    /// carries `group_idx = 0`; with N unique outer-axes tuples on a
+    /// given `(data_id, axis)` the groups carry `0..N` in walk order.
+    pub group_idx: u64,
     /// The slot shape inferred by Stage 1 (`length`, `min_offset`).
     pub slot: ReuseSlot,
     /// The canonical OUTER-axis index expressions (all axes except
@@ -1133,8 +1145,11 @@ pub struct ReuseRewriteGroup {
     /// indexing is preserved (axis 0 first, then axis 1, etc., with
     /// the reuse axis at position `axis` omitted).
     pub outer_axes: Vec<IrExpr>,
-    /// Emitted Rust identifier for the per-(data, axis) buffer. Form:
-    /// `__reuse_buf_<data_name>_a<axis>`.
+    /// Emitted Rust identifier for the per-`(data, axis, group_idx)`
+    /// buffer. Form: `__reuse_buf_<data_name>_a<axis>_g<group_idx>`.
+    /// The `_g<group_idx>` suffix is uniform — single-group cases
+    /// carry `_g0` rather than a bare `_a<axis>` (deterministic across
+    /// the narrow first-cut shape and the multi-outer-coord shape).
     pub buf_ident: String,
     /// The iter-var name (e.g. `"x"`) — used by `render_fire_arg` to
     /// detect the affine `iv + b` shape on the reuse-axis index.
@@ -1200,29 +1215,40 @@ fn try_reuse_axis_offset(
     }
 }
 
-/// Walk an `Event` tree shallowly looking for the FIRST matching
-/// DataRef of each `(data_id, axis)` reuse slot. "Matching" means:
-/// the `ArgBinding::Data`'s `DataSlice` has enough axes, the
-/// reuse-axis index decodes via [`try_reuse_axis_offset`], and the
-/// outer axes are kept as-is (one canonical variation is picked from
-/// the first matching read).
+/// Walk an `Event` tree looking for EVERY unique
+/// `(data_id, axis, outer_axes_tuple)` matching a reuse slot.
+/// "Matching" means: the `ArgBinding::Data`'s `DataSlice` has enough
+/// axes, the reuse-axis index decodes via [`try_reuse_axis_offset`],
+/// and the outer-axes tuple is novel for this `(data_id, axis)` so
+/// far (deduped against already-discovered groups).
 ///
 /// The walk descends through nested `Event::Loop` bodies and
 /// `Event::Fire` arg bindings, including `ArgBinding::Nested`'s
-/// `Vec<ArgBinding>`. It stops at the first matching read PER
-/// `(data_id, axis)` pair so the canonical outer-axes pattern is
-/// stable.
+/// `Vec<ArgBinding>`. Unlike the pre-TASK-0282 first-cut, it does
+/// NOT stop after the first match per axis — the body is walked in
+/// full so every outer-coord variation gets its own buffer (e.g.
+/// the 3-row 05-stencil/reuse fixture produces 3 groups on
+/// `(img_in, axis=1)`, one each for outer axes `[y-1]`, `[y]`, and
+/// `[y+1]`).
+///
+/// Group indexing is in source-discovery order: the first novel
+/// `(axis, outer_axes)` tuple under a given `(data_id, axis)` is
+/// `group_idx = 0`, the second is `1`, etc. The body walk is
+/// deterministic (source-order Vec/BTreeMap iteration), so the
+/// resulting `group_idx` assignment is reproducible.
 ///
 /// Returns `BTreeMap<DataId, Vec<ReuseRewriteGroup>>` ordered by
-/// `DataId` then by axis (determinism via `BTreeMap` + sorted axis
-/// iteration).
+/// `DataId` (BTreeMap), and within each `Vec` by source-discovery
+/// order (which sorts by axis ascending — `per_axis` is a BTreeMap —
+/// then by outer-axes discovery order within an axis).
 ///
 /// Fail-loud on a missing `name_data` entry for any reuse-active
-/// `DataId`: the buffer identifier `__reuse_buf_<data_name>_a<axis>`
-/// requires a real symbol name and an absent one is a projection-layer
-/// gap, NOT a silent fallback to `d<id>` (TASK-0269 cycle-103 review
-/// architect P2.3 — siblings like [`data_name`] in this module are
-/// already fail-loud; the reuse-discovery path now matches).
+/// `DataId`: the buffer identifier
+/// `__reuse_buf_<data_name>_a<axis>_g<group_idx>` requires a real
+/// symbol name and an absent one is a projection-layer gap, NOT a
+/// silent fallback to `d<id>` (TASK-0269 cycle-103 review architect
+/// P2.3 — siblings like [`data_name`] in this module are already
+/// fail-loud; the reuse-discovery path now matches).
 fn discover_reuse_groups(
     body: &[Event],
     iv_name: &str,
@@ -1252,9 +1278,12 @@ fn discover_reuse_groups(
                  (TASK-0269 — buffer ident requires a real symbol name)"
             ))
         })?;
-        // Collect already-found axes so the walk can skip past once
-        // every axis on this data has a canonical pattern.
-        let mut found: BTreeMap<u64, ReuseRewriteGroup> = BTreeMap::new();
+        // TASK-0282: collect EVERY unique (axis, outer_axes) tuple per
+        // (data_id) — no early-out. The walk visits the body in source
+        // order; each novel outer_axes tuple under a given axis becomes
+        // a new group with group_idx = (count of existing groups for
+        // that axis at discovery time).
+        let mut found: Vec<ReuseRewriteGroup> = Vec::new();
         for ev in body {
             walk_event_for_reuse(
                 ev,
@@ -1265,13 +1294,9 @@ fn discover_reuse_groups(
                 &mut found,
                 &consts_resolved,
             );
-            if found.len() == per_axis.len() {
-                break;
-            }
         }
-        let groups: Vec<ReuseRewriteGroup> = found.into_values().collect();
-        if !groups.is_empty() {
-            out.insert(*data_id, groups);
+        if !found.is_empty() {
+            out.insert(*data_id, found);
         }
     }
     Ok(out)
@@ -1284,7 +1309,7 @@ fn walk_event_for_reuse(
     data_name: &str,
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
-    found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    found: &mut Vec<ReuseRewriteGroup>,
     consts: &BTreeMap<String, ResolvedConst>,
 ) {
     match ev {
@@ -1312,7 +1337,7 @@ fn walk_arg_for_reuse(
     data_name: &str,
     iv_name: &str,
     per_axis: &BTreeMap<u64, ReuseSlot>,
-    found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    found: &mut Vec<ReuseRewriteGroup>,
     consts: &BTreeMap<String, ResolvedConst>,
 ) {
     match arg {
@@ -1321,9 +1346,6 @@ fn walk_arg_for_reuse(
                 return;
             }
             for (axis, slot) in per_axis {
-                if found.contains_key(axis) {
-                    continue;
-                }
                 let ax_idx = *axis as usize;
                 if ax_idx >= s.indices.len() {
                     continue;
@@ -1345,17 +1367,31 @@ fn walk_arg_for_reuse(
                     .enumerate()
                     .filter_map(|(i, e)| if i == ax_idx { None } else { Some(e.clone()) })
                     .collect();
-                let buf_ident = format!("__reuse_buf_{}_a{}", data_name, axis);
-                found.insert(
-                    *axis,
-                    ReuseRewriteGroup {
-                        axis: *axis,
-                        slot: *slot,
-                        outer_axes,
-                        buf_ident,
-                        iv_name: iv_name.to_string(),
-                    },
-                );
+                // TASK-0282 dedupe: skip if a group with this exact
+                // `(axis, outer_axes)` already exists. `IrExpr` carries
+                // `PartialEq` (structural equality on the AST), so the
+                // dedupe is direct.
+                if found
+                    .iter()
+                    .any(|g| g.axis == *axis && g.outer_axes == outer_axes)
+                {
+                    continue;
+                }
+                // TASK-0282 group_idx: in source-discovery order within
+                // an axis. New axis -> 0; second outer-coord variant on
+                // the same axis -> 1; etc. The `_g<group_idx>` suffix
+                // is uniform — single-group cases carry `_g0` rather
+                // than a bare `_a<axis>`.
+                let group_idx = found.iter().filter(|g| g.axis == *axis).count() as u64;
+                let buf_ident = format!("__reuse_buf_{}_a{}_g{}", data_name, axis, group_idx);
+                found.push(ReuseRewriteGroup {
+                    axis: *axis,
+                    group_idx,
+                    slot: *slot,
+                    outer_axes,
+                    buf_ident,
+                    iv_name: iv_name.to_string(),
+                });
             }
         }
         ArgBinding::Nested { args, .. } => {
