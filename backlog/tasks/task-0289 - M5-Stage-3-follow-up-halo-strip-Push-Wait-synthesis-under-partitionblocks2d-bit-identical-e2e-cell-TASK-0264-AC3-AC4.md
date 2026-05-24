@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-24 19:58'
-updated_date: '2026-05-24 20:54'
+updated_date: '2026-05-24 21:17'
 labels:
   - M5
   - compiler
@@ -174,4 +174,40 @@ f8d58ea transfer_inject: TASK-0289 cycle 114a — halo-strip Push/Wait synthesis
 
 ### Forward-carried to TASK-0290
 See TASK-0290 notes for full set of gotchas the e2e cell implementer needs to know.
+
+=== cycle-114a review gate close (orchestrator-applied) — TASK-0289 stays In Progress (AC#2+4 deferred to TASK-0290) ===
+
+Reviewers (parallel, read-only):
+- qa-test-runner: GO. gate green; 92/79/0/13/0 unchanged across 2 e2e + 2 determ runs.
+- mped-architect: GO with P1 + P2 findings.
+
+Orchestrator-applied in-thread fixes (commit 11c23e7):
+- P2.1 doc-lie at transfer_inject.rs:2454-2462 (walker-returns-tuple): rewritten honestly to reflect `&mut to_insert` drain semantics.
+- P2.2 doc-lie at transfer_inject.rs:2499-2504 (claimed "Recurse FIRST" but code does drain-then-recurse-then-assemble): rewritten to reflect actual order + WHY that order matters.
+- P2.3 doc-lie at tests/halo_strip_synth.rs:93-98 (claimed load_op required to avoid hoist-escape panic): empirically refuted — removed load_op + ran tests, all 5 still pass. Removed the dead setup, in-line comment now records the empirical check.
+
+P1 findings forward-carried to TASK-0290 as refinements (architect's wording was load-bearing — implementer's framing as "multi-pass only" was understated):
+- P1.1 placement-before-load_op is broken for single-pass too. TASK-0290 must address before AC#2.
+- P1.2 idempotence disclosure has no test pin — recommended pin in TASK-0290.
+
+Unrelated defect discovered during gate sanity-check:
+- TASK-0291 filed: `backend-common`'s `run_sh_multi_debug_asserts_so_buf_comment_lines_are_shell_comments` is `#[should_panic]` on a `debug_assert!`, which is stripped under `cargo test --release` → release-mode unit-test failure. Pre-existing on HEAD (47e844c), confirmed via `git stash` + re-run.
+
+Cycle-114a gate (final, after hardening):
+- just build: PASS
+- just clippy: PASS (zero warnings)
+- just test (dev profile): PASS (no failures; halo_strip_synth 5/5)
+- just e2e: 92 pass / 0 fail / 13 skipped / 0 required-fail / 92 total — baseline unchanged
+
+Per-AC final status (cycle 114a scope):
+- AC#1 halo-strip Push/Wait synthesis: DONE
+- AC#3 existing matrix stays green: DONE (e2e bit-identical baseline preserved + AC#3 short-circuit confirmed structural)
+- AC#2 new bit-identical e2e cell: DEFERRED to TASK-0290 (still open)
+- AC#4 e2e baseline bump: DEFERRED to TASK-0290 (still open)
+
+TASK-0289 STAYS In Progress. AC#2+AC#4 close on TASK-0290.
+
+LESSONS / SUBTLETIES (forward-carried to memory):
+- "Implementer disclosure but stated mechanism is wrong" — architect's static trace was correct, implementer's claimed `load_op`-required-for-panic story was a doc-lie. The empirical 1-line edit (remove load_op, re-run tests) was the cheap verification path. When an implementer's report says "without X, Y panics with message Z" — verify by removing X if the cost is bounded.
+- "qa-test-runner gate misses release-mode unit-test failures" — `just test` uses dev profile only; `--release` strips debug_asserts and breaks `#[should_panic]`-on-debug_assert! tests. The qa agent's gate is not exhaustive across profiles. TASK-0291 captures the structural fix.
 <!-- SECTION:NOTES:END -->
