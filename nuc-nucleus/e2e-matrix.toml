@@ -670,34 +670,35 @@ schedule = "pipeline_parallel"
 backend  = "pthreads-async"
 milestone = "M3"
 
-# 05-stencil/distributed × pthreads-async: M5 capstone candidate cell.
-# Diagnostic history:
+# 05-stencil/distributed × pthreads-async: M5 capstone cell. PROMOTED
+# cycle 102 (TASK-0268). Diagnostic history:
 #   - TASK-0262 (cycle 83) floor-with-spillover remainder policy: y=1..15
 #     across 4 workers lowers as 4/4/3/3 bands.
 #   - TASK-0263 (cycle 83) wired halo widths into transfer_inject.
 #   - TASK-0181 multi-worker block-tag rebinding landed earlier.
-#   - Cycle-83 [[required]] promotion HUNG (>30min); TASK-0266 filed.
-#   - Cycle-83..85 diagnosis (Petri-net diff under partition policies +
-#     emit inspection) split TASK-0266 into TWO independent bugs:
-#       BUG 1 (TASK-0267): transfer_inject's contains_block_inner
-#       opacity stranded host-side Push synthesis under inner block /
-#       async transfer / partition=rows.
-#       BUG 2 (TASK-0268): sync_inject per-iteration barriers deadlock
-#       under unequal per-worker iteration counts (4/4/3/3 bands).
-#   - TASK-0267 LANDED: contains_block_inner opacity gate removed;
-#     Pass A's per-Wait classification subsumes the gate. Pinned by
-#     `distributed_pthreads_async_host_pushes_img_in_to_every_worker`
-#     (nucleus-compiler/tests/e2e_example_05.rs) and by the updated
-#     synthetic shape tests in transfer_inject_hoist.rs.
-# Remaining blocker is BUG 2 (TASK-0268). Cell stays [[skip]] until
-# the per-iteration barrier deadlock under partition_{rows,workers}
-# unequal-iter counts is resolved.
-[[skip]]
+#   - Cycle-83..86 diagnosis (Petri-net diff + emit inspection) split
+#     TASK-0266 into BUG 1 (TASK-0267, contains_block_inner opacity)
+#     and BUG 2 (TASK-0268, sync_inject per-iteration barriers under
+#     unequal partition counts).
+#   - TASK-0267 LANDED cycle 101: gate removed; per-Wait classification
+#     subsumes it.
+#   - TASK-0268 LANDED cycle 102: sync_inject's partitioned-Repeat
+#     skip propagates downward — every Repeat nested inside a
+#     partitioned scope skips body-entry/exit and Sequence-boundary
+#     Syncs (cross-worker data is delivered by the loop-boundary
+#     Push/Wait pairs anyway, per single-assignment invariant + the
+#     TASK-0218 push_wait_pair_covers logic). The cell now runs
+#     bit-identical to reference.bin.
+#
+# Capstone closure for M5 AC#3: this is the first multi-process
+# tier-1 backend cell that exercises partition=rows + halo synthesis
+# + reuse marker + async transfer + per-(seq, peer) ring buffer
+# end-to-end.
+[[required]]
 example  = "05-stencil"
 schedule = "distributed"
 backend  = "pthreads-async"
-reason   = "TASK-0268: per-iteration sync_inject barriers deadlock under partition=rows 4/4/3/3 (floor-with-spillover) unequal per-worker iteration counts. TASK-0267 (BUG 1: host-Push synthesis drop under block-governed enclosing Repeat) was the upstream blocker — LANDED; the host now emits ring_<N>.push(img_in.clone()) per worker. Promotion to [[required]] still requires TASK-0268 closure."
-milestone = "M3"
+milestone = "M5"
 
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------
 #

@@ -410,3 +410,140 @@ fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
          Emitted main.rs:\n{main_rs}"
     );
 }
+
+/// TASK-0268: real-pipeline regression pin for sync_inject's
+/// partitioned-scope skip propagation.
+///
+/// Pre-TASK-0268 sync_inject skipped body-entry/exit Syncs on the
+/// directly-partitioned Repeat (the y-loop in 05-stencil/distributed)
+/// but DID NOT propagate the skip to inner Repeats (x__tile, x). Under
+/// the floor-with-spillover remainder policy (TASK-0262 — 14 rows / 4
+/// workers ⇒ 4/4/3/3 unequal iteration counts), workers w2/w3 exited
+/// the y-loop early and workers w0/w1 deadlocked at the next inner
+/// barrier expecting all 4 participants.
+///
+/// Post-TASK-0268 the partitioned-scope skip is SDS (sticky downward
+/// state): once a partitioned Repeat is entered, every nested Repeat
+/// skips `wrap_repeat_body` too. The emit's per-worker section now
+/// contains ZERO `bar_<N>.wait()` lines inside the per-worker y-loop
+/// body. The only barriers that fire on the per-worker chain are the
+/// loop-boundary barriers (pre-y-loop entry + post-y-loop exit) — both
+/// {host,w0..w3} 5-way joins.
+///
+/// HONEST SCOPE: this pin asserts the BUG 2 / TASK-0268 fix only. It
+/// is the structural fire-alarm — a future regression that
+/// resurrects the per-iteration body barriers under a partitioned
+/// outer Repeat fires this pin LOUDLY rather than silently
+/// reintroducing the deadlock. The actual bit-identical correctness
+/// is asserted by the e2e matrix promotion of the cell to
+/// `[[required]]` (see `nuc-nucleus/e2e-matrix.toml`).
+#[test]
+fn distributed_pthreads_async_no_inner_barriers_inside_partitioned_y_loop() {
+    let out = scratch_dir("example_05_distributed_pthreads_async_no_inner_bar_check");
+    let ex = example_dir();
+    let nuc_ws = repo_root().join("nucleus");
+
+    let build = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("nucleus")
+        .arg("--")
+        .arg("build")
+        .arg("--algo")
+        .arg(ex.join("prog.algo.nuc"))
+        .arg("--sched")
+        .arg(ex.join("schedules/distributed.sched.nuc"))
+        .arg("--kernels")
+        .arg(ex.join("kernels.rs"))
+        .arg("--backend")
+        .arg("pthreads-async")
+        .arg("--out")
+        .arg(&out)
+        .current_dir(&nuc_ws)
+        .output()
+        .expect("nucleus build on distributed × pthreads-async");
+    assert!(
+        build.status.success(),
+        "nucleus build (distributed × pthreads-async) failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let main_rs =
+        fs::read_to_string(out.join("src/main.rs")).expect("read main.rs (distributed build)");
+
+    // STRUCTURAL ASSERTION 1: exactly 2 Barrier::new() declarations in
+    // the emit. Pre-fix the emit declared 4 (pre-y entry + 2 inner
+    // barriers fired inside y body + post-y exit). Post-fix only the
+    // 2 loop-boundary barriers remain.
+    let barrier_decl_count = main_rs.matches("Barrier::new(").count();
+    assert_eq!(
+        barrier_decl_count, 2,
+        "TASK-0268: exactly 2 Barrier::new() declarations MUST appear in \
+         the emit (loop-entry + loop-exit, both {{host,w0..w3}}). Got \
+         {barrier_decl_count}.\n\nIf this rises above 2, sync_inject is \
+         emitting body-internal barriers inside a partitioned scope \
+         again — under unequal-iter partitions this DEADLOCKS \
+         (cycle-85 BUG 2 / TASK-0268 regression).\n\n\
+         Emitted main.rs:\n{main_rs}"
+    );
+
+    // STRUCTURAL ASSERTION 2: for each worker's `for y in ... { ...
+    // }` block, the body MUST NOT contain any `bar_*.wait()` line.
+    // The only barriers fired by a worker are the pre-y entry barrier
+    // (above the `for y`) and the post-y exit barrier (below the
+    // closing `}`). Scan each worker block, locate the `for y`, then
+    // verify the body between matching braces has zero bar_*.wait().
+    //
+    // Implementation: regex-free brace-counting scan to keep the test
+    // dependency-free.
+    let lines: Vec<&str> = main_rs.lines().collect();
+    let mut for_y_found = 0;
+    let mut for_y_lines_with_inner_wait: Vec<(usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if trimmed.starts_with("for y in (") {
+            for_y_found += 1;
+            // Walk forward, tracking brace depth, starting after the
+            // `{` on this line (every `for y in ... {` ends in `{`).
+            let mut depth: i32 = if lines[i].contains('{') { 1 } else { 0 };
+            let mut j = i + 1;
+            while j < lines.len() && depth > 0 {
+                for c in lines[j].chars() {
+                    if c == '{' {
+                        depth += 1;
+                    } else if c == '}' {
+                        depth -= 1;
+                    }
+                }
+                if depth > 0 && lines[j].contains("bar_") && lines[j].contains(".wait()") {
+                    for_y_lines_with_inner_wait.push((j + 1, lines[j].to_string()));
+                }
+                j += 1;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    assert_eq!(
+        for_y_found, 4,
+        "expected exactly 4 `for y in (...)` blocks in the emit \
+         (one per worker w0..w3); got {for_y_found}.\n\nIf this drops, \
+         the per-worker partition codegen has been rearranged and this \
+         test's structural assumptions need to be updated.\n\n\
+         Emitted main.rs:\n{main_rs}"
+    );
+    assert!(
+        for_y_lines_with_inner_wait.is_empty(),
+        "TASK-0268: ZERO `bar_<N>.wait()` lines MUST appear inside the \
+         per-worker `for y` partitioned loop body. Got the following \
+         offending lines:\n{for_y_lines_with_inner_wait:#?}\n\n\
+         If this regresses, sync_inject is emitting per-iteration body \
+         barriers under a partitioned outer Repeat again, which \
+         DEADLOCKS under partition=rows 4/4/3/3 unequal-iter counts \
+         (cycle-85 BUG 2 / TASK-0268 regression).\n\n\
+         Emitted main.rs:\n{main_rs}"
+    );
+}

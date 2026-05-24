@@ -5574,16 +5574,21 @@ mystery = 42
         let m2 = count(Some(Milestone(2)));
         let m3 = count(Some(Milestone(3)));
         let m4 = count(Some(Milestone(4)));
+        let m5 = count(Some(Milestone(5)));
         let full = count(None);
+        // TASK-0268 (cycle 102) added the first M5-tagged required cell
+        // (05-stencil/distributed × pthreads-async). M4 → M5 is now a
+        // STRICT subset relationship; promoting more M5 cells preserves
+        // it. When M6 cells land, extend this assertion the same way.
         assert!(
-            m1 < m2 && m2 < m3 && m3 < m4,
+            m1 < m2 && m2 < m3 && m3 < m4 && m4 < m5,
             "milestone subsets must strictly grow: \
-             M1={m1} M2={m2} M3={m3} M4={m4}"
+             M1={m1} M2={m2} M3={m3} M4={m4} M5={m5}"
         );
         assert_eq!(
-            m4, full,
-            "M4 is the current top tier ⇒ its required set == the full set \
-             (M1={m1} M2={m2} M3={m3} M4={m4} full={full})"
+            m5, full,
+            "M5 is the current top tier ⇒ its required set == the full set \
+             (M1={m1} M2={m2} M3={m3} M4={m4} M5={m5} full={full})"
         );
     }
 
