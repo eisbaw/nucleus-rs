@@ -3,9 +3,11 @@ id: TASK-0289
 title: >-
   M5 Stage 3 follow-up: halo-strip Push/Wait synthesis under partition=blocks2d
   + bit-identical e2e cell (TASK-0264 AC#3 + AC#4)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-24 19:58'
+updated_date: '2026-05-24 20:54'
 labels:
   - M5
   - compiler
@@ -60,3 +62,116 @@ TASK-0264 cycle 113 landed AC#1+2 (sidecar plumbing): ACFG.partition_pairs + ACF
 - Mirror: nucleus/nucleus-compiler/src/sidecar.rs::build_sidecar.
 - Tests pinning the writer + wire shape: nucleus/nucleus-compiler/tests/partition_blocks2d.rs + nucleus/nucleus-compiler/tests/sidecar_partition_blocks2d.rs.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Scope this cycle (cycle 114a): AC#1 + AC#3 only
+
+AC#2 + AC#4 (the new bit-identical e2e cell) is split off as **TASK-0290**. Reasoning: the synthesis pass + its tests is one logical unit, big enough that bundling a new 2D-divisible image + reference-oracle crate + matrix wiring in the same cycle is overscope. Cycle B (TASK-0290) is the integration confidence on top.
+
+## Work plan (this cycle)
+
+### Step 1 — design pick: extend transfer_inject vs new pass
+
+Insertion point for the new consumer is already pre-marked in `transfer_inject.rs` near line 240 — the comment `// TASK-0289 halo-strip Push/Wait synthesis will be the first consumer.` lives right where partition_pairs + grid_shape_for_outer_iv are destructured.
+
+Two viable shapes:
+
+(a) **Extend transfer_inject** — add a new internal function (sibling of `extend_xfer_tiles_for_halo`) that runs AFTER `rewrite_partition_tiles` and AFTER the halo extension, and INJECTS new XferPlaceholders for cross-worker halo strips before the splice→Push/Wait conversion. Smaller blast radius; composes with existing splice machinery.
+
+(b) **New pass after transfer_inject** — runs on the post-Push/Wait ACFG, walks for partitioned outer Repeats, and synthesises new ACFGNode::Xfer nodes directly. Cleaner separation but requires understanding splice_pushes_global's invariants and re-deriving the seq/tile shape.
+
+**Pick (a)** — the splice machinery is the single point that converts XferPlaceholder → (Push, Wait, Xfer); reusing it means the new halo-strip transfers inherit hoisting, partition-tile rewriting, and pipeline-depth annotation for free. Build new XferPlaceholders BEFORE splice, let splice handle them.
+
+### Step 2 — synthesis logic
+
+Per (outer_iv, inner_iv) in `partition_pairs` (where `inner_iv = partition_pairs[outer_iv]`):
+- recover `(grid_rows, grid_cols) = grid_shape_for_outer_iv[outer_iv]`
+- recover `body_workers` from `partition_worker_ranges[outer_iv].keys()` (BTreeSet → deterministic numeric order)
+- for each `(i, w)` in `body_workers.enumerate()`:
+  - `(row, col) = (i / grid_cols, i % grid_cols)`
+  - identify N/S/E/W neighbours: `(row-1, col)`, `(row+1, col)`, `(row, col-1)`, `(row, col+1)` — skipping edges
+  - for each neighbour: synthesise an XferPlaceholder (`data_id` = the halo-bearing data symbol; `src/dst = w/neighbour`; `tile = halo-strip range`)
+- corner cells excluded per task brief
+
+### Step 3 — tile range for the halo strip
+
+For a worker at `(row, col)` with y-band `[y_lo, y_hi)`, x-band `[x_lo, x_hi)`, and halo width H (the per-(consumer, iv) halo from `halo_widths`):
+- N-strip (from `(row-1, col)`): y ∈ `[y_lo - H, y_lo)`, x ∈ `[x_lo, x_hi)` — i.e. the upstairs neighbour's bottom H rows.
+- S-strip (from `(row+1, col)`): y ∈ `[y_hi, y_hi + H)`, x ∈ `[x_lo, x_hi)`.
+- E/W-strips symmetric.
+
+Note: TASK-0263's `extend_xfer_tiles_for_halo` already extends the host→worker transfer's tile to cover the halo from the SOURCE side. The new cross-worker strip transfers are a SEPARATE pair (worker→worker) for the halo data, fired after the body's loop boundary.
+
+### Step 4 — tests
+
+- New unit/integration test `tests/halo_strip_synth.rs` that mirrors `tests/partition_blocks2d.rs`: hand-built 2D ACFG, populates `partition_pairs` + `grid_shape_for_outer_iv` + `halo_widths`, runs `inject_transfers`, asserts the expected (src, dst, data) Push/Wait pairs are emitted for a 2x2 grid with halo=1 (4 inner cells get 0, 4 edge cells get 1-2, corners get 0-2 — actually for 2x2 EVERY cell is a corner; pick 3x3 with center inner cell to exercise the 4-direction emit).
+- Pin determinism: two runs of the pass produce byte-identical ACFG.
+
+### Step 5 — additive-only proof (AC#3)
+
+Every shipped schedule today has empty `partition_pairs` (verified by `tests/sidecar_partition_blocks2d.rs::shipped_examples_without_blocks2d_leave_maps_empty`). The new synthesis logic MUST short-circuit on empty partition_pairs. Add an explicit `if partition_pairs.is_empty() { return ... }` guard at the top of the new function. Run `just e2e` after the change to verify 92/79/0/13/0 baseline holds.
+
+### Step 6 — gate + commit + tracker
+
+- `just build && just clippy && just test && just e2e`
+- per-AC notes + final summary
+- file gotchas as forward-carried notes on TASK-0290
+
+## Honest limits
+
+- This cycle does NOT exercise the new synthesis on a real fixture — that's TASK-0290's job. Confidence comes from the unit test + the additive-only guard. A subtle bug in the synthesis logic (off-by-one on tile range, wrong worker pairing on non-square grids) could land here and only surface in TASK-0290.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 114a (2026-05-24) — AC#1 + AC#3 landed
+
+### Commit
+f8d58ea transfer_inject: TASK-0289 cycle 114a — halo-strip Push/Wait synthesis (AC#1+3)
+
+### File changes
+- nucleus/nucleus-compiler/src/passes/transfer_inject.rs — added inject_halo_strip_xfers (sibling of extend_xfer_tiles_for_halo) + prepend_strip_pairs helper. Plumbed into the finalisation chain AFTER rewrite_partition_tiles + extend_xfer_tiles_for_halo (so strip tiles are not clobbered by either pass). Total +474 lines (impl + docs).
+- nucleus/nucleus-compiler/tests/halo_strip_synth.rs — 5 tests pinning: 3x3 grid per-worker pair counts (corner=2, edge=3, center=4) + center-cell exact strip tiles for N/S/W/E; 2x2 grid corner shapes; AC#3 empty-partition_pairs ⇒ zero Xfers; determinism across runs.
+
+### Gate (all green)
+- just build: OK
+- just clippy (-D warnings): OK
+- just test: all OK (no regressions; existing idempotence test stays green via AC#3 short-circuit)
+- just e2e: 92/79/0/13/0 (baseline UNCHANGED — AC#3 additive-only contract holds)
+- just determinism-check: 92/79/0/13/0 (no determinism regression)
+
+### Per-AC status this cycle
+- AC#1: DONE (synthesis pass + unit tests landed)
+- AC#3: DONE (additive-only contract pinned by empty_partition_pairs_emits_zero_halo_strip_xfers + e2e baseline unchanged)
+- AC#2: DEFERRED to TASK-0290 (new bit-identical e2e cell + hand-written reference oracle)
+- AC#4: DEFERRED to TASK-0290 (baseline bump to 93/80/0/13/0)
+- AC#5 (determinism): inherits via the unit test + the existing determinism-check infrastructure; new cell-specific determinism comes with TASK-0290
+
+### Subtleties + gotchas
+
+1. **Where the synthesis runs in the chain** — must be AFTER both rewrite_partition_tiles AND extend_xfer_tiles_for_halo. Both passes walk every Xfer and rewrite tiles in-place; for a halo-strip with src+dst both partitioned workers, rewrite would replace the strip with src's full partition slice. Running last preserves the carefully-crafted strip tile.
+
+2. **Pre-paired Push+Wait with shared SeqTag** — cannot use the splice_pushes_global path because that finds the producer via data_producers, which for img_in is host's load_image. We emit BOTH endpoints pre-paired with state.fresh_seq() so splice can't mis-route. The per-worker projection in petri_to_events::emit_xfer routes Push to src's EventList and Wait to dst's EventList — both endpoints can sit in the SAME ACFG sequence.
+
+3. **Placement = parent Sequence of outer Repeat** — single-pass stencil case lands them at top-level (before load_op + outer_repeat). For multi-pass / time-step stencils, future cycles should refine to 'inside the timestep Repeat, before the partitioned outer'. Documented as a forward-carried note on TASK-0290.
+
+4. **IDEMPOTENCE BROKEN when partition_pairs is non-empty** (forward-carried to TASK-0290). On re-run: (a) rewrite_partition_tiles clobbers strip tiles, (b) splice_pushes_for_waits (inside inject_in_sequence) splices a NEW Push after the producer load_op for every halo-strip Wait it sees in the root sequence — because the existing Pushes from the first pass sit BEFORE load_op (outside the immediate-successor dedupe window of splice_pushes_for_waits at line ~990). The existing idempotence test (idempotent_on_synthetic_two_worker_case) stays green because empty partition_pairs short-circuits the synthesis. No production driver path re-runs inject_transfers. Filed forward-carried.
+
+5. **Test fixture had to include a top-level host load Op** producing the halo data symbol. Without it, the hoist's escape-tracking would bubble synthesised Waits all the way to root and panic (cross-worker Wait escaped the whole ACFG with no producing Operation). Real stencils ALWAYS have load_image as producer of img_in, so the fixture is faithful — but it caught the design assumption that 'data must have a producer Op somewhere' for the hoist's escape boundary check to pass.
+
+6. **HashSet/BTreeSet for dedupe keys**: IterTile is NOT Ord; XferRole is NOT Ord either. Switched to Vec for the (originally-intended-but-now-removed) dedupe key. Re-discovered the broader idempotence design issue and removed the dedupe entirely — accepting honest scope reduction.
+
+### Rejected approaches
+
+- **Synthesise only Wait, let splice make the Push**: splice routes Push via data_producers, which for img_in is host load_image, not the neighbour worker. Push lands in wrong scope and routes to host on per-worker projection. Rejected.
+
+- **Run synthesis BEFORE rewrite_partition_tiles**: rewrite would clobber the strip tile (its compute-worker rule replaces tile with src's full partition slice when both endpoints are partitioned). Rejected.
+
+- **Add (role, src, dst, data, tile) dedupe in inject_halo_strip_xfers for idempotence**: doesn't work because rewrite mangles the existing tile before we see it, and even if we drop tile from the key, splice_pushes_for_waits ALSO emits duplicate pushes that we cannot retroactively dedupe. Idempotence with halo-strip synthesis needs a broader fix (TASK-0290).
+
+### Forward-carried to TASK-0290
+See TASK-0290 notes for full set of gotchas the e2e cell implementer needs to know.
+<!-- SECTION:NOTES:END -->
