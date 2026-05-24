@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 04:04'
-updated_date: '2026-05-24 04:06'
+updated_date: '2026-05-24 07:29'
 labels:
   - M5
   - bug
@@ -100,4 +100,48 @@ Until this lands:
 - 05-stencil/distributed × pthreads-async stays [[skip]] with TASK-0266 reason.
 - TASK-0043 (M5 capstone) AC#4 (e2e differential green on 5/6/7 distributed) stays partial.
 - TASK-0262 + TASK-0263 commits are LEGITIMATE Stage-2 progress; they don't need reverting — the codegen is correct, the runtime gap is the partition×barrier seam.
+
+REFINED DIAGNOSIS (cycle-84 attempt, 2026-05-24):
+
+Cycle 84 attempted to close M5 AC#4 by narrowing the 05-stencil/distributed schedule to 2 workers (14/2=7 exact, sidesteps the alleged unequal-iteration-count theory from cycle-83). The 2-worker variant ALSO HUNG. Killed the new run at PID 3329456.
+
+Inspection of the 2-worker emit at /home/mpedersen/topics/mark_thesis/nucleus/target/e2e-matrix/run-3327453-*/05-stencil__distributed__pthreads-async/src/main.rs identified the ACTUAL root cause:
+
+HOST FAILS TO EMIT PUSH FOR img_in.
+- Line 115:  — host loads input.
+- Lines 116-117:  — host hits barriers.
+- Lines 118-119: ,  — host receives img_out from workers.
+- MISSING:  and  — the host's send of img_in to w0 and w1.
+- Workers w0, w1: line 76/101  /  — wait for img_in INDEFINITELY.
+
+The cycle-83 unequal-iteration-count theory was WRONG. The deadlock is in the host-side Push synthesis for partitioned schedules, NOT in the per-iteration barrier participation count.
+
+## Where the bug likely lives
+
+transfer_inject's host-side Push synthesis path (in passes/transfer_inject.rs). The cycle-83 commit cf2f9ac extended transfer_inject to consume halo_widths — it adds halo extension to existing XferPlaceholder tiles but may have inadvertently dropped the host's whole-array Push synthesis for partitioned consumers OR the host's Push synthesis was always missing for partition_rows (since partition_rows is new and never had downstream consumer testing).
+
+Likely candidates:
+1. The host's emission walks ACFG XferPlaceholders for OPs placed on host. With partition_rows, the host's Op is  (a producer for img_in). The Push synthesis for the producer side may not be generating Push events when the consumer is partitioned across multiple workers.
+2. cf2f9ac's extend_xfer_tiles_for_halo may have re-shaped the XferPlaceholders in a way that broke the host-walker's recognition of which Xfers need a host-side Push.
+3. Pre-existing partition_rows + transfer_inject gap: TASK-0258 partition_rows wrote per-worker ranges into partition_worker_ranges but transfer_inject was never updated to emit per-worker Push events from the host. The whole-array Push was assumed to be the right thing — but when consumers READ partitioned slices, the host must still push the whole array, AND each worker must consume its slice.
+
+## Verification
+
+The simplest fix-or-diagnose probe:
+- Build the schedule WITHOUT cf2f9ac (revert it temporarily) and check if the host still fails to emit Push. If yes → pre-existing partition_rows gap (NOT cycle-83 regression). If no → cf2f9ac broke something downstream.
+- This isolation is the next session's first step.
+
+## Updated fix-options for closure
+
+(E) **Fix host-side Push synthesis for partitioned consumers** — the actual root cause. transfer_inject needs to emit Push events from the host (producer of img_in) targeting EACH consumer worker w_i, with the (possibly halo-extended) slice of img_in that w_i needs. The cycle-83 work on the receive-side tile arithmetic is correct; the send-side (host's Push) is what's missing.
+
+Options A-D from the earlier diagnosis are SUBORDINATE: they are about runtime semantics (barrier participation, iteration counts) which are downstream of the host actually shipping img_in. Until E lands, A-D don't matter.
+
+## Honest stop signal
+
+Cycle 84 is closed without closing TASK-0266. The cycle's value: REFINED the diagnosis from 'unequal-iteration barrier deadlock' (wrong) to 'host fails to emit Push for partitioned consumers' (precise, verified by emit-inspection). The next session picks this up cold with the diagnosis recorded and the verification probe (build without cf2f9ac) documented.
+
+M5 AC#4 stays BLOCKED on TASK-0266 with the new precise root cause.
+
+NOTE-FIX (shell expansion ate the prior diagnosis): the cycle-84 attempt confirmed the deadlock root cause is HOST FAILS TO EMIT PUSH for img_in to partitioned worker consumers. In the emitted main.rs the host loads img_in via load_image then waits on barriers + receives img_out, but never invokes ring_0.push() or ring_1.push() to ship img_in to the workers. Workers w0/w1 are blocked on w0_ring_0.wait() and w1_ring_1.wait() indefinitely. This is NOT the cycle-83 unequal-iteration-count barrier deadlock; the bug is in transfer_inject host-side Push synthesis for partition_rows consumers. Next-session probe: temporarily revert cf2f9ac and re-run to determine if it is a cycle-83 regression or a pre-existing partition_rows + transfer_inject gap that was masked by the [[skip]]. Fix option E (the real fix): make transfer_inject emit per-consumer host-side Push for partitioned consumers; options A-D from the earlier diagnosis are downstream of E.
 <!-- SECTION:NOTES:END -->
