@@ -55,9 +55,7 @@
 use std::collections::BTreeMap;
 
 use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
-use nucleus_compiler::event::{
-    ArgBinding, DataId, Event, FireBinding, IterTile, IterVar, KernelId, SeqTag, WorkerId,
-};
+use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 use nucleus_compiler::NameTables;
@@ -255,14 +253,3 @@ fn multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty() {
          Full emit:\n{out}",
     );
 }
-
-// --------------------------------------------------------------------
-// Suppress unused-import warnings for symbols referenced only via
-// type signatures in the helpers above. The same shape lives in the
-// sibling fixture `multi_worker_blocked_rebind.rs`.
-// --------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn _force_use_argbinding(_a: ArgBinding) {}
-#[allow(dead_code)]
-fn _force_use_firebinding(_f: FireBinding) {}
