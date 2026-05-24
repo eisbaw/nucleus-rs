@@ -3,9 +3,11 @@ id: TASK-0262
 title: >-
   TASK-0258 follow-up: remainder policy for partition_rows + partition_workers
   (non-divisible ranges)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-24 00:13'
+updated_date: '2026-05-24 02:46'
 labels:
   - compiler
   - partition
@@ -35,12 +37,13 @@ A trailing-partial / last-worker-gets-remainder policy that mirrors block_transf
 PRD §6.3.3 doesn't pin a policy; the schedule grammar carries no hint. Decision needs an explicit recording.
 
 ## Acceptance Criteria
-- [ ] Policy decision recorded (a / b / c, with rationale).
-- [ ] partition_workers and partition_rows BOTH adopt the chosen policy (consistency — both passes write into the same sidecar field and downstream consumers don't distinguish).
-- [ ] Existing tests in partition_workers.rs / partition_rows.rs that expect NonDivisible flip to assert the new shape.
-- [ ] 05-stencil/distributed restores the `loop y : partition=rows;` directive (uncomment from the schedule file).
-- [ ] Sched-lower / parser / link tests pin the restored directive (loop count goes back to 2; y-loop carries Partition(Rows)).
-- [ ] Bit-identical preserved for any required e2e cell that exercises partition_workers (today: 13-cnn-inference/batch_parallel × 4 backends).
+<!-- AC:BEGIN -->
+- [ ] #1 Policy decision recorded (a / b / c, with rationale).
+- [ ] #2 partition_workers and partition_rows BOTH adopt the chosen policy (consistency — both passes write into the same sidecar field and downstream consumers don't distinguish).
+- [ ] #3 Existing tests in partition_workers.rs / partition_rows.rs that expect NonDivisible flip to assert the new shape.
+- [ ] #4 05-stencil/distributed restores the `loop y : partition=rows;` directive (uncomment from the schedule file).
+- [ ] #5 Sched-lower / parser / link tests pin the restored directive (loop count goes back to 2; y-loop carries Partition(Rows)).
+- [ ] #6 Bit-identical preserved for any required e2e cell that exercises partition_workers (today: 13-cnn-inference/batch_parallel × 4 backends).
 
 ## Dependencies
 - TASK-0258 (partition_rows consumer) — landed.
@@ -50,3 +53,4 @@ PRD §6.3.3 doesn't pin a policy; the schedule grammar carries no hint. Decision
 - Halo inference (TASK-0260 — sibling).
 - partition_blocks2d (TASK-0259 — sibling).
 <!-- SECTION:DESCRIPTION:END -->
+<!-- AC:END -->

@@ -3,10 +3,11 @@ id: TASK-0263
 title: >-
   M5 Stage 2: transfer_inject consumes halo_widths to extend per-tile transfer
   ranges
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mped-architect-impl'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 01:58'
+updated_date: '2026-05-24 02:46'
 labels:
   - M5
   - compiler
