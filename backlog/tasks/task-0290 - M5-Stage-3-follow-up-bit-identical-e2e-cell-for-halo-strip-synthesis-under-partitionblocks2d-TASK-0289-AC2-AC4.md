@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 20:24'
-updated_date: '2026-05-24 20:55'
+updated_date: '2026-05-24 21:14'
 labels:
   - M5
   - compiler
@@ -111,4 +111,23 @@ These are the gotchas + design constraints the TASK-0290 implementer needs to kn
 - nucleus/nucleus-compiler/src/passes/partition_blocks2d.rs (the sidecar writer; row-major assignment)
 - nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc (the closest existing schedule shape)
 - nuc-nucleus/e2e-matrix.toml (where the new cell will be wired)
+
+=== TASK-0289 cycle 114a review-hardening (orchestrator-applied) — REFINEMENT of forward-carried lesson #2 ===
+
+The cycle-114a implementer flagged "placement = parent Sequence of outer Repeat" as a problem ONLY for multi-pass / time-step stencils. Read-only architect review of cycle-114a (architect agent) corrected this: the placement defect applies to SINGLE-PASS stencils too.
+
+Concrete restatement:
+- `prepend_strip_pairs` inserts halo-strip Push/Wait pairs at the FRONT of the root Sequence — i.e. BEFORE any `load_image` Operation lowered to the same root Sequence.
+- On the receiving worker, the synthesised `Wait` is scheduled before the host's `load_image` has fired → the neighbour worker's matching `Push` references data that has not yet been produced on the host. Order-of-emit in the EventList per worker comes from the source Sequence order, so this is a real ordering defect, not just an aesthetic concern.
+- For 05-stencil/distributed-2d (TASK-0290 AC#2), the bit-identical reference will diverge from the synthesised output the FIRST time the worker reads the halo strip — unless the synthesis is moved to land AFTER the producing Operation.
+
+Fix candidates for TASK-0290's cycle, ranked:
+- (i) place halo-strip pairs AFTER the producing Operation in the root Sequence — walk the children of the root Sequence to find the index of the first `Operation` that produces the halo data symbol; insert the Xfers between that Operation and the outer Repeat.
+- (ii) alternative: place inside the outer Repeat body's pre-children prefix (the "before-the-inner-Repeat" position). Cleaner for multi-pass schedules but requires deciding whether the halo strip fires per-outer-iteration (correct for time-step) or once at top-level (correct for single-pass).
+- (iii) richer alternative: emit a synthetic dataflow edge so transfer_inject's existing splice machinery places the Push/Wait pair via the same path as host->worker fan-outs; this would inherit hoisting, partition-tile-rewriting, and pipeline-depth annotation for free, and is the architecturally cleanest path but requires more plumbing.
+
+Also REFINEMENT of forward-carried lesson #4 (idempotence break):
+The cycle-114a hardening also confirmed the architect's earlier static trace was correct: the `load_op` in the cycle-114a test fixture (`tests/halo_strip_synth.rs`) was UNNECESSARY for any panic the implementer described. It has been REMOVED in the hardening commit; the fixture is now minimal. The empirical check pinning this (running the 5 tests without `load_op` and observing all green) is also documented in-line in the test file.
+
+Forward-carried tactical note: the hoist-escape panic site in `transfer_inject.rs` (~line 358, ~line 1451) IS still a real panic-on-valid-input risk for any FUTURE schedule where the halo data symbol has no top-level producing Operation; that risk should be ruled out (or converted to a typed error) when TASK-0290's e2e cell lands.
 <!-- SECTION:NOTES:END -->

@@ -89,31 +89,19 @@ fn build_2d_acfg_with_partition_and_halo(
     let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
     name_data.insert("d".to_string(), data_id);
 
-    // Top-level "load" Operation on host that produces `data_id`.
-    // Without a producer Operation for the halo data symbol, the
-    // hoist pass (in `inject_transfers`'s finalisation chain) would
-    // bubble every synthesised halo Wait all the way to the root and
-    // panic with "cross-worker Wait escaped the whole ACFG with no
-    // producing Operation". A real stencil's `img_in` is produced by
-    // `load_image` at top-level; this fixture mirrors that shape.
-    let loader_kernel = KernelId(0);
-    let mut host_only: BTreeSet<WorkerId> = BTreeSet::new();
-    host_only.insert(WorkerId(0));
-    let load_op = ACFGNode::Operation(Operation {
-        kernel: loader_kernel,
-        workers: host_only,
-        dataflow: DataflowDag {
-            edges: vec![DataflowEdge::new(vec![], loader_kernel, Some(data_id))],
-        },
-    });
-
     // Inner-body Operation that reads `data_id` on the partitioned
     // workers. We intentionally DO NOT thread the producer entity
     // through `LinkedIR.data_producers` — that would trigger the
     // regular (non-halo-strip) Push/Wait fan-out and make the
     // Xfer-counting assertions noisy. The halo-strip synthesis path
     // we are testing reads only the ACFG sidecars; it does not need
-    // `data_producers` to fire.
+    // `data_producers` to fire, and it does not need a producer
+    // Operation in the ACFG either — the synthesised Push/Wait pairs
+    // are appended AFTER `hoist_invariant_waits` + `splice_pushes_global`,
+    // so the hoist's "escape with no producing Operation" panic
+    // (line ~358 / ~1451 in transfer_inject.rs) is unreachable for
+    // them. Empirically verified TASK-0289 review-hardening cycle:
+    // removing the previously-included `load_op` here changes nothing.
     let body_op = ACFGNode::Operation(Operation {
         kernel: kernel_id,
         workers: body_workers.clone(),
@@ -179,12 +167,9 @@ fn build_2d_acfg_with_partition_and_halo(
     }
 
     ACFG {
-        // Root sequence: load (host) THEN outer Repeat. The hoist's
-        // `produced_data_set` walks the sequence to record what data
-        // is produced anywhere in it; the loader Op records `data_id`
-        // as produced, so the halo Waits land here rather than
-        // bubbling to a non-existent enclosing scope.
-        root: ACFGNode::Sequence(vec![load_op, outer]),
+        // Root sequence: just the outer Repeat. No top-level loader
+        // Operation is needed (see comment above next to body_op).
+        root: ACFGNode::Sequence(vec![outer]),
         name_kernels,
         name_data,
         name_workers,

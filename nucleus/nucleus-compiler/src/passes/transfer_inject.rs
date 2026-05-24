@@ -2452,14 +2452,15 @@ fn inject_halo_strip_xfers(
     }
 
     // Walk the ACFG once and prepend each group's pairs to the parent
-    // Sequence containing the outer Repeat. The walker returns
-    // (rewritten_node, set_of_outer_ivs_still_to_place); after the
-    // walk, any outer_iv that did not match a Repeat in the tree is a
-    // sidecar/tree mismatch we tolerate silently (a synthetic test or
-    // a future composition where the partition_pairs entry survives a
-    // tree restructure). The behaviour is: prepend at the closest
-    // ancestor Sequence we can find; if none found, the synthesis is
-    // a no-op for that pair.
+    // Sequence containing the outer Repeat. `to_insert` is threaded
+    // through the walk as a `&mut` arg shared with the recursive
+    // helper; entries are drained (removed) by `prepend_strip_pairs`
+    // as it places them. After the walk, any outer_iv still in the
+    // map is a sidecar/tree mismatch we tolerate silently (a
+    // synthetic test or a future composition where the
+    // partition_pairs entry survives a tree restructure that loses
+    // the matching Repeat). No panic — the synthesis is simply a
+    // no-op for that pair.
     let mut to_insert_mut = to_insert;
     prepend_strip_pairs(node, &mut to_insert_mut)
 }
@@ -2496,12 +2497,14 @@ fn prepend_strip_pairs(
                     }
                 }
             }
-            // Recurse into each child so a nested partitioned Repeat
-            // can drain its own group. Recurse FIRST, then assemble:
-            // recursing on already-rewritten siblings is unnecessary
-            // because we drained any outer-iv group BEFORE the
-            // recursion; the recursion handles only groups whose
-            // matching Repeat lies strictly DEEPER in the tree.
+            // Order: (1) drain direct-child Repeat matches into
+            // `prepend` above; (2) recurse into each child so any
+            // nested partitioned Repeat can drain its own group from
+            // `to_insert`; (3) assemble by emitting the prepended
+            // Xfer nodes before the rewritten children. Step (1)
+            // runs before (2) because once we recurse, the matching
+            // child Repeat is consumed inside the recursion and we
+            // cannot re-bind the group to the parent Sequence.
             let rewritten_children: Vec<ACFGNode> = children
                 .into_iter()
                 .map(|c| prepend_strip_pairs(c, to_insert))
