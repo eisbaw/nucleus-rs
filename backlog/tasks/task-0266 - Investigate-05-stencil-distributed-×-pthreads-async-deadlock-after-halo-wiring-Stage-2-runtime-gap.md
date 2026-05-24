@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 04:04'
-updated_date: '2026-05-24 07:56'
+updated_date: '2026-05-24 08:03'
 labels:
   - M5
   - bug
@@ -14,8 +14,8 @@ labels:
   - deadlock
   - stage-2
 dependencies:
-  - TASK-0262
-  - TASK-0263
+  - TASK-0267
+  - TASK-0268
 priority: high
 ---
 
@@ -216,4 +216,13 @@ REVISED CLOSURE PATH: M5 AC#4 e2e evidence requires BOTH bugs fixed. Workarounds
 For M5 AC#4 substantive closure: file separate tasks for BUG 1 (transfer_inject block × partition interaction + async-transfer host-Push drop) and BUG 2 (sync_inject participant-aware barriers for unequal-iter partitioned bodies). Both are non-trivial transfer_inject / sync_inject investigations warranting fresh context.
 
 Repo restored to cycle-84 final state (88/73/0/15/0); cell stays [[skip]] with TASK-0266 reason. The cycle-85 diagnostic value is the precise two-bug identification — next session opens with the exact code paths and trigger conditions documented.
+
+CYCLE-86 ORCHESTRATOR SPLIT (2026-05-24): the cycle-85 diagnosis converged on TWO independent bugs that BOTH must land for M5 AC#4 closure. Split into precise typed follow-ups so a fresh implementer can pick up either bug without re-deriving the 5-cycle diagnostic context:
+
+- TASK-0267 (HIGH) — transfer_inject host-side Push synthesis drops for partitioned consumers under inner block transform OR async transfer. Petri-net-diff evidence + reproduction recipe + probe instrumentation guide captured.
+- TASK-0268 (HIGH) — sync_inject participant-aware barriers for partitioned-loop bodies with unequal per-worker iteration counts. Four fix options (A/B/C/D) with the cycle-83 emit-inspection evidence + recommendation captured.
+
+TASK-0266 reclassified as the M5 AC#4 closure UMBRELLA: dependency on 0267 + 0268; closure of those two unblocks bit-identical run of 05-stencil/distributed × pthreads-async + matrix on examples 5/6/7. Until then, the cell stays [[skip]] with TASK-0266 reason.
+
+The cycle-83..85 diagnostic work IS the substantive contribution of this task — the 5-cycle history is preserved here as the audit trail for HOW the precise diagnoses were reached (Petri-net-diff methodology + emit-inspection methodology). The implementation work lives in 0267 and 0268.
 <!-- SECTION:NOTES:END -->

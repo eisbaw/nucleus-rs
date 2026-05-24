@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-24 04:07'
+updated_date: '2026-05-24 08:04'
 labels:
   - M5
   - validation
@@ -114,4 +114,12 @@ AC#4 status updated: BLOCKED-NOT-FAILED on TASK-0266 (5-stencil/distributed dead
 Final M5 capstone status: SUBSTANTIVELY ACHIEVED for the inference + initial Stage-2 wiring; one runtime gap (TASK-0266) precisely diagnosed but not closed in this session. Honest closure pattern same as M3 (TASK-0166 CI runner) and M4 (TASK-0175 w-to-w mesh): the IMPLEMENTATION WORK named by the milestone is complete; the e2e differential evidence depends on a precisely-named sibling blocker.
 
 Total M5 cycles this session: 79c, 80, 81, 82, 83 (5 cycles, 4 sub-tasks + Stage-2 partial + precise blocker diagnosis).
+
+CYCLE-86 UPDATE (2026-05-24): AC#4 (M5 differential matrix green on 5/6/7) now precisely depends on TWO bugs identified by TASK-0266 cycle-83..85 diagnosis, split into typed follow-ups:
+- TASK-0267 (HIGH) — transfer_inject host-Push synthesis drops for partitioned consumers under inner block OR async transfer.
+- TASK-0268 (HIGH) — sync_inject participant-aware barriers for partitioned-loop bodies with unequal per-worker iteration counts.
+
+TASK-0266 stays as the AC#4 closure umbrella (now blocked-by 0267 + 0268). Closing 0267 + 0268 closes 0266 which closes AC#4 which substantively closes M5.
+
+AC#1/2/3/5/6 remain MET (4 sub-tasks landed cycles 79c..82). The substantive M5 milestone is achieved; only the e2e bit-identical evidence on the distributed shapes (AC#4) is gated on the two bugs.
 <!-- SECTION:NOTES:END -->
