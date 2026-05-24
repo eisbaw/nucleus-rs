@@ -97,7 +97,9 @@ use backend_common::check_frame::{
     emit_count_reporter_struct, emit_count_static, emit_log_branch,
 };
 use backend_common::render::{
-    render_array_init_for, render_const_expr_pub, render_fire_args_pub, rust_type_of, RenderCtxPub,
+    render_array_init_for, render_const_expr_pub, render_fire_args_pub,
+    render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
+    rust_type_of, RenderCtxPub,
 };
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
@@ -855,10 +857,81 @@ impl<'a> Plan<'a> {
                     // doc-comment for the RenderCtx <-> RenderCtxPub
                     // unification note).
                     if let Some(tag) = block_tag {
-                        let child_ctx =
-                            backend_common::multi_worker_walker::render_block_tag_loop_header(
-                                out, indent, *iter_var, range, tag, enclosing, ctx,
+                        // TASK-0284 cycle 107: parity with the shared
+                        // `multi_worker_walker` strip-mine arm reuse
+                        // codegen (TASK-0270 cycle 104). Buffer decls +
+                        // prologue MUST live OUTSIDE the for-header (the
+                        // buffer must persist across the inner loop's
+                        // iterations), so the previous wholesale
+                        // delegation to `render_block_tag_loop_header`
+                        // (which writes the header itself) is split: use
+                        // `compute_block_tag_abs_exprs` for the pure
+                        // expressions (returns abs + structurally-built
+                        // strip_lo_expr — NO textual replace, mirrors
+                        // the cycle-103 fix in pthreads-sync per
+                        // `feedback-textual-replace-codegen-unsafe`),
+                        // emit buf decls at the OUTER pad, write the
+                        // for-header inline, then emit per-iter update
+                        // + recurse into body with the child context
+                        // carrying BOTH abs_subst AND reuse_active.
+                        // `render_block_tag_loop_header` is still
+                        // used by callers that don't want reuse codegen
+                        // (none currently — pthreads-async / mp-tcp-event
+                        // moved to the same pattern in cycle 104).
+                        let var_string = var.clone();
+                        let (abs, strip_lo_expr) =
+                            backend_common::multi_worker_walker::compute_block_tag_abs_exprs(
+                                *iter_var, tag, enclosing, ctx,
                             )?;
+                        let reuse_groups = render_reuse_buf_decls_pub(
+                            out,
+                            indent,
+                            *iter_var,
+                            &var_string,
+                            &strip_lo_expr,
+                            body,
+                            ctx,
+                        )?;
+                        let mut child_subst = ctx.abs_subst.clone();
+                        child_subst.insert(var_string.clone(), abs.clone());
+                        let mut child_reuse = ctx.reuse_active.clone();
+                        for (data_id, gs) in reuse_groups.clone() {
+                            child_reuse.insert(data_id, gs);
+                        }
+                        let child_ctx =
+                            ctx.with_abs_subst_and_reuse_active(child_subst, child_reuse);
+                        // Header line: concrete folded range
+                        // (`{start}_i64..{end}_i64`) — NOT the source-form
+                        // bound (would re-introduce the full range) and
+                        // NOT the partition slice (the strip-mined inner
+                        // loop iterates over the tile, not the worker's
+                        // partition slice).
+                        writeln!(
+                            out,
+                            "{pad}for {var_string} in ({}_i64)..({}_i64) {{",
+                            range.start, range.end
+                        )
+                        .ok();
+                        // Marker (preserved; substring `reuse_widths_pending`
+                        // is load-bearing for the cross-backend grep tests).
+                        render_reuse_marker_comment(
+                            out,
+                            indent + 1,
+                            *iter_var,
+                            &var_string,
+                            ctx.sidecar,
+                            ctx.names,
+                        );
+                        // Per-iter update: iv expression is the rebound
+                        // ABSOLUTE expression so the source-array index
+                        // reflects the strip-mined coordinate.
+                        render_reuse_per_iter_update_pub(
+                            out,
+                            indent + 1,
+                            &reuse_groups,
+                            &abs,
+                            &child_ctx,
+                        )?;
                         self.render_events(
                             body,
                             out,
@@ -892,6 +965,17 @@ impl<'a> Plan<'a> {
                             None => (format!("{}_i64", range.start), format!("{}_i64", range.end)),
                         },
                     };
+                    // TASK-0284 cycle 107: regular arm reuse codegen
+                    // parity with the shared walker (TASK-0270 cycle
+                    // 104). Buffer decls + prologue at OUTER pad BEFORE
+                    // the for-header; per-iter update + body recursion
+                    // inside the loop with a child context carrying the
+                    // reuse_active map. NO-OP when the iv carries no
+                    // reuse (preserves byte-identicality on every
+                    // mp-tcp-bufsync cell shipped pre-TASK-0284).
+                    let reuse_groups = render_reuse_buf_decls_pub(
+                        out, indent, *iter_var, var, &lo, body, ctx,
+                    )?;
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                     // Real-time `check loop V : latency_max=T` codegen
                     // (TASK-0052.02). Mirrors the pthreads-sync
@@ -914,6 +998,34 @@ impl<'a> Plan<'a> {
                     // contracted shape.
                     let body_indent = indent + 1;
                     let body_pad = "    ".repeat(body_indent);
+                    // TASK-0284 cycle 107: marker + per-iter update at
+                    // body entry (mirrors the shared walker regular
+                    // arm). Marker substring `reuse_widths_pending`
+                    // preserved as cross-backend canary. Both the
+                    // check_frame and non-check_frame body-recursion
+                    // arms below use `body_ctx` (the child ctx carrying
+                    // the new `reuse_active` map) so any DataRef
+                    // rewrite reaches the body.
+                    render_reuse_marker_comment(
+                        out,
+                        body_indent,
+                        *iter_var,
+                        var,
+                        ctx.sidecar,
+                        ctx.names,
+                    );
+                    let mut child_reuse = ctx.reuse_active.clone();
+                    for (data_id, gs) in reuse_groups.clone() {
+                        child_reuse.insert(data_id, gs);
+                    }
+                    let body_ctx = ctx.with_reuse_active(child_reuse);
+                    render_reuse_per_iter_update_pub(
+                        out,
+                        body_indent,
+                        &reuse_groups,
+                        var,
+                        &body_ctx,
+                    )?;
                     if let Some(frame) = check_frame {
                         // TASK-0221 (a): defensive — `var` (NameTables)
                         // and `frame.loop_var` (CheckFrame) must name
@@ -936,7 +1048,7 @@ impl<'a> Plan<'a> {
                             body_indent,
                             worker,
                             is_host,
-                            ctx,
+                            &body_ctx,
                             Some(*iter_var),
                         )?;
                         writeln!(
@@ -991,7 +1103,7 @@ impl<'a> Plan<'a> {
                             body_indent,
                             worker,
                             is_host,
-                            ctx,
+                            &body_ctx,
                             Some(*iter_var),
                         )?;
                     }
