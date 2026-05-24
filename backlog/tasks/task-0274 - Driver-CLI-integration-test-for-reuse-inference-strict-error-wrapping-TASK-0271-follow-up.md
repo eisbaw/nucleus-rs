@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-24 09:16'
-updated_date: '2026-05-24 10:01'
+updated_date: '2026-05-24 10:08'
 labels:
   - M5
   - test-gap
@@ -54,6 +54,28 @@ LOW priority. The current pass-level pin already proves the strict variant bites
 - Forward-carried from: TASK-0271 (cycle-88 architect P3 review item).
 - Related: TASK-0273 (multi-worker marker coverage gap; both are coverage-gap follow-ups from cycle-87/88).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+CYCLE-92 REVIEW-HARDENING (orchestrator, 2026-05-24, commits 534e7a7):
+
+Parallel review gate post-landing:
+- **qa-test-runner GO**: e2e 92/77/0/15/0 unchanged (fixture not in e2e enumeration tree); determinism green; cargo test workspace 0 failed; clippy clean; cli_reuse_strict 1/1 PASS across 2 runs (no flake).
+- **mped-architect GO with 2 P2 + 2 P3**: 
+
+P2-1 (sched/ast.rs:67-68 doc-lie about non-existent path resolver — PRE-EXISTING, found during this review): FILED as TASK-0277. Not introduced by TASK-0274 but the review uncovered it; per "any newly-found issue → file precise tracker task" discipline.
+
+P2-2 (stale line-number references in cli_reuse_strict.rs: claimed `driver/src/main.rs:413` is actually at 438-439; same risk on `reuse_inference.rs:322`): FIXED in-thread (commit 534e7a7). Replaced both with grep-by-symbol references (`apply_reuse_inference` + `StridedAccessNotSupported`) — textually unique, won't rot on refactor.
+
+P3-1 (fixture comment about "v*2 in-bounds" misleading because build never reaches runtime): FIXED in-thread (commit 534e7a7). Tightened to "IR-level affine-decomposition rejection fires at compile time before any runtime".
+
+P3-2 (kernels.rs scaffolding minimal): POSITIVE finding, no action.
+
+P3-3 (substring-on-combined-stream safe today): POSITIVE finding, no action. Architect verified: success path of `nucleus build` never emits "reuse-inference error:" literal.
+
+Re-ran cli_reuse_strict after hardening: 1/1 PASS. Tree clean. TASK-0274 stays Done.
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
