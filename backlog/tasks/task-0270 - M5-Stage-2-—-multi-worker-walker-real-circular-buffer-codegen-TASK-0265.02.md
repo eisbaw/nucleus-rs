@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 16:16'
+updated_date: '2026-05-24 16:40'
 labels:
   - M5
   - codegen
@@ -234,4 +234,57 @@ Both TASK-0269 (pthreads-sync single-worker, cycle 103) and TASK-0270 (multi-wor
 - mp-tcp-event multi-worker: TASK-0270.
 
 mp-tcp-bufsync strip-mine arm remains marker-only on multi-worker reuse, but no shipped cell exercises it (capability mismatch on 05-stencil/distributed).
+
+## CYCLE-104 REVIEW-HARDENING (orchestrator, 2026-05-24)
+
+Parallel read-only review gate on commits bab57cc + 1bc841d:
+
+**QA: GO** — 808/0/3 tests (no flake across 2 runs), clippy clean, 92/79/0/13/0 e2e (2 runs), determinism + both falsifiers BITE. Codegen-shape canaries verified across 4 cells (counts of `__reuse_buf_img_in_a1` match the expected 5 per worker × 4 workers for 05-stencil/distributed pthreads-async + mp-tcp-event; 5 per single-worker for 05-stencil/reuse pthreads-async + mp-tcp-event). No HashMap leak. cycle-103 P1.1 textual-replace defect verifiably absent.
+
+**Architect: GO conditional on P1.1 fix**:
+
+- **P1.1** — doc-lie in `render_reuse_marker_comment` body comment at render.rs:1052-1054. Claimed the marker now precedes circular-buffer codegen on "the shared multi-worker walker (used by pthreads-async + mp-tcp-bufsync + mp-tcp-event)" but mp-tcp-bufsync has its OWN per-event Plan walker at backends/mp-tcp-bufsync/src/lib.rs::Plan::render_events (line 772). It delegates to backend-common's render_block_tag_loop_header for the strip-mine header only and does NOT call render_worker_events_inner — so reuse codegen is absent on mp-tcp-bufsync. **Fixed in commit 601e81f** (doc rewritten with accurate consumer list + silent-sibling caveat).
+
+- **P2.1** — same defect as architect P1.1 viewed from the silent-sibling angle, AND QA P3.1: mp-tcp-bufsync's Plan walker has no reuse codegen on EITHER arm. **Filed as TASK-0284** (LOW; dormant — no shipped cell exercises mp-tcp-bufsync's missing reuse path).
+
+- **P2.2** — stale section header at render.rs:1069 said "TASK-0269 Stage 2 Tier 2 (pthreads-sync single-worker path)" even though cycle 104 added the _pub shims under it. **Fixed in commit 601e81f**.
+
+- **P2.3** — redundant names.iter_var.get lookup in render_block_tag_loop_header (now also looked up by compute_block_tag_abs_exprs). Cosmetic cruft, no correctness impact. **Deferred**.
+
+- **P2.4** — builder explosion smell (two new with_* methods at once; 2^N if a third orthogonal field lands). **Deferred** as future tech-debt note.
+
+- **P3** — cosmetic in-source TASK-id references + BTreeMap.clone() perf at body recursion. **Deferred**.
+
+- **QA P2.1** — marker-discriminator stylistic follow-up (architect P2.1 from cycle 103 was 'rename or branch the marker'; cycle 104 chose 'extend the parenthetical' instead). QA noted the new arm-specific tests provide a stronger discriminator than the marker text would. **Accepted as the test-based discriminator approach**.
+
+## Gate post-hardening (this cycle, verified by both reviewers + orchestrator)
+
+- cargo test --workspace: **808 / 0 / 3** (+2 vs cycle 103 baseline 806).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: **92 / 79 / 0 / 13 / 0** required-fail (preserved; reuse is perf rewrite not semantic).
+- just determinism-check: **92 / 79 / 0 / 13** (GREEN).
+- just determinism-check-negative: bites correctly.
+- just xbackend-check-negative: bites correctly.
+
+## Stale-binary trap (cycle-104-specific gotcha for forward-carry)
+
+The release binaries (nucleus driver + nucleus-e2e) became stale during the session — the implementer's first run showed the OLD pre-cycle-104 emit in target/e2e-matrix/. The cargo workspace dependency graph did not invalidate nucleus driver against backend-common's source change, OR cargo's mtime-based invalidation missed the inline edits. After a forced `cargo build --release --workspace` (32s) the nucleus driver was fresh and the emit correctly showed the new reuse codegen. **Forward-carry to TASK-0284 + future M5/M6 implementer cycles**: always force-rebuild the release binaries before relying on target/e2e-matrix/ content. `stat -c \"%Y\" nucleus/target/release/nucleus` vs the source mtime is the quick check.
+
+## Review-gate decision
+
+**GO** for Done. All 4 ACs GREEN per the implementer's report + verified by both reviewers:
+
+- AC#1 (multi_worker_walker emits Vec<T> + rewrite for any Event::Loop carrying reuse_widths): MET on both arms; the new pure helper compute_block_tag_abs_exprs handles the strip-mine path without textual replace.
+- AC#2 (multi-worker e2e fixture bit-identical to reference): MET — 05-stencil/distributed × pthreads-async + mp-tcp-event remain [[required]] bit-identical with REAL reuse codegen now.
+- AC#3 (just e2e + determinism stay GREEN on all 4 tier-1 backends): MET.
+- AC#4 (cargo test --workspace GREEN; unit + integration tests cover the rewrite): MET — 2 new tests pin the codegen shape on both walker arms with the x__tile name-overlap regression assertion.
+
+The mp-tcp-bufsync silent-sibling (architect P2.1 / QA P3.1) is honest scope: this task wired the SHARED walker, mp-tcp-bufsync's private walker is a separate site filed as TASK-0284.
+
+## Final commits for TASK-0270
+
+- bab57cc — multi-worker walker reuse codegen + new builders + new tests.
+- 1bc841d — tracker: cycle-104 implementation summary.
+- 601e81f — cycle-104 review-hardening 1/2 (architect P1.1 + P2.2): doc-honesty fixes + TASK-0284 filed.
+- (this commit) — cycle-104 review-hardening 2/2: tracker close-out.
 <!-- SECTION:NOTES:END -->
