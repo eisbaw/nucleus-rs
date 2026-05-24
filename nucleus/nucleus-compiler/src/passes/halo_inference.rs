@@ -50,8 +50,11 @@
 //!    of an enclosing iter-var and `b` const-folds to an integer.
 //!    Contributes `|b|` to `(kernel, iv)`'s halo.
 //! 3. `iv` by itself (just the iter-var Ident). Equivalent to `iv + 0`;
-//!    contributes 0 (no entry written — halo absence is equivalent to
-//!    width 0).
+//!    contributes 0. The implementation DOES write an explicit
+//!    `halo_widths[K][iv] = 0` entry rather than omitting it (so a
+//!    Stage-2 consumer can distinguish "inspected, no halo needed"
+//!    from "kernel never inspected this axis"); the contract permits
+//!    either form — consumers MUST treat absence and 0 identically.
 //! 4. `-iv` (the negation of an iter-var Ident). `iv * -1 + 0` is
 //!    coefficient `-1`, which DOES qualify as `a == 1` in magnitude — but
 //!    reverses iteration order. For the FIRST CUT we reject this with
@@ -252,6 +255,14 @@ pub enum HaloInferenceError {
     /// [`crate::passes::partition_rows::PartitionRowsError::UnknownLoopVar`]
     /// carries.
     UnknownKernelInCall { callee: String },
+    /// An iter-var name was collected from the lexical scope during the
+    /// kernel-arg walk but is missing from `ACFG::name_iter_vars`. Cannot
+    /// happen for link-valid IR (the link step inserts every `for var`
+    /// into `name_iter_vars`); the variant exists so the pass fails
+    /// closed on an inconsistently-constructed `(LinkedIR, ACFG)` pair
+    /// rather than panicking — architect-review F-P1 of cycle 81.
+    /// Same invariant-guard pattern as [`Self::UnknownKernelInCall`].
+    UnknownIterVarInScope { iter_var: String },
 }
 
 impl std::fmt::Display for HaloInferenceError {
@@ -307,6 +318,12 @@ impl std::fmt::Display for HaloInferenceError {
                 f,
                 "halo inference: kernel call references `{callee}` but the ACFG has no such \
                  kernel id (link-pass invariant violation)"
+            ),
+            HaloInferenceError::UnknownIterVarInScope { iter_var } => write!(
+                f,
+                "halo inference: iter-var `{iter_var}` was collected from lexical scope but is \
+                 missing from `ACFG::name_iter_vars` (link-pass invariant violation; the link \
+                 step is contracted to insert every `for var` into the name table)"
             ),
         }
     }
@@ -676,10 +693,22 @@ fn classify_index(
         return;
     }
 
-    let iv = *ctx
-        .name_iter_vars
-        .get(&iv_name)
-        .expect("iter-var name was collected from scope, must be in name_iter_vars");
+    let iv = match ctx.name_iter_vars.get(&iv_name) {
+        Some(iv) => *iv,
+        None => {
+            // Defensive — collect_iter_var_refs only emits names that
+            // were pushed onto `scope`, and scope is grown from
+            // `IrStmt::For { var, ... }`s the link step inserts into
+            // name_iter_vars. The variant exists so an inconsistently-
+            // constructed `(LinkedIR, ACFG)` pair fails closed with a
+            // typed error rather than panicking (cycle-81 architect
+            // review F-P1).
+            errors.push(HaloInferenceError::UnknownIterVarInScope {
+                iter_var: iv_name,
+            });
+            return;
+        }
+    };
     let width = offset.unsigned_abs();
     let per_iv = out.entry(site.kid).or_default();
     let entry = per_iv.entry(iv).or_insert(0);
