@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 08:33'
-updated_date: '2026-05-24 09:10'
+updated_date: '2026-05-24 09:17'
 labels:
   - M5
   - driver
@@ -118,4 +118,26 @@ None — Display impls on ReuseInferenceError were already audited at cycle 82 (
 1. **Pattern for TASK-0263 (halo Stage 2 driver promotion)**: when transfer_inject's halo Stage 2 consumer lands, replicate this 5-line shape exactly at driver/src/main.rs:385 — drop apply_halo_inference_advisory in favour of apply_halo_inference, propagate Err via map_err(|e| format!('halo-inference error: {e}'))?. Add a parallel pair of pins in tests/sidecar_halo.rs (mirror task0271_strict_rejects_* / accepts_* naming).
 2. **passes::common::iv_diag_policy lift trigger**: defer until BOTH halo and reuse driver calls are strict AND a third caller appears, OR until the diagnostic surface needs centralisation (e.g. error-aggregation across both passes). Single-caller lift is premature.
 3. **The advisory entry point is the test escape-hatch.** Do NOT delete apply_reuse_inference_advisory even after every driver path is strict — it's used by determinism-pin tests that need to inspect the full error vector (cycle-87 advisory_collects_all_errors_strict_short_circuits is the canonical example). Same forward-carry applies to apply_halo_inference_advisory when TASK-0263 lands.
+
+CYCLE-88 REVIEW-HARDENING (orchestrator, 2026-05-24, commit a9e91b7):
+
+Parallel read-only review gate ran post-promotion:
+- **qa-test-runner GO**: e2e 92/77/0/15/0 across 2 runs (no flake); determinism GREEN at 92 across 5 runs; determinism-check-negative falsifier fires at 77/77; cargo test 0 failed; clippy clean. sidecar_reuse 8 passed (6 from cycle 87 + 2 new TASK-0271 pins). 05-stencil/reuse cell PASS on all 4 backends.
+- **mped-architect GO with 3 P3 nits**: 
+
+P3-1 (driver-CLI wrapping not pinned by integration test) — FILED as **TASK-0274** (driver-CLI integration test for the strict-error wrapping). Low-priority belt-and-braces coverage; pass-level pin already proves the strict variant bites, this would catch a future refactor that drops the "reuse-inference error:" prefix.
+
+P3-2 (apply_reuse_inference_advisory not #[deprecated]) — DEFER per architect's own recommendation (advisory still needed by `advisory_collects_all_errors_strict_short_circuits` determinism pin in reuse_inference.rs; deprecation premature with in-crate callers).
+
+P3-3 (main.rs:434-435 speculative TASK-0272 reference for `iv_diag_policy` lift) — FIXED in-thread (commit a9e91b7). TASK-0272 is actually about IvScopeError variant unification (different concern); both drivers ending up as one-line `?`-propagation means there's no shared-helper substance to lift. Rewrote the comment to point the next reader at TASK-0263's forward-carry caveat (example 11 step_or_seed) instead.
+
+POSITIVE ARCHITECT VERDICT VERIFIED:
+- Strict policy rationale sound (`halo_inference` walks kernel-arg DataRefs unconditionally, confirming (B) trivially collapses to (A)).
+- `apply_reuse_inference_advisory` KEPT (still used by `advisory_collects_all_errors_strict_short_circuits` pin at line 1404).
+- Display impl on `ReuseInferenceError::StridedAccessNotSupported` is informative (names the coefficient + suggests "drop the `reuse` hint or use `iv + b`").
+- Dead `for e in &reuse_errors { nuc_trace!... }` loop cleanly removed (no stub).
+- No HashMap/HashSet introduced. Determinism preserved.
+- Forward-carry to TASK-0263 verified load-bearing: example 11's `step_or_seed` reads `grid[(t+ITERS)%(ITERS+1)]` (Mod-index), and `halo_inference` walks unconditionally, so strict halo promotion would newly-reject example 11 unless gated by consumer-required or directive-presence.
+
+Post-hardening gate: cargo build + clippy clean (comment-only change; full e2e re-run skipped — no runtime impact possible from a comment edit).
 <!-- SECTION:NOTES:END -->
