@@ -425,14 +425,16 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     //
     // The sibling halo driver call above (line 385,
     // `apply_halo_inference_advisory`) intentionally remains advisory;
-    // its strict promotion is TASK-0263's responsibility (the halo
-    // Stage 2 consumer in transfer_inject is not yet wired, so the
-    // promotion criterion — "the silent error is now wrong output" —
-    // is not yet met for halo). When TASK-0263 lands, the same
-    // strict-promotion pattern set here should be applied; if both
-    // drivers persist in producing typed errors at the same surface,
-    // a `passes::common::iv_diag_policy` helper may be worth lifting
-    // (see TASK-0272 cosmetic).
+    // its strict promotion is TASK-0263's responsibility (transfer_inject
+    // halo Stage 2 already landed cycle 83 commit cf2f9ac, but the
+    // promotion needs a recheck against example 11's `step_or_seed`
+    // Mod-indexed kernel — see the forward-carried caveat appended to
+    // TASK-0263 by TASK-0271). When TASK-0263's driver call promotes,
+    // mirror the exact 5-line shape here: same `apply_X(...).map_err(
+    // |e| format!("...: {e}"))?` pattern, no shared-helper lift
+    // anticipated since each driver call is one line of `?`-propagation
+    // (the speculative `iv_diag_policy` helper from cycle-87 review
+    // turned out to have no real substance).
     let acfg = apply_reuse_inference(&linked, acfg)
         .map_err(|e| format!("reuse-inference error: {e}"))?;
     let acfg = inject_syncs(acfg);
