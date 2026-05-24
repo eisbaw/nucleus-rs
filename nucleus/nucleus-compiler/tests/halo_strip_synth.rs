@@ -445,6 +445,187 @@ fn halo_strip_synthesis_is_deterministic_across_runs() {
     assert_eq!(a, b, "two runs must produce identical ACFG");
 }
 
+// --------------------------------------------------------------------
+// AC#2 placement (TASK-0290 cycle 114b): pairs land AFTER the producer
+// --------------------------------------------------------------------
+
+/// AC#2 (TASK-0290 cycle 114b): when the parent Sequence of the outer
+/// Repeat contains a producing Operation (the host's load_image, in
+/// the realistic case), the synthesised halo-strip Push/Wait pairs
+/// land in the Sequence AFTER that Operation — not before.
+///
+/// **Why this matters**: a worker's emitted EventList orders its
+/// Push/Wait pairs by source-tree order. Before TASK-0290 cycle 114b
+/// the synthesised pairs were prepended to the front of the parent
+/// Sequence, which placed each receiving worker's halo-strip `Wait`
+/// BEFORE the host's `load_image` Operation — i.e. before the data
+/// the matching `Push` is supposed to send had been produced on the
+/// host. This was a real ordering defect (the bit-identical e2e cell
+/// landing in the same cycle would have failed without this fix).
+///
+/// **Test shape**: same 2x2 grid as `positive_2x2_halo_1_corner_pair_shapes`,
+/// but the root Sequence is `[load_op, outer_repeat]` instead of just
+/// `[outer_repeat]`. After `inject_transfers`, the root Sequence must
+/// have the synthesised Xfers BETWEEN load_op (index 0) and the outer
+/// Repeat (now at index > number-of-synthesised-Xfers).
+///
+/// Pinned post-condition:
+/// - root.children[0] is `load_op` (producer Operation)
+/// - root.children[1..=8] are 8 synthesised Xfer nodes (4 workers * 2
+///   pairs each; per-pair = Push+Wait, but they're both ACFGNode::Xfer
+///   variants so we count = 16 Xfer entries — wait, that's wrong. Each
+///   pair = 1 Push + 1 Wait = 2 Xfer nodes; 4 workers * 2 pairs = 8
+///   pairs = 16 Xfer nodes).
+/// - root.children.last() is the outer Repeat.
+#[test]
+fn positive_placement_after_producing_op() {
+    // Build a 2x2 grid fixture with a top-level load_image-style
+    // Operation that produces `data_id` on the host worker.
+    let outer_iv = IterVar(7);
+    let inner_iv = IterVar(8);
+    let kernel_id = KernelId(42);
+    let load_kernel_id = KernelId(43); // distinct from `kernel_id`
+    let data_id = DataId(99);
+
+    let host_worker = WorkerId(0);
+    let body_workers: BTreeSet<WorkerId> = (1..=4u64).map(WorkerId).collect();
+
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".to_string(), host_worker);
+    for w in &body_workers {
+        name_workers.insert(format!("w{}", w.0), *w);
+    }
+    let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+    name_iter_vars.insert("y".to_string(), outer_iv);
+    name_iter_vars.insert("x".to_string(), inner_iv);
+    let mut name_kernels: BTreeMap<String, KernelId> = BTreeMap::new();
+    name_kernels.insert("blur3".to_string(), kernel_id);
+    name_kernels.insert("load_image".to_string(), load_kernel_id);
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("img".to_string(), data_id);
+
+    // Producer Operation on host: writes `data_id`. Single host worker
+    // in `workers` so `output_data` reports `Some(data_id)`.
+    let mut host_only: BTreeSet<WorkerId> = BTreeSet::new();
+    host_only.insert(host_worker);
+    let load_op = ACFGNode::Operation(Operation {
+        kernel: load_kernel_id,
+        workers: host_only,
+        dataflow: DataflowDag {
+            // load_image: () -> img. data_in = []; data_out = Some(img).
+            edges: vec![DataflowEdge::new(Vec::new(), load_kernel_id, Some(data_id))],
+        },
+    });
+
+    let body_op = ACFGNode::Operation(Operation {
+        kernel: kernel_id,
+        workers: body_workers.clone(),
+        dataflow: DataflowDag {
+            edges: vec![DataflowEdge::new(vec![data_id], kernel_id, None)],
+        },
+    });
+
+    let inner = ACFGNode::Repeat {
+        iter_var: inner_iv,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![body_op])),
+        block_tag: None,
+    };
+    let outer = ACFGNode::Repeat {
+        iter_var: outer_iv,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![inner])),
+        block_tag: None,
+    };
+
+    // Partition sidecar: per-worker y-band + x-band, 2x2 grid over
+    // 0..16 / 0..16, slice=8 each. Mirrors build_2d_acfg_with_partition_and_halo.
+    let y_slice = 16 / 2;
+    let x_slice = 16 / 2;
+    let mut per_worker_y: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    let mut per_worker_x: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    for (i, &wid) in body_workers.iter().enumerate() {
+        let row = (i / 2) as i64;
+        let col = (i % 2) as i64;
+        per_worker_y.insert(wid, (row * y_slice)..((row + 1) * y_slice));
+        per_worker_x.insert(wid, (col * x_slice)..((col + 1) * x_slice));
+    }
+    let mut partition_worker_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> =
+        BTreeMap::new();
+    partition_worker_ranges.insert(outer_iv, per_worker_y);
+    partition_worker_ranges.insert(inner_iv, per_worker_x);
+
+    let mut partition_pairs: BTreeMap<IterVar, IterVar> = BTreeMap::new();
+    partition_pairs.insert(outer_iv, inner_iv);
+    let mut grid_shape_for_outer_iv: BTreeMap<IterVar, (u32, u32)> = BTreeMap::new();
+    grid_shape_for_outer_iv.insert(outer_iv, (2, 2));
+
+    let mut halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>> = BTreeMap::new();
+    let mut per_iv: BTreeMap<IterVar, u64> = BTreeMap::new();
+    per_iv.insert(outer_iv, 1);
+    per_iv.insert(inner_iv, 1);
+    halo_widths.insert(kernel_id, per_iv);
+
+    // Root Sequence has the producer BEFORE the outer Repeat — this is
+    // the ordering we want to validate the placement fix against.
+    let acfg = ACFG {
+        root: ACFGNode::Sequence(vec![load_op.clone(), outer]),
+        name_kernels,
+        name_data,
+        name_workers,
+        name_iter_vars,
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges,
+        pipeline_depth_for_seq: BTreeMap::new(),
+        halo_widths,
+        reuse_widths: BTreeMap::new(),
+        partition_pairs,
+        grid_shape_for_outer_iv,
+    };
+
+    let linked = empty_linked();
+    let after = inject_transfers(&linked, acfg);
+
+    // Pin: root is a Sequence with the producer at index 0, the
+    // synthesised Xfers at indices 1..=N (where N = number of
+    // synthesised Xfers), and the outer Repeat at the tail.
+    let children = match &after.root {
+        ACFGNode::Sequence(c) => c.clone(),
+        other => panic!("root must be a Sequence; got {:?}", other),
+    };
+    assert!(
+        matches!(&children[0], ACFGNode::Operation(op) if op.kernel == load_kernel_id),
+        "root.children[0] must be the load_image producer Operation; got {:?}",
+        &children[0]
+    );
+    assert!(
+        matches!(children.last().unwrap(), ACFGNode::Repeat { iter_var, .. } if *iter_var == outer_iv),
+        "root.children.last() must be the outer Repeat; got {:?}",
+        children.last().unwrap()
+    );
+
+    // Count Xfers BETWEEN producer (index 0) and outer Repeat (tail).
+    // 4 workers * 2 pairs each * 2 Xfer nodes per pair = 16.
+    let xfer_count_in_middle = children[1..children.len() - 1]
+        .iter()
+        .filter(|c| matches!(c, ACFGNode::Xfer(_)))
+        .count();
+    assert_eq!(
+        xfer_count_in_middle, 16,
+        "expected 16 synthesised Xfer nodes between producer and outer Repeat \
+         (4 workers * 2 pairs * 2 Xfer per pair); got {xfer_count_in_middle}"
+    );
+    // Every intermediate child must be an Xfer (no stray nodes).
+    for (k, c) in children[1..children.len() - 1].iter().enumerate() {
+        assert!(
+            matches!(c, ACFGNode::Xfer(_)),
+            "intermediate child at index {} must be an Xfer; got {:?}",
+            k + 1,
+            c
+        );
+    }
+}
+
 // IDEMPOTENCE / RE-RUN CAVEAT (forward-carried to TASK-0290):
 //
 // `inject_transfers` claims idempotence ("re-running on the output

@@ -2125,8 +2125,10 @@ fn is_duplicate_xfer(prev: Option<&ACFGNode>, cand: &XferPlaceholder) -> bool {
 /// `x.dst`'s EventList. So placing both Push and Wait nodes in the
 /// SAME ACFG `Sequence` is fine: each worker's EventList picks up only
 /// the endpoint matching its WorkerId. We insert the pairs as
-/// siblings prepended to whatever `Sequence` contains the outer
-/// Repeat for `outer_iv`.
+/// siblings into whatever `Sequence` contains the outer Repeat for
+/// `outer_iv`, AFTER the last producing Operation in that Sequence
+/// (TASK-0290 cycle 114b — see `prepend_strip_pairs` for the
+/// placement rule and fallback).
 ///
 /// ### Strip tile math
 ///
@@ -2238,8 +2240,10 @@ fn inject_halo_strip_xfers(
 
     // For each (outer_iv, inner_iv) pair, build the list of
     // (data, src_worker, dst_worker, tile) halo-strip transfers to
-    // synthesise. Group by outer_iv: each group is prepended to the
-    // parent Sequence containing the outer Repeat for that outer_iv.
+    // synthesise. Group by outer_iv: each group is placed in the
+    // parent Sequence containing the outer Repeat for that outer_iv
+    // (TASK-0290 cycle 114b: placement is AFTER the last producing
+    // Operation, not at the front — see `prepend_strip_pairs`).
     //
     // `BTreeMap<IterVar, Vec<XferPlaceholder>>` so the insertion order
     // matches outer_iv numeric order — deterministic.
@@ -2451,8 +2455,11 @@ fn inject_halo_strip_xfers(
         return node;
     }
 
-    // Walk the ACFG once and prepend each group's pairs to the parent
-    // Sequence containing the outer Repeat. `to_insert` is threaded
+    // Walk the ACFG once and place each group's pairs in the parent
+    // Sequence containing the outer Repeat (TASK-0290 cycle 114b:
+    // placement is AFTER the LAST producing Operation, not at the
+    // front of the Sequence; see `prepend_strip_pairs` for the
+    // rationale and the fallback rule). `to_insert` is threaded
     // through the walk as a `&mut` arg shared with the recursive
     // helper; entries are drained (removed) by `prepend_strip_pairs`
     // as it places them. After the walk, any outer_iv still in the
@@ -2465,13 +2472,33 @@ fn inject_halo_strip_xfers(
     prepend_strip_pairs(node, &mut to_insert_mut)
 }
 
-/// Walk `node` and prepend each group's `Vec<XferPlaceholder>` to the
+/// Walk `node` and insert each group's `Vec<XferPlaceholder>` into the
 /// Sequence that contains the Repeat for the matching `outer_iv`.
 ///
-/// "Prepend to the parent Sequence" semantics: we rewrite the Sequence
-/// in-place, drain the matching group out of `to_insert`, and emit the
-/// new Xfer nodes BEFORE the existing children. Groups not matched at
-/// the top-level Sequence are tried recursively in the children.
+/// **Placement rule** (TASK-0290 cycle 114b — architect P1 from cycle 114a):
+/// for each group keyed by `outer_iv`, the synthesised Xfers are
+/// inserted into the parent Sequence AFTER the LAST direct-child
+/// `Operation` whose `dataflow.edges[*].data_out` is one of the halo
+/// data symbols that group carries (the producer Operations on the
+/// host side that load the data the halo strips will exchange).
+///
+/// **Why**: a worker's emitted EventList orders Push/Wait pairs by
+/// source-tree order. If the synthesised `Wait` lands BEFORE the
+/// host's `load_image` Operation in the root Sequence, the receiving
+/// worker schedules its halo-strip Wait against a producer Push that
+/// has not yet fired on the host — a real ordering defect, not just
+/// aesthetic. Inserting AFTER the producer Operation orders the new
+/// Push/Wait pair behind the producer's host-broadcast pairs (which
+/// `splice_pushes_for_waits` placed immediately after the producer
+/// via the dedupe-window path), which is the data-flow-correct order.
+///
+/// **Fallback**: if NO direct-child Operation in the parent Sequence
+/// produces a halo data symbol for this group, the group is prepended
+/// to the front of the Sequence (the pre-cycle-114b behaviour). This
+/// keeps synthetic test fixtures without a top-level producer
+/// (`tests/halo_strip_synth.rs` — 4 of 5 cases) green by construction:
+/// their parent Sequence contains only the outer Repeat, so the
+/// "insert at index 0" position is unchanged.
 ///
 /// `to_insert` is consumed: when an outer_iv's group is placed, its
 /// entry is removed. After the walk, any entries left in `to_insert`
@@ -2484,36 +2511,105 @@ fn prepend_strip_pairs(
 ) -> ACFGNode {
     match node {
         ACFGNode::Sequence(children) => {
-            // Find every direct child Repeat whose iter_var is a key
-            // in `to_insert`; collect the placeholders to prepend
-            // BEFORE the existing children. Multiple matching outer_ivs
-            // at the same Sequence drain in BTreeMap order
-            // (deterministic).
-            let mut prepend: Vec<XferPlaceholder> = Vec::new();
-            for child in &children {
-                if let ACFGNode::Repeat { iter_var, .. } = child {
-                    if let Some(group) = to_insert.remove(iter_var) {
-                        prepend.extend(group);
+            // Phase 1: bind each matching outer_iv to its placement
+            // position in the children vector. Position = (last
+            // producer index for the group's halo data symbols) + 1,
+            // or 0 if no producer is found (fallback for synthetic
+            // fixtures + structurally-redundant single-pass stencils).
+            //
+            // We use BTreeMap iteration order on `to_insert` to keep
+            // the per-outer_iv visit order deterministic (numeric
+            // IterVar order). Multiple groups landing at the SAME
+            // position concatenate in BTreeMap order.
+            let mut groups_at: BTreeMap<usize, Vec<XferPlaceholder>> = BTreeMap::new();
+            let matched_ivs: Vec<IterVar> = children
+                .iter()
+                .filter_map(|c| {
+                    if let ACFGNode::Repeat { iter_var, .. } = c {
+                        if to_insert.contains_key(iter_var) {
+                            return Some(*iter_var);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            for iv in matched_ivs {
+                // Pull the group out (we know it exists).
+                let group = to_insert.remove(&iv).expect("checked above");
+                // Halo data symbols this group carries — used to
+                // identify producing Operations in the parent
+                // Sequence.
+                let halo_data: BTreeSet<DataId> =
+                    group.iter().map(|p| p.data).collect();
+                // Find the LAST direct-child Operation that writes any
+                // symbol in `halo_data`. We walk all edges (not just
+                // edges[0]) — a future multi-edge DAG may carry the
+                // halo data on a non-first edge, and we want the
+                // placement to follow the data, not the convention of
+                // edge[0].
+                let mut last_producer_idx: Option<usize> = None;
+                for (idx, child) in children.iter().enumerate() {
+                    if let ACFGNode::Operation(op) = child {
+                        let writes_halo = op
+                            .dataflow
+                            .edges
+                            .iter()
+                            .any(|e| {
+                                e.data_out
+                                    .map(|d| halo_data.contains(&d))
+                                    .unwrap_or(false)
+                            });
+                        if writes_halo {
+                            last_producer_idx = Some(idx);
+                        }
                     }
                 }
+                let insert_pos = match last_producer_idx {
+                    Some(idx) => idx + 1,
+                    None => 0,
+                };
+                groups_at.entry(insert_pos).or_default().extend(group);
             }
-            // Order: (1) drain direct-child Repeat matches into
-            // `prepend` above; (2) recurse into each child so any
-            // nested partitioned Repeat can drain its own group from
-            // `to_insert`; (3) assemble by emitting the prepended
-            // Xfer nodes before the rewritten children. Step (1)
-            // runs before (2) because once we recurse, the matching
-            // child Repeat is consumed inside the recursion and we
-            // cannot re-bind the group to the parent Sequence.
+            // Phase 2: recurse into each child so any nested
+            // partitioned Repeat can drain its own group from
+            // `to_insert`. We DO NOT recurse into the children before
+            // computing `last_producer_idx` above, because the
+            // recursion might restructure them — but the matched_ivs
+            // and producer-index computation reads only the
+            // top-level shape (Operation/Repeat at this Sequence
+            // level), so the pre-recursion scan is safe.
             let rewritten_children: Vec<ACFGNode> = children
                 .into_iter()
                 .map(|c| prepend_strip_pairs(c, to_insert))
                 .collect();
-            let mut out: Vec<ACFGNode> = Vec::with_capacity(prepend.len() + rewritten_children.len());
-            for p in prepend {
-                out.push(ACFGNode::Xfer(p));
+            // Phase 3: assemble the output Sequence, splicing each
+            // group's Xfers in at its computed `insert_pos`. We walk
+            // children in order; before emitting the child at index
+            // `k`, we drain any groups whose insert_pos == k. After
+            // the last child, drain any groups whose insert_pos ==
+            // children.len() (appended at the tail).
+            let n_existing = rewritten_children.len();
+            let n_inserted: usize = groups_at.values().map(|v| v.len()).sum();
+            let mut out: Vec<ACFGNode> = Vec::with_capacity(n_inserted + n_existing);
+            for (k, child) in rewritten_children.into_iter().enumerate() {
+                if let Some(group) = groups_at.remove(&k) {
+                    for p in group {
+                        out.push(ACFGNode::Xfer(p));
+                    }
+                }
+                out.push(child);
             }
-            out.extend(rewritten_children);
+            // Tail: groups whose insert_pos == n_existing (i.e. after
+            // every child). In practice the only positions that ever
+            // get computed are 0..=n_existing-1 (a producer must
+            // exist as a child to anchor the placement), but the
+            // tail-drain keeps the code total and easy to reason
+            // about. Drained in BTreeMap key order.
+            for (_, group) in groups_at {
+                for p in group {
+                    out.push(ACFGNode::Xfer(p));
+                }
+            }
             ACFGNode::Sequence(out)
         }
         ACFGNode::Repeat {
