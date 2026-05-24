@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 01:41'
+updated_date: '2026-05-24 01:47'
 labels:
   - M5
   - compiler
@@ -109,4 +109,17 @@ Gotchas worth recording for the architect:
 - The lenient/strict split is a CONSCIOUS escape valve for Stage 1's no-consumer-yet state. Stage 2 must make a deliberate decision about which to use AND about how to surface partition-policy-relevant rejections only.
 - ACFG destructure-and-rebuild pattern propagated to every pass — 5 passes touched mechanically. Future ACFG field additions follow the same pattern; consider centralising via an ACFG::with_X builder if more fields land.
 - Sibling clippy fix: WalkCtx + IndexSite bundles were necessary to keep classify_index + walkers under the 7-arg cap. Future walkers should adopt the same idiom from the start.
+
+Commits:
+- 4529622 halo_inference: land Stage 1 inference + sidecar persistence (TASK-0260)
+- 42a3fa1 tracker: TASK-0260 cycle-81 implementation notes + file Stage 2/3 follow-ups
+
+ACs:
+1. Halo_inference pass (apply_halo_inference + apply_halo_inference_advisory) walks AlgoIR + LinkedIR Dataflows + computes per-(KernelId, IterVar) halo widths. **LANDED**
+2. Halo widths persisted to NameSidecar.halo_widths (nested BTreeMap<KernelId, BTreeMap<IterVar, u64>>). **LANDED**
+3. Affine-stride only; data-dependent rejected with typed HaloInferenceError::DataDependentStride per PRD §13. Strict variant rejects; lenient variant collects errors as warnings. **LANDED**
+4. transfer_inject + partition consumers use the halo to extend per-tile transfer ranges. **DEFERRED to TASK-0263 Stage 2 (filed cycle 81)**
+5. New e2e cell on example 5 distributed schedule bit-identical to reference.bin. **DEFERRED to TASK-0263 (this requires Stage 2 wiring + TASK-0262 remainder policy)**
+
+Task status: Stage 1 COMPLETE. AC#1-AC#3 met. AC#4-AC#5 are explicitly Stage 2 (TASK-0263) per the task brief's scope clarification ("STAGE 1 only: inference + sidecar, not the downstream consumer wiring"). Recommend status: ready-for-review on Stage 1 scope; close as ADDRESSED-VIA-TASK-0263 after review-gate.
 <!-- SECTION:NOTES:END -->
