@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-24 12:08'
-updated_date: '2026-05-24 12:25'
+updated_date: '2026-05-24 12:29'
 labels:
   - M5
   - test-gap
@@ -73,4 +73,21 @@ Module-doc Test surface section extended to list all three tests + their call-si
 
 ### Cycle 99 outcome
 TASK-0278 Done; TASK-0273's silent-sibling defect family fully closed for the multi_worker_walker.rs paths (both line 404 strip-mine and line 478 non-strip-mine now have presence + payload pins; line 478 also has symmetric absence). The new test joins the cycle-98 pair as one cohesive 3-test fixture file.
+
+## Cycle 99 review-hardening (orchestrator, 2026-05-24)
+
+Parallel review gate on commit 74fef15: both reviewers **GO**.
+
+### architect P2 (material): pthreads-sync sibling-grep gap
+The cycle-99 close pinned both walker arms in backend-common/multi_worker_walker.rs (404 strip-mine + 478 non-strip-mine), but nucleus/backends/pthreads-sync/src/lib.rs has TWO call sites to render_reuse_marker_comment (lines 653 + 675) that were NOT re-audited. The existing single-worker e2e grep test asserts >=1 marker presence — satisfied by EITHER call site, so a regression dropping one would silently pass.
+
+Same silent-sibling pattern as TASK-0278 itself. Filed as **TASK-0279** (Audit pthreads-sync render_reuse_marker_comment call-site coverage; 30-min investigation + possible synthetic pin).
+
+### architect P3 (cosmetic): fixture comment precision
+Strip-mine fixture's inner-loop comment overclaimed name-reuse: 'the inner iv reuses the source loop's variable name (per the strip-mine contract)'. The synthetic fixture actually uses distinct IterVar ids (11 + 20) with distinct names ('x' + 'tile') — no name reuse. **Fix landed in commit (this cycle hardening commit)**: rewrote to honestly describe the rendering invariant the fixture models vs the production projection's id-reuse contract.
+
+### qa P3s (all non-blocking): defensible test scaffolding (`.expect` on link/build calls), count >= 1 vs == 1 (legitimate flexibility for future contract revisions), pre-existing tracker md uncommitted at review time (since committed).
+
+### Cycle 99 outcome
+TASK-0278 **Done, review-GO with one carry**: TASK-0279 inherits the pthreads-sync sibling-grep audit responsibility. The silent-sibling pattern from cycle 93/95/97-98 is now THREE cycles deep — the family pattern is reliably surfacing because we're explicitly looking for it (the cycle-98 memory entry [[feedback-silent-sibling-defect]] folds the check into reviewer briefs).
 <!-- SECTION:NOTES:END -->
