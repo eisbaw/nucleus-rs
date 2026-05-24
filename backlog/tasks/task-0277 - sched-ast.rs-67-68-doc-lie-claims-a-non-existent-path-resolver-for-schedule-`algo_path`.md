@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-24 10:07'
-updated_date: '2026-05-24 10:22'
+updated_date: '2026-05-24 10:28'
 labels:
   - doc-lie
   - sched
@@ -67,6 +67,27 @@ If the long-term intent IS to add a resolver (e.g. so the schedule can be invoke
 Forward-carried from: TASK-0274 cycle-92 architect P2-1 finding.
 Related memory: \`feedback-comment-doc-lie-recurring\`.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+CYCLE-93 REVIEW-HARDENING (orchestrator, 2026-05-24, commit 3924bff):
+
+Parallel review gate post-landing:
+- **qa-test-runner GO**: e2e 92/77/0/15/0 unchanged; cargo test workspace 0 failed; sched_parser 33 passed (now 34 post-hardening); clippy clean.
+- **mped-architect NO-GO**: P1 — the cycle-93 commit fixed sched/ast.rs but MISSED THE SAME LIE at sched/ir.rs:365-366 ("The build driver resolves it relative to the schedule file" — the exact load-bearing claim TASK-0277 was filed to eliminate). The cycle-93 headline was half-done. This was a real orchestrator-implementation defect; I saw sched/ir.rs:370 in my own grep early in cycle 93 and let it slide.
+
+P1 FIXED in-thread (commit 3924bff): sched/ir.rs:365-366 docstring rewritten to forward-reference the AST contract + name TASK-0277's pin tests. IR struct shape was already trivial (forward unchanged from AST); docstring now matches reality.
+
+P2 (FIXED in commit 3924bff): the original `..._stored_verbatim_no_resolution` test used a syntactically-valid POSIX filename ({{not-a-path:::!!!}}) — a no-op pass-through resolver would silently bypass it. New companion test `algo_path_invariant_under_schedule_file_directory` asserts parse_sched is a PURE function of source bytes (proves by type-signature that no parent-dir context can be threaded without breaking the &str-only signature). Type-system pin > fixture pin.
+
+P3a (FIXED in commit 3924bff): trimmed ast.rs docstring from 12→8 lines, dropped speculative "future tooling" rationale (was itself a comment-doc-lie shape per the recurring-feedback memory).
+P3b (deferred): test placement — keeping new tests at file end with their docstring banner. Moving them would be cosmetic churn.
+
+POSITIVE architect verdicts verified: docstring no longer claims resolution; "grammar §2 note 9" correctly identified as fiction (PRD only has notes up to §2 note 5); parser confirmed to assign string_lit() directly without path-touching code.
+
+Post-hardening gate: cargo test (sched_parser 34 passed); cargo clippy clean; just e2e 92/77/0/15/0. TASK-0277 stays Done with both pin tests + sibling lie eliminated.
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
