@@ -350,29 +350,13 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
     //   - 9 buffer reads inside the blur3 call (after TASK-0282
     //     rewrite — pre-TASK-0282 only 3 were rewritten, leaving 6
     //     verbatim).
-    // So `img_in[` appears at most 4 times inside the for-x body
-    // (3 per-iter updates + 1 pre-existing `img_in.iter()` or load
-    // helper if any). The actual lower bound: 3 per-iter update
-    // RHS reads. The assertion below extracts the for-x body and
-    // counts.
-    let for_x_start = reuse_main
-        .find("for x in")
-        .expect("emit must contain a `for x in` header");
-    let for_x_open_brace = reuse_main[for_x_start..]
-        .find('{')
-        .expect("`for x in` header must open a body")
-        + for_x_start
-        + 1;
-    // The matching closing `}` is the next-line `}` at the for-x
-    // body indent (4 spaces of inner-x indent + 4 of outer-y indent
-    // = 8 spaces). Search forward for `\n        }` (8 spaces then
-    // close brace). This is robust against nested braces inside
-    // expressions (none of which start at col 8).
-    let for_x_close = reuse_main[for_x_open_brace..]
-        .find("\n        }")
-        .expect("for-x body must close with `\\n        }`")
-        + for_x_open_brace;
-    let for_x_body = &reuse_main[for_x_open_brace..for_x_close];
+    // So `img_in[` appears at most 3 times inside the for-x body
+    // (the per-iter updates). The assertion below extracts the for-x
+    // body and counts. TASK-0287 cycle 111: the body extraction is a
+    // brace-balance scan now (was a textual `find("\n        }")` that
+    // was fragile to indent changes).
+    let for_x_body = extract_for_x_body(&reuse_main)
+        .expect("emit must contain an extractable `for x in { ... }` body");
     let verbatim_img_in_reads = for_x_body.matches("img_in[").count();
     assert!(
         verbatim_img_in_reads <= 3,
@@ -677,5 +661,141 @@ fn distributed_pthreads_async_no_inner_barriers_inside_partitioned_y_loop() {
          DEADLOCKS under partition=rows 4/4/3/3 unequal-iter counts \
          (cycle-85 BUG 2 / TASK-0268 regression).\n\n\
          Emitted main.rs:\n{main_rs}"
+    );
+}
+
+/// Extract the body of the inner `for x in ...` loop from an emitted
+/// `main.rs` string, returning the slice between the opening `{` of
+/// the for-x header (exclusive) and its matching closing `}`
+/// (exclusive). Returns `None` if no `for x in` substring or no
+/// matching `{` is found.
+///
+/// # Why a brace-balance scan (TASK-0287 cycle 111)
+///
+/// The pre-TASK-0287 implementation used a literal textual `find(
+/// "\n        }")` (i.e. a newline + 8 spaces + close brace) to locate
+/// the for-x close. That worked on today's emit shape — for-y outer
+/// indent 4 spaces + for-x inner indent 4 spaces ⇒ close brace at col
+/// 8. But it was fragile to legitimate emit-shape changes:
+///   - A future `block_transform` interposing a tile-outer loop above
+///     for-x would shift the indent ⇒ extraction panics on the
+///     missing 8-space close.
+///   - An inner sub-block (e.g. a nested `{ ... }` expression) emitted
+///     at the matching indent would short-circuit the search and
+///     silently shrink the extracted body ⇒ the `<= 3` count assert
+///     would still PASS on a truncated region. Exactly the kind of
+///     regression-masking gap `feedback-silent-sibling-defect` warns
+///     about.
+///
+/// The brace-balance scan starts at depth 1 immediately past the open
+/// brace and increments / decrements on subsequent `{` / `}`. It
+/// returns the slice when depth hits 0. No indent assumption; nested
+/// expression braces are tracked.
+///
+/// # Limitations
+///
+/// String literals containing `{` or `}` would unbalance the scan.
+/// The current emit shape contains no such literals on the for-x body
+/// surface (the emitted reuse-buffer + blur3 calls are pure
+/// arithmetic + identifier expressions), so this is benign today.
+/// If a future emit introduces string literals on this surface, the
+/// scan needs a string-literal skip pass.
+fn extract_for_x_body(emit: &str) -> Option<&str> {
+    let for_x_start = emit.find("for x in")?;
+    let open_brace_rel = emit[for_x_start..].find('{')?;
+    let open = for_x_start + open_brace_rel;
+    // Depth starts at 1 (the open brace just found is the for-x body
+    // opener). Walk forward, increment on '{', decrement on '}'. Stop
+    // when depth returns to 0 — that '}' is the matching close.
+    let mut depth: u32 = 1;
+    let bytes = emit.as_bytes();
+    let mut idx = open + 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&emit[open + 1..idx]);
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// TASK-0287 cycle 111: pin that `extract_for_x_body` finds the
+/// inner for-x body, NOT the outer for-y body, even when an
+/// additional outer for-loop wraps the structure. Pre-TASK-0287 the
+/// textual-find scan would have stopped at the FIRST `\n        }`
+/// (an 8-space-indented close brace) — under a synthetic 3-deep nest
+/// (`for outer { for y { for x { ... } } }`) the inner-x close brace
+/// is at col 12, but the for-y close brace is at col 8, so the old
+/// scan would have extracted "the for-x body PLUS the for-y suffix"
+/// silently, and any count-bounded grep on the resulting slice would
+/// have included verbatim reads from outside the for-x body.
+///
+/// This test BUILDS a synthetic emit string with the silent-truncation
+/// shape and asserts the brace-balance scan returns the precise
+/// inner-x body (not the truncated parent).
+#[test]
+fn extract_for_x_body_handles_nested_outer_indent() {
+    let emit = "\
+fn main() {
+    for outer in 0..2 {
+        for y in 0..16 {
+            for x in 0..16 {
+                let a = inner_call();
+                let b = img_in[(y * 16 + x) as usize];
+            }
+            let bad = img_in[(y * 16) as usize];
+        }
+    }
+}
+";
+    let body = extract_for_x_body(emit).expect("for-x body must be extractable");
+
+    // The extracted body MUST contain the inner `inner_call()` +
+    // `img_in[(y * 16 + x) as usize]` lines (Fire-arg buffer reads in
+    // a real emit).
+    assert!(
+        body.contains("inner_call()"),
+        "extract_for_x_body must include the inner-body Fire-arg \
+         expression; got body:\n{body}"
+    );
+    assert!(
+        body.contains("img_in[(y * 16 + x) as usize]"),
+        "extract_for_x_body must include the inner-x img_in[...] read \
+         (one img_in occurrence inside the for-x body); got body:\n{body}"
+    );
+
+    // The extracted body MUST NOT contain the for-y suffix `let bad =
+    // img_in[(y * 16) as usize];` — that read is OUTSIDE the for-x
+    // body, in the for-y body after the for-x closes. Pre-TASK-0287
+    // the textual-find scan would have stopped at the first
+    // `\n        }` (the for-x close at col 12 has 12-space indent,
+    // so the OLD scan would have walked past it to the next
+    // `\n        }` at col 8 — the for-y close — silently
+    // SWALLOWING the `let bad` line as part of the body.
+    assert!(
+        !body.contains("let bad"),
+        "extract_for_x_body must STOP at the inner-x close brace, not \
+         silently extend into the enclosing for-y suffix. If `let bad` \
+         appears in the body, the brace-balance scan regressed to a \
+         textual-find shape. Got body:\n{body}"
+    );
+
+    // Count `img_in[` inside the extracted body — must be EXACTLY 1
+    // (the inner-x line only). Pre-TASK-0287 textual scan would have
+    // returned 2 (the inner-x line + the for-y `let bad` line) and a
+    // hypothetical `<= 1` assertion would have FAILED there but
+    // PASSED with the brace-balance scan.
+    let count = body.matches("img_in[").count();
+    assert_eq!(
+        count, 1,
+        "extract_for_x_body must return exactly 1 `img_in[` occurrence \
+         on this fixture (the inner-x line). Got {count}; body:\n{body}"
     );
 }
