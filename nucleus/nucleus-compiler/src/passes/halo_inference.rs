@@ -70,9 +70,9 @@
 //! codegen) — both share the same affine-only prerequisite (forward-carry
 //! lesson recorded against TASK-0261).
 //!
-//! ## Strict vs advisory entry points
+//! ## Strict vs advisory vs partition-policy-aware entry points
 //!
-//! Two entry points exist:
+//! Three entry points exist:
 //!
 //! - [`apply_halo_inference`] is the **strict** variant: returns
 //!   `Err(HaloInferenceError)` on the first non-affine / strided /
@@ -82,20 +82,37 @@
 //! - [`apply_halo_inference_advisory`] is the **lenient** variant:
 //!   walks the algorithm to completion, records every affine fact it
 //!   CAN classify, returns the populated ACFG + the vector of typed
-//!   errors that the strict variant would have raised. The driver
-//!   consumes this in Stage 1.
+//!   errors that the strict variant would have raised. Retained for
+//!   in-pass tests + direct callers that want the full error vector;
+//!   NOT called from the driver.
+//! - [`apply_halo_inference_partition_aware`] is the **(B)
+//!   partition-policy-aware** variant (TASK-0275): for each typed
+//!   error the walker raises, look at the enclosing-loop scope at the
+//!   error-push site. If ANY iv in that scope carries a
+//!   [`crate::sched::ResolvedLoopOption::Partition`] directive in the
+//!   schedule, the error is FATAL (returned as `Err` on the first such
+//!   occurrence). Otherwise the error is recorded in the advisory
+//!   vector and lowering proceeds with whatever halo widths the walker
+//!   COULD recover. This is the driver's entry point as of TASK-0275.
 //!
-//! Why the driver is lenient in Stage 1: no downstream pass yet reads
-//! `halo_widths`, so a rejection here is purely advisory until Stage 2
-//! (TASK-0263, transfer_inject extension) makes the consumer concrete.
-//! Real-world reachable case: example 11 (`11-game-of-life`) reads
-//! `grid[(t + ITERS) % (ITERS + 1)]` — a compile-time-constant `Mod`
-//! wrap that the affine detector cannot fold (Mod is rejected by the
-//! detector). The strict variant would reject; the lenient variant
-//! records nothing and lets compilation proceed (the schedule does not
-//! partition, so no halo is needed). When Stage 2 lands, the driver
-//! will switch to the strict variant (or check the errors vec against
-//! the partition policy before swallowing them).
+//! Why the driver is partition-policy-aware and NOT (A) strict
+//! (cf. TASK-0271 reuse precedent which IS (A) strict): the halo
+//! consumer in `transfer_inject` (cycle 83, commit cf2f9ac) only
+//! extends per-tile transfer ranges when the iv at the kernel-call
+//! site is itself partitioned. If the iv is NOT partitioned, a missing
+//! halo entry is harmless — the consumer does not fire. The reuse Tier
+//! 1 marker by contrast fires for EVERY recognised slot regardless of
+//! partition, so (B) degenerates into (A) for reuse and the simpler
+//! strict promotion sufficed (TASK-0271 cycle 88).
+//!
+//! Real-world reachable case the (B) policy preserves: example 11
+//! (`11-game-of-life`) reads `grid[(t + ITERS) % (ITERS + 1)]` — a
+//! compile-time-constant `Mod` wrap that the affine detector cannot
+//! fold. The naive/pipelined schedules carry ZERO `partition=`
+//! directives, so under (B) this stays in the advisory bucket and
+//! both cells stay PASS. A naive (A) strict mirror would
+//! newly-reject example 11. See TASK-0263 cycle-89 verification
+//! block for the full reasoning.
 //!
 //! ## Honest limitations (first cut)
 //!
@@ -173,6 +190,7 @@ use crate::acfg::ACFG;
 use crate::algo::{IndexedRef, IrExpr, IrStmt, ResolvedConst};
 use crate::event::{IterVar, KernelId};
 use crate::link::LinkedIR;
+use crate::sched::ResolvedLoopOption;
 // Shared affine-stride helpers — see [`crate::passes::common`] module
 // docs. The lift in cycle 82 is single-use today but the second
 // consumer (TASK-0261 reuse_inference) is landing in the same series
@@ -364,8 +382,8 @@ impl std::error::Error for HaloInferenceError {}
 /// On any error, no partial sidecar is committed — the function
 /// validates every kernel call up front before mutating the sidecar.
 pub fn apply_halo_inference(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, HaloInferenceError> {
-    let (halo, errors) = infer_halo_widths(linked, &acfg);
-    if let Some(e) = errors.into_iter().next() {
+    let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
+    if let Some((e, _scope)) = errors_with_scope.into_iter().next() {
         return Err(e);
     }
     Ok(commit_halo_widths(acfg, halo))
@@ -376,58 +394,119 @@ pub fn apply_halo_inference(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, HaloI
 /// returns every typed error it would have raised so the caller decides
 /// whether each shape is fatal.
 ///
-/// ## Stage 1 driver policy (TASK-0260)
+/// ## Driver policy (TASK-0275)
 ///
-/// The driver consumes the lenient variant in Stage 1: no downstream
-/// pass yet reads `halo_widths`, so a non-affine index is only advisory
-/// until Stage 2 (TASK-0263, transfer_inject extension) makes the
-/// consumer concrete. The driver emits a `nuc_trace!` line per
-/// returned error (visible under `NUC_TRACE=1`); the e2e baseline
-/// stays byte-identical because no cell's emitted bytes change.
+/// The driver no longer calls this entry point — it was promoted to
+/// the partition-policy-aware [`apply_halo_inference_partition_aware`]
+/// once the TASK-0263 transfer_inject halo consumer landed (cycle 83,
+/// commit cf2f9ac). A typed error under a partitioned iv now
+/// corresponds to a halo the backend would silently fail to ship.
 ///
-/// Real-world reachable case the lenient variant unblocks: example 11
-/// (`11-game-of-life`) reads
-/// `grid[(t + ITERS) % (ITERS + 1)][(i + N - 1) % N]` — a constant
-/// modulo wrap, NOT runtime-data-dependent. The first-cut affine
-/// detector cannot fold `Mod` and the strict variant would reject;
-/// the lenient variant records nothing for that (kernel, iter-var)
-/// pair and lets compilation proceed (no halo synthesis needed; the
-/// schedule does not partition).
-///
-/// Stage 2 will either (a) move the driver back to the strict variant
-/// once the consumer wiring is in place + every shipped example is
-/// affine-only, or (b) check the errors vec against the partition
-/// policy and only treat them as fatal when a partition asks for halo
-/// on the rejected axis.
+/// This advisory entry point is retained for in-pass tests + direct
+/// callers that want to inspect the FULL error vector. Do NOT route
+/// the driver through this function without re-deciding the policy in
+/// TASK-0275's spirit.
 pub fn apply_halo_inference_advisory(
     linked: &LinkedIR,
     acfg: ACFG,
 ) -> (ACFG, Vec<HaloInferenceError>) {
-    let (halo, errors) = infer_halo_widths(linked, &acfg);
+    let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
     let acfg = commit_halo_widths(acfg, halo);
+    let errors: Vec<HaloInferenceError> =
+        errors_with_scope.into_iter().map(|(e, _scope)| e).collect();
     (acfg, errors)
 }
 
-/// Core inference: walk `linked.algo.stmts` and return both the
-/// populated halo map AND the typed errors raised along the way. The
-/// walker is COLLECTING (does not short-circuit on the first error)
-/// so the lenient variant can record every recognisable fact even
-/// when some indices are non-affine. The strict variant short-
-/// circuits on the first error at the entry point.
-fn infer_halo_widths(
+/// Partition-policy-aware variant (TASK-0275): per-error fatality
+/// decision based on whether the enclosing-loop scope at the error
+/// site contains an iv that carries a
+/// [`ResolvedLoopOption::Partition`] directive in the schedule.
+///
+/// Rationale (see module-level "Strict vs advisory vs
+/// partition-policy-aware entry points" for the full picture): the
+/// `transfer_inject` halo consumer is conditional on the iv being
+/// partitioned. A naive (A) strict promotion (mirroring the
+/// TASK-0271 reuse promotion) would newly-reject shipped examples
+/// like `11-game-of-life` whose `step_or_seed` reads
+/// `grid[(t + ITERS) % (ITERS + 1)]` (Mod wrap the affine detector
+/// cannot fold) even though no schedule for the example carries a
+/// `partition=` directive. The (B) rule preserves the baseline while
+/// still failing loudly on the cases where a backend would silently
+/// emit wrong output.
+///
+/// Returns `Ok((acfg, advisory_errors))` when no error fell under a
+/// partitioned iv; the advisory vector lists the typed errors the
+/// walker raised that the (B) policy deemed harmless. Returns
+/// `Err(e)` on the first error whose scope contained a partitioned iv
+/// — that is the fail-fast contract the driver leans on. The
+/// returned ACFG is the committed sidecar (mirrors the advisory
+/// variant: partial halo widths from the walker are preserved).
+pub fn apply_halo_inference_partition_aware(
     linked: &LinkedIR,
-    acfg: &ACFG,
-) -> (
-    BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    Vec<HaloInferenceError>,
-) {
+    acfg: ACFG,
+) -> Result<(ACFG, Vec<HaloInferenceError>), HaloInferenceError> {
+    let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
+    let mut advisory: Vec<HaloInferenceError> = Vec::new();
+    for (err, scope) in errors_with_scope {
+        if scope.iter().any(|iv| iv_is_partitioned(linked, iv)) {
+            return Err(err);
+        }
+        advisory.push(err);
+    }
+    Ok((commit_halo_widths(acfg, halo), advisory))
+}
+
+/// Does the schedule's `loops` table tag this iv with a
+/// `partition=` directive? Returns false for missing iv (no schedule
+/// directive at all) and false for ivs whose directive carries only
+/// non-partition options (`block=`, `pipeline=`, `reuse`).
+///
+/// Used by [`apply_halo_inference_partition_aware`] for the per-error
+/// fatality decision.
+fn iv_is_partitioned(linked: &LinkedIR, iv: &str) -> bool {
+    linked
+        .sched
+        .loops
+        .get(iv)
+        .map(|d| {
+            d.options
+                .iter()
+                .any(|o| matches!(o, ResolvedLoopOption::Partition(_)))
+        })
+        .unwrap_or(false)
+}
+
+/// Halo-widths map: kernel → iter-var → halo width.
+type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
+/// Typed error paired with the enclosing-loop scope (outermost-first
+/// iter-var names) captured at the error-push site. Load-bearing for
+/// [`apply_halo_inference_partition_aware`]: the scope is the precise
+/// iv set the per-error fatality predicate consults.
+type HaloErrorWithScope = (HaloInferenceError, Vec<String>);
+
+/// Core inference: walk `linked.algo.stmts` and return both the
+/// populated halo map AND the typed errors raised along the way,
+/// PAIRED with the enclosing-loop scope at the error-push site
+/// (outermost-first iv names). The walker is COLLECTING (does not
+/// short-circuit on the first error) so the lenient + (B)
+/// partition-policy-aware variants can both walk a per-error
+/// decision over the full error list. The strict variant short-
+/// circuits on the first error at the entry point.
+///
+/// The paired scope is load-bearing for
+/// [`apply_halo_inference_partition_aware`]: it is the precise iv
+/// set the per-error fatality predicate consults. Both
+/// [`apply_halo_inference`] and [`apply_halo_inference_advisory`]
+/// strip the scope at the call site (they only need the typed
+/// error).
+fn infer_halo_widths(linked: &LinkedIR, acfg: &ACFG) -> (HaloMap, Vec<HaloErrorWithScope>) {
     let ctx = WalkCtx {
         name_kernels: &acfg.name_kernels,
         name_iter_vars: &acfg.name_iter_vars,
         consts: &linked.algo.consts,
     };
-    let mut halo: BTreeMap<KernelId, BTreeMap<IterVar, u64>> = BTreeMap::new();
-    let mut errors: Vec<HaloInferenceError> = Vec::new();
+    let mut halo: HaloMap = BTreeMap::new();
+    let mut errors: Vec<HaloErrorWithScope> = Vec::new();
     let scope: Vec<String> = Vec::new();
     collect_from_stmts(&linked.algo.stmts, &scope, &ctx, &mut halo, &mut errors);
     (halo, errors)
@@ -493,7 +572,7 @@ fn collect_from_stmts(
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    errors: &mut Vec<HaloInferenceError>,
+    errors: &mut Vec<HaloErrorWithScope>,
 ) {
     for s in stmts {
         match s {
@@ -537,7 +616,7 @@ fn visit_expr_for_calls(
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    errors: &mut Vec<HaloInferenceError>,
+    errors: &mut Vec<HaloErrorWithScope>,
 ) {
     match e {
         IrExpr::Call { callee, args } => process_call(callee, args, scope, ctx, out, errors),
@@ -558,7 +637,7 @@ fn process_call(
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    errors: &mut Vec<HaloInferenceError>,
+    errors: &mut Vec<HaloErrorWithScope>,
 ) {
     // Some "calls" are effect-statement load/capture kernels that the
     // ACFG name_kernels DOES include (every algorithm kernel is in the
@@ -568,9 +647,12 @@ fn process_call(
     let kid = match ctx.name_kernels.get(callee) {
         Some(k) => *k,
         None => {
-            errors.push(HaloInferenceError::UnknownKernelInCall {
-                callee: callee.to_string(),
-            });
+            errors.push((
+                HaloInferenceError::UnknownKernelInCall {
+                    callee: callee.to_string(),
+                },
+                scope.to_vec(),
+            ));
             return;
         }
     };
@@ -595,7 +677,7 @@ fn visit_arg(
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    errors: &mut Vec<HaloInferenceError>,
+    errors: &mut Vec<HaloErrorWithScope>,
 ) {
     match e {
         IrExpr::DataRef(IndexedRef { name, indices }) => {
@@ -648,15 +730,18 @@ fn classify_index(
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
-    errors: &mut Vec<HaloInferenceError>,
+    errors: &mut Vec<HaloErrorWithScope>,
 ) {
     // Reject early: DataRef or Call inside the index = data-dependent.
     if expr_contains_dataref_or_call(e) {
-        errors.push(HaloInferenceError::DataDependentStride {
-            kernel: site.callee.to_string(),
-            ref_name: site.ref_name.to_string(),
-            ax_idx: site.ax_idx,
-        });
+        errors.push((
+            HaloInferenceError::DataDependentStride {
+                kernel: site.callee.to_string(),
+                ref_name: site.ref_name.to_string(),
+                ax_idx: site.ax_idx,
+            },
+            scope.to_vec(),
+        ));
         return;
     }
 
@@ -675,12 +760,15 @@ fn classify_index(
     }
 
     if ivs_used.len() > 1 {
-        errors.push(HaloInferenceError::MultipleIterVarsInIndex {
-            kernel: site.callee.to_string(),
-            ref_name: site.ref_name.to_string(),
-            ax_idx: site.ax_idx,
-            iter_vars: ivs_used.into_iter().collect(),
-        });
+        errors.push((
+            HaloInferenceError::MultipleIterVarsInIndex {
+                kernel: site.callee.to_string(),
+                ref_name: site.ref_name.to_string(),
+                ax_idx: site.ax_idx,
+                iter_vars: ivs_used.into_iter().collect(),
+            },
+            scope.to_vec(),
+        ));
         return;
     }
 
@@ -691,22 +779,28 @@ fn classify_index(
     let (coeff, offset) = match affine_decompose(e, &iv_name, ctx.consts) {
         Some(pair) => pair,
         None => {
-            errors.push(HaloInferenceError::NonAffineIndex {
-                kernel: site.callee.to_string(),
-                ref_name: site.ref_name.to_string(),
-                ax_idx: site.ax_idx,
-            });
+            errors.push((
+                HaloInferenceError::NonAffineIndex {
+                    kernel: site.callee.to_string(),
+                    ref_name: site.ref_name.to_string(),
+                    ax_idx: site.ax_idx,
+                },
+                scope.to_vec(),
+            ));
             return;
         }
     };
 
     if coeff != 1 {
-        errors.push(HaloInferenceError::StridedAccessNotSupported {
-            kernel: site.callee.to_string(),
-            ref_name: site.ref_name.to_string(),
-            ax_idx: site.ax_idx,
-            coefficient: coeff,
-        });
+        errors.push((
+            HaloInferenceError::StridedAccessNotSupported {
+                kernel: site.callee.to_string(),
+                ref_name: site.ref_name.to_string(),
+                ax_idx: site.ax_idx,
+                coefficient: coeff,
+            },
+            scope.to_vec(),
+        ));
         return;
     }
 
@@ -720,7 +814,10 @@ fn classify_index(
             // constructed `(LinkedIR, ACFG)` pair fails closed with a
             // typed error rather than panicking (cycle-81 architect
             // review F-P1).
-            errors.push(HaloInferenceError::UnknownLoopVar { var: iv_name });
+            errors.push((
+                HaloInferenceError::UnknownLoopVar { var: iv_name },
+                scope.to_vec(),
+            ));
             return;
         }
     };

@@ -18,14 +18,17 @@
 //!    payload (synthesised by dropping the field) deserialises with
 //!    `halo_widths` defaulting to an empty map.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use nucleus_compiler::{
     algo::{lower_algo, parse_algo},
-    apply_block_transforms, apply_halo_inference, apply_partition_blocks2d, apply_partition_rows,
-    apply_partition_workers, build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
+    apply_block_transforms, apply_halo_inference, apply_halo_inference_partition_aware,
+    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, build_acfg,
+    build_sidecar, inject_syncs, inject_transfers, link,
     sched::{lower_sched, parse_sched},
+    HaloInferenceError,
 };
 
 fn repo_root() -> PathBuf {
@@ -198,5 +201,284 @@ fn halo_widths_serde_default_on_missing_field() {
     assert!(
         back.halo_widths.is_empty(),
         "missing halo_widths field must default to empty map"
+    );
+}
+
+// ----------------------------------------------------------------------
+// TASK-0275: partition-policy-aware (B) entry-point pins.
+//
+// These pins lock in the per-error fatality contract of
+// `apply_halo_inference_partition_aware`:
+//
+// - Non-affine kernel-arg index UNDER a partitioned iv → FATAL.
+//   transfer_inject (cycle 83) would silently emit wrong-output tiles
+//   without the halo entry it cannot recover; we must fail loud.
+//
+// - Non-affine kernel-arg index UNDER an UN-partitioned iv (example 11
+//   `step_or_seed` Mod-wrap shape) → ADVISORY. transfer_inject does
+//   not fire on un-partitioned ivs, so the missing halo entry is
+//   harmless. Recording the error in the advisory bucket keeps the
+//   diagnostic visible to NUC_TRACE consumers but lets compilation
+//   proceed. This is the load-bearing case (B) preserves over the
+//   naive (A) strict mirror that would have newly-rejected example 11.
+//
+// - Fully-affine body under a partitioned iv → CLEAN: Ok((acfg, []))
+//   with the recovered halo width committed.
+//
+// Hand-built LinkedIR mirrors the cycle-88 TASK-0271 reuse template
+// (tests/sidecar_reuse.rs::task0271_strict_rejects_non_affine_reuse_body
+// + sibling); the same scaffold (data + kernel + workers + places +
+// loops) is reused across the three arms with only the kernel-arg
+// index expression / the `partition=` option toggling between them.
+
+/// Common scaffold: build a `LinkedIR` for halo (B) tests with one
+/// kernel `K`, one data symbol `grid` (1D, length 64), one out symbol
+/// `out`, one worker `w0`, one placement of K on w0, and a single
+/// `for y in 0..16` loop containing `out[y] = K(grid[<idx_expr>])`.
+/// The caller chooses the index expression (affine vs non-affine) and
+/// whether to attach a `partition=` option to the `y` loop directive.
+fn build_linked_for_partition_test(
+    y_idx_expr: nucleus_compiler::algo::IrExpr,
+    y_partition: Option<nucleus_compiler::sched::PartitionKind>,
+) -> nucleus_compiler::link::LinkedIR {
+    use nucleus_compiler::algo::{
+        AlgoIR, IndexedRef, IrExpr, IrStmt, Purity, ResolvedData, ResolvedKernel, ResolvedType,
+        ScalarType,
+    };
+    use nucleus_compiler::sched::{
+        ResolvedLoopDirective, ResolvedLoopOption, ResolvedPlaceTarget, ResolvedPlacement,
+        ResolvedWorker, SchedIR, DEFAULT_WORKER_CLASS,
+    };
+
+    let mut data = BTreeMap::new();
+    data.insert(
+        "grid".to_string(),
+        ResolvedData {
+            name: "grid".to_string(),
+            ty: ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![64],
+            },
+        },
+    );
+    data.insert(
+        "out".to_string(),
+        ResolvedData {
+            name: "out".to_string(),
+            ty: ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![16],
+            },
+        },
+    );
+    let mut kernels = BTreeMap::new();
+    kernels.insert(
+        "K".to_string(),
+        ResolvedKernel {
+            name: "K".to_string(),
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+            purity: Purity::Pure,
+            name_span: None,
+        },
+    );
+    let stmts = vec![IrStmt::For {
+        var: "y".to_string(),
+        lo: IrExpr::IntLit(0),
+        hi: IrExpr::IntLit(16),
+        body: vec![IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "out".to_string(),
+                indices: vec![IrExpr::Ident("y".to_string())],
+            },
+            rhs: IrExpr::Call {
+                callee: "K".to_string(),
+                args: vec![IrExpr::DataRef(IndexedRef {
+                    name: "grid".to_string(),
+                    indices: vec![y_idx_expr],
+                })],
+            },
+        }],
+    }];
+    let algo = AlgoIR {
+        consts: BTreeMap::new(),
+        data,
+        kernels,
+        stmts,
+    };
+
+    let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();
+    workers.insert(
+        "w0".to_string(),
+        ResolvedWorker {
+            name: "w0".to_string(),
+            class: DEFAULT_WORKER_CLASS.to_string(),
+        },
+    );
+    let mut places: BTreeMap<String, ResolvedPlacement> = BTreeMap::new();
+    places.insert(
+        "K".to_string(),
+        ResolvedPlacement {
+            kernel: "K".to_string(),
+            target: ResolvedPlaceTarget::One("w0".to_string()),
+            kernel_span: None,
+        },
+    );
+    let mut loops: BTreeMap<String, ResolvedLoopDirective> = BTreeMap::new();
+    if let Some(p) = y_partition {
+        loops.insert(
+            "y".to_string(),
+            ResolvedLoopDirective {
+                var: "y".to_string(),
+                options: vec![ResolvedLoopOption::Partition(p)],
+                var_span: None,
+            },
+        );
+    }
+    let sched = SchedIR {
+        algo_path: String::new(),
+        worker_classes: BTreeMap::new(),
+        memory_regions: BTreeMap::new(),
+        workers,
+        places,
+        place_data: BTreeMap::new(),
+        loops,
+        transfers: BTreeMap::new(),
+        checks: BTreeMap::new(),
+    };
+    link(algo, sched).expect("link must succeed")
+}
+
+#[test]
+fn task0275_partition_aware_rejects_non_affine_under_partitioned_iv() {
+    // Body: `for y in 0..16 { out[y] = K(grid[y*2]) }` with
+    // `loop y : partition=workers;`. The `y*2` index is StridedAccess
+    // (coefficient 2, not +1). Under (B), the y-loop carries a
+    // `partition=` directive → transfer_inject's halo consumer would
+    // fire and need the halo width, which the walker cannot recover.
+    // The partition-aware entry point MUST return Err on this case.
+    use nucleus_compiler::algo::{IrBinOp, IrExpr};
+    use nucleus_compiler::sched::PartitionKind;
+
+    let stride_idx = IrExpr::BinOp(
+        IrBinOp::Mul,
+        Box::new(IrExpr::Ident("y".to_string())),
+        Box::new(IrExpr::IntLit(2)),
+    );
+    let linked = build_linked_for_partition_test(stride_idx, Some(PartitionKind::Workers));
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+        "partition-aware must reject non-affine kernel-arg index when the enclosing iv is \
+         partitioned (transfer_inject would silently emit wrong tiles)",
+    );
+    match err {
+        HaloInferenceError::StridedAccessNotSupported {
+            kernel,
+            ref_name,
+            coefficient,
+            ..
+        } => {
+            assert_eq!(kernel, "K");
+            assert_eq!(ref_name, "grid");
+            assert_eq!(coefficient, 2);
+        }
+        other => panic!("expected StridedAccessNotSupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn task0275_partition_aware_accepts_non_affine_under_unpartitioned_iv() {
+    // Same body shape as the rejection arm above (`grid[y*2]` —
+    // StridedAccess), but the `y` loop has NO `partition=` directive
+    // (mirrors the example-11 `step_or_seed` shape: schedule carries
+    // zero partition= on the iv whose body the affine detector cannot
+    // fold). Under (B), this is ADVISORY: transfer_inject does not
+    // fire on un-partitioned ivs, so the missing halo entry is
+    // harmless. The partition-aware entry point returns Ok and routes
+    // the typed error into the advisory bucket. This is the
+    // load-bearing case that distinguishes (B) from a naive (A) strict
+    // mirror — the latter would newly-reject the example.
+    use nucleus_compiler::algo::{IrBinOp, IrExpr};
+
+    let stride_idx = IrExpr::BinOp(
+        IrBinOp::Mul,
+        Box::new(IrExpr::Ident("y".to_string())),
+        Box::new(IrExpr::IntLit(2)),
+    );
+    let linked = build_linked_for_partition_test(stride_idx, None);
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let (acfg_out, advisory) = apply_halo_inference_partition_aware(&linked, acfg).expect(
+        "partition-aware must NOT reject non-affine kernel-arg index when the enclosing iv is \
+         un-partitioned (transfer_inject won't fire — the missing halo is harmless)",
+    );
+    assert_eq!(
+        advisory.len(),
+        1,
+        "the single StridedAccess error must surface in the advisory bucket; got {advisory:?}"
+    );
+    match &advisory[0] {
+        HaloInferenceError::StridedAccessNotSupported {
+            coefficient: 2, ..
+        } => {}
+        other => panic!("expected advisory StridedAccessNotSupported coeff=2, got {other:?}"),
+    }
+    // The walker recovered no widths for this body (the only index was
+    // rejected); the committed sidecar therefore has an empty
+    // halo_widths map. This pins the partial-commit contract for the
+    // (B) entry point: errors that go advisory still preserve whatever
+    // widths the walker COULD recover (vacuously empty here).
+    assert!(
+        acfg_out.halo_widths.values().all(|m| m.is_empty()),
+        "no widths recoverable for this body; got {:?}",
+        acfg_out.halo_widths
+    );
+}
+
+#[test]
+fn task0275_partition_aware_accepts_clean_affine_under_partitioned_iv() {
+    // Body: `for y in 0..16 { out[y] = K(grid[y+1]) }` with
+    // `loop y : partition=workers;`. The `y+1` index is fully affine
+    // (coefficient +1, offset 1). Under (B), this is CLEAN: no typed
+    // error from the walker, the partition-aware entry point returns
+    // Ok with an empty advisory vector AND the recovered halo width
+    // (1) committed to the sidecar. Pins the no-false-positive contract
+    // — the shipped 05-stencil/distributed schedule (partition=workers
+    // on its y-loop with fully-affine `blur3` body) is the production
+    // analogue.
+    use nucleus_compiler::algo::{IrBinOp, IrExpr};
+    use nucleus_compiler::sched::PartitionKind;
+
+    let affine_idx = IrExpr::BinOp(
+        IrBinOp::Add,
+        Box::new(IrExpr::Ident("y".to_string())),
+        Box::new(IrExpr::IntLit(1)),
+    );
+    let linked = build_linked_for_partition_test(affine_idx, Some(PartitionKind::Workers));
+    let acfg = build_acfg(&linked).expect("acfg build");
+
+    let (acfg_out, advisory) = apply_halo_inference_partition_aware(&linked, acfg)
+        .expect("partition-aware must accept fully-affine body under partitioned iv");
+    assert!(
+        advisory.is_empty(),
+        "no errors expected on a clean affine body; got {advisory:?}"
+    );
+    let kid = *acfg_out.name_kernels.get("K").expect("K in ACFG");
+    let y_iv = *acfg_out.name_iter_vars.get("y").expect("y in ACFG");
+    assert_eq!(
+        acfg_out
+            .halo_widths
+            .get(&kid)
+            .and_then(|m| m.get(&y_iv))
+            .copied(),
+        Some(1),
+        "recovered halo width for K[y] must be 1 (offset +1)"
     );
 }

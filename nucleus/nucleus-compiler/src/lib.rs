@@ -60,7 +60,8 @@ pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 pub use passes::halo_inference::{
-    apply_halo_inference, apply_halo_inference_advisory, HaloInferenceError,
+    apply_halo_inference, apply_halo_inference_advisory, apply_halo_inference_partition_aware,
+    HaloInferenceError,
 };
 pub use passes::inject_check_frames::inject_check_frames;
 pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError};
