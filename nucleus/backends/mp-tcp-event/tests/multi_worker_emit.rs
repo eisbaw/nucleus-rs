@@ -280,3 +280,293 @@ fn host_excluding_barrier_is_typed_contract_gap() {
         Ok(_) => panic!("expected ContractGap on host-excluding barrier"),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0255 — negative-path coverage for the OTHER 4 typed-ContractGap
+// branches landed in cycle 79 (host-excluding-barrier above was the
+// only one with a test). Forward-carried from architect F10 of
+// TASK-0042.05.
+//
+// Pattern is the same as host_excluding_barrier_is_typed_contract_gap:
+// hand-build per_worker / NameTables / NameSidecar fixtures and assert
+// the matching EmitError::ContractGap message contains a stable
+// substring (+ the TASK-NNNN forward-link where the production message
+// carries one — Branches C and D).
+//
+// Branch A (used_workers.len() < 2) is NOT exercisable from emit()
+// because lib.rs:290 routes single-worker input to the single-worker
+// arm BEFORE Plan::build is called. Its test lives as a
+// `#[cfg(test)] mod tests` inside src/multi_worker.rs so it can call
+// the pub(crate) Plan::build directly.
+// --------------------------------------------------------------------
+
+/// Branch B (multi_worker.rs:154-161) — `pair_tiles` is populated from
+/// BOTH Push and Wait (see `collect_xfer_pairs`), but `chan_pairs` is
+/// populated ONLY from Push. So a worker carrying a `Wait` with no
+/// peer's `Push` producing the same `(DataId, SeqTag)` triggers the
+/// defensive "Wait but no matching Push — malformed projection" check.
+///
+/// This branch is normally unreachable from valid projections (the
+/// `transfer_inject` pass guarantees matched pairs); the test pins it
+/// so a regression in `transfer_inject` or `collect_xfer_pairs` does
+/// not silently route a malformed projection to a deadlocked binary.
+#[test]
+fn wait_without_matching_push_is_typed_contract_gap() {
+    use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, WorkerId};
+    use std::collections::BTreeMap;
+
+    use nucleus_compiler::event::{SyncKind, SyncTag};
+
+    let w_host = WorkerId(0);
+    let w1 = WorkerId(1);
+    let data = DataId(0);
+    let seq = SeqTag(0);
+
+    // w1 carries a Wait expecting data from host, but host has NO
+    // Push event producing this (data, seq). `pair_tiles` will pick
+    // up the Wait (via collect_xfer_pairs, which scans BOTH Push and
+    // Wait) but `chan_pairs` (which only scans Push) will not —
+    // triggering Branch B.
+    //
+    // The Branch-B check fires BEFORE the barrier topology check and
+    // the chan_pairs topology check, so we don't have to be careful
+    // about the barrier participants here — but we DO need both
+    // workers non-empty so `used_workers.len() >= 2` (else Branch A
+    // would fire first). Give host a host-only Sync as a non-empty
+    // marker; the Branch-A check is the only earlier gate and we're
+    // past it.
+    let host_marker = Event::Sync {
+        participants: [w_host].into_iter().collect(),
+        kind: SyncKind::Barrier,
+        sync: SyncTag(42),
+    };
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(w_host, vec![host_marker]);
+    per_worker.insert(
+        w1,
+        vec![Event::Wait {
+            src: w_host,
+            data,
+            tile: IterTile::empty(),
+            seq,
+        }],
+    );
+
+    let mut names = NameTables::default();
+    names.worker.insert(w_host, "host".to_string());
+    names.worker.insert(w1, "w1".to_string());
+    let sidecar = NameSidecar::default();
+
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root()
+        .join("nucleus/target/mp-tcp-event-test-scratch/wait_without_matching_push");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
+    match r {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("Wait") && msg.contains("no matching Push"),
+                "ContractGap must name the Wait-without-Push rejection: {msg}"
+            );
+            assert!(
+                msg.contains("malformed projection"),
+                "ContractGap must include the 'malformed projection' diagnosis: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected ContractGap on Wait without matching Push"),
+    }
+}
+
+/// Branch C (multi_worker.rs:174-186) — every cross-worker
+/// `(DataId, SeqTag)` pair must have a `transfer_buffer_for_seq[seq]`
+/// entry in the sidecar (TASK-0233 contract). Missing entry =
+/// ContractGap forward-linking TASK-0233.
+///
+/// Mirrors `pthreads-async`'s `build_fails_on_missing_sidecar_buffer_entry`
+/// (multi_worker.rs:854) — same shape, same TASK-0233 forward-link,
+/// but exercises the mp-tcp-event Plan::build instead of the pthreads-
+/// async one (the two share the contract but each owns its own check).
+#[test]
+fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
+    use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId};
+    use std::collections::BTreeMap;
+
+    let w_host = WorkerId(0);
+    let w1 = WorkerId(1);
+    let data = DataId(0);
+    let seq = SeqTag(0);
+
+    // host pushes; w1 waits. Both worker events form a VALID
+    // Push/Wait pair (chan_pairs lookup will succeed). The ONLY
+    // missing piece is the sidecar's transfer_buffer_for_seq entry
+    // for `seq` — Plan::build must catch this and forward-link
+    // TASK-0233 rather than default-size and silently produce a
+    // runtime mismatch.
+    //
+    // Both workers also carry an inclusive barrier so the
+    // host-excluding-barrier check passes (every barrier must include
+    // host).
+    let parts: std::collections::BTreeSet<WorkerId> = [w_host, w1].into_iter().collect();
+    let barrier = Event::Sync {
+        participants: parts,
+        kind: SyncKind::Barrier,
+        sync: SyncTag(0),
+    };
+
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(
+        w_host,
+        vec![
+            Event::Push {
+                dst: w1,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            },
+            barrier.clone(),
+        ],
+    );
+    per_worker.insert(
+        w1,
+        vec![
+            Event::Wait {
+                src: w_host,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            },
+            barrier,
+        ],
+    );
+
+    let mut names = NameTables::default();
+    names.worker.insert(w_host, "host".to_string());
+    names.worker.insert(w1, "w1".to_string());
+    // Deliberately empty sidecar — no transfer_buffer_for_seq[seq].
+    let sidecar = NameSidecar::default();
+
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root()
+        .join("nucleus/target/mp-tcp-event-test-scratch/missing_sidecar_buffer");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
+    match r {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("transfer_buffer_for_seq"),
+                "ContractGap must name the missing sidecar field: {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0233"),
+                "ContractGap must forward-link TASK-0233 (the sidecar-buffer contract): {msg}"
+            );
+        }
+        Ok(_) => panic!("expected ContractGap on missing transfer_buffer_for_seq entry"),
+    }
+}
+
+/// Branch D (multi_worker.rs:220-228) — every cross-worker `Push` must
+/// be host<->non-host. A `worker-to-worker` Push violates the star
+/// topology (one CTRL/DATA pair per (host, worker)) and is rejected
+/// with a ContractGap forward-linking TASK-0175 (same transport limit
+/// as mp-tcp-bufsync).
+///
+/// Currently only exercised by e2e `[[skip]]` cells; this direct
+/// Plan::build test pins the diagnostic surface so a regression that
+/// "helpfully" defaulted the routing through host (silently
+/// mis-routing) fails here before reaching the e2e matrix.
+#[test]
+fn worker_to_worker_push_is_typed_contract_gap() {
+    use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let w_host = WorkerId(0);
+    let w1 = WorkerId(1);
+    let w2 = WorkerId(2);
+    let data = DataId(0);
+    let seq = SeqTag(0);
+
+    // host is in used_workers (smallest WorkerId + named "host"),
+    // every barrier includes host (so we get past the host-excluding
+    // check). The OFFENDING Push is w1 -> w2 (neither endpoint is
+    // host). Branch D fires.
+    //
+    // The (data, seq) pair must ALSO be in transfer_buffer_for_seq
+    // so we don't trip Branch C first; this is the LAST branch in
+    // the check order so all other invariants must hold.
+    let parts_all: BTreeSet<WorkerId> = [w_host, w1, w2].into_iter().collect();
+    let barrier = Event::Sync {
+        participants: parts_all,
+        kind: SyncKind::Barrier,
+        sync: SyncTag(0),
+    };
+
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    // host: participates in the barrier so it's in used_workers and
+    // is the elected host. No Push/Wait.
+    per_worker.insert(w_host, vec![barrier.clone()]);
+    // w1: Pushes to w2 (the worker-to-worker offence) + barrier.
+    per_worker.insert(
+        w1,
+        vec![
+            Event::Push {
+                dst: w2,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            },
+            barrier.clone(),
+        ],
+    );
+    // w2: Waits from w1 + barrier (the matching Wait so Branch B
+    // doesn't trip first — pair_tiles + chan_pairs both populated).
+    per_worker.insert(
+        w2,
+        vec![
+            Event::Wait {
+                src: w1,
+                data,
+                tile: IterTile::empty(),
+                seq,
+            },
+            barrier,
+        ],
+    );
+
+    let mut names = NameTables::default();
+    names.worker.insert(w_host, "host".to_string());
+    names.worker.insert(w1, "w1".to_string());
+    names.worker.insert(w2, "w2".to_string());
+    let mut sidecar = NameSidecar::default();
+    // Branch C must NOT trip: provide the sidecar entry.
+    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root()
+        .join("nucleus/target/mp-tcp-event-test-scratch/worker_to_worker_push");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
+    match r {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("worker-to-worker"),
+                "ContractGap must name the worker-to-worker Push rejection: {msg}"
+            );
+            assert!(
+                msg.contains("star topology"),
+                "ContractGap must name the star-topology constraint: {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0175"),
+                "ContractGap must forward-link TASK-0175: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected ContractGap on worker-to-worker Push"),
+    }
+}

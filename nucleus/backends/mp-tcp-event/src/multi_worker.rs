@@ -1106,3 +1106,115 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
     writeln!(s, "exit \"$rc\"").ok();
     Ok(s)
 }
+
+// --------------------------------------------------------------------
+// TASK-0255 — Branch A (used_workers.len() < 2) unit test.
+//
+// `Plan::build` is `pub(crate)`. Branch A is unreachable from the
+// public `emit()` because the lib.rs:290 dispatch routes
+// `used_workers.len() <= 1` to the single-worker arm BEFORE
+// Plan::build is ever called. The only way to exercise Branch A is
+// to call Plan::build directly from inside this crate — hence this
+// in-module test.
+//
+// Branches B/C/D have integration tests in
+// `tests/multi_worker_emit.rs` (they ARE reachable from `emit()` on
+// 2+ workers, so the integration-test path is the right surface for
+// them and matches the existing `host_excluding_barrier_is_typed_contract_gap`
+// pattern).
+// --------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NameTables;
+    use nucleus_compiler::event::{Event, SyncKind, SyncTag, WorkerId};
+    use nucleus_compiler::sidecar::NameSidecar;
+    use std::collections::BTreeMap;
+
+    /// Branch A (multi_worker.rs:114-119) — `Plan::build` must reject
+    /// single-worker input (used_workers.len() < 2) with a typed
+    /// ContractGap naming the >= 2 invariant. This branch is the
+    /// gatekeeper that catches a regression where the lib.rs dispatch
+    /// arm accidentally routed single-worker input to `Plan::build`
+    /// instead of the single-worker emitter.
+    ///
+    /// Reachability: only from inside the crate. `emit()` routes
+    /// `<=1` worker input to `render_single_worker_main` BEFORE
+    /// `Plan::build` is called (lib.rs:290).
+    #[test]
+    fn single_worker_input_is_typed_contract_gap() {
+        let w_host = WorkerId(0);
+
+        // ONE non-empty worker. used_workers will be `[w_host]`,
+        // len 1, < 2 — Branch A fires.
+        let host_marker = Event::Sync {
+            participants: [w_host].into_iter().collect(),
+            kind: SyncKind::Barrier,
+            sync: SyncTag(0),
+        };
+        let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+        per_worker.insert(w_host, vec![host_marker]);
+
+        let mut names = NameTables::default();
+        names.worker.insert(w_host, "host".to_string());
+        let sidecar = NameSidecar::default();
+
+        let r = Plan::build(&per_worker, &names, &sidecar);
+        match r {
+            Err(EmitError::ContractGap(msg)) => {
+                assert!(
+                    msg.contains("used_workers.len() >= 2"),
+                    "ContractGap must name the >= 2 invariant: {msg}"
+                );
+                assert!(
+                    msg.contains("Single-worker is handled by emit()"),
+                    "ContractGap must point to the single-worker arm as the correct route: {msg}"
+                );
+            }
+            Err(other) => panic!(
+                "expected ContractGap on single-worker Plan::build; got Err({other:?})"
+            ),
+            Ok(_) => panic!(
+                "expected ContractGap on single-worker Plan::build; got Ok(Plan)"
+            ),
+        }
+    }
+
+    /// Edge: ZERO non-empty workers (every Vec is empty). Still
+    /// triggers Branch A — used_workers.len() == 0 < 2. The
+    /// message's `n=` placeholder must reflect that.
+    #[test]
+    fn zero_worker_input_is_typed_contract_gap() {
+        let w_host = WorkerId(0);
+        let w1 = WorkerId(1);
+        let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+        // Both entries present but EMPTY — used_workers filter drops
+        // empties, leaving 0.
+        per_worker.insert(w_host, vec![]);
+        per_worker.insert(w1, vec![]);
+
+        let names = NameTables::default();
+        let sidecar = NameSidecar::default();
+
+        let r = Plan::build(&per_worker, &names, &sidecar);
+        match r {
+            Err(EmitError::ContractGap(msg)) => {
+                assert!(
+                    msg.contains("used_workers.len() >= 2"),
+                    "ContractGap must name the >= 2 invariant: {msg}"
+                );
+                assert!(
+                    msg.contains("got 0"),
+                    "ContractGap must report the actual count (0 here): {msg}"
+                );
+            }
+            Err(other) => panic!(
+                "expected ContractGap on zero-worker Plan::build; got Err({other:?})"
+            ),
+            Ok(_) => panic!(
+                "expected ContractGap on zero-worker Plan::build; got Ok(Plan)"
+            ),
+        }
+    }
+}
