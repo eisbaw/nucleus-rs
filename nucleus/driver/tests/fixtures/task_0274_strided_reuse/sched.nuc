@@ -1,0 +1,15 @@
+// TASK-0274 negative fixture schedule: single-host placement + the
+// `reuse` loop hint that activates reuse_inference's strict-rejection
+// path (the strided `src[v * 2]` index in prog.algo.nuc is the
+// trigger; the rejection itself happens at compile time when the
+// driver invokes apply_reuse_inference per TASK-0271 cycle 88).
+
+schedule for "./prog.algo.nuc" {
+    workers = { host };
+
+    place load_src on host;
+    place save_dst on host;
+    place pass     on host;
+
+    loop v : reuse;
+}

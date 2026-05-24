@@ -1,0 +1,27 @@
+// TASK-0274 negative fixture: a `loop v : reuse;` body with a strided
+// `src[v * 2]` index. The reuse_inference pass (Stage 1, TASK-0261)
+// rejects strided coefficients with ReuseInferenceError::Strided-
+// AccessNotSupported (cf. reuse_inference.rs:322). Since TASK-0271
+// cycle 88 promoted the driver to strict, the build now fails with
+// the wrapped "reuse-inference error: ..." string the CLI surfaces
+// to the user. This fixture's only job is to trigger that path.
+
+const N : usize = 4;
+
+data src : i32[N];
+data dst : i32[N];
+
+kernel load_src : ()        -> i32[N] effectful;
+kernel save_dst : (i32[N])  -> ()     effectful;
+kernel pass     : (i32)     -> i32    pure;
+
+src <-- load_src();
+
+// v iterates 0..2 so v*2 stays in-bounds (0, 2 are both < N=4).
+// The strided index is the only point of this fixture; everything
+// else is the minimal scaffolding needed to reach the inference pass.
+for v : 0 .. 2 {
+    dst[v] <-- pass(src[v * 2]);
+}
+
+save_dst(dst);
