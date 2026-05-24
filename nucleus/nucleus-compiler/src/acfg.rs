@@ -747,6 +747,86 @@ pub struct ACFG {
         IterVar,
         BTreeMap<DataId, BTreeMap<u64, crate::passes::reuse_inference::ReuseSlot>>,
     >,
+
+    /// Per-outer-`IterVar` pairing of the two iter-vars a single
+    /// `partition=blocks2d` directive partitions (TASK-0264 cycle 113,
+    /// AC#1). Populated by
+    /// [`crate::passes::partition_blocks2d::apply_partition_blocks2d`]
+    /// alongside its [`Self::partition_worker_ranges`] writes.
+    /// Outer key = the outer (row-band) [`IterVar`]; value = the
+    /// paired inner (col-band) [`IterVar`] for the same blocks2d
+    /// directive.
+    ///
+    /// ## Why a sidecar — not re-derivation
+    ///
+    /// `partition_worker_ranges` records TWO entries per blocks2d
+    /// directive (one per axis), with the same `WorkerId` keyset and
+    /// the per-worker (row, col) assignment implied by BTreeSet
+    /// iteration order. A downstream pass (TASK-0289 halo-strip
+    /// Push/Wait synthesis) cannot distinguish "paired-by-one-
+    /// blocks2d-directive" from "two independent partition=rows
+    /// directives on unrelated loops" by reading
+    /// `partition_worker_ranges` alone. This sidecar captures the
+    /// pairing at the source — at the partition pass — so the
+    /// consumer reads it instead of re-deriving by walking
+    /// `linked.sched.loops`.
+    ///
+    /// ## Cross-reference: [`Self::grid_shape_for_outer_iv`]
+    ///
+    /// The pair + the grid shape together let a downstream pass
+    /// invert WorkerId → (row, col) without re-running
+    /// `decompose_grid`. Both fields are populated in lockstep by
+    /// `partition_blocks2d`.
+    ///
+    /// ## Determinism
+    ///
+    /// `BTreeMap` keyed by `IterVar` (a `u64` newtype); iteration in
+    /// numeric order. serde-default so an old wire payload (no field)
+    /// deserialises as empty (no partition_blocks2d directives —
+    /// equivalent to the pre-TASK-0264 codegen behaviour).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub partition_pairs: BTreeMap<IterVar, IterVar>,
+
+    /// Per-outer-`IterVar` `(rows, cols)` grid shape inferred by
+    /// `partition_blocks2d`'s `decompose_grid(num_workers)` call
+    /// (TASK-0264 cycle 113, AC#2). Populated by
+    /// [`crate::passes::partition_blocks2d::apply_partition_blocks2d`]
+    /// alongside its [`Self::partition_worker_ranges`] +
+    /// [`Self::partition_pairs`] writes. Key = the outer
+    /// [`IterVar`] (the same key used in `partition_pairs` and in
+    /// `partition_worker_ranges`); value = `(rows, cols)`.
+    ///
+    /// ## Why a sidecar — not exposing `decompose_grid`
+    ///
+    /// `partition_blocks2d::decompose_grid` is the
+    /// canonical factoriser today (largest-square-or-closest-to-
+    /// square deterministic decomposition; rejects prime-worker
+    /// counts as degenerate). Exposing it as `pub(crate)` would
+    /// force every downstream consumer to re-invoke it with the same
+    /// worker count, and to KNOW the worker count for that outer iv
+    /// — information already known at the partition pass site.
+    /// Persisting the grid shape in the sidecar makes the consumer
+    /// lookup O(log n) and eliminates the re-derivation risk if
+    /// `decompose_grid`'s tiebreaker policy changes (the sidecar is
+    /// the single source of truth for which grid shape was actually
+    /// used).
+    ///
+    /// ## Worker → (row, col) inversion
+    ///
+    /// A downstream pass (TASK-0289) inverts a WorkerId to its
+    /// (row, col) cell via `i = bset_position(worker)` then
+    /// `(row, col) = (i / cols, i % cols)` where `(rows, cols) =
+    /// grid_shape_for_outer_iv[outer_iv]`. The body_workers ordering
+    /// is `BTreeSet::iter()` (numeric), matching `partition_blocks2d`'s
+    /// row-major assignment.
+    ///
+    /// ## Determinism
+    ///
+    /// `BTreeMap` keyed by `IterVar` (a `u64` newtype); iteration in
+    /// numeric order. serde-default so an old wire payload (no field)
+    /// deserialises as empty.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub grid_shape_for_outer_iv: BTreeMap<IterVar, (u32, u32)>,
 }
 
 // --------------------------------------------------------------------
@@ -937,6 +1017,18 @@ pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
         // codegen behaviour, since Stage 2 (backend walker delay-line
         // emit, TASK-0265) is what would observe these.
         reuse_widths: BTreeMap::new(),
+        // Populated by `passes::partition_blocks2d` (TASK-0264
+        // cycle 113, AC#1). `build_acfg` is schedule-unaware in this
+        // respect; empty means "no partition=blocks2d directive", so
+        // the pair lookup returns None — the TASK-0289 halo-strip
+        // Push/Wait synthesis consumer's only required postcondition.
+        partition_pairs: BTreeMap::new(),
+        // Populated by `passes::partition_blocks2d` (TASK-0264
+        // cycle 113, AC#2). `build_acfg` is worker-count-unaware in
+        // this respect; empty means "no grid shape recorded", so the
+        // worker -> (row, col) inversion has no entries to read — the
+        // TASK-0289 consumer's only required postcondition.
+        grid_shape_for_outer_iv: BTreeMap::new(),
     })
 }
 

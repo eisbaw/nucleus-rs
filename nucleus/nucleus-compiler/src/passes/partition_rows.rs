@@ -306,6 +306,11 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
         // partition_rows does not consult or mutate the reuse-widths
         // sidecar (TASK-0261); forward verbatim.
         reuse_widths,
+        // TASK-0264 cycle 113: partition_rows does not consult or
+        // mutate partition_pairs / grid_shape_for_outer_iv (those are
+        // populated by partition_blocks2d only); forward verbatim.
+        partition_pairs,
+        grid_shape_for_outer_iv,
     } = acfg;
 
     for (iter_var, range, body_workers) in to_record {
@@ -333,6 +338,8 @@ pub fn apply_partition_rows(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Parti
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     })
 }
 

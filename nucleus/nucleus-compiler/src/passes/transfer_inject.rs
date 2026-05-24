@@ -233,6 +233,12 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // reuse-widths sidecar — Stage 2 (TASK-0265, backend walker
         // delay-line emit) is the wiring cycle. Forward verbatim.
         reuse_widths,
+        // TASK-0264 cycle 113: transfer_inject does not consult or
+        // mutate partition_pairs / grid_shape_for_outer_iv (populated
+        // by partition_blocks2d); forward verbatim. TASK-0289
+        // halo-strip Push/Wait synthesis will be the first consumer.
+        partition_pairs,
+        grid_shape_for_outer_iv,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -429,6 +435,8 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     }
 }
 

@@ -846,6 +846,11 @@ fn commit_reuse_widths(acfg: ACFG, reuse: ReuseWidthsMap) -> ACFG {
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths: _existing,
+        // TASK-0264 cycle 113: forward partition_pairs +
+        // grid_shape_for_outer_iv verbatim. Populated by
+        // partition_blocks2d, which runs before reuse_inference.
+        partition_pairs,
+        grid_shape_for_outer_iv,
     } = acfg;
 
     ACFG {
@@ -859,6 +864,8 @@ fn commit_reuse_widths(acfg: ACFG, reuse: ReuseWidthsMap) -> ACFG {
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths: reuse,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     }
 }
 

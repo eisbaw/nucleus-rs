@@ -386,16 +386,25 @@ pub fn apply_partition_blocks2d(
         mut partition_worker_ranges,
         pipeline_depth_for_seq,
         // partition_blocks2d does not consult or mutate halo widths
-        // (TASK-0260); forward verbatim. Stage 3 (TASK-0264) will couple
-        // halo to partition_blocks2d's block-pair metadata, but that is
-        // a DIFFERENT join (worker -> neighbour grid cell), not a
-        // mutation of `halo_widths` itself.
+        // (TASK-0260); forward verbatim. Stage 3 (TASK-0289 halo-strip
+        // Push/Wait synthesis) will couple halo to partition_blocks2d's
+        // block-pair metadata, but that is a DIFFERENT join (worker ->
+        // neighbour grid cell), not a mutation of `halo_widths` itself.
         halo_widths,
         // partition_blocks2d does not consult or mutate reuse widths
         // (TASK-0261); forward verbatim. Reuse is independent of
         // partition policy (the delay-line lives within ONE worker's
         // tile; partitioning bounds the iv-range each worker covers).
         reuse_widths,
+        // TASK-0264 cycle 113 AC#1+2: this pass IS the populator of
+        // partition_pairs + grid_shape_for_outer_iv. Bring the (likely-
+        // empty) existing maps into scope mutably so the to_record loop
+        // below can extend them per-directive, preserving any prior
+        // entries (composition with other partition passes — e.g. a
+        // future schedule combining partition=blocks2d on one nest with
+        // partition=workers on a sibling nest).
+        mut partition_pairs,
+        mut grid_shape_for_outer_iv,
     } = acfg;
 
     for plan in to_record {
@@ -418,6 +427,24 @@ pub fn apply_partition_blocks2d(
         }
         partition_worker_ranges.insert(plan.outer_iter_var, per_worker_y);
         partition_worker_ranges.insert(plan.inner_iter_var, per_worker_x);
+
+        // TASK-0264 cycle 113: persist the pair + grid shape next to
+        // the per-worker ranges. The pair is keyed by outer_iter_var
+        // (matching partition_worker_ranges' outer-axis entry); the
+        // grid shape is keyed identically. A downstream consumer
+        // (TASK-0289 halo-strip Push/Wait synthesis) reads
+        // sidecar.partition_pairs.get(outer_iv) to recover the
+        // matching inner iv and sidecar.grid_shape_for_outer_iv.get
+        // (outer_iv) for the (rows, cols) inversion.
+        //
+        // `decompose_grid` returns `(usize, usize)` (max worker count
+        // ~hundreds in practice); cast to u32 for sidecar storage
+        // (compact + serde-friendly; usize would vary by host arch).
+        partition_pairs.insert(plan.outer_iter_var, plan.inner_iter_var);
+        grid_shape_for_outer_iv.insert(
+            plan.outer_iter_var,
+            (plan.grid_rows as u32, plan.grid_cols as u32),
+        );
     }
 
     Ok(ACFG {
@@ -431,6 +458,8 @@ pub fn apply_partition_blocks2d(
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     })
 }
 

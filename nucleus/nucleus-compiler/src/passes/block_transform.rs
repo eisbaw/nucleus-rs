@@ -295,6 +295,15 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         // earlier, an IterVar-keyed reuse entry would need re-binding
         // to the synthesised outer-tile / intra-tile pair.)
         reuse_widths,
+        // TASK-0264 cycle 113: block_transform runs BEFORE
+        // partition_blocks2d in the driver pipeline so partition_pairs
+        // / grid_shape_for_outer_iv are always empty here; forward
+        // verbatim. (Same forward-carry hazard as halo / reuse: if the
+        // pass order ever moves partition_blocks2d earlier, an
+        // IterVar-keyed pair entry would need re-binding to the
+        // synthesised outer-tile / intra-tile pair.)
+        partition_pairs,
+        grid_shape_for_outer_iv,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -339,6 +348,8 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     })
 }
 

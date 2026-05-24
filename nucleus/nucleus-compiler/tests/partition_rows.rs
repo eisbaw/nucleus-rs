@@ -107,6 +107,8 @@ fn build_2d_acfg(
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     }
 }
 
@@ -147,6 +149,8 @@ fn build_1d_acfg(
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     }
 }
 

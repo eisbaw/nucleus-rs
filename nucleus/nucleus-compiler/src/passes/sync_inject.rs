@@ -104,6 +104,12 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         // widths sidecar; forward verbatim. reuse_inference populates
         // it; Stage 2 (TASK-0265) makes the backend walker the consumer.
         reuse_widths,
+        // TASK-0264 cycle 113: sync_inject does not consult or mutate
+        // the partition_pairs / grid_shape_for_outer_iv sidecars
+        // (populated by partition_blocks2d); forward verbatim. The
+        // TASK-0289 halo-strip Push/Wait synthesis is the consumer.
+        partition_pairs,
+        grid_shape_for_outer_iv,
     } = acfg;
 
     // The set of iter-vars that the partition-{workers,rows,blocks2d}
@@ -195,6 +201,8 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         pipeline_depth_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     }
 }
 

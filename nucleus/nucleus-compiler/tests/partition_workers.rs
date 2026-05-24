@@ -92,6 +92,8 @@ fn build_synthetic_acfg(
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     }
 }
 
@@ -365,6 +367,8 @@ fn non_divisible_range_spillover_policy() {
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     };
 
     let after = apply_partition_workers(&linked, acfg).expect("non-divisible now lowers");
@@ -435,6 +439,8 @@ fn insufficient_work_range_is_rejected() {
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     };
 
     let err = apply_partition_workers(&linked, acfg).expect_err("L<N must reject");
@@ -539,6 +545,8 @@ fn partitioned_repeat_skips_body_entry_exit_syncs() {
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     };
     let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     per_worker.insert(WorkerId(1), 0..4);
@@ -622,6 +630,8 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
         pipeline_depth_for_seq: BTreeMap::new(),
         halo_widths: BTreeMap::new(),
         reuse_widths: BTreeMap::new(),
+        partition_pairs: BTreeMap::new(),
+        grid_shape_for_outer_iv: BTreeMap::new(),
     };
 
     let after = inject_syncs(acfg);
@@ -705,6 +715,8 @@ fn transfer_fanout_composes_with_partition_sidecar() {
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     };
 
     // Populate the partition sidecar by hand — equivalent to running

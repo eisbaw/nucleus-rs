@@ -299,6 +299,49 @@ pub struct NameSidecar {
         IterVar,
         BTreeMap<DataId, BTreeMap<u64, crate::passes::reuse_inference::ReuseSlot>>,
     >,
+
+    /// Per-outer-`IterVar` pairing of the two iter-vars a
+    /// `partition=blocks2d` directive partitions (TASK-0264 cycle
+    /// 113, AC#1). Mirrors
+    /// [`crate::acfg::ACFG::partition_pairs`] verbatim — the codegen
+    /// contract surface for that ACFG sidecar.
+    ///
+    /// A downstream consumer (TASK-0289 halo-strip Push/Wait
+    /// synthesis) reads this to disambiguate paired-by-one-blocks2d-
+    /// directive iter-vars from two-independent-rows-directives on
+    /// unrelated loops. Empty for algorithms whose schedule carries
+    /// no `partition=blocks2d` directives (every shipped example
+    /// today is in this set; the cycle-79 mp-tcp-* examples + 02-13
+    /// all use partition=workers / partition=rows or no partition).
+    ///
+    /// serde-default so an older wire payload (no field) deserialises
+    /// as empty — same additive contract as
+    /// [`Self::partition_worker_ranges`] (TASK-0212).
+    ///
+    /// Determinism: `BTreeMap` keyed by `IterVar` (a `u64` newtype);
+    /// iteration is in numeric order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub partition_pairs: BTreeMap<IterVar, IterVar>,
+
+    /// Per-outer-`IterVar` `(rows, cols)` grid shape inferred by
+    /// `partition_blocks2d`'s `decompose_grid(num_workers)` call
+    /// (TASK-0264 cycle 113, AC#2). Mirrors
+    /// [`crate::acfg::ACFG::grid_shape_for_outer_iv`] verbatim — the
+    /// codegen contract surface for that ACFG sidecar.
+    ///
+    /// A downstream consumer (TASK-0289) inverts WorkerId →
+    /// (row, col) via `(i / cols, i % cols)` where `i =
+    /// bset_position(worker)` and `(rows, cols) = sidecar
+    /// .grid_shape_for_outer_iv[outer_iv]`. Empty for algorithms
+    /// whose schedule carries no `partition=blocks2d` directives.
+    ///
+    /// serde-default so an older wire payload (no field) deserialises
+    /// as empty.
+    ///
+    /// Determinism: `BTreeMap` keyed by `IterVar` (a `u64` newtype);
+    /// iteration is in numeric order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub grid_shape_for_outer_iv: BTreeMap<IterVar, (u32, u32)>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -596,6 +639,23 @@ pub fn build_sidecar(
     //     clones above.
     let reuse_widths = acfg.reuse_widths.clone();
 
+    // (i) Per-outer-IterVar partition pairing (TASK-0264 cycle 113,
+    //     AC#1). Forwarded verbatim from the ACFG sidecar
+    //     `partition_pairs`, populated by `passes::partition_blocks2d`
+    //     to record the (outer_iv → inner_iv) coupling of every
+    //     blocks2d directive. Empty for ACFGs whose schedule carries
+    //     no `partition=blocks2d` directives — backends pre-TASK-0289
+    //     simply do not read it.
+    let partition_pairs = acfg.partition_pairs.clone();
+
+    // (j) Per-outer-IterVar `(rows, cols)` grid shape (TASK-0264
+    //     cycle 113, AC#2). Forwarded verbatim from the ACFG sidecar
+    //     `grid_shape_for_outer_iv`, populated by
+    //     `passes::partition_blocks2d` from the decompose_grid result.
+    //     Empty for ACFGs whose schedule carries no
+    //     `partition=blocks2d` directives.
+    let grid_shape_for_outer_iv = acfg.grid_shape_for_outer_iv.clone();
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -605,6 +665,8 @@ pub fn build_sidecar(
         transfer_buffer_for_seq,
         halo_widths,
         reuse_widths,
+        partition_pairs,
+        grid_shape_for_outer_iv,
     })
 }
 

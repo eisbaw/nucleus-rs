@@ -107,6 +107,8 @@ fn build_2d_acfg(
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     }
 }
 
@@ -147,6 +149,8 @@ fn build_1d_acfg(
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
         halo_widths: std::collections::BTreeMap::new(),
         reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
     }
 }
 
@@ -228,6 +232,33 @@ fn positive_4_workers_records_2x2_per_worker_ranges() {
 
     assert_eq!(per_y.get(&WorkerId(4)), Some(&(8..16)));
     assert_eq!(per_x.get(&WorkerId(4)), Some(&(16..32)));
+
+    // TASK-0264 cycle 113 AC#1: partition_pairs records the (outer, inner)
+    // pairing of the blocks2d directive. Keyed by outer_iter_var; value
+    // is the paired inner iv.
+    assert_eq!(
+        acfg.partition_pairs.get(&IterVar(7)),
+        Some(&IterVar(8)),
+        "partition_pairs[outer_iv]=inner_iv must record the blocks2d coupling"
+    );
+    assert_eq!(
+        acfg.partition_pairs.len(),
+        1,
+        "exactly one pair recorded for one blocks2d directive"
+    );
+
+    // TASK-0264 cycle 113 AC#2: grid_shape_for_outer_iv records the
+    // decompose_grid result. 4 workers ⇒ (2, 2) perfect square.
+    assert_eq!(
+        acfg.grid_shape_for_outer_iv.get(&IterVar(7)),
+        Some(&(2u32, 2u32)),
+        "grid_shape_for_outer_iv[outer_iv]=(rows, cols) must record the (2, 2) grid"
+    );
+    assert_eq!(
+        acfg.grid_shape_for_outer_iv.len(),
+        1,
+        "exactly one grid shape recorded for one blocks2d directive"
+    );
 }
 
 /// AC: 6 workers → 2x3 grid (R=2, C=3 by deterministic decomposition).
@@ -266,6 +297,13 @@ fn positive_6_workers_records_2x3_per_worker_ranges() {
     assert_eq!(per_x.get(&WorkerId(5)), Some(&(6..12)));
     assert_eq!(per_y.get(&WorkerId(6)), Some(&(8..16)));
     assert_eq!(per_x.get(&WorkerId(6)), Some(&(12..18)));
+
+    // TASK-0264 cycle 113 AC#1 + AC#2: 6-worker grid pins are (2, 3).
+    assert_eq!(acfg.partition_pairs.get(&IterVar(7)), Some(&IterVar(8)));
+    assert_eq!(
+        acfg.grid_shape_for_outer_iv.get(&IterVar(7)),
+        Some(&(2u32, 3u32)),
+    );
 }
 
 // --------------------------------------------------------------------
