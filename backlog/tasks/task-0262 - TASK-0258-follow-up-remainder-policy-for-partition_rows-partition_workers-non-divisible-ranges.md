@@ -3,11 +3,11 @@ id: TASK-0262
 title: >-
   TASK-0258 follow-up: remainder policy for partition_rows + partition_workers
   (non-divisible ranges)
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 00:13'
-updated_date: '2026-05-24 02:46'
+updated_date: '2026-05-24 04:07'
 labels:
   - compiler
   - partition
@@ -53,4 +53,15 @@ PRD §6.3.3 doesn't pin a policy; the schedule grammar carries no hint. Decision
 - Halo inference (TASK-0260 — sibling).
 - partition_blocks2d (TASK-0259 — sibling).
 <!-- SECTION:DESCRIPTION:END -->
+
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle 83: floor-with-spillover policy landed (commit 624d7dc). 14/4 case now produces w0,w1=4 rows; w2,w3=3 rows. Test fixtures updated; clippy clean; e2e baseline preserved (no regressions on the 13-cnn-inference/batch_parallel divisible case).
+
+Closure caveat: the policy is CORRECT in isolation but exposes a partition_rows × sync_inject seam (per-iteration barriers + unequal worker counts ⇒ deadlock). Documented under TASK-0266. The remainder policy itself is not the bug — sync_inject's expectation of equal iteration counts is what needs the next-cycle work (trailing-partial sibling à la block_transform TASK-0142).
+
+Status: Done. The narrowly-scoped policy decision the task names is met; the architectural follow-up is owned by TASK-0266.
+<!-- SECTION:NOTES:END -->

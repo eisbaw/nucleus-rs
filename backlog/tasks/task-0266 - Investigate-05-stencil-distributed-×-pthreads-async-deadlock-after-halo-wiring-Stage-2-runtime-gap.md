@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 04:04'
+updated_date: '2026-05-24 04:06'
 labels:
   - M5
   - bug
@@ -61,3 +62,42 @@ The cycle-83 implementer's intermediate commits stay (624d7dc + cf2f9ac): the pa
 ## Forward-carry context
 This is the closing keystone for M5 AC#4 (TASK-0043). The full M5 differential matrix on examples 5/6/7 distributed depends on this task closing. Until it lands, M5 AC#4 stays partial.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR ROOT-CAUSE DIAGNOSIS (cycle 83 post-PROBE-FAILED inspection of the emitted code at /home/mpedersen/topics/mark_thesis/nucleus/target/e2e-matrix/run-3307562-*/05-stencil__distributed__pthreads-async/src/main.rs):
+
+The deadlock is NOT in halo Push/Wait pairs (those work — the host's transfer_inject extension correctly ships halo-extended slices to each worker, verified at main.rs:80,105,130). The deadlock is in PER-ITERATION BARRIERS firing inside the partitioned y-loop body, combined with the floor-with-spillover policy producing UNEQUAL iteration counts:
+
+- TASK-0262 policy: 14 rows / 4 workers = floor-with-spillover ⇒ w0=4 rows, w1=4 rows, w2=3 rows, w3=3 rows.
+- Emitted main.rs shows w0_bar_1.wait() and w0_bar_2.wait() fire INSIDE the y-loop body.
+- bar_1 + bar_2 are sync_inject barriers requiring ALL 4 workers to participate.
+- w0/w1 call bar_1 four times; w2/w3 call it three times.
+- On the 4th iteration, w0/w1 wait for w2/w3 — who are already past the loop — INDEFINITELY.
+
+This is a structural problem at the partition_rows × sync_inject seam: when partition=rows produces unequal per-worker iteration counts, the in-body barriers expect equal counts and deadlock.
+
+## Fix options (pick consciously)
+
+(A) **Restore NonDivisible reject for partition_rows**: revert TASK-0262's floor-with-spillover, return to the divisible-only constraint. The 14-row range of 05-stencil/distributed becomes a compile-time reject — fail-fast discipline, but the example schedule cannot demonstrate row-band partitioning unless the algorithm changes (H=16 → H=17 makes y∈1..16 length 15 = 3×5, divisible by some smaller worker counts but not 4).
+
+(B) **Trailing-partial-tile policy** (TASK-0262 option c): mirror block_transform's discipline — emit one Repeat for the divisible portion (12 rows = 4 × 3 for our case) and a separate trailing Repeat for the remainder (2 rows), each with its own worker-aware barrier participant set. Requires sync_inject to be aware of the trailing-partial split.
+
+(C) **Hoist per-iteration barriers out of the partitioned loop body**: if sync_inject can prove a barrier's participants all execute the same number of iterations, fine; otherwise hoist the barrier ABOVE the partitioned y-loop OR omit it. Requires sync_inject to consult partition_worker_ranges.
+
+(D) **Participant-aware barriers** (TASK-0172 SyncTag direction): each Event::Sync carries a participant set; bar_1 fires only when ITS participants arrive. The fourth iteration's bar_1 would have an EMPTY participant set (no worker has work) and would be a no-op. Requires Event::Sync to carry participants + the Bar emit to filter by current-iteration-active-set.
+
+## Recommendation
+
+Option (A) is the smallest correct change but loses the M5 capstone example. Option (B) is the principled long-term fix. Option (C) is a partial fix (silently hoisting barriers changes semantics for schedules that intentionally synchronise per-iteration). Option (D) is the deepest fix but generalises TASK-0172.
+
+For closing M5 AC#4: Option (A) for THIS task + a follow-up to land Option (B) for the actual unblocking of the 4-way distributed shape.
+
+## Forward-carry
+
+Until this lands:
+- 05-stencil/distributed × pthreads-async stays [[skip]] with TASK-0266 reason.
+- TASK-0043 (M5 capstone) AC#4 (e2e differential green on 5/6/7 distributed) stays partial.
+- TASK-0262 + TASK-0263 commits are LEGITIMATE Stage-2 progress; they don't need reverting — the codegen is correct, the runtime gap is the partition×barrier seam.
+<!-- SECTION:NOTES:END -->

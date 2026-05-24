@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-24 02:43'
+updated_date: '2026-05-24 04:07'
 labels:
   - M5
   - validation
@@ -95,4 +95,23 @@ Stage-2 follow-up tasks filed across the M5 cycles:
 Status decision: TASK-0043 stays In Progress on AC#4 residue (the M5 differential matrix bit-identical e2e cells) — same closure-deferred-on-sibling-blocker pattern as M3 + M4 capstones. The IMPLEMENTATION WORK named by AC#1/#2/#3/#5/#6 is genuinely COMPLETE; the residue is Stage-2-wiring + a remainder-policy decision, NOT capability or correctness gaps.
 
 Substantive conclusion: the user-goal part 'implement milestone 5 (distributed schedule + reuse)' is SUBSTANTIATED — partition=rows + partition=blocks2d are both real consumers (no more silent-drop); halo inference and reuse inference both produce compile-time artefacts the codegen layer can consume. The 4 Stage-2 follow-ups define the closure path for the e2e bit-identical evidence; landing them in lockstep is the next session's work.
+
+CYCLE-83 PROGRESS + PRECISE BLOCKER DIAGNOSIS (2026-05-24):
+
+After the M5 cycle-79c..82 Stage-1 inference work landed all 4 sub-tasks (TASK-0258/0259/0260/0261), cycle 83 attempted the M5 AC#4 closure by landing the lockstep pair TASK-0262 (remainder policy) + TASK-0263 (transfer_inject halo extension), then promoting 05-stencil/distributed × pthreads-async from [[skip]] to [[required]].
+
+The promotion deadlocked. Orchestrator inspection of the emitted code identified the precise root cause: the floor-with-spillover policy gives w0,w1 four y-iterations and w2,w3 three; sync_inject's per-iteration barriers (bar_1, bar_2) fire INSIDE the partitioned y-loop body and require ALL 4 workers; on the 4th iteration w0/w1 wait for w2/w3 who are already past the loop ⇒ infinite hang.
+
+The remainder policy + halo wiring CODEGEN are correct in isolation (verified by reading the emitted main.rs — the halo strips are correctly received by each worker at their extended tile range). The gap is the partition_rows × sync_inject seam: unequal per-worker iteration counts + per-iteration barriers = deadlock.
+
+Cycle-83 commits stay (624d7dc + cf2f9ac + 16eb845 revert-promotion):
+- TASK-0262 floor-with-spillover policy is legitimate Stage-2 progress for the divisible-portion case.
+- TASK-0263 transfer_inject halo extension is correct codegen.
+- The promotion was reverted to [[skip]] with the new TASK-0266 reason.
+
+AC#4 status updated: BLOCKED-NOT-FAILED on TASK-0266 (5-stencil/distributed deadlock investigation; precise diagnosis recorded). TASK-0266's fix options A/B/C/D are documented in its notes; the architecturally correct path is option (B) trailing-partial sibling to block_transform's TASK-0142 discipline (each worker gets a divisible-portion Repeat + a remainder Repeat with participant-aware barriers).
+
+Final M5 capstone status: SUBSTANTIVELY ACHIEVED for the inference + initial Stage-2 wiring; one runtime gap (TASK-0266) precisely diagnosed but not closed in this session. Honest closure pattern same as M3 (TASK-0166 CI runner) and M4 (TASK-0175 w-to-w mesh): the IMPLEMENTATION WORK named by the milestone is complete; the e2e differential evidence depends on a precisely-named sibling blocker.
+
+Total M5 cycles this session: 79c, 80, 81, 82, 83 (5 cycles, 4 sub-tasks + Stage-2 partial + precise blocker diagnosis).
 <!-- SECTION:NOTES:END -->
