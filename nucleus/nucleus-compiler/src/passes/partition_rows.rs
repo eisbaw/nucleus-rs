@@ -20,9 +20,14 @@
 //! - `partition=rows` (TASK-0258, this pass) applies to the OUTER loop
 //!   of a 2D nest — the schedule author says "I want explicit row-bands
 //!   along this axis", and the compiler verifies the nest is structurally
-//!   2D (Repeat-of-Repeat on the same worker entity) before applying.
-//!   On a 1D loop, `partition=rows` is a category error per PRD §6.3.3
-//!   ("bad combinations: `partition=rows` on a 1D iteration").
+//!   Repeat-of-Repeat (an outer Repeat whose body contains at least one
+//!   inner Repeat reachable through `Sequence`s) before applying. The
+//!   per-worker row-band is sliced across the INNER body's worker union
+//!   (whoever runs the row), NOT across the outer Repeat's worker label;
+//!   the same-worker case is the typical one but the code does not pin
+//!   "outer Repeat's worker equals inner Repeat's workers" as an
+//!   invariant. On a 1D loop, `partition=rows` is a category error per
+//!   PRD §6.3.3 ("bad combinations: `partition=rows` on a 1D iteration").
 //!
 //! Both passes write into the SAME sidecar field
 //! (`ACFG::partition_worker_ranges`) because downstream consumers
@@ -39,8 +44,14 @@
 //!
 //! 1. The two passes diverge in their structural pre-condition (outer-
 //!    of-2D vs any-multi-worker-body) and their error types
-//!    ([`PartitionRowsError`] vs `PartitionError`); the shared core is
-//!    only ~6 lines of arithmetic.
+//!    ([`PartitionRowsError`] vs `PartitionError`). The genuinely shared
+//!    bytes are the row-band arithmetic (~6 lines) PLUS the
+//!    `collect_op_workers` helper (~18 lines, byte-identical between
+//!    the two pass files) — total ~24 LoC of straight duplication. The
+//!    deliberate non-extraction is a one-cycle bisect-locality bet
+//!    (cycle-79c review-finding F1 / TASK-0259's sibling will compound
+//!    this to 3-way duplication, at which point the lift becomes
+//!    warranted — flag for TASK-0259 + TASK-0244 follow-up).
 //! 2. A refactor that touches both pass files would also touch the
 //!    `partition_workers.rs` invariants pinned by TASK-0212's 9 tests;
 //!    that consolidation belongs to a future cleanup task
