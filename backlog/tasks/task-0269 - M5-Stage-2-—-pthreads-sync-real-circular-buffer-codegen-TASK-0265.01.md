@@ -4,6 +4,7 @@ title: M5 Stage 2 — pthreads-sync real circular-buffer codegen (TASK-0265.01)
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:31'
+updated_date: '2026-05-24 11:22'
 labels:
   - M5
   - codegen
@@ -37,3 +38,13 @@ Single-worker path (pthreads-sync render_event Event::Loop arm; also delegated t
 - New 05-stencil/reuse.sched.nuc cell currently PASSES on all 4 backends bit-identical to reference.bin. Real codegen MUST keep output bit-identical (reuse is perf rewrite, not semantic).
 - Rewrite-site: render_fire_arg has access to ctx.sidecar but currently has no reuse context. Threading active reuse slots through RenderCtx/RenderCtxPub is the cleanest path; alternative is a side-channel arg-rewrite map populated in the Event::Loop arm.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Forward-carried from TASK-0275 (cycle 96, halo (B) promotion)
+
+When pthreads-sync circular-buffer codegen consumes reuse_widths, note that the reuse driver is already STRICT (TASK-0271 cycle 88, no advisory bucket). That is the right shape for THIS task — every reuse slot is universally consumed by the Tier 1 marker today, and your real codegen will only strengthen that. Do NOT mirror the halo (B) partition-policy-aware shape here; the two pass siblings are asymmetric on purpose (transfer_inject is conditional on partition=, reuse marker is universal).
+
+Implementation lesson: if you need to thread additional context into the walker errors (the TASK-0275 refactor changed the halo walker return to `Vec<(Error, Vec<String>)>` to pair errors with their enclosing scope), introduce a type alias EARLY — clippy::type_complexity fires on the bare tuple+vec shape (1 error on first attempt; saved by `type HaloErrorWithScope = (HaloInferenceError, Vec<String>);`).
+<!-- SECTION:NOTES:END -->

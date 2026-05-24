@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 09:21'
+updated_date: '2026-05-24 11:22'
 labels:
   - M5
   - compiler
@@ -108,4 +108,14 @@ Recommendation: option 1 ((B) partition-policy-aware) — the principled fix, sc
 UNTIL AC#4 lands, the cf2f9ac transfer_inject extension (cycle 83) is good code with its consumer halo_widths populated by the lenient driver. The e2e 92/77/0/15/0 baseline is preserved.
 
 The cycle-87 review item 1 (driver promotion for halo) is REFINED: do NOT mirror TASK-0271's (A) strict pattern; halo genuinely needs (B). TASK-0271's rationale was specific to reuse (Tier 1 marker consumer makes every slot consumed).
+
+## AC#4 CLOSED — TASK-0275 cycle 96 landed
+
+TASK-0275 landed in 2 commits:
+- 36eb387 (pass-side: apply_halo_inference_partition_aware + 3 pins)
+- 7b71fd6 (driver promotion to the new entry point)
+
+The cycle-89 verification block's recommended path (option 1, (B) partition-policy-aware) was implemented as described. Example 11's two cells stay PASS; e2e 92/77/0/15/0 preserved; determinism GREEN.
+
+AC#4 was the last lenient → strict policy choice; with (B) landed, it is now closed. AC#1 (transfer_inject reads halo_widths) + AC#2 (XferPlaceholder extension) remain cycle-83 commitments (cf2f9ac). AC#3 (new e2e cell bit-identical) still BLOCKED on TASK-0266 (sync_inject × partition_rows seam deadlock), unrelated to halo policy.
 <!-- SECTION:NOTES:END -->

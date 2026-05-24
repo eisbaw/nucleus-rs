@@ -4,7 +4,7 @@ title: M5 Stage 2 — multi-worker walker real circular-buffer codegen (TASK-026
 status: To Do
 assignee: []
 created_date: '2026-05-24 08:32'
-updated_date: '2026-05-24 08:32'
+updated_date: '2026-05-24 11:22'
 labels:
   - M5
   - codegen
@@ -57,4 +57,12 @@ A loop carrying BOTH a halo entry AND a reuse entry needs both code paths active
 
 <!-- SECTION:NOTES:BEGIN -->
 Reconstructed lost fragment from create-time bash interpolation: the integration target is 05-stencil/distributed loop x with block=64, vectorize=8, reuse; once TASK-0267 and TASK-0268 land.
+
+## Forward-carried from TASK-0275 (cycle 96, halo (B) promotion)
+
+Multi-worker walker reuse codegen lands AFTER TASK-0269 (pthreads-sync first). Two carry items:
+
+1. The reuse driver is STRICT (TASK-0271), not (B) partition-policy-aware like halo (TASK-0275). The reason: reuse marker is universally consumed across every recognised slot; halo's transfer_inject consumer is conditional on partition=. Do not transplant the halo (B) shape here.
+
+2. If you extend reuse_inference's walker to thread additional context (e.g. partition= for multi-worker scope checks), introduce a type alias for the paired-Vec return EARLY — clippy::type_complexity fires on the bare `Vec<(Error, Vec<String>)>` shape. See halo_inference.rs `HaloErrorWithScope` for the pattern.
 <!-- SECTION:NOTES:END -->
