@@ -306,6 +306,45 @@ fn positive_6_workers_records_2x3_per_worker_ranges() {
     );
 }
 
+/// TASK-0264 cycle 113 architect P2.1: the existing positive tests
+/// above pin the ACFG writer contract; this test extends to the
+/// END-TO-END wire shape (`build_sidecar` mirror). A regression that
+/// dropped the mirror from `build_sidecar` would silently zero out
+/// the TASK-0289 consumer's input — the partition_pairs entry would
+/// be present in ACFG but absent in NameSidecar. This test bites such
+/// a regression.
+#[test]
+fn positive_4_workers_sidecar_mirrors_pair_and_grid_shape() {
+    let acfg = build_2d_acfg("y", 7, 0..16, "x", 8, 0..32, &[1, 2, 3, 4]);
+    let linked = linked_with_blocks2d_directive("y");
+    let acfg = nucleus_compiler::passes::partition_blocks2d::apply_partition_blocks2d(
+        &linked, acfg,
+    )
+    .expect("partition_blocks2d must accept 4 workers");
+
+    let sidecar = nucleus_compiler::build_sidecar(&linked, &acfg).expect("build_sidecar");
+
+    // Mirror invariants: both new fields land in NameSidecar with the
+    // same (outer -> inner) and (outer -> (rows, cols)) shape the ACFG
+    // recorded. The mirror is a `.clone()` in build_sidecar; a future
+    // regression that drops the clone would zero one or both maps
+    // here.
+    assert_eq!(
+        sidecar.partition_pairs, acfg.partition_pairs,
+        "NameSidecar.partition_pairs must mirror ACFG.partition_pairs exactly"
+    );
+    assert_eq!(
+        sidecar.grid_shape_for_outer_iv, acfg.grid_shape_for_outer_iv,
+        "NameSidecar.grid_shape_for_outer_iv must mirror ACFG.grid_shape_for_outer_iv exactly"
+    );
+    // Positive shape pins (non-empty + correct values).
+    assert_eq!(sidecar.partition_pairs.get(&IterVar(7)), Some(&IterVar(8)));
+    assert_eq!(
+        sidecar.grid_shape_for_outer_iv.get(&IterVar(7)),
+        Some(&(2u32, 2u32)),
+    );
+}
+
 // --------------------------------------------------------------------
 // Negative tests
 // --------------------------------------------------------------------
