@@ -3,9 +3,10 @@ id: TASK-0283
 title: >-
   Reuse codegen hygiene: lift try_reuse_axis_offset onto affine_decompose
   (TASK-0269 follow-up)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-24 15:49'
+updated_date: '2026-05-24 17:12'
 labels:
   - reuse
   - hygiene
@@ -34,3 +35,65 @@ This is hygiene, NOT a current correctness defect — the two helpers agree toda
 ## Dependencies
 None (independent hygiene).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## CYCLE-106 LANDING (orchestrator-led, 2026-05-24)
+
+TASK-0283 closed in commit **29ae72c**. Lift  onto  (the same function Stage 1 reuse_inference + halo_inference use). Both stages now share one definition of 'what is iv + b on the reuse axis'; cross-pass divergence is structurally impossible.
+
+### Concrete divergence pre-cycle-106
+
+The cycle-103 inlined re-impl rejected  (Ident-Ident) when STRIDE was a declared const. Stage 1 affine_decompose accepts it (const-folding to coefficient 1, offset STRIDE.value). Result pre-cycle-106: Stage 1 records the slot, marker fires, but Stage 2's narrow matcher silently skips discovery → buffer decl absent → raw body read. Silent codegen mismatch (output still correct because raw read works; the 'reuse codegen happened' claim was structurally false).
+
+### Fix shape
+
+1. Promote  from  to . Re-export at .
+2. Rewrite  as a 4-line wrapper: call affine_decompose, filter for coeff == 1.
+3. Thread the consts table through discover_reuse_groups → walk_event_for_reuse → walk_arg_for_reuse. Add  helper at the boundary (sidecar carries BTreeMap<String, ConstValue>; affine_decompose wants BTreeMap<String, ResolvedConst>; cheap O(consts.len()) conversion).
+4. New test  in pthreads-sync/tests/reuse_marker.rs: builds the exact fixture that triggered the divergence (const STRIDE=1, body reads data[iv + STRIDE]), asserts buffer decl is emitted AND body read is rewritten. Bite-verified: stashing the commit and running the test fails on the buffer-decl assertion with the marker firing but no buffer + raw img_in body read visible.
+
+### Gate post-lift
+
+- cargo test --workspace: 817 / 0 / 3 (+1 vs cycle 105 baseline 816).
+- cargo clippy: clean.
+- just e2e: 92 / 79 / 0 / 13 / 0 required-fail (preserved).
+- just determinism-check: 92 / 79 / 0 / 13 (GREEN).
+
+### Both ACs MET
+
+- AC#1 (SOSO via path 1): MET. affine_decompose is single source of truth.
+- AC#2 (regression test that bites): MET via bite-verified test.
+
+Status: Done.
+
+## Cycle-106 notes (re-added with proper escaping; previous append had backtick stripping)
+
+Lift try_reuse_axis_offset (in backend-common/src/render.rs) onto nucleus_compiler::affine_decompose (the same function passes::reuse_inference + passes::halo_inference call). Both stages now share ONE definition of affine 'iv + b' decoding; cross-pass divergence is structurally impossible.
+
+### Concrete divergence pre-cycle-106
+
+Pre-cycle-106 the codegen had an inlined re-impl that rejected the Ident-Ident shape on the RHS of Add (e.g. for x : reuse with body data[x + STRIDE] where const STRIDE = 1 was declared). Stage 1 affine_decompose accepted this via const-folding (coefficient 1, offset STRIDE.value); Stage 2's narrow matcher silently rejected it. Result: marker fires, buffer decl skipped, body read stays raw. Silent codegen mismatch (output still correct because raw read works; the 'reuse codegen happened' claim was structurally false).
+
+### Fix shape
+
+1. Promote passes::common::affine_decompose from pub(crate) to pub. Re-export at nucleus_compiler::affine_decompose.
+2. Rewrite try_reuse_axis_offset as a 4-line wrapper: call affine_decompose, filter for coeff == 1.
+3. Thread the consts table through discover_reuse_groups → walk_event_for_reuse → walk_arg_for_reuse. New helper sidecar_consts_to_resolved at the boundary (sidecar carries BTreeMap<String, ConstValue>; affine_decompose wants BTreeMap<String, ResolvedConst>; cheap O(consts.len()) conversion).
+4. New regression test 'codegen_recognises_const_named_offset_via_affine_decompose' in pthreads-sync/tests/reuse_marker.rs builds the exact fixture that triggered the divergence (const STRIDE=1, body reads data[iv + STRIDE]). Asserts buffer decl emitted AND body read rewritten. Bite-verified by stashing the commit and re-running: fails on the buffer-decl assertion with the marker firing but no buffer + raw img_in body read visible.
+
+### Gate post-lift
+
+- cargo test --workspace: 817 / 0 / 3 (+1 vs cycle 105 baseline 816).
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- just e2e: 92 / 79 / 0 / 13 / 0 required-fail (preserved).
+- just determinism-check: 92 / 79 / 0 / 13 (GREEN).
+
+### ACs MET
+
+- Single source of truth on affine 'iv + b' decoding: MET via path (1) — affine_decompose is now called from both inference and codegen.
+- Regression test that bites if two diverge: MET via the new bite-verified test in pthreads-sync/tests/reuse_marker.rs.
+
+Status: Done. Commit: 29ae72c.
+<!-- SECTION:NOTES:END -->
