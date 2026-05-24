@@ -83,11 +83,16 @@ schedule for \"a.algo.nuc\" {
 }
 ";
 
-fn lower(scratch: &Path) -> (
+fn lower(
+    scratch: &Path,
+) -> (
     PathBuf,
     NameTables,
     nucleus_compiler::sidecar::NameSidecar,
-    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
+    std::collections::BTreeMap<
+        nucleus_compiler::event::WorkerId,
+        Vec<nucleus_compiler::event::Event>,
+    >,
 ) {
     let kernels_path = scratch.join("kernels.rs");
     fs::write(

@@ -547,9 +547,8 @@ fn task0275_partition_aware_rejects_strided_under_partition_rows() {
     let linked = build_linked_for_partition_test(stride_idx, Some(PartitionKind::Rows));
     let acfg = build_acfg(&linked).expect("acfg build");
 
-    let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
-        "partition-aware must escalate on any PartitionKind, not just Workers",
-    );
+    let err = apply_halo_inference_partition_aware(&linked, acfg)
+        .expect_err("partition-aware must escalate on any PartitionKind, not just Workers");
     assert!(
         matches!(err, HaloInferenceError::StridedAccessNotSupported { .. }),
         "expected StridedAccessNotSupported under partition=rows, got {err:?}"

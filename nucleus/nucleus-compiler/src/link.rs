@@ -63,7 +63,9 @@ use core::ops::Range;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt};
-use crate::sched::{ResolvedLoopOption, ResolvedPlaceTarget, ResolvedPlacement, ResolvedTransferOption, SchedIR};
+use crate::sched::{
+    ResolvedLoopOption, ResolvedPlaceTarget, ResolvedPlacement, ResolvedTransferOption, SchedIR,
+};
 
 // --------------------------------------------------------------------
 // Public types
@@ -976,11 +978,7 @@ fn collect_dataref_consumers(
 ///
 /// Determinism: outer iteration is `sched.loops.values()` (BTreeMap by
 /// loop_var name); the inner check walks a `BTreeSet<String>`.
-fn check_pipeline_buffer_constraints(
-    algo: &AlgoIR,
-    sched: &SchedIR,
-    errors: &mut Vec<LinkError>,
-) {
+fn check_pipeline_buffer_constraints(algo: &AlgoIR, sched: &SchedIR, errors: &mut Vec<LinkError>) {
     for loop_dir in sched.loops.values() {
         // Find the pipeline depth (if any) on this loop. PRD §6.3.3
         // forbids duplicate option keywords (DuplicateLoopOption), so
@@ -1036,7 +1034,13 @@ fn check_pipeline_buffer_constraints(
         // loop (the IR contract that triggers `initial_marking = D`).
         let mut produced: BTreeSet<String> = BTreeSet::new();
         let mut consumed: BTreeSet<String> = BTreeSet::new();
-        collect_data_in_loop(&algo.stmts, &loop_dir.var, false, &mut produced, &mut consumed);
+        collect_data_in_loop(
+            &algo.stmts,
+            &loop_dir.var,
+            false,
+            &mut produced,
+            &mut consumed,
+        );
 
         // Intersect (deterministic — both are BTreeSets).
         for data_name in produced.intersection(&consumed) {
@@ -1141,11 +1145,7 @@ fn data_is_cross_worker(algo: &AlgoIR, sched: &SchedIR, data_name: &str) -> bool
 /// — as Dataflow LHS-producing-kernel (RHS expression is a Call), as a
 /// Dataflow RHS DataRef inside a kernel's arg list, or as an Effect
 /// arg. Recurses into For-bodies.
-fn collect_kernels_touching_data(
-    stmts: &[IrStmt],
-    data_name: &str,
-    out: &mut BTreeSet<String>,
-) {
+fn collect_kernels_touching_data(stmts: &[IrStmt], data_name: &str, out: &mut BTreeSet<String>) {
     for s in stmts {
         match s {
             IrStmt::Dataflow { lhs, rhs } => {
@@ -1176,7 +1176,9 @@ fn expr_touches_data(e: &IrExpr, data_name: &str) -> bool {
     match e {
         IrExpr::DataRef(r) => r.name == data_name,
         IrExpr::Call { args, .. } => args.iter().any(|a| expr_touches_data(a, data_name)),
-        IrExpr::BinOp(_, l, r) => expr_touches_data(l, data_name) || expr_touches_data(r, data_name),
+        IrExpr::BinOp(_, l, r) => {
+            expr_touches_data(l, data_name) || expr_touches_data(r, data_name)
+        }
         IrExpr::Neg(inner) => expr_touches_data(inner, data_name),
         IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
     }

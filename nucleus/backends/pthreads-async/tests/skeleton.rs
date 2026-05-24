@@ -65,8 +65,7 @@ fn multi_worker_emit_for_02_split_succeeds() {
         &test_common::LowerForTestOpts::default(),
     );
 
-    let scratch = root
-        .join("nucleus/target/pthreads-async-test-scratch/multi_worker_02_split");
+    let scratch = root.join("nucleus/target/pthreads-async-test-scratch/multi_worker_02_split");
     let _ = std::fs::remove_dir_all(&scratch);
     let result = emit(
         &r.per_worker,
@@ -151,14 +150,16 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync() {
     // backends so the kernels.rs copy step in each is identical.
     let kernels = stem.join("empty_kernels.rs");
     std::fs::create_dir_all(&stem).expect("scratch dir");
-    std::fs::write(&kernels, "// Empty kernels.rs for the empty-eventlist test.\n")
-        .expect("empty kernels.rs");
+    std::fs::write(
+        &kernels,
+        "// Empty kernels.rs for the empty-eventlist test.\n",
+    )
+    .expect("empty kernels.rs");
 
-    let async_res =
-        emit(&per_worker, &names, &sidecar, &kernels, &async_out).expect("async emit");
+    let async_res = emit(&per_worker, &names, &sidecar, &kernels, &async_out).expect("async emit");
     // Build pthreads_sync's NameTables from the re-exported alias.
-    let sync_res = pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels, &sync_out)
-        .expect("sync emit");
+    let sync_res =
+        pthreads_sync::emit(&per_worker, &names, &sidecar, &kernels, &sync_out).expect("sync emit");
 
     // ---- The invariant: byte-identical main.rs, Cargo.toml, run.sh ----
     let async_main = std::fs::read_to_string(&async_res.main_rs).expect("async main.rs");
@@ -170,10 +171,8 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync() {
          async:\n{async_main}\n--- sync:\n{sync_main}"
     );
 
-    let async_cargo =
-        std::fs::read_to_string(&async_res.cargo_toml).expect("async Cargo.toml");
-    let sync_cargo =
-        std::fs::read_to_string(&sync_res.cargo_toml).expect("sync Cargo.toml");
+    let async_cargo = std::fs::read_to_string(&async_res.cargo_toml).expect("async Cargo.toml");
+    let sync_cargo = std::fs::read_to_string(&sync_res.cargo_toml).expect("sync Cargo.toml");
     assert_eq!(
         async_cargo, sync_cargo,
         "pthreads-async single-worker Cargo.toml must be byte-identical \
@@ -188,10 +187,8 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync() {
          to pthreads-sync's (shared render_run_sh)"
     );
 
-    let async_kernels =
-        std::fs::read_to_string(&async_res.kernels_rs).expect("async kernels.rs");
-    let sync_kernels =
-        std::fs::read_to_string(&sync_res.kernels_rs).expect("sync kernels.rs");
+    let async_kernels = std::fs::read_to_string(&async_res.kernels_rs).expect("async kernels.rs");
+    let sync_kernels = std::fs::read_to_string(&sync_res.kernels_rs).expect("sync kernels.rs");
     assert_eq!(
         async_kernels, sync_kernels,
         "pthreads-async single-worker kernels.rs must be a verbatim copy \
@@ -271,7 +268,8 @@ fn lower_example_01_naive() -> (
 fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
     let (per_worker, names, sidecar, kernels) = lower_example_01_naive();
 
-    let scratch = repo_root().join("nucleus/target/pthreads-async-test-scratch/single_worker_01_naive");
+    let scratch =
+        repo_root().join("nucleus/target/pthreads-async-test-scratch/single_worker_01_naive");
     let async_out = scratch.join("async");
     let sync_out = scratch.join("sync");
     let _ = std::fs::remove_dir_all(&async_out);
@@ -284,8 +282,7 @@ fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
 
     // The cross-backend differential invariant: same algorithm + same
     // naive schedule -> byte-identical main.rs across both backends.
-    let async_main =
-        std::fs::read_to_string(&async_res.main_rs).expect("async main.rs");
+    let async_main = std::fs::read_to_string(&async_res.main_rs).expect("async main.rs");
     let sync_main = std::fs::read_to_string(&sync_res.main_rs).expect("sync main.rs");
     assert_eq!(
         async_main, sync_main,
@@ -377,8 +374,14 @@ fn const_in_indexexpr_pthreads_async_resolves_to_literal_value() {
     std::fs::create_dir_all(&scratch).expect("create scratch dir");
     std::fs::write(&kernels_path, "// stub for emit-string test\n").unwrap();
 
-    let result = emit(&r.per_worker, &r.names, &r.sidecar, &kernels_path, &scratch.join("gen"))
-        .expect("pthreads-async emit must succeed on const-in-IndexExpr fixture");
+    let result = emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &kernels_path,
+        &scratch.join("gen"),
+    )
+    .expect("pthreads-async emit must succeed on const-in-IndexExpr fixture");
     let main_rs = std::fs::read_to_string(&result.main_rs).expect("read main.rs");
 
     let iters_val = test_common::CONST_IN_INDEXEXPR_ITERS_VALUE;

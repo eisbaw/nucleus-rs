@@ -98,9 +98,9 @@ use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
     Purity, ScalarType, SpExpr, SpIdent, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
-use crate::span::Spanned;
 use crate::error::map_all_chumsky_errors;
 pub use crate::error::{ParseError, ParseErrorKind, ParseErrors};
+use crate::span::Spanned;
 
 /// Internal: the tail of an identifier-led atom — either a call's
 /// argument list or zero-or-more index suffixes. Kept local because it
@@ -518,105 +518,107 @@ fn expr_parser() -> impl Parser<char, SpExpr, Error = Simple<char>> + Clone {
     // both operands for a binary, the `-` and operand for a unary,
     // etc.). Atoms span just their token; the parenthesised form spans
     // the inner expression (the parens are structural).
-    recursive(|expr: chumsky::recursive::Recursive<char, SpExpr, Simple<char>>| {
-        // Atom: int | ident-or-call | parenthesised expr. The int
-        // span is the digits only (trailing layout excluded).
-        let int_atom = padded_spanned(int_lit().map(Expr::IntLit));
+    recursive(
+        |expr: chumsky::recursive::Recursive<char, SpExpr, Simple<char>>| {
+            // Atom: int | ident-or-call | parenthesised expr. The int
+            // span is the digits only (trailing layout excluded).
+            let int_atom = padded_spanned(int_lit().map(Expr::IntLit));
 
-        // The parenthesised expression keeps the *inner* expression's
-        // span (already populated); the surrounding parens carry no
-        // independent diagnostic meaning.
-        let paren = pad(just('('))
-            .ignore_then(expr.clone())
-            .then_ignore(pad(just(')')));
+            // The parenthesised expression keeps the *inner* expression's
+            // span (already populated); the surrounding parens carry no
+            // independent diagnostic meaning.
+            let paren = pad(just('('))
+                .ignore_then(expr.clone())
+                .then_ignore(pad(just(')')));
 
-        // After an identifier we may see either a call `(args)` or a
-        // sequence of index suffixes `[i][j]...`. The grammar makes
-        // these mutually exclusive: only an LValue can be indexed, a
-        // CallExpr cannot. We model that here with a single choice on
-        // the tail.
-        // Each tail also reports the byte offset just past its closing
-        // delimiter so the composed atom span ends tightly at `)` /
-        // `]` (or at the identifier itself for a bare ident), never
-        // including trailing layout.
-        let call_tail = just('(')
-            .ignore_then(comment_or_ws())
-            .ignore_then(expr.clone().separated_by(pad(just(','))).allow_trailing())
-            .then(just(')').map_with_span(|_, s: std::ops::Range<usize>| s.end))
-            .then_ignore(comment_or_ws())
-            .map(|(args, end)| (IdentTail::Call(args), Some(end)));
+            // After an identifier we may see either a call `(args)` or a
+            // sequence of index suffixes `[i][j]...`. The grammar makes
+            // these mutually exclusive: only an LValue can be indexed, a
+            // CallExpr cannot. We model that here with a single choice on
+            // the tail.
+            // Each tail also reports the byte offset just past its closing
+            // delimiter so the composed atom span ends tightly at `)` /
+            // `]` (or at the identifier itself for a bare ident), never
+            // including trailing layout.
+            let call_tail = just('(')
+                .ignore_then(comment_or_ws())
+                .ignore_then(expr.clone().separated_by(pad(just(','))).allow_trailing())
+                .then(just(')').map_with_span(|_, s: std::ops::Range<usize>| s.end))
+                .then_ignore(comment_or_ws())
+                .map(|(args, end)| (IdentTail::Call(args), Some(end)));
 
-        let index_tail = just('[')
-            .ignore_then(comment_or_ws())
-            .ignore_then(expr.clone())
-            .then(just(']').map_with_span(|_, s: std::ops::Range<usize>| s.end))
-            .then_ignore(comment_or_ws())
-            .repeated()
-            .map(|pairs| {
-                let end = pairs.last().map(|(_, e)| *e);
-                let indices = pairs.into_iter().map(|(i, _)| i).collect();
-                (IdentTail::Indices(indices), end)
-            });
+            let index_tail = just('[')
+                .ignore_then(comment_or_ws())
+                .ignore_then(expr.clone())
+                .then(just(']').map_with_span(|_, s: std::ops::Range<usize>| s.end))
+                .then_ignore(comment_or_ws())
+                .repeated()
+                .map(|pairs| {
+                    let end = pairs.last().map(|(_, e)| *e);
+                    let indices = pairs.into_iter().map(|(i, _)| i).collect();
+                    (IdentTail::Indices(indices), end)
+                });
 
-        // `name` is already a tightly-spanned `SpIdent`. Behaviour
-        // preserved exactly from before spans: `index_tail` is
-        // `.repeated()` so it always succeeds (possibly empty) — a
-        // bare identifier still lowers as
-        // `Expr::LValue(IndexedLValue{ indices: [] })`, NOT
-        // `Expr::Ident`, so lowering's existing bare-ident handling
-        // (lower.rs `Expr::LValue` empty-indices arms) is unchanged.
-        // The atom span is `name.start .. (close-delim end | name end)`
-        // — tight, no trailing layout.
-        let ident_or_call = pad(ident())
-            .then(call_tail.or(index_tail))
-            .map(|(name, (tail, tail_end))| {
-                let span = name.span.start..tail_end.unwrap_or(name.span.end);
-                let node = match tail {
-                    IdentTail::Call(args) => Expr::Call(Call { callee: name, args }),
-                    IdentTail::Indices(indices) => {
-                        Expr::LValue(IndexedLValue { name, indices })
-                    }
-                };
-                Spanned::new(node, span)
-            });
+            // `name` is already a tightly-spanned `SpIdent`. Behaviour
+            // preserved exactly from before spans: `index_tail` is
+            // `.repeated()` so it always succeeds (possibly empty) — a
+            // bare identifier still lowers as
+            // `Expr::LValue(IndexedLValue{ indices: [] })`, NOT
+            // `Expr::Ident`, so lowering's existing bare-ident handling
+            // (lower.rs `Expr::LValue` empty-indices arms) is unchanged.
+            // The atom span is `name.start .. (close-delim end | name end)`
+            // — tight, no trailing layout.
+            let ident_or_call =
+                pad(ident())
+                    .then(call_tail.or(index_tail))
+                    .map(|(name, (tail, tail_end))| {
+                        let span = name.span.start..tail_end.unwrap_or(name.span.end);
+                        let node = match tail {
+                            IdentTail::Call(args) => Expr::Call(Call { callee: name, args }),
+                            IdentTail::Indices(indices) => {
+                                Expr::LValue(IndexedLValue { name, indices })
+                            }
+                        };
+                        Spanned::new(node, span)
+                    });
 
-        let atom = choice((int_atom, paren, ident_or_call));
+            let atom = choice((int_atom, paren, ident_or_call));
 
-        // Unary `-`. `foldr` wraps right-to-left; each added `-`
-        // re-spans to cover that `-` plus everything to its right.
-        let unary = pad(just('-'))
-            .map_with_span(|_, span: std::ops::Range<usize>| span)
-            .repeated()
-            .then(atom)
-            .foldr(|minus_span, rhs: SpExpr| {
-                let span = minus_span.start..rhs.span.end;
-                Spanned::new(Expr::Unary(UnaryOp::Neg, Box::new(rhs)), span)
-            });
+            // Unary `-`. `foldr` wraps right-to-left; each added `-`
+            // re-spans to cover that `-` plus everything to its right.
+            let unary = pad(just('-'))
+                .map_with_span(|_, span: std::ops::Range<usize>| span)
+                .repeated()
+                .then(atom)
+                .foldr(|minus_span, rhs: SpExpr| {
+                    let span = minus_span.start..rhs.span.end;
+                    Spanned::new(Expr::Unary(UnaryOp::Neg, Box::new(rhs)), span)
+                });
 
-        // Multiplicative. `foldl` re-spans each composed binary to
-        // cover lhs.start..rhs.end.
-        let mul_op = choice((
-            pad(just('*')).to(BinOp::Mul),
-            pad(just('/')).to(BinOp::Div),
-            pad(just('%')).to(BinOp::Mod),
-        ));
-        let mul = unary
-            .clone()
-            .then(mul_op.then(unary).repeated())
-            .foldl(|lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
-                let span = lhs.span.start..rhs.span.end;
-                Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
-            });
+            // Multiplicative. `foldl` re-spans each composed binary to
+            // cover lhs.start..rhs.end.
+            let mul_op = choice((
+                pad(just('*')).to(BinOp::Mul),
+                pad(just('/')).to(BinOp::Div),
+                pad(just('%')).to(BinOp::Mod),
+            ));
+            let mul = unary.clone().then(mul_op.then(unary).repeated()).foldl(
+                |lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
+                    let span = lhs.span.start..rhs.span.end;
+                    Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
+                },
+            );
 
-        // Additive.
-        let add_op = choice((pad(just('+')).to(BinOp::Add), pad(just('-')).to(BinOp::Sub)));
-        mul.clone()
-            .then(add_op.then(mul).repeated())
-            .foldl(|lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
-                let span = lhs.span.start..rhs.span.end;
-                Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
-            })
-    })
+            // Additive.
+            let add_op = choice((pad(just('+')).to(BinOp::Add), pad(just('-')).to(BinOp::Sub)));
+            mul.clone().then(add_op.then(mul).repeated()).foldl(
+                |lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
+                    let span = lhs.span.start..rhs.span.end;
+                    Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
+                },
+            )
+        },
+    )
 }
 
 /// `DataType ::= ScalarType DimList?`.
@@ -765,7 +767,10 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
             // `<--`) and `bare_call` (expects `(`) fail — see
             // `place_data_shape` for the chumsky furthest-end-position
             // merge rule that makes this necessary.
-            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+            Err(Simple::custom(
+                span.start..outer_span.end,
+                sched_hint_msg(kw),
+            ))
         })
     };
 
@@ -793,21 +798,30 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
         .map_with_span(|(), span| ("place_data", span))
         .then(ident_chars)
         .try_map(|((kw, span), _ident), outer_span| {
-            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+            Err(Simple::custom(
+                span.start..outer_span.end,
+                sched_hint_msg(kw),
+            ))
         });
 
     let place_shape = pad(keyword("place"))
         .map_with_span(|(), span| ("place", span))
         .then(ident_chars)
         .try_map(|((kw, span), _ident), outer_span| {
-            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+            Err(Simple::custom(
+                span.start..outer_span.end,
+                sched_hint_msg(kw),
+            ))
         });
 
     let check_loop_shape = pad(keyword("check"))
         .map_with_span(|(), span| ("check", span))
         .then_ignore(pad(keyword("loop")))
         .try_map(|(kw, span), outer_span| {
-            Err(Simple::custom(span.start..outer_span.end, sched_hint_msg(kw)))
+            Err(Simple::custom(
+                span.start..outer_span.end,
+                sched_hint_msg(kw),
+            ))
         });
 
     // Order: `place_data` BEFORE `place` (prefix-rule disambiguation
@@ -827,10 +841,12 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
     // path we'd materialise a placeholder `Stmt::Effect` with an
     // impossible call, but `try_map` always returns `Err`, so this is
     // a phantom branch in practice — kept only to satisfy the type.
-    .map(|_: ()| Stmt::Effect(Call {
-        callee: Spanned::new("__unreachable_sched_hint__".to_string(), 0..0),
-        args: vec![],
-    }))
+    .map(|_: ()| {
+        Stmt::Effect(Call {
+            callee: Spanned::new("__unreachable_sched_hint__".to_string(), 0..0),
+            args: vec![],
+        })
+    })
 }
 
 /// Build the hint message for a schedule-directive keyword. Kept as
@@ -838,67 +854,67 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
 /// future re-skinning (e.g. adding the surrounding source line) is a
 /// single edit.
 fn sched_hint_msg(kw: &str) -> String {
-    format!(
-        "`{kw}` is a schedule directive — did you mean to put it in a `*.sched.nuc` file?"
-    )
+    format!("`{kw}` is a schedule directive — did you mean to put it in a `*.sched.nuc` file?")
 }
 
 /// Statements (dataflow / effect / for).
 fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
-    recursive(|stmt: chumsky::recursive::Recursive<char, SpStmt, Simple<char>>| {
-        // Dataflow vs effect both start with an ident. We disambiguate
-        // by trying dataflow (which needs `<--` after the LValue) and
-        // falling back to a bare call statement.
-        // Each alternative ends at its *bare* terminator (`;` / `}`)
-        // — NOT `pad(just(..))` — so the `.map_with_span` below fixes
-        // the statement span tight at the terminator; trailing layout
-        // is consumed afterwards (`then_ignore(comment_or_ws())`),
-        // outside the span. Without this the span would swallow the
-        // newline after `;`, mislocating a statement-level diagnostic.
-        let dataflow = lvalue_parser()
-            .then_ignore(pad(just('<')).then(pad(just('-'))).then(pad(just('-'))))
-            .then(expr_parser())
-            .then_ignore(just(';'))
-            .map(|(lhs, rhs)| Stmt::Dataflow { lhs, rhs });
+    recursive(
+        |stmt: chumsky::recursive::Recursive<char, SpStmt, Simple<char>>| {
+            // Dataflow vs effect both start with an ident. We disambiguate
+            // by trying dataflow (which needs `<--` after the LValue) and
+            // falling back to a bare call statement.
+            // Each alternative ends at its *bare* terminator (`;` / `}`)
+            // — NOT `pad(just(..))` — so the `.map_with_span` below fixes
+            // the statement span tight at the terminator; trailing layout
+            // is consumed afterwards (`then_ignore(comment_or_ws())`),
+            // outside the span. Without this the span would swallow the
+            // newline after `;`, mislocating a statement-level diagnostic.
+            let dataflow = lvalue_parser()
+                .then_ignore(pad(just('<')).then(pad(just('-'))).then(pad(just('-'))))
+                .then(expr_parser())
+                .then_ignore(just(';'))
+                .map(|(lhs, rhs)| Stmt::Dataflow { lhs, rhs });
 
-        // Bare call statement: ident '(' args ')' ';'
-        let bare_call = pad(ident())
-            .then_ignore(pad(just('(')))
-            .then(
-                expr_parser()
-                    .separated_by(pad(just(',')))
-                    .allow_trailing()
-                    .or_not()
-                    .map(|a| a.unwrap_or_default()),
-            )
-            .then_ignore(pad(just(')')))
-            .then_ignore(just(';'))
-            .map(|(callee, args)| Stmt::Effect(Call { callee, args }));
+            // Bare call statement: ident '(' args ')' ';'
+            let bare_call = pad(ident())
+                .then_ignore(pad(just('(')))
+                .then(
+                    expr_parser()
+                        .separated_by(pad(just(',')))
+                        .allow_trailing()
+                        .or_not()
+                        .map(|a| a.unwrap_or_default()),
+                )
+                .then_ignore(pad(just(')')))
+                .then_ignore(just(';'))
+                .map(|(callee, args)| Stmt::Effect(Call { callee, args }));
 
-        let for_stmt = pad(keyword("for"))
-            .ignore_then(pad(ident()))
-            .then_ignore(pad(just(':')))
-            .then(expr_parser())
-            .then_ignore(pad(just('.')).then(pad(just('.'))))
-            .then(expr_parser())
-            .then_ignore(pad(just('{')))
-            .then(stmt.clone().repeated())
-            .then_ignore(just('}'))
-            .map(|(((var, lo), hi), body)| Stmt::For { var, lo, hi, body });
+            let for_stmt = pad(keyword("for"))
+                .ignore_then(pad(ident()))
+                .then_ignore(pad(just(':')))
+                .then(expr_parser())
+                .then_ignore(pad(just('.')).then(pad(just('.'))))
+                .then(expr_parser())
+                .then_ignore(pad(just('{')))
+                .then(stmt.clone().repeated())
+                .then_ignore(just('}'))
+                .map(|(((var, lo), hi), body)| Stmt::For { var, lo, hi, body });
 
-        // Order: schedule-directive hint first (TASK-0083) — it
-        // probes for the unambiguous `<sched_kw> =` / `place IDENT`
-        // / `place_data IDENT` / `check loop` shapes and fires a
-        // tailored hint via `Simple::custom`; on no-match it
-        // consumes nothing and falls through to the real algorithm
-        // grammar. Then `for_stmt` (distinct keyword), then dataflow
-        // (uses `<--`), then bare-call as fallback. Span fixed at the
-        // bare terminator, then trailing layout consumed off-span.
-        let hint = sched_directive_hint_stmt();
-        choice((hint, for_stmt, dataflow, bare_call))
-            .map_with_span(Spanned::new)
-            .then_ignore(comment_or_ws())
-    })
+            // Order: schedule-directive hint first (TASK-0083) — it
+            // probes for the unambiguous `<sched_kw> =` / `place IDENT`
+            // / `place_data IDENT` / `check loop` shapes and fires a
+            // tailored hint via `Simple::custom`; on no-match it
+            // consumes nothing and falls through to the real algorithm
+            // grammar. Then `for_stmt` (distinct keyword), then dataflow
+            // (uses `<--`), then bare-call as fallback. Span fixed at the
+            // bare terminator, then trailing layout consumed off-span.
+            let hint = sched_directive_hint_stmt();
+            choice((hint, for_stmt, dataflow, bare_call))
+                .map_with_span(Spanned::new)
+                .then_ignore(comment_or_ws())
+        },
+    )
 }
 
 /// Top-level item.

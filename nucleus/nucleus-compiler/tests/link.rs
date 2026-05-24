@@ -844,10 +844,12 @@ schedule for \"a.algo.nuc\" {
     // UnknownLoop(z) all reported together.
     assert!(errs.contains(&LinkError::new(LinkErrorKind::UnplacedKernel("b".into()))));
     // No data / no loop vars declared → both suggestions None.
-    assert!(errs.contains(&LinkError::new(LinkErrorKind::UnknownTransferData {
-        name: "phantom".into(),
-        suggestion: None,
-    })));
+    assert!(
+        errs.contains(&LinkError::new(LinkErrorKind::UnknownTransferData {
+            name: "phantom".into(),
+            suggestion: None,
+        }))
+    );
     assert!(errs.contains(&LinkError::new(LinkErrorKind::UnknownLoop {
         name: "z".into(),
         suggestion: None,
@@ -1446,7 +1448,10 @@ schedule for \"a.algo.nuc\" {
         .iter()
         .find(|e| matches!(&e.kind, LinkErrorKind::UnknownTransferData { name, .. } if name == "phantom"))
         .expect("UnknownTransferData(phantom) present");
-    let span = e.span.as_ref().expect("UnknownTransferData must carry a span");
+    let span = e
+        .span
+        .as_ref()
+        .expect("UnknownTransferData must carry a span");
     assert_eq!(e.source, nucleus_compiler::LinkErrorSource::Schedule);
     let expected = line_col_of(sched_src, "phantom");
     let (line, col) = nucleus_compiler::error::offset_to_line_col(sched_src, span.start);
@@ -1503,7 +1508,10 @@ schedule for \"a.algo.nuc\" {
         .iter()
         .find(|e| matches!(&e.kind, LinkErrorKind::UnknownLoop { name, .. } if name == "bogus_var"))
         .expect("UnknownLoop(bogus_var) present");
-    let span = e.span.as_ref().expect("UnknownLoop via check must carry a span");
+    let span = e
+        .span
+        .as_ref()
+        .expect("UnknownLoop via check must carry a span");
     assert_eq!(e.source, nucleus_compiler::LinkErrorSource::Schedule);
     let expected = line_col_of(sched_src, "bogus_var");
     let (line, col) = nucleus_compiler::error::offset_to_line_col(sched_src, span.start);

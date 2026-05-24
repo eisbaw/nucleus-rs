@@ -210,10 +210,7 @@ fn is_failed_sched_decl(failed_decls: &BTreeMap<String, ()>, name: &str) -> bool
 /// today, so the seam is purely structural; it pins the wiring so a
 /// future poison-source variant cannot silently re-open the dormant
 /// cascade gap.
-fn lower_sched_with_accum(
-    ast: &SchedAst,
-    mut acc: Accum,
-) -> Result<SchedIR, SchedLowerErrors> {
+fn lower_sched_with_accum(ast: &SchedAst, mut acc: Accum) -> Result<SchedIR, SchedLowerErrors> {
     let mut ir = SchedIR {
         algo_path: ast.algo_path.clone(),
         ..SchedIR::default()
@@ -400,11 +397,7 @@ fn lower_sched_with_accum(
                         Some(c) => c.span.clone(),
                         None => entry.name.span.clone(),
                     };
-                    worker_class_refs.push((
-                        entry.name.node.clone(),
-                        class.clone(),
-                        class_span,
-                    ));
+                    worker_class_refs.push((entry.name.node.clone(), class.clone(), class_span));
                     ir.workers.insert(
                         entry.name.node.clone(),
                         ResolvedWorker {
@@ -433,7 +426,9 @@ fn lower_sched_with_accum(
         // single ROOT diagnostic (missing workers decl), not N
         // cascade place-on-unknown-worker lines.
         acc.workers_missing = true;
-        acc.record_stmt_error(SchedLowerError::new(SchedLowerErrorKind::MissingWorkersDecl));
+        acc.record_stmt_error(SchedLowerError::new(
+            SchedLowerErrorKind::MissingWorkersDecl,
+        ));
     }
 
     // Synthesise the default class only after we know whether any
@@ -447,9 +442,9 @@ fn lower_sched_with_accum(
             // overwrite); the user's class stays.
             acc.record_decl_failure(
                 DEFAULT_WORKER_CLASS,
-                SchedLowerError::new(
-                    SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string()),
-                ),
+                SchedLowerError::new(SchedLowerErrorKind::DuplicateWorkerClass(
+                    DEFAULT_WORKER_CLASS.to_string(),
+                )),
             );
         } else {
             ir.worker_classes.insert(
@@ -489,8 +484,7 @@ fn lower_sched_with_accum(
     // the union of declared `worker_class` and worker names.
     accessible_by_refs.sort_by(|a, b| a.0.cmp(&b.0));
     for (region, name, span) in &accessible_by_refs {
-        let declared =
-            ir.worker_classes.contains_key(name) || ir.workers.contains_key(name);
+        let declared = ir.worker_classes.contains_key(name) || ir.workers.contains_key(name);
         if !declared {
             acc.record_stmt_error(SchedLowerError::at(
                 SchedLowerErrorKind::UnknownAccessibleByName {
@@ -779,8 +773,7 @@ impl Accum {
         // cascade. The empty workers symbol table makes every
         // `place X on W` an automatic UnknownPlaceWorker — pure
         // cascade of the already-reported root.
-        if self.workers_missing
-            && matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. })
+        if self.workers_missing && matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. })
         {
             return true;
         }
@@ -896,9 +889,7 @@ fn lower_place_data(
     let region = &pd.region.node;
     if ir.place_data.contains_key(data) {
         return Err(SchedLowerError::at(
-            SchedLowerErrorKind::DuplicatePlaceData {
-                data: data.clone(),
-            },
+            SchedLowerErrorKind::DuplicatePlaceData { data: data.clone() },
             pd.data.span.clone(),
         ));
     }
@@ -1159,9 +1150,7 @@ fn lower_transfer(
     let data_span = &t.data.span;
     if ir.transfers.contains_key(data) {
         return Err(SchedLowerError::at(
-            SchedLowerErrorKind::DuplicateTransfer {
-                data: data.clone(),
-            },
+            SchedLowerErrorKind::DuplicateTransfer { data: data.clone() },
             data_span.clone(),
         ));
     }
@@ -1174,9 +1163,7 @@ fn lower_transfer(
                     mode_flags += 1;
                     if mode_flags > 1 {
                         return Err(SchedLowerError::at(
-                            SchedLowerErrorKind::ConflictingTransferMode {
-                                data: data.clone(),
-                            },
+                            SchedLowerErrorKind::ConflictingTransferMode { data: data.clone() },
                             data_span.clone(),
                         ));
                     }
@@ -1405,9 +1392,7 @@ mod tests {
                 Kind::WorkerClass => {
                     for i in 0..k {
                         for _ in 0..m {
-                            src.push_str(&format!(
-                                "    worker_class n{i} {{ simd = none; }};\n"
-                            ));
+                            src.push_str(&format!("    worker_class n{i} {{ simd = none; }};\n"));
                         }
                     }
                     // Need a workers decl so the schedule is otherwise
@@ -1417,9 +1402,7 @@ mod tests {
                 Kind::MemoryRegion => {
                     for i in 0..k {
                         for _ in 0..m {
-                            src.push_str(&format!(
-                                "    memory_region n{i} {{ size = 32KB; }};\n"
-                            ));
+                            src.push_str(&format!("    memory_region n{i} {{ size = 32KB; }};\n"));
                         }
                     }
                     src.push_str("    workers = { host };\n");
@@ -1542,9 +1525,7 @@ mod tests {
                         let found = errs.errors().iter().any(|e| match (kind, &e.kind) {
                             (Kind::WorkerClass, SchedLowerErrorKind::DuplicateWorkerClass(n))
                             | (Kind::MemoryRegion, SchedLowerErrorKind::DuplicateMemoryRegion(n))
-                            | (Kind::Worker, SchedLowerErrorKind::DuplicateWorker(n)) => {
-                                n == &name
-                            }
+                            | (Kind::Worker, SchedLowerErrorKind::DuplicateWorker(n)) => n == &name,
                             _ => false,
                         });
                         assert!(
@@ -1581,7 +1562,11 @@ schedule for \"../prog.algo.nuc\" {
         let ast = parse_sched(src).expect("source must parse");
         let ir = lower_sched_with_accum(&ast, Accum::default())
             .expect("clean source must lower without errors");
-        assert_eq!(ir.worker_classes.len(), 2 + 1, "n0 + n1 + synthetic default");
+        assert_eq!(
+            ir.worker_classes.len(),
+            2 + 1,
+            "n0 + n1 + synthetic default"
+        );
         assert_eq!(ir.memory_regions.len(), 1, "n2");
         assert_eq!(ir.workers.len(), 2, "n3 + n4");
     }

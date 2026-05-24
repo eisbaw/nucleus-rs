@@ -73,7 +73,12 @@ impl std::fmt::Display for EmitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EmitError::KernelsReadFailed { path, source } => {
-                write!(f, "failed to read kernels.rs at {}: {}", path.display(), source)
+                write!(
+                    f,
+                    "failed to read kernels.rs at {}: {}",
+                    path.display(),
+                    source
+                )
             }
             EmitError::OutputCreateFailed { path, source } => write!(
                 f,
@@ -399,7 +404,10 @@ enum SliceForm {
 /// source of truth for declared shape (AlgoIR-free path; AC#2 of
 /// TASK-0124 still holds — no `algo.data` lookup).
 fn classify_data_slice(s: &DataSlice, ctx: &RenderCtx<'_>) -> Result<SliceForm, EmitError> {
-    debug_assert!(!s.indices.is_empty(), "classify_data_slice requires indices");
+    debug_assert!(
+        !s.indices.is_empty(),
+        "classify_data_slice requires indices"
+    );
     let name = data_name(s.data, ctx)?;
     let ty = ctx.sidecar.data_type(s.data).ok_or_else(|| {
         EmitError::ContractGap(format!(
@@ -750,10 +758,7 @@ pub fn render_fire_args_pub(
     render_fire_args(kernel, inputs, &ctx.inner())
 }
 
-pub fn render_flat_index_pub(
-    s: &DataSlice,
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
+pub fn render_flat_index_pub(s: &DataSlice, ctx: &RenderCtxPub<'_>) -> Result<String, EmitError> {
     render_flat_index(s, &ctx.inner())
 }
 
@@ -770,10 +775,7 @@ pub fn render_fire_output_assign_pub(
     render_fire_output_assign(o, rhs, &ctx.inner())
 }
 
-pub fn render_const_expr_pub(
-    e: &IrExpr,
-    ctx: &RenderCtxPub<'_>,
-) -> Result<String, EmitError> {
+pub fn render_const_expr_pub(e: &IrExpr, ctx: &RenderCtxPub<'_>) -> Result<String, EmitError> {
     render_const_expr(e, &ctx.inner())
 }
 

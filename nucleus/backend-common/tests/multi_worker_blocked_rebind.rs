@@ -110,9 +110,8 @@ fn rebinds_full_nest_in_loop_header_and_fire_body() {
     let src_iv = IterVar(1); // the strip-mined inner var (reuses src name)
     let tile_iv = IterVar(2); // enclosing tile loop
     let kernel = KernelId(7);
-    let (names, sidecar) = make_minimal_tables(
-        src_iv, "inner", tile_iv, "tile", 5, 17, kernel, "k",
-    );
+    let (names, sidecar) =
+        make_minimal_tables(src_iv, "inner", tile_iv, "tile", 5, 17, kernel, "k");
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
 
     // Inner loop body: `k(inner)` — the rebind target. Use the
@@ -201,9 +200,8 @@ fn rebinds_partial_nest_constant_base() {
     let src_iv = IterVar(1);
     let tile_iv = IterVar(2);
     let kernel = KernelId(7);
-    let (names, sidecar) = make_minimal_tables(
-        src_iv, "inner", tile_iv, "p_tile", 5, 19, kernel, "k",
-    );
+    let (names, sidecar) =
+        make_minimal_tables(src_iv, "inner", tile_iv, "p_tile", 5, 19, kernel, "k");
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
 
     let fire = Event::Fire {
@@ -240,15 +238,8 @@ fn rebinds_partial_nest_constant_base() {
     };
 
     let mut out = String::new();
-    render_worker_events(
-        &ctx,
-        WorkerId(0),
-        &[partial_tile_loop],
-        &mut out,
-        0,
-        "",
-    )
-    .expect("partial-nest rebinding emit must succeed");
+    render_worker_events(&ctx, WorkerId(0), &[partial_tile_loop], &mut out, 0, "")
+        .expect("partial-nest rebinding emit must succeed");
 
     // Inner partial loop header: concrete folded range `0..2`.
     assert!(
@@ -280,9 +271,8 @@ fn full_nest_without_enclosing_tile_returns_contract_gap() {
     let src_iv = IterVar(1);
     let tile_iv = IterVar(2); // declared in NameTables but not used as a wrapping loop
     let kernel = KernelId(7);
-    let (names, sidecar) = make_minimal_tables(
-        src_iv, "inner", tile_iv, "tile", 5, 17, kernel, "k",
-    );
+    let (names, sidecar) =
+        make_minimal_tables(src_iv, "inner", tile_iv, "tile", 5, 17, kernel, "k");
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
 
     let fire = Event::Fire {
@@ -332,15 +322,12 @@ fn non_blocked_loop_unchanged_partition_slice_path() {
     let src_iv = IterVar(1);
     let unused_tile = IterVar(2);
     let kernel = KernelId(7);
-    let (names, mut sidecar) = make_minimal_tables(
-        src_iv, "i", unused_tile, "_unused", 0, 8, kernel, "k",
-    );
+    let (names, mut sidecar) =
+        make_minimal_tables(src_iv, "i", unused_tile, "_unused", 0, 8, kernel, "k");
     // Per-worker slice override: worker 0 takes 0..4.
     let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     per_worker.insert(WorkerId(0), 0..4);
-    sidecar
-        .partition_worker_ranges
-        .insert(src_iv, per_worker);
+    sidecar.partition_worker_ranges.insert(src_iv, per_worker);
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
 
     let fire = Event::Fire {

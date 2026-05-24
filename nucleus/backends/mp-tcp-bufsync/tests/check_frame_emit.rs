@@ -48,7 +48,10 @@ fn build_per_worker(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
+    std::collections::BTreeMap<
+        nucleus_compiler::event::WorkerId,
+        Vec<nucleus_compiler::event::Event>,
+    >,
     NameTables,
     nucleus_compiler::sidecar::NameSidecar,
 ) {
@@ -365,7 +368,10 @@ fn build_per_worker_partitioned(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
+    std::collections::BTreeMap<
+        nucleus_compiler::event::WorkerId,
+        Vec<nucleus_compiler::event::Event>,
+    >,
     NameTables,
     nucleus_compiler::sidecar::NameSidecar,
 ) {
@@ -489,7 +495,8 @@ schedule for \"a.algo.nuc\" {
             "static NUC_CHECK_COUNT_n: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);"
         ).count();
         total_guard_count += bin_src
-            .matches("let _nuc_check_reporter_n = NucCheckCountReporter {").count();
+            .matches("let _nuc_check_reporter_n = NucCheckCountReporter {")
+            .count();
         total_fetch_add += bin_src
             .matches("NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);")
             .count();

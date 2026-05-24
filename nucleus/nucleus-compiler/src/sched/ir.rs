@@ -594,7 +594,11 @@ pub enum SchedLowerErrorKind {
     /// Both integers are static, so the check is purely on the option
     /// payloads. `var` is the loop variable; `unroll` and `block` are
     /// the literal values written.
-    UnrollNotDivisibleByBlock { var: String, unroll: u64, block: u64 },
+    UnrollNotDivisibleByBlock {
+        var: String,
+        unroll: u64,
+        block: u64,
+    },
     /// `loop V : block=N, vectorize=M` where `M` does not divide `N`
     /// (TASK-0144.01 Stage 3). PRD §6.3.3: "bad combinations rejected
     /// at compile time, not at runtime." `block=N` strip-mines the loop

@@ -78,16 +78,9 @@ fn header_full_nest_emits_concrete_range_and_extends_abs_subst() {
     let range = 0..4;
 
     let mut out = String::new();
-    let child = render_block_tag_loop_header(
-        &mut out,
-        0,
-        src_iv,
-        &range,
-        &tag,
-        Some(tile_iv),
-        &parent,
-    )
-    .expect("full-nest header emit must succeed");
+    let child =
+        render_block_tag_loop_header(&mut out, 0, src_iv, &range, &tag, Some(tile_iv), &parent)
+            .expect("full-nest header emit must succeed");
 
     // Header line: concrete folded range, exact byte spelling. This is
     // the load-bearing format string — the cross-backend bit-identical
@@ -128,16 +121,8 @@ fn header_partial_nest_uses_constant_base_in_abs_subst() {
     // consult `enclosing`, so the helper must succeed without it. This
     // also proves the typed-error path (test #3) is only taken on the
     // full-nest branch.
-    let child = render_block_tag_loop_header(
-        &mut out,
-        1,
-        src_iv,
-        &range,
-        &tag,
-        None,
-        &parent,
-    )
-    .expect("partial-nest header emit must succeed");
+    let child = render_block_tag_loop_header(&mut out, 1, src_iv, &range, &tag, None, &parent)
+        .expect("partial-nest header emit must succeed");
 
     // Indent 1 = 4 leading spaces.
     assert_eq!(out, "    for inner in (0_i64)..(2_i64) {\n");
@@ -175,15 +160,7 @@ fn missing_enclosing_tile_returns_typed_contract_gap() {
     let range = 0..4;
 
     let mut out = String::new();
-    let result = render_block_tag_loop_header(
-        &mut out,
-        0,
-        src_iv,
-        &range,
-        &tag,
-        None,
-        &parent,
-    );
+    let result = render_block_tag_loop_header(&mut out, 0, src_iv, &range, &tag, None, &parent);
     // `RenderCtxPub` does not implement Debug (its `names`/`sidecar`
     // borrows are opaque), so `.expect_err` would fail to compile —
     // pattern-match directly.
@@ -230,16 +207,9 @@ fn missing_loop_bounds_falls_back_to_zero_lo() {
     let range = 0..4;
 
     let mut out = String::new();
-    let child = render_block_tag_loop_header(
-        &mut out,
-        0,
-        src_iv,
-        &range,
-        &tag,
-        Some(tile_iv),
-        &parent,
-    )
-    .expect("no-loop-bounds fallback emit must succeed");
+    let child =
+        render_block_tag_loop_header(&mut out, 0, src_iv, &range, &tag, Some(tile_iv), &parent)
+            .expect("no-loop-bounds fallback emit must succeed");
 
     assert_eq!(out, "for inner in (0_i64)..(4_i64) {\n");
     let rebound = child

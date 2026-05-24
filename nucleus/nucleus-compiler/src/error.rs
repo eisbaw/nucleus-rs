@@ -268,10 +268,7 @@ fn map_one_chumsky_error(src: &str, err: &chumsky::error::Simple<char>) -> Parse
 /// (the `ParseErrors` non-empty invariant). This is an
 /// earlier-pass-guaranteed invariant, not diagnosable user input
 /// (decision-0003).
-pub fn map_all_chumsky_errors(
-    src: &str,
-    errors: Vec<chumsky::error::Simple<char>>,
-) -> ParseErrors {
+pub fn map_all_chumsky_errors(src: &str, errors: Vec<chumsky::error::Simple<char>>) -> ParseErrors {
     assert!(
         !errors.is_empty(),
         "chumsky returns a non-empty error list on parse failure"
@@ -428,10 +425,7 @@ mod fuzzy_tests {
     #[test]
     fn suggest_typo_returns_closest() {
         // One insertion, within bound max(1, 4/3)=1.
-        assert_eq!(
-            suggest("fooo", ["foo", "barbaz"]),
-            Some("foo".to_string())
-        );
+        assert_eq!(suggest("fooo", ["foo", "barbaz"]), Some("foo".to_string()));
     }
 
     #[test]
@@ -452,14 +446,8 @@ mod fuzzy_tests {
         // substitution each) and from `aa`. Among the equal-distance
         // set the lexicographically-first must win, deterministically,
         // regardless of input order.
-        assert_eq!(
-            suggest("ac", ["ad", "ab", "aa"]),
-            Some("aa".to_string())
-        );
-        assert_eq!(
-            suggest("ac", ["aa", "ab", "ad"]),
-            Some("aa".to_string())
-        );
+        assert_eq!(suggest("ac", ["ad", "ab", "aa"]), Some("aa".to_string()));
+        assert_eq!(suggest("ac", ["aa", "ab", "ad"]), Some("aa".to_string()));
         // Same multiset, reversed: identical result (determinism).
         assert_eq!(
             suggest("ac", ["ad", "ab", "aa"]),

@@ -12,9 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::event::{
-    DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId,
-};
+use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId};
 use nucleus_compiler::event_validate::{
     validate_event_lists, validate_event_lists_strict_per_worker, EventValidationError,
 };
@@ -38,10 +36,7 @@ fn one_worker(worker: u64, events: Vec<Event>) -> BTreeMap<WorkerId, Vec<Event>>
 }
 
 /// Build a two-worker map.
-fn two_workers(
-    a: (u64, Vec<Event>),
-    b: (u64, Vec<Event>),
-) -> BTreeMap<WorkerId, Vec<Event>> {
+fn two_workers(a: (u64, Vec<Event>), b: (u64, Vec<Event>)) -> BTreeMap<WorkerId, Vec<Event>> {
     let mut m = BTreeMap::new();
     m.insert(WorkerId(a.0), a.1);
     m.insert(WorkerId(b.0), b.1);
@@ -171,9 +166,7 @@ fn neg_empty_sync_participants() {
     let errors = validate_event_lists(&map).expect_err("must reject empty Sync");
     assert_eq!(
         errors,
-        vec![EventValidationError::EmptySyncParticipants {
-            sync: SyncTag(17)
-        }]
+        vec![EventValidationError::EmptySyncParticipants { sync: SyncTag(17) }]
     );
 
     // Strict subset also catches this — invariant (3) is per-event,

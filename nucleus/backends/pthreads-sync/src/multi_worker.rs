@@ -80,15 +80,13 @@ use std::fmt::Write as _;
 use nucleus_compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
-use backend_common::multi_worker_walker::{
-    self as walker, RendezvousId, WalkerCtx,
-};
+use crate::NameTables;
 use backend_common::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
     emit_count_static, CountCheckLoop,
 };
+use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
 use backend_common::render::{rust_scalar_type, EmitError};
-use crate::NameTables;
 
 // --------------------------------------------------------------------
 // Entry point
@@ -278,7 +276,11 @@ impl<'a> Plan<'a> {
             "/// slot is empty again and a subsequent `push` reuses it."
         )
         .ok();
-        writeln!(out, "struct Slot<T> {{ mu: Mutex<Option<T>>, cv: Condvar }}").ok();
+        writeln!(
+            out,
+            "struct Slot<T> {{ mu: Mutex<Option<T>>, cv: Condvar }}"
+        )
+        .ok();
         writeln!(out, "impl<T> Slot<T> {{").ok();
         writeln!(
             out,
@@ -542,7 +544,6 @@ impl<'a> Plan<'a> {
         Ok(out)
     }
 
-
     /// Pre-init set for a worker: cross-worker inputs it Waits on +
     /// data it writes via an indexed Fire output and never
     /// whole-array. Sorted by name.
@@ -569,7 +570,6 @@ impl<'a> Plan<'a> {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
     }
-
 }
 
 // --------------------------------------------------------------------
@@ -582,7 +582,6 @@ impl<'a> Plan<'a> {
 // so pthreads-async can call them directly. This module retains only
 // the per-backend `Plan` shape (`Slot<T>` substrate, one-shot
 // rendezvous semantics) plus the `Plan::emit` orchestration above.
-
 
 // --------------------------------------------------------------------
 // Type rendering helpers (sidecar-driven; no AlgoIR)

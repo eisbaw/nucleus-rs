@@ -133,7 +133,8 @@ fn ring_instance_decl_pins_arc_ring_shape() {
     // The instance is an Arc so the producer + consumer threads each
     // hold their own handle; Ring::new(4) sets the capacity to the
     // schedule's `transfer DATA : buffer=4` directive.
-    let expected = "    let ring_d1_s2: std::sync::Arc<Ring<Vec<f32>>> = std::sync::Arc::new(Ring::new(4));\n";
+    let expected =
+        "    let ring_d1_s2: std::sync::Arc<Ring<Vec<f32>>> = std::sync::Arc::new(Ring::new(4));\n";
     assert_eq!(
         out, expected,
         "ring instance decl must match the documented shape exactly:\n\

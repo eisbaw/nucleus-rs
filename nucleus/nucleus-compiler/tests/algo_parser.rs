@@ -15,11 +15,11 @@
 //! Stable across edits: we assert *counts*, not exact AST trees. If
 //! the example files grow or shrink, update the counts here.
 
+use nucleus_compiler::algo::span::Spanned;
 use nucleus_compiler::algo::{
     parse_algo, AlgoAst, Item, KernelDecl, ParseError, ParseErrorKind, ParseErrors, Purity,
     ScalarType, Stmt,
 };
-use nucleus_compiler::algo::span::Spanned;
 
 /// The body of the first top-level `for` loop. Spans (TASK-0082) mean
 /// items/statements are `Spanned<_>`; this projects through `.node` so
@@ -462,7 +462,8 @@ fn sched_directive_hint_fires_for_each_keyword() {
         let src = format!("for y : 1 .. 10 {{\n    {directive}\n}}\n");
         let err = expect_err(&src);
         assert!(
-            err.message.contains(&format!("`{kw}` is a schedule directive")),
+            err.message
+                .contains(&format!("`{kw}` is a schedule directive")),
             "directive `{directive}`: expected hint mentioning `{kw}`, got: {}",
             err.message
         );
@@ -721,7 +722,10 @@ fn pathological_input_terminates_bounded_and_deterministic() {
 /// case — is pinned precisely and separately by
 /// [`single_error_input_yields_exactly_one_error_no_cascade`].
 fn expect_err(src: &str) -> ParseError {
-    parse_algo(src).expect_err("expected parse error").first().clone()
+    parse_algo(src)
+        .expect_err("expected parse error")
+        .first()
+        .clone()
 }
 
 // --------------------------------------------------------------------

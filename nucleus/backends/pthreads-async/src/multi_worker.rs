@@ -45,13 +45,11 @@ use std::fmt::Write as _;
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
-use backend_common::multi_worker_walker::{
-    self as walker, RendezvousId, WalkerCtx,
-};
 use backend_common::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
     emit_count_static,
 };
+use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
 use backend_common::render::{render_array_init_for, rust_type_of};
 
 use crate::ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
@@ -228,13 +226,15 @@ impl<'a> Plan<'a> {
                 .transfer_buffer_for_seq
                 .get(seq)
                 .copied()
-                .ok_or_else(|| EmitError::ContractGap(format!(
-                    "pthreads-async Plan: (data={data:?}, seq={seq:?}) Push/Wait \
+                .ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "pthreads-async Plan: (data={data:?}, seq={seq:?}) Push/Wait \
                      pair has no entry in sidecar.transfer_buffer_for_seq. \
                      Either build_sidecar's walker missed an Xfer placeholder \
                      (TASK-0233 regression), or the EventList was projected \
                      without running transfer_inject first."
-                )))?;
+                    ))
+                })?;
             ring_caps.insert((*data, *seq), cap);
         }
 
@@ -244,8 +244,7 @@ impl<'a> Plan<'a> {
         // record the participant set the first time a SyncTag is seen.
         // Distinct tags are independent barriers, so partial/non-uniform
         // is fine without validation.
-        let mut barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>> =
-            BTreeMap::new();
+        let mut barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>> = BTreeMap::new();
         for w in &used_workers {
             walker::collect_barriers_by_tag(&per_worker[w], &mut |tag, parts| {
                 barrier_participants
@@ -404,18 +403,17 @@ impl<'a> Plan<'a> {
                 ))
             })?;
             let rty = rust_type_of(ty);
-            let cap = self.ring_caps.get(&(*data_id, *seq)).copied().ok_or_else(|| {
-                EmitError::ContractGap(format!(
-                    "ring_caps missing entry for (data={data_id:?}, seq={seq:?}); \
+            let cap = self
+                .ring_caps
+                .get(&(*data_id, *seq))
+                .copied()
+                .ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "ring_caps missing entry for (data={data_id:?}, seq={seq:?}); \
                      ring_ids and ring_caps must be 1:1 — see Plan::build invariant"
-                ))
-            })?;
-            emit_ring_instance_decl(
-                &mut out,
-                &format!("ring_{ring_id}"),
-                &rty,
-                cap,
-            );
+                    ))
+                })?;
+            emit_ring_instance_decl(&mut out, &format!("ring_{ring_id}"), &rty, cap);
         }
 
         // ---- Allocate barriers (ascending SyncTag order). ----
@@ -575,7 +573,8 @@ impl<'a> Plan<'a> {
 fn collect_unique_count_check_frames(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
 ) -> Vec<backend_common::check_frame::CountCheckLoop> {
-    let mut by_ident: BTreeMap<String, backend_common::check_frame::CountCheckLoop> = BTreeMap::new();
+    let mut by_ident: BTreeMap<String, backend_common::check_frame::CountCheckLoop> =
+        BTreeMap::new();
     for evs in per_worker.values() {
         for cf in collect_count_check_frames(evs) {
             by_ident.entry(cf.ident.clone()).or_insert(cf);
@@ -620,9 +619,10 @@ mod tests {
         sched_rel: &str,
     ) -> (BTreeMap<WorkerId, Vec<Event>>, NameTables, NameSidecar) {
         use nucleus_compiler::{
-            acfg_to_events, apply_block_transforms, build_acfg, build_sidecar,
+            acfg_to_events,
             algo::{lower_algo, parse_algo},
-            inject_syncs, inject_transfers, link,
+            apply_block_transforms, build_acfg, build_sidecar, inject_syncs, inject_transfers,
+            link,
             sched::{lower_sched, parse_sched},
         };
 
@@ -683,11 +683,7 @@ mod tests {
         let plan = Plan::build(&per_worker, &names, &sidecar).expect("Plan::build");
 
         // Host election: the worker named "host" wins.
-        let host_name = plan
-            .names
-            .worker
-            .get(&plan.host_worker)
-            .map(String::as_str);
+        let host_name = plan.names.worker.get(&plan.host_worker).map(String::as_str);
         assert_eq!(
             host_name,
             Some("host"),
@@ -729,11 +725,7 @@ mod tests {
             lower("13-cnn-inference", "schedules/pipeline_parallel.sched.nuc");
         let plan = Plan::build(&per_worker, &names, &sidecar).expect("Plan::build");
 
-        let host_name = plan
-            .names
-            .worker
-            .get(&plan.host_worker)
-            .map(String::as_str);
+        let host_name = plan.names.worker.get(&plan.host_worker).map(String::as_str);
         assert_eq!(host_name, Some("host"));
 
         assert_eq!(plan.used_workers.len(), 4, "host + 3 stages");
@@ -856,8 +848,7 @@ mod tests {
         // EMPTY sidecar.transfer_buffer_for_seq. Plan::build MUST
         // fail-loud — never default-size and produce a runtime
         // mismatch (the TASK-0233 contract-gap path).
-        let (per_worker, names, _real_sidecar) =
-            lower("02-split-add", "schedules/split.sched.nuc");
+        let (per_worker, names, _real_sidecar) = lower("02-split-add", "schedules/split.sched.nuc");
         let degenerate_sidecar = NameSidecar::default(); // empty maps
         let r = Plan::build(&per_worker, &names, &degenerate_sidecar);
         match r {

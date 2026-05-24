@@ -331,9 +331,7 @@ fn walk(
                 if body_events.is_empty() {
                     continue;
                 }
-                let projected_range = match per_worker_override
-                    .and_then(|m| m.get(&wid))
-                {
+                let projected_range = match per_worker_override.and_then(|m| m.get(&wid)) {
                     Some(r) => r.clone(),
                     None => range.clone(),
                 };

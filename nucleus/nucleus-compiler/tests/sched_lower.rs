@@ -404,7 +404,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on host;
 }
 ";
-    let err = lower_str(src).expect_err("missing workers decl must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("missing workers decl must fail")
+        .first()
+        .clone();
     assert_eq!(err.kind, SchedLowerErrorKind::MissingWorkersDecl);
 }
 
@@ -416,7 +419,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { w0 };
 }
 ";
-    let err = lower_str(src).expect_err("two workers decls must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("two workers decls must fail")
+        .first()
+        .clone();
     assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorkersDecl);
 }
 
@@ -427,8 +433,14 @@ schedule for \"../prog.algo.nuc\" {
     workers = { host, host };
 }
 ";
-    let err = lower_str(src).expect_err("duplicate worker name must fail").first().clone();
-    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorker("host".into()));
+    let err = lower_str(src)
+        .expect_err("duplicate worker name must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateWorker("host".into())
+    );
 }
 
 #[test]
@@ -467,7 +479,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { fe : missing_class, host : core, host : core };
 }
 ";
-    let err = lower_str(src).expect_err("multi-fault schedule must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("multi-fault schedule must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateWorker("host".into()),
@@ -479,10 +494,7 @@ schedule for \"../prog.algo.nuc\" {
     // variant, so a refactor reordering the two passes cannot pass by
     // coincidence (a loosened kind match would still bite here).
     assert!(
-        !matches!(
-            err.kind,
-            SchedLowerErrorKind::UnknownWorkerClass { .. }
-        ),
+        !matches!(err.kind, SchedLowerErrorKind::UnknownWorkerClass { .. }),
         "must NOT surface UnknownWorkerClass first on a dup+unknown-class \
          schedule; got {:?}",
         err.kind
@@ -497,7 +509,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { fe : missing_class };
 }
 ";
-    let err = lower_str(src).expect_err("unknown worker_class must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unknown worker_class must fail")
+        .first()
+        .clone();
     // TASK-0198: the only declared class is the synthetic
     // `__default` (no user `worker_class` decl); `missing_class`
     // (len 13) vs `__default` is far above the bound
@@ -523,8 +538,14 @@ schedule for \"../prog.algo.nuc\" {
     workers = { fe : core };
 }
 ";
-    let err = lower_str(src).expect_err("duplicate worker_class must fail").first().clone();
-    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateWorkerClass("core".into()));
+    let err = lower_str(src)
+        .expect_err("duplicate worker_class must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateWorkerClass("core".into())
+    );
 }
 
 #[test]
@@ -536,7 +557,10 @@ schedule for \"../prog.algo.nuc\" {
     place_data foo in nowhere;
 }
 ";
-    let err = lower_str(src).expect_err("unknown memory_region must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unknown memory_region must fail")
+        .first()
+        .clone();
     // TASK-0198: no `memory_region` declared at all → empty
     // candidate set → no suggestion. assert_eq! on the whole `.kind`
     // preserves the exact-variant+payload strength and adds the
@@ -560,8 +584,14 @@ schedule for \"../prog.algo.nuc\" {
     workers = { host };
 }
 ";
-    let err = lower_str(src).expect_err("duplicate memory_region must fail").first().clone();
-    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateMemoryRegion("sram".into()));
+    let err = lower_str(src)
+        .expect_err("duplicate memory_region must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateMemoryRegion("sram".into())
+    );
 }
 
 #[test]
@@ -573,8 +603,14 @@ schedule for \"../prog.algo.nuc\" {
     place k on w0;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate place must fail").first().clone();
-    assert_eq!(err.kind, SchedLowerErrorKind::DuplicatePlace { kernel: "k".into() });
+    let err = lower_str(src)
+        .expect_err("duplicate place must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicatePlace { kernel: "k".into() }
+    );
 }
 
 #[test]
@@ -588,7 +624,10 @@ schedule for \"../prog.algo.nuc\" {
     place_data foo in b;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate place_data must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate place_data must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicatePlaceData { data: "foo".into() }
@@ -604,8 +643,14 @@ schedule for \"../prog.algo.nuc\" {
     loop y : vectorize=8;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate loop must fail").first().clone();
-    assert_eq!(err.kind, SchedLowerErrorKind::DuplicateLoop { var: "y".into() });
+    let err = lower_str(src)
+        .expect_err("duplicate loop must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateLoop { var: "y".into() }
+    );
 }
 
 #[test]
@@ -617,7 +662,10 @@ schedule for \"../prog.algo.nuc\" {
     transfer img : async;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate transfer must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate transfer must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateTransfer { data: "img".into() }
@@ -633,7 +681,10 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : on_violation = log;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate check must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate check must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateCheck {
@@ -653,7 +704,10 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : latency_max = 0ms;
 }
 ";
-    let err = lower_str(src).expect_err("latency_max=0 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("latency_max=0 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ZeroLatencyMax {
@@ -673,7 +727,10 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : latency_max = 10ms, latency_max = 5ms;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate latency_max must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate latency_max must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateCheckAssertion {
@@ -696,7 +753,10 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : on_violation = panic;
 }
 ";
-    let err = lower_str(src).expect_err("on_violation-only check must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("on_violation-only check must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::MissingLatencyMax {
@@ -716,12 +776,13 @@ schedule for \"../prog.algo.nuc\" {
     loop n : block=4, pipeline=2;
 }
 ";
-    let err = lower_str(src).expect_err("block+pipeline on same loop must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("block+pipeline on same loop must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
-        SchedLowerErrorKind::BlockPipelineConflict {
-            var: "n".into(),
-        }
+        SchedLowerErrorKind::BlockPipelineConflict { var: "n".into() }
     );
 }
 
@@ -794,12 +855,13 @@ schedule for \"../prog.algo.nuc\" {
     check loop n : latency_max = 10ms;
 }
 ";
-    let err = lower_str(src).expect_err("check on strip-mined loop must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("check on strip-mined loop must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
-        SchedLowerErrorKind::CheckOnStripMinedLoop {
-            var: "n".into(),
-        }
+        SchedLowerErrorKind::CheckOnStripMinedLoop { var: "n".into() }
     );
 }
 
@@ -812,7 +874,10 @@ schedule for \"../prog.algo.nuc\" {
     check loop frame : latency_max = 10ms, on_violation = panic, on_violation = log;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate on_violation must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate on_violation must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateCheckAssertion {
@@ -830,7 +895,10 @@ schedule for \"../prog.algo.nuc\" {
     loop y : block=0;
 }
 ";
-    let err = lower_str(src).expect_err("block=0 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("block=0 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ZeroLoopOption {
@@ -848,7 +916,10 @@ schedule for \"../prog.algo.nuc\" {
     loop y : pipeline=0;
 }
 ";
-    let err = lower_str(src).expect_err("pipeline=0 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("pipeline=0 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ZeroLoopOption {
@@ -869,17 +940,24 @@ schedule for \"../prog.algo.nuc\" {
     loop y : pipeline=1;
 }
 ";
-    let err = lower_str(src).expect_err("pipeline=1 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("pipeline=1 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
-        SchedLowerErrorKind::UnitPipelineOption {
-            var: "y".into()
-        }
+        SchedLowerErrorKind::UnitPipelineOption { var: "y".into() }
     );
     // The error message names the option and tells the user how to fix.
     let msg = format!("{}", err.kind);
-    assert!(msg.contains("pipeline=1"), "msg should name pipeline=1: {msg}");
-    assert!(msg.contains("D >= 2") || msg.contains(">= 2"), "msg should suggest D >= 2: {msg}");
+    assert!(
+        msg.contains("pipeline=1"),
+        "msg should name pipeline=1: {msg}"
+    );
+    assert!(
+        msg.contains("D >= 2") || msg.contains(">= 2"),
+        "msg should suggest D >= 2: {msg}"
+    );
 }
 
 #[test]
@@ -982,7 +1060,10 @@ schedule for \"../prog.algo.nuc\" {
     loop y : vectorize=0;
 }
 ";
-    let err = lower_str(src).expect_err("vectorize=0 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("vectorize=0 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ZeroLoopOption {
@@ -1000,7 +1081,10 @@ schedule for \"../prog.algo.nuc\" {
     transfer img : async, buffer=0;
 }
 ";
-    let err = lower_str(src).expect_err("buffer=0 must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("buffer=0 must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ZeroBufferOption { data: "img".into() }
@@ -1015,7 +1099,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on bogus;
 }
 ";
-    let err = lower_str(src).expect_err("unknown worker must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unknown worker must fail")
+        .first()
+        .clone();
     // TASK-0198: `bogus` vs the sole declared worker `host` is far
     // above the bound max(1, 5/3) = 1 → no suggestion. Whole-`.kind`
     // assert_eq! strength preserved; suggestion asserted (AC#2).
@@ -1038,7 +1125,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on { w0, bogus };
 }
 ";
-    let err = lower_str(src).expect_err("unknown worker in set must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unknown worker in set must fail")
+        .first()
+        .clone();
     // TASK-0198: `bogus` vs declared workers {host, w0} — both far
     // above bound max(1, 5/3) = 1 → no suggestion. Strength
     // preserved; suggestion asserted (AC#2).
@@ -1064,7 +1154,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { host };
 }
 ";
-    let err = lower_str(src).expect_err("default-class collision must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("default-class collision must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateWorkerClass(DEFAULT_WORKER_CLASS.to_string())
@@ -1084,7 +1177,10 @@ schedule for \"../prog.algo.nuc\" {
     loop i : block=64, block=128;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate loop option must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate loop option must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateLoopOption {
@@ -1103,7 +1199,10 @@ schedule for \"../prog.algo.nuc\" {
     transfer x : sync, async;
 }
 ";
-    let err = lower_str(src).expect_err("sync+async must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("sync+async must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::ConflictingTransferMode { data: "x".into() }
@@ -1118,7 +1217,10 @@ schedule for \"../prog.algo.nuc\" {
     transfer x : async, buffer=1, buffer=2;
 }
 ";
-    let err = lower_str(src).expect_err("duplicate buffer option must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate buffer option must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicateTransferOption {
@@ -1167,7 +1269,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on { w0, w0 };
 }
 ";
-    let err = lower_str(src).expect_err("duplicate place worker must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("duplicate place worker must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicatePlaceWorker {
@@ -1196,7 +1301,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on { ghost, ghost };
 }
 ";
-    let err = lower_str(src).expect_err("dup+undeclared place worker must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("dup+undeclared place worker must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::DuplicatePlaceWorker {
@@ -1210,10 +1318,7 @@ schedule for \"../prog.algo.nuc\" {
     // variant, so a future change that loosens the kind match (or
     // reorders the scans) cannot pass by coincidence.
     assert!(
-        !matches!(
-            err.kind,
-            SchedLowerErrorKind::UnknownPlaceWorker { .. }
-        ),
+        !matches!(err.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. }),
         "must NOT surface UnknownPlaceWorker first; got {:?}",
         err.kind
     );
@@ -1242,7 +1347,10 @@ schedule for \"../prog.algo.nuc\" {
     memory_region R { size = 1KB; accessible_by = { ghost }; };
 }
 ";
-    let err = lower_str(src).expect_err("undeclared accessible_by name must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("undeclared accessible_by name must fail")
+        .first()
+        .clone();
     // TASK-0198: candidate union is {`__default` (synthetic class),
     // `host` (the declared worker)}. `ghost` → `host` is exactly one
     // deletion (distance 1), within bound max(1, 5/3) = 1 → the hint
@@ -1295,7 +1403,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { fe : cor };
 }
 ";
-    let err = lower_str(src).expect_err("typo'd worker_class must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("typo'd worker_class must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownWorkerClass {
@@ -1321,7 +1432,10 @@ schedule for \"../prog.algo.nuc\" {
     workers = { fe : zzzzzzzz };
 }
 ";
-    let err = lower_str(src).expect_err("unrelated worker_class must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unrelated worker_class must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownWorkerClass {
@@ -1343,7 +1457,10 @@ schedule for \"../prog.algo.nuc\" {
     place_data d in sra;
 }
 ";
-    let err = lower_str(src).expect_err("typo'd memory_region must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("typo'd memory_region must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownMemoryRegion {
@@ -1368,7 +1485,10 @@ schedule for \"../prog.algo.nuc\" {
     place_data d in zzzzzzzz;
 }
 ";
-    let err = lower_str(src).expect_err("unrelated memory_region must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unrelated memory_region must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownMemoryRegion {
@@ -1389,7 +1509,10 @@ schedule for \"../prog.algo.nuc\" {
     place k on hostt;
 }
 ";
-    let err = lower_str(src).expect_err("typo'd place worker must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("typo'd place worker must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownPlaceWorker {
@@ -1416,7 +1539,10 @@ schedule for \"../prog.algo.nuc\" {
     memory_region R { size = 1KB; accessible_by = { zzzzzzzz }; };
 }
 ";
-    let err = lower_str(src).expect_err("unrelated accessible_by must fail").first().clone();
+    let err = lower_str(src)
+        .expect_err("unrelated accessible_by must fail")
+        .first()
+        .clone();
     assert_eq!(
         err.kind,
         SchedLowerErrorKind::UnknownAccessibleByName {
@@ -1516,7 +1642,10 @@ schedule for \"../p.algo.nuc\" {
     workers = { fe : core };
 }
 ";
-        let err = lower_str(src).expect_err("duplicate worker_class must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("duplicate worker_class must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, SchedLowerErrorKind::DuplicateWorkerClass(ref n) if n == "core"),
             "got {err:?}"
@@ -1530,7 +1659,11 @@ schedule for \"../p.algo.nuc\" {
             .0;
         let core_off = second_decl + "worker_class ".len();
         let expected = offset_to_line_col(src, core_off);
-        assert_eq!(expected, (3, 18), "sanity: duplicate `core` at line 3 col 18");
+        assert_eq!(
+            expected,
+            (3, 18),
+            "sanity: duplicate `core` at line 3 col 18"
+        );
         assert_eq!(
             sched_err_line_col(src, &err),
             expected,
@@ -1551,7 +1684,10 @@ schedule for \"../p.algo.nuc\" {
     place k on bogus;
 }
 ";
-        let err = lower_str(src).expect_err("unknown place worker must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("unknown place worker must error")
+            .first()
+            .clone();
         assert!(
             matches!(
                 err.kind,
@@ -1596,7 +1732,10 @@ schedule for \"../p.algo.nuc\" {
     memory_region R { size = 1KB; accessible_by = { ghost }; };
 }
 ";
-        let err = lower_str(src).expect_err("undeclared accessible_by must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("undeclared accessible_by must error")
+            .first()
+            .clone();
         assert!(
             matches!(
                 err.kind,
@@ -1645,7 +1784,10 @@ schedule for \"../p.algo.nuc\" {
     workers = { host, host };
 }
 ";
-        let err = lower_str(src).expect_err("duplicate worker must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("duplicate worker must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, SchedLowerErrorKind::DuplicateWorker(ref n) if n == "host"),
             "got {err:?}"
@@ -1676,7 +1818,10 @@ schedule for \"../p.algo.nuc\" {
     place k on host;
 }
 ";
-        let err = lower_str(src).expect_err("missing workers decl must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("missing workers decl must error")
+            .first()
+            .clone();
         assert!(
             matches!(err.kind, SchedLowerErrorKind::MissingWorkersDecl),
             "got {err:?}"
@@ -1704,7 +1849,10 @@ schedule for \"../p.algo.nuc\" {
     workers = { host };
 }
 ";
-        let err = lower_str(src).expect_err("default-class collision must error").first().clone();
+        let err = lower_str(src)
+            .expect_err("default-class collision must error")
+            .first()
+            .clone();
         assert!(
             matches!(
                 err.kind,
@@ -1798,21 +1946,15 @@ fn sched_multi_error_independents_count_for_any_k_l() {
             // pair is independent: distinct class names, no
             // cross-pair dependencies.
             for i in 0..k {
-                src.push_str(&format!(
-                    "    worker_class ck{i} {{ simd = none; }};\n"
-                ));
-                src.push_str(&format!(
-                    "    worker_class ck{i} {{ simd = none; }};\n"
-                ));
+                src.push_str(&format!("    worker_class ck{i} {{ simd = none; }};\n"));
+                src.push_str(&format!("    worker_class ck{i} {{ simd = none; }};\n"));
             }
             // The L independent ZeroBufferOption transfers need
             // distinct data names so each fires its own
             // ZeroBufferOption (rather than collapsing into a single
             // DuplicateTransfer).
             for j in 0..l {
-                src.push_str(&format!(
-                    "    transfer x{j} : sync, buffer=0;\n"
-                ));
+                src.push_str(&format!("    transfer x{j} : sync, buffer=0;\n"));
             }
             // Minimal workers decl so the schedule isn't also
             // rejected with MissingWorkersDecl.
@@ -1834,22 +1976,12 @@ fn sched_multi_error_independents_count_for_any_k_l() {
             let dup_class_count = errs
                 .errors()
                 .iter()
-                .filter(|e| {
-                    matches!(
-                        e.kind,
-                        SchedLowerErrorKind::DuplicateWorkerClass(_)
-                    )
-                })
+                .filter(|e| matches!(e.kind, SchedLowerErrorKind::DuplicateWorkerClass(_)))
                 .count();
             let zero_buf_count = errs
                 .errors()
                 .iter()
-                .filter(|e| {
-                    matches!(
-                        e.kind,
-                        SchedLowerErrorKind::ZeroBufferOption { .. }
-                    )
-                })
+                .filter(|e| matches!(e.kind, SchedLowerErrorKind::ZeroBufferOption { .. }))
                 .count();
             assert_eq!(
                 dup_class_count, k,
@@ -2075,12 +2207,10 @@ fn workers_missing_cascade_collapses_place_unknown_worker_for_any_n() {
         }
         src.push_str("}\n");
 
-        let errs = lower_str(&src)
-            .expect_err("missing workers + N places must error");
+        let errs = lower_str(&src).expect_err("missing workers + N places must error");
         // Determinism cross-check: re-lower the same source; the
         // bundle must be byte-identical.
-        let errs2 = lower_str(&src)
-            .expect_err("missing workers + N places must error (run 2)");
+        let errs2 = lower_str(&src).expect_err("missing workers + N places must error (run 2)");
         assert_eq!(
             errs, errs2,
             "(N={n}): multi-error bundle must be deterministic"
@@ -2095,14 +2225,18 @@ fn workers_missing_cascade_collapses_place_unknown_worker_for_any_n() {
             errs.errors().len()
         );
         assert!(
-            matches!(errs.errors()[0].kind, SchedLowerErrorKind::MissingWorkersDecl),
+            matches!(
+                errs.errors()[0].kind,
+                SchedLowerErrorKind::MissingWorkersDecl
+            ),
             "(N={n}): surviving error must be MissingWorkersDecl root, got {:?}",
             errs.errors()[0].kind
         );
         // Explicit non-leak guard: no UnknownPlaceWorker survived.
-        let leaked_unknown_worker = errs.errors().iter().any(|e| {
-            matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. })
-        });
+        let leaked_unknown_worker = errs
+            .errors()
+            .iter()
+            .any(|e| matches!(e.kind, SchedLowerErrorKind::UnknownPlaceWorker { .. }));
         assert!(
             !leaked_unknown_worker,
             "(N={n}): no UnknownPlaceWorker may leak — every `place X on W` \
@@ -2129,8 +2263,8 @@ schedule for \"../prog.algo.nuc\" {
     place k on no_such_worker_typo;
 }
 ";
-    let errs = lower_str(src)
-        .expect_err("unknown-worker reference with workers-decl present must error");
+    let errs =
+        lower_str(src).expect_err("unknown-worker reference with workers-decl present must error");
     assert_eq!(
         errs.errors().len(),
         1,

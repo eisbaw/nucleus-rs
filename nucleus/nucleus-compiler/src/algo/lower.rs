@@ -331,12 +331,11 @@ impl Accum {
     /// is an independent property of the statement itself.
     fn is_cascade_of_failed_decl(&self, e: &LowerError) -> bool {
         let referenced = match &e.kind {
-            LowerErrorKind::UnknownIdent(n)
-            | LowerErrorKind::AssignmentTargetNotData(n) => n.as_str(),
-            LowerErrorKind::ConstRefersToNonConst { unknown_ident, .. }
-            | LowerErrorKind::ShapeRefersToNonConst { unknown_ident, .. } => {
-                unknown_ident.as_str()
+            LowerErrorKind::UnknownIdent(n) | LowerErrorKind::AssignmentTargetNotData(n) => {
+                n.as_str()
             }
+            LowerErrorKind::ConstRefersToNonConst { unknown_ident, .. }
+            | LowerErrorKind::ShapeRefersToNonConst { unknown_ident, .. } => unknown_ident.as_str(),
             _ => return false,
         };
         self.failed_decls.contains_key(referenced)

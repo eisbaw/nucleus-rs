@@ -494,8 +494,9 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
     let (b_hw0, b_w0w1) = (tag_hw0.0, tag_w0w1.0);
     for (b, label) in [(b_hw0, "{host,w0}"), (b_w0w1, "{w0,w1}")] {
         assert!(
-            main_rs
-                .contains(&format!("let bar_{b}: Arc<Barrier> = Arc::new(Barrier::new(2))")),
+            main_rs.contains(&format!(
+                "let bar_{b}: Arc<Barrier> = Arc::new(Barrier::new(2))"
+            )),
             "expected a 2-party Barrier for the {label} barrier (tag {b}):\n{main_rs}"
         );
     }
@@ -666,8 +667,7 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     // TASK-0238 (cycle 25): the 5-field NameTables literal collapsed
     // to the centralized constructor.
@@ -686,7 +686,9 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
     // onto each of {w0, w1}, so the rendered main.rs contains
     // exactly TWO occurrences (one per spawned worker; host is not
     // a participant of partition=workers).
-    let start_count = main_rs.matches("let _check_start = std::time::Instant::now();").count();
+    let start_count = main_rs
+        .matches("let _check_start = std::time::Instant::now();")
+        .count();
     assert_eq!(
         start_count, 2,
         "expected 2 `Instant::now()` instrumentation points (one per \
@@ -876,7 +878,13 @@ fn lower_multi_worker_check_schedule(
             inject_check_frames: true,
         },
     );
-    (r.per_worker, r.names, r.sidecar, kernels_path, scratch.join("gen"))
+    (
+        r.per_worker,
+        r.names,
+        r.sidecar,
+        kernels_path,
+        scratch.join("gen"),
+    )
 }
 
 #[test]
@@ -884,10 +892,8 @@ fn multi_worker_check_loop_log_emit_pins_per_thread_eprintln_template() {
     // Mirrors single-worker check_frame_codegen::log_on_violation_codegen
     // shape but exercises the MULTI-WORKER code path (render_worker_events
     // Log branch via the shared `emit_log_branch` helper, TASK-0222).
-    let (per_worker, names, sidecar, kernels_path, out_dir) = lower_multi_worker_check_schedule(
-        CHECK_LOG_SCHED_SRC,
-        "multi_worker_check_loop_log_emit",
-    );
+    let (per_worker, names, sidecar, kernels_path, out_dir) =
+        lower_multi_worker_check_schedule(CHECK_LOG_SCHED_SRC, "multi_worker_check_loop_log_emit");
     let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
         .expect("multi-worker emit with on_violation=log must succeed");
     let main_rs = fs::read_to_string(&result.main_rs).unwrap();
@@ -946,7 +952,8 @@ fn multi_worker_check_loop_count_emit_pins_static_guard_and_fetch_add_templates(
     // (b) ONE Drop guard local in fn main (host thread owns the
     // summary printing — Drop runs after all handle.join() returns).
     let guard_count = main_rs
-        .matches("let _nuc_check_reporter_n = NucCheckCountReporter {").count();
+        .matches("let _nuc_check_reporter_n = NucCheckCountReporter {")
+        .count();
     assert_eq!(
         guard_count, 1,
         "expected exactly 1 NucCheckCountReporter guard local in fn main \
@@ -956,9 +963,7 @@ fn multi_worker_check_loop_count_emit_pins_static_guard_and_fetch_add_templates(
     // (c) EXACTLY 2 fetch_add sites (one per spawned worker; host is
     // not a participant of partition=workers).
     let fetch_add_count = main_rs
-        .matches(
-            "NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);",
-        )
+        .matches("NUC_CHECK_COUNT_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);")
         .count();
     assert_eq!(
         fetch_add_count, 2,

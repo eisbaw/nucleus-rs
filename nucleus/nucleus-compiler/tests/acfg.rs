@@ -469,11 +469,26 @@ fn effect_statement_records_whole_array_read_with_no_indices() {
 #[test]
 fn access_lists_mirror_bare_lists_for_all_e2e_examples() {
     for (algo, sched) in [
-        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
-        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
-        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
-        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
-        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+        (
+            "01-elementwise-add/prog.algo.nuc",
+            "01-elementwise-add/schedules/naive.sched.nuc",
+        ),
+        (
+            "02-split-add/prog.algo.nuc",
+            "02-split-add/schedules/split.sched.nuc",
+        ),
+        (
+            "03-reduction/prog.algo.nuc",
+            "03-reduction/schedules/naive.sched.nuc",
+        ),
+        (
+            "05-stencil/prog.algo.nuc",
+            "05-stencil/schedules/naive.sched.nuc",
+        ),
+        (
+            "07-matmul/prog.algo.nuc",
+            "07-matmul/schedules/naive.sched.nuc",
+        ),
     ] {
         let linked = linked_from_paths(algo, sched);
         let acfg = build_acfg(&linked).expect("build_acfg");

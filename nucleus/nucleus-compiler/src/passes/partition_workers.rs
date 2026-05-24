@@ -248,7 +248,13 @@ pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Pa
         // twice is fine and lets the loop above stay "validate then
         // commit" with no partial state.
         if let Err(e) = compute_partition_bands(range.start, range.end, body_workers.len()) {
-            return Err(map_band_error(var, range.start, range.end, body_workers.len(), e));
+            return Err(map_band_error(
+                var,
+                range.start,
+                range.end,
+                body_workers.len(),
+                e,
+            ));
         }
         to_record.push((var.clone(), iter_var, range, body_workers));
     }

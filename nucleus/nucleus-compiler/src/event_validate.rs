@@ -442,9 +442,7 @@ fn walk_events(
                 );
             }
             Event::Sync {
-                participants,
-                sync,
-                ..
+                participants, sync, ..
             } => {
                 // (3) non-empty participants.
                 if participants.is_empty() {

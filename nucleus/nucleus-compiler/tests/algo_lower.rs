@@ -645,10 +645,7 @@ fn located_errors_carry_correct_line_col() {
             "DuplicateConst must point at the duplicate declaration's identifier"
         );
         // And the driver-facing rendering carries it.
-        assert_eq!(
-            err.display_with_src(src),
-            "duplicate const `N` at 2:7"
-        );
+        assert_eq!(err.display_with_src(src), "duplicate const `N` at 2:7");
     }
 
     // Case 2: unknown identifier in a kernel-call RHS. Points at the
@@ -699,7 +696,11 @@ x <-- f(y);\n";
         // second `x <-- `).
         let second_assign = src.match_indices("x <-- ").nth(1).expect("two `x <-- `").0;
         let expected = offset_to_line_col(src, second_assign);
-        assert_eq!(expected, (7, 1), "sanity: re-assignment `x` is at line 7 col 1");
+        assert_eq!(
+            expected,
+            (7, 1),
+            "sanity: re-assignment `x` is at line 7 col 1"
+        );
         assert_eq!(
             err_line_col(src, &err),
             expected,
@@ -793,9 +794,10 @@ for j : 0 .. f() {
     // (the loop-bound one; the body's `f()` is never reached because
     // the bound errors first). Validate via `offset_to_line_col`
     // against the crafted source, not a guessed constant.
-    let bound_call_at = src.find("0 .. f()").map(|i| i + "0 .. ".len()).expect(
-        "loop-bound call `f()` present in crafted source",
-    );
+    let bound_call_at = src
+        .find("0 .. f()")
+        .map(|i| i + "0 .. ".len())
+        .expect("loop-bound call `f()` present in crafted source");
     let expected = offset_to_line_col(src, bound_call_at);
     assert_eq!(
         expected,
@@ -841,8 +843,7 @@ fn m_independent_bad_decls_yield_exactly_m_errors() {
         for i in 0..m {
             src.push_str(&format!("const Bad{i} : usize = 1 / 0;\n"));
         }
-        let errs = lower_str(&src)
-            .expect_err("every Bad{i} is an independent div-by-zero");
+        let errs = lower_str(&src).expect_err("every Bad{i} is an independent div-by-zero");
 
         assert_eq!(
             errs.errors().len(),
@@ -916,8 +917,7 @@ fn one_failed_const_with_n_dependents_yields_exactly_one_error() {
         for i in 0..n {
             src.push_str(&format!("data d{i} : f32[N];\n"));
         }
-        let errs = lower_str(&src)
-            .expect_err("the failed const N must produce its root error");
+        let errs = lower_str(&src).expect_err("the failed const N must produce its root error");
 
         assert_eq!(
             errs.errors().len(),
@@ -1206,9 +1206,7 @@ fn transitive_cascade_collapses_for_any_k_l() {
 
                     // Sink kernel for AssignmentLhs (every kind) and for
                     // BareCallRead on data/const cascade-decls.
-                    src.push_str(
-                        "kernel sk : () -> f32[1] effectful;\n",
-                    );
+                    src.push_str("kernel sk : () -> f32[1] effectful;\n");
                     // BareCallRead sinks differ by cascade-kind:
                     // - data: `dump_arr(f32[N])` — takes the cascade-
                     //   data's f32[N] shape. The sink ITSELF references
@@ -1253,8 +1251,7 @@ fn transitive_cascade_collapses_for_any_k_l() {
                         }
                     }
 
-                    let errs = lower_str(&src)
-                        .expect_err("the root failed const must error");
+                    let errs = lower_str(&src).expect_err("the root failed const must error");
 
                     // AC#1 + AC#2: EXACTLY 1 error for every cell.
                     assert_eq!(
@@ -1265,10 +1262,7 @@ fn transitive_cascade_collapses_for_any_k_l() {
                          root ConstDivByZero{{N}}), got {} kinds={:?} — \
                          source:\n{src}",
                         errs.errors().len(),
-                        errs.errors()
-                            .iter()
-                            .map(|e| &e.kind)
-                            .collect::<Vec<_>>(),
+                        errs.errors().iter().map(|e| &e.kind).collect::<Vec<_>>(),
                     );
 
                     // The sole survivor is the root.
@@ -1514,9 +1508,8 @@ fn duplicate_of_failed_decl_fires_for_any_k_m() {
                     }
                 }
 
-                let errs = lower_str(&src).expect_err(
-                    "a poisoned root must produce at least one error",
-                );
+                let errs =
+                    lower_str(&src).expect_err("a poisoned root must produce at least one error");
 
                 let expected = k + k * m;
                 assert_eq!(
@@ -1866,8 +1859,15 @@ fn located_effect_purity_error_has_correct_line_col() {
     // point at the line-4 occurrence.
     let last_pure_k = src.rfind("pure_k").expect("`pure_k` in source");
     let expected = offset_to_line_col(src, last_pure_k);
-    assert_eq!(expected, (4, 1), "sanity: bare-call `pure_k` is at line 4 col 1");
-    let span = err.span.clone().expect("EffectCalleeNotEffectful carries a span");
+    assert_eq!(
+        expected,
+        (4, 1),
+        "sanity: bare-call `pure_k` is at line 4 col 1"
+    );
+    let span = err
+        .span
+        .clone()
+        .expect("EffectCalleeNotEffectful carries a span");
     assert_eq!(
         offset_to_line_col(src, span.start),
         expected,
@@ -1937,7 +1937,11 @@ pure_b(y);
     // "wrong token on the line" regression that would still produce
     // two distinct spans (defeating the older `spans[0] != spans[1]`
     // assertion). TASK-0202.
-    let spans: Vec<_> = errs.errors().iter().filter_map(|e| e.span.clone()).collect();
+    let spans: Vec<_> = errs
+        .errors()
+        .iter()
+        .filter_map(|e| e.span.clone())
+        .collect();
     assert_eq!(spans.len(), 2, "both errors must carry spans");
 
     // `pure_a` appears three times in the source: line 5 (kernel
@@ -2057,8 +2061,7 @@ fn effect_stmt_to_declared_but_failed_kernel_collapses_to_root() {
 kernel bad_kernel : (i32[BAD_CONST]) -> () pure;\n\
 bad_kernel();\n";
 
-    let errs = lower_str(src)
-        .expect_err("the failed const must produce its root error");
+    let errs = lower_str(src).expect_err("the failed const must produce its root error");
 
     // AC#1: EXACTLY one error survives — the root `ConstDivByZero`.
     // The kernel decl's `ShapeRefersToNonConst` is a cascade
@@ -2098,7 +2101,8 @@ bad_kernel();\n";
     let div_at = src.find("1 / 0").expect("`1 / 0` in source");
     let expected = offset_to_line_col(src, div_at);
     assert_eq!(
-        expected, (1, 27),
+        expected,
+        (1, 27),
         "sanity: the `1 / 0` of BAD_CONST is on line 1 col 27"
     );
     assert_eq!(
@@ -2112,9 +2116,10 @@ bad_kernel();\n";
     // vector. This is the discriminating assertion for the TASK-0092
     // case-1 transitive-poison path: if it regressed, the bare-call
     // would leak an `UnknownIdent("bad_kernel")` cascade here.
-    let leaked_unknown_ident = errs.errors().iter().any(|e| {
-        matches!(&e.kind, LowerErrorKind::UnknownIdent(n) if n == "bad_kernel")
-    });
+    let leaked_unknown_ident = errs
+        .errors()
+        .iter()
+        .any(|e| matches!(&e.kind, LowerErrorKind::UnknownIdent(n) if n == "bad_kernel"));
     assert!(
         !leaked_unknown_ident,
         "no `UnknownIdent(\"bad_kernel\")` may leak — the kernel name \
@@ -2312,8 +2317,7 @@ fn for_body_independents_survive_cascade_poisoned_bound_for_any_k_m() {
     for k in [1usize, 2, 3] {
         for m in [0usize, 1, 2, 3] {
             let src = render(k, m);
-            let errs = lower_str(&src)
-                .expect_err("the root failed const must produce its error");
+            let errs = lower_str(&src).expect_err("the root failed const must produce its error");
             let all = errs.errors();
 
             let expected = 1 + k * m;

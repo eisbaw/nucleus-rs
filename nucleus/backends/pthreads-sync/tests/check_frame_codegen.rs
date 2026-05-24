@@ -19,11 +19,11 @@ use nucleus_compiler::acfg_to_events;
 use nucleus_compiler::algo::{lower_algo, parse_algo};
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sched::{lower_sched, parse_sched};
+use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::{
     apply_block_transforms, apply_partition_workers, build_acfg, build_sidecar,
     inject_check_frames, inject_syncs, inject_transfers, link,
 };
-use nucleus_compiler::sidecar::NameSidecar;
 use pthreads_sync::NameTables;
 
 fn build_per_worker_with_names(
@@ -41,8 +41,7 @@ fn build_per_worker_with_names(
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).expect("sidecar");
     // TASK-0238 (cycle 25): 5-field NameTables literal collapsed to
     // the centralized constructor.
@@ -369,10 +368,12 @@ fn cargo_build_and_run(project_dir: &std::path::Path) -> std::process::Output {
         );
     }
     let bin = target_dir.join("debug/nuc-generated");
-    assert!(bin.exists(), "generated binary missing at {}", bin.display());
-    Command::new(&bin)
-        .output()
-        .expect("run generated binary")
+    assert!(
+        bin.exists(),
+        "generated binary missing at {}",
+        bin.display()
+    );
+    Command::new(&bin).output().expect("run generated binary")
 }
 
 #[test]

@@ -138,17 +138,15 @@ pub fn lower_for_test(
     opts: &LowerForTestOpts,
 ) -> LowerForTestResult {
     use nucleus_compiler::{
-        acfg_to_events, apply_block_transforms, apply_partition_workers, build_acfg,
-        build_sidecar,
+        acfg_to_events,
         algo::{lower_algo, parse_algo},
+        apply_block_transforms, apply_partition_workers, build_acfg, build_sidecar,
         inject_check_frames, inject_syncs, inject_transfers, link,
         sched::{lower_sched, parse_sched},
     };
 
-    let algo_ir =
-        lower_algo(&parse_algo(algo_src).expect("parse_algo")).expect("lower_algo");
-    let sched_ir =
-        lower_sched(&parse_sched(sched_src).expect("parse_sched")).expect("lower_sched");
+    let algo_ir = lower_algo(&parse_algo(algo_src).expect("parse_algo")).expect("lower_algo");
+    let sched_ir = lower_sched(&parse_sched(sched_src).expect("parse_sched")).expect("lower_sched");
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = if opts.apply_block_transforms {
@@ -317,11 +315,7 @@ schedule for "anything.algo.nuc" {
 
     #[test]
     fn single_worker_default_opts_produces_complete_result() {
-        let r = lower_for_test(
-            ALGO_SRC,
-            SCHED_SRC,
-            &LowerForTestOpts::default(),
-        );
+        let r = lower_for_test(ALGO_SRC, SCHED_SRC, &LowerForTestOpts::default());
         assert!(!r.per_worker.is_empty(), "per_worker must be non-empty");
         assert!(
             !r.names.data.is_empty(),

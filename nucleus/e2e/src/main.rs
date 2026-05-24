@@ -192,12 +192,12 @@ impl Milestone {
     /// adding an M4+ cell does not require a code change here). Any
     /// other shape is a typed error.
     fn parse(s: &str) -> Result<Milestone, String> {
-        let rest = s.strip_prefix('M').ok_or_else(|| {
-            format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)")
-        })?;
-        let k: u8 = rest.parse().map_err(|_| {
-            format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)")
-        })?;
+        let rest = s
+            .strip_prefix('M')
+            .ok_or_else(|| format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)"))?;
+        let k: u8 = rest
+            .parse()
+            .map_err(|_| format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)"))?;
         if k > 6 {
             return Err(format!(
                 "milestone `{s}` is out of the tier-1 range M0..M6 (PRD §11)"
@@ -234,9 +234,7 @@ impl Manifest {
     /// mis-bucket — mis-bucketing would let `--milestone M1`
     /// silently drop a cell that was really M1, the TASK-0163
     /// silent-vanish class generalised to the milestone axis.
-    fn required_milestones(
-        &self,
-    ) -> Result<std::collections::BTreeMap<Cell, Milestone>, String> {
+    fn required_milestones(&self) -> Result<std::collections::BTreeMap<Cell, Milestone>, String> {
         let mut map = std::collections::BTreeMap::new();
         for r in &self.required {
             let m = Milestone::parse(&r.milestone).map_err(|e| {
@@ -253,9 +251,7 @@ impl Manifest {
     /// Parse + validate every `[[skip]]` entry, returning a
     /// `Cell -> (reason, Milestone)` map. Same fail-loud contract as
     /// `required_milestones`.
-    fn skip_table(
-        &self,
-    ) -> Result<std::collections::BTreeMap<Cell, (String, Milestone)>, String> {
+    fn skip_table(&self) -> Result<std::collections::BTreeMap<Cell, (String, Milestone)>, String> {
         let mut map = std::collections::BTreeMap::new();
         for s in &self.skip {
             let m = Milestone::parse(&s.milestone).map_err(|e| {
@@ -294,10 +290,7 @@ impl CapabilitiesSniff {
     /// absent/unknown transport, conservatively) ⇒ single binary.
     /// Anything else ⇒ multi-process, launched via `run.sh`.
     fn is_single_binary(&self) -> bool {
-        matches!(
-            self.transport.as_deref(),
-            None | Some("shared-memory")
-        )
+        matches!(self.transport.as_deref(), None | Some("shared-memory"))
     }
 }
 
@@ -453,9 +446,7 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                     format!("flag `--jobs` requires a positive integer, got `{raw}`")
                 })?;
                 if n == 0 {
-                    return Err(
-                        "flag `--jobs` must be >= 1 (0 would spawn no workers)".to_string()
-                    );
+                    return Err("flag `--jobs` must be >= 1 (0 would spawn no workers)".to_string());
                 }
                 if n > MAX_JOBS {
                     return Err(format!(
@@ -489,9 +480,7 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 // just to discover the path was bad.
                 let raw = need_val(i)?;
                 if raw.is_empty() {
-                    return Err(
-                        "flag `--emit-timings` requires a non-empty PATH".to_string()
-                    );
+                    return Err("flag `--emit-timings` requires a non-empty PATH".to_string());
                 }
                 a.emit_timings = Some(PathBuf::from(raw));
                 i += 2;
@@ -502,9 +491,7 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
             x if x.starts_with("--emit-timings=") => {
                 let raw = &x["--emit-timings=".len()..];
                 if raw.is_empty() {
-                    return Err(
-                        "flag `--emit-timings=` requires a non-empty PATH".to_string()
-                    );
+                    return Err("flag `--emit-timings=` requires a non-empty PATH".to_string());
                 }
                 a.emit_timings = Some(PathBuf::from(raw));
                 i += 1;
@@ -519,9 +506,7 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
                 // time saves the matrix cost.
                 let raw = need_val(i)?;
                 if raw.is_empty() {
-                    return Err(
-                        "flag `--baseline` requires a non-empty PATH".to_string()
-                    );
+                    return Err("flag `--baseline` requires a non-empty PATH".to_string());
                 }
                 let p = PathBuf::from(&raw);
                 if !p.exists() {
@@ -539,9 +524,7 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
             x if x.starts_with("--baseline=") => {
                 let raw = &x["--baseline=".len()..];
                 if raw.is_empty() {
-                    return Err(
-                        "flag `--baseline=` requires a non-empty PATH".to_string()
-                    );
+                    return Err("flag `--baseline=` requires a non-empty PATH".to_string());
                 }
                 let p = PathBuf::from(raw);
                 if !p.exists() {
@@ -1037,10 +1020,9 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                 //    job should run exactly its tier, no noise, all
                 //    pass ⇒ exit 0). This is AC#1's "subset the
                 //    required set by milestone".
-                let in_band_required =
-                    req_m.is_some_and(|m| milestone_in_gate(m, args.milestone));
-                let in_band_skip = skip_m
-                    .is_some_and(|(_, m)| milestone_in_gate(*m, args.milestone));
+                let in_band_required = req_m.is_some_and(|m| milestone_in_gate(m, args.milestone));
+                let in_band_skip =
+                    skip_m.is_some_and(|(_, m)| milestone_in_gate(*m, args.milestone));
 
                 if args.milestone.is_some() && !in_band_required && !in_band_skip {
                     // Out of this milestone tier — do not plan it.
@@ -2149,8 +2131,8 @@ fn maybe_corrupt_wire_for_xbackend(tree: &std::path::Path) -> Result<bool, Strin
             wire_rs.display()
         ));
     }
-    let src = fs::read_to_string(&wire_rs)
-        .map_err(|e| format!("read {}: {e}", wire_rs.display()))?;
+    let src =
+        fs::read_to_string(&wire_rs).map_err(|e| format!("read {}: {e}", wire_rs.display()))?;
     // The single body line of `enc_vec` in wire_runtime.rs. We append
     // a deterministic last-byte tweak after the buffer is filled.
     // Anchored on the exact source text so a refactor of wire_runtime
@@ -3112,21 +3094,12 @@ fn write_timings_json(path: &std::path::Path, results: &[CellResult]) -> Result<
     // survivor — CI baseline corruption). Belt-and-braces over
     // POSIX rename atomicity.
     use std::io::Write as _;
-    let mut f = fs::File::create(&tmp).map_err(|e| {
-        format!("--emit-timings: create `{}`: {e}", tmp.display())
-    })?;
-    f.write_all(doc.as_bytes()).map_err(|e| {
-        format!(
-            "--emit-timings: write `{}`: {e}",
-            tmp.display()
-        )
-    })?;
-    f.sync_all().map_err(|e| {
-        format!(
-            "--emit-timings: fsync `{}`: {e}",
-            tmp.display()
-        )
-    })?;
+    let mut f = fs::File::create(&tmp)
+        .map_err(|e| format!("--emit-timings: create `{}`: {e}", tmp.display()))?;
+    f.write_all(doc.as_bytes())
+        .map_err(|e| format!("--emit-timings: write `{}`: {e}", tmp.display()))?;
+    f.sync_all()
+        .map_err(|e| format!("--emit-timings: fsync `{}`: {e}", tmp.display()))?;
     drop(f);
     fs::rename(&tmp, path).map_err(|e| {
         format!(
@@ -3254,10 +3227,7 @@ fn render_det_timings_json(results: &[DetCellResult]) -> String {
 /// tmp+fsync+rename contract as `write_timings_json` — a power-loss
 /// during write must NEVER leave a partial JSON survivor that a
 /// downstream consumer might mistake for a clean baseline.
-fn write_det_timings_json(
-    path: &std::path::Path,
-    results: &[DetCellResult],
-) -> Result<(), String> {
+fn write_det_timings_json(path: &std::path::Path, results: &[DetCellResult]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -3332,7 +3302,11 @@ struct BaselineParseError {
 
 impl fmt::Display for BaselineParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "--baseline: JSON parse error at byte offset {}: {}", self.offset, self.msg)
+        write!(
+            f,
+            "--baseline: JSON parse error at byte offset {}: {}",
+            self.offset, self.msg
+        )
     }
 }
 
@@ -3428,10 +3402,7 @@ impl JsonCursor<'_> {
                 self.pos += 1;
                 Ok(())
             }
-            Some(b) => Err(self.err(&format!(
-                "expected `{}`, got `{}`",
-                want as char, b as char
-            ))),
+            Some(b) => Err(self.err(&format!("expected `{}`, got `{}`", want as char, b as char))),
             None => Err(self.err(&format!("expected `{}`, got EOF", want as char))),
         }
     }
@@ -3473,10 +3444,7 @@ impl JsonCursor<'_> {
                                 .ok_or_else(|| self.err("invalid \\u code point"))?
                         }
                         other => {
-                            return Err(self.err(&format!(
-                                "unknown escape `\\{}`",
-                                other as char
-                            )))
+                            return Err(self.err(&format!("unknown escape `\\{}`", other as char)))
                         }
                     };
                     out.push(ch);
@@ -3533,7 +3501,13 @@ impl JsonCursor<'_> {
                     self.pos += 1;
                 }
                 while let Some(b) = self.peek() {
-                    if b.is_ascii_digit() || b == b'.' || b == b'e' || b == b'E' || b == b'+' || b == b'-' {
+                    if b.is_ascii_digit()
+                        || b == b'.'
+                        || b == b'e'
+                        || b == b'E'
+                        || b == b'+'
+                        || b == b'-'
+                    {
                         self.pos += 1;
                     } else {
                         break;
@@ -3702,7 +3676,13 @@ impl DeltaRow {
             (None, Some(_), _) => (2, 0),
             _ => (3, 0),
         };
-        (tier, neg_pct_milli, self.example.clone(), self.schedule.clone(), self.backend.clone())
+        (
+            tier,
+            neg_pct_milli,
+            self.example.clone(),
+            self.schedule.clone(),
+            self.backend.clone(),
+        )
     }
 }
 
@@ -3722,14 +3702,21 @@ fn compute_delta_rows(
 ) -> Vec<DeltaRow> {
     use std::collections::HashMap;
     type Key = (String, String, String);
-    let key_for_baseline = |b: &BaselineCell| -> Key {
-        (b.example.clone(), b.schedule.clone(), b.backend.clone())
-    };
+    let key_for_baseline =
+        |b: &BaselineCell| -> Key { (b.example.clone(), b.schedule.clone(), b.backend.clone()) };
     let key_for_current = |r: &CellResult| -> Key {
-        (r.cell.example.clone(), r.cell.schedule.clone(), r.cell.backend.clone())
+        (
+            r.cell.example.clone(),
+            r.cell.schedule.clone(),
+            r.cell.backend.clone(),
+        )
     };
     let key_for_planned = |p: &PlannedCell| -> Key {
-        (p.cell.example.clone(), p.cell.schedule.clone(), p.cell.backend.clone())
+        (
+            p.cell.example.clone(),
+            p.cell.schedule.clone(),
+            p.cell.backend.clone(),
+        )
     };
     let base_map: HashMap<Key, &BaselineCell> =
         baseline.iter().map(|b| (key_for_baseline(b), b)).collect();
@@ -3798,9 +3785,7 @@ fn compute_delta_rows(
                     }
                 } else {
                     Some(
-                        ((current_ms as f64) - (baseline_ms as f64))
-                            / (baseline_ms as f64)
-                            * 100.0,
+                        ((current_ms as f64) - (baseline_ms as f64)) / (baseline_ms as f64) * 100.0,
                     )
                 };
                 rows.push(mk_row(
@@ -3858,11 +3843,7 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
     const BRIGHT_RED: &str = "\x1b[1;31m";
 
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "--- baseline diff ({} row(s)) ---",
-        rows.len()
-    );
+    let _ = writeln!(out, "--- baseline diff ({} row(s)) ---", rows.len());
     // Header is preserved verbatim from cycle 55 so a bare `--baseline`
     // invocation (no thresholds in the matrix yet) renders byte-identical
     // to cycle 55. The optional "[threshold=…]" / "[REGRESSION …]" suffix
@@ -3898,7 +3879,11 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
                 format!("{b} -> {c} {tag}")
             }
             (None, Some(c), _) => {
-                let tag = if color { format!("{DIM}(new){RESET}") } else { "(new)".to_string() };
+                let tag = if color {
+                    format!("{DIM}(new){RESET}")
+                } else {
+                    "(new)".to_string()
+                };
                 format!("- -> {c} {tag}")
             }
             (Some(b), None, _) => {
@@ -3926,15 +3911,27 @@ fn render_delta_table(rows: &[DeltaRow], color: bool) -> String {
         let suffix = match (r.perf_threshold_pct, r.regression, r.required) {
             (Some(t), true, true) => {
                 let s = format!(" [REGRESSION threshold={:+.1}%]", t);
-                if color { format!("{BRIGHT_RED}{s}{RESET}") } else { s }
+                if color {
+                    format!("{BRIGHT_RED}{s}{RESET}")
+                } else {
+                    s
+                }
             }
             (Some(t), true, false) => {
                 let s = format!(" [regression threshold={:+.1}%]", t);
-                if color { format!("{RED}{DIM}{s}{RESET}") } else { s }
+                if color {
+                    format!("{RED}{DIM}{s}{RESET}")
+                } else {
+                    s
+                }
             }
             (Some(t), false, _) => {
                 let s = format!(" [threshold={:+.1}%]", t);
-                if color { format!("{DIM}{s}{RESET}") } else { s }
+                if color {
+                    format!("{DIM}{s}{RESET}")
+                } else {
+                    s
+                }
             }
             (None, _, _) => String::new(),
         };
@@ -3955,9 +3952,8 @@ fn compare_against_baseline(
     current: &[CellResult],
     planned: &[PlannedCell],
 ) -> Result<usize, String> {
-    let src = fs::read_to_string(path).map_err(|e| {
-        format!("--baseline: cannot read `{}`: {e}", path.display())
-    })?;
+    let src = fs::read_to_string(path)
+        .map_err(|e| format!("--baseline: cannot read `{}`: {e}", path.display()))?;
     let baseline = parse_baseline_json(&src).map_err(|e| {
         // Carry the parse-time offset/snippet up; the prefix already
         // names the flag so the developer knows which file to look at.
@@ -4310,7 +4306,12 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     if !gaps.is_empty() {
         let listed = gaps
             .iter()
-            .map(|c| format!("(example={}, schedule={}, backend={})", c.example, c.schedule, c.backend))
+            .map(|c| {
+                format!(
+                    "(example={}, schedule={}, backend={})",
+                    c.example, c.schedule, c.backend
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
@@ -4351,11 +4352,8 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
         // jobs>=2 cells run on a worker pool and completion lines emit
         // in completion order while `det_results` is re-sorted to
         // planned order before the summary + gate-signal block runs.
-        let (det_results, det_wall_clock): (Vec<DetCellResult>, Duration) = execute_cells_parallel(
-            paths,
-            &planned,
-            args.jobs,
-            |paths, pc, i, total| {
+        let (det_results, det_wall_clock): (Vec<DetCellResult>, Duration) =
+            execute_cells_parallel(paths, &planned, args.jobs, |paths, pc, i, total| {
                 let r = check_cell_determinism(paths, pc);
                 // Build the completion line as a STRING rather than
                 // splitting eprint!/eprintln! around the work — that
@@ -4379,8 +4377,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
                     DetCellStatus::Skipped { .. } => "SKIPPED".to_string(),
                 };
                 (r, format!("{head}{tail}"))
-            },
-        );
+            });
         // TASK-0023.02: choose summary format. The `Text` default is
         // byte-identical to pre-flag behaviour; `Junit` emits XML on
         // stdout for CI consumption. Exit-code logic below is
@@ -4520,11 +4517,8 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // lines emit in completion order, but `results` is returned in
     // planned order so the summary / required-fail / NUC_XBACKEND_*
     // gates stay deterministic.
-    let (results, wall_clock): (Vec<CellResult>, Duration) = execute_cells_parallel(
-        paths,
-        &planned,
-        args.jobs,
-        |paths, pc, i, total| {
+    let (results, wall_clock): (Vec<CellResult>, Duration) =
+        execute_cells_parallel(paths, &planned, args.jobs, |paths, pc, i, total| {
             let r = run_cell(paths, pc);
             let head = format!(
                 "  [{:>2}/{:<2}] {} | {} | {} ... ",
@@ -4540,8 +4534,7 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
                 Status::Skipped { .. } => "SKIPPED".to_string(),
             };
             (r, format!("{head}{tail}"))
-        },
-    );
+        });
 
     // TASK-0023.02: choose summary format. The `Text` default is
     // byte-identical to the pre-flag table; `Junit` emits XML on
@@ -4694,7 +4687,11 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // are disjoint signals (one is correctness, one is perf) but share
     // a single exit-code channel — the table on STDERR + the explicit
     // "HARD FAIL" line in `compare_against_baseline` disambiguate.
-    Ok(if required_failed || perf_regressions > 0 { 1 } else { 0 })
+    Ok(if required_failed || perf_regressions > 0 {
+        1
+    } else {
+        0
+    })
 }
 
 fn main() -> ExitCode {
@@ -4879,8 +4876,7 @@ mod tests {
         // exists because `just e2e-jobs 4` may pass -j and that path
         // would otherwise diverge from the long form silently.
         for flag in ["--jobs", "-j"] {
-            let argv: Vec<OsString> =
-                [flag, "4"].iter().map(|s| OsString::from(*s)).collect();
+            let argv: Vec<OsString> = [flag, "4"].iter().map(|s| OsString::from(*s)).collect();
             let a = parse_args(&argv).expect("parse");
             assert_eq!(a.jobs, 4, "expected jobs=4 via `{flag} 4`");
         }
@@ -4891,7 +4887,10 @@ mod tests {
         // MAX_JOBS is the documented ceiling. Exactly MAX_JOBS must be
         // accepted (off-by-one guard against accidentally tightening
         // the bound during a refactor).
-        let argv = vec![OsString::from("--jobs"), OsString::from(MAX_JOBS.to_string())];
+        let argv = vec![
+            OsString::from("--jobs"),
+            OsString::from(MAX_JOBS.to_string()),
+        ];
         let a = parse_args(&argv).expect("parse");
         assert_eq!(a.jobs, MAX_JOBS);
     }
@@ -4922,7 +4921,10 @@ mod tests {
     fn arg_parser_rejects_jobs_negative() {
         // usize parse rejects the leading minus; we only need to confirm
         // the error message names the offending value (good UX).
-        let argv: Vec<OsString> = ["--jobs", "-1"].iter().map(|s| OsString::from(*s)).collect();
+        let argv: Vec<OsString> = ["--jobs", "-1"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
         let err = parse_args(&argv).unwrap_err();
         assert!(err.contains("positive integer"), "got: {err}");
     }
@@ -5007,10 +5009,7 @@ mod tests {
             vec![OsString::from("--format=yaml")],
         ] {
             let err = parse_args(&argv).unwrap_err();
-            assert!(
-                err.contains("text") && err.contains("junit"),
-                "got: {err}"
-            );
+            assert!(err.contains("text") && err.contains("junit"), "got: {err}");
         }
     }
 
@@ -5261,7 +5260,10 @@ mystery = 42
         // treat the absence as a gap.
         let plan: Vec<PlannedCell> = vec![];
         let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
-        assert!(gaps.is_empty(), "skip-declared required must be exempt, got {gaps:?}");
+        assert!(
+            gaps.is_empty(),
+            "skip-declared required must be exempt, got {gaps:?}"
+        );
     }
 
     /// A required triple that IS planned (will execute) is accounted
@@ -5277,7 +5279,10 @@ mystery = 42
         };
         let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
         let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
-        assert!(gaps.is_empty(), "planned required must not be a gap, got {gaps:?}");
+        assert!(
+            gaps.is_empty(),
+            "planned required must not be a gap, got {gaps:?}"
+        );
     }
 
     /// CLI narrowing must scope the coverage check: `--example 01`
@@ -5317,7 +5322,10 @@ mystery = 42
         };
         let plan2 = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
         let gaps2 = required_coverage_gaps(&manifest_typo, &plan2, &args).expect("ok");
-        assert_eq!(gaps2, vec![cell("01-elementwise-add", "naiv", "pthreads-sync")]);
+        assert_eq!(
+            gaps2,
+            vec![cell("01-elementwise-add", "naiv", "pthreads-sync")]
+        );
     }
 
     /// The shipped `e2e-matrix.toml` against the real discovered
@@ -5987,7 +5995,9 @@ mystery = 42
         );
         // The anchor must be gone (replaced exactly once).
         assert!(
-            !after.contains("    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}"),
+            !after.contains(
+                "    for &e in v {\n        out.extend_from_slice(&to_le(e));\n    }\n    out\n}"
+            ),
             "the pristine enc_vec tail must have been rewritten"
         );
 
@@ -6225,7 +6235,10 @@ mystery = 42
             doc.starts_with("{\n  \"mode\": \"run\",\n  \"cells\": ["),
             "leading brace + mode + cells array missing: {doc}"
         );
-        assert!(doc.trim_end().ends_with("]\n}"), "trailing close missing: {doc}");
+        assert!(
+            doc.trim_end().ends_with("]\n}"),
+            "trailing close missing: {doc}"
+        );
 
         // Ordering: ex-a appears before ex-b before ex-c. A simple
         // 3-find suffices since cell names are unique.
@@ -6237,28 +6250,70 @@ mystery = 42
         // PASS cell carries `phase_times_ms` with ints, total_ms,
         // and NO fail_phase/skip_reason key.
         let pass_block = &doc[a..b];
-        assert!(pass_block.contains("\"status\":\"PASS\""), "PASS status: {pass_block}");
-        assert!(pass_block.contains("\"compile\":100"), "compile ms: {pass_block}");
-        assert!(pass_block.contains("\"build\":2000"), "build ms: {pass_block}");
+        assert!(
+            pass_block.contains("\"status\":\"PASS\""),
+            "PASS status: {pass_block}"
+        );
+        assert!(
+            pass_block.contains("\"compile\":100"),
+            "compile ms: {pass_block}"
+        );
+        assert!(
+            pass_block.contains("\"build\":2000"),
+            "build ms: {pass_block}"
+        );
         assert!(pass_block.contains("\"run\":50"), "run ms: {pass_block}");
-        assert!(pass_block.contains("\"total_ms\":2150"), "total ms: {pass_block}");
-        assert!(!pass_block.contains("fail_phase"), "PASS must not carry fail_phase");
-        assert!(!pass_block.contains("skip_reason"), "PASS must not carry skip_reason");
+        assert!(
+            pass_block.contains("\"total_ms\":2150"),
+            "total ms: {pass_block}"
+        );
+        assert!(
+            !pass_block.contains("fail_phase"),
+            "PASS must not carry fail_phase"
+        );
+        assert!(
+            !pass_block.contains("skip_reason"),
+            "PASS must not carry skip_reason"
+        );
 
         // SKIPPED carries skip_reason and nulls for phase_times_ms.
         let skip_block = &doc[b..c];
-        assert!(skip_block.contains("\"status\":\"SKIPPED\""), "SKIPPED status: {skip_block}");
-        assert!(skip_block.contains("\"skip_reason\":\"no capabilities.toml\""), "reason: {skip_block}");
-        assert!(skip_block.contains("\"compile\":null"), "null compile: {skip_block}");
-        assert!(skip_block.contains("\"build\":null"), "null build: {skip_block}");
-        assert!(skip_block.contains("\"run\":null"), "null run: {skip_block}");
-        assert!(skip_block.contains("\"total_ms\":0"), "total ms 0: {skip_block}");
+        assert!(
+            skip_block.contains("\"status\":\"SKIPPED\""),
+            "SKIPPED status: {skip_block}"
+        );
+        assert!(
+            skip_block.contains("\"skip_reason\":\"no capabilities.toml\""),
+            "reason: {skip_block}"
+        );
+        assert!(
+            skip_block.contains("\"compile\":null"),
+            "null compile: {skip_block}"
+        );
+        assert!(
+            skip_block.contains("\"build\":null"),
+            "null build: {skip_block}"
+        );
+        assert!(
+            skip_block.contains("\"run\":null"),
+            "null run: {skip_block}"
+        );
+        assert!(
+            skip_block.contains("\"total_ms\":0"),
+            "total ms 0: {skip_block}"
+        );
 
         // FAILED carries fail_phase + detail; detail contains an
         // escaped newline (proving json_escape_str ran).
         let fail_block = &doc[c..];
-        assert!(fail_block.contains("\"status\":\"FAIL\""), "FAIL status: {fail_block}");
-        assert!(fail_block.contains("\"fail_phase\":\"build\""), "fail_phase: {fail_block}");
+        assert!(
+            fail_block.contains("\"status\":\"FAIL\""),
+            "FAIL status: {fail_block}"
+        );
+        assert!(
+            fail_block.contains("\"fail_phase\":\"build\""),
+            "fail_phase: {fail_block}"
+        );
         assert!(
             fail_block.contains("\"detail\":\"cargo build failed\\nlinker error\""),
             "escaped detail: {fail_block}"
@@ -6283,7 +6338,10 @@ mystery = 42
 
         let path = tmp_root.join("nested").join("dir").join("timings.json");
         assert!(!path.exists());
-        assert!(!path.parent().unwrap().exists(), "parent must not pre-exist");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "parent must not pre-exist"
+        );
 
         let results = vec![synth_cell_result(
             "ex-a",
@@ -6354,7 +6412,9 @@ mystery = 42
                 "ex-b",
                 "tiled",
                 "mp-tcp-bufsync",
-                DetCellStatus::Skipped { reason: "no capabilities.toml".into() },
+                DetCellStatus::Skipped {
+                    reason: "no capabilities.toml".into(),
+                },
                 0,
             ),
             synth_det_cell_result(
@@ -6377,7 +6437,10 @@ mystery = 42
             doc.starts_with("{\n  \"mode\": \"determinism\",\n  \"cells\": ["),
             "leading mode + cells missing: {doc}"
         );
-        assert!(doc.trim_end().ends_with("]\n}"), "trailing close missing: {doc}");
+        assert!(
+            doc.trim_end().ends_with("]\n}"),
+            "trailing close missing: {doc}"
+        );
 
         // Planned order preserved.
         let a = doc.find("\"ex-a\"").expect("ex-a present");
@@ -6388,27 +6451,54 @@ mystery = 42
         // PASS: files_compared + elapsed_ms, no skip_reason / det_mismatch.
         let pass = &doc[a..b];
         assert!(pass.contains("\"status\":\"PASS\""), "PASS status: {pass}");
-        assert!(pass.contains("\"files_compared\":7"), "files_compared: {pass}");
+        assert!(
+            pass.contains("\"files_compared\":7"),
+            "files_compared: {pass}"
+        );
         assert!(pass.contains("\"elapsed_ms\":120"), "elapsed_ms: {pass}");
-        assert!(!pass.contains("skip_reason"), "PASS must not carry skip_reason: {pass}");
-        assert!(!pass.contains("det_mismatch"), "PASS must not carry det_mismatch: {pass}");
+        assert!(
+            !pass.contains("skip_reason"),
+            "PASS must not carry skip_reason: {pass}"
+        );
+        assert!(
+            !pass.contains("det_mismatch"),
+            "PASS must not carry det_mismatch: {pass}"
+        );
 
         // SKIPPED: skip_reason + elapsed_ms null; no files_compared.
         let skip = &doc[b..c];
-        assert!(skip.contains("\"status\":\"SKIPPED\""), "SKIPPED status: {skip}");
-        assert!(skip.contains("\"skip_reason\":\"no capabilities.toml\""), "reason: {skip}");
+        assert!(
+            skip.contains("\"status\":\"SKIPPED\""),
+            "SKIPPED status: {skip}"
+        );
+        assert!(
+            skip.contains("\"skip_reason\":\"no capabilities.toml\""),
+            "reason: {skip}"
+        );
         assert!(skip.contains("\"elapsed_ms\":null"), "null elapsed: {skip}");
-        assert!(!skip.contains("files_compared"), "SKIPPED must not carry files_compared: {skip}");
+        assert!(
+            !skip.contains("files_compared"),
+            "SKIPPED must not carry files_compared: {skip}"
+        );
 
         // FAIL: det_mismatch object with all four fields + elapsed_ms.
         let fail = &doc[c..];
         assert!(fail.contains("\"status\":\"FAIL\""), "FAIL status: {fail}");
-        assert!(fail.contains("\"det_mismatch\":{"), "det_mismatch present: {fail}");
-        assert!(fail.contains("\"relative_path\":\"src/main.rs\""), "relpath: {fail}");
+        assert!(
+            fail.contains("\"det_mismatch\":{"),
+            "det_mismatch present: {fail}"
+        );
+        assert!(
+            fail.contains("\"relative_path\":\"src/main.rs\""),
+            "relpath: {fail}"
+        );
         assert!(fail.contains("\"kind\":\"bytes differ\""), "kind: {fail}");
         assert!(fail.contains("\"offset\":42"), "offset: {fail}");
         // Escaped newline proves json_escape_str ran on the detail.
-        assert!(fail.contains("\"detail\":\"A=foo\\nB=bar\""), "escaped detail: {fail}");
+        assert!(
+            fail.contains("\"detail\":\"A=foo\\nB=bar\""),
+            "escaped detail: {fail}"
+        );
         assert!(fail.contains("\"elapsed_ms\":250"), "elapsed_ms: {fail}");
     }
 
@@ -6431,7 +6521,10 @@ mystery = 42
 
         let path = tmp_root.join("nested").join("dir").join("det-timings.json");
         assert!(!path.exists());
-        assert!(!path.parent().unwrap().exists(), "parent must not pre-exist");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "parent must not pre-exist"
+        );
 
         let results = vec![synth_det_cell_result(
             "ex-a",
@@ -6444,9 +6537,15 @@ mystery = 42
 
         assert!(path.exists(), "output JSON must exist after write");
         let body = fs::read_to_string(&path).expect("read back");
-        assert!(body.contains("\"mode\": \"determinism\""), "mode marker: {body}");
+        assert!(
+            body.contains("\"mode\": \"determinism\""),
+            "mode marker: {body}"
+        );
         assert!(body.contains("\"ex-a\""), "round-trip body: {body}");
-        assert!(body.contains("\"files_compared\":3"), "files_compared: {body}");
+        assert!(
+            body.contains("\"files_compared\":3"),
+            "files_compared: {body}"
+        );
         assert!(body.contains("\"elapsed_ms\":42"), "elapsed_ms: {body}");
 
         let tmp_sibling = path.with_file_name("det-timings.json.tmp");
@@ -6519,18 +6618,36 @@ mystery = 42
         // match (the only fields the comparator reads).
         let results = vec![
             synth_cell_result(
-                "ex-a", "naive", "pthreads-sync", Status::Pass,
-                Some(100), Some(2000), Some(50),
+                "ex-a",
+                "naive",
+                "pthreads-sync",
+                Status::Pass,
+                Some(100),
+                Some(2000),
+                Some(50),
             ),
             synth_cell_result(
-                "ex-b", "tiled", "mp-tcp-bufsync",
-                Status::Skipped { reason: "no caps".into() },
-                None, None, None,
+                "ex-b",
+                "tiled",
+                "mp-tcp-bufsync",
+                Status::Skipped {
+                    reason: "no caps".into(),
+                },
+                None,
+                None,
+                None,
             ),
             synth_cell_result(
-                "ex-c", "naive", "pthreads-sync",
-                Status::Failed { phase: Phase::Build, detail: "boom".into() },
-                Some(80), Some(500), None,
+                "ex-c",
+                "naive",
+                "pthreads-sync",
+                Status::Failed {
+                    phase: Phase::Build,
+                    detail: "boom".into(),
+                },
+                Some(80),
+                Some(500),
+                None,
             ),
         ];
         let doc = render_timings_json(&results);
@@ -6573,24 +6690,38 @@ mystery = 42
         // row in the delta table (largest regression first).
         let baseline = vec![
             BaselineCell {
-                example: "ex-a".into(), schedule: "naive".into(),
-                backend: "pthreads-sync".into(), total_ms: 1000,
+                example: "ex-a".into(),
+                schedule: "naive".into(),
+                backend: "pthreads-sync".into(),
+                total_ms: 1000,
             },
             BaselineCell {
-                example: "ex-b".into(), schedule: "tiled".into(),
-                backend: "pthreads-sync".into(), total_ms: 2000,
+                example: "ex-b".into(),
+                schedule: "tiled".into(),
+                backend: "pthreads-sync".into(),
+                total_ms: 2000,
             },
         ];
         let current = vec![
             // 50% slower — the regression.
             synth_cell_result(
-                "ex-a", "naive", "pthreads-sync", Status::Pass,
-                None, Some(1500), None,
+                "ex-a",
+                "naive",
+                "pthreads-sync",
+                Status::Pass,
+                None,
+                Some(1500),
+                None,
             ),
             // Unchanged.
             synth_cell_result(
-                "ex-b", "tiled", "pthreads-sync", Status::Pass,
-                None, Some(2000), None,
+                "ex-b",
+                "tiled",
+                "pthreads-sync",
+                Status::Pass,
+                None,
+                Some(2000),
+                None,
             ),
         ];
         let rows = compute_delta_rows(&baseline, &current, &[]);
@@ -6620,22 +6751,36 @@ mystery = 42
         // never crash on either side's missing.
         let baseline = vec![
             BaselineCell {
-                example: "ex-a".into(), schedule: "naive".into(),
-                backend: "pthreads-sync".into(), total_ms: 100,
+                example: "ex-a".into(),
+                schedule: "naive".into(),
+                backend: "pthreads-sync".into(),
+                total_ms: 100,
             },
             BaselineCell {
-                example: "ex-b".into(), schedule: "naive".into(),
-                backend: "pthreads-sync".into(), total_ms: 200,
+                example: "ex-b".into(),
+                schedule: "naive".into(),
+                backend: "pthreads-sync".into(),
+                total_ms: 200,
             },
         ];
         let current = vec![
             synth_cell_result(
-                "ex-a", "naive", "pthreads-sync", Status::Pass,
-                None, Some(100), None,
+                "ex-a",
+                "naive",
+                "pthreads-sync",
+                Status::Pass,
+                None,
+                Some(100),
+                None,
             ),
             synth_cell_result(
-                "ex-c", "naive", "pthreads-sync", Status::Pass,
-                None, Some(300), None,
+                "ex-c",
+                "naive",
+                "pthreads-sync",
+                Status::Pass,
+                None,
+                Some(300),
+                None,
             ),
         ];
         let rows = compute_delta_rows(&baseline, &current, &[]);
@@ -6645,9 +6790,8 @@ mystery = 42
         // 0%), ex-c is "(new)" (tier 2), ex-b is "(removed)"
         // (tier 1). Tier 1 sorts before tier 2 so removed appears
         // before new in the output.
-        let by_ex = |name: &str| -> &DeltaRow {
-            rows.iter().find(|r| r.example == name).expect(name)
-        };
+        let by_ex =
+            |name: &str| -> &DeltaRow { rows.iter().find(|r| r.example == name).expect(name) };
         let a = by_ex("ex-a");
         assert_eq!(a.baseline_ms, Some(100));
         assert_eq!(a.current_ms, Some(100));
@@ -6678,16 +6822,26 @@ mystery = 42
         // even in long CI logs.
         let rows = vec![
             DeltaRow {
-                example: "ex-a".into(), schedule: "n".into(), backend: "p".into(),
-                baseline_ms: Some(100), current_ms: Some(150),
+                example: "ex-a".into(),
+                schedule: "n".into(),
+                backend: "p".into(),
+                baseline_ms: Some(100),
+                current_ms: Some(150),
                 delta_pct: Some(50.0),
-                perf_threshold_pct: None, required: false, regression: false,
+                perf_threshold_pct: None,
+                required: false,
+                regression: false,
             },
             DeltaRow {
-                example: "ex-b".into(), schedule: "n".into(), backend: "p".into(),
-                baseline_ms: Some(100), current_ms: Some(50),
+                example: "ex-b".into(),
+                schedule: "n".into(),
+                backend: "p".into(),
+                baseline_ms: Some(100),
+                current_ms: Some(50),
                 delta_pct: Some(-50.0),
-                perf_threshold_pct: None, required: false, regression: false,
+                perf_threshold_pct: None,
+                required: false,
+                regression: false,
             },
         ];
         let table = render_delta_table(&rows, true);
@@ -6721,14 +6875,24 @@ mystery = 42
         let path = tmp_root.join("baseline.json");
 
         let baseline_results = vec![synth_cell_result(
-            "ex-a", "naive", "pthreads-sync", Status::Pass,
-            None, Some(1000), None,
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            None,
+            Some(1000),
+            None,
         )];
         write_timings_json(&path, &baseline_results).expect("write");
 
         let current_results = vec![synth_cell_result(
-            "ex-a", "naive", "pthreads-sync", Status::Pass,
-            None, Some(1500), None,
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            None,
+            Some(1500),
+            None,
         )];
         // Just verify the read-and-parse path: a corrupt-on-disk
         // baseline must NOT silently no-op.
@@ -6783,15 +6947,26 @@ mystery = 42
         // and `compute_delta_rows` must surface it for the exit-code
         // wiring to bite.
         let baseline = vec![BaselineCell {
-            example: "ex-a".into(), schedule: "naive".into(),
-            backend: "pthreads-sync".into(), total_ms: 200,
+            example: "ex-a".into(),
+            schedule: "naive".into(),
+            backend: "pthreads-sync".into(),
+            total_ms: 200,
         }];
         let current = vec![synth_cell_result(
-            "ex-a", "naive", "pthreads-sync", Status::Pass,
-            None, None, Some(350),
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            None,
+            None,
+            Some(350),
         )];
         let planned = vec![planned_with_threshold(
-            "ex-a", "naive", "pthreads-sync", true, Some(50.0),
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            true,
+            Some(50.0),
         )];
         let rows = compute_delta_rows(&baseline, &current, &planned);
         assert_eq!(rows.len(), 1);
@@ -6817,15 +6992,26 @@ mystery = 42
         // Threshold tag is still rendered (so a reviewer sees the gate
         // was active), the exit-code-impacting REGRESSION is NOT.
         let baseline = vec![BaselineCell {
-            example: "ex-a".into(), schedule: "naive".into(),
-            backend: "pthreads-sync".into(), total_ms: 200,
+            example: "ex-a".into(),
+            schedule: "naive".into(),
+            backend: "pthreads-sync".into(),
+            total_ms: 200,
         }];
         let current = vec![synth_cell_result(
-            "ex-a", "naive", "pthreads-sync", Status::Pass,
-            None, None, Some(250),
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            None,
+            None,
+            Some(250),
         )];
         let planned = vec![planned_with_threshold(
-            "ex-a", "naive", "pthreads-sync", true, Some(50.0),
+            "ex-a",
+            "naive",
+            "pthreads-sync",
+            true,
+            Some(50.0),
         )];
         let rows = compute_delta_rows(&baseline, &current, &planned);
         assert_eq!(rows.len(), 1);
@@ -6856,15 +7042,24 @@ mystery = 42
         // `regression && required` in `compare_against_baseline`) stays
         // at zero — a skip-band breach is signal, not blocker.
         let baseline = vec![BaselineCell {
-            example: "ex-skip".into(), schedule: "naive".into(),
-            backend: "pthreads-sync".into(), total_ms: 100,
+            example: "ex-skip".into(),
+            schedule: "naive".into(),
+            backend: "pthreads-sync".into(),
+            total_ms: 100,
         }];
         let current = vec![synth_cell_result(
-            "ex-skip", "naive", "pthreads-sync", Status::Pass,
-            None, None, Some(500),
+            "ex-skip",
+            "naive",
+            "pthreads-sync",
+            Status::Pass,
+            None,
+            None,
+            Some(500),
         )];
         let planned = vec![planned_with_threshold(
-            "ex-skip", "naive", "pthreads-sync",
+            "ex-skip",
+            "naive",
+            "pthreads-sync",
             /* required = */ false,
             Some(10.0),
         )];
@@ -6969,11 +7164,7 @@ perf_threshold_pct = 50.0
         let mut m = sample_manifest_with_one_required();
         let before_len = m.required.len();
         let injected = maybe_inject_required_coverage_negative(&mut m);
-        assert_eq!(
-            injected,
-            Ok(false),
-            "env unset must report no injection"
-        );
+        assert_eq!(injected, Ok(false), "env unset must report no injection");
         assert_eq!(
             m.required.len(),
             before_len,
@@ -7045,7 +7236,10 @@ perf_threshold_pct = 50.0
             1,
             "synthetic typo'd required must surface as a gap (got {gaps:?})"
         );
-        assert_eq!(gaps[0].schedule, REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE);
+        assert_eq!(
+            gaps[0].schedule,
+            REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE
+        );
         // The attribution filter `run_inner` uses must select exactly
         // this gap — pin it here so a future refactor of either side
         // (the filter or the sentinel) fails LOUD instead of silently

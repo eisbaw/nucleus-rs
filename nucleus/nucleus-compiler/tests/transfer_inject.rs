@@ -1337,8 +1337,7 @@ fn build_stencil_like_acfg(halo_y: u64, halo_x: u64) -> (ACFG, LinkedIR) {
     );
     acfg.name_iter_vars.insert("y".to_string(), IterVar(7));
     acfg.name_iter_vars.insert("x".to_string(), IterVar(8));
-    acfg.name_kernels
-        .insert("blur3".to_string(), KernelId(100));
+    acfg.name_kernels.insert("blur3".to_string(), KernelId(100));
 
     // Floor-with-spillover partition for y on 4 workers, range 1..15:
     // first 2 get 4 rows, last 2 get 3.
@@ -1518,15 +1517,23 @@ fn halo_extends_multiple_axes_when_both_partitioned() {
     // x in 0..4 → -1..5 clamped to -1..9 → -1..5. (The negative bound
     // is a halo-into-margin; the kernel handles the boundary.)
     let w1 = waits.iter().find(|w| w.dst == WorkerId(1)).unwrap();
-    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> =
-        w1.tile.bounds.iter().map(|(iv, r)| (*iv, r.clone())).collect();
+    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> = w1
+        .tile
+        .bounds
+        .iter()
+        .map(|(iv, r)| (*iv, r.clone()))
+        .collect();
     assert_eq!(bounds.get(&IterVar(7)), Some(&(-1..5)));
     assert_eq!(bounds.get(&IterVar(8)), Some(&(-1..5)));
     // w4 (the diagonally-opposite corner): y in 4..8 → 3..9; x in
     // 4..8 → 3..9.
     let w4 = waits.iter().find(|w| w.dst == WorkerId(4)).unwrap();
-    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> =
-        w4.tile.bounds.iter().map(|(iv, r)| (*iv, r.clone())).collect();
+    let bounds: BTreeMap<IterVar, std::ops::Range<i64>> = w4
+        .tile
+        .bounds
+        .iter()
+        .map(|(iv, r)| (*iv, r.clone()))
+        .collect();
     assert_eq!(bounds.get(&IterVar(7)), Some(&(3..9)));
     assert_eq!(bounds.get(&IterVar(8)), Some(&(3..9)));
 }

@@ -42,11 +42,11 @@ pub mod span {
     pub use crate::span::Spanned;
 }
 
+pub use crate::span::Spanned;
 pub use ast::{
     AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig, Purity,
     ScalarType, Stmt, Type, UnaryOp,
 };
-pub use crate::span::Spanned;
 pub use ir::{
     AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
     ResolvedConst, ResolvedData, ResolvedKernel, ResolvedType,

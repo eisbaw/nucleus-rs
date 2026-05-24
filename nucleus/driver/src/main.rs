@@ -51,10 +51,9 @@ use std::process::ExitCode;
 
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
-    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
-    apply_reuse_inference, build_acfg, build_sidecar, check_kernels_contract,
-    check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
-    load_capabilities,
+    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, apply_reuse_inference,
+    build_acfg, build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
+    inject_syncs, inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -449,8 +448,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // names + the role of any returned advisory bucket differ — the
     // speculative `iv_diag_policy` helper from cycle-87 review still
     // has no real substance to lift.
-    let acfg = apply_reuse_inference(&linked, acfg)
-        .map_err(|e| format!("reuse-inference error: {e}"))?;
+    let acfg =
+        apply_reuse_inference(&linked, acfg).map_err(|e| format!("reuse-inference error: {e}"))?;
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

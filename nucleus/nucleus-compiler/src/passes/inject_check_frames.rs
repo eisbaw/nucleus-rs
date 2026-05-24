@@ -170,10 +170,7 @@ fn resolve_check_directive(loop_var: &str, directive: &ResolvedCheckDirective) -
 /// is skipped — but we still recurse into its body (a nested source
 /// loop inside a tiled outer loop is the intended target of a
 /// `check` directive on the nested loop's name).
-fn inject_events(
-    events: Vec<Event>,
-    by_iter_var: &BTreeMap<IterVar, CheckFrame>,
-) -> Vec<Event> {
+fn inject_events(events: Vec<Event>, by_iter_var: &BTreeMap<IterVar, CheckFrame>) -> Vec<Event> {
     events
         .into_iter()
         .map(|e| inject_event(e, by_iter_var))
@@ -236,7 +233,7 @@ fn inject_event(event: Event, by_iter_var: &BTreeMap<IterVar, CheckFrame>) -> Ev
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, IterVar, KernelId, IterTile, FireBinding, WorkerId};
+    use crate::event::{Event, FireBinding, IterTile, IterVar, KernelId, WorkerId};
     use crate::sched::ast::TimeLit;
     use crate::sched::ast::TimeUnit;
 
@@ -267,9 +264,8 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let names: BTreeMap<String, IterVar> = vec![("n".to_string(), IterVar(0))]
-            .into_iter()
-            .collect();
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
         let out = inject_check_frames(pw.clone(), &BTreeMap::new(), &names);
         assert_eq!(out, pw, "no `check` directives -> pass is identity");
     }
@@ -284,9 +280,8 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let names: BTreeMap<String, IterVar> = vec![("n".to_string(), IterVar(0))]
-            .into_iter()
-            .collect();
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
         let checks: BTreeMap<String, ResolvedCheckDirective> = vec![(
             "n".to_string(),
             ResolvedCheckDirective {
@@ -302,7 +297,9 @@ mod tests {
         let w0 = &out[&WorkerId(0)];
         match &w0[0] {
             Event::Loop { check_frame, .. } => {
-                let cf = check_frame.as_ref().expect("outer loop must have check_frame");
+                let cf = check_frame
+                    .as_ref()
+                    .expect("outer loop must have check_frame");
                 assert_eq!(cf.latency_max_ns, 10_000_000);
                 assert_eq!(cf.on_violation, ViolationKind::Panic);
                 assert_eq!(cf.loop_var, "n");
@@ -324,9 +321,8 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let names: BTreeMap<String, IterVar> = vec![("n".to_string(), IterVar(0))]
-            .into_iter()
-            .collect();
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
         let checks: BTreeMap<String, ResolvedCheckDirective> = vec![(
             "x".to_string(), // not in names
             ResolvedCheckDirective {
@@ -367,9 +363,8 @@ mod tests {
         );
         let pw: BTreeMap<WorkerId, Vec<Event>> =
             vec![(WorkerId(0), vec![inner])].into_iter().collect();
-        let names: BTreeMap<String, IterVar> = vec![("n".to_string(), IterVar(0))]
-            .into_iter()
-            .collect();
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
         let checks: BTreeMap<String, ResolvedCheckDirective> = vec![(
             "n".to_string(),
             ResolvedCheckDirective {
@@ -407,9 +402,8 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let names: BTreeMap<String, IterVar> = vec![("n".to_string(), IterVar(0))]
-            .into_iter()
-            .collect();
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
         let checks: BTreeMap<String, ResolvedCheckDirective> = vec![(
             "n".to_string(),
             ResolvedCheckDirective {

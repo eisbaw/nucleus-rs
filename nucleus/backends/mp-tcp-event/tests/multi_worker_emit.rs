@@ -358,8 +358,8 @@ fn wait_without_matching_push_is_typed_contract_gap() {
     let sidecar = NameSidecar::default();
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/wait_without_matching_push");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/wait_without_matching_push");
     let _ = std::fs::remove_dir_all(&scratch);
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
@@ -448,8 +448,8 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
     let sidecar = NameSidecar::default();
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/missing_sidecar_buffer");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/missing_sidecar_buffer");
     let _ = std::fs::remove_dir_all(&scratch);
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
@@ -546,8 +546,8 @@ fn worker_to_worker_push_is_typed_contract_gap() {
     sidecar.transfer_buffer_for_seq.insert(seq, 1);
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/worker_to_worker_push");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/worker_to_worker_push");
     let _ = std::fs::remove_dir_all(&scratch);
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);

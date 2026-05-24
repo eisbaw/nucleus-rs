@@ -107,10 +107,7 @@ pub(crate) enum PartitionBandError {
     /// Distinct from "non-divisible": non-divisible (`len > N`,
     /// `len % N != 0`) is now ACCEPTED with the spillover policy; the
     /// only category left to reject is "not enough work to go around".
-    InsufficientWork {
-        len: i64,
-        workers: usize,
-    },
+    InsufficientWork { len: i64, workers: usize },
     /// `n_workers == 0`. A no-op input — the caller should pre-check
     /// the worker set is non-empty and surface a pass-specific
     /// `NoMultiWorkerBody` error before reaching here. Defensive guard
@@ -524,10 +521,7 @@ mod tests {
         let err = compute_partition_bands(0, 3, 4).expect_err("L<N must reject");
         assert_eq!(
             err,
-            PartitionBandError::InsufficientWork {
-                len: 3,
-                workers: 4
-            }
+            PartitionBandError::InsufficientWork { len: 3, workers: 4 }
         );
     }
 

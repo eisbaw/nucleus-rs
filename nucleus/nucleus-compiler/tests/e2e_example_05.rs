@@ -244,8 +244,8 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
         "nucleus build (reuse) failed:\n{}",
         String::from_utf8_lossy(&reuse_build.stderr)
     );
-    let reuse_main = fs::read_to_string(reuse_dir.join("src/main.rs"))
-        .expect("read main.rs (reuse build)");
+    let reuse_main =
+        fs::read_to_string(reuse_dir.join("src/main.rs")).expect("read main.rs (reuse build)");
     let reuse_count = reuse_main.matches("reuse_widths_pending").count();
     assert!(
         reuse_count >= 1,
@@ -303,8 +303,8 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
         "nucleus build (naive) failed:\n{}",
         String::from_utf8_lossy(&naive_build.stderr)
     );
-    let naive_main = fs::read_to_string(naive_dir.join("src/main.rs"))
-        .expect("read main.rs (naive build)");
+    let naive_main =
+        fs::read_to_string(naive_dir.join("src/main.rs")).expect("read main.rs (naive build)");
     let naive_count = naive_main.matches("reuse_widths_pending").count();
     assert_eq!(
         naive_count, 0,

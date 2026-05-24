@@ -34,7 +34,14 @@ fn repo_root() -> PathBuf {
 }
 
 /// Run the full lower-link-inject pipeline for a given example/schedule.
-fn lower(ex_rel: &str, sched_rel: &str) -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG, PathBuf) {
+fn lower(
+    ex_rel: &str,
+    sched_rel: &str,
+) -> (
+    nucleus_compiler::link::LinkedIR,
+    nucleus_compiler::ACFG,
+    PathBuf,
+) {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples").join(ex_rel);
     let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).expect("read algo");
@@ -61,10 +68,7 @@ fn async_pipeline_parallel_populates_buffer_for_each_cross_worker_pair() {
     // The new sidecar field MUST contain at least one entry whose
     // value is 3 (the async buffer), and the sync hops produce
     // entries whose value is 1.
-    let (linked, acfg, _) = lower(
-        "13-cnn-inference",
-        "schedules/pipeline_parallel.sched.nuc",
-    );
+    let (linked, acfg, _) = lower("13-cnn-inference", "schedules/pipeline_parallel.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
 
     // Some entries must exist (this is a multi-worker schedule with
@@ -162,10 +166,7 @@ fn collect_walks_repeat_and_sequence_via_pipeline_parallel_fixture() {
     // Verify by counting Xfer nodes via a direct walk vs the sidecar
     // map size. The map collapses Push+Wait endpoints onto one seq,
     // so the count is `xfer_node_count / 2`.
-    let (linked, acfg, _) = lower(
-        "13-cnn-inference",
-        "schedules/pipeline_parallel.sched.nuc",
-    );
+    let (linked, acfg, _) = lower("13-cnn-inference", "schedules/pipeline_parallel.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     let xfer_count = count_xfer_nodes(&acfg.root);
     let map_count = sidecar.transfer_buffer_for_seq.len();

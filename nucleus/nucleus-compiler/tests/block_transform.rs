@@ -108,11 +108,7 @@ fn synthetic_one_loop(h: i64, with_block: Option<u64>) -> (LinkedIR, ACFG) {
 /// `Repeat` bodies that themselves don't match. Used to find the
 /// full-tile and trailing-partial-tile nests regardless of where the
 /// rewritten `Sequence` sits in the surrounding program tree.
-fn collect_repeats_with_var<'a>(
-    node: &'a ACFGNode,
-    target: IterVar,
-    out: &mut Vec<&'a ACFGNode>,
-) {
+fn collect_repeats_with_var<'a>(node: &'a ACFGNode, target: IterVar, out: &mut Vec<&'a ACFGNode>) {
     match node {
         ACFGNode::Repeat { iter_var, body, .. } => {
             if *iter_var == target {
@@ -363,7 +359,11 @@ fn block_non_divisible_two_tiles_full_then_partial() {
 
     let mut nests: Vec<&ACFGNode> = Vec::new();
     collect_repeats_with_var(&acfg.root, tile_id, &mut nests);
-    assert_eq!(nests.len(), 2, "an outer loop of 2 tiles (1 full + 1 partial)");
+    assert_eq!(
+        nests.len(),
+        2,
+        "an outer loop of 2 tiles (1 full + 1 partial)"
+    );
 
     let inner_of = |node: &ACFGNode| -> (std::ops::Range<i64>, std::ops::Range<i64>) {
         if let ACFGNode::Repeat {

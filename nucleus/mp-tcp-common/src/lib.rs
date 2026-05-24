@@ -62,7 +62,10 @@ mod tests {
         assert_eq!(back, v);
 
         let empty: Vec<i32> = vec![];
-        assert_eq!(dec_vec::<i32, 4>(&enc_vec(&empty, i32::to_le_bytes), i32::from_le_bytes), empty);
+        assert_eq!(
+            dec_vec::<i32, 4>(&enc_vec(&empty, i32::to_le_bytes), i32::from_le_bytes),
+            empty
+        );
     }
 
     #[test]
@@ -125,7 +128,9 @@ mod tests {
         });
         let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
         write_msg(&mut c, 5, b"x");
-        let err = server.join().expect_err("receiver must panic on seq mismatch");
+        let err = server
+            .join()
+            .expect_err("receiver must panic on seq mismatch");
         let msg = err
             .downcast_ref::<String>()
             .map(String::as_str)

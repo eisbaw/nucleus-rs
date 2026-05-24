@@ -90,7 +90,10 @@ fn build_per_worker_partitioned(
     algo_src: &str,
     sched_src: &str,
 ) -> (
-    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>,
+    std::collections::BTreeMap<
+        nucleus_compiler::event::WorkerId,
+        Vec<nucleus_compiler::event::Event>,
+    >,
     NameTables,
     nucleus_compiler::sidecar::NameSidecar,
 ) {

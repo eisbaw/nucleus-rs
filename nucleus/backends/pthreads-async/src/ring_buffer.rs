@@ -70,16 +70,32 @@ use std::fmt::Write as _;
 /// argument) trips those tests, which is the desired behaviour
 /// (drift detection at the codegen boundary, not in production).
 pub fn emit_ring_struct_decl(out: &mut String) {
-    writeln!(out, "/// Bounded ring buffer used as a per-(DataId, SeqTag)").ok();
+    writeln!(
+        out,
+        "/// Bounded ring buffer used as a per-(DataId, SeqTag)"
+    )
+    .ok();
     writeln!(out, "/// channel between producer and consumer threads.").ok();
     writeln!(out, "/// Capacity is stored in the instance so a single").ok();
     writeln!(out, "/// `Ring<T>` definition serves rings of every size.").ok();
     writeln!(out, "/// Starts EMPTY (no pre-fill). Producer `push(v)`").ok();
-    writeln!(out, "/// blocks while `ring.len() == cap`; consumer `wait()`").ok();
-    writeln!(out, "/// blocks while empty. See pthreads-async's TASK-0228").ok();
+    writeln!(
+        out,
+        "/// blocks while `ring.len() == cap`; consumer `wait()`"
+    )
+    .ok();
+    writeln!(
+        out,
+        "/// blocks while empty. See pthreads-async's TASK-0228"
+    )
+    .ok();
     writeln!(out, "/// notes for the post-TASK-0213 ring-EMPTY contract.").ok();
     writeln!(out, "struct Ring<T> {{").ok();
-    writeln!(out, "    mu: std::sync::Mutex<std::collections::VecDeque<T>>,").ok();
+    writeln!(
+        out,
+        "    mu: std::sync::Mutex<std::collections::VecDeque<T>>,"
+    )
+    .ok();
     writeln!(out, "    cap: usize,").ok();
     writeln!(out, "    not_empty: std::sync::Condvar,").ok();
     writeln!(out, "    not_full: std::sync::Condvar,").ok();
@@ -87,7 +103,11 @@ pub fn emit_ring_struct_decl(out: &mut String) {
     writeln!(out, "impl<T> Ring<T> {{").ok();
     writeln!(out, "    fn new(cap: usize) -> Self {{").ok();
     writeln!(out, "        Ring {{").ok();
-    writeln!(out, "            mu: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(cap)),").ok();
+    writeln!(
+        out,
+        "            mu: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(cap)),"
+    )
+    .ok();
     writeln!(out, "            cap,").ok();
     writeln!(out, "            not_empty: std::sync::Condvar::new(),").ok();
     writeln!(out, "            not_full: std::sync::Condvar::new(),").ok();
@@ -146,12 +166,7 @@ pub fn emit_ring_struct_decl(out: &mut String) {
 /// runtime ring is sized to hold every concurrent in-flight token
 /// without producer-side blocking under steady state, AND it is
 /// never sized to 0 (which would deadlock both push and wait).
-pub fn emit_ring_instance_decl(
-    out: &mut String,
-    var_name: &str,
-    element_type: &str,
-    cap: u64,
-) {
+pub fn emit_ring_instance_decl(out: &mut String, var_name: &str, element_type: &str, cap: u64) {
     writeln!(
         out,
         "    let {var_name}: std::sync::Arc<Ring<{element_type}>> = std::sync::Arc::new(Ring::new({cap}));",

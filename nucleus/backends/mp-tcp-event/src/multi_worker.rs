@@ -1181,12 +1181,10 @@ mod tests {
                     "ContractGap must point to the single-worker arm as the correct route: {msg}"
                 );
             }
-            Err(other) => panic!(
-                "expected ContractGap on single-worker Plan::build; got Err({other:?})"
-            ),
-            Ok(_) => panic!(
-                "expected ContractGap on single-worker Plan::build; got Ok(Plan)"
-            ),
+            Err(other) => {
+                panic!("expected ContractGap on single-worker Plan::build; got Err({other:?})")
+            }
+            Ok(_) => panic!("expected ContractGap on single-worker Plan::build; got Ok(Plan)"),
         }
     }
 
@@ -1218,12 +1216,10 @@ mod tests {
                     "ContractGap must report the actual count (0 here): {msg}"
                 );
             }
-            Err(other) => panic!(
-                "expected ContractGap on zero-worker Plan::build; got Err({other:?})"
-            ),
-            Ok(_) => panic!(
-                "expected ContractGap on zero-worker Plan::build; got Ok(Plan)"
-            ),
+            Err(other) => {
+                panic!("expected ContractGap on zero-worker Plan::build; got Err({other:?})")
+            }
+            Ok(_) => panic!("expected ContractGap on zero-worker Plan::build; got Ok(Plan)"),
         }
     }
 }

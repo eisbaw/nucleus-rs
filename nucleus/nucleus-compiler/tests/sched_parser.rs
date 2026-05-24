@@ -385,8 +385,8 @@ fn parses_14_hearing_aid_naive() {
 #[test]
 fn parses_14_hearing_aid_embedded_multimcu() {
     let src = read_example("14-hearing-aid/schedules/embedded_multimcu.sched.nuc");
-    let ast = parse_sched(&src)
-        .expect("14-hearing-aid/embedded_multimcu must parse after TASK-0079");
+    let ast =
+        parse_sched(&src).expect("14-hearing-aid/embedded_multimcu must parse after TASK-0079");
     // The example has exactly one `check` directive (`check loop frame`).
     assert_eq!(ast.count_checks(), 1, "{:?}", ast);
     let check = ast
@@ -570,8 +570,7 @@ schedule for \"../prog.algo.nuc\" {
     // least one at line 5 (the missing `loop` qualifier). Validate the
     // reported (line, column) against the actual source so a
     // mislocation regresses this test.
-    let lines: std::collections::BTreeSet<usize> =
-        errs.errors().iter().map(|e| e.line).collect();
+    let lines: std::collections::BTreeSet<usize> = errs.errors().iter().map(|e| e.line).collect();
     assert!(
         lines.contains(&3),
         "expected an error on line 3 (empty loop option list), got {:?}",
@@ -585,7 +584,10 @@ schedule for \"../prog.algo.nuc\" {
     // Cross-check the first error's coordinates against the source:
     // the offending token must actually be at the reported line.
     let first = errs.first();
-    let line_text = src.lines().nth(first.line - 1).expect("reported line in source");
+    let line_text = src
+        .lines()
+        .nth(first.line - 1)
+        .expect("reported line in source");
     assert!(
         first.line == 3,
         "first (earliest) error must be the line-3 one, got {first:?} (line {}: {:?})",
@@ -1249,4 +1251,3 @@ fn algo_path_invariant_under_schedule_file_directory() {
          no parent-dir resolution possible."
     );
 }
-

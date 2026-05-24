@@ -34,9 +34,9 @@ use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
 
 use nucleus_compiler::{
-    acfg_to_events, build_acfg, build_sidecar,
+    acfg_to_events,
     algo::{lower_algo, parse_algo},
-    inject_syncs, inject_transfers, link,
+    build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
     sched::{lower_sched, parse_sched},
 };
 use pthreads_sync::{emit, NameTables};
@@ -81,7 +81,11 @@ fn scratch_dir(name: &str) -> PathBuf {
 }
 
 /// Load + link example 01 with the naive schedule. Shared helper.
-fn link_example_01_naive() -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG, PathBuf) {
+fn link_example_01_naive() -> (
+    nucleus_compiler::link::LinkedIR,
+    nucleus_compiler::ACFG,
+    PathBuf,
+) {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/01-elementwise-add");
     let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
@@ -102,7 +106,14 @@ fn link_example_01_naive() -> (nucleus_compiler::link::LinkedIR, nucleus_compile
 /// pipeline (incl. `apply_block_transforms`) so a blocked schedule
 /// gets the tile rewrite. Returns `(linked, post-pass acfg, kernels
 /// path)`.
-fn link_example(ex_rel: &str, sched_rel: &str) -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG, PathBuf) {
+fn link_example(
+    ex_rel: &str,
+    sched_rel: &str,
+) -> (
+    nucleus_compiler::link::LinkedIR,
+    nucleus_compiler::ACFG,
+    PathBuf,
+) {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples").join(ex_rel);
     let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
@@ -136,7 +147,8 @@ fn golden_real_codegen_strings_pin_sidecar_consumption() {
     let (linked, acfg, kernels) = link_example("05-stencil", "schedules/naive.sched.nuc");
     let out = scratch_dir("golden_05_naive");
     let (pw, names, sc) = contract_inputs(&linked, &acfg);
-    let main_rs = fs::read_to_string(emit(&pw, &names, &sc, &kernels, &out).unwrap().main_rs).unwrap();
+    let main_rs =
+        fs::read_to_string(emit(&pw, &names, &sc, &kernels, &out).unwrap().main_rs).unwrap();
     assert!(
         main_rs.contains("for y in (1_i64)..((16_i64 - 1_i64)) {"),
         "05-stencil symbolic bound from sidecar drifted:\n{main_rs}"
@@ -156,7 +168,8 @@ fn golden_real_codegen_strings_pin_sidecar_consumption() {
     let (linked, acfg, kernels) = link_example("07-matmul", "schedules/blocked.sched.nuc");
     let out = scratch_dir("golden_07_blocked");
     let (pw, names, sc) = contract_inputs(&linked, &acfg);
-    let main_rs = fs::read_to_string(emit(&pw, &names, &sc, &kernels, &out).unwrap().main_rs).unwrap();
+    let main_rs =
+        fs::read_to_string(emit(&pw, &names, &sc, &kernels, &out).unwrap().main_rs).unwrap();
     assert!(
         main_rs.contains("for i__tile in (0_i64)..(2_i64) {")
             && main_rs.contains("for i in (0_i64)..(8_i64) {"),

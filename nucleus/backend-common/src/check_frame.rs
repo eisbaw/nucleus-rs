@@ -51,7 +51,13 @@ pub struct CountCheckLoop {
 pub fn sanitize_loop_var(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if s.is_empty() {
         s.push('_');
@@ -70,7 +76,10 @@ pub fn collect_count_check_frames(events: &[Event]) -> Vec<CountCheckLoop> {
     let mut out = Vec::new();
     fn walk(events: &[Event], out: &mut Vec<CountCheckLoop>) {
         for e in events {
-            if let Event::Loop { body, check_frame, .. } = e {
+            if let Event::Loop {
+                body, check_frame, ..
+            } = e
+            {
                 if let Some(frame) = check_frame {
                     if matches!(frame.on_violation, ViolationKind::Count) {
                         out.push(CountCheckLoop {
@@ -143,12 +152,7 @@ pub fn emit_count_static(out: &mut String, ident: &str) {
 /// `fn main()`-level scope all callers emit into. If a future
 /// codegen path needs nested-scope emission, add a `pad: &str`
 /// parameter.
-pub fn emit_count_guard_local(
-    out: &mut String,
-    ident: &str,
-    loop_var: &str,
-    latency_max_ns: u64,
-) {
+pub fn emit_count_guard_local(out: &mut String, ident: &str, loop_var: &str, latency_max_ns: u64) {
     writeln!(
         out,
         "    let _nuc_check_reporter_{ident} = NucCheckCountReporter {{\n\
@@ -173,12 +177,7 @@ pub fn emit_count_guard_local(
 /// `latency_max_ns` appears twice: in the threshold compare and in
 /// the printed line. Mirrors pre-extraction pthreads-sync at
 /// lib.rs:991-997 and mp-tcp-bufsync at lib.rs:809-815 (TASK-0052.04).
-pub fn emit_log_branch(
-    out: &mut String,
-    body_pad: &str,
-    loop_var: &str,
-    latency_max_ns: u64,
-) {
+pub fn emit_log_branch(out: &mut String, body_pad: &str, loop_var: &str, latency_max_ns: u64) {
     writeln!(
         out,
         "{body_pad}if _check_elapsed > {ns}_u128 {{ \

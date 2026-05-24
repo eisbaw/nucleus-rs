@@ -320,8 +320,8 @@ fn task_0120_schema_version_defaults_to_1_when_missing() {
          to exercise the default — fixture drift broke the test"
     );
     let f = write_tmp(src);
-    let caps = load_capabilities(f.path())
-        .expect("missing schema_version must deserialise to default=1");
+    let caps =
+        load_capabilities(f.path()).expect("missing schema_version must deserialise to default=1");
     assert_eq!(
         caps.schema_version, 1,
         "missing schema_version must default to 1 (TASK-0120 backward-compat); got {}",
@@ -335,8 +335,7 @@ fn task_0120_schema_version_explicit_1_parses() {
     // explicitly. Verify the explicit form parses identically.
     let src = format!("schema_version  = 1\n{EXAMPLE_TOML}");
     let f = write_tmp(&src);
-    let caps = load_capabilities(f.path())
-        .expect("explicit schema_version = 1 must parse cleanly");
+    let caps = load_capabilities(f.path()).expect("explicit schema_version = 1 must parse cleanly");
     assert_eq!(caps.schema_version, 1);
 }
 

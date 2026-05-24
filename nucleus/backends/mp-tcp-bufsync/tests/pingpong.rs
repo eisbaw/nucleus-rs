@@ -119,8 +119,17 @@ pub fn sink(z: Vec<i32>) {
 
 /// Build the post-injection ACFG + sidecar + reverse name tables
 /// (exactly what the driver feeds every EventList backend).
-fn pipeline(scratch: &Path) -> (PathBuf, NameTables, nucleus_compiler::sidecar::NameSidecar,
-    std::collections::BTreeMap<nucleus_compiler::event::WorkerId, Vec<nucleus_compiler::event::Event>>) {
+fn pipeline(
+    scratch: &Path,
+) -> (
+    PathBuf,
+    NameTables,
+    nucleus_compiler::sidecar::NameSidecar,
+    std::collections::BTreeMap<
+        nucleus_compiler::event::WorkerId,
+        Vec<nucleus_compiler::event::Event>,
+    >,
+) {
     let kernels_path = scratch.join("kernels.rs");
     fs::write(&kernels_path, KERNELS_SRC).unwrap();
 
@@ -308,14 +317,8 @@ fn const_in_indexexpr_mp_tcp_bufsync_resolves_to_literal_value() {
     );
 
     let out_dir = scratch.join("gen");
-    let result = mp_tcp_bufsync::emit(
-        &r.per_worker,
-        &r.names,
-        &r.sidecar,
-        &kernels_path,
-        &out_dir,
-    )
-    .expect("mp-tcp-bufsync emit must succeed on const-in-IndexExpr fixture");
+    let result = mp_tcp_bufsync::emit(&r.per_worker, &r.names, &r.sidecar, &kernels_path, &out_dir)
+        .expect("mp-tcp-bufsync emit must succeed on const-in-IndexExpr fixture");
 
     // mp-tcp-bufsync emits ONE binary per used worker; the fixture's
     // 2-worker schedule yields TWO files in worker_bins. Both

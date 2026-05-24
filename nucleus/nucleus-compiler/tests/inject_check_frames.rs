@@ -42,8 +42,7 @@ fn build_per_worker(
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     let per_worker = acfg_to_events(&acfg);
-    let per_worker =
-        inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     (per_worker, acfg, linked)
 }
 
@@ -52,10 +51,16 @@ fn build_per_worker(
 /// (iter_var, check_frame).
 fn collect_loops(
     events: &[Event],
-) -> Vec<(nucleus_compiler::IterVar, Option<nucleus_compiler::CheckFrame>)> {
+) -> Vec<(
+    nucleus_compiler::IterVar,
+    Option<nucleus_compiler::CheckFrame>,
+)> {
     fn walk(
         events: &[Event],
-        out: &mut Vec<(nucleus_compiler::IterVar, Option<nucleus_compiler::CheckFrame>)>,
+        out: &mut Vec<(
+            nucleus_compiler::IterVar,
+            Option<nucleus_compiler::CheckFrame>,
+        )>,
     ) {
         for e in events {
             if let Event::Loop {
@@ -106,7 +111,10 @@ schedule for \"a.algo.nuc\" {
         .next()
         .expect("at least one worker (host)");
     let loops = collect_loops(host_events);
-    assert!(!loops.is_empty(), "the `n` loop must project to an Event::Loop");
+    assert!(
+        !loops.is_empty(),
+        "the `n` loop must project to an Event::Loop"
+    );
     // The OUTER (and here only) Event::Loop has the check_frame.
     let (_iv, cf) = &loops[0];
     let cf = cf.as_ref().expect("outer loop must carry check_frame");

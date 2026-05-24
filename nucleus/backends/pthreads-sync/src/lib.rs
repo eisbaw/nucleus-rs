@@ -455,11 +455,7 @@ fn walk_fire_outputs(
 /// (no AlgoIR). Local wrapper that adds a named-DataId contract-gap
 /// error around `backend_common::render::render_array_init_for`
 /// (TASK-0244 single source of truth for the string shape).
-fn render_array_init(
-    did: DataId,
-    sidecar: &NameSidecar,
-    name: &str,
-) -> Result<String, EmitError> {
+fn render_array_init(did: DataId, sidecar: &NameSidecar, name: &str) -> Result<String, EmitError> {
     let ty = sidecar.data_type(did).ok_or_else(|| {
         EmitError::ContractGap(format!(
             "data `{name}` ({did:?}) has no ResolvedType in the NameSidecar \

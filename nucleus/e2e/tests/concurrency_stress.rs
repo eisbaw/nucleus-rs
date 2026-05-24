@@ -68,8 +68,7 @@ fn repo_root() -> PathBuf {
 fn has_infra_race(text: &str) -> bool {
     text.contains("getcwd: cannot access parent directories")
         || text.contains("cannot open output file")
-        || text.contains("No such file or directory")
-            && text.contains("nuc_generated")
+        || text.contains("No such file or directory") && text.contains("nuc_generated")
 }
 
 struct RunOutcome {

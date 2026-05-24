@@ -64,8 +64,8 @@ use std::fmt::Write as _;
 use nucleus_compiler::event::{
     BlockTag, DataId, Event, IterTile, IterVar, SeqTag, SyncTag, ViolationKind, WorkerId,
 };
-use nucleus_compiler::NameTables;
 use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::NameTables;
 
 use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
 use crate::render::{
@@ -354,11 +354,7 @@ fn render_worker_events_inner(
                     }
                     Some(o) if o.indices.is_empty() => {
                         let name = ctx.data_name(o.data)?;
-                        writeln!(
-                            out,
-                            "{pad}let mut {name} = kernels::{callee}({args});"
-                        )
-                        .ok();
+                        writeln!(out, "{pad}let mut {name} = kernels::{callee}({args});").ok();
                     }
                     Some(o) => {
                         // TASK-0209 shared scalar-vs-sub-array
@@ -398,13 +394,7 @@ fn render_worker_events_inner(
                 // not abstract over.
                 if let Some(tag) = block_tag {
                     let child = render_block_tag_loop_header(
-                        out,
-                        indent,
-                        *iter_var,
-                        range,
-                        tag,
-                        enclosing,
-                        render_ctx,
+                        out, indent, *iter_var, range, tag, enclosing, render_ctx,
                     )?;
                     // TASK-0265 Tier 1 wiring: a strip-mined inner
                     // loop CAN carry reuse (cf. 05-stencil/distributed
@@ -462,19 +452,13 @@ fn render_worker_events_inner(
                     .get(iter_var)
                     .and_then(|m| m.get(&worker));
                 let (lo, hi) = match partition_slice {
-                    Some(r) => (
-                        format!("{}_i64", r.start),
-                        format!("{}_i64", r.end),
-                    ),
+                    Some(r) => (format!("{}_i64", r.start), format!("{}_i64", r.end)),
                     None => match ctx.sidecar.loop_bounds.get(iter_var) {
                         Some(b) => (
                             render_const_expr_pub(&b.lo, render_ctx)?,
                             render_const_expr_pub(&b.hi, render_ctx)?,
                         ),
-                        None => (
-                            format!("{}_i64", range.start),
-                            format!("{}_i64", range.end),
-                        ),
+                        None => (format!("{}_i64", range.start), format!("{}_i64", range.end)),
                     },
                 };
                 writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
@@ -542,12 +526,7 @@ fn render_worker_events_inner(
                         }
                         ViolationKind::Log => {
                             // TASK-0222: shared template — see emit_log_branch.
-                            emit_log_branch(
-                                out,
-                                &body_pad,
-                                &frame.loop_var,
-                                frame.latency_max_ns,
-                            );
+                            emit_log_branch(out, &body_pad, &frame.loop_var, frame.latency_max_ns);
                         }
                         ViolationKind::Count => {
                             // TASK-0222: shared template — see emit_count_branch.
@@ -593,9 +572,7 @@ fn render_worker_events_inner(
                 )
                 .ok();
             }
-            Event::Wait {
-                data, src, seq, ..
-            } => {
+            Event::Wait { data, src, seq, .. } => {
                 let rid = ctx.rendezvous_ids.get(&(*data, *seq)).ok_or_else(|| {
                     EmitError::ContractGap(format!(
                         "Wait of data {data:?} (seq {seq:?}) has no rendezvous id \
@@ -740,10 +717,7 @@ fn leading_axis_slice(
 /// the pair's tile, copied from the first event sighting; the same
 /// `seq` is carried on both endpoints by the XferPlaceholder
 /// construction (TASK-0018) so first-sighting is well-defined.
-pub fn collect_xfer_pairs(
-    events: &[Event],
-    out: &mut BTreeMap<(DataId, SeqTag), IterTile>,
-) {
+pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag), IterTile>) {
     for e in events {
         match e {
             Event::Push {
@@ -752,8 +726,7 @@ pub fn collect_xfer_pairs(
             | Event::Wait {
                 data, seq, tile, ..
             } => {
-                out.entry((*data, *seq))
-                    .or_insert_with(|| tile.clone());
+                out.entry((*data, *seq)).or_insert_with(|| tile.clone());
             }
             Event::Loop { body, .. } => collect_xfer_pairs(body, out),
             _ => {}
