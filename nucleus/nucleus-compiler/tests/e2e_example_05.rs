@@ -276,6 +276,35 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
         "marker must name min_offset=-1 (smallest offset is -1)"
     );
 
+    // TASK-0269 cycle 103: real circular-buffer codegen landed on
+    // pthreads-sync. The emit MUST now contain:
+    //   1. A per-(data, axis) buffer declaration of the right type +
+    //      length. The buffer name is `__reuse_buf_<data>_a<axis>`.
+    //   2. A `rem_euclid(3_i64)` indexing op (the circular wrap on
+    //      length-3 slots).
+    // These are structural fingerprints; together with the marker
+    // payload assertions above they pin the contract that Stage 2 is
+    // ACTUAL codegen, not a comment-only scaffold.
+    //
+    // A regression dropping the buffer decl (reverting to marker-only)
+    // would still pass the marker substring assertions above; THIS
+    // test pins the codegen difference.
+    assert!(
+        reuse_main.contains("let mut __reuse_buf_img_in_a1: Vec<i32>"),
+        "TASK-0269 AC#1: emit MUST contain a `let mut __reuse_buf_img_in_a1: Vec<i32>` \
+         declaration for the (img_in, axis=1) reuse slot (length=3 elements). Got:\n{reuse_main}"
+    );
+    assert!(
+        reuse_main.contains("vec![0; 3usize]"),
+        "TASK-0269 AC#1: emit MUST initialise the reuse buffer with \
+         `vec![0; 3usize]` (length matches ReuseSlot.length=3). Got:\n{reuse_main}"
+    );
+    assert!(
+        reuse_main.contains("rem_euclid(3_i64)"),
+        "TASK-0269 AC#3: emit MUST contain a `rem_euclid(3_i64)` circular \
+         wrap on the length-3 buffer. Got:\n{reuse_main}"
+    );
+
     // Naive schedule: marker MUST NOT appear (no reuse directive).
     let naive_dir = scratch_dir("example_05_naive_marker_absent_check");
     let naive_build = Command::new("cargo")
@@ -312,6 +341,15 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
          got {naive_count} occurrence(s). Symmetric ABSENCE check guards \
          against an over-eager render_reuse_marker_comment that fires when \
          no slot exists."
+    );
+
+    // TASK-0269 symmetric absence: the buffer decl + rem_euclid wrap
+    // must ALSO NOT appear under naive. Guards against an over-eager
+    // render_reuse_buf_decls that fires when no reuse slot is active.
+    assert!(
+        !naive_main.contains("__reuse_buf"),
+        "TASK-0269 absence: naive schedule has no `reuse` directive ⇒ \
+         no `__reuse_buf` identifier may appear in the emit. Got:\n{naive_main}"
     );
 }
 

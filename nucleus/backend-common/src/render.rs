@@ -36,7 +36,8 @@ use std::io;
 use std::path::PathBuf;
 
 use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
-use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, IterVar, KernelId};
+use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, Event, IterVar, KernelId};
+use nucleus_compiler::passes::reuse_inference::ReuseSlot;
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
@@ -130,6 +131,21 @@ pub struct RenderCtx<'a> {
     /// to the pre-TASK-0124 backend (the map is consulted only by
     /// `render_int_expr`/`render_const_expr` on an `Ident`).
     pub abs_subst: BTreeMap<String, String>,
+    /// Active reuse-buffer rewrite groups, keyed by `DataId`.
+    ///
+    /// Populated by [`render_reuse_buf_decls`] at the entry of an
+    /// `Event::Loop` body when `sidecar.reuse_widths.get(iter_var)` is
+    /// non-empty AND a matching DataRef shape was discovered in the
+    /// body (TASK-0269 Stage 2 codegen). Empty for every loop without
+    /// reuse-active slots — preserves byte-identicality on every
+    /// pre-TASK-0269 schedule (the map is consulted only by
+    /// `render_fire_arg` on an `ArgBinding::Data` with non-empty
+    /// indices).
+    ///
+    /// Multi-axis reuse on the same DataId (a separable filter at
+    /// different (data, axis) pairs) is supported in shape but the
+    /// 05-stencil first landing exercises one (data, axis=1) group.
+    pub reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -141,6 +157,7 @@ impl<'a> RenderCtx<'a> {
             names,
             sidecar,
             abs_subst: BTreeMap::new(),
+            reuse_active: BTreeMap::new(),
         }
     }
 }
@@ -175,6 +192,13 @@ pub struct RenderCtxPub<'a> {
     /// multi-worker program (which is every tier-1 schedule today, so
     /// the existing 88/70/0/18 e2e matrix renders byte-identically).
     pub abs_subst: BTreeMap<String, String>,
+    /// See [`RenderCtx::reuse_active`]. Empty for every multi-worker
+    /// program in TASK-0269's scope: the multi-worker walker landing
+    /// for reuse codegen is forward-carried to TASK-0270, and until
+    /// that lands no multi-worker code path populates this map. The
+    /// field carries the same shape as `RenderCtx::reuse_active` so
+    /// the cross-context `inner()` conversion is a literal copy.
+    pub reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
 }
 
 impl<'a> RenderCtxPub<'a> {
@@ -186,6 +210,7 @@ impl<'a> RenderCtxPub<'a> {
             names,
             sidecar,
             abs_subst: BTreeMap::new(),
+            reuse_active: BTreeMap::new(),
         }
     }
 
@@ -200,6 +225,7 @@ impl<'a> RenderCtxPub<'a> {
             names: self.names,
             sidecar: self.sidecar,
             abs_subst,
+            reuse_active: self.reuse_active.clone(),
         }
     }
 
@@ -212,6 +238,7 @@ impl<'a> RenderCtxPub<'a> {
             names: self.names,
             sidecar: self.sidecar,
             abs_subst: self.abs_subst.clone(),
+            reuse_active: self.reuse_active.clone(),
         }
     }
 }
@@ -304,6 +331,64 @@ pub fn render_fire_args(
     Ok(parts.join(", "))
 }
 
+/// Try the reuse-buffer rewrite at a Fire-arg DataRef site.
+///
+/// Returns `Some(rendered_rust)` iff:
+/// 1. `ctx.reuse_active` carries a group for `s.data`, and
+/// 2. one of the groups at this `data` has `axis < s.indices.len()`
+///    and matches the OUTER axes (every non-reuse axis exactly
+///    `IrExpr::eq` to the canonical pattern), and
+/// 3. the reuse-axis index decodes as `iv + b` via
+///    [`try_reuse_axis_offset`].
+///
+/// On match the rewrite is
+/// `buf[((iv_rendered + b - min_offset).rem_euclid(L)) as usize]`.
+/// `iv_rendered` is the iv name (or its `abs_subst`-rebound
+/// expression) — the source-code rendering of the iv, NOT a value.
+fn try_rewrite_reuse_arg(s: &DataSlice, ctx: &RenderCtx<'_>) -> Option<String> {
+    let groups = ctx.reuse_active.get(&s.data)?;
+    for g in groups {
+        let ax_idx = g.axis as usize;
+        if ax_idx >= s.indices.len() {
+            continue;
+        }
+        // Outer-axes match check. The DataSlice's indices with the
+        // reuse axis at `ax_idx` skipped must equal `g.outer_axes`
+        // verbatim (PartialEq on IrExpr ignores no fields — it's a
+        // structural equality on the AST).
+        if s.indices.len() != g.outer_axes.len() + 1 {
+            continue;
+        }
+        let outer_match = s
+            .indices
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != ax_idx)
+            .map(|(_, e)| e)
+            .zip(g.outer_axes.iter())
+            .all(|(a, b)| a == b);
+        if !outer_match {
+            continue;
+        }
+        let b = try_reuse_axis_offset(&s.indices[ax_idx], &g.iv_name)?;
+        // Render the iv via render_int_expr on a synthetic
+        // `IrExpr::Ident(iv_name)` so any active `abs_subst`
+        // substitution (strip-mined inner loop) reaches the rewrite
+        // too. Unwrap is safe: render_int_expr on an Ident is
+        // infallible (only DataRef/Call branches return Err).
+        let iv_expr = IrExpr::Ident(g.iv_name.clone());
+        let iv_rendered = render_int_expr(&iv_expr, ctx).ok()?;
+        let length = g.slot.length;
+        let min_offset = g.slot.min_offset;
+        return Some(format!(
+            "{buf}[(((({iv}) + ({b}_i64) - ({min_offset}_i64)).rem_euclid({length}_i64)) as usize)]",
+            buf = g.buf_ident,
+            iv = iv_rendered,
+        ));
+    }
+    None
+}
+
 fn render_fire_arg(
     arg: &ArgBinding,
     param_ty: Option<&ResolvedType>,
@@ -318,6 +403,19 @@ fn render_fire_arg(
                 // catch it loudly (same as the old backend).
                 data_name(s.data, ctx)
             } else {
+                // TASK-0269 Stage 2 codegen: if a reuse group is
+                // active on this `(data, axis)` AND the outer axes
+                // match the canonical pattern AND the reuse-axis
+                // index decodes as `iv + b` for the recorded iv,
+                // rewrite the read into a buffer slot lookup. The
+                // restrictive cut keeps the first-cut landing narrow
+                // (only 1 of 3 outer-coord variations in 05-stencil/
+                // reuse hits the rewrite); a more general rewrite
+                // (one buffer per outer-coord variation) is a
+                // follow-up.
+                if let Some(rewrite) = try_rewrite_reuse_arg(s, ctx) {
+                    return Ok(rewrite);
+                }
                 // Classify scalar vs sub-array based on rank match
                 // (TASK-0209). Sidecar `dims` is the single source of
                 // truth for the data's declared shape — fewer indices
@@ -862,12 +960,432 @@ pub fn render_reuse_marker_comment(
             // Marker substring `reuse_widths_pending` is load-bearing
             // for AC#4 of TASK-0265 — the e2e marker-detection test
             // greps for it. Do NOT rename without updating the test.
+            //
+            // TASK-0269 (cycle 103): the marker comment now precedes
+            // the real circular-buffer codegen on pthreads-sync's
+            // single-worker path. The substring is preserved as a
+            // regression canary above the buffer decl — Tier 2 + Tier 3
+            // landings can subsume it (TASK-0270 multi-worker remains
+            // marker-only).
             let _ = writeln!(
                 out,
-                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 marker; circular-buffer emit forward-carried to TASK-0269 + TASK-0270)",
+                "{pad}// reuse_widths_pending: iv={iter_var_name} data={data_name} axis={axis} length={length} min_offset={min_offset} (Stage 2 active; circular-buffer codegen below on pthreads-sync — TASK-0269)",
                 length = slot.length,
                 min_offset = slot.min_offset,
             );
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// Reuse circular-buffer codegen — TASK-0269 Stage 2 Tier 2
+// (pthreads-sync single-worker path)
+// --------------------------------------------------------------------
+
+/// One reuse rewrite group: the circular buffer that backs every
+/// matching DataRef read of a single `(DataId, axis)` slot whose
+/// OUTER axes match the canonical `outer_axes` pattern verbatim.
+///
+/// Populated by [`render_reuse_buf_decls`] when a body's first
+/// matching DataRef is discovered; consumed by [`render_fire_arg`] at
+/// every Fire-arg read site to rewrite a matching DataRef into a
+/// `buf[(iv + b - min_offset).rem_euclid(L) as usize]` lookup.
+///
+/// The first-cut narrowing (TASK-0269): only DataRefs whose OUTER
+/// axes match `outer_axes` exactly (PartialEq on `IrExpr`) are
+/// rewritten. In 05-stencil/reuse this means the 3 reads at
+/// `img_in[y][x-1..=x+1]` get rewritten; the 6 reads at `img_in[y-1]`
+/// and `img_in[y+1]` stay verbatim. A more general rewrite (one
+/// buffer per outer-coord variation) is filed as a follow-up.
+#[derive(Debug, Clone)]
+pub struct ReuseRewriteGroup {
+    /// The reuse-axis index inside the DataRef (`axis` key from the
+    /// sidecar's `reuse_widths` triple-nested map).
+    pub axis: u64,
+    /// The slot shape inferred by Stage 1 (`length`, `min_offset`).
+    pub slot: ReuseSlot,
+    /// The canonical OUTER-axis index expressions (all axes except
+    /// `axis`) — a matching DataRef must have these EXACT outer-axis
+    /// expressions to be rewritten. Stored in source-order, so axis
+    /// indexing is preserved (axis 0 first, then axis 1, etc., with
+    /// the reuse axis at position `axis` omitted).
+    pub outer_axes: Vec<IrExpr>,
+    /// Emitted Rust identifier for the per-(data, axis) buffer. Form:
+    /// `__reuse_buf_<data_name>_a<axis>`.
+    pub buf_ident: String,
+    /// The iter-var name (e.g. `"x"`) — used by `render_fire_arg` to
+    /// detect the affine `iv + b` shape on the reuse-axis index.
+    pub iv_name: String,
+}
+
+/// Try to decompose an affine `iv + b` index. Returns `Some(b)` iff
+/// the expression is one of the shapes
+/// [`affine_decompose`](nucleus_compiler::passes::common::affine_decompose)
+/// accepts with coefficient 1 (the only coefficient Stage 1 records;
+/// any other has already been rejected by `apply_reuse_inference`).
+/// Pure-integer expressions (no iv mention) return `None` — they're
+/// out-of-pattern for a reuse-axis index.
+///
+/// This is a tiny inlined re-impl of the iv+constant shapes —
+/// [`nucleus_compiler::passes::common::affine_decompose`] is
+/// `pub(crate)` so codegen cannot call it directly. The shapes we
+/// recognise here MUST stay a subset of Stage 1's; mismatch would
+/// mean we'd rewrite reads that Stage 1 didn't count (or vice versa).
+fn try_reuse_axis_offset(e: &IrExpr, iv_name: &str) -> Option<i64> {
+    match e {
+        IrExpr::Ident(n) if n == iv_name => Some(0),
+        IrExpr::BinOp(IrBinOp::Add, lhs, rhs) => match (lhs.as_ref(), rhs.as_ref()) {
+            (IrExpr::Ident(n), IrExpr::IntLit(v)) if n == iv_name => Some(*v),
+            (IrExpr::IntLit(v), IrExpr::Ident(n)) if n == iv_name => Some(*v),
+            _ => None,
+        },
+        IrExpr::BinOp(IrBinOp::Sub, lhs, rhs) => match (lhs.as_ref(), rhs.as_ref()) {
+            (IrExpr::Ident(n), IrExpr::IntLit(v)) if n == iv_name => Some(-*v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Walk an `Event` tree shallowly looking for the FIRST matching
+/// DataRef of each `(data_id, axis)` reuse slot. "Matching" means:
+/// the `ArgBinding::Data`'s `DataSlice` has enough axes, the
+/// reuse-axis index decodes via [`try_reuse_axis_offset`], and the
+/// outer axes are kept as-is (one canonical variation is picked from
+/// the first matching read).
+///
+/// The walk descends through nested `Event::Loop` bodies and
+/// `Event::Fire` arg bindings, including `ArgBinding::Nested`'s
+/// `Vec<ArgBinding>`. It stops at the first matching read PER
+/// `(data_id, axis)` pair so the canonical outer-axes pattern is
+/// stable.
+///
+/// Returns `BTreeMap<DataId, Vec<ReuseRewriteGroup>>` ordered by
+/// `DataId` then by axis (determinism via `BTreeMap` + sorted axis
+/// iteration).
+fn discover_reuse_groups(
+    body: &[Event],
+    iv_name: &str,
+    per_data: &BTreeMap<DataId, BTreeMap<u64, ReuseSlot>>,
+    names: &NameTables,
+) -> BTreeMap<DataId, Vec<ReuseRewriteGroup>> {
+    let mut out: BTreeMap<DataId, Vec<ReuseRewriteGroup>> = BTreeMap::new();
+    for (data_id, per_axis) in per_data {
+        // Collect already-found axes so the walk can skip past once
+        // every axis on this data has a canonical pattern.
+        let mut found: BTreeMap<u64, ReuseRewriteGroup> = BTreeMap::new();
+        for ev in body {
+            walk_event_for_reuse(ev, *data_id, iv_name, per_axis, &mut found, names);
+            if found.len() == per_axis.len() {
+                break;
+            }
+        }
+        let groups: Vec<ReuseRewriteGroup> = found.into_values().collect();
+        if !groups.is_empty() {
+            out.insert(*data_id, groups);
+        }
+    }
+    out
+}
+
+fn walk_event_for_reuse(
+    ev: &Event,
+    data_id: DataId,
+    iv_name: &str,
+    per_axis: &BTreeMap<u64, ReuseSlot>,
+    found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    names: &NameTables,
+) {
+    match ev {
+        Event::Fire { bindings, .. } => {
+            for arg in &bindings.inputs {
+                walk_arg_for_reuse(arg, data_id, iv_name, per_axis, found, names);
+            }
+        }
+        Event::Loop { body, .. } => {
+            for child in body {
+                walk_event_for_reuse(child, data_id, iv_name, per_axis, found, names);
+            }
+        }
+        // Sync / Push / Wait / Alloc / Free carry no Fire-arg DataRefs.
+        _ => {}
+    }
+}
+
+fn walk_arg_for_reuse(
+    arg: &ArgBinding,
+    data_id: DataId,
+    iv_name: &str,
+    per_axis: &BTreeMap<u64, ReuseSlot>,
+    found: &mut BTreeMap<u64, ReuseRewriteGroup>,
+    names: &NameTables,
+) {
+    match arg {
+        ArgBinding::Data(s) => {
+            if s.data != data_id || s.indices.is_empty() {
+                return;
+            }
+            for (axis, slot) in per_axis {
+                if found.contains_key(axis) {
+                    continue;
+                }
+                let ax_idx = *axis as usize;
+                if ax_idx >= s.indices.len() {
+                    continue;
+                }
+                // The reuse-axis index must decode as `iv + b`. If not,
+                // this DataRef is out-of-pattern (a non-iv index on the
+                // reuse axis); skip it. Stage 1 would have rejected the
+                // body if NO DataRef matched, so we're guaranteed at
+                // least one match per axis (else `per_axis` wouldn't
+                // contain `axis`).
+                if try_reuse_axis_offset(&s.indices[ax_idx], iv_name).is_none() {
+                    continue;
+                }
+                // Build the OUTER axes (all axes except the reuse one),
+                // source-order preserved.
+                let outer_axes: Vec<IrExpr> = s
+                    .indices
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| if i == ax_idx { None } else { Some(e.clone()) })
+                    .collect();
+                let data_name = names
+                    .data
+                    .get(&data_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("d{}", data_id.0));
+                let buf_ident = format!("__reuse_buf_{}_a{}", data_name, axis);
+                found.insert(
+                    *axis,
+                    ReuseRewriteGroup {
+                        axis: *axis,
+                        slot: *slot,
+                        outer_axes,
+                        buf_ident,
+                        iv_name: iv_name.to_string(),
+                    },
+                );
+            }
+        }
+        ArgBinding::Nested { args, .. } => {
+            for inner in args {
+                walk_arg_for_reuse(inner, data_id, iv_name, per_axis, found, names);
+            }
+        }
+        ArgBinding::Scalar(_) => {}
+    }
+}
+
+/// Emit Vec<T> circular-buffer declarations + initial-fill prologue
+/// for every reuse group active on `iter_var` in `body`. Returns the
+/// `reuse_active` map the caller seeds into the child `RenderCtx` it
+/// recurses into the body with.
+///
+/// The prologue unrolls the fills for offsets `b in min_offset ..
+/// min_offset+length-1` (i.e. every offset EXCEPT the most-distant
+/// `max_offset = min_offset + length - 1`). The per-iter update for
+/// `max_offset` is the responsibility of [`render_reuse_per_iter_update`]
+/// at body entry.
+///
+/// `lo_expr_rs` is the Rust expression for the loop's `lo` bound
+/// (e.g. `"1_i64"` for `for x : 1..W-1`). It substitutes the iv in
+/// the source-axis index at prologue time — the reuse-axis position
+/// of the source array reads becomes `lo + b` for each prologue
+/// offset.
+///
+/// `body` is the loop's body — walked once to discover the canonical
+/// outer-axes pattern per `(data_id, axis)`.
+///
+/// Empty path is a true no-op (returns empty map, writes nothing).
+/// Byte-identicality with the pre-TASK-0269 emit holds for every
+/// schedule without an active reuse slot.
+pub fn render_reuse_buf_decls(
+    out: &mut String,
+    indent: usize,
+    iter_var: IterVar,
+    iter_var_name: &str,
+    lo_expr_rs: &str,
+    body: &[Event],
+    ctx: &RenderCtx<'_>,
+) -> Result<BTreeMap<DataId, Vec<ReuseRewriteGroup>>, EmitError> {
+    use std::fmt::Write as _;
+    let Some(per_data) = ctx.sidecar.reuse_widths.get(&iter_var) else {
+        return Ok(BTreeMap::new());
+    };
+    if per_data.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let groups = discover_reuse_groups(body, iter_var_name, per_data, ctx.names);
+    let pad = "    ".repeat(indent);
+    for (data_id, gs) in &groups {
+        let data_name = data_name(*data_id, ctx)?;
+        let ty = ctx.sidecar.data_type(*data_id).ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "reuse buffer for data `{data_name}` ({:?}) has no \
+                 ResolvedType in the NameSidecar (TASK-0269)",
+                data_id
+            ))
+        })?;
+        let scalar_ty = rust_scalar_type(&ty.scalar);
+        let zero = rust_scalar_zero(&ty.scalar);
+        for g in gs {
+            // 1. Buffer decl.
+            let _ = writeln!(
+                out,
+                "{pad}let mut {buf}: Vec<{scalar_ty}> = vec![{zero}; {length}usize];",
+                buf = g.buf_ident,
+                length = g.slot.length,
+            );
+            // 2. Prologue: fill every offset EXCEPT the most-distant
+            //    one (which is filled per-iter inside the body). The
+            //    `lo + b` source-axis index substitutes the iv for the
+            //    prologue's evaluation.
+            //
+            //    The source array's flat index is computed by the same
+            //    `render_flat_index`-style sum the body uses; we build
+            //    a synthetic `DataSlice` with the prologue's
+            //    iv-substituted index and pass it through
+            //    `render_flat_index`.
+            let max_offset = g.slot.min_offset + (g.slot.length as i64) - 1;
+            for b in g.slot.min_offset..max_offset {
+                let prologue_slice = prologue_slice_for_offset(g, *data_id, b, lo_expr_rs);
+                let src_flat = render_flat_index(&prologue_slice, ctx)?;
+                // The buffer slot index MUST match the body's read
+                // formula `buf[(iv + b - min_offset).rem_euclid(L)]`
+                // evaluated at iv == lo (the first body iteration).
+                // Hence: `buf[((lo + b) - min_offset).rem_euclid(L)]`.
+                // We emit this as a runtime expression to avoid having
+                // to const-fold `lo` at codegen time (it may carry
+                // `H-1`-style symbolic-const subtrees from
+                // `render_const_expr`).
+                let length = g.slot.length;
+                let _ = writeln!(
+                    out,
+                    "{pad}{buf}[(((({lo_expr_rs}) + ({b}_i64) - ({min_offset}_i64)).rem_euclid({length}_i64)) as usize)] = {data_name}[{src_flat}];",
+                    buf = g.buf_ident,
+                    min_offset = g.slot.min_offset,
+                );
+            }
+        }
+    }
+    Ok(groups)
+}
+
+/// Emit the per-iteration most-distant-element load for every active
+/// reuse group. Called at body entry, AFTER the loop header and
+/// BEFORE recursing into the body, so the slot is current when any
+/// Fire arg reads it.
+///
+/// `iv_expr_rs` is the Rust expression for the iv (typically just the
+/// iv variable name, or the rebound absolute expression under a
+/// strip-mined inner loop).
+pub fn render_reuse_per_iter_update(
+    out: &mut String,
+    indent: usize,
+    groups: &BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
+    iv_expr_rs: &str,
+    ctx: &RenderCtx<'_>,
+) -> Result<(), EmitError> {
+    use std::fmt::Write as _;
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let pad = "    ".repeat(indent);
+    for (data_id, gs) in groups {
+        let data_name = data_name(*data_id, ctx)?;
+        for g in gs {
+            let max_offset = g.slot.min_offset + (g.slot.length as i64) - 1;
+            // Source flat index uses the LIVE iv expression
+            // (`iv + max_offset`) on the reuse axis.
+            let live_slice = live_slice_for_offset(g, *data_id, max_offset, iv_expr_rs);
+            let src_flat = render_flat_index(&live_slice, ctx)?;
+            // The buffer slot rotates with the iv. We could fold the
+            // `as i64` + `rem_euclid` away if iv is known non-negative,
+            // but keeping the rem_euclid form makes the rewrite
+            // uniform between the prologue (where the slot index is a
+            // const u64 literal) and the per-iter update + rewrite
+            // sites (where the slot index depends on the live iv).
+            let length = g.slot.length;
+            let _ = writeln!(
+                out,
+                "{pad}{buf}[((({iv_expr_rs}) + ({max_offset}_i64) - ({min_offset}_i64)).rem_euclid({length}_i64)) as usize] = {data_name}[{src_flat}];",
+                buf = g.buf_ident,
+                min_offset = g.slot.min_offset,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Build the synthetic DataSlice the prologue uses to fetch one slot
+/// from the source array. Reuse axis is replaced with the literal
+/// `(<lo_expr_rs>) + (b)`; outer axes are the canonical
+/// [`ReuseRewriteGroup::outer_axes`] pattern verbatim.
+///
+/// `render_flat_index` consumes the result — its render path treats
+/// our synthetic IrExpr nodes the same as natural ones (no
+/// observational difference).
+fn prologue_slice_for_offset(
+    group: &ReuseRewriteGroup,
+    data_id: DataId,
+    b: i64,
+    lo_expr_rs: &str,
+) -> DataSlice {
+    // Build the prologue's reuse-axis index expression as
+    // `Ident("(lo) + (b)")` — render_int_expr emits Ident verbatim
+    // (the `abs_subst` table is empty for this synthetic path), so
+    // the printed text is exactly the Rust expression we want. This
+    // is the same precedent `abs_subst`'s rebound expressions use:
+    // pre-rendered Rust strings smuggled through an Ident node.
+    let mut indices: Vec<IrExpr> = Vec::with_capacity(group.outer_axes.len() + 1);
+    let mut outer_iter = group.outer_axes.iter();
+    let ax_idx = group.axis as usize;
+    // Splice the reuse-axis index back at its original position.
+    for i in 0..(group.outer_axes.len() + 1) {
+        if i == ax_idx {
+            indices.push(IrExpr::Ident(format!("({lo_expr_rs}) + ({b}_i64)")));
+        } else {
+            indices.push(
+                outer_iter
+                    .next()
+                    .expect("outer_axes length matches")
+                    .clone(),
+            );
+        }
+    }
+    DataSlice {
+        data: data_id,
+        indices,
+    }
+}
+
+/// Same as [`prologue_slice_for_offset`] but for the live per-iter
+/// update — the reuse-axis index becomes
+/// `(<iv_expr_rs>) + (offset)`.
+fn live_slice_for_offset(
+    group: &ReuseRewriteGroup,
+    data_id: DataId,
+    offset: i64,
+    iv_expr_rs: &str,
+) -> DataSlice {
+    let ax_idx = group.axis as usize;
+    let mut indices: Vec<IrExpr> = Vec::with_capacity(group.outer_axes.len() + 1);
+    let mut outer_iter = group.outer_axes.iter();
+    for i in 0..(group.outer_axes.len() + 1) {
+        if i == ax_idx {
+            indices.push(IrExpr::Ident(format!("({iv_expr_rs}) + ({offset}_i64)")));
+        } else {
+            indices.push(
+                outer_iter
+                    .next()
+                    .expect("outer_axes length matches")
+                    .clone(),
+            );
+        }
+    }
+    DataSlice {
+        data: data_id,
+        indices,
     }
 }

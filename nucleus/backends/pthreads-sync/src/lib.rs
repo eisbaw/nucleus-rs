@@ -103,7 +103,7 @@ use backend_common::check_frame::{
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use backend_common::render::{
     data_name, render_const_expr, render_fire_args, render_fire_output_assign, render_loop_bounds,
-    render_reuse_marker_comment, RenderCtx,
+    render_reuse_buf_decls, render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
 };
 // Re-export the codegen-time error type so downstream callers (the
 // driver, tests, other backends that delegate to this crate's
@@ -631,11 +631,40 @@ fn render_event(
                     format!("({lo_src} + ({tile_name} * {n}_i64) + {var})")
                 };
                 let mut child_subst = ctx.abs_subst.clone();
-                child_subst.insert(var.clone(), abs);
+                child_subst.insert(var.clone(), abs.clone());
+                // TASK-0269 strip-mined arm: a strip-mined inner loop
+                // CAN carry reuse (`loop x : block=64, reuse;` —
+                // 05-stencil/distributed). The buffer decl + prologue
+                // lives at the OUTER pad above the for header (so it
+                // persists across the inner-loop's iterations). For
+                // the prologue's reuse-axis "lo" we use the rebound
+                // ABSOLUTE expression (`LO + tile*N + 0`-equivalent)
+                // because the strip-mined loop's lexical range is
+                // `0..inner_len`, not `LO..HI`.
+                //
+                // The strip-mined inner loop's first iteration has
+                // `var == 0`, so the absolute lo expression is
+                // `(LO + tile*N + 0)`. We get that by substituting
+                // `0` for var into the abs expression, but a simpler
+                // shape is to pass the prologue the OUTER pad's
+                // expression for the iv at lo-time. For 05-stencil/
+                // distributed: LO=1, so lo expr is `(1 + tile*N)`.
+                //
+                // Pragmatic: for the strip-mined arm, render the lo
+                // expression by replacing `var` with `0_i64` in the
+                // abs expression we already computed.
+                let strip_lo_expr = abs.replace(var.as_str(), "0_i64");
+                let reuse_groups =
+                    render_reuse_buf_decls(out, indent, *iter_var, var, &strip_lo_expr, body, ctx)?;
+                let mut child_reuse = ctx.reuse_active.clone();
+                for (data_id, gs) in reuse_groups.clone() {
+                    child_reuse.insert(data_id, gs);
+                }
                 let child = RenderCtx {
                     names: ctx.names,
                     sidecar: ctx.sidecar,
                     abs_subst: child_subst,
+                    reuse_active: child_reuse,
                 };
                 // Loop header uses the concrete folded range
                 // (`{start}_i64..{end}_i64`) — NOT the source-form
@@ -658,19 +687,35 @@ fn render_event(
                     ctx.sidecar,
                     ctx.names,
                 );
+                // TASK-0269 per-iter update: the iv expression here
+                // is the rebound ABSOLUTE expression (so the source-
+                // array index reflects the strip-mined coordinate),
+                // not the bare `var`.
+                render_reuse_per_iter_update(out, indent + 1, &reuse_groups, &abs, &child)?;
                 render_events_in(body, out, indent + 1, &child, Some(*iter_var))?;
                 writeln!(out, "{pad}}}").ok();
                 return Ok(());
             }
 
             let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
+            // TASK-0269 cycle 103: real circular-buffer codegen.
+            // ORDER: buffer decl + initial-fill prologue MUST live
+            // OUTSIDE the for-header (the buffer must persist across
+            // iterations), so we emit them BEFORE writing the for
+            // line. `render_reuse_buf_decls` walks the body to
+            // discover the canonical outer-axes pattern per (data,
+            // axis), emits the Vec<T> decl + unrolled prologue, and
+            // returns the per-(data, axis) ReuseRewriteGroup map the
+            // child RenderCtx threads into the body recursion. Empty
+            // when the iv carries no reuse slot — byte-identical no-
+            // op for every pre-TASK-0269 schedule.
+            let reuse_groups =
+                render_reuse_buf_decls(out, indent, *iter_var, var, &lo_s, body, ctx)?;
             writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
             // TASK-0265 Tier 1: regular (non-strip-mined) loop —
-            // marker comment at body entry. NO-OP when the iv carries
-            // no reuse (every shipped schedule pre-cycle 87) so the
-            // existing matrix stays byte-identical. Stage 2 codegen
-            // (circular-buffer emit) is forward-carried to TASK-0265
-            // sub-tasks.
+            // marker comment at body entry. The substring
+            // `reuse_widths_pending` is grep-able for AC#4 of the
+            // parent task. NO-OP when the iv carries no reuse.
             let body_indent_for_marker = indent + 1;
             render_reuse_marker_comment(
                 out,
@@ -680,6 +725,11 @@ fn render_event(
                 ctx.sidecar,
                 ctx.names,
             );
+            // TASK-0269 per-iter update: load the most-distant
+            // element into the buffer slot before any Fire arg reads
+            // it. Iv expression here is the bare var (no abs_subst
+            // rebinding on this non-strip-mine path).
+            render_reuse_per_iter_update(out, body_indent_for_marker, &reuse_groups, var, ctx)?;
             // Real-time `check loop V : latency_max=T` (TASK-0052.02 /
             // PRD §6.3.5). The projection pass `inject_check_frames`
             // populates `check_frame` ONLY on outer source loops
@@ -699,6 +749,23 @@ fn render_event(
             }
             let body_indent = indent + 1;
             let body_pad = "    ".repeat(body_indent);
+            // TASK-0269: build the child RenderCtx that carries the
+            // newly-active reuse groups into the body recursion. The
+            // parent's reuse_active is preserved (so nested reuse
+            // loops compose); new groups OVERRIDE on data_id collision
+            // (a hypothetical inner-loop reuse on the SAME data; not
+            // exercised by 05-stencil/reuse but the BTreeMap semantics
+            // are well-defined).
+            let mut child_reuse = ctx.reuse_active.clone();
+            for (data_id, gs) in reuse_groups {
+                child_reuse.insert(data_id, gs);
+            }
+            let body_ctx = RenderCtx {
+                names: ctx.names,
+                sidecar: ctx.sidecar,
+                abs_subst: ctx.abs_subst.clone(),
+                reuse_active: child_reuse,
+            };
             if let Some(frame) = check_frame {
                 // TASK-0221 (a): CheckFrame.loop_var carries the
                 // user-source loop variable name, but `var` (resolved
@@ -731,7 +798,7 @@ fn render_event(
                     "{body_pad}let _check_start = std::time::Instant::now();"
                 )
                 .ok();
-                render_events_in(body, out, body_indent, ctx, Some(*iter_var))?;
+                render_events_in(body, out, body_indent, &body_ctx, Some(*iter_var))?;
                 writeln!(
                     out,
                     "{body_pad}let _check_elapsed = _check_start.elapsed().as_nanos();"
@@ -792,7 +859,7 @@ fn render_event(
                     }
                 }
             } else {
-                render_events_in(body, out, body_indent, ctx, Some(*iter_var))?;
+                render_events_in(body, out, body_indent, &body_ctx, Some(*iter_var))?;
             }
             writeln!(out, "{pad}}}").ok();
             Ok(())
