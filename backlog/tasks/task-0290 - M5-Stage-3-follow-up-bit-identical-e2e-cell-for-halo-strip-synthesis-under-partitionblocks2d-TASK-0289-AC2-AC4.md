@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-24 20:24'
-updated_date: '2026-05-24 23:42'
+updated_date: '2026-05-24 23:57'
 labels:
   - M5
   - compiler
@@ -250,4 +250,34 @@ TASK-0290 stays In Progress pending TASK-0294. AC#1+#3 closed; AC#2+#4 blocked o
 
 ### Architect-review-mark
 Per the architect's cycle 114a forward-carried review note: the placement defect was real (sibling worker reads halo-strip data before host has produced it) AND now verifiably fixed. The new cell's emitted main.rs (target/e2e-matrix scratch) shows the host's load_image() call BEFORE the host's ring_*.push(img_in.clone()) broadcasts to the workers — the correct producer-then-broadcast order. Pre-fix this would have been reversed.
+
+=== cycle-114b review gate close (orchestrator-applied) — TASK-0290 stays In Progress (AC#2+#4 blocked on TASK-0294) ===
+
+Reviewers (parallel, read-only):
+- qa-test-runner: GO. Independent verification: e2e 96/79/0/17/0 across 2 runs; determinism 96/79/0/17 across 2 runs; halo_strip_synth 6/6 (incl. new positive_placement_after_producing_op) in both dev + release profiles. Confirmed all 4 distributed-2d cells SKIP genuinely (not silent PASS/FAIL); confirmed 0 pre-existing PASS cells regressed (additive-only).
+- mped-architect (read-only): GO with P1.1 + P1.2 findings + P2 commendation on the honest-failure outcome.
+
+Orchestrator-applied in-thread fixes (commit 436f146):
+- P1.1 strengthened positive_placement_after_producing_op: added per-worker pair count + exact (src, dst, data, tile) for two opposite corners (w1, w4), pinning N/S/E/W strip bounds. Mirror of positive_2x2_halo_1_corner_pair_shapes for the cycle-114b fixture shape.
+- P1.2 pinned the phase-1/phase-2 arity invariant in prepend_strip_pairs: captures n_existing pre-recursion + debug_asserts rewritten_children.len() == n_existing post-recursion. Silent today; loud if a future walker variant inserts at child level.
+
+Cycle-114b gate (final, after hardening):
+- just build / clippy: PASS (0 warnings)
+- just test (dev) / test-release: 837 / 0 / 3 in both profiles; halo_strip_synth 6/6
+- just check-textual-replace-on-codegen / check-include-str-coverage: OK
+- just e2e: 96 / 79 / 0 / 17 / 0 (unchanged from cycle 114b mid-cycle; the hardening was test- and assertion-only, not behavioural)
+- determinism: 96 / 79 / 0 / 17 across 2 runs
+
+Per-AC final status (TASK-0290):
+- AC#1 (synthesis pass + N/S/E/W neighbour resolution + corners excluded): DONE in cycle 114a (inherited).
+- AC#2 (bit-identical e2e cell + reference oracle): NOT MET. Cell SKIPs on TASK-0294 (2D slice-paste codegen gap in backend-common::leading_axis_slice). Schedule + matrix wiring landed cleanly as the verifying fixture TASK-0294 will need.
+- AC#3 (existing matrix green): DONE — additive-only, +4 SKIPs only; zero pre-existing PASS lost.
+- AC#4 (baseline bump to 93/80/0/13/0): NOT MET. Baseline is 96/79/0/17/0 (+4 SKIPs not +1 PASS). Closes when TASK-0294 lands + the pthreads-async cell promotes from SKIP to required-PASS.
+
+TASK-0290 STAYS In Progress. AC#2+#4 close on TASK-0294. TASK-0289 (umbrella) also stays In Progress for the same reason.
+
+LESSONS / SUBTLETIES (forward-carried to memory + TASK-0294):
+- The orchestrator's forward-carried lesson #5 from cycle 114a ("single-pass partition=blocks2d is bit-identical to today's reference.bin") was WRONG. The reasoning was correct ALGEBRAICALLY (a single-pass box-blur with full host broadcast IS partition-shape-invariant in mathematical output) but wrong at the CODEGEN LAYER (leading_axis_slice consumes only the first axis of an IterTile, silently dropping the x-band). The cycle-114b implementer caught this empirically by running the cell and observing the diff at byte 68 (= element 17 = first compute pixel; algebraically consistent with a 4-worker 2x2-grid setup paste-over-paste).
+- This is a third instance of the "static-narrative-vs-empirical" failure mode, this time on the orchestrator's own forward-carried note (not an implementer's claim). Lesson: when a forward-carried lesson asserts bit-identical output across two structural shapes, the assertion needs to be tested AT THE CODEGEN LAYER, not just argued from algebraic semantics — even when the source is the orchestrator.
+- The placement fix is correct and verified by the strengthened unit test, but its e2e benefit only materialises when TASK-0294 lands.
 <!-- SECTION:NOTES:END -->
