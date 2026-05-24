@@ -50,9 +50,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, apply_partition_blocks2d,
-    apply_partition_rows, apply_partition_workers, build_acfg, build_sidecar,
-    check_kernels_contract,
+    acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_advisory,
+    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, build_acfg,
+    build_sidecar, check_kernels_contract,
     check_schedule_compat, inject_check_frames, inject_syncs, inject_transfers, link,
     load_capabilities,
 };
@@ -358,6 +358,36 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // clarity.
     let acfg = apply_partition_blocks2d(&linked, acfg)
         .map_err(|e| format!("partition-blocks2d error: {e}"))?;
+    // Halo-region inference (TASK-0260 Stage 1): walk `linked.algo.stmts`
+    // and infer per-(KernelId, IterVar) halo widths from affine kernel-
+    // arg DataRef indices. Pure + observationally-inert in Stage 1 —
+    // populates `ACFG::halo_widths` for Stage 2 (transfer_inject
+    // extension, TASK-0263) to consume.
+    //
+    // STAGE 1 DRIVER POLICY (load-bearing): a non-affine / strided /
+    // data-dependent index inside a kernel arg is a typed
+    // `HaloInferenceError` per PRD §13 ("reuse / halo on data-dependent
+    // strides is rejected at compile time"). But that rejection is only
+    // CORRECT to surface when halo synthesis is actually required —
+    // i.e. when a downstream consumer (transfer_inject, Stage 2 /
+    // TASK-0263) needs the halo widths and the missing one would
+    // produce wrong output. Stage 1 has no downstream consumer wired,
+    // so a kernel like example 11's `step_or_seed` (which reads
+    // `grid[(t + ITERS) % (ITERS + 1)]` — a constant modulo wrap, not
+    // truly data-dependent in the runtime sense) would otherwise
+    // newly-reject an example that compiles cleanly today. We
+    // therefore swallow the typed error in Stage 1 and emit a
+    // `nuc_trace!` line so the diagnostic remains visible under
+    // `NUC_TRACE=1`. Stage 2 (TASK-0263) is where the rejection moves
+    // out of advisory — at that point a consumer-required halo on a
+    // non-affine index is a real compile error, and we promote the
+    // trace to a fatal `Err`.
+    let (acfg, halo_errors) = apply_halo_inference_advisory(&linked, acfg);
+    for e in &halo_errors {
+        nucleus_compiler::nuc_trace!(
+            "halo_inference: advisory (Stage 1, not yet consumed by transfer_inject): {e}"
+        );
+    }
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
 

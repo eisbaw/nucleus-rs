@@ -205,8 +205,7 @@ pub struct NameSidecar {
     /// numeric order. serde-default so an old wire payload (no field)
     /// deserialises as empty (no overrides, pre-TASK-0212 behaviour).
     #[cfg_attr(feature = "serde", serde(default))]
-    pub partition_worker_ranges:
-        BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    pub partition_worker_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
 
     /// Per-SeqTag transfer buffer size — the `transfer DATA : buffer=N`
     /// value the schedule's directive carries through to the matched
@@ -234,6 +233,37 @@ pub struct NameSidecar {
     /// deserialises as empty.
     #[cfg_attr(feature = "serde", serde(default))]
     pub transfer_buffer_for_seq: BTreeMap<SeqTag, u64>,
+
+    /// Per-(KernelId, IterVar) halo width inferred from the kernel's
+    /// access pattern (TASK-0260, Stage 1). Mirrors
+    /// [`crate::acfg::ACFG::halo_widths`] verbatim — the codegen
+    /// contract surface for that ACFG sidecar.
+    ///
+    /// A backend (Stage 2 — TASK-0263 — `transfer_inject` extension)
+    /// joins this map with the [`IterTile::bounds`](crate::event::IterTile)
+    /// it walks during projection to extend per-tile transfer ranges
+    /// by the halo width on each side of each axis. STAGE 1 lands the
+    /// fact; no current backend / pass observes it yet, so emitted
+    /// code is byte-identical to pre-TASK-0260.
+    ///
+    /// Empty for algorithms whose kernels do not exercise affine
+    /// `iter_var + b` reads (every example today ships this way:
+    /// Stage 1 is observationally inert). serde-default so an older
+    /// wire payload (no field) deserialises as empty — same backward-
+    /// compat contract as `transfer_buffer_for_seq` (TASK-0233) and
+    /// `partition_worker_ranges` (TASK-0212).
+    ///
+    /// ### Shape
+    ///
+    /// `BTreeMap<KernelId, BTreeMap<IterVar, u64>>` — nested maps,
+    /// both keyed by `serde(transparent)` `u64` newtypes so the
+    /// codegen-contract JSON wire form round-trips. See
+    /// [`crate::acfg::ACFG::halo_widths`] docs for the rationale (a
+    /// tuple-keyed flat map cannot be a JSON map key).
+    ///
+    /// Determinism: nested `BTreeMap`s, iteration in numeric order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -512,6 +542,15 @@ pub fn build_sidecar(
     let mut transfer_buffer_for_seq: BTreeMap<SeqTag, u64> = BTreeMap::new();
     collect_transfer_buffers(&acfg.root, &mut transfer_buffer_for_seq);
 
+    // (g) Per-(KernelId, IterVar) halo widths (TASK-0260 Stage 1).
+    //     Forwarded verbatim from the ACFG sidecar `halo_widths`, which
+    //     the `passes::halo_inference` pass populated by walking
+    //     `linked.algo.stmts` for `kernel(grid[iv + b], ...)`-shaped
+    //     access patterns. Empty for ACFGs whose kernels don't exercise
+    //     affine `iv + b` reads. A `.clone()` for the same independent-
+    //     ownership reason `partition_worker_ranges` clones above.
+    let halo_widths = acfg.halo_widths.clone();
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -519,6 +558,7 @@ pub fn build_sidecar(
         kernel_sigs,
         partition_worker_ranges,
         transfer_buffer_for_seq,
+        halo_widths,
     })
 }
 
@@ -530,10 +570,7 @@ pub fn build_sidecar(
 /// policy.buffer, so the second insertion under a given key is
 /// idempotent. We accept the redundant write rather than branching
 /// on role — simpler + no behavior difference.
-fn collect_transfer_buffers(
-    node: &crate::acfg::ACFGNode,
-    out: &mut BTreeMap<SeqTag, u64>,
-) {
+fn collect_transfer_buffers(node: &crate::acfg::ACFGNode, out: &mut BTreeMap<SeqTag, u64>) {
     use crate::acfg::ACFGNode;
     match node {
         ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}

@@ -222,6 +222,11 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // the populator), but tests may inject their own values
         // before calling us — preserve them.
         pipeline_depth_for_seq: pre_existing_pipeline_depth,
+        // TASK-0260: transfer_inject currently DOES NOT read the
+        // halo-widths sidecar — Stage 2 (TASK-0263) is the wiring
+        // cycle. Forward verbatim. (Tests that inject pre-existing
+        // halo entries to validate forwarding are preserved.)
+        halo_widths,
     } = acfg;
 
     // Resolve the link pass's `WorkerEntity` (BTreeSet<String>) to a
@@ -394,8 +399,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
     // splice. We aggregate per seq using "any endpoint inside a
     // pipelined loop" as the trigger, but in practice the two
     // endpoints share the same enclosing tile by construction.
-    let mut pipeline_depth_for_seq: BTreeMap<SeqTag, NonZeroU64> =
-        pre_existing_pipeline_depth;
+    let mut pipeline_depth_for_seq: BTreeMap<SeqTag, NonZeroU64> = pre_existing_pipeline_depth;
     if !pipeline_depth_for_iter_var.is_empty() {
         annotate_pipeline_depth_for_seq(
             &new_root,
@@ -413,6 +417,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         inner_block_iter_vars,
         partition_worker_ranges,
         pipeline_depth_for_seq,
+        halo_widths,
     }
 }
 
@@ -1029,11 +1034,7 @@ fn collect_deferred_xfers(node: &ACFGNode, out: &mut Vec<XferPlaceholder>) {
 /// determinism/e2e safe). Worded as a deliberate deferral, not an
 /// error: the per-tile Push/Wait is owned by TASK-0149's per-tile
 /// finalisation, not a bug in this pass.
-fn trace_block_deferral(
-    pass: &str,
-    subtree: &ACFGNode,
-    name_data: &BTreeMap<String, DataId>,
-) {
+fn trace_block_deferral(pass: &str, subtree: &ACFGNode, name_data: &BTreeMap<String, DataId>) {
     // Cheap structural guard mirrors the macro guard: skip the walk
     // entirely on the default (silent) path.
     if !(crate::trace::trace_enabled() || crate::trace::test_sink_active()) {
@@ -1165,7 +1166,8 @@ fn hoist_invariant_waits(
                         slots.push((Slot::Wait(x), Vec::new()));
                     }
                     other => {
-                        let (c2, esc) = hoist_invariant_waits(other, enclosing_tile, block_inner, name_data);
+                        let (c2, esc) =
+                            hoist_invariant_waits(other, enclosing_tile, block_inner, name_data);
                         slots.push((Slot::Node(c2), esc));
                     }
                 }
@@ -1694,15 +1696,9 @@ fn rewrite_partition_tiles_inner(
     match node {
         ACFGNode::Xfer(mut x) => {
             // Pick the compute worker per the rule above.
-            let compute_worker = if partition_ranges
-                .values()
-                .any(|m| m.contains_key(&x.src))
-            {
+            let compute_worker = if partition_ranges.values().any(|m| m.contains_key(&x.src)) {
                 Some(x.src)
-            } else if partition_ranges
-                .values()
-                .any(|m| m.contains_key(&x.dst))
-            {
+            } else if partition_ranges.values().any(|m| m.contains_key(&x.dst)) {
                 Some(x.dst)
             } else {
                 None
@@ -1845,7 +1841,6 @@ fn build_waits_for_op(
 
     out
 }
-
 
 // --------------------------------------------------------------------
 // Helpers

@@ -90,6 +90,7 @@ fn build_synthetic_acfg(
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     }
 }
 
@@ -231,8 +232,7 @@ fn read_example(relpath: &str) -> String {
         .parent()
         .unwrap();
     let full = repo_root.join("nuc-nucleus").join("examples").join(relpath);
-    std::fs::read_to_string(&full)
-        .unwrap_or_else(|e| panic!("read example {full:?}: {e}"))
+    std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("read example {full:?}: {e}"))
 }
 
 /// AC#1/AC#2 end-to-end: lower the actual CNN batch_parallel schedule
@@ -245,8 +245,7 @@ fn cnn_batch_parallel_projects_b_over_n_per_worker() {
     let algo_src = read_example("13-cnn-inference/prog.algo.nuc");
     let sched_src = read_example("13-cnn-inference/schedules/batch_parallel.sched.nuc");
     let algo = lower_algo(&parse_algo(&algo_src).expect("algo parse")).expect("algo lower");
-    let sched =
-        lower_sched(&parse_sched(&sched_src).expect("sched parse")).expect("sched lower");
+    let sched = lower_sched(&parse_sched(&sched_src).expect("sched parse")).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
@@ -298,8 +297,7 @@ fn naive_schedule_records_no_partition_ranges() {
     let algo_src = read_example("13-cnn-inference/prog.algo.nuc");
     let sched_src = read_example("13-cnn-inference/schedules/naive.sched.nuc");
     let algo = lower_algo(&parse_algo(&algo_src).expect("algo parse")).expect("algo lower");
-    let sched =
-        lower_sched(&parse_sched(&sched_src).expect("sched parse")).expect("sched lower");
+    let sched = lower_sched(&parse_sched(&sched_src).expect("sched parse")).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
@@ -376,6 +374,7 @@ fn non_divisible_range_is_rejected() {
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let err = apply_partition_workers(&linked, acfg).expect_err("non-divisible should error");
@@ -478,6 +477,7 @@ fn partitioned_repeat_skips_body_entry_exit_syncs() {
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let mut per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     per_worker.insert(WorkerId(1), 0..4);
@@ -559,6 +559,7 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(), // empty — no partition
         pipeline_depth_for_seq: BTreeMap::new(),
+        halo_widths: BTreeMap::new(),
     };
 
     let after = inject_syncs(acfg);
@@ -594,7 +595,7 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
 /// composability check between TASK-0212 and TASK-0117.
 #[test]
 fn transfer_fanout_composes_with_partition_sidecar() {
-    use nucleus_compiler::acfg::{ACFGNode, DataflowDag, DataflowEdge, Operation, ACFG, XferRole};
+    use nucleus_compiler::acfg::{ACFGNode, DataflowDag, DataflowEdge, Operation, XferRole, ACFG};
     use nucleus_compiler::link::{LinkedIR, WorkerEntity};
 
     fn op_on(workers: &[u64], data_in: &[u64], data_out: Option<u64>) -> ACFGNode {
@@ -640,6 +641,7 @@ fn transfer_fanout_composes_with_partition_sidecar() {
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     // Populate the partition sidecar by hand — equivalent to running
@@ -662,7 +664,10 @@ fn transfer_fanout_composes_with_partition_sidecar() {
     let sched_ast = parse_sched(sched_src).expect("parse");
     let sched = lower_sched(&sched_ast).expect("lower");
     let mut data_producers: BTreeMap<String, WorkerEntity> = BTreeMap::new();
-    data_producers.insert("a".to_string(), WorkerEntity(BTreeSet::from(["host".to_string()])));
+    data_producers.insert(
+        "a".to_string(),
+        WorkerEntity(BTreeSet::from(["host".to_string()])),
+    );
     let linked = LinkedIR {
         algo: Default::default(),
         sched,
@@ -679,7 +684,12 @@ fn transfer_fanout_composes_with_partition_sidecar() {
     fn collect_waits(node: &ACFGNode, out: &mut Vec<(WorkerId, std::ops::Range<i64>)>) {
         match node {
             ACFGNode::Xfer(x) if x.role == XferRole::Wait => {
-                let r = x.tile.bounds.first().map(|(_, r)| r.clone()).unwrap_or(0..0);
+                let r = x
+                    .tile
+                    .bounds
+                    .first()
+                    .map(|(_, r)| r.clone())
+                    .unwrap_or(0..0);
                 out.push((x.dst, r));
             }
             ACFGNode::Sequence(cs) => {

@@ -282,6 +282,13 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         // those are transfer_inject's product, so there is no
         // SeqTag remapping to do here.
         pipeline_depth_for_seq,
+        // TASK-0260: block_transform runs BEFORE halo_inference so this
+        // map is always empty here; forward verbatim. (Aside: even if
+        // halo_inference moved earlier, block_transform splits an
+        // IterVar into outer-tile + inner-intra-tile pair — a halo
+        // entry keyed by the original inner IterVar would need
+        // re-binding to the new pair, which is a Stage 2/3 concern.)
+        halo_widths,
     } = acfg;
 
     let mut next_id: u64 = name_iter_vars
@@ -324,6 +331,7 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
         inner_block_iter_vars,
         partition_worker_ranges,
         pipeline_depth_for_seq,
+        halo_widths,
     })
 }
 
@@ -501,12 +509,22 @@ fn rewrite_node(
                     let mut tiles: Vec<ACFGNode> = Vec::with_capacity(2);
                     if num_full > 0 {
                         tiles.push(tile_nest(
-                            *tile_id, 0..num_full, iter_var, n_i64, &new_body, full_tag,
+                            *tile_id,
+                            0..num_full,
+                            iter_var,
+                            n_i64,
+                            &new_body,
+                            full_tag,
                         ));
                     }
                     if rem != 0 {
                         tiles.push(tile_nest(
-                            *tile_id, 0..1, iter_var, rem, &new_body, partial_tag,
+                            *tile_id,
+                            0..1,
+                            iter_var,
+                            rem,
+                            &new_body,
+                            partial_tag,
                         ));
                     }
 
@@ -614,8 +632,8 @@ mod tests {
             } => {
                 assert_eq!(outer, IterVar(5));
                 assert_eq!(outer_range, 0..4); // 16 / 4 = 4 tiles
-                // The synthesised TILE loop carries no rebinding tag —
-                // its variable never indexes the body (TASK-0180).
+                                               // The synthesised TILE loop carries no rebinding tag —
+                                               // its variable never indexes the body (TASK-0180).
                 assert_eq!(outer_tag, None, "tile loop must NOT be tagged");
                 match *body {
                     ACFGNode::Sequence(seq) => {
@@ -629,12 +647,12 @@ mod tests {
                             } => {
                                 assert_eq!(*inner, IterVar(0));
                                 assert_eq!(*inner_range, 0..4); // chunk size
-                                // The strip-mined INNER loop is tagged
-                                // per-occurrence: divisible single nest
-                                // => full (not partial), N=4, num_full=4
-                                // (16/4). This is exactly what the
-                                // backend rebinds `LO + tile*N + inner`
-                                // from (TASK-0180 AC#1).
+                                                                // The strip-mined INNER loop is tagged
+                                                                // per-occurrence: divisible single nest
+                                                                // => full (not partial), N=4, num_full=4
+                                                                // (16/4). This is exactly what the
+                                                                // backend rebinds `LO + tile*N + inner`
+                                                                // from (TASK-0180 AC#1).
                                 assert_eq!(
                                     *inner_tag,
                                     Some(BlockTag {
@@ -779,9 +797,7 @@ mod tests {
         let inner = |node: &ACFGNode| -> std::ops::Range<i64> {
             match node {
                 ACFGNode::Repeat {
-                    iter_var: ov,
-                    body,
-                    ..
+                    iter_var: ov, body, ..
                 } => {
                     assert_eq!(*ov, IterVar(9), "outer is the tile var");
                     match &**body {

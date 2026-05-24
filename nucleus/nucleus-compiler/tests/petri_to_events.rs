@@ -84,6 +84,7 @@ fn synthetic_acfg(
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     }
 }
 
@@ -322,7 +323,11 @@ fn repeat_preserves_structure_in_event_list() {
             block_tag,
             check_frame,
         } => {
-            assert_eq!(*iter_var, nucleus_compiler::event::IterVar(7), "iter-var carried");
+            assert_eq!(
+                *iter_var,
+                nucleus_compiler::event::IterVar(7),
+                "iter-var carried"
+            );
             assert_eq!(*range, 0..3, "concrete loop bound carried verbatim");
             // A plain source loop (no block= directive) is NOT
             // strip-mined, so it carries no rebinding tag (TASK-0180).
@@ -398,7 +403,11 @@ fn repeat_worker_with_empty_body_gets_no_loop() {
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
 
     let events = acfg_to_events(&acfg);
-    assert_eq!(events.get(&WorkerId(0)).unwrap().len(), 1, "w0 gets the Loop");
+    assert_eq!(
+        events.get(&WorkerId(0)).unwrap().len(),
+        1,
+        "w0 gets the Loop"
+    );
     assert_eq!(
         events.get(&WorkerId(1)).unwrap().len(),
         0,
@@ -469,8 +478,8 @@ fn petri_wrapper_agrees_with_acfg_entry_point() {
 /// Run the full front pipeline and return the post-injection ACFG.
 /// Reuses the file-scoped `read_example` defined later in this file.
 fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
-    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
-        .expect("algo lower");
+    let algo =
+        lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse")).expect("algo lower");
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
@@ -535,16 +544,12 @@ fn reconstruct_call_from_event(
         other => panic!("expected Fire, got {other:?}"),
     };
     let kname = kid_to_name.get(kernel).expect("kernel id in name table");
-    fn render_arg(
-        a: &ArgBinding,
-        did_to_name: &BTreeMap<DataId, String>,
-    ) -> String {
+    fn render_arg(a: &ArgBinding, did_to_name: &BTreeMap<DataId, String>) -> String {
         match a {
             ArgBinding::Data(s) => render_slice_from_event(s, did_to_name),
             ArgBinding::Scalar(e) => render_ir_expr(e),
             ArgBinding::Nested { callee, args } => {
-                let inner: Vec<String> =
-                    args.iter().map(|x| render_arg(x, did_to_name)).collect();
+                let inner: Vec<String> = args.iter().map(|x| render_arg(x, did_to_name)).collect();
                 format!("{callee}({})", inner.join(", "))
             }
         }
@@ -647,8 +652,8 @@ img_in[(y + 1)][(x - 1)], img_in[(y + 1)][x], img_in[(y + 1)][(x + 1)])";
 /// plain `full_pipeline_acfg` skips it, which is why the existing
 /// reconstruction test uses the *naive* (un-blocked) schedule.
 fn blocked_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
-    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
-        .expect("algo lower");
+    let algo =
+        lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse")).expect("algo lower");
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
@@ -740,11 +745,26 @@ fn eventlist_carries_bindings_for_all_e2e_examples() {
     // input arity is plausible and whose output presence matches the
     // dataflow-vs-effect distinction (effect firings -> no output).
     for (algo, sched) in [
-        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
-        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
-        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
-        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
-        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+        (
+            "01-elementwise-add/prog.algo.nuc",
+            "01-elementwise-add/schedules/naive.sched.nuc",
+        ),
+        (
+            "02-split-add/prog.algo.nuc",
+            "02-split-add/schedules/split.sched.nuc",
+        ),
+        (
+            "03-reduction/prog.algo.nuc",
+            "03-reduction/schedules/naive.sched.nuc",
+        ),
+        (
+            "05-stencil/prog.algo.nuc",
+            "05-stencil/schedules/naive.sched.nuc",
+        ),
+        (
+            "07-matmul/prog.algo.nuc",
+            "07-matmul/schedules/naive.sched.nuc",
+        ),
     ] {
         let acfg = full_pipeline_acfg(algo, sched);
         let events = acfg_to_events(&acfg);
@@ -762,8 +782,7 @@ fn eventlist_carries_bindings_for_all_e2e_examples() {
                     // the binding is *present* (not the default
                     // empty) for any firing that reads or writes
                     // data.
-                    let has_value = !bindings.inputs.is_empty()
-                        || bindings.output.is_some();
+                    let has_value = !bindings.inputs.is_empty() || bindings.output.is_some();
                     assert!(
                         has_value,
                         "{algo}: a Fire carried an empty binding — \
@@ -1003,8 +1022,8 @@ use nucleus_compiler::sidecar::{build_sidecar, ConstValue, NameSidecar};
 /// `build_sidecar` needs (it reads `linked.algo` for the unevaluated
 /// `for` bounds + consts that `build_acfg` folds away).
 fn full_pipeline_with_linked(algo_rel: &str, sched_rel: &str) -> (link::LinkedIR, ACFG) {
-    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
-        .expect("algo lower");
+    let algo =
+        lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse")).expect("algo lower");
     let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
         .expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
@@ -1136,7 +1155,8 @@ fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
 
     for (algo, sched, data_checks) in expectations {
         let (linked, acfg) = full_pipeline_with_linked(algo, sched);
-        let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
+        let sidecar = build_sidecar(&linked, &acfg)
+            .expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
 
         // The name table the backend also receives (DataId -> name)
         // — same join key as the EventList's DataSlice.data.
@@ -1175,7 +1195,8 @@ fn sidecar_alone_sizes_preinit_and_types_slots_for_all_e2e_examples() {
         // Determinism: a second sidecar build is byte-identical.
         assert_eq!(
             sidecar,
-            build_sidecar(&linked, &acfg).expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
+            build_sidecar(&linked, &acfg)
+                .expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
             "{algo}: build_sidecar must be deterministic"
         );
     }
@@ -1189,9 +1210,12 @@ fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
     // from the SOURCE bounds. Prove: from `Event::Loop`'s iter_var +
     // the SIDECAR's loop_bounds + consts ALONE (no AlgoIR), a backend
     // reconstructs that exact source-form bound.
-    let (linked, acfg) =
-        full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
+    let (linked, acfg) = full_pipeline_with_linked(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+    let sidecar = build_sidecar(&linked, &acfg)
+        .expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     let events = acfg_to_events(&acfg);
 
     // Find the OUTER stencil loop in the EventList (the `y` loop). It
@@ -1201,7 +1225,9 @@ fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
     let outer = list
         .iter()
         .find_map(|e| match e {
-            Event::Loop { iter_var, range, .. } => Some((*iter_var, range.clone())),
+            Event::Loop {
+                iter_var, range, ..
+            } => Some((*iter_var, range.clone())),
             _ => None,
         })
         .expect("a top-level Event::Loop (the y loop) must exist");
@@ -1209,7 +1235,8 @@ fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
 
     // Sanity: the EventList alone only gives the FOLDED range.
     assert_eq!(
-        concrete_range, 1..15,
+        concrete_range,
+        1..15,
         "Event::Loop carries the concrete folded range (TASK-0159)"
     );
 
@@ -1237,10 +1264,7 @@ fn sidecar_renders_stencil_symbolic_loop_bound_in_source_form() {
     // yields non-Loop leaves, never the Loop nodes themselves).
     fn collect_loop_vars(events: &[Event], out: &mut Vec<nucleus_compiler::event::IterVar>) {
         for e in events {
-            if let Event::Loop {
-                iter_var, body, ..
-            } = e
-            {
+            if let Event::Loop { iter_var, body, .. } = e {
                 out.push(*iter_var);
                 collect_loop_vars(body, out);
             }
@@ -1265,9 +1289,12 @@ fn sidecar_const_table_matches_resolved_consts() {
     // The sidecar const table must carry every AlgoIR const verbatim
     // (value + scalar type) so the backend never reaches for
     // `algo.consts`.
-    let (linked, acfg) =
-        full_pipeline_with_linked("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
+    let (linked, acfg) = full_pipeline_with_linked(
+        "01-elementwise-add/prog.algo.nuc",
+        "01-elementwise-add/schedules/naive.sched.nuc",
+    );
+    let sidecar = build_sidecar(&linked, &acfg)
+        .expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     assert_eq!(
         sidecar.consts.get("N"),
         Some(&ConstValue {
@@ -1289,9 +1316,12 @@ fn sidecar_const_table_matches_resolved_consts() {
 fn sidecar_serde_roundtrip_is_byte_identical() {
     // The sidecar is a committable codegen artifact (like the
     // contract types) — JSON roundtrip must be lossless and stable.
-    let (linked, acfg) =
-        full_pipeline_with_linked("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc");
-    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
+    let (linked, acfg) = full_pipeline_with_linked(
+        "05-stencil/prog.algo.nuc",
+        "05-stencil/schedules/naive.sched.nuc",
+    );
+    let sidecar = build_sidecar(&linked, &acfg)
+        .expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
     let json = serde_json::to_string(&sidecar).expect("serialize");
     let back: NameSidecar = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(sidecar, back, "sidecar serde roundtrip must be lossless");
@@ -1378,16 +1408,32 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
     // `algo.kernels`. Also records the RESOLVED FINDING: across the
     // e2e set, no Fire feeds a Scalar arg to a scalar param.
     let examples: &[(&str, &str)] = &[
-        ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
-        ("02-split-add/prog.algo.nuc", "02-split-add/schedules/split.sched.nuc"),
-        ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
-        ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
-        ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
+        (
+            "01-elementwise-add/prog.algo.nuc",
+            "01-elementwise-add/schedules/naive.sched.nuc",
+        ),
+        (
+            "02-split-add/prog.algo.nuc",
+            "02-split-add/schedules/split.sched.nuc",
+        ),
+        (
+            "03-reduction/prog.algo.nuc",
+            "03-reduction/schedules/naive.sched.nuc",
+        ),
+        (
+            "05-stencil/prog.algo.nuc",
+            "05-stencil/schedules/naive.sched.nuc",
+        ),
+        (
+            "07-matmul/prog.algo.nuc",
+            "07-matmul/schedules/naive.sched.nuc",
+        ),
     ];
 
     for (algo, sched) in examples {
         let (linked, acfg) = full_pipeline_with_linked(algo, sched);
-        let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
+        let sidecar = build_sidecar(&linked, &acfg)
+            .expect("build_sidecar: e2e examples reuse no loop var with differing bounds");
 
         // Every AlgoIR kernel reachable via the canonical KernelId
         // must be in kernel_sigs with identical params + ret.
@@ -1424,11 +1470,8 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
                         if let Some(sig) = sidecar.kernel_sig(*kernel) {
                             for (i, ab) in bindings.inputs.iter().enumerate() {
                                 if let ArgBinding::Scalar(_) = ab {
-                                    let is_scalar_param = sig
-                                        .params
-                                        .get(i)
-                                        .map(|p| p.is_scalar())
-                                        .unwrap_or(false);
+                                    let is_scalar_param =
+                                        sig.params.get(i).map(|p| p.is_scalar()).unwrap_or(false);
                                     assert!(
                                         !is_scalar_param,
                                         "{algo}: UNEXPECTED Scalar arg #{i} fed to a \
@@ -1456,7 +1499,8 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
         // Determinism: second build byte-identical (covers kernel_sigs).
         assert_eq!(
             sidecar,
-            build_sidecar(&linked, &acfg).expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
+            build_sidecar(&linked, &acfg)
+                .expect("build_sidecar: deterministic, no same-name-diff-bounds loop"),
             "{algo}: build_sidecar (incl. kernel_sigs) must be deterministic"
         );
     }

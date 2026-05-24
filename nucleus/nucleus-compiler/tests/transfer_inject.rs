@@ -127,6 +127,7 @@ fn synthetic_acfg(
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     }
 }
 
@@ -550,8 +551,8 @@ fn inject_transfers_preserves_operation_count_on_real_examples() {
 fn fanout_one_to_n_emits_n_pairs() {
     // host produces d0; {w1,w2,w3,w4} consumes d0.
     let root = ACFGNode::Sequence(vec![
-        op(&[0], 100, vec![], Some(0)),                // host
-        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),      // {w1..w4}
+        op(&[0], 100, vec![], Some(0)),           // host
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)), // {w1..w4}
     ]);
     let acfg = synthetic_acfg(
         root,
@@ -577,14 +578,8 @@ fn fanout_one_to_n_emits_n_pairs() {
 
     // Each Push has src=host(0) and dst in {1,2,3,4}; each Wait has
     // matching src=host(0) and the same dst.
-    let pushes: Vec<_> = xfers
-        .iter()
-        .filter(|x| x.role == XferRole::Push)
-        .collect();
-    let waits: Vec<_> = xfers
-        .iter()
-        .filter(|x| x.role == XferRole::Wait)
-        .collect();
+    let pushes: Vec<_> = xfers.iter().filter(|x| x.role == XferRole::Push).collect();
+    let waits: Vec<_> = xfers.iter().filter(|x| x.role == XferRole::Wait).collect();
     let push_dsts: BTreeSet<WorkerId> = pushes.iter().map(|x| x.dst).collect();
     let wait_dsts: BTreeSet<WorkerId> = waits.iter().map(|x| x.dst).collect();
     assert_eq!(
@@ -632,10 +627,7 @@ fn fanout_n_to_one_emits_n_pairs() {
     let seqs: BTreeSet<SeqTag> = xfers.iter().map(|x| x.seq).collect();
     assert_eq!(seqs.len(), 4);
 
-    let pushes: Vec<_> = xfers
-        .iter()
-        .filter(|x| x.role == XferRole::Push)
-        .collect();
+    let pushes: Vec<_> = xfers.iter().filter(|x| x.role == XferRole::Push).collect();
     let push_srcs: BTreeSet<WorkerId> = pushes.iter().map(|x| x.src).collect();
     assert_eq!(
         push_srcs,
@@ -655,14 +647,10 @@ fn fanout_n_to_one_emits_n_pairs() {
 #[test]
 fn fanout_one_to_one_unchanged() {
     let root = ACFGNode::Sequence(vec![
-        op(&[0], 100, vec![], Some(0)), // host
+        op(&[0], 100, vec![], Some(0)),  // host
         op(&[1], 101, vec![0], Some(1)), // w0
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("host", 0), ("w0", 1)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("host", 0), ("w0", 1)]);
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
@@ -784,8 +772,7 @@ fn fanout_per_worker_tile_for_output_direction() {
     // Real partition_workers-shaped ACFG (see input-direction sibling
     // for the TASK-0224 rationale): producer op runs inside the
     // partitioned Repeat, gather happens at top-level on host.
-    let producer_body =
-        ACFGNode::Sequence(vec![op(&[1, 2, 3, 4], 100, vec![], Some(0))]);
+    let producer_body = ACFGNode::Sequence(vec![op(&[1, 2, 3, 4], 100, vec![], Some(0))]);
     let root = ACFGNode::Sequence(vec![
         ACFGNode::Repeat {
             iter_var: IterVar(7),
@@ -855,8 +842,7 @@ fn pipeline_depth_populated_for_inter_stage_transfers() {
     use nucleus_compiler::algo::{lower_algo, parse_algo};
     use nucleus_compiler::sched::{lower_sched, parse_sched};
 
-    let algo_ast =
-        parse_algo(&read_example("13-cnn-inference/prog.algo.nuc")).expect("algo parse");
+    let algo_ast = parse_algo(&read_example("13-cnn-inference/prog.algo.nuc")).expect("algo parse");
     let algo = lower_algo(&algo_ast).expect("algo lower");
     let sched_ast = parse_sched(&read_example(
         "13-cnn-inference/schedules/pipeline_parallel.sched.nuc",
@@ -899,8 +885,14 @@ fn pipeline_depth_populated_for_inter_stage_transfers() {
     }
 
     // Sanity: feat1 has at least one Push/Wait pair.
-    assert!(!seqs_for.get(&feat1_id).unwrap_or(&BTreeSet::new()).is_empty());
-    assert!(!seqs_for.get(&feat2_id).unwrap_or(&BTreeSet::new()).is_empty());
+    assert!(!seqs_for
+        .get(&feat1_id)
+        .unwrap_or(&BTreeSet::new())
+        .is_empty());
+    assert!(!seqs_for
+        .get(&feat2_id)
+        .unwrap_or(&BTreeSet::new())
+        .is_empty());
 
     let expect_depth = std::num::NonZeroU64::new(3).unwrap();
     for s in seqs_for.get(&feat1_id).unwrap() {
@@ -949,8 +941,8 @@ fn pipeline_depth_empty_for_non_pipelined_schedules() {
 
     let algo_ast = parse_algo(&read_example("02-split-add/prog.algo.nuc")).expect("algo");
     let algo = lower_algo(&algo_ast).expect("algo lower");
-    let sched_ast = parse_sched(&read_example("02-split-add/schedules/split.sched.nuc"))
-        .expect("sched");
+    let sched_ast =
+        parse_sched(&read_example("02-split-add/schedules/split.sched.nuc")).expect("sched");
     let sched = lower_sched(&sched_ast).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
@@ -972,11 +964,7 @@ fn fanout_empty_partition_sidecar_preserves_construction_tile() {
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![0], Some(1)),
     ]);
-    let acfg = synthetic_acfg(
-        root,
-        &[("d", 0), ("c", 1)],
-        &[("host", 0), ("w0", 1)],
-    );
+    let acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("host", 0), ("w0", 1)]);
     // partition_worker_ranges left empty by `synthetic_acfg`.
 
     let linked = synthetic_linked_ir(
@@ -1089,8 +1077,7 @@ fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
     // Cross-check: the sidecar has one entry per UNIQUE seq (Push
     // and Wait of a pair share one seq, so 4 fan-out pairs = 4 seqs
     // = 4 annotations, NOT 8 xfers).
-    let unique_seqs: std::collections::BTreeSet<_> =
-        xfers.iter().map(|x| x.seq).collect();
+    let unique_seqs: std::collections::BTreeSet<_> = xfers.iter().map(|x| x.seq).collect();
     let annotated_count = result.pipeline_depth_for_seq.len();
     assert_eq!(
         annotated_count,
@@ -1164,12 +1151,14 @@ fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
     let mut outer_per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     outer_per_worker.insert(WorkerId(1), 0..2);
     outer_per_worker.insert(WorkerId(2), 2..4);
-    acfg.partition_worker_ranges.insert(IterVar(7), outer_per_worker);
+    acfg.partition_worker_ranges
+        .insert(IterVar(7), outer_per_worker);
     // INNER partition: IterVar(3) -> {w1: 0..3, w2: 3..6}
     let mut inner_per_worker: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
     inner_per_worker.insert(WorkerId(1), 0..3);
     inner_per_worker.insert(WorkerId(2), 3..6);
-    acfg.partition_worker_ranges.insert(IterVar(3), inner_per_worker);
+    acfg.partition_worker_ranges
+        .insert(IterVar(3), inner_per_worker);
 
     let linked = synthetic_linked_ir(
         &acfg.name_data,
@@ -1184,10 +1173,7 @@ fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
     // IterVar(3) second — with each axis carrying the per-worker
     // partition slice for that dst.
     let xfers = result.root.collect_xfers();
-    let waits: Vec<&XferPlaceholder> = xfers
-        .iter()
-        .filter(|x| x.role == XferRole::Wait)
-        .collect();
+    let waits: Vec<&XferPlaceholder> = xfers.iter().filter(|x| x.role == XferRole::Wait).collect();
     assert!(
         !waits.is_empty(),
         "expected fan-out Wait xfers from the nested-partitioned op; got none"
@@ -1301,10 +1287,7 @@ fn rewrite_partition_tiles_three_level_nest_order() {
     let result = inject_transfers(&linked, acfg);
 
     let xfers = result.root.collect_xfers();
-    let waits: Vec<&XferPlaceholder> = xfers
-        .iter()
-        .filter(|x| x.role == XferRole::Wait)
-        .collect();
+    let waits: Vec<&XferPlaceholder> = xfers.iter().filter(|x| x.role == XferRole::Wait).collect();
     assert!(!waits.is_empty(), "expected fan-out Waits");
     for w in &waits {
         let order: Vec<IterVar> = w.tile.bounds.iter().map(|(iv, _)| *iv).collect();

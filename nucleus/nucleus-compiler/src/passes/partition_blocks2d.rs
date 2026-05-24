@@ -385,6 +385,12 @@ pub fn apply_partition_blocks2d(
         inner_block_iter_vars,
         mut partition_worker_ranges,
         pipeline_depth_for_seq,
+        // partition_blocks2d does not consult or mutate halo widths
+        // (TASK-0260); forward verbatim. Stage 3 (TASK-0264) will couple
+        // halo to partition_blocks2d's block-pair metadata, but that is
+        // a DIFFERENT join (worker -> neighbour grid cell), not a
+        // mutation of `halo_widths` itself.
+        halo_widths,
     } = acfg;
 
     for plan in to_record {
@@ -418,6 +424,7 @@ pub fn apply_partition_blocks2d(
         inner_block_iter_vars,
         partition_worker_ranges,
         pipeline_depth_for_seq,
+        halo_widths,
     })
 }
 

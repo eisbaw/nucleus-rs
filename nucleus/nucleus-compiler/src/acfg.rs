@@ -135,8 +135,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ResolvedConst};
 use crate::event::{
-    ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, SyncTag,
-    WorkerId,
+    ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, SyncTag, WorkerId,
 };
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{NotifyKind, ResolvedPlaceTarget};
@@ -346,7 +345,10 @@ impl DataflowEdge {
             "DataflowEdge invariant: data_in must equal data_in_access \
              projected (got data_in={:?}, data_in_access data={:?})",
             self.data_in,
-            self.data_in_access.iter().map(|a| a.data).collect::<Vec<_>>(),
+            self.data_in_access
+                .iter()
+                .map(|a| a.data)
+                .collect::<Vec<_>>(),
         );
         debug_assert!(
             self.data_out_access.as_ref().map(|a| a.data) == self.data_out,
@@ -621,8 +623,7 @@ pub struct ACFG {
     /// inner `BTreeMap<WorkerId, Range<i64>>` keyed by id (a `u64`).
     /// Both iterate in numeric order; no `HashMap`/`HashSet`.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub partition_worker_ranges:
-        BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    pub partition_worker_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
 
     /// Pipeline-depth annotation for buffer places (TASK-0134, PRD §8.2
     /// "Initial marking on a place = pipeline depth / latency-hiding
@@ -667,6 +668,45 @@ pub struct ACFG {
     /// any path that affects emitted output.
     #[cfg_attr(feature = "serde", serde(default))]
     pub pipeline_depth_for_seq: BTreeMap<SeqTag, std::num::NonZeroU64>,
+
+    /// Per-(KernelId, IterVar) halo width inferred from the kernel's
+    /// access pattern (TASK-0260, Stage 1). Populated by
+    /// [`crate::passes::halo_inference::apply_halo_inference`]. The width
+    /// `N` at `halo_widths[kid][iv]` is the maximum absolute integer
+    /// offset across all of that kernel's `iter_var + b` DataRef indices
+    /// along that axis; a kernel that reads `grid[y-1]`, `grid[y]`,
+    /// `grid[y+1]` produces entry `halo_widths[blur3][y] = 1`.
+    ///
+    /// Independent of partition policy: halo widths apply whether the
+    /// loop is partitioned or not. Stage 2 (TASK-0263, transfer_inject
+    /// extension) consumes this map to extend per-tile transfer ranges;
+    /// Stage 3 (TASK-0264, block-pair metadata recovery) couples it to
+    /// `partition=blocks2d` neighbour resolution. The MAP itself is
+    /// partition-agnostic — it is a property of the algorithm IR.
+    ///
+    /// Empty for algorithms whose kernels do not exercise affine
+    /// `iter_var + b` reads (every example pre-Stage 2 ships this
+    /// way, since Stage 1 records facts but no downstream pass yet
+    /// observes them — Stage 1 lands the inference deliberately
+    /// inert).
+    ///
+    /// ### Shape rationale: nested map, not `BTreeMap<(KernelId, IterVar), u64>`
+    ///
+    /// A tuple-keyed `BTreeMap<(KernelId, IterVar), u64>` would model
+    /// the same fact more compactly but does not survive serde JSON
+    /// (tuples cannot be JSON map keys). The nested `BTreeMap<KernelId,
+    /// BTreeMap<IterVar, u64>>` shape mirrors
+    /// [`Self::partition_worker_ranges`] — both keys are
+    /// `serde(transparent)` `u64` newtypes that serialise as numeric
+    /// JSON keys. The nested form is the shape that round-trips through
+    /// the codegen-contract serde wire form (TASK-0233 precedent).
+    ///
+    /// Determinism: nested `BTreeMap` (`KernelId`, then `IterVar`),
+    /// both `u64` newtypes; iteration is in numeric order. No
+    /// `HashMap` / `HashSet` on the emit path. serde-default so an old
+    /// wire payload (no field) deserialises as empty.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
 }
 
 // --------------------------------------------------------------------
@@ -845,6 +885,12 @@ pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
         // always empty here; empty means "no pipeline head-start", so
         // every buffer place starts at `initial_marking = 0`.
         pipeline_depth_for_seq: BTreeMap::new(),
+        // Populated by `passes::halo_inference` (TASK-0260 Stage 1).
+        // `build_acfg` is access-pattern-unaware; empty means
+        // "no halo recorded yet" — equivalent to the pre-TASK-0260
+        // codegen behaviour, since Stage 2 (transfer_inject extension)
+        // is what would observe these.
+        halo_widths: BTreeMap::new(),
     })
 }
 
@@ -966,9 +1012,7 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, Bui
 /// into an ACFG (its `data_in` recursed into the nested call); the
 /// binding preserves that, it does not regress it.
 fn build_arg_bindings(args: &[IrExpr], name_data: &BTreeMap<String, DataId>) -> Vec<ArgBinding> {
-    args.iter()
-        .map(|a| bind_arg(a, name_data))
-        .collect()
+    args.iter().map(|a| bind_arg(a, name_data)).collect()
 }
 
 /// Bind one argument expression. See [`build_arg_bindings`].

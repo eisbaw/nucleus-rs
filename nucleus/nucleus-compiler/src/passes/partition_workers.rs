@@ -168,10 +168,7 @@ impl std::error::Error for PartitionError {}
 ///
 /// On any error, no partial sidecar is committed — the function
 /// validates every directive up front before mutating the sidecar.
-pub fn apply_partition_workers(
-    linked: &LinkedIR,
-    acfg: ACFG,
-) -> Result<ACFG, PartitionError> {
+pub fn apply_partition_workers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, PartitionError> {
     // ---- 1. Collect every `partition=workers` directive. ----
     //
     // `linked.sched.loops` is a `BTreeMap<var_name, ResolvedLoopDirective>`;
@@ -179,10 +176,7 @@ pub fn apply_partition_workers(
     let mut partition_vars: BTreeSet<String> = BTreeSet::new();
     for (var, directive) in &linked.sched.loops {
         for opt in &directive.options {
-            if matches!(
-                opt,
-                ResolvedLoopOption::Partition(PartitionKind::Workers)
-            ) {
+            if matches!(opt, ResolvedLoopOption::Partition(PartitionKind::Workers)) {
                 partition_vars.insert(var.clone());
             }
         }
@@ -205,17 +199,13 @@ pub fn apply_partition_workers(
         let iter_var = match acfg.name_iter_vars.get(var) {
             Some(v) => *v,
             None => {
-                return Err(PartitionError::UnknownLoopVar {
-                    var: var.clone(),
-                });
+                return Err(PartitionError::UnknownLoopVar { var: var.clone() });
             }
         };
         let (range, body_workers) = match find_loop(&acfg.root, iter_var) {
             Some(found) => found,
             None => {
-                return Err(PartitionError::UnknownLoopVar {
-                    var: var.clone(),
-                });
+                return Err(PartitionError::UnknownLoopVar { var: var.clone() });
             }
         };
         if body_workers.len() < 2 {
@@ -250,6 +240,9 @@ pub fn apply_partition_workers(
         // TASK-0134: partition_workers does not consult or mutate the
         // pipeline-depth sidecar; forward verbatim.
         pipeline_depth_for_seq,
+        // TASK-0260: partition_workers does not consult or mutate the
+        // halo-widths sidecar; forward verbatim.
+        halo_widths,
     } = acfg;
 
     for (_var, iter_var, range, body_workers) in to_record {
@@ -277,6 +270,7 @@ pub fn apply_partition_workers(
         inner_block_iter_vars,
         partition_worker_ranges,
         pipeline_depth_for_seq,
+        halo_widths,
     })
 }
 
@@ -378,10 +372,7 @@ mod tests {
         let inner = ACFGNode::Repeat {
             iter_var: IterVar(7),
             range: 0..16,
-            body: Box::new(ACFGNode::Sequence(vec![
-                op_on(&[1, 2]),
-                op_on(&[2, 3]),
-            ])),
+            body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2]), op_on(&[2, 3])])),
             block_tag: None,
         };
         let (range, workers) = find_loop(&inner, IterVar(7)).unwrap();

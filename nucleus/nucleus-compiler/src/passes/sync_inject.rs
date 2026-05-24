@@ -96,6 +96,10 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         // pipeline-depth sidecar; forward verbatim. transfer_inject
         // populates it; acfg_to_petri reads it.
         pipeline_depth_for_seq,
+        // TASK-0260: sync_inject does not consult or mutate the halo-
+        // widths sidecar; forward verbatim. halo_inference populates it;
+        // Stage 2 (TASK-0263) makes transfer_inject the consumer.
+        halo_widths,
     } = acfg;
 
     // The set of iter-vars that the partition-workers pass (TASK-0212)
@@ -163,6 +167,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         inner_block_iter_vars,
         partition_worker_ranges,
         pipeline_depth_for_seq,
+        halo_widths,
     }
 }
 

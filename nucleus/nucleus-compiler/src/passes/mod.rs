@@ -18,6 +18,12 @@ pub mod acfg_to_petri;
 pub mod block_transform;
 pub mod boundedness;
 pub mod deadlock;
+// TASK-0260 Stage 1: halo region inference from kernel access patterns.
+// Runs AFTER `apply_partition_blocks2d` (driver pass order), AFTER
+// `build_acfg` (needs name_iter_vars / name_kernels). Pure +
+// observationally-inert in Stage 1: writes `ACFG::halo_widths` for
+// Stage 2 (transfer_inject extension, TASK-0263) to consume.
+pub mod halo_inference;
 // TASK-0052.02: real-time `check loop V : latency_max=T` projection.
 // Runs AFTER `petri_to_events`, BEFORE backend codegen — see module
 // docstring for the dependency rationale.

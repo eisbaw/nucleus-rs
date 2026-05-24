@@ -54,10 +54,14 @@ pub use link::{link, LinkError, LinkErrorKind, LinkErrorSource, LinkedIR, Worker
 // Petri-net IR (PRD §8). `Arc` is intentionally NOT re-exported at the
 // crate root to avoid shadowing `std::sync::Arc` for downstream code;
 // reach for it via `nucleus_compiler::petri::Arc` when you actually need it.
+pub use name_tables::NameTables;
 pub use passes::acfg_to_petri::acfg_to_net;
 pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
+pub use passes::halo_inference::{
+    apply_halo_inference, apply_halo_inference_advisory, HaloInferenceError,
+};
 pub use passes::inject_check_frames::inject_check_frames;
 pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError};
 pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};
@@ -65,6 +69,5 @@ pub use passes::partition_workers::{apply_partition_workers, PartitionError};
 pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
 pub use passes::sync_inject::inject_syncs;
 pub use passes::transfer_inject::inject_transfers;
-pub use sidecar::{build_sidecar, ConstValue, KernelSig, LoopBound, NameSidecar, SidecarError};
-pub use name_tables::NameTables;
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};
+pub use sidecar::{build_sidecar, ConstValue, KernelSig, LoopBound, NameSidecar, SidecarError};

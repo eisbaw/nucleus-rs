@@ -81,6 +81,7 @@ fn empty_acfg(root: ACFGNode) -> ACFG {
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     }
 }
 

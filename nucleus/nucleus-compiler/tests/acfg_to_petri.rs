@@ -84,6 +84,7 @@ fn synthetic_acfg(
         inner_block_iter_vars: Default::default(),
         partition_worker_ranges: Default::default(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     }
 }
 
@@ -609,10 +610,8 @@ fn synthetic_pipeline_depth_sets_initial_marking() {
         op_node(&[1], 101, vec![0], Some(1)),
     ]);
     let mut acfg = synthetic_acfg(root, &[("d", 0), ("c", 1)], &[("w0", 0), ("w1", 1)]);
-    acfg.pipeline_depth_for_seq.insert(
-        SeqTag(7),
-        std::num::NonZeroU64::new(3).expect("3 != 0"),
-    );
+    acfg.pipeline_depth_for_seq
+        .insert(SeqTag(7), std::num::NonZeroU64::new(3).expect("3 != 0"));
 
     let net = acfg_to_net(&acfg);
 

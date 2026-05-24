@@ -219,6 +219,7 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
@@ -331,6 +332,7 @@ fn loop_invariant_wait_hoists_out_of_plain_loops() {
         inner_block_iter_vars: BTreeSet::new(),
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
@@ -409,6 +411,7 @@ fn hoisting_is_idempotent() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
@@ -496,6 +499,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
@@ -570,6 +574,7 @@ fn in_intra_tile_producer_consumer_is_not_hoisted() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
@@ -715,6 +720,7 @@ fn example_02_shape() -> (ACFG, LinkedIR) {
         inner_block_iter_vars: BTreeSet::new(),
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let linked = synthetic_linked_ir(
         &[("a", &["host"]), ("b", &["host"]), ("c", &["w0"])],
@@ -824,6 +830,7 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let linked = synthetic_linked_ir(
         &[("d", &["host"]), ("e", &["host"])],
@@ -900,6 +907,7 @@ fn malformed_acfg_wait_without_producer_op_panics() {
         inner_block_iter_vars: BTreeSet::new(),
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
     // Should panic inside splice_pushes_global (TASK-0152 invariant).
@@ -972,6 +980,7 @@ fn block_nested_in_plain_loop_strands_the_invariant_wait() {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let linked = synthetic_linked_ir(
         &[("d", &["host"]), ("e", &["host"])],
@@ -1052,6 +1061,7 @@ fn mixed_block_nonblock_tree_is_structurally_idempotent() {
             inner_block_iter_vars: ibiv,
             partition_worker_ranges: std::collections::BTreeMap::new(),
             pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+            halo_widths: std::collections::BTreeMap::new(),
         }
     };
     let linked = synthetic_linked_ir(
@@ -1147,6 +1157,7 @@ fn mixed_block_nonblock_program() -> (ACFG, LinkedIR) {
         inner_block_iter_vars,
         partition_worker_ranges: std::collections::BTreeMap::new(),
         pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
     };
     let linked = synthetic_linked_ir(
         &[("d", &["host"]), ("e", &["host"])],
