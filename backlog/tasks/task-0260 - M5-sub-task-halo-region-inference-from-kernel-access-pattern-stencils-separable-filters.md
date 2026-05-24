@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 01:47'
+updated_date: '2026-05-24 01:58'
 labels:
   - M5
   - compiler
@@ -122,4 +122,30 @@ ACs:
 5. New e2e cell on example 5 distributed schedule bit-identical to reference.bin. **DEFERRED to TASK-0263 (this requires Stage 2 wiring + TASK-0262 remainder policy)**
 
 Task status: Stage 1 COMPLETE. AC#1-AC#3 met. AC#4-AC#5 are explicitly Stage 2 (TASK-0263) per the task brief's scope clarification ("STAGE 1 only: inference + sidecar, not the downstream consumer wiring"). Recommend status: ready-for-review on Stage 1 scope; close as ADDRESSED-VIA-TASK-0263 after review-gate.
+
+REVIEW-GATE LANDED (cycle 81 orchestrator hardening, commit 372aaf8).
+
+Parallel read-only review of cycle-81 implementer commits (4529622 + 42a3fa1 + 0e42da1) returned GO from both qa-test-runner and mped-architect.
+
+## In-thread fixes (commit 372aaf8)
+
+F-P1 (architect): an .expect() at halo_inference.rs:682 on a cross-module transitive invariant (iter-var name collected from scope must be in name_iter_vars) would panic on user input if the link step ever produced a 'for var' whose name escaped. Recurring panic-not-diagnostic defect. Fix: new HaloInferenceError::UnknownIterVarInScope variant + Display arm; the .get().expect() site routes to a typed-error push.
+
+F-P2 (architect): module docs line 53 said 'iv by itself … no entry written' but code writes explicit 0-width entry. Doc-lie. Corrected to describe the explicit-0 form + the consumer contract.
+
+## P1+P2 findings filed as forward-carry to TASK-0263
+
+- (P1)  not tested directly — only via strict path. The lenient/strict dichotomy is load-bearing for Stage 2 (TASK-0263 driver toggle decision). Recommended fixture: a multi-error case (one Mod index + one strided index in two different kernel calls); strict returns Err on first; advisory returns both errors AND the partial halo map for unaffected calls. Filed as forward-carry on TASK-0263's notes (not a new task).
+- (P2) No explicit test pinning Mod/Div rejection. The example-11 Mod-indexed claim is verified at module-doc + commit-message level but not by a dedicated  test. Filed as forward-carry on TASK-0263's notes — when Stage 2 lands, it should harden this.
+
+## Gate (post-hardening)
+
+- cargo test nucleus-compiler: 573 / 0.
+- cargo clippy --workspace --all-targets -- -D warnings: clean.
+- Behaviour unchanged for link-valid IR (the new error path is reachable only on an inconsistently-constructed input).
+- e2e/determinism/negative gates preserved from cycle-81 baseline (verified by qa-test-runner before this in-thread edit: 88/73/0/15/0 required-fail; 24 new tests at +722→746 baseline; serde-default test exists; all 7 ACFG destructure sites correctly thread halo_widths).
+
+## Review-gate decision
+
+Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258 + TASK-0259. AC#1/AC#2/AC#3 GREEN. AC#4 (transfer_inject consumer) explicitly DEFERRED to TASK-0263 Stage 2 per the task brief. AC#5 (e2e cell bit-identical) DEFERRED to TASK-0263 + TASK-0262 lockstep landing.
 <!-- SECTION:NOTES:END -->
