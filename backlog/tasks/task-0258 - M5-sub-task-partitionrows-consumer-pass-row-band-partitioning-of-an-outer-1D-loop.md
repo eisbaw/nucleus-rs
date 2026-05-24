@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:01'
+updated_date: '2026-05-24 00:21'
 labels:
   - M5
   - compiler
@@ -117,4 +117,76 @@ Implementation Plan (cycle 79c — implementer):
 12. Out of scope (will file follow-ups on commit):
     - Halo inference (TASK-0260 already filed)
     - Stencil e2e cell exercising partition=rows + halo bit-identical to reference.bin (blocked-on TASK-0260)
+
+Cycle 79c implementation complete (commits ef85b99, 5e4acc9).
+
+## Landed
+
+- nucleus-compiler/src/passes/partition_rows.rs (NEW, ~330 LoC incl. tests): the consumer pass. Walks ACFG for Repeat nodes with ResolvedLoopOption::Partition(Rows), verifies outer-of-2D structural pre-condition (Repeat-of-Repeat via find_outer_of_2d + contains_repeat helpers, both 100% covered by 4 #[cfg(test)] unit tests), validates multi-worker body + divisibility, applies the same row-band slicing algorithm partition_workers uses, writes per-(IterVar, WorkerId) ranges into the SHARED ACFG::partition_worker_ranges sidecar (downstream consumers don't distinguish which directive produced the override).
+- nucleus-compiler/src/passes/mod.rs: pub mod partition_rows;
+- nucleus-compiler/src/lib.rs: pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};
+- nucleus-compiler/src/passes/partition_workers.rs:40 caveat-comment updated: 'partition=rows now consumed by partition_rows (TASK-0258)'; Blocks2d remains rejected at sched-lower (TASK-0259).
+- nucleus-compiler/src/sched/lower.rs:1109..1133: PartitionKind::Rows arm added to the LoopOption::Partition match (alongside Workers). PartitionKind::Blocks2d remains the only kind rejected. Comment block updated to document the cycle-79c state with full citations.
+- nucleus-compiler/src/sched/ir.rs:643..671 / 816..843: UnsupportedPartitionKind docstring + Display message updated — only Blocks2d reaches this variant from the live lower call site; Workers + Rows arms remain in the match for exhaustiveness so any future PartitionKind addition fails to compile.
+- nucleus/driver/src/main.rs: import apply_partition_rows + call site IMMEDIATELY after apply_partition_workers (sequential composition).
+- nucleus-compiler/tests/partition_rows.rs (NEW, 6 integration tests): outer_of_2d_records_per_worker_row_bands (positive), negative_partition_rows_on_1d_iter_is_rejected, negative_single_worker_body_is_rejected, negative_non_divisible_range_is_rejected, partition_rows_is_deterministic_across_runs, no_directive_is_identity.
+- nucleus-compiler/tests/sched_lower.rs: negative_partition_rows_is_rejected → positive_partition_rows_now_lowers (flipped). negative_partition_blocks2d_is_rejected updated to assert the new Display includes 'partition=rows' as a TASK-0258 sibling suggestion. positive_partition_workers_still_lowers unchanged regression guard.
+- nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc: header NOTE block rewritten to document TASK-0258 + the divisibility caveat. Directive HELD in commented form (see below).
+- backlog/tasks/task-0262 - TASK-0258 follow-up: remainder policy filed (status To Do).
+
+## Gates (run via nix develop -c just <recipe>)
+
+- just test: 700 passed / 0 failed / 3 ignored. Was 690 baseline, +10 new (6 integration + 4 unit). VERIFIED.
+- just clippy: clean (-D warnings, --all-targets). VERIFIED.
+- just e2e: 88 pass=73 fail=0 skipped=15 required-fail=0. UNCHANGED baseline. VERIFIED.
+- just determinism-check: byte-identical across both runs (88 cells). VERIFIED.
+- just determinism-check-negative: 73/88 perturbed, correctly bit. OK. VERIFIED.
+- just xbackend-check-negative: 16 applied, 1 detected, correctly bit. OK. VERIFIED.
+
+## AC status (per task brief)
+
+- AC#1 (partition_rows pass exists; called from passes/mod.rs in canonical pass order): GREEN.
+- AC#2 (synthetic 2D Repeat-of-Repeat with partition=rows on 4-worker place set → per-worker row-band ranges): GREEN. Pinned by outer_of_2d_records_per_worker_row_bands (positive — w0:0..4, w1:4..8, w2:8..12, w3:12..16). Inner iter_var is NOT partitioned (intact per worker) — also pinned in the same test.
+- AC#3 (partition=rows on a 1D loop is rejected at sched-lower as a typed error): RESOLVED-DIFFERENTLY, see honest limit below. The check moved from sched-lower to the partition_rows PASS entry (NotOuterOf2DNest). The AST shape needed to verify the outer-of-2D pre-condition is only available after build_acfg, not at sched-lower. Pinned by negative_partition_rows_on_1d_iter_is_rejected.
+- AC#4 (UnsupportedPartitionKind for Rows is REMOVED from sched-lower): GREEN. Only Blocks2d remains rejected.
+- AC#5 (new e2e cell exercises partition=rows + bit-identical reference.bin on ≥1 tier-1 backend): BLOCKED-ON-TASK-0260 (halo inference). Pure row-band partitioning of a stencil produces wrong output at row-band boundaries — no e2e cell can be bit-identical without halo synthesis. The 05-stencil/distributed schedule directive itself is additionally held back by the 14-not-divisible-by-4 issue (filed as TASK-0262). Honest non-claim per task brief.
+
+## Honest gotchas / surprises
+
+1. **05-stencil divisibility blocker**: the algo y-loop = 1..15 = length 14. 4 workers want length % 4 == 0. partition_rows's first-cut policy refuses to compile. Restoring the directive AS-IS today would make every nucleus build of 05-stencil/distributed fail at compile time. Resolution: hold the directive in commented form with the full citation block + file TASK-0262 (shared remainder policy with partition_workers). Cell remains [[skip]] across all 4 tier-1 backends, so no e2e behaviour change.
+
+2. **AC#3 reject site is the PASS, not sched-lower**: the brief said 'partition=rows on a non-outer-of-2D context: reject at compile time'. At sched-lower the AST has not yet been built into the ACFG, so the 'outer-of-2D' structural check cannot run there — sched-lower only sees the loop directives, not the algo's nest shape. The check naturally lives in partition_rows.rs as PartitionRowsError::NotOuterOf2DNest. This is the spec-correct location; the brief's framing was slightly imprecise. Documented in the pass docstring + the sched/lower.rs comment.
+
+3. **Shared sidecar field**: partition_rows writes into the SAME ACFG::partition_worker_ranges field as partition_workers. Intentional — downstream consumers (sync_inject, petri_to_events, the backend walkers) don't distinguish which directive produced the per-worker range. The 'extra validation' partition=rows adds is captured by the pass entry; downstream IR shape is identical. Disjoint IterVar keys by grammar construction (at most one partition= per loop), so the two passes' order is observationally irrelevant.
+
+4. **No shared helper extraction**: tempting to share the divisible/round-robin slicing math between partition_rows and partition_workers (it's ~6 lines). Deliberately NOT done in this cycle — the two passes diverge in their structural pre-condition and error types; a refactor would touch partition_workers.rs's 9 TASK-0212-pinned tests and make any regression bisect to the consolidation commit rather than to a real bug. A backend-common-style consolidation belongs to a future cleanup task (see memory: project-backend-common-crate).
+
+5. **Repo-wide cargo fmt --check drift**: baseline 146 pre-existing fmt diffs across files I touched. My new partition_rows.rs (source + test) is clean per rustfmt. The driver/src/main.rs change went through rustfmt. The pre-existing drift in lib.rs / sched/lower.rs / sched/ir.rs / sched_lower.rs / partition_workers.rs is unchanged by this commit — those are existing issues to be addressed by a fmt-sweep task, not this one.
+
+## Forward-carried lessons (appended to siblings)
+
+- TASK-0259 (partition_blocks2d): the partition_rows pattern (typed errors + structural pre-condition check at pass entry, NOT sched-lower; reuse ACFG::partition_worker_ranges; PartitionRowsError-style error variants) is the template. Blocks2d's structural pre-condition is 'outer pair of a 2D nest' (likely Repeat-of-Repeat with both iter vars partitioned). UnsupportedPartitionKind currently only fires for Blocks2d — when this task lands, remove that variant entirely or document it as exhaustiveness-only.
+- TASK-0260 (halo inference): the partition_rows pass writes into the shared partition_worker_ranges sidecar. Halo inference needs to consult that sidecar to know which workers OWN which row-bands and which neighbours need halo transfer synthesis. Coordinate via partition_worker_ranges; the sidecar key set (BTreeMap<IterVar, BTreeMap<WorkerId, Range<i64>>>) is the natural interface.
+- TASK-0261 (reuse): orthogonal to this task; the schedule grammar's 'reuse' directive needs its own consumer. Not blocked on TASK-0258 / TASK-0262.
+- TASK-0262 (remainder policy): both partition_rows and partition_workers must adopt the same policy. Pick the policy in coordination with block_transform's trailing-partial discipline (TASK-0142 / TASK-0218); same sidecar field consumer-side, same harm-class first-cut limit.
+
+## Disposition
+
+Status remains In Progress. AC#5 (new e2e cell exercising partition=rows + bit-identical reference.bin on ≥1 tier-1 backend) is BLOCKED-ON-TASK-0260 (halo inference) AND BLOCKED-ON-TASK-0262 (remainder policy for 05-stencil/distributed). The other 4 ACs are GREEN:
+
+- AC#1 GREEN (pass exists, wired in passes/mod.rs canonical order)
+- AC#2 GREEN (synthetic 2D Repeat-of-Repeat produces per-worker row-bands)
+- AC#3 GREEN-WITH-CORRECTION (partition=rows on 1D is rejected, but at the partition_rows pass entry — NotOuterOf2DNest — not at sched-lower; sched-lower has no AST shape information to do the check there. Documented in code + commit message + this notes block.)
+- AC#4 GREEN (UnsupportedPartitionKind for Rows removed from sched-lower; only Blocks2d still rejects.)
+- AC#5 BLOCKED (joint deliverable with TASK-0260; documented above)
+
+The mechanism (partition=rows lowers + the pass writes correct per-worker row-bands + the sidecar surface integrates with all downstream consumers) is COMPLETE and pinned by tests. The 'bit-identical e2e cell' that would close AC#5 cannot land until halo inference (TASK-0260) is wired AND the remainder policy (TASK-0262) handles the 05-stencil row-count.
+
+Per implementer-contract rule 5 ('mark Done only if every AC is genuinely met'), this task stays In Progress until TASK-0260 + TASK-0262 land and the joint e2e cell becomes bit-identical. When that happens, this task can be closed with a final-summary referencing those commits.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 79c lands the partition_rows consumer pass: a sibling to partition_workers that consumes ResolvedLoopOption::Partition(PartitionKind::Rows), verifies the schedule's outer-of-2D structural pre-condition (Repeat-of-Repeat with a multi-worker body via the find_outer_of_2d helper), and writes per-(IterVar, WorkerId) row-band ranges into the shared ACFG::partition_worker_ranges sidecar (already consumed by sync_inject + petri_to_events + the 4 tier-1 backend walkers — no downstream changes needed). Typed PartitionRowsError variants: UnknownLoopVar, NotOuterOf2DNest (PRD §6.3.3 category-error reject), NoMultiWorkerBody, NonDivisible (first-cut, shared follow-up with partition_workers as TASK-0262). sched-lower's TASK-0249-era reject for PartitionKind::Rows is removed; Blocks2d still rejects (TASK-0259). driver/main.rs wires apply_partition_rows immediately after apply_partition_workers. 10 new tests (6 integration in tests/partition_rows.rs + 4 #[cfg(test)] unit in the pass), all 5 negative paths covered, sched_lower tests updated (negative_partition_rows → positive_partition_rows_now_lowers; blocks2d unchanged). 05-stencil/distributed schedule's 'loop y : partition=rows;' directive could not be restored as-is — the algo's y=1..15 length-14 is not divisible by 4 workers (TASK-0262 remainder-policy follow-up filed). Gates: just test 700/0/3 (+10), just clippy clean, just e2e 88/73/0/15/0-required-fail (unchanged), determinism + determinism-negative + xbackend-negative all PASS. AC#1/2/4 GREEN; AC#3 GREEN with the corrected reject site (PASS entry, not sched-lower — documented in code); AC#5 BLOCKED-ON-TASK-0260 + TASK-0262 (cannot land a bit-identical stencil e2e cell without halo inference and remainder-policy resolution; pure row-band partitioning produces wrong output at row-band boundaries). Status remains In Progress until those siblings land and the joint e2e cell becomes bit-identical. Commits: ef85b99 (consumer pass + tests + sched-lower update), 5e4acc9 (05-stencil schedule documentation + TASK-0262).
+<!-- SECTION:FINAL_SUMMARY:END -->

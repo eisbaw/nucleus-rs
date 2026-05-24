@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-23 23:54'
+updated_date: '2026-05-24 00:21'
 labels:
   - M5
   - compiler
@@ -34,3 +35,15 @@ At codegen time, when a Dataflow's kernel arg indices reveal loop-carried OVERLA
 ## Honest scope clarification
 - Performance NOT proven in M5 — only correctness + bit-identical re-emit. PRD §11 'examples 5–7 benefit measurably' is a stretch target; this task closes the codegen path. Quantified perf improvement is M6+ scope.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carry from TASK-0258 (cycle 79c, partition_rows landed): this task is ORTHOGONAL — 'reuse' is a sliding-window optimisation, not a worker-distribution policy. Not blocked on TASK-0258, TASK-0259, TASK-0260, or TASK-0262. However:
+
+1. **Reuse + partition_rows interaction**: a stencil schedule with both 'loop x : block=64, reuse;' (sliding-window across X) AND 'loop y : partition=rows;' (row-band across Y) is the original 05-stencil/distributed shape. The two directives compose along orthogonal axes: reuse on X (intra-worker, intra-row), partition=rows on Y (cross-worker). Verify the composition does not double-bind any sidecar field when reuse lands.
+
+2. **Pass order**: reuse's consumer pass should sit AFTER block_transform (consumes the strip-mined inner iter_var) and is independent of partition_workers / partition_rows. Driver pipeline order in nucleus/driver/src/main.rs around line 332 is the integration point; choose a position relative to the other consumers that matches the dependency graph.
+
+3. **TASK-0258 template applies**: typed errors at pass entry (mirror PartitionRowsError pattern), sidecar (likely new field for sliding-window state), structural pre-condition checks lived in the PASS not at sched-lower.
+<!-- SECTION:NOTES:END -->
