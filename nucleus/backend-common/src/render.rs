@@ -192,12 +192,23 @@ pub struct RenderCtxPub<'a> {
     /// multi-worker program (which is every tier-1 schedule today, so
     /// the existing 88/70/0/18 e2e matrix renders byte-identically).
     pub abs_subst: BTreeMap<String, String>,
-    /// See [`RenderCtx::reuse_active`]. Empty for every multi-worker
-    /// program in TASK-0269's scope: the multi-worker walker landing
-    /// for reuse codegen is forward-carried to TASK-0270, and until
-    /// that lands no multi-worker code path populates this map. The
-    /// field carries the same shape as `RenderCtx::reuse_active` so
-    /// the cross-context `inner()` conversion is a literal copy.
+    /// See [`RenderCtx::reuse_active`]. Populated by the shared
+    /// `multi_worker_walker::render_worker_events_inner` at both
+    /// Event::Loop arms (cycle-104 TASK-0270 landing): each loop's
+    /// pre-header sets the map from `render_reuse_buf_decls_pub`'s
+    /// returned groups, the body recursion inherits it via
+    /// [`Self::with_abs_subst_and_reuse_active`] /
+    /// [`Self::with_reuse_active`]. Empty for any iv without a
+    /// matching `sidecar.reuse_widths` entry (every non-reuse
+    /// schedule emits byte-identically to pre-cycle-103). The field
+    /// carries the same shape as `RenderCtx::reuse_active` so the
+    /// cross-context `inner()` conversion is a literal copy.
+    ///
+    /// **mp-tcp-bufsync** has its own per-event walker that does NOT
+    /// consume the shared walker (filed as TASK-0284); its
+    /// `RenderCtxPub` will always carry an empty `reuse_active` in
+    /// this cycle — `render_fire_arg`'s `try_rewrite_reuse_arg`
+    /// no-ops on an empty map, so no codegen drift.
     pub reuse_active: BTreeMap<DataId, Vec<ReuseRewriteGroup>>,
 }
 
