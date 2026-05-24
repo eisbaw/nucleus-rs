@@ -29,6 +29,14 @@ check:
 fmt:
     cd nucleus && cargo fmt --all
 
+# Check rustfmt without writing. Returns non-zero on drift so a
+# developer can verify before committing — closes the asymmetric-
+# strict gap with `just clippy` (TASK-0256). NOT wired into `just ci`
+# per TASK-0069 closure (fmt is dev-side informational; clippy is the
+# CI hard gate).
+fmt-check:
+    cd nucleus && cargo fmt --all -- --check
+
 # Lint. Warnings are errors. --all-targets so test/bin-target lint
 # rot is gate-visible and cannot silently re-accumulate behind a
 # green `just ci` (decision-0002, TASK-0186).
