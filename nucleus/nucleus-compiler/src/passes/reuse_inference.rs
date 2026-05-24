@@ -296,7 +296,7 @@ pub enum ReuseInferenceError {
     /// table); the variant exists so an inconsistently-constructed
     /// `(LinkedIR, ACFG)` pair fails closed with a typed error rather
     /// than panicking — same invariant-guard pattern as
-    /// [`crate::passes::halo_inference::HaloInferenceError::UnknownIterVarInScope`].
+    /// [`crate::passes::halo_inference::HaloInferenceError::UnknownLoopVar`].
     UnknownLoopVar { var: String },
     /// A DataRef inside a `reuse`-tagged loop body names a data symbol
     /// the ACFG `name_data` table does not contain. Cannot happen for

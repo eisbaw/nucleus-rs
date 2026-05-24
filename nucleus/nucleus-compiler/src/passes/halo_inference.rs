@@ -269,7 +269,12 @@ pub enum HaloInferenceError {
     /// closed on an inconsistently-constructed `(LinkedIR, ACFG)` pair
     /// rather than panicking — architect-review F-P1 of cycle 81.
     /// Same invariant-guard pattern as [`Self::UnknownKernelInCall`].
-    UnknownIterVarInScope { iter_var: String },
+    ///
+    /// Variant + field name aligned (TASK-0272 scope A, cycle 95) with
+    /// the same shape across 5 sibling passes (partition_workers,
+    /// partition_blocks2d, partition_rows, block_transform,
+    /// reuse_inference — all carry `UnknownLoopVar { var: String }`).
+    UnknownLoopVar { var: String },
 }
 
 impl std::fmt::Display for HaloInferenceError {
@@ -326,9 +331,9 @@ impl std::fmt::Display for HaloInferenceError {
                 "halo inference: kernel call references `{callee}` but the ACFG has no such \
                  kernel id (link-pass invariant violation)"
             ),
-            HaloInferenceError::UnknownIterVarInScope { iter_var } => write!(
+            HaloInferenceError::UnknownLoopVar { var } => write!(
                 f,
-                "halo inference: iter-var `{iter_var}` was collected from lexical scope but is \
+                "halo inference: iter-var `{var}` was collected from lexical scope but is \
                  missing from `ACFG::name_iter_vars` (link-pass invariant violation; the link \
                  step is contracted to insert every `for var` into the name table)"
             ),
@@ -715,7 +720,7 @@ fn classify_index(
             // constructed `(LinkedIR, ACFG)` pair fails closed with a
             // typed error rather than panicking (cycle-81 architect
             // review F-P1).
-            errors.push(HaloInferenceError::UnknownIterVarInScope { iter_var: iv_name });
+            errors.push(HaloInferenceError::UnknownLoopVar { var: iv_name });
             return;
         }
     };
