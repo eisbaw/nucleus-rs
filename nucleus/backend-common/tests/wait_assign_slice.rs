@@ -93,6 +93,24 @@
 //!    else-branch early return. Both converge on the whole-array
 //!    `name = rhs;` emit, but only one of these two tests
 //!    pre-existed. Closes TASK-0316 AC#2.
+//!
+//! ## Scope drift: prefix-substitution pins (TASK-0321 / TASK-0322)
+//!
+//! Tests 10-11 below (`task0321_rendezvous_prefix_substituted_in_2d_
+//! row_loop_arm` + `task0322_rendezvous_prefix_substituted_on_push_
+//! emit`) pin the `WalkerCtx::rendezvous_prefix` substitution across
+//! the three `render_worker_events`-using prefixes (`"ring"` /
+//! `"slot"` / `"chan"`). They live in this file (rather than a new
+//! `push_emit_prefix.rs`) for sibling-adjacency with the shared
+//! `make_minimal_tables` + `one_pair` helpers and to keep the two
+//! substitution sites (Wait at `multi_worker_walker.rs:809`, Push at
+//! `multi_worker_walker.rs:789`) paired in one place. This stretches
+//! the "Receiver-side gather emit shape for `Event::Wait`" name in
+//! the module heading: the file now also covers Push-side prefix
+//! emit. Acknowledged tradeoff, not a defect. Acceptance: TASK-0321
+//! cycle-140 (Wait) + TASK-0322 cycle-141 (Push) close the
+//! prefix-substitution sweep end-to-end on the
+//! `render_worker_events` machinery.
 
 use std::collections::BTreeMap;
 
@@ -654,6 +672,107 @@ fn task0321_rendezvous_prefix_substituted_in_2d_row_loop_arm() {
             out.contains("for _y in 1usize..8usize"),
             "TASK-0321: must dispatch to 2D row-loop arm regardless of \
              prefix (`rendezvous_prefix = {prefix:?}`); got:\n{out}"
+        );
+    }
+}
+
+/// TASK-0322 (cycle-141 sibling closure to TASK-0321 cycle-140
+/// architect P2): the Push-side substitution site at
+/// `multi_worker_walker.rs:789` is structurally identical to the
+/// Wait site at line 809 — a single `format!("{prefix}\
+/// {rendezvous_prefix}_{rid}.push(...)")` call with no prefix-
+/// conditional branches in the Push branch. TASK-0321 pinned the
+/// Wait site across `{"ring", "slot", "chan"}` but constructs only
+/// an `Event::Wait`, so the Push site is uncovered by that test.
+///
+/// A regression that hardcoded `"ring_"` (or any other prefix
+/// string) inside the Push emit would silently break partition=
+/// blocks2d (and any other multi-worker) Push emit for pthreads-
+/// sync (`"slot"`) and mp-tcp-event (`"chan"`); pthreads-async
+/// (`"ring"`) would coincidentally still pass because the
+/// hardcoded value matches its configured prefix.
+///
+/// This test pins the Push-side substitution across the same three
+/// `render_worker_events`-using prefixes used by TASK-0321. Shape
+/// (`DataId` / tile / `RendezvousId`) is held identical to
+/// `task0321_rendezvous_prefix_substituted_in_2d_row_loop_arm` so
+/// the two tests differ ONLY in the event constructor (`Wait` vs
+/// `Push`) — sibling-adjacency by construction.
+#[test]
+fn task0322_rendezvous_prefix_substituted_on_push_emit() {
+    let data = DataId(7);
+    let seq = SeqTag(3);
+    let y_iv = IterVar(1);
+    let x_iv = IterVar(2);
+    let (names, sidecar) = make_minimal_tables(data, "img_out", vec![16, 16]);
+    let tile = IterTile::new(vec![(y_iv, 1..8), (x_iv, 1..8)]);
+    let (ids, tiles) = one_pair(data, seq, 12, tile.clone());
+
+    for prefix in ["ring", "slot", "chan"] {
+        let ctx = WalkerCtx {
+            names: &names,
+            sidecar: &sidecar,
+            rendezvous_prefix: prefix,
+            rendezvous_ids: &ids,
+            pair_tiles: &tiles,
+        };
+        let push = Event::Push {
+            dst: WorkerId(1),
+            data,
+            tile: tile.clone(),
+            seq,
+        };
+        let mut out = String::new();
+        // Render on WorkerId(0) ("w0"): the sender. WorkerId(1) is
+        // the dst ("host" from `make_minimal_tables`), so the
+        // emitted comment will read `// send `img_out` to host`.
+        render_worker_events(&ctx, WorkerId(0), &[push], &mut out, 0, "")
+            .expect("Push must render under each prefix");
+
+        // The Push emit MUST substitute the configured prefix
+        // verbatim. A regression that hardcoded `"ring_"` (or any
+        // other prefix string) inside the Push branch would emit
+        // the wrong rendezvous identifier here.
+        let expected_push = format!("{prefix}_12.push(img_out.clone());");
+        assert!(
+            out.contains(&expected_push),
+            "TASK-0322: Push emit MUST substitute \
+             `rendezvous_prefix = {prefix:?}` into the `.push(...)` \
+             call; expected substring `{expected_push}`; got:\n{out}"
+        );
+
+        // Defensive: a regression that hardcoded any other prefix
+        // would emit, say, `ring_12.push(` even when the configured
+        // prefix is `slot` or `chan`. Assert the WRONG prefixes are
+        // NOT present on the Push call. Match on the full
+        // `{other}_12.push(` substring rather than just the prefix
+        // word (which can legitimately appear in unrelated text
+        // like the rendezvous-ident, were any present).
+        for other in ["ring", "slot", "chan"] {
+            if other == prefix {
+                continue;
+            }
+            let unexpected = format!("{other}_12.push(");
+            assert!(
+                !out.contains(&unexpected),
+                "TASK-0322: Push emit under \
+                 `rendezvous_prefix = {prefix:?}` MUST NOT emit the \
+                 unrelated prefix substring `{unexpected}` (would \
+                 indicate a hardcoded `{other}_` in the Push branch); \
+                 got:\n{out}"
+            );
+        }
+
+        // Sanity: confirm the Push branch was entered (not falling
+        // through to some other event handler — e.g. a future
+        // refactor that accidentally routed Push through `wait_slice`).
+        // The `// send `{name}` to {to}` comment is emitted ONLY by
+        // the Push branch (multi_worker_walker.rs:789).
+        assert!(
+            out.contains("// send `img_out` to host"),
+            "TASK-0322: must enter the Push branch (which emits the \
+             `// send ... to ...` comment); `rendezvous_prefix = \
+             {prefix:?}`; got:\n{out}"
         );
     }
 }
