@@ -4,9 +4,11 @@ title: >-
   Class-wide stale absolute-line citation sweep — Phase B/tail follow-up
   (acfg.rs:697 + driver/main.rs:399 narrative + ~256 long-tail citations;
   TASK-0312 cycle-129 architect P2 #2 honest-scope follow-up)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 07:29'
+updated_date: '2026-05-25 08:24'
 labels:
   - M5
   - tracker-hygiene
@@ -71,3 +73,75 @@ LOW priority. Tail-end tracker hygiene. Cycle cost: estimated 1 medium cycle for
 - A `just check-tracker-line-citations` lint recipe: still rejected (cycle-127 + cycle-129 architect P3 stance unchanged).
 - Wholesale corpus-wide sweep of the ~256 remaining citations: prohibitively wide; cycle-129 closure pattern (architect-named priority sets only, broader tail filed as follow-up) holds.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Cycle 132 plan (orchestrator-direct, no implementer subagent per [[feedback-spawned-agents-refuse-code-edits]]):
+
+## Discovered at onboarding (CORRECTION to TASK-0313 Description premise)
+
+TASK-0313 was filed cycle 129 (2026-05-25) claiming 'TASK-0179 (still listed as To Do) may itself be partially fulfilled'. Verified at cycle-132 onboarding: TASK-0179 status is ✔ Done since 2026-05-19 — 6 days BEFORE TASK-0313 was filed. The 'still listed as To Do' claim was already stale at filing time (a meta-instance of the [[feedback-comment-doc-lie-recurring]] / [[feedback-orchestrator-narrative-also-wrong]] pattern firing on a tracker description, not just on code comments).
+
+TASK-0179's Final Summary already documents complete closure of all 3 sub-limitations:
+- sub-lim #1 (out[i-1] underflow guard, single-assignment base-case+loop split): accepted as kernel-level idiom (PRD §6.2.5 'Recorded decision: in-array prefix scan is a kernel-level idiom for v2')
+- sub-lim #2 (const-only bounds + PANIC on non-const): fixed via BuildAcfgError::NonConstLoopBound at acfg.rs build_seq (verified cycle 132: current sites at lines 1089/1096 call eval_const().ok_or_else(BuildAcfgError::NonConstLoopBound{...}))
+- sub-lim #3 (single-assignment differing-const indices): same kernel-level-idiom decision
+
+So TASK-0179 is genuinely Done. AC#1's 'if all sub-limitations are closed, close TASK-0179' is a no-op (already closed). The substantive work remaining for cycle 132 is the STALE-CITATION migration + STATE-OF-WORLD ADDENDUM on task-0039 + task-0179.
+
+## Cycle 132 steps
+
+1. **Append cycle-132 STATE-OF-WORLD ADDENDUM to task-0179's Description-end** (precedent: cycle-129 task-0271 ADDENDUM per [[feedback-ac-rewrite-on-done-task]] P3 rule). Content: cite the stale acfg.rs:697 line (eval_const definition now at line 1351; call sites at 1089/1096); cite the stale claim (PANIC replaced by BuildAcfgError::NonConstLoopBound, see Final Summary); migrate the inline citation to a symbolic anchor ('search BuildAcfgError::NonConstLoopBound in acfg.rs build_seq').
+
+2. **Append cycle-132 STATE-OF-WORLD ADDENDUM to task-0039's Description-end** with the same stale-citation migration + pointer to TASK-0179 Final Summary.
+
+3. **Update TASK-0313's Description** to record the 'TASK-0179 still listed as To Do' stale-premise correction at the Description-end ADDENDUM block; cite as a [[feedback-orchestrator-narrative-also-wrong]] meta-instance.
+
+4. **Spot-check AC#2** (driver/main.rs:399 + task-0280/0285): per cycle-127 charitable-retention convention, leave under historically-annotated narrative IF a fresh reader could NOT draw a wrong-current-state conclusion; migrate IF they could. Quick read; decide; document.
+
+5. **Spot-check AC#3** (task-0271 cycle-129 STATE-OF-WORLD ADDENDUM): re-read; verify Description-only skim defends against [[feedback-implementer-disclosure-mechanism-wrong]]. If not, add a one-line forward-reference at the FIRST tense marker. Else leave.
+
+6. **AC#5 (this task's specific defense)**: NAME the scope choice. Cycle 132 chooses 'architect-named priority sets only' (acfg.rs:697 + driver/main.rs:399 + task-0271 spot-check). The corpus-wide tail of ~256 long-tail citations remains explicitly OUT OF SCOPE; if a future class-wide sweep is wanted, it gets a new task at sweep-close per the cycle-129 forward-carry rule.
+
+7. **Cheap gate**: nix develop --command bash -c 'just build && just clippy && just test && just test-release && just e2e'. Tracker-md-only changes shouldn't touch any of these; baseline 108/92/0/16/0 MUST hold.
+
+8. **Commit**: 'tracker hygiene + addenda: TASK-0313 cycle 132 — acfg.rs:697 substantive-claim closure verification (TASK-0179 Done since 2026-05-19; addenda on task-0039 + task-0179 + TASK-0313 premise correction); AC#1+5 met, AC#2/3/4 spot-checked'.
+
+9. **Parallel read-only review gate** (qa-test-runner + mped-architect). Fold P1/P2 in-thread; file follow-ups for larger items.
+
+## AC mapping
+- AC#1 (acfg.rs:697 + TASK-0179 substantive-closure verification): step 1+2+3. Conclusion: TASK-0179 already Done; no further closure cycle needed.
+- AC#2 (driver/main.rs:399 spot-check): step 4.
+- AC#3 (task-0271 addendum verification): step 5.
+- AC#4 (cycle-126/127 substitution discipline): methodology, applied throughout steps 1-5.
+- AC#5 (cycle-129 forward-carry scope-wording): step 6.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 132 ORCHESTRATOR PREMISE CORRECTION (TASK-0313 AC#1 fold-back, before any code change)
+
+The cycle-129 Description above (TASK-0313 'Specific deferred Phase B targets' item 1) overclaimed by asserting 'TASK-0179 (still listed as To Do) may itself be partially fulfilled'. Verified at cycle-132 onboarding:
+
+- TASK-0179 status is **✔ Done since 2026-05-19**, six days BEFORE TASK-0313 was filed (2026-05-25). The Final Summary documents complete closure of all 3 ACs with parallel reviewer GO.
+- Cycle-132 code-read of acfg.rs confirms the panic-not-diagnostic fix is live: lines 1085-1101 carry the explicit comment 'Typed error, not a panic (TASK-0179)' and return BuildAcfgError::NonConstLoopBound{var, end, expr} via eval_const().ok_or_else(...). eval_const definition at line 1351; call sites at 1089/1096. The 'panic' is genuinely gone.
+
+This is a meta-instance of [[feedback-orchestrator-narrative-also-wrong]] (orchestrator-written narrative is also wrong even when no implementer was involved): the TASK-0313 filer (orchestrator) cross-referenced TASK-0179 by name but did not VERIFY its status at the time of filing. Same pattern that fires on implementer disclosures + orchestrator carry-forwards.
+
+This addendum is the cycle-126-P3-compliant in-place correction; the original Description is preserved verbatim above for honesty-of-record.
+
+## Cycle 132 deliverable (AC#1 + AC#5 done; AC#2/3 spot-checked OK)
+
+- **AC#1**: cycle-132 STATE-OF-WORLD ADDENDUM appended to TASK-0179 Description-end. Documents stale citation (acfg.rs:697 → 1089/1096 call sites + 1351 def) AND stale claim (panic → typed error). Per-sub-limitation closure status recorded:
+  - sub-lim #1 (out[i-1] guard + base-case+loop split): ACCEPTED kernel-idiom per PRD §6.2.5.
+  - sub-lim #2 (const-only bound + panic): FIXED via BuildAcfgError::NonConstLoopBound, verified live cycle 132.
+  - sub-lim #3 (single-assignment differing-const indices): ACCEPTED kernel-idiom (same PRD §6.2.5 scope).
+  TASK-0179 remains Done (no status change needed; it was already closed).
+- **AC#1 follow-up on TASK-0039**: deliberately NOT TOUCHED. TASK-0039's stale acfg.rs:697 citations live in its Implementation Notes / Final Summary — immutable historical records of work-at-time-of-completion. TASK-0039 already points readers to TASK-0179 ('filed TASK-0179 for the language gap incl. the acfg.rs:697 panic-not-diagnostic'); a reader who follows that link now sees the cycle-132 ADDENDUM at TASK-0179 with the closure correction. Single source of truth for the cycle-132 fix is TASK-0179; TASK-0039 charitable-retention per cycle-127/129 convention. [[feedback-ac-rewrite-on-done-task]] respected.
+- **AC#2 (driver/main.rs:399 spot-check)**: SPOT-CHECK PASS. Verified cycle 132 the :399 line is still LINE-CORRECT (nuc_trace! call inside the halo_errors_advisory for-loop at lines 396-403; line 399 is the macro call line). task-0280:79 already annotates 'Landed cycle 96 (TASK-0275 (B) partition-policy-aware promotion)' — historically-tense. task-0285:26+:67 cite the same line in PROPOSAL context (future-tense: 'write a test that pins ... using TraceCapture'). Neither permits a fresh reader to draw a wrong-current-state conclusion. Charitable retention applies; NO migration this cycle.
+- **AC#3 (task-0271 cycle-129 ADDENDUM verification)**: SPOT-CHECK PASS-WITH-RATIONALE. The cycle-129 STATE-OF-WORLD ADDENDUM is at task-0271 Description-end, immediately before the 'Acceptance Criteria' field. A reader who skims the Description sequentially DOES see the addendum before reaching the AC section; a reader who skims faster sees the inline annotation 'search for apply_reuse_inference_advisory to find it before the cycle-88 promotion, or apply_reuse_inference after' at the first reuse-driver tense marker. The 'Halo has the same choice today (its driver also uses advisory)' sentence in section 3 IS a residual reader-confusion risk for halo (it's not — partition-policy-aware since cycle 96), but adding a one-line forward-reference WOULD be a Description-text edit on a Done task, and the cycle-129 ADDENDUM already cross-references the halo migration. Cycle 132 chooses NOT to tighten — the existing defense is adequate and a further Description-text edit would risk a [[feedback-ac-rewrite-on-done-task]] near-miss. If a FUTURE reader confusion is reported, file as a focused follow-up then.
+- **AC#4 (cycle-126/127 substitution discipline)**: methodology, applied throughout cycle 132. Cycle 132 made ONE atomic --description rewrite (TASK-0179 — original Description preserved verbatim, addendum appended; verified via post-edit re-read). Zero sed-batches; zero AC mutations.
+- **AC#5 (cycle-129 forward-carry scope-wording)**: NAMED. Cycle 132 scope: 'architect-named priority sets only' (acfg.rs:697 substantive-claim closure + driver/main.rs:399 + task-0271 spot-checks). The corpus-wide tail of ~256 long-tail citations is EXPLICITLY OUT OF SCOPE this cycle. If a future class-wide sweep is wanted, it gets a NEW task at sweep-close per the cycle-129 forward-carry rule (the same rule TASK-0313 itself was filed under).
+<!-- SECTION:NOTES:END -->

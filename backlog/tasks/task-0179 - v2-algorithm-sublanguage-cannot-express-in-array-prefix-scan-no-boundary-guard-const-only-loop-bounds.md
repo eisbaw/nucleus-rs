@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-19 01:13'
-updated_date: '2026-05-19 03:50'
+updated_date: '2026-05-25 08:23'
 labels:
   - M3
   - language
@@ -20,6 +20,22 @@ dependencies:
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Surfaced by TASK-0039 (example 04 prefix-sum). Three concrete v2 limitations make a textbook in-array carried prefix scan inexpressible: (1) carried shifted index out[i-1] underflows usize at i=0 and there is no conditional (PRD 6.2.4) to guard it; single-assignment (keyed by symbol name) forbids a base-case + loop split on the same array. (2) Loop bounds must be compile-time const (acfg.rs:697 eval_const) and PANICS rather than returning a clean LowerError on a non-const bound — triangular loops impossible AND the failure mode is an ugly panic not a diagnostic. (3) Single-assignment ignores differing constant indices so block unrolling as separate statements is rejected. TASK-0039 worked around this in-language by pushing the carry/boundary logic into hand-written Rust kernels (legal) over a rectangular reduction-accumulator; this task tracks the underlying language gaps. Options: add a clamp/saturating index intrinsic, an exclusive-scan/segmented-scan algorithm builtin, or a guarded-first-iteration form; at minimum convert the acfg.rs:697 panic into a LowerError.
+
+## Cycle-132 STATE-OF-WORLD ADDENDUM (orchestrator, 2026-05-25, TASK-0313 AC#1 follow-up)
+
+The Description text above was written at file time (cycle that surfaced TASK-0039's prefix-scan limitations). Two of its inline citations are STALE today:
+
+- **`acfg.rs:697 eval_const`**: as of cycle 132 the `eval_const` definition lives at `acfg.rs:1351`; the non-const-loop-bound consumer sites are at `acfg.rs:1089` (lower bound) and `acfg.rs:1096` (upper bound). Symbolic anchor: search `BuildAcfgError::NonConstLoopBound` in acfg.rs build_seq.
+- **"PANICS rather than returning a clean LowerError"**: STALE. The panic was replaced by a typed error in THIS task's own AC#1 fix (commits 8cc1279 / 45d836a / 5e1157e, 2026-05-19). Today `acfg.rs:1085-1101` carries the explicit comment "Typed error, not a panic (TASK-0179)" and returns `BuildAcfgError::NonConstLoopBound{var, end, expr}` via `eval_const(...).ok_or_else(...)`. The Final Summary below documents the fix end-to-end.
+
+**Per-sub-limitation closure status** (verified cycle 132 via code-read of current acfg.rs / lower.rs / link / PRD §6.2.5):
+- **sub-lim #1** (out[i-1] underflow guard, single-assignment base-case+loop split): ACCEPTED as kernel-level idiom per PRD §6.2.5 "Recorded decision: in-array prefix scan is a kernel-level idiom for v2" (TASK-0179 AC#2 close).
+- **sub-lim #2** (const-only bounds + PANIC on non-const): FIXED via `BuildAcfgError::NonConstLoopBound` (TASK-0179 AC#1 close); verified live at acfg.rs:1089/1096 cycle 132.
+- **sub-lim #3** (single-assignment ignores differing-const indices, block unrolling as separate statements rejected): ACCEPTED under the same PRD §6.2.5 kernel-idiom decision scope.
+
+All 3 sub-limitations have a final disposition; this task is genuinely Done. No follow-up cycle needed. Future language work (clamp/saturating-index intrinsic, exclusive-scan/segmented-scan builtin, guarded-first-iteration form, triangular-bounds support) is explicitly deferred per PRD §6.2.5 — NOT tracked as a TASK-0179 sub-item.
+
+This addendum defends against the [[feedback-comment-doc-lie-recurring]] / [[feedback-orchestrator-narrative-also-wrong]] patterns firing on a Description-only skim that would otherwise conclude (incorrectly) that the acfg.rs:697 panic is still live. Per [[feedback-ac-rewrite-on-done-task]] (cycle 126 P3 rule), the Description narrative above is NOT mutated in place; this addendum block is the cycle-126-compliant disclosure (matching the cycle-129 task-0271 precedent).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
