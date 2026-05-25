@@ -52,8 +52,10 @@ fn repo_root() -> PathBuf {
 }
 
 /// Run the full lower-link-inject pipeline for a given example/schedule.
-/// Mirrors `sidecar_halo.rs::lower` exactly so the sidecar shape is the
-/// driver's shape.
+/// Mirrors `sidecar_halo.rs::lower_partition_aware` (TASK-0309 cycle
+/// 128 — the driver-aligned variant that calls
+/// `fn apply_halo_inference_partition_aware`) so the sidecar shape is
+/// the driver's shape (partition-aware-B).
 fn lower(
     ex_rel: &str,
     sched_rel: &str,

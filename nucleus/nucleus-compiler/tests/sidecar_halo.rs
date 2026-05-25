@@ -40,10 +40,25 @@ fn repo_root() -> PathBuf {
         .expect("two ancestors above compiler crate")
 }
 
-/// Run the full lower-link-inject pipeline for a given example/schedule.
+/// Run the full lower-link-inject pipeline for a given example/schedule
+/// under the **strict-A** halo-inference variant.
+///
 /// Mirrors `sidecar_buffer.rs::lower` but includes the three partition
-/// passes + `apply_halo_inference` so the sidecar is populated as the
-/// driver does it.
+/// passes + `fn apply_halo_inference` (search for that name in
+/// `nucleus/nucleus-compiler/src/passes/halo_inference.rs`) — the
+/// strict-A entry point that fails fast on any non-affine / strided /
+/// data-dependent index. Use this helper for tests that pin halo_widths
+/// under strict-A error semantics (the in-module strict-tests at the
+/// top of this file + serde-roundtrip pins).
+///
+/// **Note** (TASK-0309 cycle 128): the driver does NOT use strict-A —
+/// it uses partition-aware-B (`fn apply_halo_inference_partition_aware`).
+/// For tests that pin halo_widths or downstream transfer_inject
+/// behaviour on REAL distributed schedules and should mirror the
+/// driver's pipeline, use `lower_partition_aware` below. See the
+/// module-doc section "## Strict vs advisory vs partition-policy-aware
+/// entry points" in `halo_inference.rs` for the three-entry-point
+/// contract.
 fn lower(
     ex_rel: &str,
     sched_rel: &str,
@@ -63,6 +78,53 @@ fn lower(
     let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
     let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
     let acfg = apply_halo_inference(&linked, acfg).expect("halo_inference");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg);
+    (linked, acfg)
+}
+
+/// Driver-aligned sibling of `lower` (TASK-0309): mirrors the
+/// production driver's pipeline, which calls
+/// `fn apply_halo_inference_partition_aware` (search for that name in
+/// `nucleus/nucleus-compiler/src/passes/halo_inference.rs`) instead of
+/// strict-A `apply_halo_inference`.
+///
+/// Use this helper for tests that pin halo_widths VALUES or downstream
+/// transfer_inject behaviour on REAL distributed schedules — they
+/// should exercise the SAME pipeline the driver does, so a future
+/// regression visible only under partition-aware-B does not slip
+/// through. See the module-doc section "## Strict vs advisory vs
+/// partition-policy-aware entry points" in `halo_inference.rs` for the
+/// three-entry-point contract: strict-A fails fast; advisory collects
+/// every typed error and proceeds; partition-aware-B is fatal only
+/// when ANY iv in the enclosing-loop scope of the typed error carries
+/// a Partition directive, otherwise the error is recorded in an
+/// advisory vector and lowering proceeds.
+///
+/// The advisory error vector is discarded (`_advisory_errors`) because
+/// every shipped distributed fixture today is fully affine — both
+/// variants agree on the halo_widths map. The split exists to defend
+/// against future M6+ schedules that would diverge.
+fn lower_partition_aware(
+    ex_rel: &str,
+    sched_rel: &str,
+) -> (nucleus_compiler::link::LinkedIR, nucleus_compiler::ACFG) {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(ex_rel);
+    let algo_src = fs::read_to_string(ex.join("prog.algo.nuc")).expect("read algo");
+    let sched_src = fs::read_to_string(ex.join(sched_rel)).expect("read sched");
+
+    let algo_ir = lower_algo(&parse_algo(&algo_src).expect("parse_algo")).expect("lower_algo");
+    let sched_ir =
+        lower_sched(&parse_sched(&sched_src).expect("parse_sched")).expect("lower_sched");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = apply_block_transforms(&linked, acfg).expect("block_transforms");
+    let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
+    let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
+    let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
+    let (acfg, _advisory_errors) = apply_halo_inference_partition_aware(&linked, acfg)
+        .expect("halo_inference_partition_aware");
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg);
     (linked, acfg)
@@ -606,7 +668,8 @@ fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
     // existing `.unwrap_or(0)` contract-form check). The sentinel
     // closes the vacuous-pass arm at the contract boundary without
     // coupling THIS narrative pin to the explicit-0 representation.
-    let (_linked, acfg) = lower("06-separable-filter", "schedules/distributed.sched.nuc");
+    let (_linked, acfg) =
+        lower_partition_aware("06-separable-filter", "schedules/distributed.sched.nuc");
 
     let hblur_id = *acfg
         .name_kernels
@@ -671,8 +734,9 @@ fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
 // more load-bearing halo-narrative claims that the cycle-119 architect
 // review identified as structurally identical to TASK-0299's narrative
 // but not yet covered by a structural test. Both use the same idioms
-// (real-file load via the `lower()` helper, .unwrap_or(0) per the
-// halo_inference contract degree of freedom).
+// (real-file load via the driver-aligned `lower_partition_aware()`
+// helper — TASK-0309 cycle 128; .unwrap_or(0) per the halo_inference
+// contract degree of freedom).
 //
 // Defends against feedback-silent-sibling-defect — pinning the narrative
 // at ONE site (TASK-0299) while leaving structurally-identical
@@ -718,7 +782,7 @@ fn task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one() {
     // contract-form-independent BY CONSTRUCTION — no vacuous-pass arm
     // here (unlike the `== 0` pins in task0299 / task0303_07, which
     // DO admit vacuous-pass under silent-skip).
-    let (_linked, acfg) = lower("05-stencil", "schedules/distributed-2d.sched.nuc");
+    let (_linked, acfg) = lower_partition_aware("05-stencil", "schedules/distributed-2d.sched.nuc");
 
     let blur3_id = *acfg.name_kernels.get("blur3").expect("blur3 in ACFG");
     let y_iv = *acfg.name_iter_vars.get("y").expect("y in ACFG");
@@ -806,7 +870,7 @@ fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
     // doesn't synthesise for matmul today, and bit-identical would
     // break. This test catches the FIRST failure (the narrative lie) at
     // halo-inference time, not at e2e-byte time.
-    let (_linked, acfg) = lower("07-matmul", "schedules/distributed.sched.nuc");
+    let (_linked, acfg) = lower_partition_aware("07-matmul", "schedules/distributed.sched.nuc");
 
     let madd_id = *acfg.name_kernels.get("madd").expect("madd in ACFG");
     let i_iv = *acfg.name_iter_vars.get("i").expect("i in ACFG");
@@ -862,10 +926,12 @@ fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
 // values would slip past task0299_06 + task0303_05 and surface only
 // as wrong e2e bytes.
 //
-// Idiom delta from task0299_* / task0303_*: same `lower()` helper
-// (already runs `inject_transfers` at line 66 of this file) but the
-// assertion target is `acfg.root.collect_xfers()` (XferPlaceholder
-// stream) — Option A from TASK-0304's spec.
+// Idiom delta from task0299_* / task0303_*: same driver-aligned
+// `lower_partition_aware()` helper (TASK-0309 cycle 128 — runs
+// `inject_transfers` after the partition-aware halo inference; see the
+// helper definition at the top of this file) but the assertion target
+// is `acfg.root.collect_xfers()` (XferPlaceholder stream) — Option A
+// from TASK-0304's spec.
 // ----------------------------------------------------------------------
 
 #[test]
@@ -888,7 +954,7 @@ fn task0304_06_separable_filter_distributed_transfer_inject_no_halo_extension_on
     // partition=rows), so this test does NOT hardcode the band
     // arithmetic — it stays robust to TASK-0262 remainder-policy
     // changes and band-count changes.
-    let (_linked, acfg) = lower(
+    let (_linked, acfg) = lower_partition_aware(
         "06-separable-filter",
         "schedules/distributed.sched.nuc",
     );
@@ -989,7 +1055,7 @@ fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_
     // Mirror narrative-pin for task0303_05 (which pins the
     // halo_widths value at the ACFG-sidecar input layer); together
     // they cover both ends of the halo→tile-extension data flow.
-    let (_linked, acfg) = lower("05-stencil", "schedules/distributed.sched.nuc");
+    let (_linked, acfg) = lower_partition_aware("05-stencil", "schedules/distributed.sched.nuc");
 
     let img_in_id = *acfg
         .name_data
@@ -1134,7 +1200,7 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
     // partition=blocks2d), so the test stays robust under future
     // partition-arithmetic changes (band shape, divisibility policy)
     // — same as the cycle-124 task0304_* pattern.
-    let (_linked, acfg) = lower("05-stencil", "schedules/distributed-2d.sched.nuc");
+    let (_linked, acfg) = lower_partition_aware("05-stencil", "schedules/distributed-2d.sched.nuc");
 
     let img_in_id = *acfg
         .name_data
@@ -1301,7 +1367,7 @@ fn task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i() {
     // would expand by 0 → no change (early-out at transfer_inject.rs
     // :~2188 returns `range.clone()`). The strong band-equality
     // assertion holds.
-    let (_linked, acfg) = lower("07-matmul", "schedules/distributed.sched.nuc");
+    let (_linked, acfg) = lower_partition_aware("07-matmul", "schedules/distributed.sched.nuc");
 
     let a_id = *acfg.name_data.get("a").expect("a in ACFG name_data");
     let i_iv = *acfg.name_iter_vars.get("i").expect("i in ACFG name_iter_vars");
