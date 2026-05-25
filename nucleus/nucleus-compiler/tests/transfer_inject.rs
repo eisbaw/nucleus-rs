@@ -3763,11 +3763,16 @@ fn task0328_ac2_negative_no_partition_anywhere() {
 /// TASK-0328 cycle-154 architect P2.2 fold-back: sibling positive case
 /// where the consumer at top-level reads with a non-partition iv (not
 /// a constant). The base positive test (`tmp[5][3]`) exercised the
-/// IntLit branch of `ident_iv_in_set` (returns None for non-Ident
-/// expressions). This sibling exercises the OTHER branch: a bare Ident
-/// referencing an iv that is NOT in `partition_iter_vars` — the iv
-/// resolves to Some(iv_id) but is_partition predicate fails, so
-/// `ident_iv_in_set` returns None.
+/// IntLit branch of the pre-cycle-156 `ident_iv_in_set` (returns None
+/// for non-Ident expressions). This sibling exercises the OTHER branch:
+/// a bare Ident referencing an iv that is NOT in `partition_iter_vars`
+/// — the iv resolves to Some(iv_id) but is_partition predicate fails,
+/// so the pre-cycle-156 `ident_iv_in_set` returned None. As of
+/// cycle-156 (TASK-0326, commit 3a98e20) the helper has been replaced
+/// by `expr_references_partition_iv` + structural-equality matching;
+/// both branches converge under the new rule (axis is treated as
+/// whole-array because no partition iv is referenced in the producer
+/// index), so the test's semantics are preserved.
 ///
 /// Producer writes `tmp[hy][hx]` with `hy : partition=rows` on
 /// {w0..w3}. Consumer at top-level wraps in `for k : 0..16 { for j :

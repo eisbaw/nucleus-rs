@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 14:19'
-updated_date: '2026-05-25 21:34'
+updated_date: '2026-05-25 21:45'
 labels:
   - compiler
   - transfer_inject
@@ -137,6 +137,38 @@ tests/transfer_inject.rs L4257–5005, three new tests:
 1. Structural-equality is strictly stronger than semantic equivalence. If a future kernel writes `tmp[hy + 0][hx]` and reads `tmp[hy][hx]`, structural-equality rejects despite the values being equal at every iv. Acceptable: fail-loud, user refactors to bare-Ident or files a follow-up.
 2. The comment block's halo-aware escape valve is documentation only. No tracker task filed (no in-tree trigger). If a future schedule needs it, file the follow-up then.
 3. The cycle-156 tightening only constrains the consumer's structural shape. It does NOT verify the producer's write actually covers the consumer's read range when the iv values diverge over time (e.g. a reduction across hy*2 and a partial read of hy*2). That is out of scope for this validator — handled by other passes.
+
+## Cycle 156b — review-gate fold-back addendum
+
+Both review agents returned GO on cycle 156 (commit 3a98e20, applied against baseline 356b843=cycle-155b). No P1/P2 findings; five P3 forward-carry items.
+
+Source citation per cycle-155b hygiene rule (FIRST FIRING of the new rule applied retroactively, per architect P3.1 review observation): baseline e2e 112/96/0/16/0 from commit **356b843** (TASK-0333 cycle-155b closure); cycle-156 measured baseline 112/96/0/16/0 byte-identical across two qa-test-runner samples in the review-gate run.
+
+Applied in-thread (cycle-156b):
+
+- **qa P3 / architect P3.2 (actionable)**: tense-marked the two pure-history `ident_iv_in_set` docstring references at `nucleus/nucleus-compiler/tests/transfer_inject.rs` L3766+L3770 with explicit `pre-cycle-156` framing + a forward-reference to `expr_references_partition_iv` (cycle-156, commit 3a98e20). The other two references at L4259 and L4513 are intentional cycle-156 transition markers and were left as-is per architect's read.
+- **architect P3.1**: cycle-155b hygiene rule (cite source commit hash, not bare 'cycle-155b' text) applied here retroactively in this addendum. First firing of the rule; no further fold-back possible on the cycle-156 commit message itself per project policy (don't amend landed commits). Forward-carried as a discipline anchor for future cycles.
+
+Accepted as-is (no fold-back required):
+
+- **architect P3.3**: no halo-aware-escape-valve tracker task filed — consistent with cycle-155b architect P3.1 grep-anchor precedent. No in-tree trigger.
+- **architect P3.4**: negative-test assertions count Push pairs (12) rather than message substring. The classifier is private; exposing it test-only is a larger refactor. Acceptable.
+- **architect P3.5**: over-rejection risk on syntactic-but-not-semantic differences (`hy*2` vs `2*hy`, `hy+0` vs `hy`). Verified by architect against `algo/lower.rs` L1140-1182: NO upstream constant-folding/canonicalisation, so the over-rejection is reachable in principle. No in-tree trigger today. Fail-loud bias dominates; user can refactor or file follow-up when triggered.
+
+### Cycle-156b gate
+
+- `just test`: 902/0/3 (preserved across docstring-only edit).
+- `just clippy`: zero warnings.
+- `just e2e`: 112/96/0/16/0 preserved (single sample post-edit; reviewer verified non-flake × 2 in cycle 156).
+
+### Final closure
+
+TASK-0326 stays Done. Validator + emit-site classifier tightened from bare-Ident to recursive-tree-walk + structural-equality. Bare-Ident path subsumed and removed. Three new fixtures pin the new behaviour. Halo-aware escape valve documented in-code as future work; no tracker task filed pending in-tree trigger.
+
+### Forward-carried lessons (for future implementers)
+
+- The cycle-155b new hygiene rule (cite source commit hash for baseline citations) was missed in the cycle-156 implementer brief AND the cycle-156 commit message. First-firing. The orchestrator's own brief discipline needs the same hygiene applied at brief-write time.
+- Architect's empirical verification step (read `algo/lower.rs` to confirm no upstream constant-folding) was a load-bearing soundness check the orchestrator's brief did NOT explicitly request. Pattern: for tightening-the-discriminator-style cycles, the brief should include the upstream-canonicalisation question as an explicit verification step.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
