@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 04:05'
-updated_date: '2026-05-25 04:33'
+updated_date: '2026-05-25 05:43'
 labels:
   - M5
   - compiler
@@ -34,8 +34,8 @@ This means a future walker regression that silently emits NO entries for a bare-
    ```
    assert_eq!(acfg.halo_widths.get(&k_id).and_then(|m| m.get(&iv_id)).copied(), Some(0));
    ```
-2. The pin must fail LOUD if the production `record_halo` walker (at the `per_iv.entry(iv).or_insert(0)` line in halo_inference.rs) is silently regressed to omit entries for inspected bare-iv accesses.
-3. Update the cross-references in halo_inference.rs:53-71 and sidecar_halo.rs's task0303_07 comment to point at the new contract-form sentinel test (replacing the current `record_halo` text search hint).
+2. The pin must fail LOUD if the production the halo-entry sink inside `classify_index` (search for `per_iv.entry(iv).or_insert(0)` in halo_inference.rs) is silently regressed to omit entries for inspected bare-iv accesses.
+3. Update the cross-references in the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") and sidecar_halo.rs's task0303_07 comment to point at the new contract-form sentinel test (replacing the current "halo-entry sink" text search hint (`per_iv.entry(iv).or_insert(0)` in halo_inference.rs)).
 
 ## Honest scope
 
@@ -44,9 +44,9 @@ LOW priority. The vacuous-pass risk is judged unlikely (today's walker DOES alwa
 ## Cross-references
 
 - TASK-0305 (cycle 122) — the Option B decision this defends.
-- halo_inference.rs:53-71 — the contract paragraph (Option B project decision marker).
-- halo_inference.rs:848 / `record_halo` — the emit site whose silent-skip the pin would catch.
-- halo_inference.rs:1199 — `no_halo_bare_iv` in-module test (the location where the pin should land).
+- the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") — the contract paragraph (Option B project decision marker).
+- the halo-entry sink (`per_iv.entry(iv).or_insert(0)` inside `classify_index` in halo_inference.rs) — the emit site whose silent-skip the pin would catch.
+- `fn no_halo_bare_iv` symbolic anchor in halo_inference.rs — in-module test (the location where the pin should land).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Implementation Plan
@@ -60,7 +60,7 @@ The TASK-0307 AC#3 wording 'replacing the current record_halo text search hint' 
 
 STEPS:
 1. Edit halo_inference.rs:1201 no_halo_bare_iv test — add ONE-LINE structural assert that copied() == Some(0); label it cycle-123 TASK-0307 P2 sentinel; the assert message names the protection (vacuous-pass arm).
-2. Edit halo_inference.rs:53-71 contract paragraph — add a sentence pointing to the sentinel test as defence-in-depth for the production sink.
+2. Edit the "TASK-0305 cycle-122 project decision (Option B)" contract paragraph in halo_inference.rs (search for "absent ≡ explicit-0") — add a sentence pointing to the sentinel test as defence-in-depth for the production sink.
 3. Edit sidecar_halo.rs task0303_07 docstring (lines ~778-780) — update the predictive 'cycle-122 architect filed TASK-0307 as a structural sentinel' to the past-tense LANDED form, name the in-module test by symbolic anchor.
 4. Run the cheap gate: nix develop --command bash -c 'just build && just clippy && just test && just test-release && just e2e' — pre-mortem any noisy failures and triage.
 5. Parallel review gate (qa-test-runner + mped-architect, READ-ONLY).

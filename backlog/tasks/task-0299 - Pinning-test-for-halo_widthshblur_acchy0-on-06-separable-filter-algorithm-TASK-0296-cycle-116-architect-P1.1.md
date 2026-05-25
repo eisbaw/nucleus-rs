@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-25 01:18'
-updated_date: '2026-05-25 02:45'
+updated_date: '2026-05-25 05:41'
 labels:
   - M5
   - compiler
@@ -51,7 +51,7 @@ Added structural pinning test in nucleus/nucleus-compiler/tests/sidecar_halo.rs 
 2. halo_widths[vblur_acc][vy] == 0 — mirror property on the vertical pass (pass 2 stays on host today per HONEST SCOPE, but the algorithm claim is symmetric).
 3. Defensive max-halo across the WHOLE algorithm == 0 — catches a regression even if the named lookups move.
 
-Contract degree of freedom honoured: the existing halo_inference contract (halo_inference.rs:53-57) permits explicit 0-width entry OR omission; the test treats both as 'halo == 0'. The only failure mode it pins is 'halo > 0'. Robust to the implementation toggling between explicit and omitted forms (which is allowed today).
+Contract degree of freedom honoured: the existing halo_inference contract (the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0")) permits explicit 0-width entry OR omission; the test treats both as 'halo == 0'. The only failure mode it pins is 'halo > 0'. Robust to the implementation toggling between explicit and omitted forms (which is allowed today).
 
 If a future kernel-surface change introduces a non-zero hy offset (e.g. in_arr[hy-1][hk] for a vertical-blur fold), this test fails LOUD and forces distributed.sched.nuc:19-21 to be updated in the same commit. Defends against the feedback-comment-doc-lie-recurring pattern (a sibling pin to TASK-0299's named class).
 

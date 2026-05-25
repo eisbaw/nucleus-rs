@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-25 02:45'
-updated_date: '2026-05-25 03:02'
+updated_date: '2026-05-25 05:41'
 labels:
   - M5
   - compiler
@@ -40,7 +40,7 @@ Header claims 'no halo, no cross-worker carry, no reduction across i'. Equivalen
 
 2. Add a second test that loads 07-matmul/prog.algo.nuc + schedules/distributed.sched.nuc and asserts the max halo across the i-axis is 0 (the load-bearing claim from distributed.sched.nuc:25). Defensive: also assert the per-kernel max halo across all axes that an inspection of matmul's algorithm should yield 0 (matmul_acc(c[i][j], a[i][k], b[k][j], j, k) reads only at offset 0).
 
-3. Both tests use .unwrap_or(0) on the absent-or-explicit-0 contract degree of freedom, per the TASK-0299 precedent and halo_inference.rs:53-57.
+3. Both tests use .unwrap_or(0) on the absent-or-explicit-0 contract degree of freedom, per the TASK-0299 precedent and the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0").
 
 4. Test docstrings name the specific schedule-header line they pin and explain the failure mode (a future kernel-surface change introducing a non-zero offset would fail loud, defending against feedback-comment-doc-lie-recurring on the sibling narratives).
 
@@ -72,7 +72,7 @@ Added two structural pinning tests in nucleus/nucleus-compiler/tests/sidecar_hal
    - Asserts halo_widths[madd][i] == 0 (the literal i-axis half of the distributed.sched.nuc:25-26 claim) AND defensive max-halo across the whole algorithm == 0.
    - Defends against feedback-comment-doc-lie-recurring on this sibling narrative.
 
-Both tests use .unwrap_or(0) per the halo_inference contract degree of freedom (explicit-0 OR omission permitted; see halo_inference.rs:53-57 + cycle-119 TASK-0299 precedent). Both pin behaviour against future kernel-surface changes that would silently lie at the schedule comment while only e2e bytes catch the wrong output.
+Both tests use .unwrap_or(0) per the halo_inference contract degree of freedom (explicit-0 OR omission permitted; see the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") + cycle-119 TASK-0299 precedent). Both pin behaviour against future kernel-surface changes that would silently lie at the schedule comment while only e2e bytes catch the wrong output.
 
 Test runs:
 - sidecar_halo file: 12 passed (10 pre-cycle-120 + 2 new), 0 failed.
