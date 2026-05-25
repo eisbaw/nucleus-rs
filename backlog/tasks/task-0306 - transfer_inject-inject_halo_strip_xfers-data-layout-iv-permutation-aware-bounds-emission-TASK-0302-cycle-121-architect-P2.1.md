@@ -3,11 +3,11 @@ id: TASK-0306
 title: >-
   transfer_inject + inject_halo_strip_xfers: data-layout / iv-permutation-aware
   bounds emission (TASK-0302 cycle-121 architect P2.1)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 03:55'
-updated_date: '2026-05-25 09:18'
+updated_date: '2026-05-25 09:19'
 labels:
   - M6
   - compiler
@@ -128,4 +128,37 @@ mped-architect: GO. No P1.
 - P3-4 closed in-thread: silent-sibling-audit doc-comment at transfer_inject.rs:1697-1720 now explicitly names the two helpers' distinct roles (REGULAR-XFER TILE REWRITE vs HALO-STRIP PUSH/WAIT SYNTHESIS) so the next implementer can pick the right one.
 
 Honest scope reminder: the cycle-133 fix is a defensive improvement against latent shapes (inner-axis-leading data layout, non-prefix data layout) that NO shipped schedule constructs today. The 4 closed P2/P3 in-thread + 2 filed P3 follow-ups represent the full review fold-back. e2e baseline 108/92/0/16/0 preserved bit-identical.
+
+Cycle 133 CLOSED — TASK-0306 Done.
+
+Summary of changes this cycle (across 2 commits):
+- 7f10a80 (implementation): order_halo_strip_bounds_by_data_dim helper + signature widening on inject_halo_strip_xfers + 4 N/S/W/E emit-site updates + 3 new pinning tests (task0306_ac3/ac4/ac5) + silent-sibling-audit doc update at compute_partition_bounds_with_dim_prefix's call site.
+- 8485da5 (review fold-back): in-thread close of architect P2-1 (commit-message narrative honesty correction, recorded in tracker addendum), P2-2 (helper doc tightened), P3-1 (canonical hot path no longer allocates unused clones), P3-4 (silent-sibling-audit doc-block clarified to name the two helpers' distinct roles); TASK-0315 (default-order fall-back silent-bypass guard) and TASK-0316 (backend-side wait_slice round-trip test) filed as P3 follow-ups.
+
+AC closure:
+- AC#1: inject_halo_strip_xfers now consults data_dim_iv_map via the new helper; emit-correct for both inner-axis-leading and non-prefix shapes (whole-array drop is the safe fall-back).
+- AC#2: VERIFIED already-satisfied via static inspection of compute_partition_bounds_with_dim_prefix:1937 (walks per_dim in numeric dim order, not partition nest order). HONEST-FRAMING per cycle-133 review-fold-back addendum: task0306_ac3 exercises ONLY the cycle-133 helper, not compute_partition_bounds_with_dim_prefix. Backend-side end-to-end coverage for AC#2 is now deferred to TASK-0316.
+- AC#3: task0306_ac3_inner_axis_leading_layout_emits_in_dim_order — green dev + release.
+- AC#4: task0306_ac4_non_prefix_data_layout_drops_to_whole_array — green dev + release.
+- AC#5: e2e 108/92/0/16/0 bit-identical preserved across 3 e2e runs this cycle (1 pre-commit, 2 post-commit non-flake confirmation by qa-test-runner subagent). Plus task0306_ac5_canonical_outer_leading_layout_preserves_emit_order pins the no-op-on-shipped-shape contract structurally.
+
+Gotchas / forward-carries:
+- The helper's default-order fall-back is hit by synthetic fixtures using DataflowEdge::new (empty data_in_access indices). Production callers never reach it (TASK-0150 populates indices at build_acfg). TASK-0315 hardens the observability gap.
+- The cycle-133 helper preserves the existing positive_3x3 / positive_2x2 / determinism / placement tests in halo_strip_synth.rs unchanged (they take the default-order branch).
+- AC#3 (inner-axis-leading) and AC#4 (non-prefix) tests build their fixtures via the new build_2x2_acfg_with_indexed_access helper (halo_strip_synth.rs:760+) which sets DataflowEdge.data_in_access indices to IrExpr::Ident(name) tuples resolving through ACFG.name_iter_vars.
+- The 'orchestrator-narrative-also-wrong' recurrence pattern (memory: feedback-orchestrator-narrative-also-wrong) fired on the 7f10a80 commit-message AC#2 phrasing — same pattern as TASK-0290 cycle 114b. Recorded.
+
+Final gate counts (orchestrator-direct, both commits this cycle):
+- just check / just clippy / just check-textual-replace-on-codegen / just check-include-str-coverage: OK
+- just test (dev): 862/0/3 (was 854/0/3 cycle 125 baseline; +3 task0306_* this cycle, +5 from cycles 126-132)
+- just test-release: 862/0/3 (verified by qa-test-runner read-only review subagent on commit 7f10a80)
+- just e2e: 108/92/0/16/0 (bit-identical, 3 runs across cycle)
+
+Done after parallel review gate GO.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 133 implementation landed via 2 commits (7f10a80 + 8485da5). All 5 ACs met: helper order_halo_strip_bounds_by_data_dim added + threaded into inject_halo_strip_xfers + 4 N/S/W/E emit-site updates + 3 pinning tests + bit-identical e2e 108/92/0/16/0 preserved across 3 runs. Parallel review gate (qa-test-runner + mped-architect read-only) returned GO; P2 + P3 findings folded back in-thread except 2 deferred to TASK-0315 (silent-bypass observability guard) + TASK-0316 (backend-side wait_slice round-trip test, M6-trigger-gated).
+<!-- SECTION:FINAL_SUMMARY:END -->
