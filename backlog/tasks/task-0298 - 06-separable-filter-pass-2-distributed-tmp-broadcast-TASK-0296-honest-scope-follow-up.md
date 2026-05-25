@@ -3,11 +3,11 @@ id: TASK-0298
 title: >-
   06-separable-filter pass-2 distributed: tmp broadcast (TASK-0296 honest-scope
   follow-up)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 01:12'
-updated_date: '2026-05-25 13:21'
+updated_date: '2026-05-25 19:23'
 labels:
   - M5
   - compiler
@@ -214,4 +214,55 @@ magnitude) that the read-only architect caught at review time.
 All three resolved in-thread before any implementer picks up
 TASK-0324 — the next subagent reads a correct description from
 line 1.
+
+## Cycle 152 closure (administrative, dependency-trigger satisfied)
+
+TASK-0324 AC#4 LANDED cycle 149 — full bit-identical coverage of
+06-separable-filter/distributed2 across all 4 tier-1 backends:
+
+- pthreads-sync (cycle 147)
+- pthreads-async (cycle 147)
+- mp-tcp-bufsync (cycle 148 — host-relay landed)
+- mp-tcp-event (cycle 149 — host-relay landed)
+
+e2e baseline (cycle 149): 112/96/0/16/0. distributed2.sched.nuc no
+longer carries any [[skip]] entries.
+
+Per this task's cycle-143 AC#3 disposition ("kept In Progress as
+the smoke-test target for TASK-0324; closes when TASK-0324's AC#4
+lands the bit-identical e2e cell"), the closure trigger is now
+satisfied.
+
+### What this task accomplished
+
+The cycle-143 investigation (recorded above) was the load-bearing
+contribution: identified that transfer_inject silently elides the
+producer-set == consumer-set + reader-iv-exceeds-producer-tile
+shape, filed TASK-0324 with runtime evidence (cmp byte 129 / row 2
+divergence) + a diagnose-first AC, retained the
+distributed2.sched.nuc fixture as the smoke-test target. The
+silent-miscompile defect was caught at investigation time, not at
+M5 milestone validation — a CYCLE-119 PRECEDENT of empirical-test
+discipline applied to a candidate-promotion AC.
+
+### Forward-carries to future cycles
+
+- TASK-0324 cycle 145 generalized the validator from set-equality
+  to non-empty-intersection (lifted both line-2501 whole-set + the
+  per-element cartesian fan-out skip in one predicate).
+- TASK-0327 cycle 148/149 unblocked the mp-tcp backends via
+  synchronous host-relay (cycle 148: bufsync; cycle 149:
+  mp-tcp-event sibling).
+- TASK-0332 cycle 150/151 surfaced the wait-before-push host-relay
+  deadlock as a NEW architectural follow-up (defensive ContractGap
+  landed cycle 151; AC#1 threaded relay remains future work).
+
+### Closure status
+
+**TASK-0298 status: DONE.** All ACs accounted for: AC#1 (Done
+cycle 143), AC#2 (N/A — broadcast did not work as-is), AC#3 (Done
+cycle 143 — TASK-0324 filed), AC#4 (Done cycle 152 — naming +
+placement decision: distributed2.sched.nuc retained at its cycle-
+143 location, promoted to e2e-matrix.toml cycle 149 across all 4
+tier-1 backends per TASK-0327 AC#3).
 <!-- SECTION:NOTES:END -->

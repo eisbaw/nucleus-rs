@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 00:27'
-updated_date: '2026-05-25 11:54'
+updated_date: '2026-05-25 19:24'
 labels:
   - M5
   - compiler
@@ -105,4 +105,34 @@ Architect read-only review (GO with one P3 finding) caught a wording-precision g
 Neither closes the gap (the AC#3 conclusion stands). But the methodology lesson is the cycle-138 silent-sibling lesson firing again: **scope your grep across sibling test files, not just the one named in the task description**. Forward-carry: when auditing test coverage for a backend-common helper, grep across ALL `nucleus/backend-common/tests/*.rs`, not just the file the task mentions.
 
 This sibling-sweep gap matches the cycle-128 meta-rule ("the next cycle following a defect-class sweep is the HIGHEST-RISK cycle for that exact defect class") — cycle 138 closed a silent-sibling listing defect in transfer_inject.rs, and cycle 139 re-introduced the SAME class on a different artifact (test files instead of code sites). The cycle-128 risk model is now validated for the THIRD time in two sessions.
+
+## Cycle 150 update (TASK-0331 empirical test outcome): AC#2 trigger DECOMPOSED, not lifted
+
+Cycle 149 closed TASK-0327 (the DATA-arm w↔w gap on mp-tcp-event via host-relay). TASK-0331 cycle 150 empirically tested whether AC#2's trigger ("When TASK-0175 lands w↔w mesh on mp-tcp-event, promote 05-stencil/distributed-2d × mp-tcp-event from [[skip]] to [[required]]") was now satisfied.
+
+**Empirical outcome**: PROMOTION FAILED at runtime (32.4s deadlock; FAIL/run shape — workers exit 0 + run.sh reports failure, not bit-identical mismatch).
+
+**Root cause** (verified by inspecting the cycle-150 e2e scratch dir's emitted host.rs + w0.rs): cycle-149's synchronous host-relay's sequential ordering creates a circular seq dependency on schedule shapes where workers' first top-level w2w event is a Wait (before any Push). The 2x2-grid halo-exchange shape has workers waiting for cross-worker halo strips BEFORE pushing their own — the deadlock pattern. The DATA-arm transport gap was lifted, but a higher-level architectural limitation in the relay design surfaced.
+
+**Filed as TASK-0332** (Medium): "mp-tcp-event host-relay deadlocks on wait-before-push schedule shapes". AC#1 (threaded or interleaved host-relay) is the architectural fix; AC#2 (defensive ContractGap detecting the hazard at Plan::build) landed cycle 151 paired across both backends.
+
+### AC#2 status update (cycle 151)
+
+AC#2's trigger condition "TASK-0175 (mesh) landed" has been decomposed: TASK-0175's DATA-arm = TASK-0327 (Done cycle 149); TASK-0175's CTRL-arm = TASK-0329 (host-mediated barrier mediation, still gated); the host-relay's wait-before-push architectural limitation = TASK-0332 (filed cycle 150).
+
+For 05-stencil/distributed-2d × mp-tcp-event specifically:
+- Capability surface (async + buffer + notify=event): MET by mp-tcp-event.
+- DATA-arm w↔w transport: LIFTED by TASK-0327 cycle 149.
+- CTRL-arm host-excluding barrier: NOT TRIGGERED by this schedule (the host-inclusive {host,w0..w3} barrier is the relevant one).
+- Wait-before-push host-relay hazard: BLOCKS (TASK-0332). Cycle-151 defensive ContractGap now FAILS LOUD at codegen instead of deadlocking at runtime.
+
+When TASK-0332 AC#1 (threaded / interleaved host-relay) lands, retry the promotion empirically (cycle 119 precedent for milestone-close empirical-verification).
+
+### AC#1 status (unchanged)
+
+AC#1's trigger ("new partition=blocks2d schedule capability-compatible with pthreads-sync OR mp-tcp-bufsync") remains unmet — no such schedule has been filed.
+
+### Honest status
+
+TASK-0295 stays In Progress. AC#1 + AC#2 are still trigger-gated; AC#3 done cycle 139. The cycle-149/150/151 finding (TASK-0332) is the SECOND-LAYER blocker for AC#2 that was masked behind TASK-0175 in this task's original framing. The cycle-150 empirical promotion + revert + TASK-0332 filing precedent should be applied to ANY future cell's promotion candidacy — prose claim of "blocker lifted" is insufficient without an empirical e2e PASS.
 <!-- SECTION:NOTES:END -->
