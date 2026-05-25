@@ -160,7 +160,7 @@ pub fn lower_for_test(
         acfg
     };
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let per_worker = acfg_to_events(&acfg);
     let per_worker = if opts.inject_check_frames {

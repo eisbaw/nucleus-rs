@@ -277,7 +277,7 @@ fn positive_3x3_halo_1_per_worker_pair_counts() {
     );
     let linked = empty_linked();
 
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Pin the per-worker pair counts.
     assert_eq!(count_pairs_for_worker(&after, WorkerId(1)), 2, "w1 (0,0) corner");
@@ -310,7 +310,7 @@ fn positive_3x3_halo_1_per_worker_pair_counts() {
 fn positive_3x3_halo_1_center_worker_w5_pair_shapes() {
     let acfg = build_2d_acfg_with_partition_and_halo(3, 3, 0..30, 0..30, 1, 1);
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let outer_iv = IterVar(7);
     let inner_iv = IterVar(8);
@@ -359,7 +359,7 @@ fn positive_3x3_halo_1_center_worker_w5_pair_shapes() {
 fn positive_2x2_halo_1_corner_pair_shapes() {
     let acfg = build_2d_acfg_with_partition_and_halo(2, 2, 0..16, 0..16, 1, 1);
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let outer_iv = IterVar(7);
     let inner_iv = IterVar(8);
@@ -418,7 +418,7 @@ fn empty_partition_pairs_emits_zero_halo_strip_xfers() {
     acfg.grid_shape_for_outer_iv.clear();
     let linked = empty_linked();
 
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Zero Xfers from the synthesis path. (The non-halo-strip paths
     // in inject_transfers also emit zero because data_producers is
@@ -441,8 +441,8 @@ fn empty_partition_pairs_emits_zero_halo_strip_xfers() {
 fn halo_strip_synthesis_is_deterministic_across_runs() {
     let acfg = build_2d_acfg_with_partition_and_halo(3, 3, 0..30, 0..30, 1, 1);
     let linked = empty_linked();
-    let a = inject_transfers(&linked, acfg.clone());
-    let b = inject_transfers(&linked, acfg);
+    let a = inject_transfers(&linked, acfg.clone()).expect("inject_transfers");
+    let b = inject_transfers(&linked, acfg).expect("inject_transfers");
     assert_eq!(a, b, "two runs must produce identical ACFG");
 }
 
@@ -585,7 +585,7 @@ fn positive_placement_after_producing_op() {
     };
 
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Pin: root is a Sequence with the producer at index 0, the
     // synthesised Xfers at indices 1..=N (where N = number of
@@ -845,7 +845,7 @@ fn task0306_ac3_inner_axis_leading_layout_emits_in_dim_order() {
         &[],
     );
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let outer_iv = IterVar(7);
     let inner_iv = IterVar(8);
@@ -929,7 +929,7 @@ fn task0306_ac4_non_prefix_data_layout_drops_to_whole_array() {
         &[("k", k_iv)],
     );
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let data = DataId(99);
 
@@ -974,7 +974,7 @@ fn task0306_ac5_canonical_outer_leading_layout_preserves_emit_order() {
         &[],
     );
     let linked = empty_linked();
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let outer_iv = IterVar(7);
     let inner_iv = IterVar(8);

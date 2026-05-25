@@ -488,7 +488,7 @@ fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let linked = link::link(algo, sched).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
-    inject_transfers(&linked, acfg)
+    inject_transfers(&linked, acfg).expect("inject_transfers")
 }
 
 /// Render a (DataId, indices) slice the way a backend would read it
@@ -664,7 +664,7 @@ fn blocked_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let acfg = nucleus_compiler::apply_block_transforms(&linked, acfg)
         .expect("block transform (non-divisible block=4 must NOT reject post-TASK-0142)");
     let acfg = inject_syncs(acfg);
-    inject_transfers(&linked, acfg)
+    inject_transfers(&linked, acfg).expect("inject_transfers")
 }
 
 /// Collect, in order, every top-level (and Sequence-nested but NOT
@@ -871,7 +871,7 @@ fn pipeline_to_events(
     let linked = link::link(algo, sched).expect("link");
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let name_workers = acfg.name_workers.clone();
     // Route through `petri_to_events` so the wrapper is exercised on
     // a real input too.
@@ -1032,7 +1032,7 @@ fn full_pipeline_with_linked(algo_rel: &str, sched_rel: &str) -> (link::LinkedIR
     let linked = link::link(algo, sched).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     (linked, acfg)
 }
 

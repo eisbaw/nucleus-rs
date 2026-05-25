@@ -752,7 +752,7 @@ fn transfer_fanout_composes_with_partition_sidecar() {
         data_consumers: Default::default(),
     };
 
-    let after = inject_transfers(&linked, acfg);
+    let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // After the fan-out, count Wait nodes whose tile == the expected
     // per-worker slice for their dst.

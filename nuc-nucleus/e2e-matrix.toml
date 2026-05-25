@@ -1264,42 +1264,47 @@ milestone = "M5"
 # Investigation reproducer for TASK-0324. The schedule places BOTH
 # passes (hblur_acc, vblur_acc) on { w0..w3 } with partition=rows on
 # both outer loops (hy, vy). Pass 2's vm sweep reads ALL rows of tmp;
-# each worker has only its own hy row-band populated. transfer_inject
-# silently elides the required cross-worker tmp transfers — 0 slots
-# allocated for tmp in the emitted main.rs — and the runtime produces
-# wrong output starting at row 2 (the first row whose vertical taps
-# reach outside w0's row-band 0..4). All 4 tier-1 backends fail
-# identically at byte 128, confirming the defect lives in the shared
-# transfer_inject compiler pass, not in any backend. Filed as
-# TASK-0324 (Medium). Cells skipped here until the diagnose-first
-# guard (AC#2) + cross-worker tmp codegen (AC#3) land; reproducer kept
-# at `nuc-nucleus/examples/06-separable-filter/schedules/
-# distributed2.sched.nuc` with a SILENT MISCOMPILE warning header.
+# each worker has only its own hy row-band populated. PRE-CYCLE-144:
+# transfer_inject silently elided the required cross-worker tmp
+# transfers — 0 slots allocated for tmp in the emitted main.rs — and
+# the runtime produced wrong output starting at row 2 (the first row
+# whose vertical taps reach outside w0's row-band 0..4). All 4 tier-1
+# backends failed identically at byte 128. POST-CYCLE-144: TASK-0324
+# AC#0 (doc-lie fix) + AC#1 (axis-by-axis discriminator against the
+# producer's data_out_access) + AC#2 (front-loaded fail-loud guard
+# `check_no_silent_elision_risk` in transfer_inject) + AC#5 (positive
+# + negative fixtures in tests/transfer_inject.rs) have landed. The
+# silent-miscompile path is now a typed `TransferInjectError::
+# SameSetSilentElisionRisk` compile error rather than wrong output.
+# AC#3 (cross-worker tmp codegen — N-to-N broadcast-of-gather) +
+# AC#4 (matrix promotion to [[required]]) remain. Reproducer kept at
+# `nuc-nucleus/examples/06-separable-filter/schedules/
+# distributed2.sched.nuc` for the eventual AC#3 cycle.
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "pthreads-sync"
-reason   = "TASK-0324: transfer_inject silent elision when producer-set == consumer-set + reader-iv exceeds producer tile. Kept as smoke-test reproducer; remove this skip + add [[required]] entries once TASK-0324 lands the diagnose-first guard (AC#2) and the cross-worker tmp codegen (AC#3)."
+reason   = "TASK-0324 AC#3 not yet landed: cycle-144 diagnose-first guard (AC#2) now rejects this shape with a typed TransferInjectError::SameSetSilentElisionRisk compile error (replacing the pre-cycle-144 silent miscompile). Remove this skip + add [[required]] entries once AC#3 emits the cross-worker tmp codegen (N-to-N broadcast-of-gather)."
 milestone = "M5"
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0324: transfer_inject silent elision (same shared-compiler-pass defect as the pthreads-sync sibling skip above). Failure mode is identical across all 4 tier-1 backends — first byte diverges at offset 128 — confirming the defect lives in transfer_inject, not in any backend."
+reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path — the AC#2 guard fires before any backend codegen. Failure is now a typed compile error rather than silent wrong output."
 milestone = "M5"
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "pthreads-async"
-reason   = "TASK-0324: transfer_inject silent elision (shared-compiler-pass defect). See pthreads-sync sibling skip above."
+reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path. See pthreads-sync sibling skip above."
 milestone = "M5"
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-event"
-reason   = "TASK-0324: transfer_inject silent elision (shared-compiler-pass defect). See pthreads-sync sibling skip above."
+reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path. See pthreads-sync sibling skip above."
 milestone = "M5"

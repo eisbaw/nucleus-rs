@@ -228,7 +228,7 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // ---- Assertion 1: exactly one Wait globally.
     // Before hoisting we would have seen one Wait per intra-tile
@@ -365,7 +365,7 @@ fn loop_invariant_wait_hoists_out_of_plain_loops() {
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Still exactly one Wait and one Push (whole-symbol: one crossing
     // for the loop-invariant datum, not one per iteration).
@@ -447,10 +447,10 @@ fn hoisting_is_idempotent() {
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
-    let once = inject_transfers(&linked, acfg);
+    let once = inject_transfers(&linked, acfg).expect("inject_transfers");
     let push1 = once.push_count();
     let wait1 = once.wait_count();
-    let twice = inject_transfers(&linked, once);
+    let twice = inject_transfers(&linked, once).expect("inject_transfers");
     assert_eq!(twice.push_count(), push1, "Push count stable on re-run");
     assert_eq!(twice.wait_count(), wait1, "Wait count stable on re-run");
 }
@@ -538,7 +538,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Single Wait globally (per-i-tile granularity). Push count is
     // not asserted -- see the cross-sequence note in the simple
@@ -616,7 +616,7 @@ fn in_intra_tile_producer_consumer_is_not_hoisted() {
     };
 
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // The Wait stays in the intra-tile body because the producer is
     // also there.
@@ -690,7 +690,7 @@ fn block_transform_marks_inner_iter_var() {
 
     // And after running transfer_inject, the marker should round-trip
     // unchanged (it is part of the ACFG state, not consumed).
-    let after = inject_transfers(&linked, after);
+    let after = inject_transfers(&linked, after).expect("inject_transfers");
     assert!(
         after.inner_block_iter_vars.contains(&i_id),
         "transfer_inject must forward the inner_block_iter_vars marker"
@@ -773,7 +773,7 @@ fn example_02_shape() -> (ACFG, LinkedIR) {
 #[test]
 fn example_02_shape_pairs_every_wait_with_a_push() {
     let (acfg, linked) = example_02_shape();
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // a, b (loop-invariant inputs) cross once; c (loop output read
     // after the loop) crosses once. Three matched whole-symbol pairs.
@@ -880,7 +880,7 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
         &[("d", &["host"]), ("e", &["host"])],
         "transfer d : sync;\n    transfer e : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let xs = result.root.collect_xfers();
 
     // The non-block transfer `e` (DataId 1) is fully paired: one Wait
@@ -967,7 +967,7 @@ fn malformed_acfg_wait_without_producer_op_panics() {
     };
     let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
     // Should panic inside splice_pushes_global (TASK-0152 invariant).
-    let _ = inject_transfers(&linked, acfg);
+    let _ = inject_transfers(&linked, acfg).expect("inject_transfers");
 }
 
 #[test]
@@ -1044,7 +1044,7 @@ fn block_nested_in_plain_loop_pairs_the_invariant_wait() {
         &[("d", &["host"]), ("e", &["host"])],
         "transfer d : sync;\n    transfer e : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let xs = result.root.collect_xfers();
 
     // TASK-0267: d's Wait IS now paired with a whole-symbol Push,
@@ -1136,9 +1136,9 @@ fn mixed_block_nonblock_tree_is_structurally_idempotent() {
         &[("d", &["host"]), ("e", &["host"])],
         "transfer d : sync;\n    transfer e : sync;",
     );
-    let once = inject_transfers(&linked, build());
-    let twice = inject_transfers(&linked, once.clone());
-    let thrice = inject_transfers(&linked, twice.clone());
+    let once = inject_transfers(&linked, build()).expect("inject_transfers");
+    let twice = inject_transfers(&linked, once.clone()).expect("inject_transfers");
+    let thrice = inject_transfers(&linked, twice.clone()).expect("inject_transfers");
     assert_eq!(
         once, twice,
         "mixed tree: inject_transfers must be idempotent"
@@ -1154,9 +1154,9 @@ fn whole_symbol_finalisation_is_structurally_idempotent() {
     // empty) — the case the existing flat / block-gated idempotence
     // tests do NOT cover.
     let (acfg, linked) = example_02_shape();
-    let once = inject_transfers(&linked, acfg);
-    let twice = inject_transfers(&linked, once.clone());
-    let thrice = inject_transfers(&linked, twice.clone());
+    let once = inject_transfers(&linked, acfg).expect("inject_transfers");
+    let twice = inject_transfers(&linked, once.clone()).expect("inject_transfers");
+    let thrice = inject_transfers(&linked, twice.clone()).expect("inject_transfers");
 
     assert_eq!(
         once, twice,

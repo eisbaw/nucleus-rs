@@ -160,7 +160,7 @@ fn two_worker_pingpong_compiles_and_runs() {
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let out_dir = scratch.join("gen");
     // TASK-0124 contract path: project to per-worker EventList +
@@ -373,7 +373,7 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let per_worker = acfg_to_events(&acfg);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
@@ -665,7 +665,7 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
     let acfg = apply_block_transforms(&linked, acfg).expect("block-transform");
     let acfg = apply_partition_workers(&linked, acfg).expect("partition-workers");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let per_worker = acfg_to_events(&acfg);
     let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");

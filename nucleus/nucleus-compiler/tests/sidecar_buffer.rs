@@ -54,7 +54,7 @@ fn lower(
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = apply_block_transforms(&linked, acfg).expect("block_transforms");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     (linked, acfg, ex.join("kernels.rs"))
 }
 

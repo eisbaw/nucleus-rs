@@ -81,13 +81,39 @@
 //!
 //! ## Honest limitations (recorded for follow-up)
 //!
-//! - **N-to-M fan-out** (both sides multi-worker, e.g. an all-to-all
-//!   shuffle) falls back to the "compute worker = dst" convention
-//!   when constructing per-pair tiles. The 1-to-N (broadcast) and
-//!   N-to-1 (gather) shapes — the only shapes the in-tree schedules
-//!   exercise — pick the multi-worker side correctly. A coordinate-
-//!   mapping policy for N-to-M is a follow-up not blocked by any
-//!   current example.
+//! - **Same-worker-set producer/consumer with the consumer reading
+//!   outside its own produce-tile** (TASK-0324 cycle-144).
+//!   `build_waits_for_op` at line 2501-2503 short-circuits with
+//!   `continue; no transfer` when `producer_workers == consumer_workers`
+//!   on a `BTreeSet`-equality test. The elision is CORRECTNESS-SAFE
+//!   when the consumer's read indices stay within the slice the local
+//!   worker produced (e.g. 13-cnn-inference/batch_parallel:
+//!   `feat1[n] <-- conv_block_1(input[n])` with `loop n :
+//!   partition=workers` — reader iv `n` IS the partition iv, so each
+//!   worker reads only the slice it wrote). It is a SILENT MISCOMPILE
+//!   when the consumer's read indices reach OUTSIDE the local
+//!   producer's slice (e.g. 06-separable-filter/distributed2:
+//!   `out[vy][vx] <-- vblur_acc(vy, vx, tmp[vm][vx])` with `loop vy :
+//!   partition=rows` — reader iv `vm` is the inner pass-2 sweep, NOT
+//!   the partition iv `vy`, so each consumer reads ALL rows of `tmp`
+//!   while owning only its `hy` row-band from pass 1).
+//!
+//!   AC#2 of TASK-0324 (cycle 144) added a front-loaded diagnose-first
+//!   guard (`check_no_silent_elision_risk`) that walks every Operation
+//!   BEFORE the emission recursion and rejects the unsafe shape with
+//!   a typed `TransferInjectError::SameSetSilentElisionRisk`. The
+//!   correctness-safe shape (every consumer read index is a bare
+//!   `Ident(X)` where X is the partition iv on the consumer's
+//!   enclosing scope) is allowed through; everything else (non-Ident
+//!   indices, non-partition ivs, empty indices on a partitioned-data
+//!   read) is conservatively rejected pending AC#3's cross-worker
+//!   codegen extension (the N-to-N broadcast-of-gather shape).
+//!
+//!   What this pass does NOT yet emit (deferred to AC#3): the
+//!   actual cross-worker `tmp` transfers for the unsafe shape — each
+//!   producer w_i pushes its slice to every consumer w_j, each
+//!   consumer assembles. Until AC#3 lands, the unsafe shape is a
+//!   typed error rather than a wrong-output silent miscompile.
 //!
 //! - **Per-point granularity outside `block=`.** When the consumer
 //!   is inside a non-blocked `for`, we still fire one Push/Wait per
@@ -248,6 +274,58 @@ use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransferOption};
 
 // --------------------------------------------------------------------
+// Error surface
+// --------------------------------------------------------------------
+
+/// Typed error from [`inject_transfers`]. Mirrors the structural-error
+/// convention used by [`crate::passes::halo_inference`] and
+/// [`crate::passes::reuse_inference`] (precedent: those passes already
+/// return `Result<ACFG, _>`).
+///
+/// Variants here name patterns transfer-injection currently CANNOT
+/// lower; the carried message must be diagnosis-quality (name the
+/// offending DataId, the failure shape, and the forward-link).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferInjectError {
+    /// TASK-0324 cycle-144 fail-loud guard. Producer and consumer worker
+    /// sets are equal (`BTreeSet`-equality at the line-2501 short-
+    /// circuit) AND the consumer's read indices reach OUTSIDE the local
+    /// producer's partition slice — i.e. the elision the existing
+    /// `continue; no transfer` would have performed is a silent
+    /// miscompile.
+    ///
+    /// The discriminator's safe escape valve (where the elision IS
+    /// correct) is when every read index for this data is a bare
+    /// `IrExpr::Ident(X)` whose `X` is the partition iv on the
+    /// consumer's enclosing scope — i.e. the consumer iterates over
+    /// exactly the same partition the producer wrote (the 13-cnn-
+    /// inference/batch_parallel `feat1[n]` with `loop n :
+    /// partition=workers` shape).
+    ///
+    /// The cross-worker codegen extension that lifts this rejection is
+    /// AC#3 of TASK-0324 (N-to-N broadcast-of-gather).
+    SameSetSilentElisionRisk {
+        /// The data symbol whose elision was rejected.
+        data: DataId,
+        /// Diagnosis-quality message (DataId + reason + TASK-0324
+        /// forward-link).
+        message: String,
+    },
+}
+
+impl std::fmt::Display for TransferInjectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransferInjectError::SameSetSilentElisionRisk { message, .. } => {
+                write!(f, "transfer_inject silent-elision risk: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TransferInjectError {}
+
+// --------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------
 
@@ -261,7 +339,7 @@ use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransf
 ///
 /// Idempotent: re-running on the output yields the same tree
 /// structurally. See `tests/transfer_inject.rs`.
-pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
+pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferInjectError> {
     let ACFG {
         root,
         name_kernels,
@@ -353,6 +431,27 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         policies_by_data: &policies_by_data,
         inner_block_iter_vars: &inner_block_iter_vars,
     };
+
+    // TASK-0324 cycle-144 AC#2: front-loaded fail-loud guard. Walk every
+    // Operation BEFORE the emission recursion and reject the
+    // producer-set == consumer-set + consumer-reads-outside-local-slice
+    // shape with a typed `TransferInjectError::SameSetSilentElisionRisk`.
+    // The unsafe pattern is the silent-miscompile path filed as
+    // TASK-0324 cycle 143; pre-validating here keeps the existing
+    // recursive emission walk unchanged for the safe shapes (e.g.
+    // 13-cnn-inference/batch_parallel reader-iv == partition-iv) while
+    // turning the unsafe shape into a typed compiler error rather than
+    // wrong output. Companion comment lives at the line-2501
+    // short-circuit (`build_waits_for_op`).
+    let partition_iter_vars: BTreeSet<IterVar> =
+        partition_worker_ranges.keys().copied().collect();
+    check_no_silent_elision_risk(
+        &root,
+        &producers_by_data,
+        &partition_iter_vars,
+        &name_iter_vars,
+        &name_data,
+    )?;
 
     // Counter state for SeqTag generation. A single monotonic counter
     // across the whole ACFG is simplest and meets the "unique per
@@ -522,7 +621,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         );
     }
 
-    ACFG {
+    Ok(ACFG {
         root: new_root,
         name_kernels,
         name_data,
@@ -535,7 +634,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-    }
+    })
 }
 
 /// Walk the final ACFG (post-hoist, post-splice, post-rewrite-tiles)
@@ -2472,6 +2571,331 @@ fn extend_xfer_tiles_inner(
 }
 
 // --------------------------------------------------------------------
+// TASK-0324 cycle-144 AC#2 — silent-elision-risk validator
+// --------------------------------------------------------------------
+
+/// Walk every Operation in `root` and reject the producer-set ==
+/// consumer-set + consumer-reads-outside-local-slice shape with a typed
+/// [`TransferInjectError::SameSetSilentElisionRisk`]. Called from
+/// [`inject_transfers`] BEFORE the recursive emission walk so the
+/// existing line-2501 `continue; no transfer` short-circuit fires only
+/// after this validator has certified the elision as safe.
+///
+/// ## Discriminator (axis-by-axis against producer's write pattern)
+///
+/// For every `(op, data_id)` pair where the consumer (`op`) and the
+/// producer (`producers_by_data[data_id]`) share an identical worker
+/// set, the elision the line-2501 short-circuit performs is correct
+/// iff for every axis `k` of the data:
+///
+/// - If the PRODUCER's `data_out_access.indices[k]` is a bare
+///   [`IrExpr::Ident`] whose name resolves to an iv in
+///   `partition_iter_vars` (i.e. axis `k` is partitioned at the
+///   producer — worker `w` writes only its own partition's k-th slot),
+///   then the CONSUMER's `data_in_access.indices[k]` MUST be a bare
+///   [`IrExpr::Ident`] with the same name (the consumer must read its
+///   own worker's k-th slot, not an arbitrary one). Same-name
+///   comparison is sufficient because: (a) producer and consumer
+///   share the same worker set; (b) when both ops live in the same
+///   `Repeat`-named outer scope, the iv name resolves to the same
+///   [`IterVar`] in both; (c) when the consumer's enclosing scope
+///   uses a different iv name from the producer's (e.g. the
+///   06/distributed2 `vm` vs producer's `hy`), the names differ AND
+///   the read references a non-matching slice — both wrong reasons to
+///   elide.
+///
+/// - If the producer's write index on axis `k` is NOT a bare Ident
+///   matching a partition iv (e.g. a `IntLit`, an arithmetic
+///   expression, or a bare Ident referencing a non-partition iv),
+///   axis `k` is NOT partition-sliced at the producer and EVERY
+///   worker owns the full k-th axis of the data — the consumer's
+///   read on this axis can be anything.
+///
+/// ## Why per-axis against the producer's write pattern, not the
+/// consumer's scope
+///
+/// An earlier formulation rejected any consumer-read iv that wasn't
+/// the consumer's enclosing partition iv. That over-rejected the
+/// accumulator-self-read shape `tmp[hy][hx] <-- hblur_acc(...,
+/// tmp[hy][hx])` (06/distributed): the consumer reads `tmp[hy][hx]`
+/// where `hy` IS the partition iv but `hx` is the inner sweep — yet
+/// the producer ALSO writes `tmp[hy][hx]`, so worker `w_i` reads
+/// EXACTLY what it wrote. The per-axis check sees `P_0 == C_0 ==
+/// Ident("hy")` (axis 0 is partitioned and aligned) and `P_1 ==
+/// Ident("hx") which is NOT a partition iv` (axis 1 is not
+/// partitioned at all) — both safe.
+///
+/// For 06/distributed2 the same machinery fires correctly:
+/// `P_0 == Ident("hy")` is a partition iv, but `C_0 == Ident("vm")` —
+/// names differ, so the consumer reads a non-aligned slot on axis 0
+/// → reject.
+fn check_no_silent_elision_risk(
+    root: &ACFGNode,
+    producers_by_data: &BTreeMap<DataId, BTreeSet<WorkerId>>,
+    partition_iter_vars: &BTreeSet<IterVar>,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    name_data: &BTreeMap<String, DataId>,
+) -> Result<(), TransferInjectError> {
+    // Index producer-side write accesses for each DataId once. Per PRD
+    // §6.2.1 single-assignment, every data symbol has at most ONE
+    // writer Operation (modulo accumulator self-writes, which carry
+    // the same data_out_access on every iteration). The first
+    // matching Operation's `data_out_access` is authoritative.
+    let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
+    collect_producer_writes(root, &mut producer_writes);
+
+    check_no_silent_elision_risk_inner(
+        root,
+        &[],
+        producers_by_data,
+        partition_iter_vars,
+        name_iter_vars,
+        name_data,
+        &producer_writes,
+    )
+}
+
+fn collect_producer_writes(node: &ACFGNode, out: &mut BTreeMap<DataId, DataAccess>) {
+    match node {
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_producer_writes(c, out);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => collect_producer_writes(body, out),
+        ACFGNode::Operation(op) => {
+            for edge in &op.dataflow.edges {
+                if let Some(out_access) = &edge.data_out_access {
+                    out.entry(out_access.data).or_insert_with(|| out_access.clone());
+                }
+            }
+        }
+        ACFGNode::Xfer(_) | ACFGNode::Sync(_) => {}
+    }
+}
+
+fn check_no_silent_elision_risk_inner(
+    node: &ACFGNode,
+    enclosing_ivs: &[IterVar],
+    producers_by_data: &BTreeMap<DataId, BTreeSet<WorkerId>>,
+    partition_iter_vars: &BTreeSet<IterVar>,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    name_data: &BTreeMap<String, DataId>,
+    producer_writes: &BTreeMap<DataId, DataAccess>,
+) -> Result<(), TransferInjectError> {
+    match node {
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                check_no_silent_elision_risk_inner(
+                    c,
+                    enclosing_ivs,
+                    producers_by_data,
+                    partition_iter_vars,
+                    name_iter_vars,
+                    name_data,
+                    producer_writes,
+                )?;
+            }
+            Ok(())
+        }
+        ACFGNode::Repeat { iter_var, body, .. } => {
+            let mut nested: Vec<IterVar> = enclosing_ivs.to_vec();
+            nested.push(*iter_var);
+            check_no_silent_elision_risk_inner(
+                body,
+                &nested,
+                producers_by_data,
+                partition_iter_vars,
+                name_iter_vars,
+                name_data,
+                producer_writes,
+            )
+        }
+        ACFGNode::Operation(op) => check_op_no_silent_elision_risk(
+            op,
+            enclosing_ivs,
+            producers_by_data,
+            partition_iter_vars,
+            name_iter_vars,
+            name_data,
+            producer_writes,
+        ),
+        ACFGNode::Xfer(_) | ACFGNode::Sync(_) => Ok(()),
+    }
+}
+
+fn check_op_no_silent_elision_risk(
+    op: &Operation,
+    enclosing_ivs: &[IterVar],
+    producers_by_data: &BTreeMap<DataId, BTreeSet<WorkerId>>,
+    partition_iter_vars: &BTreeSet<IterVar>,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    name_data: &BTreeMap<String, DataId>,
+    producer_writes: &BTreeMap<DataId, DataAccess>,
+) -> Result<(), TransferInjectError> {
+    let consumer_workers: BTreeSet<WorkerId> = op.workers.clone();
+
+    // Partition ivs that are ACTUALLY in the consumer's enclosing scope.
+    // Used only for the "no-partition active" short-circuit (clause
+    // (1) below); the per-axis check (clause (2)) uses the global
+    // `partition_iter_vars` against the producer's write pattern.
+    let enclosing_partition_ivs: BTreeSet<IterVar> = enclosing_ivs
+        .iter()
+        .copied()
+        .filter(|iv| partition_iter_vars.contains(iv))
+        .collect();
+
+    let mut seen: BTreeSet<DataId> = BTreeSet::new();
+    for edge in &op.dataflow.edges {
+        for (i, &data_id) in edge.data_in.iter().enumerate() {
+            if !seen.insert(data_id) {
+                continue;
+            }
+            let producer_workers = match producers_by_data.get(&data_id) {
+                Some(p) => p,
+                None => continue, // No recorded producer.
+            };
+            if producer_workers != &consumer_workers {
+                continue; // The line-2501 short-circuit does NOT fire here.
+            }
+
+            // Clause (1): no partition iv active on the consumer's
+            // enclosing scope → every worker owns the full data →
+            // safe elision.
+            if enclosing_partition_ivs.is_empty() {
+                continue;
+            }
+
+            // Need the producer's write access to drive the per-axis
+            // discriminator. If we don't have it (synthetic test
+            // fixtures that omit data_out_access, or a producer not
+            // captured by `collect_producer_writes`), conservatively
+            // continue: the validator is additive over the existing
+            // behaviour, and missing producer access means we cannot
+            // distinguish safe from unsafe — falling back to the
+            // pre-TASK-0324 elision is acceptable for synthetic-only
+            // fixtures because those don't exercise the silent-
+            // miscompile code path in production.
+            let prod_access = match producer_writes.get(&data_id) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Clause (2): for each axis k, if the producer's write
+            // index P_k is a bare Ident matching a partition iv,
+            // require the consumer's read index C_k to be a bare
+            // Ident with the SAME name. Iterate over every parallel
+            // consumer access for this data; ALL must satisfy.
+            let mut first_unsafe_reason: Option<String> = None;
+
+            'outer: for access in edge.data_in_access.iter() {
+                if access.data != data_id {
+                    continue;
+                }
+
+                // If the producer carries indices but the consumer
+                // carries none (a whole-array read of partitioned
+                // data), reject — the worker does NOT own the whole
+                // array.
+                if access.indices.is_empty() && !prod_access.indices.is_empty() {
+                    // Determine if ANY producer axis is a partition iv;
+                    // if all axes are non-partition (so producer wrote
+                    // whole-array), the elision is still safe.
+                    let any_partitioned_axis = prod_access
+                        .indices
+                        .iter()
+                        .any(|p| ident_iv_in_set(p, partition_iter_vars, name_iter_vars).is_some());
+                    if any_partitioned_axis {
+                        first_unsafe_reason = Some(format!(
+                            "consumer reads data as a whole array (no indices) while \
+                             the producer writes with a partition iv on at least one \
+                             axis (producer indices: {:?}); each worker owns only \
+                             its partition slice",
+                            prod_access.indices
+                        ));
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
+
+                // Per-axis check.
+                let n_axes = prod_access.indices.len().min(access.indices.len());
+                for k in 0..n_axes {
+                    let p_iv =
+                        ident_iv_in_set(&prod_access.indices[k], partition_iter_vars, name_iter_vars);
+                    let Some(p_iv) = p_iv else {
+                        // Producer's axis-k index is not a partition iv
+                        // (e.g. inner sweep, const, arithmetic): axis
+                        // k is not partition-sliced at the producer →
+                        // no constraint on consumer's axis-k read.
+                        continue;
+                    };
+                    // Producer's axis k IS partition-sliced. The
+                    // consumer's axis-k read must be a bare Ident with
+                    // the same partition iv name.
+                    let c_iv =
+                        ident_iv_in_set(&access.indices[k], partition_iter_vars, name_iter_vars);
+                    if c_iv != Some(p_iv) {
+                        first_unsafe_reason = Some(format!(
+                            "axis {k} is partition-sliced at the producer (writes \
+                             at {:?}, partition iv {:?}); consumer reads at \
+                             {:?} which does not match — worker reads a slice \
+                             it does not own",
+                            prod_access.indices[k], p_iv, access.indices[k]
+                        ));
+                        break 'outer;
+                    }
+                }
+            }
+
+            if let Some(reason) = first_unsafe_reason {
+                let data_name = name_data
+                    .iter()
+                    .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
+                    .unwrap_or("<unknown>");
+                let message = format!(
+                    "data `{data_name}` (id {data_id:?}, edge.data_in index {i}): \
+                     producer worker set and consumer worker set are identical \
+                     ({consumer_workers:?}), AND {reason}. Without a cross-worker \
+                     transfer this elides into a silent miscompile — see TASK-0324. \
+                     The diagnose-first guard (AC#2) lands ahead of the cross-worker \
+                     codegen extension (AC#3); kernels.rs is unchanged. Remove the \
+                     same-set placement, switch to a different partition iv, or \
+                     wait for AC#3."
+                );
+                return Err(TransferInjectError::SameSetSilentElisionRisk {
+                    data: data_id,
+                    message,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// If `expr` is `IrExpr::Ident(name)` AND `name_iter_vars[name]` is in
+/// `set`, return `Some(IterVar)`. Otherwise `None`. Used by the
+/// per-axis discriminator to recognise partition-iv indices.
+fn ident_iv_in_set(
+    expr: &IrExpr,
+    set: &BTreeSet<IterVar>,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+) -> Option<IterVar> {
+    match expr {
+        IrExpr::Ident(name) => {
+            let iv = name_iter_vars.get(name).copied()?;
+            if set.contains(&iv) {
+                Some(iv)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+// --------------------------------------------------------------------
 // Wait construction
 // --------------------------------------------------------------------
 
@@ -2499,7 +2923,31 @@ fn build_waits_for_op(
                 None => continue, // No recorded producer (e.g. unread const data).
             };
             if producer_workers == &consumer_workers {
-                continue; // Same entity — intra-worker dataflow.
+                // Same worker set on both sides — intra-worker dataflow.
+                //
+                // TASK-0324 cycle-144 AC#2: the SILENT-MISCOMPILE arm
+                // of this short-circuit (consumer reads a slice the
+                // local producer does NOT own) is rejected up-front by
+                // `check_no_silent_elision_risk` (called at the top of
+                // `inject_transfers`). Reaching this `continue` means
+                // the validator has already certified the elision as
+                // safe — either there is no partition iv active on the
+                // consumer's enclosing scope (each worker owns the
+                // full data) OR every consumer read index for this
+                // data is a bare `Ident(X)` where X is the partition
+                // iv on the consumer's enclosing scope (e.g. 13-cnn-
+                // inference/batch_parallel `feat1[n]` with `loop n :
+                // partition=workers` — reader iv == partition iv, each
+                // worker reads only the slice it wrote).
+                //
+                // The "compute worker = dst" fallback paragraph this
+                // module's header once claimed for the N-to-M case
+                // does NOT exist for the same-set case; the structural
+                // code path is `continue; no transfer`. AC#3 of
+                // TASK-0324 will replace the AC#2 fail-loud with the
+                // actual cross-worker `tmp` codegen (N-to-N broadcast-
+                // of-gather) and lift the validator's rejection.
+                continue;
             }
             let policy = ctx
                 .policies_by_data

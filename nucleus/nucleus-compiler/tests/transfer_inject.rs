@@ -156,7 +156,7 @@ fn two_worker_producer_consumer_yields_matched_push_wait() {
         &[("d", &["w0"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Exactly one Push and one Wait.
     assert_eq!(result.push_count(), 1, "exactly one Push");
@@ -206,7 +206,7 @@ fn same_worker_producer_consumer_yields_no_transfers() {
         &[("d", &["w0"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     assert_eq!(result.xfer_count(), 0);
 }
 
@@ -232,7 +232,7 @@ fn seq_tags_unique_per_pair() {
         &[("d0", &["w0"]), ("d1", &["w1"]), ("d2", &["w2"])],
         "transfer d0 : sync; transfer d1 : sync; transfer d2 : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     assert_eq!(result.push_count(), 3);
     assert_eq!(result.wait_count(), 3);
@@ -277,7 +277,7 @@ fn policy_after_inject(transfers_src: &str) -> TransferPolicy {
         &[("d", &["w0"])],
         transfers_src,
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     assert!(!xfers.is_empty(), "expected at least one transfer");
@@ -358,8 +358,8 @@ fn idempotent_on_synthetic_two_worker_case() {
         &[("d", &["w0"])],
         "transfer d : async, buffer=2, notify=event;",
     );
-    let once = inject_transfers(&linked, acfg.clone());
-    let twice = inject_transfers(&linked, once.clone());
+    let once = inject_transfers(&linked, acfg.clone()).expect("inject_transfers");
+    let twice = inject_transfers(&linked, once.clone()).expect("inject_transfers");
 
     // Same structure: same Push/Wait counts, same positions, same
     // (data, src, dst, tile, policy) tuples. We do NOT require seq
@@ -418,7 +418,7 @@ fn example_1_naive_has_no_transfers() {
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     assert_eq!(result.xfer_count(), 0);
 }
 
@@ -430,7 +430,7 @@ fn example_13_naive_has_no_transfers() {
         "13-cnn-inference/schedules/naive.sched.nuc",
     );
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     assert_eq!(result.xfer_count(), 0);
 }
 
@@ -441,7 +441,7 @@ fn example_14_naive_has_no_transfers() {
         "14-hearing-aid/schedules/naive.sched.nuc",
     );
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     assert_eq!(result.xfer_count(), 0);
 }
 
@@ -467,7 +467,7 @@ fn structural_pairing_holds_for_synthetic_multi_edge() {
         &[("d0", &["w0"]), ("d1", &["w1"]), ("d2", &["w2"])],
         "transfer d0 : sync; transfer d1 : async, buffer=2; transfer d2 : async, buffer=2, notify=event;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     let mut by_seq: BTreeMap<SeqTag, Vec<&XferPlaceholder>> = BTreeMap::new();
@@ -505,7 +505,7 @@ fn inject_transfers_preserves_name_tables() {
         "01-elementwise-add/schedules/naive.sched.nuc",
     );
     let before = build_acfg(&linked).expect("build_acfg");
-    let after = inject_transfers(&linked, before.clone());
+    let after = inject_transfers(&linked, before.clone()).expect("inject_transfers");
     assert_eq!(before.name_kernels, after.name_kernels);
     assert_eq!(before.name_data, after.name_data);
     assert_eq!(before.name_workers, after.name_workers);
@@ -530,7 +530,7 @@ fn inject_transfers_preserves_operation_count_on_real_examples() {
     ] {
         let linked = linked_from_paths(algo, sched);
         let before = build_acfg(&linked).expect("build_acfg");
-        let after = inject_transfers(&linked, before.clone());
+        let after = inject_transfers(&linked, before.clone()).expect("inject_transfers");
         assert_eq!(
             before.operation_count(),
             after.operation_count(),
@@ -568,7 +568,7 @@ fn fanout_one_to_n_emits_n_pairs() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // 4 destination workers -> 4 Push/Wait pairs.
     assert_eq!(result.push_count(), 4, "one Push per destination worker");
@@ -621,7 +621,7 @@ fn fanout_n_to_one_emits_n_pairs() {
         &[("d", &["w1", "w2", "w3", "w4"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     assert_eq!(result.push_count(), 4, "one Push per producer worker");
     assert_eq!(result.wait_count(), 4, "one Wait per producer worker");
@@ -660,7 +660,7 @@ fn fanout_one_to_one_unchanged() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     assert_eq!(result.push_count(), 1);
     assert_eq!(result.wait_count(), 1);
@@ -690,8 +690,14 @@ fn fanout_is_deterministic_across_runs() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let r1 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
-    let r2 = inject_transfers(&linked, mk_acfg()).root.collect_xfers();
+    let r1 = inject_transfers(&linked, mk_acfg())
+        .expect("inject_transfers")
+        .root
+        .collect_xfers();
+    let r2 = inject_transfers(&linked, mk_acfg())
+        .expect("inject_transfers")
+        .root
+        .collect_xfers();
     assert_eq!(r1.len(), r2.len());
     for (a, b) in r1.iter().zip(r2.iter()) {
         assert_eq!(a.role, b.role);
@@ -745,7 +751,7 @@ fn fanout_per_worker_tile_for_input_direction() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     // Each pair's tile must carry the dst-worker's partition slice.
@@ -804,7 +810,7 @@ fn fanout_per_worker_tile_for_output_direction() {
         &[("d", &["w1", "w2", "w3", "w4"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     for x in &xfers {
@@ -855,7 +861,7 @@ fn pipeline_depth_populated_for_inter_stage_transfers() {
     let linked = link::link(algo, sched).expect("link");
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
     let acfg = nucleus_compiler::passes::sync_inject::inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     assert!(
         !acfg.pipeline_depth_for_seq.is_empty(),
@@ -950,7 +956,7 @@ fn pipeline_depth_empty_for_non_pipelined_schedules() {
     let linked = link::link(algo, sched).expect("link");
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
     let acfg = nucleus_compiler::passes::sync_inject::inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     assert!(
         acfg.pipeline_depth_for_seq.is_empty(),
@@ -976,7 +982,7 @@ fn fanout_empty_partition_sidecar_preserves_construction_tile() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     for x in &xfers {
@@ -1051,7 +1057,7 @@ fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
         // an algorithm — it's a sched-side declaration.
         "loop n : pipeline=2;\n    transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     assert!(!xfers.is_empty(), "expected fan-out xfers; got none");
@@ -1169,7 +1175,7 @@ fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Collect Wait xfers grouped by dst worker; for each dst, the tile
     // bounds must be in OUTER-to-INNER nest order — IterVar(7) first,
@@ -1287,7 +1293,7 @@ fn rewrite_partition_tiles_three_level_nest_order() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let xfers = result.root.collect_xfers();
     let waits: Vec<&XferPlaceholder> = xfers.iter().filter(|x| x.role == XferRole::Wait).collect();
@@ -1491,7 +1497,7 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
         "transfer a : sync; transfer b : sync; transfer c : sync;",
     );
 
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let xfers = result.root.collect_xfers();
 
     // Group Waits by data — we care about the SHAPE of bounds, not the
@@ -1748,7 +1754,7 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
         "transfer a : sync; transfer b : sync; transfer c : sync;",
     );
 
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let xfers = result.root.collect_xfers();
 
     let waits_for = |data: DataId| -> Vec<XferPlaceholder> {
@@ -1932,7 +1938,7 @@ fn rewrite_partition_tiles_drops_ambiguous_multi_partitioned_iv_per_dim() {
         "transfer a : sync;",
     );
 
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let xfers = result.root.collect_xfers();
     let a_waits: Vec<XferPlaceholder> = xfers
         .iter()
@@ -2032,7 +2038,7 @@ fn build_stencil_like_acfg(halo_y: u64, halo_x: u64) -> (ACFG, LinkedIR) {
 #[test]
 fn halo_extends_partition_tile_05_stencil_shape() {
     let (acfg, linked) = build_stencil_like_acfg(/*halo_y=*/ 1, /*halo_x=*/ 0);
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Expect one Wait per (host, w_i) pair across the 4 workers.
     let waits: Vec<XferPlaceholder> = result
@@ -2078,7 +2084,7 @@ fn halo_empty_sidecar_is_identity() {
         acfg.halo_widths.is_empty(),
         "fixture must produce empty sidecar"
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let waits: Vec<XferPlaceholder> = result
         .root
         .collect_xfers()
@@ -2158,7 +2164,7 @@ fn halo_extends_multiple_axes_when_both_partitioned() {
         &[("d", &["host"])],
         "transfer d : sync;",
     );
-    let result = inject_transfers(&linked, acfg);
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
     let waits: Vec<XferPlaceholder> = result
         .root
         .collect_xfers()
@@ -2189,4 +2195,395 @@ fn halo_extends_multiple_axes_when_both_partitioned() {
         .collect();
     assert_eq!(bounds.get(&IterVar(7)), Some(&(3..9)));
     assert_eq!(bounds.get(&IterVar(8)), Some(&(3..9)));
+}
+
+// --------------------------------------------------------------------
+// TASK-0324 cycle-144 AC#5 — silent-elision-risk validator fixtures
+// --------------------------------------------------------------------
+//
+// Two end-to-end fixtures pin the AC#2 fail-loud guard:
+//
+// - `task0324_ac5_positive_fires_on_06_distributed2_shape`: the
+//   06-separable-filter/distributed2 shape — pass-1 producer and
+//   pass-2 consumer both on {w0..w3}, both with their own
+//   partition=rows iv on axis 0 of the data, but reader-iv != writer-
+//   iv. Validator MUST return Err(SameSetSilentElisionRisk).
+//
+// - `task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape`:
+//   the 13-cnn-inference/batch_parallel shape — producer writes
+//   `feat1[n]` on {w0..w3} with `loop n : partition=workers`,
+//   consumer reads `feat1[n]` on the same set with the same iv.
+//   Validator MUST succeed (no error).
+
+#[test]
+fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+    use nucleus_compiler::passes::transfer_inject::TransferInjectError;
+
+    // IterVars for the two passes. Non-monotonic ids so a regression
+    // that depends on iter-var ordering is independently visible.
+    const IV_HY: IterVar = IterVar(11);
+    const IV_HX: IterVar = IterVar(12);
+    const IV_VY: IterVar = IterVar(13);
+    const IV_VX: IterVar = IterVar(14);
+    const IV_VM: IterVar = IterVar(15);
+    // DataIds.
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+
+    // Pass-1 op: hblur_acc reads in_arr[hy][hx] (whole, not the
+    // hk-summing inner that the real algorithm uses; the validator's
+    // discriminator is index-pattern-driven, so a minimal model is
+    // sufficient). Writes tmp[hy][hx]. Placed on {w0..w3}.
+    let hblur_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(200),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let hblur_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(200),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![hblur_edge] },
+    });
+
+    // Pass-2 op: vblur_acc reads tmp[vm][vx] (the offending non-
+    // partition-iv read on axis 0). Writes out[vy][vx]. Placed on
+    // {w0..w3}.
+    let vblur_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(201),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access(D_TMP, &["vm", "vx"])],
+        data_out_access: Some(access(D_OUT, &["vy", "vx"])),
+        args: vec![ArgBinding::Data(access(D_TMP, &["vm", "vx"]))],
+    };
+    let vblur_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(201),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![vblur_edge] },
+    });
+
+    // Pass-1 nest: for hy : 0..16 { for hx : 0..16 { hblur_op } }
+    let pass1 = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![hblur_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+    // Pass-2 nest: for vy : 0..16 { for vx : 0..16 { for vm : 0..16 { vblur_op } } }
+    let pass2 = ACFGNode::Repeat {
+        iter_var: IV_VY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_VX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+                iter_var: IV_VM,
+                range: 0..16,
+                body: Box::new(ACFGNode::Sequence(vec![vblur_op])),
+                block_tag: None,
+            }])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Host loader for in_arr, host saver for out.
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        pass1,
+        pass2,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+    acfg.name_iter_vars.insert("vy".to_string(), IV_VY);
+    acfg.name_iter_vars.insert("vx".to_string(), IV_VX);
+    acfg.name_iter_vars.insert("vm".to_string(), IV_VM);
+
+    // Partition hy AND vy across {w0..w3} (matches the schedule's
+    // `loop hy : partition=rows; loop vy : partition=rows`).
+    let bands_4 = || {
+        let mut b: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+        b.insert(WorkerId(1), 0..4);
+        b.insert(WorkerId(2), 4..8);
+        b.insert(WorkerId(3), 8..12);
+        b.insert(WorkerId(4), 12..16);
+        b
+    };
+    acfg.partition_worker_ranges.insert(IV_HY, bands_4());
+    acfg.partition_worker_ranges.insert(IV_VY, bands_4());
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        // tmp produced by pass-1 on workers; in_arr loaded on host;
+        // out written by pass-2 on workers, saved on host.
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg);
+    match result {
+        Err(TransferInjectError::SameSetSilentElisionRisk { data, message }) => {
+            assert_eq!(
+                data, D_TMP,
+                "expected the rejection to name `tmp` (the cross-pass data)"
+            );
+            assert!(
+                message.contains("TASK-0324"),
+                "ContractGap message must forward-link TASK-0324; got: {message}"
+            );
+            assert!(
+                message.contains("partition-sliced"),
+                "ContractGap message must name the per-axis discrimination reason; \
+                 got: {message}"
+            );
+        }
+        Ok(_) => panic!(
+            "expected TransferInjectError::SameSetSilentElisionRisk on the \
+             06-separable-filter/distributed2 shape (producer-set == consumer-set \
+             + reader iv `vm` ≠ partition iv on axis 0)"
+        ),
+    }
+}
+
+#[test]
+fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+
+    // IterVar for the batch loop.
+    const IV_N: IterVar = IterVar(21);
+    // DataIds.
+    const D_INPUT: DataId = DataId(0);
+    const D_FEAT1: DataId = DataId(1);
+    const D_FEAT2: DataId = DataId(2);
+    const D_OUTPUT: DataId = DataId(3);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access_n(data: DataId) -> DataAccess {
+        DataAccess {
+            data,
+            indices: vec![ident("n")],
+        }
+    }
+
+    // conv_block_1: reads input[n], writes feat1[n] on {w0..w3}.
+    let cb1_edge = DataflowEdge {
+        data_in: vec![D_INPUT],
+        kernel: KernelId(300),
+        data_out: Some(D_FEAT1),
+        data_in_access: vec![access_n(D_INPUT)],
+        data_out_access: Some(access_n(D_FEAT1)),
+        args: vec![ArgBinding::Data(access_n(D_INPUT))],
+    };
+    let cb1_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(300),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![cb1_edge] },
+    });
+    // conv_block_2: reads feat1[n], writes feat2[n] on {w0..w3}.
+    let cb2_edge = DataflowEdge {
+        data_in: vec![D_FEAT1],
+        kernel: KernelId(301),
+        data_out: Some(D_FEAT2),
+        data_in_access: vec![access_n(D_FEAT1)],
+        data_out_access: Some(access_n(D_FEAT2)),
+        args: vec![ArgBinding::Data(access_n(D_FEAT1))],
+    };
+    let cb2_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(301),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![cb2_edge] },
+    });
+    // classifier: reads feat2[n], writes output[n] on {w0..w3}.
+    let cls_edge = DataflowEdge {
+        data_in: vec![D_FEAT2],
+        kernel: KernelId(302),
+        data_out: Some(D_OUTPUT),
+        data_in_access: vec![access_n(D_FEAT2)],
+        data_out_access: Some(access_n(D_OUTPUT)),
+        args: vec![ArgBinding::Data(access_n(D_FEAT2))],
+    };
+    let cls_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(302),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![cls_edge] },
+    });
+
+    let body = ACFGNode::Sequence(vec![cb1_op, cb2_op, cls_op]);
+    let n_loop = ACFGNode::Repeat {
+        iter_var: IV_N,
+        range: 0..16,
+        body: Box::new(body),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_INPUT),
+        n_loop,
+        host_saver(D_OUTPUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("input", 0), ("feat1", 1), ("feat2", 2), ("output", 3)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("n".to_string(), IV_N);
+
+    // Partition n across {w0..w3} (batch_parallel: `loop n : partition=workers`).
+    let mut n_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    n_bands.insert(WorkerId(1), 0..4);
+    n_bands.insert(WorkerId(2), 4..8);
+    n_bands.insert(WorkerId(3), 8..12);
+    n_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_N, n_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("input", &["host"]),
+            ("feat1", &["w0", "w1", "w2", "w3"]),
+            ("feat2", &["w0", "w1", "w2", "w3"]),
+            ("output", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer input : sync; transfer feat1 : sync; transfer feat2 : sync; \
+         transfer output : sync;",
+    );
+
+    // Validator MUST succeed: every shared-set producer/consumer pair
+    // (feat1 between cb1 and cb2, feat2 between cb2 and cls) has the
+    // same partition iv `n` on the only data axis — the per-axis check
+    // sees `P_0 == C_0 == Ident("n")`.
+    let _result = inject_transfers(&linked, acfg)
+        .expect("13-cnn-inference/batch_parallel shape MUST NOT trigger the AC#2 guard");
 }

@@ -3,10 +3,11 @@ id: TASK-0324
 title: >-
   transfer_inject silent elision when producer-set == consumer-set + consumer
   reads outside its produce-tile (TASK-0298 cycle-143 silent-miscompile)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 13:20'
+updated_date: '2026-05-25 14:06'
 labels:
   - compiler
   - transfer_inject
@@ -286,3 +287,91 @@ adds AC#0 (doc-lie) at the front. Implementer onboarding should
 read THIS rewritten description, not look for a separate "v1"
 artifact.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 144 implementation plan (orchestrator self-implementing per memory feedback-spawned-agents-refuse-code-edits)
+
+### Cycle scope decision
+
+Land AC#0 (doc-lie fix) + AC#1 (detection logic, internal helper) + AC#2 (fail-loud guard) + AC#5 (both fixtures). DEFER AC#3 (cross-worker tmp codegen extension) and AC#4 (distributed2 smoke promotion) to a follow-up cycle.
+
+Rationale: silent-miscompile exposure is the priority — a typed error is strictly better than wrong output even if it temporarily breaks more cells. AC#3 is a substantial new codegen path (N-to-N broadcast-of-gather); not in scope for one cycle.
+
+### Plan
+
+1. Signature change: `pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferInjectError>`. Add a new typed enum mirroring the precedent (`apply_halo_inference` / `apply_reuse_inference`).
+2. Detection logic (AC#1): at line 2501, when `producer_workers == &consumer_workers`, inspect the consumer's `edge.data_in_access` for this DataId. For each axis where that consumer access uses an IterVar `X`:
+   - If `X` is the same iv on which the data was partitioned at the producer (i.e. `acfg.partition_worker_ranges.contains_key(&X)` AND that iv was the partition iv on the producer's corresponding axis), the elision is correctness-safe — continue.
+   - Otherwise the consumer references a slice the local producer does NOT own → return Err.
+3. Fail-loud guard (AC#2): return `Err(TransferInjectError::SilentElisionRisk { data: DataId, ... })` with a message naming TASK-0324 and the offending DataId.
+4. Doc-lie fix (AC#0): rewrite lines 82-90 to describe the actual short-circuit (line 2501-2503 `continue; no transfer`) + cite line numbers + cross-ref TASK-0324. The fabricated 'compute worker = dst' fallback paragraph goes away.
+5. Tests (AC#5):
+   - Positive (fire) fixture: build a synthetic ACFG matching the 06/distributed2 shape (prod-set==cons-set + reader-iv != partition-iv) → expect Err(SilentElisionRisk).
+   - Negative (no-fire) fixture: build a synthetic ACFG matching the 13-cnn/batch_parallel shape (prod-set==cons-set + reader-iv == partition-iv) → expect Ok.
+6. Update all ~17 call sites to thread the Result. Production callers `.map_err` to bubble up; tests use `.expect` with an explanatory message.
+
+### Verification gate
+
+- 13-cnn/batch_parallel × {pthreads-sync, pthreads-async, mp-tcp-event} MUST stay green (the negative case must not fire).
+- e2e baseline 112/92/0/20/0 (post-cycle-143) MUST hold.
+- New positive + negative fixture tests pass.
+- The 4 distributed2 [[skip]] entries stay skipped (codegen extension AC#3 still pending) — but the skip reason should still be valid (now a typed error rather than a silent miscompile).
+
+## Cycle 144 landing — orchestrator self-implemented
+
+### What landed (AC#0 + AC#1 + AC#2 + AC#5)
+
+1. **AC#0 doc-lie fix** at `transfer_inject.rs:82-108`: rewrote the bullet that fabricated a 'compute worker = dst' fallback for the N-to-M case. New text honestly describes the line-2501 short-circuit, names the two known shapes (safe: 13-cnn-inference/batch_parallel; unsafe: 06-separable-filter/distributed2), and cross-references this task + the AC#2 validator.
+
+2. **Signature change**: `pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferInjectError>`. Mirrors the precedent set by `apply_halo_inference` / `apply_reuse_inference` (memory: [[feedback-panic-not-diagnostic-recurring]] — typed errors over panic).
+
+3. **AC#1 + AC#2 validator**: new `check_no_silent_elision_risk` walker called as the FIRST step in `inject_transfers` (front-loaded; the existing recursive emission walk is unchanged for safe shapes). Discriminator is **axis-by-axis against the producer's `data_out_access`**:
+   - For each axis `k`: if the producer's write index is a bare `Ident(X)` where X is a partition iv → require consumer's read index on axis k to be a bare `Ident(X)` with the same name (so worker w reads its own slice).
+   - For axes where the producer's index is NOT a partition iv → no constraint (axis is whole-array at every worker).
+   - For consumer reads with empty indices on partitioned data → reject (whole-array read while worker owns only a slice).
+   - First failing axis returns `TransferInjectError::SameSetSilentElisionRisk { data, message }` with a TASK-0324 forward-link and a precise reason string.
+
+4. **AC#5 fixtures** at `tests/transfer_inject.rs:2199+`:
+   - `task0324_ac5_positive_fires_on_06_distributed2_shape`: producer writes `tmp[hy][hx]` on {w0..w3} with hy partitioned; consumer reads `tmp[vm][vx]` on {w0..w3} with vm ≠ hy → expects `Err(SameSetSilentElisionRisk { data: D_TMP, .. })` AND verifies the message forward-links TASK-0324 + names the partition-sliced axis.
+   - `task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape`: producer/consumer chain (cb1/cb2/cls) all on {w0..w3} reading/writing `feat1[n]`/`feat2[n]`/`output[n]` with `loop n : partition=workers` → expects `Ok`.
+
+5. **Call-site propagation**: 83 sites updated. Driver uses `.map_err(|e| format!("transfer-injection error: {e}"))?`. All 79 test sites updated via a Python regex pass to `.expect("inject_transfers")`; 4 edge-cases (chained `.root.collect_xfers()`, tail-expression returns) updated by hand.
+
+6. **e2e-matrix.toml**: 4 distributed2 skip-reason texts updated to reflect AC#2-landed-state (typed compile error rather than silent miscompile). Schedule header at `distributed2.sched.nuc` rewritten with the same correction.
+
+### What is NOT in this cycle (deferred to follow-up cycles)
+
+- **AC#3**: cross-worker `tmp` codegen (N-to-N broadcast-of-gather). Each producer w_i pushes its slice to every other consumer w_j; each consumer w_j assembles from 3 (or 4) pushes. Substantial new codegen surface — its own cycle.
+- **AC#4**: matrix promotion. Once AC#3 lands and the output is bit-identical against `reference.bin`, the 4 `[[skip]]` entries become `[[required]]` and the schedule header's warning is removed.
+
+### Verification gate (cycle-144 self-run, pre-parallel-review)
+
+- `just check`: clean.
+- `just clippy`: clean.
+- `just test`: all tests pass (0 failed across the workspace).
+- `just test-release`: all tests pass (release profile guards against debug_assert!-divergence per [[feedback-qa-gate-misses-release-profile]]).
+- `just e2e`: 112/92/0/20/0 — IDENTICAL to pre-cycle-143 baseline. No matrix regression.
+- `just check-textual-replace-on-codegen`: OK.
+- `just check-include-str-coverage`: OK.
+- `just ci`: full hard gate green, including all 4 negative/determinism arms (zero-perturbation, determinism, cross-backend differential, required-coverage).
+
+### Gotchas + subtleties (forward-carry for future cycles)
+
+1. **Two attempts at the discriminator**. First version ('any consumer read iv must be the consumer's enclosing partition iv') over-rejected the accumulator-self-read shape `tmp[hy][hx] <-- hblur_acc(..., tmp[hy][hx])` (06/distributed shipped schedule). Four tests in `sidecar_halo.rs` caught this on first `just test`. The fix was to compare against the PRODUCER's `data_out_access` per-axis rather than against the consumer's enclosing scope alone — only axes where the producer writes with a partition iv need to be aligned at the consumer.
+
+2. **`feedback-comment-doc-lie-recurring` self-defense**: the new module-doc bullet (AC#0) names the exact line range (2501-2503), the exact short-circuit (`continue; no transfer`), and both the safe + unsafe shape with example task IDs (13-cnn + 06/distributed2). The TASK-0319 grep-witness discipline applies — anyone editing this code can re-derive whether the bullet still matches reality.
+
+3. **`feedback-silent-sibling-defect` audit during this cycle**: the architect's cycle-143 P2-2 caught 13-cnn-inference/batch_parallel as a silent sibling of 06/distributed2 (same producer-set == consumer-set + line-2501 path; correctness coincidence saved 13-cnn from miscompiling). This cycle's discriminator MUST NOT fire on 13-cnn — AC#5's negative test pins this explicitly. The validator is index-pattern-driven so 13-cnn's reader-iv-equals-partition-iv coincidence is structurally recognised, not a special case.
+
+4. **`feedback-spawned-agents-refuse-code-edits` continues to apply**: orchestrator self-implemented this cycle. No implementer subagent was spawned.
+
+5. **Synthetic test fixtures via `DataflowEdge::new` carry empty `data_in_access` indices**. The validator's discriminator clause for those is to CONTINUE (no producer access info → cannot distinguish safe from unsafe → fall back to pre-TASK-0324 elision). This is safe because synthetic-only fixtures don't exercise the silent-miscompile production code path. For real-fixture tests that DO want to exercise the validator, the test must construct DataflowEdge directly with proper data_in_access / data_out_access (see the 2 new AC#5 fixtures for the template).
+
+### Forward-carries to future tasks (AC#3 follow-up)
+
+- The AC#3 codegen cycle MUST land with the validator's rejection LIFTED simultaneously — otherwise the typed error keeps firing after AC#3 lands. The simplest path: at the validator, when AC#3 emits cross-worker pairs for this shape, the validator either short-circuits (because the emission walk now handles it) or its predicate is relaxed. The cleanest approach is to keep the validator and add a sibling fan-out path in `build_waits_for_op` that emits real cross-worker pairs; the validator then only fires when AC#3 doesn't apply (a residual edge case).
+
+- The conservative-reject shapes (halo `data[n+1]`, const-indexed `data[5]`, arithmetic indices) are NOT exercised by any shipped schedule today. If a future schedule needs them and they ARE safe (e.g. halo+self-read with the halo machinery already extending the worker's tile), the discriminator must be enriched — for now they're rejected.
+<!-- SECTION:NOTES:END -->

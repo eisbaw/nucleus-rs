@@ -120,7 +120,7 @@ fn lower(
     // and the test would not exercise the TASK-0284 wiring.
     let acfg = apply_reuse_inference(&linked, acfg).expect("apply_reuse_inference");
     let acfg = inject_syncs(acfg);
-    let acfg = inject_transfers(&linked, acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let per_worker = acfg_to_events(&acfg);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     let names = NameTables::from_acfg(&acfg);

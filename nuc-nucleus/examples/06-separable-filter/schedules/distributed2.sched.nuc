@@ -1,15 +1,22 @@
-// !!! SILENT MISCOMPILE — see TASK-0324 !!!
-// !!! DO NOT add to e2e-matrix.toml or run in production. This schedule
-// !!! compiles silently to WRONG code under all 4 tier-1 backends:
-// !!! transfer_inject elides the cross-worker `tmp` transfers because
-// !!! producer-set == consumer-set, but pass 2's `vm` sweep reads the
-// !!! WHOLE `tmp` (each consumer worker has only its hy row-band
-// !!! populated; non-owned rows stay zero → wrong vblur output).
+// !!! TASK-0324 AC#3 NOT YET LANDED — see below !!!
+// !!! POST-CYCLE-144: TASK-0324 AC#2's diagnose-first guard
+// !!! (`check_no_silent_elision_risk` in
+// !!! `nucleus-compiler/src/passes/transfer_inject.rs`) now REJECTS
+// !!! this schedule with a typed
+// !!! `TransferInjectError::SameSetSilentElisionRisk` compile error
+// !!! BEFORE backend codegen. The pre-cycle-144 silent miscompile
+// !!! (transfer_inject elided cross-worker `tmp` transfers because
+// !!! producer-set == consumer-set, runtime produced wrong vblur
+// !!! output starting at row 2) is no longer reachable: the per-axis
+// !!! discriminator sees that the producer (pass 1) writes
+// !!! `tmp[hy][hx]` with `hy` partitioned but the consumer (pass 2)
+// !!! reads `tmp[vm][vx]` with `vm` ≠ `hy` on axis 0 → fail-loud.
 // !!!
 // !!! TASK-0298 cycle 143 investigation reproducer: kept in the
 // !!! repository as the smoke-test target for the eventual TASK-0324
-// !!! fix in transfer_inject. Remove the warning + add an e2e cell
-// !!! once TASK-0324 lands and the output bit-matches reference.bin.
+// !!! AC#3 (cross-worker `tmp` codegen — N-to-N broadcast-of-gather).
+// !!! Remove this header + add e2e cells (4 backends) once AC#3
+// !!! lands and the output bit-matches reference.bin.
 //
 // Both-passes-distributed schedule: pass 1 (hblur_acc) AND pass 2
 // (vblur_acc) both placed on { w0..w3 } with partition=rows.
