@@ -3,11 +3,11 @@ id: TASK-0319
 title: >-
   Future-audit discipline: every 'every X' doc claim must carry a grep-witness
   anchor (TASK-0318 cycle-137 architect P1 + P3-3 forward-carry)
-status: In Progress
+status: Done
 assignee:
   - orchestrator-self
 created_date: '2026-05-25 11:11'
-updated_date: '2026-05-25 15:26'
+updated_date: '2026-05-25 15:34'
 labels:
   - compiler
   - doc-lie
@@ -101,4 +101,43 @@ A **verification stamp** (e.g. a comment that names absolute line numbers as a s
 2. **Grep-witness pattern hygiene**: when authoring a grep witness, prefer match-strings that EXCLUDE non-production hits (docstrings, comments, test source). The cycle-146 wait_assign_slice.rs grep uses the literal `{rid}` placeholder to exclude the docstring examples that use `{id}` — "exactly N production sites" claims must match the GREP COUNT, not require the reader to mentally filter.
 
 3. **What this cycle does NOT cover**: there are ~50-100 other absolute file:line citations across nucleus/ that are NOT silent-sibling audits (e.g. external pointers like "see lib.rs:551"). Migrating those is beyond TASK-0319's scope — they're documentation-helper anchors, not load-bearing universal-quantifier claims. Filed observation, not a follow-up task.
+
+## Cycle 146 — final state after review fold-back
+
+### Review gate (parallel read-only)
+
+- **qa-test-runner**: GO. 4/4 grep-witness verifications PASS. Full ci run truncated by agent; orchestrator verified e2e 112/92/0/20/0 pre-commit + post-commit.
+- **mped-architect**: GO with P2.1 + P2.2 + P3.1 follow-ups (architect caught header/body asymmetry — 9th firing of the silent-sibling pattern, in a NEW shape).
+
+### Architect findings folded back in-thread (commit ab4ba6b)
+
+- **P2.1 (header/body asymmetry within scope-file)**: 5 stale in-body citations in 3 in-scope files migrated to function-name anchors: wait_assign_slice.rs 604/692/781, multi_worker_reuse_marker.rs 283/380, reuse_marker.rs 70-71/160.
+- **P2.2 (out-of-scope sibling)**: partition_blocks2d.rs:40 migrated; grep-witness disambiguated 5-vs-1 (one production site at `render_worker_events_inner` Event::Loop arm, four read-only `collect_*` walker siblings).
+- **P3.1 (memory cycle-146 closure note)**: feedback-silent-sibling-defect.md updated with 9th-firing entry promoting 'header/body asymmetry within a single file' as a new shape.
+
+### Self-discovered fold-back during cycle (commit 17f480c)
+
+- emit_pair grep-witness tightened from `emit_pair(neighbour` (5 hits including audit-listing self-reference) to `emit_pair\(neighbour,` (4 production sites — trailing comma excludes self-ref).
+- IterTile witness re-stated: 5 total hits (3 production + 1 module-doc + 1 audit-listing self-ref) with `grep -vE ':\s*//'` filter trick for production-only count.
+
+### TASK-0319 status
+
+**Done.** AC#1 + AC#2 + AC#3 all landed. The future-audit discipline is now anchored in 4 silent-sibling audit listings + 1 out-of-scope sibling + 1 memory entry. The architect's 'header/body asymmetry' finding is the 9th firing of the silent-sibling pattern — captured as a new structural shape.
+
+### Final verification gate
+
+- `just check`: clean.
+- `just clippy --all-targets -D warnings`: clean.
+- `just test` (dev): all pass.
+- `just e2e`: 112/92/0/20/0 (pre-cycle baseline preserved).
+
+### Forward-carries
+
+- **TASK-0319 charter is now closed**, but the *discipline* it codified continues — every future cycle that authors an 'every X' / 'exactly N sites' claim MUST carry a grep-witness anchor; the witness MUST disambiguate self-references and comment matches; the load-bearing index is the function/symbol name, not the line number.
+- **Memory entry** feedback-silent-sibling-defect.md now carries 9 firings — the architect's read-only review is the safety net that keeps catching the pattern across new shapes.
+
+### Lessons forward-carried into memory
+
+- 9th firing observation: "header/body asymmetry within a single file" is a new shape. Orchestrator hygiene: when retroactively migrating audit listings, scope is the WHOLE FILE — grep `:[0-9]+` matches across the touched file (including assertion-message strings, per-test docstrings, inline comments) and migrate each match.
+- The architect's heuristic 'did the orchestrator's execution actually match the AC wording?' caught this cycle's scope-cut vs scope-execution mismatch (sibling of cycle-129 wording-execution mismatch from feedback-orchestrator-narrative-also-wrong).
 <!-- SECTION:NOTES:END -->
