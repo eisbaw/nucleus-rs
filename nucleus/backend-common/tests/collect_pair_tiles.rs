@@ -146,3 +146,39 @@ fn push_nested_in_loop_is_collected() {
     assert_eq!(pairs.len(), 1, "Push nested in Loop body still collected");
     assert_eq!(pairs.get(&(data, seq)).cloned(), Some(tile));
 }
+
+#[test]
+fn vec_of_slices_input_compiles_and_collects() {
+    // TASK-0314 cycle 131 impedance-removal proof: the looser
+    // `T: AsRef<[Event]>` signature must accept inputs that are NOT
+    // `&Vec<Event>`. This test folds a `Vec<&[Event]>` — a borrowed
+    // slice source like a future caller concatenating events from a
+    // non-BTreeMap layout. Compiles AND yields the expected map.
+    //
+    // If a future cycle accidentally narrows the signature back to
+    // `IntoIterator<Item = &'a Vec<Event>>`, this test fails to
+    // compile — the regression is loud, not silent.
+    let data = DataId(13);
+    let seq = SeqTag(8);
+    let tile = tile_1d(0, 0..4);
+
+    let worker_a_events: Vec<Event> = vec![Event::Push {
+        dst: WorkerId(1),
+        data,
+        tile: tile.clone(),
+        seq,
+    }];
+    let worker_b_events: Vec<Event> = vec![Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile: tile.clone(),
+        seq,
+    }];
+
+    // Source is a `Vec` of borrowed slices, not a `BTreeMap::Values`.
+    let event_slices: Vec<&[Event]> = vec![&worker_a_events, &worker_b_events];
+
+    let pairs = collect_pair_tiles(event_slices.iter().copied());
+    assert_eq!(pairs.len(), 1, "Vec<&[Event]> input → one entry");
+    assert_eq!(pairs.get(&(data, seq)).cloned(), Some(tile));
+}

@@ -4,9 +4,11 @@ title: >-
   collect_pair_tiles: loosen signature from &Vec<Event> to AsRef<[Event]> for
   symmetry with collect_xfer_pairs(&[Event]) (TASK-0300 cycle-130 architect P2
   #3)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 07:56'
+updated_date: '2026-05-25 08:00'
 labels:
   - backend-common
   - refactor
@@ -65,3 +67,25 @@ Existing callers (`per_worker.values()` where per_worker is `BTreeMap<WorkerId, 
 - TASK-0300 cycle 130 architect P2 #3.
 - Memory: [[backend-common-crate-is-shared-codegen-home]] — backend-common is shared substrate across 4 tier-1 backends.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Cycle 131 plan:
+
+1. Widen collect_pair_tiles signature in nucleus/backend-common/src/multi_worker_walker.rs from `IntoIterator<Item = &'a Vec<Event>>` to `IntoIterator<Item = &'a T>` where `T: AsRef<[Event]> + 'a + ?Sized`. Body becomes `collect_xfer_pairs(evs.as_ref(), &mut out)`. Existing per_worker.values() callers unchanged (Vec<Event>: AsRef<[Event]> is std).
+
+2. Add one new test `vec_of_slices_input_compiles_and_collects` to nucleus/backend-common/tests/collect_pair_tiles.rs that constructs a `Vec<&[Event]>` and asserts collect_pair_tiles folds it correctly — proves the looser signature actually accepts a non-Vec source (not just compiles against the old call pattern).
+
+3. Cheap gate: nix develop --command bash -c 'just build && just clippy && just test && just test-release && just e2e'. Baseline 108/92/0/16/0 MUST hold; the 4 cycle-130 tests must still pass.
+
+4. Commit: 'backend-common + test: TASK-0314 cycle 131 — loosen collect_pair_tiles signature to AsRef<[Event]>'.
+
+5. Parallel read-only review gate (qa-test-runner + mped-architect).
+
+AC mapping:
+- AC#1 (helper signature widened): step 1.
+- AC#2 (e2e baseline preserved + 4 backends still compile): step 3.
+- AC#3 (new test proves impedance removal): step 2.
+- AC#4 (cycle-130 tests still pass unchanged): step 3 (cycle-130 tests use per_worker.values() → unchanged).
+<!-- SECTION:PLAN:END -->

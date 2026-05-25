@@ -1108,13 +1108,14 @@ pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag),
 /// names that `(DataId, SeqTag)`. The helper's output is keyed only on
 /// `(DataId, SeqTag)`, so worker iteration order cannot leak into the
 /// output's KEY ordering — only into which tile wins on a conflict.
-pub fn collect_pair_tiles<'a, I>(events_per_worker: I) -> BTreeMap<(DataId, SeqTag), IterTile>
+pub fn collect_pair_tiles<'a, I, T>(events_per_worker: I) -> BTreeMap<(DataId, SeqTag), IterTile>
 where
-    I: IntoIterator<Item = &'a Vec<Event>>,
+    I: IntoIterator<Item = &'a T>,
+    T: AsRef<[Event]> + 'a + ?Sized,
 {
     let mut out: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
     for evs in events_per_worker {
-        collect_xfer_pairs(evs, &mut out);
+        collect_xfer_pairs(evs.as_ref(), &mut out);
     }
     out
 }
