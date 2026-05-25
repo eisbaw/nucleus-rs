@@ -4,10 +4,11 @@ title: >-
   Sibling-promotion audit for 2D row-loop slice-paste: pthreads-sync /
   mp-tcp-bufsync / mp-tcp-event under partition=blocks2d (TASK-0294 cycle-115
   architect P3.1)
-status: To Do
+status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 00:27'
+updated_date: '2026-05-25 11:52'
 labels:
   - M5
   - compiler
@@ -54,3 +55,39 @@ When any of those skips unlock (a new partition=blocks2d schedule WITHOUT the as
 
 Speculative — files a future-promotion checklist, NOT new code. The shared walker means the BUG fix lands once; this task is the housekeeping to make sure the BENEFIT is realised on every backend when their upstream blockers clear. Low priority because the trigger (capability/mesh land) is gated on other tasks.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 139 AC#3 audit (orchestrator-direct)
+
+### Audit scope
+
+Scanned `nucleus/backend-common/tests/wait_assign_slice.rs` and all callers of `render_wait_assign` / `render_worker_events` for tests that pin the multi_worker_walker 2D-tile emit string across the four tier-1 backends.
+
+### Findings
+
+- The four tier-1 backends use four distinct `rendezvous_prefix` values:
+  - pthreads-sync: `"slot"` (backends/pthreads-sync/src/multi_worker.rs:536)
+  - pthreads-async: `"ring"` (backends/pthreads-async/src/multi_worker.rs:516)
+  - mp-tcp-event: `"chan"` (backends/mp-tcp-event/src/multi_worker.rs:493)
+  - mp-tcp-bufsync: bypasses `render_worker_events`; calls `render_wait_assign` directly (backends/mp-tcp-bufsync/src/lib.rs:1196), no prefix involved.
+
+- All existing 2D-tile pins in `wait_assign_slice.rs` (`rows_2d_slice_paste_for_partition_blocks2d`, `task0316_inner_axis_leading_layout_emits_against_dim0`, `task0316_non_prefix_layout_empty_bounds_consumer_pin`) feed `rendezvous_prefix: "ring"` via the `render_one_wait` helper. No 2D test exercises a non-`"ring"` prefix.
+
+- Prefix substitution machinery is rendezvous_prefix-agnostic at multi_worker_walker.rs:809 — a single `format!("{prefix}{rendezvous_prefix}_{rid}.wait()")` with no prefix-conditional branches in the 2D row-loop dispatch. So substantively the dispatch IS shared correctly across all 4 backends; the test gap is in the test surface, not the production code.
+
+### Outcome
+
+Filed gap as **TASK-0321** (wait_assign_slice: parametric 2D-tile pin across all 4 rendezvous_prefix values). LOW priority — defensive coverage, no current defect. The gap would bite if a future refactor hardcoded `"ring_"` inside the 2D arm; the parameterised test would catch it.
+
+### AC status (cycle 139)
+
+- **AC#1**: trigger NOT MET. Requires "new partition=blocks2d schedule that is capability-compatible with pthreads-sync OR mp-tcp-bufsync" (i.e., not async/buffer/event). Today no such schedule exists. Remains conditional on the trigger materialising.
+- **AC#2**: trigger NOT MET. Requires TASK-0175 (w↔w mesh on mp-tcp-event) to land. Today blocked. Remains conditional on TASK-0175.
+- **AC#3**: **DONE** — audit complete, gap filed as TASK-0321.
+
+### Honest status
+
+AC#3 is closed. AC#1 + AC#2 are unconditionally trigger-gated and cannot be satisfied today. Per honest-failure discipline, this task stays In Progress (not Done) until the triggers materialise. The notes record the closure of AC#3 so a future cycle picking this up cold sees what's actually remaining.
+<!-- SECTION:NOTES:END -->
