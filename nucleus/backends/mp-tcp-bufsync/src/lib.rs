@@ -550,13 +550,16 @@ impl<'a> Plan<'a> {
             // is not published until worker N has completed BOTH its
             // accepts, so worker N+1 is blocked on the rendezvous
             // poll while host accepts N — the 6s poll bound is shared
-            // by all workers, not budgeted per-worker. Today's tier-1
-            // mp-tcp-bufsync set is 2-party (host + 1 worker) so this
-            // is invisible. When TASK-0175 introduces worker-to-worker
-            // mesh / >2-party host topologies, restructure to
-            // publish-all-port-files-first, then accept-all in a
-            // second pass (or accept on per-worker threads). Filed:
-            // TASK-0176 closure notes carry this forward.
+            // by all workers, not budgeted per-worker. The cycle-148
+            // 06/distributed2 promotion (host + 4 workers; TASK-0327
+            // host-relay) confirms this is fine in practice: per-
+            // worker accept latency on loopback is ~ms, so 4 workers
+            // comfortably finish within the 6s budget. A future
+            // schedule with substantially more workers (or slower
+            // accept) would need either parallel accepts (per-worker
+            // thread) or publish-all-port-files-first, then accept-
+            // all in a second pass. Filed: TASK-0176 closure notes
+            // carry this forward.
             for nw in self.non_host_workers() {
                 let nwn = self.worker_name(nw);
                 writeln!(
@@ -735,15 +738,50 @@ impl<'a> Plan<'a> {
         }
 
         let ctx = RenderCtxPub::new(self.names, self.sidecar);
-        self.render_events(
-            &self.per_worker[&worker],
-            &mut out,
-            1,
-            worker,
-            is_host,
-            &ctx,
-            None,
-        )?;
+
+        // TASK-0327 (cycle 148): for HOST, when the schedule has w2w
+        // pushes, splice the synchronous relay phase right BEFORE the
+        // first top-level Wait event (the gather start). The relay
+        // phase drains all worker-to-worker (seq, dst) hops through
+        // host's existing data sockets. Insertion-point heuristic
+        // (acceptable for the cycle-148 06/distributed2 reproducer
+        // shape — scatter → cross-relay → gather): host has no data
+        // reads BETWEEN scatter Pushes and gather Waits, so relay-
+        // reads on data_<src> don't race host's own reads. If no top-
+        // level Wait exists, the relay goes at the END (just before
+        // main returns). Non-host workers render unchanged — they
+        // just see `data_host` for both directions, host does the
+        // forwarding.
+        let host_events = &self.per_worker[&worker];
+        let host_relay = if is_host {
+            self.render_relay_phase(1)?
+        } else {
+            String::new()
+        };
+        if is_host && !host_relay.is_empty() {
+            let split_at = relay_phase_insertion_point(host_events);
+            self.render_events(
+                &host_events[..split_at],
+                &mut out,
+                1,
+                worker,
+                is_host,
+                &ctx,
+                None,
+            )?;
+            out.push_str(&host_relay);
+            self.render_events(
+                &host_events[split_at..],
+                &mut out,
+                1,
+                worker,
+                is_host,
+                &ctx,
+                None,
+            )?;
+        } else {
+            self.render_events(host_events, &mut out, 1, worker, is_host, &ctx, None)?;
+        }
 
         writeln!(out, "}}").ok();
         Ok(out)
@@ -1221,13 +1259,21 @@ impl<'a> Plan<'a> {
     }
 
     /// The DATA-channel variable for a Push/Wait whose peer is
-    /// `peer`. On the star topology a non-host worker only ever talks
-    /// to host; host talks to the specific peer. A non-host worker
-    /// whose Push/Wait peer is not host cannot be lowered here
-    /// (fail-loud, not mis-routed).
+    /// `peer`. On the star topology a non-host worker only ever owns
+    /// a single TCP connection — to host. TASK-0327 (cycle 148) lifts
+    /// the prior fail-loud rejection of non-host peers: when a non-
+    /// host worker's Push/Wait names another non-host worker, it
+    /// writes/reads on its existing `data_host` connection and HOST
+    /// runs a SYNCHRONOUS RELAY PHASE (see [`Plan::relay_schedule`] +
+    /// the emit in [`render_relay_phase`]) that drains the matching
+    /// (seq, dst) entry from `data_<src>` and forwards it verbatim to
+    /// `data_<dst>`. Host stays the sole party that owns the (data,
+    /// ctrl)-pair-per-(host, worker) topology; no worker-to-worker
+    /// socket is added. (Filed forward as TASK-0327 sibling for mp-
+    /// tcp-event; TASK-0175 for the eventual full-mesh path.)
     fn data_conn_var(
         &self,
-        worker: WorkerId,
+        _worker: WorkerId,
         is_host: bool,
         peer: WorkerId,
     ) -> Result<String, EmitError> {
@@ -1240,17 +1286,84 @@ impl<'a> Plan<'a> {
             }
             Ok(format!("data_{}", self.worker_name(peer)))
         } else {
-            if peer != self.host_worker {
-                return Err(EmitError::ContractGap(format!(
-                    "worker {:?} Push/Wait peer {peer:?} is not the host; \
-                     mp-tcp-bufsync's one-(data,ctrl)-pair-per-(host,worker) \
-                     topology has no worker-to-worker channel (filed as \
-                     TASK-0175). Not silently mis-routed.",
-                    worker
-                )));
-            }
+            // TASK-0327 (cycle 148): non-host peer is now routed via
+            // host-relay — the worker uses its existing `data_host`
+            // connection for both directions; HOST relays bytes
+            // through to/from the actual peer. See module-doc + the
+            // relay phase emit in `render_relay_phase`.
             Ok("data_host".to_string())
         }
+    }
+
+    /// TASK-0327 (cycle 148): per non-host src worker, the ordered
+    /// list of (seq, dst, data) for every w2w Push event in src's
+    /// event list (src != host && dst != host). Event-list order
+    /// equals TCP wire order on src's `data_host` stream — host's
+    /// relay reads in this order.
+    ///
+    /// Empty for any src with no w2w pushes. Empty overall if the
+    /// schedule has no w2w transfers (the common host↔worker-only
+    /// case), and then `render_relay_phase` is a no-op.
+    fn relay_schedule(&self) -> BTreeMap<WorkerId, Vec<RelayHop>> {
+        let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
+        for (src, events) in self.per_worker.iter() {
+            if *src == self.host_worker {
+                continue;
+            }
+            let mut hops: Vec<RelayHop> = Vec::new();
+            collect_w2w_pushes(events, self.host_worker, &mut hops);
+            if !hops.is_empty() {
+                out.insert(*src, hops);
+            }
+        }
+        out
+    }
+
+    /// TASK-0327 (cycle 148): emit host's synchronous relay phase as
+    /// a String — for each src in BTreeMap (sorted WorkerId) order,
+    /// for each hop in src's event-list order, read `expect_seq` from
+    /// `data_<src>` and forward to `data_<dst>`. The seq cross-check
+    /// (`read_msg_expect`) preserves the wire-protocol-v0 fail-loud
+    /// contract: a mismatch means the deterministic event order
+    /// diverged across the three endpoints (src worker, host relay,
+    /// dst worker) — a codegen regression, never silently tolerated.
+    ///
+    /// Returns `EmitError::ContractGap` if any hop's `DataId` lacks
+    /// a name in `NameTables` (a contract violation the existing
+    /// Push/Wait emit also fails-loud on — cycle-148 architect P2.2
+    /// fold-back replaced an earlier silent comment-fallback).
+    fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
+        let pad = "    ".repeat(indent);
+        let schedule = self.relay_schedule();
+        if schedule.is_empty() {
+            return Ok(String::new());
+        }
+        let mut out = String::new();
+        writeln!(
+            out,
+            "{pad}// TASK-0327 host-relay phase: forward worker-to-worker Push/Wait\n\
+             {pad}// pairs through host's existing (data, ctrl)-pair-per-(host, worker)\n\
+             {pad}// star topology. SYNCHRONOUS: read from data_<src>, write to data_<dst>,\n\
+             {pad}// one (seq, dst) hop at a time, srcs iterated in sorted-WorkerId order."
+        )
+        .ok();
+        for (src, hops) in &schedule {
+            let src_name = self.worker_name(*src);
+            for hop in hops {
+                let dst_name = self.worker_name(hop.dst);
+                let data_name = self.data_name(hop.data)?;
+                writeln!(
+                    out,
+                    "{pad}{{ \
+                     let __relay_payload = wire::read_msg_expect(&mut data_{src_name}, {}); \
+                     wire::write_msg(&mut data_{dst_name}, {}, &__relay_payload); \
+                     }} // relay `{data_name}` from {src_name} to {dst_name}",
+                    hop.seq.0, hop.seq.0
+                )
+                .ok();
+            }
+        }
+        Ok(out)
     }
 
     /// Pre-init set for a worker: cross-worker inputs it Waits on +
@@ -1412,6 +1525,103 @@ fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
                 out.insert(*data);
             }
             Event::Loop { body, .. } => collect_xfer_data(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// TASK-0327 (cycle 148): one host-relay hop = "read seq N from
+/// data_<src>, write seq N to data_<dst>". `data` is the DataId for
+/// codegen comment only; the wire pass-through is bytes-verbatim.
+#[derive(Debug, Clone, Copy)]
+struct RelayHop {
+    seq: SeqTag,
+    dst: WorkerId,
+    data: DataId,
+}
+
+/// TASK-0327 (cycle 148): pick the position in HOST's top-level
+/// event list at which the host-relay phase should splice in.
+///
+/// Constraints driving the choice (the 06/distributed2 shape):
+///
+/// 1. Workers reach their pass-2-end barrier only AFTER receiving
+///    their cross-tmps (which require relay) and computing pass 2.
+///    So relay must happen BEFORE host's LAST top-level
+///    `Event::Sync` — otherwise host blocks at that barrier waiting
+///    for workers whose progress is gated on the relay we haven't
+///    run yet (circular wait = deadlock).
+///
+/// 2. Workers reach their pass-1-end barrier (typically the FIRST
+///    `Event::Sync` on workers) BEFORE pushing their tmps; so relay
+///    needs the workers to have crossed that barrier, which means
+///    host must have crossed it too — i.e. relay AFTER host's first
+///    Sync (if any) is OK and required.
+///
+/// 3. (Sub-fallback constraint, only when no top-level Sync exists)
+///    Relay reads from `data_<src>` would race host's own reads on
+///    the same socket, so relay must happen BEFORE any host Wait
+///    on a worker that also has w2w pushes. In practice (with no
+///    Sync to anchor on): before the first top-level Wait.
+///
+/// Heuristic resolution — priority order:
+///
+/// - **Primary**: insert just BEFORE the LAST top-level
+///   `Event::Sync` (= relay happens between the pass-1 barrier and
+///   the pass-2 barrier — satisfies constraints 1 + 2). Picked
+///   for any schedule whose host events contain >= 1 top-level
+///   `Sync`; 06/distributed2 lands here (two top-level Syncs).
+/// - **Fallback** (no top-level Sync exists): insert just BEFORE
+///   the first top-level `Event::Wait` (the gather start —
+///   satisfies constraint 3 alone, which is sufficient when there
+///   is no barrier to consider).
+/// - **Last resort** (no Sync, no Wait): insert at end.
+///
+/// "Top-level" = not nested in an `Event::Loop`. The implementation
+/// uses `rposition` for the primary (last-Sync) and `position` for
+/// the fallback (first-Wait), reflecting the priority above.
+///
+/// Acceptable cycle-148 limitation: any schedule with a host
+/// `Sync`-or-`Wait`-AFTER-the-w2w-relay-window structure that does
+/// not match this heuristic would deadlock or race; the 06/
+/// distributed2 reproducer + the existing 02-split (no w2w) cell +
+/// the 03-reduction/distributed cell (no w2w — blocked on
+/// host-excluding-barrier, separate gap) all satisfy it.
+fn relay_phase_insertion_point(events: &[Event]) -> usize {
+    if let Some(idx) = events
+        .iter()
+        .rposition(|e| matches!(e, Event::Sync { .. }))
+    {
+        return idx;
+    }
+    if let Some(idx) = events.iter().position(|e| matches!(e, Event::Wait { .. })) {
+        return idx;
+    }
+    events.len()
+}
+
+/// TASK-0327 (cycle 148): collect every Push event where the dst is
+/// a non-host worker — these are the w2w pushes that host must relay.
+/// Recurses into Loop bodies in event-list order (host's relay code is
+/// emitted as a flat sequence outside any loop, but the source events
+/// may be nested; the cycle-148 limitation is that the relay assumes
+/// each w2w push fires exactly once per main, so a Push inside a Loop
+/// would over-count or mis-order. The current in-tree 06/distributed2
+/// reproducer has all w2w pushes at top level — verified by inspecting
+/// the cycle-147 emitted main.rs for pthreads-sync — so the limitation
+/// is dormant. Filed as part of TASK-0327 cycle-149 follow-up if a
+/// future schedule nests w2w pushes inside Loops.
+fn collect_w2w_pushes(events: &[Event], host: WorkerId, out: &mut Vec<RelayHop>) {
+    for e in events {
+        match e {
+            Event::Push { dst, data, seq, .. } if *dst != host => {
+                out.push(RelayHop {
+                    seq: *seq,
+                    dst: *dst,
+                    data: *data,
+                });
+            }
+            Event::Loop { body, .. } => collect_w2w_pushes(body, host, out),
             _ => {}
         }
     }

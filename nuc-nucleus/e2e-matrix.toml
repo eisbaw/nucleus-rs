@@ -1282,15 +1282,13 @@ milestone = "M5"
 # reference.bin on pthreads-sync + pthreads-async (shared-memory
 # backends — N-to-N codegen lowers cleanly to slot-Arc + Condvar).
 #
-# The two mp-tcp backends (mp-tcp-bufsync, mp-tcp-event) STILL skip
-# this cell — their star topology (one-(data,ctrl)-pair-per-(host,
-# worker)) has no worker-to-worker channel, so the per-pair fan-out
-# `Push WorkerId(1) -> WorkerId(2)` fails LOUD with the same
-# EmitError::ContractGap the existing 05-stencil/distributed-2d ×
-# mp-tcp-event skip + reduction-distributed × mp-tcp-event skip cite
-# (TASK-0175). TASK-0175 was closed as deferred-until-such-a-schedule-
-# exists; that condition is now met. Filed as TASK-0327 for the
-# follow-up mesh / host-relay codegen extension.
+# POST-CYCLE-148 (TASK-0327 first slice): mp-tcp-bufsync lifted via
+# host-relay (data_conn_var routes non-host peer through data_host;
+# HOST runs a synchronous 12-hop relay phase spliced between pass-1
+# barrier and pass-2 barrier). 3 of 4 tier-1 backends bit-identical
+# on 06/distributed2 (pthreads-sync, pthreads-async, mp-tcp-bufsync).
+# Only mp-tcp-event remains [[skip]], pending cycle-149 replication
+# of the host-relay shape into the mio reactor.
 
 [[required]]
 example  = "06-separable-filter"
@@ -1304,16 +1302,22 @@ schedule = "distributed2"
 backend  = "pthreads-async"
 milestone = "M5"
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): cycle-147 AC#3 cross-worker tmp codegen lowers cleanly for shared-memory backends (pthreads-sync, pthreads-async) but mp-tcp-bufsync's star topology has no worker-to-worker channel. The 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events fail LOUD with EmitError::ContractGap at Plan::build (the same topology limit the 03-reduction/distributed × mp-tcp-bufsync skip + 05-stencil/distributed-2d × mp-tcp-event skip cite — verbatim message: `mp-tcp-bufsync's one-(data,ctrl)-pair-per-(host,worker) topology has no worker-to-worker channel (filed as TASK-0175)`). Codegen correctly fails loud rather than silently mis-routing. Follow-up filed as TASK-0327."
 milestone = "M5"
+# TASK-0327 cycle 148 host-relay: data_conn_var lifted to route non-
+# host peer through `data_host`; HOST runs a synchronous relay phase
+# (12 read+write hops, srcs iterated sorted-WorkerId order) spliced
+# between the pass-1-end and pass-2-end barriers. Bit-identical
+# against reference.bin verified. mp-tcp-event sibling still skipped
+# pending cycle-149 (same host-relay shape transplanted into the mio
+# reactor).
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-event"
-reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): same topology limit as mp-tcp-bufsync sibling — the 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events fail LOUD with EmitError::ContractGap (verbatim: `the star topology requires host as the relay (filed as TASK-0175)`). Follow-up filed as TASK-0327."
+reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): cycle 148 landed host-relay for the SIBLING mp-tcp-bufsync backend (now [[required]] above); mp-tcp-event still skipped pending the cycle-149 replication into the mio reactor (per-(seq, peer) Chan abstraction needs an adapter for the relay phase). The 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events still fail LOUD with EmitError::ContractGap (verbatim: `the star topology requires host as the relay (filed as TASK-0175)`)."
 milestone = "M5"
