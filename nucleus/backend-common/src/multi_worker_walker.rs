@@ -1094,20 +1094,32 @@ pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag),
 /// mp-tcp-event) had been duplicating inline (TASK-0300, cycle 130
 /// hardening from TASK-0296 cycle-116 architect P1.2).
 ///
-/// First-sighting on a given `(DataId, SeqTag)` wins; later sightings
-/// are dropped. Both endpoints carry the same `IterTile` by the
-/// XferPlaceholder construction (TASK-0018), so under valid input the
-/// dropped sightings agree with the kept one and the choice is
-/// observationally a no-op.
+/// # Contract
 ///
-/// Determinism of "first" under hypothetical drift (the cycle-130 pin
-/// test `first_sighting_wins_on_conflicting_tiles`): callers pass
-/// `per_worker.values()` where `per_worker: BTreeMap<WorkerId,
-/// Vec<Event>>`. `BTreeMap::values()` iterates in key-ascending order,
-/// so "first sighting" = the lowest-`WorkerId` worker whose event list
-/// names that `(DataId, SeqTag)`. The helper's output is keyed only on
-/// `(DataId, SeqTag)`, so worker iteration order cannot leak into the
-/// output's KEY ordering — only into which tile wins on a conflict.
+/// First-sighting on a given `(DataId, SeqTag)` wins; later sightings
+/// are dropped. Under valid input, both endpoints carry the same
+/// `IterTile` by the XferPlaceholder construction (TASK-0018), so the
+/// dropped sightings agree with the kept one and the choice is
+/// observationally a no-op. "First" means *first in the input
+/// iterator's order* — the helper has no opinion about what that order
+/// is; it inherits it from the caller.
+///
+/// # Current-caller convention (informational, not part of the contract)
+///
+/// All four tier-1 backends pass `per_worker.values()` where
+/// `per_worker: BTreeMap<WorkerId, Vec<Event>>`. `BTreeMap::values()`
+/// iterates in key-ascending order, so for those callers "first
+/// sighting" = the lowest-`WorkerId` worker whose event list names
+/// that `(DataId, SeqTag)`. This is what the cycle-130 pin test
+/// `first_sighting_wins_on_conflicting_tiles` relies on. A different
+/// caller (e.g. `Vec<&[Event]>::iter().copied()` from the cycle-131
+/// `vec_of_slices_input_compiles_and_collects` test) sees
+/// insertion-order, not WorkerId-ascending — both are valid uses; the
+/// helper does not assume the BTreeMap shape.
+///
+/// The output is keyed only on `(DataId, SeqTag)`, so input iteration
+/// order cannot leak into the output's KEY ordering — only into which
+/// tile wins on a conflict.
 pub fn collect_pair_tiles<'a, I, T>(events_per_worker: I) -> BTreeMap<(DataId, SeqTag), IterTile>
 where
     I: IntoIterator<Item = &'a T>,

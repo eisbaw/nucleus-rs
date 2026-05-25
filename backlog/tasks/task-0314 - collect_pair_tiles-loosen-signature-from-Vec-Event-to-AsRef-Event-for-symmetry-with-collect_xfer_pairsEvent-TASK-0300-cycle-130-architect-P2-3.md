@@ -4,11 +4,11 @@ title: >-
   collect_pair_tiles: loosen signature from &Vec<Event> to AsRef<[Event]> for
   symmetry with collect_xfer_pairs(&[Event]) (TASK-0300 cycle-130 architect P2
   #3)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 07:56'
-updated_date: '2026-05-25 08:00'
+updated_date: '2026-05-25 08:12'
 labels:
   - backend-common
   - refactor
@@ -89,3 +89,45 @@ AC mapping:
 - AC#3 (new test proves impedance removal): step 2.
 - AC#4 (cycle-130 tests still pass unchanged): step 3 (cycle-130 tests use per_worker.values() → unchanged).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 131 review-hardening fold-back (commit e03a626 + this commit)
+
+Mandatory parallel read-only review gate (qa-test-runner + mped-architect, in parallel):
+
+### qa-test-runner: GO
+- just build / clippy / test (859/0/3) / test-release (859/0/3 — identical to dev) / e2e (108/92/0/16/0 on BOTH consecutive runs, deterministic) / check-textual-replace-on-codegen / check-include-str-coverage — all 7 arms green.
+- The 5 collect_pair_tiles tests all pass (4 from cycle 130 + vec_of_slices_input_compiles_and_collects new this cycle).
+- ?Sized + AsRef widening landed with zero clippy warnings and zero rustc inference noise.
+
+### mped-architect: GO (1 P2 + sundry P3 mention-only)
+
+Folded in-thread on this same cycle:
+
+- **P2-1** (FIXED): comment-doc-lie regression introduced by THIS cycle's widening. The cycle-130 docstring 'Determinism of first under hypothetical drift' paragraph asserted as a helper-contract property that callers pass per_worker.values() from a BTreeMap<WorkerId, Vec<Event>>. After cycle 131 widened the type contract, that BTreeMap-specific framing describes only one of multiple valid callers (the new vec_of_slices test deliberately uses a Vec<&[Event]> whose order is insertion-order, not WorkerId-ascending). Docstring restructured with a '# Contract' section (first-sighting under input iterator order; helper has no opinion about that order) separated from a '# Current-caller convention (informational, not part of the contract)' section (the 4 backends' BTreeMap::values() pattern). Defends against [[feedback-comment-doc-lie-recurring]] firing on a docstring that the cycle's own signature change made stale.
+
+P3 findings (mention-only, no fold-back):
+- P3-1: ?Sized bound load-bearing for the new test (T = [Event] needs it); architect verified correct.
+- P3-2: test regression-sensitivity premise validated by architect (Vec<&[Event]> would fail to compile under hypothetical narrowing back to &Vec<Event>).
+- P3-3: honest scope clean.
+- P3-4: no cross-impact regression risk.
+
+### Honest scope at AC level
+
+All 4 ACs of TASK-0314 met by cycle 131:
+- AC#1 (signature widened to AsRef<[Event]>): commit e03a626.
+- AC#2 (4 backends still compile + e2e baseline preserved): commit e03a626 (per_worker.values() still satisfies the bound via Vec<Event>: AsRef<[Event]> std blanket).
+- AC#3 (new test proves impedance removal): commit e03a626 (vec_of_slices_input_compiles_and_collects with Vec<&[Event]>::iter().copied()).
+- AC#4 (cycle-130 4 tests unchanged): commit e03a626 (all 5 tests green, including the 4 cycle-130 ones).
+
+### Forward-carry / lessons feed-forward
+
+- Lesson for any future cycle that widens a generic signature on backend-common: the SAME cycle MUST audit the cycle-N docstring for narrative-tense / contract-vs-convention drift. The cycle-131 P2-1 demonstrates the pattern fires on docstrings the *current cycle's own* widening invalidates — not just legacy docs. Worth one re-read of every docstring on the changed symbol BEFORE committing.
+- The architect P2-2 sibling-helper observation (only collect_pair_tiles is generic; collect_xfer_pairs / collect_worker_rendezvous / collect_barriers_by_tag / collect_pre_init_sets all take &[Event] directly) is the correct shape for those helpers — they already take the most permissive slice shape. The asymmetry is correct and DOES NOT need follow-up; if a future cycle hoists ANOTHER multi-worker fold helper (one that walks the per-worker outer iterator), it should match the cycle-131 AsRef<[Event]> generic shape.
+
+## Cycle 131 status
+
+In Progress → Done after the review-hardening fold-back lands on a green re-gate (108/92/0/16/0 preserved through the hardening commit).
+<!-- SECTION:NOTES:END -->
