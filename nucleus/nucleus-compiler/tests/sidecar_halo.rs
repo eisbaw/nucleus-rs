@@ -691,6 +691,18 @@ fn task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one() {
     // comment-doc-lie and this test fails LOUD, forcing the comment to
     // be updated in the same commit. Defends against
     // feedback-comment-doc-lie-recurring on this sibling narrative.
+    //
+    // Contract degree of freedom (TASK-0305 cycle-122 decision, Option
+    // B): halo_inference's contract permits an explicit entry OR
+    // omission (see halo_inference.rs:53-57). This test uses
+    // `.unwrap_or(0)` and asserts `blur3_y == 1`. The assert is
+    // robust UNDER EITHER contract form — a value of 1 must be
+    // explicitly present. Soundness floor: a regression that silently
+    // produced NO entries for blur3 would surface as `unwrap_or(0) →
+    // 0 ≠ 1` and fail LOUD. So this >0 pin is
+    // contract-form-independent BY CONSTRUCTION — no vacuous-pass arm
+    // here (unlike the `== 0` pins in task0299 / task0303_07, which
+    // DO admit vacuous-pass under silent-skip).
     let (_linked, acfg) = lower("05-stencil", "schedules/distributed-2d.sched.nuc");
 
     let blur3_id = *acfg.name_kernels.get("blur3").expect("blur3 in ACFG");
@@ -750,6 +762,22 @@ fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
     // OR is explicit-0 for every inspected (kernel, iv). The claim
     // "max halo over i is 0" is the strongest pin and trivially
     // satisfied by either contract form.
+    //
+    // Soundness floor (TASK-0305 cycle-122 decision, Option B): the
+    // contract degree of freedom DOES admit a vacuous pass on a future
+    // silent-skip regression. If halo_inference were to stop emitting
+    // entries for madd entirely (a walker bug), both `madd_i == 0`
+    // (.unwrap_or(0) → 0 ≡ 0) and `max_halo == 0` (empty map .max() →
+    // .unwrap_or(0) → 0 ≡ 0) would pass vacuously. Accepted per
+    // contract; the alternative (a strict key-exists assertion) would
+    // narrow halo_inference.rs:53-57's permitted representations and
+    // is rejected on test-coupling grounds. The vacuous-pass risk is
+    // judged unlikely: today's production walker at `record_halo`
+    // (search for `per_iv.entry(iv).or_insert(0)` in halo_inference.rs)
+    // always emits an explicit-0 entry for every inspected (kernel, iv)
+    // pair. Cycle-122 architect filed TASK-0307 as a structural sentinel
+    // (one-line `Some(0)` key-exists pin at the in-module test boundary)
+    // — closes the vacuous-pass arm without coupling downstream tests.
     //
     // If a future kernel-surface change introduces a non-zero i-axis
     // offset (e.g. `a[i+1][k]` for some fused stencil-matmul), the

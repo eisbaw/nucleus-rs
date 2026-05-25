@@ -55,6 +55,22 @@
 //!    Stage-2 consumer can distinguish "inspected, no halo needed"
 //!    from "kernel never inspected this axis"); the contract permits
 //!    either form — consumers MUST treat absence and 0 identically.
+//!
+//!    **TASK-0305 cycle-122 project decision (Option B)**: the
+//!    `absent ≡ explicit-0` degree of freedom is the LOAD-BEARING
+//!    representation contract; downstream tests MAY (and the shipped
+//!    `tests/sidecar_halo.rs` `task0299_*` / `task0303_*` narrative
+//!    pins DO) consult `halo_widths.get(...).copied().unwrap_or(0)`
+//!    and accept either form. Trade-off accepted: a future
+//!    silent-skip regression on the per-iv `or_insert(0)` emit site
+//!    (the production sink at `record_halo` — search for
+//!    `per_iv.entry(iv).or_insert(0)` in this file) would let `== 0`
+//!    narrative pins pass vacuously. Judged unlikely; preserving the
+//!    contract robustness is worth the accepted vacuous-pass arm. A
+//!    future change to require explicit-0 (Option C) would need a
+//!    contract-pin test of the new invariant plus consumer-side
+//!    `unwrap_or(0)` → explicit `expect(...)` migration across the
+//!    test suite.
 //! 4. `-iv` (the negation of an iter-var Ident). `iv * -1 + 0` is
 //!    coefficient `-1`, which DOES qualify as `a == 1` in magnitude — but
 //!    reverses iteration order. For the FIRST CUT we reject this with
