@@ -4,9 +4,11 @@ title: >-
   transfer_inject behaviour pin sibling-sweep: 05-stencil/distributed-2d +
   07-matmul/distributed behaviour layer (TASK-0304 cycle-124 architect P2.2 +
   P2.4)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 05:04'
+updated_date: '2026-05-25 05:14'
 labels:
   - M5
   - test-coverage
@@ -58,3 +60,15 @@ LOW priority. The behaviour-layer regression risk for halo-bearing distributed s
 - TASK-0302 — open 2D iv↔dim mapping limit; may bear on the 05/distributed-2d test fixture shape.
 - Memory: `feedback-silent-sibling-defect` — the recurrence pattern this task closes.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Cycle 125 implementation plan (orchestrator in-thread, mirror cycle-124 task0304_* idiom):
+- Add task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_in_y_AND_x to nucleus/nucleus-compiler/tests/sidecar_halo.rs. Lower 05/distributed-2d; filter acfg.root.collect_xfers() for XferRole::Push && data == img_in_id; for each per-worker Push, lookup partition_worker_ranges[y_iv][x.dst] AND partition_worker_ranges[x_iv][x.dst]; assert both bounds present in x.tile.bounds; assert each EQUAL (band.start - 1)..(band.end + 1). Source range for y and x is 1..15; bands are 7-wide → expansion stays inside source clamp; strong band±1 holds. Assert seen_workers.len() == 4 (w0..w3).
+- Add task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i. Lower 07/distributed; filter for XferRole::Push && data == a_id; for each per-worker Push, lookup partition_worker_ranges[i_iv][x.dst]; assert i bound present + EQUAL the band (no extension because halo_widths[madd][i] = 0). Assert seen_workers.len() == 4.
+- Each test cites the schedule-header line range; failure message names the conjunct + the precise tile.bounds[iv] vs expected.
+- Run nix develop -c just check + clippy + test + test-release + e2e to confirm 108/92/0/16/0 preserved and tests pass dev+release.
+- Spawn parallel read-only review gate (qa-test-runner + mped-architect) on the cycle commit.
+- Commit per the project convention (no AI co-author), append-notes + final-summary to TASK-0310, mark Done iff gate is GO.
+<!-- SECTION:PLAN:END -->

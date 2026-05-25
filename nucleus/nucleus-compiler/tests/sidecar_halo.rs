@@ -1062,3 +1062,304 @@ fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_
         seen_workers
     );
 }
+
+// ----------------------------------------------------------------------
+// TASK-0310: behaviour-layer sibling-sweep on the cycle-124 task0304_*
+// pattern. The cycle-124 architect review-gate (P2.2 + P2.4) flagged
+// two structurally-identical narratives that pin the halo_widths VALUE
+// (task0303_05 + task0303_07) without pinning the downstream
+// transfer_inject BEHAVIOUR (per-tile transfer ranges actually
+// extended/not). The cycle-124 task0304_* tests closed that gap for
+// 05-stencil/distributed (halo=1 → band±1) and 06-separable-filter/
+// distributed (halo=0 → band unchanged); the two tests below extend
+// the sweep to:
+//   - 05-stencil/distributed-2d (partition=blocks2d, halo=1 on BOTH y
+//     and x — the 2D analog of task0304_05).
+//   - 07-matmul/distributed (partition=workers on i, halo=0 — the
+//     1D-no-halo analog of task0304_06).
+// Defends against `feedback-silent-sibling-defect` on the
+// transfer_inject behaviour-claim layer.
+// ----------------------------------------------------------------------
+
+#[test]
+fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_in_y_and_x() {
+    // Schedule header at nuc-nucleus/examples/05-stencil/schedules/
+    // distributed-2d.sched.nuc carries the 2D analog of cycle-83
+    // TASK-0263's load-bearing transfer_inject claim: per-worker
+    // tiles of img_in must be extended by halo=1 on BOTH y AND x so
+    // each worker's blur3 reads have the 3x3 neighbourhood that
+    // crosses tile boundaries available locally.
+    //
+    // Behaviour pin (mirror task0304_05 idiom but with TWO axes):
+    // for each per-worker Push of img_in, the y bound MUST EQUAL
+    // `(band_y.start - 1)..(band_y.end + 1)` AND the x bound MUST
+    // EQUAL `(band_x.start - 1)..(band_x.end + 1)`. Both axes are
+    // populated by `partition_blocks2d` into the same
+    // `partition_worker_ranges` map keyed by each iv independently
+    // (partition_blocks2d.rs:428-429 — outer_iter_var + inner_iter_var
+    // each get their own per-worker map entry).
+    //
+    // Source-clamp arithmetic (load-bearing, same shape as task0304_05):
+    //   - Algorithm loops are `for y : 1..H-1` and `for x : 1..W-1`
+    //     with H = W = 16 (05-stencil/prog.algo.nuc:69-70 +
+    //     prog.algo.nuc:37). Source ranges: y=1..15, x=1..15. After
+    //     halo expansion by ±1 the clamps are (0, 16) on each axis.
+    //   - 2x2 grid, 14/2 = 7 rows and 7 cols per worker (exact-
+    //     divisible). Bands (read from
+    //     `acfg.partition_worker_ranges` at runtime — not hardcoded
+    //     in the assertion):
+    //       w0: y=1..8,  x=1..8     w1: y=1..8,  x=8..15
+    //       w2: y=8..15, x=1..8     w3: y=8..15, x=8..15
+    //   - After ±1 extension: w0 → y=0..9 / x=0..9; w1 → y=0..9 /
+    //     x=7..16; w2 → y=7..16 / x=0..9; w3 → y=7..16 / x=7..16.
+    //     None of the bands hit either clamp boundary tightly
+    //     (interior bands w1.x.end+1 = 16 == clamp_hi = 16 but the
+    //     clamp `min` is the same value — no narrowing). The strong
+    //     band±1 assertion holds.
+    //
+    // What a future regression would look like:
+    //   - The TASK-0306 latent (open) data-layout/iv-permutation-
+    //     aware bounds emission risk: if the dim-prefix logic ever
+    //     stopped emitting both ivs for img_in (e.g. swapping to an
+    //     inner-axis-leading partition shape or a non-prefix data
+    //     layout), one of the two bound lookups would panic at the
+    //     `find().unwrap_or_else` call — visible name in the failure.
+    //   - A regression in extend_xfer_tiles_inner that touched only
+    //     one axis would surface as a band-not-band±1 mismatch on the
+    //     untouched axis. The assertion's error message names which
+    //     axis (y vs x) and which worker.
+    //
+    // Soundness floor: bands are read from the live
+    // `partition_worker_ranges` map (the source of truth for
+    // partition=blocks2d), so the test stays robust under future
+    // partition-arithmetic changes (band shape, divisibility policy)
+    // — same as the cycle-124 task0304_* pattern.
+    let (_linked, acfg) = lower("05-stencil", "schedules/distributed-2d.sched.nuc");
+
+    let img_in_id = *acfg
+        .name_data
+        .get("img_in")
+        .expect("img_in in ACFG name_data");
+    let y_iv = *acfg.name_iter_vars.get("y").expect("y in ACFG name_iter_vars");
+    let x_iv = *acfg.name_iter_vars.get("x").expect("x in ACFG name_iter_vars");
+
+    let y_bands = acfg
+        .partition_worker_ranges
+        .get(&y_iv)
+        .expect("partition_worker_ranges[y] populated by partition_blocks2d pass");
+    let x_bands = acfg
+        .partition_worker_ranges
+        .get(&x_iv)
+        .expect("partition_worker_ranges[x] populated by partition_blocks2d pass");
+    // The 05/distributed-2d schedule emits TWO kinds of Pushes for
+    // img_in: (a) the host-broadcast main Pushes (host → compute
+    // worker) carrying each worker's tile extended by halo=1 — the
+    // cycle-83 TASK-0263 claim this test pins; (b) the cross-worker
+    // halo-strip Pushes (compute worker → compute worker) synthesised
+    // by the TASK-0289 cycle-114a `inject_halo_strip_xfers` pass,
+    // carrying 1-row / 1-column halo strips. The TASK-0263 BEHAVIOUR
+    // claim is about (a); the strips have their own narrow bounds
+    // that are a separate pass's contract. Filter to host-broadcast
+    // Pushes by excluding any Push whose `src` is itself a compute
+    // worker (a key of `partition_worker_ranges[y_iv]`).
+    let compute_workers: BTreeSet<WorkerId> = y_bands.keys().copied().collect();
+
+    let mut seen_workers: BTreeSet<WorkerId> = BTreeSet::new();
+    for x in acfg.root.collect_xfers() {
+        if x.role != XferRole::Push || x.data != img_in_id {
+            continue;
+        }
+        if compute_workers.contains(&x.src) {
+            // Halo-strip Push (TASK-0289); not the host-broadcast main
+            // Push this behaviour pin is about. Skip.
+            continue;
+        }
+        let y_band = y_bands.get(&x.dst).cloned().unwrap_or_else(|| {
+            panic!(
+                "Push of img_in to dst={:?} but dst is NOT a partition \
+                 worker on y; partition_worker_ranges[y] = {:?}",
+                x.dst, y_bands
+            )
+        });
+        let x_band = x_bands.get(&x.dst).cloned().unwrap_or_else(|| {
+            panic!(
+                "Push of img_in to dst={:?} but dst is NOT a partition \
+                 worker on x; partition_worker_ranges[x] = {:?}",
+                x.dst, x_bands
+            )
+        });
+        let actual_y_bound = x
+            .tile
+            .bounds
+            .iter()
+            .find(|(iv, _)| *iv == y_iv)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of img_in to {:?} must have y in tile.bounds \
+                     under partition=blocks2d; got bounds={:?}. (If this \
+                     fires under a future inner-axis-leading partition or \
+                     non-prefix data layout, see open TASK-0306.)",
+                    x.dst, x.tile.bounds
+                )
+            });
+        let actual_x_bound = x
+            .tile
+            .bounds
+            .iter()
+            .find(|(iv, _)| *iv == x_iv)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of img_in to {:?} must have x in tile.bounds \
+                     under partition=blocks2d; got bounds={:?}. (If this \
+                     fires under a future inner-axis-leading partition or \
+                     non-prefix data layout, see open TASK-0306.)",
+                    x.dst, x.tile.bounds
+                )
+            });
+        let expected_y = (y_band.start - 1)..(y_band.end + 1);
+        let expected_x = (x_band.start - 1)..(x_band.end + 1);
+        assert_eq!(
+            actual_y_bound, expected_y,
+            "Push of img_in to {:?}: y bound MUST EQUAL band_y±1 \
+             (halo_widths[blur3][y] = 1; extension expected by \
+             transfer_inject::extend_xfer_tiles_inner on the 2D-grid \
+             distributed-2d schedule). Defends the cycle-83 TASK-0263 \
+             narrative extended to the partition=blocks2d shape at \
+             05-stencil/schedules/distributed-2d.sched.nuc. \
+             Got y={}..{}, expected={}..{} (band was {}..{}). Full \
+             tile.bounds={:?}.",
+            x.dst,
+            actual_y_bound.start, actual_y_bound.end,
+            expected_y.start, expected_y.end,
+            y_band.start, y_band.end,
+            x.tile.bounds,
+        );
+        assert_eq!(
+            actual_x_bound, expected_x,
+            "Push of img_in to {:?}: x bound MUST EQUAL band_x±1 \
+             (halo_widths[blur3][x] = 1; the 2D analog of the y axis \
+             above). Defends the cycle-83 TASK-0263 narrative on the \
+             SECOND axis of the partition=blocks2d shape — a regression \
+             that extended only one axis would surface here. \
+             Got x={}..{}, expected={}..{} (band was {}..{}). Full \
+             tile.bounds={:?}.",
+            x.dst,
+            actual_x_bound.start, actual_x_bound.end,
+            expected_x.start, expected_x.end,
+            x_band.start, x_band.end,
+            x.tile.bounds,
+        );
+        seen_workers.insert(x.dst);
+    }
+    assert_eq!(
+        seen_workers.len(),
+        4,
+        "expected 4 distinct compute-worker dst for img_in Pushes under \
+         partition=blocks2d (2x2 grid → 4 workers); saw {:?}",
+        seen_workers
+    );
+}
+
+#[test]
+fn task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i() {
+    // Schedule header at nuc-nucleus/examples/07-matmul/schedules/
+    // distributed.sched.nuc:13-22 + :40-42 carries the load-bearing
+    // claim: `no halo, no cross-worker carry` on the partitioned `i`
+    // axis. task0303_07 (cycle 120) pins the halo_widths VALUE side
+    // (`madd_i == 0` + defensive max=0); this test pins the BEHAVIOUR
+    // half — that transfer_inject's halo-extension early-out at
+    // `extend_xfer_tiles_inner`'s `if halo == 0 { push unchanged }`
+    // (transfer_inject.rs:~2188) fires for a's i bound.
+    //
+    // Behaviour pin (mirror task0304_06 idiom):
+    // for each per-worker Push of `a`, the i bound MUST EQUAL the
+    // worker's partition band — no extension, no widening. A future
+    // regression that unconditionally extended ANY axis (e.g. a code
+    // path that emits +halo even when halo=0, or a wrong default in
+    // the early-out) would surface here.
+    //
+    // Why `a` and not `b` or `c`:
+    //   - `a` is indexed [i][k]; dim 0 is partitioned (i), so
+    //     `compute_partition_bounds_with_dim_prefix` returns
+    //     non-empty bounds — exactly the shape this test asserts on.
+    //   - `b` is indexed [k][j]; dim 0 is k (NOT partitioned) — the
+    //     dim-prefix filter returns empty (whole-array broadcast)
+    //     per TASK-0301 cycle 118. No per-tile bound to check.
+    //   - `c` is the OUTPUT (worker → host Push, gathered); its
+    //     i bound is structurally identical to a's, but pinning a is
+    //     the minimal sufficient case for the no-halo-on-i claim.
+    //
+    // Soundness floor: bands are read from
+    // `acfg.partition_worker_ranges[i_iv]` (the source of truth for
+    // partition=workers), so the test stays robust under future band-
+    // arithmetic changes (e.g. TASK-0262 remainder policy).
+    //
+    // Source range for i is 0..N = 0..16; bands are 4-wide
+    // (16/4=4): w0=0..4, w1=4..8, w2=8..12, w3=12..16. Halo extension
+    // would expand by 0 → no change (early-out at transfer_inject.rs
+    // :~2188 returns `range.clone()`). The strong band-equality
+    // assertion holds.
+    let (_linked, acfg) = lower("07-matmul", "schedules/distributed.sched.nuc");
+
+    let a_id = *acfg.name_data.get("a").expect("a in ACFG name_data");
+    let i_iv = *acfg.name_iter_vars.get("i").expect("i in ACFG name_iter_vars");
+
+    let bands = acfg
+        .partition_worker_ranges
+        .get(&i_iv)
+        .expect("partition_worker_ranges[i] populated by partition_workers pass");
+
+    let mut seen_workers: BTreeSet<WorkerId> = BTreeSet::new();
+    for x in acfg.root.collect_xfers() {
+        if x.role != XferRole::Push || x.data != a_id {
+            continue;
+        }
+        let expected_band = bands.get(&x.dst).cloned().unwrap_or_else(|| {
+            panic!(
+                "Push of a to dst={:?} but dst is NOT a partition \
+                 worker; partition_worker_ranges[i] = {:?}",
+                x.dst, bands
+            )
+        });
+        let actual_i_bound = x
+            .tile
+            .bounds
+            .iter()
+            .find(|(iv, _)| *iv == i_iv)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of a to {:?} must have i in tile.bounds \
+                     (a is indexed [i][k] and i is partitioned, so \
+                     compute_partition_bounds_with_dim_prefix returns \
+                     non-empty bounds); got bounds={:?}",
+                    x.dst, x.tile.bounds
+                )
+            });
+        assert_eq!(
+            actual_i_bound, expected_band,
+            "Push of a to {:?}: i bound MUST EQUAL the partition band \
+             (no halo extension because halo_widths[madd][i] = 0). \
+             Defends the second conjunct of \
+             07-matmul/schedules/distributed.sched.nuc:13-22 (`no halo, \
+             no cross-worker carry`) — the BEHAVIOUR half that \
+             task0303_07 (VALUE half) does not cover. Got bound={}..{}, \
+             expected={}..{}. Full tile.bounds={:?}.",
+            x.dst,
+            actual_i_bound.start, actual_i_bound.end,
+            expected_band.start, expected_band.end,
+            x.tile.bounds,
+        );
+        seen_workers.insert(x.dst);
+    }
+    assert_eq!(
+        seen_workers.len(),
+        4,
+        "expected 4 distinct compute-worker dst for a Pushes \
+         (matching 4 partition bands under partition=workers on i); \
+         saw {:?}",
+        seen_workers
+    );
+}
