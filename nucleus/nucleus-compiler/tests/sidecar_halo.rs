@@ -731,11 +731,18 @@ fn task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one() {
 fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
     // 07-matmul/schedules/distributed.sched.nuc:25-26 carries the
     // load-bearing narrative claim `no halo, no cross-worker carry, no
-    // reduction across i`. This is the precondition for the cycle-118
-    // axis-mapping filter (TASK-0301) producing empty bounds on the
-    // i-axis for the b matrix (which is indexed [k][j], not by i),
-    // allowing whole-array broadcast of b. The bit-identical e2e cells
-    // across all 4 tier-1 backends rest on this narrative being true.
+    // reduction across i`. The bit-identical e2e cells across all 4
+    // tier-1 backends rest on this narrative being true.
+    //
+    // Scope (structural vs behavioural — narrowed deliberately):
+    //   This test pins ONLY the halo_widths value (the narrative's
+    //   first half — "no halo across i"). It does NOT pin the
+    //   downstream BEHAVIOUR that the schedule comment also names
+    //   (cycle-118 TASK-0301 axis-mapping filter producing empty
+    //   bounds on i for b, leading to whole-array broadcast). That
+    //   behaviour lives in transfer_inject, exercised by a different
+    //   fixture; a regression there with correct halo_widths would
+    //   pass this test and be caught only by the e2e bytes.
     //
     // The algorithm reads `madd(c[i][j], a[i][k], b[k][j])`: c, a, b
     // each use only bare-iv index expressions at offset 0. So
