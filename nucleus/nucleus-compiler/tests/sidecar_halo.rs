@@ -28,8 +28,9 @@ use nucleus_compiler::{
     apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, build_acfg,
     build_sidecar, inject_syncs, inject_transfers, link,
     sched::{lower_sched, parse_sched},
-    HaloInferenceError,
+    HaloInferenceError, WorkerId, XferRole,
 };
+use std::collections::BTreeSet;
 
 fn repo_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -843,5 +844,221 @@ fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
          only (madd(c[i][j], a[i][k], b[k][j])); no kernel argument reads \
          at non-zero iv offset. max halo width must be 0; got map {:?}",
         acfg.halo_widths
+    );
+}
+
+// ----------------------------------------------------------------------
+// TASK-0304: transfer_inject BEHAVIOUR-claim pins (cycle 124).
+//
+// Sibling sweep on the narrative-pin pattern at a different layer:
+// task0299_* / task0303_* pin the halo_widths VALUE in the ACFG
+// sidecar (the input to `extend_xfer_tiles_for_halo` in
+// transfer_inject.rs:~2079); the two tests below pin the
+// transfer_inject BEHAVIOUR (the OUTPUT — per-tile transfer ranges,
+// extended or not). The schedule headers carry the load-bearing
+// transfer_inject claim half (the second conjunct on 06-separable-
+// filter and the cycle-83 / TASK-0263 narrative on 05-stencil); a
+// regression that broke that half WITHOUT touching halo_widths
+// values would slip past task0299_06 + task0303_05 and surface only
+// as wrong e2e bytes.
+//
+// Idiom delta from task0299_* / task0303_*: same `lower()` helper
+// (already runs `inject_transfers` at line 66 of this file) but the
+// assertion target is `acfg.root.collect_xfers()` (XferPlaceholder
+// stream) — Option A from TASK-0304's spec.
+// ----------------------------------------------------------------------
+
+#[test]
+fn task0304_06_separable_filter_distributed_transfer_inject_no_halo_extension_on_in_arr_hy() {
+    // Schedule header at nuc-nucleus/examples/06-separable-filter/
+    // schedules/distributed.sched.nuc:19-21 carries a TWO-PART
+    // conjunction: (1) `halo_widths[hblur_acc][hy] = 0`, (2)
+    // `transfer_inject does NOT extend per-tile transfer ranges`.
+    // task0299_06 pins half (1); this test pins half (2): the BEHAVIOUR.
+    //
+    // For each per-worker Push of `in_arr`, the hy bound MUST EQUAL
+    // the worker's partition band — no extension, no widening. Pins
+    // the second conjunct against a future transfer_inject regression
+    // that unconditionally extends tile ranges even when halo=0
+    // (defends `extend_xfer_tiles_inner`'s `if halo == 0 { push
+    // unchanged; continue }` early-out at transfer_inject.rs:~2188).
+    //
+    // Soundness floor: the band is read from
+    // `acfg.partition_worker_ranges[hy_iv]` (the source of truth for
+    // partition=rows), so this test does NOT hardcode the band
+    // arithmetic — it stays robust to TASK-0262 remainder-policy
+    // changes and band-count changes.
+    let (_linked, acfg) = lower(
+        "06-separable-filter",
+        "schedules/distributed.sched.nuc",
+    );
+
+    let in_arr_id = *acfg
+        .name_data
+        .get("in_arr")
+        .expect("in_arr in ACFG name_data");
+    let hy_iv = *acfg
+        .name_iter_vars
+        .get("hy")
+        .expect("hy in ACFG name_iter_vars");
+
+    let bands = acfg
+        .partition_worker_ranges
+        .get(&hy_iv)
+        .expect("partition_worker_ranges[hy] populated by partition_rows pass");
+
+    let mut seen_workers: BTreeSet<WorkerId> = BTreeSet::new();
+    for x in acfg.root.collect_xfers() {
+        if x.role != XferRole::Push || x.data != in_arr_id {
+            continue;
+        }
+        let expected_band = bands
+            .get(&x.dst)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of in_arr to dst={:?} but dst is NOT a partition \
+                     worker; partition_worker_ranges[hy] = {:?}",
+                    x.dst, bands
+                )
+            });
+        let actual_hy_bound = x
+            .tile
+            .bounds
+            .iter()
+            .find(|(iv, _)| *iv == hy_iv)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of in_arr to {:?} must have hy in tile.bounds; \
+                     got bounds={:?}",
+                    x.dst, x.tile.bounds
+                )
+            });
+        assert_eq!(
+            actual_hy_bound, expected_band,
+            "Push of in_arr to {:?}: hy bound MUST EQUAL the partition band \
+             (no halo extension because halo_widths[hblur_acc][hy] = 0). \
+             Defends the second conjunct of \
+             06-separable-filter/schedules/distributed.sched.nuc:19-21. \
+             Got bound={}..{}, expected={}..{}. Full tile.bounds={:?}.",
+            x.dst,
+            actual_hy_bound.start,
+            actual_hy_bound.end,
+            expected_band.start,
+            expected_band.end,
+            x.tile.bounds,
+        );
+        seen_workers.insert(x.dst);
+    }
+    assert_eq!(
+        seen_workers.len(),
+        4,
+        "expected 4 distinct compute-worker dst for in_arr Pushes \
+         (matching 4 partition bands); saw {:?}",
+        seen_workers
+    );
+}
+
+#[test]
+fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_y() {
+    // Schedule header at nuc-nucleus/examples/05-stencil/schedules/
+    // distributed.sched.nuc:30-34 carries the load-bearing
+    // transfer_inject BEHAVIOUR claim: `TASK-0263 (cycle 83) wired
+    // halo widths into transfer_inject so each per-worker tile
+    // carries the halo strips its blur3 reads from neighbouring
+    // bands`. This is a positive-extension claim — for each
+    // per-worker Push of img_in the y bound MUST be wider than the
+    // partition band by halo=1 on both sides.
+    //
+    // Strongest pin: assert exact extension by ±1 (matches today's
+    // implementation: extend_xfer_tiles_inner at
+    // transfer_inject.rs:~2197-2217 emits
+    // `(band.start - halo) .. (band.end + halo)` clamped to
+    // `(source.start - halo, source.end + halo)`). The 05 source
+    // range is y=1..15 (algorithm `for y : 1..H-1`) so the clamp
+    // expands to [0, 16]; none of the 4 band-after-halo-extensions
+    // (w0=0..6, w1=4..10, w2=8..13, w3=11..16) hit either clamp
+    // boundary — the strong assertion is preserved.
+    //
+    // A future implementation change that tightened the clamp to
+    // `[source.start, source.end] = [1, 15]` would fail this test
+    // at w0 (extension 0 → 1 clamped) and at w3 (extension 16 → 15
+    // clamped) — that IS a behaviour change worth catching loudly.
+    //
+    // Mirror narrative-pin for task0303_05 (which pins the
+    // halo_widths value at the ACFG-sidecar input layer); together
+    // they cover both ends of the halo→tile-extension data flow.
+    let (_linked, acfg) = lower("05-stencil", "schedules/distributed.sched.nuc");
+
+    let img_in_id = *acfg
+        .name_data
+        .get("img_in")
+        .expect("img_in in ACFG name_data");
+    let y_iv = *acfg
+        .name_iter_vars
+        .get("y")
+        .expect("y in ACFG name_iter_vars");
+
+    let bands = acfg
+        .partition_worker_ranges
+        .get(&y_iv)
+        .expect("partition_worker_ranges[y] populated by partition_rows pass");
+
+    let mut seen_workers: BTreeSet<WorkerId> = BTreeSet::new();
+    for x in acfg.root.collect_xfers() {
+        if x.role != XferRole::Push || x.data != img_in_id {
+            continue;
+        }
+        let band = bands
+            .get(&x.dst)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of img_in to dst={:?} but dst is NOT a partition \
+                     worker; partition_worker_ranges[y] = {:?}",
+                    x.dst, bands
+                )
+            });
+        let actual_y_bound = x
+            .tile
+            .bounds
+            .iter()
+            .find(|(iv, _)| *iv == y_iv)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Push of img_in to {:?} must have y in tile.bounds; \
+                     got bounds={:?}",
+                    x.dst, x.tile.bounds
+                )
+            });
+        let expected = (band.start - 1)..(band.end + 1);
+        assert_eq!(
+            actual_y_bound, expected,
+            "Push of img_in to {:?}: y bound MUST EQUAL band±1 \
+             (halo_widths[blur3][y] = 1; extension expected by \
+             transfer_inject::extend_xfer_tiles_inner). Defends the \
+             cycle-83 TASK-0263 narrative at \
+             05-stencil/schedules/distributed.sched.nuc:30-34. \
+             Got bound={}..{}, expected={}..{} (band was {}..{}). \
+             Full tile.bounds={:?}.",
+            x.dst,
+            actual_y_bound.start,
+            actual_y_bound.end,
+            expected.start,
+            expected.end,
+            band.start,
+            band.end,
+            x.tile.bounds,
+        );
+        seen_workers.insert(x.dst);
+    }
+    assert_eq!(
+        seen_workers.len(),
+        4,
+        "expected 4 distinct compute-worker dst for img_in Pushes \
+         (matching 4 partition bands); saw {:?}",
+        seen_workers
     );
 }
