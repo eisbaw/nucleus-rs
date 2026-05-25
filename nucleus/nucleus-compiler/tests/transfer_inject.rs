@@ -2422,6 +2422,16 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
              06-separable-filter/distributed2 shape (producer-set == consumer-set \
              + reader iv `vm` ≠ partition iv on axis 0)"
         ),
+        // TransferInjectError is `#[non_exhaustive]` (reviewer P2.2
+        // cycle-144 fold-back): future variants land without breaking
+        // this match. Any new variant firing on the AC#5 positive
+        // fixture is itself a regression worth surfacing — panic with
+        // the discovered shape.
+        #[allow(unreachable_patterns)]
+        Err(other) => panic!(
+            "expected SameSetSilentElisionRisk on the 06/distributed2 shape; \
+             got a different TransferInjectError variant: {other:?}"
+        ),
     }
 }
 

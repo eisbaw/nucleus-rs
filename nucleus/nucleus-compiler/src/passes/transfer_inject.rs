@@ -81,6 +81,24 @@
 //!
 //! ## Honest limitations (recorded for follow-up)
 //!
+//! - **N-to-M fan-out tile-rewrite convention** (the
+//!   `rewrite_partition_tiles` per-Xfer rule, lines 1689-1698). When
+//!   constructing per-pair tiles for a cross-worker `Xfer`, the
+//!   compute worker is `src` if `src` has a `partition_ranges` entry
+//!   (the N-to-1 gather direction, e.g. an output), otherwise `dst` if
+//!   `dst` has one (the 1-to-N broadcast direction, e.g. an input),
+//!   otherwise neither (the 1-to-1 host↔single-worker shape — no
+//!   partition involvement, tile left unchanged). The in-tree
+//!   schedules exercise only the 1-to-N and N-to-1 shapes, never a
+//!   true N-to-M coordinate mapping where both sides are partitioned
+//!   on the same axis with non-aligned slices. A coordinate-mapping
+//!   policy for true N-to-M (both partitioned, slices need explicit
+//!   mapping) is a follow-up not blocked by any current example.
+//!   IMPORTANT: this paragraph describes the per-pair tile-rewrite
+//!   for the CROSS-WORKER case where the pair was emitted (the line-
+//!   2501 short-circuit did NOT fire). The same-set elision case is
+//!   a separate path described in the next bullet.
+//!
 //! - **Same-worker-set producer/consumer with the consumer reading
 //!   outside its own produce-tile** (TASK-0324 cycle-144).
 //!   `build_waits_for_op` at line 2501-2503 short-circuits with
@@ -285,7 +303,15 @@ use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransf
 /// Variants here name patterns transfer-injection currently CANNOT
 /// lower; the carried message must be diagnosis-quality (name the
 /// offending DataId, the failure shape, and the forward-link).
+///
+/// Marked `#[non_exhaustive]` so future variants (e.g. once
+/// TASK-0324 AC#3 lifts the SameSetSilentElisionRisk variant or
+/// adds a sibling for the partially-overlapping-worker-set case,
+/// or new typed errors land for other transfer-inject limitations)
+/// can be added without breaking downstream `match` exhaustiveness.
+/// Reviewer P2.2 cycle-144 fold-back.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransferInjectError {
     /// TASK-0324 cycle-144 fail-loud guard. Producer and consumer worker
     /// sets are equal (`BTreeSet`-equality at the line-2501 short-
@@ -2637,10 +2663,19 @@ fn check_no_silent_elision_risk(
     name_data: &BTreeMap<String, DataId>,
 ) -> Result<(), TransferInjectError> {
     // Index producer-side write accesses for each DataId once. Per PRD
-    // §6.2.1 single-assignment, every data symbol has at most ONE
-    // writer Operation (modulo accumulator self-writes, which carry
-    // the same data_out_access on every iteration). The first
-    // matching Operation's `data_out_access` is authoritative.
+    // §6.2.1 single-assignment (enforced upstream by `algo::lower` —
+    // see `LowerErrorKind::DoubleAssignment` in
+    // `nucleus-compiler/src/algo/ir.rs:256-260`, grep-witness for the
+    // single-assignment rule), every data symbol has at most ONE
+    // writer Operation, modulo accumulator self-writes (an op whose
+    // `data_in` and `data_out` are the same DataId at the same
+    // indices, e.g. `c[i][j] <-- madd(c[i][j], ...)` — exercised by
+    // 07-matmul's reference shape). Accumulator self-writes carry the
+    // SAME `data_out_access` on every iteration by construction, so
+    // the lexically-first occurrence is authoritative: the
+    // `or_insert_with` below is sound only under (§6.2.1 single-
+    // assignment) ∧ (accumulator-self-writes carry the same access on
+    // every iteration). Reviewer P2.5 cycle-144 fold-back.
     let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
     collect_producer_writes(root, &mut producer_writes);
 
@@ -2825,10 +2860,29 @@ fn check_op_no_silent_elision_risk(
                     let p_iv =
                         ident_iv_in_set(&prod_access.indices[k], partition_iter_vars, name_iter_vars);
                     let Some(p_iv) = p_iv else {
-                        // Producer's axis-k index is not a partition iv
-                        // (e.g. inner sweep, const, arithmetic): axis
-                        // k is not partition-sliced at the producer →
-                        // no constraint on consumer's axis-k read.
+                        // Producer's axis-k index is not a bare Ident
+                        // matching a partition iv. The cases are:
+                        //   - `IntLit(c)` / non-iv-`Ident` / `Neg(...)`:
+                        //     axis k is whole-array at every worker
+                        //     (the producer writes the same slot
+                        //     regardless of partition) → no
+                        //     constraint on consumer's axis-k read.
+                        //   - `BinOp(...)` involving a partition iv
+                        //     (e.g. `tmp[hy*2][hx]`, `tmp[hy+1][hx]`):
+                        //     CONSERVATIVELY-NOT-REJECTED here. The
+                        //     access IS partition-sliced semantically
+                        //     (the worker writes only its own
+                        //     transformed range), but the per-axis
+                        //     check skips this axis and treats it as
+                        //     unconstrained. No in-tree schedule
+                        //     today exercises this shape, so the
+                        //     under-conservative path is dormant —
+                        //     filed as TASK-0326 (reviewer P1.3
+                        //     cycle-144 fold-back).
+                        //   - `Call(...)` / `DataRef(...)`: not used
+                        //     as a producer index in any algorithm
+                        //     today; rejected upstream by `algo::
+                        //     lower` before reaching this pass.
                         continue;
                     };
                     // Producer's axis k IS partition-sliced. The
