@@ -66,11 +66,11 @@ use pthreads_sync::{render_single_worker_main, NameTables};
 
 #[test]
 fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag() {
-    // TASK-0279: pin the strip-mine call site at pthreads-sync/src/
-    // lib.rs:653 (inside the `if let Some(tag) = block_tag` branch of
-    // `render_event`). The non-strip-mine sibling at line 675 is
-    // already covered by `e2e_example_05.rs::reuse_marker_present_on_
-    // reuse_schedule_absent_on_naive` (the shipped `reuse.sched.nuc`
+    // TASK-0279: pin the strip-mine call site inside `render_event`'s
+    // `if let Some(tag) = block_tag` branch. The non-strip-mine
+    // sibling (same `render_event` function, `block_tag: None` arm)
+    // is already covered by `e2e_example_05.rs::reuse_marker_present_
+    // on_reuse_schedule_absent_on_naive` (the shipped `reuse.sched.nuc`
     // routes through it — no `block=` on its reuse iv).
     //
     // Fixture mirrors the cycle-99 `multi_worker_reuse_marker.rs`
@@ -157,7 +157,7 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
     assert!(
         count >= 1,
         "TASK-0279: pthreads-sync's strip-mine arm \
-         (pthreads-sync/src/lib.rs:653) MUST emit the \
+         (`render_event`, `block_tag: Some` branch) MUST emit the \
          `reuse_widths_pending` marker when sidecar.reuse_widths[iv] \
          is non-empty and the inner loop carries block_tag=Some. Got \
          {count} occurrences.\n\

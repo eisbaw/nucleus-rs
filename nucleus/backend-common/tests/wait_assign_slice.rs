@@ -600,8 +600,11 @@ fn task0316_non_prefix_layout_empty_bounds_consumer_pin() {
 
 /// TASK-0321 (cycle-139 TASK-0295 AC#3 gap closure): the 2D row-loop
 /// slice-paste arm in `wait_slice` builds its `_tmp = X.wait()` rhs by
-/// substituting `WalkerCtx::rendezvous_prefix` at
-/// `multi_worker_walker.rs:809` — a single `format!("{prefix}\
+/// substituting `WalkerCtx::rendezvous_prefix` inside the Wait
+/// match-arm of `render_worker_events_inner` (grep-witness:
+/// `grep -nE '\{rendezvous_prefix\}_\{rid\}\.wait'
+/// nucleus/backend-common/src/multi_worker_walker.rs` returns the
+/// single Wait substitution site) — a single `format!("{prefix}\
 /// {rendezvous_prefix}_{rid}.wait()")` call with no prefix-conditional
 /// branches in the 2D dispatch. The four tier-1 backends use four
 /// distinct prefix values: `"slot"` (pthreads-sync), `"ring"`
@@ -688,9 +691,12 @@ fn task0321_rendezvous_prefix_substituted_in_2d_row_loop_arm() {
 }
 
 /// TASK-0322 (cycle-141 sibling closure to TASK-0321 cycle-140
-/// architect P2): the Push-side substitution site at
-/// `multi_worker_walker.rs:789` is structurally identical to the
-/// Wait site at line 809 — a single `format!("{prefix}\
+/// architect P2): the Push-side substitution site (grep-witness:
+/// `grep -nE '\{rendezvous_prefix\}_\{rid\}\.push'
+/// nucleus/backend-common/src/multi_worker_walker.rs` returns the
+/// single Push substitution site inside `render_worker_events_inner`)
+/// is structurally identical to the Wait site documented above — a
+/// single `format!("{prefix}\
 /// {rendezvous_prefix}_{rid}.push(...)")` call with no prefix-
 /// conditional branches in the Push branch. TASK-0321 pinned the
 /// Wait site across `{"ring", "slot", "chan"}` but constructs only
@@ -778,7 +784,7 @@ fn task0322_rendezvous_prefix_substituted_on_push_emit() {
         // through to some other event handler — e.g. a future
         // refactor that accidentally routed Push through `wait_slice`).
         // The `// send `{name}` to {to}` comment is emitted ONLY by
-        // the Push branch (multi_worker_walker.rs:789).
+        // the Push branch inside `render_worker_events_inner`.
         assert!(
             out.contains("// send `img_out` to host"),
             "TASK-0322: must enter the Push branch (which emits the \

@@ -280,9 +280,9 @@ fn multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty() {
 #[test]
 fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_block_tag() {
     // TASK-0278: extend TASK-0273 coverage to the strip-mine call
-    // site (`multi_worker_walker.rs:404`, inside the
-    // `if let Some(tag) = block_tag` branch). The cycle-98 pins above
-    // only exercise the non-strip-mine arm (line 478) with
+    // site inside `render_worker_events_inner`'s
+    // `if let Some(tag) = block_tag` branch. The cycle-98 pins above
+    // only exercise the non-strip-mine arm of the same function with
     // `block_tag: None`. The shipped `05-stencil/distributed.sched.nuc`
     // carries `loop x : block=64, vectorize=8, reuse;` — exactly the
     // strip-mine-WITH-reuse shape the line-404 wiring was added for;
@@ -377,8 +377,9 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_bloc
     assert!(
         count >= 1,
         "TASK-0278: multi_worker_walker's strip-mine arm \
-         (multi_worker_walker.rs:404) MUST emit the \
-         `reuse_widths_pending` marker when sidecar.reuse_widths[iv] \
+         (`render_worker_events_inner`, `block_tag: Some` branch) \
+         MUST emit the `reuse_widths_pending` marker when \
+         sidecar.reuse_widths[iv] \
          is non-empty and the inner loop carries block_tag=Some. Got \
          {count} occurrences.\n\
          If this dropped, the strip-mine arm of the marker contract \

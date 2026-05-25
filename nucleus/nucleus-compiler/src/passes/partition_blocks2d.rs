@@ -36,10 +36,17 @@
 //! existing per-iter_var per-worker map: the walker
 //! ([`backend_common::multi_worker_walker::render_worker_events_inner`])
 //! already keys on `(iter_var, worker_id)` independently for each
-//! `Event::Loop` it emits — verified in cycle 80 by reading
-//! `multi_worker_walker.rs:446-466`. Writing two entries (one per
-//! iter_var) under the same worker key set yields the 2D-block effect
-//! without changing the sidecar contract.
+//! `Event::Loop` it emits — verified in cycle 80 by reading the
+//! `Event::Loop` match-arm inside `render_worker_events_inner`
+//! (grep-witness: `grep -nE "Event::Loop\s*\{"
+//! nucleus/backend-common/src/multi_worker_walker.rs` returns five
+//! hits across the file — exactly one is inside
+//! `render_worker_events_inner` and uses `partition_worker_ranges[iv]`
+//! per worker; the other four are read-only `collect_*` walkers
+//! that descend into the loop body without per-worker range lookup).
+//! Writing two entries (one per iter_var) under the same worker key
+//! set yields the 2D-block effect without changing the sidecar
+//! contract.
 //!
 //! Option A is preferred because it:
 //!   - keeps the sidecar shape stable (one fewer ACFG field, one fewer
