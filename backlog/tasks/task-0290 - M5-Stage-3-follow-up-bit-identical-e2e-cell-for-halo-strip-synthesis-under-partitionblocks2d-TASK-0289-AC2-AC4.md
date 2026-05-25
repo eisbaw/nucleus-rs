@@ -3,11 +3,11 @@ id: TASK-0290
 title: >-
   M5 Stage 3 follow-up: bit-identical e2e cell for halo-strip synthesis under
   partition=blocks2d (TASK-0289 AC#2 + AC#4)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-24 20:24'
-updated_date: '2026-05-24 23:57'
+updated_date: '2026-05-25 00:28'
 labels:
   - M5
   - compiler
@@ -280,4 +280,15 @@ LESSONS / SUBTLETIES (forward-carried to memory + TASK-0294):
 - The orchestrator's forward-carried lesson #5 from cycle 114a ("single-pass partition=blocks2d is bit-identical to today's reference.bin") was WRONG. The reasoning was correct ALGEBRAICALLY (a single-pass box-blur with full host broadcast IS partition-shape-invariant in mathematical output) but wrong at the CODEGEN LAYER (leading_axis_slice consumes only the first axis of an IterTile, silently dropping the x-band). The cycle-114b implementer caught this empirically by running the cell and observing the diff at byte 68 (= element 17 = first compute pixel; algebraically consistent with a 4-worker 2x2-grid setup paste-over-paste).
 - This is a third instance of the "static-narrative-vs-empirical" failure mode, this time on the orchestrator's own forward-carried note (not an implementer's claim). Lesson: when a forward-carried lesson asserts bit-identical output across two structural shapes, the assertion needs to be tested AT THE CODEGEN LAYER, not just argued from algebraic semantics — even when the source is the orchestrator.
 - The placement fix is correct and verified by the strengthened unit test, but its e2e benefit only materialises when TASK-0294 lands.
+
+## Cycle 115 close — AC#2 + AC#4 now MET via TASK-0294
+
+TASK-0294 cycle 115 landed the wait_slice 2D row-loop slice-paste, which unblocks AC#2 (bit-identical against reference.bin) and AC#4 (baseline bump) for this task.
+
+- AC#1 (synthesis pass + N/S/E/W neighbour resolution + corners excluded): MET in cycle 114a (TASK-0289 commit f8d58ea).
+- AC#2 (bit-identical e2e cell + reference oracle): MET in cycle 115 via the distributed-2d schedule. Reference oracle = 05-stencil/reference.bin (single-pass equivalence per forward-carried lesson #5 — algorithm output is invariant under partition shape).
+- AC#3 (existing matrix green): HOLDS — `just e2e` 96/80/0/16/0 with no required-fail; cycle 114b placement fix + cycle 115 wait_slice are both additive-only on the existing 1D path.
+- AC#4 (baseline bump): MET. 96/80/0/16/0 (the +4 distributed-2d cells in 114b + +1 promotion in cycle 115).
+
+Task closed cleanly. Multi-pass / time-step stencil where halo strips carry semantically-unique data remains deferred (separate follow-up under TASK-0289 description's 'multi-pass placement extension').
 <!-- SECTION:NOTES:END -->

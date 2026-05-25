@@ -3,11 +3,11 @@ id: TASK-0289
 title: >-
   M5 Stage 3 follow-up: halo-strip Push/Wait synthesis under partition=blocks2d
   + bit-identical e2e cell (TASK-0264 AC#3 + AC#4)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-24 19:58'
-updated_date: '2026-05-24 21:17'
+updated_date: '2026-05-25 00:29'
 labels:
   - M5
   - compiler
@@ -210,4 +210,15 @@ TASK-0289 STAYS In Progress. AC#2+AC#4 close on TASK-0290.
 LESSONS / SUBTLETIES (forward-carried to memory):
 - "Implementer disclosure but stated mechanism is wrong" — architect's static trace was correct, implementer's claimed `load_op`-required-for-panic story was a doc-lie. The empirical 1-line edit (remove load_op, re-run tests) was the cheap verification path. When an implementer's report says "without X, Y panics with message Z" — verify by removing X if the cost is bounded.
 - "qa-test-runner gate misses release-mode unit-test failures" — `just test` uses dev profile only; `--release` strips debug_asserts and breaks `#[should_panic]`-on-debug_assert! tests. The qa agent's gate is not exhaustive across profiles. TASK-0291 captures the structural fix.
+
+## Cycle 115 close — AC#2 + AC#4 now MET via TASK-0294 (cascade close from TASK-0290)
+
+TASK-0290 cycle 114b shipped the placement fix + distributed-2d schedule; TASK-0294 cycle 115 landed the wait_slice 2D row-loop slice-paste that lets the new cell pass bit-identical. With those, all four ACs of this task are met:
+
+- AC#1 (transfer_inject reads partition_pairs + grid_shape_for_outer_iv + halo_widths and synthesises N/S/E/W cross-worker Push/Wait pairs): MET in cycle 114a (commit f8d58ea).
+- AC#2 (new bit-identical 2D-divisible e2e cell): MET in cycle 115 — 05-stencil/distributed-2d × pthreads-async [[required]], bit-identical against 05-stencil/reference.bin.
+- AC#3 (existing matrix stays green): HOLDS — cycle 114a + 114b + 115 all additive-only on shipped 1D-partition cells (verified by the e2e baseline holding 96/80/0/16/0 with no required-fail).
+- AC#4 (baseline 93/80/0/13/0+): MET as 96/80/0/16/0 (the +4 cycle 114b cells + +1 cycle 115 promotion; the 16 skips include the 3 distributed-2d sibling cells correctly held under TASK-0042 / TASK-0175 lineage).
+
+Task closed cleanly. The deeper multi-pass / time-step stencil with semantically-unique halo strips remains in the followup space — file when motivated.
 <!-- SECTION:NOTES:END -->

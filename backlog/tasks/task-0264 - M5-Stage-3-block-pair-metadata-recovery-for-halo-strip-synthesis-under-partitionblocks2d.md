@@ -3,11 +3,11 @@ id: TASK-0264
 title: >-
   M5 Stage 3: block-pair metadata recovery for halo-strip synthesis under
   partition=blocks2d
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 20:11'
+updated_date: '2026-05-25 00:29'
 labels:
   - M5
   - compiler
@@ -101,4 +101,16 @@ Files modified (cycle 113): 19 files, +515/-4 lines (substantive) + 1 file +47 (
 - src/passes/{sync_inject, transfer_inject, block_transform, halo_inference, reuse_inference, partition_workers, partition_rows}.rs (verbatim forwarders)
 - tests/{partition_blocks2d, partition_workers, partition_rows, transfer_inject, transfer_inject_hoist, sync_inject, acfg_to_petri, petri_to_events}.rs (hand-built ACFG instances extended)
 - tests/sidecar_partition_blocks2d.rs (new file, 3 tests)
+
+## Cycle 115 close — AC#3 + AC#4 now MET (cascade close from TASK-0289 → TASK-0290 → TASK-0294)
+
+Full M5 Stage-3 halo-strip chain landed:
+- Cycle 113 (commit 365dc99 + fec78e9): AC#1 (partition_pairs sidecar) + AC#2 (grid_shape_for_outer_iv sidecar) — sidecar plumbing.
+- Cycle 114a (TASK-0289, commit f8d58ea + 11c23e7): AC#3 (halo-strip Push/Wait synthesis fires).
+- Cycle 114b (TASK-0290, commits b334627/d2a4ec6/436f146/7a564e7): placement fix + first e2e cell wired in (initially [[skip]] pending wait_slice 2D path).
+- Cycle 115 (TASK-0294): the wait_slice 2D row-loop slice-paste in backend-common closes the bit-identical assertion; AC#4 (new e2e cell 05-stencil/distributed-2d × pthreads-async bit-identical to reference.bin) MET via promotion to [[required]] in nuc-nucleus/e2e-matrix.toml.
+
+e2e baseline: 96/80/0/16/0 (was 92/79/0/13/0 pre-cycle-114b).
+
+Task closed cleanly. The Stage-3 keystone is shut.
 <!-- SECTION:NOTES:END -->

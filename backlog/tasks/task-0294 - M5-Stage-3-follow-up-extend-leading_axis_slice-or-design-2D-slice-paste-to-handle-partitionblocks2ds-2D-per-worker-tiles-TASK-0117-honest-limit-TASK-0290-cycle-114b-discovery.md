@@ -4,10 +4,11 @@ title: >-
   M5 Stage-3 follow-up: extend leading_axis_slice (or design 2D slice-paste) to
   handle partition=blocks2d's 2D per-worker tiles (TASK-0117 honest-limit +
   TASK-0290 cycle-114b discovery)
-status: To Do
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-24 23:34'
+updated_date: '2026-05-25 00:28'
 labels:
   - M5
   - compiler
@@ -69,3 +70,57 @@ The 05-stencil/distributed-2d schedule file is landed at `nuc-nucleus/examples/0
 - nucleus/nucleus-compiler/src/passes/transfer_inject.rs (the tile-shape producer — already emits 2D tiles via TASK-0263 + TASK-0264).
 - nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc (the fixture).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 115 — landed
+
+`backend-common::multi_worker_walker` extended: `LeadingAxis` pub struct → module-private `WaitSlice` enum with `Flat` (1D pre-TASK-0294 path, bit-identical-pinned) + `Rows` (new 2D row-loop slice-paste). `leading_axis_slice` → `wait_slice`; `render_wait_assign` dispatches.
+
+Per-AC outcome:
+- AC#1 (wait_slice respects all axes of an N-D tile up to rank 2): MET. `bounds.len() >= 2 && ty.dims.len() >= 2` enters `Rows` with outer/inner ranges + row_stride + inner offsets. Rank-3+ is rejected loud with a typed `EmitError::ContractGap` (cycle-115 architect P2.1 — file follow-up TASK-0295).
+- AC#2 (1D partition=workers/rows stays bit-identical): MET. Existing flat-emit string preserved verbatim; `flat_1d_slice_paste_for_partition_workers` test pins the exact pre-TASK-0294 emit; `just e2e` shows the row-band distributed cells (e.g. 05-stencil/distributed × pthreads-async) still pass byte-identical.
+- AC#3 (05-stencil/distributed-2d × pthreads-async promoted to [[required]]): MET. nuc-nucleus/e2e-matrix.toml updated; cell passes bit-identical against 05-stencil/reference.bin.
+- AC#4 (baseline bump): MET. 96/80/0/16/0 (prior 96/79/0/17/0; the +4 distributed-2d cells were added in cycle 114b as [[skip]]; cycle 115 flips 1 skip → required pass).
+
+## Verification
+
+`just ci` exit 0. Full hard gate green:
+- `just build` clean (workspace).
+- `just clippy` clean.
+- `just test` 842/0/3.
+- `just test-release` 842/0/3 (release matches dev — no debug_assert! divergence).
+- `just e2e` 96/80/0/16/0.
+- `just determinism-check` 96/80/0/16 (matches).
+- Negative arms (xbackend, required-coverage) both correctly bit on injected corruption.
+
+New tests (nucleus/backend-common/tests/wait_assign_slice.rs, 7 tests):
+- whole_array_assign_when_tile_empty
+- flat_1d_slice_paste_for_partition_workers (bit-identical regression pin for the 1D arm)
+- rows_2d_slice_paste_for_partition_blocks2d (the load-bearing 2D arm)
+- degenerate_2d_full_range_collapses_to_whole_array (defensive emit-identity guard)
+- inner_axis_out_of_bounds_returns_contract_gap (cycle-115 typed-error surface)
+- leading_axis_out_of_bounds_returns_contract_gap (architect P3.2 — closes pre-existing test gap)
+- rank_3_or_higher_tile_returns_contract_gap (architect P2.1 — pins the cycle-115 fail-loud guard against silent rank-3+ partial)
+
+## Cycle-115 review-gate hardening applied in-thread
+
+- P2.1 (architect): added rank-3+ ContractGap surface in wait_slice. Guards against the SAME HONEST-PARTIAL class the cycle-115 fix removed for 2-axis data. Pinned by rank_3_or_higher_tile_returns_contract_gap.
+- P3.2 (architect): added leading_axis_out_of_bounds test (5 lines). Closes pre-existing test gap.
+- P3.3 (architect): rewrote the _y/_r safety doc-comment to cite block-shadowing (placement-independent) rather than the placement-fragile original.
+- P3.4 (architect): labelled degenerate_2d_full_range_collapses_to_whole_array as DEFENSIVE-ONLY in its docstring.
+- P3.1 (architect): filed as TASK-0295 (sibling-promotion audit for non-pthreads-async backends).
+
+## Forward-carried lessons (for TASK-0290 / TASK-0289 / TASK-0264 closure + any future N-D slice-paste work)
+
+1. The cycle-115 axis-mapping assumption `tile.bounds[i].iter_var ↔ ty.dims[i]` is row-major / nest-order; held verified via rewrite_partition_tiles_inner (transfer_inject.rs:1627-1687) walking partition_axis_order outer-to-inner AND partition_blocks2d.rs:443 inserting partition_pairs as (outer_iv, inner_iv). For a hypothetical inner-axis-leading partition or non-row-major data layout the slice would silently address the wrong axis. Same HONEST-PARTIAL lineage as TASK-0117.
+
+2. `saturating_mul` on usize offsets is defensive belt-and-braces — preceding bounds checks already rule out overflow. Harmless.
+
+3. The single-pass box blur is invariant under partition SHAPE (1D row-band vs 2D grid): each output pixel is a pure function of its 3x3 input neighbourhood, no cross-dependencies. cycle 114b's reference-oracle-is-degenerate analysis (forward-carried from TASK-0290) is the right way to handle the bit-identical assertion when the algorithm is partition-invariant — DON'T rebuild a custom oracle; reuse the existing reference.bin from the 1D-partition sibling.
+
+4. The shared `multi_worker_walker` means the bug fix lands in ONE place and benefits all 4 tier-1 backends automatically. The flip side: the silent-sibling pattern can spread quietly — file explicit promotion tasks (TASK-0295) when downstream blockers unlock.
+
+5. `backend-common` edits + nucleus driver: cargo's mtime invalidation has missed this combo once before (TASK-0270 cycle 104 — see MEMORY.md). When running `just e2e` after a backend-common edit, double-check the driver release binary is newer than the source; if not, force `cargo build --release --workspace`. (Cycle 115 was fine — `just ci`'s sequencing forces the release build before e2e.)
+<!-- SECTION:NOTES:END -->
