@@ -45,5 +45,5 @@ LOW priority. The divergence is currently observationally inert (the two variant
 
 - TASK-0304 cycle 124 architect review-gate P2.1.
 - Memory: `feedback-implementer-disclosure-mechanism-wrong` (cycle 119 — orchestrator note claimed driver uses strict-A; the actual code at driver/main.rs:396 uses partition-aware-B; the lesson includes the test-vs-driver divergence vector).
-- `nucleus/nucleus-compiler/src/passes/halo_inference.rs:89-129` — the contract paragraph documenting the 3 entry points (strict-A, advisory, partition-aware-B).
+- `nucleus/nucleus-compiler/src/passes/halo_inference.rs` (module-doc section "## Strict vs advisory vs partition-policy-aware entry points"; search for that heading) — the contract paragraph documenting the 3 entry points (strict-A, advisory, partition-aware-B).
 <!-- SECTION:DESCRIPTION:END -->

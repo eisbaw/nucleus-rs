@@ -82,7 +82,7 @@ TASK-0271 promoted the reuse_inference driver call to STRICT (apply_reuse_infere
 
 CYCLE-89 VERIFICATION (orchestrator, 2026-05-24): the TASK-0271 forward-carry caveat (example 11 step_or_seed Mod-indexed read) is CONFIRMED reachable today.
 
-**Code path verified**: `nucleus/nucleus-compiler/src/passes/halo_inference.rs:361-367` `apply_halo_inference` walks `linked.algo.stmts` UNCONDITIONALLY (no gate on schedule directives, no gate on "is this iv partitioned"). The strict variant short-circuits on the first error from `infer_halo_widths` (line 412).
+**Code path verified**: `nucleus/nucleus-compiler/src/passes/halo_inference.rs` (search for `fn apply_halo_inference` — the strict-A entry point) walks `linked.algo.stmts` UNCONDITIONALLY (no gate on schedule directives, no gate on "is this iv partitioned"). The strict variant short-circuits on the first error from `infer_halo_widths` (search for `fn infer_halo_widths` in the same file).
 
 **Example 11 confirmation**: `nuc-nucleus/examples/11-game-of-life/prog.algo.nuc:156-158` shows `step_or_seed(grid[(t + ITERS) % (ITERS + 1)][(i + N - 1) % N], ...)`. Both `naive.sched.nuc` AND `pipelined.sched.nuc` carry zero `halo`/`partition`/`reuse` directives — the only schedule comment found that mentions partition is at pipelined.sched.nuc:87-88: "No `partition=workers` on the inner `i` loop. The grid is small (N=32) and partitioning the spatial axis is example future scope."
 

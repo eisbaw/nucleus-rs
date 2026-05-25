@@ -24,7 +24,7 @@ priority: medium
 
 Forward-carried from TASK-0263 cycle-89 verification + TASK-0271 cycle-88 forward-carry caveat.
 
-TASK-0271 (cycle 88) promoted the reuse_inference driver call to (A) strict because the Tier 1 marker consumer (TASK-0265) makes every recognised slot consumed; (B) partition-policy-aware degenerated to (A) for reuse. TASK-0263 cycle-89 verification confirmed halo is DIFFERENT: `apply_halo_inference` at halo_inference.rs:361 walks `linked.algo.stmts` UNCONDITIONALLY without gating on schedule directives, AND example 11's `step_or_seed` reads `grid[(t + ITERS) % (ITERS + 1)]` (Mod-index the affine detector cannot fold). A naive (A) strict mirror for halo would newly-reject example 11 — even though no shipped schedule for example 11 carries halo/partition/reuse directives.
+TASK-0271 (cycle 88) promoted the reuse_inference driver call to (A) strict because the Tier 1 marker consumer (TASK-0265) makes every recognised slot consumed; (B) partition-policy-aware degenerated to (A) for reuse. TASK-0263 cycle-89 verification confirmed halo is DIFFERENT: `apply_halo_inference` (search for `fn apply_halo_inference` in halo_inference.rs) walks `linked.algo.stmts` UNCONDITIONALLY without gating on schedule directives, AND example 11's `step_or_seed` reads `grid[(t + ITERS) % (ITERS + 1)]` (Mod-index the affine detector cannot fold). A naive (A) strict mirror for halo would newly-reject example 11 — even though no shipped schedule for example 11 carries halo/partition/reuse directives.
 
 ## Why halo needs (B) but reuse didn't
 

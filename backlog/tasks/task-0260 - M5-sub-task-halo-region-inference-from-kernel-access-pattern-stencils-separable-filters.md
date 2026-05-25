@@ -129,7 +129,7 @@ Parallel read-only review of cycle-81 implementer commits (4529622 + 42a3fa1 + 0
 
 ## In-thread fixes (commit 372aaf8)
 
-F-P1 (architect): an .expect() at halo_inference.rs:682 on a cross-module transitive invariant (iter-var name collected from scope must be in name_iter_vars) would panic on user input if the link step ever produced a 'for var' whose name escaped. Recurring panic-not-diagnostic defect. Fix: new HaloInferenceError::UnknownIterVarInScope variant + Display arm; the .get().expect() site routes to a typed-error push.
+F-P1 (architect): an .expect() at the iv-name-resolve site in halo_inference.rs (search for `HaloInferenceError::UnknownLoopVar` — the typed-error variant introduced by this fix; rename history captured in the CYCLE-95 UPDATE block below) on a cross-module transitive invariant (iter-var name collected from scope must be in name_iter_vars) would panic on user input if the link step ever produced a 'for var' whose name escaped. Recurring panic-not-diagnostic defect. Fix: new `HaloInferenceError::UnknownLoopVar` variant + Display arm; the .get().expect() site routes to a typed-error push.
 
 F-P2 (architect): module docs line 53 said 'iv by itself … no entry written' but code writes explicit 0-width entry. Doc-lie. Corrected to describe the explicit-0 form + the consumer contract.
 
@@ -149,5 +149,5 @@ F-P2 (architect): module docs line 53 said 'iv by itself … no entry written' b
 
 Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258 + TASK-0259. AC#1/AC#2/AC#3 GREEN. AC#4 (transfer_inject consumer) explicitly DEFERRED to TASK-0263 Stage 2 per the task brief. AC#5 (e2e cell bit-identical) DEFERRED to TASK-0263 + TASK-0262 lockstep landing.
 
-[CYCLE-95 UPDATE, 2026-05-24]: halo_inference's UnknownIterVarInScope was renamed to UnknownLoopVar in commit f8a3267 (TASK-0272 scope-A). The reference at line 132 above is historical — at the time of architect F-P1 (cycle 81) the variant was named UnknownIterVarInScope; it is now UnknownLoopVar matching the convention of 5 sibling passes. The architectural intent is unchanged.
+[CYCLE-95 UPDATE, 2026-05-24 — cross-reference REVISED in cycle 127, 2026-05-25 (TASK-0311)]: halo_inference's `UnknownIterVarInScope` was renamed to `UnknownLoopVar` in commit f8a3267 (TASK-0272 scope-A). The F-P1 finding record in this task's notes (above) was MIGRATED in cycle 127 (TASK-0311) to use the current variant name `UnknownLoopVar`; at the time of architect F-P1 (cycle 81) the variant was named `UnknownIterVarInScope`. The architectural intent is unchanged — the rename was symbol-only, matching the convention of 5 sibling passes.
 <!-- SECTION:NOTES:END -->
