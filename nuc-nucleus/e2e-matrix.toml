@@ -1143,3 +1143,39 @@ backend  = "mp-tcp-event"
 reason   = "TASK-0175 (worker-to-worker mesh): pipeline_parallel places conv_block_1/conv_block_2/classifier on three distinct non-host workers with barriers excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175. AC#4 of TASK-0042.05 is blocked on TASK-0175 — same blocker mp-tcp-bufsync has on this and similar w-only barriers."
 milestone = "M3"
 
+# ---- M5 example 06 — distributed schedule (TASK-0296) ----------------
+#
+# Closes the "examples 5-7 benefit measurably" half for example 06.
+# Schedule: pass 1 (hblur_acc) distributed across {w0..w3} with
+# partition=rows on hy (halo=0, rectangular accumulator); pass 2
+# (vblur_acc) stays on host (N-to-M broadcast of tmp would be
+# required for both-passes-distributed — filed as TASK-0296's
+# follow-up). All sync transfers, so all 4 tier-1 backends carry
+# this cell — broader M5 validation than 05/distributed (which
+# uses async and is pthreads-async-only). See the schedule file
+# header for the full rationale.
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M5"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M5"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M5"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M5"
+

@@ -801,7 +801,8 @@ fn render_worker_events_inner(
                 let from = ctx.worker_name(*src);
                 // TASK-0117 host-side gather: see render_wait_assign.
                 let assign = render_wait_assign(
-                    ctx,
+                    ctx.sidecar,
+                    ctx.pair_tiles,
                     &name,
                     *data,
                     *seq,
@@ -841,14 +842,15 @@ fn render_worker_events_inner(
 ///   path would paste each worker's whole y-band (overwriting
 ///   adjacent workers' columns with default-zero values).
 pub fn render_wait_assign(
-    ctx: &WalkerCtx<'_>,
+    sidecar: &NameSidecar,
+    pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
     name: &str,
     data: DataId,
     seq: SeqTag,
     rhs: &str,
 ) -> Result<String, EmitError> {
-    let slice = match ctx.pair_tiles.get(&(data, seq)) {
-        Some(tile) => wait_slice(ctx, data, tile)?,
+    let slice = match pair_tiles.get(&(data, seq)) {
+        Some(tile) => wait_slice(sidecar, data, tile)?,
         None => None,
     };
     match slice {
@@ -932,7 +934,7 @@ pub fn render_wait_assign(
 /// slice would silently address the wrong axis. Still tracked as
 /// the honest-limit lineage of TASK-0117.
 fn wait_slice(
-    ctx: &WalkerCtx<'_>,
+    sidecar: &NameSidecar,
     data: DataId,
     tile: &IterTile,
 ) -> Result<Option<WaitSlice>, EmitError> {
@@ -940,7 +942,7 @@ fn wait_slice(
     let Some((_iv, leading_range)) = tile.bounds.first() else {
         return Ok(None);
     };
-    let ty = ctx.sidecar.data_type(data).ok_or_else(|| {
+    let ty = sidecar.data_type(data).ok_or_else(|| {
         EmitError::ContractGap(format!(
             "Wait of data {data:?} has no ResolvedType in NameSidecar"
         ))

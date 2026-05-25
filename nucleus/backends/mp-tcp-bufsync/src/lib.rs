@@ -79,7 +79,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nucleus_compiler::event::{DataId, Event, IterVar, SyncTag, WorkerId};
+use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 // Shared codegen primitives (TASK-0244 cycle 37) — the SINGLE
@@ -96,6 +96,7 @@ use backend_common::check_frame::{
     collect_count_check_frames, emit_count_branch, emit_count_guard_local,
     emit_count_reporter_struct, emit_count_static, emit_log_branch,
 };
+use backend_common::multi_worker_walker::{collect_xfer_pairs, render_wait_assign};
 use backend_common::project_skeleton::multi_binary;
 use backend_common::render::{
     render_array_init_for, render_const_expr_pub, render_fire_args_pub,
@@ -292,6 +293,21 @@ struct Plan<'a> {
     host_worker: WorkerId,
     /// Cross-worker data symbols sorted by DataId.
     xfer_ids: BTreeMap<DataId, XferId>,
+    /// Per-(DataId,SeqTag) iteration tile from the originating
+    /// XferPlaceholder. Drives the receiver-side leading-axis /
+    /// 2D row-loop slice-paste in `backend_common::multi_worker_walker
+    /// ::render_wait_assign`. Lifted to the shared helper as of TASK-0296
+    /// cycle 116 — before that, mp-tcp-bufsync's Event::Wait emit
+    /// rendered `{name} = {dec}` (whole-array overwrite), silently
+    /// dropping partition-band slicing on the host gather. The
+    /// silent-sibling defect surfaced on 06-separable-filter/distributed
+    /// × mp-tcp-bufsync (`tmp` row-band gather: each worker's recv
+    /// overwrote the whole `tmp` instead of pasting its band).
+    /// pthreads-async + mp-tcp-event currently route through the same
+    /// helper via their `WalkerCtx`; if either grows a backend-private
+    /// Wait emit path, that path must also call `render_wait_assign`
+    /// (= the silent-sibling memory pattern that motivated this fix).
+    pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
 }
 
 impl<'a> Plan<'a> {
@@ -330,6 +346,15 @@ impl<'a> Plan<'a> {
         }
         let xfer_ids: BTreeMap<DataId, XferId> =
             xfer_data.iter().enumerate().map(|(i, d)| (*d, i)).collect();
+
+        // Collect per-pair tiles for slice-aware Wait gathers (TASK-0296
+        // cycle 116). The shared helper handles deterministic first-
+        // sighting wins on the same `(DataId, SeqTag)`; both endpoints
+        // carry the same tile by XferPlaceholder construction (TASK-0018).
+        let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+        for evs in per_worker.values() {
+            collect_xfer_pairs(evs, &mut pair_tiles);
+        }
 
         // Barrier identity by the contract-carried `SyncTag`
         // (TASK-0172). Each Event::Sync names its own barrier; the
@@ -373,6 +398,7 @@ impl<'a> Plan<'a> {
             used_workers,
             host_worker,
             xfer_ids,
+            pair_tiles,
         })
     }
 
@@ -1155,10 +1181,31 @@ impl<'a> Plan<'a> {
                     let cv = self.data_conn_var(worker, is_host, *src)?;
                     let from = self.worker_name(*src);
                     let dec = decode_expr(ty)?;
+                    // TASK-0296 cycle 116: route Wait gather through the
+                    // shared backend-common slice-paste helper. Before
+                    // this, the host-side emit was `{name} = {dec};`
+                    // (whole-array overwrite) regardless of the pair's
+                    // tile — partition-band gathers silently lost their
+                    // slice, e.g. 06-separable-filter/distributed × mp-
+                    // tcp-bufsync overwrote `tmp` per recv instead of
+                    // pasting each worker's hy row-band. The shared
+                    // helper dispatches whole-array vs 1D leading-axis
+                    // vs 2D row-loop slice-paste from the IterTile;
+                    // pthreads-async + mp-tcp-event already went via
+                    // this helper (silent-sibling defect closure for
+                    // mp-tcp-bufsync).
+                    let assign = render_wait_assign(
+                        self.sidecar,
+                        &self.pair_tiles,
+                        &name,
+                        *data,
+                        *seq,
+                        &dec,
+                    )?;
                     writeln!(
                         out,
                         "{pad}{{ let __buf = wire::read_msg_expect(&mut {cv}, {}); \
-                         {name} = {dec}; }} // recv `{name}` from {from}",
+                         {assign} }} // recv `{name}` from {from}",
                         seq.0
                     )
                     .ok();

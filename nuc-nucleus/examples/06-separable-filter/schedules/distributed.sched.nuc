@@ -1,0 +1,83 @@
+// Distributed schedule: 4 compute workers run pass 1 (row-banded
+// horizontal blur); host runs pass 2 (vertical blur). M5 AC#4
+// closeout cell for example 06 (TASK-0296).
+//
+// PRD §11 M5: "Examples 5–7 benefit measurably" from
+// distributed/reuse. Example 05 was carried by cycle 79c..115;
+// this cell is the example-06 closure half (example 07 is
+// TASK-0297). It exercises the M5 machinery (partition_rows +
+// transfer_inject host/worker gather) on a NON-stencil shape — a
+// rectangular-accumulator separable filter where each pass-1 row
+// is independent and halo=0.
+//
+// Partition shape
+// ---------------
+// `loop hy : partition=rows;` on the OUTER axis of pass 1's
+// three-loop nest. H=16, 4 workers, exact-divisible into
+// 4-row bands (0..4, 4..8, 8..12, 12..16). No halo: hblur_acc only
+// reads `in_arr[hy][hk]` and `tmp[hy][hx]` — both indexed by `hy`
+// directly, no `hy ± k` offsets, so halo inference produces
+// `halo_widths[hblur_acc][hy] = 0` and transfer_inject does NOT
+// extend per-tile transfer ranges.
+//
+// Why pass 2 stays on host (HONEST SCOPE — TASK-0296 follow-up)
+// -------------------------------------------------------------
+// Pass 2 reads `tmp[vm][vx]` where `vm` iterates `0..H` for every
+// output (vy, vx) — `vm` is the INNER iteration variable, not
+// partitioned. Distributing pass 2 on `{ w0..w3 }` with
+// `partition=rows` on `vy` would make every worker need the FULL
+// `tmp` matrix (N-to-M all-to-all gather). transfer_inject's
+// per-pair-tile machinery handles that as a fallback only — see
+// `nucleus-compiler/src/passes/transfer_inject.rs` module docs
+// §"Honest limitations / N-to-M fan-out". The both-passes-
+// distributed variant via `tmp` broadcast is filed as TASK-0298.
+//
+// Keeping pass 2 on host yields the simpler 1-to-N (host → workers,
+// in_arr) and N-to-1 (workers → host, tmp) shapes — both inside
+// the bit-identical envelope today.
+//
+// Why sync (not async) transfers
+// ------------------------------
+// 05/distributed uses async/buffer=2/notify=event because the
+// natural streaming shape of a stencil pipeline benefits from
+// two row-bands in flight. For example 06's M5 capstone purpose
+// the value is BACKEND BREADTH: a sync-only schedule lowers on
+// every tier-1 backend (pthreads-sync, mp-tcp-bufsync,
+// pthreads-async, mp-tcp-event) instead of just pthreads-async,
+// so every backend gets a partition=rows + non-stencil bit-
+// identical cell. Async variants are out of scope for the
+// closeout cycle; a future cell can mirror 05/distributed's
+// async shape on top of this one.
+//
+// Bit-identicality
+// ----------------
+// The rectangular-accumulator algorithm is invariant under the
+// row-band partition shape: pass 1's hy iterations are
+// independent (each row writes `tmp[hy][0..W]` from
+// `in_arr[hy][0..W]` only), so banding hy across workers
+// reorders nothing. Pass 2 runs single-worker on the assembled
+// `tmp`, identical to naive/blocked. Therefore the existing
+// reference.bin oracle applies — no new reference is needed.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+
+    // Pass 1: distributed across 4 compute workers, row-banded by hy.
+    place hblur_acc on { w0, w1, w2, w3 };
+
+    // Pass 2: stays on host (see HONEST SCOPE note above).
+    place vblur_acc on host;
+
+    // Row-band partition pass 1's outer axis. hy is independent across
+    // rows; halo=0; no halo-strip synthesis required.
+    loop hy : partition=rows;
+
+    // host -> workers: per-band slice of in_arr for pass 1.
+    transfer in_arr : sync;
+
+    // workers -> host: gather per-band slice of tmp for pass 2.
+    transfer tmp : sync;
+}
