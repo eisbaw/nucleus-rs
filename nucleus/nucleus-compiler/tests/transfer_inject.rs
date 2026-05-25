@@ -1556,6 +1556,408 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
 }
 
 // --------------------------------------------------------------------
+// TASK-0302: per-dim contiguous-prefix axis-mapping filter
+// --------------------------------------------------------------------
+
+/// Pin the 07-matmul/distributed-2d shape at the unit-test level:
+/// triple loop `for i { for j { for k { c[i][j] <-- madd(c[i][j],
+/// a[i][k], b[k][j]) }}}` with `partition=blocks2d` on the (i, j) nest
+/// must produce per-Xfer tiles consistent with the data-dim-prefix
+/// invariant `wait_slice` rests on (`tile.bounds[i].iter_var ↔
+/// data.dim[i]`). Specifically:
+///
+/// - `a` (indexed `[i][k]`) — dim 0 covered by partitioned `i`, dim 1
+///   not covered. Coverage `{0}` is a contiguous prefix; bounds must
+///   carry exactly `[(i, i_band)]`.
+/// - `c` (indexed `[i][j]`) — dim 0 covered by `i`, dim 1 covered by
+///   `j`. Coverage `{0, 1}` is a contiguous prefix; bounds must carry
+///   exactly `[(i, i_band), (j, j_band)]` in dim order.
+/// - `b` (indexed `[k][j]`) — dim 0 NOT covered (k is not partitioned),
+///   dim 1 covered by `j`. Coverage `{1}` is NOT a contiguous prefix
+///   from dim 0; bounds must be EMPTY → `wait_slice` whole-array arm.
+///
+/// Pre-TASK-0302 (with only TASK-0301's per-symbol-union filter), `b`
+/// would have received `bounds = [(j, j_band)]` because j IS in b's
+/// observed iv union — and `wait_slice` would have silently sliced
+/// b's k dimension by `j_band`, mis-addressing the data. This test
+/// would catch that regression at unit speed.
+///
+/// The 07-matmul/distributed-2d e2e cell is the only other proving
+/// ground; this pin localises a future regression and exercises the
+/// 2D non-prefix arm that the 1D-only `distributed` cell does not.
+#[test]
+fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+
+    // IterVar ids — pick non-monotonic so a regression that reverts to
+    // BTreeMap-key-order is independently visible (cf. TASK-0224).
+    const IV_I: IterVar = IterVar(7);
+    const IV_J: IterVar = IterVar(3);
+    const IV_K: IterVar = IterVar(5);
+    // Data ids
+    const D_A: DataId = DataId(0);
+    const D_B: DataId = DataId(1);
+    const D_C: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+
+    // madd op on {w0..w3}: reads c[i][j], a[i][k], b[k][j]; writes c[i][j].
+    let edge = DataflowEdge {
+        data_in: vec![D_C, D_A, D_B],
+        kernel: KernelId(100),
+        data_out: Some(D_C),
+        data_in_access: vec![
+            access(D_C, &["i", "j"]),
+            access(D_A, &["i", "k"]),
+            access(D_B, &["k", "j"]),
+        ],
+        data_out_access: Some(access(D_C, &["i", "j"])),
+        args: vec![
+            ArgBinding::Data(access(D_C, &["i", "j"])),
+            ArgBinding::Data(access(D_A, &["i", "k"])),
+            ArgBinding::Data(access(D_B, &["k", "j"])),
+        ],
+    };
+    let madd_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(100),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![edge] },
+    });
+
+    // Triple loop nest: outer `i` (partitioned), middle `j`
+    // (partitioned via blocks2d's pair), inner `k`.
+    let k_body = ACFGNode::Sequence(vec![madd_op]);
+    let k_loop = ACFGNode::Repeat {
+        iter_var: IV_K,
+        range: 0..16,
+        body: Box::new(k_body),
+        block_tag: None,
+    };
+    let j_body = ACFGNode::Sequence(vec![k_loop]);
+    let j_loop = ACFGNode::Repeat {
+        iter_var: IV_J,
+        range: 0..16,
+        body: Box::new(j_body),
+        block_tag: None,
+    };
+    let i_body = ACFGNode::Sequence(vec![j_loop]);
+    let i_loop = ACFGNode::Repeat {
+        iter_var: IV_I,
+        range: 0..16,
+        body: Box::new(i_body),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_A),
+        host_loader(D_B),
+        i_loop,
+        host_saver(D_C),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("a", 0), ("b", 1), ("c", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("i".to_string(), IV_I);
+    acfg.name_iter_vars.insert("j".to_string(), IV_J);
+    acfg.name_iter_vars.insert("k".to_string(), IV_K);
+
+    // Simulate blocks2d's (2 x 2) decomposition: i_band = 8 rows, j_band
+    // = 8 cols. Same row-major BTreeSet WorkerId assignment that
+    // partition_blocks2d uses (verified via 05-stencil/distributed-2d's
+    // schedule comment which documents the exact mapping).
+    //   w0 -> i=0..8,  j=0..8
+    //   w1 -> i=0..8,  j=8..16
+    //   w2 -> i=8..16, j=0..8
+    //   w3 -> i=8..16, j=8..16
+    let mut i_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    i_bands.insert(WorkerId(1), 0..8);
+    i_bands.insert(WorkerId(2), 0..8);
+    i_bands.insert(WorkerId(3), 8..16);
+    i_bands.insert(WorkerId(4), 8..16);
+    acfg.partition_worker_ranges.insert(IV_I, i_bands);
+    let mut j_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    j_bands.insert(WorkerId(1), 0..8);
+    j_bands.insert(WorkerId(2), 8..16);
+    j_bands.insert(WorkerId(3), 0..8);
+    j_bands.insert(WorkerId(4), 8..16);
+    acfg.partition_worker_ranges.insert(IV_J, j_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("a", &["host"]), ("b", &["host"]), ("c", &["w0", "w1", "w2", "w3"])],
+        "transfer a : sync; transfer b : sync; transfer c : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg);
+    let xfers = result.root.collect_xfers();
+
+    let waits_for = |data: DataId| -> Vec<XferPlaceholder> {
+        xfers
+            .iter()
+            .filter(|x| x.role == XferRole::Wait && x.data == data)
+            .cloned()
+            .collect()
+    };
+
+    let a_waits = waits_for(D_A);
+    let b_waits = waits_for(D_B);
+    let c_waits = waits_for(D_C);
+
+    assert!(!a_waits.is_empty(), "expected fan-out Waits for data a");
+    assert!(!b_waits.is_empty(), "expected fan-out Waits for data b");
+    assert!(!c_waits.is_empty(), "expected gather Waits for data c");
+
+    // a is indexed [i][k] — dim coverage {0}. Contiguous prefix. Bounds
+    // must carry exactly [(i, ...)] in dim order.
+    for w in &a_waits {
+        let order: Vec<IterVar> = w.tile.bounds.iter().map(|(iv, _)| *iv).collect();
+        assert_eq!(
+            order,
+            vec![IV_I],
+            "data a bounds must be [(i, i_band)] (i indexes a dim 0; \
+             k indexes dim 1 but k is not partitioned); got {:?}",
+            order
+        );
+    }
+
+    // c is indexed [i][j] — dim coverage {0, 1}. Contiguous prefix.
+    // Bounds must carry exactly [(i, ...), (j, ...)] in dim order.
+    for w in &c_waits {
+        let order: Vec<IterVar> = w.tile.bounds.iter().map(|(iv, _)| *iv).collect();
+        assert_eq!(
+            order,
+            vec![IV_I, IV_J],
+            "data c bounds must be [(i, i_band), (j, j_band)] in DIM \
+             order — i indexes dim 0, j indexes dim 1; got {:?}",
+            order
+        );
+    }
+
+    // b is indexed [k][j] — dim coverage {1} only (k not partitioned).
+    // NOT a contiguous prefix from dim 0; bounds must be EMPTY (wait_slice
+    // whole-array arm). Pre-TASK-0302 the TASK-0301 per-symbol filter
+    // would have admitted j (j IS in b's observed union) and emitted
+    // bounds = [(j, j_band)] — which wait_slice would silently slice as
+    // b's leading-axis range, mis-mapping j_band to b's k dim.
+    for w in &b_waits {
+        assert!(
+            w.tile.bounds.is_empty(),
+            "data b bounds must be EMPTY (b is [k][j]; k is not \
+             partitioned, so dim coverage is {{1}} — NOT a contiguous \
+             prefix from dim 0; TASK-0302 drops to whole-array \
+             broadcast); got {:?}. Pre-TASK-0302 this would have been \
+             [(j, j_band)] and `wait_slice` would silently mis-map j to \
+             b's k dim.",
+            w.tile.bounds
+        );
+    }
+}
+
+/// Pin the AMBIGUOUS multi-iv-per-dim arm of
+/// `compute_partition_bounds_with_dim_prefix` (TASK-0302, architect
+/// cycle 121 P2.2). When a single data dim is observed indexed by
+/// MULTIPLE partitioned ivs (e.g. `a[i+j]` where both `i` and `j`
+/// are partitioned), the slicing shape is ambiguous (which partition
+/// is "the" partition of this dim?). The defensive choice is to
+/// drop to whole-array broadcast — empty bounds.
+///
+/// No shipped grammar / schedule constructs this shape today (every
+/// shipped schedule keeps iv-per-dim cardinality at 1); this pin is
+/// for a future grammar widening that admits multi-iv index
+/// expressions to a partitioned axis.
+#[test]
+fn rewrite_partition_tiles_drops_ambiguous_multi_partitioned_iv_per_dim() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::{IrBinOp, IrExpr};
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_I: IterVar = IterVar(7);
+    const IV_J: IterVar = IterVar(3);
+    const D_A: DataId = DataId(0);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+
+    // a is indexed at dim 0 by `i + j` — two partitioned ivs at the
+    // same dim.
+    let access_a = DataAccess {
+        data: D_A,
+        indices: vec![IrExpr::BinOp(
+            IrBinOp::Add,
+            Box::new(ident("i")),
+            Box::new(ident("j")),
+        )],
+    };
+    let edge = DataflowEdge {
+        data_in: vec![D_A],
+        kernel: KernelId(100),
+        data_out: None,
+        data_in_access: vec![access_a.clone()],
+        data_out_access: None,
+        args: vec![ArgBinding::Data(access_a)],
+    };
+    let body_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(100),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![edge] },
+    });
+
+    // Outer i (partitioned), inner j (partitioned).
+    let j_loop = ACFGNode::Repeat {
+        iter_var: IV_J,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![body_op])),
+        block_tag: None,
+    };
+    let i_loop = ACFGNode::Repeat {
+        iter_var: IV_I,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![j_loop])),
+        block_tag: None,
+    };
+
+    // Host producer of a (forces a fan-out Xfer to compute workers).
+    let producer = {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(D_A),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: D_A,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    };
+
+    let root = ACFGNode::Sequence(vec![producer, i_loop]);
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("a", 0)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("i".to_string(), IV_I);
+    acfg.name_iter_vars.insert("j".to_string(), IV_J);
+
+    let mut i_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    i_bands.insert(WorkerId(1), 0..4);
+    i_bands.insert(WorkerId(2), 4..8);
+    i_bands.insert(WorkerId(3), 8..12);
+    i_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_I, i_bands);
+    let mut j_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    j_bands.insert(WorkerId(1), 0..4);
+    j_bands.insert(WorkerId(2), 4..8);
+    j_bands.insert(WorkerId(3), 8..12);
+    j_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_J, j_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[("a", &["host"])],
+        "transfer a : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg);
+    let xfers = result.root.collect_xfers();
+    let a_waits: Vec<XferPlaceholder> = xfers
+        .iter()
+        .filter(|x| x.role == XferRole::Wait && x.data == D_A)
+        .cloned()
+        .collect();
+    assert!(!a_waits.is_empty(), "expected fan-out Waits for data a");
+
+    // a's dim 0 is indexed by BOTH i and j (both partitioned). The
+    // ambiguity arm of compute_partition_bounds_with_dim_prefix
+    // returns Some(Vec::new()) → wait_slice whole-array. If a future
+    // change picks "first partitioned iv" or "outer iv" instead, this
+    // test fires LOUD.
+    for w in &a_waits {
+        assert!(
+            w.tile.bounds.is_empty(),
+            "data a bounds must be EMPTY (dim 0 indexed by BOTH \
+             partitioned i and j — ambiguous; TASK-0302 drops to \
+             whole-array broadcast); got {:?}",
+            w.tile.bounds
+        );
+    }
+}
+
+// --------------------------------------------------------------------
 // TASK-0263 Stage 2: halo extension on per-tile transfer ranges
 // --------------------------------------------------------------------
 

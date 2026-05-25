@@ -1,0 +1,76 @@
+// Distributed 2D-grid schedule: 4 compute workers in a 2x2 grid via
+// `partition=blocks2d` over the outer (i, j) nest of the matmul
+// triple loop. Host runs load/save. The innermost `k` loop is the
+// reduction axis and is NOT partitioned.
+//
+// M5 AC#4 follow-up to 07-matmul/distributed (TASK-0297 +
+// TASK-0301). This cell discharges the 2D shape of TASK-0302
+// (`wait_slice` axis-mapping under sparse partition coverage).
+//
+// Partition shape
+// ---------------
+// `loop i : partition=blocks2d;` pairs the outer i-loop with the
+// inner j-loop into a 2x2 worker grid (per partition_blocks2d's
+// decompose_grid(4) = (2,2)). N=16, 2 rows × 2 cols → i_band = 8,
+// j_band = 8 per worker. Each worker computes
+//     c[i_band][j_band] = sum_k a[i_band][k] * b[k][j_band]
+//
+// Per-worker assignment (row-major over BTreeSet numeric WorkerId
+// order — matches partition_blocks2d.rs's `for (i, wid) in
+// body_workers.iter().enumerate() { row = i / cols; col = i % cols }`):
+//     w0 (0,0): i=0..8,  j=0..8     w1 (0,1): i=0..8,  j=8..16
+//     w2 (1,0): i=8..16, j=0..8     w3 (1,1): i=8..16, j=8..16
+//
+// Why this is bit-identical with naive/blocked/distributed
+// --------------------------------------------------------
+// The k-accumulator semantics are unchanged under the (i, j)
+// partition: each output c[i][j] is the SAME sum over k = 0..N
+// regardless of which worker computes it. Workers are independent
+// on (i, j); no halo, no cross-worker carry, no reduction across
+// (i, j). The existing reference.bin oracle applies — no new
+// reference is needed.
+//
+// Why this needs TASK-0302
+// ------------------------
+// Under partition=blocks2d(i,j):
+//   - a is indexed [i][k]: dim 0 partition-covered (by i), dim 1
+//     not (k is not partitioned). Coverage forms a contiguous
+//     prefix {0} → bounds = [(i, i_band)]. wait_slice slices a
+//     by leading-axis (correct).
+//   - c is indexed [i][j]: dim 0 covered (i), dim 1 covered (j).
+//     Contiguous prefix {0, 1} → bounds = [(i, i_band), (j, j_band)].
+//     wait_slice's 2D row-loop slice-paste (TASK-0294) handles the
+//     gather correctly.
+//   - b is indexed [k][j]: dim 0 NOT covered (k is not partitioned),
+//     dim 1 covered (j). Coverage {1} is NOT a contiguous prefix
+//     starting at dim 0. Pre-TASK-0302 the TASK-0301 per-symbol
+//     filter would have emitted bounds = [(j, j_band)] (j IS in b's
+//     observed union), which wait_slice would silently mis-map to
+//     b's k dimension. TASK-0302's dim-prefix check detects the
+//     sparse coverage and drops to empty bounds → wait_slice
+//     whole-array broadcast of b (over-transfer but bit-correct).
+//
+// Why sync transfers
+// ------------------
+// Sync-only schedule lowers on every tier-1 backend without
+// capability gaps. Async variants are out of scope for this cell.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+    place madd   on { w0, w1, w2, w3 };
+
+    // 2x2-grid partition over the (i, j) nest. N=16 → 8×8 tile per
+    // worker. The partition_blocks2d pass pairs i (outer) with the
+    // first inner Repeat (j) and writes both bands into
+    // partition_worker_ranges; the k-loop (innermost reduction)
+    // remains intact per-worker.
+    loop i : partition=blocks2d;
+
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

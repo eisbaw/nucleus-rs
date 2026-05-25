@@ -187,7 +187,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use crate::acfg::{
-    ACFGNode, NotifyMode, Operation, TransferPolicy, XferPlaceholder, XferRole, ACFG,
+    ACFGNode, DataAccess, NotifyMode, Operation, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 use crate::algo::ir::IrExpr;
 use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
@@ -383,20 +383,25 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // neither endpoint is partitioned (the 1:1 host↔single-worker
         // shape from examples 01..07) survive unchanged because the
         // map has no entry for either side.
-        // TASK-0301: Build the (DataId -> {IterVar mentioned in this data's
-        // accesses}) map by walking every Operation's DataflowDag. This is
-        // consulted by `rewrite_partition_tiles_inner` to filter the per-
-        // Xfer tile-bounds: an axis whose iter-var does NOT appear in the
-        // data symbol's access expressions must be excluded from that
-        // Xfer's tile, lest `wait_slice` mis-map it to a data dim the iv
-        // doesn't index (the AXIS-MAPPING ASSUMPTION discharged here for
-        // the case where the filter alone is sufficient — every shipped
-        // M5 cell + 07-matmul/distributed × partition=workers(i)).
-        let data_iv_indexing = collect_data_iv_indexing(&spliced, &name_iter_vars);
+        // TASK-0301 / TASK-0302: Build the per-data, per-dim iter-var
+        // index map by walking every Operation's DataflowDag. Consulted
+        // by `rewrite_partition_tiles_inner` to enforce the
+        // *contiguous-prefix* invariant on per-Xfer tile bounds: bounds
+        // must be in dim order AND cover only a contiguous prefix of
+        // the data's dims, lest `wait_slice` (whose convention is
+        // `tile.bounds[i].iter_var ↔ data.dim[i]`) silently mis-map a
+        // sparse covering. The 1D AXIS-MAPPING discharge (TASK-0301)
+        // covered the "iv not in the data's union" case via the
+        // per-symbol filter; TASK-0302 generalises the input to a
+        // per-dim map so the 2D `b[k][j]` × `partition=blocks2d(i,j)`
+        // shape (where j IS in b's union but only at dim 1, with no
+        // partitioned iv covering dim 0) also drops safely to a
+        // whole-array broadcast rather than slicing the wrong dim.
+        let data_dim_iv_map = collect_data_dim_iv_map(&spliced, &name_iter_vars);
         let partitioned = rewrite_partition_tiles(
             spliced,
             &partition_worker_ranges,
-            &data_iv_indexing,
+            &data_dim_iv_map,
         );
         // TASK-0263 Stage 2 halo extension. For each XferPlaceholder
         // whose tile axis carries a non-zero halo entry (the data
@@ -1587,7 +1592,7 @@ fn splice_pushes_global(mut root: ACFGNode, name_data: &BTreeMap<String, DataId>
 fn rewrite_partition_tiles(
     node: ACFGNode,
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
-    data_iv_indexing: &BTreeMap<DataId, BTreeSet<IterVar>>,
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
 ) -> ACFGNode {
     if partition_ranges.is_empty() {
         return node;
@@ -1601,13 +1606,22 @@ fn rewrite_partition_tiles(
     // on its first visit — the partition slice is keyed per iter-var,
     // and a second copy at deeper nest would double the bounds entry
     // for the same logical axis.
+    //
+    // `partition_axis_order` is the FALL-BACK iteration order used when
+    // a data symbol has no observed indexed accesses (TASK-0301
+    // additive contract → preserves pre-TASK-0301 behaviour for
+    // synthetic test fixtures using `DataflowEdge::new`). For data
+    // symbols WITH observed accesses, `data_dim_iv_map` carries the
+    // per-dim info needed for the TASK-0302 dim-prefix logic, which
+    // emits bounds in *data-dim* order (matching `wait_slice`'s
+    // axis-mapping convention).
     let mut partition_axis_order: Vec<IterVar> = Vec::new();
     collect_partitioned_iter_var_nest_order(&node, partition_ranges, &mut partition_axis_order);
     rewrite_partition_tiles_inner(
         node,
         partition_ranges,
         &partition_axis_order,
-        data_iv_indexing,
+        data_dim_iv_map,
     )
 }
 
@@ -1641,15 +1655,19 @@ fn collect_partitioned_iter_var_nest_order(
 /// Recursive worker for [`rewrite_partition_tiles`].
 ///
 /// `partition_axis_order` is the OUTER-to-INNER nest-order vec of
-/// partitioned iter-vars precomputed by the caller; we consult it to
-/// keep `IterTile::bounds` in nest order regardless of where the Xfer
-/// currently sits in the tree (post-hoist Xfers may live outside their
-/// birth-position Repeats — see [`rewrite_partition_tiles`] doc).
+/// partitioned iter-vars precomputed by the caller. As of TASK-0302 it
+/// is consulted only on the *fall-back* path (data symbols with no
+/// observed indexed accesses — synthetic fixtures using
+/// `DataflowEdge::new`, OR bare-aggregate-only data symbols). The
+/// canonical path keys off `data_dim_iv_map` via
+/// [`compute_partition_bounds_with_dim_prefix`], which emits bounds in
+/// data-dim order (matching `wait_slice`'s
+/// `tile.bounds[i] ↔ data.dim[i]` convention).
 fn rewrite_partition_tiles_inner(
     node: ACFGNode,
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
     partition_axis_order: &[IterVar],
-    data_iv_indexing: &BTreeMap<DataId, BTreeSet<IterVar>>,
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
 ) -> ACFGNode {
     match node {
         ACFGNode::Xfer(mut x) => {
@@ -1662,69 +1680,59 @@ fn rewrite_partition_tiles_inner(
                 None
             };
             if let Some(w) = compute_worker {
-                // Iterate the precomputed OUTER-to-INNER nest-order
-                // axis vec and append the per-worker partition slice
-                // for each axis where this compute worker has an
-                // entry. Replaces a pre-TASK-0224 BTreeMap-key-order
-                // iteration that coincidentally produced nest order
-                // only because every in-tree schedule's outer
-                // iter-vars happened to have lower IterVar ids.
+                // TASK-0302: prefer the per-dim contiguous-prefix
+                // filter (which subsumes TASK-0301's per-symbol-union
+                // filter and additionally handles the sparse-coverage
+                // case where partition axes do NOT form a prefix of
+                // the data's dims). Returns:
+                //   - `Some(bounds)` — emit in DATA-DIM order. Empty
+                //     vec means "drop to whole-array broadcast"
+                //     (sparse coverage OR ambiguous multi-iv-per-dim).
+                //   - `None` — no observed indexed accesses on this
+                //     data; fall back to the pre-TASK-0301 nest-order
+                //     iteration that preserves the synthetic-fixture
+                //     contract (DataflowEdge::new constructs accesses
+                //     with empty indices).
                 //
-                // TASK-0301: additionally filter by `data_iv_indexing[x.data]`
-                // — an iter-var that does NOT appear in this data symbol's
-                // access expressions must be excluded from this Xfer's
-                // bounds. `wait_slice`'s axis-mapping convention assumes
-                // `tile.bounds[i].iter_var` indexes data dim i; appending
-                // an unrelated iv silently mis-maps the slice (07-matmul
-                // × partition=workers(i): b is indexed [k][j], so i must
-                // not appear in b's bounds — empty bounds → whole-array
-                // broadcast of b, which is correct).
-                //
-                // Additive contract: the filter only removes an iv when
-                // we have POSITIVE evidence the iv does not index the
-                // data — i.e., the data has a non-empty observed iv set
-                // and that set does not contain `iv`. When the observed
-                // set is empty (rare in production: a data symbol that
-                // is *only* ever read/written as a bare aggregate, OR a
-                // synthetic test fixture using the index-less
-                // `DataflowEdge::new`), we fall back to the pre-TASK-0301
-                // behaviour and keep every partitioned axis. This keeps
-                // the change additive on every shipped M5 cell (05/-,
-                // 05/distributed-2d, 06/distributed all have every
-                // partitioned iv observed in every data's accesses; the
-                // filter is structurally a no-op for them) and preserves
-                // the synthetic-fixture contract that pins the partition
-                // composition. 07-matmul's `b` triggers the new behaviour
-                // because its observed iv set {k, j} positively excludes
-                // the partitioned `i`.
-                // Silent-sibling audit (architect P3.3, cycle 118): every
-                // other site that mutates `x.tile` either constructs it
-                // structurally from the live enclosing-loop stack
-                // (`inject_in_node_with_tile`), extends an already-filtered
-                // bounds set (`extend_xfer_tiles_for_halo`, runs after us),
-                // or hand-crafts the (outer_iv, inner_iv) pair from the
+                // Silent-sibling audit (architect P3.3, cycle 118):
+                // every other site that mutates `x.tile` either
+                // constructs it structurally from the live enclosing-
+                // loop stack (`inject_in_node_with_tile`), extends an
+                // already-filtered bounds set
+                // (`extend_xfer_tiles_for_halo`, runs after us), or
+                // hand-crafts the (outer_iv, inner_iv) pair from the
                 // partition_pairs sidecar (`inject_halo_strip_xfers`,
-                // structurally axis-correct by construction). None need
-                // the TASK-0301 filter today; a future N-dim halo or
-                // partition pass that constructs `bounds` from a
-                // partition_axis_order MUST consult `data_iv_indexing`
-                // to avoid re-importing the axis-mapping assumption.
-                let allowed = data_iv_indexing.get(&x.data);
-                let filter_active = allowed.is_some_and(|s| !s.is_empty());
-                let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
-                for iv in partition_axis_order {
-                    if filter_active {
-                        let allowed_set = allowed.expect("filter_active implies Some");
-                        if !allowed_set.contains(iv) {
-                            continue;
+                // structurally axis-correct by construction). A future
+                // N-dim halo or partition pass that constructs
+                // `bounds` from a `partition_axis_order` MUST consult
+                // `data_dim_iv_map` (via
+                // `compute_partition_bounds_with_dim_prefix`) to
+                // avoid re-importing the axis-mapping assumption.
+                let bounds = match compute_partition_bounds_with_dim_prefix(
+                    x.data,
+                    data_dim_iv_map,
+                    partition_ranges,
+                    w,
+                ) {
+                    Some(b) => b,
+                    None => {
+                        // Pre-TASK-0301 fall-back: iterate the
+                        // partition_axis_order (nest order) and append
+                        // every partitioned axis the worker has an
+                        // entry for. Used only when the data symbol
+                        // has no observed indexed accesses (synthetic
+                        // fixtures + bare-aggregate-only data).
+                        let mut tmp: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
+                        for iv in partition_axis_order {
+                            if let Some(per_worker) = partition_ranges.get(iv) {
+                                if let Some(range) = per_worker.get(&w) {
+                                    tmp.push((*iv, range.clone()));
+                                }
+                            }
                         }
+                        tmp
                     }
-                    if let Some(per_worker) = partition_ranges.get(iv) {
-                        if let Some(range) = per_worker.get(&w) {
-                            bounds.push((*iv, range.clone()));
-                        }
-                    }
-                }
+                };
                 if !bounds.is_empty() {
                     x.tile = IterTile::new(bounds);
                 }
@@ -1739,7 +1747,7 @@ fn rewrite_partition_tiles_inner(
                         c,
                         partition_ranges,
                         partition_axis_order,
-                        data_iv_indexing,
+                        data_dim_iv_map,
                     )
                 })
                 .collect(),
@@ -1756,7 +1764,7 @@ fn rewrite_partition_tiles_inner(
                 *body,
                 partition_ranges,
                 partition_axis_order,
-                data_iv_indexing,
+                data_dim_iv_map,
             )),
             block_tag,
         },
@@ -1765,80 +1773,202 @@ fn rewrite_partition_tiles_inner(
 }
 
 // --------------------------------------------------------------------
-// TASK-0301: data → iter-vars indexing (axis-mapping filter input)
+// TASK-0301 / TASK-0302: data → per-dim iter-vars indexing
+// (axis-mapping filter input)
 // --------------------------------------------------------------------
 
-/// Build the per-data set of iter-vars that appear inside any indexing
-/// expression on that data symbol, by walking every `Operation`'s
-/// `DataflowDag` in `root`.
+/// Build the per-data, per-dim iter-var sets observed across every
+/// indexed access on the symbol.
 ///
-/// For each access (`data_in_access` *and* `data_out_access` on each
-/// `DataflowEdge`), the `indices: Vec<IrExpr>` of the access is
-/// recursively scanned for `IrExpr::Ident(name)` leaves whose `name`
-/// resolves through `name_iter_vars` to an `IterVar`. The result is
-/// keyed by `DataId` and carries the union over all observed firings of
-/// the symbol (axis-precise filtering would require a per-axis map; the
-/// per-symbol union is what the axis-filter at `rewrite_partition_tiles`
-/// needs to suppress an iv that is *never* observed indexing this data —
-/// the 07-matmul `b` case, where `i` indexes neither dim of `b`).
+/// Returns `BTreeMap<DataId, Vec<BTreeSet<IterVar>>>` where the inner
+/// `Vec` is indexed by *data dim position* (the position in
+/// [`DataAccess::indices`]) and each set is the union of iter-vars
+/// referenced by the index expression at that dim across all observed
+/// accesses on the data. The Vec length equals the maximum index-count
+/// seen across accesses; ragged accesses (one site indexing fewer dims
+/// than another — pathological, not seen in canonical AlgoIR) are
+/// tolerated.
 ///
-/// Symbols not seen on any access (bare-aggregate transfers such as
-/// `save_c(c)`) get no entry; `rewrite_partition_tiles_inner` treats
-/// "absent" as "no iv could possibly index this data" and yields an
-/// empty bounds vec → whole-array transfer. That matches the pre-
-/// TASK-0301 behaviour for whole-aggregate transfers that already
-/// carried no partitioned axes.
+/// TASK-0302 generalisation of the TASK-0301 per-symbol-union map: the
+/// per-dim positions are what
+/// [`compute_partition_bounds_with_dim_prefix`] needs to enforce the
+/// *contiguous-prefix* invariant that `wait_slice`'s axis-mapping
+/// convention rests on. The per-symbol union the older code produced is
+/// recoverable as `iter().flatten().copied().collect()` over a data's
+/// Vec entry — kept implicit; no caller needs it any more.
 ///
-/// A non-`Ident` index leaf (e.g. an `IntLit`, or a `Neg`/`BinOp` over
-/// only consts) records no iv — correct, those axes are partition-
-/// invariant and shouldn't pull a partitioned slice. Arithmetic over
-/// an iv (`y - 1`, `k + halo`) still records the iv: the leaf is
-/// `Ident("y")` / `Ident("k")` inside the `BinOp` and `collect_ivs_
-/// from_expr` recurses to it. This is structurally independent of
-/// `extend_xfer_tiles_for_halo` (which keys off the `halo_widths`
-/// sidecar, not off the iv set this function records) — the two are
-/// only required to be *consistent*, not coupled.
-fn collect_data_iv_indexing(
+/// Index-extraction semantics (unchanged from TASK-0301):
+/// - `IrExpr::Ident(name)` leaves whose `name` resolves through
+///   `name_iter_vars` to an `IterVar` contribute that iv to the
+///   per-dim set.
+/// - A non-`Ident` leaf (`IntLit`, `Neg`/`BinOp` over only consts) records
+///   no iv — those axes are partition-invariant.
+/// - Arithmetic over an iv (`y - 1`, `k + halo`) still records the iv
+///   via recursion on the `BinOp`/`Neg` arms.
+/// - `DataRef` / `Call` in index position is defensive descent (the
+///   canonical grammar does not nest these inside index expressions, but
+///   recursing keeps a future grammar widening from silently dropping
+///   ivs).
+///
+/// Symbols seen only as bare-aggregate accesses (`save_c(c)` style:
+/// `indices.is_empty()`) get an entry with an *empty* `Vec` — the same
+/// fall-back trigger
+/// [`compute_partition_bounds_with_dim_prefix`] treats as "no observed
+/// dim info, pre-TASK-0301 contract applies". Symbols not seen on any
+/// access at all get no map entry, same fall-back path.
+///
+/// Structurally independent of `extend_xfer_tiles_for_halo` (which keys
+/// off the `halo_widths` sidecar) — the two are only required to be
+/// *consistent*, not coupled.
+fn collect_data_dim_iv_map(
     root: &ACFGNode,
     name_iter_vars: &BTreeMap<String, IterVar>,
-) -> BTreeMap<DataId, BTreeSet<IterVar>> {
-    let mut out: BTreeMap<DataId, BTreeSet<IterVar>> = BTreeMap::new();
-    walk_data_iv_indexing(root, name_iter_vars, &mut out);
+) -> BTreeMap<DataId, Vec<BTreeSet<IterVar>>> {
+    let mut out: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+    walk_data_dim_iv_map(root, name_iter_vars, &mut out);
     out
 }
 
-fn walk_data_iv_indexing(
+fn walk_data_dim_iv_map(
     node: &ACFGNode,
     name_iter_vars: &BTreeMap<String, IterVar>,
-    out: &mut BTreeMap<DataId, BTreeSet<IterVar>>,
+    out: &mut BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
 ) {
     match node {
         ACFGNode::Operation(op) => {
             for edge in &op.dataflow.edges {
                 for access in &edge.data_in_access {
-                    let entry = out.entry(access.data).or_default();
-                    for ix in &access.indices {
-                        collect_ivs_from_expr(ix, name_iter_vars, entry);
-                    }
+                    record_access_per_dim(access, name_iter_vars, out);
                 }
                 if let Some(access) = &edge.data_out_access {
-                    let entry = out.entry(access.data).or_default();
-                    for ix in &access.indices {
-                        collect_ivs_from_expr(ix, name_iter_vars, entry);
-                    }
+                    record_access_per_dim(access, name_iter_vars, out);
                 }
             }
         }
         ACFGNode::Sequence(children) => {
             for c in children {
-                walk_data_iv_indexing(c, name_iter_vars, out);
+                walk_data_dim_iv_map(c, name_iter_vars, out);
             }
         }
         ACFGNode::Repeat { body, .. } => {
-            walk_data_iv_indexing(body, name_iter_vars, out);
+            walk_data_dim_iv_map(body, name_iter_vars, out);
         }
         ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
     }
+}
+
+fn record_access_per_dim(
+    access: &DataAccess,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    out: &mut BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+) {
+    let entry = out.entry(access.data).or_default();
+    if entry.len() < access.indices.len() {
+        entry.resize(access.indices.len(), BTreeSet::new());
+    }
+    for (dim, ix_expr) in access.indices.iter().enumerate() {
+        collect_ivs_from_expr(ix_expr, name_iter_vars, &mut entry[dim]);
+    }
+}
+
+/// TASK-0302 helper: apply the data-dim-prefix filter to derive per-Xfer
+/// `IterTile::bounds` from the partition state.
+///
+/// Returns:
+/// - `None` — no observed dim info for this data (no access on the
+///   symbol, OR every access is a bare-aggregate `indices.is_empty()`
+///   reference, OR a synthetic `DataflowEdge::new` fixture with empty
+///   indices). The caller must then fall back to the *pre-TASK-0301*
+///   "every partitioned iv applies" behaviour. This contract preserves
+///   every shipped pre-TASK-0301 test fixture verbatim.
+/// - `Some(bounds)` — applied the per-dim contiguous-prefix logic. The
+///   returned Vec is in *data-dim* order. An empty Vec means the data's
+///   partition-covered dims do not form a contiguous prefix starting at
+///   dim 0 (the 07-matmul `b[k][j]` × `partition=blocks2d(i,j)` case:
+///   only dim 1 is partition-covered, dim 0 is not, so no safe slice is
+///   possible without an `iv → dim` mapping on `wait_slice`) — the
+///   caller drops the tile to whole-array broadcast, the same shape
+///   TASK-0301's i-membership filter already used for the
+///   `partition=workers(i)` × `b[k][j]` 1D case.
+///
+/// ### Why dim-order, not partition_axis_order
+///
+/// `wait_slice`'s axis-mapping convention is `tile.bounds[i].iter_var
+/// ↔ data.dim[i]` (row-major / nest-order). Emitting in dim order is
+/// what makes that convention hold. The two orders coincide on every
+/// shipped M5 cell because every cell's partition axes ARE the data's
+/// dim-0 (`workers` on `[y][x]`, `[i][k]`, `[i][j]`) OR dim-0+dim-1
+/// nest-order (`blocks2d` on `[y][x]`), so this rewrite is
+/// observationally identical for them. The change bites when partition
+/// axes are *sparse over the data's dim space* — the 07-matmul
+/// `b[k][j]` × `partition=blocks2d(i,j)` shape that motivates this task.
+///
+/// ### Ambiguity handling
+///
+/// If a single dim is observed indexed by *multiple* partitioned ivs
+/// (e.g. `a[i+j]` where both `i` and `j` are partitioned), the slicing
+/// shape is ambiguous (which partition is "the" partition of this dim?).
+/// The conservative choice is `Some(empty)` → whole-array broadcast.
+/// Today's grammar + every shipped schedule keeps the iv-per-dim
+/// cardinality at 1; this branch is defensive.
+///
+/// `partition_axis_order` is consulted only when `dim_iv_map.get(&data)`
+/// is `None` (fall-back path in the caller), so it is intentionally NOT
+/// a parameter to this function.
+fn compute_partition_bounds_with_dim_prefix(
+    data: DataId,
+    dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    worker: WorkerId,
+) -> Option<Vec<(IterVar, std::ops::Range<i64>)>> {
+    let per_dim = dim_iv_map.get(&data)?;
+    if per_dim.is_empty() {
+        return None;
+    }
+    // Resolve per-dim coverage: at each dim, find the (unique) partitioned
+    // iv that indexes it on this worker.
+    let mut per_dim_cover: Vec<Option<(IterVar, std::ops::Range<i64>)>> =
+        Vec::with_capacity(per_dim.len());
+    for iv_set in per_dim {
+        let partitioned: Vec<IterVar> = iv_set
+            .iter()
+            .copied()
+            .filter(|iv| partition_ranges.contains_key(iv))
+            .collect();
+        match partitioned.len() {
+            0 => per_dim_cover.push(None),
+            1 => {
+                let iv = partitioned[0];
+                let range = partition_ranges
+                    .get(&iv)
+                    .and_then(|m| m.get(&worker))
+                    .cloned();
+                per_dim_cover.push(range.map(|r| (iv, r)));
+            }
+            _ => {
+                // Ambiguous (multiple partitioned ivs at the same dim).
+                // Defensive whole-array broadcast.
+                return Some(Vec::new());
+            }
+        }
+    }
+    // Walk dims in order, accept contiguous prefix from dim 0; reject
+    // sparse coverage (a covered dim AFTER a hole).
+    let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
+    let mut hit_hole = false;
+    for slot in per_dim_cover {
+        match (slot, hit_hole) {
+            (Some(b), false) => bounds.push(b),
+            (None, _) => hit_hole = true,
+            (Some(_), true) => {
+                // Sparse coverage (e.g. b[k][j] with partition on j but
+                // not on k): wait_slice's dim-i ↔ bounds[i] convention
+                // would silently mis-map. Drop to whole-array.
+                return Some(Vec::new());
+            }
+        }
+    }
+    Some(bounds)
 }
 
 /// Recursively collect every `IrExpr::Ident(name)` whose `name` resolves

@@ -916,23 +916,51 @@ pub fn render_wait_assign(
 /// Module-private — both backends consume this only indirectly via
 /// `render_wait_assign`.
 ///
-/// # AXIS-MAPPING ASSUMPTION
+/// # AXIS-MAPPING ASSUMPTION (discharged TASK-0302; consult upstream guarantee)
 ///
 /// Assumes `tile.bounds[i].iter_var` maps to data dim `i` (the
-/// row-major / nest-order convention). For `partition=workers`
-/// schedules and the 1D leading axis, this is the TASK-0117 cycle-
-/// 1 review-gate's HONEST-PARTIAL ASSUMPTION (pre-TASK-0294, the
-/// `_iv` was never consulted — only the numerical range was
-/// validated). TASK-0294 generalises the same convention to the
-/// second axis: `tile.bounds[1].iter_var` is presumed to map to
-/// dim 1. For `partition=blocks2d` on a 2D loop nest the
-/// convention holds because `partition_blocks2d` writes the outer-
-/// then-inner iv pair into `partition_pairs` in row-major (outer →
-/// dim 0, inner → dim 1) order; the `rewrite_partition_tiles_inner`
-/// pass appends them to the tile in nest order. For a hypothetical
-/// inner-axis-leading partition or a non-row-major data layout the
-/// slice would silently address the wrong axis. Still tracked as
-/// the honest-limit lineage of TASK-0117.
+/// row-major / nest-order convention). The convention is now
+/// upstream-enforced by
+/// `transfer_inject::compute_partition_bounds_with_dim_prefix`
+/// (TASK-0302, cycle 121): it consults the per-data, per-dim iv
+/// indexing map and emits bounds in *data-dim* order, dropping any
+/// data symbol whose partition-covered dims do not form a
+/// contiguous prefix from dim 0 to whole-array (empty bounds). This
+/// generalises TASK-0301's per-symbol iv-membership filter to the
+/// per-dim shape — necessary for the 07-matmul `b[k][j]` ×
+/// `partition=blocks2d(i,j)` case where j is in b's union but only
+/// at dim 1 (not a prefix); pre-TASK-0302 the per-symbol filter
+/// would have emitted `[(j, j_band)]` for b and silently mis-sliced
+/// b's k dim.
+///
+/// Lineage:
+///   - TASK-0117 cycle 1: HONEST-PARTIAL ASSUMPTION (1D leading axis;
+///     `_iv` never consulted — only the numerical range validated).
+///   - TASK-0294: generalised to the second axis (`tile.bounds[1]
+///     .iter_var ↔ ty.dims[1]`).
+///   - TASK-0301: 1D per-symbol-union filter (07-matmul/distributed
+///     × `partition=workers(i)`).
+///   - TASK-0302: per-dim contiguous-prefix filter (07-matmul/
+///     distributed-2d × `partition=blocks2d(i, j)`). Upstream-enforced
+///     for every shipped partition shape: partition-derived bounds
+///     (`compute_partition_bounds_with_dim_prefix`) AND halo-strip
+///     bounds (`inject_halo_strip_xfers`, written as `[(outer_iv,
+///     ...), (inner_iv, ...)]` assuming the data is `[outer][inner]`)
+///     emit in data-dim order on every cell currently in the e2e
+///     matrix. The assumption is no longer a silent risk for any
+///     shipped schedule.
+///
+/// Open shapes (not currently in the e2e matrix):
+///   - A halo-bearing data symbol indexed `[k][j]` while the
+///     partition pair is `(outer=i, inner=j)`. `inject_halo_strip_xfers`
+///     would write `[(i, ...), (j, ...)]` and `wait_slice` would
+///     slice dim 0 (=k) by `i_band`. Same axis-mapping concern
+///     resurfaces; the halo-strip site does not yet consult
+///     `data_dim_iv_map`.
+///   - An inner-axis-leading partition (e.g. `partition=blocks2d(j, i)`
+///     where the OUTER iv lands at data dim 1 instead of 0) or a
+///     non-row-major data layout — the dim-prefix logic assumes
+///     dim 0 comes first.
 fn wait_slice(
     sidecar: &NameSidecar,
     data: DataId,

@@ -1215,3 +1215,47 @@ schedule = "distributed"
 backend  = "mp-tcp-event"
 milestone = "M5"
 
+# ---- M5 example 07 — distributed-2d schedule (TASK-0302) ------------
+#
+# 07-matmul/distributed-2d.sched.nuc — partition=blocks2d on the (i, j)
+# nest of the matmul triple loop. TASK-0302 (this cycle) generalises
+# the TASK-0301 axis-mapping filter to a per-dim contiguous-prefix
+# check, which is what makes this schedule lower bit-identical: b is
+# indexed [k][j], so its partition-covered dim set is {1} (NOT a
+# prefix from dim 0) → bounds drop to empty → whole-array broadcast.
+# a (dim coverage {0}) and c (dim coverage {0, 1}) are prefixes; their
+# bounds carry the per-worker (i_band, j_band) slices.
+#
+# k-accumulator semantics are unchanged under (i, j) partitioning, so
+# the existing 07-matmul/reference.bin oracle applies.
+#
+# Sync transfers throughout — no async capability gap on any tier-1
+# backend. mp-tcp-event has no host-excluding barrier on this shape
+# (madd has zero halo, so inject_halo_strip_xfers synthesises no
+# w↔w pairs — same shape as the partition=workers `distributed`
+# cell above).
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "pthreads-sync"
+milestone = "M5"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "mp-tcp-bufsync"
+milestone = "M5"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "pthreads-async"
+milestone = "M5"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "mp-tcp-event"
+milestone = "M5"
+
