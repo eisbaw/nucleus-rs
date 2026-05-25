@@ -1931,9 +1931,16 @@ fn rewrite_partition_tiles_inner(
                 //   or `data_dim_iv_map` in its own scope, so the
                 //   axis-mapping assumption cannot leak in via them.
                 //   Grep witnesses (must remain consistent):
-                //   - `grep -n "IterTile::new(enclosing_tile" `
-                //     returns exactly three production sites (one
-                //     per function above) PLUS module-doc citations.
+                //   - `grep -nE "IterTile::new\(enclosing_tile\.to_vec\(\)\)"`
+                //     returns 5 hits in this file: 3 PRODUCTION
+                //     code-sites (one per function above —
+                //     identifiable by `w.tile =` / `tile:` LHS) +
+                //     1 module-doc citation (the `//!`-prefixed
+                //     line) + 1 self-reference inside THIS audit
+                //     listing (the `//   `-prefixed line). Filter
+                //     out commentary lines (`grep -nE "..." | grep
+                //     -vE ":\s*//"`) to count only the three
+                //     production sites directly.
                 //   - `grep -nE "data_dim_iv_map|partition_ranges"`
                 //     restricted to the body of each function above
                 //     returns zero hits.
@@ -1951,9 +1958,10 @@ fn rewrite_partition_tiles_inner(
                 //   AFTER `order_halo_strip_bounds_by_data_dim`
                 //   returns the data-dim-ordered bounds; axis-
                 //   correct since cycle 133 by construction. Grep
-                //   witness: `grep -n "emit_pair(neighbour"` returns
-                //   exactly four sites (N/S/W/E neighbours) and all
-                //   live inside `inject_halo_strip_xfers`.
+                //   witness: `grep -nE "emit_pair\(neighbour,"`
+                //   (trailing comma excludes this self-reference)
+                //   returns exactly four production sites (N/S/W/E
+                //   neighbours), all inside `inject_halo_strip_xfers`.
                 //
                 // A future N-dim partition pass that constructs tile
                 // bounds MUST consult `data_dim_iv_map` to avoid
