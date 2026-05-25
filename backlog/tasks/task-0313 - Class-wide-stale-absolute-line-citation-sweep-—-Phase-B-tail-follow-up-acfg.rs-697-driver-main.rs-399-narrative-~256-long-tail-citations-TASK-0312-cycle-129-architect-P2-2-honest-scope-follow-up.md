@@ -4,11 +4,11 @@ title: >-
   Class-wide stale absolute-line citation sweep — Phase B/tail follow-up
   (acfg.rs:697 + driver/main.rs:399 narrative + ~256 long-tail citations;
   TASK-0312 cycle-129 architect P2 #2 honest-scope follow-up)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 07:29'
-updated_date: '2026-05-25 08:24'
+updated_date: '2026-05-25 08:31'
 labels:
   - M5
   - tracker-hygiene
@@ -144,4 +144,29 @@ This addendum is the cycle-126-P3-compliant in-place correction; the original De
 - **AC#3 (task-0271 cycle-129 ADDENDUM verification)**: SPOT-CHECK PASS-WITH-RATIONALE. The cycle-129 STATE-OF-WORLD ADDENDUM is at task-0271 Description-end, immediately before the 'Acceptance Criteria' field. A reader who skims the Description sequentially DOES see the addendum before reaching the AC section; a reader who skims faster sees the inline annotation 'search for apply_reuse_inference_advisory to find it before the cycle-88 promotion, or apply_reuse_inference after' at the first reuse-driver tense marker. The 'Halo has the same choice today (its driver also uses advisory)' sentence in section 3 IS a residual reader-confusion risk for halo (it's not — partition-policy-aware since cycle 96), but adding a one-line forward-reference WOULD be a Description-text edit on a Done task, and the cycle-129 ADDENDUM already cross-references the halo migration. Cycle 132 chooses NOT to tighten — the existing defense is adequate and a further Description-text edit would risk a [[feedback-ac-rewrite-on-done-task]] near-miss. If a FUTURE reader confusion is reported, file as a focused follow-up then.
 - **AC#4 (cycle-126/127 substitution discipline)**: methodology, applied throughout cycle 132. Cycle 132 made ONE atomic --description rewrite (TASK-0179 — original Description preserved verbatim, addendum appended; verified via post-edit re-read). Zero sed-batches; zero AC mutations.
 - **AC#5 (cycle-129 forward-carry scope-wording)**: NAMED. Cycle 132 scope: 'architect-named priority sets only' (acfg.rs:697 substantive-claim closure + driver/main.rs:399 + task-0271 spot-checks). The corpus-wide tail of ~256 long-tail citations is EXPLICITLY OUT OF SCOPE this cycle. If a future class-wide sweep is wanted, it gets a NEW task at sweep-close per the cycle-129 forward-carry rule (the same rule TASK-0313 itself was filed under).
+
+## Cycle 132 review-gate fold-back + Done close
+
+Mandatory parallel read-only review gate (qa-test-runner + mped-architect):
+
+### qa-test-runner: GO
+- 8 arms all green; just test 859/0/3 dev = release; e2e 108/92/0/16/0 BOTH runs deterministic; build cache showed ZERO recompilation (release binary mtime predates HEAD commit time) — empirically confirms tracker-md-only.
+
+### mped-architect: GO with one P3 self-discipline action (folded this cycle)
+- **P1**: all 4 cycle-132 substantive claims verified TRUE against HEAD (TASK-0179 Done since 2026-05-19, acfg.rs:1085-1101 typed-error + line citations match exactly, ADDENDUM shape-compatible with cycle-129 task-0271 precedent, TASK-0039 forward-pointer to TASK-0179 routes readers to closure).
+- **P2 #1** (leave TASK-0039 alone): VERIFIED SOUND.
+- **P2 #2** (leave task-0271:24 first-tense-marker alone): VERIFIED DEFENSIBLE (cycle-126 P3 explicitly recommends ADDENDUM over in-place rewrite).
+- **P2 #3** (cycle-127/129 charitable retention convention preserved): VERIFIED INTACT.
+- **P3 #1** (close TASK-0313 this cycle): the architect notes keeping it In Progress conflates 'this cycle's deliverable' with 'the deferred corpus-wide tail' — exactly what AC#5 exists to forbid. AC#5 scope wording explicitly commits to filing any future class-wide sweep as a NEW task at sweep-close per cycle-129 forward-carry. CLOSING NOW per AC#5 self-discipline. If a corpus-wide tail sweep is wanted in a future cycle, file as new task at the moment of want.
+
+## Final closure rationale
+
+All 5 ACs met:
+- AC#1: substantive verification complete (TASK-0179 already Done; cycle-132 ADDENDUM documents stale-line + stale-claim closure).
+- AC#2: spot-check PASS (driver/main.rs:399 line-correct + historically annotated).
+- AC#3: spot-check PASS-WITH-RATIONALE (task-0271 cycle-129 ADDENDUM adequate; halo half flagged for hysteresis policy).
+- AC#4: methodology applied (1 atomic edit; original preserved verbatim; greppability of new anchors verified).
+- AC#5: scope NAMED ('architect-named priority sets only'; corpus-wide tail explicitly OUT OF SCOPE; future class-wide sweep → NEW task at sweep-close).
+
+Gate green twice (commit 9560f4e); baseline 108/92/0/16/0 preserved end-to-end. Status: In Progress → Done.
 <!-- SECTION:NOTES:END -->
