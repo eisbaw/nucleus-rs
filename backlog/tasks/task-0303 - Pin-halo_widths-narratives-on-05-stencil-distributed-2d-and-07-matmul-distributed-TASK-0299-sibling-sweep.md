@@ -3,9 +3,10 @@ id: TASK-0303
 title: >-
   Pin halo_widths narratives on 05-stencil/distributed-2d and
   07-matmul/distributed (TASK-0299 sibling-sweep)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-25 02:45'
+updated_date: '2026-05-25 03:02'
 labels:
   - M5
   - compiler
@@ -53,3 +54,39 @@ LOW priority. Pure narrative-pinning hygiene. The e2e bytes already bite on any 
 - feedback-comment-doc-lie-recurring memory entry.
 - feedback-silent-sibling-defect memory entry (a pin at one site without pinning the structurally-identical siblings is the named pattern this task closes).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR CLOSE (cycle 120, 2026-05-25).
+
+Added two structural pinning tests in nucleus/nucleus-compiler/tests/sidecar_halo.rs as siblings to task0299_*:
+
+1. task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one
+   - Loads 05-stencil/prog.algo.nuc + schedules/distributed-2d.sched.nuc via the existing lower() helper.
+   - Asserts halo_widths[blur3][y] == 1 AND halo_widths[blur3][x] == 1 (the load-bearing claim at distributed-2d.sched.nuc:53).
+   - Defends against feedback-comment-doc-lie-recurring on this sibling narrative.
+
+2. task0303_07_matmul_distributed_halo_widths_pinned_to_zero
+   - Loads 07-matmul/prog.algo.nuc + schedules/distributed.sched.nuc via the lower() helper.
+   - Asserts halo_widths[madd][i] == 0 (the literal i-axis half of the distributed.sched.nuc:25-26 claim) AND defensive max-halo across the whole algorithm == 0.
+   - Defends against feedback-comment-doc-lie-recurring on this sibling narrative.
+
+Both tests use .unwrap_or(0) per the halo_inference contract degree of freedom (explicit-0 OR omission permitted; see halo_inference.rs:53-57 + cycle-119 TASK-0299 precedent). Both pin behaviour against future kernel-surface changes that would silently lie at the schedule comment while only e2e bytes catch the wrong output.
+
+Test runs:
+- sidecar_halo file: 12 passed (10 pre-cycle-120 + 2 new), 0 failed.
+- Pre-commit gate (just build && clippy && test && test-release && e2e): all green.
+- E2e baseline unchanged: 104/88/0/16/0 (test-only addition has no production code path).
+
+AC#1 (05-stencil/distributed-2d pin on blur3[y]=1, blur3[x]=1): DONE
+AC#2 (07-matmul/distributed pin on max-halo-across-i==0): DONE
+AC#3 (.unwrap_or(0) contract degree of freedom): DONE
+AC#4 (test docstrings name specific schedule-header lines + failure modes): DONE
+
+Honest scope-narrowings (pre-empting cycle-119 P2.1-class disclosure):
+- task0303_05_*: pins ONLY halo_widths values; does NOT pin that the halo-strip Push/Wait synthesis pass (TASK-0289) actually fires on these widths, NOR that transfer_inject extends per-tile transfer ranges by halo=1. The schedule header attributes both behaviours to TASK-0289 cycle 114a; this test pins only the precondition (halo widths), not the consumers. A regression in TASK-0289's strip synthesis with correct halo_widths would NOT trip this test; the e2e bytes catch it iff the strip-synthesis regression changes output.
+- task0303_07_*: pins ONLY the halo_widths zero claim; does NOT pin that the cycle-118 TASK-0301 axis-mapping filter (transfer_inject) produces empty bounds for b. That's a different pass. A regression in TASK-0301 with correct halo_widths would NOT trip this test; the existing 07-matmul/distributed × all 4 tier-1 backends e2e cells catch it via wrong bytes.
+
+Cycle-119 architect-disclosure-mechanism-wrong defense: the driver actually uses apply_halo_inference_partition_aware (B) at nucleus/driver/src/main.rs:396; the test calls apply_halo_inference (A, strict) via lower(). A and B agree on clean-affine inputs (both 05-stencil/distributed-2d and 07-matmul/distributed are clean-affine), so the test's coverage is sound across either driver entry-point choice. Cited explicitly so a future reader does NOT have to re-derive the mechanism.
+<!-- SECTION:NOTES:END -->

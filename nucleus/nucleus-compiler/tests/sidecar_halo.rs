@@ -652,3 +652,142 @@ fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
         acfg.halo_widths
     );
 }
+
+// ----------------------------------------------------------------------
+// TASK-0303: sibling-sweep follow-up to TASK-0299 cycle 119. Pins two
+// more load-bearing halo-narrative claims that the cycle-119 architect
+// review identified as structurally identical to TASK-0299's narrative
+// but not yet covered by a structural test. Both use the same idioms
+// (real-file load via the `lower()` helper, .unwrap_or(0) per the
+// halo_inference contract degree of freedom).
+//
+// Defends against feedback-silent-sibling-defect — pinning the narrative
+// at ONE site (TASK-0299) while leaving structurally-identical
+// narratives unpinned at sibling sites is the named pattern this task
+// closes.
+
+#[test]
+fn task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one() {
+    // 05-stencil/schedules/distributed-2d.sched.nuc:53 carries the
+    // load-bearing narrative claim `halo_y = halo_x = 1 (inferred from
+    // blur3's 3x3 access)`. This is the precondition for the halo-strip
+    // Push/Wait synthesis pass (TASK-0289 cycle 114a) that the same
+    // header attributes to its own design rationale at lines 19-31 —
+    // halo=1 is what determines that exactly one row/column of cross-
+    // worker halo gets synthesised per (neighbour, axis).
+    //
+    // Halo inference is partition-independent (it walks AlgoIR, not
+    // SchedIR), so an existing test `stencil_3x3_produces_halo_one_on_both_axes`
+    // at lines 70-125 covers the 05-stencil naive schedule and would
+    // also catch an algorithm-level regression. This test is the
+    // NARRATIVE TIE — a future failure here names `distributed-2d`
+    // specifically so the failure message points the reader at the
+    // schedule header whose narrative just broke, not just at the
+    // algorithm.
+    //
+    // The claim's exact text is at distributed-2d.sched.nuc:53. If a
+    // future kernel-surface change toggles blur3 to a 5x5 access
+    // pattern (or a 1x3 / 3x1), the schedule comment becomes a
+    // comment-doc-lie and this test fails LOUD, forcing the comment to
+    // be updated in the same commit. Defends against
+    // feedback-comment-doc-lie-recurring on this sibling narrative.
+    let (_linked, acfg) = lower("05-stencil", "schedules/distributed-2d.sched.nuc");
+
+    let blur3_id = *acfg.name_kernels.get("blur3").expect("blur3 in ACFG");
+    let y_iv = *acfg.name_iter_vars.get("y").expect("y in ACFG");
+    let x_iv = *acfg.name_iter_vars.get("x").expect("x in ACFG");
+
+    let blur3_y = acfg
+        .halo_widths
+        .get(&blur3_id)
+        .and_then(|m| m.get(&y_iv))
+        .copied()
+        .unwrap_or(0);
+    let blur3_x = acfg
+        .halo_widths
+        .get(&blur3_id)
+        .and_then(|m| m.get(&x_iv))
+        .copied()
+        .unwrap_or(0);
+
+    assert_eq!(
+        blur3_y, 1,
+        "halo_widths[blur3][y] must be 1; the schedule header at \
+         nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc:53 \
+         claims `halo_y = halo_x = 1 (inferred from blur3's 3x3 access)` \
+         and the halo-strip synthesis (TASK-0289) depends on it. \
+         acfg.halo_widths = {:?}",
+        acfg.halo_widths
+    );
+    assert_eq!(
+        blur3_x, 1,
+        "halo_widths[blur3][x] must be 1; same narrative claim as above. \
+         acfg.halo_widths = {:?}",
+        acfg.halo_widths
+    );
+}
+
+#[test]
+fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
+    // 07-matmul/schedules/distributed.sched.nuc:25-26 carries the
+    // load-bearing narrative claim `no halo, no cross-worker carry, no
+    // reduction across i`. This is the precondition for the cycle-118
+    // axis-mapping filter (TASK-0301) producing empty bounds on the
+    // i-axis for the b matrix (which is indexed [k][j], not by i),
+    // allowing whole-array broadcast of b. The bit-identical e2e cells
+    // across all 4 tier-1 backends rest on this narrative being true.
+    //
+    // The algorithm reads `madd(c[i][j], a[i][k], b[k][j])`: c, a, b
+    // each use only bare-iv index expressions at offset 0. So
+    // halo_widths is EITHER omitted entirely for every (kernel, iv) pair
+    // OR is explicit-0 for every inspected (kernel, iv). The claim
+    // "max halo over i is 0" is the strongest pin and trivially
+    // satisfied by either contract form.
+    //
+    // If a future kernel-surface change introduces a non-zero i-axis
+    // offset (e.g. `a[i+1][k]` for some fused stencil-matmul), the
+    // schedule comment becomes a comment-doc-lie, the partition=workers
+    // tile bounds on a would need a halo extension that transfer_inject
+    // doesn't synthesise for matmul today, and bit-identical would
+    // break. This test catches the FIRST failure (the narrative lie) at
+    // halo-inference time, not at e2e-byte time.
+    let (_linked, acfg) = lower("07-matmul", "schedules/distributed.sched.nuc");
+
+    let madd_id = *acfg.name_kernels.get("madd").expect("madd in ACFG");
+    let i_iv = *acfg.name_iter_vars.get("i").expect("i in ACFG");
+
+    let madd_i = acfg
+        .halo_widths
+        .get(&madd_id)
+        .and_then(|m| m.get(&i_iv))
+        .copied()
+        .unwrap_or(0);
+
+    assert_eq!(
+        madd_i, 0,
+        "halo_widths[madd][i] must be 0; the schedule header at \
+         nuc-nucleus/examples/07-matmul/schedules/distributed.sched.nuc:25-26 \
+         depends on `no halo across i` for the cycle-118 axis-mapping \
+         filter (TASK-0301) to lower bit-identical across all 4 tier-1 \
+         backends. acfg.halo_widths = {:?}",
+        acfg.halo_widths
+    );
+
+    // Defensive: max halo across the WHOLE matmul algorithm must be 0
+    // (the narrative is "no halo" without qualifying the axis). Catches
+    // a regression on any (kernel, iv) pair, including the un-named
+    // {j, k} axes of madd that the narrative covers implicitly.
+    let max_halo = acfg
+        .halo_widths
+        .values()
+        .flat_map(|m| m.values().copied())
+        .max()
+        .unwrap_or(0);
+    assert_eq!(
+        max_halo, 0,
+        "07-matmul is a triple-nested loop with bare-iv index expressions \
+         only (madd(c[i][j], a[i][k], b[k][j])); no kernel argument reads \
+         at non-zero iv offset. max halo width must be 0; got map {:?}",
+        acfg.halo_widths
+    );
+}
