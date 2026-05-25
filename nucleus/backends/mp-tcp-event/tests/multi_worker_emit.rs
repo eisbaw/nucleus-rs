@@ -300,11 +300,15 @@ fn host_excluding_barrier_is_typed_contract_gap() {
 // the pub(crate) Plan::build directly.
 // --------------------------------------------------------------------
 
-/// Branch B (multi_worker.rs:154-161) — `pair_tiles` is populated from
-/// BOTH Push and Wait (see `collect_xfer_pairs`), but `chan_pairs` is
-/// populated ONLY from Push. So a worker carrying a `Wait` with no
-/// peer's `Push` producing the same `(DataId, SeqTag)` triggers the
-/// defensive "Wait but no matching Push — malformed projection" check.
+/// Branch B (search in `multi_worker.rs` for the `"Wait but no
+/// matching Push"` ContractGap inside `Plan::build`; symbolic anchor
+/// since cycle 130 shortened the local layout — TASK-0300 hoist) —
+/// `pair_tiles` is populated from BOTH Push and Wait (see
+/// `collect_xfer_pairs` / its shared wrapper `collect_pair_tiles`), but
+/// `chan_pairs` is populated ONLY from Push. So a worker carrying a
+/// `Wait` with no peer's `Push` producing the same `(DataId, SeqTag)`
+/// triggers the defensive "Wait but no matching Push — malformed
+/// projection" check.
 ///
 /// This branch is normally unreachable from valid projections (the
 /// `transfer_inject` pass guarantees matched pairs); the test pins it

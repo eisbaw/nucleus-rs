@@ -1096,14 +1096,18 @@ pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag),
 ///
 /// First-sighting on a given `(DataId, SeqTag)` wins; later sightings
 /// are dropped. Both endpoints carry the same `IterTile` by the
-/// XferPlaceholder construction (TASK-0018), so the choice is
-/// deterministic and the dropped sightings agree by construction.
+/// XferPlaceholder construction (TASK-0018), so under valid input the
+/// dropped sightings agree with the kept one and the choice is
+/// observationally a no-op.
 ///
-/// Callers pass `per_worker.values()` where `per_worker:
-/// BTreeMap<WorkerId, Vec<Event>>`. Iteration order of the map's
-/// `values()` is `WorkerId`-ascending, but the helper's output is keyed
-/// only on `(DataId, SeqTag)`, so worker iteration order cannot leak
-/// into the result.
+/// Determinism of "first" under hypothetical drift (the cycle-130 pin
+/// test `first_sighting_wins_on_conflicting_tiles`): callers pass
+/// `per_worker.values()` where `per_worker: BTreeMap<WorkerId,
+/// Vec<Event>>`. `BTreeMap::values()` iterates in key-ascending order,
+/// so "first sighting" = the lowest-`WorkerId` worker whose event list
+/// names that `(DataId, SeqTag)`. The helper's output is keyed only on
+/// `(DataId, SeqTag)`, so worker iteration order cannot leak into the
+/// output's KEY ordering — only into which tile wins on a conflict.
 pub fn collect_pair_tiles<'a, I>(events_per_worker: I) -> BTreeMap<(DataId, SeqTag), IterTile>
 where
     I: IntoIterator<Item = &'a Vec<Event>>,

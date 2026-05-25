@@ -3,11 +3,14 @@
 //! hoist from TASK-0296 cycle-116 architect P1.2).
 //!
 //! Before cycle 130 each backend (mp-tcp-bufsync, mp-tcp-event,
-//! pthreads-async, pthreads-sync) inlined the same 4-line build:
-//! initialise an empty `BTreeMap`, fold `collect_xfer_pairs` across
-//! `per_worker.values()`. The risk this test pins down is that the
-//! lifted helper preserves the original semantics so the four backends
-//! stay byte-identical in their bit-identical e2e differential:
+//! pthreads-async, pthreads-sync) inlined the same 3-5-line build
+//! shape: initialise an empty `BTreeMap` then fold `collect_xfer_pairs`
+//! across `per_worker.values()`. (pthreads-sync's pre-cycle-130 form
+//! ran ~5 lines because it bound a temp `xfer_pairs` then rebound to
+//! `pair_tiles`; the other three were 3-4 lines each.) The risk this
+//! test pins down is that the lifted helper preserves the original
+//! semantics so the four backends stay byte-identical in their
+//! bit-identical e2e differential:
 //!
 //! 1. `empty_input_yields_empty_map` — defensive identity on the empty
 //!    iterator (no workers projected yet).
