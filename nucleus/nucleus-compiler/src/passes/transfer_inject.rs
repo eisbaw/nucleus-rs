@@ -166,6 +166,24 @@
 //!   exercises partial overlap today — the partial-overlap arm is
 //!   dormant-but-defended.
 //!
+//!   TASK-0328 (cycle 154) removed an over-lenient "no partition iv
+//!   active on consumer scope → safe elision" short-circuit (formerly
+//!   clause (1)) from BOTH the validator and the emit-site mirror in
+//!   `build_waits_for_op`. The reasoning "every worker owns the full
+//!   data" conflated the consumer's enclosing scope with what each
+//!   worker has in memory: a partition-sliced producer leaves each
+//!   worker with only its band, regardless of whether the consumer's
+//!   enclosing scope has a partition iv. With clause (1) at the emit
+//!   site, the cartesian-product fan-out NEVER fired for the
+//!   consumer-at-top-level case — silent miscompile. Removal makes
+//!   the per-axis discriminator (`same_set_elision_unsafe_reason`)
+//!   the single load-bearing classifier for both sites. Test pins:
+//!   `task0328_ac2_positive_partition_producer_topfile_consumer`
+//!   (consumer at top-level reading constant indices → emit must
+//!   produce 12 cross-worker pairs); `task0328_ac2_negative_no_
+//!   partition_anywhere` (no partition anywhere → elision stays
+//!   correct, 0 cross-worker pairs).
+//!
 //!   What this pass does NOT yet emit (deferred to AC#3): the
 //!   actual cross-worker `tmp` transfers for the unsafe shape — each
 //!   producer w_i pushes its slice to every consumer w_j, each
@@ -2797,7 +2815,6 @@ fn check_no_silent_elision_risk(
     // cycle-144 fold-back.
     check_no_silent_elision_risk_inner(
         root,
-        &[],
         producers_by_data,
         partition_iter_vars,
         name_iter_vars,
@@ -2827,19 +2844,23 @@ fn collect_producer_writes(node: &ACFGNode, out: &mut BTreeMap<DataId, DataAcces
 
 fn check_no_silent_elision_risk_inner(
     node: &ACFGNode,
-    enclosing_ivs: &[IterVar],
     producers_by_data: &BTreeMap<DataId, BTreeSet<WorkerId>>,
     partition_iter_vars: &BTreeSet<IterVar>,
     name_iter_vars: &BTreeMap<String, IterVar>,
     name_data: &BTreeMap<String, DataId>,
     producer_writes: &BTreeMap<DataId, DataAccess>,
 ) -> Result<(), TransferInjectError> {
+    // TASK-0328 cycle-154 architect P2.1 fold-back: `enclosing_ivs`
+    // threading dropped end-to-end. After clause (1) removal at the
+    // leaf, no consumer in this function family consults the
+    // enclosing-iv stack — the per-axis discriminator works on
+    // producer's write pattern vs consumer's read pattern, not on
+    // either side's enclosing scope.
     match node {
         ACFGNode::Sequence(children) => {
             for c in children {
                 check_no_silent_elision_risk_inner(
                     c,
-                    enclosing_ivs,
                     producers_by_data,
                     partition_iter_vars,
                     name_iter_vars,
@@ -2849,22 +2870,16 @@ fn check_no_silent_elision_risk_inner(
             }
             Ok(())
         }
-        ACFGNode::Repeat { iter_var, body, .. } => {
-            let mut nested: Vec<IterVar> = enclosing_ivs.to_vec();
-            nested.push(*iter_var);
-            check_no_silent_elision_risk_inner(
-                body,
-                &nested,
-                producers_by_data,
-                partition_iter_vars,
-                name_iter_vars,
-                name_data,
-                producer_writes,
-            )
-        }
+        ACFGNode::Repeat { body, .. } => check_no_silent_elision_risk_inner(
+            body,
+            producers_by_data,
+            partition_iter_vars,
+            name_iter_vars,
+            name_data,
+            producer_writes,
+        ),
         ACFGNode::Operation(op) => check_op_no_silent_elision_risk(
             op,
-            enclosing_ivs,
             producers_by_data,
             partition_iter_vars,
             name_iter_vars,
@@ -2877,7 +2892,6 @@ fn check_no_silent_elision_risk_inner(
 
 fn check_op_no_silent_elision_risk(
     op: &Operation,
-    enclosing_ivs: &[IterVar],
     producers_by_data: &BTreeMap<DataId, BTreeSet<WorkerId>>,
     partition_iter_vars: &BTreeSet<IterVar>,
     name_iter_vars: &BTreeMap<String, IterVar>,
@@ -2886,15 +2900,22 @@ fn check_op_no_silent_elision_risk(
 ) -> Result<(), TransferInjectError> {
     let consumer_workers: BTreeSet<WorkerId> = op.workers.clone();
 
-    // Partition ivs that are ACTUALLY in the consumer's enclosing scope.
-    // Used only for the "no-partition active" short-circuit (clause
-    // (1) below); the per-axis check (clause (2)) uses the global
-    // `partition_iter_vars` against the producer's write pattern.
-    let enclosing_partition_ivs: BTreeSet<IterVar> = enclosing_ivs
-        .iter()
-        .copied()
-        .filter(|iv| partition_iter_vars.contains(iv))
-        .collect();
+    // TASK-0328 cycle-154: clause (1) (the "no partition iv on consumer
+    // scope → safe elision" short-circuit) REMOVED as empirically
+    // over-lenient. The original reasoning was "every worker owns the
+    // full data", which conflates the consumer's enclosing scope with
+    // what each worker has in memory. If the PRODUCER wrote with a
+    // partition iv (each worker has only its band), then the CONSUMER
+    // at top-level reading `tmp[c0][c1]` (constant indices) reads a
+    // slice it does not own — silent miscompile. The per-axis check
+    // below correctly catches this case: producer's axis-0 = Ident(hy)
+    // = partition iv → p_iv = Some(hy); consumer's axis-0 = IntLit(c0)
+    // → c_iv = None ≠ Some(hy) → returns Some(reason). Test
+    // `task0328_ac2_positive_partition_producer_topfile_consumer`
+    // pins the rejection. The `enclosing_ivs` parameter was dropped
+    // entirely (cycle-154 architect P2.1 fold-back): no longer used
+    // at this site and the inner walker still tracks it for
+    // Repeat-enclosing-scope recursion correctness.
 
     let mut seen: BTreeSet<DataId> = BTreeSet::new();
     for edge in &op.dataflow.edges {
@@ -2927,13 +2948,6 @@ fn check_op_no_silent_elision_risk(
                 .collect();
             if same_worker_set.is_empty() {
                 continue; // No same-worker elision happens anywhere.
-            }
-
-            // Clause (1): no partition iv active on the consumer's
-            // enclosing scope → every worker owns the full data →
-            // safe elision.
-            if enclosing_partition_ivs.is_empty() {
-                continue;
             }
 
             // Need the producer's write access to drive the per-axis
@@ -3205,23 +3219,27 @@ fn build_waits_for_op(
                 // scope (no in-tree schedule exercises partial-overlap).
                 // The validator still rejects partial-overlap unsafe
                 // shapes.
-                // Mirror the validator's clause (1): if no partition
-                // iv is active on the consumer's enclosing scope,
-                // every worker owns the full data (the partition is
-                // inert for this consumer) → safe elision. Without
-                // this gate the emit site is STRICTER than the
-                // validator (over-emits, never under-emits — direction
-                // safe), but reviewer cycle-147 P2.1 flagged the
-                // asymmetry; replicating clause (1) here keeps the
-                // predicates in lockstep so a future schedule that
-                // exercises this case doesn't surprise readers with
-                // a behavioural difference between the two sites.
-                let consumer_has_partition_iv_in_scope = enclosing_tile
-                    .iter()
-                    .any(|(iv, _)| ctx.partition_iter_vars.contains(iv));
-                if !consumer_has_partition_iv_in_scope {
-                    continue;
-                }
+                // TASK-0328 cycle-154: the clause (1) mirror REMOVED in
+                // lockstep with the validator-site removal. The
+                // cycle-147 P2.1 fold-back kept the emit site in step
+                // with the validator's (over-lenient) short-circuit.
+                // Cycle-154 architect P1.1 fold-back: this fall-
+                // through path is NOT a defensive backstop — it is the
+                // primary code path for the silent-miscompile shape.
+                // The cycle-147 AC#3 lift returns Ok on
+                // `producer_workers == &consumer_workers && unsafe`
+                // (the same-set + unsafe combination) precisely so the
+                // emit site here can fall through to the cartesian-
+                // product fan-out and emit the cross-worker pairs that
+                // populate full data on each worker. Pre-fix: clause
+                // (1) at the emit site short-circuited the same-set
+                // unsafe path → no cross-worker pairs → silent
+                // miscompile. Post-fix: emit reaches
+                // `same_set_elision_unsafe_reason`; if unsafe, fall
+                // through; if safe, continue (elide). Test pin:
+                // `task0328_ac2_positive_partition_producer_topfile_consumer`
+                // asserts 12 cross-worker pairs for the
+                // consumer-at-top-level shape (was 0 pre-fix).
                 let prod_access = ctx.producer_writes.get(&data_id);
                 let is_safe = match prod_access {
                     None => true, // No producer-side access — pre-AC#2 fall-back path.

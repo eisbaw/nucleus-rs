@@ -3287,3 +3287,697 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
         ),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0328 cycle-154: clause (1) soundness investigation
+// --------------------------------------------------------------------
+//
+// Background: cycle-147's `check_op_no_silent_elision_risk` (and the
+// emit-site mirror in `build_waits_for_op`) carried a clause (1) that
+// short-circuited when the consumer's enclosing scope had no partition
+// iv:
+//
+// ```
+// if enclosing_partition_ivs.is_empty() { continue; }
+// ```
+//
+// The reasoning was "no partition iv active on the consumer's scope →
+// every worker owns the full data → safe elision". TASK-0328 found
+// the reasoning empirically over-lenient on the EMIT SITE: if the
+// PRODUCER wrote with a partition iv (each worker has only its band)
+// and the CONSUMER reads at top-level (no enclosing partition iv),
+// each worker has incomplete data and the elision is a silent
+// miscompile. The validator-site clause (1) appeared dormant because
+// the cycle-147 AC#3 lift returns Ok on same-set + unsafe and relies
+// on the emit-site fan-out to populate full data on each worker. With
+// clause (1) at the emit site, that fan-out NEVER FIRED — silent
+// miscompile.
+//
+// AC#1 OUTCOME: clause (1) is over-lenient. AC#1 outcome 2 chosen:
+// removed clause (1) at BOTH sites (validator + emit-site mirror) so
+// the emit site falls through to `same_set_elision_unsafe_reason`,
+// which correctly fires cartesian-product fan-out for the
+// top-level-consumer case.
+//
+// `task0328_ac2_positive_partition_producer_topfile_consumer` is the
+// empirical fixture: producer at `for hy : partition=rows` writes
+// `tmp[hy][hx]` on {w0..w3}; consumer at TOP-LEVEL reads `tmp[5][3]`
+// on {w0..w3}. POST-FIX: validator returns Ok (AC#3 cycle-147 lift),
+// and `inject_transfers` emits N*(N-1) = 12 cross-worker (src, dst)
+// pairs for `tmp` so each worker has the full data after the
+// per-tile transfer phase.
+
+#[test]
+fn task0328_ac2_positive_partition_producer_topfile_consumer() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_HY: IterVar = IterVar(81);
+    const IV_HX: IterVar = IterVar(82);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+    fn access_const(data: DataId, vals: &[i64]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: vals.iter().copied().map(IrExpr::IntLit).collect(),
+        }
+    }
+
+    // Producer: writes `tmp[hy][hx]` on {w0..w3}.
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(700),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(700),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+
+    // Producer nest: for hy : 0..16 { for hx : 0..16 { writer_op } }
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer: reads `tmp[5][3]` at TOP-LEVEL on {w0..w3}. The
+    // constant indices are the asymmetry-trigger: clause (1) fires
+    // because the consumer's enclosing partition-iv stack is empty,
+    // even though the producer's writes ARE partition-sliced.
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(701),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access_const(D_TMP, &[5, 3])],
+        data_out_access: Some(access_const(D_OUT, &[0])),
+        args: vec![ArgBinding::Data(access_const(D_TMP, &[5, 3]))],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(701),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        // Consumer at TOP LEVEL — no enclosing Repeat wrapping. This
+        // is the structural trigger for clause (1)'s short-circuit.
+        reader_op,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+
+    // hy partitioned across {w0..w3}.
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..4);
+    hy_bands.insert(WorkerId(2), 4..8);
+    hy_bands.insert(WorkerId(3), 8..12);
+    hy_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    // TASK-0328 cycle-154 AC#1 outcome 2: with clause (1) REMOVED at
+    // both sites, the cycle-147 AC#3 same-set lift correctly emits
+    // cross-worker fan-out for this asymmetry case. Validator returns
+    // Ok; the result contains N*(N-1) = 12 cross-worker pairs for
+    // `tmp`. Without the fix (clause (1) present at the emit site),
+    // the elision fires and zero cross-worker pairs are emitted —
+    // silent miscompile.
+    let result = inject_transfers(&linked, acfg).expect(
+        "TASK-0328 AC#1 outcome 2: cycle-147 AC#3 lift returns Ok on same-set \
+         + unsafe; emit site falls through to cartesian fan-out",
+    );
+
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+
+    // 4 workers, same set → cartesian-product minus diagonal =
+    // 4 * 3 = 12 cross-worker pairs.
+    assert_eq!(
+        pushes.len(),
+        12,
+        "TASK-0328 cycle-154 AC#1 outcome 2 regression: expected 12 cross-worker \
+         Push placeholders for `tmp` (the cartesian-product fan-out that the \
+         emit site now correctly emits after clause (1) removal); got {} \
+         pushes: {:?}. If you see 0 pushes, the emit-site clause (1) mirror \
+         has been re-introduced and the silent-miscompile path is back.",
+        pushes.len(),
+        pushes
+    );
+    assert_eq!(
+        waits.len(),
+        12,
+        "expected 12 cross-worker Wait placeholders for `tmp` (matched with \
+         the 12 Pushes); got {} waits: {:?}",
+        waits.len(),
+        waits
+    );
+
+    // No self-pairs.
+    for (role, src, dst) in &xfers {
+        assert_ne!(
+            src, dst,
+            "no self-pair (w_i -> w_i) should be emitted: got {role:?} src=dst={src:?}"
+        );
+    }
+}
+
+/// TASK-0328 cycle-154 AC#2 negative case: when neither producer nor
+/// consumer has a partition iv in scope, the same-set elision IS safe
+/// (each worker owns the whole data because the producer writes it
+/// whole-array). The per-axis check correctly returns None (no axis
+/// is partition-sliced at the producer), so no cross-worker pairs
+/// are emitted. This pins that clause (1) removal did NOT regress
+/// the safe-elision case.
+#[test]
+fn task0328_ac2_negative_no_partition_anywhere() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_HY: IterVar = IterVar(91);
+    const IV_HX: IterVar = IterVar(92);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+    fn access_const(data: DataId, vals: &[i64]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: vals.iter().copied().map(IrExpr::IntLit).collect(),
+        }
+    }
+
+    // Producer: writes `tmp[hy][hx]` on {w0..w3} but NEITHER iv is a
+    // partition iv. So each worker writes the WHOLE `tmp` redundantly;
+    // every worker has the full data.
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(800),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(800),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+
+    // No partition on either iv. Whole-array write semantics on every
+    // worker.
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer at TOP-LEVEL reads `tmp[5][3]` on {w0..w3}. Same shape
+    // as the positive test, but without any partition iv anywhere, the
+    // elision is correct: every worker has the whole `tmp`.
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(801),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access_const(D_TMP, &[5, 3])],
+        data_out_access: Some(access_const(D_OUT, &[0])),
+        args: vec![ArgBinding::Data(access_const(D_TMP, &[5, 3]))],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(801),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        reader_op,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+    // No `partition_worker_ranges.insert(...)` — NO partition ivs.
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg).expect(
+        "no-partition-anywhere case must NOT trigger the validator; \
+         per-axis check returns None (no axis is partition-sliced)",
+    );
+
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    // The safe elision SHOULD still happen — no cross-worker pairs
+    // because every worker has the full data already.
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        0,
+        "no-partition-anywhere case must NOT emit cross-worker pairs (the \
+         per-axis check correctly classifies elision as SAFE); got {} \
+         pushes: {:?}",
+        pushes.len(),
+        pushes
+    );
+}
+
+/// TASK-0328 cycle-154 architect P2.2 fold-back: sibling positive case
+/// where the consumer at top-level reads with a non-partition iv (not
+/// a constant). The base positive test (`tmp[5][3]`) exercised the
+/// IntLit branch of `ident_iv_in_set` (returns None for non-Ident
+/// expressions). This sibling exercises the OTHER branch: a bare Ident
+/// referencing an iv that is NOT in `partition_iter_vars` — the iv
+/// resolves to Some(iv_id) but is_partition predicate fails, so
+/// `ident_iv_in_set` returns None.
+///
+/// Producer writes `tmp[hy][hx]` with `hy : partition=rows` on
+/// {w0..w3}. Consumer at top-level wraps in `for k : 0..16 { for j :
+/// 0..16 { reads tmp[k][j] } }` where `k` and `j` are NON-partition
+/// ivs (declared on the outer consumer-side scope, not in
+/// `partition_worker_ranges`). Same-set + unsafe → emit must fan out
+/// 12 cross-worker pairs.
+#[test]
+fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_HY: IterVar = IterVar(101);
+    const IV_HX: IterVar = IterVar(102);
+    const IV_K: IterVar = IterVar(103); // non-partition outer iv on consumer side
+    const IV_J: IterVar = IterVar(104); // non-partition inner iv on consumer side
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(900),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(900),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer reads `tmp[k][j]` where k, j are NON-partition outer
+    // ivs (the structural asymmetry trigger this sibling exercises).
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(901),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access(D_TMP, &["k", "j"])],
+        data_out_access: Some(access(D_OUT, &["k", "j"])),
+        args: vec![ArgBinding::Data(access(D_TMP, &["k", "j"]))],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(901),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+
+    // Consumer wrapper: for k : 0..16 { for j : 0..16 { reader_op } }
+    // — k, j are NOT in `partition_worker_ranges`, so they are
+    // non-partition ivs even though they are in the enclosing scope.
+    let consumer_nest = ACFGNode::Repeat {
+        iter_var: IV_K,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_J,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![reader_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        consumer_nest,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+    acfg.name_iter_vars.insert("k".to_string(), IV_K);
+    acfg.name_iter_vars.insert("j".to_string(), IV_J);
+
+    // ONLY hy is partitioned. k and j are non-partition ivs.
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..4);
+    hy_bands.insert(WorkerId(2), 4..8);
+    hy_bands.insert(WorkerId(3), 8..12);
+    hy_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg).expect(
+        "cycle-147 AC#3 lift returns Ok on same-set + unsafe; emit \
+         falls through to cartesian-product fan-out",
+    );
+
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        12,
+        "consumer-at-top-level reading non-partition iv `tmp[k][j]` must \
+         emit 12 cross-worker pairs (the per-axis check returns None for \
+         consumer's non-partition iv `k` ≠ producer's partition iv `hy`); \
+         got {} pushes: {:?}",
+        pushes.len(),
+        pushes
+    );
+}
