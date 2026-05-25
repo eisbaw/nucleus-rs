@@ -3981,3 +3981,275 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
         pushes
     );
 }
+
+/// TASK-0333 cycle-155 AC#1: partial-overlap sibling sweep of the
+/// cycle-154 clause-(1) removal (paired-lift discipline, per
+/// `feedback-silent-sibling-defect`).
+///
+/// Structural shape is identical to
+/// `task0328_ac2_positive_partition_producer_topfile_consumer` (the
+/// cycle-154 fixture template at L3330) — producer writes `tmp[hy][hx]`
+/// on {w0..w3} with `hy : partition=rows`; consumer at TOP LEVEL reads
+/// `tmp[5][3]` (constant indices, no enclosing partition iv) — with
+/// ONE structural difference: the consumer worker set is {w0..w3, w4}
+/// (5 workers) rather than {w0..w3} (4 workers). The intersection
+/// {w0..w3} is non-empty, so the validator's same-worker-set check
+/// fires; producer_workers ≠ consumer_workers, so the cycle-147 AC#3
+/// lift gate (`if producer_workers == &consumer_workers { continue; }`
+/// inside `check_op_no_silent_elision_risk`) does NOT short-circuit
+/// here.
+///
+/// Expected outcome (per cycle-154 paired-lift audit in TASK-0333):
+/// the validator REJECTS with
+/// `TransferInjectError::SameSetSilentElisionRisk` — confirming that
+/// the partial-overlap arm has no clause-(1) analog to remove, because
+/// the validator's hard-reject IS the load-bearing safety net (not the
+/// emit-site per-element `if src == dst { continue; }` skip, which
+/// runs unconditionally).
+///
+/// AC#1 (validator rejects → existing behaviour sound, no fix needed)
+/// is the documented outcome the audit confirms. If this test FAILS
+/// (validator returns Ok), the silent-miscompile sibling is live and
+/// a cycle-154-style fix is needed on the per-element skip path —
+/// file a follow-up task at that point.
+///
+/// Note: the existing `task0325_ac2_positive_partial_overlap_non_aligned_read`
+/// (L2704) pins the partial-overlap rejection for a non-aligned read
+/// shape inside a consumer-side loop nest (reads `tmp[vm][vx]`). This
+/// TASK-0333 fixture pins the orthogonal shape: constant-indices read
+/// at TOP LEVEL (no enclosing loop) with partial overlap. Both shapes
+/// must reject — together they cover both consumer-side asymmetry
+/// triggers (top-level constant + nested non-aligned) under partial
+/// overlap.
+#[test]
+fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+    use nucleus_compiler::passes::transfer_inject::TransferInjectError;
+
+    // Fresh IterVar ids — past 31..35 (task0325_ac2_positive),
+    // 81..82 (task0328_ac2_positive), 91..92 (task0328_ac2_negative),
+    // 101..104 (task0328_ac2_positive_nonpartition_iv).
+    const IV_HY: IterVar = IterVar(121);
+    const IV_HX: IterVar = IterVar(122);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+    fn access_const(data: DataId, vals: &[i64]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: vals.iter().copied().map(IrExpr::IntLit).collect(),
+        }
+    }
+
+    // Producer: writes `tmp[hy][hx]` on {w0..w3} (worker ids 1..4).
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(1000),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1000),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+
+    // Producer nest: for hy : 0..16 { for hx : 0..16 { writer_op } }.
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer: reads `tmp[5][3]` at TOP LEVEL on {w0..w3, w4} —
+    // partial overlap with the producer (intersection = {w0..w3},
+    // w4 is the cross-worker addition). Constant indices are the
+    // structural trigger that mirrors the cycle-154 fixture; the
+    // 5-worker consumer set is the structural difference.
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(1001),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access_const(D_TMP, &[5, 3])],
+        data_out_access: Some(access_const(D_OUT, &[0])),
+        args: vec![ArgBinding::Data(access_const(D_TMP, &[5, 3]))],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1001),
+        workers: ws(&[1, 2, 3, 4, 5]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        // Consumer at TOP LEVEL — no enclosing Repeat wrapping. This
+        // is the constant-indices + top-level structural trigger
+        // shared with `task0328_ac2_positive_partition_producer_topfile_consumer`.
+        reader_op,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+            ("w4", 5),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+
+    // hy partitioned across {w0..w3}. w4 has no range entry — same as
+    // task0325_ac2_positive: the validator does not consult per-worker
+    // ranges, only `partition_iter_vars` membership.
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..4);
+    hy_bands.insert(WorkerId(2), 4..8);
+    hy_bands.insert(WorkerId(3), 8..12);
+    hy_bands.insert(WorkerId(4), 12..16);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3", "w4"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    // TASK-0333 cycle-155 AC#1 outcome (documented case 1): validator
+    // REJECTS with SameSetSilentElisionRisk. Evidence trace:
+    //   - intersection {w0..w3} ≠ ∅
+    //     → check_op_no_silent_elision_risk does NOT continue at the
+    //       empty-set early exit.
+    //   - producer's `data_out_access` carries indices `[hy, hx]` →
+    //     `same_set_elision_unsafe_reason`'s per-axis check fires on
+    //     axis 0: p_iv = Some(hy) (hy ∈ partition_iter_vars); consumer
+    //     axis 0 is IntLit(5) → c_iv = None ≠ Some(hy) → returns
+    //     Some(reason).
+    //   - producer_workers ({w0..w3}) ≠ consumer_workers
+    //     ({w0..w3, w4}) → the cycle-147 AC#3 lift gate at L3004 of
+    //     transfer_inject.rs (`if producer_workers == &consumer_workers
+    //     { continue; }`) does NOT short-circuit → falls through to
+    //     the format-error block → Err.
+    //
+    // If the assertion below CHANGES to Ok (validator stops rejecting),
+    // the partial-overlap arm has gained a clause-(1)-class over-
+    // lenience and the silent-miscompile sibling is live → file a
+    // follow-up task; do NOT update this expected outcome.
+    let result = inject_transfers(&linked, acfg);
+    match result {
+        Err(TransferInjectError::SameSetSilentElisionRisk { data, message }) => {
+            assert_eq!(
+                data, D_TMP,
+                "rejection must name `tmp` (the partition-sliced cross-pass \
+                 data); got data = {data:?}"
+            );
+            assert!(
+                message.contains("overlap"),
+                "message must name the partial-overlap shape (anchor: \
+                 \"overlap\"); got: {message}"
+            );
+            assert!(
+                message.contains("partition-sliced"),
+                "message must carry the per-axis discrimination reason \
+                 (anchor: \"partition-sliced\" via same_set_elision_unsafe_reason); \
+                 got: {message}"
+            );
+            assert!(
+                message.contains("TASK-0324"),
+                "message must forward-link TASK-0324 (set-equality lineage); \
+                 got: {message}"
+            );
+            assert!(
+                message.contains("TASK-0325"),
+                "message must forward-link TASK-0325 (partial-overlap \
+                 generalisation lineage); got: {message}"
+            );
+        }
+        Ok(_) => panic!(
+            "TASK-0333 cycle-155 AC#1: validator MUST reject partial-overlap \
+             unsafe shape (producer={{w0..w3}} writes `tmp[hy][hx]` with hy \
+             partitioned; consumer={{w0..w3, w4}} reads `tmp[5][3]` at top \
+             level). If this fires, the partial-overlap arm's clause-(1) \
+             analog has been re-introduced and the silent-miscompile sibling \
+             of the cycle-154 same-set elision is live — file a follow-up \
+             task and DO NOT relax this expectation."
+        ),
+        #[allow(unreachable_patterns)]
+        Err(other) => panic!(
+            "TASK-0333 cycle-155 AC#1: expected SameSetSilentElisionRisk on \
+             the partial-overlap shape; got a different TransferInjectError \
+             variant: {other:?}"
+        ),
+    }
+}

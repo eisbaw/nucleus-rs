@@ -3001,6 +3001,17 @@ fn check_op_no_silent_elision_risk(
                 // to the per-element-fan-out case will lift this
                 // rejection too. No in-tree schedule exercises the
                 // partial-overlap path today.
+                //
+                // TASK-0333 cycle-155 audit confirmed (paired-lift
+                // sweep of the cycle-154 clause-(1) removal): the
+                // partial-overlap arm has NO clause-(1) analog to
+                // remove. The emit-site per-element skip
+                // (`if src == dst { continue; }` in `build_waits_for_op`'s
+                // cartesian fan-out) is unconditional — no consumer-
+                // scope gate exists there to elide. This validator
+                // rejection IS the load-bearing safety net for the
+                // partial-overlap arm. Regression pin:
+                // `task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects`.
                 if producer_workers == &consumer_workers {
                     continue; // AC#3 handles this in cycle 147.
                 }
@@ -3317,6 +3328,19 @@ fn build_waits_for_op(
                         // `check_no_silent_elision_risk` for the
                         // partial-overlap shape — no in-tree schedule
                         // exercises it.
+                        //
+                        // TASK-0333 cycle-155 audit confirmed (paired-
+                        // lift sweep of the cycle-154 clause-(1)
+                        // removal at the same-set arm): this per-element
+                        // skip is UNCONDITIONAL — it has no consumer-
+                        // scope gate analogous to clause (1), so there
+                        // is nothing structurally identical to remove
+                        // here. The validator's rejection
+                        // (`check_op_no_silent_elision_risk` →
+                        // `SameSetSilentElisionRisk`) is the load-
+                        // bearing safety net for the partial-overlap
+                        // unsafe shape. Regression pin:
+                        // `task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects`.
                         //
                         // TASK-0324 cycle-147 AC#3 (same-set case):
                         // when the whole-set short-circuit above falls
