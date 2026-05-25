@@ -51,6 +51,48 @@
 //!    hits the 1D arm). This test pins the typed-error refusal so
 //!    a future schedule that does construct one is flagged at
 //!    compile time, not after an out-of-bounds gather.
+//! 8. `task0316_inner_axis_leading_layout_emits_against_dim0` —
+//!    backend-side CONSUMER pin for the `bounds[i] ↔ ty.dims[i]`
+//!    positional contract that the TASK-0306 cycle-133 helper
+//!    `order_halo_strip_bounds_by_data_dim` produces in
+//!    `transfer_inject`. Feeds `render_wait_assign` directly with an
+//!    inner-leading tile (`bounds[0] = inner_iv`,
+//!    `bounds[1] = outer_iv` — what cycle-133's helper emits for
+//!    data indexed `[inner_iv][outer_iv]`) on deliberately ASYMMETRIC
+//!    data dims `[16, 8]` so the emitted slice arithmetic differs
+//!    from the canonical `(outer_iv, inner_iv)` order. By transitive
+//!    coverage (both cycle-133 `order_halo_strip_bounds_by_data_dim`
+//!    and cycle-135 `rewrite_partition_tiles_inner` feed the same
+//!    `IterTile.bounds` consumed by the same `wait_slice` dispatch),
+//!    this pin also covers the TASK-0317 helper's output shape — no
+//!    separate backend pin is required for the broadcast Push/Wait
+//!    path. The producer-side end-to-end pin lives in
+//!    `nucleus-compiler/tests/halo_strip_synth.rs` as
+//!    `task0306_ac3/ac4/ac5` and exercises `inject_transfers`
+//!    directly. **What this test catches**: a future `wait_slice`
+//!    refactor that drops positional dim-mapping (e.g. switches to
+//!    iv-name lookup) would silently re-permute the helper's
+//!    dim-ordered output and slice-paste against the wrong dim — the
+//!    test bites with asymmetric dims by asserting `outer_lo..outer_hi`
+//!    = `bounds[0].1` and `row_stride` = `dims[1]`. **What this test
+//!    does NOT catch**: producer-side cycle-133 helper rot — that
+//!    lives in `task0306_ac3` (the helper would emit canonical-order
+//!    bounds; this test fabricates dim-ordered bounds regardless of
+//!    producer state). Closes TASK-0316 AC#1.
+//! 9. `task0316_non_prefix_layout_empty_bounds_consumer_pin` —
+//!    backend-side CONSUMER pin for the empty-bounds shape that
+//!    cycle-133's `order_halo_strip_bounds_by_data_dim` produces for
+//!    non-prefix data layouts (data indexed `[k][x]` where `k` is
+//!    unpartitioned — the helper returns `Vec::new()` for safety).
+//!    Distinct dispatch path from
+//!    `whole_array_assign_when_tile_empty` above: that test passes
+//!    an EMPTY `pair_tiles` map (`pair_tiles.get(...).is_none()`),
+//!    skipping `wait_slice` entirely. This test passes a POPULATED
+//!    `pair_tiles` map carrying an `IterTile::empty()` so dispatch
+//!    enters `wait_slice` and hits the `tile.bounds.first()`
+//!    else-branch early return. Both converge on the whole-array
+//!    `name = rhs;` emit, but only one of these two tests
+//!    pre-existed. Closes TASK-0316 AC#2.
 
 use std::collections::BTreeMap;
 
@@ -372,5 +414,157 @@ fn inner_axis_out_of_bounds_returns_contract_gap() {
         msg.contains("inner-axis range") && msg.contains("inner-dim 16"),
         "expected ContractGap mentioning the offending inner-axis range + \
          inner-dim; got: {msg}"
+    );
+}
+
+/// TASK-0316 AC#1: backend-side CONSUMER pin for the
+/// `bounds[i] ↔ ty.dims[i]` positional contract on the
+/// inner-axis-leading bounds shape that cycle-133's
+/// `order_halo_strip_bounds_by_data_dim` produces.
+///
+/// `order_halo_strip_bounds_by_data_dim` (transfer_inject.rs, cycle
+/// 133) re-orders the halo-strip bounds vector so `bounds[i]` indexes
+/// `ty.dims[i]`. This test pins the BACKEND side of that contract:
+/// fed the inner-leading tile shape (`bounds[0] = inner_iv`,
+/// `bounds[1] = outer_iv` — what the cycle-133 helper emits for
+/// `data` indexed `[inner_iv][outer_iv]`), `render_wait_assign` MUST
+/// drive the 2D row-loop with `outer_lo..outer_hi` = `bounds[0].1`
+/// (the inner_iv's range, NOT the outer_iv's) and `row_stride` =
+/// `dims[1]` (the outer_iv-dim stride, NOT `dims[0]`).
+///
+/// Asymmetric dims `[16, 8]` make the test bite: under the canonical
+/// `(outer_iv, inner_iv)` order the 1D path's stride product is the
+/// same 8 (it falls out from `dims[1..]`), but the slice ranges and
+/// row-loop bounds differ — the row-loop's `outer_lo..outer_hi` is
+/// fed from `bounds[0].1`, so a `wait_slice` that read bounds out
+/// of dim-position order would yield `for _y in 4..5` instead of
+/// `for _y in 0..8`.
+///
+/// What this test catches: a future `wait_slice` refactor that
+/// drops the positional `bounds[i] ↔ ty.dims[i]` semantics (e.g.
+/// switches to an iv-name lookup or sorts on a different key) would
+/// silently re-permute cycle-133's dim-ordered output and slice-paste
+/// against the wrong dim. This pin asserts the positional contract
+/// directly with hand-constructed dim-ordered bounds.
+///
+/// What this test does NOT catch: producer-side cycle-133 helper
+/// rot. The test fabricates an `IterTile` directly and never invokes
+/// `inject_transfers` or the cycle-133 helper. If
+/// `order_halo_strip_bounds_by_data_dim` regressed to emit
+/// canonical-order bounds, this test would still pass — the producer-
+/// side coverage lives in
+/// `nucleus-compiler/tests/halo_strip_synth.rs::task0306_ac3`.
+///
+/// Transitive coverage: cycle-135's `rewrite_partition_tiles_inner`
+/// helper feeds the same `IterTile.bounds` consumed by the same
+/// `wait_slice` dispatch, so this pin also covers the TASK-0317
+/// helper's backend-side positional contract.
+#[test]
+fn task0316_inner_axis_leading_layout_emits_against_dim0() {
+    let data = DataId(99);
+    let seq = SeqTag(3);
+    // The cycle-133 fixture names: outer_iv = y = IterVar(7),
+    // inner_iv = x = IterVar(8). Names carried for traceability; the
+    // backend reads bounds positionally and is iv-name agnostic.
+    let outer_iv = IterVar(7);
+    let inner_iv = IterVar(8);
+    // Data layout: inner-axis-leading. dims[0] = inner_iv's range
+    // (16), dims[1] = outer_iv's range (8). Asymmetric on purpose so
+    // a misordered bounds vector emits a different string than the
+    // dim-aligned bounds vector below.
+    let (names, sidecar) = make_minimal_tables(data, "img_in", vec![16, 8]);
+    // The cycle-133 emit for an inner-leading S-strip (analogous to
+    // AC#3 in halo_strip_synth.rs, adjusted for asymmetric dims):
+    //   bounds[0] = (inner_iv, 0..8)  ↔ data dim 0 (inner_iv-dim 16)
+    //   bounds[1] = (outer_iv, 4..5)  ↔ data dim 1 (outer_iv-dim 8)
+    let tile = IterTile::new(vec![(inner_iv, 0..8), (outer_iv, 4..5)]);
+    let (ids, tiles) = one_pair(data, seq, 7, tile.clone());
+
+    let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect("inner-leading 2D Wait must render");
+
+    // row_stride = product(dims[1..]) = 8. inner_stride =
+    // product(dims[2..]) = 1 (empty product). outer_lo..outer_hi =
+    // bounds[0].1 = 0..8. inner_lo_off..inner_hi_off =
+    // bounds[1].1 * inner_stride = 4..5.
+    assert!(
+        out.contains(
+            "{ let _tmp = ring_7.wait(); \
+             for _y in 0usize..8usize { \
+             let _r = _y * 8usize; \
+             img_in[_r + 4usize.._r + 5usize].copy_from_slice(\
+             &_tmp[_r + 4usize.._r + 5usize]); } }"
+        ),
+        "TASK-0316 AC#1: inner-leading bounds [(inner_iv, 0..8), \
+         (outer_iv, 4..5)] on data dims [16, 8] MUST drive row-loop \
+         outer=0..8 + row_stride=8 + inner=4..5; got:\n{out}"
+    );
+    // Negative-pin the canonical-order positional footprint: a
+    // `wait_slice` refactor that read `bounds[0]` as the outer_iv
+    // slot regardless of dim layout (i.e. dropped positional
+    // dim-mapping) would emit `for _y in 4usize..5usize { let _r =
+    // _y * 8usize; img_in[_r + 0usize.._r + 8usize]...`. Assert
+    // that string is NOT present.
+    assert!(
+        !out.contains("for _y in 4usize..5usize"),
+        "TASK-0316 AC#1: `wait_slice` appears to have dropped the \
+         positional `bounds[i] ↔ ty.dims[i]` contract — the row-loop \
+         bounds (4..5) come from the outer_iv slot rather than \
+         `bounds[0].1` (0..8 for the inner-leading layout). The \
+         cycle-133 helper's dim-ordered output is being silently \
+         re-permuted by the consumer. Got:\n{out}"
+    );
+}
+
+/// TASK-0316 AC#2: backend-side CONSUMER pin for the empty-bounds
+/// shape that cycle-133's `order_halo_strip_bounds_by_data_dim`
+/// produces for non-prefix data layouts (data indexed by an iv NOT
+/// covered by the partition).
+///
+/// `order_halo_strip_bounds_by_data_dim` (and the sibling
+/// `compute_partition_bounds_with_dim_prefix` /
+/// `rewrite_partition_tiles_inner` guards from cycle 134-135) return
+/// an EMPTY bounds vector when the data's leading dim's iv is not in
+/// `partition_worker_ranges` — the safe default is whole-array drop
+/// rather than mis-mapping `bounds[0]` to a partitioned iv that does
+/// not index dim 0.
+///
+/// This pins that the backend dispatches such an empty-bounds tile
+/// to the whole-array `name = rhs;` arm. DISTINCT dispatch path
+/// from `whole_array_assign_when_tile_empty` above: that test passes
+/// an EMPTY `pair_tiles` map (`render_wait_assign`'s
+/// `pair_tiles.get(...).is_none()` short-circuit fires before
+/// `wait_slice` is called). This test passes a POPULATED
+/// `pair_tiles` map carrying an `IterTile::empty()` so dispatch
+/// enters `wait_slice` and hits the `tile.bounds.first()`
+/// else-branch early return. Both arms converge on the same emit
+/// but the two assertions cover the two distinct receiver-side
+/// dispatches.
+#[test]
+fn task0316_non_prefix_layout_empty_bounds_consumer_pin() {
+    let data = DataId(99);
+    let seq = SeqTag(3);
+    let (names, sidecar) = make_minimal_tables(data, "img_in", vec![16, 16]);
+    // Cycle-133 / cycle-134 / cycle-135 emit shape for non-prefix
+    // data layouts: empty bounds vector (whole-array drop).
+    let tile = IterTile::empty();
+    let (ids, tiles) = one_pair(data, seq, 0, tile.clone());
+
+    let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect("empty-bounds Wait must render");
+
+    assert!(
+        out.contains("img_in = ring_0.wait();"),
+        "TASK-0316 AC#2: empty bounds via populated `pair_tiles` \
+         (non-prefix data layout) MUST dispatch through `wait_slice`'s \
+         `bounds.first()` early-return arm to the whole-array assign \
+         `name = rhs;`; got:\n{out}"
+    );
+    assert!(
+        !out.contains("copy_from_slice") && !out.contains("for _y in"),
+        "TASK-0316 AC#2: empty bounds MUST NOT fall through to a \
+         slice-paste arm (a `wait_slice` regression that interpreted \
+         empty bounds as a partial-slice would undo cycle-133's \
+         defensive whole-array drop). Got:\n{out}"
     );
 }

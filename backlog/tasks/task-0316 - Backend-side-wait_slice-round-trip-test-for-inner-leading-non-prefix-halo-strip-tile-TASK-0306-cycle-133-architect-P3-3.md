@@ -3,9 +3,11 @@ id: TASK-0316
 title: >-
   Backend-side wait_slice round-trip test for inner-leading / non-prefix
   halo-strip tile (TASK-0306 cycle-133 architect P3-3)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 09:17'
+updated_date: '2026-05-25 10:39'
 labels:
   - M6
   - compiler
@@ -48,3 +50,18 @@ LOW priority. Trigger: a future M6+ schedule that constructs either latent shape
 
 ## Forward-carried from TASK-0306 cycle 133 architect P3-3 (read-only review of commit 7f10a80)
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 136 scope addendum (orchestrator)
+
+AC#1 text mandates 'constructs the synthetic ACFG **with cycle-133 fixture builder**, runs backend codegen via render_wait_assign or equivalent'. Cycle-136 implementation deviates: feeds render_wait_assign DIRECTLY with the IterTile shape the cycle-133 helper would emit, using backend-common's established make_minimal_tables + one_pair test fixture pattern (wait_assign_slice.rs precedent set under TASK-0117 + TASK-0294).
+
+Rationale for the scope deviation:
+1. backend-common does NOT import nucleus-compiler pass machinery (only the contract types Event/Sidecar/NameTables). Pulling inject_transfers into backend-common test scope would require a cross-test-crate fixture replicator (build_2x2_acfg_with_indexed_access lives in nucleus-compiler/tests/halo_strip_synth.rs, not importable by another crate's tests).
+2. The producer-side cycle-133 helper output is already pinned end-to-end via inject_transfers by task0306_ac3/ac4/ac5 in nucleus-compiler/tests/halo_strip_synth.rs:840,921,970. Re-running inject_transfers in backend-common would duplicate that coverage.
+3. The cycle-136 test pins what was actually missing: the BACKEND-SIDE positional bounds[i] ↔ ty.dims[i] contract that wait_slice silently relies on. A wait_slice refactor that drops positional semantics would not be caught by the producer-side pins.
+
+The deviation tightens AC#1 from 'round-trip' (which the test does NOT do — it does not call inject_transfers) to 'backend-side consumer pin for the cycle-133 helper's positional output contract'. AC#2 + AC#3 satisfied as written.
+<!-- SECTION:NOTES:END -->
