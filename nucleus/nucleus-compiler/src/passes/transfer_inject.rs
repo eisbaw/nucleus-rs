@@ -189,6 +189,7 @@ use std::num::NonZeroU64;
 use crate::acfg::{
     ACFGNode, NotifyMode, Operation, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
+use crate::algo::ir::IrExpr;
 use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
 use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransferOption};
@@ -382,7 +383,21 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
         // neither endpoint is partitioned (the 1:1 host↔single-worker
         // shape from examples 01..07) survive unchanged because the
         // map has no entry for either side.
-        let partitioned = rewrite_partition_tiles(spliced, &partition_worker_ranges);
+        // TASK-0301: Build the (DataId -> {IterVar mentioned in this data's
+        // accesses}) map by walking every Operation's DataflowDag. This is
+        // consulted by `rewrite_partition_tiles_inner` to filter the per-
+        // Xfer tile-bounds: an axis whose iter-var does NOT appear in the
+        // data symbol's access expressions must be excluded from that
+        // Xfer's tile, lest `wait_slice` mis-map it to a data dim the iv
+        // doesn't index (the AXIS-MAPPING ASSUMPTION discharged here for
+        // the case where the filter alone is sufficient — every shipped
+        // M5 cell + 07-matmul/distributed × partition=workers(i)).
+        let data_iv_indexing = collect_data_iv_indexing(&spliced, &name_iter_vars);
+        let partitioned = rewrite_partition_tiles(
+            spliced,
+            &partition_worker_ranges,
+            &data_iv_indexing,
+        );
         // TASK-0263 Stage 2 halo extension. For each XferPlaceholder
         // whose tile axis carries a non-zero halo entry (the data
         // symbol's consumer kernel's halo widths along that
@@ -1572,6 +1587,7 @@ fn splice_pushes_global(mut root: ACFGNode, name_data: &BTreeMap<String, DataId>
 fn rewrite_partition_tiles(
     node: ACFGNode,
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    data_iv_indexing: &BTreeMap<DataId, BTreeSet<IterVar>>,
 ) -> ACFGNode {
     if partition_ranges.is_empty() {
         return node;
@@ -1587,7 +1603,12 @@ fn rewrite_partition_tiles(
     // for the same logical axis.
     let mut partition_axis_order: Vec<IterVar> = Vec::new();
     collect_partitioned_iter_var_nest_order(&node, partition_ranges, &mut partition_axis_order);
-    rewrite_partition_tiles_inner(node, partition_ranges, &partition_axis_order)
+    rewrite_partition_tiles_inner(
+        node,
+        partition_ranges,
+        &partition_axis_order,
+        data_iv_indexing,
+    )
 }
 
 /// DFS pre-order walk of the ACFG recording each `Repeat::iter_var`
@@ -1628,6 +1649,7 @@ fn rewrite_partition_tiles_inner(
     node: ACFGNode,
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
     partition_axis_order: &[IterVar],
+    data_iv_indexing: &BTreeMap<DataId, BTreeSet<IterVar>>,
 ) -> ACFGNode {
     match node {
         ACFGNode::Xfer(mut x) => {
@@ -1647,8 +1669,56 @@ fn rewrite_partition_tiles_inner(
                 // iteration that coincidentally produced nest order
                 // only because every in-tree schedule's outer
                 // iter-vars happened to have lower IterVar ids.
+                //
+                // TASK-0301: additionally filter by `data_iv_indexing[x.data]`
+                // — an iter-var that does NOT appear in this data symbol's
+                // access expressions must be excluded from this Xfer's
+                // bounds. `wait_slice`'s axis-mapping convention assumes
+                // `tile.bounds[i].iter_var` indexes data dim i; appending
+                // an unrelated iv silently mis-maps the slice (07-matmul
+                // × partition=workers(i): b is indexed [k][j], so i must
+                // not appear in b's bounds — empty bounds → whole-array
+                // broadcast of b, which is correct).
+                //
+                // Additive contract: the filter only removes an iv when
+                // we have POSITIVE evidence the iv does not index the
+                // data — i.e., the data has a non-empty observed iv set
+                // and that set does not contain `iv`. When the observed
+                // set is empty (rare in production: a data symbol that
+                // is *only* ever read/written as a bare aggregate, OR a
+                // synthetic test fixture using the index-less
+                // `DataflowEdge::new`), we fall back to the pre-TASK-0301
+                // behaviour and keep every partitioned axis. This keeps
+                // the change additive on every shipped M5 cell (05/-,
+                // 05/distributed-2d, 06/distributed all have every
+                // partitioned iv observed in every data's accesses; the
+                // filter is structurally a no-op for them) and preserves
+                // the synthetic-fixture contract that pins the partition
+                // composition. 07-matmul's `b` triggers the new behaviour
+                // because its observed iv set {k, j} positively excludes
+                // the partitioned `i`.
+                // Silent-sibling audit (architect P3.3, cycle 118): every
+                // other site that mutates `x.tile` either constructs it
+                // structurally from the live enclosing-loop stack
+                // (`inject_in_node_with_tile`), extends an already-filtered
+                // bounds set (`extend_xfer_tiles_for_halo`, runs after us),
+                // or hand-crafts the (outer_iv, inner_iv) pair from the
+                // partition_pairs sidecar (`inject_halo_strip_xfers`,
+                // structurally axis-correct by construction). None need
+                // the TASK-0301 filter today; a future N-dim halo or
+                // partition pass that constructs `bounds` from a
+                // partition_axis_order MUST consult `data_iv_indexing`
+                // to avoid re-importing the axis-mapping assumption.
+                let allowed = data_iv_indexing.get(&x.data);
+                let filter_active = allowed.is_some_and(|s| !s.is_empty());
                 let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
                 for iv in partition_axis_order {
+                    if filter_active {
+                        let allowed_set = allowed.expect("filter_active implies Some");
+                        if !allowed_set.contains(iv) {
+                            continue;
+                        }
+                    }
                     if let Some(per_worker) = partition_ranges.get(iv) {
                         if let Some(range) = per_worker.get(&w) {
                             bounds.push((*iv, range.clone()));
@@ -1664,7 +1734,14 @@ fn rewrite_partition_tiles_inner(
         ACFGNode::Sequence(children) => ACFGNode::Sequence(
             children
                 .into_iter()
-                .map(|c| rewrite_partition_tiles_inner(c, partition_ranges, partition_axis_order))
+                .map(|c| {
+                    rewrite_partition_tiles_inner(
+                        c,
+                        partition_ranges,
+                        partition_axis_order,
+                        data_iv_indexing,
+                    )
+                })
                 .collect(),
         ),
         ACFGNode::Repeat {
@@ -1679,10 +1756,129 @@ fn rewrite_partition_tiles_inner(
                 *body,
                 partition_ranges,
                 partition_axis_order,
+                data_iv_indexing,
             )),
             block_tag,
         },
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0301: data → iter-vars indexing (axis-mapping filter input)
+// --------------------------------------------------------------------
+
+/// Build the per-data set of iter-vars that appear inside any indexing
+/// expression on that data symbol, by walking every `Operation`'s
+/// `DataflowDag` in `root`.
+///
+/// For each access (`data_in_access` *and* `data_out_access` on each
+/// `DataflowEdge`), the `indices: Vec<IrExpr>` of the access is
+/// recursively scanned for `IrExpr::Ident(name)` leaves whose `name`
+/// resolves through `name_iter_vars` to an `IterVar`. The result is
+/// keyed by `DataId` and carries the union over all observed firings of
+/// the symbol (axis-precise filtering would require a per-axis map; the
+/// per-symbol union is what the axis-filter at `rewrite_partition_tiles`
+/// needs to suppress an iv that is *never* observed indexing this data —
+/// the 07-matmul `b` case, where `i` indexes neither dim of `b`).
+///
+/// Symbols not seen on any access (bare-aggregate transfers such as
+/// `save_c(c)`) get no entry; `rewrite_partition_tiles_inner` treats
+/// "absent" as "no iv could possibly index this data" and yields an
+/// empty bounds vec → whole-array transfer. That matches the pre-
+/// TASK-0301 behaviour for whole-aggregate transfers that already
+/// carried no partitioned axes.
+///
+/// A non-`Ident` index leaf (e.g. an `IntLit`, or a `Neg`/`BinOp` over
+/// only consts) records no iv — correct, those axes are partition-
+/// invariant and shouldn't pull a partitioned slice. Arithmetic over
+/// an iv (`y - 1`, `k + halo`) still records the iv: the leaf is
+/// `Ident("y")` / `Ident("k")` inside the `BinOp` and `collect_ivs_
+/// from_expr` recurses to it. This is structurally independent of
+/// `extend_xfer_tiles_for_halo` (which keys off the `halo_widths`
+/// sidecar, not off the iv set this function records) — the two are
+/// only required to be *consistent*, not coupled.
+fn collect_data_iv_indexing(
+    root: &ACFGNode,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+) -> BTreeMap<DataId, BTreeSet<IterVar>> {
+    let mut out: BTreeMap<DataId, BTreeSet<IterVar>> = BTreeMap::new();
+    walk_data_iv_indexing(root, name_iter_vars, &mut out);
+    out
+}
+
+fn walk_data_iv_indexing(
+    node: &ACFGNode,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    out: &mut BTreeMap<DataId, BTreeSet<IterVar>>,
+) {
+    match node {
+        ACFGNode::Operation(op) => {
+            for edge in &op.dataflow.edges {
+                for access in &edge.data_in_access {
+                    let entry = out.entry(access.data).or_default();
+                    for ix in &access.indices {
+                        collect_ivs_from_expr(ix, name_iter_vars, entry);
+                    }
+                }
+                if let Some(access) = &edge.data_out_access {
+                    let entry = out.entry(access.data).or_default();
+                    for ix in &access.indices {
+                        collect_ivs_from_expr(ix, name_iter_vars, entry);
+                    }
+                }
+            }
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                walk_data_iv_indexing(c, name_iter_vars, out);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => {
+            walk_data_iv_indexing(body, name_iter_vars, out);
+        }
+        ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+    }
+}
+
+/// Recursively collect every `IrExpr::Ident(name)` whose `name` resolves
+/// to an `IterVar` via `name_iter_vars`, accumulating into `out`. Const
+/// idents (lookup misses) are silently ignored — they are partition-
+/// invariant and don't contribute to axis-mapping.
+fn collect_ivs_from_expr(
+    expr: &IrExpr,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+    out: &mut BTreeSet<IterVar>,
+) {
+    match expr {
+        IrExpr::IntLit(_) => {}
+        IrExpr::Ident(name) => {
+            if let Some(iv) = name_iter_vars.get(name) {
+                out.insert(*iv);
+            }
+        }
+        IrExpr::Neg(inner) => collect_ivs_from_expr(inner, name_iter_vars, out),
+        IrExpr::BinOp(_, lhs, rhs) => {
+            collect_ivs_from_expr(lhs, name_iter_vars, out);
+            collect_ivs_from_expr(rhs, name_iter_vars, out);
+        }
+        IrExpr::DataRef(ix_ref) => {
+            // A nested DataRef in an index position is structurally
+            // exotic (the AlgoIR grammar treats DataRef as a kernel
+            // argument or RHS, not normally an index inside another
+            // index). Descend defensively into its own indices so a
+            // future grammar widening doesn't silently miss ivs.
+            for ix in &ix_ref.indices {
+                collect_ivs_from_expr(ix, name_iter_vars, out);
+            }
+        }
+        IrExpr::Call { args, .. } => {
+            // A Call in index position is also non-canonical; descend
+            // for the same defensiveness as DataRef.
+            for a in args {
+                collect_ivs_from_expr(a, name_iter_vars, out);
+            }
+        }
     }
 }
 
