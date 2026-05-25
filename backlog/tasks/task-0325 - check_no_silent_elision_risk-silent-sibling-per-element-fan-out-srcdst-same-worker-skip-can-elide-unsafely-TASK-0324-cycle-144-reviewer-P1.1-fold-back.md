@@ -4,11 +4,11 @@ title: >-
   check_no_silent_elision_risk silent sibling: per-element fan-out (src,dst)
   same-worker skip can elide unsafely (TASK-0324 cycle-144 reviewer P1.1
   fold-back)
-status: In Progress
+status: Done
 assignee:
   - orchestrator-self
 created_date: '2026-05-25 14:18'
-updated_date: '2026-05-25 14:47'
+updated_date: '2026-05-25 15:07'
 labels:
   - compiler
   - transfer_inject
@@ -104,4 +104,43 @@ No in-tree schedule today places a kernel on partially-overlapping worker sets. 
 4. **TransferInjectError #[non_exhaustive] is load-bearing now**: cycle-144 added it defensively; cycle-145 didn't add new variants but the partial-overlap fixture's match-arm uses the wildcard pattern — future variants (AC#3 lift, TASK-0326) land without breaking either fixture's match.
 
 5. **TASK-0325 was filed AS the silent-sibling of the cycle-144 implementer's blind spot** (cycle-144 architect P1.1). Cycle 145 closes that gap. The meta-lesson (per [[feedback-silent-sibling-defect]] cycle-144 update): when writing a new validator/guard against a defect class, enumerate every structural variant of the class in the codebase BEFORE writing the validator. This time the line-2501 vs line-3048 enumeration is now anchored in the docstring (lines 2618-2640).
+
+## Cycle 145 — final state after review fold-back
+
+### Review gate (parallel read-only)
+
+- **qa-test-runner**: GO. just ci green end-to-end. just test 878 passed / 0 failed / 3 ignored. just test-release 878 passed / 0 failed / 3 ignored. e2e 112/92/0/20/0 across 3 samples (non-flake).
+- **mped-architect**: GO with P2 follow-ups. P2.1 (3 stale line-NNNN citations missed by orchestrator's first stamp-pass) + P2.2 (companion-comment asymmetry between elision sites) + P3.2 (reverse-direction fixture) all folded back in-thread (commit f355add). P3.1 (variant rename decision) filed as forward-carry on TASK-0324 AC#3.
+
+### Architect findings + closure
+
+- **P2.1 stamp-drift sibling**: 3 'line-2501'/'line-3048' references at `transfer_inject.rs:104` + `tests/transfer_inject.rs:2606-2607` survived the orchestrator's mid-cycle stamp-correction (commit 02f38a2). Resolution: migrated to grep-witness anchors ('if producer_workers == &consumer_workers' + 'if src == dst' inside build_waits_for_op). This is the 2nd stamp-drift firing in two cycles per the architect — promoted to a recurring pattern observation.
+- **P2.2 companion-comment asymmetry**: both same-worker elision sites in build_waits_for_op now carry TASK-0325 cycle-145 addenda (whole-set short-circuit at the producer == consumer branch + per-element skip at if src == dst), with cross-references to check_no_silent_elision_risk.
+- **P3.2 direction-asymmetry pin**: new fixture `task0325_ac2_positive_partial_overlap_reverse_direction` (producer={w0..w3, w4}, consumer={w0..w3}) pins that the intersection-based check is direction-agnostic. 5/5 task032 fixtures pass.
+- **P3.1 variant rename**: forward-carried to TASK-0324 AC#3 land-time decision.
+
+### TASK-0325 status
+
+**Done.** AC#1 detection extension + AC#2 fixtures (positive + negative + reverse-direction) + AC#3 dormant-but-defended audit all landed. Validator now covers both same-worker elision sites with one check. Cycle 145 closure-cycle for the cycle-144 architect P1.1 sibling-gap.
+
+### Final verification gate
+
+- `just check`: clean.
+- `just clippy --all-targets -D warnings`: clean.
+- `just test` (dev): all pass (count includes +3 new task0325_* fixtures).
+- `just test-release`: all pass.
+- `just e2e`: 112/92/0/20/0 (3 samples, non-flake).
+- `just check-textual-replace-on-codegen`: OK.
+- `just check-include-str-coverage`: OK.
+- `just ci` (full hard gate): green including all 4 negative/determinism arms.
+
+### Forward-carries (already filed)
+
+- **TASK-0324 AC#3**: cross-worker tmp codegen (N-to-N broadcast-of-gather). When AC#3 lands, the validator's rejection must be lifted; also a variant-rename decision per cycle-145 P3.1 forward-carry note.
+- **TASK-0326**: tighten discriminator for arithmetic-on-partition-iv producer writes (cycle-144 P1.3, still dormant).
+
+### Lessons forward-carried into memory
+
+- `feedback-silent-sibling-defect` updated with cycle-145 closure observation: when a defect class has both whole-set and per-element expressions, write the check against the access-pattern axis (the structural reason), not the predicate-arity (the conditional that fires it). Cycle 145 closed in one cycle because cycle 144's validator was already in this shape.
+- `feedback-stamp-twice-when-narrative-content-shifts-line` re-fired in cycle 145 (architect P2.1): adding ~76 lines of new docstring + comments shifted some line numbers by ~+76 but the orchestrator's first stamp-correction pass missed 3 of the 12 stale references. Reinforces the hygiene: bare line-NNNN references in docstrings should be banned in favour of grep-witness anchors.
 <!-- SECTION:NOTES:END -->
