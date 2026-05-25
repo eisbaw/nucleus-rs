@@ -1,5 +1,10 @@
-//! Shared multi-worker event-walker for the pthreads-sync and
-//! pthreads-async backends (TASK-0239).
+//! Shared multi-worker event-walker. Originating consumers were the
+//! pthreads-sync and pthreads-async backends (TASK-0239 cycle 31);
+//! mp-tcp-event joined as the third consumer at cycle 79 with
+//! `rendezvous_prefix = "chan"`. mp-tcp-bufsync is the fourth tier-1
+//! backend but bypasses this walker entirely — it calls
+//! `render_wait_assign` directly without going through
+//! `render_worker_events`.
 //!
 //! # Why this module exists
 //!
@@ -11,9 +16,11 @@
 //! `collect_barriers_by_tag`), substituting `slot_<id>`
 //! for `ring_<id>` at the four Push/Wait callsites. The duplication was
 //! mechanically maintainable for one cycle but every subsequent edit
-//! to the walker would risk silent drift between two backends whose
-//! cross-backend bit-identical differential (PRD §10.1) is the headline
-//! thesis-falsifiability claim.
+//! to the walker would risk silent drift between the two then-
+//! existing backends whose cross-backend bit-identical differential
+//! (PRD §10.1) is the headline thesis-falsifiability claim. (mp-tcp-
+//! event later joined as the third prefix-using consumer at cycle 79;
+//! mp-tcp-bufsync remains on the direct-`render_wait_assign` bypass.)
 //!
 //! TASK-0239 (this module) lifts the walker into a single source of
 //! truth parameterised by ONE string: the rendezvous variable prefix
@@ -42,9 +49,16 @@
 //! - The `Plan` struct definition itself (the async variant carries
 //!   an extra `ring_caps: BTreeMap<(DataId, SeqTag), u64>` for sizing).
 //!
-//! That keeps the two backends' real semantic difference (one-shot
-//! rendezvous vs bounded buffered channel) visible at the `emit()`
-//! entry point.
+//! That keeps each prefix-using backend's real semantic difference
+//! visible at the `emit()` entry point — pthreads-sync (one-shot
+//! `Slot<T>` rendezvous via `Mutex+Condvar`), pthreads-async
+//! (bounded `Ring<T>` buffered channel), mp-tcp-event (mio reactor
+//! with bounded outbound queues and `seq`-keyed inbound queues).
+//! The "What stays per-backend" section above enumerates only the
+//! pthreads-sync / pthreads-async axis (the cycle-31 originating
+//! pair); mp-tcp-event's substrate (`runtime_src.rs` + per-peer
+//! `Chan<T>`) is documented in its own module-doc at
+//! `nucleus/backends/mp-tcp-event/src/multi_worker.rs`.
 //!
 //! # Design choice: direct parameter, not trait
 //!
@@ -57,9 +71,13 @@
 //!
 //! # SlotId == RingId == usize
 //!
-//! Confirmed by both backends' type alias (`type SlotId = usize` /
-//! `pub(crate) type RingId = usize`). The shared map shape is
-//! `BTreeMap<(DataId, SeqTag), usize>` and is reused verbatim.
+//! Confirmed by all three prefix-using backends' type aliases:
+//! `type SlotId = RendezvousId` (pthreads-sync), `type RingId =
+//! RendezvousId` (pthreads-async), `type ChanId = RendezvousId`
+//! (mp-tcp-event). The shared map shape is `BTreeMap<(DataId,
+//! SeqTag), usize>` and is reused verbatim. mp-tcp-bufsync does
+//! not need a rendezvous-id alias because it bypasses
+//! `render_worker_events`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -145,10 +163,11 @@ pub struct WalkerCtx<'a> {
     /// (the `Event::Push` branch) and `{prefix}{rendezvous_prefix}_{id}.wait()`
     /// (the `Event::Wait` branch, fed into `render_wait_assign`).
     ///
-    /// Grep witness (cycle 141 TASK-0322 fold-back): `grep -n
+    /// Grep witness (cycle 141 TASK-0322 fold-back, line stamps
+    /// updated cycle 142 TASK-0323 module-doc sweep): `grep -n
     /// '{rendezvous_prefix}_' nucleus/backend-common/src/` yields
-    /// exactly two emit-template sites (Push at line 806, Wait at
-    /// line 826 — both pinned parametrically by
+    /// exactly two emit-template sites (Push at line 831, Wait at
+    /// line 851 — both pinned parametrically by
     /// `task0321_*` / `task0322_*` in
     /// `nucleus/backend-common/tests/wait_assign_slice.rs`).
     pub rendezvous_prefix: &'a str,
@@ -379,10 +398,13 @@ pub fn compute_block_tag_abs_exprs(
 
 /// Walk one worker's EventList, emitting Rust statements into `out`.
 ///
-/// This is the SHARED walker — both pthreads-sync's `Plan` and
-/// pthreads-async's `Plan` call through it. The substitution surface
-/// is exactly `ctx.rendezvous_prefix` (the variable-name prefix on
-/// `{prefix}_<id>.push(...)` / `{prefix}_<id>.wait()`).
+/// This is the SHARED walker — pthreads-sync's `Plan`, pthreads-
+/// async's `Plan`, and mp-tcp-event's `Plan` all call through it
+/// (`rendezvous_prefix` = `"slot"` / `"ring"` / `"chan"` respectively;
+/// mp-tcp-bufsync is the fourth tier-1 backend but bypasses this
+/// walker and calls `render_wait_assign` directly). The substitution
+/// surface is exactly `ctx.rendezvous_prefix` (the variable-name
+/// prefix on `{prefix}_<id>.push(...)` / `{prefix}_<id>.wait()`).
 ///
 /// # Strip-mine rebinding (TASK-0181)
 ///
@@ -470,9 +492,12 @@ fn render_worker_events_inner(
                     }
                     Some(o) => {
                         // TASK-0209 shared scalar-vs-sub-array
-                        // classifier — both backends route through
-                        // `render_fire_output_assign_pub` so the Fire-
-                        // output sites cannot drift.
+                        // classifier — all `render_worker_events`-
+                        // using backends (pthreads-sync, pthreads-
+                        // async, mp-tcp-event) route Fire-output
+                        // assignment through `render_fire_output_
+                        // assign_pub` so the Fire-output sites
+                        // cannot drift across backends.
                         let rhs = format!("kernels::{callee}({args})");
                         let stmt = render_fire_output_assign_pub(o, &rhs, render_ctx)?;
                         writeln!(out, "{pad}{stmt}").ok();
@@ -930,8 +955,12 @@ pub fn render_wait_assign(
 ///   These are compiler-pass invariant violations worth failing
 ///   loud rather than silently emitting an out-of-bounds slice.
 ///
-/// Module-private — both backends consume this only indirectly via
-/// `render_wait_assign`.
+/// Module-private — all three `render_worker_events`-using
+/// backends (pthreads-sync, pthreads-async, mp-tcp-event) consume
+/// this only indirectly via `render_wait_assign`. mp-tcp-bufsync
+/// calls `render_wait_assign` directly without going through
+/// `render_worker_events`, so it consumes this helper through the
+/// same surface.
 ///
 /// # AXIS-MAPPING ASSUMPTION (discharged TASK-0302; consult upstream guarantee)
 ///

@@ -30,14 +30,18 @@
 //!   slice` + `collect_pre_init_sets` + `collect_xfer_pairs` +
 //!   `collect_barriers_by_tag` + `collect_worker_rendezvous` +
 //!   `LeadingAxis`) was lifted out of both backends into
-//!   `pthreads_sync::multi_worker_walker`, parameterised by ONE
-//!   string (`rendezvous_prefix: "slot"` for pthreads-sync, `"ring"`
-//!   for pthreads-async). Both backends now route through that
-//!   single source of truth; emission is byte-identical to the
-//!   pre-refactor state. This module retains only the per-backend
-//!   `Plan` shape (ring sizing from `transfer_buffer_for_seq`) and
-//!   the `Plan::emit` orchestration (substrate decl + per-pair
-//!   instance alloc + per-thread spawn).
+//!   `pthreads_sync::multi_worker_walker` (later moved to the
+//!   `backend-common` crate), parameterised by ONE string —
+//!   `rendezvous_prefix`. The three prefix-using backends today are
+//!   `"slot"` (pthreads-sync), `"ring"` (pthreads-async), `"chan"`
+//!   (mp-tcp-event); mp-tcp-bufsync is the fourth tier-1 backend but
+//!   bypasses `render_worker_events` and calls `render_wait_assign`
+//!   directly. All three prefix-using backends route through the
+//!   shared walker; emission is byte-identical to the pre-refactor
+//!   state. This module retains only the per-backend `Plan` shape
+//!   (ring sizing from `transfer_buffer_for_seq`) and the `Plan::emit`
+//!   orchestration (substrate decl + per-pair instance alloc + per-
+//!   thread spawn).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -70,11 +74,13 @@ pub(crate) fn render_main_rs_multi(
 }
 
 /// Stable identifier for one ring buffer (the `(DataId, SeqTag)`
-/// pair's runtime channel). Same shape as pthreads-sync's `SlotId` —
-/// a `usize` keyed by `(DataId, SeqTag)` ordered ascending. As of
-/// TASK-0239 this is an alias for the shared
-/// `multi_worker_walker::RendezvousId`; the two backends use the
-/// same map type for their per-pair rendezvous index.
+/// pair's runtime channel). Same shape as pthreads-sync's `SlotId`
+/// and mp-tcp-event's `ChanId` — a `usize` keyed by `(DataId,
+/// SeqTag)` ordered ascending. As of TASK-0239 this is an alias for
+/// the shared `backend_common::multi_worker_walker::RendezvousId`;
+/// all three prefix-using backends (pthreads-sync, pthreads-async,
+/// mp-tcp-event) use the same `BTreeMap<(DataId, SeqTag),
+/// RendezvousId>` map type for their per-pair rendezvous index.
 pub(crate) type RingId = RendezvousId;
 
 /// Data structure capturing every fact a Wave B-2 emit() needs to
@@ -550,15 +556,20 @@ impl<'a> Plan<'a> {
 }
 
 // --------------------------------------------------------------------
-// Walker helpers extracted to `pthreads_sync::multi_worker_walker`
-// (TASK-0239). The shared walker — `render_worker_events`,
-// `render_wait_assign`, `leading_axis_slice` + `LeadingAxis`,
-// `collect_pre_init_sets`, `collect_xfer_pairs`, `collect_barriers_by_tag`,
-// and the per-worker rendezvous-id collector — is the single source
-// of truth across both pthreads-sync (rendezvous_prefix = "slot") and
-// pthreads-async (rendezvous_prefix = "ring"). This module retains
-// only the per-backend `Plan` shape (bounded `Ring<T>` substrate, per-
-// pair capacity from `transfer_buffer_for_seq`) plus the `Plan::emit`
+// Walker helpers extracted to `backend_common::multi_worker_walker`
+// (TASK-0239, originally landed in `pthreads_sync::multi_worker_walker`
+// and later moved to backend-common). The shared walker —
+// `render_worker_events`, `render_wait_assign`, the `WaitSlice`
+// shape-dispatch (TASK-0294 / TASK-0117 `leading_axis_slice` +
+// `LeadingAxis`), `collect_pre_init_sets`, `collect_xfer_pairs`,
+// `collect_barriers_by_tag`, and the per-worker rendezvous-id
+// collector — is the single source of truth across all three
+// prefix-using backends: pthreads-sync (`rendezvous_prefix = "slot"`),
+// pthreads-async (`rendezvous_prefix = "ring"`), and mp-tcp-event
+// (`rendezvous_prefix = "chan"`). mp-tcp-bufsync is the fourth
+// tier-1 backend but bypasses this walker. This module retains only
+// the per-backend `Plan` shape (bounded `Ring<T>` substrate, per-pair
+// capacity from `transfer_buffer_for_seq`) plus the `Plan::emit`
 // orchestration above.
 
 /// Collect unique Count-violation `check_frame` instances across every

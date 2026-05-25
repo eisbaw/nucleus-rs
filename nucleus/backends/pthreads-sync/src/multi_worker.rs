@@ -124,9 +124,11 @@ pub(crate) fn render_main_rs_multi(
 /// stable `slot_X` indices, because the BTreeSet iteration order over
 /// (DataId, SeqTag) ascends by DataId first.
 /// `SlotId` is the shared rendezvous-id alias from
-/// [`multi_worker_walker`] — both backends use `usize` keyed by
-/// `(DataId, SeqTag)`. Kept as a local alias so the rest of this
-/// module's local nomenclature ("slot") stays unchanged.
+/// [`backend_common::multi_worker_walker`] — all three prefix-using
+/// backends (pthreads-sync, pthreads-async, mp-tcp-event) use
+/// `RendezvousId = usize` keyed by `(DataId, SeqTag)`. Kept as a
+/// local alias so the rest of this module's local nomenclature
+/// ("slot") stays unchanged.
 type SlotId = RendezvousId;
 /// Stable identifier for one barrier — the contract-carried
 /// [`SyncTag`] (TASK-0172). Same value for every participant of the

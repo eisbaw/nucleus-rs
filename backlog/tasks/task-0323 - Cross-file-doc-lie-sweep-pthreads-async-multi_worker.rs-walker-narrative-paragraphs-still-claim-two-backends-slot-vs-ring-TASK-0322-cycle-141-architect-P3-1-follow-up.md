@@ -4,9 +4,11 @@ title: >-
   Cross-file doc-lie sweep: pthreads-async/multi_worker.rs + walker narrative
   paragraphs still claim 'two backends' / 'slot vs ring' (TASK-0322 cycle-141
   architect P3 #1 follow-up)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-25 12:25'
+updated_date: '2026-05-25 12:30'
 labels:
   - backend-common
   - pthreads-async
