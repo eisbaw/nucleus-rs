@@ -1259,3 +1259,47 @@ schedule = "distributed-2d"
 backend  = "mp-tcp-event"
 milestone = "M5"
 
+# ---- 06-separable-filter / distributed2 — TASK-0298 cycle-143 ------
+#
+# Investigation reproducer for TASK-0324. The schedule places BOTH
+# passes (hblur_acc, vblur_acc) on { w0..w3 } with partition=rows on
+# both outer loops (hy, vy). Pass 2's vm sweep reads ALL rows of tmp;
+# each worker has only its own hy row-band populated. transfer_inject
+# silently elides the required cross-worker tmp transfers — 0 slots
+# allocated for tmp in the emitted main.rs — and the runtime produces
+# wrong output starting at row 2 (the first row whose vertical taps
+# reach outside w0's row-band 0..4). All 4 tier-1 backends fail
+# identically at byte 128, confirming the defect lives in the shared
+# transfer_inject compiler pass, not in any backend. Filed as
+# TASK-0324 (Medium). Cells skipped here until the diagnose-first
+# guard (AC#2) + cross-worker tmp codegen (AC#3) land; reproducer kept
+# at `nuc-nucleus/examples/06-separable-filter/schedules/
+# distributed2.sched.nuc` with a SILENT MISCOMPILE warning header.
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "pthreads-sync"
+reason   = "TASK-0324: transfer_inject silent elision when producer-set == consumer-set + reader-iv exceeds producer tile. Kept as smoke-test reproducer; remove this skip + add [[required]] entries once TASK-0324 lands the diagnose-first guard (AC#2) and the cross-worker tmp codegen (AC#3)."
+milestone = "M5"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0324: transfer_inject silent elision (same shared-compiler-pass defect as the pthreads-sync sibling skip above). Failure mode is identical across all 4 tier-1 backends — first byte diverges at offset 128 — confirming the defect lives in transfer_inject, not in any backend."
+milestone = "M5"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "pthreads-async"
+reason   = "TASK-0324: transfer_inject silent elision (shared-compiler-pass defect). See pthreads-sync sibling skip above."
+milestone = "M5"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "mp-tcp-event"
+reason   = "TASK-0324: transfer_inject silent elision (shared-compiler-pass defect). See pthreads-sync sibling skip above."
+milestone = "M5"

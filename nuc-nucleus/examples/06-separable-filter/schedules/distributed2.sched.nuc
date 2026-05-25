@@ -1,0 +1,77 @@
+// !!! SILENT MISCOMPILE — see TASK-0324 !!!
+// !!! DO NOT add to e2e-matrix.toml or run in production. This schedule
+// !!! compiles silently to WRONG code under all 4 tier-1 backends:
+// !!! transfer_inject elides the cross-worker `tmp` transfers because
+// !!! producer-set == consumer-set, but pass 2's `vm` sweep reads the
+// !!! WHOLE `tmp` (each consumer worker has only its hy row-band
+// !!! populated; non-owned rows stay zero → wrong vblur output).
+// !!!
+// !!! TASK-0298 cycle 143 investigation reproducer: kept in the
+// !!! repository as the smoke-test target for the eventual TASK-0324
+// !!! fix in transfer_inject. Remove the warning + add an e2e cell
+// !!! once TASK-0324 lands and the output bit-matches reference.bin.
+//
+// Both-passes-distributed schedule: pass 1 (hblur_acc) AND pass 2
+// (vblur_acc) both placed on { w0..w3 } with partition=rows.
+//
+// TASK-0298 cycle 143 investigation: the existing distributed.sched.nuc
+// places pass 2 on host (with N-to-1 gather of tmp) because pass 2's
+// inner iv vm reads `tmp[vm][vx]` where vm sweeps 0..H regardless of
+// the output (vy, vx) — every consumer worker needs the FULL tmp
+// matrix. This schedule tests whether transfer_inject's broadcast
+// machinery handles that shape: each producer worker w_i owns its
+// hy row-band of tmp (from pass 1), and each consumer worker w_j
+// needs the WHOLE tmp.
+//
+// Per-pair-tile shape (the question this schedule probes):
+// - Pass 1: in_arr host -> {w0..w3}, row-banded by hy. Standard
+//   1-to-N broadcast + per-tile slice. Already shipped in
+//   distributed.sched.nuc.
+// - Pass 2: tmp is produced by 4 workers (each its hy row-band)
+//   and consumed by 4 workers (each its vy row-band, but the
+//   inner vm sweep means EACH consumer needs ALL rows of tmp).
+//   Conceptually: tmp = gather + broadcast (N-to-1-to-N). The
+//   per-pair transfer (w_i -> w_j) is WHOLE-ARRAY on the consumer
+//   side (vm covers 0..H) regardless of which output row band w_j
+//   owns; only the producer side has a row-band slice.
+//
+// If transfer_inject's existing per-pair-tile machinery handles
+// this (the N-to-M fan-out "Honest limitations" warning is about
+// COORDINATE-MAPPING when both sides are partial, not when the
+// consumer needs the whole thing), this schedule should lower
+// cleanly bit-identical across all 4 tier-1 backends.
+//
+// If it fails (codegen error, wrong main.rs, or runtime data
+// mismatch), the failure mode tells us exactly what gap to file.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+
+    // Pass 1: distributed across 4 compute workers, row-banded by hy.
+    // Identical to distributed.sched.nuc pass 1.
+    place hblur_acc on { w0, w1, w2, w3 };
+
+    // Pass 2: ALSO distributed, row-banded by vy. (The shape under
+    // investigation.)
+    place vblur_acc on { w0, w1, w2, w3 };
+
+    // Row-band partition each pass's outer axis.
+    loop hy : partition=rows;
+    loop vy : partition=rows;
+
+    // host -> workers: per-band slice of in_arr for pass 1.
+    transfer in_arr : sync;
+
+    // workers <-> workers: tmp transfer. The consumer side (vm
+    // sweep) reads every row of tmp regardless of output row band,
+    // so this is the broadcast-of-gather shape under test.
+    transfer tmp : sync;
+
+    // workers -> host: gather `out` from the 4 row-bands for save_image.
+    // (Sibling of distributed.sched.nuc's `tmp` gather, just on `out`
+    // because pass 2 is now on workers.)
+    transfer out : sync;
+}
