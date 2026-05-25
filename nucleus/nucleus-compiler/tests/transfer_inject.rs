@@ -4253,3 +4253,753 @@ fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
         ),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0326 cycle-156 — tighten classifier for arithmetic-on-partition-iv
+// producer writes. Pre-fix, the bare-Ident-only `ident_iv_in_set`
+// silently treated `tmp[hy*2][hx]` as non-partitioned at axis 0 and
+// the per-axis check fell into CONSERVATIVELY-NOT-REJECTED. Post-fix,
+// `expr_references_partition_iv` walks the IrExpr tree; if a partition
+// iv is referenced anywhere on the producer side, the consumer's
+// axis-k expression must be STRUCTURALLY EQUAL to the producer's.
+// --------------------------------------------------------------------
+
+/// TASK-0326 cycle-156 AC#2 positive: producer writes `tmp[hy*2][hx]`
+/// on {w0..w3} with `hy` partitioned; consumer reads `tmp[hy*2][hx]`
+/// at top level on the SAME worker set. Structural equality holds at
+/// axis 0 (both `BinOp(Mul, Ident(hy), IntLit(2))`) and axis 1 (both
+/// `Ident(hx)`, non-partition iv → axis is whole-array; consumer
+/// unconstrained). Validator returns Ok; the cycle-147 AC#3 lift gate
+/// (`producer_workers == &consumer_workers`) routes the same-set
+/// unsafe combination through the cartesian-product fan-out, but here
+/// the classifier returns None (the elision IS safe — each worker
+/// reads its own slice), so no cross-worker pairs are emitted.
+///
+/// This pins the structural-equality-of-arithmetic acceptance path.
+#[test]
+fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::{IrBinOp, IrExpr};
+    use nucleus_compiler::event::ArgBinding;
+
+    // Fresh IterVar ids — past 121..122 (task0333) and prior tests.
+    const IV_HY: IterVar = IterVar(131);
+    const IV_HX: IterVar = IterVar(132);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    // `hy * 2` — the partition-iv-bearing arithmetic shape that the
+    // pre-cycle-156 bare-Ident check silently skipped.
+    fn hy_mul_2() -> IrExpr {
+        IrExpr::BinOp(
+            IrBinOp::Mul,
+            Box::new(IrExpr::Ident("hy".to_string())),
+            Box::new(IrExpr::IntLit(2)),
+        )
+    }
+    fn access_hy_mul2_hx(data: DataId) -> DataAccess {
+        DataAccess {
+            data,
+            indices: vec![hy_mul_2(), ident("hx")],
+        }
+    }
+
+    // Producer: writes `tmp[hy*2][hx]` on {w0..w3}.
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(1100),
+        data_out: Some(D_TMP),
+        data_in_access: vec![DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        }],
+        data_out_access: Some(access_hy_mul2_hx(D_TMP)),
+        args: vec![ArgBinding::Data(DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        })],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1100),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer: reads `tmp[hy*2][hx]` at TOP LEVEL on the SAME set
+    // {w0..w3}. Wrap in the same hy/hx nest so the consumer has the
+    // partition iv in scope (matches the producer's axis-0 shape).
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(1101),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access_hy_mul2_hx(D_TMP)],
+        data_out_access: Some(DataAccess {
+            data: D_OUT,
+            indices: vec![ident("hy"), ident("hx")],
+        }),
+        args: vec![ArgBinding::Data(access_hy_mul2_hx(D_TMP))],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1101),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+    let consumer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![reader_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        consumer_nest,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..2);
+    hy_bands.insert(WorkerId(2), 2..4);
+    hy_bands.insert(WorkerId(3), 4..6);
+    hy_bands.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    // Validator returns Ok: producer's axis 0 is `hy*2` (references
+    // partition iv hy); consumer's axis 0 is structurally equal to
+    // producer's; consumer reads only its own partition slice.
+    let result = inject_transfers(&linked, acfg).expect(
+        "TASK-0326 AC#1 positive: arithmetic producer index with structurally \
+         equal consumer index → classifier returns None (safe elision); \
+         validator does NOT reject",
+    );
+
+    // Count cross-worker `tmp` pairs. The shapes are structurally
+    // equal → safe elision → ZERO cross-worker pairs.
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let cross_pairs: Vec<_> = xfers
+        .iter()
+        .filter(|(_, s, d)| s != d)
+        .copied()
+        .collect();
+    assert_eq!(
+        cross_pairs.len(),
+        0,
+        "TASK-0326 AC#1 positive: structurally-equal arithmetic indices \
+         on producer/consumer side imply safe same-set elision (each worker \
+         reads its own slice); expected ZERO cross-worker pairs for `tmp`. \
+         Got {} pairs: {:?}. If you see >0 pairs, the classifier is \
+         over-rejecting the matched-arithmetic shape — investigate \
+         `same_set_elision_unsafe_reason`'s per-axis structural-equality \
+         check.",
+        cross_pairs.len(),
+        cross_pairs
+    );
+}
+
+/// TASK-0326 cycle-156 AC#2 negative case 1: producer writes
+/// `tmp[hy*2][hx]` on {w0..w3} (hy partitioned); consumer reads
+/// `tmp[other_iv][hx]` at TOP LEVEL on the same worker set. The
+/// consumer's axis-0 expression is `Ident("other_iv")` — structurally
+/// unequal to the producer's `BinOp(Mul, Ident("hy"), IntLit(2))`.
+///
+/// Pre-cycle-156: the bare-Ident-only `ident_iv_in_set` returned
+/// `None` on the producer's `BinOp` → axis treated as whole-array →
+/// no constraint on consumer → silent elision.
+/// Post-cycle-156: `expr_references_partition_iv` returns true on the
+/// producer's axis 0; structural inequality with the consumer's
+/// `Ident("other_iv")` → classifier returns `Some(reason)`. The
+/// cycle-147 AC#3 lift gate at `producer_workers == &consumer_workers`
+/// routes through the cartesian fan-out (Ok with cross-pairs) — the
+/// fix here is that the elision NO LONGER hides behind the bare-Ident
+/// gap.
+///
+/// This test pins the classifier-level rejection by counting the
+/// cross-worker fan-out pairs (12 = 4*3 for the 4-worker set), which
+/// only happen when `same_set_elision_unsafe_reason` returns Some.
+#[test]
+fn task0326_ac1_negative_arithmetic_mismatched_iv() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::{IrBinOp, IrExpr};
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_HY: IterVar = IterVar(141);
+    const IV_HX: IterVar = IterVar(142);
+    const IV_OTHER: IterVar = IterVar(143);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn hy_mul_2() -> IrExpr {
+        IrExpr::BinOp(
+            IrBinOp::Mul,
+            Box::new(IrExpr::Ident("hy".to_string())),
+            Box::new(IrExpr::IntLit(2)),
+        )
+    }
+
+    // Producer: writes `tmp[hy*2][hx]` on {w0..w3}.
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(1200),
+        data_out: Some(D_TMP),
+        data_in_access: vec![DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        }],
+        data_out_access: Some(DataAccess {
+            data: D_TMP,
+            indices: vec![hy_mul_2(), ident("hx")],
+        }),
+        args: vec![ArgBinding::Data(DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        })],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1200),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer: reads `tmp[other_iv][hx]` at TOP LEVEL on {w0..w3}.
+    // `other_iv` is in scope as a non-partition iv.
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(1201),
+        data_out: Some(D_OUT),
+        data_in_access: vec![DataAccess {
+            data: D_TMP,
+            indices: vec![ident("other_iv"), ident("hx")],
+        }],
+        data_out_access: Some(DataAccess {
+            data: D_OUT,
+            indices: vec![ident("other_iv"), ident("hx")],
+        }),
+        args: vec![ArgBinding::Data(DataAccess {
+            data: D_TMP,
+            indices: vec![ident("other_iv"), ident("hx")],
+        })],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1201),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+    let consumer_nest = ACFGNode::Repeat {
+        iter_var: IV_OTHER,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![reader_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        consumer_nest,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+    acfg.name_iter_vars.insert("other_iv".to_string(), IV_OTHER);
+
+    // Only hy is partitioned. other_iv is in scope but NOT a partition
+    // iv — the structural-equality check on axis 0 fires.
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..2);
+    hy_bands.insert(WorkerId(2), 2..4);
+    hy_bands.insert(WorkerId(3), 4..6);
+    hy_bands.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    // Same-set producer + consumer + classifier returns Some →
+    // cycle-147 AC#3 lift gate falls through to the cartesian fan-out
+    // → 4*3 = 12 cross-worker pairs for `tmp`. If the classifier had
+    // returned None (pre-fix bare-Ident gap), the elision would fire
+    // and zero pairs would be emitted — the silent miscompile.
+    let result = inject_transfers(&linked, acfg).expect(
+        "TASK-0326 AC#1 negative case 1: same-set + unsafe → cycle-147 AC#3 \
+         lift routes to cartesian fan-out (Ok with cross-pairs). The fix is \
+         that the classifier NO LONGER returns None on the BinOp producer \
+         axis with a mismatched-iv consumer.",
+    );
+
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        12,
+        "TASK-0326 AC#1 negative case 1 regression: expected 12 cross-worker \
+         Push placeholders for `tmp` (cartesian-product fan-out triggered by \
+         the classifier rejecting the structurally-unequal axis-0 indices: \
+         producer `hy*2` vs consumer `other_iv`). Got {} pushes: {:?}. If you \
+         see 0 pushes, the bare-Ident-only path has been re-introduced and \
+         the silent-miscompile sibling is live.",
+        pushes.len(),
+        pushes
+    );
+}
+
+/// TASK-0326 cycle-156 AC#2 negative case 2: producer writes
+/// `tmp[hy*2][hx]` on {w0..w3} (hy partitioned); consumer reads
+/// `tmp[hy + 1][hx]` at TOP LEVEL on the same worker set. Both
+/// expressions reference the partition iv `hy`, but they are
+/// STRUCTURALLY UNEQUAL (`Mul` vs `Add`, `2` vs `1`).
+///
+/// This is the case where the brief's "minimum-suggested" set-of-
+/// referenced-ivs predicate would have accepted (both reference `hy`),
+/// but the safer structural-equality rule REJECTS — the consumer reads
+/// slot `hy + 1` while the producer wrote slot `hy * 2`, which is a
+/// different cell at every iteration. Under-rejection would be a
+/// silent miscompile; over-rejection (here) is fail-loud and forces a
+/// user refactor.
+///
+/// As with `task0326_ac1_negative_arithmetic_mismatched_iv`, we
+/// observe rejection via the 12 cross-worker pairs that the cycle-147
+/// AC#3 lift emits when the classifier returns Some.
+#[test]
+fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::{IrBinOp, IrExpr};
+    use nucleus_compiler::event::ArgBinding;
+
+    const IV_HY: IterVar = IterVar(151);
+    const IV_HX: IterVar = IterVar(152);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn hy_mul_2() -> IrExpr {
+        IrExpr::BinOp(
+            IrBinOp::Mul,
+            Box::new(IrExpr::Ident("hy".to_string())),
+            Box::new(IrExpr::IntLit(2)),
+        )
+    }
+    fn hy_plus_1() -> IrExpr {
+        IrExpr::BinOp(
+            IrBinOp::Add,
+            Box::new(IrExpr::Ident("hy".to_string())),
+            Box::new(IrExpr::IntLit(1)),
+        )
+    }
+
+    // Producer: writes `tmp[hy*2][hx]` on {w0..w3}.
+    let writer_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(1300),
+        data_out: Some(D_TMP),
+        data_in_access: vec![DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        }],
+        data_out_access: Some(DataAccess {
+            data: D_TMP,
+            indices: vec![hy_mul_2(), ident("hx")],
+        }),
+        args: vec![ArgBinding::Data(DataAccess {
+            data: D_IN_ARR,
+            indices: vec![ident("hy"), ident("hx")],
+        })],
+    };
+    let writer_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1300),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![writer_edge] },
+    });
+    let producer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![writer_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    // Consumer: reads `tmp[hy+1][hx]` on {w0..w3} — same partition iv,
+    // different arithmetic.
+    let reader_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(1301),
+        data_out: Some(D_OUT),
+        data_in_access: vec![DataAccess {
+            data: D_TMP,
+            indices: vec![hy_plus_1(), ident("hx")],
+        }],
+        data_out_access: Some(DataAccess {
+            data: D_OUT,
+            indices: vec![ident("hy"), ident("hx")],
+        }),
+        args: vec![ArgBinding::Data(DataAccess {
+            data: D_TMP,
+            indices: vec![hy_plus_1(), ident("hx")],
+        })],
+    };
+    let reader_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(1301),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![reader_edge] },
+    });
+    let consumer_nest = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..8,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![reader_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        producer_nest,
+        consumer_nest,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+
+    let mut hy_bands: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+    hy_bands.insert(WorkerId(1), 0..2);
+    hy_bands.insert(WorkerId(2), 2..4);
+    hy_bands.insert(WorkerId(3), 4..6);
+    hy_bands.insert(WorkerId(4), 6..8);
+    acfg.partition_worker_ranges.insert(IV_HY, hy_bands);
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    // Classifier returns Some on the mismatched-arithmetic axis;
+    // cycle-147 AC#3 lift routes through cartesian fan-out → 12 cross-
+    // worker pairs.
+    let result = inject_transfers(&linked, acfg).expect(
+        "TASK-0326 AC#1 negative case 2: same-set + unsafe → cycle-147 AC#3 \
+         lift routes to cartesian fan-out (Ok with cross-pairs). The \
+         structural-equality rule rejects this shape even though both indices \
+         reference the same partition iv `hy` — the SAFER call per the \
+         project's fail-loud bias.",
+    );
+
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        12,
+        "TASK-0326 AC#1 negative case 2 regression: expected 12 cross-worker \
+         Push placeholders for `tmp` (cartesian fan-out triggered by the \
+         classifier rejecting axis-0 structural inequality: producer `hy*2` \
+         vs consumer `hy + 1`). Got {} pushes: {:?}. If you see 0 pushes, \
+         the classifier has weakened to a set-of-referenced-ivs predicate \
+         and now under-rejects same-iv-different-arithmetic — silent \
+         miscompile risk; do NOT weaken this expectation.",
+        pushes.len(),
+        pushes
+    );
+}

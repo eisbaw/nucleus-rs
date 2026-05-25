@@ -3082,13 +3082,20 @@ fn same_set_elision_unsafe_reason(
         // none (a whole-array read of partitioned data), reject —
         // the worker does NOT own the whole array.
         if access.indices.is_empty() && !prod_access.indices.is_empty() {
-            // Determine if ANY producer axis is a partition iv; if
-            // all axes are non-partition (so producer wrote whole-
-            // array), the elision is still safe.
+            // Determine if ANY producer axis references a partition
+            // iv (anywhere in the IrExpr tree — bare Ident, arithmetic
+            // like `hy*2`, `hy+1`, `-hy`, etc.). If every axis is
+            // non-partition (so producer wrote whole-array), the
+            // elision is still safe.
+            //
+            // TASK-0326 cycle-156: tightened from the bare-Ident-only
+            // `ident_iv_in_set` predicate (which silently treated
+            // `tmp[hy*2][hx]` as non-partitioned) to the recursive
+            // tree-walking `expr_references_partition_iv`.
             let any_partitioned_axis = prod_access
                 .indices
                 .iter()
-                .any(|p| ident_iv_in_set(p, partition_iter_vars, name_iter_vars).is_some());
+                .any(|p| expr_references_partition_iv(p, partition_iter_vars, name_iter_vars));
             if any_partitioned_axis {
                 return Some(format!(
                     "consumer reads data as a whole array (no indices) while \
@@ -3103,46 +3110,78 @@ fn same_set_elision_unsafe_reason(
         }
 
         // Per-axis check.
+        //
+        // TASK-0326 cycle-156: the per-axis discriminator was
+        // previously bare-Ident-only. The classifier returned
+        // `Some(p_iv)` only when the producer's axis-k expression
+        // was `IrExpr::Ident(name)` with `name` resolving to a
+        // partition iv — arithmetic shapes like `tmp[hy*2][hx]`
+        // or `tmp[hy+1][hx]` fell into the CONSERVATIVELY-NOT-
+        // REJECTED path, treating the axis as whole-array and
+        // skipping the constraint on the consumer. That was the
+        // dormant under-conservative path filed as TASK-0326.
+        //
+        // The tightened rule:
+        //   1. If the producer's axis-k expression CONTAINS any
+        //      partition iv (anywhere in the IrExpr tree, walked
+        //      recursively by `expr_references_partition_iv`),
+        //      treat the axis as partition-sliced.
+        //   2. The consumer's axis-k expression must then be
+        //      STRUCTURALLY EQUAL to the producer's (IrExpr derives
+        //      PartialEq + Eq). Same `Ident(hy)` is fine; the
+        //      cycle-144 bare-Ident case is SUBSUMED. Same
+        //      `BinOp(Mul, Ident(hy), IntLit(2))` is also fine.
+        //      Anything else → reject.
+        //   3. If the producer's axis-k expression does NOT
+        //      reference a partition iv (`IntLit(c)`, non-iv
+        //      `Ident(const_name)`, arithmetic over non-iv names):
+        //      axis is whole-array at every worker; consumer is
+        //      unconstrained.
+        //
+        // Safety direction (PRD bias toward fail-loud): structural
+        // equality is the minimum sound discriminator. Over-rejection
+        // is fail-loud (user sees a clear error and refactors);
+        // under-rejection is silent miscompile. Cases where a
+        // non-structural-equality consumer read is provably safe
+        // (e.g. the access stays within the halo-extended tile)
+        // are NOT accepted by this classifier — the halo-aware
+        // escape valve is option B (documented; deferred to a
+        // follow-up if an in-tree schedule trips it). The cases
+        // that previously hit CONSERVATIVELY-NOT-REJECTED are:
+        //   - `Call(...)` / `DataRef(...)` as producer indices: not
+        //     used today; rejected upstream by `algo::lower`. Still
+        //     handled by `expr_references_partition_iv`'s
+        //     defensive-walk over `Call.args` and `DataRef.indices`
+        //     in case the upstream gate changes.
         let n_axes = prod_access.indices.len().min(access.indices.len());
         for k in 0..n_axes {
-            let p_iv =
-                ident_iv_in_set(&prod_access.indices[k], partition_iter_vars, name_iter_vars);
-            let Some(p_iv) = p_iv else {
-                // Producer's axis-k index is not a bare Ident
-                // matching a partition iv. The cases are:
-                //   - `IntLit(c)` / non-iv-`Ident` / `Neg(...)`:
-                //     axis k is whole-array at every worker (the
-                //     producer writes the same slot regardless of
-                //     partition) → no constraint on consumer's
-                //     axis-k read.
-                //   - `BinOp(...)` involving a partition iv (e.g.
-                //     `tmp[hy*2][hx]`, `tmp[hy+1][hx]`):
-                //     CONSERVATIVELY-NOT-REJECTED here. The access
-                //     IS partition-sliced semantically (the worker
-                //     writes only its own transformed range), but
-                //     the per-axis check skips this axis and treats
-                //     it as unconstrained. No in-tree schedule
-                //     today exercises this shape, so the under-
-                //     conservative path is dormant — filed as
-                //     TASK-0326 (reviewer P1.3 cycle-144 fold-back).
-                //   - `Call(...)` / `DataRef(...)`: not used as a
-                //     producer index in any algorithm today;
-                //     rejected upstream by `algo::lower` before
-                //     reaching this pass.
+            let p_partitioned = expr_references_partition_iv(
+                &prod_access.indices[k],
+                partition_iter_vars,
+                name_iter_vars,
+            );
+            if !p_partitioned {
+                // Producer's axis-k does not involve any partition
+                // iv → whole-array on every worker → consumer's
+                // axis-k read is unconstrained.
                 continue;
-            };
+            }
             // Producer's axis k IS partition-sliced. The consumer's
-            // axis-k read must be a bare Ident with the same
-            // partition iv name.
-            let c_iv =
-                ident_iv_in_set(&access.indices[k], partition_iter_vars, name_iter_vars);
-            if c_iv != Some(p_iv) {
+            // axis-k read must be STRUCTURALLY EQUAL to the
+            // producer's. This is the minimum sound discriminator;
+            // see the comment block above for the safety rationale.
+            if prod_access.indices[k] != access.indices[k] {
                 return Some(format!(
                     "axis {k} is partition-sliced at the producer (writes \
-                     at {:?}, partition iv {:?}); consumer reads at \
-                     {:?} which does not match — worker reads a slice \
-                     it does not own",
-                    prod_access.indices[k], p_iv, access.indices[k]
+                     at {:?}); consumer reads at {:?} which does not match \
+                     structurally — worker reads a slice it does not own. \
+                     This is the TASK-0326 cycle-156 tightened rule: the \
+                     consumer's axis-k expression must be structurally \
+                     equal to the producer's. A halo-aware escape valve \
+                     (accept reads provably within the halo-extended tile) \
+                     is deferred (option B); file a follow-up if an in-tree \
+                     schedule needs it.",
+                    prod_access.indices[k], access.indices[k]
                 ));
             }
         }
@@ -3150,24 +3189,51 @@ fn same_set_elision_unsafe_reason(
     None
 }
 
-/// If `expr` is `IrExpr::Ident(name)` AND `name_iter_vars[name]` is in
-/// `set`, return `Some(IterVar)`. Otherwise `None`. Used by the
-/// per-axis discriminator to recognise partition-iv indices.
-fn ident_iv_in_set(
+/// Recursively walks `expr` and returns `true` iff any subexpression
+/// is an `IrExpr::Ident(name)` whose resolved `IterVar` is in `set`.
+///
+/// Used by the per-axis discriminator in
+/// `same_set_elision_unsafe_reason` to recognise partition-iv-bearing
+/// producer indices — including arithmetic shapes like
+/// `tmp[hy*2][hx]`, `tmp[hy+1][hx]`, or `tmp[-hy][hx]` that the
+/// pre-cycle-156 bare-Ident `ident_iv_in_set` silently treated as
+/// non-partitioned (the under-conservative dormant path filed as
+/// TASK-0326).
+///
+/// Cases walked:
+/// - `Ident(name)`: the partition-iv leaf detector.
+/// - `IntLit(_)`: false — no iv reference possible.
+/// - `Neg(e)`: recurse on `e`.
+/// - `BinOp(_, l, r)`: recurse on `l` OR `r`.
+/// - `DataRef(IndexedRef { indices, .. })`: defensive recurse over
+///   every index. `algo::lower` rejects `DataRef` as a producer
+///   index today, but the predicate stays sound if that upstream
+///   gate ever changes (avoids a silent miscompile by construction).
+/// - `Call { args, .. }`: defensive recurse over every arg. Same
+///   upstream-rejected-today caveat as `DataRef`.
+fn expr_references_partition_iv(
     expr: &IrExpr,
     set: &BTreeSet<IterVar>,
     name_iter_vars: &BTreeMap<String, IterVar>,
-) -> Option<IterVar> {
+) -> bool {
     match expr {
-        IrExpr::Ident(name) => {
-            let iv = name_iter_vars.get(name).copied()?;
-            if set.contains(&iv) {
-                Some(iv)
-            } else {
-                None
-            }
+        IrExpr::Ident(name) => match name_iter_vars.get(name) {
+            Some(iv) => set.contains(iv),
+            None => false,
+        },
+        IrExpr::IntLit(_) => false,
+        IrExpr::Neg(e) => expr_references_partition_iv(e, set, name_iter_vars),
+        IrExpr::BinOp(_, l, r) => {
+            expr_references_partition_iv(l, set, name_iter_vars)
+                || expr_references_partition_iv(r, set, name_iter_vars)
         }
-        _ => None,
+        IrExpr::DataRef(idx_ref) => idx_ref
+            .indices
+            .iter()
+            .any(|i| expr_references_partition_iv(i, set, name_iter_vars)),
+        IrExpr::Call { args, .. } => args
+            .iter()
+            .any(|a| expr_references_partition_iv(a, set, name_iter_vars)),
     }
 }
 
