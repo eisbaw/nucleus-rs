@@ -63,7 +63,7 @@
 //!    pins DO) consult `halo_widths.get(...).copied().unwrap_or(0)`
 //!    and accept either form. Trade-off accepted: a future
 //!    silent-skip regression on the per-iv `or_insert(0)` emit site
-//!    (the production sink at `record_halo` — search for
+//!    (the production sink at `classify_index` — search for
 //!    `per_iv.entry(iv).or_insert(0)` in this file) would let `== 0`
 //!    narrative pins pass vacuously. Judged unlikely; preserving the
 //!    contract robustness is worth the accepted vacuous-pass arm. A
@@ -71,6 +71,17 @@
 //!    contract-pin test of the new invariant plus consumer-side
 //!    `unwrap_or(0)` → explicit `expect(...)` migration across the
 //!    test suite.
+//!
+//!    **TASK-0307 cycle-123 structural sentinel**: the in-module test
+//!    `no_halo_bare_iv` (search for `fn no_halo_bare_iv` in this
+//!    file) carries a `copied() == Some(0)` structural assertion
+//!    that fails LOUD if the production walker at `classify_index` is
+//!    silently regressed to skip emission for inspected (kernel, iv)
+//!    pairs. This closes the Option B vacuous-pass arm at the
+//!    contract boundary WITHOUT coupling the downstream
+//!    `task0299_*` / `task0303_*` narrative pins to the explicit-0
+//!    representation. Future contract-form changes (e.g. Option C
+//!    above) MUST update this sentinel alongside the contract doc.
 //! 4. `-iv` (the negation of an iter-var Ident). `iv * -1 + 0` is
 //!    coefficient `-1`, which DOES qualify as `a == 1` in magnitude — but
 //!    reverses iteration order. For the FIRST CUT we reject this with
@@ -1221,7 +1232,9 @@ mod tests {
         let k_id = *acfg.name_kernels.get("K").unwrap();
         let y_iv = *acfg.name_iter_vars.get("y").unwrap();
         // Width must be 0 (or absent — both satisfy the contract; we
-        // emit explicit 0).
+        // emit explicit 0). The lenient form (.unwrap_or(0)) documents
+        // the contract; the structural form below pins TODAY'S
+        // implementation choice as a sentinel.
         let width = acfg
             .halo_widths
             .get(&k_id)
@@ -1229,6 +1242,37 @@ mod tests {
             .copied()
             .unwrap_or(0);
         assert_eq!(width, 0);
+
+        // TASK-0307 cycle-123 structural sentinel (TASK-0305 cycle-122
+        // Option B defence). Pins the implementation choice of recording
+        // explicit `Some(0)` for every inspected (kernel, iv) pair at
+        // the `classify_index` emit site (search for
+        // `per_iv.entry(iv).or_insert(0)` in this file). A future
+        // walker regression that silently DROPS entries for bare-iv
+        // accesses would make the `== 0` `.unwrap_or(0)` narrative pins
+        // in `tests/sidecar_halo.rs` (specifically `task0299_06` and
+        // `task0303_07` — both `assert == 0`) pass vacuously: no entry
+        // → `.unwrap_or(0)` → 0 ≡ 0. (`task0303_05` is the sibling
+        // with the same idiom but `assert == 1` — strict-positive, so
+        // contract-form-independent BY CONSTRUCTION, NOT vacuous-pass-
+        // prone. Sentinel is moot there.) This single sentinel catches
+        // the silent-skip at the contract boundary, without coupling
+        // downstream tests to the explicit-0 representation (preserves
+        // Option B contract).
+        assert_eq!(
+            acfg.halo_widths
+                .get(&k_id)
+                .and_then(|m| m.get(&y_iv))
+                .copied(),
+            Some(0),
+            "structural sentinel: halo_inference must emit an \
+             explicit `Some(0)` entry for every inspected (kernel, iv) \
+             pair (today's contract-form choice — Option B per \
+             TASK-0305). A silent-skip regression here would let the \
+             `== 0` `.unwrap_or(0)` narrative pins in \
+             tests/sidecar_halo.rs (specifically `task0299_06` and \
+             `task0303_07`) pass vacuously."
+        );
     }
 
     #[test]

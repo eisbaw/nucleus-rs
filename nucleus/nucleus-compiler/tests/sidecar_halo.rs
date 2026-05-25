@@ -589,10 +589,22 @@ fn task0275_partition_aware_rejects_strided_under_partition_rows() {
 #[test]
 fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
     // Contract degree of freedom: halo_inference's contract permits an
-    // explicit 0-width entry OR omission (see halo_inference.rs:53-57 +
-    // its `no_halo_bare_iv` test). This pinning test treats both as
-    // "halo == 0" — robust to that choice; the ONLY failure mode it
-    // pins is "halo > 0".
+    // explicit 0-width entry OR omission (see the "TASK-0305 cycle-122
+    // project decision (Option B)" paragraph in halo_inference.rs —
+    // search for `absent ≡ explicit-0` + its `no_halo_bare_iv` test).
+    // This pinning test treats both as "halo == 0" — robust to that
+    // choice; the ONLY failure mode it pins is "halo > 0".
+    //
+    // Soundness floor (TASK-0305 cycle-122 decision, Option B): the
+    // `== 0` `.unwrap_or(0)` form admits a vacuous pass on a future
+    // silent-skip regression in the production walker (no entries
+    // emitted for hblur_acc/vblur_acc → unwrap → 0 ≡ 0). TASK-0307
+    // cycle-123 LANDED the structural sentinel (search for
+    // `fn no_halo_bare_iv` in halo_inference.rs — the in-module test
+    // now carries a `copied() == Some(0)` assertion alongside the
+    // existing `.unwrap_or(0)` contract-form check). The sentinel
+    // closes the vacuous-pass arm at the contract boundary without
+    // coupling THIS narrative pin to the explicit-0 representation.
     let (_linked, acfg) = lower("06-separable-filter", "schedules/distributed.sched.nuc");
 
     let hblur_id = *acfg
@@ -694,8 +706,10 @@ fn task0303_05_stencil_distributed_2d_halo_widths_pinned_to_one() {
     //
     // Contract degree of freedom (TASK-0305 cycle-122 decision, Option
     // B): halo_inference's contract permits an explicit entry OR
-    // omission (see halo_inference.rs:53-57). This test uses
-    // `.unwrap_or(0)` and asserts `blur3_y == 1`. The assert is
+    // omission (see the "TASK-0305 cycle-122 project decision
+    // (Option B)" paragraph in halo_inference.rs — search for
+    // `absent ≡ explicit-0`). This test uses `.unwrap_or(0)` and
+    // asserts `blur3_y == 1`. The assert is
     // robust UNDER EITHER contract form — a value of 1 must be
     // explicitly present. Soundness floor: a regression that silently
     // produced NO entries for blur3 would surface as `unwrap_or(0) →
@@ -770,14 +784,19 @@ fn task0303_07_matmul_distributed_halo_widths_pinned_to_zero() {
     // (.unwrap_or(0) → 0 ≡ 0) and `max_halo == 0` (empty map .max() →
     // .unwrap_or(0) → 0 ≡ 0) would pass vacuously. Accepted per
     // contract; the alternative (a strict key-exists assertion) would
-    // narrow halo_inference.rs:53-57's permitted representations and
+    // narrow the contract's permitted representations (see the
+    // "TASK-0305 cycle-122 project decision (Option B)" paragraph
+    // in halo_inference.rs — search for `absent ≡ explicit-0`) and
     // is rejected on test-coupling grounds. The vacuous-pass risk is
-    // judged unlikely: today's production walker at `record_halo`
+    // judged unlikely: today's production walker at `classify_index`
     // (search for `per_iv.entry(iv).or_insert(0)` in halo_inference.rs)
     // always emits an explicit-0 entry for every inspected (kernel, iv)
-    // pair. Cycle-122 architect filed TASK-0307 as a structural sentinel
-    // (one-line `Some(0)` key-exists pin at the in-module test boundary)
-    // — closes the vacuous-pass arm without coupling downstream tests.
+    // pair. TASK-0307 cycle-123 LANDED the structural sentinel
+    // (search for `fn no_halo_bare_iv` in halo_inference.rs — the
+    // in-module test now carries a `copied() == Some(0)` assertion
+    // alongside the existing `.unwrap_or(0)` contract-form check):
+    // closes the vacuous-pass arm at the contract boundary without
+    // coupling THIS narrative pin to the explicit-0 representation.
     //
     // If a future kernel-surface change introduces a non-zero i-axis
     // offset (e.g. `a[i+1][k]` for some fused stencil-matmul), the
