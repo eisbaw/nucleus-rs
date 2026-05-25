@@ -125,15 +125,32 @@ enum WaitSlice {
 ///
 /// Mirrors the per-backend `Plan` field set, but only the references
 /// the walker actually reads — no ownership transfer, no copying. The
-/// `rendezvous_prefix` field is THE ONE knob that distinguishes the
-/// two backends (`"slot"` vs `"ring"`); every other field is shared
-/// verbatim.
+/// `rendezvous_prefix` field is the per-backend knob that distinguishes
+/// the three prefix-using backends (`"slot"` for pthreads-sync, `"ring"`
+/// for pthreads-async, `"chan"` for mp-tcp-event); mp-tcp-bufsync
+/// bypasses `render_worker_events` entirely and calls `render_wait_assign`
+/// directly with no prefix involvement. Every other field is shared
+/// verbatim across all `render_worker_events`-using backends.
+///
+/// Grep witness (cycle 141 TASK-0322 fold-back): `grep -n
+/// 'rendezvous_prefix:' nucleus/backends/*/src/multi_worker.rs` yields
+/// exactly three field-init sites (pthreads-sync `"slot"` line 536,
+/// pthreads-async `"ring"` line 516, mp-tcp-event `"chan"` line 493).
 pub struct WalkerCtx<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
-    /// `"slot"` for pthreads-sync, `"ring"` for pthreads-async. Used
-    /// in the four emit-string substitutions (`{prefix}_{id}.push(...)`
-    /// and `{prefix}_{id}.wait()`).
+    /// `"slot"` for pthreads-sync, `"ring"` for pthreads-async,
+    /// `"chan"` for mp-tcp-event. Used in the two emit-string
+    /// substitutions in this file: `{prefix}{rendezvous_prefix}_{id}.push(...)`
+    /// (the `Event::Push` branch) and `{prefix}{rendezvous_prefix}_{id}.wait()`
+    /// (the `Event::Wait` branch, fed into `render_wait_assign`).
+    ///
+    /// Grep witness (cycle 141 TASK-0322 fold-back): `grep -n
+    /// '{rendezvous_prefix}_' nucleus/backend-common/src/` yields
+    /// exactly two emit-template sites (Push at line 806, Wait at
+    /// line 826 — both pinned parametrically by
+    /// `task0321_*` / `task0322_*` in
+    /// `nucleus/backend-common/tests/wait_assign_slice.rs`).
     pub rendezvous_prefix: &'a str,
     /// Cross-worker Push/Wait pair -> rendezvous index. Both backends
     /// key by `(DataId, SeqTag)` and assign indices ascending.
