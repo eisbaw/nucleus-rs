@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 14:25'
+updated_date: '2026-05-25 15:01'
 labels:
   - compiler
   - transfer_inject
@@ -413,4 +413,15 @@ Parallel review gate run (qa-test-runner + mped-architect, both read-only). Both
 2. **`#[non_exhaustive]` should be added at first-variant-land**: cycle-144 added it AFTER 84 call sites already used the bare `Err` arm. The fix required only 1 site update (the AC#5 positive test) because the others used `.map_err`/`.expect` patterns rather than explicit match. Future enums in this codebase should carry `#[non_exhaustive]` from day one.
 
 3. **AC#0 doc-lie fixes must preserve true content adjacent to false content**: the cycle-143 architect's P2-3 framing 'fabricated fallback' was correct for the same-set case but did NOT mean 'no compute-worker convention exists at all'. The cycle-144 implementer (orchestrator) over-corrected. Architect P1.2 caught it. Hygiene rule: when deleting a doc-lie, the same edit must verify that the surrounding true content remains intact OR is moved to where it still applies.
+
+## Cycle-145 review-fold-back forward-carry (architect P3.1)
+
+When AC#3 lifts the SameSetSilentElisionRisk variant (cross-worker tmp codegen lands; same-worker elision is no longer a silent miscompile), the variant NAME 'SameSetSilentElisionRisk' will be misleading — it currently also fires under partial worker-set overlap (post-cycle-145 generalisation). Two options at AC#3 land-time:
+
+1. Rename to SameWorkerElisionRisk or SilentElisionRisk (variant rename, ~85 sites updated via the same #[non_exhaustive] discipline cycle-144 established).
+2. Accept as a fixed-compatibility name and document the historical context.
+
+Note for future AC#3 implementer: choose at AC#3 land-time; rename is the more honest option, but the name has a clean public-API status (only crate-internal callers exist today).
+
+Cycle-145 reference: architect read-only review P3.1 cycle 145.
 <!-- SECTION:NOTES:END -->

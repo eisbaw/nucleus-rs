@@ -101,9 +101,11 @@
 //!
 //! - **Same-worker-set producer/consumer with the consumer reading
 //!   outside its own produce-tile** (TASK-0324 cycle-144).
-//!   `build_waits_for_op` at line 2501-2503 short-circuits with
-//!   `continue; no transfer` when `producer_workers == consumer_workers`
-//!   on a `BTreeSet`-equality test. The elision is CORRECTNESS-SAFE
+//!   `build_waits_for_op` short-circuits with `continue; no transfer`
+//!   when `producer_workers == consumer_workers` on a `BTreeSet`-
+//!   equality test (grep-witness anchor: `if producer_workers ==
+//!   &consumer_workers` inside `build_waits_for_op`). The elision is
+//!   CORRECTNESS-SAFE
 //!   when the consumer's read indices stay within the slice the local
 //!   worker produced (e.g. 13-cnn-inference/batch_parallel:
 //!   `feat1[n] <-- conv_block_1(input[n])` with `loop n :
@@ -3094,6 +3096,15 @@ fn build_waits_for_op(
                 // TASK-0324 will replace the AC#2 fail-loud with the
                 // actual cross-worker `tmp` codegen (N-to-N broadcast-
                 // of-gather) and lift the validator's rejection.
+                //
+                // TASK-0325 cycle-145: this short-circuit is one of
+                // TWO same-worker elision sites in this function. The
+                // sibling (`if src == dst` inside the cartesian-
+                // product fan-out below) elides per-pair when the
+                // sets are NOT equal but share at least one worker.
+                // Both sites are defended by the same validator
+                // (`check_no_silent_elision_risk` fires on non-empty
+                // worker-set intersection).
                 continue;
             }
             let policy = ctx
@@ -3139,6 +3150,20 @@ fn build_waits_for_op(
             for &src in producer_workers.iter() {
                 for &dst in consumer_workers.iter() {
                     if src == dst {
+                        // TASK-0325 cycle-145: per-element same-
+                        // worker elision. Skipping this pair is the
+                        // structural sibling of the whole-set short-
+                        // circuit above (`if producer_workers ==
+                        // &consumer_workers`); the SILENT-MISCOMPILE
+                        // arm of this skip (consumer reads a slice
+                        // the local producer does NOT own, under
+                        // partial worker-set overlap) is rejected
+                        // up-front by `check_no_silent_elision_risk`,
+                        // which fires when the intersection is non-
+                        // empty (so it covers this pair-skip when
+                        // the wider sets aren't equal). Reaching
+                        // this `continue` means the validator
+                        // certified the per-pair elision as safe.
                         continue;
                     }
                     out.push(XferPlaceholder {

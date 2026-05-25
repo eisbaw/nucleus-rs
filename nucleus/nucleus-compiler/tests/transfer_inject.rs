@@ -2603,9 +2603,11 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
 // --------------------------------------------------------------------
 //
 // The cycle-144 validator only fired when producer_workers ==
-// consumer_workers (the line-2501 set-equality short-circuit). The
-// structurally identical sibling at line-3048 — `if src == dst {
-// continue; }` inside the cartesian-product fan-out — elides ONE
+// consumer_workers (the set-equality short-circuit; grep-witness
+// anchor: `if producer_workers == &consumer_workers` inside
+// `build_waits_for_op`). The structurally identical sibling (grep-
+// witness anchor: `if src == dst` inside `build_waits_for_op`'s
+// cartesian-product fan-out) — `continue;` per pair — elides ONE
 // transfer per worker in the intersection of producer_workers and
 // consumer_workers, even when the sets are not equal. Cycle 145
 // generalises the validator from a set-equality test to a non-empty-
@@ -3009,4 +3011,216 @@ fn task0325_ac2_negative_partial_overlap_aligned_read() {
         "partial-overlap shape with reader-iv == partition-iv on every axis \
          MUST NOT trigger the AC#1 guard",
     );
+}
+
+#[test]
+fn task0325_ac2_positive_partial_overlap_reverse_direction() {
+    // Reviewer P3.2 fold-back (cycle-145 architect): pin the
+    // PRODUCER-SUPERSET-OF-CONSUMER direction of partial-overlap.
+    // The cycle-145 positive fixture has producer⊂consumer
+    // ({w0..w3} ⊂ {w0..w3, w4}); this fixture has producer⊃consumer
+    // ({w0..w3, w4} ⊃ {w0..w3}). Both directions trigger the same
+    // intersection-non-empty entry test; the validator's per-axis
+    // discriminator is direction-agnostic (it compares producer's
+    // write pattern against consumer's read pattern, irrespective
+    // of which side is the superset). This fixture pins that
+    // structural property so a future regression that introduces
+    // direction-asymmetric logic is independently visible.
+    use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
+    use nucleus_compiler::algo::ir::IrExpr;
+    use nucleus_compiler::event::ArgBinding;
+    use nucleus_compiler::passes::transfer_inject::TransferInjectError;
+
+    const IV_HY: IterVar = IterVar(51);
+    const IV_HX: IterVar = IterVar(52);
+    const IV_VY: IterVar = IterVar(53);
+    const IV_VX: IterVar = IterVar(54);
+    const IV_VM: IterVar = IterVar(55);
+    const D_IN_ARR: DataId = DataId(0);
+    const D_TMP: DataId = DataId(1);
+    const D_OUT: DataId = DataId(2);
+
+    fn ident(name: &str) -> IrExpr {
+        IrExpr::Ident(name.to_string())
+    }
+    fn access(data: DataId, ivs: &[&str]) -> DataAccess {
+        DataAccess {
+            data,
+            indices: ivs.iter().map(|n| ident(n)).collect(),
+        }
+    }
+
+    // Producer on {w0..w3, w4} — the SUPERSET side this time.
+    let hblur_edge = DataflowEdge {
+        data_in: vec![D_IN_ARR],
+        kernel: KernelId(600),
+        data_out: Some(D_TMP),
+        data_in_access: vec![access(D_IN_ARR, &["hy", "hx"])],
+        data_out_access: Some(access(D_TMP, &["hy", "hx"])),
+        args: vec![ArgBinding::Data(access(D_IN_ARR, &["hy", "hx"]))],
+    };
+    let hblur_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(600),
+        workers: ws(&[1, 2, 3, 4, 5]),
+        dataflow: DataflowDag { edges: vec![hblur_edge] },
+    });
+
+    // Consumer on {w0..w3} — the SUBSET side. Reads tmp[vm][vx] with
+    // the same 06/distributed2-shape non-aligned axis-0 read.
+    let vblur_edge = DataflowEdge {
+        data_in: vec![D_TMP],
+        kernel: KernelId(601),
+        data_out: Some(D_OUT),
+        data_in_access: vec![access(D_TMP, &["vm", "vx"])],
+        data_out_access: Some(access(D_OUT, &["vy", "vx"])),
+        args: vec![ArgBinding::Data(access(D_TMP, &["vm", "vx"]))],
+    };
+    let vblur_op = ACFGNode::Operation(Operation {
+        kernel: KernelId(601),
+        workers: ws(&[1, 2, 3, 4]),
+        dataflow: DataflowDag { edges: vec![vblur_edge] },
+    });
+
+    let pass1 = ACFGNode::Repeat {
+        iter_var: IV_HY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_HX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![hblur_op])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+    let pass2 = ACFGNode::Repeat {
+        iter_var: IV_VY,
+        range: 0..16,
+        body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IV_VX,
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+                iter_var: IV_VM,
+                range: 0..16,
+                body: Box::new(ACFGNode::Sequence(vec![vblur_op])),
+                block_tag: None,
+            }])),
+            block_tag: None,
+        }])),
+        block_tag: None,
+    };
+
+    fn host_loader(data_out: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![],
+            kernel: KernelId(99),
+            data_out: Some(data_out),
+            data_in_access: vec![],
+            data_out_access: Some(DataAccess {
+                data: data_out,
+                indices: vec![],
+            }),
+            args: vec![],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(99),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+    fn host_saver(data_in: DataId) -> ACFGNode {
+        let edge = DataflowEdge {
+            data_in: vec![data_in],
+            kernel: KernelId(98),
+            data_out: None,
+            data_in_access: vec![DataAccess {
+                data: data_in,
+                indices: vec![],
+            }],
+            data_out_access: None,
+            args: vec![ArgBinding::Data(DataAccess {
+                data: data_in,
+                indices: vec![],
+            })],
+        };
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(98),
+            workers: ws(&[0]),
+            dataflow: DataflowDag { edges: vec![edge] },
+        })
+    }
+
+    let root = ACFGNode::Sequence(vec![
+        host_loader(D_IN_ARR),
+        pass1,
+        pass2,
+        host_saver(D_OUT),
+    ]);
+
+    let mut acfg = synthetic_acfg(
+        root,
+        &[("in_arr", 0), ("tmp", 1), ("out", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+            ("w4", 5),
+        ],
+    );
+    acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
+    acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
+    acfg.name_iter_vars.insert("vy".to_string(), IV_VY);
+    acfg.name_iter_vars.insert("vx".to_string(), IV_VX);
+    acfg.name_iter_vars.insert("vm".to_string(), IV_VM);
+
+    let bands_4 = || {
+        let mut b: BTreeMap<WorkerId, std::ops::Range<i64>> = BTreeMap::new();
+        b.insert(WorkerId(1), 0..4);
+        b.insert(WorkerId(2), 4..8);
+        b.insert(WorkerId(3), 8..12);
+        b.insert(WorkerId(4), 12..16);
+        b
+    };
+    acfg.partition_worker_ranges.insert(IV_HY, bands_4());
+    acfg.partition_worker_ranges.insert(IV_VY, bands_4());
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("in_arr", &["host"]),
+            ("tmp", &["w0", "w1", "w2", "w3", "w4"]),
+            ("out", &["w0", "w1", "w2", "w3"]),
+        ],
+        "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg);
+    match result {
+        Err(TransferInjectError::SameSetSilentElisionRisk { data, message }) => {
+            assert_eq!(
+                data, D_TMP,
+                "expected the rejection to name `tmp` (the cross-pass data)"
+            );
+            assert!(
+                message.contains("overlap"),
+                "message must name the partial-overlap shape (producer⊃consumer); \
+                 got: {message}"
+            );
+            assert!(
+                message.contains("partition-sliced"),
+                "message must name the per-axis discrimination reason; got: {message}"
+            );
+        }
+        Ok(_) => panic!(
+            "expected TransferInjectError::SameSetSilentElisionRisk on the \
+             producer-superset-of-consumer partial-overlap shape"
+        ),
+        #[allow(unreachable_patterns)]
+        Err(other) => panic!(
+            "expected SameSetSilentElisionRisk on the reverse-direction \
+             partial-overlap shape; got: {other:?}"
+        ),
+    }
 }
