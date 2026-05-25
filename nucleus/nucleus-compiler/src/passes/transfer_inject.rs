@@ -1696,20 +1696,56 @@ fn rewrite_partition_tiles_inner(
                 //     with empty indices).
                 //
                 // Silent-sibling audit (architect P3.3, cycle 118;
-                // updated TASK-0306 cycle 133): every other site that
-                // mutates `x.tile` either constructs it structurally
-                // from the live enclosing-loop stack
-                // (`inject_in_node_with_tile`), extends an
-                // already-filtered bounds set
-                // (`extend_xfer_tiles_for_halo`, runs after us), or
-                // hand-crafts the (outer_iv, inner_iv) pair from the
-                // partition_pairs sidecar (`inject_halo_strip_xfers`,
-                // axis-correct since cycle 133 via
-                // `order_halo_strip_bounds_by_data_dim` consulting
-                // `data_dim_iv_map`). A future N-dim partition pass
-                // that constructs tile bounds MUST consult
-                // `data_dim_iv_map` to avoid re-importing the
-                // axis-mapping assumption — using either:
+                // updated TASK-0306 cycle 133; cycle-137 doc-lie
+                // audit listing-correction; cycle-137 architect P1
+                // fold-back adds `build_waits_for_op`, fixes line
+                // cites for `extend_xfer_tiles_inner` and
+                // `inject_halo_strip_xfers`): every other site that
+                // mutates `x.tile` / `w.tile` OR constructs an
+                // `IterTile` carrying the enclosing-tile assumption
+                // either:
+                //
+                // - **Builds tile from enclosing-loop stack** —
+                //   `inject_in_sequence` (mutation at line 858 —
+                //   hoisted-Wait tile rewrite at sequence boundary,
+                //   called via `inject_in_node_with_tile`'s dispatch),
+                //   `hoist_invariant_waits` (mutation at line 1171 —
+                //   Wait tile rewrite when invariant-Wait hoisted
+                //   across an enclosing sequence, separate post-pass
+                //   NOT in the inject_in_node_with_tile family), and
+                //   `build_waits_for_op` (construction at line 2483 —
+                //   the INITIAL `XferPlaceholder` tile on every
+                //   cross-worker Wait the cartesian fan-out emits;
+                //   what this `rewrite_partition_tiles_inner` arm
+                //   later overwrites with `bounds`). All three use
+                //   `IterTile::new(enclosing_tile.to_vec())` and
+                //   never consult `partition_ranges` /
+                //   `data_dim_iv_map` in their own scopes
+                //   (cross-checked: zero references at 724-959 +
+                //   1062-1212 + 2411-2493), so the axis-mapping
+                //   assumption cannot leak in via them. Grep witness:
+                //   `IterTile::new(enclosing_tile.to_vec())` returns
+                //   exactly these three sites.
+                // - **Extends an already-filtered bounds set** —
+                //   `extend_xfer_tiles_for_halo` (entry line 2234;
+                //   mutation in worker `extend_xfer_tiles_inner` at
+                //   line 2374, runs AFTER this pass per pass order
+                //   at lines 401/414; iterates the post-partition
+                //   `x.tile.bounds` and widens each range by halo,
+                //   preserving order).
+                // - **Hand-crafts the (outer_iv, inner_iv) pair from
+                //   the partition_pairs sidecar** —
+                //   `inject_halo_strip_xfers` (entry line 2679)
+                //   constructs fresh tiles at the four cardinal-
+                //   direction emit_pair sites (lines 2894, 2915,
+                //   2936, 2957) AFTER `order_halo_strip_bounds_by
+                //   _data_dim` returns the data-dim-ordered bounds;
+                //   axis-correct since cycle 133 by construction.
+                //
+                // A future N-dim partition pass that constructs tile
+                // bounds MUST consult `data_dim_iv_map` to avoid
+                // re-importing the axis-mapping assumption — using
+                // either:
                 //   - `compute_partition_bounds_with_dim_prefix` for
                 //     REGULAR-XFER TILE REWRITE (the path this match
                 //     arm is on), where partitioned bounds replace
