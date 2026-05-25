@@ -129,9 +129,12 @@
 //!
 //!   TASK-0325 (cycle 145) generalised the guard from a set-equality
 //!   test on the worker sets to a non-empty-intersection test. The
-//!   line-3048 per-element `if src == dst { continue; }` inside the
-//!   cartesian-product fan-out is the structurally identical sibling
-//!   of the line-2501 set-equality short-circuit: it elides one
+//!   per-element `if src == dst { continue; }` inside the cartesian-
+//!   product fan-out (grep-witness anchor: `if src == dst` inside
+//!   `build_waits_for_op`) is the structurally identical sibling of
+//!   the `producer_workers == &consumer_workers` whole-set short-
+//!   circuit (grep-witness anchor: `if producer_workers ==
+//!   &consumer_workers` inside `build_waits_for_op`): it elides one
 //!   transfer per same-worker pair in the intersection of
 //!   `producer_workers` and `consumer_workers`. Under partial overlap
 //!   (e.g. producer={w0..w3}, consumer={w0..w3, w4}) the same per-
@@ -326,9 +329,13 @@ use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransf
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TransferInjectError {
-    /// TASK-0324 cycle-144 fail-loud guard. Producer and consumer worker
-    /// sets are equal (`BTreeSet`-equality at the line-2501 short-
-    /// circuit) AND the consumer's read indices reach OUTSIDE the local
+    /// TASK-0324 cycle-144 + TASK-0325 cycle-145 fail-loud guard.
+    /// Producer and consumer worker sets share at least one common
+    /// worker (`BTreeSet` intersection non-empty — covers both the
+    /// `producer_workers == &consumer_workers` short-circuit inside
+    /// `build_waits_for_op` AND the per-element `if src == dst { continue; }`
+    /// skip inside the cartesian-product fan-out in the same function)
+    /// AND the consumer's read indices reach OUTSIDE the local
     /// producer's partition slice — i.e. the elision the existing
     /// `continue; no transfer` would have performed is a silent
     /// miscompile.
@@ -471,17 +478,22 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         inner_block_iter_vars: &inner_block_iter_vars,
     };
 
-    // TASK-0324 cycle-144 AC#2: front-loaded fail-loud guard. Walk every
-    // Operation BEFORE the emission recursion and reject the
-    // producer-set == consumer-set + consumer-reads-outside-local-slice
-    // shape with a typed `TransferInjectError::SameSetSilentElisionRisk`.
-    // The unsafe pattern is the silent-miscompile path filed as
-    // TASK-0324 cycle 143; pre-validating here keeps the existing
-    // recursive emission walk unchanged for the safe shapes (e.g.
-    // 13-cnn-inference/batch_parallel reader-iv == partition-iv) while
-    // turning the unsafe shape into a typed compiler error rather than
-    // wrong output. Companion comment lives at the line-2501
-    // short-circuit (`build_waits_for_op`).
+    // TASK-0324 cycle-144 AC#2 + TASK-0325 cycle-145 generalisation:
+    // front-loaded fail-loud guard. Walk every Operation BEFORE the
+    // emission recursion and reject the same-worker-pair-elision +
+    // consumer-reads-outside-local-slice shape with a typed
+    // `TransferInjectError::SameSetSilentElisionRisk`. The unsafe
+    // pattern is the silent-miscompile path filed as TASK-0324 cycle
+    // 143; pre-validating here keeps the existing recursive emission
+    // walk unchanged for the safe shapes (e.g. 13-cnn-inference/
+    // batch_parallel reader-iv == partition-iv) while turning the
+    // unsafe shape into a typed compiler error rather than wrong
+    // output. Companion comments live at both same-worker short-circuits
+    // inside `build_waits_for_op` (the `producer_workers ==
+    // &consumer_workers` whole-set short-circuit AND the `if src == dst`
+    // per-element skip in the cartesian-product fan-out — grep
+    // `if producer_workers == &consumer_workers` and `if src == dst`
+    // for the witness anchors).
     let partition_iter_vars: BTreeSet<IterVar> =
         partition_worker_ranges.keys().copied().collect();
     check_no_silent_elision_risk(
@@ -2625,19 +2637,20 @@ fn extend_xfer_tiles_inner(
 /// The validator defends against two structurally identical same-
 /// worker elision sites:
 ///
-/// 1. **Whole-set elision** (line-2501 `continue; no transfer` inside
-///    [`compute_xfer_placeholders`]): fires when the producer and
-///    consumer worker sets are equal.
+/// 1. **Whole-set elision** (grep-witness anchor:
+///    `if producer_workers == &consumer_workers` inside
+///    `build_waits_for_op` — `continue; no transfer`): fires when the
+///    producer and consumer worker sets are equal.
 ///
-/// 2. **Per-element fan-out elision** (line-3048 `if src == dst {
-///    continue; }` inside the cartesian-product fan-out loop): fires
-///    for every worker in `producer_workers ∩ consumer_workers`, even
-///    when the sets are not equal. Example: producer = {w0..w3},
-///    consumer = {w0..w3, w4} — the four self-pairs `(w_i, w_i)` are
-///    skipped per-element while the cross pairs to/from w4 are
-///    emitted normally. Each skipped self-pair has the same silent-
-///    miscompile risk profile as a whole-set elision restricted to
-///    that worker.
+/// 2. **Per-element fan-out elision** (grep-witness anchor: `if src
+///    == dst` inside `build_waits_for_op`'s cartesian-product fan-
+///    out — `continue;`): fires for every worker in
+///    `producer_workers ∩ consumer_workers`, even when the sets are
+///    not equal. Example: producer = {w0..w3}, consumer = {w0..w3,
+///    w4} — the four self-pairs `(w_i, w_i)` are skipped per-element
+///    while the cross pairs to/from w4 are emitted normally. Each
+///    skipped self-pair has the same silent-miscompile risk profile
+///    as a whole-set elision restricted to that worker.
 ///
 /// The validator therefore fires when
 /// `producer_workers ∩ consumer_workers` is non-empty — generalising
@@ -2828,11 +2841,12 @@ fn check_op_no_silent_elision_risk(
                 None => continue, // No recorded producer.
             };
             // TASK-0325 cycle-145: both elision sites are checked
-            // together. The line-2501 short-circuit (`if producer ==
-            // consumer { continue; no transfer; }`) fires for the
-            // whole-set case. The line-3048 per-element skip (`if src
-            // == dst { continue; }` inside the cartesian-product
-            // fan-out) fires for EVERY worker in the intersection of
+            // together. The whole-set short-circuit (grep-witness:
+            // `if producer_workers == &consumer_workers` inside
+            // `build_waits_for_op`) fires for the whole-set case.
+            // The per-element skip (grep-witness: `if src == dst`
+            // inside `build_waits_for_op`'s cartesian-product fan-out)
+            // fires for EVERY worker in the intersection of
             // producer_workers and consumer_workers — that is, even
             // when the sets are not equal (e.g. producer={w0..w3},
             // consumer={w0..w3, w4}: the four self-pairs (w_i, w_i)
@@ -2964,9 +2978,12 @@ fn check_op_no_silent_elision_risk(
                     .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
                     .unwrap_or("<unknown>");
                 // TASK-0325 cycle-145: distinguish the whole-set
-                // elision shape (line-2501) from the partial-overlap
-                // per-element elision shape (line-3048) in the error
-                // message. The variant remains
+                // elision shape (grep-witness anchor:
+                // `if producer_workers == &consumer_workers`) from
+                // the partial-overlap per-element elision shape
+                // (grep-witness anchor: `if src == dst` inside
+                // `build_waits_for_op`'s cartesian-product fan-out)
+                // in the error message. The variant remains
                 // SameSetSilentElisionRisk because the underlying
                 // defect class (same-worker self-pair elision under
                 // an unsafe consumer access pattern) is identical;
