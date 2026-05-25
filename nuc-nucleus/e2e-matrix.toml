@@ -427,9 +427,13 @@ milestone = "M3"
 #        mp-tcp-bufsync's one-connection-per-(host,worker) topology
 #        requires host as the barrier hub. A host-excluding barrier
 #        needs a worker-to-worker mesh (filed as TASK-0175)."
-#     Promotion blocked on TASK-0175 (worker-to-worker mesh
-#     transport), NOT TASK-0117/0172. Identical root cause to
-#     13-cnn-inference batch_parallel × mp-tcp-bufsync (skip block below).
+#     Promotion blocked on TASK-0329 (host-mediated barrier mediation
+#     for host-excluding barriers — the CTRL-arm sibling of TASK-0327;
+#     TASK-0175 was the original combined DATA+CTRL filing, split by
+#     cycles 148/149: DATA-arm lifted as TASK-0327 Done; CTRL-arm
+#     remains as TASK-0329). NOT TASK-0117/0172. Identical root cause
+#     to 13-cnn-inference batch_parallel × mp-tcp-bufsync (skip block
+#     below).
 #   - 05-stencil/distributed: requests async + buffer=2 + notify=event,
 #     none of which a sync tier-1 backend supports; the capability
 #     check rejects it (correct) before codegen.
@@ -437,7 +441,7 @@ milestone = "M3"
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0175: host-excluding barrier needs worker-to-worker mesh; mp-tcp-bufsync's one-connection-per-(host,worker) topology fails LOUD via EmitError::ContractGap (verbatim message above). NOT TASK-0117 (now closed) and NOT TASK-0172 (now closed); sibling pthreads-sync cell PASSES."
+reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — filed cycle 148, NOT YET landed): host-excluding barrier needs worker-to-worker mediation; mp-tcp-bufsync's one-connection-per-(host,worker) topology fails LOUD via EmitError::ContractGap forward-linking TASK-0175 (the original combined DATA+CTRL filing). Cycle 148/149 split TASK-0175: DATA arm Done (TASK-0327); CTRL arm remains (TASK-0329). NOT TASK-0117 (now closed) and NOT TASK-0172 (now closed); sibling pthreads-sync cell PASSES."
 milestone = "M3"
 
 [[skip]]
@@ -468,14 +472,15 @@ milestone = "M3"
 
 # Example 13 batch_parallel × mp-tcp-bufsync: same multi-worker transfer
 # gap as the pthreads-sync sibling above PLUS the pre-existing host-
-# excluding inter-worker barrier limitation (TASK-0175). The codegen
-# fails at the contract layer (loud), not at cargo build, because the
-# capability mismatch fires first.
+# excluding inter-worker barrier limitation (TASK-0329 sibling of
+# TASK-0327, cycle-148/149 split of the original TASK-0175). The
+# codegen fails at the contract layer (loud), not at cargo build,
+# because the capability mismatch fires first.
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0175 (host-excluding barrier) + TASK-0117 (transfer-injection fan-out across distributed entities, upstream root of TASK-0211)"
+reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): host-excluding barrier rejected by mp-tcp-bufsync's one-connection-per-(host,worker) topology. Codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). PLUS TASK-0117 (transfer-injection fan-out across distributed entities, upstream root of TASK-0211)."
 milestone = "M3"
 
 # Example 13 pipeline_parallel × the two SYNC tier-1 backends:
@@ -578,10 +583,10 @@ milestone = "M3"
 # near-verbatim copy of pthreads-sync's (cycle 26 / TASK-0228 Wave
 # B-2) meant pthreads-sync passed too once the stale SKIP was
 # removed (now [[required]] above). Three-way differential covers
-# {pthreads-sync, pthreads-async} for this cell; mp-tcp-bufsync
-# remains correctly fail-loud SKIPPED on TASK-0175 (host-excluding
-# barrier requires worker-to-worker mesh — transport limitation,
-# not a front-pass gap).
+# {pthreads-sync, pthreads-async} for this cell; mp-tcp-bufsync +
+# mp-tcp-event remain correctly fail-loud SKIPPED on TASK-0329
+# (host-mediated barrier mediation — cycle-148/149 split of the
+# original TASK-0175 CTRL arm; the DATA arm was lifted by TASK-0327).
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
@@ -773,25 +778,51 @@ backend  = "mp-tcp-bufsync"
 reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-bufsync supports (sync, single-buffer, barrier/blocking only). Same rationale as 05-stencil/distributed × mp-tcp-bufsync."
 milestone = "M5"
 
-# 05-stencil/distributed-2d × mp-tcp-event: SKIP. The 2x2-grid
-# partition emits genuine worker-to-worker E/W halo strips between
-# (row, 0) and (row, 1) workers. Differs from distributed.sched.nuc
-# × mp-tcp-event (promoted cycle 102, TASK-0268) where the row-band
-# partition's halo strips happen to compose with the existing
-# host-broadcast extension (no genuine w↔w transfer).
+# 05-stencil/distributed-2d × mp-tcp-event: SKIP (root-cause corrected
+# cycle 150 from empirical-then-re-empirical evidence; TASK-0331 AC#2
+# + TASK-0332 filing).
 #
-# Post-cycle-149 (TASK-0327 mp-tcp-event host-relay LANDED for w2w
-# Push/Wait): the DATA-side w↔w gap is no longer a blocker — w2w
-# Push/Wait now lower via host-relay. The remaining blocker is
-# TASK-0294 (host 2D slice-paste gather defect): the bit-identical
-# assertion would fail at the receiver-side assembly until that
-# slice-paste path lands. Once TASK-0294 lands this cell becomes
-# promotable.
+# Cycle-149 prose speculation: blocker = TASK-0294 (host 2D slice-paste).
+# Cycle-150 first attempt: blamed TASK-0330 (Loop-body w2w Push) —
+# also wrong. Inspecting the emitted code (`nucleus/target/e2e-matrix/
+# run-*/05-stencil__distributed-2d__mp-tcp-event/src/bin/{host,w0}.rs`)
+# revealed the actual deadlock root cause and produced TASK-0332.
+#
+# Empirical test: promote [[skip]] → [[required]], run `just e2e`,
+# observe FAIL/run at 32.4s (workers exit 0 but run.sh reports
+# failure — timeout-shape).
+#
+# Root cause (cycle-150 verified by code inspection): each worker's
+# events begin with `chan_X.wait()` calls for cross-worker halo
+# strips BEFORE any push:
+#   // w0.rs:
+#   chan_4.wait();  // recv from w2 — needs host-relay
+#   chan_5.wait();  // recv from w1 — needs host-relay
+#   chan_7.push(); chan_8.push();
+#   bar_0.wait();
+# Cycle-149's host-relay splices AFTER bar_0 (host.rs ~line 226).
+# DEADLOCK CHAIN: workers blocked at initial waits never reach
+# bar_0 → host blocks at bar_0 → host never runs the relay → workers
+# never receive relayed frames → loop. The cycle-149 host-relay's
+# scatter-compute-gather TIMING MODEL assumes workers PUSH BEFORE
+# WAITING on w2w pairs; this schedule's halo-exchange shape has the
+# opposite event order. Filed as TASK-0332.
+#
+# Why pthreads-async passes: pthreads-async has direct worker-to-worker
+# ring buffers (no host mediation needed); pushes are async on rings.
+#
+# Cycle-149 architect P3.2 lesson FIRES TWICE in cycle 150:
+# (a) prose claim "remaining blocker is TASK-0294" was wrong; empirical
+#     test caught it.
+# (b) ORCHESTRATOR'S OWN cycle-150 first re-attribution to TASK-0330
+#     was also wrong; the SECOND empirical step (reading emitted code
+#     rather than relying on cycle-148/149 narrative) caught it.
+# The two-step empirical-verification discipline is the safety net.
 [[skip]]
 example  = "05-stencil"
 schedule = "distributed-2d"
 backend  = "mp-tcp-event"
-reason   = "TASK-0294 (host 2D slice-paste gather defect): the 2x2-grid partition's bit-identical assertion would fail at receiver-side slice assembly even with the post-cycle-149 host-relay path (TASK-0327 cycle 149 LIFTED the DATA-side w↔w gap; this cell is no longer w↔w-blocked, only 2D-slice-paste-blocked). Distinct from 05-stencil/distributed × mp-tcp-event (PROMOTED cycle 102, TASK-0268) because that schedule's row-band partition has no 2D slice-paste requirement on the host gather."
+reason   = "TASK-0332 (mp-tcp-event host-relay deadlocks on wait-before-push schedule shapes — filed cycle 150 from empirical e2e + code-inspection evidence): worker events begin with chan_X.wait() for cross-worker halo strips BEFORE any push; cycle-149's host-relay splices after bar_0, so workers block at their initial waits, never reach bar_0, host blocks at bar_0 forever, relay never runs, deadlock. Cycle-150 empirical promotion test confirmed FAIL/run (32.4s timeout, workers exit 0, run.sh reports failure). Distinct from TASK-0330 (which covers Loop-body w2w Push; this cell's w2w pushes are at TOP LEVEL). Distinct from TASK-0294 (host 2D slice-paste — already covered by the shared walker since cycle 115). The DATA-arm w↔w gap was lifted cycle 149 (TASK-0327 Done) but the scatter-compute-gather TIMING MODEL of cycle 149 does not accommodate halo-exchange-shape schedules; AC#1 of TASK-0332 (threaded / interleaved / pre-bar_0 host-relay) is the substantive fix; AC#2 (defensive ContractGap detecting wait-before-push at Plan::build) is the minimum cycle-N+1 closure."
 milestone = "M5"
 
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------
@@ -986,7 +1017,7 @@ milestone = "M3"
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0175 (worker-to-worker mesh): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Same transport limitation mp-tcp-bufsync has. TASK-0042.05 (Stage 3 of TASK-0042.02) — the mio reactor + per-(seq,peer) outbound queue — LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175."
+reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Same transport limitation mp-tcp-bufsync has (sibling skip above). TASK-0042.05 (Stage 3 of TASK-0042.02) — the mio reactor + per-(seq,peer) outbound queue — LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). Cycle 149 lifted the DATA-arm of TASK-0175 (TASK-0327 Done); the CTRL-arm barrier blocker remains."
 milestone = "M3"
 
 [[required]]
@@ -1123,27 +1154,31 @@ schedule = "batch_parallel"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-# 13/pipeline_parallel × mp-tcp-event: BLOCKED by TASK-0175
-# (worker-to-worker mesh). The pipeline_parallel schedule places
-# `conv_block_1`, `conv_block_2`, `classifier` on three distinct
-# non-host workers, with barriers among them excluding host. The
-# mp-tcp-event one-(DATA,CTRL)-pair-per-(host,worker) star topology
-# cannot lower a host-excluding barrier (the same TASK-0175
-# transport limitation mp-tcp-bufsync has). Codegen reaches
-# Plan::build then correctly fail-loud with a typed ContractGap
-# forward-linking TASK-0175. The capability surface IS satisfiable
-# (async + buffer=3 + notify=event); only the topology gates.
-# This is the AC#4 cell of TASK-0042.05; resolution requires
-# TASK-0175 (worker-to-worker channel mesh) to land first. The
-# four-way bit-identical differential against reference.bin sha256
+# 13/pipeline_parallel × mp-tcp-event: BLOCKED by TASK-0329 (host-
+# mediated barrier mediation, sibling of TASK-0327 for the CTRL
+# arm — cycle-148/149 split of the original TASK-0175 combined
+# filing). The pipeline_parallel schedule places `conv_block_1`,
+# `conv_block_2`, `classifier` on three distinct non-host workers,
+# with barriers among them excluding host. The mp-tcp-event
+# one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower
+# a host-excluding barrier on the CTRL channel (the same transport
+# limitation mp-tcp-bufsync has). Codegen reaches Plan::build then
+# correctly fail-loud with a typed ContractGap forward-linking
+# TASK-0175 (the original combined filing). The capability surface
+# IS satisfiable (async + buffer=3 + notify=event); only the CTRL
+# topology gates. This is the AC#4 cell of TASK-0042.05; resolution
+# requires TASK-0329 to land. The four-way bit-identical
+# differential against reference.bin sha256
 # d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
 # is therefore CARRIED as [[skip]]-with-blocker, not as a regression
-# of TASK-0042.05.
+# of TASK-0042.05. Note: cycle 149 lifted the DATA arm of TASK-0175
+# (TASK-0327 Done); this cell's only remaining blocker is the CTRL-
+# arm barrier mediation (TASK-0329).
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-event"
-reason   = "TASK-0175 (worker-to-worker mesh): pipeline_parallel places conv_block_1/conv_block_2/classifier on three distinct non-host workers with barriers excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175. AC#4 of TASK-0042.05 is blocked on TASK-0175 — same blocker mp-tcp-bufsync has on this and similar w-only barriers."
+reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): pipeline_parallel places conv_block_1/conv_block_2/classifier on three distinct non-host workers with barriers excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier on the CTRL channel. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). AC#4 of TASK-0042.05 is blocked on TASK-0329 — same CTRL-arm blocker mp-tcp-bufsync has on similar w-only barriers. Cycle 149 lifted the DATA arm of TASK-0175 (TASK-0327 Done); the CTRL-arm barrier blocker remains."
 milestone = "M3"
 
 # ---- M5 example 06 — distributed schedule (TASK-0296) ----------------

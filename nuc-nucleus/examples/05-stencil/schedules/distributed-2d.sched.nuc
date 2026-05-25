@@ -59,9 +59,16 @@
 //   - pthreads-sync + mp-tcp-bufsync: SKIP on capability mismatch
 //     (no async/buffer/event), same as today's distributed
 //     schedule sibling.
-//   - mp-tcp-event: SKIP on TASK-0175 lineage (w↔w mesh required
-//     for the halo strips' worker-to-worker transfers, which
-//     mp-tcp-event's host-star topology cannot lower). NOTE this
+//   - mp-tcp-event: SKIP on TASK-0332 (mp-tcp-event host-relay
+//     deadlocks on wait-before-push schedule shapes — cycle-150
+//     empirical finding). The cycle-149 host-relay path (TASK-0327)
+//     lifted the w↔w DATA gap, but this schedule's halo-exchange
+//     event order (worker waits BEFORE worker pushes; host's
+//     sequential relay starts with seq=11 from w0 which w0 hasn't
+//     pushed yet because it's blocked at wait(seq=8) = host's 5th
+//     hop = circular dependency) cannot be lowered by cycle-149's
+//     scatter-compute-gather timing model. TASK-0332 AC#1 (threaded
+//     or interleaved relay) is the architectural fix. NOTE this
 //     differs from `distributed.sched.nuc` where mp-tcp-event was
 //     ultimately promoted in cycle 102 (TASK-0268) because the
 //     row-band partition's halo strips happen to land in the

@@ -376,9 +376,18 @@ impl<'a> Plan<'a> {
         // Topology constraint (UNRELATED to TASK-0172): one stream per
         // (host, worker) pair, so every barrier must include host as
         // the mediating hub. True for the tier-1 set (02-split:
-        // {host,w0}). A host-excluding barrier needs a worker-to-worker
-        // mesh — a genuine transport limitation (TASK-0175), not a
-        // partial-barrier rejection. Fail loud, never a wrong binary.
+        // {host,w0}). A host-excluding barrier needs host-mediated
+        // barrier mediation — the CTRL arm of the cycle-148/149 split
+        // of the original combined TASK-0175 filing (DATA arm lifted
+        // as TASK-0327; CTRL arm tracked as TASK-0329). Fail loud,
+        // never a wrong binary.
+        //
+        // NB: the ContractGap message text below intentionally still
+        // says "filed as TASK-0175" — test-pinned by
+        // `nucleus/backends/mp-tcp-event/tests/multi_worker_emit.rs`
+        // and `host_relay_emit.rs` for cross-backend differential
+        // stability. The forward-link in the prose ABOVE supersedes;
+        // do not propose updating the literal message string here.
         for (tag, parts) in &barrier_participants {
             if !parts.contains(&host_worker) {
                 let bid = tag.0;

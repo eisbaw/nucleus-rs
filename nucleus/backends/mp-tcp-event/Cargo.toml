@@ -24,7 +24,10 @@
 # reactor + per-(seq, peer) outbound queue + per-seq inbound queue):
 # TASK-0042.05 cycle 79; verified bit-identical against reference.bin
 # on 3 cells. AC#2/AC#4 of TASK-0042.05 (09/pipelined,
-# 13/pipeline_parallel) blocked on TASK-0175 (worker-to-worker mesh).
+# 13/pipeline_parallel) blocked on TASK-0329 (host-mediated barrier
+# mediation for host-excluding barriers — CTRL arm of the
+# cycle-148/149 split of the original combined TASK-0175 filing;
+# the DATA arm was lifted in TASK-0327 cycles 148/149).
 
 [package]
 name = "mp-tcp-event"

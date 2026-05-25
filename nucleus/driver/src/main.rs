@@ -41,9 +41,12 @@
 //! EventList contract; the cross-backend differential (same source
 //! -> bit-identical output.bin) is the M3 headline (four-way) and
 //! the M4 headline (three-way today; the AC#4 fourth column,
-//! 13/pipeline_parallel × mp-tcp-event, is blocked on TASK-0175
-//! (worker-to-worker mesh) — same transport limit mp-tcp-bufsync
-//! has on similar host-excluding-barrier cells).
+//! 13/pipeline_parallel × mp-tcp-event, is blocked on TASK-0329
+//! (host-mediated barrier mediation for host-excluding barriers —
+//! CTRL arm of the cycle-148/149 split of the original combined
+//! TASK-0175 filing; the DATA arm was lifted in TASK-0327 cycles
+//! 148/149). Same transport limit mp-tcp-bufsync has on similar
+//! host-excluding-barrier cells.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -593,11 +596,16 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // pthreads-sync). Stages 1+2 (skeleton + single-worker
         // delegation) landed cycle 41; Stage 3 (multi-worker mio
         // reactor + Chan<T>) landed cycle 79 — verified bit-identical
-        // against reference.bin on 3 cells. Host-excluding barriers /
-        // worker-to-worker Pushes still fail-loud with a typed
-        // ContractGap forward-linking TASK-0175 (same transport limit
-        // mp-tcp-bufsync has). The user-facing error from this arm
-        // carries the precise forward-link.
+        // against reference.bin on 3 cells.
+        //
+        // Worker-to-worker Pushes were LIFTED in TASK-0327 cycle 149
+        // via host-relay (Reactor::relay_one + Plan::render_relay_phase).
+        // Host-excluding barriers still fail-loud with a typed
+        // ContractGap forward-linking TASK-0175 (now precisely
+        // tracked as TASK-0329 — the CTRL arm of the cycle-148/149
+        // split of the original combined TASK-0175 filing). The
+        // user-facing error from this arm carries the precise
+        // forward-link.
         "mp-tcp-event" => {
             let result = mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
                 .map_err(|e| format!("mp-tcp-event codegen error: {e}"))?;

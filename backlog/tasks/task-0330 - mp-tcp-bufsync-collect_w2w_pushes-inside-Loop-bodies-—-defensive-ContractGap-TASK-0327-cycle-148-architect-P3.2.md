@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-25 18:35'
+updated_date: '2026-05-25 18:51'
 labels:
   - M6
   - backend
@@ -81,4 +81,28 @@ The cycle-149 mp-tcp-event host-relay implementation inherits the SAME flat-emit
 **Cross-reference:** cycle-149 mp-tcp-event host-relay test pin lives at `nucleus/backends/mp-tcp-event/tests/host_relay_emit.rs::host_emit_includes_task_0327_relay_phase_with_12_hops`. The same fixture (06/distributed2) is the negative-case "no Loop body" check for the mp-tcp-event sibling.
 
 **Scope clarification:** the task title still says "mp-tcp-bufsync" but the AC now covers BOTH backends (mp-tcp-bufsync from cycle 148, mp-tcp-event from cycle 149). When working: either rename the task (single-arm-scope title) or treat as a paired fix; the cycle-148/149 history establishes the precedent for the paired fix.
+
+## Cycle 150 (TASK-0331 AC#2 empirical promotion test): in-tree trigger FOUND
+
+Cycle 150 empirically tested the cycle-149 prose claim that `05-stencil/distributed-2d × mp-tcp-event`'s remaining blocker was TASK-0294 (host 2D slice-paste). The promotion attempt FAILED at runtime: workers w0..w3 deadlock at 32.4s with run.sh reporting failure (exit code 0 from workers but timeout-shape, not bit-identical mismatch).
+
+Root cause: the 2x2-grid partition emits halo-strip Push/Wait events INSIDE an outer time-step / iteration loop. mp-tcp-event's cycle-149 host-relay code emits a FLAT relay block. The src worker pushes N times per outer iteration; the host's flat relay runs ONCE; subsequent iterations deadlock waiting for relayed frames that never arrive.
+
+This IS the in-tree trigger that TASK-0330 was filed pending. The same defect would hit mp-tcp-bufsync if `05-stencil/distributed-2d × mp-tcp-bufsync` were ever promoted (currently [[skip]] on TASK-0042 capability mismatch).
+
+Priority bump: LOW -> MEDIUM. The cycle-150 finding makes this an active correctness gap rather than a defensive-only consideration.
+
+Cycle-150 e2e-matrix.toml record: the `05-stencil/distributed-2d × mp-tcp-event` skip reason now precisely cites TASK-0330 as the remaining blocker (cycle-150 edit, lines ~776-810).
+
+Forward-carry to TASK-0330 implementation cycle: the empirical test fixture is in-tree as `nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc`. Promote that cell as the regression-pin once the fix lands.
+
+## Cycle 150 priority-bump RETRACTED (orchestrator self-correction)
+
+The cycle-150 entry above attributed the `05-stencil/distributed-2d × mp-tcp-event` deadlock to "Loop-body w2w Push" — TASK-0330's scope. EMPIRICAL RE-EXAMINATION of the emitted w0.rs (cycle-150 e2e scratch dir) shows the w2w pushes are at TOP LEVEL inside `fn main`, NOT inside any `for` loop. The actual root cause is a DIFFERENT defect class: w0/w1/w2/w3 all begin with `chan_X.wait()` calls for cross-worker halo strips BEFORE any push. Cycle-149's host-relay splices the relay AFTER `bar_0.wait()`. Workers blocked at initial waits never reach bar_0; host blocks at bar_0; relay never runs; deadlock.
+
+Root-cause classification: **WAIT-BEFORE-PUSH schedule shape vs cycle-149's scatter-compute-gather assumption**, NOT Loop-body. The in-tree trigger for TASK-0330 has NOT been found; this task remains dormant pending an actual Loop-body w2w Push schedule. Priority returned to Low.
+
+The newly-identified defect class is filed as a SEPARATE follow-up task (see cycle-150 commit / tracker for the exact ID); TASK-0330 is unaffected.
+
+Honesty note: this is exactly the cycle-149 architect P3.2 lesson firing in real time — a prose claim ("Loop-body limitation") was made without empirical verification of the emitted code, and the empirical-verification step (running `just e2e` + reading the generated host.rs and w0.rs) caught the mis-attribution within the same cycle. The retraction here is the honest record.
 <!-- SECTION:NOTES:END -->

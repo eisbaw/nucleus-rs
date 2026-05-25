@@ -226,8 +226,18 @@ impl<'a> Plan<'a> {
 
         // Host-mediated barrier topology — every barrier must include
         // host. Mirrors mp-tcp-bufsync's check (one CTRL stream per
-        // (host,worker)). A host-excluding barrier needs a w↔w mesh
-        // (TASK-0175). Fail-loud rather than mis-route.
+        // (host,worker)). A host-excluding barrier needs host-mediated
+        // barrier mediation (TASK-0329 — CTRL arm of the cycle-148/149
+        // split of the original TASK-0175 combined filing; the DATA
+        // arm was lifted as TASK-0327 in cycles 148/149). Fail-loud
+        // rather than mis-route.
+        //
+        // NB: the ContractGap message text below intentionally still
+        // says "filed as TASK-0175" — test-pinned by
+        // `tests/multi_worker_emit.rs::host_excluding_barrier_is_typed_contract_gap`
+        // and `tests/host_relay_emit.rs`. The forward-link in the
+        // prose ABOVE supersedes; do not propose updating the literal
+        // message string here.
         for (tag, parts) in &barrier_participants {
             if !parts.contains(&host_worker) {
                 let bid = tag.0;
