@@ -1735,6 +1735,40 @@ fn rewrite_partition_tiles_inner(
                         // entry for. Used only when the data symbol
                         // has no observed indexed accesses (synthetic
                         // fixtures + bare-aggregate-only data).
+                        //
+                        // TASK-0317: emit a `NUC_TRACE`-gated diagnostic
+                        // on the fall-back. Mirrors the cycle-134
+                        // (TASK-0315) defence on
+                        // `order_halo_strip_bounds_by_data_dim`. The
+                        // TASK-0301 axis-mapping defence (data-dim-aware
+                        // emit) is BYPASSED on this call; trace makes
+                        // the bypass observable so a future regression
+                        // masked by synthetic-fixture coverage is not
+                        // silent. Production callers always observe
+                        // accesses; this trace fires only on synthetic
+                        // / bare-aggregate-only data paths.
+                        // cycle-135 architect P2-1 fold-back: mirror
+                        // cycle-134's `entry = absent | Some(empty)`
+                        // disambiguator. `compute_partition_bounds_with_
+                        // dim_prefix` returns None on exactly two paths
+                        // (dim_iv_map.get is None, or per_dim.is_empty())
+                        // so the 2-arm match is exhaustive at the trace
+                        // site by the helper's contract — parallel to
+                        // cycle-134's identical disambiguator shape.
+                        crate::nuc_trace!(
+                            "transfer_inject::rewrite_partition_tiles_inner: fall-back to \
+                             partition_axis_order nest-order emit (data={data:?}, worker={w:?}); \
+                             compute_partition_bounds_with_dim_prefix returned None — \
+                             data_dim_iv_map entry is {entry} — \
+                             TASK-0301 axis-mapping defence BYPASSED for this call \
+                             (expected only on synthetic fixtures via DataflowEdge::new or \
+                             bare-aggregate-only data symbols)",
+                            data = x.data,
+                            entry = match data_dim_iv_map.get(&x.data) {
+                                None => "absent",
+                                Some(_) => "Some(empty)",
+                            },
+                        );
                         let mut tmp: Vec<(IterVar, std::ops::Range<i64>)> = Vec::new();
                         for iv in partition_axis_order {
                             if let Some(per_worker) = partition_ranges.get(iv) {
@@ -3301,6 +3335,147 @@ mod tests {
             vec![(outer_iv, 8..9), (inner_iv, 0..8)],
             "TASK-0315: missing entry takes fall-back; default order is \
              outer-leading.",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0317: silent-sibling pins for
+    // `compute_partition_bounds_with_dim_prefix`.
+    //
+    // Same shape as the TASK-0315 inline tests above. The helper is
+    // the canonical-path arm of `rewrite_partition_tiles_inner`; the
+    // `None` arm now triggers a NUC_TRACE diagnostic in the caller
+    // (the fall-back observability addition this task lands).
+    //
+    // We pin: (a) the data-dim-aware canonical Some-arm, (b) the
+    // missing-entry None arm that drives the caller's nest-order
+    // fall-back + trace emit, (c) the empty-per-dim None arm
+    // (parallel to TASK-0315's Some(empty) twin), and (d) the
+    // sparse-coverage whole-array drop.
+    // ----------------------------------------------------------------
+
+    #[allow(clippy::type_complexity)]
+    fn make_partition_ranges(
+        entries: &[(IterVar, &[(WorkerId, std::ops::Range<i64>)])],
+    ) -> BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> {
+        let mut out: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> = BTreeMap::new();
+        for (iv, per_worker) in entries {
+            let map: BTreeMap<_, _> =
+                per_worker.iter().map(|(w, r)| (*w, r.clone())).collect();
+            out.insert(*iv, map);
+        }
+        out
+    }
+
+    /// AC: canonical Some-arm — `data_dim_iv_map` indexed [outer][inner]
+    /// with both partitioned ⇒ returns dim-ordered bounds. Caller does
+    /// NOT take the fall-back; no trace fires.
+    #[test]
+    fn task0317_canonical_path_returns_dim_ordered_bounds_no_fallback() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let data = DataId(99);
+        let worker = WorkerId(2);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        map.insert(data, vec![iv_set(&[outer_iv]), iv_set(&[inner_iv])]);
+
+        let partition_ranges = make_partition_ranges(&[
+            (outer_iv, &[(worker, 8..16)]),
+            (inner_iv, &[(worker, 0..8)]),
+        ]);
+
+        let got = compute_partition_bounds_with_dim_prefix(
+            data, &map, &partition_ranges, worker,
+        );
+
+        assert_eq!(
+            got,
+            Some(vec![(outer_iv, 8..16), (inner_iv, 0..8)]),
+            "TASK-0317 canonical: both dims covered by partitioned ivs in \
+             nest-prefix order ⇒ dim-ordered bounds, no fall-back.",
+        );
+    }
+
+    /// AC: None arm — `data_dim_iv_map` missing entry for the data
+    /// symbol ⇒ caller takes nest-order fall-back + emits NUC_TRACE.
+    /// This is the arm the trace is observability-instrumenting.
+    #[test]
+    fn task0317_missing_entry_returns_none_drives_fallback() {
+        let outer_iv = IterVar(7);
+        let data = DataId(99);
+        let worker = WorkerId(2);
+        let map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        let partition_ranges =
+            make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
+
+        let got = compute_partition_bounds_with_dim_prefix(
+            data, &map, &partition_ranges, worker,
+        );
+
+        assert_eq!(
+            got, None,
+            "TASK-0317 None-arm: missing data_dim_iv_map entry returns \
+             None; rewrite_partition_tiles_inner's fall-back arm fires \
+             on this case and emits the NUC_TRACE diagnostic.",
+        );
+    }
+
+    /// AC: None arm — `data_dim_iv_map` records data with empty per-dim
+    /// Vec (synthetic fixtures via DataflowEdge::new) ⇒ returns None
+    /// via the `per_dim.is_empty()` early-out at line 1938. Caller
+    /// takes the same fall-back as the missing-entry case.
+    #[test]
+    fn task0317_empty_per_dim_returns_none_drives_fallback() {
+        let outer_iv = IterVar(7);
+        let data = DataId(99);
+        let worker = WorkerId(2);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        map.insert(data, Vec::new());
+        let partition_ranges =
+            make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
+
+        let got = compute_partition_bounds_with_dim_prefix(
+            data, &map, &partition_ranges, worker,
+        );
+
+        assert_eq!(
+            got, None,
+            "TASK-0317 None-arm (twin): empty per-dim Vec returns None \
+             via the explicit is_empty() early-out. Caller fall-back \
+             trace fires on this arm too.",
+        );
+    }
+
+    /// AC: sparse-coverage whole-array drop — partitioned iv covers
+    /// dim 1 but not dim 0 (a hole at dim 0 followed by a covered
+    /// dim 1 violates the contiguous-prefix invariant). Returns
+    /// `Some(Vec::new())` per the safe-drop policy at line 1980.
+    #[test]
+    fn task0317_sparse_coverage_drops_to_whole_array() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let unpart_iv = IterVar(42);
+        let data = DataId(99);
+        let worker = WorkerId(2);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        // dim 0 = unpartitioned (k), dim 1 = inner_iv (x, partitioned).
+        // outer_iv is partitioned but doesn't index this data.
+        map.insert(data, vec![iv_set(&[unpart_iv]), iv_set(&[inner_iv])]);
+        let partition_ranges = make_partition_ranges(&[
+            (outer_iv, &[(worker, 8..16)]),
+            (inner_iv, &[(worker, 0..8)]),
+        ]);
+
+        let got = compute_partition_bounds_with_dim_prefix(
+            data, &map, &partition_ranges, worker,
+        );
+
+        assert_eq!(
+            got, Some(Vec::new()),
+            "TASK-0317 sparse: dim 0 has no partitioned iv covering it \
+             (k is unpartitioned), dim 1 does. Sparse coverage triggers \
+             the safe whole-array drop per compute_partition_bounds_with_\
+             dim_prefix's hole-after-cover policy.",
         );
     }
 }
