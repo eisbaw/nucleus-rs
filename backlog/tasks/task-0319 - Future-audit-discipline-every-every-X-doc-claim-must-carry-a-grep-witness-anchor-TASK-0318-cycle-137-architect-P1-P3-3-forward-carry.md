@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 11:11'
+updated_date: '2026-05-25 11:42'
 labels:
   - compiler
   - doc-lie
@@ -48,3 +49,26 @@ The cycle-137 lesson generalises: any audit comment that claims 'every X is cove
 - transfer_inject.rs:1696-1746 (the cycle-137 rewritten listing, now with grep witness).
 - MEMORY.md `feedback-silent-sibling-defect`.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 138 forward-carry: a new dimension on grep-witness discipline
+
+TASK-0320 cycle 138 demonstrated a new failure mode this discipline must defend against:
+
+A **verification stamp** (e.g. a comment that names absolute line numbers as a stamp-of-correctness "as of cycle X, the witness yields N matches at lines L1 / L2 / ...") is ITSELF a doc-lie candidate if the edit that AUTHORS the stamp shifts the lines it cites. Cycle 138's first fold-back wrote line stamps that were already-stale at write-time because the bullet itself grew by ~22 lines.
+
+**Mitigation discovered in cycle 138**:
+1. Write the bullet with the stamp.
+2. Save the file (do not yet commit).
+3. Re-run the grep against the now-saved file.
+4. Apply a DIGIT-ONLY edit to update the stamp to post-edit line numbers (no line-count change → no further drift).
+5. Re-verify with grep one more time.
+
+**Stronger structural mitigation**: make function/symbol names the PRIMARY anchor in the witness ("the `XferRole::Wait` match-arm in `inject_in_sequence`"); treat absolute line numbers as ADVISORY-ONLY. The function/symbol name is stable under arbitrary later edits; the line stamp is a convenience for the reader to find the citation quickly but should not be the load-bearing index.
+
+**Suggested fold-into-AC**: TASK-0319 AC#1 should be amended to add: "If absolute line numbers are included as a verification stamp, they MUST be the post-write values, not pre-write. The verification protocol is grep-after-save → digit-only edit to fix → re-grep."
+
+(This forward-carry was added by cycle-138 orchestrator, not author of original TASK-0319.)
+<!-- SECTION:NOTES:END -->

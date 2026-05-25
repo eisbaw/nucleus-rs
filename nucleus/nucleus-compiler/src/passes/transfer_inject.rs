@@ -161,9 +161,62 @@
 //! - **Idempotence by structural skip.** Re-running the pass detects
 //!   that a Wait already precedes the consumer Operation (and a Push
 //!   already follows the producer Operation) by checking sibling
-//!   `Xfer` nodes carrying the same `(src, dst, data, tile)`. It
-//!   does NOT re-derive `seq` to be the same — the original
-//!   placeholder is left in place. Tests cover this.
+//!   `Xfer` nodes carrying matching structural keys. The pass does
+//!   NOT re-derive `seq` to be the same — the original placeholder
+//!   is left in place. Three dedup sites exist; two use the full
+//!   `(src, dst, data, tile)` key, one omits `tile`. The divergence
+//!   is intentional and is governed by **dedup-set composition**,
+//!   NOT by whether the tile was rewritten before the check:
+//!
+//!     - `inject_in_sequence` (Wait dedup): keys on full
+//!       `(src, dst, data, tile)`. The dedup-set is the entire
+//!       enclosing `out: Vec<ACFGNode>` and may include
+//!       previously-emitted Waits that carry tile granularities
+//!       from EARLIER iterations (not all rewritten to this
+//!       sequence's enclosing tile). The `tile` component is
+//!       therefore part of the identity even though the inserting
+//!       site rewrites the candidate to the enclosing tile just
+//!       before the check.
+//!     - `splice_pushes_for_waits` (Push dedup): keys on full
+//!       `(src, dst, data, tile)`. The dedup-set is the single
+//!       `out[insert_at]` slot immediately following the producer.
+//!       The tile distinguishes Pushes for distinct partition
+//!       sub-regions targeting the same consumer.
+//!     - `hoist_invariant_waits` (Wait dedup, `place_or_bubble`):
+//!       keys on `(src, dst, data)` only. The dedup-set is the
+//!       local `out: Vec<ACFGNode>` of the current `place_or_bubble`
+//!       scope; every candidate is rewritten to
+//!       `IterTile::new(enclosing_tile.to_vec())` on the immediately
+//!       preceding line, so every member of the dedup-set carries
+//!       the SAME tile by construction. Including `tile` in the key
+//!       would be redundant.
+//!
+//!   Grep witness for the three dedup sites (function-name anchors
+//!   are the stable index; line numbers are an as-of-edit stamp,
+//!   re-run the grep if they have drifted):
+//!   `grep -nE 'existing\.role == XferRole::|x\.role == XferRole::' transfer_inject.rs`
+//!   yields exactly 9 matches. The three DEDUP-CHECK matches are the
+//!   ones whose `matches!` / `if`-chain continues with
+//!   `&& src == … && dst == … && data == …`:
+//!     - in `inject_in_sequence`: the `XferRole::Wait` match-arm
+//!       (full 4-tuple including `tile`).
+//!     - in `splice_pushes_for_waits`: the `XferRole::Push` if-chain
+//!       (full 4-tuple including `tile`).
+//!     - in `hoist_invariant_waits::place_or_bubble`: the
+//!       `XferRole::Wait` match-arm (3-tuple, NO `tile`).
+//!
+//!   The other 6 grep matches are role-scans for unrelated purposes
+//!   (e.g. counting Waits, filtering Push nodes during splice) and
+//!   are NOT dedup checks. As-of-cycle-138 line stamp: dedup checks
+//!   at 944 / 1053 / 1227; role-scans at 996 / 1022 / 1190 / 1334 /
+//!   1424 / 1445.
+//!
+//!   Tests cover the cross-site invariant: see
+//!   `idempotent_on_synthetic_two_worker_case` in
+//!   `tests/transfer_inject.rs`, and `hoisting_is_idempotent` /
+//!   `mixed_block_nonblock_tree_is_structurally_idempotent` /
+//!   `whole_symbol_finalisation_is_structurally_idempotent` in
+//!   `tests/transfer_inject_hoist.rs`.
 //!
 //! - **Conflict detection happens upstream at sched-lower.** A schedule
 //!   writing `transfer D : sync, async;` is rejected by `lower_transfer`
