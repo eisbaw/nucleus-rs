@@ -44,7 +44,7 @@ Landed across TASK-0053 cycle-2 + TASK-0209 + TASK-0117 + TASK-0212:
 | naive             | pthreads-sync   | REQUIRED   | byte-identical to `reference.bin`.               |
 | naive             | mp-tcp-bufsync  | REQUIRED   | single-process under mp-tcp; same renderer.      |
 | batch_parallel    | pthreads-sync   | **REQUIRED** | four-worker partition=workers; transfer-injection fan-out (TASK-0117) + per-worker loop-bound rewrite (TASK-0212). Byte-identical to `reference.bin`. |
-| batch_parallel    | mp-tcp-bufsync  | SKIPPED    | TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of original TASK-0175) + mp-tcp slot-keying not yet ported to (DataId, SeqTag). |
+| batch_parallel    | mp-tcp-bufsync  | **REQUIRED** | PROMOTED cycle 157 (TASK-0334 empirical-verification audit). The cycle-150 forward-link to TASK-0329 was wrong — the schedule has NO host-excluding barrier; transfer_inject emits one Push per (data, producer) cleanly. Byte-identical to `reference.bin`. |
 | pipeline_parallel | (both)          | SKIPPED    | TASK-0210 (async+buffer+event tier-2).           |
 
 `naive` exercises the load-bearing claim of this example: a single

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-25 19:50'
+updated_date: '2026-05-25 22:22'
 labels:
   - M6
   - backend
@@ -75,4 +75,14 @@ The TASK-0330 cycle established a useful sibling-walker audit step that should b
 After implementing the lift, grep ALL recursive event-walkers in BOTH backends for `Event::Loop` recursion (mp-tcp-bufsync: `collect_xfer_data`, `collect_w2w_pushes`; mp-tcp-event: `collect_push_pairs`, `collect_w2w_pushes`, others). For each one, audit how it handles Loop-body events of the kind your lift touches — does it use set-union (idempotent), or_insert (first-visit-wins), or list-append (over-count)? Document the answer at each walker site, even if it's "incidentally robust".
 
 This audit defends against [[feedback-silent-sibling-defect]]: the structural pattern "recursive event-walker over Loop bodies" repeats; a new fail-loud or new accumulator pattern may have silent siblings that need the same treatment.
+
+## Cycle 157 (TASK-0334) empirical-verification update
+
+The TASK-0329 description (filed cycle 148) included the line: '13-cnn-inference/batch_parallel × mp-tcp-bufsync also SKIPPED with mixed TASK-0175 + TASK-0117 reasons.'
+
+Cycle 157 empirically verified this cell — it does NOT trigger TASK-0329 OR TASK-0117. The schedule has no host-excluding barrier; transfer_inject emits cleanly (one Push per (data, producer)). The cell PASSES bit-identical against reference.bin and has been PROMOTED [[skip]] → [[required]] cycle 157.
+
+The TASK-0329 description's enumeration of impacted cells is therefore stale on that one entry. The remaining in-tree trigger for TASK-0329 (empirically confirmed cycle 157) is **13-cnn-inference/pipeline_parallel × mp-tcp-event** — that cell's barriers {w1,w2,w3} genuinely exclude host. 03-reduction/distributed cells on both bufsync and mp-tcp-event were also forward-linked to TASK-0329 by cycle 150, but cycle 157 refuted all 3 of those misattributions (the bufsync arm now cites TASK-0335; the mp-tcp-event arm now PASSES with a masking disclosure).
+
+Net: TASK-0329's in-tree trigger today is exactly ONE cell, not the original four cycle-150's prose enumerated.
 <!-- SECTION:NOTES:END -->

@@ -392,10 +392,14 @@ milestone = "M3"
 # commit 299e1b0), but no one re-checked this cell. The audit
 # directly removed the SKIP and observed PASS, bit-identical to
 # reference.bin (the e2e harness's Phase::Diff against
-# 03-reduction/reference.bin). Three-way differential now covers
-# 03-reduction/distributed on { pthreads-sync, pthreads-async }
-# (mp-tcp-bufsync remains a fail-loud SKIP for the host-excluding-
-# barrier reason captured below — TASK-0175, not TASK-0117/0172).
+# 03-reduction/reference.bin). Cycle 157 (TASK-0334) further
+# PROMOTED mp-tcp-event; three-way differential now covers
+# 03-reduction/distributed on { pthreads-sync, pthreads-async,
+# mp-tcp-event }. mp-tcp-bufsync remains a SKIP — cycle-157
+# empirical verification refuted the cycle-150 forward-link to
+# TASK-0329 (no host-excluding barrier exists on this schedule);
+# the actual blocker is TASK-0335 (transfer_inject duplicate-Push
+# + producer-side ordering inversion vs host's FIFO Wait sequence).
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
@@ -410,30 +414,24 @@ reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=
 milestone = "M3"
 
 # Distributed gaps under the mp-tcp-bufsync backend.
-#   - 03-reduction/distributed: cycle-30 audit (TASK-0242) ROUTED THE
-#     REAL FAILURE. The prior SKIP citing TASK-0117 + TASK-0172 was
-#     STALE — pthreads-sync now PASSES this cell (sibling [[required]]
-#     above), so the upstream front-pass / iteration-partitioning gap
-#     is closed. The mp-tcp-bufsync failure mode is a TRANSPORT
-#     limitation, not a front-pass one: the `place accumulate on
-#     {w0..w3}` partition leaves host OUT of the per-partition barrier
-#     (host does load_input, the compute workers join phase-1, host
-#     resumes for the tree combine). mp-tcp-bufsync's one-connection-
-#     per-(host,worker) topology has no worker-to-worker mesh and
-#     thus cannot mediate a host-excluding barrier. Backend fails
-#     LOUD via EmitError::ContractGap with the verbatim text:
-#       "barrier #1 participants {WorkerId(1), WorkerId(2),
-#        WorkerId(3), WorkerId(4)} exclude the host worker;
-#        mp-tcp-bufsync's one-connection-per-(host,worker) topology
-#        requires host as the barrier hub. A host-excluding barrier
-#        needs a worker-to-worker mesh (filed as TASK-0175)."
-#     Promotion blocked on TASK-0329 (host-mediated barrier mediation
-#     for host-excluding barriers — the CTRL-arm sibling of TASK-0327;
-#     TASK-0175 was the original combined DATA+CTRL filing, split by
-#     cycles 148/149: DATA-arm lifted as TASK-0327 Done; CTRL-arm
-#     remains as TASK-0329). NOT TASK-0117/0172. Identical root cause
-#     to 13-cnn-inference batch_parallel × mp-tcp-bufsync (skip block
-#     below).
+#   - 03-reduction/distributed: EMPIRICALLY VERIFIED CYCLE 157
+#     (TASK-0334). The cycle-150 forward-link to TASK-0329 was WRONG —
+#     codegen actually SUCCEEDS (barriers correctly include host;
+#     phase-1 barriers are NOT host-excluding because sync_inject
+#     places them across the full {host,w0..w3} set, not across
+#     {w0..w3} as the cycle-150 prose claimed). The runtime failure
+#     is a TRANSFER-INJECTION defect: transfer_inject emits one Push
+#     per host-side consume site of `partials` (host reads partials
+#     across two `combine` calls = 8 reads on 4 workers), so each
+#     worker emits TWO Pushes of partials back-to-back with seqs
+#     (8, 4) — wire FIFO inverts vs host's per-consumer wait
+#     sequence (4..7 first, then 8..11). Fails LOUD with
+#     `wire: seq tag mismatch: receiver expected 4, wire delivered
+#     8`. Promotion blocked on TASK-0335 (per-(data,producer) Push
+#     dedupe + ordering). Same logical defect exists on mp-tcp-event
+#     but its per-(DataId,SeqTag) channel demux MASKS the ordering
+#     mismatch (sibling [[required]] cell below now PROMOTED cycle
+#     157 with explicit masking disclosure).
 #   - 05-stencil/distributed: requests async + buffer=2 + notify=event,
 #     none of which a sync tier-1 backend supports; the capability
 #     check rejects it (correct) before codegen.
@@ -441,7 +439,7 @@ milestone = "M3"
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — filed cycle 148, NOT YET landed): host-excluding barrier needs worker-to-worker mediation; mp-tcp-bufsync's one-connection-per-(host,worker) topology fails LOUD via EmitError::ContractGap forward-linking TASK-0175 (the original combined DATA+CTRL filing). Cycle 148/149 split TASK-0175: DATA arm Done (TASK-0327); CTRL arm remains (TASK-0329). NOT TASK-0117 (now closed) and NOT TASK-0172 (now closed); sibling pthreads-sync cell PASSES."
+reason   = "TASK-0335 (cycle 157 empirical verification; supersedes the cycle-150 TASK-0329 forward-link as a wrong-attribution per feedback-orchestrator-narrative-also-wrong fourth firing): codegen SUCCEEDS — barriers include host correctly. Runtime fails with `wire: seq tag mismatch: receiver expected 4, wire delivered 8` because transfer_inject emits per-host-consume-site Push (each worker writes partials twice with seqs 8 and 4 in inverted order vs host's FIFO wait sequence 4..11). NOT TASK-0329 (no host-excluding barrier exists on this schedule); NOT TASK-0117 (now closed); NOT TASK-0172 (now closed). Same logical defect on mp-tcp-event is masked by per-(DataId,SeqTag) channel demux — sibling cell PROMOTED cycle 157 with masking disclosure."
 milestone = "M3"
 
 [[skip]]
@@ -470,17 +468,21 @@ schedule = "batch_parallel"
 backend  = "pthreads-sync"
 milestone = "M3"
 
-# Example 13 batch_parallel × mp-tcp-bufsync: same multi-worker transfer
-# gap as the pthreads-sync sibling above PLUS the pre-existing host-
-# excluding inter-worker barrier limitation (TASK-0329 sibling of
-# TASK-0327, cycle-148/149 split of the original TASK-0175). The
-# codegen fails at the contract layer (loud), not at cargo build,
-# because the capability mismatch fires first.
-[[skip]]
+# Example 13 batch_parallel × mp-tcp-bufsync: PROMOTED cycle 157
+# (TASK-0334 empirical-verification). The cycle-150 forward-link to
+# TASK-0329 was wrong — the schedule has NO host-excluding barrier,
+# transfer_inject emits one Push per (data,producer) cleanly (each
+# worker pushes `output` once with seq=4 to host; host pushes `input`
+# slices once per worker), codegen succeeds, and the run produces
+# output.bin bit-identical against reference.bin sha256
+# d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861.
+# Verified non-flake × 3 cycle 157. Four-way bit-identical
+# differential against the three other tier-1 backend columns of this
+# cell.
+[[required]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): host-excluding barrier rejected by mp-tcp-bufsync's one-connection-per-(host,worker) topology. Codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). PLUS TASK-0117 (transfer-injection fan-out across distributed entities, upstream root of TASK-0211)."
 milestone = "M3"
 
 # Example 13 pipeline_parallel × the two SYNC tier-1 backends:
@@ -582,11 +584,14 @@ milestone = "M3"
 # from cycle 27: pthreads-async's multi-worker emit being a
 # near-verbatim copy of pthreads-sync's (cycle 26 / TASK-0228 Wave
 # B-2) meant pthreads-sync passed too once the stale SKIP was
-# removed (now [[required]] above). Three-way differential covers
-# {pthreads-sync, pthreads-async} for this cell; mp-tcp-bufsync +
-# mp-tcp-event remain correctly fail-loud SKIPPED on TASK-0329
-# (host-mediated barrier mediation — cycle-148/149 split of the
-# original TASK-0175 CTRL arm; the DATA arm was lifted by TASK-0327).
+# removed (now [[required]] above). Cycle 157 (TASK-0334 empirical
+# verification) PROMOTED mp-tcp-event from [[skip]] to [[required]]
+# — the cycle-150 forward-link to TASK-0329 was wrong; the schedule
+# has NO host-excluding barrier, and the same transfer_inject
+# duplicate-Push defect that fails mp-tcp-bufsync (TASK-0335) is
+# masked by mp-tcp-event's per-(DataId,SeqTag) channel demux.
+# Three-way differential now covers {pthreads-sync, pthreads-async,
+# mp-tcp-event}; mp-tcp-bufsync remains [[skip]] on TASK-0335.
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
@@ -1013,11 +1018,35 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-[[skip]]
+# 03-reduction/distributed × mp-tcp-event: PROMOTED cycle 157
+# (TASK-0334 empirical-verification). The cycle-150 forward-link to
+# TASK-0329 was wrong — the schedule has NO host-excluding barrier
+# (sync_inject places phase-1 barriers across {host,w0..w3}, not
+# {w0..w3} as cycle-150 prose claimed). The same transfer_inject
+# duplicate-Push defect that fails bufsync (TASK-0335) ALSO emits on
+# mp-tcp-event (each worker emits chan_8.push then chan_4.push for
+# partials), but mp-tcp-event's per-(DataId,SeqTag) channel demux
+# masks the ordering mismatch — receiver matches by seq regardless
+# of producer-side push order. Output is bit-identical against
+# 03-reduction/reference.bin (verified non-flake × 3 cycle 157).
+# Promotion is sound for correctness but documents a known
+# bandwidth-waste defect: workers transmit `partials` twice over
+# redundant channels. When TASK-0335 lands the per-(data,producer)
+# Push dedupe, this cell stays bit-identical and uses HALF the
+# transfer bandwidth.
+#
+# Masking invariant guard (cycle 157 architect P2.1): the
+# correctness of this promotion depends on mp-tcp-event's
+# per-(DataId, SeqTag) channel demux invariant (project-mp-tcp-
+# event-vs-bufsync-safety-profile in MEMORY.md). If a future
+# mp-tcp-event refactor collapses two channels of the same DataId
+# into a shared FIFO, or routes by DataId-only instead of (DataId,
+# SeqTag), this cell would re-fail the same way 03/distributed ×
+# mp-tcp-bufsync fails today — re-skip and re-route to TASK-0335.
+[[required]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): the `distributed` schedule's reduction barriers exclude the host worker (participants = {w0..w3}, no host), and mp-tcp-event's one-CTRL-stream-per-(host,worker) topology cannot lower a host-excluding barrier. Same transport limitation mp-tcp-bufsync has (sibling skip above). TASK-0042.05 (Stage 3 of TASK-0042.02) — the mio reactor + per-(seq,peer) outbound queue — LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). Cycle 149 lifted the DATA-arm of TASK-0175 (TASK-0327 Done); the CTRL-arm barrier blocker remains."
 milestone = "M3"
 
 [[required]]
@@ -1157,19 +1186,22 @@ milestone = "M3"
 # 13/pipeline_parallel × mp-tcp-event: BLOCKED by TASK-0329 (host-
 # mediated barrier mediation, sibling of TASK-0327 for the CTRL
 # arm — cycle-148/149 split of the original TASK-0175 combined
-# filing). The pipeline_parallel schedule places `conv_block_1`,
-# `conv_block_2`, `classifier` on three distinct non-host workers,
-# with barriers among them excluding host. The mp-tcp-event
-# one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower
-# a host-excluding barrier on the CTRL channel (the same transport
-# limitation mp-tcp-bufsync has). Codegen reaches Plan::build then
-# correctly fail-loud with a typed ContractGap forward-linking
-# TASK-0175 (the original combined filing). The capability surface
-# IS satisfiable (async + buffer=3 + notify=event); only the CTRL
-# topology gates. This is the AC#4 cell of TASK-0042.05; resolution
-# requires TASK-0329 to land. The four-way bit-identical
-# differential against reference.bin sha256
-# d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
+# filing). EMPIRICALLY VERIFIED cycle 157 (TASK-0334): codegen
+# fails with the verbatim ContractGap "mp-tcp-event barrier #2
+# participants {WorkerId(1), WorkerId(2), WorkerId(3)} exclude
+# the host worker; the one-CTRL-stream-per-(host,worker) topology
+# requires host as the barrier hub. A host-excluding barrier needs
+# a worker-to-worker mesh (filed as TASK-0175)." The
+# pipeline_parallel schedule places `conv_block_1`, `conv_block_2`,
+# `classifier` on three distinct non-host workers, with barriers
+# {w1, w2, w3} (no host). This is the ONE cell of the four
+# cycle-150 forward-linked to TASK-0329 whose forward-link was
+# correct (TASK-0334 audit verified the other three were
+# misattributed). The capability surface IS satisfiable (async +
+# buffer=3 + notify=event); only the CTRL topology gates. This is
+# the AC#4 cell of TASK-0042.05; resolution requires TASK-0329 to
+# land. The four-way bit-identical differential against reference.bin
+# sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
 # is therefore CARRIED as [[skip]]-with-blocker, not as a regression
 # of TASK-0042.05. Note: cycle 149 lifted the DATA arm of TASK-0175
 # (TASK-0327 Done); this cell's only remaining blocker is the CTRL-
