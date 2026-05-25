@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 14:06'
+updated_date: '2026-05-25 14:25'
 labels:
   - compiler
   - transfer_inject
@@ -374,4 +374,43 @@ Rationale: silent-miscompile exposure is the priority — a typed error is stric
 - The AC#3 codegen cycle MUST land with the validator's rejection LIFTED simultaneously — otherwise the typed error keeps firing after AC#3 lands. The simplest path: at the validator, when AC#3 emits cross-worker pairs for this shape, the validator either short-circuits (because the emission walk now handles it) or its predicate is relaxed. The cleanest approach is to keep the validator and add a sibling fan-out path in `build_waits_for_op` that emits real cross-worker pairs; the validator then only fires when AC#3 doesn't apply (a residual edge case).
 
 - The conservative-reject shapes (halo `data[n+1]`, const-indexed `data[5]`, arithmetic indices) are NOT exercised by any shipped schedule today. If a future schedule needs them and they ARE safe (e.g. halo+self-read with the halo machinery already extending the worker's tile), the discriminator must be enriched — for now they're rejected.
+
+## Cycle 144 final state — fold-back complete; AC#3 + AC#4 remain
+
+Parallel review gate run (qa-test-runner + mped-architect, both read-only). Both returned GO.
+
+### Architect findings folded back in-thread (commit 70e92ad)
+
+- **P1.2 (honesty)**: cycle-144 AC#0 fix deleted both true (N-to-M tile-rewrite convention at `rewrite_partition_tiles:1689-1698`) AND false (the same-set 'compute worker = dst' fabrication) content. Restored the N-to-M convention as a SEPARATE module-header bullet with explicit cross-reference to the new same-set bullet.
+- **P2.2 (defensive)**: `TransferInjectError` now carries `#[non_exhaustive]` so future variants (AC#3 lift / TASK-0325 / TASK-0326) can land without breaking `match` exhaustiveness across the 84 .map_err / .expect call sites. AC#5 positive fixture's match updated for wildcard.
+- **P2.4 + P2.5 (grep-witness)**: 'modulo accumulator self-writes' carve-out in `collect_producer_writes` now anchors to `LowerErrorKind::DoubleAssignment` in algo/ir.rs:256-260 (per TASK-0319 future-audit discipline).
+- **P1.3 (conservatively-not-rejected)**: the `ident_iv_in_set` -> None branch in the per-axis check now spells out its three sub-cases with TASK-0326 cross-reference for the arithmetic-producer-write under-conservative path.
+
+### Follow-up tracker entries filed
+
+- **TASK-0325** (Medium, M6, silent-sibling): extend validator to the per-element `(src,dst)` same-worker skip in the fan-out loop at transfer_inject.rs:2994. Architect P1.1 — the structurally-identical sibling of the line-2501 set-equality short-circuit that this cycle's validator does NOT cover.
+- **TASK-0326** (Low, validator-coverage): tighten discriminator for arithmetic-on-partition-iv producer writes. Architect P1.3 — the dormant under-conservative path.
+
+### Cycle 144 status
+
+**TASK-0324 status: stays In Progress.** AC#0/1/2/5 landed (silent-miscompile path → typed compile error). **AC#3 (cross-worker tmp codegen, N-to-N broadcast-of-gather) + AC#4 (matrix promotion to [[required]] + skip removal) remain.** Reproducer schedule kept at `distributed2.sched.nuc` as smoke-test target for the eventual AC#3 cycle.
+
+### Final verification gate
+
+- `just check`: clean.
+- `just clippy`: clean.
+- `just test`: all tests pass (dev profile).
+- `just test-release`: all tests pass (post-TASK-0291 discipline).
+- `just e2e`: 112/92/0/20/0 — IDENTICAL to pre-cycle-144 baseline. 3 back-to-back samples non-flake (qa-runner verified).
+- `just check-textual-replace-on-codegen`: OK.
+- `just check-include-str-coverage`: OK.
+- `just ci` (full hard gate): green including all 4 negative/determinism arms.
+
+### Forward-carried lessons (cycle 144 → future cycles)
+
+1. **The validator-itself was a silent-sibling defect candidate**: cycle 144 wrote a new guard against the line-2501 set-equality short-circuit but did NOT grep for structurally-identical sibling guards (line 2994 per-element skip). Architect caught it. Filed as TASK-0325. Hygiene rule: when adding a new validator / guard / check against a defect class, enumerate every structural variant of the class in the codebase BEFORE writing the validator (memory: feedback-silent-sibling-defect cycle-144 update).
+
+2. **`#[non_exhaustive]` should be added at first-variant-land**: cycle-144 added it AFTER 84 call sites already used the bare `Err` arm. The fix required only 1 site update (the AC#5 positive test) because the others used `.map_err`/`.expect` patterns rather than explicit match. Future enums in this codebase should carry `#[non_exhaustive]` from day one.
+
+3. **AC#0 doc-lie fixes must preserve true content adjacent to false content**: the cycle-143 architect's P2-3 framing 'fabricated fallback' was correct for the same-set case but did NOT mean 'no compute-worker convention exists at all'. The cycle-144 implementer (orchestrator) over-corrected. Architect P1.2 caught it. Hygiene rule: when deleting a doc-lie, the same edit must verify that the surrounding true content remains intact OR is moved to where it still applies.
 <!-- SECTION:NOTES:END -->
