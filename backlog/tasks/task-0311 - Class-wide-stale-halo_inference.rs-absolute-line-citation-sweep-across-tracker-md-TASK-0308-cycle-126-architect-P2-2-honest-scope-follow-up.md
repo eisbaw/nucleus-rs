@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 05:55'
+updated_date: '2026-05-25 05:59'
 labels: []
 dependencies: []
 priority: low
@@ -54,3 +55,20 @@ LOW priority. Same defect class as TASK-0308 cycle-126; same charitable AC inter
 - Memory: `feedback-silent-sibling-defect` — the recurrence pattern at the meta level (closing visible sites while same-class siblings silently skip).
 - Memory: `feedback-comment-doc-lie-recurring` — the underlying defect class.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0308 cycle-126 fold-back: durable memory entries persisted at feedback-sed-batch-tracker-md-substitution.md (the 4-defect class introduced by sed-batch substitution) and feedback-ac-rewrite-on-done-task.md (the related caveat on rewriting LIVE ACs of Done tasks). The next implementer briefing on TASK-0311 should read both before proposing the substitution shape. The cycle-126 lessons in concrete form:
+
+1. Atomic per-string substitution + surrounding-context re-grep AFTER each. Never sed-batch.
+2. Every NEW symbolic anchor must be greppability-verified by grep -rn "<anchor>" nucleus/ returning ≥1 hit. Editorial descriptive coinages (e.g. "halo-entry sink") are forbidden; use production literals (per_iv.entry(iv).or_insert(0), fn no_halo_bare_iv, "absent ≡ explicit-0" with backtick delimiters matching production).
+3. For LIVE ACs on Done tasks, prefer separate "Cycle-NNN clarification addendum" block. In-place rewrite only when the AC was ambiguous at filing AND the de-facto interpretation is well-documented. Always cite the earlier cycle whose interpretation is being recorded.
+4. Heredoc quoting discipline (cycle-125 lesson): use cat <<'EOF' (single-quoted) not double-quoted; backticks otherwise get command-substituted to empty strings.
+
+Sites TASK-0311 specifically targets (as of cycle 126):
+- task-0260:132 — halo_inference.rs:682 (F-P1 finding record in description)
+- task-0263:85 — halo_inference.rs:361-367 + :412 (cycle-89 verification record; borderline historical, may stay)
+- task-0275:27 — halo_inference.rs:361 (description)
+- task-0309:48 — halo_inference.rs:89-129 (cross-references on a To Do task — LIVE citation)
+<!-- SECTION:NOTES:END -->
