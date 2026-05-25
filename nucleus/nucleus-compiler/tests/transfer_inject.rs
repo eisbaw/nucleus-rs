@@ -4014,7 +4014,7 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
 /// file a follow-up task at that point.
 ///
 /// Note: the existing `task0325_ac2_positive_partial_overlap_non_aligned_read`
-/// (L2704) pins the partial-overlap rejection for a non-aligned read
+/// pins the partial-overlap rejection for a non-aligned read
 /// shape inside a consumer-side loop nest (reads `tmp[vm][vx]`). This
 /// TASK-0333 fixture pins the orthogonal shape: constant-indices read
 /// at TOP LEVEL (no enclosing loop) with partial overlap. Both shapes

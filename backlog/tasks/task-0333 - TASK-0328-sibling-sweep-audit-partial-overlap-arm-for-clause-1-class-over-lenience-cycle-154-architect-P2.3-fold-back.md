@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 20:27'
-updated_date: '2026-05-25 20:55'
+updated_date: '2026-05-25 21:13'
 labels: []
 dependencies: []
 priority: low
@@ -167,6 +167,32 @@ The AC#1 test IS the regression pin. Identical wording at both comment sites is 
 ### Implementer effort honesty (per feedback-implementer-effort-estimate-overstated)
 
 The audit work was small: ~250 LoC for the synthetic test + ~14 lines of comment addenda. The verification gate (full just-ci subset) was the bulk of the wall time. Total cycle wall time well under one hour. No surprise expansions of scope.
+
+## Cycle 155b — review-gate fold-back addendum
+
+Both review agents returned GO on cycle 155 (commit 29e28a9). No P1/P2 findings; all P3s are forward-carry. Applied in-thread (cycle 155b):
+
+- **architect P3.1**: added a grep-anchored `// FUTURE-WORK (TASK-0333 cycle-155b architect P3.1):` marker in transfer_inject.rs (between the cycle-147 AC#3 same-set early-continue and the partial-overlap rejection emit) so the latent partial-overlap-AC#3 extension surface is greppable as a single anchor rather than buried inside the rejection prose.
+- **architect P3.2**: memory file `~/.claude/projects/.../memory/feedback-orchestrator-narrative-also-wrong.md` updated with the 11th-firing entry — the implementer-brief stale-baseline (108/92/0/16/0 vs actual cycle-154 closure 112/96/0/16/0). Distinctive in that the wrong-number was in the orchestrator's IMPLEMENTER BRIEF, not in a tracker note. New hygiene rule added: cite the SOURCE ("per TASK-0328 cycle-154 closure") not bare numbers when writing briefs.
+- **qa P3.2**: tests/transfer_inject.rs doc comment cleaned — removed the off-by-one `(L2704)` absolute-line citation; function-name grep-anchor is the project's preferred pattern per [[feedback-stamp-twice-when-narrative-content-shifts-line]].
+
+Deferred (forward-carry, not blocking):
+- **qa P3.1**: pre-existing codegen-template warnings in nuc-generated scratch crate (`unused_assignments` × 3). Not from cycle-155. Future small-task material.
+- **qa P3.3**: paired-anchor phrasing drift risk (single-source-of-truth via `see also` reference). Intentionally accepted per silent-sibling discipline.
+
+### Cycle-155b gate
+
+- `just test`: 899/0/3 (preserved).
+- `just clippy`: zero warnings.
+- `just e2e`: 112/96/0/16/0 byte-identical (single sample post-edit; cycle-155 reviewer already verified non-flake × 2).
+
+### Orchestrator self-discovered defect (cycle-155b)
+
+Initial attempt used `backlog task edit --notes` which REPLACES rather than appends — clobbered the cycle-155 implementer's notes. Reverted via `git checkout` and re-applied with `--append-notes`. Lesson: ALWAYS use `--append-notes` for incremental progress; `--notes` is for first-write only. Filing this as a tracker-hygiene addendum to the orchestrator-narrative-also-wrong memory.
+
+### Final closure
+
+TASK-0333 stays Done. Audit concluded with empirical evidence: partial-overlap arm has no clause-(1) analog at the emit-site; validator hard-rejection is the load-bearing safety net. Regression pin in place. Future-work anchor added. No new tracker tasks filed (no defect surfaced).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

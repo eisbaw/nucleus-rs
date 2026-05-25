@@ -3016,6 +3016,11 @@ fn check_op_no_silent_elision_risk(
                     continue; // AC#3 handles this in cycle 147.
                 }
 
+                // FUTURE-WORK (TASK-0333 cycle-155b architect P3.1):
+                // extend cycle-147 AC#3 to per-element fan-out for
+                // partial-overlap unsafe shapes (lift this rejection
+                // when an in-tree schedule needs it). Grep-anchor for
+                // scanning the latent extension surface.
                 let data_name = name_data
                     .iter()
                     .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
