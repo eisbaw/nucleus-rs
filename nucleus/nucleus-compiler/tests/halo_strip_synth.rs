@@ -30,9 +30,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::acfg::{
-    ACFGNode, DataflowDag, DataflowEdge, Operation, XferRole, ACFG,
+    ACFGNode, DataAccess, DataflowDag, DataflowEdge, Operation, XferRole, ACFG,
 };
-use nucleus_compiler::event::{DataId, IterVar, KernelId, WorkerId};
+use nucleus_compiler::algo::ir::IrExpr;
+use nucleus_compiler::event::{ArgBinding, DataId, IterVar, KernelId, WorkerId};
 use nucleus_compiler::link::LinkedIR;
 use nucleus_compiler::passes::transfer_inject::inject_transfers;
 use nucleus_compiler::sched::SchedIR;
@@ -712,3 +713,290 @@ fn positive_placement_after_producing_op() {
 //       after the producer;
 //   (b) tag synthesised halo-strip pairs structurally so subsequent
 //       finalisation passes pass them through.
+
+// --------------------------------------------------------------------
+// TASK-0306 cycle 133: axis-mapping aware halo-strip tile emission
+// --------------------------------------------------------------------
+//
+// The pre-cycle-133 halo-strip emit hard-coded `[(outer_iv, ...),
+// (inner_iv, ...)]` tile order. This is correct for the canonical
+// shipped shape (data indexed `[outer_iv][inner_iv]` with an outer-
+// axis-leading partition) but mis-maps to wait_slice's
+// `tile.bounds[i] ↔ data.dim[i]` convention for two latent shapes:
+//
+// 1. **Inner-axis-leading layout**: data indexed `[inner_iv]
+//    [outer_iv]` — outer_iv at data dim 1, inner_iv at data dim 0.
+//    The emit must flip to `[(inner_iv, ...), (outer_iv, ...)]`.
+// 2. **Non-prefix layout**: data indexed `[k][inner_iv]` where `k`
+//    is a non-partitioned iv. Dim 0 has no partitioned iv covering
+//    it; the emit must drop to a whole-array push (empty bounds).
+//
+// `order_halo_strip_bounds_by_data_dim` (transfer_inject.rs, cycle
+// 133) consults the `data_dim_iv_map` to choose the right emit. The
+// existing positive_3x3 / positive_2x2 / determinism / placement
+// tests above (which build fixtures via `DataflowEdge::new` carrying
+// empty `data_in_access` indices) take the helper's no-dim-info
+// fall-back path — preserving the pre-cycle-133 emit order.
+//
+// AC#3 + AC#4 below construct fixtures with EXPLICIT indexed
+// accesses to exercise the two latent shapes.
+
+/// Build a synthetic 2x2 ACFG identical to
+/// `build_2d_acfg_with_partition_and_halo(2, 2, ...)` but with the
+/// body Operation's data access carrying explicit `IrExpr::Ident`
+/// indices that resolve through `name_iter_vars` to the listed iv
+/// names — populating `data_dim_iv_map` for the body data symbol.
+///
+/// `index_names` is the per-dim list of iv names, in dim order. Each
+/// entry must be a name that exists in the ACFG's `name_iter_vars`
+/// map (for AC#3 these are `"y"` and `"x"`; for AC#4 one is a fresh
+/// non-partitioned iv name added to the map).
+fn build_2x2_acfg_with_indexed_access(
+    outer_range: std::ops::Range<i64>,
+    inner_range: std::ops::Range<i64>,
+    halo_y: u64,
+    halo_x: u64,
+    index_names: &[&str],
+    extra_name_iter_vars: &[(&str, IterVar)],
+) -> ACFG {
+    let mut acfg = build_2d_acfg_with_partition_and_halo(
+        2, 2,
+        outer_range,
+        inner_range,
+        halo_y,
+        halo_x,
+    );
+    // Augment name_iter_vars with any extra (non-partitioned) ivs the
+    // caller wants to reference from the access indices.
+    for (n, iv) in extra_name_iter_vars {
+        acfg.name_iter_vars.insert((*n).to_string(), *iv);
+    }
+    // Re-wire the inner-body Operation's edge to carry indexed
+    // accesses. `build_2d_acfg_with_partition_and_halo` placed the
+    // body Op at: root[Sequence].children[0][outer Repeat].body
+    // [Sequence].children[0][inner Repeat].body[Sequence].children[0].
+    let kernel_id = KernelId(42);
+    let data_id = DataId(99);
+    let access = DataAccess {
+        data: data_id,
+        indices: index_names
+            .iter()
+            .map(|n| IrExpr::Ident((*n).to_string()))
+            .collect(),
+    };
+    let new_edge = DataflowEdge {
+        data_in: vec![data_id],
+        kernel: kernel_id,
+        data_out: None,
+        data_in_access: vec![access.clone()],
+        data_out_access: None,
+        args: vec![ArgBinding::Data(access)],
+    };
+    // Replace the body Op's edge. Walk into the tree to find the Op.
+    fn rewrite(node: &mut ACFGNode, new_edge: &DataflowEdge) {
+        match node {
+            ACFGNode::Operation(op) => {
+                op.dataflow.edges = vec![new_edge.clone()];
+            }
+            ACFGNode::Sequence(children) => {
+                let op_idx = children
+                    .iter()
+                    .position(|c| matches!(c, ACFGNode::Operation(_)));
+                if let Some(i) = op_idx {
+                    rewrite(&mut children[i], new_edge);
+                    return;
+                }
+                for c in children {
+                    rewrite(c, new_edge);
+                }
+            }
+            ACFGNode::Repeat { body, .. } => rewrite(body, new_edge),
+            ACFGNode::Xfer(_) | ACFGNode::Sync(_) => {}
+        }
+    }
+    rewrite(&mut acfg.root, &new_edge);
+    acfg
+}
+
+/// TASK-0306 AC#3: inner-axis-leading data layout.
+///
+/// Data indexed `[inner_iv][outer_iv]` while partition pair is
+/// `(outer=y, inner=x)` (the `partition_blocks2d` outer/inner roles
+/// are unchanged from `build_2d_acfg_with_partition_and_halo`).
+/// `inner_iv` (x) lives at data dim 0, `outer_iv` (y) at dim 1. The
+/// halo-strip emit MUST order the tile by data-dim position →
+/// `[(inner_iv, x_band), (outer_iv, y_strip)]` — flipped from the
+/// canonical outer-leading emit.
+///
+/// Pre-cycle-133 (without the `order_halo_strip_bounds_by_data_dim`
+/// helper) emitted `[(outer_iv, y_strip), (inner_iv, x_band)]`
+/// regardless of layout — silent mis-map to wait_slice's
+/// `bounds[i] ↔ data.dim[i]` convention.
+///
+/// Pair counts and band arithmetic match the
+/// `positive_2x2_halo_1_corner_pair_shapes` test (same fixture, same
+/// halo, just an inner-axis-leading access pattern).
+#[test]
+fn task0306_ac3_inner_axis_leading_layout_emits_in_dim_order() {
+    // Indices `[x, y]` ⇒ data dim 0 = x (inner_iv), data dim 1 = y (outer_iv).
+    let acfg = build_2x2_acfg_with_indexed_access(
+        0..16, 0..16, 1, 1,
+        &["x", "y"],
+        &[],
+    );
+    let linked = empty_linked();
+    let after = inject_transfers(&linked, acfg);
+
+    let outer_iv = IterVar(7);
+    let inner_iv = IterVar(8);
+    let data = DataId(99);
+
+    // w1 (row=0, col=0): S from w3, E from w2 (per
+    // `positive_2x2_halo_1_corner_pair_shapes`).
+    //
+    // Canonical layout would have:
+    //   S: [(outer_iv, 8..9),  (inner_iv, 0..8)]
+    //   E: [(outer_iv, 0..8),  (inner_iv, 8..9)]
+    //
+    // Inner-axis-leading layout MUST emit in dim order (inner first):
+    //   S: [(inner_iv, 0..8),  (outer_iv, 8..9)]
+    //   E: [(inner_iv, 8..9),  (outer_iv, 0..8)]
+    let s = unique_wait_tile(&after, WorkerId(3), WorkerId(1), data);
+    assert_eq!(
+        s.bounds,
+        vec![(inner_iv, 0..8), (outer_iv, 8..9)],
+        "TASK-0306 AC#3: inner-axis-leading layout MUST emit S-strip in \
+         data-dim order (inner_iv at dim 0 first, outer_iv at dim 1 last). \
+         Got bounds={:?}",
+        s.bounds,
+    );
+    let e = unique_wait_tile(&after, WorkerId(2), WorkerId(1), data);
+    assert_eq!(
+        e.bounds,
+        vec![(inner_iv, 8..9), (outer_iv, 0..8)],
+        "TASK-0306 AC#3: inner-axis-leading layout MUST emit E-strip in \
+         data-dim order. Got bounds={:?}",
+        e.bounds,
+    );
+
+    // Pin w4 (row=1, col=1): N from w2, W from w3.
+    let n = unique_wait_tile(&after, WorkerId(2), WorkerId(4), data);
+    assert_eq!(
+        n.bounds,
+        vec![(inner_iv, 8..16), (outer_iv, 7..8)],
+        "TASK-0306 AC#3: inner-axis-leading N-strip dim order. \
+         Got bounds={:?}",
+        n.bounds,
+    );
+    let w = unique_wait_tile(&after, WorkerId(3), WorkerId(4), data);
+    assert_eq!(
+        w.bounds,
+        vec![(inner_iv, 7..8), (outer_iv, 8..16)],
+        "TASK-0306 AC#3: inner-axis-leading W-strip dim order. \
+         Got bounds={:?}",
+        w.bounds,
+    );
+}
+
+/// TASK-0306 AC#4: non-prefix data layout.
+///
+/// Data indexed `[k][inner_iv]` where `k` is a non-partitioned iv.
+/// Dim 0 has iv set {k}; k is NOT in `partition_worker_ranges`, so
+/// the dim-0 covering iv is None. The halo-strip emit MUST drop to
+/// a whole-array push (empty bounds) rather than silently mis-map
+/// `bounds[0]` to a partitioned iv that doesn't index dim 0.
+///
+/// Without the cycle-133 fix the emit would have been
+/// `[(outer_iv, y_strip), (inner_iv, x_band)]` — wait_slice would
+/// interpret `bounds[0] = (outer_iv, y_strip)` as a slice on data
+/// dim 0, but data dim 0 is the `k` axis. Whole-array drop is the
+/// safe, defensive answer per AC#1.
+///
+/// The halo on outer_iv is the trigger here (data still ends up in
+/// `data_with_halo_y` via the consumer-kernel join in
+/// `inject_halo_strip_xfers` lines ~2618-2648, even though the data
+/// itself isn't indexed by outer_iv — the kernel may have halo on
+/// outer_iv for OTHER data symbols it reads).
+#[test]
+fn task0306_ac4_non_prefix_data_layout_drops_to_whole_array() {
+    // Introduce a synthetic non-partitioned iv `k = IterVar(42)`,
+    // index the data as `[k, x]`. Dim 0 = k (unpartitioned),
+    // dim 1 = inner_iv (x, partitioned).
+    let k_iv = IterVar(42);
+    let acfg = build_2x2_acfg_with_indexed_access(
+        0..16, 0..16, 1, 1,
+        &["k", "x"],
+        &[("k", k_iv)],
+    );
+    let linked = empty_linked();
+    let after = inject_transfers(&linked, acfg);
+
+    let data = DataId(99);
+
+    // Every halo-strip tile for `data` MUST be empty-bounds (whole-
+    // array drop): `outer_iv` is not in data's dim union, so the
+    // helper returns Vec::new().
+    let strips: Vec<_> = after
+        .root
+        .collect_xfers()
+        .into_iter()
+        .filter(|x| x.role == XferRole::Wait && x.data == data)
+        .collect();
+    assert!(
+        !strips.is_empty(),
+        "TASK-0306 AC#4: expected halo-strip Waits to be emitted for \
+         `data` (the halo widths exist on outer_iv and inner_iv); got 0 \
+         Waits which would itself be a regression"
+    );
+    for w in &strips {
+        assert!(
+            w.tile.bounds.is_empty(),
+            "TASK-0306 AC#4: non-prefix layout (data indexed [k][x] with \
+             k NOT partitioned) MUST drop halo-strip tile to whole-array \
+             (empty bounds). Got bounds={:?} on Wait src={:?} dst={:?} \
+             seq={:?}",
+            w.tile.bounds, w.src, w.dst, w.seq,
+        );
+    }
+}
+
+/// TASK-0306 AC#5 regression-floor: the canonical outer-axis-leading
+/// data layout (data indexed `[outer_iv][inner_iv]` matching the
+/// shipped 05/distributed-2d shape) MUST emit halo-strip tiles in
+/// the pre-cycle-133 `(outer_iv, inner_iv)` order. This pins that
+/// the cycle-133 helper's "outer_dim < inner_dim" branch is
+/// observationally a no-op for shipped schedules.
+#[test]
+fn task0306_ac5_canonical_outer_leading_layout_preserves_emit_order() {
+    let acfg = build_2x2_acfg_with_indexed_access(
+        0..16, 0..16, 1, 1,
+        &["y", "x"],  // canonical: [outer_iv][inner_iv]
+        &[],
+    );
+    let linked = empty_linked();
+    let after = inject_transfers(&linked, acfg);
+
+    let outer_iv = IterVar(7);
+    let inner_iv = IterVar(8);
+    let data = DataId(99);
+
+    // Pin w1 (0,0): S from w3, E from w2 — same shapes as
+    // `positive_2x2_halo_1_corner_pair_shapes` (which uses
+    // DataflowEdge::new no-index fall-back).
+    let s = unique_wait_tile(&after, WorkerId(3), WorkerId(1), data);
+    assert_eq!(
+        s.bounds,
+        vec![(outer_iv, 8..9), (inner_iv, 0..8)],
+        "TASK-0306 AC#5: canonical outer-leading S-strip emit. \
+         Got bounds={:?}",
+        s.bounds,
+    );
+    let e = unique_wait_tile(&after, WorkerId(2), WorkerId(1), data);
+    assert_eq!(
+        e.bounds,
+        vec![(outer_iv, 0..8), (inner_iv, 8..9)],
+        "TASK-0306 AC#5: canonical outer-leading E-strip emit. \
+         Got bounds={:?}",
+        e.bounds,
+    );
+}

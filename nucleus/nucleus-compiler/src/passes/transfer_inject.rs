@@ -432,6 +432,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> ACFG {
             &grid_shape_for_outer_iv,
             &partition_worker_ranges,
             &policies_by_data,
+            &data_dim_iv_map,
             &mut state,
         )
     };
@@ -1694,20 +1695,24 @@ fn rewrite_partition_tiles_inner(
                 //     contract (DataflowEdge::new constructs accesses
                 //     with empty indices).
                 //
-                // Silent-sibling audit (architect P3.3, cycle 118):
-                // every other site that mutates `x.tile` either
-                // constructs it structurally from the live enclosing-
-                // loop stack (`inject_in_node_with_tile`), extends an
+                // Silent-sibling audit (architect P3.3, cycle 118;
+                // updated TASK-0306 cycle 133): every other site that
+                // mutates `x.tile` either constructs it structurally
+                // from the live enclosing-loop stack
+                // (`inject_in_node_with_tile`), extends an
                 // already-filtered bounds set
                 // (`extend_xfer_tiles_for_halo`, runs after us), or
                 // hand-crafts the (outer_iv, inner_iv) pair from the
                 // partition_pairs sidecar (`inject_halo_strip_xfers`,
-                // structurally axis-correct by construction). A future
-                // N-dim halo or partition pass that constructs
-                // `bounds` from a `partition_axis_order` MUST consult
+                // axis-correct since cycle 133 via
+                // `order_halo_strip_bounds_by_data_dim` consulting
+                // `data_dim_iv_map`). A future N-dim halo or partition
+                // pass that constructs `bounds` from a
+                // `partition_axis_order` MUST consult
                 // `data_dim_iv_map` (via
-                // `compute_partition_bounds_with_dim_prefix`) to
-                // avoid re-importing the axis-mapping assumption.
+                // `compute_partition_bounds_with_dim_prefix` or the
+                // cycle-133 helper) to avoid re-importing the
+                // axis-mapping assumption.
                 let bounds = match compute_partition_bounds_with_dim_prefix(
                     x.data,
                     data_dim_iv_map,
@@ -1969,6 +1974,75 @@ fn compute_partition_bounds_with_dim_prefix(
         }
     }
     Some(bounds)
+}
+
+/// TASK-0306: order an `inject_halo_strip_xfers` strip tile by data-dim
+/// position (matching `wait_slice`'s `tile.bounds[i] ↔ data.dim[i]`
+/// convention).
+///
+/// `inject_halo_strip_xfers` constructs each strip tile from the
+/// partition-pair `(outer_iv, inner_iv)` and the per-axis halo band
+/// arithmetic. The pre-cycle-133 emit hard-coded `[(outer_iv, ...),
+/// (inner_iv, ...)]` — correct ONLY when the halo-bearing data is
+/// indexed `[outer_iv][inner_iv]` (outer-axis-leading) AND both ivs
+/// form a contiguous prefix of the data's dims. Every shipped schedule
+/// (05/distributed-2d's `img_in[y][x]` × `partition=blocks2d(y, x)`)
+/// is in that safe regime; the two open shapes this helper guards
+/// against are:
+///
+/// 1. **Inner-axis-leading partition** — data indexed `[inner_iv]
+///    [outer_iv]`. `outer_dim = 1`, `inner_dim = 0`; the emit must
+///    flip to `[(inner_iv, ...), (outer_iv, ...)]`.
+/// 2. **Non-prefix data layout** — data indexed `[k][inner_iv]`
+///    where `k` is not partitioned. `outer_dim = None`; the emit
+///    must drop to a whole-array push (empty bounds) rather than
+///    silently mis-map dim 0 to the outer iv.
+///
+/// ### Fall-back: no observed dim info
+///
+/// Synthetic test fixtures built via `DataflowEdge::new` carry empty
+/// `data_in_access` indices ⇒ `data_dim_iv_map[data]` is `Some(empty)`
+/// or `None`. We treat both as "no observed dim info" and return the
+/// pre-cycle-133 default ordering so the existing
+/// `halo_strip_synth.rs` fixtures (positive_3x3 / positive_2x2 /
+/// determinism / placement) stay byte-identical.
+///
+/// ### Ambiguity (both ivs at same dim)
+///
+/// `a[outer_iv + inner_iv]` is theoretically possible (composite
+/// index expression); not seen in canonical AlgoIR. Defensive drop to
+/// whole-array (empty bounds), same policy as
+/// [`compute_partition_bounds_with_dim_prefix`].
+fn order_halo_strip_bounds_by_data_dim(
+    data: DataId,
+    outer_iv: IterVar,
+    outer_range: std::ops::Range<i64>,
+    inner_iv: IterVar,
+    inner_range: std::ops::Range<i64>,
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+) -> Vec<(IterVar, std::ops::Range<i64>)> {
+    let default_order = vec![
+        (outer_iv, outer_range.clone()),
+        (inner_iv, inner_range.clone()),
+    ];
+    let Some(per_dim) = data_dim_iv_map.get(&data) else {
+        return default_order;
+    };
+    if per_dim.is_empty() {
+        return default_order;
+    }
+    let outer_dim = per_dim.iter().position(|s| s.contains(&outer_iv));
+    let inner_dim = per_dim.iter().position(|s| s.contains(&inner_iv));
+    match (outer_dim, inner_dim) {
+        (Some(od), Some(id)) if od == id => Vec::new(),
+        (Some(od), Some(id)) if od < id => {
+            vec![(outer_iv, outer_range), (inner_iv, inner_range)]
+        }
+        (Some(_), Some(_)) => {
+            vec![(inner_iv, inner_range), (outer_iv, outer_range)]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Recursively collect every `IrExpr::Ident(name)` whose `name` resolves
@@ -2520,6 +2594,7 @@ fn is_duplicate_xfer(prev: Option<&ACFGNode>, cand: &XferPlaceholder) -> bool {
 /// per-axis emit order is fixed (N, S, W, E). SeqTags come from the
 /// shared `state` counter in DFS-deterministic visit order. Same
 /// input ⇒ byte-identical output.
+#[allow(clippy::too_many_arguments)]
 fn inject_halo_strip_xfers(
     node: ACFGNode,
     halo_widths: &BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
@@ -2527,6 +2602,7 @@ fn inject_halo_strip_xfers(
     grid_shape_for_outer_iv: &BTreeMap<IterVar, (u32, u32)>,
     partition_worker_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
     policies_by_data: &BTreeMap<DataId, TransferPolicy>,
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
     state: &mut State,
 ) -> ACFGNode {
     // AC#3 additive-only short-circuit. Every shipped schedule has an
@@ -2712,16 +2788,29 @@ fn inject_halo_strip_xfers(
                 };
 
             // ---- N neighbour: row-1, col. ----
+            //
+            // Per-axis bands: outer (y) extends DOWN by h_y into the
+            // neighbour's bottom row; inner (x) stays at this worker's
+            // x-band. `order_halo_strip_bounds_by_data_dim` (TASK-0306)
+            // orders the tile by data-dim position — preserving the
+            // pre-cycle-133 `(outer, inner)` shape for canonical
+            // outer-axis-leading layouts and flipping / dropping for
+            // inner-axis-leading or non-prefix layouts.
             if row > 0 {
                 let neighbour_idx = (row - 1) * grid_cols_usize + col;
                 let neighbour = body_workers[neighbour_idx];
                 for &data in &all_halo_data {
                     if let Some(&h_y) = data_with_halo_y.get(&data) {
                         let h_y_i: i64 = h_y.try_into().unwrap_or(i64::MAX);
-                        let tile = IterTile::new(vec![
-                            (outer_iv, (y_lo - h_y_i)..y_lo),
-                            (inner_iv, x_lo..x_hi),
-                        ]);
+                        let bounds = order_halo_strip_bounds_by_data_dim(
+                            data,
+                            outer_iv,
+                            (y_lo - h_y_i)..y_lo,
+                            inner_iv,
+                            x_lo..x_hi,
+                            data_dim_iv_map,
+                        );
+                        let tile = IterTile::new(bounds);
                         emit_pair(neighbour, this_w, data, tile, state);
                     }
                 }
@@ -2734,10 +2823,15 @@ fn inject_halo_strip_xfers(
                 for &data in &all_halo_data {
                     if let Some(&h_y) = data_with_halo_y.get(&data) {
                         let h_y_i: i64 = h_y.try_into().unwrap_or(i64::MAX);
-                        let tile = IterTile::new(vec![
-                            (outer_iv, y_hi..(y_hi + h_y_i)),
-                            (inner_iv, x_lo..x_hi),
-                        ]);
+                        let bounds = order_halo_strip_bounds_by_data_dim(
+                            data,
+                            outer_iv,
+                            y_hi..(y_hi + h_y_i),
+                            inner_iv,
+                            x_lo..x_hi,
+                            data_dim_iv_map,
+                        );
+                        let tile = IterTile::new(bounds);
                         emit_pair(neighbour, this_w, data, tile, state);
                     }
                 }
@@ -2750,10 +2844,15 @@ fn inject_halo_strip_xfers(
                 for &data in &all_halo_data {
                     if let Some(&h_x) = data_with_halo_x.get(&data) {
                         let h_x_i: i64 = h_x.try_into().unwrap_or(i64::MAX);
-                        let tile = IterTile::new(vec![
-                            (outer_iv, y_lo..y_hi),
-                            (inner_iv, (x_lo - h_x_i)..x_lo),
-                        ]);
+                        let bounds = order_halo_strip_bounds_by_data_dim(
+                            data,
+                            outer_iv,
+                            y_lo..y_hi,
+                            inner_iv,
+                            (x_lo - h_x_i)..x_lo,
+                            data_dim_iv_map,
+                        );
+                        let tile = IterTile::new(bounds);
                         emit_pair(neighbour, this_w, data, tile, state);
                     }
                 }
@@ -2766,10 +2865,15 @@ fn inject_halo_strip_xfers(
                 for &data in &all_halo_data {
                     if let Some(&h_x) = data_with_halo_x.get(&data) {
                         let h_x_i: i64 = h_x.try_into().unwrap_or(i64::MAX);
-                        let tile = IterTile::new(vec![
-                            (outer_iv, y_lo..y_hi),
-                            (inner_iv, x_hi..(x_hi + h_x_i)),
-                        ]);
+                        let bounds = order_halo_strip_bounds_by_data_dim(
+                            data,
+                            outer_iv,
+                            y_lo..y_hi,
+                            inner_iv,
+                            x_hi..(x_hi + h_x_i),
+                            data_dim_iv_map,
+                        );
+                        let tile = IterTile::new(bounds);
                         emit_pair(neighbour, this_w, data, tile, state);
                     }
                 }
