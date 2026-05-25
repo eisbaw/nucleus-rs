@@ -3,11 +3,11 @@ id: TASK-0297
 title: >-
   07-matmul distributed schedule + e2e cells (M5 AC#4 closeout, example 7 of
   5-7)
-status: In Progress
+status: Done
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-25 00:49'
-updated_date: '2026-05-25 01:36'
+updated_date: '2026-05-25 02:23'
 labels:
   - M5
   - compiler
@@ -87,27 +87,17 @@ Honest-failure path: if 2D matmul + partition=blocks2d hits codegen gaps in tran
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-CYCLE 117 BLOCKED (orchestrator-direct, 2026-05-25):
-- Drafted nuc-nucleus/examples/07-matmul/schedules/distributed.sched.nuc with partition=workers on i, sync transfers for a/b/c.
-- Smoke-built on pthreads-sync via release driver; emit inspection found:
-  - a: `a[0..64].copy_from_slice(&_tmp[0..64])` — CORRECT (a indexed [i][k], leading axis i = partitioned).
-  - b: `b[0..64].copy_from_slice(&_tmp[0..64])` — WRONG. b indexed [k][j]; leading axis k. tile.bounds[0] = (i, i_band) silently sliced b's k axis by i_band. Worker 0 receives only b[k=0..i_band.end][full j], reads zero-default for k beyond its band.
-  - c: gather correct (c indexed [i][j], leading axis i).
-- ROOT CAUSE: AXIS-MAPPING ASSUMPTION limit documented at `nucleus/backend-common/src/multi_worker_walker.rs:919-935`. transfer_inject's `rewrite_partition_tiles_inner` (lines 1627-1687) constructs xfer tile bounds with ALL partitioned axes regardless of whether they index the specific data symbol. wait_slice then mis-maps. Matmul is the FIRST shipped algorithm where the partitioned iv does NOT index every data symbol (b is not indexed by i, a is not indexed by j).
-- FILED PREREQUISITE: TASK-0301 (HIGH) — transfer_inject + wait_slice must filter tile bounds by data access pattern. The data needed is already on `DataflowEdge::data_in_access` (per transfer_inject docs); the filter is one upstream pass away.
+CLOSED cycle 118 (2026-05-25). Blocker TASK-0301 LANDED — additive per-data axis-mapping filter at transfer_inject.rs::rewrite_partition_tiles_inner correctly excludes the partitioned i from b's tile bounds (b is indexed [k][j], not by i) → empty bounds → wait_slice's whole-array arm broadcasts full b. All 4 tier-1 backends pass bit-identical:
 
-CURRENT STATE:
-- TASK-0297 marked BLOCKED on TASK-0301 (depends_on added).
-- Draft schedule kept in place with explicit BLOCKED header pointing to TASK-0301.
-- 4 [[skip]] entries added to nuc-nucleus/e2e-matrix.toml citing TASK-0301 (so the harness reports SKIPPED instead of FAIL/diff noise). e2e baseline 100/84/0/16/0 → 104/84/0/20/0 (+4 skip cells).
-- When TASK-0301 lands, change [[skip]] → [[required]] in matrix, verify bit-identical, close TASK-0297.
+  07-matmul/distributed × pthreads-sync   PASS (847ms)
+  07-matmul/distributed × mp-tcp-bufsync  PASS (803ms)
+  07-matmul/distributed × pthreads-async  PASS (1.03s)
+  07-matmul/distributed × mp-tcp-event    PASS (3.10s)
 
-DECISION RATIONALE (cycle 117):
-- Considered partition=workers (1D) vs partition=blocks2d (2D). Both hit the same limit; blocks2d hits it on BOTH a and b; workers hits it only on b. partition=workers is the simpler exerciser of the gap.
-- Considered honest-scope-down to "single-worker matmul + per-worker broadcast of full b" — but that's a degenerate distributed shape that doesn't really stress M5 machinery. Worse than honest-blocked.
-- The HIGH-priority TASK-0301 unblocks not just matmul but ANY future algorithm where a transferred data symbol is not indexed by every partitioned iv. The class of unblocked algorithms is substantial (any partial-reduction, any non-stencil distributed shape).
+PROMOTED: 4 [[skip]] → 4 [[required]] M5 in e2e-matrix.toml.
+SCHEDULE: examples/07-matmul/schedules/distributed.sched.nuc — BLOCKED header replaced with production comment.
 
-GOTCHAS + FORWARD-CARRY:
-- Cycle 116 closed mp-tcp-bufsync's slice-paste silent-sibling. Cycle 117 closed mp-tcp-bufsync's silent-sibling AND surfaced the AXIS-MAPPING limit (a separate class of silent-corruption-bypass that the cycle-116 fix made universal across backends). Both are different shapes of "honest-partial assumption hardens silently across backends" — the architectural memory `feedback-silent-sibling-defect.md` (cycle-116 update) covers the first; this one motivates extending the "AXIS-MAPPING ASSUMPTION" doc reference into the same memory file when TASK-0301 lands.
-- Verify after TASK-0301 lands: 05/distributed + 05/distributed-2d + 06/distributed cells remain byte-identical (the fix must not regress cases where every partitioned iv DOES index every data symbol).
+M5 AC#4 COMPLETE for examples 5-7 (PRD §11): examples 5 (05-stencil, cycles 79c..115), 6 (06-separable-filter, cycle 116), 7 (07-matmul, cycle 118) all have distributed schedules landing bit-identical on at least one tier-1 backend.
+
+Baseline 104/84/0/20/0 → 104/88/0/16/0.
 <!-- SECTION:NOTES:END -->
