@@ -3,11 +3,11 @@ id: TASK-0322
 title: >-
   multi_worker_walker: parametric prefix pin for Push emit (line 789) — sibling
   to TASK-0321 Wait coverage
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 12:05'
-updated_date: '2026-05-25 12:12'
+updated_date: '2026-05-25 12:29'
 labels:
   - backend-common
   - multi-worker-walker
@@ -110,3 +110,111 @@ Cycle 141 plan:
    after both subagents return GO and AC#1 + AC#3 are met (AC#2 was
    already deferred at TASK-0321 cycle 140 — explicit honest-scope).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 141 implementation summary + architect P3 #1 fold-back
+
+### What landed
+
+Added `task0322_rendezvous_prefix_substituted_on_push_emit` to
+`nucleus/backend-common/tests/wait_assign_slice.rs`. Iterates over
+`rendezvous_prefix in {"ring", "slot", "chan"}` and asserts on the
+Push branch at `multi_worker_walker.rs:789` (now line 806
+post-cycle-141 fold-back docstring expansion):
+
+1. The expected line `{prefix}_12.push(img_out.clone());` is present.
+2. For each of the other two prefixes, the substring
+   `{other}_12.push(` is NOT present (defensive — catches a hardcoded
+   prefix regression on the Push branch).
+3. The `// send `img_out` to host` comment is present (confirms the
+   Push branch was entered; not a fall-through to some other handler).
+
+Shape (DataId(7) "img_out" [16,16], 2D tile [(y,1..8),(x,1..8)],
+rid=12) is held identical to the cycle-140 TASK-0321 Wait test so the
+two tests differ ONLY in the event constructor.
+
+### Placement decision (AC#3)
+
+Test placed in `wait_assign_slice.rs` alongside TASK-0321 rather than
+in a new `push_emit_prefix.rs`. Rationale: sibling-adjacency for the
+prefix-substitution sweep + helper reuse (avoids duplicating
+`make_minimal_tables` / `one_pair` / `RendezvousIds` aliases). Cost:
+slight name-vs-content drift — the file module-doc heading still says
+"Receiver-side gather emit shape for `Event::Wait`" but the file now
+also covers Push-side prefix-emit. Mitigation: a new module-doc
+paragraph (lines 96-113) acknowledges the scope drift explicitly and
+documents the tradeoff. Acknowledged stretch, not a defect (both
+review subagents concurred).
+
+### AC status
+
+- **AC#1**: DONE. Push-side prefix substitution at the line-789
+  emit-template (post-fold-back line 806) is parametrically pinned
+  across the three `render_worker_events`-using prefixes.
+- **AC#2**: DONE. Defensive negative assertions filter the other two
+  prefixes per iteration (matched on the full `{other}_12.push(`
+  substring, not just the prefix word — avoids false positives on
+  comment text mentioning other prefix names).
+- **AC#3**: DONE (placement decision documented in module-doc
+  + this final summary).
+
+### Gates (cycle-141 implementation commit + fold-back, both verified)
+
+- `just build && just clippy`: green (no warnings under `-D warnings`).
+- `just test` (dev): 874 / 0 / 3 (was 873; +1 new test).
+- `just test-release`: 874 / 0 / 3 (matches dev).
+- `just e2e`: 108 / 92 / 0 / 16 / 0 baseline preserved exactly.
+
+### Review gate (parallel, read-only)
+
+Both subagents independently reproduced the gate numbers:
+
+- **qa-test-runner**: GO. Verified test bite by patching the
+  production substitution string to a hardcoded `ring_{rid}` — the
+  test fired correctly. P3 nit only (consider renaming
+  wait_assign_slice.rs if a third Push-class pin lands).
+- **mped-architect**: GO. Three P3 findings:
+  - **P3 #1** (acted-on in-thread): `WalkerCtx` rustdoc at
+    `multi_worker_walker.rs:128-129` and `:134-136` (pre-fold-back
+    lines) contained two stale claims from cycle 31 era: "the two
+    backends" (now three prefix-using + one bypass) and "the four
+    emit-string substitutions" (actual count: two — Push at line 789,
+    Wait at line 809, both same-file). Both rewritten with grep-witness
+    anchors per cycle-138/140 pattern. Same-file line stamps
+    digit-only updated post-edit (789→806, 809→826) and re-grepped
+    for stability per cycle-138 protocol.
+  - **P3 #2** (no action — architect concurred during verification):
+    "end-to-end" claim in the new module-doc paragraph is honestly
+    scoped — no other `{rendezvous_prefix}` substitution sites exist
+    in `nucleus/backend-common/src/`.
+  - **P3 #3** (no action — by-construction non-issue): defensive
+    negatives only catch hardcoded values within {ring, slot, chan},
+    but a regression hardcoding "chan_" while configured as "chan" is
+    a no-op.
+
+### Cycle-128 silent-sibling discipline: TASK-0323 filed
+
+The same `WalkerCtx`-era doc-lie pattern appears at four other
+narrative sites (two same-file paragraphs in `multi_worker_walker.rs`
++ two cross-crate paragraphs in `pthreads-async/multi_worker.rs`).
+Cycle 141 fixed only the two architect-cited sites in-thread; the
+broader sweep is filed as TASK-0323 (LOW, dependency TASK-0322) with
+grep-anchored site enumeration. This honest-scope split matches the
+"small precise findings: fix in-thread; larger findings: file new
+tracker tasks with dependencies" discipline.
+
+### Sibling-pair completion
+
+TASK-0321 (cycle 140) + TASK-0322 (cycle 141) close the
+`render_worker_events`-machinery prefix-substitution sweep end-to-end:
+both substitution sites in `multi_worker_walker.rs` (Push line 806,
+Wait line 826 — post-cycle-141 fold-back) are now parametrically
+pinned across the three prefix-using backends.
+
+### Cycle conclusion
+
+All ACs met. Cycle-141 implementation (commit 9622375) + review
+fold-back (commit 925ac97) both gate-green. Closing as Done.
+<!-- SECTION:NOTES:END -->
