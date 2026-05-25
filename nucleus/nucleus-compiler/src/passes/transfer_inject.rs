@@ -2036,9 +2036,27 @@ fn order_halo_strip_bounds_by_data_dim(
     // Fall-back hot path: synthetic fixtures + the defensive
     // missing-entry case. Build the default order LAZILY (no clones
     // on the canonical-indexed-access branches below).
+    //
+    // TASK-0315: emit a `NUC_TRACE`-gated diagnostic on the fall-back
+    // so a future engineer who unwittingly constructs a synthetic
+    // fixture via `DataflowEdge::new` (empty `data_in_access`) gets
+    // an observable signal that the cycle-133 axis-mapping defence
+    // is BYPASSED on this call. Production callers always observe
+    // accesses (`walk_data_dim_iv_map` records non-empty per-dim
+    // sets), so this trace fires only for synthetic test paths.
     let per_dim = match data_dim_iv_map.get(&data) {
         Some(p) if !p.is_empty() => p,
         _ => {
+            crate::nuc_trace!(
+                "transfer_inject::order_halo_strip_bounds_by_data_dim: fall-back to default \
+                 order (data={data:?}, outer_iv={outer_iv:?}, inner_iv={inner_iv:?}); \
+                 data_dim_iv_map entry is {entry} — axis-mapping defence BYPASSED for this \
+                 call (expected only on synthetic fixtures built via DataflowEdge::new)",
+                entry = match data_dim_iv_map.get(&data) {
+                    None => "absent",
+                    Some(_) => "Some(empty)",
+                }
+            );
             return vec![(outer_iv, outer_range), (inner_iv, inner_range)];
         }
     };
@@ -3162,5 +3180,127 @@ impl ACFG {
     /// Total Wait count across the whole ACFG.
     pub fn wait_count(&self) -> usize {
         self.root.count_xfers_role(XferRole::Wait)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Inline unit tests for `order_halo_strip_bounds_by_data_dim`.
+    //!
+    //! TASK-0315: pin the helper's branch selection directly. The
+    //! integration tests in `tests/halo_strip_synth.rs` (task0306_ac3 /
+    //! ac4) exercise the helper via `inject_transfers` end-to-end and
+    //! observe the EMIT shape; these direct-call tests prove the
+    //! helper's branch ordering as a unit, so a future refactor of
+    //! `inject_halo_strip_xfers` that bypasses or short-circuits the
+    //! helper would still be caught by these unit pins.
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn iv_set(ivs: &[IterVar]) -> BTreeSet<IterVar> {
+        ivs.iter().copied().collect()
+    }
+
+    /// AC#2 (positive arm): with a populated `data_dim_iv_map` entry,
+    /// the helper returns dim-ordered bounds — proving the fall-back
+    /// branch was NOT taken. Indices `[outer_iv][inner_iv]` → canonical
+    /// outer-leading emit.
+    #[test]
+    fn task0315_outer_leading_takes_canonical_path_not_fallback() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let data = DataId(99);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        map.insert(data, vec![iv_set(&[outer_iv]), iv_set(&[inner_iv])]);
+
+        let got = order_halo_strip_bounds_by_data_dim(
+            data, outer_iv, 8..9, inner_iv, 0..8, &map,
+        );
+
+        assert_eq!(
+            got,
+            vec![(outer_iv, 8..9), (inner_iv, 0..8)],
+            "TASK-0315 AC#2: outer-leading data layout MUST emit canonical \
+             outer-first order via the data-dim consultation branch, not the \
+             default-order fall-back (which would happen to coincide here, \
+             but the swapped-layout test below proves the canonical branch \
+             actually fires).",
+        );
+    }
+
+    /// AC#2 (cross-check): with a SWAPPED dim layout (inner_iv at dim 0,
+    /// outer_iv at dim 1) the helper MUST flip emit order. Default-order
+    /// fall-back would return `[(outer_iv, ...), (inner_iv, ...)]` — a
+    /// different vector — so this directly distinguishes the canonical
+    /// path from the fall-back.
+    #[test]
+    fn task0315_inner_leading_flips_order_proving_non_fallback() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let data = DataId(99);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        // dim 0 = inner_iv, dim 1 = outer_iv (inner-axis-leading layout).
+        map.insert(data, vec![iv_set(&[inner_iv]), iv_set(&[outer_iv])]);
+
+        let got = order_halo_strip_bounds_by_data_dim(
+            data, outer_iv, 8..9, inner_iv, 0..8, &map,
+        );
+
+        assert_eq!(
+            got,
+            vec![(inner_iv, 0..8), (outer_iv, 8..9)],
+            "TASK-0315 AC#2: inner-axis-leading layout MUST flip to \
+             inner-first emit. The fall-back branch would have returned \
+             [(outer_iv, ...), (inner_iv, ...)] — its return value \
+             differs from this expected output, so a passing assertion \
+             here is direct evidence the canonical (non-fall-back) \
+             branch fired.",
+        );
+    }
+
+    /// Fall-back branch: `Some(empty)` per-dim Vec ⇒ default order. This
+    /// is the path the cycle-133 NUC_TRACE diagnostic now reports. The
+    /// behaviour is unchanged from cycle 133 — pinned here so a future
+    /// edit to the fall-back cannot silently change its return shape.
+    #[test]
+    fn task0315_some_empty_falls_back_to_default_order() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let data = DataId(99);
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        map.insert(data, Vec::new());
+
+        let got = order_halo_strip_bounds_by_data_dim(
+            data, outer_iv, 8..9, inner_iv, 0..8, &map,
+        );
+
+        assert_eq!(
+            got,
+            vec![(outer_iv, 8..9), (inner_iv, 0..8)],
+            "TASK-0315: Some(empty) takes fall-back; default order is \
+             outer-leading.",
+        );
+    }
+
+    /// Fall-back branch: data missing from the map ⇒ default order (the
+    /// `None` arm). Production callers never reach this path; pinned for
+    /// the synthetic-fixture safety net.
+    #[test]
+    fn task0315_missing_data_falls_back_to_default_order() {
+        let outer_iv = IterVar(7);
+        let inner_iv = IterVar(8);
+        let data = DataId(99);
+        let map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+
+        let got = order_halo_strip_bounds_by_data_dim(
+            data, outer_iv, 8..9, inner_iv, 0..8, &map,
+        );
+
+        assert_eq!(
+            got,
+            vec![(outer_iv, 8..9), (inner_iv, 0..8)],
+            "TASK-0315: missing entry takes fall-back; default order is \
+             outer-leading.",
+        );
     }
 }
