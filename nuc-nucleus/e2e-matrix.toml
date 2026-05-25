@@ -702,53 +702,55 @@ milestone = "M5"
 
 # 05-stencil/distributed-2d × pthreads-async: FIRST e2e cell
 # exercising the halo-strip Push/Wait synthesis (TASK-0289 cycle 114a)
-# under partition=blocks2d on a 2x2 worker grid. The schedule landed
-# in TASK-0290 cycle 114b alongside the placement fix in
+# + the 2D row-loop slice-paste (TASK-0294 cycle 115) under
+# partition=blocks2d on a 2x2 worker grid. The schedule landed in
+# TASK-0290 cycle 114b alongside the placement fix in
 # `prepend_strip_pairs` (synthesised pairs now land AFTER the host
 # load_image Operation, not before — see transfer_inject.rs docs
 # for the ordering rationale).
 #
-# DISCOVERED cycle 114b (TASK-0290): the bit-identical assertion
-# FAILS against 05-stencil/reference.bin at byte 68 (element 17 =
-# row 1, col 1, first compute pixel) because backend-common's
-# `leading_axis_slice` (HONEST-PARTIAL ASSUMPTION cited in its
-# doc comment from TASK-0117) ignores the inner axis of 2D
-# partition tiles. The host gather pastes each worker's 2D
-# rectangle as a 1D y-band slice, overwriting adjacent workers'
-# columns with default-zero values. This is a real semantic
-# codegen gap, NOT a defect in the halo-strip synthesis or the
-# cycle 114b placement fix.
+# PROMOTED to [[required]] in TASK-0294 cycle 115: extending
+# backend-common's `wait_slice` (pre-cycle-115: `leading_axis_slice`)
+# from a 1D leading-axis-only descriptor to a `WaitSlice` enum
+# (`Flat` 1D + `Rows` 2D) lets `render_wait_assign` emit a per-row
+# `copy_from_slice` over only the rectangular sub-region each
+# worker wrote, instead of the pre-cycle-115 1D y-band collapse
+# that overwrote adjacent workers' columns with default-zero
+# values. Bit-identical against 05-stencil/reference.bin holds — a
+# single-pass box blur is invariant under the partition SHAPE
+# (1D row-band vs 2D grid), so the same reference oracle applies.
 #
-# Promotion to [[required]] is blocked on TASK-0294 (extend
-# leading_axis_slice / design a 2D slice-paste path that respects
-# both axes of an N-D tile). The schedule file + this matrix entry
-# stay landed so the next implementer of TASK-0294 has the
-# verifying fixture ready.
+# Pre-cycle-115 defect footprint (regression pin in
+# nucleus/backend-common/tests/wait_assign_slice.rs::
+# rows_2d_slice_paste_for_partition_blocks2d): host gather pastes
+# `img_out[16usize..128usize]` (rows 1..8 ALL cols) per worker;
+# w1's call OVERWRITES w0's contribution to cols 0..8 with w1's
+# default-zero columns there, etc. First divergence at byte 68 =
+# element 17 = row 1 col 1 = first compute pixel. Post-cycle-115:
+# emits `for _y in 1usize..8usize { let _r = _y * 16usize; img_out
+# [_r + 1usize.._r + 8usize].copy_from_slice(&_tmp[_r + 1usize.._r
+# + 8usize]); }` — each worker writes only its own 7x7 rectangle.
 #
-# What cycle 114b DID prove (without bit-identical promotion):
-#   - partition=blocks2d lowers end-to-end through the pipeline
-#     (no panic, no fall-through, the emitted main.rs builds and
-#     runs);
-#   - halo-strip Push/Wait synthesis fires under the new
+# What this cell proves:
+#   - partition=blocks2d lowers end-to-end through the pipeline;
+#   - halo-strip Push/Wait synthesis fires under the
 #     partition_pairs sidecar (16 synthesised Xfer nodes at the
 #     root Sequence, exercised by the unit test
-#     `positive_placement_after_producing_op` and the e2e cell
-#     above);
+#     `positive_placement_after_producing_op` upstream);
 #   - cycle 114b's placement fix orders the synthesised Wait AFTER
-#     the producing Operation in the root Sequence (the e2e cell's
-#     emitted main.rs has the host's `load_image` call BEFORE the
-#     host's `ring_*.push(img_in.clone())` broadcasts, which is the
-#     correct producer-then-broadcast order — pre-fix would have
-#     swapped them).
+#     the producing Operation in the root Sequence;
+#   - cycle 115's 2D row-loop slice-paste produces bit-identical
+#     output against the reference oracle on both the host gather
+#     of `img_out` AND the worker-to-worker halo strips for
+#     `img_in`.
 #
 # Multi-pass / time-step stencil (where halo strips carry unique
 # semantic value) remains a separate follow-up — see the parent
-# task brief.
-[[skip]]
+# task brief for TASK-0289.
+[[required]]
 example  = "05-stencil"
 schedule = "distributed-2d"
 backend  = "pthreads-async"
-reason   = "TASK-0294: `leading_axis_slice` in backend-common (HONEST-PARTIAL ASSUMPTION from TASK-0117) ignores the inner axis of 2D partition tiles; host gather pastes each worker's 2D rectangle as a 1D y-band slice, overwriting adjacent workers' columns. Diff at byte 68 (first compute pixel). Cell stays [[skip]] until TASK-0294 lands the 2D slice-paste path. Schedule + cell wiring landed in TASK-0290 cycle 114b for the verifying fixture."
 milestone = "M5"
 
 # 05-stencil/distributed-2d × pthreads-sync: SKIP on capability

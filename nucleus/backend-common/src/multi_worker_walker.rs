@@ -5,9 +5,10 @@
 //!
 //! Cycle 26 (TASK-0228 Wave B-2) implemented pthreads-async multi-worker
 //! emit by COPYING ~400 LoC of pthreads-sync's walker
-//! (`render_worker_events`, `render_wait_assign`, `leading_axis_slice`,
+//! (`render_worker_events`, `render_wait_assign`, the `WaitSlice`
+//! shape-dispatch (pre-TASK-0294 `leading_axis_slice` / `LeadingAxis`),
 //! `collect_pre_init_sets`, `collect_xfer_pairs`, `collect_worker_slots`,
-//! `collect_barriers_by_tag`, `LeadingAxis`), substituting `slot_<id>`
+//! `collect_barriers_by_tag`), substituting `slot_<id>`
 //! for `ring_<id>` at the four Push/Wait callsites. The duplication was
 //! mechanically maintainable for one cycle but every subsequent edit
 //! to the walker would risk silent drift between two backends whose
@@ -22,9 +23,11 @@
 //! block_tag rebinding (TASK-0181; the header + abs_subst-construction
 //! half is the shared [`render_block_tag_loop_header`] helper that
 //! mp-tcp-bufsync ALSO consumes — TASK-0253),
-//! barrier identity via `SyncTag`, slice-paste leading-axis arithmetic)
-//! is shared verbatim across both backends — there is no second axis
-//! of variation worth a trait abstraction.
+//! barrier identity via `SyncTag`, slice-paste 1D/2D-tile arithmetic
+//! (TASK-0117 leading-axis path + TASK-0294 row-loop path for 2D
+//! `partition=blocks2d` tiles)) is shared verbatim across both
+//! backends — there is no second axis of variation worth a trait
+//! abstraction.
 //!
 //! # What stays per-backend
 //!
@@ -80,17 +83,42 @@ use crate::render::{
 /// map is shared.
 pub type RendezvousId = usize;
 
-/// Leading-axis slice descriptor for the receiver-side gather
-/// (TASK-0117). Lifted from the per-backend duplicates so both
-/// backends now route through one definition. The fields stay
-/// crate-private — only `render_wait_assign` destructures them, and
-/// it lives in this module.
-pub struct LeadingAxis {
-    lo: usize,
-    hi: usize,
-    /// Product of the data type's inner dims; per-outer-axis stride
-    /// in flat-Vec elements.
-    stride: usize,
+/// Receiver-side gather shape for a Wait event's tile.
+///
+/// Dispatched in [`render_wait_assign`]:
+///
+/// - `Flat { lo, hi }` — 1D leading-axis slice-paste
+///   (`name[lo..hi].copy_from_slice(&_tmp[lo..hi])`). The TASK-0117
+///   path. `lo`/`hi` are pre-multiplied flat-element offsets (i.e.
+///   leading-axis index × product of inner dims).
+/// - `Rows { outer_lo, outer_hi, row_stride, inner_lo_off,
+///   inner_hi_off }` — 2D row-loop slice-paste, one `copy_from_
+///   slice` per outer-axis iteration. The TASK-0294 path. Selected
+///   when the tile has rank >= 2 AND the data has dim rank >= 2.
+///   Each worker under `partition=blocks2d` owns a 2D rectangle of
+///   its data; the 1D leading-axis path would paste the worker's
+///   whole y-band (overwriting adjacent workers' columns with
+///   default-zero values), so a row-loop is required for
+///   bit-identical gather. `row_stride` is the per-outer-axis-
+///   element flat-element count (= product of `dims[1..]`);
+///   `inner_lo_off` / `inner_hi_off` are the per-row flat-element
+///   offsets of the inner-axis range (= inner-axis index × product
+///   of `dims[2..]`).
+///
+/// Module-private — only [`render_wait_assign`] destructures the
+/// variants, and it lives in this module.
+enum WaitSlice {
+    Flat {
+        lo: usize,
+        hi: usize,
+    },
+    Rows {
+        outer_lo: usize,
+        outer_hi: usize,
+        row_stride: usize,
+        inner_lo_off: usize,
+        inner_hi_off: usize,
+    },
 }
 
 /// Walker-time bundle of every fact the per-worker event walk needs.
@@ -112,7 +140,8 @@ pub struct WalkerCtx<'a> {
     pub rendezvous_ids: &'a BTreeMap<(DataId, SeqTag), RendezvousId>,
     /// Per-pair iteration tile from the originating XferPlaceholder
     /// (TASK-0117). Drives the receiver-side leading-axis slice-paste
-    /// in `render_wait_assign`.
+    /// in `render_wait_assign` (1D leading-axis path TASK-0117 + 2D
+    /// row-loop path TASK-0294).
     pub pair_tiles: &'a BTreeMap<(DataId, SeqTag), IterTile>,
 }
 
@@ -791,21 +820,26 @@ fn render_worker_events_inner(
 /// Render the receiver-side assignment statement for one Wait event.
 /// Returns one statement (no trailing newline).
 ///
-/// Two shapes:
+/// Three shapes, dispatched by [`wait_slice`]:
 /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
 ///   single-pair behaviour. Selected when the pair's tile is empty
 ///   (no enclosing iteration nest, e.g. a top-level load_input ⇒ host
-///   transfer), OR when the leading axis of the tile covers the
-///   data's full leading-axis range (i.e. the producer sent the whole
-///   array on this pair).
-/// - **Slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
-///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 host-side
-///   gather. Selected when the tile's outer axis is a strict
-///   sub-range of the data's leading axis. The producer pushed its
-///   whole local buffer with only its tile-slice populated; the
-///   receiver copies that slice into its own whole buffer. The
-///   byte/element stride per outer-axis element is the product of
-///   the data's inner dims.
+///   transfer), OR when every consulted axis of the tile covers the
+///   data's full range on the corresponding dim (i.e. the producer
+///   sent the whole array on this pair).
+/// - **1D slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
+///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 leading-axis
+///   gather. Selected when the tile has a single bound (or only one
+///   bound is consultable against the data's dim rank).
+/// - **2D row-loop slice-paste** (`{ let _tmp = <rhs>; for _y in
+///   outer_lo..outer_hi { let _r = _y * row_stride; name[_r +
+///   inner_lo_off.._r + inner_hi_off].copy_from_slice(&_tmp[_r +
+///   inner_lo_off.._r + inner_hi_off]); } }`) — TASK-0294
+///   `partition=blocks2d` gather. Selected when the tile has rank >=
+///   2 AND the data has dim rank >= 2; each outer-axis iteration
+///   copies one row's inner-axis sub-range. The 1D leading-axis
+///   path would paste each worker's whole y-band (overwriting
+///   adjacent workers' columns with default-zero values).
 pub fn render_wait_assign(
     ctx: &WalkerCtx<'_>,
     name: &str,
@@ -814,57 +848,96 @@ pub fn render_wait_assign(
     rhs: &str,
 ) -> Result<String, EmitError> {
     let slice = match ctx.pair_tiles.get(&(data, seq)) {
-        Some(tile) => leading_axis_slice(ctx, data, tile)?,
+        Some(tile) => wait_slice(ctx, data, tile)?,
         None => None,
     };
     match slice {
         None => {
-            // Empty tile (or no shape match) — whole-array assign.
+            // Empty tile (or whole-array match) — whole-array assign.
             Ok(format!("{name} = {rhs};"))
         }
-        Some(LeadingAxis { lo, hi, stride }) => {
-            // Slice-paste: receiver-side gather half of TASK-0117.
-            let lo_off = lo.saturating_mul(stride);
-            let hi_off = hi.saturating_mul(stride);
+        Some(WaitSlice::Flat { lo, hi }) => {
+            // 1D leading-axis slice-paste — TASK-0117.
             Ok(format!(
                 "{{ let _tmp = {rhs}; \
-                 {name}[{lo_off}usize..{hi_off}usize].copy_from_slice(\
-                 &_tmp[{lo_off}usize..{hi_off}usize]); }}"
+                 {name}[{lo}usize..{hi}usize].copy_from_slice(\
+                 &_tmp[{lo}usize..{hi}usize]); }}"
+            ))
+        }
+        Some(WaitSlice::Rows {
+            outer_lo,
+            outer_hi,
+            row_stride,
+            inner_lo_off,
+            inner_hi_off,
+        }) => {
+            // 2D row-loop slice-paste — TASK-0294. The `_y`/`_r`
+            // local names are underscore-prefixed AND introduced
+            // inside a `{ ... }` block — Rust block-shadowing makes
+            // them safe regardless of where this Wait is placed
+            // (host main() body, worker pre-compute halo-strip
+            // landing site, or a future multi-pass time-step Repeat
+            // body). The cycle-115 placement happens to keep
+            // halo-strip Waits at the root Sequence (TASK-0290), so
+            // collision was structurally impossible; this argument
+            // stays sound when that placement moves under TASK-0294
+            // multi-pass follow-ups.
+            Ok(format!(
+                "{{ let _tmp = {rhs}; \
+                 for _y in {outer_lo}usize..{outer_hi}usize {{ \
+                 let _r = _y * {row_stride}usize; \
+                 {name}[_r + {inner_lo_off}usize.._r + {inner_hi_off}usize]\
+                 .copy_from_slice(\
+                 &_tmp[_r + {inner_lo_off}usize.._r + {inner_hi_off}usize]); \
+                 }} }}"
             ))
         }
     }
 }
 
-/// Compute the leading-axis slice for a Wait's tile.
+/// Compute the receiver-side gather shape for a Wait's tile.
 ///
-/// Returns `Some(LeadingAxis { lo, hi, stride })` when the tile's
-/// outer axis is a strict sub-range of the data's leading axis (the
-/// slice-paste path), `None` when the tile is empty or the outer
-/// axis covers the full source range (the whole-array path).
-///
-/// Returns `Err` on a shape mismatch — e.g. the tile's leading axis
-/// range exceeds the data's leading-dim length; a compiler-pass
-/// invariant violation worth failing loud rather than silently
-/// emitting an out-of-bounds slice.
+/// Returns:
+/// - `Ok(None)` when the tile is empty OR every consulted axis
+///   covers the corresponding dim's full source range — the
+///   whole-array path.
+/// - `Ok(Some(WaitSlice::Flat { ... }))` for the 1D leading-axis
+///   slice-paste (TASK-0117).
+/// - `Ok(Some(WaitSlice::Rows { ... }))` for the 2D row-loop
+///   slice-paste (TASK-0294), fired iff the tile has rank >= 2 AND
+///   the data has dim rank >= 2.
+/// - `Err` on a shape mismatch — a tile axis range exceeding the
+///   corresponding dim length, an empty range, or a negative start.
+///   These are compiler-pass invariant violations worth failing
+///   loud rather than silently emitting an out-of-bounds slice.
 ///
 /// Module-private — both backends consume this only indirectly via
 /// `render_wait_assign`.
 ///
-/// # HONEST-PARTIAL ASSUMPTION (TASK-0117 cycle-1 review-gate)
+/// # AXIS-MAPPING ASSUMPTION
 ///
-/// Assumes `tile.bounds[0].iter_var` maps to the DATA's leading dim
-/// (axis 0). The `_iv` is not consulted — only the numerical range
-/// is validated. For `partition=workers` schedules whose loop var is
-/// the leading-axis index (the in-tree case), this holds. For a
-/// hypothetical inner-axis partition, the slice would silently
-/// address the wrong axis. Tracked as a honest-limit in TASK-0117.
-fn leading_axis_slice(
+/// Assumes `tile.bounds[i].iter_var` maps to data dim `i` (the
+/// row-major / nest-order convention). For `partition=workers`
+/// schedules and the 1D leading axis, this is the TASK-0117 cycle-
+/// 1 review-gate's HONEST-PARTIAL ASSUMPTION (pre-TASK-0294, the
+/// `_iv` was never consulted — only the numerical range was
+/// validated). TASK-0294 generalises the same convention to the
+/// second axis: `tile.bounds[1].iter_var` is presumed to map to
+/// dim 1. For `partition=blocks2d` on a 2D loop nest the
+/// convention holds because `partition_blocks2d` writes the outer-
+/// then-inner iv pair into `partition_pairs` in row-major (outer →
+/// dim 0, inner → dim 1) order; the `rewrite_partition_tiles_inner`
+/// pass appends them to the tile in nest order. For a hypothetical
+/// inner-axis-leading partition or a non-row-major data layout the
+/// slice would silently address the wrong axis. Still tracked as
+/// the honest-limit lineage of TASK-0117.
+fn wait_slice(
     ctx: &WalkerCtx<'_>,
     data: DataId,
     tile: &IterTile,
-) -> Result<Option<LeadingAxis>, EmitError> {
+) -> Result<Option<WaitSlice>, EmitError> {
     // Empty tile -> no per-axis slicing.
-    let Some((_iv, range)) = tile.bounds.first() else {
+    let Some((_iv, leading_range)) = tile.bounds.first() else {
         return Ok(None);
     };
     let ty = ctx.sidecar.data_type(data).ok_or_else(|| {
@@ -877,23 +950,83 @@ fn leading_axis_slice(
         return Ok(None);
     }
     let leading_dim = ty.dims[0] as i64;
-    // Pre-TASK-0117 single-pair: tile covers the full source range
-    // of the leading axis (0..B). No slicing.
-    if range.start == 0 && range.end == leading_dim {
-        return Ok(None);
-    }
-    if range.start < 0 || range.end > leading_dim || range.start >= range.end {
+    if leading_range.start < 0
+        || leading_range.end > leading_dim
+        || leading_range.start >= leading_range.end
+    {
         return Err(EmitError::ContractGap(format!(
             "Wait of data {data:?}: tile leading-axis range {:?} out of \
              bounds for data dims {:?} (leading-dim {})",
-            range, ty.dims, leading_dim
+            leading_range, ty.dims, leading_dim
         )));
     }
+    let leading_full = leading_range.start == 0 && leading_range.end == leading_dim;
+
+    // 2D row-loop path (TASK-0294): fires iff tile has 2+ axes AND
+    // the data has 2+ dims. The inner axis is `tile.bounds[1]`,
+    // assumed to map to `ty.dims[1]` — same axis-ordering convention
+    // the 1D path applies to `tile.bounds[0]` ↔ ty.dims[0].
+    //
+    // Rank-3+ guard (TASK-0294 cycle-115 architect P2.1): a tile or
+    // data shape with rank >= 3 would slip silently into the 2D arm,
+    // consulting only the first two axes — the SAME HONEST-PARTIAL
+    // class the cycle-115 fix removed for 2-axis data. No shipped
+    // schedule constructs such a (tile, data) shape today (13-cnn-
+    // inference has rank-4 data but only rank-1 tiles via
+    // partition=workers, which hits the 1D arm below). Fail LOUD so
+    // a future schedule that does construct one is flagged at
+    // compile time rather than emitting an out-of-bounds gather.
+    if tile.bounds.len() > 2 || (tile.bounds.len() >= 2 && ty.dims.len() > 2) {
+        return Err(EmitError::ContractGap(format!(
+            "Wait of data {data:?}: tile rank {} and data dim rank {} \
+             exceed the 2D row-loop slice-paste's supported shape (rank \
+             <= 2 on both). No shipped schedule constructs this today; \
+             see TASK-0294 cycle-115 architect P2.1 — extend `wait_slice` \
+             to N-D nested-loop dispatch or file a follow-up before \
+             shipping a schedule that does",
+            tile.bounds.len(),
+            ty.dims.len(),
+        )));
+    }
+    if tile.bounds.len() >= 2 && ty.dims.len() >= 2 {
+        let inner_range = &tile.bounds[1].1;
+        let inner_dim = ty.dims[1] as i64;
+        if inner_range.start < 0
+            || inner_range.end > inner_dim
+            || inner_range.start >= inner_range.end
+        {
+            return Err(EmitError::ContractGap(format!(
+                "Wait of data {data:?}: tile inner-axis range {:?} out of \
+                 bounds for data dims {:?} (inner-dim {})",
+                inner_range, ty.dims, inner_dim
+            )));
+        }
+        let inner_full = inner_range.start == 0 && inner_range.end == inner_dim;
+        // Degenerate: both axes cover their full source. Whole-array
+        // assign for emit identity with pre-TASK-0294 single-pair.
+        if leading_full && inner_full {
+            return Ok(None);
+        }
+        let inner_stride: usize = ty.dims[2..].iter().product();
+        let row_stride: usize = ty.dims[1..].iter().product();
+        return Ok(Some(WaitSlice::Rows {
+            outer_lo: leading_range.start as usize,
+            outer_hi: leading_range.end as usize,
+            row_stride,
+            inner_lo_off: (inner_range.start as usize).saturating_mul(inner_stride),
+            inner_hi_off: (inner_range.end as usize).saturating_mul(inner_stride),
+        }));
+    }
+
+    // 1D leading-axis path (TASK-0117). Degenerate full-range tile
+    // → whole-array assign for pre-TASK-0117 single-pair identity.
+    if leading_full {
+        return Ok(None);
+    }
     let stride: usize = ty.dims[1..].iter().product();
-    Ok(Some(LeadingAxis {
-        lo: range.start as usize,
-        hi: range.end as usize,
-        stride,
+    Ok(Some(WaitSlice::Flat {
+        lo: (leading_range.start as usize).saturating_mul(stride),
+        hi: (leading_range.end as usize).saturating_mul(stride),
     }))
 }
 
