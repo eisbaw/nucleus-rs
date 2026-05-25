@@ -1146,16 +1146,17 @@ fn detect_wait_before_push_hazard(
         // close a deadlock cycle from its own side. Pure-consumer
         // workers are SAFE under host-relay.
         //
-        // Cycle-151 architect P2 note: this precondition scans only
-        // TOP-LEVEL events for w2w Pushes; the `collect_w2w_pushes`
-        // helper above ALSO recurses into Loop bodies. A worker with
-        // Wait at top level + Push inside a Loop body is therefore a
-        // theoretical false-negative for this detector. No in-tree
-        // schedule triggers that shape today (TASK-0330 tracks the
-        // parent Loop-body-w2w-Push limitation); when TASK-0330 is
-        // worked, align this precondition with `collect_w2w_pushes`'s
-        // recursion (call it and test for non-empty, or write a
-        // recursive walker here).
+        // Cycle-151 architect P2 note (RESOLVED by TASK-0330): this
+        // precondition scans only TOP-LEVEL events for w2w Pushes; the
+        // `collect_w2w_pushes` helper recurses into Loop bodies. A
+        // worker with Wait at top level + Push inside a Loop body
+        // would be a false-negative for THIS detector — but TASK-0330
+        // now fires a fail-loud ContractGap in `collect_w2w_pushes` for
+        // any w2w Push found INSIDE a Loop body, so the Loop-body
+        // hazard is rejected later in the pipeline (in
+        // `render_relay_phase` rather than here in `Plan::build`). The
+        // composition is sound: a Loop-body w2w Push CANNOT silently
+        // reach codegen on either backend.
         let has_w2w_push = events
             .iter()
             .any(|e| matches!(e, Event::Push { dst, .. } if *dst != host));
@@ -1201,6 +1202,14 @@ fn detect_wait_before_push_hazard(
 /// Per-pair Push collector: records the (src, dst) of every cross-
 /// worker Push. Mirrors `collect_xfer_pairs` but the dst comes from
 /// the Push event itself (not from the worker doing the visit).
+///
+/// **Loop-body interaction with TASK-0330**: this walker recurses into
+/// `Event::Loop` bodies and uses `or_insert`, so a w2w Push appearing
+/// inside a Loop body would be recorded once (first-visit-wins). The
+/// TASK-0330 guard in `collect_w2w_pushes` rejects that shape upstream
+/// before host emit reaches `render_relay_phase`, so this walker's
+/// duplicate-tolerance is incidentally robust but not load-bearing for
+/// the Loop-body case.
 fn collect_push_pairs(
     events: &[Event],
     src: WorkerId,
@@ -1285,24 +1294,57 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 /// `cap` is looked up against `chan_caps` so the emitted relay code
 /// can pass the right back-pressure bound.
 ///
-/// Recurses into Loop bodies in event-list order (the relay block is
-/// emitted as a flat sequence outside any loop; the source events may
-/// be nested but the cycle-149 limitation is that the relay assumes
-/// each w2w push fires exactly once per main). The in-tree
-/// 06/distributed2 reproducer has all w2w pushes at top level —
-/// verified by inspecting the cycle-148 mp-tcp-bufsync emit, which
-/// is structurally identical to mp-tcp-event's. Filed as a sibling
-/// of TASK-0330 (mp-tcp-bufsync's cycle-148 defensive ContractGap
-/// for w2w Push inside Loop bodies).
+/// Recurses into Loop bodies in event-list order; the relay block is
+/// emitted FLAT outside any loop.
+///
+/// **TASK-0330 active guard** (defensive ContractGap):
+/// when the recursion is INSIDE an `Event::Loop` body and encounters a
+/// w2w `Push`, returns [`EmitError::ContractGap`] forward-linking
+/// TASK-0330. The flat relay block would either over-count (host calls
+/// `relay_one` once per (seq, dst) but the worker pushes N times around
+/// the loop) or mis-order (the flat replay order would not align with
+/// the loop's nested iteration order). Fail-loud at codegen > silent
+/// miscompile, per [[feedback-panic-not-diagnostic-recurring]].
+///
+/// In-tree schedules today have all w2w Pushes at TOP LEVEL — verified
+/// by `host_relay_emit` and the cycle-148 paired-lift audit — so this
+/// guard is dormant on the current matrix; it pins the contract for a
+/// future schedule shape, with test pins in
+/// `nucleus/backends/mp-tcp-event/tests/loop_body_w2w_push.rs`.
 fn collect_w2w_pushes(
     events: &[Event],
     host: WorkerId,
     chan_caps: &BTreeMap<(DataId, SeqTag), u64>,
     out: &mut Vec<RelayHop>,
 ) -> Result<(), EmitError> {
+    collect_w2w_pushes_inner(events, host, false, chan_caps, out)
+}
+
+fn collect_w2w_pushes_inner(
+    events: &[Event],
+    host: WorkerId,
+    inside_loop: bool,
+    chan_caps: &BTreeMap<(DataId, SeqTag), u64>,
+    out: &mut Vec<RelayHop>,
+) -> Result<(), EmitError> {
     for e in events {
         match e {
             Event::Push { dst, data, seq, .. } if *dst != host => {
+                if inside_loop {
+                    return Err(EmitError::ContractGap(format!(
+                        "mp-tcp-event: TASK-0330 defensive guard — \
+                         worker-to-worker Push (data={data:?}, dst={dst:?}, \
+                         seq={seq:?}) found INSIDE an Event::Loop body. The \
+                         cycle-149 host-relay (TASK-0327) emits the relay \
+                         block FLAT outside any loop, so a nested w2w Push \
+                         would either over-count (host calls relay_one once \
+                         per (seq, dst) but the worker pushes N times around \
+                         the loop) or mis-order (the flat replay order would \
+                         not align with the loop's nested iteration order). \
+                         No in-tree schedule trips this today; file a \
+                         follow-up if one needs it."
+                    )));
+                }
                 let cap = chan_caps.get(&(*data, *seq)).copied().ok_or_else(|| {
                     EmitError::ContractGap(format!(
                         "mp-tcp-event relay schedule: missing chan_caps for \
@@ -1317,7 +1359,9 @@ fn collect_w2w_pushes(
                     cap,
                 });
             }
-            Event::Loop { body, .. } => collect_w2w_pushes(body, host, chan_caps, out)?,
+            Event::Loop { body, .. } => {
+                collect_w2w_pushes_inner(body, host, true, chan_caps, out)?;
+            }
             _ => {}
         }
     }

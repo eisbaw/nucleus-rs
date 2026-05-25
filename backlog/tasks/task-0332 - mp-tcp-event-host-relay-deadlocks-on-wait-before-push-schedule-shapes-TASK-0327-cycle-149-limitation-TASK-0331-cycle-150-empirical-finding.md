@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 18:52'
-updated_date: '2026-05-25 19:21'
+updated_date: '2026-05-25 19:50'
 labels:
   - M6
   - backend
@@ -94,106 +94,9 @@ Once AC#1 lands, promote `05-stencil/distributed-2d × mp-tcp-event` to `[[requi
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-## Cycle-150 architect P1 fold-back — root cause is more precise than wait-before-push
+## Forward-carried from TASK-0330 (cycle 153)
 
-The cycle-150 architect read-only review (`mped-architect` P1) provided a more precise mechanism for the deadlock than this task's initial filing described. Folding it back here so the task captures both the immediate framing and the underlying defect:
+When AC#1 lands one of the (A) threaded / (B) interleaved / (C) pre-bar_0 host-relay scheduling alternatives, the cycle-153 "RESOLVED by TASK-0330" comment in `detect_wait_before_push_hazard` (both backends, ~line 1740-1750 mp-tcp-bufsync and ~1146-1157 mp-tcp-event) needs re-verifying. The composition assumption is: a Loop-body w2w Push CANNOT silently reach codegen because `collect_w2w_pushes` runs from `render_relay_phase` which is on the only host emit path. If AC#1's new design diverges from that call graph (e.g. host emits relays piecewise inside the per-event loop), the TASK-0330 guard's downstream-fire timing may need to be moved up to `Plan::build` as a recursive walker — or the composition claim must be re-validated against the new emit path.
 
-### The architect's precise diagnosis (mechanism)
-
-Even if `bar_0`'s sync timing were not a factor, the cycle-149 host-relay's sequential ordering creates a CIRCULAR SEQ DEPENDENCY. Empirically (`nucleus/target/e2e-matrix/run-96488-.../05-stencil__distributed-2d__mp-tcp-event/src/bin/host.rs` lines ~232-240):
-
-```
-__relay.relay_one(11u64, 1usize, 2usize); // relay `img_in` from w0 to w1
-__relay.relay_one(12u64, 2usize, 2usize); // relay `img_in` from w0 to w2
-__relay.relay_one(9u64,  0usize, 2usize); // relay `img_in` from w1 to w0
-__relay.relay_one(14u64, 3usize, 2usize); // relay `img_in` from w1 to w3
-__relay.relay_one(8u64,  0usize, 2usize); // relay `img_in` from w2 to w0
-__relay.relay_one(15u64, 3usize, 2usize); // relay `img_in` from w2 to w3
-__relay.relay_one(10u64, 1usize, 2usize); // relay `img_in` from w3 to w1
-__relay.relay_one(13u64, 2usize, 2usize); // relay `img_in` from w3 to w2
-```
-
-Host's relay STARTS with `relay_one(11)` = wait(seq=11) + push to w1. wait(seq=11) blocks until w0 has pushed seq=11. But w0's first events are `wait(chan_4 = seq=8)` from w2 — which is host's 5th relay hop (not yet reached). w0 cannot push seq=11 until it has crossed its initial waits. Circular dependency: host waits for w0's push, w0 waits for host's 5th relay hop, host's 5th hop can only run after host's 1st hop completes.
-
-This pattern was DISCLOSED in cycle-148's TASK-0327 implementation plan ("host cannot have data reads BETWEEN scatter and gather... complex interleaved schedules would need either threaded relay or scheduled relay events") but was not filed as a separate task until cycle 150 found the empirical trigger.
-
-### Two-level framing (both correct, different layers)
-
-- **Surface layer (the obvious bar_0 deadlock)**: workers are blocked at their initial w2w `chan.wait()` calls; they never reach `bar_0.wait()`; host's `bar_0.wait()` blocks until all participants (including workers) cross it; host never runs the relay phase. This is what the initial task description captured.
-- **Underlying defect (the architect's precise diagnosis)**: even if `bar_0` were not a factor, the sequential-ordered relay phase has a circular seq dependency. This is the actual constraint that AC#1's threaded / interleaved / per-Push-arrival reactive relay must fix.
-
-Both layers point at the same architectural fix set (AC#1 (A)/(B)/(C)). AC#2 (defensive ContractGap detecting wait-before-push at Plan::build) catches the surface symptom; a more thorough detection would also enumerate the seq DAG and check for cycles — likely overkill at codegen, simpler to fix-with-AC#1 and remove the detection.
-
-### Triggers two recurring-pattern memory entries
-
-- **feedback-implementer-disclosure-mechanism-wrong**: cycle-148's implementation plan disclosed this limitation HONESTLY but with a vague "complex interleaved schedules" wording. Cycle-150 surfaced it as the precise mechanism. Memory note candidate update: vague disclosures in implementation plans should be filed as defensive tasks AT IMPLEMENTATION TIME, not deferred to the in-tree trigger.
-- **feedback-orchestrator-narrative-also-wrong**: the cycle-150 first re-attribution (TASK-0330 Loop-body) was also a wrong orchestrator-written narrative; the cycle-149 first attribution (TASK-0294 slice-paste) was also wrong. Three wrong-attributions before the right one. The empirical-verification step (read the emitted code) is the safety net; without it, narrative-rot iterates ad infinitum.
-
-### AC#1 implementation guidance (extends original task brief)
-
-The architect's diagnosis sharpens the AC#1 design choice:
-- (A) Threaded host-relay: separate thread runs `relay_one` calls indefinitely, polling inbound for any seq that arrives, forwarding to the right dst. Solves both the bar_0 timing AND the sequential-ordering issue.
-- (B) Interleaved host-relay: emit per-seq-arrival hooks in host's main; uses the reactor's pump_once loop. Less code than (A) but requires walker integration.
-- (C) Pre-bar_0 relay (rejected): does NOT solve the sequential-ordering issue; only solves the bar_0 timing. Insufficient.
-
-(A) is the recommended path; (B) is the more invasive but cleaner alternative. (C) is rejected by the architect's diagnosis.
-
-## Cycle 151 AC#2 LANDED (pending architect read-only review GO)
-
-### What landed
-
-**Defensive ContractGap detection of the wait-before-push hazard**, paired across both backends per the cycle-148/149 paired-lift discipline ([[feedback-silent-sibling-defect]] 10th firing applied prophylactically here).
-
-1. **mp-tcp-event** (`nucleus/backends/mp-tcp-event/src/multi_worker.rs`): new `detect_wait_before_push_hazard` free function called from `Plan::build` between the malformed-projection check and the `debug_assert_eq!`. Conservative-but-sound: rejects any non-host worker whose FIRST top-level w2w event is a Wait (rather than a Push), gated by the `has_w2w_push` precondition so pure-consumer workers (w2w Waits but no w2w Pushes) are exempt — they are NOT srcs in `Plan::relay_schedule` and cannot close a deadlock cycle from their own side.
-
-2. **mp-tcp-bufsync** (`nucleus/backends/mp-tcp-bufsync/src/lib.rs`): same function (backend-specific message prefix) called from `Plan::build` right after the host-excluding-barrier check. Same precondition; same shape.
-
-### Test surface
-
-- **mp-tcp-event** (`tests/multi_worker_emit.rs`): added `wait_before_push_w2w_is_typed_contract_gap` (positive — synthetic 3-worker symmetric Wait-then-Push fixture; expects ContractGap with TASK-0332 forward-link + hazard mechanism prose) + `pure_consumer_wait_only_does_not_trigger_wait_before_push_check` (negative — pure-consumer w2 with w2w Waits but no w2w Pushes; expects Ok).
-- **mp-tcp-bufsync** (`tests/wait_before_push.rs` NEW): mirror of the above. Same 2 tests for the sibling backend.
-
-### Cycle-149 fixture stability
-
-`worker_to_worker_push_emits_host_relay` (mp-tcp-event) and `host_relay_emit.rs` (both backends) pass post-cycle-151 — verified by `cargo test -p mp-tcp-event -p mp-tcp-bufsync`. Total backend test counts:
-- mp-tcp-event multi_worker_emit: 7 → 9 (+2 cycle-151 tests).
-- mp-tcp-bufsync wait_before_push (new file): 2 tests.
-
-### Verification gate (cycle-151 self-run)
-
-- `just check`, `just clippy` (-D warnings), `just test`, `just test-release`, `just check-textual-replace-on-codegen`, `just check-include-str-coverage`: all PASS.
-- `just e2e` × 2 samples both 112/96/0/16/0 (non-flake; baseline preserved — no in-tree promoted cell has the wait-before-push shape, so the detector doesn't reject any passing schedule).
-
-### What did NOT land (still pending TASK-0332 AC#1)
-
-- The THREADED or INTERLEAVED host-relay (AC#1) — the architectural fix. Cycle 151 only landed the defensive detection (AC#2) that converts the runtime deadlock to a codegen fail-loud rejection.
-- The 05/distributed-2d × mp-tcp-event cell remains [[skip]] in e2e-matrix.toml citing TASK-0332. With cycle 151's detector, attempting to compile that schedule would now fail-LOUD at codegen with the ContractGap forward-linking TASK-0332 (instead of generating code that deadlocks at runtime).
-
-### Honest scope
-
-- LOW additional risk: cycle 151 is purely additive (new check + new tests; no existing behavior changed). Worst-case for an over-conservative false positive: a future schedule with a safe wait-before-push pattern (where the wait-on src happens to push in time) gets rejected at codegen. AC#1's eventual landing removes the detection entirely.
-- MEDIUM design value: converts a silent runtime deadlock (32s timeout) into an actionable codegen error pointing at the precise fix task. Per [[feedback-panic-not-diagnostic-recurring]] — fail-loud at codegen > silent runtime deadlock.
-
-### Forward-carry to AC#1 cycle
-
-When AC#1 (threaded or interleaved host-relay) lands, the `detect_wait_before_push_hazard` function in BOTH backends should be REMOVED (not left as dead code) — its purpose is to gate the cycle-148/149 limitation, which AC#1 removes. The same paired-lift discipline applies: remove in both backends in the same cycle.
-
-## Cycle-151 architect fold-back
-
-Architect read-only review (mped-architect) returned GO with 4 findings — all folded back in-thread:
-
-- **P1 (must-fix)**: mp-tcp-bufsync's `detect_wait_before_push_hazard` was inserted BEFORE `collect_w2w_pushes` with no blank-line separator between the two `///` blocks. Rust's docstring attachment rule absorbed `collect_w2w_pushes`'s cycle-148 docstring into the new function's docstring, leaving `collect_w2w_pushes` with ZERO documentation. Architect empirically verified via `cargo doc --document-private-items`. Folded back by MOVING `detect_wait_before_push_hazard` to AFTER `collect_w2w_pushes` (restoring the boundary). This is recorded as the 11th firing of [[feedback-silent-sibling-defect]] in a NEW shape: paired-lift identical source insertions developing different RENDERED defects per sibling due to local file structure (presence/absence of blank-line separator).
-- **P2 (theoretical, dormant)**: `has_w2w_push` precondition scans TOP-LEVEL events only via `events.iter().any(...)`, but `collect_w2w_pushes` recurses into Loop bodies. A worker with `[Wait{w2w}, Loop{Push{w2w}}]` would be a false-negative for cycle-151's detector. No in-tree schedule triggers this shape today; TASK-0330 (Loop-body w2w Push defensive ContractGap) is the parent task — appended a cycle-151 note to TASK-0330 with the alignment requirement. Forward-carry comments added in BOTH backends' `detect_wait_before_push_hazard` documenting this divergence.
-- **P3 (test asymmetry)**: mp-tcp-event positive test did NOT pin `msg.contains("mp-tcp-event")` for the backend-prefix (the whole point of duplicating per backend). Added the assertion for symmetry with the bufsync sibling.
-- **P3 (operator precedence)**: cycle-151's `assert!(msg.contains("...") || msg.contains("A") && msg.contains("B"), ...)` parses as `A || (B && C)` — technically correct but visually fragile. Parenthesized.
-
-### Memory note update
-
-[[feedback-silent-sibling-defect]] updated with the cycle-151 11th-firing in a new shape. Hygiene rule extension: paired-lift code insertions must run a RENDERING-layer validation per sibling (not just source-text identity); `cargo doc --document-private-items` + grep of expected narrative is a concrete mitigation.
-
-### Verification gate after fold-back
-
-- `just check`, `just clippy` (-D warnings): PASS.
-- `just test -p mp-tcp-event -p mp-tcp-bufsync`: 11 tests (9 mp-tcp-event multi_worker_emit + 2 mp-tcp-bufsync wait_before_push), all PASS.
-- `just e2e` × 2 samples both 112/96/0/16/0 (non-flake, baseline preserved).
+Audit step for the AC#1 implementer: `grep -rn render_relay_phase` and `grep -rn collect_w2w_pushes` in both backends; verify the TASK-0330 guard still fires on every code-emitting path before claiming this task closes.
 <!-- SECTION:NOTES:END -->

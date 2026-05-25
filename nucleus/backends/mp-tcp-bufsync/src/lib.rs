@@ -1340,19 +1340,19 @@ impl<'a> Plan<'a> {
     /// Empty for any src with no w2w pushes. Empty overall if the
     /// schedule has no w2w transfers (the common host↔worker-only
     /// case), and then `render_relay_phase` is a no-op.
-    fn relay_schedule(&self) -> BTreeMap<WorkerId, Vec<RelayHop>> {
+    fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
         let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
         for (src, events) in self.per_worker.iter() {
             if *src == self.host_worker {
                 continue;
             }
             let mut hops: Vec<RelayHop> = Vec::new();
-            collect_w2w_pushes(events, self.host_worker, &mut hops);
+            collect_w2w_pushes(events, self.host_worker, &mut hops)?;
             if !hops.is_empty() {
                 out.insert(*src, hops);
             }
         }
-        out
+        Ok(out)
     }
 
     /// TASK-0327 (cycle 148): emit host's synchronous relay phase as
@@ -1370,7 +1370,7 @@ impl<'a> Plan<'a> {
     /// fold-back replaced an earlier silent comment-fallback).
     fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
         let pad = "    ".repeat(indent);
-        let schedule = self.relay_schedule();
+        let schedule = self.relay_schedule()?;
         if schedule.is_empty() {
             return Ok(String::new());
         }
@@ -1554,6 +1554,13 @@ fn scalar_fn_suffix(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
 // shared part and is NOT re-implemented).
 // --------------------------------------------------------------------
 
+/// **Loop-body interaction with TASK-0330**: this walker recurses into
+/// `Event::Loop` bodies and accumulates DataIds via a set (`insert`),
+/// so a Loop-body Push/Wait is idempotent across iterations and benign
+/// here regardless of TASK-0330's guard. The TASK-0330 guard rejects
+/// the w2w-Push-in-Loop shape upstream in `collect_w2w_pushes` before
+/// it would matter; this walker's set-union shape is incidentally
+/// robust independently.
 fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
     for e in events {
         match e {
@@ -1638,29 +1645,68 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 
 /// TASK-0327 (cycle 148): collect every Push event where the dst is
 /// a non-host worker — these are the w2w pushes that host must relay.
-/// Recurses into Loop bodies in event-list order (host's relay code is
-/// emitted as a flat sequence outside any loop, but the source events
-/// may be nested; the cycle-148 limitation is that the relay assumes
-/// each w2w push fires exactly once per main, so a Push inside a Loop
-/// would over-count or mis-order. The current in-tree 06/distributed2
-/// reproducer has all w2w pushes at top level — verified by inspecting
-/// the cycle-147 emitted main.rs for pthreads-sync — so the limitation
-/// is dormant. Filed as part of TASK-0327 cycle-149 follow-up if a
-/// future schedule nests w2w pushes inside Loops.
-fn collect_w2w_pushes(events: &[Event], host: WorkerId, out: &mut Vec<RelayHop>) {
+/// Recurses into Loop bodies in event-list order; the relay block is
+/// emitted FLAT outside any loop.
+///
+/// **TASK-0330 active guard** (defensive ContractGap):
+/// when the recursion is INSIDE an `Event::Loop` body and encounters a
+/// w2w `Push`, returns [`EmitError::ContractGap`] forward-linking
+/// TASK-0330. The flat relay block would either over-count (host reads
+/// once per (seq, dst) but the worker pushes N times around the loop)
+/// or mis-order (the flat read order would not align with the loop's
+/// nested iteration order). Fail-loud at codegen > silent miscompile or
+/// runtime deadlock, per [[feedback-panic-not-diagnostic-recurring]].
+///
+/// In-tree schedules today have all w2w Pushes at TOP LEVEL — verified
+/// by `host_relay_emit` and the cycle-148 reviewer audit — so this
+/// guard is dormant on the current matrix; it pins the contract for a
+/// future schedule shape, with test pins in
+/// `nucleus/backends/mp-tcp-bufsync/tests/loop_body_w2w_push.rs`.
+fn collect_w2w_pushes(
+    events: &[Event],
+    host: WorkerId,
+    out: &mut Vec<RelayHop>,
+) -> Result<(), EmitError> {
+    collect_w2w_pushes_inner(events, host, false, out)
+}
+
+fn collect_w2w_pushes_inner(
+    events: &[Event],
+    host: WorkerId,
+    inside_loop: bool,
+    out: &mut Vec<RelayHop>,
+) -> Result<(), EmitError> {
     for e in events {
         match e {
             Event::Push { dst, data, seq, .. } if *dst != host => {
+                if inside_loop {
+                    return Err(EmitError::ContractGap(format!(
+                        "mp-tcp-bufsync: TASK-0330 defensive guard — \
+                         worker-to-worker Push (data={data:?}, dst={dst:?}, \
+                         seq={seq:?}) found INSIDE an Event::Loop body. The \
+                         cycle-148 host-relay (TASK-0327) emits the relay \
+                         block FLAT outside any loop, so a nested w2w Push \
+                         would either over-count (host reads once per \
+                         (seq, dst) but the worker pushes N times around \
+                         the loop) or mis-order (the flat read order would \
+                         not align with the loop's nested iteration order). \
+                         No in-tree schedule trips this today; file a \
+                         follow-up if one needs it."
+                    )));
+                }
                 out.push(RelayHop {
                     seq: *seq,
                     dst: *dst,
                     data: *data,
                 });
             }
-            Event::Loop { body, .. } => collect_w2w_pushes(body, host, out),
+            Event::Loop { body, .. } => {
+                collect_w2w_pushes_inner(body, host, true, out)?;
+            }
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// TASK-0332 (cycle 151 AC#2): detect the wait-before-push hazard at
@@ -1698,16 +1744,17 @@ fn detect_wait_before_push_hazard(
         // close a deadlock cycle from its own side. Pure-consumer
         // workers are SAFE under host-relay.
         //
-        // Cycle-151 architect P2 note: this precondition scans only
-        // TOP-LEVEL events for w2w Pushes; the `collect_w2w_pushes`
-        // helper above ALSO recurses into Loop bodies. A worker with
-        // Wait at top level + Push inside a Loop body is therefore a
-        // theoretical false-negative for this detector. No in-tree
-        // schedule triggers that shape today (TASK-0330 tracks the
-        // parent Loop-body-w2w-Push limitation); when TASK-0330 is
-        // worked, align this precondition with `collect_w2w_pushes`'s
-        // recursion (call it and test for non-empty, or write a
-        // recursive walker here).
+        // Cycle-151 architect P2 note (RESOLVED by TASK-0330): this
+        // precondition scans only TOP-LEVEL events for w2w Pushes; the
+        // `collect_w2w_pushes` helper recurses into Loop bodies. A
+        // worker with Wait at top level + Push inside a Loop body
+        // would be a false-negative for THIS detector — but TASK-0330
+        // now fires a fail-loud ContractGap in `collect_w2w_pushes` for
+        // any w2w Push found INSIDE a Loop body, so the Loop-body
+        // hazard is rejected later in the pipeline (in
+        // `render_relay_phase` rather than here in `Plan::build`). The
+        // composition is sound: a Loop-body w2w Push CANNOT silently
+        // reach codegen on either backend.
         let has_w2w_push = events
             .iter()
             .any(|e| matches!(e, Event::Push { dst, .. } if *dst != host));

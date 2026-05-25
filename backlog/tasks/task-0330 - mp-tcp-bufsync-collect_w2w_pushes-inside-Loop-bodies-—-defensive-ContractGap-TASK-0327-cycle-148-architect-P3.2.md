@@ -3,10 +3,11 @@ id: TASK-0330
 title: >-
   mp-tcp-bufsync collect_w2w_pushes inside Loop bodies — defensive ContractGap
   (TASK-0327 cycle-148 architect P3.2)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mark'
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-25 19:20'
+updated_date: '2026-05-25 19:50'
 labels:
   - M6
   - backend
@@ -69,56 +70,88 @@ Update the collect_w2w_pushes doc comment to reflect the AC#1 active guard (repl
 LOW priority. Dormant defect. Filed for fail-loud hygiene before a future schedule shape arrives.
 <!-- SECTION:DESCRIPTION:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Cycle-NNN implementation plan
+
+**Goal**: AC#1 (defensive ContractGap) + AC#2 (positive/negative tests) + AC#3 (doc-comment update) for BOTH backends in the same cycle, per the cycle-148/149 paired-lift precedent recorded in this task's Implementation Notes.
+
+**Code changes**:
+
+1. `mp-tcp-bufsync/src/lib.rs::collect_w2w_pushes`:
+   - Add an inner helper with an `inside_loop: bool` parameter; entry point passes `false`.
+   - When recursing into `Event::Loop`, set `inside_loop = true`.
+   - When `inside_loop && Event::Push { dst != host, .. }` matches, return `EmitError::ContractGap(...)` with: backend prefix `mp-tcp-bufsync`, TASK-0330 + TASK-0327 forward-link, the data/dst/seq fields, and the mechanism (flat relay block can't drain N pushes / order-mismatched).
+   - Change signature from `fn collect_w2w_pushes(...)` to `Result<(), EmitError>`.
+   - Update single call site at `relay_schedule()` to bubble `?`.
+
+2. `mp-tcp-event/src/multi_worker.rs::collect_w2w_pushes`:
+   - Same shape; helper already returns Result, just add the inside_loop flag.
+   - Backend prefix `mp-tcp-event`.
+
+3. Doc comments at both sites: replace the dormant-limitation framing ("Filed as part of TASK-0327 cycle-149 follow-up if a future schedule nests w2w pushes inside Loops") with an active-guard statement naming TASK-0330 + the in-cycle test pin.
+
+**Tests** (new files):
+
+- `mp-tcp-bufsync/tests/loop_body_w2w_push.rs`:
+  - Positive: 3-worker synthetic fixture with a w2w Push (w1->w2) inside an `Event::Loop` body; assert ContractGap mentioning `Loop`, `mp-tcp-bufsync`, `TASK-0330`.
+  - Negative: same shape but with a host-bound Push inside the Loop (dst == host); assert Ok / no fire (the relay only cares about non-host destinations).
+
+- `mp-tcp-event/tests/loop_body_w2w_push.rs`:
+  - Mirror, with `mp-tcp-event` backend prefix.
+
+**Verification gate**:
+
+```
+nix develop --command bash -c "just build && just clippy && just test && just test-release && just e2e"
+```
+
+Expected pre/post e2e baseline unchanged (no schedules in the matrix trip the new guard; in-tree workloads have top-level w2w pushes only).
+
+**Honest scope / out-of-scope**:
+
+- AC#1 (the host-relay LIFT for nested Pushes) is **not** in scope — this task is the fail-loud DEFENSIVE GUARD only, per its filing scope (LOW, dormant, fail-loud hygiene). The day a real in-tree schedule needs nested w2w Pushes, file a separate task.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-## Cycle 149 sibling extension (TASK-0327 cycle-149 architect P2.1 + P3.1 fold-back)
+## Cycle 153 — landed
 
-The cycle-149 mp-tcp-event host-relay implementation inherits the SAME flat-emit limitation as mp-tcp-bufsync's cycle-148 slice — `collect_w2w_pushes` in `nucleus/backends/mp-tcp-event/src/multi_worker.rs` (`grep -n 'fn collect_w2w_pushes' nucleus/backends/mp-tcp-event/src/multi_worker.rs`) recurses into Event::Loop bodies but the relay phase is emitted FLAT outside any loop. Same hazard, same defensive ContractGap need.
+### What landed
 
-**Action:** when this task is worked, the defensive ContractGap must land in BOTH backends in the same cycle (or a sibling task — the precedent should match the cycle-148/149 paired-lift design). Test coverage must include both backends' collect_w2w_pushes paths.
+- `mp-tcp-bufsync` (`src/lib.rs::collect_w2w_pushes`): signature changed from `fn ... -> ()` to `Result<(), EmitError>`; private inner helper `collect_w2w_pushes_inner` with an `inside_loop: bool` accumulator fires `EmitError::ContractGap` forward-linking TASK-0330 + TASK-0327 when a w2w `Push` (dst != host) is found INSIDE an `Event::Loop` body. Single call site (`relay_schedule`) updated to propagate the Result via `?`; `render_relay_phase` propagates via `?` to the existing host-emit code path.
+- `mp-tcp-event` (`src/multi_worker.rs::collect_w2w_pushes`): same shape; the helper already returned Result so only the `inside_loop` accumulator + new ContractGap arm were added. Backend prefix `mp-tcp-event` for the message.
+- Cycle-151 architect P2 note in `detect_wait_before_push_hazard` (both backends) updated from "TASK-0330 tracks the parent Loop-body-w2w-Push limitation; when worked, align this precondition with collect_w2w_pushes's recursion" to "RESOLVED by TASK-0330" — the composition is now sound: a Loop-body w2w Push CANNOT silently reach codegen because `collect_w2w_pushes` runs from `render_relay_phase` (called in host's render_worker_program) and fail-louds before any code is written. The earlier top-level-only precondition in `detect_wait_before_push_hazard` is intentionally kept narrow because the Loop-body case is covered by TASK-0330's downstream guard.
 
-**Cross-reference:** cycle-149 mp-tcp-event host-relay test pin lives at `nucleus/backends/mp-tcp-event/tests/host_relay_emit.rs::host_emit_includes_task_0327_relay_phase_with_12_hops`. The same fixture (06/distributed2) is the negative-case "no Loop body" check for the mp-tcp-event sibling.
+### Test coverage (3 tests × 2 backends = 6 total, all PASS)
 
-**Scope clarification:** the task title still says "mp-tcp-bufsync" but the AC now covers BOTH backends (mp-tcp-bufsync from cycle 148, mp-tcp-event from cycle 149). When working: either rename the task (single-arm-scope title) or treat as a paired fix; the cycle-148/149 history establishes the precedent for the paired fix.
+- `loop_body_w2w_push_is_typed_contract_gap` (positive, range 0..1) — pins the structural trigger + asserts message contains backend prefix, TASK-0330, TASK-0327, the "Loop" trigger, and the "FLAT outside any loop" mechanism narrative.
+- `host_bound_push_inside_loop_does_not_trigger_guard` (negative) — host-bound Push inside a Loop body must NOT trigger the new guard (predicate is dst != host).
+- `multi_iter_loop_body_w2w_push_is_typed_contract_gap` (positive, range 0..3) — cycle-153 architect P3.1 fold-back: quantitatively exercises the N>1 over-count narrative the error message claims.
 
-## Cycle 150 (TASK-0331 AC#2 empirical promotion test): in-tree trigger FOUND
+### Cycle-153 review fold-back (P3 nice-to-have)
 
-Cycle 150 empirically tested the cycle-149 prose claim that `05-stencil/distributed-2d × mp-tcp-event`'s remaining blocker was TASK-0294 (host 2D slice-paste). The promotion attempt FAILED at runtime: workers w0..w3 deadlock at 32.4s with run.sh reporting failure (exit code 0 from workers but timeout-shape, not bit-identical mismatch).
+The parallel read-only review gate (qa-test-runner + mped-architect) both returned GO with three P3 findings; all three folded back before commit:
 
-Root cause: the 2x2-grid partition emits halo-strip Push/Wait events INSIDE an outer time-step / iteration loop. mp-tcp-event's cycle-149 host-relay code emits a FLAT relay block. The src worker pushes N times per outer iteration; the host's flat relay runs ONCE; subsequent iterations deadlock waiting for relayed frames that never arrive.
+- **Architect P3.1**: multi-iteration positive test added (`range: 0..3`) — exercises the "worker pushes N times around the loop" narrative at N=3 rather than N=1.
+- **Architect P3.2**: sibling-walker comments added at `mp-tcp-event/src/multi_worker.rs::collect_push_pairs` and `mp-tcp-bufsync/src/lib.rs::collect_xfer_data`. Both ALSO recurse into Loop bodies but are incidentally robust (or_insert / set-union) — the comment now documents the TASK-0330 guard as the upstream rejection point so a future maintainer doesn't add a redundant guard.
+- **QA optional tightening**: the `flat` assertion in both backends' positive tests tightened to `FLAT outside any loop` (exact substring pin).
 
-This IS the in-tree trigger that TASK-0330 was filed pending. The same defect would hit mp-tcp-bufsync if `05-stencil/distributed-2d × mp-tcp-bufsync` were ever promoted (currently [[skip]] on TASK-0042 capability mismatch).
+Architect P3.3 was a no-fix observation about call-graph soundness; left as-is per the architect's recommendation.
 
-Priority bump: LOW -> MEDIUM. The cycle-150 finding makes this an active correctness gap rather than a defensive-only consideration.
+### Gotchas / subtleties for future maintainers
 
-Cycle-150 e2e-matrix.toml record: the `05-stencil/distributed-2d × mp-tcp-event` skip reason now precisely cites TASK-0330 as the remaining blocker (cycle-150 edit, lines ~776-810).
+1. `Event::Loop` worker emit requires `names.iter_var` entries for all iter_vars referenced by Loop bodies. The negative test initially failed with `iter var IterVar(0) in Event::Loop has no name in NameTables` (an UNRELATED rejection from the worker emit path) and had to be fixed by adding the iter_var name to the fixture. Future synthetic Loop fixtures must do the same.
 
-Forward-carry to TASK-0330 implementation cycle: the empirical test fixture is in-tree as `nuc-nucleus/examples/05-stencil/schedules/distributed-2d.sched.nuc`. Promote that cell as the regression-pin once the fix lands.
+2. The TASK-0330 guard fires in `render_relay_phase` (the rendering pass), NOT in `Plan::build` (the validation pass). `detect_wait_before_push_hazard` (cycle 151) scans top-level events only and so cannot catch the Loop-body case; the composition relies on `render_relay_phase` being on the only emit path (it is — verified by grep on `render_relay_phase` callers in both backends: only `render_host_program` / `emit_host_main`). A future refactor that lets a host emit skip `render_relay_phase` for non-relay schedules would silently re-introduce the gap unless this guard is also moved up to Plan::build. Filed forward as a soundness-pin in [[feedback-orchestrator-narrative-also-wrong]] (the "composition of cycle-151 + TASK-0330 is sound" claim is a call-graph property, not an asserted invariant).
 
-## Cycle 150 priority-bump RETRACTED (orchestrator self-correction)
+3. Test counts: 893/0/3 → 895/0/3 (+2 multi-iter tests, one per backend). e2e baseline 112/96/0/16/0 preserved across pre-fold-back and post-fold-back samples.
 
-The cycle-150 entry above attributed the `05-stencil/distributed-2d × mp-tcp-event` deadlock to "Loop-body w2w Push" — TASK-0330's scope. EMPIRICAL RE-EXAMINATION of the emitted w0.rs (cycle-150 e2e scratch dir) shows the w2w pushes are at TOP LEVEL inside `fn main`, NOT inside any `for` loop. The actual root cause is a DIFFERENT defect class: w0/w1/w2/w3 all begin with `chan_X.wait()` calls for cross-worker halo strips BEFORE any push. Cycle-149's host-relay splices the relay AFTER `bar_0.wait()`. Workers blocked at initial waits never reach bar_0; host blocks at bar_0; relay never runs; deadlock.
+### Forward-carried lessons
 
-Root-cause classification: **WAIT-BEFORE-PUSH schedule shape vs cycle-149's scatter-compute-gather assumption**, NOT Loop-body. The in-tree trigger for TASK-0330 has NOT been found; this task remains dormant pending an actual Loop-body w2w Push schedule. Priority returned to Low.
+- **For TASK-0329 (host-mediated barrier mediation, the sibling CTRL-arm task)**: when that task lands, the same paired-backend discipline applies. Its lift will likely follow the cycle-148/149 splice pattern; the cycle-153 P3.2 sibling-walker audit shape (grep for ALL recursive Event::Loop walkers, document their robustness) is a reusable hygiene step for that task too.
 
-The newly-identified defect class is filed as a SEPARATE follow-up task (see cycle-150 commit / tracker for the exact ID); TASK-0330 is unaffected.
-
-Honesty note: this is exactly the cycle-149 architect P3.2 lesson firing in real time — a prose claim ("Loop-body limitation") was made without empirical verification of the emitted code, and the empirical-verification step (running `just e2e` + reading the generated host.rs and w0.rs) caught the mis-attribution within the same cycle. The retraction here is the honest record.
-
-## Cycle 151 (TASK-0332 AC#2 architect P2): defensive-check divergence found
-
-Cycle 151's `detect_wait_before_push_hazard` (added to both backends) has a precondition `has_w2w_push` that scans TOP-LEVEL events only via `events.iter().any(...)`. The cycle-148/149 `collect_w2w_pushes` helper (which decides who is a src in `Plan::relay_schedule`) ALSO recurses into Loop bodies — so a worker with `[Wait{w2w}, Loop{Push{w2w}}]`:
-
-- `has_w2w_push` (top-only) = false → cycle-151 detector skips → no hazard reported.
-- `collect_w2w_pushes` includes this worker's Loop-body Push → relay_schedule includes it as a src → host blocks on `relay_one(seq=its push)` → DEADLOCK.
-
-This is a theoretical false-negative for cycle-151's defensive check — TASK-0330's parent Loop-body limitation. When THIS task is implemented:
-
-1. The defensive ContractGap should fire LOUD on `collect_w2w_pushes` encountering a Push inside `Event::Loop` (per the original AC#1 of THIS task).
-2. Cycle-151's `has_w2w_push` precondition in BOTH backends should be ALIGNED with `collect_w2w_pushes`'s recursion (call `collect_w2w_pushes` and check for non-empty, OR write a recursive walker). The current `events.iter().any(...)` shape is a known false-negative for the Loop-body shape THIS task scopes.
-
-Both alignments should land in the same cycle as THIS task's implementation (paired-lift discipline — feedback-silent-sibling-defect 11th firing).
-
-Cycle-151 left a forward-carry comment in BOTH backends' `detect_wait_before_push_hazard` documenting this divergence and pointing at TASK-0330 for the eventual closure.
+- **For TASK-0332 AC#1 (relax the host-relay scheduling model, the wait-before-push lift)**: if AC#1 lands one of the (A) threaded / (B) interleaved / (C) pre-bar_0 alternatives, the cycle-153 "RESOLVED by TASK-0330" comment in `detect_wait_before_push_hazard` needs revisiting — the composition assumption may need re-verification depending on whether the new design still goes through `render_relay_phase`.
 <!-- SECTION:NOTES:END -->

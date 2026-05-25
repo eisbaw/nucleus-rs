@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 17:40'
+updated_date: '2026-05-25 19:50'
 labels:
   - M6
   - backend
@@ -63,3 +64,15 @@ Add a fixture exercising a host-excluding barrier shape; assert the barrier_cros
 
 LOW priority. Dormant defect (no in-tree schedule trips it on mp-tcp-bufsync today). Filed so the asymmetry surfaced by cycle-148's lift has a tracker anchor; promote when an actual schedule needs it.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Forward-carried from TASK-0330 (cycle 153)
+
+The TASK-0330 cycle established a useful sibling-walker audit step that should be reused when this task's host-mediated barrier mediation lands:
+
+After implementing the lift, grep ALL recursive event-walkers in BOTH backends for `Event::Loop` recursion (mp-tcp-bufsync: `collect_xfer_data`, `collect_w2w_pushes`; mp-tcp-event: `collect_push_pairs`, `collect_w2w_pushes`, others). For each one, audit how it handles Loop-body events of the kind your lift touches — does it use set-union (idempotent), or_insert (first-visit-wins), or list-append (over-count)? Document the answer at each walker site, even if it's "incidentally robust".
+
+This audit defends against [[feedback-silent-sibling-defect]]: the structural pattern "recursive event-walker over Loop bodies" repeats; a new fail-loud or new accumulator pattern may have silent siblings that need the same treatment.
+<!-- SECTION:NOTES:END -->
