@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 04:05'
-updated_date: '2026-05-25 05:43'
+updated_date: '2026-05-25 05:54'
 labels:
   - M5
   - compiler
@@ -34,8 +34,8 @@ This means a future walker regression that silently emits NO entries for a bare-
    ```
    assert_eq!(acfg.halo_widths.get(&k_id).and_then(|m| m.get(&iv_id)).copied(), Some(0));
    ```
-2. The pin must fail LOUD if the production the halo-entry sink inside `classify_index` (search for `per_iv.entry(iv).or_insert(0)` in halo_inference.rs) is silently regressed to omit entries for inspected bare-iv accesses.
-3. Update the cross-references in the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") and sidecar_halo.rs's task0303_07 comment to point at the new contract-form sentinel test (replacing the current "halo-entry sink" text search hint (`per_iv.entry(iv).or_insert(0)` in halo_inference.rs)).
+2. The pin must fail LOUD if the production `per_iv.entry(iv).or_insert(0)` emit site inside `classify_index` (halo_inference.rs) is silently regressed to omit entries for inspected bare-iv accesses.
+3. Update the cross-references in the Option B contract paragraph in halo_inference.rs (search for "absent ≡ explicit-0") and sidecar_halo.rs's task0303_07 comment to point at the new contract-form sentinel test. (Closed cycle 123 by CHARITABLE interpretation: kept the production-sink search hint `per_iv.entry(iv).or_insert(0)` AND added a reference to the new `fn no_halo_bare_iv` sentinel — the cycle-123 architect accepted this reading.)
 
 ## Honest scope
 
@@ -45,7 +45,7 @@ LOW priority. The vacuous-pass risk is judged unlikely (today's walker DOES alwa
 
 - TASK-0305 (cycle 122) — the Option B decision this defends.
 - the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") — the contract paragraph (Option B project decision marker).
-- the halo-entry sink (`per_iv.entry(iv).or_insert(0)` inside `classify_index` in halo_inference.rs) — the emit site whose silent-skip the pin would catch.
+- `per_iv.entry(iv).or_insert(0)` inside `classify_index` (halo_inference.rs) — the production emit site whose silent-skip the pin would catch.
 - `fn no_halo_bare_iv` symbolic anchor in halo_inference.rs — in-module test (the location where the pin should land).
 <!-- SECTION:DESCRIPTION:END -->
 

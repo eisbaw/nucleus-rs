@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 03:09'
-updated_date: '2026-05-25 05:44'
+updated_date: '2026-05-25 05:53'
 labels:
   - M5
   - compiler
@@ -31,7 +31,7 @@ Cycle-120 architect review-gate flagged a project-wide soundness gap shared by a
 **Option A — TIGHTEN the tests** (add a key-exists assertion):
 - Each test additionally asserts that halo_widths[kid] entry IS PRESENT (independent of value).
 - Cost: NARROWS the halo_inference contract degree of freedom from 'explicit-0 OR omission' to 'explicit-0 ONLY' for the pinned kernels.
-- Today's implementation chooses explicit-0 per no_halo_bare_iv (halo_inference.rs:1184), so the tightening is observationally inert today.
+- Today's implementation chooses explicit-0 per the in-module test `fn no_halo_bare_iv` in halo_inference.rs, so the tightening is observationally inert today.
 - Risk: a future refactor that legitimately toggles halo_inference's representation toward omission (contract-permitted) would break these tests.
 
 **Option B — RECORD the contract degree of freedom as the design choice** (defer Option A):
@@ -70,7 +70,7 @@ ORCHESTRATOR-DIRECT IMPLEMENTATION cycle 122.
 
 DECISION: Option B (record contract degree of freedom as design choice). Rationale:
 - The existing tests remain robust to contract-permitted halo_inference representation toggles (an explicit-0 entry OR omission).
-- The vacuous-pass risk on a silent-skip regression is judged unlikely (halo_inference's walker pattern at halo_inference.rs:1184 always emits explicit-0 per no_halo_bare_iv; the walker doesn't drop entries in practice).
+- The vacuous-pass risk on a silent-skip regression is judged unlikely (halo_inference's walker pattern always emits explicit-0 per the `fn no_halo_bare_iv` in-module test in halo_inference.rs; the walker doesn't drop entries in practice).
 - The contract IS the protection against test coupling — narrowing the tests (Option A) would couple them to a single representation choice, breaking on a contract-permitted refactor.
 - Option C (strengthen contract + new contract-pin test + then Option A) is a multi-task arc not justified by current evidence.
 
@@ -91,7 +91,7 @@ ORCHESTRATOR-DIRECT IMPLEMENTATION cycle 122 (2026-05-25). DOC-ONLY.
 DECISION RECORDED: Option B (preserve halo_inference's absent ≡ explicit-0 contract degree of freedom).
 
 SHIPPED:
-- nucleus/nucleus-compiler/src/passes/the "TASK-0305 cycle-122 project decision (Option B)" paragraph in halo_inference.rs (search for "absent ≡ explicit-0") — added explicit project-decision marker paragraph naming Option B, citing the production emit site by SYMBOLIC NAME (search for `per_iv.entry(iv).or_insert(0)` — durable across line moves) and explaining the trade-off (vacuous-pass arm accepted vs contract robustness preserved).
+- nucleus/nucleus-compiler/src/passes/halo_inference.rs (Option B contract paragraph; search for "absent ≡ explicit-0") — added explicit project-decision marker paragraph naming Option B, citing the production emit site by symbolic anchor (`per_iv.entry(iv).or_insert(0)` — durable across line moves) and explaining the trade-off (vacuous-pass arm accepted vs contract robustness preserved).
 - nucleus/nucleus-compiler/tests/sidecar_halo.rs task0303_05 — added soundness-floor acknowledgement: the >0 pin is contract-form-independent BY CONSTRUCTION; no vacuous-pass arm here (unlike the == 0 pins in task0299 / task0303_07).
 - nucleus/nucleus-compiler/tests/sidecar_halo.rs task0303_07 — strengthened the existing degree-of-freedom paragraph to EXPLICITLY name the vacuous-pass arm and cite the cycle-122 decision lineage.
 
@@ -107,7 +107,7 @@ REVIEW GATE (cycle 122 parallel read-only):
 GOTCHAS + FORWARD-CARRY:
 - The architect's catch on P1a is the precise feedback-comment-doc-lie-recurring pattern firing INSIDE a commit whose explicit purpose is doc-lie defence. Forward-carry to TASK-0307 + future doc-citation work: prefer SYMBOLIC search hints (`grep for X`) over absolute line numbers, which rot with edits.
 - P1b is the precise feedback-comment-doc-lie pattern at sentence granularity (an inverted negative); the fix was a one-word rewrite ("neither" → "UNDER EITHER"). Two-claim docstrings need each clause verified.
-- The Option B decision is sound today because the `per_iv.entry(iv).or_insert(0)` emit site in halo_inference.rs (the sole halo-entry sink inside `classify_index`)'s or_insert(0) is the only emit path — every inspected (kernel, iv) gets explicit-0. If a future refactor moves to true conditional emission (e.g. skipping no-halo entries to compress the sidecar), the cycle-122 narrative pins (task0299, task0303_07) WOULD silently become vacuous; TASK-0307's sentinel is the structural defence.
+- The Option B decision is sound today because `per_iv.entry(iv).or_insert(0)` inside `classify_index` (halo_inference.rs) is the only emit path — every inspected (kernel, iv) gets explicit-0. If a future refactor moves to true conditional emission (e.g. skipping no-halo entries to compress the sidecar), the cycle-122 narrative pins (task0299, task0303_07) WOULD silently become vacuous; TASK-0307's sentinel is the structural defence.
 
 FILES SHIPPED:
 - nucleus/nucleus-compiler/src/passes/halo_inference.rs (+13 lines of contract doc + symbolic search hint)
