@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-05-25 01:18'
-updated_date: '2026-05-25 02:36'
+updated_date: '2026-05-25 02:45'
 labels:
   - M5
   - compiler
@@ -63,4 +63,19 @@ AC#2 (forces same-commit update on algorithm change): DONE — test fails LOUD o
 Honest limits:
 - Test asserts ONLY the rejection of non-zero halo on the inspected ivs. It does NOT assert that the implementation chose explicit-0 vs omission today; if a future PR toggles that representation, the test stays green (correct — that's a contract degree of freedom).
 - Test does not exercise the apply_halo_inference_partition_aware (B) entry point. Today the strict (A) entry is what the driver uses on this fixture; if the driver switches to (B) for distributed schedules, this test still pins behaviour because (B) is a superset of (A) on clean affine bodies.
+
+ORCHESTRATOR REVIEW-GATE HARDENING (cycle 119, post-architect-P1 finding).
+
+CORRECTION to the prior note: the line 'Today the strict (A) entry is what the driver uses on this fixture; if the driver switches to (B) for distributed schedules, this test still pins behaviour because (B) is a superset of (A) on clean affine bodies' was FACTUALLY WRONG on the mechanism. The driver ACTUALLY uses apply_halo_inference_partition_aware (B) — see nucleus/driver/src/main.rs:396 — NOT the strict (A) variant. The conclusion (the test pins behaviour either way) happens to be correct (both A and B return the same halo map for clean-affine input on 06-separable-filter), but the stated mechanism was wrong.
+
+This is a textbook feedback-implementer-disclosure-mechanism-wrong instance, ironic given that TASK-0299 itself defends against the sibling feedback-comment-doc-lie-recurring pattern. The architect review-gate caught it cycle 119; orchestrator surfaces it here.
+
+Corrected mechanism statement:
+- Driver uses apply_halo_inference_partition_aware (B) on the production path.
+- The test calls the lower() helper which calls apply_halo_inference (A, strict).
+- Both A and B return the same halo map for the 06-separable-filter clean-affine body (B is a superset of A: it widens the error-handling envelope, not the map-population logic). So the test's halo-widths assertions are sound regardless of which entry point the driver picks. If the driver ever switches BACK to (A), this test still pins behaviour; if a new (C) entry point lands, the test would need to be re-aimed.
+
+P2 architect findings filed/handled separately:
+- Two-part schedule-header conjunction: only the first conjunct (halo_widths value) is pinned by this test; the second conjunct (transfer_inject does NOT extend per-tile ranges) requires a different fixture. Test docstring updated to disclose this narrowing.
+- Silent-sibling sweep: two other schedule headers (05-stencil/distributed-2d.sched.nuc:53 and 07-matmul/distributed.sched.nuc:25) carry similar load-bearing halo narratives that are not pinned. Filed as TASK-0303 follow-up.
 <!-- SECTION:NOTES:END -->

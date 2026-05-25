@@ -573,6 +573,18 @@ fn task0275_partition_aware_rejects_strided_under_partition_rows() {
 // change with non-zero halo on hy fails LOUD and forces the schedule
 // comment to be updated in the same commit. Defends against the
 // feedback-comment-doc-lie-recurring pattern.
+//
+// Scope narrowing: the schedule header is a TWO-PART conjunction —
+// "halo_widths[hblur_acc][hy] = 0 AND transfer_inject does NOT extend
+// per-tile transfer ranges". This test pins ONLY the first conjunct
+// (the halo_inference output). A regression that breaks the second
+// conjunct without touching the first (e.g. a future transfer_inject
+// that unconditionally extends tile ranges even when halo=0) would not
+// trip this test; the e2e bytes would catch it iff the over-extension
+// changes the output. Pinning the second conjunct is a separate
+// fixture (assert transfer_inject's per-tile ranges, not halo widths)
+// and is filed as a follow-up if the project wants narrative-coverage
+// parity across both halves of the claim.
 
 #[test]
 fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
