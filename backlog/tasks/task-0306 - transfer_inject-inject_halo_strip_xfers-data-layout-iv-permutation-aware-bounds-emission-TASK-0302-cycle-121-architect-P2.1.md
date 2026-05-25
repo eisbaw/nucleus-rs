@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 03:55'
-updated_date: '2026-05-25 09:05'
+updated_date: '2026-05-25 09:18'
 labels:
   - M6
   - compiler
@@ -114,4 +114,18 @@ Gate green this cycle (orchestrator-direct):
 - just e2e: 108/92/0/16/0 (bit-identical preservation)
 
 Forward-carry to TASK-0306 description: AC#2 marked VERIFIED-IN-PLACE (no code change needed); the function's per-dim walk in numeric order already handles inner-leading layout correctly.
+
+Cycle 133 PARALLEL REVIEW GATE FOLD-BACK (commit 7f10a80, qa-test-runner + mped-architect read-only):
+
+qa-test-runner: GO. Reproduced 862/0/3 (dev + release), e2e 108/92/0/16/0 twice (non-flake), all 7 gates (check / clippy / test / test-release / check-textual-replace / check-include-str / e2e) pass. 3 new task0306_ac3/4/5 tests present and green.
+
+mped-architect: GO. No P1.
+- P2-1 closed in-thread (this addendum): the commit-message phrase 'AC#2 ... handles inner-axis-leading by construction (test task0306_ac3 confirms via inject_transfers end-to-end)' was misleading. The honest framing: AC#2 is verified by STATIC INSPECTION of compute_partition_bounds_with_dim_prefix (transfer_inject.rs:1937 walks per_dim in numeric dim order, not partition nest order). task0306_ac3 exercises ONLY the cycle-133 helper inject_halo_strip_xfers via inject_transfers; the regular fan-out path that would route through compute_partition_bounds_with_dim_prefix is short-circuited by empty data_producers in the synthetic fixture. The 'orchestrator-narrative-also-wrong' recurrence pattern fired on the cycle-133 commit message; recording it here.
+- P2-2 closed in-thread: helper doc tightened — production callers always observe accesses (TASK-0150 populates indices at build_acfg time), so only Some(empty) reaches the fall-back from real fixtures; None is defensive (transfer_inject.rs:2007 doc updated).
+- P3-1 closed in-thread: removed the eager default_order pre-allocation + clones on the canonical hot path; replaced with a lazy fall-back early-return (transfer_inject.rs:2020-2046).
+- P3-2 filed as TASK-0315 (silent-bypass guard for default-order fall-back via nuc_trace or unreachable! sentinel).
+- P3-3 filed as TASK-0316 (backend-side wait_slice round-trip test for the new shapes — codegen-layer end-to-end pin to complement the transfer_inject-output-level pins added this cycle).
+- P3-4 closed in-thread: silent-sibling-audit doc-comment at transfer_inject.rs:1697-1720 now explicitly names the two helpers' distinct roles (REGULAR-XFER TILE REWRITE vs HALO-STRIP PUSH/WAIT SYNTHESIS) so the next implementer can pick the right one.
+
+Honest scope reminder: the cycle-133 fix is a defensive improvement against latent shapes (inner-axis-leading data layout, non-prefix data layout) that NO shipped schedule constructs today. The 4 closed P2/P3 in-thread + 2 filed P3 follow-ups represent the full review fold-back. e2e baseline 108/92/0/16/0 preserved bit-identical.
 <!-- SECTION:NOTES:END -->

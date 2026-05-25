@@ -1706,13 +1706,21 @@ fn rewrite_partition_tiles_inner(
                 // partition_pairs sidecar (`inject_halo_strip_xfers`,
                 // axis-correct since cycle 133 via
                 // `order_halo_strip_bounds_by_data_dim` consulting
-                // `data_dim_iv_map`). A future N-dim halo or partition
-                // pass that constructs `bounds` from a
-                // `partition_axis_order` MUST consult
-                // `data_dim_iv_map` (via
-                // `compute_partition_bounds_with_dim_prefix` or the
-                // cycle-133 helper) to avoid re-importing the
-                // axis-mapping assumption.
+                // `data_dim_iv_map`). A future N-dim partition pass
+                // that constructs tile bounds MUST consult
+                // `data_dim_iv_map` to avoid re-importing the
+                // axis-mapping assumption — using either:
+                //   - `compute_partition_bounds_with_dim_prefix` for
+                //     REGULAR-XFER TILE REWRITE (the path this match
+                //     arm is on), where partitioned bounds replace
+                //     the existing source tile under wait_slice's
+                //     dim convention; or
+                //   - `order_halo_strip_bounds_by_data_dim` for
+                //     HALO-STRIP PUSH/WAIT SYNTHESIS (the
+                //     `inject_halo_strip_xfers` path), where a
+                //     freshly-constructed `(outer_iv, inner_iv)`
+                //     tuple must be re-ordered into data-dim order
+                //     before emit.
                 let bounds = match compute_partition_bounds_with_dim_prefix(
                     x.data,
                     data_dim_iv_map,
@@ -2001,11 +2009,15 @@ fn compute_partition_bounds_with_dim_prefix(
 /// ### Fall-back: no observed dim info
 ///
 /// Synthetic test fixtures built via `DataflowEdge::new` carry empty
-/// `data_in_access` indices ⇒ `data_dim_iv_map[data]` is `Some(empty)`
-/// or `None`. We treat both as "no observed dim info" and return the
-/// pre-cycle-133 default ordering so the existing
-/// `halo_strip_synth.rs` fixtures (positive_3x3 / positive_2x2 /
-/// determinism / placement) stay byte-identical.
+/// `data_in_access` indices, so `walk_data_dim_iv_map` records the
+/// data with `Some(vec![])` (an empty per-dim Vec). Production
+/// callers always observe accesses with non-empty indices (TASK-0150
+/// populates them at `build_acfg` time). We treat both `None` (data
+/// not in the map at all) and `Some(empty)` uniformly as "no
+/// observed dim info" and return the pre-cycle-133 default ordering
+/// so the existing `halo_strip_synth.rs` fixtures (positive_3x3 /
+/// positive_2x2 / determinism / placement) stay byte-identical. The
+/// `None` branch is defensive — no production caller reaches it.
 ///
 /// ### Ambiguity (both ivs at same dim)
 ///
@@ -2021,16 +2033,15 @@ fn order_halo_strip_bounds_by_data_dim(
     inner_range: std::ops::Range<i64>,
     data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
 ) -> Vec<(IterVar, std::ops::Range<i64>)> {
-    let default_order = vec![
-        (outer_iv, outer_range.clone()),
-        (inner_iv, inner_range.clone()),
-    ];
-    let Some(per_dim) = data_dim_iv_map.get(&data) else {
-        return default_order;
+    // Fall-back hot path: synthetic fixtures + the defensive
+    // missing-entry case. Build the default order LAZILY (no clones
+    // on the canonical-indexed-access branches below).
+    let per_dim = match data_dim_iv_map.get(&data) {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return vec![(outer_iv, outer_range), (inner_iv, inner_range)];
+        }
     };
-    if per_dim.is_empty() {
-        return default_order;
-    }
     let outer_dim = per_dim.iter().position(|s| s.contains(&outer_iv));
     let inner_dim = per_dim.iter().position(|s| s.contains(&inner_iv));
     match (outer_dim, inner_dim) {
