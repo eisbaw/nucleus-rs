@@ -48,7 +48,19 @@
 //! - **Host-excluding barriers**: same transport limitation as
 //!   mp-tcp-bufsync — one CTRL stream per `(host, worker)` pair, so a
 //!   barrier whose participants exclude host cannot be lowered.
-//!   Fail-loud with a typed `ContractGap` forward-linking TASK-0175.
+//!   Fail-loud with a typed `ContractGap` forward-linking TASK-0175
+//!   (filed forward as TASK-0329 for host-mediated barrier
+//!   mediation, analogous to cycle-148/149's data lift).
+//! - **Worker-to-worker `Push`/`Wait`** (TASK-0327, cycle 149):
+//!   DATA-side w↔w lifted via HOST-RELAY. Src's `chan_<rid>.push`
+//!   uses peer_idx=0 (host); HOST's `main()` runs a synchronous
+//!   relay phase (`Plan::render_relay_phase`) emitted just BEFORE
+//!   the LAST top-level `Event::Sync` that calls
+//!   `Reactor::relay_one(seq, dst_peer, cap)` per hop — drains
+//!   `inbound[seq]` from src and re-pushes to
+//!   `outbound[(seq, dst_peer_idx_at_host)]` toward dst. Dst's
+//!   `chan_<rid>.wait` reads its own `inbound[seq]` (driven by
+//!   host's forwarded frames on its `data_host` socket).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -111,12 +123,19 @@ impl<'a> Plan<'a> {
             .map(|(w, _)| *w)
             .collect();
 
-        // CHECK-ORDER NOTE (TASK-0255 cycle 90): the ContractGap checks
-        // below are A (used_workers<2) -> B (Wait/no-Push) -> C (missing
-        // sidecar buffer) -> host-excluding-barrier -> D (worker-to-
-        // worker Push). This order is load-bearing for the negative-
-        // path test fixtures in this file's `#[cfg(test)] mod tests` and
-        // in `tests/multi_worker_emit.rs` — each test must NOT trip any
+        // CHECK-ORDER NOTE (TASK-0255 cycle 90, refreshed TASK-0327
+        // cycle 149): the ContractGap checks below are A
+        // (used_workers<2) -> B (Wait/no-Push) -> C (missing sidecar
+        // buffer) -> host-excluding-barrier -> D (defensive
+        // src==host==dst projection malformedness). Branch D used to
+        // reject any src/dst that were both non-host (the cycle-79
+        // worker-to-worker gap); cycle 149 lifted that via
+        // host-relay (see `Plan::render_relay_phase` +
+        // `Reactor::relay_one`), so Branch D now bites only the
+        // genuinely-malformed `src == dst == host` projection. This
+        // order is load-bearing for the negative-path test fixtures
+        // in this file's `#[cfg(test)] mod tests` and in
+        // `tests/multi_worker_emit.rs` — each test must NOT trip any
         // EARLIER check to exercise its target branch. A new check
         // inserted between branches may silently invalidate a bypass-
         // fixture; if you reorder/add, update the fixtures together.
@@ -223,15 +242,24 @@ impl<'a> Plan<'a> {
         }
 
         // Cross-worker push-pair topology: every Push must travel
-        // host<->non-host on the (host,worker) star. A
-        // worker-to-worker pair has no CTRL/DATA channel (TASK-0175).
+        // host<->non-host on the (host,worker) star. TASK-0327 (cycle
+        // 149) lifts the prior fail-loud rejection of worker-to-worker
+        // pairs by routing them via SYNCHRONOUS HOST-RELAY: both src
+        // and dst non-host workers use their existing `data_host`
+        // reactor socket (peer_idx=0 — see `chan_peer_index`), and
+        // HOST runs a relay phase (`Plan::render_relay_phase`) that
+        // drains `inbound[seq]` from src and re-pushes to
+        // `outbound[(seq, dst_peer_idx_at_host)]` toward dst. Mirrors
+        // mp-tcp-bufsync's cycle-148 lift. Filed forward as TASK-0175
+        // for the eventual full-mesh path. The defensive
+        // src==host==dst projection check still bites — a Push naming
+        // host both ways is malformed regardless of topology.
         for ((d, s), (src, dst)) in &chan_pairs {
-            if *src != host_worker && *dst != host_worker {
+            if *src == host_worker && *dst == host_worker {
                 return Err(EmitError::ContractGap(format!(
                     "mp-tcp-event Push (data={d:?}, seq={s:?}) from {src:?} \
-                     to {dst:?} is worker-to-worker; the star topology \
-                     requires host as the relay (filed as TASK-0175). \
-                     Not silently mis-routed."
+                     to {dst:?} names host as both src and dst — malformed \
+                     projection"
                 )));
             }
         }
@@ -310,6 +338,18 @@ impl<'a> Plan<'a> {
     /// Chan<T> carries — for a wait-only chan we still construct it
     /// with the peer = SRC for symmetry; push() on a wait-only chan
     /// would be a contract bug).
+    ///
+    /// TASK-0327 (cycle 149): for worker-to-worker pairs (both
+    /// non-host), the logical peer (the other worker) is NOT a peer
+    /// in this worker's reactor — its reactor has only HOST as a
+    /// peer (peer_idx = 0). Route both src's `push` and dst's `wait`
+    /// through HOST: replace the logical peer with `host_worker` for
+    /// the peer-index lookup. HOST runs a synchronous relay phase
+    /// (see `Plan::render_relay_phase`) that drains `inbound[seq]`
+    /// from src and re-pushes to `outbound[(seq, dst_peer_idx_at_host)]`
+    /// toward dst. For dst, peer_idx is irrelevant (wait reads
+    /// `inbound[seq]`); for src, peer_idx = 0 routes the push to
+    /// host's `data_<src>` socket. Mirrors mp-tcp-bufsync cycle 148.
     fn chan_peer_index(
         &self,
         worker: WorkerId,
@@ -332,10 +372,17 @@ impl<'a> Plan<'a> {
                  but is neither src ({src:?}) nor dst ({dst:?})"
             )));
         };
-        self.peer_index_for(worker, peer).ok_or_else(|| {
+        // TASK-0327: route worker-to-worker pairs via host.
+        let effective_peer = if peer != self.host_worker && worker != self.host_worker {
+            self.host_worker
+        } else {
+            peer
+        };
+        self.peer_index_for(worker, effective_peer).ok_or_else(|| {
             EmitError::ContractGap(format!(
                 "mp-tcp-event Plan: worker {worker:?} has no peer index for \
-                 peer {peer:?} on chan {chan_key:?}"
+                 peer {peer:?} (effective_peer {effective_peer:?}) on chan \
+                 {chan_key:?}"
             ))
         })
     }
@@ -521,25 +568,157 @@ impl<'a> Plan<'a> {
             writeln!(out).ok();
         }
 
-        let body = {
-            let mut buf = String::new();
+        // TASK-0327 (cycle 149): for HOST, when the schedule has w2w
+        // pushes, splice the synchronous relay phase right BEFORE the
+        // LAST top-level `Event::Sync` event (= between pass-1 barrier
+        // and pass-2 barrier on the 06/distributed2 reproducer). The
+        // relay phase drains all worker-to-worker (seq, dst) hops
+        // through host's existing reactor: `wait(seq)` blocks driving
+        // the reactor (pulling frames from `data_<src>` mio sockets
+        // into `inbound[seq]`); `push(seq, dst_peer, payload, cap)`
+        // enqueues to `outbound[(seq, dst_peer)]` (drained on next
+        // reactor turn into `data_<dst>` mio socket). Non-host workers
+        // render unchanged — their `chan_<rid>` uses peer_idx=0 (host)
+        // for both push and wait; host does the forwarding.
+        //
+        // Mirror of mp-tcp-bufsync's cycle-148 splice in
+        // `nucleus/backends/mp-tcp-bufsync/src/lib.rs` `render_worker_program`.
+        let host_events = &self.per_worker[&worker];
+        let host_relay = if is_host {
+            self.render_relay_phase(1)?
+        } else {
+            String::new()
+        };
+        if is_host && !host_relay.is_empty() {
+            let split_at = relay_phase_insertion_point(host_events);
+            let mut pre = String::new();
             walker::render_worker_events(
                 &walker_ctx,
                 worker,
-                &self.per_worker[&worker],
-                &mut buf,
+                &host_events[..split_at],
+                &mut pre,
                 1,
                 "",
             )?;
-            buf
-        };
-        out.push_str(&body);
+            out.push_str(&pre);
+            out.push_str(&host_relay);
+            let mut post = String::new();
+            walker::render_worker_events(
+                &walker_ctx,
+                worker,
+                &host_events[split_at..],
+                &mut post,
+                1,
+                "",
+            )?;
+            out.push_str(&post);
+        } else {
+            let body = {
+                let mut buf = String::new();
+                walker::render_worker_events(
+                    &walker_ctx,
+                    worker,
+                    host_events,
+                    &mut buf,
+                    1,
+                    "",
+                )?;
+                buf
+            };
+            out.push_str(&body);
+        }
 
         // ---- Flush outbound + close. ----
         writeln!(out).ok();
         writeln!(out, "    reactor.borrow_mut().flush_outbound();").ok();
 
         writeln!(out, "}}").ok();
+        Ok(out)
+    }
+
+    /// TASK-0327 (cycle 149): per non-host src worker, the ordered
+    /// list of (seq, dst, data, cap) for every w2w Push event in src's
+    /// event list (src != host && dst != host). Event-list order
+    /// equals the order in which the host's relay should drain
+    /// `inbound[seq]` for that src — though since `wait(seq)` is
+    /// per-seq-demuxed, ordering across hops only affects latency,
+    /// not correctness.
+    ///
+    /// Empty for any src with no w2w pushes. Empty overall if the
+    /// schedule has no w2w transfers (the common host↔worker-only
+    /// case), and then `render_relay_phase` is a no-op.
+    fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
+        let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
+        for (src, events) in self.per_worker.iter() {
+            if *src == self.host_worker {
+                continue;
+            }
+            let mut hops: Vec<RelayHop> = Vec::new();
+            collect_w2w_pushes(events, self.host_worker, &self.chan_caps, &mut hops)?;
+            if !hops.is_empty() {
+                out.insert(*src, hops);
+            }
+        }
+        Ok(out)
+    }
+
+    /// TASK-0327 (cycle 149): emit host's synchronous relay phase as a
+    /// String — for each src in BTreeMap (sorted WorkerId) order, for
+    /// each hop in src's event-list order, call
+    /// `reactor.borrow_mut().relay_one(seq, dst_peer_idx_at_host, cap)`.
+    /// `relay_one` (defined in `runtime.rs`) does `wait(seq)` then
+    /// `push(seq, dst_peer, payload, cap)` — bytes-verbatim forwarding,
+    /// no re-encode. The whole batch runs inside a single
+    /// `reactor.borrow_mut()` scope so no other reactor borrow can
+    /// interleave (single-threaded RefCell on host).
+    ///
+    /// Returns `EmitError::ContractGap` if any hop's `DataId` lacks a
+    /// name in `NameTables` — same fail-loud contract as the Push/Wait
+    /// emit path. Cycle-148 architect P2.2 lesson applies: bubble
+    /// data_name errors rather than silently inlining a `{DataId:?}`
+    /// fallback in the comment.
+    fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
+        let pad = "    ".repeat(indent);
+        let schedule = self.relay_schedule()?;
+        if schedule.is_empty() {
+            return Ok(String::new());
+        }
+        let mut out = String::new();
+        writeln!(
+            out,
+            "{pad}// TASK-0327 host-relay phase: forward worker-to-worker Push/Wait\n\
+             {pad}// pairs through host's existing per-(host,worker) star-topology\n\
+             {pad}// reactor. SYNCHRONOUS: read inbound[seq] (from data_<src>),\n\
+             {pad}// then re-push to outbound[(seq, dst_peer)] (toward data_<dst>),\n\
+             {pad}// one (seq, dst) hop at a time, srcs iterated in sorted-WorkerId order."
+        )
+        .ok();
+        writeln!(out, "{pad}{{").ok();
+        writeln!(out, "{pad}    let mut __relay = reactor.borrow_mut();").ok();
+        for (src, hops) in &schedule {
+            let src_name = self.worker_name(*src);
+            for hop in hops {
+                let dst_name = self.worker_name(hop.dst);
+                let data_name = self.data_name(hop.data)?;
+                let dst_peer = self.peer_index_for(self.host_worker, hop.dst).ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "mp-tcp-event relay: host has no peer index for dst {:?} \
+                         on hop seq={:?} data={:?}",
+                        hop.dst, hop.seq, hop.data
+                    ))
+                })?;
+                writeln!(
+                    out,
+                    "{pad}    __relay.relay_one({seq}u64, {dst_peer}usize, {cap}usize); \
+                     // relay `{data_name}` from {src_name} to {dst_name}",
+                    seq = hop.seq.0,
+                    dst_peer = dst_peer,
+                    cap = hop.cap,
+                )
+                .ok();
+            }
+        }
+        writeln!(out, "{pad}}}").ok();
         Ok(out)
     }
 
@@ -923,6 +1102,113 @@ fn collect_push_pairs(
             _ => {}
         }
     }
+}
+
+/// TASK-0327 (cycle 149): one host-relay hop for a worker-to-worker
+/// `Push`/`Wait` pair on the mp-tcp-event star topology — "drain
+/// `inbound[seq]` from src worker, re-push to `outbound[(seq, dst_peer
+/// at host)]` toward dst worker". `data` is for codegen-comment
+/// disambiguation only; the wire pass-through is bytes-verbatim.
+/// Cap is the chan's per-pair `outbound` bound (`chan_caps`).
+#[derive(Debug, Clone, Copy)]
+struct RelayHop {
+    seq: SeqTag,
+    dst: WorkerId,
+    data: DataId,
+    cap: u64,
+}
+
+/// TASK-0327 (cycle 149): pick the position in HOST's top-level event
+/// list at which the host-relay phase should splice in.
+///
+/// Same heuristic-shape as mp-tcp-bufsync's cycle-148
+/// `relay_phase_insertion_point`. Constraints 1 + 2 below are the
+/// load-bearing ones — they fire regardless of backend. Constraint 3
+/// is INERT on mp-tcp-event by construction (per-seq demux at the
+/// reactor's `inbound` map means a relay `wait(seq)` cannot interleave
+/// with another host Wait on a different seq from the same `data_<src>`
+/// socket — the same socket fans into N distinct `inbound[seq]`
+/// queues); kept in the doc only as narrative continuity with the
+/// bufsync sibling. Cycle-149 architect P2.3 fold-back.
+///
+/// 1. Workers reach their pass-2-end barrier only AFTER receiving
+///    their cross-tmps (which require relay) and computing pass 2.
+///    Relay must happen BEFORE host's LAST top-level `Event::Sync`,
+///    otherwise host blocks at that barrier waiting for workers whose
+///    progress depends on the relay we haven't run yet.
+///
+/// 2. Workers reach their pass-1-end barrier BEFORE pushing tmps; so
+///    relay needs the workers to have crossed pass-1 — host must have
+///    crossed it too, i.e. relay AFTER host's first `Sync` (if any).
+///
+/// 3. (Inert on mp-tcp-event — fires on bufsync only.) bufsync uses
+///    one ordered DATA stream per `(host, worker)` pair, so relay
+///    reads from `data_<src>` would race host's own reads on the
+///    same socket. mp-tcp-event's per-seq demux removes this hazard:
+///    the relay's `wait(seq)` and any host `chan_<rid>.wait()` for a
+///    different seq drain into disjoint `inbound[seq]` queues by
+///    construction. The "before-first-Wait" fallback below is kept
+///    purely for narrative symmetry; on mp-tcp-event it would be
+///    correct anyway, but for a reason that does not bite.
+///
+/// Priority order: LAST top-level `Sync` (primary), then FIRST
+/// top-level `Wait` (fallback — inert hazard on mp-tcp-event but
+/// gives a sensible insertion site), then end-of-events (last resort).
+fn relay_phase_insertion_point(events: &[Event]) -> usize {
+    if let Some(idx) = events
+        .iter()
+        .rposition(|e| matches!(e, Event::Sync { .. }))
+    {
+        return idx;
+    }
+    if let Some(idx) = events.iter().position(|e| matches!(e, Event::Wait { .. })) {
+        return idx;
+    }
+    events.len()
+}
+
+/// TASK-0327 (cycle 149): collect every Push event where the dst is a
+/// non-host worker (= worker-to-worker push), in event-list order.
+/// `cap` is looked up against `chan_caps` so the emitted relay code
+/// can pass the right back-pressure bound.
+///
+/// Recurses into Loop bodies in event-list order (the relay block is
+/// emitted as a flat sequence outside any loop; the source events may
+/// be nested but the cycle-149 limitation is that the relay assumes
+/// each w2w push fires exactly once per main). The in-tree
+/// 06/distributed2 reproducer has all w2w pushes at top level —
+/// verified by inspecting the cycle-148 mp-tcp-bufsync emit, which
+/// is structurally identical to mp-tcp-event's. Filed as a sibling
+/// of TASK-0330 (mp-tcp-bufsync's cycle-148 defensive ContractGap
+/// for w2w Push inside Loop bodies).
+fn collect_w2w_pushes(
+    events: &[Event],
+    host: WorkerId,
+    chan_caps: &BTreeMap<(DataId, SeqTag), u64>,
+    out: &mut Vec<RelayHop>,
+) -> Result<(), EmitError> {
+    for e in events {
+        match e {
+            Event::Push { dst, data, seq, .. } if *dst != host => {
+                let cap = chan_caps.get(&(*data, *seq)).copied().ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "mp-tcp-event relay schedule: missing chan_caps for \
+                         (data={data:?}, seq={seq:?}) — Push collected but \
+                         Plan::build did not populate the cap"
+                    ))
+                })?;
+                out.push(RelayHop {
+                    seq: *seq,
+                    dst: *dst,
+                    data: *data,
+                    cap,
+                });
+            }
+            Event::Loop { body, .. } => collect_w2w_pushes(body, host, chan_caps, out)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Encoder/decoder fn-path for a ResolvedType. Returns `(encode_path,

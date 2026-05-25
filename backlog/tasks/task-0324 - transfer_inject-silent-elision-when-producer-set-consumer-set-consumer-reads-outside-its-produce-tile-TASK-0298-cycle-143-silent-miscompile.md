@@ -3,11 +3,11 @@ id: TASK-0324
 title: >-
   transfer_inject silent elision when producer-set == consumer-set + consumer
   reads outside its produce-tile (TASK-0298 cycle-143 silent-miscompile)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 16:26'
+updated_date: '2026-05-25 18:31'
 labels:
   - compiler
   - transfer_inject
@@ -520,4 +520,36 @@ This is a textbook instance of [[feedback-orchestrator-narrative-also-wrong]] �
 **Corrected closure state**:
 - AC#3 (cross-worker tmp codegen — N-to-N broadcast-of-gather): **LANDED**. The pass emits 12 cross-pairs for 06/distributed2 across all 4 backends; 2 backends lower the resulting events to bit-identical output; 2 backends correctly fail LOUD with a typed error citing TASK-0175 / TASK-0327.
 - AC#4 (matrix promotion to [[required]]): **PARTIAL** (2 of 4 cells). The remaining 2 cells block on TASK-0327 (mp-tcp transport).
+
+## Cycle 149 final state — AC#4 fully closed; ALL ACs landed (AC#0/1/2/3/4/5 + #2-validator)
+
+Cycle 149 (TASK-0327 AC#2 + AC#3 closure) landed mp-tcp-event's worker-to-worker Push/Wait via SYNCHRONOUS HOST-RELAY, mirroring cycle-148's mp-tcp-bufsync slice. All 4 tier-1 backends are now bit-identical on 06-separable-filter/distributed2.
+
+### AC#4 closure detail
+
+- pthreads-sync × distributed2: PASS (cycle 147).
+- pthreads-async × distributed2: PASS (cycle 147).
+- mp-tcp-bufsync × distributed2: PASS (cycle 148 — host-relay landed).
+- mp-tcp-event × distributed2: **PASS (cycle 149 — host-relay landed on the mio reactor side)**.
+
+e2e matrix shift: 112/95/0/17/0 (post-cycle-148) → **112/96/0/16/0 (post-cycle-149)**. Two back-to-back e2e samples on the cycle-149 cell: both bit-identical against reference.bin. distributed2.sched.nuc no longer carries [[skip]] entries — full cross-backend coverage achieved for the cycle-143/144 silent-miscompile reproducer schedule.
+
+### Closure status
+
+- AC#0 (doc-lie fix at transfer_inject.rs:82-108): cycle 144 LANDED.
+- AC#1 + AC#2 (detection logic + diagnose-first validator `check_no_silent_elision_risk` + `SameSetSilentElisionRisk` variant): cycle 144 LANDED.
+- AC#3 (cross-worker tmp codegen — N-to-N broadcast-of-gather): cycle 147 LANDED at the pass layer; cycle 148 + 149 lifted the mp-tcp transport gap.
+- AC#4 (matrix promotion to [[required]]): cycle 149 LANDED. All 4 [[skip]] entries are now [[required]] and bit-identical.
+- AC#5 (positive + negative test fixtures): cycle 144 LANDED.
+
+**TASK-0324 status: DONE.** The cycle-128/138/140/141/142/142b/143 silent-sibling meta-rule's seventh-firing instance (cycle 143 architect P2-2 — 13-cnn-inference/batch_parallel as silent sibling of 06/distributed2) was the cycle that broke the silent-miscompile open; cycles 144→149 closed it across all 4 tier-1 backends.
+
+### Forward-carry to dependent tasks
+
+- TASK-0325 (per-element src==dst silent-elision validator extension, cycle-144 architect P1.1): still In Progress; not lifted by cycle 149 — its trigger (a schedule with partial worker-set overlap on a same-data fan-out) still has no in-tree exemplar. When such a schedule lands, cycle-149's `same_set_elision_unsafe_reason` factoring already prepares the path.
+- TASK-0326 (arithmetic-on-partition-iv producer-write validator tightening, cycle-144 architect P1.3): unchanged.
+- TASK-0327 (mp-tcp w2w mesh / host-relay) — see its own cycle-149 final-state addendum. **DONE** alongside TASK-0324 in this cycle.
+- TASK-0328 (clause-1 soundness investigation, cycle-147 architect P2.1): unchanged.
+- TASK-0329 (host-mediated barrier mediation, cycle-148 architect P3.1): unchanged — the CTRL arm of the host-mediated star topology is still gated; only the DATA arm was lifted by cycles 148+149.
+- TASK-0330 (defensive ContractGap for w2w Push inside Loop bodies, cycle-148 architect P3.2): unchanged — mp-tcp-event inherits the same flat-emit limitation in `collect_w2w_pushes`; same justification (no in-tree trigger).
 <!-- SECTION:NOTES:END -->

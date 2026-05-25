@@ -473,18 +473,22 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
     }
 }
 
-/// Branch D (multi_worker.rs:220-228) — every cross-worker `Push` must
-/// be host<->non-host. A `worker-to-worker` Push violates the star
-/// topology (one CTRL/DATA pair per (host, worker)) and is rejected
-/// with a ContractGap forward-linking TASK-0175 (same transport limit
-/// as mp-tcp-bufsync).
+/// TASK-0327 (cycle 149) — worker-to-worker `Push`/`Wait` is now
+/// lowered via HOST-RELAY: HOST's `main()` contains an inline relay
+/// phase that calls `Reactor::relay_one(seq, dst_peer, cap)` per hop;
+/// src worker pushes via peer_idx=0 (host); dst worker waits via its
+/// `chan_<rid>.wait()` (reads `inbound[seq]` populated by the host's
+/// forwarded frame). What used to be Branch D's ContractGap rejection
+/// (cycle 79 — `worker-to-worker_push_is_typed_contract_gap`, deleted
+/// cycle 149) now succeeds; this test pins the positive emit surface
+/// so a regression that silently dropped the relay block, or routed
+/// via the wrong dst_peer index, fails here before reaching the e2e
+/// matrix.
 ///
-/// Currently only exercised by e2e `[[skip]]` cells; this direct
-/// Plan::build test pins the diagnostic surface so a regression that
-/// "helpfully" defaulted the routing through host (silently
-/// mis-routing) fails here before reaching the e2e matrix.
+/// Mirrors mp-tcp-bufsync's cycle-148 host-relay positive fixtures
+/// in `nucleus/backends/mp-tcp-bufsync/tests/host_relay_emit.rs`.
 #[test]
-fn worker_to_worker_push_is_typed_contract_gap() {
+fn worker_to_worker_push_emits_host_relay() {
     use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -494,26 +498,35 @@ fn worker_to_worker_push_is_typed_contract_gap() {
     let data = DataId(0);
     let seq = SeqTag(0);
 
-    // host is in used_workers (smallest WorkerId + named "host"),
-    // every barrier includes host (so we get past the host-excluding
-    // check). The OFFENDING Push is w1 -> w2 (neither endpoint is
-    // host). Branch D fires.
-    //
-    // The (data, seq) pair must ALSO be in transfer_buffer_for_seq
-    // so we don't trip Branch C first; this is the LAST branch in
-    // the check order so all other invariants must hold.
+    // The previously-OFFENDING Push is w1 -> w2 (neither endpoint is
+    // host). Host is in used_workers (smallest WorkerId + named
+    // "host"), the lone barrier participates ALL three workers (so
+    // the host-excluding-barrier check stays inert). Two top-level
+    // Syncs on host so the relay-phase insertion point splices the
+    // relay between them (matches the 06/distributed2 reproducer
+    // shape: pass-1 barrier -> RELAY -> pass-2 barrier).
     let parts_all: BTreeSet<WorkerId> = [w_host, w1, w2].into_iter().collect();
-    let barrier = Event::Sync {
-        participants: parts_all,
+    let barrier_1 = Event::Sync {
+        participants: parts_all.clone(),
         kind: SyncKind::Barrier,
         sync: SyncTag(0),
     };
+    let barrier_2 = Event::Sync {
+        participants: parts_all,
+        kind: SyncKind::Barrier,
+        sync: SyncTag(1),
+    };
 
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    // host: participates in the barrier so it's in used_workers and
-    // is the elected host. No Push/Wait.
-    per_worker.insert(w_host, vec![barrier.clone()]);
-    // w1: Pushes to w2 (the worker-to-worker offence) + barrier.
+    // host: two top-level barriers, no Push/Wait. The cycle-149 relay
+    // splice inserts the relay block right BEFORE the LAST top-level
+    // Sync (= barrier_2 here), giving the layout
+    //   [pre: barrier_1] [relay block] [post: barrier_2]
+    // on host. matches the cycle-148 mp-tcp-bufsync test fixture
+    // shape.
+    per_worker.insert(w_host, vec![barrier_1.clone(), barrier_2.clone()]);
+    // w1: Pushes to w2 (the worker-to-worker shape lifted in cycle
+    // 149) and crosses both barriers.
     per_worker.insert(
         w1,
         vec![
@@ -523,21 +536,22 @@ fn worker_to_worker_push_is_typed_contract_gap() {
                 tile: IterTile::empty(),
                 seq,
             },
-            barrier.clone(),
+            barrier_1.clone(),
+            barrier_2.clone(),
         ],
     );
-    // w2: Waits from w1 + barrier (the matching Wait so Branch B
-    // doesn't trip first — pair_tiles + chan_pairs both populated).
+    // w2: Waits from w1 and crosses both barriers.
     per_worker.insert(
         w2,
         vec![
+            barrier_1,
             Event::Wait {
                 src: w1,
                 data,
                 tile: IterTile::empty(),
                 seq,
             },
-            barrier,
+            barrier_2,
         ],
     );
 
@@ -545,32 +559,104 @@ fn worker_to_worker_push_is_typed_contract_gap() {
     names.worker.insert(w_host, "host".to_string());
     names.worker.insert(w1, "w1".to_string());
     names.worker.insert(w2, "w2".to_string());
+    // Cycle 149: relay block emits `// relay \`<data_name>\` from ...`
+    // and `Plan::render_relay_phase` propagates EmitError::ContractGap
+    // when the DataId has no name (mp-tcp-bufsync cycle-148 P2.2
+    // discipline). Without a data name, the test would fail with
+    // `data id DataId(0) has no name in NameTables` instead of
+    // exercising the positive relay surface.
+    names.data.insert(data, "tmp".to_string());
     let mut sidecar = NameSidecar::default();
     // Branch C must NOT trip: provide the sidecar entry.
     sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    // Chan::new (emit_reactor_and_chans) needs the ResolvedType to
+    // pick the right encode/decode fn pair. i32 scalar is enough for
+    // a synthetic 1-byte-payload-equivalent test fixture (the relay
+    // itself is bytes-verbatim; the type only affects the encode/
+    // decode wiring on src and dst, which we assert exists below).
+    sidecar.data_types.insert(
+        data,
+        nucleus_compiler::algo::ResolvedType {
+            scalar: nucleus_compiler::algo::ScalarType::I32,
+            dims: vec![],
+        },
+    );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
     let scratch =
         repo_root().join("nucleus/target/mp-tcp-event-test-scratch/worker_to_worker_push");
     let _ = std::fs::remove_dir_all(&scratch);
 
-    let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
-    match r {
-        Err(e) => {
-            let msg = format!("{e}");
-            assert!(
-                msg.contains("worker-to-worker"),
-                "ContractGap must name the worker-to-worker Push rejection: {msg}"
-            );
-            assert!(
-                msg.contains("star topology"),
-                "ContractGap must name the star-topology constraint: {msg}"
-            );
-            assert!(
-                msg.contains("TASK-0175"),
-                "ContractGap must forward-link TASK-0175: {msg}"
-            );
-        }
-        Ok(_) => panic!("expected ContractGap on worker-to-worker Push"),
-    }
+    let result = emit(&per_worker, &names, &sidecar, &kernels, &scratch)
+        .expect("cycle-149 host-relay lifts the cycle-79 w2w ContractGap; emit must Ok");
+
+    // ---- host main.rs contains the relay block. ----
+    let host_bin = result
+        .worker_bins
+        .iter()
+        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some("host.rs"))
+        .expect("host.rs must be emitted (host is in used_workers)");
+    let host_src = std::fs::read_to_string(host_bin).expect("read host.rs");
+    assert!(
+        host_src.contains("TASK-0327 host-relay phase"),
+        "host main.rs must contain the TASK-0327 host-relay banner: {host_src}"
+    );
+    // dst_peer index for w2 in host's non_host_workers list = position
+    // of w2 in [w1, w2] = 1. seq=0, cap=1 (from sidecar).
+    assert!(
+        host_src.contains("__relay.relay_one(0u64, 1usize, 1usize)"),
+        "host main.rs must call relay_one(seq=0, dst_peer=1, cap=1) for the \
+         w1->w2 hop: {host_src}"
+    );
+    assert!(
+        host_src.contains("// relay `tmp` from w1 to w2"),
+        "host main.rs must carry the disambiguating relay comment naming \
+         the data + src + dst: {host_src}"
+    );
+    // Splice between barriers: relay banner appears AFTER the first
+    // barrier crossing and BEFORE the second.
+    let banner_pos = host_src
+        .find("TASK-0327 host-relay phase")
+        .expect("banner present");
+    let bar0_pos = host_src
+        .find("bar_0.wait()")
+        .expect("first barrier wait present");
+    let bar1_pos = host_src
+        .find("bar_1.wait()")
+        .expect("second barrier wait present");
+    assert!(
+        bar0_pos < banner_pos && banner_pos < bar1_pos,
+        "relay banner must splice BETWEEN bar_0.wait() (pre) and \
+         bar_1.wait() (post); got bar0@{bar0_pos}, banner@{banner_pos}, \
+         bar1@{bar1_pos}"
+    );
+
+    // ---- src worker (w1) pushes via peer_idx=0 (host). ----
+    let w1_bin = result
+        .worker_bins
+        .iter()
+        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some("w1.rs"))
+        .expect("w1.rs must be emitted");
+    let w1_src = std::fs::read_to_string(w1_bin).expect("read w1.rs");
+    // Chan::new(reactor, seq=0, peer_idx=0, cap=1, encode, decode).
+    assert!(
+        w1_src.contains("runtime::Chan::new(") && w1_src.contains("0u64, 0usize, 1usize,"),
+        "w1.rs must build chan with peer_idx=0 (host-relay route): {w1_src}"
+    );
+    assert!(
+        w1_src.contains("chan_0.push("),
+        "w1.rs must call chan_0.push for the w1->w2 hop: {w1_src}"
+    );
+
+    // ---- dst worker (w2) waits via chan_0.wait(). ----
+    let w2_bin = result
+        .worker_bins
+        .iter()
+        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some("w2.rs"))
+        .expect("w2.rs must be emitted");
+    let w2_src = std::fs::read_to_string(w2_bin).expect("read w2.rs");
+    assert!(
+        w2_src.contains("chan_0.wait()"),
+        "w2.rs must call chan_0.wait() for the w1->w2 hop: {w2_src}"
+    );
 }

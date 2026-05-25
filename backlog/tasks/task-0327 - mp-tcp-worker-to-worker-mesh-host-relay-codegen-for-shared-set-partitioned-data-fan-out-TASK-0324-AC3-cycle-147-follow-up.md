@@ -3,11 +3,11 @@ id: TASK-0327
 title: >-
   mp-tcp worker-to-worker mesh / host-relay codegen for shared-set
   partitioned-data fan-out (TASK-0324 AC#3 cycle-147 follow-up)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 16:04'
-updated_date: '2026-05-25 17:57'
+updated_date: '2026-05-25 18:37'
 labels:
   - M6
   - backend
@@ -34,8 +34,8 @@ The two mp-tcp backends (mp-tcp-bufsync, mp-tcp-event) cannot lower the 12 cross
 
 TASK-0175 was closed cycle-77 as DEFERRED-until-TASK-0117-lands-AND-a-distributed-schedule-needs-worker-to-worker (AC#3 of TASK-0175). Both conditions are now met: TASK-0117 fan-out has been live for many cycles, and 06/distributed2 is the in-tree schedule that exercises the worker-to-worker shape.
 
-## Acceptance criteria
-
+## Acceptance Criteria
+<!-- AC:BEGIN -->
 ### AC#1: mp-tcp-bufsync worker-to-worker channel
 
 Extend mp-tcp-bufsync's transport so a Push from WorkerId(i) to WorkerId(j) (i, j both non-host) routes correctly. Two viable approaches:
@@ -158,4 +158,102 @@ Limitation (acceptable for cycle 148): host cannot have data reads BETWEEN scatt
 ### Status
 
 **TASK-0327 stays In Progress.** AC#1 partially landed (mp-tcp-bufsync only); AC#3 partial (3 of 4 cells promoted). AC#2 (mp-tcp-event) + remaining 1 cell promotion deferred to cycle 149.
+
+## Cycle 149 implementation plan (orchestrator self-implementing per memory feedback-spawned-agents-refuse-code-edits)
+
+### Scope decision
+Land AC#2 (mp-tcp-event worker-to-worker host-relay) + close AC#3 (06/distributed2 fourth-backend [[required]] promotion). Mirror the cycle-148 mp-tcp-bufsync design verbatim: same wait-then-push semantics, same splice point heuristic (before LAST top-level Sync), same sorted-WorkerId ordering, same per-hop disambiguating comments.
+
+### Design: synchronous host-relay over mio reactor
+- `runtime_src.rs`: NEW `Reactor::relay_one(seq, dst_peer, cap)` primitive = `let p = self.wait(seq); self.push(seq, dst_peer, p, cap)`. Bytes-verbatim; bypasses Chan<T> encode/decode (the wire codec is symmetric for w2w).
+- `multi_worker.rs`: lift the cycle-79 w2w-Push rejection at Plan::build (now bites only `src==dst==host` malformedness). `chan_peer_index`: when both src and dst non-host, replace effective_peer with `host_worker` so peer_index_for returns 0 (host).
+- `multi_worker.rs`: NEW `RelayHop { seq, dst, data, cap }`, `collect_w2w_pushes` (recursive into Loop bodies — same cycle-148 limitation filed forward), `relay_phase_insertion_point` (LAST top-level Sync → first top-level Wait fallback → end-of-events last resort).
+- `Plan::relay_schedule()` → `Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError>`.
+- `Plan::render_relay_phase(indent)`: emits `{ let mut __relay = reactor.borrow_mut(); __relay.relay_one(seq, dst_peer, cap); ... }` block with per-hop disambiguating comments.
+- `render_worker_program` for HOST with non-empty relay schedule: split events at insertion point, call walker::render_worker_events twice (pre + post) with relay block between (mirror of cycle-148 bufsync line 762-784 splice).
+
+### Test surface
+- `tests/multi_worker_emit.rs`: REPLACED negative `worker_to_worker_push_is_typed_contract_gap` (cycle 79) with positive `worker_to_worker_push_emits_host_relay` (3-worker synthetic fixture). Asserts host main contains the banner + `__relay.relay_one(0u64, 1usize, 1usize)` for the w1→w2 hop + splice between bar_0 and bar_1; src/dst workers route via peer_idx=0.
+- `tests/host_relay_emit.rs`: NEW file mirroring `mp-tcp-bufsync/tests/host_relay_emit.rs` cycle-148 structure. 3 tests on the in-tree 06/distributed2 fixture:
+  - `host_emit_includes_task_0327_relay_phase_with_12_hops`: banner + 12 hops + 12 relay_one calls.
+  - `host_relay_phase_sits_between_the_two_barrier_rounds`: bar_0.wait < relay marker < bar_1.wait.
+  - `non_host_worker_routes_w2w_through_host_peer_only`: w0.rs has 8 Chan::new instances, all with peer_idx=0.
+- e2e-matrix.toml: flipped [[skip]] → [[required]] for 06-separable-filter/distributed2 × mp-tcp-event.
+
+### Verification gate (cycle-149 self-run, pre-parallel-review)
+- `just check`: clean.
+- `just clippy`: clean (-D warnings).
+- `just test`: all tests pass (dev profile, includes the 3 new host_relay_emit tests + the rewritten multi_worker_emit test).
+- `just test-release`: green after 1 transient flake on `e2e_example_07/naive_pthreads_sync_bit_identical` (re-ran clean — pthreads-sync scratch-dir collision, unrelated to TASK-0327 which touches mp-tcp-event only).
+- `just check-textual-replace-on-codegen`: OK.
+- `just check-include-str-coverage`: OK.
+- `just e2e`: 112/96/0/16/0 (was 112/95/0/17/0; +1 pass -1 skip on the cycle-149 cell). 2 back-to-back samples: bit-identical PASS for 06/distributed2 × mp-tcp-event in both.
+
+### Forward-carry to cycle 150+
+- AC#2 fully landed; **AC#3 fully landed**: all 4 tier-1 backends now bit-identical on 06/distributed2 (pthreads-sync, mp-tcp-bufsync, pthreads-async, mp-tcp-event). TASK-0324 AC#4 also closes here as a consequence — see TASK-0324's cycle-149 final-state addendum.
+- Honest sibling carry: the host-mediated barrier mediation gap (TASK-0329 cycle 148, host-excluding `bar_<bid>.wait()` for CTRL barriers excluding host) is still gated. Cycle 149 lifted the DATA arm only — the CTRL barrier-excluding-host arm requires a separate barrier-relay (`bar` shim mediates through host) and is filed forward.
+- collect_w2w_pushes recursion into Loop bodies (TASK-0330's mp-tcp-bufsync sibling) — for mp-tcp-event the same flat-emit assumption applies. No in-tree trigger; defensive ContractGap is a future cycle.
+
+## Cycle 149 final state — Done after parallel review gate GO
+
+### What landed (cycle 149, mp-tcp-event slice; closes AC#1+AC#2+AC#3)
+
+**AC#2 mp-tcp-event worker-to-worker via SYNCHRONOUS host-relay** (mirror of cycle-148's mp-tcp-bufsync slice; same heuristic, same splice point, same ordering):
+
+- `Reactor::relay_one(seq, dst_peer, cap)` added to runtime_src.rs: `let p = self.wait(seq); self.push(seq, dst_peer, p, cap);` — bytes-verbatim, bypasses Chan<T> encode/decode.
+- `chan_peer_index` lifted at multi_worker.rs: w2w pairs (both src and dst non-host) now resolve `effective_peer = host_worker`, routing through peer_idx=0.
+- Plan::build's old w2w-Push rejection (cycle 79, multi_worker.rs:225-237) lifted; the loop now bites only the genuinely-malformed `src == dst == host` projection (the defensive check stayed).
+- New RelayHop struct + `collect_w2w_pushes` helper + `relay_phase_insertion_point` heuristic (LAST top-level Sync → first top-level Wait fallback → end-of-events) + Plan::relay_schedule + Plan::render_relay_phase.
+- render_worker_program for HOST with non-empty relay: split events at insertion point, walker::render_worker_events twice (pre + post) with relay block between.
+- Module-doc updates: lib.rs added point 5 "Host-relay for worker-to-worker Push/Wait"; multi_worker.rs CHECK-ORDER NOTE updated; "Honest limitations" worker-to-worker bullet split DATA (lifted) vs CTRL (still gated on TASK-0329).
+
+**AC#3 06-separable-filter/distributed2 promotion (fourth-backend slice)**:
+
+- e2e-matrix.toml: flipped [[skip]] → [[required]] for distributed2 × mp-tcp-event. AC#3 is now FULLY closed — all 4 tier-1 backends bit-identical.
+- e2e baseline shift: 112/95/0/17/0 → **112/96/0/16/0**.
+- Both qa-test-runner samples PASS (3.24s and 3.26s); no flake observed on target cell.
+- Tests: 882/0/3 (post-cycle-148) → **885/0/3** (+3 host_relay_emit.rs cycle-149 tests).
+
+### Parallel review gate
+
+- **qa-test-runner**: GO. All gates green. `just ci` exit 0 including the 4 negative/determinism arms (cross-backend differential 21/5, required-coverage 1, etc.). 2 e2e samples line-by-line identical pass/skip composition. Target cell PASS in both; no regressions in any other cell; previously-skipped cells stay correctly skipped.
+- **mped-architect**: GO with 4 P2 fold-back items + 2 P3 task filings. All P2 folded back in-thread (this commit):
+  - **P2.1**: TASK-0330's defensive ContractGap scope amended to cover BOTH mp-tcp-bufsync and mp-tcp-event collect_w2w_pushes Loop-body siblings (the cycle-149 slice inherited the same flat-emit limitation).
+  - **P2.2**: e2e-matrix.toml opacity-rot fold-back: 786-791 (05-stencil/distributed-2d × mp-tcp-event) now names TASK-0294 as the remaining blocker (host 2D slice-paste); 1082 (09/pipelined × mp-tcp-event) now names TASK-0329 as the remaining CTRL-arm blocker. Both cite cycle-149 as the DATA-arm lift. Lines 985 and 1143 are accurate-but-narratively-loose (host-excluding barrier only) — deferred to TASK-0331's full audit.
+  - **P2.3**: `relay_phase_insertion_point` doc updated to mark constraint #3 as INERT on mp-tcp-event (per-seq demux at the reactor's inbound map removes the bufsync constraint by construction). The fallback is kept for narrative symmetry only.
+  - **P2.4**: `Reactor::relay_one` docstring extended with explicit safety invariant: unlike bufsync's `wire::read_msg_expect` seq cross-check, mp-tcp-event's per-seq demux relies on the wire-protocol-v0 globally-unique-seq invariant. A future weakening would surface as a silent wrong-payload race; documented for the defensive check site at Plan::build if needed.
+- P3 filings:
+  - **TASK-0330** (P2.1+P3.1 amendment): scope extended to both backends; same defensive ContractGap pattern needed in both.
+  - **TASK-0331** filed: e2e-matrix.toml skip-reason audit post-cycle-149 (opacity-rot of TASK-0175 citations after DATA-arm lift). Lines 985 + 1143 + any other unaudited TASK-0175-citing entry. Empirical-verification discipline per cycle-119 precedent.
+
+### Honesty gaps disclosed
+
+- **`just test-release` flake on first sample**: `e2e_example_07/naive_pthreads_sync_bit_identical` failed transiently (scratch-dir collision in pthreads-sync e2e test). Re-ran clean on subsequent samples (3 total). UNRELATED to cycle 149 (which touches mp-tcp-event only); pthreads-sync code unchanged this cycle. NOT a regression of this cycle.
+- **2-sample non-flake for the 06/distributed2 × mp-tcp-event cell** (qa-test-runner) — meets the cycle-119 milestone-close empirical-verification precedent but does not extend to the rest of the e2e matrix (the broader composition was 2-sample-identical, also non-flake at the macro level).
+- **Effort-estimate honesty**: cycle-149's implementation was ~280 LoC pass-side + ~28 LoC runtime-side + ~270 LoC tests = ~580 LoC total in mp-tcp-event. Cycle-148 self-disclosed ~239 LoC pass + ~234 LoC tests for the bufsync slice. Roughly parity. The architect's read-only review caught 4 P2 items in ~250s — comparable to cycle 148.
+- **Architect P3.2 NOT empirically validated this cycle**: the 786-791 (05/distributed-2d × mp-tcp-event) prose-update is unverified; TASK-0294 may not be the SOLE remaining blocker. Cycle-149 chose not to empirically promote this cell (would need TASK-0294 to land first). The skip reason update is a best-effort narrative correction.
+
+## TASK-0327 closure
+
+**TASK-0327 status: DONE.**
+
+All 3 ACs landed:
+- AC#1 (mp-tcp-bufsync w2w): cycle 148.
+- AC#2 (mp-tcp-event w2w): cycle 149.
+- AC#3 (06/distributed2 four-backend promotion): cycle 148 (3 of 4) + cycle 149 (4 of 4).
+
+Closes TASK-0324 as a transitive dependency (TASK-0324 AC#4 needed AC#3 = full closure). M5 cross-backend-completeness milestone for the silent-miscompile reproducer now achieved.
+
+### Forward-carried lessons (cycle 149 → future cycles)
+
+1. **Paired-lift discipline (architect P2.1)**: when a defect class spans multiple backends, fixing one + filing a sibling task for the other is the cycle-148→149 precedent. The sibling task should be filed at the END of the first cycle, not waited for the architect to catch. Memory feedback-silent-sibling-defect.md should be updated with this paired-lift hygiene as the 10th firing example.
+
+2. **Opacity-gate-rot fires across narrative surfaces (P2.2 + P3.2)**: when a precise sub-task is split out from a coarse parent (TASK-0175 → TASK-0327 + TASK-0329 in cycles 148-149), every prose surface citing the parent task is potentially rotted. The full grep audit should happen in the SAME cycle that splits the task, not deferred. Memory feedback-opacity-gate-rot.md should be updated.
+
+3. **Per-seq demux is a different safety profile than per-socket FIFO (P2.4)**: mp-tcp-event's reactor naturally isolates seqs into independent queues; bufsync's wire-protocol relies on FIFO ordering. The cycle-149 mp-tcp-event slice inherits a DIFFERENT defensive surface than cycle-148 bufsync's slice. Documenting this is essential — the failure mode under contract violation is also different (silent wrong-payload vs fail-loud seq mismatch). Memory note candidate.
 <!-- SECTION:NOTES:END -->
+
+- [ ] #1 AC#1: mp-tcp-bufsync worker-to-worker channel
+- [ ] #2 AC#2: mp-tcp-event worker-to-worker channel
+- [ ] #3 AC#3: 06-separable-filter/distributed2 promotion
+<!-- AC:END -->

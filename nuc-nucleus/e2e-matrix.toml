@@ -773,21 +773,25 @@ backend  = "mp-tcp-bufsync"
 reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-bufsync supports (sync, single-buffer, barrier/blocking only). Same rationale as 05-stencil/distributed × mp-tcp-bufsync."
 milestone = "M5"
 
-# 05-stencil/distributed-2d × mp-tcp-event: SKIP on TASK-0175 lineage.
-# Differs from distributed.sched.nuc × mp-tcp-event (which was promoted
-# in cycle 102, TASK-0268): the 2x2-grid partition emits genuine
-# worker-to-worker E/W halo strips between (row, 0) and (row, 1)
-# workers — strips that mp-tcp-event's one-CTRL-stream-per-(host,
-# worker) star topology cannot lower without a w↔w mesh. The row-band
-# sibling escaped this because its halo strips happen to compose with
-# the existing host-broadcast extension (no genuine w↔w transfer).
-# Promotion blocked on TASK-0175 (w↔w mesh transport) AND TASK-0294
-# (2D slice-paste); whichever lands later carries the promotion.
+# 05-stencil/distributed-2d × mp-tcp-event: SKIP. The 2x2-grid
+# partition emits genuine worker-to-worker E/W halo strips between
+# (row, 0) and (row, 1) workers. Differs from distributed.sched.nuc
+# × mp-tcp-event (promoted cycle 102, TASK-0268) where the row-band
+# partition's halo strips happen to compose with the existing
+# host-broadcast extension (no genuine w↔w transfer).
+#
+# Post-cycle-149 (TASK-0327 mp-tcp-event host-relay LANDED for w2w
+# Push/Wait): the DATA-side w↔w gap is no longer a blocker — w2w
+# Push/Wait now lower via host-relay. The remaining blocker is
+# TASK-0294 (host 2D slice-paste gather defect): the bit-identical
+# assertion would fail at the receiver-side assembly until that
+# slice-paste path lands. Once TASK-0294 lands this cell becomes
+# promotable.
 [[skip]]
 example  = "05-stencil"
 schedule = "distributed-2d"
 backend  = "mp-tcp-event"
-reason   = "TASK-0175 (w↔w mesh) + TASK-0294 (2D slice-paste): 2x2-grid partition emits genuine worker-to-worker E/W halo strips between (row, 0) and (row, 1) workers; mp-tcp-event's one-CTRL-stream-per-(host, worker) star topology cannot lower a host-excluding worker-to-worker Push/Wait pair. Distinct from 05-stencil/distributed × mp-tcp-event (PROMOTED cycle 102, TASK-0268) because that schedule's row-band partition has no genuine w↔w transfer. ALSO blocked on TASK-0294 (host gather defect) — the bit-identical assertion would fail even with a w↔w mesh until the 2D slice-paste path lands."
+reason   = "TASK-0294 (host 2D slice-paste gather defect): the 2x2-grid partition's bit-identical assertion would fail at receiver-side slice assembly even with the post-cycle-149 host-relay path (TASK-0327 cycle 149 LIFTED the DATA-side w↔w gap; this cell is no longer w↔w-blocked, only 2D-slice-paste-blocked). Distinct from 05-stencil/distributed × mp-tcp-event (PROMOTED cycle 102, TASK-0268) because that schedule's row-band partition has no 2D slice-paste requirement on the host gather."
 milestone = "M5"
 
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------
@@ -1063,23 +1067,22 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-# 09/pipelined × mp-tcp-event: BLOCKED by TASK-0175 (worker-to-worker
-# mesh). The producer/consumer pair on this schedule (workers 0 and
-# 2, both non-host) need a barrier between them excluding host, AND
-# the cross-worker `stream` transfer is producer->consumer
-# (worker-to-worker, not host-mediated). mp-tcp-event's one-(DATA,
-# CTRL)-pair-per-(host,worker) star topology cannot lower either.
-# Same blocker mp-tcp-bufsync's `13/batch_parallel` once hit before
-# TASK-0117 closed the host-mediated gather direction; the
-# fundamental worker-to-worker channel is still missing. TASK-0042.05
-# Stage 3 LANDED cycle 79 (mio reactor + ring buffer codegen); this
-# cell now reaches Plan::build then correctly fail-loud with a typed
-# ContractGap forward-linking TASK-0175.
+# 09/pipelined × mp-tcp-event: BLOCKED by TASK-0329 (host-mediated
+# barrier mediation, cycle-148 filing). The producer/consumer pair
+# on this schedule (workers 0 and 2, both non-host) need a barrier
+# between them excluding host. The CTRL arm of the star topology
+# cannot lower a host-excluding barrier.
+#
+# Post-cycle-149 update (TASK-0327): the cross-worker `stream`
+# transfer (worker-to-worker, not host-mediated) is no longer a
+# blocker — cycle-149 host-relay lifts the DATA-side w↔w. ONLY the
+# CTRL-side host-excluding-barrier is still gated; tracked as
+# TASK-0329, sibling of TASK-0327 for the barrier arm.
 [[skip]]
 example  = "09-producer-consumer"
 schedule = "pipelined"
 backend  = "mp-tcp-event"
-reason   = "TASK-0175 (worker-to-worker mesh): the pipelined producer/consumer pair (workers 0 and 2, both non-host) need a barrier between them excluding host, AND the cross-worker `stream` transfer is worker-to-worker. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower either. Same transport limitation mp-tcp-bufsync has on similar cells. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175."
+reason   = "TASK-0329 (host-mediated barrier mediation, cycle-148 filing — sibling of TASK-0327 for the CTRL arm): the pipelined producer/consumer pair (workers 0 and 2, both non-host) need a barrier between them excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier on the CTRL channel. NOTE: the cross-worker `stream` w2w Push/Wait was LIFTED in cycle 149 via host-relay (TASK-0327 AC#2); only the CTRL barrier-arm remains gated. Codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (the original combined-arm filing)."
 milestone = "M4"
 
 [[required]]
@@ -1311,13 +1314,18 @@ milestone = "M5"
 # host peer through `data_host`; HOST runs a synchronous relay phase
 # (12 read+write hops, srcs iterated sorted-WorkerId order) spliced
 # between the pass-1-end and pass-2-end barriers. Bit-identical
-# against reference.bin verified. mp-tcp-event sibling still skipped
-# pending cycle-149 (same host-relay shape transplanted into the mio
-# reactor).
+# against reference.bin verified.
+# TASK-0327 cycle 149 host-relay (mp-tcp-event sibling): chan_peer_index
+# lifted to route worker-to-worker pairs via host (peer_idx=0); HOST
+# runs a synchronous relay phase (Reactor::relay_one(seq, dst_peer,
+# cap) = wait(seq) + push(seq, dst_peer, payload, cap), bytes-verbatim)
+# spliced just BEFORE the LAST top-level Event::Sync (same heuristic
+# as cycle-148 mp-tcp-bufsync). Bit-identical against reference.bin
+# verified — full tier-1 matrix on 06/distributed2 now bit-identical
+# (closes TASK-0324 AC#4 with TASK-0327 AC#3).
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-event"
-reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): cycle 148 landed host-relay for the SIBLING mp-tcp-bufsync backend (now [[required]] above); mp-tcp-event still skipped pending the cycle-149 replication into the mio reactor (per-(seq, peer) Chan abstraction needs an adapter for the relay phase). The 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events still fail LOUD with EmitError::ContractGap (verbatim: `the star topology requires host as the relay (filed as TASK-0175)`)."
 milestone = "M5"

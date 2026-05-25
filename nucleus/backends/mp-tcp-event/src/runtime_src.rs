@@ -542,6 +542,52 @@ impl Reactor {
         }
     }
 
+    /// TASK-0327 (cycle 149): host-relay primitive for
+    /// worker-to-worker `Push`/`Wait` on the star topology. Drains one
+    /// frame from `inbound[seq]` (received from the src worker via
+    /// host's `data_<src>` reactor socket) and re-enqueues it to
+    /// `outbound[(seq, dst_peer)]` (forwarded to the dst worker via
+    /// host's `data_<dst>` socket). The wire-level seq tag is preserved
+    /// verbatim so the dst worker's `chan_<rid>.wait()` (which demuxes
+    /// on `inbound[seq]`) sees the same frame the src worker pushed.
+    /// `dst_peer` is the dst worker's index in HOST's reactor (its
+    /// position in the `non_host_workers` Vec).
+    ///
+    /// `cap` is the per-pair outbound bound (= `chan_caps[(data, seq)]`
+    /// from `Plan`); back-pressure on the dst socket's outbound queue
+    /// applies as in any other `push`. Bypasses the typed `Chan<T>`
+    /// encode/decode — the payload is bytes-verbatim, the wire codec
+    /// is symmetric for w2w.
+    ///
+    /// Used ONLY by the host's `main()` relay phase, inline-emitted by
+    /// `multi_worker::Plan::render_relay_phase`. Non-host workers
+    /// never call this — they `push` via their own `chan_<rid>`
+    /// (peer_idx = 0 = host) and `wait` via `chan_<rid>.wait()` (reads
+    /// `inbound[seq]` on their reactor's `data_host` socket, which
+    /// receives whatever host has forwarded).
+    ///
+    /// ## Safety invariant (cycle-149 architect P2.4 fold-back)
+    ///
+    /// Unlike mp-tcp-bufsync's cycle-148 relay (which uses
+    /// `wire::read_msg_expect(data_<src>, seq)` and panics on a seq
+    /// mismatch at the wire layer), this primitive's `wait(seq)` is
+    /// per-seq-demuxed and will succeed as long as ANY frame for
+    /// `seq` has arrived in `inbound[seq]` — even, in principle, one
+    /// produced by a peer other than the intended src. The reason
+    /// that is SAFE today is the wire-protocol-v0 invariant: `seq`
+    /// is globally unique per Push/Wait pair (see
+    /// `mp_tcp_common::WIRE_RUNTIME_SRC` `HEADER_LEN`/seq-tag
+    /// contract + the cycle-149 [`Plan::build`] uniqueness check via
+    /// `chan_ids`). A future schedule that allowed two distinct Push
+    /// events to share a `seq` would surface here as a silent
+    /// wrong-payload race rather than the fail-loud seq-mismatch
+    /// bufsync gets — file a typed defensive check at `Plan::build`
+    /// if that contract ever weakens.
+    pub fn relay_one(&mut self, seq: u64, dst_peer: usize, cap: usize) {
+        let payload = self.wait(seq);
+        self.push(seq, dst_peer, payload, cap);
+    }
+
     /// After the schedule's final Push, the worker should drain any
     /// outbound bytes still in flight before exiting; otherwise a
     /// fast-exit worker can drop the last frames the kernel hasn't

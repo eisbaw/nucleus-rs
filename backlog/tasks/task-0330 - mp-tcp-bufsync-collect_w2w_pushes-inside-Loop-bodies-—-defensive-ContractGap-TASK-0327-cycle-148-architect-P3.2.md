@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 17:40'
+updated_date: '2026-05-25 18:35'
 labels:
   - M6
   - backend
@@ -67,3 +68,17 @@ Update the collect_w2w_pushes doc comment to reflect the AC#1 active guard (repl
 
 LOW priority. Dormant defect. Filed for fail-loud hygiene before a future schedule shape arrives.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 149 sibling extension (TASK-0327 cycle-149 architect P2.1 + P3.1 fold-back)
+
+The cycle-149 mp-tcp-event host-relay implementation inherits the SAME flat-emit limitation as mp-tcp-bufsync's cycle-148 slice — `collect_w2w_pushes` in `nucleus/backends/mp-tcp-event/src/multi_worker.rs` (`grep -n 'fn collect_w2w_pushes' nucleus/backends/mp-tcp-event/src/multi_worker.rs`) recurses into Event::Loop bodies but the relay phase is emitted FLAT outside any loop. Same hazard, same defensive ContractGap need.
+
+**Action:** when this task is worked, the defensive ContractGap must land in BOTH backends in the same cycle (or a sibling task — the precedent should match the cycle-148/149 paired-lift design). Test coverage must include both backends' collect_w2w_pushes paths.
+
+**Cross-reference:** cycle-149 mp-tcp-event host-relay test pin lives at `nucleus/backends/mp-tcp-event/tests/host_relay_emit.rs::host_emit_includes_task_0327_relay_phase_with_12_hops`. The same fixture (06/distributed2) is the negative-case "no Loop body" check for the mp-tcp-event sibling.
+
+**Scope clarification:** the task title still says "mp-tcp-bufsync" but the AC now covers BOTH backends (mp-tcp-bufsync from cycle 148, mp-tcp-event from cycle 149). When working: either rename the task (single-arm-scope title) or treat as a paired fix; the cycle-148/149 history establishes the precedent for the paired fix.
+<!-- SECTION:NOTES:END -->

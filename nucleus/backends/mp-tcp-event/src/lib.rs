@@ -73,7 +73,27 @@
 //!    because there is only one CTRL stream per `(host, worker)`
 //!    pair; a worker-to-worker barrier needs a w↔w mesh that the
 //!    star topology lacks. Fail-loud with a typed `ContractGap`
-//!    forward-linking TASK-0175 — never a wrong binary.
+//!    forward-linking TASK-0175 — never a wrong binary. (DATA-side
+//!    worker-to-worker `Push`/`Wait` was lifted in cycle 149 via
+//!    HOST-RELAY — point 5 below. Barrier-side w↔w remains filed
+//!    forward as TASK-0329.)
+//!
+//! 5. **Host-relay for worker-to-worker `Push`/`Wait`** (TASK-0327,
+//!    cycle 149 — mirrors mp-tcp-bufsync's cycle-148 lift): when a
+//!    schedule's projection emits a Push from one non-host worker to
+//!    another non-host worker, neither endpoint owns a direct DATA
+//!    socket to the other. We route via HOST: src's `chan_<rid>.push`
+//!    uses peer_idx=0 (host) so the frame lands on host's
+//!    `data_<src>` reactor inbound queue; HOST's `main()` runs a
+//!    synchronous relay phase (one `wait(seq)` + `push(seq, dst_peer,
+//!    payload, cap)` per hop, srcs iterated in sorted-WorkerId order)
+//!    that drains each `inbound[seq]` and re-pushes to
+//!    `outbound[(seq, dst_peer_idx_at_host)]`, from which the reactor
+//!    forwards to dst's `data_<dst>` socket. Dst's `chan_<rid>.wait`
+//!    reads `inbound[seq]` on its own reactor (peer_idx=0=host) as
+//!    usual. Relay phase splice point: just BEFORE host's LAST
+//!    top-level `Event::Sync`. See `multi_worker::Plan::render_relay_phase`
+//!    + `Reactor::relay_one`.
 //!
 //! ## mio dependency
 //!
@@ -95,14 +115,17 @@
 //!   two backends are the trade-off column for TCP-transport
 //!   pipelined schedules.
 //!
-//! - **Worker-to-worker channel**: cycle-79 still leaves
-//!   `mp-tcp-event` constrained to the host-mediated star topology
-//!   for both DATA and CTRL. Schedules with worker-to-worker Push
-//!   pairs OR host-excluding barriers fail-loud with a
-//!   `ContractGap` naming TASK-0175. AC#2 (09/pipelined) and AC#4
-//!   (13/pipeline_parallel) of TASK-0042.05 are therefore blocked
-//!   on TASK-0175, not a regression of this cycle — same blocker
-//!   mp-tcp-bufsync has on the same w↔w surface.
+//! - **Worker-to-worker channel — DATA lifted, CTRL still gated**:
+//!   cycle-79 left `mp-tcp-event` constrained to the host-mediated
+//!   star topology for both DATA and CTRL. **Cycle 149 (TASK-0327)
+//!   lifted the DATA arm via host-relay** — see point 5 above; the
+//!   schedule's worker-to-worker `Push`/`Wait` events now lower
+//!   correctly without a full w↔w mesh. Schedules with
+//!   *host-excluding barriers* still fail-loud with a `ContractGap`
+//!   naming TASK-0175 (CTRL arm — filed forward as TASK-0329 for
+//!   host-mediated barrier mediation). AC#2 (09/pipelined) and AC#4
+//!   (13/pipeline_parallel) of TASK-0042.05 remain blocked on the
+//!   CTRL gap, not on the DATA gap that cycle 149 lifted.
 //!
 //! - **Determinism boundary**: the wire frame ORDER per pair is
 //!   schedule-determined (the projection emits Pushes in event-list
