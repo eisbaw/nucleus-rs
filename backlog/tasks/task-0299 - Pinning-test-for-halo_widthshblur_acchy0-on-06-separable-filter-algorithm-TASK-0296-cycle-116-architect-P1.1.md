@@ -3,9 +3,10 @@ id: TASK-0299
 title: >-
   Pinning test for halo_widths[hblur_acc][hy]=0 on 06-separable-filter algorithm
   (TASK-0296 cycle-116 architect P1.1)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-25 01:18'
+updated_date: '2026-05-25 02:36'
 labels:
   - M5
   - compiler
@@ -38,3 +39,28 @@ The claim is a comment-doc-lie waiting to happen: if a future kernel-surface cha
 - `nuc-nucleus/examples/06-separable-filter/prog.algo.nuc:100` — the access patterns asserted.
 - `nucleus/nucleus-compiler/src/passes/halo_inference.rs` — the inference pass.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR CLOSE (cycle 119, 2026-05-25).
+
+Added structural pinning test in nucleus/nucleus-compiler/tests/sidecar_halo.rs (task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero) loading 06-separable-filter/prog.algo.nuc + schedules/distributed.sched.nuc through the full lower/link/partition/halo_inference pipeline (the existing per-file lower() helper). Three assertions:
+
+1. halo_widths[hblur_acc][hy] == 0 — the literal claim in distributed.sched.nuc:19-21.
+2. halo_widths[vblur_acc][vy] == 0 — mirror property on the vertical pass (pass 2 stays on host today per HONEST SCOPE, but the algorithm claim is symmetric).
+3. Defensive max-halo across the WHOLE algorithm == 0 — catches a regression even if the named lookups move.
+
+Contract degree of freedom honoured: the existing halo_inference contract (halo_inference.rs:53-57) permits explicit 0-width entry OR omission; the test treats both as 'halo == 0'. The only failure mode it pins is 'halo > 0'. Robust to the implementation toggling between explicit and omitted forms (which is allowed today).
+
+If a future kernel-surface change introduces a non-zero hy offset (e.g. in_arr[hy-1][hk] for a vertical-blur fold), this test fails LOUD and forces distributed.sched.nuc:19-21 to be updated in the same commit. Defends against the feedback-comment-doc-lie-recurring pattern (a sibling pin to TASK-0299's named class).
+
+Test run: 10 passed (the new test + the 9 existing sidecar_halo tests), 0 failed.
+
+AC#1 (structural test on halo_widths[hblur_acc][hy]==0): DONE
+AC#2 (forces same-commit update on algorithm change): DONE — test fails LOUD on regression.
+
+Honest limits:
+- Test asserts ONLY the rejection of non-zero halo on the inspected ivs. It does NOT assert that the implementation chose explicit-0 vs omission today; if a future PR toggles that representation, the test stays green (correct — that's a contract degree of freedom).
+- Test does not exercise the apply_halo_inference_partition_aware (B) entry point. Today the strict (A) entry is what the driver uses on this fixture; if the driver switches to (B) for distributed schedules, this test still pins behaviour because (B) is a superset of (A) on clean affine bodies.
+<!-- SECTION:NOTES:END -->

@@ -554,3 +554,89 @@ fn task0275_partition_aware_rejects_strided_under_partition_rows() {
         "expected StridedAccessNotSupported under partition=rows, got {err:?}"
     );
 }
+
+// ----------------------------------------------------------------------
+// TASK-0299: pinning test for 06-separable-filter's distributed schedule.
+//
+// 06-separable-filter/schedules/distributed.sched.nuc:19-21 carries the
+// load-bearing narrative claim that halo_inference produces
+// halo_widths[hblur_acc][hy] = 0 and that transfer_inject does NOT
+// extend per-tile transfer ranges. The claim is true today by
+// inspection of the algorithm: hblur_acc(tmp[hy][hx], in_arr[hy][hk],
+// hx, hk) reads hy at offset 0 only (same with vblur_acc on vy).
+//
+// Without this test, the claim is a comment-doc-lie waiting to happen:
+// a future kernel-surface change introducing a non-zero hy offset (e.g.
+// `in_arr[hy-1][hk]` for a vertical-blur fold) would silently break the
+// claim while the e2e cell catches only the wrong output. This test
+// makes the claim a structural invariant — a future kernel-surface
+// change with non-zero halo on hy fails LOUD and forces the schedule
+// comment to be updated in the same commit. Defends against the
+// feedback-comment-doc-lie-recurring pattern.
+
+#[test]
+fn task0299_06_separable_filter_distributed_halo_widths_pinned_to_zero() {
+    // Contract degree of freedom: halo_inference's contract permits an
+    // explicit 0-width entry OR omission (see halo_inference.rs:53-57 +
+    // its `no_halo_bare_iv` test). This pinning test treats both as
+    // "halo == 0" — robust to that choice; the ONLY failure mode it
+    // pins is "halo > 0".
+    let (_linked, acfg) = lower("06-separable-filter", "schedules/distributed.sched.nuc");
+
+    let hblur_id = *acfg
+        .name_kernels
+        .get("hblur_acc")
+        .expect("hblur_acc in ACFG");
+    let vblur_id = *acfg
+        .name_kernels
+        .get("vblur_acc")
+        .expect("vblur_acc in ACFG");
+    let hy_iv = *acfg.name_iter_vars.get("hy").expect("hy in ACFG");
+    let vy_iv = *acfg.name_iter_vars.get("vy").expect("vy in ACFG");
+
+    let hblur_hy = acfg
+        .halo_widths
+        .get(&hblur_id)
+        .and_then(|m| m.get(&hy_iv))
+        .copied()
+        .unwrap_or(0);
+    let vblur_vy = acfg
+        .halo_widths
+        .get(&vblur_id)
+        .and_then(|m| m.get(&vy_iv))
+        .copied()
+        .unwrap_or(0);
+
+    assert_eq!(
+        hblur_hy, 0,
+        "halo_widths[hblur_acc][hy] must be 0; the schedule header at \
+         nuc-nucleus/examples/06-separable-filter/schedules/distributed.sched.nuc:19-21 \
+         depends on this. acfg.halo_widths = {:?}",
+        acfg.halo_widths
+    );
+    assert_eq!(
+        vblur_vy, 0,
+        "halo_widths[vblur_acc][vy] must be 0 (mirror property on the \
+         vertical pass; though pass 2 stays on host today per the \
+         schedule's HONEST SCOPE note, the algorithm-level claim is \
+         symmetric to hblur_acc[hy]). acfg.halo_widths = {:?}",
+        acfg.halo_widths
+    );
+
+    // Defensive: max halo across the WHOLE algorithm must be 0. Catches
+    // a future regression that introduces a non-zero halo on ANY
+    // (kernel, iv) pair, even one the named lookups above don't cover.
+    let max_halo = acfg
+        .halo_widths
+        .values()
+        .flat_map(|m| m.values().copied())
+        .max()
+        .unwrap_or(0);
+    assert_eq!(
+        max_halo, 0,
+        "06-separable-filter is a rectangular-accumulator separable filter; \
+         no kernel argument reads at non-zero iv offset. max halo width \
+         must be 0; got map {:?}",
+        acfg.halo_widths
+    );
+}
