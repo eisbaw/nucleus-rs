@@ -568,3 +568,92 @@ fn task0316_non_prefix_layout_empty_bounds_consumer_pin() {
          defensive whole-array drop). Got:\n{out}"
     );
 }
+
+/// TASK-0321 (cycle-139 TASK-0295 AC#3 gap closure): the 2D row-loop
+/// slice-paste arm in `wait_slice` builds its `_tmp = X.wait()` rhs by
+/// substituting `WalkerCtx::rendezvous_prefix` at
+/// `multi_worker_walker.rs:809` — a single `format!("{prefix}\
+/// {rendezvous_prefix}_{rid}.wait()")` call with no prefix-conditional
+/// branches in the 2D dispatch. The four tier-1 backends use four
+/// distinct prefix values: `"slot"` (pthreads-sync), `"ring"`
+/// (pthreads-async), `"chan"` (mp-tcp-event); mp-tcp-bufsync bypasses
+/// `render_worker_events` entirely and calls `render_wait_assign`
+/// directly with no prefix involvement.
+///
+/// All other 2D-tile pins in this file feed `rendezvous_prefix: "ring"`
+/// via the shared `render_one_wait` helper. If a future refactor
+/// hardcoded `"ring_"` inside the 2D arm (or the `_tmp = X.wait()`
+/// builder), the existing pins would still pass because they
+/// already feed `"ring"`; pthreads-sync and mp-tcp-event would
+/// silently emit wrong rendezvous identifiers for partition=blocks2d.
+///
+/// This test pins the prefix substitution on the 2D row-loop arm
+/// across all three `render_worker_events`-using prefixes.
+#[test]
+fn task0321_rendezvous_prefix_substituted_in_2d_row_loop_arm() {
+    let data = DataId(7);
+    let seq = SeqTag(3);
+    let y_iv = IterVar(1);
+    let x_iv = IterVar(2);
+    let (names, sidecar) = make_minimal_tables(data, "img_out", vec![16, 16]);
+    let tile = IterTile::new(vec![(y_iv, 1..8), (x_iv, 1..8)]);
+    let (ids, tiles) = one_pair(data, seq, 12, tile.clone());
+
+    for prefix in ["ring", "slot", "chan"] {
+        let ctx = WalkerCtx {
+            names: &names,
+            sidecar: &sidecar,
+            rendezvous_prefix: prefix,
+            rendezvous_ids: &ids,
+            pair_tiles: &tiles,
+        };
+        let wait = Event::Wait {
+            src: WorkerId(0),
+            data,
+            tile: tile.clone(),
+            seq,
+        };
+        let mut out = String::new();
+        render_worker_events(&ctx, WorkerId(1), &[wait], &mut out, 0, "")
+            .expect("2D row-loop Wait must render under each prefix");
+
+        // The `_tmp = X.wait()` builder MUST substitute the configured
+        // prefix verbatim. A regression that hardcoded `"ring_"`
+        // (or any other prefix string) inside the 2D arm would emit
+        // the wrong rendezvous identifier here.
+        let expected_rhs = format!("let _tmp = {prefix}_12.wait();");
+        assert!(
+            out.contains(&expected_rhs),
+            "TASK-0321: 2D row-loop arm MUST substitute \
+             `rendezvous_prefix = {prefix:?}` into the `_tmp` builder; \
+             expected substring `{expected_rhs}`; got:\n{out}"
+        );
+
+        // Defensive: a regression that hardcoded `"ring_"` would
+        // emit a `ring_12.wait()` even when the configured prefix is
+        // `slot` or `chan`. Assert the WRONG prefixes are NOT present.
+        for other in ["ring", "slot", "chan"] {
+            if other == prefix {
+                continue;
+            }
+            let unexpected = format!("{other}_12.wait()");
+            assert!(
+                !out.contains(&unexpected),
+                "TASK-0321: 2D row-loop arm under \
+                 `rendezvous_prefix = {prefix:?}` MUST NOT emit the \
+                 unrelated prefix substring `{unexpected}` (would \
+                 indicate a hardcoded `{other}_` in the 2D arm); \
+                 got:\n{out}"
+            );
+        }
+
+        // Sanity: the row-loop shape itself MUST be present (we are
+        // pinning the 2D arm; if dispatch fell through to whole-array
+        // or 1D, the prefix substitution would also be wrong).
+        assert!(
+            out.contains("for _y in 1usize..8usize"),
+            "TASK-0321: must dispatch to 2D row-loop arm regardless of \
+             prefix (`rendezvous_prefix = {prefix:?}`); got:\n{out}"
+        );
+    }
+}
