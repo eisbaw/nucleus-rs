@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 01:12'
-updated_date: '2026-05-25 13:05'
+updated_date: '2026-05-25 13:21'
 labels:
   - M5
   - compiler
@@ -142,4 +142,76 @@ was made; will re-run during the review-gate verification.)
    and cmp against reference.bin) is the cleanest way to surface
    silent miscompiles. Promoted to a forward-carried lesson on
    TASK-0324 AC#5 (defensive negative test fixture).
+
+## Cycle 143 review-gate outcome + in-thread fold-back
+
+### qa-test-runner: GO
+
+Independently reproduced all gate numbers (dev 874/0/3, release
+874/0/3, e2e 112/92/0/20/0). Confirmed the reproducer reproduces:
+`cmp` reports divergence at byte 129 (1-based) == offset 128
+(0-based), and `grep slot_` confirms zero allocations for `tmp`.
+Only P3: byte 128 vs 129 inconsistency between commit body and
+TASK-0324 desc (1-based vs 0-based base — semantically equivalent,
+cosmetic).
+
+### mped-architect: GO with three P2s (all folded back in-thread
+into TASK-0324 description rewrite)
+
+- **P2-1 root-cause precision**: cycle-143's framing of the
+  defect as "per-pair-tile machinery treats each worker's access
+  as same-worker without checking..." was IMPRECISE. The actual
+  elision is at
+  `nucleus/nucleus-compiler/src/passes/transfer_inject.rs:2501-2503`
+  — a `BTreeSet` set-equality `continue` that NEVER reaches tile
+  construction. TASK-0324 description rewritten with the precise
+  citation + the actual code text.
+
+- **P2-2 silent sibling at 13-cnn-inference/batch_parallel**:
+  conv_block_1/conv_block_2/classifier all on {w0..w3}; feat1
+  and feat2 have producer-set == consumer-set. The line-2501
+  continue fires for both — identical code path to 06/distributed2.
+  Today correctness-safe (reader iv n == partition iv n) but the
+  silent-elision path is unguarded. The current 13-cnn skip cites
+  an UNRELATED reason (TASK-0042 partition=workers gap), so the
+  silent-elision class is double-masked. SEVENTH firing of the
+  cycle-128 silent-sibling meta-rule in this session-chain.
+  TASK-0324 rewrites to include a first-class sibling section +
+  AC#5 sibling-guard test.
+
+- **P2-3 doc-lie magnitude understated**: cycle-143 commit body
+  called the transfer_inject.rs:82-90 module-doc paragraph
+  "off by direction". Architect correction: the "compute worker
+  = dst" fallback DOES NOT EXIST in the code; the doc fabricates
+  a behaviour. The actual code path is `continue; no transfer`.
+  Promoted to TASK-0324 AC#0 (doc-lie fix) at the front of the
+  AC list.
+
+### P3-1 byte-offset reconciliation (in-thread)
+
+Cycle-143 commit body said "offset 128"; TASK-0324 description
+v1 said "byte 129". Both correct (cmp 1-based vs offset 0-based,
+same byte). TASK-0324 description v2 normalizes to "cmp 1-based
+byte 129 (== 0-based offset 128)" throughout.
+
+### e2e-matrix skip reasons: no change needed
+
+Skip reasons already used "first byte diverges at offset 128"
+(0-based), consistent with the commit body. The TASK-0324
+description was the only outlier; now normalized.
+
+### Cycle conclusion
+
+No production code change in cycle 143; the cycle's value is
+the investigation outcome + filed TASK-0324 + the
+architect-driven precision corrections to that filing. TASK-0298
+stays In Progress per its AC#3.
+
+Cycle-143 demonstrates the parallel review gate working exactly
+as designed: the implementer's narrative had three concrete
+imprecisions (one root-cause, one sibling-sweep gap, one doc-lie
+magnitude) that the read-only architect caught at review time.
+All three resolved in-thread before any implementer picks up
+TASK-0324 — the next subagent reads a correct description from
+line 1.
 <!-- SECTION:NOTES:END -->
