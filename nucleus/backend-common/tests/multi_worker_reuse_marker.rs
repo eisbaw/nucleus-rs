@@ -33,17 +33,21 @@
 //!
 //! 1. `multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated`
 //!    — presence + per-slot payload (iv, data, axis, length,
-//!    min_offset) on the NON-strip-mine call site
-//!    (`multi_worker_walker.rs:478`, `block_tag: None`). Catches both
-//!    "marker dropped entirely" and "marker fires but with the wrong
-//!    / empty payload" regressions.
+//!    min_offset) on the NON-strip-mine call site inside
+//!    `render_worker_events_inner` (`block_tag: None` arm).
+//!    Catches both "marker dropped entirely" and "marker fires but
+//!    with the wrong / empty payload" regressions. Grep witness:
+//!    `grep -n "render_reuse_marker_comment(" multi_worker_walker.rs`
+//!    returns exactly two production sites; this test covers the
+//!    `block_tag: None` arm.
 //! 2. `multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty`
 //!    — symmetric absence on the same call site. Catches an over-
 //!    eager unconditional emit.
 //! 3. `multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_block_tag`
 //!    (TASK-0278) — same presence + payload shape on the STRIP-MINE
-//!    call site (`multi_worker_walker.rs:404`, `block_tag: Some`)
-//!    with an enclosing tile loop. Closes the cycle-98 honest-limits
+//!    call site inside `render_worker_events_inner` (`block_tag:
+//!    Some` arm) with an enclosing tile loop. Closes the cycle-98
+//!    honest-limits
 //!    gap; the shipped `05-stencil/distributed.sched.nuc` carries
 //!    `loop x : block=64, vectorize=8, reuse;` exercising exactly
 //!    this arm live, but that cell is `[[skip]]`ped pending

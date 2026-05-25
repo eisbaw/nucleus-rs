@@ -3,10 +3,11 @@ id: TASK-0319
 title: >-
   Future-audit discipline: every 'every X' doc claim must carry a grep-witness
   anchor (TASK-0318 cycle-137 architect P1 + P3-3 forward-carry)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - orchestrator-self
 created_date: '2026-05-25 11:11'
-updated_date: '2026-05-25 11:42'
+updated_date: '2026-05-25 15:26'
 labels:
   - compiler
   - doc-lie
@@ -71,4 +72,33 @@ A **verification stamp** (e.g. a comment that names absolute line numbers as a s
 **Suggested fold-into-AC**: TASK-0319 AC#1 should be amended to add: "If absolute line numbers are included as a verification stamp, they MUST be the post-write values, not pre-write. The verification protocol is grep-after-save → digit-only edit to fix → re-grep."
 
 (This forward-carry was added by cycle-138 orchestrator, not author of original TASK-0319.)
+
+## Cycle 146 — orchestrator self-implemented audit sweep
+
+### What landed (AC#1 + AC#2)
+
+1. **transfer_inject.rs silent-sibling audit listing** (lines ~1903-1965): migrated 9 stale absolute-line citations (per-function entry lines + emit-pair sites + cross-checked grep-scope range citations) to function-name anchors as PRIMARY indices + grep-witness anchors as machine-checkable verification. Cycle-137 grep-witness for site-1 (`IterTile::new(enclosing_tile.to_vec())`) re-verified — 3 production sites unchanged. New grep witness added for site-3 (4 cardinal emit_pair sites inside inject_halo_strip_xfers).
+
+2. **pthreads-sync/tests/reuse_marker.rs**: replaced 4 stale absolute-line citations (`multi_worker_walker.rs:404`, `:478`, `pthreads-sync/src/lib.rs:653`, `:675`) with function-name anchors (`render_worker_events_inner` and `render_event`) and a grep witness.
+
+3. **backend-common/tests/multi_worker_reuse_marker.rs**: replaced 2 stale line citations (`multi_worker_walker.rs:478`, `:404`) with function-name anchors + grep witness mentioning the two production sites inside `render_worker_events_inner`.
+
+4. **backend-common/tests/wait_assign_slice.rs**: replaced 2 stale line citations (`multi_worker_walker.rs:809` Wait, `:789` Push) with function-name anchors + a precise grep-witness pattern (`{rendezvous_prefix}_{rid}.(push|wait)`) that returns EXACTLY two production matches (excludes docstring examples by using the literal `{rid}` placeholder, not `{id}`).
+
+5. **MEMORY.md cross-reference**: AC#3 is met by existing memory entries — `feedback-silent-sibling-defect` cycles 137-138 + 145 already document the audit-fix-is-sibling-defect-candidate pattern and the grep-witness mitigation.
+
+### Verification gate (cycle-146 self-run)
+
+- `just check`: clean.
+- `just clippy --all-targets -D warnings`: clean.
+- `just test` (dev): all pass, no regression.
+- `just e2e`: 112/92/0/20/0 — IDENTICAL to pre-cycle-146 baseline.
+
+### Gotchas + forward-carries
+
+1. **The cycle-137 audit listing itself stamp-drifted by ~700 lines** in the 8 cycles since it was last refreshed. Cycle 146's mitigation is structural: function-name anchors are the load-bearing index; line numbers (where retained) are advisory-only. New grep witnesses are MACHINE-CHECKABLE (any reader can re-run the grep, verify the match count, and follow the enumeration).
+
+2. **Grep-witness pattern hygiene**: when authoring a grep witness, prefer match-strings that EXCLUDE non-production hits (docstrings, comments, test source). The cycle-146 wait_assign_slice.rs grep uses the literal `{rid}` placeholder to exclude the docstring examples that use `{id}` — "exactly N production sites" claims must match the GREP COUNT, not require the reader to mentally filter.
+
+3. **What this cycle does NOT cover**: there are ~50-100 other absolute file:line citations across nucleus/ that are NOT silent-sibling audits (e.g. external pointers like "see lib.rs:551"). Migrating those is beyond TASK-0319's scope — they're documentation-helper anchors, not load-bearing universal-quantifier claims. Filed observation, not a follow-up task.
 <!-- SECTION:NOTES:END -->

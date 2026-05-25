@@ -103,8 +103,19 @@
 //! `"slot"` / `"chan"`). They live in this file (rather than a new
 //! `push_emit_prefix.rs`) for sibling-adjacency with the shared
 //! `make_minimal_tables` + `one_pair` helpers and to keep the two
-//! substitution sites (Wait at `multi_worker_walker.rs:809`, Push at
-//! `multi_worker_walker.rs:789`) paired in one place. This stretches
+//! substitution sites (Wait inside `render_worker_events_inner` —
+//! the `{prefix}{rendezvous_prefix}_{rid}.wait()` substitution arm;
+//! Push inside the same function — the
+//! `{prefix}{rendezvous_prefix}_{rid}.push(...)` substitution arm)
+//! paired in one place. Grep witness:
+//! `grep -nE '\{rendezvous_prefix\}_\{rid\}\.(push|wait)'
+//! nucleus/backend-common/src/multi_worker_walker.rs` returns
+//! exactly two production sites (Push + Wait substitution) — the
+//! `{rid}` (not `{id}`) match-string excludes the docstring
+//! examples at the top of the file.
+//! TASK-0319 cycle-146 audit migrated former line citations
+//! (`multi_worker_walker.rs:809` Wait, `:789` Push) to function-name
+//! anchors per the cycle-138 forward-carry discipline. This stretches
 //! the "Receiver-side gather emit shape for `Event::Wait`" name in
 //! the module heading: the file now also covers Push-side prefix
 //! emit. Acknowledged tradeoff, not a defect. Acceptance: TASK-0321

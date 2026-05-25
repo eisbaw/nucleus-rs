@@ -4,22 +4,30 @@
 //! ## Why this file exists
 //!
 //! TASK-0265 cycle 87 wired `render_reuse_marker_comment` at FOUR
-//! production call sites total:
-//!   1. `backend-common/src/multi_worker_walker.rs:404` (strip-mine
-//!      arm, multi-worker — covered by TASK-0278 cycle 99).
-//!   2. `backend-common/src/multi_worker_walker.rs:478` (non-strip-
-//!      mine arm, multi-worker — covered by TASK-0273 cycle 98).
-//!   3. `nucleus/backends/pthreads-sync/src/lib.rs:653` (strip-mine
-//!      arm, single-worker — covered by THIS file, TASK-0279).
-//!   4. `nucleus/backends/pthreads-sync/src/lib.rs:675` (non-strip-
-//!      mine arm, single-worker — covered by the existing e2e grep
-//!      test `e2e_example_05.rs::reuse_marker_present_on_reuse_
-//!      schedule_absent_on_naive`, which builds the shipped
-//!      `05-stencil/reuse.sched.nuc` carrying `loop x : reuse;` with
-//!      NO `block=`, routing through site 4).
+//! production call sites total. Grep witness:
+//! `grep -n render_reuse_marker_comment( <files-listed-below>` returns
+//! exactly four production sites (TASK-0319 cycle-146 audit; line
+//! citations below are ADVISORY-ONLY and may drift — function/file
+//! anchors are the load-bearing index):
+//!   1. `backend-common/src/multi_worker_walker.rs` strip-mine arm
+//!      inside `render_worker_events_inner` (multi-worker — covered
+//!      by TASK-0278 cycle 99).
+//!   2. `backend-common/src/multi_worker_walker.rs` non-strip-mine
+//!      arm inside `render_worker_events_inner` (multi-worker —
+//!      covered by TASK-0273 cycle 98).
+//!   3. `nucleus/backends/pthreads-sync/src/lib.rs` strip-mine arm
+//!      inside `render_event` (single-worker — covered by THIS file,
+//!      TASK-0279).
+//!   4. `nucleus/backends/pthreads-sync/src/lib.rs` non-strip-mine
+//!      arm inside `render_event` (single-worker — covered by the
+//!      existing e2e grep test `e2e_example_05.rs::reuse_marker_
+//!      present_on_reuse_schedule_absent_on_naive`, which builds the
+//!      shipped `05-stencil/reuse.sched.nuc` carrying `loop x :
+//!      reuse;` with NO `block=`, routing through site 4).
 //!
-//! Site 3 (the strip-mine arm at line 653) was THE LAST UNCOVERED
-//! production marker call site. The shipped `05-stencil/distributed.
+//! Site 3 (the strip-mine arm in `render_event`) was THE LAST
+//! UNCOVERED production marker call site. The shipped
+//! `05-stencil/distributed.
 //! sched.nuc` carries `loop x : block=64, vectorize=8, reuse;` —
 //! exactly the strip-mine-WITH-reuse shape this arm was wired for —
 //! but that cell is `[[skip]]`ped across every backend pending

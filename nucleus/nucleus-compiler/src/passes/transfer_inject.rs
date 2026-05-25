@@ -1905,47 +1905,55 @@ fn rewrite_partition_tiles_inner(
                 // audit listing-correction; cycle-137 architect P1
                 // fold-back adds `build_waits_for_op`, fixes line
                 // cites for `extend_xfer_tiles_inner` and
-                // `inject_halo_strip_xfers`): every other site that
-                // mutates `x.tile` / `w.tile` OR constructs an
-                // `IterTile` carrying the enclosing-tile assumption
-                // either:
+                // `inject_halo_strip_xfers`; TASK-0319 cycle 146
+                // migrates absolute line citations to function-name
+                // anchors as primary indices — line numbers are
+                // ADVISORY-ONLY): every other site that mutates
+                // `x.tile` / `w.tile` OR constructs an `IterTile`
+                // carrying the enclosing-tile assumption either:
                 //
-                // - **Builds tile from enclosing-loop stack** —
-                //   `inject_in_sequence` (mutation at line 858 —
-                //   hoisted-Wait tile rewrite at sequence boundary,
-                //   called via `inject_in_node_with_tile`'s dispatch),
-                //   `hoist_invariant_waits` (mutation at line 1171 —
-                //   Wait tile rewrite when invariant-Wait hoisted
-                //   across an enclosing sequence, separate post-pass
-                //   NOT in the inject_in_node_with_tile family), and
-                //   `build_waits_for_op` (construction at line 2483 —
-                //   the INITIAL `XferPlaceholder` tile on every
-                //   cross-worker Wait the cartesian fan-out emits;
-                //   what this `rewrite_partition_tiles_inner` arm
-                //   later overwrites with `bounds`). All three use
-                //   `IterTile::new(enclosing_tile.to_vec())` and
-                //   never consult `partition_ranges` /
-                //   `data_dim_iv_map` in their own scopes
-                //   (cross-checked: zero references at 724-959 +
-                //   1062-1212 + 2411-2493), so the axis-mapping
-                //   assumption cannot leak in via them. Grep witness:
-                //   `IterTile::new(enclosing_tile.to_vec())` returns
-                //   exactly these three sites.
+                // - **Builds tile from enclosing-loop stack** — three
+                //   production sites, all using
+                //   `IterTile::new(enclosing_tile.to_vec())`:
+                //     1. `inject_in_sequence` — hoisted-Wait tile
+                //        rewrite at sequence boundary, called via
+                //        `inject_in_node_with_tile`'s dispatch.
+                //     2. `hoist_invariant_waits` — Wait tile rewrite
+                //        when an invariant-Wait is hoisted across an
+                //        enclosing sequence (separate post-pass, NOT
+                //        in the `inject_in_node_with_tile` family).
+                //     3. `build_waits_for_op` — INITIAL
+                //        `XferPlaceholder` tile on every cross-
+                //        worker Wait the cartesian fan-out emits.
+                //        This `rewrite_partition_tiles_inner` arm
+                //        later overwrites it with `bounds`.
+                //   None of the three references `partition_ranges`
+                //   or `data_dim_iv_map` in its own scope, so the
+                //   axis-mapping assumption cannot leak in via them.
+                //   Grep witnesses (must remain consistent):
+                //   - `grep -n "IterTile::new(enclosing_tile" `
+                //     returns exactly three production sites (one
+                //     per function above) PLUS module-doc citations.
+                //   - `grep -nE "data_dim_iv_map|partition_ranges"`
+                //     restricted to the body of each function above
+                //     returns zero hits.
                 // - **Extends an already-filtered bounds set** —
-                //   `extend_xfer_tiles_for_halo` (entry line 2234;
-                //   mutation in worker `extend_xfer_tiles_inner` at
-                //   line 2374, runs AFTER this pass per pass order
-                //   at lines 401/414; iterates the post-partition
-                //   `x.tile.bounds` and widens each range by halo,
-                //   preserving order).
+                //   `extend_xfer_tiles_for_halo`, with the per-Xfer
+                //   mutation inside the worker `extend_xfer_tiles_inner`.
+                //   Runs AFTER this pass per the explicit pass-order
+                //   call in `inject_transfers`. Iterates the post-
+                //   partition `x.tile.bounds` and widens each range
+                //   by halo, preserving order.
                 // - **Hand-crafts the (outer_iv, inner_iv) pair from
                 //   the partition_pairs sidecar** —
-                //   `inject_halo_strip_xfers` (entry line 2679)
-                //   constructs fresh tiles at the four cardinal-
-                //   direction emit_pair sites (lines 2894, 2915,
-                //   2936, 2957) AFTER `order_halo_strip_bounds_by
-                //   _data_dim` returns the data-dim-ordered bounds;
-                //   axis-correct since cycle 133 by construction.
+                //   `inject_halo_strip_xfers` constructs fresh tiles
+                //   at FOUR cardinal-direction `emit_pair` sites
+                //   AFTER `order_halo_strip_bounds_by_data_dim`
+                //   returns the data-dim-ordered bounds; axis-
+                //   correct since cycle 133 by construction. Grep
+                //   witness: `grep -n "emit_pair(neighbour"` returns
+                //   exactly four sites (N/S/W/E neighbours) and all
+                //   live inside `inject_halo_strip_xfers`.
                 //
                 // A future N-dim partition pass that constructs tile
                 // bounds MUST consult `data_dim_iv_map` to avoid
