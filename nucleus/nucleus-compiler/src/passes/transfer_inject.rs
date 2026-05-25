@@ -120,14 +120,35 @@
 //!
 //!   AC#2 of TASK-0324 (cycle 144) added a front-loaded diagnose-first
 //!   guard (`check_no_silent_elision_risk`) that walks every Operation
-//!   BEFORE the emission recursion and rejects the unsafe shape with
-//!   a typed `TransferInjectError::SameSetSilentElisionRisk`. The
-//!   correctness-safe shape (every consumer read index is a bare
-//!   `Ident(X)` where X is the partition iv on the consumer's
-//!   enclosing scope) is allowed through; everything else (non-Ident
-//!   indices, non-partition ivs, empty indices on a partitioned-data
-//!   read) is conservatively rejected pending AC#3's cross-worker
-//!   codegen extension (the N-to-N broadcast-of-gather shape).
+//!   BEFORE the emission recursion. The correctness-safe shape (every
+//!   consumer read index is a bare `Ident(X)` where X is the partition
+//!   iv on the consumer's enclosing scope) was allowed through; the
+//!   unsafe shape rejected with a typed
+//!   `TransferInjectError::SameSetSilentElisionRisk`.
+//!
+//!   AC#3 of TASK-0324 (cycle 147) lifts the same-set rejection. The
+//!   validator now classifies but does NOT reject the same-set unsafe
+//!   shape; `build_waits_for_op`'s same-set short-circuit (grep-
+//!   witness: `if producer_workers == &consumer_workers`) classifies
+//!   with the SAME predicate (`same_set_elision_unsafe_reason`) and
+//!   falls through to the cartesian-product fan-out below when
+//!   unsafe — emitting N*(N-1) cross-worker pairs. Each producer w_i
+//!   pushes its partition slice (compute_worker = src per
+//!   `rewrite_partition_tiles`'s N-to-1 gather rule); each consumer
+//!   w_j receives (N-1) cross-pushes covering the other producers'
+//!   slices; w_j's own slice is filled by local production. The
+//!   receiver-side `render_wait_assign`'s `WaitSlice::Rows` path
+//!   composes the row-bands into the full data. The
+//!   06-separable-filter/distributed2 schedule is the in-tree
+//!   reproducer this lift unblocks.
+//!
+//!   The partial-overlap case (`producer_workers !=
+//!   &consumer_workers` but non-empty intersection — the per-element
+//!   `if src == dst` skip in the cartesian fan-out, grep-witness:
+//!   `if src == dst` inside `build_waits_for_op`) is NOT in cycle
+//!   147's AC#3 scope. The validator still rejects unsafe shapes
+//!   there. No in-tree schedule exercises it; a future cycle that
+//!   adds one extends AC#3 to that path too.
 //!
 //!   TASK-0325 (cycle 145) generalised the guard from a set-equality
 //!   test on the worker sets to a non-empty-intersection test. The
@@ -474,23 +495,23 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         })
         .collect();
 
-    let ctx = InjectCtx {
-        producers_by_data: &producers_by_data,
-        policies_by_data: &policies_by_data,
-        inner_block_iter_vars: &inner_block_iter_vars,
-    };
-
-    // TASK-0324 cycle-144 AC#2 + TASK-0325 cycle-145 generalisation:
-    // front-loaded fail-loud guard. Walk every Operation BEFORE the
-    // emission recursion and reject the same-worker-pair-elision +
+    // TASK-0324 cycle-144 AC#2 + TASK-0325 cycle-145 generalisation +
+    // TASK-0324 cycle-147 AC#3 lift: front-loaded validator. Walks every
+    // Operation BEFORE the emission recursion. Pre-cycle-147 the
+    // validator rejected the same-worker-pair-elision +
     // consumer-reads-outside-local-slice shape with a typed
-    // `TransferInjectError::SameSetSilentElisionRisk`. The unsafe
-    // pattern is the silent-miscompile path filed as TASK-0324 cycle
-    // 143; pre-validating here keeps the existing recursive emission
-    // walk unchanged for the safe shapes (e.g. 13-cnn-inference/
-    // batch_parallel reader-iv == partition-iv) while turning the
-    // unsafe shape into a typed compiler error rather than wrong
-    // output. Companion comments live at both same-worker short-circuits
+    // `TransferInjectError::SameSetSilentElisionRisk`. Cycle 147 AC#3
+    // adds a carve-out: when the producer and consumer worker sets are
+    // IDENTICAL (the same-set case the 06/distributed2 reproducer
+    // exercises), the validator allows the unsafe shape through —
+    // `build_waits_for_op`'s same-set short-circuit now classifies the
+    // elision with the SAME predicate and falls through to the
+    // cartesian-product fan-out, emitting cross-worker pairs. The
+    // partial-overlap case (TASK-0325 — different sets sharing some
+    // workers) still rejects pending AC#3's extension to per-element
+    // fan-out elision.
+    //
+    // Companion comments live at both same-worker short-circuits
     // inside `build_waits_for_op` (the `producer_workers ==
     // &consumer_workers` whole-set short-circuit AND the `if src == dst`
     // per-element skip in the cartesian-product fan-out — grep
@@ -498,13 +519,25 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
     // for the witness anchors).
     let partition_iter_vars: BTreeSet<IterVar> =
         partition_worker_ranges.keys().copied().collect();
+    let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
+    collect_producer_writes(&root, &mut producer_writes);
     check_no_silent_elision_risk(
         &root,
         &producers_by_data,
         &partition_iter_vars,
         &name_iter_vars,
         &name_data,
+        &producer_writes,
     )?;
+
+    let ctx = InjectCtx {
+        producers_by_data: &producers_by_data,
+        policies_by_data: &policies_by_data,
+        inner_block_iter_vars: &inner_block_iter_vars,
+        partition_iter_vars: &partition_iter_vars,
+        name_iter_vars: &name_iter_vars,
+        producer_writes: &producer_writes,
+    };
 
     // Counter state for SeqTag generation. A single monotonic counter
     // across the whole ACFG is simplest and meets the "unique per
@@ -764,6 +797,19 @@ struct InjectCtx<'a> {
     /// (intra-tile) loops. Push/Wait pairs emitted inside one of
     /// these get hoisted to the enclosing per-tile body — TASK-0143.
     inner_block_iter_vars: &'a BTreeSet<IterVar>,
+    /// Iter-vars partitioned across worker sets. Used by
+    /// `build_waits_for_op`'s same-set short-circuit (TASK-0324 AC#3)
+    /// to decide whether the existing `continue; no transfer` elision
+    /// is safe for this (op, data) pair — same predicate the AC#2
+    /// validator uses.
+    partition_iter_vars: &'a BTreeSet<IterVar>,
+    /// Name -> IterVar map (link-pass output). Threaded for the
+    /// same AC#3 predicate.
+    name_iter_vars: &'a BTreeMap<String, IterVar>,
+    /// Per-data producer-side write access pattern (single-assignment
+    /// invariant, PRD §6.2.1; first lexical occurrence wins for
+    /// accumulator self-writes). Threaded for the AC#3 predicate.
+    producer_writes: &'a BTreeMap<DataId, DataAccess>,
 }
 
 /// Mutable state threaded through the walk.
@@ -2729,10 +2775,14 @@ fn check_no_silent_elision_risk(
     partition_iter_vars: &BTreeSet<IterVar>,
     name_iter_vars: &BTreeMap<String, IterVar>,
     name_data: &BTreeMap<String, DataId>,
+    producer_writes: &BTreeMap<DataId, DataAccess>,
 ) -> Result<(), TransferInjectError> {
-    // Index producer-side write accesses for each DataId once. Per PRD
-    // §6.2.1 single-assignment (enforced upstream by `algo::lower` —
-    // see `LowerErrorKind::DoubleAssignment` in
+    // Producer-write index is built by the caller via
+    // `collect_producer_writes` and shared with `InjectCtx` so the
+    // AC#3 same-set classifier inside `build_waits_for_op` uses the
+    // SAME index without re-walking the tree. Per PRD §6.2.1 single-
+    // assignment (enforced upstream by `algo::lower` — see
+    // `LowerErrorKind::DoubleAssignment` in
     // `nucleus-compiler/src/algo/ir.rs:256-260`, grep-witness for the
     // single-assignment rule), every data symbol has at most ONE
     // writer Operation, modulo accumulator self-writes (an op whose
@@ -2741,12 +2791,10 @@ fn check_no_silent_elision_risk(
     // 07-matmul's reference shape). Accumulator self-writes carry the
     // SAME `data_out_access` on every iteration by construction, so
     // the lexically-first occurrence is authoritative: the
-    // `or_insert_with` below is sound only under (§6.2.1 single-
-    // assignment) ∧ (accumulator-self-writes carry the same access on
-    // every iteration). Reviewer P2.5 cycle-144 fold-back.
-    let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
-    collect_producer_writes(root, &mut producer_writes);
-
+    // `or_insert_with` inside `collect_producer_writes` is sound only
+    // under (§6.2.1 single-assignment) ∧ (accumulator-self-writes
+    // carry the same access on every iteration). Reviewer P2.5
+    // cycle-144 fold-back.
     check_no_silent_elision_risk_inner(
         root,
         &[],
@@ -2754,7 +2802,7 @@ fn check_no_silent_elision_risk(
         partition_iter_vars,
         name_iter_vars,
         name_data,
-        &producer_writes,
+        producer_writes,
     )
 }
 
@@ -2903,131 +2951,64 @@ fn check_op_no_silent_elision_risk(
                 None => continue,
             };
 
-            // Clause (2): for each axis k, if the producer's write
-            // index P_k is a bare Ident matching a partition iv,
-            // require the consumer's read index C_k to be a bare
-            // Ident with the SAME name. Iterate over every parallel
-            // consumer access for this data; ALL must satisfy.
-            let mut first_unsafe_reason: Option<String> = None;
+            // Classify whether the existing same-worker elision is
+            // safe for this (op, data) pair. The classifier is shared
+            // with `build_waits_for_op`'s same-set short-circuit so
+            // the validator and the emission decision use the SAME
+            // predicate by construction (no drift between AC#2
+            // rejection and AC#3 emit). `Some(reason)` means the
+            // elision is UNSAFE — the consumer reads outside the
+            // local producer's partition slice.
+            let unsafe_reason = same_set_elision_unsafe_reason(
+                edge,
+                data_id,
+                prod_access,
+                partition_iter_vars,
+                name_iter_vars,
+            );
 
-            'outer: for access in edge.data_in_access.iter() {
-                if access.data != data_id {
-                    continue;
+            if let Some(reason) = unsafe_reason {
+                // TASK-0324 cycle-147 AC#3 lift: when the producer
+                // and consumer worker sets are IDENTICAL, the AC#3
+                // codegen extension at `build_waits_for_op`'s same-
+                // set short-circuit now FALLS THROUGH to the
+                // cartesian-product fan-out and emits cross-worker
+                // pairs. So the previously-silent elision is now a
+                // real cross-worker transfer; no need to reject.
+                //
+                // The partial-overlap case (TASK-0325 — different
+                // sets sharing some workers, the `if src == dst`
+                // per-element skip inside the cartesian fan-out)
+                // is NOT in cycle 147's AC#3 scope; the existing
+                // `if src == dst { continue; }` still elides those
+                // per-element self-pairs unconditionally. So the
+                // validator continues to reject partial-overlap
+                // unsafe shapes — a future cycle that extends AC#3
+                // to the per-element-fan-out case will lift this
+                // rejection too. No in-tree schedule exercises the
+                // partial-overlap path today.
+                if producer_workers == &consumer_workers {
+                    continue; // AC#3 handles this in cycle 147.
                 }
 
-                // If the producer carries indices but the consumer
-                // carries none (a whole-array read of partitioned
-                // data), reject — the worker does NOT own the whole
-                // array.
-                if access.indices.is_empty() && !prod_access.indices.is_empty() {
-                    // Determine if ANY producer axis is a partition iv;
-                    // if all axes are non-partition (so producer wrote
-                    // whole-array), the elision is still safe.
-                    let any_partitioned_axis = prod_access
-                        .indices
-                        .iter()
-                        .any(|p| ident_iv_in_set(p, partition_iter_vars, name_iter_vars).is_some());
-                    if any_partitioned_axis {
-                        first_unsafe_reason = Some(format!(
-                            "consumer reads data as a whole array (no indices) while \
-                             the producer writes with a partition iv on at least one \
-                             axis (producer indices: {:?}); each worker owns only \
-                             its partition slice",
-                            prod_access.indices
-                        ));
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-
-                // Per-axis check.
-                let n_axes = prod_access.indices.len().min(access.indices.len());
-                for k in 0..n_axes {
-                    let p_iv =
-                        ident_iv_in_set(&prod_access.indices[k], partition_iter_vars, name_iter_vars);
-                    let Some(p_iv) = p_iv else {
-                        // Producer's axis-k index is not a bare Ident
-                        // matching a partition iv. The cases are:
-                        //   - `IntLit(c)` / non-iv-`Ident` / `Neg(...)`:
-                        //     axis k is whole-array at every worker
-                        //     (the producer writes the same slot
-                        //     regardless of partition) → no
-                        //     constraint on consumer's axis-k read.
-                        //   - `BinOp(...)` involving a partition iv
-                        //     (e.g. `tmp[hy*2][hx]`, `tmp[hy+1][hx]`):
-                        //     CONSERVATIVELY-NOT-REJECTED here. The
-                        //     access IS partition-sliced semantically
-                        //     (the worker writes only its own
-                        //     transformed range), but the per-axis
-                        //     check skips this axis and treats it as
-                        //     unconstrained. No in-tree schedule
-                        //     today exercises this shape, so the
-                        //     under-conservative path is dormant —
-                        //     filed as TASK-0326 (reviewer P1.3
-                        //     cycle-144 fold-back).
-                        //   - `Call(...)` / `DataRef(...)`: not used
-                        //     as a producer index in any algorithm
-                        //     today; rejected upstream by `algo::
-                        //     lower` before reaching this pass.
-                        continue;
-                    };
-                    // Producer's axis k IS partition-sliced. The
-                    // consumer's axis-k read must be a bare Ident with
-                    // the same partition iv name.
-                    let c_iv =
-                        ident_iv_in_set(&access.indices[k], partition_iter_vars, name_iter_vars);
-                    if c_iv != Some(p_iv) {
-                        first_unsafe_reason = Some(format!(
-                            "axis {k} is partition-sliced at the producer (writes \
-                             at {:?}, partition iv {:?}); consumer reads at \
-                             {:?} which does not match — worker reads a slice \
-                             it does not own",
-                            prod_access.indices[k], p_iv, access.indices[k]
-                        ));
-                        break 'outer;
-                    }
-                }
-            }
-
-            if let Some(reason) = first_unsafe_reason {
                 let data_name = name_data
                     .iter()
                     .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
                     .unwrap_or("<unknown>");
-                // TASK-0325 cycle-145: distinguish the whole-set
-                // elision shape (grep-witness anchor:
-                // `if producer_workers == &consumer_workers`) from
-                // the partial-overlap per-element elision shape
-                // (grep-witness anchor: `if src == dst` inside
-                // `build_waits_for_op`'s cartesian-product fan-out)
-                // in the error message. The variant remains
-                // SameSetSilentElisionRisk because the underlying
-                // defect class (same-worker self-pair elision under
-                // an unsafe consumer access pattern) is identical;
-                // only the shape that produces it differs.
-                let same_worker_kind = if producer_workers == &consumer_workers {
-                    format!(
-                        "producer worker set and consumer worker set are \
-                         identical ({consumer_workers:?})"
-                    )
-                } else {
-                    format!(
-                        "producer worker set ({producer_workers:?}) and consumer \
-                         worker set ({consumer_workers:?}) overlap on the \
-                         same-worker pairs {same_worker_set:?}, which the \
-                         cartesian-product fan-out skips per-element"
-                    )
-                };
                 let message = format!(
                     "data `{data_name}` (id {data_id:?}, edge.data_in index {i}): \
-                     {same_worker_kind}, AND {reason}. Without a cross-worker \
-                     transfer this elides into a silent miscompile — see TASK-0324 \
-                     (set-equality elision) and TASK-0325 (per-element fan-out \
-                     elision). The diagnose-first guard (AC#2) lands ahead of the \
-                     cross-worker codegen extension (AC#3); kernels.rs is \
-                     unchanged. Remove the same-set placement, switch to a \
-                     different partition iv, or wait for AC#3."
+                     producer worker set ({producer_workers:?}) and consumer \
+                     worker set ({consumer_workers:?}) overlap on the \
+                     same-worker pairs {same_worker_set:?}, which the \
+                     cartesian-product fan-out skips per-element, AND \
+                     {reason}. Without a cross-worker transfer this elides \
+                     into a silent miscompile — see TASK-0324 (set-equality \
+                     elision; lifted cycle 147 by AC#3) and TASK-0325 (per-\
+                     element fan-out elision; still defended). The AC#3 \
+                     extension that lifts this partial-overlap rejection is \
+                     not yet scoped — no in-tree schedule exercises it. \
+                     Remove the overlap, switch to a different partition iv, \
+                     or extend AC#3 to per-element fan-out."
                 );
                 return Err(TransferInjectError::SameSetSilentElisionRisk {
                     data: data_id,
@@ -3037,6 +3018,106 @@ fn check_op_no_silent_elision_risk(
         }
     }
     Ok(())
+}
+
+/// Shared classifier for the AC#2 validator + AC#3 emission decision.
+/// Returns `Some(reason)` when the existing same-worker elision (for
+/// a single `(edge, data_id)` consumer side, given the producer's
+/// `prod_access`) would be a SILENT MISCOMPILE — i.e. the consumer
+/// reads outside the local producer's partition slice. Returns `None`
+/// when the elision is correct (consumer reads only its own slice).
+///
+/// Caller is responsible for the upstream gates:
+/// - non-empty worker-set intersection,
+/// - non-empty enclosing partition-iv stack,
+/// - producer's `data_out_access` present (`prod_access`),
+/// - non-empty `prod_access.indices`.
+///
+/// The per-axis discriminator works axis-by-axis against the
+/// producer's write pattern; see the module docs and the
+/// `check_no_silent_elision_risk` doc comment for the full rationale.
+fn same_set_elision_unsafe_reason(
+    edge: &crate::acfg::DataflowEdge,
+    data_id: DataId,
+    prod_access: &DataAccess,
+    partition_iter_vars: &BTreeSet<IterVar>,
+    name_iter_vars: &BTreeMap<String, IterVar>,
+) -> Option<String> {
+    for access in edge.data_in_access.iter() {
+        if access.data != data_id {
+            continue;
+        }
+
+        // If the producer carries indices but the consumer carries
+        // none (a whole-array read of partitioned data), reject —
+        // the worker does NOT own the whole array.
+        if access.indices.is_empty() && !prod_access.indices.is_empty() {
+            // Determine if ANY producer axis is a partition iv; if
+            // all axes are non-partition (so producer wrote whole-
+            // array), the elision is still safe.
+            let any_partitioned_axis = prod_access
+                .indices
+                .iter()
+                .any(|p| ident_iv_in_set(p, partition_iter_vars, name_iter_vars).is_some());
+            if any_partitioned_axis {
+                return Some(format!(
+                    "consumer reads data as a whole array (no indices) while \
+                     the producer writes with a partition iv on at least one \
+                     axis (producer indices: {:?}); each worker owns only \
+                     its partition slice",
+                    prod_access.indices
+                ));
+            } else {
+                continue;
+            }
+        }
+
+        // Per-axis check.
+        let n_axes = prod_access.indices.len().min(access.indices.len());
+        for k in 0..n_axes {
+            let p_iv =
+                ident_iv_in_set(&prod_access.indices[k], partition_iter_vars, name_iter_vars);
+            let Some(p_iv) = p_iv else {
+                // Producer's axis-k index is not a bare Ident
+                // matching a partition iv. The cases are:
+                //   - `IntLit(c)` / non-iv-`Ident` / `Neg(...)`:
+                //     axis k is whole-array at every worker (the
+                //     producer writes the same slot regardless of
+                //     partition) → no constraint on consumer's
+                //     axis-k read.
+                //   - `BinOp(...)` involving a partition iv (e.g.
+                //     `tmp[hy*2][hx]`, `tmp[hy+1][hx]`):
+                //     CONSERVATIVELY-NOT-REJECTED here. The access
+                //     IS partition-sliced semantically (the worker
+                //     writes only its own transformed range), but
+                //     the per-axis check skips this axis and treats
+                //     it as unconstrained. No in-tree schedule
+                //     today exercises this shape, so the under-
+                //     conservative path is dormant — filed as
+                //     TASK-0326 (reviewer P1.3 cycle-144 fold-back).
+                //   - `Call(...)` / `DataRef(...)`: not used as a
+                //     producer index in any algorithm today;
+                //     rejected upstream by `algo::lower` before
+                //     reaching this pass.
+                continue;
+            };
+            // Producer's axis k IS partition-sliced. The consumer's
+            // axis-k read must be a bare Ident with the same
+            // partition iv name.
+            let c_iv =
+                ident_iv_in_set(&access.indices[k], partition_iter_vars, name_iter_vars);
+            if c_iv != Some(p_iv) {
+                return Some(format!(
+                    "axis {k} is partition-sliced at the producer (writes \
+                     at {:?}, partition iv {:?}); consumer reads at \
+                     {:?} which does not match — worker reads a slice \
+                     it does not own",
+                    prod_access.indices[k], p_iv, access.indices[k]
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// If `expr` is `IrExpr::Ident(name)` AND `name_iter_vars[name]` is in
@@ -3088,40 +3169,60 @@ fn build_waits_for_op(
                 None => continue, // No recorded producer (e.g. unread const data).
             };
             if producer_workers == &consumer_workers {
-                // Same worker set on both sides — intra-worker dataflow.
+                // Same worker set on both sides.
                 //
-                // TASK-0324 cycle-144 AC#2: the SILENT-MISCOMPILE arm
-                // of this short-circuit (consumer reads a slice the
-                // local producer does NOT own) is rejected up-front by
-                // `check_no_silent_elision_risk` (called at the top of
-                // `inject_transfers`). Reaching this `continue` means
-                // the validator has already certified the elision as
-                // safe — either there is no partition iv active on the
-                // consumer's enclosing scope (each worker owns the
-                // full data) OR every consumer read index for this
-                // data is a bare `Ident(X)` where X is the partition
-                // iv on the consumer's enclosing scope (e.g. 13-cnn-
-                // inference/batch_parallel `feat1[n]` with `loop n :
-                // partition=workers` — reader iv == partition iv, each
-                // worker reads only the slice it wrote).
+                // Pre-cycle-147: unconditional `continue; no transfer`
+                // (intra-worker dataflow). Cycle-144 AC#2 added a
+                // validator that rejected the silent-miscompile arm
+                // up-front so the elision here was always safe.
                 //
-                // The "compute worker = dst" fallback paragraph this
-                // module's header once claimed for the N-to-M case
-                // does NOT exist for the same-set case; the structural
-                // code path is `continue; no transfer`. AC#3 of
-                // TASK-0324 will replace the AC#2 fail-loud with the
-                // actual cross-worker `tmp` codegen (N-to-N broadcast-
-                // of-gather) and lift the validator's rejection.
+                // Cycle-147 AC#3 lifts the validator's rejection for
+                // this same-set case and classifies the elision HERE
+                // with the same predicate (`same_set_elision_unsafe_reason`).
+                // - SAFE → continue (intra-worker dataflow, as before;
+                //   e.g. 13-cnn-inference/batch_parallel reader-iv ==
+                //   partition-iv shape).
+                // - UNSAFE → fall through to the cartesian-product
+                //   fan-out below, which emits one cross-worker
+                //   (src, dst) pair per src != dst member of the set.
+                //   Each producer w_i pushes its partition slice
+                //   (compute_worker = src per `rewrite_partition_tiles`'s
+                //   N-to-1 gather rule); each consumer w_j receives
+                //   (N-1) cross-pushes covering the other workers'
+                //   slices; w_j's own slice is filled by local
+                //   production. Combined: full data per worker —
+                //   the N-to-N broadcast-of-gather shape the
+                //   06-separable-filter/distributed2 schedule needs.
+                //   `render_wait_assign`'s `WaitSlice::Rows` path
+                //   handles the receiver-side row-band assignment.
                 //
                 // TASK-0325 cycle-145: this short-circuit is one of
                 // TWO same-worker elision sites in this function. The
                 // sibling (`if src == dst` inside the cartesian-
                 // product fan-out below) elides per-pair when the
-                // sets are NOT equal but share at least one worker.
-                // Both sites are defended by the same validator
-                // (`check_no_silent_elision_risk` fires on non-empty
-                // worker-set intersection).
-                continue;
+                // sets are NOT equal but share at least one worker —
+                // the AC#3 extension to that path is NOT in cycle 147
+                // scope (no in-tree schedule exercises partial-overlap).
+                // The validator still rejects partial-overlap unsafe
+                // shapes.
+                let prod_access = ctx.producer_writes.get(&data_id);
+                let is_safe = match prod_access {
+                    None => true, // No producer-side access — pre-AC#2 fall-back path.
+                    Some(p) if p.indices.is_empty() => true, // whole-array writer
+                    Some(p) => same_set_elision_unsafe_reason(
+                        edge,
+                        data_id,
+                        p,
+                        ctx.partition_iter_vars,
+                        ctx.name_iter_vars,
+                    )
+                    .is_none(),
+                };
+                if is_safe {
+                    continue;
+                }
+                // Unsafe — fall through to the cartesian-product fan-
+                // out. AC#3 cross-worker emission.
             }
             let policy = ctx
                 .policies_by_data
@@ -3166,20 +3267,36 @@ fn build_waits_for_op(
             for &src in producer_workers.iter() {
                 for &dst in consumer_workers.iter() {
                     if src == dst {
-                        // TASK-0325 cycle-145: per-element same-
-                        // worker elision. Skipping this pair is the
-                        // structural sibling of the whole-set short-
-                        // circuit above (`if producer_workers ==
-                        // &consumer_workers`); the SILENT-MISCOMPILE
-                        // arm of this skip (consumer reads a slice
-                        // the local producer does NOT own, under
-                        // partial worker-set overlap) is rejected
-                        // up-front by `check_no_silent_elision_risk`,
-                        // which fires when the intersection is non-
-                        // empty (so it covers this pair-skip when
-                        // the wider sets aren't equal). Reaching
-                        // this `continue` means the validator
-                        // certified the per-pair elision as safe.
+                        // Per-element same-worker elision. Skipping
+                        // this pair represents intra-worker dataflow
+                        // (worker w reads its own writes — no
+                        // cross-worker transfer needed).
+                        //
+                        // TASK-0325 cycle-145 (partial-overlap case):
+                        // when `producer_workers != &consumer_workers`
+                        // but they share at least one worker, this
+                        // skip elides one transfer per overlap member.
+                        // The SILENT-MISCOMPILE arm of this skip
+                        // (consumer reads a slice the local producer
+                        // does NOT own) is rejected up-front by
+                        // `check_no_silent_elision_risk` for the
+                        // partial-overlap shape — no in-tree schedule
+                        // exercises it.
+                        //
+                        // TASK-0324 cycle-147 AC#3 (same-set case):
+                        // when the whole-set short-circuit above falls
+                        // through (unsafe shape, AC#3 emit), the
+                        // cartesian product enumerates (w_i, w_j) for
+                        // every pair. This skip then fires for the
+                        // N self-pairs `(w_i, w_i)`, leaving only
+                        // N*(N-1) cross-pairs emitted. The self-pair
+                        // skip is correct: each consumer's own slice
+                        // is filled by local production (the same
+                        // worker also being the producer), so no
+                        // cross-worker transfer is needed for that
+                        // axis. The receiver-side `render_wait_assign`
+                        // composes local production + (N-1) cross-
+                        // pushes into the full data.
                         continue;
                     }
                     out.push(XferPlaceholder {

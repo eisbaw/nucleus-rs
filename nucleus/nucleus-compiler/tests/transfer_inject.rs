@@ -2199,28 +2199,34 @@ fn halo_extends_multiple_axes_when_both_partitioned() {
 
 // --------------------------------------------------------------------
 // TASK-0324 cycle-144 AC#5 — silent-elision-risk validator fixtures
+// (updated cycle-147 for AC#3 lift)
 // --------------------------------------------------------------------
 //
-// Two end-to-end fixtures pin the AC#2 fail-loud guard:
+// Two end-to-end fixtures pin the same-set elision behaviour:
 //
 // - `task0324_ac5_positive_fires_on_06_distributed2_shape`: the
 //   06-separable-filter/distributed2 shape — pass-1 producer and
 //   pass-2 consumer both on {w0..w3}, both with their own
 //   partition=rows iv on axis 0 of the data, but reader-iv != writer-
-//   iv. Validator MUST return Err(SameSetSilentElisionRisk).
+//   iv. PRE-cycle-147: validator returned Err(SameSetSilentElisionRisk).
+//   POST-cycle-147 AC#3: validator returns Ok and the same-set short-
+//   circuit in `build_waits_for_op` falls through to the cartesian-
+//   product fan-out, emitting N*(N-1) = 12 cross-worker (src, dst)
+//   pairs for `tmp` (the offending DataId). This fixture now asserts
+//   the AC#3 emission rather than the AC#2 rejection.
 //
 // - `task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape`:
 //   the 13-cnn-inference/batch_parallel shape — producer writes
 //   `feat1[n]` on {w0..w3} with `loop n : partition=workers`,
 //   consumer reads `feat1[n]` on the same set with the same iv.
-//   Validator MUST succeed (no error).
+//   Validator MUST succeed (no error). Cycle 147 unchanged: the
+//   safe shape continues to elide; no cross-pairs emitted.
 
 #[test]
 fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
     use nucleus_compiler::acfg::{DataAccess, DataflowDag, DataflowEdge, Operation};
     use nucleus_compiler::algo::ir::IrExpr;
     use nucleus_compiler::event::ArgBinding;
-    use nucleus_compiler::passes::transfer_inject::TransferInjectError;
 
     // IterVars for the two passes. Non-monotonic ids so a regression
     // that depends on iter-var ordering is independently visible.
@@ -2400,39 +2406,96 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
         "transfer in_arr : sync; transfer tmp : sync; transfer out : sync;",
     );
 
-    let result = inject_transfers(&linked, acfg);
-    match result {
-        Err(TransferInjectError::SameSetSilentElisionRisk { data, message }) => {
-            assert_eq!(
-                data, D_TMP,
-                "expected the rejection to name `tmp` (the cross-pass data)"
-            );
-            assert!(
-                message.contains("TASK-0324"),
-                "ContractGap message must forward-link TASK-0324; got: {message}"
-            );
-            assert!(
-                message.contains("partition-sliced"),
-                "ContractGap message must name the per-axis discrimination reason; \
-                 got: {message}"
-            );
+    // Cycle-147 AC#3 lift: inject_transfers now returns Ok, and
+    // build_waits_for_op emits N*(N-1) cross-worker pairs for `tmp`.
+    let result = inject_transfers(&linked, acfg)
+        .expect("AC#3 cycle 147: same-set unsafe shape now emits cross-worker pairs (no rejection)");
+
+    // Walk the resulting ACFG and count Xfer placeholders for `tmp`,
+    // partitioned by role + (src, dst) shape.
+    use nucleus_compiler::acfg::XferRole;
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => {
+                out.push((x.role, x.src, x.dst));
+            }
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
         }
-        Ok(_) => panic!(
-            "expected TransferInjectError::SameSetSilentElisionRisk on the \
-             06-separable-filter/distributed2 shape (producer-set == consumer-set \
-             + reader iv `vm` ≠ partition iv on axis 0)"
-        ),
-        // TransferInjectError is `#[non_exhaustive]` (reviewer P2.2
-        // cycle-144 fold-back): future variants land without breaking
-        // this match. Any new variant firing on the AC#5 positive
-        // fixture is itself a regression worth surfacing — panic with
-        // the discovered shape.
-        #[allow(unreachable_patterns)]
-        Err(other) => panic!(
-            "expected SameSetSilentElisionRisk on the 06/distributed2 shape; \
-             got a different TransferInjectError variant: {other:?}"
-        ),
     }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+
+    // 4 workers in the same set → 4 * (4-1) = 12 cross-worker pairs.
+    assert_eq!(
+        pushes.len(),
+        12,
+        "expected 12 cross-worker Push placeholders for `tmp` (N*(N-1) for \
+         N=4 workers in the same set); got {} pushes: {:?}",
+        pushes.len(),
+        pushes
+    );
+    assert_eq!(
+        waits.len(),
+        12,
+        "expected 12 cross-worker Wait placeholders for `tmp` (matched with \
+         the 12 Pushes); got {} waits: {:?}",
+        waits.len(),
+        waits
+    );
+
+    // No self-pairs — the per-element `if src == dst` skip fires
+    // for each (w_i, w_i) → 4 self-pairs elided.
+    for (role, src, dst) in &xfers {
+        assert_ne!(
+            src, dst,
+            "no self-pair (w_i -> w_i) should be emitted: got {role:?} src=dst={src:?}"
+        );
+    }
+
+    // Every (src, dst) with src != dst in {w0..w3}^2 appears exactly
+    // once as a Push and once as a Wait — i.e. the full cartesian
+    // minus the diagonal.
+    let mut expected_pairs: BTreeSet<(WorkerId, WorkerId)> = BTreeSet::new();
+    for s in [1, 2, 3, 4] {
+        for d in [1, 2, 3, 4] {
+            if s != d {
+                expected_pairs.insert((WorkerId(s), WorkerId(d)));
+            }
+        }
+    }
+    let push_pairs: BTreeSet<(WorkerId, WorkerId)> =
+        pushes.iter().map(|(_, s, d)| (*s, *d)).collect();
+    let wait_pairs: BTreeSet<(WorkerId, WorkerId)> =
+        waits.iter().map(|(_, s, d)| (*s, *d)).collect();
+    assert_eq!(
+        push_pairs, expected_pairs,
+        "every (src, dst) cross-pair in {{w0..w3}}^2 must appear as a Push"
+    );
+    assert_eq!(
+        wait_pairs, expected_pairs,
+        "every (src, dst) cross-pair in {{w0..w3}}^2 must appear as a Wait"
+    );
 }
 
 #[test]

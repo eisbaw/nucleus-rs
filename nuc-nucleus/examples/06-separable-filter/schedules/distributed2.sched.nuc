@@ -1,22 +1,26 @@
-// !!! TASK-0324 AC#3 NOT YET LANDED — see below !!!
-// !!! POST-CYCLE-144: TASK-0324 AC#2's diagnose-first guard
-// !!! (`check_no_silent_elision_risk` in
-// !!! `nucleus-compiler/src/passes/transfer_inject.rs`) now REJECTS
-// !!! this schedule with a typed
-// !!! `TransferInjectError::SameSetSilentElisionRisk` compile error
-// !!! BEFORE backend codegen. The pre-cycle-144 silent miscompile
-// !!! (transfer_inject elided cross-worker `tmp` transfers because
-// !!! producer-set == consumer-set, runtime produced wrong vblur
-// !!! output starting at row 2) is no longer reachable: the per-axis
-// !!! discriminator sees that the producer (pass 1) writes
-// !!! `tmp[hy][hx]` with `hy` partitioned but the consumer (pass 2)
-// !!! reads `tmp[vm][vx]` with `vm` ≠ `hy` on axis 0 → fail-loud.
-// !!!
-// !!! TASK-0298 cycle 143 investigation reproducer: kept in the
-// !!! repository as the smoke-test target for the eventual TASK-0324
-// !!! AC#3 (cross-worker `tmp` codegen — N-to-N broadcast-of-gather).
-// !!! Remove this header + add e2e cells (4 backends) once AC#3
-// !!! lands and the output bit-matches reference.bin.
+// TASK-0298 cycle 143 reproducer schedule, now an in-tree
+// integration-test target for the TASK-0324 same-set fan-out shape.
+// LIFECYCLE:
+//   - Pre-cycle-144: silent miscompile (transfer_inject elided the
+//     cross-worker `tmp` transfers; runtime produced wrong vblur
+//     output starting at row 2).
+//   - Cycle 144 (AC#0/1/2/5): typed compile error
+//     `TransferInjectError::SameSetSilentElisionRisk` replaced the
+//     silent miscompile (diagnose-first guard
+//     `check_no_silent_elision_risk`).
+//   - Cycle 147 (AC#3/4): cross-worker codegen lands. The
+//     validator's same-set rejection is lifted;
+//     `build_waits_for_op`'s same-set short-circuit falls through
+//     to the cartesian fan-out and emits N*(N-1) = 12 cross-worker
+//     (src, dst) Push/Wait pairs for `tmp`. Bit-identical against
+//     reference.bin on pthreads-sync + pthreads-async.
+//
+// MP-TCP COVERAGE (TASK-0327): mp-tcp-bufsync + mp-tcp-event still
+// SKIP this schedule because their star topology has no worker-to-
+// worker channel (the 12 cross-pairs fail LOUD with EmitError::
+// ContractGap). That is a backend transport gap, NOT a transfer_inject
+// gap — the pass-level emission is correct for all 4 backends, only
+// the transport lowering fails.
 //
 // Both-passes-distributed schedule: pass 1 (hblur_acc) AND pass 2
 // (vblur_acc) both placed on { w0..w3 } with partition=rows.

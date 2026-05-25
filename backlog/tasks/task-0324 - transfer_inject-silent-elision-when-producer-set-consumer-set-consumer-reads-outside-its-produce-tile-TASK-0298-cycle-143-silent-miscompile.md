@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 15:01'
+updated_date: '2026-05-25 16:11'
 labels:
   - compiler
   - transfer_inject
@@ -424,4 +424,86 @@ When AC#3 lifts the SameSetSilentElisionRisk variant (cross-worker tmp codegen l
 Note for future AC#3 implementer: choose at AC#3 land-time; rename is the more honest option, but the name has a clean public-API status (only crate-internal callers exist today).
 
 Cycle-145 reference: architect read-only review P3.1 cycle 145.
+
+## Cycle 147 implementation plan (orchestrator self-implementing per memory feedback-spawned-agents-refuse-code-edits)
+
+### Cycle scope decision
+
+Land AC#3 (cross-worker tmp codegen via lifted validator + same-set fan-out emission) + AC#4 (matrix promotion). Reuse the existing per-pair cartesian-fan-out path: when the same-set short-circuit at build_waits_for_op would elide an UNSAFE shape, fall through to the existing cartesian-product emission instead of `continue`. compute_worker=src for the cross-pairs (per rewrite_partition_tiles rule (1)); render_wait_assign with WaitSlice::Rows handles receiver-side band assembly into the full-size tmp Vec.
+
+### Plan
+
+1. Factor out the per-op safety check from check_op_no_silent_elision_risk into a reusable predicate `is_same_set_elision_safe(op, data_id, producer_workers, ...)` returning `bool`.
+2. In build_waits_for_op same-set short-circuit (line 3090, the `producer_workers == &consumer_workers` arm) and per-element skip (line 3168, the `src == dst` arm): use the predicate to decide `continue` vs fall-through to fan-out.
+3. In check_no_silent_elision_risk: same predicate. Lift the rejection for the same-set case (the AC#3 emit handles it now). Keep the function/variant alive but flip the same-set path to Ok — the per-element fan-out elision path (TASK-0325) stays defended since AC#3 handles only the whole-set case at the cycle 147 scope.
+4. Test pthreads-sync e2e on 06/distributed2; verify bit-identical against reference.bin.
+5. If bit-identical → run other 3 tier-1 backends; if also bit-identical → AC#4 matrix promotion: 4 [[skip]] → [[required]], remove the distributed2.sched.nuc warning header.
+6. New fixture in tests/transfer_inject.rs: AC#3 positive — asserts the same-set unsafe shape now emits 12 (4×4-4) cross-pairs, not zero, and the validator returns Ok.
+
+### Verification gate
+
+- 13-cnn/batch_parallel × {pthreads-sync, pthreads-async, mp-tcp-event} MUST stay green (validator-safe shape, still no cross-pairs emitted).
+- 4 distributed2 cells must become [[required]] bit-identical (cycle scope success criterion).
+- e2e baseline 112/92/0/20/0 → 116/96/0/20/0 (or equivalent +4 [[required]] -4 [[skip]]).
+- All existing tests pass (transfer_inject, sidecar_halo, multi_worker_walker, end-to-end matrix).
+- check, clippy, test, test-release, check-textual-replace-on-codegen, check-include-str-coverage all green.
+
+### Forward-carried context
+
+- The cycle-144 implementer left this AC#3 explicitly deferred citing 'substantial new codegen path'; the fresh-context analysis shows existing infrastructure (cartesian-product fan-out + rewrite_partition_tiles compute=src rule + render_wait_assign WaitSlice::Rows) already produces the right pieces — the missing wire is JUST the same-set short-circuit's predicate flip. Estimated < 200 LoC of pass changes + tests + e2e-matrix.toml edits.
+- 06/distributed2 reproducer schedule already in tree at nuc-nucleus/examples/06-separable-filter/schedules/distributed2.sched.nuc (cycle 143).
+- Risk: receiver-side may not actually assemble correctly under partial-overlap (TASK-0325) shapes; cycle 147 confirms ONLY the same-set whole-overlap case. Per-element fan-out elision validator stays alive.
+
+## Cycle 147 landing — AC#3 (shared-memory) + AC#4 (partial)
+
+### What landed
+
+1. **AC#3 cross-worker tmp codegen** (the silent-miscompile lift): `build_waits_for_op` same-set short-circuit now classifies with `same_set_elision_unsafe_reason` (shared with the AC#2 validator); when unsafe, falls through to the cartesian-product fan-out and emits N*(N-1) cross-worker Push/Wait pairs. `rewrite_partition_tiles` picks compute_worker=src per its N-to-1 gather rule, giving each cross-pair the src-worker's partition slice as its tile. `render_wait_assign`'s `WaitSlice::Rows` path composes the row-bands on the receiver.
+
+2. **Validator carve-out**: `check_op_no_silent_elision_risk` no longer rejects when producer_workers == consumer_workers (AC#3 handles it). The partial-overlap case (TASK-0325 — non-empty intersection but unequal sets) STILL rejects pending a future AC#3 extension; no in-tree schedule exercises it.
+
+3. **AC#4 partial matrix promotion**: 2 of 4 backends bit-identical on 06-separable-filter/distributed2:
+   - pthreads-sync: PASS (1.44s) — flipped [[skip]] → [[required]]
+   - pthreads-async: PASS (1.16s) — flipped [[skip]] → [[required]]
+   - mp-tcp-bufsync: still SKIP — topology limit (filed TASK-0327)
+   - mp-tcp-event: still SKIP — topology limit (filed TASK-0327)
+
+4. **AC#5 positive test rewrite**: `task0324_ac5_positive_fires_on_06_distributed2_shape` now asserts `Ok` + exactly 12 cross-worker (src, dst) pairs (4*3) emitted for tmp, with src != dst and full cartesian-minus-diagonal coverage. Negative test (`task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape`) unchanged — safe shape still elides.
+
+5. **Schedule header rewrite**: `distributed2.sched.nuc` SILENT MISCOMPILE warning replaced with a 4-cycle lifecycle narrative (pre-144 → 144 → 147; mp-tcp gap call-out).
+
+6. **TASK-0327 filed**: mp-tcp worker-to-worker mesh / host-relay codegen — the residual gap, currently dormant because TASK-0175 closure deferred it 'until a distributed schedule needs it' and 06/distributed2 is now that schedule.
+
+### Verification gate (cycle-147 self-run, pre-parallel-review)
+
+- `just check`: clean.
+- `just clippy`: clean (with `-D warnings`).
+- `just test`: all tests pass.
+- `just test-release`: all tests pass.
+- `just e2e`: 112/94/0/18/0 — IDENTICAL to expected delta (was 112/92/0/20/0; +2 pass, -2 skip). 2 back-to-back samples non-flake.
+- `just check-textual-replace-on-codegen`: OK.
+- `just check-include-str-coverage`: OK.
+
+### Gotchas + subtleties (forward-carry for future cycles)
+
+1. **The AC#3 implementation reused EVERYTHING.** `rewrite_partition_tiles`'s compute=src rule, `render_wait_assign`'s WaitSlice::Rows path, and the cartesian-product fan-out at `build_waits_for_op` already existed for the partial-overlap case (different worker sets). The only changes for cycle 147 were:
+   - Lift the validator's same-set rejection (one if-branch).
+   - Classify safe-vs-unsafe at the same-set short-circuit using the same predicate (delete unconditional `continue`, add classify-and-fall-through).
+   - Factor the predicate into a shared helper.
+   This validates the cycle-144 implementer's note that `AC#3 is substantial new codegen surface` was IMPRECISE — for shared-memory backends, AC#3 is a tiny structural change (~30 LoC of pass logic + ~80 LoC of test rewrite). The substantial work was already done by TASK-0117 (fan-out) + TASK-0290 (WaitSlice::Rows) + TASK-0301 (per-dim filter). Forward-carried lesson: when an implementer says 'substantial new codegen', verify by tracing the existing call graph for the simpler-shape sibling — the heavy lifting may already exist.
+
+2. **mp-tcp topology gap is NOT an AC#3 defect.** The pass-level emission is correct for all 4 backends (12 cross-pairs emitted, all WorkerId(i) -> WorkerId(j) with i != j); the gap is the network transport. mp-tcp-bufsync/mp-tcp-event correctly fail LOUD with EmitError::ContractGap forward-linking TASK-0175 (now TASK-0327). Verbatim error messages preserved in the new skip reasons in e2e-matrix.toml so future engineers can grep both task IDs.
+
+3. **TASK-0175 closure precedent re-triggered.** TASK-0175 was closed cycle-77 as 'deferred until TASK-0117 lands AND a distributed schedule needs worker-to-worker'. 06/distributed2 is that schedule. Per project hygiene (don't reopen Done tasks; file a sibling), filed TASK-0327. Forward-carried hygiene point: closure-pending-trigger tasks may need a sibling-file when the trigger arrives.
+
+4. **Partial-overlap case (TASK-0325) NOT lifted this cycle.** The validator's per-element fan-out rejection stays alive. Reasoning: cycle scope discipline — same-set case has an in-tree reproducer (06/distributed2); partial-overlap does not. Lifting both at once would land an untested code path. When a partial-overlap schedule materializes, a follow-up cycle lifts the per-element validator carve-out by symmetry. The factoring through `same_set_elision_unsafe_reason` already prepares for that.
+
+### Final cycle-147 status
+
+**TASK-0324 stays In Progress.** AC#3 partially landed (2 of 4 backends); AC#4 partially landed (2 of 4 cells promoted). The remaining 2 cells are blocked on TASK-0327 (mp-tcp topology) — separate task, separate cycle, separate scope.
+
+### Forward-carries to future tasks
+
+- **TASK-0327** (filed cycle 147): mp-tcp worker-to-worker mesh / host-relay to complete the 06/distributed2 matrix. When that lands, the 2 remaining [[skip]] entries flip to [[required]] and TASK-0324 closes fully.
+- **Partial-overlap AC#3** (no task filed; trigger-pending): when a schedule with non-equal-but-overlapping worker sets + unsafe-read shape lands, lift the per-element `if src == dst` validator carve-out by symmetry to the cycle-147 same-set lift. The factoring through `same_set_elision_unsafe_reason` already prepares the path.
 <!-- SECTION:NOTES:END -->

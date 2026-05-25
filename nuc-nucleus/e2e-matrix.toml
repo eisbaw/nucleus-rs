@@ -1267,44 +1267,53 @@ milestone = "M5"
 # each worker has only its own hy row-band populated. PRE-CYCLE-144:
 # transfer_inject silently elided the required cross-worker tmp
 # transfers — 0 slots allocated for tmp in the emitted main.rs — and
-# the runtime produced wrong output starting at row 2 (the first row
-# whose vertical taps reach outside w0's row-band 0..4). All 4 tier-1
-# backends failed identically at byte 128. POST-CYCLE-144: TASK-0324
-# AC#0 (doc-lie fix) + AC#1 (axis-by-axis discriminator against the
-# producer's data_out_access) + AC#2 (front-loaded fail-loud guard
-# `check_no_silent_elision_risk` in transfer_inject) + AC#5 (positive
-# + negative fixtures in tests/transfer_inject.rs) have landed. The
-# silent-miscompile path is now a typed `TransferInjectError::
-# SameSetSilentElisionRisk` compile error rather than wrong output.
-# AC#3 (cross-worker tmp codegen — N-to-N broadcast-of-gather) +
-# AC#4 (matrix promotion to [[required]]) remain. Reproducer kept at
-# `nuc-nucleus/examples/06-separable-filter/schedules/
-# distributed2.sched.nuc` for the eventual AC#3 cycle.
+# the runtime produced wrong output starting at row 2. All 4 tier-1
+# backends failed identically at byte 128. POST-CYCLE-144 (AC#0/1/2/5)
+# the silent-miscompile path became a typed
+# `TransferInjectError::SameSetSilentElisionRisk` compile error.
+#
+# POST-CYCLE-147 (AC#3 cross-worker tmp codegen + AC#4 matrix
+# promotion): the validator's same-set rejection is LIFTED;
+# `build_waits_for_op`'s same-set short-circuit falls through to the
+# cartesian-product fan-out and emits N*(N-1) = 12 cross-worker pairs
+# for `tmp` (compute_worker = src per `rewrite_partition_tiles`'s
+# N-to-1 gather rule; receiver assembles via `render_wait_assign`'s
+# WaitSlice::Rows row-band path). Verified bit-identical against
+# reference.bin on pthreads-sync + pthreads-async (shared-memory
+# backends — N-to-N codegen lowers cleanly to slot-Arc + Condvar).
+#
+# The two mp-tcp backends (mp-tcp-bufsync, mp-tcp-event) STILL skip
+# this cell — their star topology (one-(data,ctrl)-pair-per-(host,
+# worker)) has no worker-to-worker channel, so the per-pair fan-out
+# `Push WorkerId(1) -> WorkerId(2)` fails LOUD with the same
+# EmitError::ContractGap the existing 05-stencil/distributed-2d ×
+# mp-tcp-event skip + reduction-distributed × mp-tcp-event skip cite
+# (TASK-0175). TASK-0175 was closed as deferred-until-such-a-schedule-
+# exists; that condition is now met. Filed as TASK-0327 for the
+# follow-up mesh / host-relay codegen extension.
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "pthreads-sync"
-reason   = "TASK-0324 AC#3 not yet landed: cycle-144 diagnose-first guard (AC#2) now rejects this shape with a typed TransferInjectError::SameSetSilentElisionRisk compile error (replacing the pre-cycle-144 silent miscompile). Remove this skip + add [[required]] entries once AC#3 emits the cross-worker tmp codegen (N-to-N broadcast-of-gather)."
+milestone = "M5"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "pthreads-async"
 milestone = "M5"
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path — the AC#2 guard fires before any backend codegen. Failure is now a typed compile error rather than silent wrong output."
-milestone = "M5"
-
-[[skip]]
-example  = "06-separable-filter"
-schedule = "distributed2"
-backend  = "pthreads-async"
-reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path. See pthreads-sync sibling skip above."
+reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): cycle-147 AC#3 cross-worker tmp codegen lowers cleanly for shared-memory backends (pthreads-sync, pthreads-async) but mp-tcp-bufsync's star topology has no worker-to-worker channel. The 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events fail LOUD with EmitError::ContractGap at Plan::build (the same topology limit the 03-reduction/distributed × mp-tcp-bufsync skip + 05-stencil/distributed-2d × mp-tcp-event skip cite — verbatim message: `mp-tcp-bufsync's one-(data,ctrl)-pair-per-(host,worker) topology has no worker-to-worker channel (filed as TASK-0175)`). Codegen correctly fails loud rather than silently mis-routing. Follow-up filed as TASK-0327."
 milestone = "M5"
 
 [[skip]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-event"
-reason   = "TASK-0324 AC#3 not yet landed: shared-compiler-pass error path. See pthreads-sync sibling skip above."
+reason   = "TASK-0327 (mp-tcp worker-to-worker mesh / host-relay): same topology limit as mp-tcp-bufsync sibling — the 12 cross-pair `Push WorkerId(i) -> WorkerId(j)` events fail LOUD with EmitError::ContractGap (verbatim: `the star topology requires host as the relay (filed as TASK-0175)`). Follow-up filed as TASK-0327."
 milestone = "M5"
