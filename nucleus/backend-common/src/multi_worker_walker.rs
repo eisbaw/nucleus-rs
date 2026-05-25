@@ -150,10 +150,12 @@ enum WaitSlice {
 /// directly with no prefix involvement. Every other field is shared
 /// verbatim across all `render_worker_events`-using backends.
 ///
-/// Grep witness (cycle 141 TASK-0322 fold-back): `grep -n
-/// 'rendezvous_prefix:' nucleus/backends/*/src/multi_worker.rs` yields
-/// exactly three field-init sites (pthreads-sync `"slot"` line 536,
-/// pthreads-async `"ring"` line 516, mp-tcp-event `"chan"` line 493).
+/// Grep witness (cycle 141 TASK-0322 fold-back, line stamps re-
+/// verified cycle 142b fold-back after qa P2 caught off-by-+2/+6
+/// drift): `grep -n 'rendezvous_prefix:'
+/// nucleus/backends/*/src/multi_worker.rs` yields exactly three
+/// field-init sites (pthreads-sync `"slot"` line 538, pthreads-
+/// async `"ring"` line 522, mp-tcp-event `"chan"` line 493).
 pub struct WalkerCtx<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
@@ -166,8 +168,8 @@ pub struct WalkerCtx<'a> {
     /// Grep witness (cycle 141 TASK-0322 fold-back, line stamps
     /// updated cycle 142 TASK-0323 module-doc sweep): `grep -n
     /// '{rendezvous_prefix}_' nucleus/backend-common/src/` yields
-    /// exactly two emit-template sites (Push at line 831, Wait at
-    /// line 851 — both pinned parametrically by
+    /// exactly two emit-template sites (Push at line 833, Wait at
+    /// line 853 — both pinned parametrically by
     /// `task0321_*` / `task0322_*` in
     /// `nucleus/backend-common/tests/wait_assign_slice.rs`).
     pub rendezvous_prefix: &'a str,

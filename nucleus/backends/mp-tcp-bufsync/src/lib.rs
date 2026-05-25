@@ -323,9 +323,11 @@ impl<'a> Plan<'a> {
             .collect();
 
         // Host: the worker literally named "host", else the smallest
-        // used WorkerId — IDENTICAL choice to pthreads-sync's
-        // multi_worker::Plan::build (the differential needs the same
-        // host election under both backends).
+        // used WorkerId — IDENTICAL choice across all four tier-1
+        // backends' `multi_worker::Plan::build` (pthreads-sync,
+        // pthreads-async, mp-tcp-event, mp-tcp-bufsync). The
+        // cross-backend bit-identical differential (PRD §10.1) needs
+        // every backend to elect the same host given the same input.
         let host_named = names
             .worker
             .iter()
