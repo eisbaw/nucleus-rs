@@ -96,7 +96,7 @@ use backend_common::check_frame::{
     collect_count_check_frames, emit_count_branch, emit_count_guard_local,
     emit_count_reporter_struct, emit_count_static, emit_log_branch,
 };
-use backend_common::multi_worker_walker::{collect_xfer_pairs, render_wait_assign};
+use backend_common::multi_worker_walker::{collect_pair_tiles, render_wait_assign};
 use backend_common::project_skeleton::multi_binary;
 use backend_common::render::{
     render_array_init_for, render_const_expr_pub, render_fire_args_pub,
@@ -348,13 +348,12 @@ impl<'a> Plan<'a> {
             xfer_data.iter().enumerate().map(|(i, d)| (*d, i)).collect();
 
         // Collect per-pair tiles for slice-aware Wait gathers (TASK-0296
-        // cycle 116). The shared helper handles deterministic first-
-        // sighting wins on the same `(DataId, SeqTag)`; both endpoints
-        // carry the same tile by XferPlaceholder construction (TASK-0018).
-        let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
-        for evs in per_worker.values() {
-            collect_xfer_pairs(evs, &mut pair_tiles);
-        }
+        // cycle 116, hoisted to `collect_pair_tiles` in cycle 130 per
+        // TASK-0300). The shared helper preserves deterministic first-
+        // sighting-wins on `(DataId, SeqTag)`; both endpoints carry the
+        // same tile by XferPlaceholder construction (TASK-0018).
+        let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> =
+            collect_pair_tiles(per_worker.values());
 
         // Barrier identity by the contract-carried `SyncTag`
         // (TASK-0172). Each Event::Sync names its own barrier; the

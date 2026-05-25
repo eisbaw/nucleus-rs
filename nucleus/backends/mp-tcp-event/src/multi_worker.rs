@@ -147,11 +147,10 @@ impl<'a> Plan<'a> {
                 )
             })?;
 
-        // Collect cross-worker (DataId, SeqTag) pairs + tiles.
-        let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
-        for evs in per_worker.values() {
-            walker::collect_xfer_pairs(evs, &mut pair_tiles);
-        }
+        // Collect cross-worker (DataId, SeqTag) pairs + tiles via the
+        // shared backend-common helper (TASK-0300 cycle 130 hoist).
+        let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> =
+            walker::collect_pair_tiles(per_worker.values());
 
         // Collect (src, dst) per pair from Push events.
         let mut chan_pairs: BTreeMap<(DataId, SeqTag), (WorkerId, WorkerId)> = BTreeMap::new();

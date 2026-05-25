@@ -199,18 +199,15 @@ impl<'a> Plan<'a> {
         // ascend by SeqTag. Examples with one pair per data symbol
         // (01..07: every cross-worker transfer is host↔single-worker)
         // map to one slot each at slot indices 0..N-1, preserving the
-        // pre-TASK-0117 stable layout.
-        let mut xfer_pairs: BTreeMap<(DataId, SeqTag), nucleus_compiler::event::IterTile> =
-            BTreeMap::new();
-        for evs in per_worker.values() {
-            walker::collect_xfer_pairs(evs, &mut xfer_pairs);
-        }
-        let slot_ids: BTreeMap<(DataId, SeqTag), SlotId> = xfer_pairs
+        // pre-TASK-0117 stable layout. Single source of construction
+        // is `walker::collect_pair_tiles` (TASK-0300 cycle 130 hoist).
+        let pair_tiles: BTreeMap<(DataId, SeqTag), nucleus_compiler::event::IterTile> =
+            walker::collect_pair_tiles(per_worker.values());
+        let slot_ids: BTreeMap<(DataId, SeqTag), SlotId> = pair_tiles
             .keys()
             .enumerate()
             .map(|(i, k)| (*k, i))
             .collect();
-        let pair_tiles = xfer_pairs;
 
         // Barrier identity by the contract-carried `SyncTag`
         // (TASK-0172). Each `Event::Sync` names its own barrier; the

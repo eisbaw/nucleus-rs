@@ -193,16 +193,13 @@ impl<'a> Plan<'a> {
             })?;
 
         // Collect cross-worker (DataId, SeqTag) pairs from every
-        // Push/Wait in every worker's events. The pair-tile is the
-        // IterTile carried on either endpoint (both endpoints share
-        // it under transfer_inject's invariant).
-        //
-        // Walks Event::Loop bodies recursively (mirrors pthreads-sync's
-        // collect_xfer_pairs in multi_worker.rs:1007).
-        let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
-        for evs in per_worker.values() {
-            walker::collect_xfer_pairs(evs, &mut pair_tiles);
-        }
+        // Push/Wait in every worker's events via the shared backend-
+        // common helper (TASK-0300 cycle 130 hoist). The pair-tile is
+        // the IterTile carried on either endpoint; both endpoints share
+        // it under transfer_inject's invariant, so the helper's
+        // first-sighting-wins choice is well-defined.
+        let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> =
+            walker::collect_pair_tiles(per_worker.values());
 
         // Deterministic ring_id assignment: ascending by (DataId, SeqTag).
         let ring_ids: BTreeMap<(DataId, SeqTag), RingId> = pair_tiles

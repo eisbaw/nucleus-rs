@@ -1086,6 +1086,35 @@ pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag),
     }
 }
 
+/// Build a `(DataId, SeqTag) -> IterTile` map by folding
+/// [`collect_xfer_pairs`] across every worker's projected events.
+///
+/// Single source of truth for the construction shape that all four
+/// tier-1 backends (pthreads-sync, pthreads-async, mp-tcp-bufsync,
+/// mp-tcp-event) had been duplicating inline (TASK-0300, cycle 130
+/// hardening from TASK-0296 cycle-116 architect P1.2).
+///
+/// First-sighting on a given `(DataId, SeqTag)` wins; later sightings
+/// are dropped. Both endpoints carry the same `IterTile` by the
+/// XferPlaceholder construction (TASK-0018), so the choice is
+/// deterministic and the dropped sightings agree by construction.
+///
+/// Callers pass `per_worker.values()` where `per_worker:
+/// BTreeMap<WorkerId, Vec<Event>>`. Iteration order of the map's
+/// `values()` is `WorkerId`-ascending, but the helper's output is keyed
+/// only on `(DataId, SeqTag)`, so worker iteration order cannot leak
+/// into the result.
+pub fn collect_pair_tiles<'a, I>(events_per_worker: I) -> BTreeMap<(DataId, SeqTag), IterTile>
+where
+    I: IntoIterator<Item = &'a Vec<Event>>,
+{
+    let mut out: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    for evs in events_per_worker {
+        collect_xfer_pairs(evs, &mut out);
+    }
+    out
+}
+
 /// Per-worker visit of Push/Wait events to collect the worker's
 /// rendezvous-id touch set. Descends into `Event::Loop` bodies.
 ///
