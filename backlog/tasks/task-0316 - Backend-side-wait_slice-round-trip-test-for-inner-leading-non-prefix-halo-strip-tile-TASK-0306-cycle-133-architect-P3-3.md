@@ -3,11 +3,11 @@ id: TASK-0316
 title: >-
   Backend-side wait_slice round-trip test for inner-leading / non-prefix
   halo-strip tile (TASK-0306 cycle-133 architect P3-3)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 09:17'
-updated_date: '2026-05-25 10:39'
+updated_date: '2026-05-25 10:42'
 labels:
   - M6
   - compiler
@@ -64,4 +64,24 @@ Rationale for the scope deviation:
 3. The cycle-136 test pins what was actually missing: the BACKEND-SIDE positional bounds[i] ↔ ty.dims[i] contract that wait_slice silently relies on. A wait_slice refactor that drops positional semantics would not be caught by the producer-side pins.
 
 The deviation tightens AC#1 from 'round-trip' (which the test does NOT do — it does not call inject_transfers) to 'backend-side consumer pin for the cycle-133 helper's positional output contract'. AC#2 + AC#3 satisfied as written.
+
+## Cycle 136 Done — final summary
+
+Committed in 9787618 (backend-common tests + tracker: TASK-0316 cycle 136).
+
+Delivered:
+- Two new tests in nucleus/backend-common/tests/wait_assign_slice.rs covering AC#1 (inner-leading positional contract) and AC#2 (non-prefix empty-bounds dispatch via populated pair_tiles).
+- All review fold-back applied in the same commit (no separate hardening commit needed): P2-1 framing rewrite (round-trip → consumer pin), P2-2 tracker scope addendum, P3-1 cycle-135 transitivity note, P3-2 dispatch-distinctness clarification.
+- AC#3 satisfied: e2e 108/92/0/16/0 preserved bit-identically (two samples this cycle).
+
+Gate measurements this cycle (both reviewers re-ran):
+- build + clippy: clean
+- test (dev): 872/0/3 (+2)
+- test (release): 872/0/3
+- e2e: 108/92/0/16/0 × 2 samples
+
+Cycle-136 gotchas / lessons feed-forward:
+- Two reviewer agents disagreed on AC#2 dispatch distinctness; the architect called it 'structurally identical' to whole_array_assign_when_tile_empty, the QA agent's trace correctly identified them as DISTINCT dispatches (populated pair_tiles entering wait_slice + bounds.first() else-branch vs empty pair_tiles short-circuiting at the get() match). When reviewers disagree, trace the code path explicitly — both agents' read-only confidence is sometimes wrong.
+- 'Round-trip' is a heavy word that implies producer-and-consumer-both-in-the-test. A consumer-side pin that fabricates the producer's expected output is NOT a round-trip; calling it that triggers feedback-comment-doc-lie-recurring. Reserve 'round-trip' for tests that actually invoke the producer.
+- Architect P3-3 follow-up question 'is cycle-135 a separate coverage gap?' has a clean transitive answer: No. Both helpers (cycle-133 order_halo_strip_bounds_by_data_dim + cycle-135 rewrite_partition_tiles_inner) feed the same IterTile.bounds vector consumed by the same wait_slice positional dispatch. A backend-side pin on one transitively covers the other; a producer-side pin must be filed PER HELPER (which TASK-0315 + TASK-0317 already did).
 <!-- SECTION:NOTES:END -->
