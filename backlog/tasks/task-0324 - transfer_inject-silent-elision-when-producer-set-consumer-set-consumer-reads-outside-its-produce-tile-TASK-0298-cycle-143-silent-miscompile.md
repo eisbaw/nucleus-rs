@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 13:05'
-updated_date: '2026-05-25 16:11'
+updated_date: '2026-05-25 16:26'
 labels:
   - compiler
   - transfer_inject
@@ -506,4 +506,18 @@ Land AC#3 (cross-worker tmp codegen via lifted validator + same-set fan-out emis
 
 - **TASK-0327** (filed cycle 147): mp-tcp worker-to-worker mesh / host-relay to complete the 06/distributed2 matrix. When that lands, the 2 remaining [[skip]] entries flip to [[required]] and TASK-0324 closes fully.
 - **Partial-overlap AC#3** (no task filed; trigger-pending): when a schedule with non-equal-but-overlapping worker sets + unsafe-read shape lands, lift the per-element `if src == dst` validator carve-out by symmetry to the cycle-147 same-set lift. The factoring through `same_set_elision_unsafe_reason` already prepares the path.
+
+## Cycle 147 P2.2 reviewer fold-back — AC#3 vs AC#4 framing clarification
+
+The cycle-147 commit message + tracker notes both said 'AC#3 partially landed (2 of 4 backends); AC#4 partially landed (2 of 4 cells promoted).' Reviewer (mped-architect) P2.2 caught this as imprecise:
+
+**AC#3 is FULLY landed at the pass layer.** `transfer_inject.rs` emits 12 cross-worker pairs for the same-set unsafe shape across ALL 4 tier-1 backends — verified by the AC#5 positive fixture (backend-agnostic) which passes. The mp-tcp backends then fail LOUD at `Plan::build` with `EmitError::ContractGap` because their star topology has no worker-to-worker channel.
+
+**AC#4 is what's partial** (2 of 4 cells flip to [[required]]). The remaining 2 cells stay [[skip]] not because AC#3 emission failed but because the BACKEND TRANSPORT (mp-tcp's one-(data,ctrl)-pair-per-(host,worker) topology) can't lower worker-to-worker Push/Wait events. That gap is filed as TASK-0327.
+
+This is a textbook instance of [[feedback-orchestrator-narrative-also-wrong]] — even cycle-147's own orchestrator-written 'AC#3 partially landed' was algebra-imprecise. The pass-layer / backend-layer distinction matters for the closure conditions of TASK-0324: full AC#3 closure does NOT require TASK-0327 — TASK-0327 is the AC#4 dependency.
+
+**Corrected closure state**:
+- AC#3 (cross-worker tmp codegen — N-to-N broadcast-of-gather): **LANDED**. The pass emits 12 cross-pairs for 06/distributed2 across all 4 backends; 2 backends lower the resulting events to bit-identical output; 2 backends correctly fail LOUD with a typed error citing TASK-0175 / TASK-0327.
+- AC#4 (matrix promotion to [[required]]): **PARTIAL** (2 of 4 cells). The remaining 2 cells block on TASK-0327 (mp-tcp transport).
 <!-- SECTION:NOTES:END -->

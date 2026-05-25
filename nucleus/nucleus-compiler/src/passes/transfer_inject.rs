@@ -3205,6 +3205,23 @@ fn build_waits_for_op(
                 // scope (no in-tree schedule exercises partial-overlap).
                 // The validator still rejects partial-overlap unsafe
                 // shapes.
+                // Mirror the validator's clause (1): if no partition
+                // iv is active on the consumer's enclosing scope,
+                // every worker owns the full data (the partition is
+                // inert for this consumer) → safe elision. Without
+                // this gate the emit site is STRICTER than the
+                // validator (over-emits, never under-emits — direction
+                // safe), but reviewer cycle-147 P2.1 flagged the
+                // asymmetry; replicating clause (1) here keeps the
+                // predicates in lockstep so a future schedule that
+                // exercises this case doesn't surprise readers with
+                // a behavioural difference between the two sites.
+                let consumer_has_partition_iv_in_scope = enclosing_tile
+                    .iter()
+                    .any(|(iv, _)| ctx.partition_iter_vars.contains(iv));
+                if !consumer_has_partition_iv_in_scope {
+                    continue;
+                }
                 let prod_access = ctx.producer_writes.get(&data_id);
                 let is_safe = match prod_access {
                     None => true, // No producer-side access — pre-AC#2 fall-back path.
