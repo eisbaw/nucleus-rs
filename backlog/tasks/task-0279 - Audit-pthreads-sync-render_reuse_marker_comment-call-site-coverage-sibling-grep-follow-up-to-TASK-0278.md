@@ -80,8 +80,8 @@ Uses pthreads-sync's public render_single_worker_main entry point (no need to ex
 
 ### Silent-sibling family CLOSED for render_reuse_marker_comment
 After this cycle, ALL FOUR production call sites have presence pins:
-- multi_worker_walker.rs:404 (cycle 99, TASK-0278)
-- multi_worker_walker.rs:478 (cycle 98, TASK-0273)
+- multi_worker_walker.rs strip-mine arm (the `render_reuse_marker_comment` call INSIDE the `if let Some(tag) = block_tag` branch; cycle 99, TASK-0278)
+- multi_worker_walker.rs non-strip-mine arm (the `render_reuse_marker_comment` call OUTSIDE the `if let Some(tag) = block_tag` branch; cycle 98, TASK-0273)
 - pthreads-sync/src/lib.rs:653 (THIS cycle, TASK-0279)
 - pthreads-sync/src/lib.rs:675 (existing e2e_example_05.rs grep test)
 

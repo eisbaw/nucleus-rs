@@ -64,7 +64,7 @@ Status: In Progress. AC#1/2 met (sidecar consumed; tiles extended). AC#3 (new e2
 
 TASK-0271 promoted the reuse_inference driver call to STRICT (apply_reuse_inference vs apply_reuse_inference_advisory). The promotion pattern is the precedent for halo when this task closes:
 
-1. **Trigger condition**: promote halo's driver call (currently at nucleus/driver/src/main.rs:385 apply_halo_inference_advisory) to apply_halo_inference once the transfer_inject Stage 2 halo consumer lands. At that point a silently-swallowed typed HaloInferenceError corresponds to a partition-required halo that the backend would silently emit a wrong-output tile for.
+1. **Trigger condition**: promote halo's driver call (at forward-carry time the `apply_halo_inference_advisory` call site in nucleus/driver/src/main.rs; search for `apply_halo_inference` to find the current site — cycle-96 TASK-0275 has since promoted it to `apply_halo_inference_partition_aware` (variant B)) to `apply_halo_inference` once the transfer_inject Stage 2 halo consumer lands. At that point a silently-swallowed typed HaloInferenceError corresponds to a partition-required halo that the backend would silently emit a wrong-output tile for.
 
 2. **5-line shape** (mirror TASK-0271 commit 0a74bea exactly):
    - replace 'apply_halo_inference_advisory' in the use-statement with 'apply_halo_inference'.

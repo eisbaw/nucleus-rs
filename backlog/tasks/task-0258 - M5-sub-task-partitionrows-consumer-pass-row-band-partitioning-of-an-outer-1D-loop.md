@@ -98,7 +98,7 @@ Implementation Plan (cycle 79c — implementer):
    - Rewrite header NOTE block: TASK-0249 removed the directive because no consumer existed; TASK-0258 restored it now that partition_rows lands. Cell remains [[skip]] (TASK-0117 / TASK-0042.05 / halo are sibling gates). 
    - Footer note: halo inference (TASK-0260) is the remaining barrier to a bit-identical stencil cell.
 
-9. Update partition_workers.rs:40 caveat comment: 'partition=rows now consumed by passes/partition_rows.rs (TASK-0258)'. Keep `Blocks2d rejects at sched-lower as UnsupportedPartitionKind`.
+9. Update the partition_workers.rs head-comment caveat (the "## Honest limitations" / "**1D partition axis only.**" bullet): 'partition=rows now consumed by passes/partition_rows.rs (TASK-0258)'. Keep `Blocks2d rejects at sched-lower as UnsupportedPartitionKind`.
 
 10. Verification gate (run via nix develop -c just <recipe>):
     a. just test
@@ -125,7 +125,7 @@ Cycle 79c implementation complete (commits ef85b99, 5e4acc9).
 - nucleus-compiler/src/passes/partition_rows.rs (NEW, ~330 LoC incl. tests): the consumer pass. Walks ACFG for Repeat nodes with ResolvedLoopOption::Partition(Rows), verifies outer-of-2D structural pre-condition (Repeat-of-Repeat via find_outer_of_2d + contains_repeat helpers, both 100% covered by 4 #[cfg(test)] unit tests), validates multi-worker body + divisibility, applies the same row-band slicing algorithm partition_workers uses, writes per-(IterVar, WorkerId) ranges into the SHARED ACFG::partition_worker_ranges sidecar (downstream consumers don't distinguish which directive produced the override).
 - nucleus-compiler/src/passes/mod.rs: pub mod partition_rows;
 - nucleus-compiler/src/lib.rs: pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};
-- nucleus-compiler/src/passes/partition_workers.rs:40 caveat-comment updated: 'partition=rows now consumed by partition_rows (TASK-0258)'; Blocks2d remains rejected at sched-lower (TASK-0259).
+- nucleus-compiler/src/passes/partition_workers.rs head-comment caveat (the "## Honest limitations" / "**1D partition axis only.**" bullet) updated: 'partition=rows now consumed by partition_rows (TASK-0258)'; Blocks2d remains rejected at sched-lower (TASK-0259).
 - nucleus-compiler/src/sched/lower.rs:1109..1133: PartitionKind::Rows arm added to the LoopOption::Partition match (alongside Workers). PartitionKind::Blocks2d remains the only kind rejected. Comment block updated to document the cycle-79c state with full citations.
 - nucleus-compiler/src/sched/ir.rs:643..671 / 816..843: UnsupportedPartitionKind docstring + Display message updated — only Blocks2d reaches this variant from the live lower call site; Workers + Rows arms remain in the match for exhaustiveness so any future PartitionKind addition fails to compile.
 - nucleus/driver/src/main.rs: import apply_partition_rows + call site IMMEDIATELY after apply_partition_workers (sequential composition).

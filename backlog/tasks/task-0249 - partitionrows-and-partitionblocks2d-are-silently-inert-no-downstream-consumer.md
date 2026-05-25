@@ -29,7 +29,7 @@ Audit of the partition handling in nucleus/compiler/src showed that of the three
 - **PartitionKind::Rows**: parsed by sched/parser.rs:573, lowered to ResolvedLoopOption::Partition(PartitionKind::Rows) by sched/lower.rs:1095, then NEVER read by any pass. The 05-stencil/distributed live schedule has `loop y : partition=rows;` (line 19) which today does NOTHING beyond being accepted.
 - **PartitionKind::Blocks2d**: same — parsed, lowered, never consumed.
 
-passes/partition_workers.rs:40 actually admits this in a header comment: "partition=rows / partition=blocks2d are orthogonal grammars handled by sibling passes (not yet filed)." — so the gap was known but no task captured it.
+passes/partition_workers.rs's module-doc head-comment at file time (cycle ~60, pre-TASK-0249) admitted this in a caveat: "partition=rows / partition=blocks2d are orthogonal grammars handled by sibling passes (not yet filed)." — so the gap was known but no task captured it. (TASK-0258 cycle 79c + TASK-0259 cycle 80 have since further updated the caveat to "all three PartitionKind variants now have consumers"; see the "## Honest limitations" / "**1D partition axis only.**" bullet today.)
 
 ## Why this is a recurring-failure-class issue
 
@@ -70,7 +70,7 @@ Steps:
 2. Add Display impl for the new variant in sched/ir.rs alongside `UnitPipelineOption`. Message is actionable and names the loop var + partition kind.
 3. Wire the rejection in sched/lower.rs:1095 — match on PartitionKind: Workers continues to lower; Rows / Blocks2d return the new error.
 4. Add the row to the classification-table doc-comment in sched/lower.rs:159 (`Independent | yes | never`).
-5. Update passes/partition_workers.rs:40 caveat comment to reflect new state (rejected at sched-lower).
+5. Update the partition_workers.rs head-comment caveat (the "## Honest limitations" / "**1D partition axis only.**" bullet) to reflect new state (rejected at sched-lower).
 6. Migrate nuc-nucleus/examples/05-stencil/schedules/distributed.sched.nuc:19 by removing the inert `loop y : partition=rows;` line and inserting a comment explaining the deletion + naming the follow-up task. Update the sched_parser / sched_lower / link tests that pin the loop count.
 7. Add negative tests (Rows + Blocks2d -> UnsupportedPartitionKind) and positive smoke (Workers still lowers) in nucleus/compiler/tests/sched_lower.rs alongside the UnitPipelineOption test.
 8. File follow-up task: "TASK-0249 follow-up: decide whether 05-stencil/distributed should partition the y-loop across {w0..w3} via partition=workers".
@@ -82,7 +82,7 @@ Acceptance criteria mapping:
 - AC#2 Implementation: steps 1-3 above.
 - AC#3 05-stencil/distributed handled: step 6 (deletion + follow-up).
 - AC#4 Tests: step 7 (positive + negative).
-- AC#5 PRD §6.3.3 cited + partition_workers.rs:40 updated: steps 1+5.
+- AC#5 PRD §6.3.3 cited + partition_workers.rs head-comment caveat updated: steps 1+5.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -104,7 +104,7 @@ Cycle 70 (TASK-0249 implementation):
   captures rationale + cites TASK-0249 + names TASK-0250 follow-up. Cell
   is SKIPPED across all 4 tier-1 backends (TASK-0117 / TASK-0181 /
   TASK-0042.02), so bit-identical-preserving for every required cell.
-- Caveat comment at `passes/partition_workers.rs:40` updated from
+- Caveat at the `passes/partition_workers.rs` head-comment (the "## Honest limitations" / "**1D partition axis only.**" bullet) updated from
   "not yet filed" → "rejected at sched-lower as UnsupportedPartitionKind
   (TASK-0249)" — closes the doc-lie.
 - Follow-up: TASK-0250 ("05-stencil/distributed: decide row-band
@@ -155,7 +155,7 @@ lower via the new SchedLowerErrorKind::UnsupportedPartitionKind
 variant; the live 05-stencil/distributed schedule migrated by
 removing the now-inert directive (the cell is SKIPPED across all
 4 tier-1 backends for pre-existing gaps, so removal is bit-identical
-for every required cell). passes/partition_workers.rs:40 caveat
+for every required cell). passes/partition_workers.rs head-comment caveat
 comment updated from "not yet filed" to reflect the new
 sched-lower rejection (closes the doc-lie). Follow-up TASK-0250
 captures the open question of whether the y-loop should be

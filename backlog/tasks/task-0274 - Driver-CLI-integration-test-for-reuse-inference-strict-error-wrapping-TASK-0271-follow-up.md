@@ -25,7 +25,7 @@ priority: low
 
 Forward-carried from TASK-0271 cycle-88 architect review (P3 finding).
 
-TASK-0271 promoted `nucleus/driver/src/main.rs:413` from `apply_reuse_inference_advisory` to `apply_reuse_inference`, wrapping the typed `ReuseInferenceError` via `.map_err(|e| format!("reuse-inference error: {e}"))?`. The negative test `tests/sidecar_reuse.rs::task0271_strict_rejects_non_affine_reuse_body` pins the strict function's behaviour at the pass level — but does NOT pin the driver's outer wrapping (the `reuse-inference error: ` prefix + the surfacing as a CLI error).
+TASK-0271 promoted the `apply_reuse_inference_advisory` call site in `nucleus/driver/src/main.rs` (search for `apply_reuse_inference` to find the post-promotion site) to `apply_reuse_inference`, wrapping the typed `ReuseInferenceError` via `.map_err(|e| format!("reuse-inference error: {e}"))?`. The negative test `tests/sidecar_reuse.rs::task0271_strict_rejects_non_affine_reuse_body` pins the strict function's behaviour at the pass level — but does NOT pin the driver's outer wrapping (the `reuse-inference error: ` prefix + the surfacing as a CLI error).
 
 ## Gap
 

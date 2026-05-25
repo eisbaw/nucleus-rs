@@ -92,7 +92,7 @@ No production code changes.
 2. `multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty` — symmetric absence (`assert_eq!(count, 0)`).
 
 **Per-AC**:
-- AC#1 (test exists, asserts marker substring + multi_worker_walker call site): YES — both tests route through `backend_common::multi_worker_walker::render_worker_events`, hitting the non-strip-mine `Event::Loop` body-entry call site at multi_worker_walker.rs:478.
+- AC#1 (test exists, asserts marker substring + multi_worker_walker call site): YES — both tests route through `backend_common::multi_worker_walker::render_worker_events`, hitting the non-strip-mine `Event::Loop` body-entry call site (the `render_reuse_marker_comment` call OUTSIDE the `if let Some(tag) = block_tag` branch in multi_worker_walker.rs; search for `render_reuse_marker_comment`).
 - AC#2 (symmetric absence): YES — test 2 asserts `out.matches(...).count() == 0`.
 - AC#3 (<30s, no full cargo build): YES — direct walker invocation; both tests complete in <0.01s per cargo test output.
 
@@ -120,7 +120,7 @@ No production code changes.
 Parallel review gate (qa-test-runner + mped-architect, read-only) on commits 1e62b4b/f2e4dda: both **GO** with one carry.
 
 ### Both reviewers caught the same P2: strip-mine arm + missing follow-up
-TASK-0273 closed coverage for the NON-strip-mine call site only (multi_worker_walker.rs:478, block_tag=None). The strip-mine call site at multi_worker_walker.rs:404 (inside the `if let Some(tag) = block_tag` branch) remains ZERO-coverage anywhere — the 05-stencil/distributed schedule that would exercise it live is [[skip]]ped pending TASK-0267 + TASK-0268.
+TASK-0273 closed coverage for the NON-strip-mine `render_reuse_marker_comment` call site only (the call OUTSIDE the `if let Some(tag) = block_tag` branch in multi_worker_walker.rs, block_tag=None). The strip-mine call site (the `render_reuse_marker_comment` call INSIDE the `if let Some(tag) = block_tag` branch) remains ZERO-coverage anywhere — the 05-stencil/distributed schedule that would exercise it live is [[skip]]ped pending TASK-0267 + TASK-0268.
 
 The implementer self-disclosed this in the cycle-98 honest-limits section but did NOT file the follow-up per implementer-contract item 5 ('any newly discovered issue → file a new tracker task').
 

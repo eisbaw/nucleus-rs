@@ -86,7 +86,7 @@ Examples (deterministic, pinned by tests):
 - nucleus/driver/src/main.rs: import + call apply_partition_blocks2d after apply_partition_rows.
 - nucleus-compiler/src/sched/lower.rs:1127-1143: remove Blocks2d rejection arm; all three PartitionKind variants now accept; document UnsupportedPartitionKind as exhaustiveness-only.
 - nucleus-compiler/src/sched/ir.rs:643-673 / 817-844: UnsupportedPartitionKind docstring + Display message updated to reflect the all-three-now-lower state (variant retained for exhaustiveness on future PartitionKind additions).
-- nucleus-compiler/src/passes/partition_workers.rs:40 caveat: update to all-three-have-consumers.
+- nucleus-compiler/src/passes/partition_workers.rs head-comment caveat (the "## Honest limitations" / "**1D partition axis only.**" bullet): update to all-three-have-consumers.
 - nucleus-compiler/tests/sched_lower.rs: negative_partition_blocks2d_is_rejected -> positive_partition_blocks2d_now_lowers.
 - nucleus-compiler/tests/partition_blocks2d.rs (NEW): mirror partition_rows test set + add grid decomposition + prime degenerate test.
 
@@ -155,7 +155,7 @@ decompose_grid(n): walk i from floor(sqrt(n)) down to 2, first divisor wins. Int
 - nucleus-compiler/src/passes/mod.rs: pub mod partition_blocks2d.
 - nucleus-compiler/src/lib.rs: pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError}.
 - nucleus-compiler/src/passes/partition_rows.rs: lifted find_outer_of_2d + contains_repeat + collect_op_workers to pub(crate). Module docstring updated (removed the 'TASK-0259 still rejects' stale claim; replaced the 'no shared helper' section with the cycle-80 sharing story).
-- nucleus-compiler/src/passes/partition_workers.rs:40 caveat-comment: updated to 'all three PartitionKind variants now have consumers'.
+- nucleus-compiler/src/passes/partition_workers.rs head-comment caveat (the "## Honest limitations" / "**1D partition axis only.**" bullet): updated to 'all three PartitionKind variants now have consumers'.
 - nucleus-compiler/src/sched/lower.rs:1109-1143: PartitionKind::Blocks2d arm now accepts and routes to ResolvedLoopOption::Partition(Blocks2d). All three variants accept; no live path reaches UnsupportedPartitionKind anymore. Comment block updated to document the all-three-accept state.
 - nucleus-compiler/src/sched/ir.rs:643-673 / 817-844: UnsupportedPartitionKind docstring + Display message updated. Variant retained for exhaustiveness (future PartitionKind addition will fail to compile at the lower-step match); Display message is now generic ('this partition= policy is unimplemented') rather than naming a specific variant.
 - nucleus/driver/src/main.rs: imports + apply_partition_blocks2d call site immediately after apply_partition_rows.

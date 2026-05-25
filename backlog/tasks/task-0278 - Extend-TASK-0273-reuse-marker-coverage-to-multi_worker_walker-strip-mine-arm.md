@@ -21,7 +21,7 @@ priority: low
 <!-- SECTION:DESCRIPTION:BEGIN -->
 ## Background
 
-Forward-carried from TASK-0273 cycle-98. TASK-0273 closed coverage for the NON-strip-mine call site to `render_reuse_marker_comment` (`multi_worker_walker.rs:478`, exercised via Event::Loop with `block_tag: None`). The STRIP-MINE call site (`multi_worker_walker.rs:404`, inside the `if let Some(tag) = block_tag` arm) remains UNCOVERED.
+Forward-carried from TASK-0273 cycle-98. TASK-0273 closed coverage for the NON-strip-mine call site to `render_reuse_marker_comment` (the call OUTSIDE the `if let Some(tag) = block_tag` arm in `multi_worker_walker.rs`; search for `render_reuse_marker_comment` — exercised via Event::Loop with `block_tag: None`). The STRIP-MINE call site (the call INSIDE the `if let Some(tag) = block_tag` arm) remains UNCOVERED.
 
 A regression that drops the marker emit from ONLY the strip-mine arm — e.g. while refactoring the per-occurrence absolute-index rebinding path or while wiring the real circular-buffer codegen for inner-block tile loops — would silently pass today.
 
@@ -46,7 +46,7 @@ The shipped `05-stencil/distributed.sched.nuc` carries `loop x : block=64, vecto
 ## Cycle 99 closure (orchestrator-implements-direct, 2026-05-24)
 
 ### Commit
-74fef15 backend-common/tests: TASK-0278 pin reuse marker on strip-mine arm (multi_worker_walker.rs:404)
+74fef15 backend-common/tests: TASK-0278 pin reuse marker on strip-mine arm (the `render_reuse_marker_comment` call inside the `if let Some(tag) = block_tag` arm in multi_worker_walker.rs)
 
 ### What landed
 One new test in nucleus/backend-common/tests/multi_worker_reuse_marker.rs:
