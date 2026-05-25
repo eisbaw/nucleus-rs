@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 03:55'
+updated_date: '2026-05-25 05:27'
 labels:
   - M6
   - compiler
@@ -51,3 +52,9 @@ Both shapes are LATENT. Every shipped M5 cell + the new 07-matmul/distributed-2d
 
 LOW priority. Not a current regression; defends against a future M6+ schedule that constructs either shape.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0310 cycle 125: when adding the iv-permutation-aware behaviour-pin tests AC#3 + AC#4, be aware that under partition=blocks2d transfer_inject emits TWO Push classes for each halo-bearing data: (a) host-broadcast main Pushes carrying band±halo on each axis, (b) inject_halo_strip_xfers cross-worker halo strips carrying 1-row / 1-column slices. A naive XferRole::Push && data == X_id filter catches BOTH. The cycle-125 task0310_05 idiom disambiguates by checking x.src ∈ partition_worker_ranges[outer_iv].keys() (compute worker → strip) vs not (host → main). Discovered empirically by a real test failure on cycle-125 first run; pure narrative would have missed it. See nucleus/nucleus-compiler/tests/sidecar_halo.rs:task0310_05_* for the canonical filter idiom. Also: any test name with uppercase letters (the literal _y_AND_x suffix the TASK-0310 brief proposed) fails clippy -D non_snake_case; use _y_and_x instead.
+<!-- SECTION:NOTES:END -->
