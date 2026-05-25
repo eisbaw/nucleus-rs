@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-25 18:51'
+updated_date: '2026-05-25 19:20'
 labels:
   - M6
   - backend
@@ -105,4 +105,20 @@ Root-cause classification: **WAIT-BEFORE-PUSH schedule shape vs cycle-149's scat
 The newly-identified defect class is filed as a SEPARATE follow-up task (see cycle-150 commit / tracker for the exact ID); TASK-0330 is unaffected.
 
 Honesty note: this is exactly the cycle-149 architect P3.2 lesson firing in real time — a prose claim ("Loop-body limitation") was made without empirical verification of the emitted code, and the empirical-verification step (running `just e2e` + reading the generated host.rs and w0.rs) caught the mis-attribution within the same cycle. The retraction here is the honest record.
+
+## Cycle 151 (TASK-0332 AC#2 architect P2): defensive-check divergence found
+
+Cycle 151's `detect_wait_before_push_hazard` (added to both backends) has a precondition `has_w2w_push` that scans TOP-LEVEL events only via `events.iter().any(...)`. The cycle-148/149 `collect_w2w_pushes` helper (which decides who is a src in `Plan::relay_schedule`) ALSO recurses into Loop bodies — so a worker with `[Wait{w2w}, Loop{Push{w2w}}]`:
+
+- `has_w2w_push` (top-only) = false → cycle-151 detector skips → no hazard reported.
+- `collect_w2w_pushes` includes this worker's Loop-body Push → relay_schedule includes it as a src → host blocks on `relay_one(seq=its push)` → DEADLOCK.
+
+This is a theoretical false-negative for cycle-151's defensive check — TASK-0330's parent Loop-body limitation. When THIS task is implemented:
+
+1. The defensive ContractGap should fire LOUD on `collect_w2w_pushes` encountering a Push inside `Event::Loop` (per the original AC#1 of THIS task).
+2. Cycle-151's `has_w2w_push` precondition in BOTH backends should be ALIGNED with `collect_w2w_pushes`'s recursion (call `collect_w2w_pushes` and check for non-empty, OR write a recursive walker). The current `events.iter().any(...)` shape is a known false-negative for the Loop-body shape THIS task scopes.
+
+Both alignments should land in the same cycle as THIS task's implementation (paired-lift discipline — feedback-silent-sibling-defect 11th firing).
+
+Cycle-151 left a forward-carry comment in BOTH backends' `detect_wait_before_push_hazard` documenting this divergence and pointing at TASK-0330 for the eventual closure.
 <!-- SECTION:NOTES:END -->

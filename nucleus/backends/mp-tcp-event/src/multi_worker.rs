@@ -274,6 +274,30 @@ impl<'a> Plan<'a> {
             }
         }
 
+        // TASK-0332 (cycle 151 AC#2): defensive ContractGap for the
+        // wait-before-push host-relay deadlock. Cycle-149's
+        // synchronous host-relay (`Plan::render_relay_phase`) emits
+        // a FLAT relay block whose hops `__relay.relay_one(seq, ...)`
+        // call `Reactor::wait(seq)`. If any non-host worker's first
+        // top-level w2w event is a Wait (rather than a Push), host's
+        // wait(seq) blocks for that worker's first Push — which the
+        // worker can't reach because it's blocked at its initial
+        // Wait. Cycle-150's empirical reproducer (05-stencil/
+        // distributed-2d × mp-tcp-event) deadlocked at 32s with this
+        // exact shape; cycle 151 converts the runtime deadlock to a
+        // codegen-time fail-loud ContractGap forward-linking
+        // TASK-0332. AC#1 (threaded or interleaved host-relay) is
+        // the architectural fix that will eventually remove this
+        // detection.
+        //
+        // Conservative-but-sound check: rejects every schedule whose
+        // first top-level w2w event for ANY non-host worker is a
+        // Wait. May false-positive on hypothetical "wait-only"
+        // workers (those with w2w Waits but no w2w Pushes) where the
+        // deadlock cycle would not actually close; AC#1's eventual
+        // landing eliminates this gap.
+        detect_wait_before_push_hazard(per_worker, host_worker)?;
+
         debug_assert_eq!(chan_ids.len(), chan_caps.len());
 
         Ok(Plan {
@@ -1093,6 +1117,85 @@ impl<'a> Plan<'a> {
         out.sort_unstable();
         out
     }
+}
+
+/// TASK-0332 (cycle 151 AC#2): detect the wait-before-push hazard at
+/// codegen time so the synchronous host-relay's circular-seq-dependency
+/// deadlock surfaces as a typed `EmitError::ContractGap` instead of a
+/// runtime timeout. See the call site in `Plan::build` for the full
+/// design narrative; this is the conservative-but-sound implementation.
+///
+/// Sibling: the same function exists in
+/// `nucleus/backends/mp-tcp-bufsync/src/lib.rs` with the same shape +
+/// a backend-specific message prefix. Per the cycle-148/149 paired-lift
+/// discipline ([[feedback-silent-sibling-defect]] 10th firing), the
+/// two implementations were added in the same cycle.
+fn detect_wait_before_push_hazard(
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    host: WorkerId,
+) -> Result<(), EmitError> {
+    for (&w, events) in per_worker {
+        if w == host {
+            continue;
+        }
+        // Precondition: this worker must have at least one w2w Push
+        // for the deadlock cycle to involve it. A "pure consumer"
+        // worker (only w2w Waits, no w2w Pushes) is NOT a src in
+        // `Plan::relay_schedule`, so host's relay does not wait FOR
+        // it, so this worker's wait-before-anything pattern cannot
+        // close a deadlock cycle from its own side. Pure-consumer
+        // workers are SAFE under host-relay.
+        //
+        // Cycle-151 architect P2 note: this precondition scans only
+        // TOP-LEVEL events for w2w Pushes; the `collect_w2w_pushes`
+        // helper above ALSO recurses into Loop bodies. A worker with
+        // Wait at top level + Push inside a Loop body is therefore a
+        // theoretical false-negative for this detector. No in-tree
+        // schedule triggers that shape today (TASK-0330 tracks the
+        // parent Loop-body-w2w-Push limitation); when TASK-0330 is
+        // worked, align this precondition with `collect_w2w_pushes`'s
+        // recursion (call it and test for non-empty, or write a
+        // recursive walker here).
+        let has_w2w_push = events
+            .iter()
+            .any(|e| matches!(e, Event::Push { dst, .. } if *dst != host));
+        if !has_w2w_push {
+            continue;
+        }
+        for e in events {
+            match e {
+                // First top-level w2w event is a Push — safe shape;
+                // host's relay can drain this worker's outbound first.
+                Event::Push { dst, .. } if *dst != host => break,
+                // First top-level w2w event is a Wait — hazard shape;
+                // host's relay would deadlock waiting for THIS worker's
+                // Push (which the worker can't reach because it's
+                // blocked at this Wait).
+                Event::Wait { src, .. } if *src != host => {
+                    return Err(EmitError::ContractGap(format!(
+                        "mp-tcp-event: worker {w:?} has a worker-to-worker \
+                         Wait (from src {src:?}) at top level before any \
+                         worker-to-worker Push. Cycle-149's synchronous \
+                         host-relay would deadlock on the circular seq \
+                         dependency: host's relay blocks at wait(seq) for \
+                         this worker's first Push; this worker blocks at \
+                         this Wait for host's relay of the seq from \
+                         {src:?}. Filed as TASK-0332 (mp-tcp-event \
+                         host-relay deadlocks on wait-before-push \
+                         schedule shapes); AC#1 (threaded or interleaved \
+                         host-relay) is the architectural fix."
+                    )));
+                }
+                // Non-w2w events (Push/Wait with host as the other
+                // endpoint, Fire, Sync, Loop, Alloc, Free) don't
+                // affect the hazard. Loop bodies are intentionally
+                // NOT walked — the hazard is about top-level event
+                // order, not nested.
+                _ => continue,
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Per-pair Push collector: records the (src, dst) of every cross-

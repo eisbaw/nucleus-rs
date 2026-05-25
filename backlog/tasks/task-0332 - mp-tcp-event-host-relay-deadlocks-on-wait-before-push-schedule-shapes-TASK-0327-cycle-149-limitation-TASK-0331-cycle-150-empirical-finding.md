@@ -3,11 +3,11 @@ id: TASK-0332
 title: >-
   mp-tcp-event host-relay deadlocks on wait-before-push schedule shapes
   (TASK-0327 cycle-149 limitation, TASK-0331 cycle-150 empirical finding)
-status: To Do
+status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 18:52'
-updated_date: '2026-05-25 18:55'
+updated_date: '2026-05-25 19:21'
 labels:
   - M6
   - backend
@@ -137,4 +137,63 @@ The architect's diagnosis sharpens the AC#1 design choice:
 - (C) Pre-bar_0 relay (rejected): does NOT solve the sequential-ordering issue; only solves the bar_0 timing. Insufficient.
 
 (A) is the recommended path; (B) is the more invasive but cleaner alternative. (C) is rejected by the architect's diagnosis.
+
+## Cycle 151 AC#2 LANDED (pending architect read-only review GO)
+
+### What landed
+
+**Defensive ContractGap detection of the wait-before-push hazard**, paired across both backends per the cycle-148/149 paired-lift discipline ([[feedback-silent-sibling-defect]] 10th firing applied prophylactically here).
+
+1. **mp-tcp-event** (`nucleus/backends/mp-tcp-event/src/multi_worker.rs`): new `detect_wait_before_push_hazard` free function called from `Plan::build` between the malformed-projection check and the `debug_assert_eq!`. Conservative-but-sound: rejects any non-host worker whose FIRST top-level w2w event is a Wait (rather than a Push), gated by the `has_w2w_push` precondition so pure-consumer workers (w2w Waits but no w2w Pushes) are exempt — they are NOT srcs in `Plan::relay_schedule` and cannot close a deadlock cycle from their own side.
+
+2. **mp-tcp-bufsync** (`nucleus/backends/mp-tcp-bufsync/src/lib.rs`): same function (backend-specific message prefix) called from `Plan::build` right after the host-excluding-barrier check. Same precondition; same shape.
+
+### Test surface
+
+- **mp-tcp-event** (`tests/multi_worker_emit.rs`): added `wait_before_push_w2w_is_typed_contract_gap` (positive — synthetic 3-worker symmetric Wait-then-Push fixture; expects ContractGap with TASK-0332 forward-link + hazard mechanism prose) + `pure_consumer_wait_only_does_not_trigger_wait_before_push_check` (negative — pure-consumer w2 with w2w Waits but no w2w Pushes; expects Ok).
+- **mp-tcp-bufsync** (`tests/wait_before_push.rs` NEW): mirror of the above. Same 2 tests for the sibling backend.
+
+### Cycle-149 fixture stability
+
+`worker_to_worker_push_emits_host_relay` (mp-tcp-event) and `host_relay_emit.rs` (both backends) pass post-cycle-151 — verified by `cargo test -p mp-tcp-event -p mp-tcp-bufsync`. Total backend test counts:
+- mp-tcp-event multi_worker_emit: 7 → 9 (+2 cycle-151 tests).
+- mp-tcp-bufsync wait_before_push (new file): 2 tests.
+
+### Verification gate (cycle-151 self-run)
+
+- `just check`, `just clippy` (-D warnings), `just test`, `just test-release`, `just check-textual-replace-on-codegen`, `just check-include-str-coverage`: all PASS.
+- `just e2e` × 2 samples both 112/96/0/16/0 (non-flake; baseline preserved — no in-tree promoted cell has the wait-before-push shape, so the detector doesn't reject any passing schedule).
+
+### What did NOT land (still pending TASK-0332 AC#1)
+
+- The THREADED or INTERLEAVED host-relay (AC#1) — the architectural fix. Cycle 151 only landed the defensive detection (AC#2) that converts the runtime deadlock to a codegen fail-loud rejection.
+- The 05/distributed-2d × mp-tcp-event cell remains [[skip]] in e2e-matrix.toml citing TASK-0332. With cycle 151's detector, attempting to compile that schedule would now fail-LOUD at codegen with the ContractGap forward-linking TASK-0332 (instead of generating code that deadlocks at runtime).
+
+### Honest scope
+
+- LOW additional risk: cycle 151 is purely additive (new check + new tests; no existing behavior changed). Worst-case for an over-conservative false positive: a future schedule with a safe wait-before-push pattern (where the wait-on src happens to push in time) gets rejected at codegen. AC#1's eventual landing removes the detection entirely.
+- MEDIUM design value: converts a silent runtime deadlock (32s timeout) into an actionable codegen error pointing at the precise fix task. Per [[feedback-panic-not-diagnostic-recurring]] — fail-loud at codegen > silent runtime deadlock.
+
+### Forward-carry to AC#1 cycle
+
+When AC#1 (threaded or interleaved host-relay) lands, the `detect_wait_before_push_hazard` function in BOTH backends should be REMOVED (not left as dead code) — its purpose is to gate the cycle-148/149 limitation, which AC#1 removes. The same paired-lift discipline applies: remove in both backends in the same cycle.
+
+## Cycle-151 architect fold-back
+
+Architect read-only review (mped-architect) returned GO with 4 findings — all folded back in-thread:
+
+- **P1 (must-fix)**: mp-tcp-bufsync's `detect_wait_before_push_hazard` was inserted BEFORE `collect_w2w_pushes` with no blank-line separator between the two `///` blocks. Rust's docstring attachment rule absorbed `collect_w2w_pushes`'s cycle-148 docstring into the new function's docstring, leaving `collect_w2w_pushes` with ZERO documentation. Architect empirically verified via `cargo doc --document-private-items`. Folded back by MOVING `detect_wait_before_push_hazard` to AFTER `collect_w2w_pushes` (restoring the boundary). This is recorded as the 11th firing of [[feedback-silent-sibling-defect]] in a NEW shape: paired-lift identical source insertions developing different RENDERED defects per sibling due to local file structure (presence/absence of blank-line separator).
+- **P2 (theoretical, dormant)**: `has_w2w_push` precondition scans TOP-LEVEL events only via `events.iter().any(...)`, but `collect_w2w_pushes` recurses into Loop bodies. A worker with `[Wait{w2w}, Loop{Push{w2w}}]` would be a false-negative for cycle-151's detector. No in-tree schedule triggers this shape today; TASK-0330 (Loop-body w2w Push defensive ContractGap) is the parent task — appended a cycle-151 note to TASK-0330 with the alignment requirement. Forward-carry comments added in BOTH backends' `detect_wait_before_push_hazard` documenting this divergence.
+- **P3 (test asymmetry)**: mp-tcp-event positive test did NOT pin `msg.contains("mp-tcp-event")` for the backend-prefix (the whole point of duplicating per backend). Added the assertion for symmetry with the bufsync sibling.
+- **P3 (operator precedence)**: cycle-151's `assert!(msg.contains("...") || msg.contains("A") && msg.contains("B"), ...)` parses as `A || (B && C)` — technically correct but visually fragile. Parenthesized.
+
+### Memory note update
+
+[[feedback-silent-sibling-defect]] updated with the cycle-151 11th-firing in a new shape. Hygiene rule extension: paired-lift code insertions must run a RENDERING-layer validation per sibling (not just source-text identity); `cargo doc --document-private-items` + grep of expected narrative is a concrete mitigation.
+
+### Verification gate after fold-back
+
+- `just check`, `just clippy` (-D warnings): PASS.
+- `just test -p mp-tcp-event -p mp-tcp-bufsync`: 11 tests (9 mp-tcp-event multi_worker_emit + 2 mp-tcp-bufsync wait_before_push), all PASS.
+- `just e2e` × 2 samples both 112/96/0/16/0 (non-flake, baseline preserved).
 <!-- SECTION:NOTES:END -->
