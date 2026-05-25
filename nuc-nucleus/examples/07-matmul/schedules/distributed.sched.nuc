@@ -1,0 +1,56 @@
+// EXPLORATORY DRAFT — BLOCKED on TASK-0301.
+//
+// TASK-0297 cycle 117 attempted to ship this as an M5 capstone cell
+// for example 07-matmul. Empirically confirmed (via inspection of
+// pthreads-sync emit) that the schedule lowers without errors, but
+// the host-side gather of `b` is silently mis-sliced: transfer_inject
+// constructs xfer tiles with `bounds = [(i, i_band_for_w)]` for EVERY
+// data symbol, then `backend_common::multi_worker_walker::wait_slice`
+// treats `tile.bounds[0]` as a slice of `data.dim[0]`. b is indexed
+// by [k][j] — its leading dim is k, NOT i. So `i_band` silently
+// slices the k axis of b, and worker 0 receives `b[k=0..4][full j]`
+// instead of `b[full k][full j]`. The compute loop reads b[k][j] for
+// k=0..N regardless, so for k=i_band.end..N it reads the zero-default
+// of its b buffer — wrong result.
+//
+// Root cause: `nucleus/backend-common/src/multi_worker_walker.rs`
+// lines 919-935 documents the AXIS-MAPPING ASSUMPTION:
+// "tile.bounds[i].iter_var maps to data dim i". This holds for stencil-
+// shape algorithms where every data symbol is indexed by the partitioned
+// iv (05-stencil, 06-separable-filter). Matmul is the first algorithm
+// where it breaks (b is not indexed by i; a is not indexed by j).
+//
+// Fix shape: transfer_inject should construct per-data tile bounds,
+// filtering `partition_axis_order` to include only axes that index
+// the specific data symbol. The per-firing index expressions are
+// already carried on `DataflowEdge::data_in_access` /
+// `data_out_access` (see transfer_inject.rs docs §"Per-tile hoist
+// for `block=N`"); the filter is one upstream pass away.
+//
+// Filed as TASK-0301 (HIGH). This draft schedule stays here as the
+// validation target when TASK-0301 lands — at that point, add the
+// corresponding e2e cells in nuc-nucleus/e2e-matrix.toml and promote
+// to [[required]] M5.
+//
+// DO NOT add this schedule to e2e-matrix.toml today — it would
+// silently fail bit-identical on every backend (mis-sliced b).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+    place madd   on { w0, w1, w2, w3 };
+
+    // Row-band partition the outer i axis. N=16, 4 workers → 4 rows each.
+    // Each worker computes c[i_band][full j] using a[i_band][full k] and
+    // b[full k][full j]. Today b is silently mis-sliced — see TASK-0301.
+    loop i : partition=workers;
+
+    // All sync transfers (sync-only schedule lowers on every tier-1
+    // backend once TASK-0301 lands).
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

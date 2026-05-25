@@ -1179,3 +1179,44 @@ schedule = "distributed"
 backend  = "mp-tcp-event"
 milestone = "M5"
 
+# ---- M5 example 07 — distributed schedule (TASK-0297) ----------------
+#
+# DRAFT schedule exists at examples/07-matmul/schedules/distributed.sched.nuc
+# but ALL 4 backend cells FAIL bit-identical on the AXIS-MAPPING
+# ASSUMPTION limit (TASK-0301): partition=workers on i constructs xfer
+# tile bounds = [(i, i_band)] for EVERY data symbol, but b is indexed
+# by [k][j] (leading dim k, NOT i), so wait_slice silently mis-slices
+# b along the wrong axis. Worker 0 receives b[k=0..i_band.end][full j]
+# instead of b[full k][full j] and reads zero-default for k beyond its
+# band. The cells stay [[skip]] until TASK-0301 lands a per-data
+# tile-bounds filter (or equivalent); at that point promote to
+# [[required]] M5.
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "pthreads-sync"
+reason   = "TASK-0301: transfer_inject's `rewrite_partition_tiles_inner` constructs xfer tile bounds = [(i, i_band)] for EVERY data symbol on a partition=workers(i) schedule, but b is indexed by [k][j] (leading dim k, NOT i). `backend_common::multi_worker_walker::wait_slice` then silently slices b's k axis by i_band — worker 0 gets b[k=0..i_band.end][full j] instead of b[full k][full j] and reads zero-default for k beyond its band. AXIS-MAPPING ASSUMPTION limit documented at `nucleus/backend-common/src/multi_worker_walker.rs:919-935`. Fix shape: filter tile bounds by data access pattern in transfer_inject (the `DataflowEdge::data_in_access` carry already has the data needed). TASK-0297 (cycle-117 implementation) BLOCKED until TASK-0301 lands."
+milestone = "M5"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0301: same axis-mapping limit as 07-matmul/distributed × pthreads-sync. mp-tcp-bufsync uses the same shared `wait_slice` helper as of TASK-0296 cycle 116 (silent-sibling closure), so this skip lifts in lockstep with TASK-0301."
+milestone = "M5"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "pthreads-async"
+reason   = "TASK-0301: same axis-mapping limit as 07-matmul/distributed × pthreads-sync. pthreads-async uses the same shared `wait_slice` helper."
+milestone = "M5"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+reason   = "TASK-0301: same axis-mapping limit as 07-matmul/distributed × pthreads-sync. mp-tcp-event uses the same shared `wait_slice` helper."
+milestone = "M5"
+
