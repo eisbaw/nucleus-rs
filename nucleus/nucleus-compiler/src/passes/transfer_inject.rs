@@ -127,6 +127,19 @@
 //!   read) is conservatively rejected pending AC#3's cross-worker
 //!   codegen extension (the N-to-N broadcast-of-gather shape).
 //!
+//!   TASK-0325 (cycle 145) generalised the guard from a set-equality
+//!   test on the worker sets to a non-empty-intersection test. The
+//!   line-3048 per-element `if src == dst { continue; }` inside the
+//!   cartesian-product fan-out is the structurally identical sibling
+//!   of the line-2501 set-equality short-circuit: it elides one
+//!   transfer per same-worker pair in the intersection of
+//!   `producer_workers` and `consumer_workers`. Under partial overlap
+//!   (e.g. producer={w0..w3}, consumer={w0..w3, w4}) the same per-
+//!   axis safety conditions apply to each self-pair, so the validator
+//!   covers both elision sites with one check. No in-tree schedule
+//!   exercises partial overlap today — the partial-overlap arm is
+//!   dormant-but-defended.
+//!
 //!   What this pass does NOT yet emit (deferred to AC#3): the
 //!   actual cross-worker `tmp` transfers for the unsafe shape — each
 //!   producer w_i pushes its slice to every consumer w_j, each
@@ -2600,19 +2613,43 @@ fn extend_xfer_tiles_inner(
 // TASK-0324 cycle-144 AC#2 — silent-elision-risk validator
 // --------------------------------------------------------------------
 
-/// Walk every Operation in `root` and reject the producer-set ==
-/// consumer-set + consumer-reads-outside-local-slice shape with a typed
+/// Walk every Operation in `root` and reject the same-worker-pair
+/// elision + consumer-reads-outside-local-slice shape with a typed
 /// [`TransferInjectError::SameSetSilentElisionRisk`]. Called from
 /// [`inject_transfers`] BEFORE the recursive emission walk so the
-/// existing line-2501 `continue; no transfer` short-circuit fires only
-/// after this validator has certified the elision as safe.
+/// existing same-worker short-circuits fire only after this validator
+/// has certified the elision as safe.
+///
+/// ## Two elision sites covered by one validator
+///
+/// The validator defends against two structurally identical same-
+/// worker elision sites:
+///
+/// 1. **Whole-set elision** (line-2501 `continue; no transfer` inside
+///    [`compute_xfer_placeholders`]): fires when the producer and
+///    consumer worker sets are equal.
+///
+/// 2. **Per-element fan-out elision** (line-3048 `if src == dst {
+///    continue; }` inside the cartesian-product fan-out loop): fires
+///    for every worker in `producer_workers ∩ consumer_workers`, even
+///    when the sets are not equal. Example: producer = {w0..w3},
+///    consumer = {w0..w3, w4} — the four self-pairs `(w_i, w_i)` are
+///    skipped per-element while the cross pairs to/from w4 are
+///    emitted normally. Each skipped self-pair has the same silent-
+///    miscompile risk profile as a whole-set elision restricted to
+///    that worker.
+///
+/// The validator therefore fires when
+/// `producer_workers ∩ consumer_workers` is non-empty — generalising
+/// the original cycle-144 set-equality check to cover the per-element
+/// case (TASK-0325 cycle-145 reviewer P1.1 fold-back from cycle 144).
 ///
 /// ## Discriminator (axis-by-axis against producer's write pattern)
 ///
 /// For every `(op, data_id)` pair where the consumer (`op`) and the
-/// producer (`producers_by_data[data_id]`) share an identical worker
-/// set, the elision the line-2501 short-circuit performs is correct
-/// iff for every axis `k` of the data:
+/// producer (`producers_by_data[data_id]`) share at least one common
+/// worker, the elision the same-worker short-circuit performs is
+/// correct iff for every axis `k` of the data:
 ///
 /// - If the PRODUCER's `data_out_access.indices[k]` is a bare
 ///   [`IrExpr::Ident`] whose name resolves to an iv in
@@ -2790,8 +2827,26 @@ fn check_op_no_silent_elision_risk(
                 Some(p) => p,
                 None => continue, // No recorded producer.
             };
-            if producer_workers != &consumer_workers {
-                continue; // The line-2501 short-circuit does NOT fire here.
+            // TASK-0325 cycle-145: both elision sites are checked
+            // together. The line-2501 short-circuit (`if producer ==
+            // consumer { continue; no transfer; }`) fires for the
+            // whole-set case. The line-3048 per-element skip (`if src
+            // == dst { continue; }` inside the cartesian-product
+            // fan-out) fires for EVERY worker in the intersection of
+            // producer_workers and consumer_workers — that is, even
+            // when the sets are not equal (e.g. producer={w0..w3},
+            // consumer={w0..w3, w4}: the four self-pairs (w_i, w_i)
+            // are skipped per-element while the cross pairs to/from
+            // w4 are emitted normally). Both elisions risk a silent
+            // miscompile under the same per-axis safety conditions,
+            // so the validator fires when the intersection is non-
+            // empty.
+            let same_worker_set: BTreeSet<WorkerId> = producer_workers
+                .intersection(&consumer_workers)
+                .copied()
+                .collect();
+            if same_worker_set.is_empty() {
+                continue; // No same-worker elision happens anywhere.
             }
 
             // Clause (1): no partition iv active on the consumer's
@@ -2908,15 +2963,36 @@ fn check_op_no_silent_elision_risk(
                     .iter()
                     .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
                     .unwrap_or("<unknown>");
+                // TASK-0325 cycle-145: distinguish the whole-set
+                // elision shape (line-2501) from the partial-overlap
+                // per-element elision shape (line-3048) in the error
+                // message. The variant remains
+                // SameSetSilentElisionRisk because the underlying
+                // defect class (same-worker self-pair elision under
+                // an unsafe consumer access pattern) is identical;
+                // only the shape that produces it differs.
+                let same_worker_kind = if producer_workers == &consumer_workers {
+                    format!(
+                        "producer worker set and consumer worker set are \
+                         identical ({consumer_workers:?})"
+                    )
+                } else {
+                    format!(
+                        "producer worker set ({producer_workers:?}) and consumer \
+                         worker set ({consumer_workers:?}) overlap on the \
+                         same-worker pairs {same_worker_set:?}, which the \
+                         cartesian-product fan-out skips per-element"
+                    )
+                };
                 let message = format!(
                     "data `{data_name}` (id {data_id:?}, edge.data_in index {i}): \
-                     producer worker set and consumer worker set are identical \
-                     ({consumer_workers:?}), AND {reason}. Without a cross-worker \
-                     transfer this elides into a silent miscompile — see TASK-0324. \
-                     The diagnose-first guard (AC#2) lands ahead of the cross-worker \
-                     codegen extension (AC#3); kernels.rs is unchanged. Remove the \
-                     same-set placement, switch to a different partition iv, or \
-                     wait for AC#3."
+                     {same_worker_kind}, AND {reason}. Without a cross-worker \
+                     transfer this elides into a silent miscompile — see TASK-0324 \
+                     (set-equality elision) and TASK-0325 (per-element fan-out \
+                     elision). The diagnose-first guard (AC#2) lands ahead of the \
+                     cross-worker codegen extension (AC#3); kernels.rs is \
+                     unchanged. Remove the same-set placement, switch to a \
+                     different partition iv, or wait for AC#3."
                 );
                 return Err(TransferInjectError::SameSetSilentElisionRisk {
                     data: data_id,
