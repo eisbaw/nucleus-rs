@@ -393,13 +393,10 @@ milestone = "M3"
 # directly removed the SKIP and observed PASS, bit-identical to
 # reference.bin (the e2e harness's Phase::Diff against
 # 03-reduction/reference.bin). Cycle 157 (TASK-0334) further
-# PROMOTED mp-tcp-event; three-way differential now covers
-# 03-reduction/distributed on { pthreads-sync, pthreads-async,
-# mp-tcp-event }. mp-tcp-bufsync remains a SKIP — cycle-157
-# empirical verification refuted the cycle-150 forward-link to
-# TASK-0329 (no host-excluding barrier exists on this schedule);
-# the actual blocker is TASK-0335 (transfer_inject duplicate-Push
-# + producer-side ordering inversion vs host's FIFO Wait sequence).
+# PROMOTED mp-tcp-event; cycle 158 (TASK-0335) LANDED the
+# transfer_inject Sequence-scope Wait dedup and PROMOTED
+# mp-tcp-bufsync; four-way differential now covers
+# 03-reduction/distributed on all four tier-1 backends.
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
@@ -413,33 +410,30 @@ backend  = "pthreads-sync"
 reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which pthreads-sync supports (sync, single-buffer, barrier/blocking only). Driver rejects at capability check before codegen, verbatim: `backend pthreads-sync cannot satisfy this schedule: transfer img_in requests async ... requests buffer=2 ... requests notify=event`. pthreads-async carries this schedule's required column (see [[skip]] below — currently also skipped on TASK-0268 BUG 2, NOT on capability)."
 milestone = "M3"
 
-# Distributed gaps under the mp-tcp-bufsync backend.
-#   - 03-reduction/distributed: EMPIRICALLY VERIFIED CYCLE 157
-#     (TASK-0334). The cycle-150 forward-link to TASK-0329 was WRONG —
-#     codegen actually SUCCEEDS (barriers correctly include host;
-#     phase-1 barriers are NOT host-excluding because sync_inject
-#     places them across the full {host,w0..w3} set, not across
-#     {w0..w3} as the cycle-150 prose claimed). The runtime failure
-#     is a TRANSFER-INJECTION defect: transfer_inject emits one Push
-#     per host-side consume site of `partials` (host reads partials
-#     across two `combine` calls = 8 reads on 4 workers), so each
-#     worker emits TWO Pushes of partials back-to-back with seqs
-#     (8, 4) — wire FIFO inverts vs host's per-consumer wait
-#     sequence (4..7 first, then 8..11). Fails LOUD with
-#     `wire: seq tag mismatch: receiver expected 4, wire delivered
-#     8`. Promotion blocked on TASK-0335 (per-(data,producer) Push
-#     dedupe + ordering). Same logical defect exists on mp-tcp-event
-#     but its per-(DataId,SeqTag) channel demux MASKS the ordering
-#     mismatch (sibling [[required]] cell below now PROMOTED cycle
-#     157 with explicit masking disclosure).
+# 03-reduction/distributed × mp-tcp-bufsync: PROMOTED to
+# [[required]] in cycle 158 (TASK-0335). The cycle-157 empirical
+# audit (TASK-0334) located the root cause: transfer_inject's
+# per-Op Wait-emission dedup was scoped to `out.last()`, missing
+# the duplicate Wait-bursts produced when two host-side `combine`
+# Operations within the same Sequence both read `partials` (4 Waits
+# per Op × 2 Ops = 8 Waits → 8 Pushes → producer-side splice
+# ordering inversion → wire FIFO seq-tag mismatch at runtime).
+# Cycle 158 widened the dedup to a Sequence-scope scan
+# (`is_duplicate_xfer_in_epoch`), stopping at the first
+# `ACFGNode::Sync` so barrier-separated rendezvous epochs keep
+# their separate buffer places. Post-fix: 4 Waits / 4 Pushes,
+# bit-identical against 03-reduction/reference.bin. Same fix also
+# eliminates the mp-tcp-event redundant-bandwidth (which was
+# wire-shape-masked but real).
+#
+# Distributed gaps still under the mp-tcp-bufsync backend:
 #   - 05-stencil/distributed: requests async + buffer=2 + notify=event,
 #     none of which a sync tier-1 backend supports; the capability
 #     check rejects it (correct) before codegen.
-[[skip]]
+[[required]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0335 (cycle 157 empirical verification; supersedes the cycle-150 TASK-0329 forward-link as a wrong-attribution per feedback-orchestrator-narrative-also-wrong fourth firing): codegen SUCCEEDS — barriers include host correctly. Runtime fails with `wire: seq tag mismatch: receiver expected 4, wire delivered 8` because transfer_inject emits per-host-consume-site Push (each worker writes partials twice with seqs 8 and 4 in inverted order vs host's FIFO wait sequence 4..11). NOT TASK-0329 (no host-excluding barrier exists on this schedule); NOT TASK-0117 (now closed); NOT TASK-0172 (now closed). Same logical defect on mp-tcp-event is masked by per-(DataId,SeqTag) channel demux — sibling cell PROMOTED cycle 157 with masking disclosure."
 milestone = "M3"
 
 [[skip]]
@@ -587,11 +581,10 @@ milestone = "M3"
 # removed (now [[required]] above). Cycle 157 (TASK-0334 empirical
 # verification) PROMOTED mp-tcp-event from [[skip]] to [[required]]
 # — the cycle-150 forward-link to TASK-0329 was wrong; the schedule
-# has NO host-excluding barrier, and the same transfer_inject
-# duplicate-Push defect that fails mp-tcp-bufsync (TASK-0335) is
-# masked by mp-tcp-event's per-(DataId,SeqTag) channel demux.
-# Three-way differential now covers {pthreads-sync, pthreads-async,
-# mp-tcp-event}; mp-tcp-bufsync remains [[skip]] on TASK-0335.
+# has NO host-excluding barrier. Cycle 158 (TASK-0335) closed the
+# transfer_inject Sequence-scope Wait dedup and PROMOTED
+# mp-tcp-bufsync. Four-way differential now covers all four tier-1
+# backends bit-identical against 03-reduction/reference.bin.
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"
@@ -1022,27 +1015,15 @@ milestone = "M3"
 # (TASK-0334 empirical-verification). The cycle-150 forward-link to
 # TASK-0329 was wrong — the schedule has NO host-excluding barrier
 # (sync_inject places phase-1 barriers across {host,w0..w3}, not
-# {w0..w3} as cycle-150 prose claimed). The same transfer_inject
-# duplicate-Push defect that fails bufsync (TASK-0335) ALSO emits on
-# mp-tcp-event (each worker emits chan_8.push then chan_4.push for
-# partials), but mp-tcp-event's per-(DataId,SeqTag) channel demux
-# masks the ordering mismatch — receiver matches by seq regardless
-# of producer-side push order. Output is bit-identical against
-# 03-reduction/reference.bin (verified non-flake × 3 cycle 157).
-# Promotion is sound for correctness but documents a known
-# bandwidth-waste defect: workers transmit `partials` twice over
-# redundant channels. When TASK-0335 lands the per-(data,producer)
-# Push dedupe, this cell stays bit-identical and uses HALF the
-# transfer bandwidth.
-#
-# Masking invariant guard (cycle 157 architect P2.1): the
-# correctness of this promotion depends on mp-tcp-event's
-# per-(DataId, SeqTag) channel demux invariant (project-mp-tcp-
-# event-vs-bufsync-safety-profile in MEMORY.md). If a future
-# mp-tcp-event refactor collapses two channels of the same DataId
-# into a shared FIFO, or routes by DataId-only instead of (DataId,
-# SeqTag), this cell would re-fail the same way 03/distributed ×
-# mp-tcp-bufsync fails today — re-skip and re-route to TASK-0335.
+# {w0..w3} as cycle-150 prose claimed). At cycle-157 promotion,
+# correctness rested on mp-tcp-event's per-(DataId,SeqTag) channel
+# demux masking a transfer_inject defect (duplicate Pushes from
+# multi-consumer-Op shapes; bandwidth-wasted but bit-identical).
+# Cycle 158 (TASK-0335) closed the defect at source via the
+# transfer_inject Sequence-scope Wait dedup: only ONE Push/Wait
+# pair per (src, dst, data, tile, epoch). This cell is now
+# bit-identical AND no longer relies on the wire-shape masking.
+# Four-way differential covers all four tier-1 backends.
 [[required]]
 example  = "03-reduction"
 schedule = "distributed"

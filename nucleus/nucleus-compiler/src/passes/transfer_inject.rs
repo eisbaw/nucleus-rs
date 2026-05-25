@@ -269,15 +269,40 @@
 //!   is intentional and is governed by **dedup-set composition**,
 //!   NOT by whether the tile was rewritten before the check:
 //!
-//!     - `inject_in_sequence` (Wait dedup): keys on full
-//!       `(src, dst, data, tile)`. The dedup-set is the entire
-//!       enclosing `out: Vec<ACFGNode>` and may include
+//!     - `inject_in_sequence` (Wait dedup, hoisted-drain site): keys
+//!       on full `(src, dst, data, tile)`. The dedup-set is the
+//!       entire enclosing `out: Vec<ACFGNode>` and may include
 //!       previously-emitted Waits that carry tile granularities
 //!       from EARLIER iterations (not all rewritten to this
 //!       sequence's enclosing tile). The `tile` component is
 //!       therefore part of the identity even though the inserting
 //!       site rewrites the candidate to the enclosing tile just
-//!       before the check.
+//!       before the check. This is the `out.iter().any(matches!(…))`
+//!       check that drains hoisted Waits back into the parent
+//!       sequence around the inner Repeat node.
+//!     - `inject_in_sequence` (Wait dedup, per-Op emission site):
+//!       keys on full `(role, src, dst, data, tile)`. The dedup-set
+//!       is the current Sequence's `out: Vec<ACFGNode>` scanned
+//!       from the end backward, stopping at the first
+//!       `ACFGNode::Sync` — sync_inject runs BEFORE transfer_inject
+//!       and barriers mark fresh rendezvous epochs where duplicate
+//!       Waits are legitimate (different consumer phase, different
+//!       buffer place). Delegated to the helper
+//!       `is_duplicate_xfer_in_epoch(&out, &w)` so it does not
+//!       appear in the literal `XferRole::…` grep witness below.
+//!
+//!       Cycle-158 (TASK-0335) widened this scope from
+//!       `is_duplicate_xfer(out.last(), …)` to the epoch-scoped
+//!       scan. The narrower form only fired when the candidate
+//!       duplicated the immediately-preceding element;
+//!       multi-consumer-Op shapes (e.g. 03-reduction/distributed's
+//!       two host-side `combine` Operations both reading
+//!       `partials`) put an Operation between the two Wait-bursts,
+//!       breaking the immediately-preceding check. The result was
+//!       N duplicate Waits → `splice_pushes_global` emitted N
+//!       duplicate Pushes → producer-side splice-at-same-index
+//!       ordering inverted → mp-tcp-bufsync wire FIFO seq mismatch
+//!       at runtime.
 //!     - `splice_pushes_for_waits` (Push dedup): keys on full
 //!       `(src, dst, data, tile)`. The dedup-set is the single
 //!       `out[insert_at]` slot immediately following the producer.
@@ -292,25 +317,31 @@
 //!       the SAME tile by construction. Including `tile` in the key
 //!       would be redundant.
 //!
-//!   Grep witness for the three dedup sites (function-name anchors
-//!   are the stable index; line numbers are an as-of-edit stamp,
-//!   re-run the grep if they have drifted):
+//!   Grep witness for the three LITERAL-XferRole dedup sites
+//!   (function-name anchors are the stable index; line numbers are
+//!   an as-of-edit stamp, re-run the grep if they have drifted):
 //!   `grep -nE 'existing\.role == XferRole::|x\.role == XferRole::' transfer_inject.rs`
 //!   yields exactly 9 matches. The three DEDUP-CHECK matches are the
 //!   ones whose `matches!` / `if`-chain continues with
 //!   `&& src == … && dst == … && data == …`:
-//!     - in `inject_in_sequence`: the `XferRole::Wait` match-arm
-//!       (full 4-tuple including `tile`).
+//!     - in `inject_in_sequence` (hoisted-Waits-drain): the
+//!       `XferRole::Wait` match-arm (full 4-tuple including `tile`).
 //!     - in `splice_pushes_for_waits`: the `XferRole::Push` if-chain
 //!       (full 4-tuple including `tile`).
 //!     - in `hoist_invariant_waits::place_or_bubble`: the
 //!       `XferRole::Wait` match-arm (3-tuple, NO `tile`).
 //!
+//!   The fourth (cycle-158) dedup site — `inject_in_sequence`'s
+//!   per-Op Wait emission — is delegated to
+//!   `is_duplicate_xfer_in_epoch(&out, &w)` whose own role check
+//!   uses `existing.role == cand.role` (no literal `XferRole::`),
+//!   so it does NOT appear in the literal-pattern grep witness.
+//!
 //!   The other 6 grep matches are role-scans for unrelated purposes
 //!   (e.g. counting Waits, filtering Push nodes during splice) and
-//!   are NOT dedup checks. As-of-cycle-138 line stamp: dedup checks
-//!   at 944 / 1053 / 1227; role-scans at 996 / 1022 / 1190 / 1334 /
-//!   1424 / 1445.
+//!   are NOT dedup checks. As-of-cycle-158 line stamp: dedup checks
+//!   at 1212 / 1321 / 1495; role-scans at 1264 / 1290 / 1458 / 1602
+//!   / 1692 / 1713.
 //!
 //!   Tests cover the cross-site invariant: see
 //!   `idempotent_on_synthetic_two_worker_case` in
@@ -1069,10 +1100,31 @@ fn inject_in_sequence(
                 // ---- Wait injection (consumer side) ----
                 let waits = build_waits_for_op(op, ctx, state, enclosing_tile);
                 for w in waits {
-                    // Idempotence: if the immediately-preceding
-                    // element is already a Wait with matching
-                    // (src, dst, data, tile), skip pushing it.
-                    if !is_duplicate_xfer(out.last(), &w) {
+                    // Sequence-scope dedup: skip the Wait if an
+                    // earlier Wait in this same Sequence (within the
+                    // current sync_inject barrier epoch) already
+                    // matches on (role, src, dst, data, tile). The
+                    // scan stops at the first ACFGNode::Sync — a
+                    // barrier marks a fresh rendezvous epoch where a
+                    // duplicate Wait is legitimate (different consumer
+                    // phase, different buffer place).
+                    //
+                    // TASK-0335 cycle 158: when two consumer Operations
+                    // in the same Sequence read the same cross-worker
+                    // data (e.g. host's two `combine` ops both reading
+                    // `partials` in 03-reduction/distributed), the
+                    // earlier dedup keyed on `out.last()` missed the
+                    // collision (the intervening Operation between the
+                    // two Wait-bursts pushed the first Wait out of
+                    // last-position). The result was N duplicate Waits
+                    // → splice_pushes_global splices N duplicate Pushes
+                    // → mp-tcp-bufsync runtime seq-tag mismatch panic
+                    // (wire FIFO ordering inverts vs receiver's Wait
+                    // sequence). The dedup at this site is the source
+                    // fix; once the duplicate Wait never enters the
+                    // ACFG, splice_pushes_global naturally emits one
+                    // Push per surviving Wait's seq.
+                    if !is_duplicate_xfer_in_epoch(&out, &w) {
                         out.push(ACFGNode::Xfer(w));
                     }
                 }
@@ -1685,19 +1737,41 @@ fn splice_pushes_global(mut root: ACFGNode, name_data: &BTreeMap<String, DataId>
         // so "a Push with this seq exists" is the exact "this transfer
         // is already paired" predicate.
         //
-        // We must NOT also skip on (src,dst,data): single-assignment
-        // data can have *several* cross-worker consumers on the same
-        // dst worker (e.g. `d` produced on host, read by two distinct
-        // Operations on w0). Each consumer gets its own Wait with its
-        // own seq and its own seq-keyed buffer place in the Petri
-        // lowering; suppressing the second because (host,w0,d) was
-        // already seen would leave its buffer place unfilled and
-        // deadlock that consumer. Idempotence on re-run is still
-        // guaranteed because Pass A collapses the regenerated
-        // fresh-seq duplicate Wait against the surviving original
-        // (by (src,dst,data) at the destination sequence) BEFORE this
-        // pass runs, so only the original seq reaches here and its
-        // Push is already in `have_seqs`.
+        // We must NOT also skip on (src,dst,data) at this site:
+        // legitimate multi-Wait shapes survive the upstream
+        // Sequence-scope dedup at `inject_in_sequence` (which now
+        // collapses same-(src,dst,data,tile) Waits within a
+        // sync_inject barrier epoch — TASK-0335 cycle 158). What
+        // reaches here as separate Waits with separate seqs is:
+        //   - cross-epoch consumers (separated by a Sync barrier;
+        //     each needs its own buffer place because the producer
+        //     re-fires per phase), and
+        //   - structurally distinct (src,dst,data,tile) tuples (e.g.
+        //     different tile slices for partition-aware reads).
+        // Either of those genuinely needs its own seq-keyed buffer
+        // place in the Petri lowering; suppressing them by
+        // (src,dst,data) at this site would leave a buffer place
+        // unfilled and deadlock that consumer.
+        //
+        // Idempotence on re-run is guaranteed by two cooperating
+        // mechanisms: Pass A collapses regenerated fresh-seq duplicate
+        // Waits against the surviving original (by (src,dst,data) at
+        // the destination sequence) BEFORE this pass runs, and the
+        // Sequence-scope dedup above prevents new multi-consumer-Op
+        // duplicates from being produced in the first place. So only
+        // the original seq reaches here and its Push is already in
+        // `have_seqs`.
+        //
+        // TASK-0335 cycle 158 historical note: pre-fix, host-side
+        // multi-consumer-Op shapes (e.g. 03-reduction/distributed's
+        // two `combine` ops reading `partials`) produced one Wait per
+        // (consumer-Op × producer-worker) — for 2 ops × 4 producers,
+        // 8 Waits → 8 Pushes here → producer-side splice ordering
+        // inverted at the same insertion point → wire FIFO seq
+        // mismatch panic on mp-tcp-bufsync. The fix lives at the
+        // Sequence-scope Wait dedup site (above), not here: this
+        // site's narrow seq-only dedup remains correct, but its
+        // input is now upstream-filtered.
         if have_seqs.contains(&w.seq.0) {
             continue;
         }
@@ -3500,20 +3574,49 @@ fn update_writer(state: &mut State, op: &Operation) {
     }
 }
 
-/// True iff `prev` is an `Xfer` placeholder whose `(role, src, dst,
-/// data, tile)` matches `cand`. Used for idempotence: re-running the
-/// pass must not duplicate an already-present placeholder.
-fn is_duplicate_xfer(prev: Option<&ACFGNode>, cand: &XferPlaceholder) -> bool {
-    match prev {
-        Some(ACFGNode::Xfer(existing)) => {
-            existing.role == cand.role
-                && existing.src == cand.src
-                && existing.dst == cand.dst
-                && existing.data == cand.data
-                && existing.tile == cand.tile
+/// True iff some earlier Xfer in `out` (within the current sync_inject
+/// barrier epoch) matches `cand` on (role, src, dst, data, tile). Scans
+/// from the end backward; stops at the first `ACFGNode::Sync` because a
+/// barrier marks a fresh rendezvous epoch where a duplicate Wait is
+/// legitimate (different consumer phase, different buffer place).
+///
+/// TASK-0335 cycle 158: introduced to dedupe Waits across multiple
+/// consumer Operations in the same Sequence. The narrower
+/// `is_duplicate_xfer(out.last(), ...)` only fires when the candidate
+/// duplicates the immediately-preceding element; with an intervening
+/// Operation it does not, and the duplicate Wait survives → duplicate
+/// Pushes downstream → mp-tcp-bufsync runtime seq mismatch (the wire
+/// FIFO inverts the producer-side splice order vs receiver Wait order).
+/// The Sequence-scope scan suppresses the duplicate at source, so
+/// `splice_pushes_global` emits one Push per surviving Wait's seq.
+///
+/// Invariant preserved: `inject_in_sequence(inject_in_sequence(x)) ==
+/// inject_in_sequence(x)` — on re-run, every surviving Wait already
+/// matches itself at index 0..N, and broader scan keeps suppressing.
+/// The shape under re-run is the same shape produced by the first run.
+fn is_duplicate_xfer_in_epoch(out: &[ACFGNode], cand: &XferPlaceholder) -> bool {
+    for n in out.iter().rev() {
+        match n {
+            ACFGNode::Sync(_) => return false,
+            ACFGNode::Xfer(existing) => {
+                if existing.role == cand.role
+                    && existing.src == cand.src
+                    && existing.dst == cand.dst
+                    && existing.data == cand.data
+                    && existing.tile == cand.tile
+                {
+                    return true;
+                }
+            }
+            // Operations, Repeats, Sequences are transparent to the
+            // scan — they neither match nor terminate. (A Repeat's
+            // body is its own walk context with its own `out` vec; if
+            // a per-iteration Wait exists inside, it is not visible
+            // here.)
+            _ => {}
         }
-        _ => false,
     }
+    false
 }
 
 // --------------------------------------------------------------------

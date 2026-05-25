@@ -5008,3 +5008,271 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
         pushes
     );
 }
+
+/// TASK-0335 cycle 158 — Sequence-scope Wait dedup across multiple
+/// consumer Operations.
+///
+/// Shape mirrors 03-reduction/distributed's host-side phase-2 tree
+/// combine: ONE producer Operation on workers `{w0..w3}` writes
+/// `partials` (i.e. each worker `w` writes `partials[w]`; the schedule's
+/// `partition=workers` on the outer `w` loop turns this into a 4-way
+/// fan-out producer), and TWO consumer Operations on `{host}` both read
+/// `partials` (host's two `combine` calls feeding `half1` and `half2`).
+/// Both consumers live in the SAME top-level Sequence with NO
+/// intervening `Sync`.
+///
+/// Pre-fix (`is_duplicate_xfer(out.last(), ...)`-only): each consumer
+/// Op's `build_waits_for_op` returned 4 cross-worker Waits (one per
+/// producer worker), and the immediate-prev dedup at the second
+/// consumer's emit site did not fire (intervening Operation pushed the
+/// first Wait-burst out of `out.last()`). Result: 8 Waits → 8 Pushes →
+/// mp-tcp-bufsync wire FIFO seq-tag mismatch panic at runtime.
+///
+/// Post-fix (`is_duplicate_xfer_in_epoch(&out, &w)`): the scan walks
+/// the entire current Sequence from the end backward, stopping at the
+/// first `ACFGNode::Sync`. The second consumer's 4 candidate Waits all
+/// match earlier Waits emitted for the first consumer (same
+/// `(role, src, dst, data, tile)` tuple) → all 4 suppressed. Result: 4
+/// Waits → 4 Pushes → wire FIFO correct.
+///
+/// **Do NOT weaken this expectation.** A regression that returns 8
+/// Waits / 8 Pushes here will silently reproduce the bufsync runtime
+/// panic and the mp-tcp-event wire-shape-masked redundant-bandwidth
+/// regression.
+#[test]
+fn task0335_ac4_dedupes_multi_consume_in_same_sequence() {
+    // Workers: host=0, w0=1, w1=2, w2=3, w3=4.
+    // Data:    partials=0, half1=1, half2=2.
+    let producer = op(&[1, 2, 3, 4], 100, vec![], Some(0)); // writes partials
+    let consumer_half1 = op(&[0], 101, vec![0], Some(1)); // host reads partials, writes half1
+    let consumer_half2 = op(&[0], 102, vec![0], Some(2)); // host reads partials, writes half2
+
+    let root = ACFGNode::Sequence(vec![producer, consumer_half1, consumer_half2]);
+
+    let acfg = synthetic_acfg(
+        root,
+        &[("partials", 0), ("half1", 1), ("half2", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        // `partials` produced by all 4 workers; `half1` / `half2` by
+        // host. Only `partials` is cross-worker.
+        &[
+            ("partials", &["w0", "w1", "w2", "w3"]),
+            ("half1", &["host"]),
+            ("half2", &["host"]),
+        ],
+        "transfer partials : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg)
+        .expect("TASK-0335 AC#4: multi-consumer-Op dedup is structural, not error-class");
+
+    // Count Xfer placeholders for `partials` by role + (src, dst).
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => out.push((x.role, x.src, x.dst)),
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, DataId(0), &mut xfers);
+
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+
+    assert_eq!(
+        waits.len(),
+        4,
+        "TASK-0335 AC#4: expected exactly 4 Wait placeholders for `partials` \
+         (ONE per producer worker w_k → host, dedup'd across the two host-side \
+         consumer Operations within the same Sequence). Pre-fix would return 8. \
+         Got {} waits: {:?}. If you see 8 here, \
+         `is_duplicate_xfer_in_epoch` is no longer suppressing the second \
+         consumer-Op's duplicate Wait-burst → 03-reduction/distributed × \
+         mp-tcp-bufsync will fail with wire seq-tag mismatch at runtime.",
+        waits.len(),
+        waits
+    );
+    assert_eq!(
+        pushes.len(),
+        4,
+        "TASK-0335 AC#4: expected exactly 4 Push placeholders for `partials` \
+         (one per surviving Wait's seq, matched by splice_pushes_global). \
+         Got {} pushes: {:?}. 8 pushes → producer-side splice ordering \
+         inversion → bufsync runtime panic.",
+        pushes.len(),
+        pushes
+    );
+
+    let wait_pairs: BTreeSet<(WorkerId, WorkerId)> =
+        waits.iter().map(|(_, s, d)| (*s, *d)).collect();
+    let push_pairs: BTreeSet<(WorkerId, WorkerId)> =
+        pushes.iter().map(|(_, s, d)| (*s, *d)).collect();
+    let expected: BTreeSet<(WorkerId, WorkerId)> = [1u64, 2, 3, 4]
+        .into_iter()
+        .map(|w| (WorkerId(w), WorkerId(0)))
+        .collect();
+    assert_eq!(
+        wait_pairs, expected,
+        "TASK-0335 AC#4: Waits must be exactly {{w0,w1,w2,w3}} → host"
+    );
+    assert_eq!(
+        push_pairs, expected,
+        "TASK-0335 AC#4: Pushes must be exactly {{w0,w1,w2,w3}} → host (one per \
+         producer worker)"
+    );
+}
+
+/// TASK-0335 cycle 158 — Sync-stopping branch of
+/// `is_duplicate_xfer_in_epoch`.
+///
+/// Companion negative case for `task0335_ac4_dedupes_multi_consume_in_same_sequence`
+/// (cycle-158 architect review P2.3 fold-back). Insert an explicit
+/// `ACFGNode::Sync` between the two host-side consumer Operations. The
+/// dedup scan in `is_duplicate_xfer_in_epoch` MUST stop at that Sync —
+/// barriers mark fresh rendezvous epochs where the producer re-fires
+/// and a fresh buffer place is needed per consumer. Suppressing the
+/// second consumer's Waits across the barrier would leave its Petri
+/// buffer places unfilled (the producer's epoch-2 Push fills its own
+/// epoch-2 buffer, not the dropped epoch-1 buffer place).
+///
+/// Pre-fix would have emitted 8 Waits / 8 Pushes (no dedup at all).
+/// Cycle-158 fix WITHOUT a Sync-stop arm would emit 4 Waits / 4
+/// Pushes (over-dedup) — and lose the second epoch.
+/// Cycle-158 fix WITH the Sync-stop arm: 8 Waits / 8 Pushes (correct;
+/// the Sync between the two consumer Ops splits them into two epochs).
+///
+/// **Do NOT weaken this expectation.** A regression that returns 4
+/// Waits / 4 Pushes here means the `ACFGNode::Sync(_) => return false`
+/// arm of `is_duplicate_xfer_in_epoch` has been dropped → silent
+/// cross-epoch dedup → deadlock for any schedule where a barrier
+/// genuinely separates two cross-worker reads of the same data.
+#[test]
+fn task0335_ac4_sync_between_consumers_separates_epochs() {
+    let producer = op(&[1, 2, 3, 4], 100, vec![], Some(0));
+    let consumer_half1 = op(&[0], 101, vec![0], Some(1));
+    let consumer_half2 = op(&[0], 102, vec![0], Some(2));
+
+    // Same shape as the positive test, but with an explicit
+    // ACFGNode::Sync between the two consumer Operations to simulate
+    // what sync_inject would emit on a schedule that places a barrier
+    // between phase-2a and phase-2b.
+    let sync_barrier = ACFGNode::Sync(nucleus_compiler::acfg::SyncPlaceholder {
+        // Participants irrelevant to the dedup scan — only the variant
+        // matters. Use all 5 workers to satisfy any future invariant.
+        participants: ws(&[0, 1, 2, 3, 4]),
+        sync: nucleus_compiler::event::SyncTag(0),
+    });
+
+    let root = ACFGNode::Sequence(vec![
+        producer,
+        consumer_half1,
+        sync_barrier,
+        consumer_half2,
+    ]);
+
+    let acfg = synthetic_acfg(
+        root,
+        &[("partials", 0), ("half1", 1), ("half2", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("partials", &["w0", "w1", "w2", "w3"]),
+            ("half1", &["host"]),
+            ("half2", &["host"]),
+        ],
+        "transfer partials : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg)
+        .expect("AC#4 negative companion: Sync-bounded epochs keep separate Waits");
+
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => out.push((x.role, x.src, x.dst)),
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, DataId(0), &mut xfers);
+
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+
+    assert_eq!(
+        waits.len(),
+        8,
+        "TASK-0335 AC#4 negative: with a Sync between the two consumer Ops, \
+         dedup MUST stop at the Sync → each consumer Op emits its own 4 \
+         Waits → 8 Waits total. Got {} waits: {:?}. If you see 4 here, \
+         the ACFGNode::Sync(_) => return false arm of \
+         is_duplicate_xfer_in_epoch has been dropped — silent cross-epoch \
+         dedup will deadlock real barrier-separated rendezvous shapes.",
+        waits.len(),
+        waits
+    );
+    assert_eq!(
+        pushes.len(),
+        8,
+        "TASK-0335 AC#4 negative: 8 Waits → 8 Pushes (one per surviving \
+         seq). Got {} pushes: {:?}.",
+        pushes.len(),
+        pushes
+    );
+}
