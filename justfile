@@ -458,7 +458,6 @@ check-mega-files:
         'nucleus/nucleus-compiler/src/passes/reuse_inference.rs' \
         'nucleus/nucleus-compiler/src/sched/lower.rs' \
         'nucleus/nucleus-compiler/src/passes/halo_inference.rs' \
-        'nucleus/nucleus-compiler/src/acfg.rs' \
         'nucleus/nucleus-compiler/src/algo/lower.rs' \
         'nucleus/nucleus-compiler/src/link.rs' \
         'nucleus/nucleus-compiler/src/passes/host_data_relay_inject.rs' \
