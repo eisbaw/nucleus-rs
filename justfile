@@ -461,7 +461,6 @@ check-mega-files:
         'nucleus/nucleus-compiler/src/acfg.rs' \
         'nucleus/nucleus-compiler/src/algo/lower.rs' \
         'nucleus/nucleus-compiler/src/link.rs' \
-        'nucleus/backend-common/src/multi_worker_walker.rs' \
         'nucleus/nucleus-compiler/src/passes/host_data_relay_inject.rs' \
         'nucleus/nucleus-compiler/src/sched/ir.rs' \
         'nucleus/backends/pthreads-async/src/multi_worker.rs' \
