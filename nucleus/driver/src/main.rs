@@ -54,8 +54,9 @@ use std::process::ExitCode;
 
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
-    apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
-    apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder, build_acfg,
+    apply_host_data_relay_inject, apply_host_mediation_inject, apply_partition_blocks2d,
+    apply_partition_rows, apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder,
+    build_acfg,
     build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
     inject_syncs, inject_transfers, link, load_capabilities,
 };
@@ -516,6 +517,56 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             Some(h) => apply_host_mediation_inject(acfg, h),
             // No `used_workers` (every per_worker entry empty). The
             // ACFG is degenerate (no barriers possible); pass through.
+            None => acfg,
+        }
+    } else {
+        acfg
+    };
+
+    // TASK-0329.01.02 slice 2 — host-mediated data-relay injection,
+    // mp-tcp-event ONLY (AC#5 bufsync audit: bufsync 09/13 cells are
+    // capability-gated, so behavioral verification is impossible;
+    // applying the pass on bufsync would have no defensible gain
+    // today). For every Push/Wait pair whose endpoints are BOTH
+    // non-host, replaces the pair with four sibling Xfers routing the
+    // transfer through host. The new host endpoints project naturally
+    // onto host's per-worker event list including INSIDE Repeat
+    // bodies — this is what unblocks 09-producer-consumer/pipelined
+    // × mp-tcp-event (per-iter w2w Push inside `for n in 0..16`),
+    // which the TASK-0330 defensive guard at
+    // `collect_w2w_pushes` would otherwise reject.
+    //
+    // Applied AFTER `apply_host_mediation_inject` so the CTRL-arm and
+    // DATA-arm passes compose cleanly (Sync participants are already
+    // host-augmented when this pass runs; this pass only touches Xfer
+    // nodes). Applied BEFORE the capability check + `acfg_to_events`
+    // so the projection sees the rewritten ACFG.
+    //
+    // Host election mirrors mp-tcp-event Plan::build EXACTLY (worker
+    // literally named "host" AND in used; else smallest used) —
+    // memory `feedback-driver-must-mirror-backend-election-exactly`
+    // (cycle-160 architect P1.1).
+    let acfg = if backend == "mp-tcp-event" {
+        // Re-derive `used_workers` from the post-mediation ACFG. The
+        // host_mediation pass may have added host to Sync participants
+        // but doesn't change which workers project events; nonetheless
+        // we re-project to get the authoritative view (cheap, matches
+        // the slice-1 safe_push_reorder host election pattern).
+        let preview = acfg_to_events(&acfg);
+        let used: std::collections::BTreeSet<_> = preview
+            .iter()
+            .filter(|(_, evs)| !evs.is_empty())
+            .map(|(w, _)| *w)
+            .collect();
+        let host = acfg
+            .name_workers
+            .iter()
+            .find(|(n, _)| n.as_str() == "host")
+            .map(|(_, w)| *w)
+            .filter(|w| used.contains(w))
+            .or_else(|| used.iter().next().copied());
+        match host {
+            Some(h) => apply_host_data_relay_inject(acfg, h),
             None => acfg,
         }
     } else {

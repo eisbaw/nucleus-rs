@@ -64,6 +64,8 @@ pub use passes::halo_inference::{
     apply_halo_inference, apply_halo_inference_advisory, apply_halo_inference_partition_aware,
     HaloInferenceError,
 };
+// TASK-0329.01.02 slice 2: host-mediated data-relay injection for mp-tcp-event.
+pub use passes::host_data_relay_inject::apply_host_data_relay_inject;
 pub use passes::host_mediation_inject::apply_host_mediation_inject;
 pub use passes::inject_check_frames::inject_check_frames;
 pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError};

@@ -40,6 +40,16 @@ pub mod halo_inference;
 // primitives handle host-excluding barriers natively). See module
 // docs for the CTRL-arm-vs-DATA-arm cycle-148/149 split rationale.
 pub mod host_mediation_inject;
+// TASK-0329.01.02 cycle 163: backend-local host-mediated data-relay
+// injection (slice 2 of the TASK-0329.01 keystone). Invoked by the
+// driver for `mp-tcp-event` only (mp-tcp-bufsync gated capability-side
+// per AC#5 bufsync audit). For every Push/Wait pair whose endpoints
+// are BOTH non-host, replaces the pair with four sibling Xfers routing
+// the transfer through host. The new host endpoints project naturally
+// onto host's per-worker event list including INSIDE Repeat bodies —
+// satisfies F1/F5 forward-carried lessons from slice 1 cycle 162a.
+// See module docs for the B1-vs-B2 decision rationale + AC mapping.
+pub mod host_data_relay_inject;
 // TASK-0261 Stage 1: reuse loop-option inference (PRD §6.3.3 + §13).
 // For each `for V : reuse;` loop, walk the body's kernel-arg
 // `IrExpr::DataRef` indices, classify their affine `(coeff, offset)` in

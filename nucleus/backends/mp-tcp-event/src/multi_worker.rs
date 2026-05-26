@@ -1355,11 +1355,24 @@ fn relay_phase_insertion_point(
 /// the loop's nested iteration order). Fail-loud at codegen > silent
 /// miscompile, per [[feedback-panic-not-diagnostic-recurring]].
 ///
-/// In-tree schedules today have all w2w Pushes at TOP LEVEL — verified
-/// by `host_relay_emit` and the cycle-148 paired-lift audit — so this
-/// guard is dormant on the current matrix; it pins the contract for a
-/// future schedule shape, with test pins in
-/// `nucleus/backends/mp-tcp-event/tests/loop_body_w2w_push.rs`.
+/// **TASK-0329.01.02 cycle 163 update (slice 2 lift):** the
+/// compiler-level `apply_host_data_relay_inject` ACFG pass
+/// (`nucleus-compiler/src/passes/host_data_relay_inject.rs`) routes
+/// every non-host-pair Push/Wait through host BEFORE projection. After
+/// the pass, every Push in any worker's event list (top-level OR
+/// inside an `Event::Loop` body) has `dst == host` OR `src == host`
+/// — i.e. the non-host-pair shape this guard fires on is structurally
+/// impossible on schedules the pass handled. The guard STAYS in place
+/// as a fail-loud safety net for residual shapes (e.g. an `Xfer` pair
+/// the pass couldn't pair within the same `Sequence` — see
+/// `host_data_relay_inject::rewrite_sequence_children` "singletons
+/// left alone" comment).
+///
+/// In-tree schedules today: zero residual hits on the post-pass
+/// matrix (verified by `just e2e` 3-sample non-flake at cycle 163).
+/// Test pins in `nucleus/backends/mp-tcp-event/tests/loop_body_w2w_push.rs`
+/// continue to assert the guard's contract on synthetic
+/// pass-bypassing fixtures.
 fn collect_w2w_pushes(
     events: &[Event],
     host: WorkerId,
@@ -1390,8 +1403,17 @@ fn collect_w2w_pushes_inner(
                          per (seq, dst) but the worker pushes N times around \
                          the loop) or mis-order (the flat replay order would \
                          not align with the loop's nested iteration order). \
-                         No in-tree schedule trips this today; file a \
-                         follow-up if one needs it."
+                         TASK-0329.01.02 cycle 163 (slice 2): the compiler \
+                         pass `apply_host_data_relay_inject` routes every \
+                         non-host-pair Push/Wait through host at the ACFG \
+                         layer; if you are seeing this guard fire on an \
+                         in-tree schedule, the pass either didn't run \
+                         (driver wiring is mp-tcp-event-only — check \
+                         driver/src/main.rs near `apply_host_data_relay_inject`) \
+                         or the pair predicate didn't fire (Push/Wait not in \
+                         the same Sequence — see \
+                         `host_data_relay_inject::rewrite_sequence_children` \
+                         singleton-left-alone comment for the residual class)."
                     )));
                 }
                 let cap = chan_caps.get(&(*data, *seq)).copied().ok_or_else(|| {

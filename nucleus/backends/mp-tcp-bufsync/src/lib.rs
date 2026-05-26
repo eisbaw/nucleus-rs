@@ -1680,6 +1680,27 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 /// guard is dormant on the current matrix; it pins the contract for a
 /// future schedule shape, with test pins in
 /// `nucleus/backends/mp-tcp-bufsync/tests/loop_body_w2w_push.rs`.
+///
+/// **TASK-0329.01.02 cycle 163 (slice 2) AC#5 bufsync audit — guard
+/// stays as-is on bufsync; pass NOT mirrored:**
+/// the compiler-level `apply_host_data_relay_inject` pass that lifts
+/// this guard on mp-tcp-event (sibling backend) is intentionally NOT
+/// wired into the driver for mp-tcp-bufsync. Reasoning:
+/// (a) mp-tcp-bufsync's 09/13 cells are capability-gated on
+///     async/buffer/event so behavioral verification of any pass
+///     effect on bufsync would be impossible (capability-skip happens
+///     BEFORE codegen);
+/// (b) bufsync's per-pair FIFO single stream + `wire::read_msg_expect`
+///     panic-on-seq-mismatch (memory
+///     `project-mp-tcp-event-vs-bufsync-safety-profile`) has a
+///     different failure profile than mp-tcp-event's per-seq-demux;
+///     enabling the pass on bufsync without a runtime verification
+///     path is a defensible-gain-of-zero risk.
+/// If a future cycle relaxes bufsync's capability gate (or the
+/// async/buffer/event semantics are mirrored to a poll/sync transport),
+/// re-evaluate whether to enable `apply_host_data_relay_inject` on
+/// bufsync. The pass itself is backend-agnostic — only the driver
+/// wiring is conditional.
 fn collect_w2w_pushes(
     events: &[Event],
     host: WorkerId,
