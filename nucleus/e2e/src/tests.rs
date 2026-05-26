@@ -25,9 +25,12 @@
 //! covers the JSON / JUnit / delta-table formatters
 //! (`json_escape_str`, `render_timings_json`, `write_timings_json`,
 //! `render_det_timings_json`, `write_det_timings_json`,
-//! `render_delta_table_color`, `compare_against_baseline_*`,
-//! `junit_summary_shape_is_valid_xml_skeleton` — roughly ten of
-//! ~seventy-five). The spirit of AC#4 ("visually separate tests from
+//! `render_delta_table_color`, `compare_against_baseline_writes_to_stderr_and_flags_regressor`,
+//! `junit_summary_shape_is_valid_xml_skeleton` — eight of seventy-five
+//! exactly; the cycle-185b architect read-only review tightened the
+//! cycle-185 "roughly ten" hedge to the exact count and replaced the
+//! plural `compare_against_baseline_*` glob with the single existing
+//! variant). The spirit of AC#4 ("visually separate tests from
 //! `main.rs` production code") is satisfied by carving the whole
 //! block; the literal description ("76 tests covering JSON/JUnit
 //! report formatter") was always inaccurate to the file contents.
