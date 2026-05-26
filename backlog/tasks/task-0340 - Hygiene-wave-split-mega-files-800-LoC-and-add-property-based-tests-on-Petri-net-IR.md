@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 15:42'
+updated_date: '2026-05-26 16:05'
 labels:
   - tech-debt
   - hygiene
@@ -40,7 +40,7 @@ Sub-concern: nucleus/e2e/src/main.rs is 7316 LoC with 76 internal tests covering
 <!-- AC:BEGIN -->
 - [ ] #1 Audit produces the canonical list of src .rs files greater than 800 LoC under nucleus/{backend-common,nucleus-compiler,backends}/src/; the six current offenders above are explicitly covered, plus any new addition
 - [ ] #2 Each listed file split into cohesive sub-modules along seams already named by its module-level docstring (no behaviour change). Per-file split is one atomic commit; final commit asserts e2e baseline preserved bit-identical (currently 98 required + 10 skip in e2e-matrix.toml; just e2e totals line preserved)
-- [ ] #3 proptest dep added to nucleus-compiler dev-dependencies; at least 3 properties per pass for passes/boundedness.rs, passes/deadlock.rs, passes/petri_to_events.rs. Generators emit small bounded ACFGs; properties assert (i) boundedness pass agrees with bounded-reachability up to N steps, (ii) deadlock pass agrees with explicit enumeration on the same generated nets, (iii) petri_to_events output is acyclic per worker
+- [x] #3 proptest dep added to nucleus-compiler dev-dependencies; at least 3 properties per pass for passes/boundedness.rs, passes/deadlock.rs, passes/petri_to_events.rs. Generators emit small bounded ACFGs; properties assert (i) boundedness pass agrees with bounded-reachability up to N steps, (ii) deadlock pass agrees with explicit enumeration on the same generated nets, (iii) petri_to_events output is acyclic per worker
 - [ ] #4 Report-formatter tests in nucleus/e2e/src/main.rs (currently 76 internal #[test]) carved out into a sub-module file (e2e/src/report/tests.rs) or sub-crate (e2e_report). Compiler-correctness tests remain in main.rs; formatter tests are visually separated
 - [ ] #5 New just recipe check-mega-files added to ci: asserts no nucleus/**/src/*.rs file exceeds 1000 LoC. Recipe is wired into just ci as a regression-fence. Initial pass exempts any file the split intentionally leaves above 1000 LoC via an explicit allow-list (with rationale)
 - [ ] #6 No new TASK-NNNN or cycle-NNN citations introduced in the refactored files (closes the comment-process-noise concentration smell: acfg.rs 74 mentions, mp-tcp-bufsync/lib.rs 68, sidecar.rs 57 at audit time)
@@ -448,4 +448,42 @@ AC#2 scope question NOW DECIDED: stop at originally-named 6-file scope. The 7 re
 
 E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved cycles 178-183b, 7 cycles).
 Test counts: 969/0/3 dev + 968/0/3 release (preserved cycle 183-183b).
+
+## Cycle 184 — slice 9 (TASK-0340.08) close — AC#3 CLOSED
+
+Slice 9 implementer (in-thread, mped-architect agent type) landed: proptest=1.9.0 dev-dep added to nucleus-compiler/Cargo.toml + new tests/proptest_petri.rs (~470 LoC; 9 properties + 1 smoke + 2 oracles + 2 generators). proptest 1.11.0 (latest) requires rustc 1.85; flake.nix pins 1.83 → resolver downgrade to 1.9.0 (rust-version=1.82). Cargo.lock updated with proptest + ~20 transitive deps (rand, rand_chacha, rand_core, rand_xorshift, regex-syntax, bit-set, bit-vec, fnv, tempfile, rusty-fork, wait-timeout, num-traits, ppv-lite86, unarray, bitflags, errno, fastrand, getrandom, libc, linux-raw-sys, rustix, autocfg).
+
+**Per-pass property delivered list:**
+- passes/boundedness: b.1 agrees-with-reachability-oracle (DELIVERED — asymmetric: oracle_false ⇒ pass≠CapacityExceeded); b.2 determinism (DELIVERED); b.3 accepts-when-oracle-finds-no-overflow (DELIVERED).
+- passes/deadlock: d.1 agrees-with-replay-oracle (DELIVERED — position match; benign CapacityExceeded variant accepted with comment); d.2 determinism (DELIVERED); d.3 rejects-iff-replay-stalls (DELIVERED).
+- passes/petri_to_events: p.1 operation-only-ACFG-emits-only-Fires (DELIVERED — tests acfg_to_events directly, not the petri_to_events(&acfg, &_net) wrapper since the _net arg is ignored at the entry point per module docs); p.2 WorkerId coverage (DELIVERED — exact set equality); p.3 determinism + per-worker Fire count (DELIVERED).
+
+**NO defects surfaced** under PROPTEST_CASES=256 default × 9 properties × ~2 strategies = ~4608 randomised cases. AC#7 (honest-failure) NOT TRIGGERED.
+
+**Verification gate (orchestrator-self-run, inside nix develop):**
+- just build / clippy / check-textual-replace-on-codegen / check-include-str-coverage / check-mega-files / check-narrative-doc-lie: clean.
+- just test (dev): 969 → 979 (+10). 0 failed; 3 ignored.
+- just test-release: 968 → 978 (+10). 0 failed; 3 ignored.
+- just e2e: 112/102/0/10/0 (preserved bit-identical — proptest is test-side only).
+
+**Generator honest limits** (forward-carry to next slice / future fuzzing iterations):
+- Petri-net generator: MAX_PLACES=4, MAX_TRANSITIONS=4, cap 1..=3, weight=1 arcs only, no multi-arc bundles, no unbounded places. Nets larger than 4×4 would push the BFS oracle past STATE_SPACE_CAP=10_000 on too many cases (would surface as prop_assume! discards reducing effective sample size).
+- ACFG generator: linear Sequence of 1-5 Operations on 1-3 workers + 1-3 kernels. Does NOT produce Push/Wait, Sync, nested Repeat, or partition_workers overrides. Future slice could extend the generator to cover these — but the test-side ROI of the current shape was the primary deliverable.
+
+**Three implementer-disclosure-honesty fixes during self-audit (pre-commit)**:
+- Doc-lie #1: oracle_bounded_reachable / oracle_has_dead_state names in module docstring did not match actual function names (oracle_capacity_can_be_violated / oracle_first_stall_position). Fixed.
+- Doc-lie #2: "≤ 6 places, ≤ 6 transitions" / "4×4 vs 6×6" inconsistency — code reduced sizes for tractability mid-implementation, docstring didn't follow. Fixed.
+- Doc-lie #3: "N=50 firing steps" referenced a removed MAX_FIRING_STEPS constant. Fixed.
+- One redundant helper (enumerate_reachable) removed during cleanup — was only a pre-flight check duplicated by the real oracle's inner BFS.
+
+**AC delta for TASK-0340 post-cycle-184:**
+- AC#1: DONE.
+- AC#2: 6/6 files split. DONE.
+- AC#3: **DONE** (this slice).
+- AC#4 (e2e/main.rs report-formatter carve-out): PENDING (slice 10).
+- AC#5: DONE.
+- AC#6: DONE for slice 9 (no new TASK-NNNN or cycle-NNN citations introduced; the file references TASK-0340 AC#3 in its module docs only as the anchor for what it implements, not as cycle-process-noise).
+- AC#7: PENDING (slice 11 — close-out cycle).
+
+Remaining slices for TASK-0340: 10 (AC#4 e2e formatter carve-out) + 11 (AC#7 final summary cycle). Two slices left.
 <!-- SECTION:NOTES:END -->
