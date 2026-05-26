@@ -54,8 +54,8 @@
 //! What this pass explicitly DOES NOT do:
 //!
 //! - Validate `partition=` policies against placement cardinality —
-//!   genuinely still deferred (no current consumer; filed only as a
-//!   `link.rs` inline note today).
+//!   genuinely still deferred (no current consumer; filed only as an
+//!   inline limitation in this module today).
 //! - Detect data symbols that have no producer at all (could be a
 //!   genuine bug; not in the spec for this task).
 //!

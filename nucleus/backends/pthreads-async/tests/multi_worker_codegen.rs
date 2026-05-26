@@ -236,7 +236,7 @@ fn ring_struct_decl_negative_checks_pin_design_decisions() {
         !out.contains("with_capacity(0)"),
         "Ring must never pre-allocate VecDeque::with_capacity(0) — the \
          schedule's buffer=N is `N >= 1` (sched/ir.rs:ZeroBufferOption) \
-         and `N >= D` (link.rs:PipelineExceedsBuffer); a 0-cap fallback \
+         and `N >= D` (link/errors.rs:PipelineExceedsBuffer); a 0-cap fallback \
          would defeat both gates:\n{out}"
     );
 }

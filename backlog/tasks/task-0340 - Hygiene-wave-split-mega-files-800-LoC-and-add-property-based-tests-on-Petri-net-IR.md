@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 15:00'
+updated_date: '2026-05-26 15:42'
 labels:
   - tech-debt
   - hygiene
@@ -412,4 +412,40 @@ Forward-carries to slice 8 (link.rs split) + slices 9-10 (AC#3 proptest + AC#4 e
 - **Silent-sibling sweep discipline (cycle 182b lesson):** when any doc-claim rewrite mentions a renamed function/struct/path, run grep -rn '<OLD-NAME>' nucleus/ BEFORE commit and sweep all hits to current truth. The implementer's claim 3 fix was 1 of 12 siblings; 11 silent siblings shipped — caught by architect review. Specifically applies to slice 8 if link.rs's docs reference any renamed compiler-pass entry points.
 
 E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved across cycles 178-182 + 182b).
+
+## Cycle 183 + 183b — slice 8 (TASK-0340.07) close + parallel review gate
+
+Slice 8 implementer (mped-architect, in-thread) landed commit f518890: nucleus-compiler/src/link.rs (1290 LoC) split into link/{mod,types,errors,build,dataflow,pipeline}.rs (6 files, total 1369 LoC; +79 vs pre-split = orientation docstrings + use lines + sub-module decls + pub use re-exports). Tracker close at e808bc2.
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) returned GO from both arms:
+- qa-test-runner: all gate numbers reproduced bit-identically. just test 969/0/3 dev; just test-release 968/0/3; just e2e 112/102/0/10/0 across TWO independent samples (post-cargo-clean -p nucleus); just check-mega-files PASS both directions (allow-list 9 → 8).
+- mped-architect: 2 P2 doc-lie findings + 1 P3 tracker-drift finding folded back as cycle 183b.
+
+Cycle 183b fold-back (doc-only):
+- P2.1 site #1: link/mod.rs:58 'filed only as a `link.rs` inline note today' → 'filed only as an inline limitation in this module today' (R2-introduced bare-filename self-deixis; link.rs no longer exists post-split).
+- P2.1 site #2: link/errors.rs:341-342 'the common path through link.rs' → 'the common path through [`link`](super::build::link)' (anchor on the symbol, not the dead file).
+- P2.2: link/dataflow.rs:48-53 R5 doc-claim overcorrection — partition_workers / partition_rows / partition_blocks2d do NOT process raw AlgoIR `Dataflow { rhs: bare-DataRef }` (they operate on ACFG DataflowEdges from kernel Calls). Rewrote the carve-out to anchor on no-current-consumer + the actual mechanism (bare-DataRef shape dropped at AlgoIR-ingest time), not on a downstream pass that doesn't address it. Promoted memory feedback-implementer-disclosure-mechanism-wrong instance.
+- Silent-sibling sweep (cycle 182b discipline) — 3 further `link.rs` references swept:
+  (i) backends/pthreads-async/tests/multi_worker_codegen.rs:239 'link.rs:PipelineExceedsBuffer' → 'link/errors.rs:PipelineExceedsBuffer'.
+  (ii) nucleus-compiler/README.md:11 'src/link.rs' → 'src/link/' (+ adjacent 'src/acfg.rs' → 'src/acfg/' caught by the same sweep — slice 7 cycle 182 should have done this and didn't).
+  (iii) nucleus-compiler/tests/link.rs:1066 'in link.rs' → 'in `link()`' (symbol anchor; the test file still legitimately exists as tests/link.rs, but the in-prose reference was to the SOURCE file).
+- P3.1 (this note): parent TASK-0340 notes updated to reflect AC#2 = 6/6.
+
+NEW Dim-3 vocabulary forward-carry (slice 9+): bare-filename and bare-path-fragment self-references are NOT covered by the cycle-181b/182b Dim-3 regex `(in this file|in this module|this function|the helper (above|below)|nearby|earlier in this file)`. Mirror the cycle-182b Dim-2 widening: extend Dim-3 to include `<basename>\.rs` self-references for any file being split, AND include directory-shape claims like `src/<name>.rs`. This pattern caught the cycle 183 R2 introduction and the 3 silent siblings above; would have shipped without the architect review.
+
+NEW lesson — 'structured deferral list' Dim-2 escape (cycle 183 implementer's own discovery): a single Dim-2 introducer line like 'X explicitly DOES NOT do (deferred):' followed by N TASK-NNNN items DOES NOT repeat the deferral verb on each item, so per-line Dim-2 regex misses the items. When the introducer trips Dim-2, walk EVERY item under the introducer. This pattern caught 4 stale items in original link.rs L52-60 list that would have shipped silently.
+
+AC delta for TASK-0340 post-cycle-183b:
+- AC#1: DONE.
+- AC#2: **6/6 files split** (render.rs cycle 178; mp-tcp-bufsync/lib.rs cycle 179; mp-tcp-event/multi_worker.rs cycle 180; backend-common/multi_worker_walker.rs cycle 181; nucleus-compiler/acfg.rs cycle 182; nucleus-compiler/link.rs cycle 183). **Original cycle-175 audit scope CLOSED.**
+- AC#3 (proptest): PENDING (next slice).
+- AC#4 (e2e/main.rs report-formatter carve-out): PENDING.
+- AC#5: DONE (allow-list shrank 9 → 8 cycle 183).
+- AC#6: DONE for slice 8 (5 doc-claim rewrites + 3 silent-sibling sweep edits in 183 + cycle-183b 5 doc-edits + 3 sweep-edits are explicitly disclosed corrections, not new TASK/cycle anchors).
+- AC#7: PENDING (final cycle when AC#3 + AC#4 close).
+
+AC#2 scope question NOW DECIDED: stop at originally-named 6-file scope. The 7 remaining files >1000 LoC on the check-mega-files allow-list (transfer_inject.rs 4726, reuse_inference.rs 1676, sched/lower.rs 1546, halo_inference.rs 1525, algo/lower.rs 1328, host_data_relay_inject.rs 1212, sched/ir.rs 1163, pthreads-async/multi_worker.rs 1048) are out-of-original-audit; AC#5 recipe already polices them at the >1000 LoC threshold. Splitting transfer_inject.rs separately is higher-leverage as a fresh TASK-NNNN rather than as a TASK-0340 sub-slice — file when the orchestrator decides the leverage outweighs the cycle cost (currently slice 9 = proptest is the higher-ROI next step).
+
+E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved cycles 178-183b, 7 cycles).
+Test counts: 969/0/3 dev + 968/0/3 release (preserved cycle 183-183b).
 <!-- SECTION:NOTES:END -->

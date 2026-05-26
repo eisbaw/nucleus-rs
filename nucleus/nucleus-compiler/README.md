@@ -8,8 +8,8 @@ Front-end + middle-end of the Nucleus v2 compiler. Reads `.algo.nuc` +
 
 - `src/algo/` — algorithm-language parser, AST, IR (`AlgoIR`), lowering.
 - `src/sched/` — schedule-language parser, AST, IR, lowering.
-- `src/link.rs` — algorithm × schedule reconciliation (`LinkedIR`).
-- `src/acfg.rs` + `src/passes/` — ACFG (Algorithmic Control Flow Graph)
+- `src/link/` — algorithm × schedule reconciliation (`LinkedIR`).
+- `src/acfg/` + `src/passes/` — ACFG (Algorithmic Control Flow Graph)
   build + transforms: `apply_block_transforms`, `apply_partition_workers`,
   `inject_syncs`, `inject_transfers`, `inject_check_frames`,
   `acfg_to_petri`, `acfg_to_events`.

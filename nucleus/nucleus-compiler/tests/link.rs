@@ -1063,7 +1063,7 @@ schedule for \"a.algo.nuc\" {
 #[test]
 fn pipeline_exceeds_buffer_coexists_with_other_link_errors() {
     // Cascade-safety: the new PipelineExceedsBuffer error rides the
-    // independent-errors path in link.rs (just `errors.push`, no
+    // independent-errors path in `link()` (just `errors.push`, no
     // cascade-suppression keyed on a failed-decl set). Confirm it
     // surfaces alongside an unrelated LinkError variant in one pass.
     //

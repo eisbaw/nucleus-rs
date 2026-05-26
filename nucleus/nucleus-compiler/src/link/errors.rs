@@ -339,8 +339,8 @@ impl LinkError {
     }
 
     /// A link error located at `span_opt` if it is `Some` — the common
-    /// path through link.rs, where the IR carries `Option<Range<usize>>`
-    /// directly. `None` collapses to [`LinkError::new`] (no fabricated
+    /// path through [`link`](super::build::link), where the IR carries
+    /// `Option<Range<usize>>` directly. `None` collapses to [`LinkError::new`] (no fabricated
     /// position when the upstream lowering had no source to point at —
     /// e.g. a hand-built test fixture; honest-partial per
     /// [`crate::span::Spanned`] semantics). `source` is unused when

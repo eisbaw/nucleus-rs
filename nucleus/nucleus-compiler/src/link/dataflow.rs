@@ -47,10 +47,12 @@ fn collect_loop_vars_in_stmts(stmts: &[IrStmt], out: &mut BTreeSet<String>) {
 ///
 /// Identity-copy dataflow (`D <-- E` where the RHS is a bare
 /// `DataRef`, not a `Call`) is currently NOT recorded as a producer
-/// edge. No example exercises this, and the right semantics for
-/// "kernel-less data move" are part of the partition/transfer pass
-/// proper (TASK-0117 + TASK-0258 / TASK-0259, the per-partition=
-/// consumers — all Done). Filed as a limitation.
+/// edge. No example exercises this and the case is filed as a known
+/// limitation (no current consumer; partition_workers /
+/// partition_rows / partition_blocks2d build edges from ACFG
+/// DataflowEdges constructed from kernel `Call`s, so the bare-
+/// `DataRef` shape is dropped at AlgoIR-ingest time rather than
+/// rewritten downstream).
 pub(super) fn analyse_dataflow(
     algo: &AlgoIR,
     kernel_workers: &BTreeMap<String, WorkerEntity>,
