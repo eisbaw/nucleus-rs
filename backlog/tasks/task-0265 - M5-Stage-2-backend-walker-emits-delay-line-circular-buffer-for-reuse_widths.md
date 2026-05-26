@@ -1,11 +1,11 @@
 ---
 id: TASK-0265
 title: 'M5 Stage 2: backend walker emits delay-line / circular buffer for reuse_widths'
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 02:33'
-updated_date: '2026-05-24 10:56'
+updated_date: '2026-05-26 08:13'
 labels:
   - M5
   - compiler
@@ -146,4 +146,25 @@ Post-hardening gate: `just e2e` 92/77/0/15/0; `just determinism-check` GREEN; `c
 **Cycle-87 keystone status**: Tier 1 LANDED, hardened, GO. Tier 2/3/4 + multi-worker marker coverage = TASK-0269/0270/0271/0272/0273. TASK-0265 itself stays In Progress with AC#1/AC#4 MET, AC#2/AC#3/AC#5 DEFERRED to those follow-ups.
 
 [CYCLE-95 UPDATE, 2026-05-24]: forward-carry review items 2 + 4 at lines 79 + 83 above reference the halo/reuse naming discrepancy and a hypothetical UnknownIterVarInScope variant. Item 2 is now PARTIALLY RESOLVED: cycle 95 commit f8a3267 landed TASK-0272 scope-A (halo renamed to UnknownLoopVar matching reuse); the passes::common lift remains deferred. Item 4's reference to 'halo's UnknownIterVarInScope' is now stale — read as UnknownLoopVar. The defensive-belt test gap described in item 4 is still open (no test pins HaloInferenceError::UnknownLoopVar; sibling test exists for ReuseInferenceError at sidecar_reuse.rs:381).
+
+## Cycle 168 closure audit — all 5 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-blockers TASK-0269 (pthreads-sync real circular-buffer codegen), TASK-0270 (multi-worker walker codegen), TASK-0271 (driver promotion) all Done. Re-verified each AC:
+
+### AC#1 (walker reads reuse_widths at Event::Loop emit site) ✓ MET cycle 87
+### AC#2 (circular-buffer decl + initial-fill + per-iter update) ✓ MET via TASK-0269 cycle 103 (commit e21d75e) — pthreads-sync real circular-buffer codegen via render_reuse_buf_decls (nucleus/backends/pthreads-sync/src/lib.rs:708-721) and the multi-worker strip-mine arm in nucleus/backend-common/src/multi_worker_walker.rs:524-617
+### AC#3 (rewrite grid[iv+b] DataRef in body) ✓ MET via TASK-0269/0270 — render_fire_arg + RenderCtx::reuse_active threading
+### AC#4 (e2e cell + marker substring present-on-reuse / absent-on-naive) ✓ MET cycle 87 (pinned by e2e_example_05::reuse_marker_present_on_reuse_schedule_absent_on_naive)
+### AC#5 (driver promotion strict OR partition-policy-aware) ✓ MET via TASK-0271 cycle 88 (driver promotion to STRICT per memory project-cross-backend-differential)
+
+### Closing this task
+The Tier-1 scaffold landed cycle 87; Tier-2/3/4 closed via the three filed follow-ups (TASK-0269/0270/0271), all Done. Multi-worker marker coverage TASK-0273 (LOW) ALSO Done — no live forward-carries remain. Closing per honest-failure discipline applied positively.
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 168 closure (orchestrator-direct, tracker-only). All 5 ACs MET. AC#1+AC#4 cycle 87 (walker scaffold + marker e2e cell). AC#2+AC#3 via TASK-0269 cycle 103 (pthreads-sync real circular-buffer codegen via render_fire_arg + RenderCtx::reuse_active) + TASK-0270 cycle 104 (multi-worker walker analogue). AC#5 via TASK-0271 cycle 88 (driver promotion to strict reuse_inference). All forward-carries (TASK-0269/0270/0271/0273) closed in prior cycles. Cycle-168 gate: e2e 112/102/0/10/0.
+<!-- SECTION:FINAL_SUMMARY:END -->

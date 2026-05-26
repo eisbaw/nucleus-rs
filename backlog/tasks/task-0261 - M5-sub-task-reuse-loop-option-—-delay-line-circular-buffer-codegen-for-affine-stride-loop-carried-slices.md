@@ -3,11 +3,11 @@ id: TASK-0261
 title: >-
   M5 sub-task: reuse loop option — delay-line / circular-buffer codegen for
   affine-stride loop-carried slices
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:54'
-updated_date: '2026-05-24 10:56'
+updated_date: '2026-05-26 08:05'
 labels:
   - M5
   - compiler
@@ -204,10 +204,25 @@ Status: same closure-deferred-on-Stage-2 pattern as TASK-0260. AC#1 (parsed-but-
 M5 keystone status (TASK-0043): all FOUR sub-tasks (TASK-0258 partition_rows + TASK-0259 partition_blocks2d + TASK-0260 halo_inference Stage 1 + this TASK-0261 reuse_inference Stage 1) have code on disk and review-GO. The Stage 2 deferred follow-ups (TASK-0263 halo consumer, TASK-0264 blocks2d block-pair, TASK-0265 reuse codegen) define the rest of the M5 implementation surface and close in lockstep as their downstream consumers wire.
 
 [CYCLE-95 UPDATE, 2026-05-24]: cross-pass consistency note at line 193 above is now RESOLVED. The halo/reuse naming discrepancy (reuse=UnknownLoopVar, halo=UnknownIterVarInScope) was closed in commit f8a3267 (TASK-0272 scope-A) — halo now also uses UnknownLoopVar. The passes::common::IvScopeError lift (scope B) remains deferred.
+
+## Cycle 168 closure audit — all 5 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-blocker TASK-0265 (backend walker delay-line/circular-buffer codegen) Done cycle 168. The deferred AC#2 + AC#4 now MET via:
+- AC#2 (backend emits delay line / circular buffer): MET via TASK-0269 cycle 103 (pthreads-sync real circular-buffer codegen) + TASK-0270 cycle 104 (multi-worker walker codegen).
+- AC#4 (e2e cell with reuse showing bit-identical output + delay-line length pinned by access-pattern stride span): MET via cycle 87 marker e2e cell (TASK-0265 AC#4) + TASK-0269 cycle 103 (the bit-identical OUTPUT half landed when the walker emitted real codegen, not just markers).
+
+### Closing this task
+Stage 1 (TASK-0261) landed cycles 76/77; Stage 2 (TASK-0265 + TASK-0269 + TASK-0270 + TASK-0271) all Done. The inference + codegen + driver-promotion together realise the reuse loop option per PRD §6.3.3 + TASK-0043 AC#3. Closing per honest-failure discipline applied positively.
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 TASK-0261 Stage 1 LANDED in commits 76db68d (affine_decompose lift to passes::common) + 005e92b (reuse_inference pass + ACFG/sidecar fields + driver wire). Gate: 765/0/3 tests, clippy clean, e2e 88/73/0/15/0 (unchanged), determinism PASS + bites. Closes AC#1/#3/#5; defers AC#2/#4 to TASK-0265 (Stage 2: backend walker delay-line emit) — filed.
+
+## Cycle 168 closure addendum
+
+AC#2 + AC#4 MET via TASK-0265 closure cycle 168 (which in turn rests on TASK-0269 cycle 103 + TASK-0270 cycle 104 + TASK-0271 cycle 88). All 5 ACs MET. Cycle-168 gate: e2e 112/102/0/10/0.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-0260
 title: >-
   M5 sub-task: halo region inference from kernel access pattern (stencils,
   separable filters)
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 10:56'
+updated_date: '2026-05-26 08:03'
 labels:
   - M5
   - compiler
@@ -150,4 +150,25 @@ F-P2 (architect): module docs line 53 said 'iv by itself … no entry written' b
 Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258 + TASK-0259. AC#1/AC#2/AC#3 GREEN. AC#4 (transfer_inject consumer) explicitly DEFERRED to TASK-0263 Stage 2 per the task brief. AC#5 (e2e cell bit-identical) DEFERRED to TASK-0263 + TASK-0262 lockstep landing.
 
 [CYCLE-95 UPDATE, 2026-05-24 — cross-reference REVISED in cycle 127, 2026-05-25 (TASK-0311)]: halo_inference's `UnknownIterVarInScope` was renamed to `UnknownLoopVar` in commit f8a3267 (TASK-0272 scope-A). The F-P1 finding record in this task's notes (above) was MIGRATED in cycle 127 (TASK-0311) to use the current variant name `UnknownLoopVar`; at the time of architect F-P1 (cycle 81) the variant was named `UnknownIterVarInScope`. The architectural intent is unchanged — the rename was symbol-only, matching the convention of 5 sibling passes.
+
+## Cycle 168 closure audit — all 5 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-deferrals TASK-0263 (transfer_inject consumes halo_widths) and TASK-0262 (remainder policy) both Done. Re-verified each AC:
+
+### AC#1 (halo_inference pass exists; called from passes/mod.rs) ✓ MET cycle 81
+### AC#2 (synthetic stencil with edge-touching kernel access produces halo_widths sidecar) ✓ MET cycle 81
+### AC#3 (Mod-indexed / data-dependent stride REJECTED with typed HaloInferenceError) ✓ MET cycle 81
+### AC#4 (transfer_inject consumer) ✓ MET via TASK-0263 closure (cycle 168) — extends XferPlaceholder tile lo/hi by ±halo
+### AC#5 (e2e cell bit-identical) ✓ MET via TASK-0263 cycle 102 — 05-stencil/distributed × pthreads-async [[required]] bit-identical (cycle-167 gate 112/102/0/10/0 confirms PASS)
+
+### Closing this task
+Stage 1 landed cycle 81 (inference + sidecar + driver wire); Stage 2 (transfer_inject consumer) landed via TASK-0263. The bit-identical e2e cell that promotes AC#4+AC#5 from "DEFERRED" to "MET" is the same cell TASK-0263 AC#3 records. Closing in lockstep with TASK-0263 (both close cycle 168).
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 168 closure (orchestrator-direct, tracker-only). All 5 ACs MET. AC#1+AC#2+AC#3 cycle 81 (halo_inference pass + sidecar + driver wire + typed Mod/non-affine rejection). AC#4 via TASK-0263 closure (cycle 168) — transfer_inject consumes halo_widths, extends XferPlaceholder tiles. AC#5 via TASK-0263 cycle 102 — 05-stencil/distributed × pthreads-async [[required]] bit-identical. Cycle-168 gate: e2e 112/102/0/10/0.
+<!-- SECTION:FINAL_SUMMARY:END -->

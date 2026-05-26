@@ -3,11 +3,11 @@ id: TASK-0258
 title: >-
   M5 sub-task: partition=rows consumer pass (row-band partitioning of an outer
   1D loop)
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:30'
+updated_date: '2026-05-26 08:04'
 labels:
   - M5
   - compiler
@@ -218,10 +218,25 @@ Status stays In Progress. The codegen/pass WORK is COMPLETE and review-GO. Of th
 - AC#5 (new e2e cell exercising partition=rows + bit-identical reference.bin): BLOCKED-NOT-FAILED on TASK-0260 (halo inference: stencil cells produce wrong output at row-band boundaries without halo synthesis) AND TASK-0262 (remainder policy: the existing 05-stencil/distributed 14-row range is non-divisible by 4 workers).
 
 Honest reading: AC#5 cannot close until BOTH TASK-0260 (halo) AND TASK-0262 (remainder policy) land. Same closure-deferred-on-sibling-blocker pattern as TASK-0042.05's AC#2/AC#4 (blocked on TASK-0175). When those land in lockstep, the 05-stencil/distributed [[skip]] cell promotes to [[required]] with bit-identical reference.bin, closing AC#5 + TASK-0258 simultaneously.
+
+## Cycle 168 closure audit — all 5 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-blockers TASK-0260 (halo inference, closes cycle 168) and TASK-0262 (remainder policy, Done) both lift. Re-verified each AC:
+
+### AC#1 (partition_rows pass exists; called from passes/mod.rs) ✓ MET cycle 79c
+### AC#2 (2D outer Repeat with partition=rows → per-worker row-bands) ✓ MET cycle 79c (positive_outer_of_2d_records_per_worker_row_bands)
+### AC#3 (partition=rows on non-outer-of-2D context REJECTED with typed error) ✓ MET cycle 79c via PartitionRowsError::NotOuterOf2DNest at pass entry (correction from "at sched-lower" — the AST shape needed is only available post-build_acfg; documented in pass docstring + sched/lower.rs comment)
+### AC#4 (UnsupportedPartitionKind for Rows REMOVED from sched-lower) ✓ MET cycle 79c
+### AC#5 (new e2e cell exercises partition=rows + bit-identical on ≥1 tier-1 backend) ✓ MET via 06-separable-filter/distributed (uses partition=rows on outer hy axis per cycle-116 / TASK-0296). All 4 tier-1 backends PASS bit-identical against 06-separable-filter/reference.bin in cycle-168 gate (112/102/0/10/0).
+
+### Closing this task
+The partition=rows consumer pass landed cycle 79c with full positive + negative test coverage. The Stage-1 brief framed AC#5 as blocked-on-TASK-0260; with halo inference + transfer_inject consumer landed (TASK-0260 + TASK-0263, both closing cycle 168), the 06-separable-filter/distributed e2e cell exercises partition=rows AND the halo machinery AND bit-identical to reference. Closing per honest-failure discipline applied positively.
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Cycle 79c lands the partition_rows consumer pass: a sibling to partition_workers that consumes ResolvedLoopOption::Partition(PartitionKind::Rows), verifies the schedule's outer-of-2D structural pre-condition (Repeat-of-Repeat with a multi-worker body via the find_outer_of_2d helper), and writes per-(IterVar, WorkerId) row-band ranges into the shared ACFG::partition_worker_ranges sidecar (already consumed by sync_inject + petri_to_events + the 4 tier-1 backend walkers — no downstream changes needed). Typed PartitionRowsError variants: UnknownLoopVar, NotOuterOf2DNest (PRD §6.3.3 category-error reject), NoMultiWorkerBody, NonDivisible (first-cut, shared follow-up with partition_workers as TASK-0262). sched-lower's TASK-0249-era reject for PartitionKind::Rows is removed; Blocks2d still rejects (TASK-0259). driver/main.rs wires apply_partition_rows immediately after apply_partition_workers. 10 new tests (6 integration in tests/partition_rows.rs + 4 #[cfg(test)] unit in the pass), all 5 negative paths covered, sched_lower tests updated (negative_partition_rows → positive_partition_rows_now_lowers; blocks2d unchanged). 05-stencil/distributed schedule's 'loop y : partition=rows;' directive could not be restored as-is — the algo's y=1..15 length-14 is not divisible by 4 workers (TASK-0262 remainder-policy follow-up filed). Gates: just test 700/0/3 (+10), just clippy clean, just e2e 88/73/0/15/0-required-fail (unchanged), determinism + determinism-negative + xbackend-negative all PASS. AC#1/2/4 GREEN; AC#3 GREEN with the corrected reject site (PASS entry, not sched-lower — documented in code); AC#5 BLOCKED-ON-TASK-0260 + TASK-0262 (cannot land a bit-identical stencil e2e cell without halo inference and remainder-policy resolution; pure row-band partitioning produces wrong output at row-band boundaries). Status remains In Progress until those siblings land and the joint e2e cell becomes bit-identical. Commits: ef85b99 (consumer pass + tests + sched-lower update), 5e4acc9 (05-stencil schedule documentation + TASK-0262).
+Cycle 168 closure (orchestrator-direct, tracker-only). All 5 ACs MET. AC#1-AC#4 cycle 79c (partition_rows pass + pass-entry reject + sched-lower lift). AC#5 via 06-separable-filter/distributed (partition=rows on hy, cycle 116/TASK-0296) — all 4 tier-1 backends PASS bit-identical against reference.bin. Cycle-168 gate: e2e 112/102/0/10/0.
 <!-- SECTION:FINAL_SUMMARY:END -->

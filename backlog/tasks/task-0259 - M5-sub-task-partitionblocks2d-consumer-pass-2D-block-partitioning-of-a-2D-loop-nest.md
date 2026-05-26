@@ -3,11 +3,11 @@ id: TASK-0259
 title: >-
   M5 sub-task: partition=blocks2d consumer pass (2D-block partitioning of a 2D
   loop nest)
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-23 23:53'
-updated_date: '2026-05-24 00:57'
+updated_date: '2026-05-26 08:04'
 labels:
   - M5
   - compiler
@@ -268,4 +268,26 @@ These are documented as forward-carries on TASK-0260's notes (cycle-80 append). 
 ## Review-gate decision
 
 Status: same closure-deferred-on-sibling-blocker pattern as TASK-0258. All 6 ACs met EXCEPT AC#6 (bit-identical e2e cell), which is blocked-not-failed on TASK-0260 (halo inference) AND TASK-0262 (remainder policy). When those land in lockstep, the e2e cell exercising partition=blocks2d (likely 07-matmul or a new 2D-grid example) becomes possible.
+
+## Cycle 168 closure audit — all 6 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-blocker TASK-0260 (halo inference, closes cycle 168) and TASK-0262 (remainder policy, Done) both lift. Re-verified each AC:
+
+### AC#1 (partition_blocks2d pass exists; called from passes/mod.rs) ✓ MET cycle 80
+### AC#2 (2D Repeat with partition=blocks2d → per-worker (row × col) ranges) ✓ MET cycle 80 (positive_4_workers_records_2x2_per_worker_ranges + positive_6_workers_records_2x3_per_worker_ranges)
+### AC#3 (partition=blocks2d on non-2D nest REJECTED with typed error) ✓ MET cycle 80 (NotOuterOf2DNest at pass entry, same correction-from-sched-lower pattern as TASK-0258 AC#3)
+### AC#4 (TASK-0144.02 closed-by-same-pattern) ✓ MET cycle 80 (structural-check-at-pass-entry uniform across all 3 partition passes)
+### AC#5 (UnsupportedPartitionKind reject for Blocks2d REMOVED from sched-lower) ✓ MET cycle 80
+### AC#6 (new e2e cell exercises partition=blocks2d + bit-identical on ≥1 tier-1 backend) ✓ MET via 07-matmul/distributed-2d (uses partition=blocks2d on outer i axis paired with inner j per cycle-121 / TASK-0302). All 4 tier-1 backends PASS bit-identical against 07-matmul/reference.bin in cycle-168 gate (112/102/0/10/0). Additionally, 05-stencil/distributed-2d (partition=blocks2d with halo machinery) PASSES on pthreads-async + mp-tcp-event (cycle 162, TASK-0329.01.01) — the SYNC backends correctly skip on capability-mismatch.
+
+### Closing this task
+The partition=blocks2d consumer pass landed cycle 80 with full positive (4-worker 2x2 + 6-worker 2x3 grids) + negative test coverage. AC#6 was filed as blocked-on-TASK-0260+TASK-0262; with both lifted, the 07-matmul/distributed-2d e2e cell exercises partition=blocks2d AND bit-identical to reference. Closing per honest-failure discipline applied positively.
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 168 closure (orchestrator-direct, tracker-only). All 6 ACs MET. AC#1-AC#5 cycle 80 (partition_blocks2d pass + 2D-grid positive tests + pass-entry reject + sched-lower lift + TASK-0144.02 closed-by-same-pattern). AC#6 via 07-matmul/distributed-2d (partition=blocks2d on outer i axis paired with inner j, cycle 121/TASK-0302) — all 4 tier-1 backends PASS bit-identical against reference.bin; 05-stencil/distributed-2d (with halo machinery) PASS on pthreads-async + mp-tcp-event (cycle 162). Cycle-168 gate: e2e 112/102/0/10/0.
+<!-- SECTION:FINAL_SUMMARY:END -->

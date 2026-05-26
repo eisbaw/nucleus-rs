@@ -3,11 +3,11 @@ id: TASK-0263
 title: >-
   M5 Stage 2: transfer_inject consumes halo_widths to extend per-tile transfer
   ranges
-status: In Progress
+status: Done
 assignee:
   - '@mped-architect-impl'
 created_date: '2026-05-24 01:40'
-updated_date: '2026-05-24 11:22'
+updated_date: '2026-05-26 08:03'
 labels:
   - M5
   - compiler
@@ -118,4 +118,26 @@ TASK-0275 landed in 2 commits:
 The cycle-89 verification block's recommended path (option 1, (B) partition-policy-aware) was implemented as described. Example 11's two cells stay PASS; e2e 92/77/0/15/0 preserved; determinism GREEN.
 
 AC#4 was the last lenient → strict policy choice; with (B) landed, it is now closed. AC#1 (transfer_inject reads halo_widths) + AC#2 (XferPlaceholder extension) remain cycle-83 commitments (cf2f9ac). AC#3 (new e2e cell bit-identical) still BLOCKED on TASK-0266 (sync_inject × partition_rows seam deadlock), unrelated to halo policy.
+
+## Cycle 168 closure audit — all 4 ACs MET (orchestrator-direct, tracker-only)
+
+Sibling-blocker TASK-0266 (sync_inject × partition_rows seam deadlock) is now Done. Re-verified each AC against current head:
+
+### AC#1 (transfer_inject reads halo_widths from ACFG) ✓ MET cycle 83 (commit cf2f9ac)
+### AC#2 (XferPlaceholder lo/hi extended by ±halo) ✓ MET cycle 83
+### AC#3 (new e2e cell 05-stencil/distributed × pthreads-async bit-identical) ✓ MET
+- nuc-nucleus/e2e-matrix.toml: 05-stencil/distributed × pthreads-async [[required]] (M5; promoted cycle 102 alongside mp-tcp-event after TASK-0268 sync_inject participant-aware barriers — INCIDENTALLY removed the per-iteration body barriers that were the partition_rows × sync_inject seam deadlock TASK-0266 chased).
+- Cycle-168 ground-truth `just e2e`: 112/102/0/10/0 (the cell PASSES bit-identical against reference.bin).
+### AC#4 (lenient → strict OR partition-policy-aware) ✓ MET cycle 96 via TASK-0275 (apply_halo_inference_partition_aware + driver promotion)
+
+### Closing this task
+The Stage-2 transfer_inject extension landed cycle 83 and proved correct. The runtime deadlock that briefly held AC#3 was a sibling concern (sync_inject participant-set, TASK-0266), not a transfer_inject defect — and was lifted cycle 102 via TASK-0268. Closing per honest-failure discipline applied positively.
+
+Gate at closure: e2e 112/102/0/10/0. No source change this cycle (tracker-only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle 168 closure (orchestrator-direct, tracker-only). All 4 ACs MET. AC#1+AC#2 cycle 83 (commit cf2f9ac) — transfer_inject reads halo_widths and extends each XferPlaceholder tile lo/hi by ±halo. AC#3 cycle 102 — 05-stencil/distributed × pthreads-async [[required]] bit-identical against reference.bin (the runtime deadlock that briefly held AC#3 was TASK-0266's sync_inject participant-set seam, lifted INCIDENTALLY by TASK-0268's participant-aware barriers). AC#4 cycle 96 via TASK-0275 (apply_halo_inference_partition_aware + driver promotion to (B) partition-policy-aware fatality). Cycle-168 gate: e2e 112/102/0/10/0.
+<!-- SECTION:FINAL_SUMMARY:END -->
