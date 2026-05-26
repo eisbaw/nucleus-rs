@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-26 08:40'
-updated_date: '2026-05-26 08:48'
+updated_date: '2026-05-26 09:03'
 labels:
   - hardening
   - structural-check
@@ -126,4 +126,66 @@ nix develop --command: toml OK, just check OK, just clippy OK (no warnings), jus
 3. **Forward-carried to TASK-0044 (M6)**: when M6 lands new schedules/backends, e2e-matrix.toml will grow new [[skip]] cells with new blocker narratives. The recipe is the gate against new doc-lies being introduced. Every new cell's prose narrative must either (a) use 'AT FILING TIME' verbs, OR (b) annotate with the per-line ALLOW + reason.
 
 4. **Forward-carried to TASK-0339-like future recipes**: the recipe pattern (informative-fail + memory pointer + fix options) is a reusable template for future structural checks; see check-textual-replace-on-codegen + check-include-str-coverage + check-narrative-doc-lie as the canonical set.
+
+## Cycle 170b architect P1 fold-back
+
+### Architect read-only review verdict (cycle 170 close)
+
+qa-test-runner: GO. All cheap-gate arms green; e2e 112/102/0/10/0 preserved; recipe BITES on injected synthetic line; ALLOW annotations honest.
+
+mped-architect: NO-GO. Three P1 findings — most damning is P1.1 (the recipe IS pattern-locked in exactly the way it was meant to fight).
+
+### P1 fold-back applied (this commit)
+
+P1.1 — pattern-locked recipe + empirically false 'high false-positive surface' rationale. The architect ran the empirical test (rg -in word-boundary patterns for awaits/awaiting/gated on/not yet on nuc-nucleus/e2e-matrix.toml, post-ALLOW-filter) returns 0 unannotated hits. The cycle-170 commit message's 'high false-positive surface' claim was empirically false. Worse, line 1222 (the second ALLOW annotation) literally contains the word 'awaits', proving the awaits pattern would have bitten the live class.
+
+Fold-back: re-added 4 patterns (word-boundary 'awaits', 'awaiting', 'gated on', 'not yet'). Re-verified BITE on a 10-line synthetic file containing each new pattern — 5 lines correctly bitten, 1 ALLOW-annotated line correctly suppressed.
+
+P1.2 — TASK-0339 AC#1 description vs implementation wording-execution mismatch. AC#1 enumerated 8 pattern groups; recipe shipped 7 (dropping the awaits-family group). Folded back as part of P1.1 — the 4 dropped patterns are now landed, so AC#1 wording matches execution.
+
+P1.3 — case-sensitivity silent miss on capitalized starts. 'pending cycle-200' matched but 'Pending cycle-200' (sentence-initial) did not. Added -i flag to rg. Re-verified BITE: sentence-initial variants now fire correctly.
+
+P2.1 (partial) — allow-list convention-locked on filing: only. The architect's specific remedy ('widen to (filing|update) and drop line-1222 ALLOW') was wrong on the line-1222 part (per-line check, not paragraph-aware). The underlying observation is correct: the file uses filing:, update (TASK-...):, PROMOTION (TASK-...):, first attempt:, prose speculation: — a sibling convention diversity. Folded back: widened header allow-list from '# Cycle-N filing:' to '# Cycle-?N word-boundary' (any line starting with # Cycle-N). This recognizes ALL paragraph-header conventions the file uses, without dropping the line-1222 ALLOW (the per-line check still requires it; documented in cycle 170b notes).
+
+### NOT folded back (P3-rated)
+
+P3.1 moot under P2.1 widening (cycle-160 paragraph header at line 1214 is now recognized; line 1222 still needs per-line ALLOW because the check is per-line, not paragraph-aware).
+
+P3.2 (recipe docstring 'two ALLOW sites today' enumeration will rot): replaced site-by-site enumeration with a one-line grep witness pointer.
+
+P3.3 (M6 forward-carry per-line ALLOW scalability): filed as a forward-carried lesson in cycle 170b notes; not implemented because it is M6+ scope (no per-line ALLOW proliferation today).
+
+P3.4 (extended BITE coverage): the architect's own BITE extension verified the recipe's miss surface; folded back via P1.1.
+
+P3.5 + P3.6: confirmed correct, no action.
+
+### Honest disclosure: the orchestrator's cycle-170 narrative was wrong
+
+The cycle-170 commit message claimed 'Pattern set deliberately narrower than the cycle-169 architect's broader sweep (dropped awaits / awaiting / gated on / not yet: generic English with high false-positive surface)'. The 'high false-positive surface' claim was empirically false — the architect ran the test in seconds and falsified it. This is the cycle-128 meta-rule firing exactly: the cycle that authors a defect-class-fighting structural check is the highest-risk cycle for that exact defect class to ship inside the check.
+
+The orchestrator did NOT run the empirical false-positive test before dropping the patterns. The cost asymmetry was severe: test-then-claim was seconds; ship-then-test-after-NO-GO was a fold-back cycle + memory update + 3 commits.
+
+### Memory updates (this cycle)
+
+- feedback-silent-sibling-defect: 14th firing recorded (structural check shipping with the defect class it was designed to fight built in). New hygiene rule: empirically BITE-test phrasings the recipe DOES NOT catch, not just phrasings it does.
+- feedback-orchestrator-narrative-also-wrong: 16th firing recorded (empirically false rejection-rationale in commit message). New hygiene rule: orchestrator quantitative/empirical claims must run the test in the same cycle as the claim.
+
+### Re-verification gate (cycle 170b)
+
+- nix develop --command just check-narrative-doc-lie: OK on tree (post-widening; both ALLOW annotations now cover BOTH still-pending AND awaits hits via the per-line filter — rg outputs one line per file:line even on multi-pattern match, so one ALLOW filters all hits on the line).
+- nix develop --command just check + just clippy + just test + just test-release + just e2e: all green; e2e baseline 112/102/0/10/0 preserved.
+- Synthetic BITE: 10-line test file with awaits, Pending cycle-200 (sentence-initial), gated on, not yet correctly bitten on 5 lines; 1 ALLOW-annotated line correctly suppressed.
+
+### AC re-evaluation (cycle 170b)
+
+- AC#1: PASS — recipe ships 11 patterns matching the description's 8 items (the description listed 8 items where the 8th was the awaits-family group of 4; the recipe ships each member as a separate pattern for clarity).
+- AC#2: PASS for today's scope (e2e-matrix.toml only narrative TOML in nuc-nucleus/).
+- AC#3: PASS (wired into just ci).
+- AC#4: PASS — per-line allow-list with widened paragraph-header recognition (any # Cycle-?N line, not just filing:).
+- AC#5: PASS — empirical BITE round-trip with widened patterns + case-insensitivity + paragraph-header widening, including phrasings the original cycle-170 recipe silently missed.
+- AC#6: PASS (failure message references memory entries).
+
+### Stop-condition trigger
+
+Per the phase3-backlog-ralph stop conditions: 'The review gate is repeatedly catching your own overconfidence' is the operative principle now (cycle 169 architect P2.1 + cycle 170 architect P1.1/P1.2/P1.3 — two cycles back-to-back where the orchestrator-direct work shipped real defects the architect caught). Per memory.feedback-silent-sibling-defect cycle-140 lesson: 'when the architect catches a sibling defect three cycles in a row in the same session, ... stop and let a fresh session reset the frontier.' Two cycles, not three — but the cycle-170 defect is the meta-shape (recipe pattern-locked in the same way it was designed to fight), which is a stronger signal than just sibling-count. Recommend stopping after this fold-back closes.
 <!-- SECTION:NOTES:END -->

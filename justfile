@@ -340,20 +340,21 @@ check-include-str-coverage:
 #
 # Per-line allow-list: a hit is OK if the same line contains one of:
 #   - 'AT FILING TIME' marker (explicit past-tense framing)
-#   - '# Cycle-<N> filing:' time-stamp prefix (paragraph explicitly
-#     historical)
+#   - '# Cycle-<N> ...' paragraph-header prefix (any line starting
+#     with `# Cycle-N` is recognized as a paragraph time-stamp;
+#     widened cycle 170b after the file was observed to use
+#     `# Cycle-N filing:`, `# Cycle-N update:`, `# Cycle-N PROMOTION:`,
+#     `# Cycle-N first attempt:`, etc.)
 #   - '# ALLOW narrative-doc-lie: <reason>' annotation
 #
-# Today: two `# ALLOW narrative-doc-lie:` annotated sites in
-# nuc-nucleus/e2e-matrix.toml — the Example 14 / hearing aid M11
-# placeholder (current-state-accurate) and the 13-cnn-inference /
-# pipeline_parallel × mp-tcp-event cycle-160 historical paragraph
-# (framed by the block header which states the cell is PROMOTED).
-# Grep `ALLOW narrative-doc-lie` to find them; their drift across
-# file edits is OK as long as the annotation stays on the same line.
+# Pattern set is case-insensitive (-i): sentence-initial variants
+# `Pending cycle-N`, `Awaits TASK`, `Blocked by TASK` etc. fire too.
+# Grep `ALLOW narrative-doc-lie` to find allow-annotated sites; their
+# drift across file edits is OK as long as the annotation stays on
+# the same line as the hit.
 check-narrative-doc-lie:
     @echo "checking for predictive-conclusion doc-lies in narrative TOML..."
-    @hits=$(rg -nH \
+    @hits=$(rg -inH \
         -e 'BLOCKED by TASK' \
         -e 'CARRIED as \[\[skip\]\]' \
         -e 'still pending' \
@@ -361,9 +362,13 @@ check-narrative-doc-lie:
         -e 'pending cycle-?[0-9]+' \
         -e 'Only .+ remains \[\[skip\]\]' \
         -e '[0-9]+ of [0-9]+ tier-1 backends' \
+        -e '\bawaits\b' \
+        -e '\bawaiting\b' \
+        -e '\bgated on\b' \
+        -e '\bnot yet\b' \
         nuc-nucleus/e2e-matrix.toml \
         | grep -v 'AT FILING TIME' \
-        | grep -vE '# Cycle-[0-9]+ filing:' \
+        | grep -vE '^[^:]+:[0-9]+:# Cycle-?[0-9]+\b' \
         | grep -v 'ALLOW narrative-doc-lie' \
         || true); \
     if [ -n "$hits" ]; then \
@@ -373,8 +378,8 @@ check-narrative-doc-lie:
         echo "Each hit is a paragraph whose predictive conclusion may have rotted when the predicted event landed."; \
         echo "Fix options (any one):"; \
         echo "  1. Convert the verb to past-tense + add 'AT FILING TIME' marker on the same line."; \
-        echo "  2. Prefix the surrounding paragraph with '# Cycle-<N> filing:' (the time-stamp pattern from cycle 169b)."; \
-        echo "  3. Annotate the line with '# ALLOW narrative-doc-lie: <reason>' (use only when the line is current-state-accurate or framed historical by a block header)."; \
+        echo "  2. Prefix the surrounding paragraph with '# Cycle-<N> filing:' / '# Cycle-<N> update:' / '# Cycle-<N> PROMOTION:' etc. (any '# Cycle-N ...' line is recognized as a paragraph time-stamp)."; \
+        echo "  3. Annotate the line with '# ALLOW narrative-doc-lie: <reason>' (use only when the line is current-state-accurate or framed historical by a block header — explain which)."; \
         exit 1; \
     fi; \
     echo "OK: no predictive-conclusion doc-lies in narrative TOML."
