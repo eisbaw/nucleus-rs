@@ -132,11 +132,15 @@ impl<'a> Plan<'a> {
         // Topology constraint (UNRELATED to TASK-0172): one stream per
         // (host, worker) pair, so every barrier must include host as
         // the mediating hub. True for the tier-1 set (02-split:
-        // {host,w0}). A host-excluding barrier needs host-mediated
-        // barrier mediation — the CTRL arm of the cycle-148/149 split
-        // of the original combined TASK-0175 filing (DATA arm lifted
-        // as TASK-0327; CTRL arm tracked as TASK-0329). Fail loud,
-        // never a wrong binary.
+        // {host,w0}). The CTRL-arm host-mediated barrier mediation
+        // (TASK-0329, Done cycle 160) lifts the underlying limitation
+        // via `apply_host_mediation_inject` in the driver — DATA arm
+        // was lifted as TASK-0327 (cycles 148/149) plus TASK-0329.01.02
+        // (cycles 163-164b for in-`Repeat`-body w↔w). The check below
+        // is now defense-in-depth: it should never fire for ACFGs that
+        // came through the driver's pipeline; if an upstream change
+        // ever removes the mediation pass it bites loud, never a wrong
+        // binary.
         //
         // NB: the ContractGap message text below intentionally still
         // says "filed as TASK-0175" — test-pinned by

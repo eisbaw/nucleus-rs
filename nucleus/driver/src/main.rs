@@ -44,18 +44,23 @@
 //! Unix domain sockets + mio, SKELETON — TASK-0044.03 cycle 175).
 //! The four shipped (M1-M4) backends consume the identical
 //! EventList contract; the cross-backend differential (same source
-//! -> bit-identical output.bin) is the M3 headline (four-way) and
-//! the M4 headline (three-way today; the AC#4 fourth column,
-//! 13/pipeline_parallel × mp-tcp-event, is blocked on TASK-0329
-//! (host-mediated barrier mediation for host-excluding barriers —
-//! CTRL arm of the cycle-148/149 split of the original combined
-//! TASK-0175 filing; the DATA arm was lifted in TASK-0327 cycles
-//! 148/149). Same transport limit mp-tcp-bufsync has on similar
-//! host-excluding-barrier cells. The three M6 skeletons (openmp-rs,
-//! mp-tcp-poll, mp-uds-event) do NOT yet participate in the
-//! differential — `emit()` returns `EmitError::ContractGap` until
-//! substantive codegen lands per the cycle-171 phased-AC addendum
-//! on TASK-0044.01/0044.02/0044.03.
+//! -> bit-identical output.bin) is the M3 headline (four-way), the
+//! M4 headline (four-way as of cycle 165 — the AC#4 fourth column
+//! 13/pipeline_parallel × mp-tcp-event was promoted bit-identical
+//! via TASK-0329.01.02.01 after the CTRL arm was lifted upstream by
+//! cycle 160's `apply_host_mediation_inject` pass — TASK-0329 marked
+//! Done — and the in-`Repeat`-body DATA arm by cycles 163-164b's
+//! `apply_host_data_relay_inject` — TASK-0329.01.02). The original
+//! combined TASK-0175 worker-to-worker filing was split into
+//! TASK-0327 (DATA top-level, cycles 148/149) and TASK-0329 (CTRL)
+//! at cycle 148/149; both arms are now lifted upstream of every
+//! tier-1 backend, so the per-backend `ContractGap` rejections at
+//! `Plan::build` for host-excluding barriers / unmediated w↔w
+//! `Push`-`Wait` are defense-in-depth, not load-bearing. The three
+//! M6 skeletons (openmp-rs, mp-tcp-poll, mp-uds-event) do NOT yet
+//! participate in the differential — `emit()` returns
+//! `EmitError::ContractGap` until substantive codegen lands per the
+//! cycle-171 phased-AC addendum on TASK-0044.01/0044.02/0044.03.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -747,13 +752,14 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // against reference.bin on 3 cells.
         //
         // Worker-to-worker Pushes were LIFTED in TASK-0327 cycle 149
-        // via host-relay (Reactor::relay_one + Plan::render_relay_phase).
-        // Host-excluding barriers still fail-loud with a typed
-        // ContractGap forward-linking TASK-0175 (now precisely
-        // tracked as TASK-0329 — the CTRL arm of the cycle-148/149
-        // split of the original combined TASK-0175 filing). The
-        // user-facing error from this arm carries the precise
-        // forward-link.
+        // via host-relay (Reactor::relay_one + Plan::render_relay_phase),
+        // plus TASK-0329.01.02 cycles 163-164b for in-`Repeat`-body
+        // pairs. Host-excluding barriers were lifted cycle 160 via
+        // TASK-0329's `apply_host_mediation_inject` pass — marked Done.
+        // The backend's ContractGap rejection in `Plan::build` (wire
+        // text still cites TASK-0175 for test-pin compatibility) is
+        // now defense-in-depth — should not fire for ACFGs that came
+        // through the driver's pipeline.
         "mp-tcp-event" => {
             let result = mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
                 .map_err(|e| format!("mp-tcp-event codegen error: {e}"))?;

@@ -69,14 +69,20 @@
 //!    `(DataId, SeqTag)` uniquely identifies one Push/Wait pair.
 //!
 //! 4. **Host-mediated barrier topology** (TASK-0175 limit): same as
-//!    mp-tcp-bufsync. Every barrier must include the host worker
-//!    because there is only one CTRL stream per `(host, worker)`
-//!    pair; a worker-to-worker barrier needs a w↔w mesh that the
-//!    star topology lacks. Fail-loud with a typed `ContractGap`
-//!    forward-linking TASK-0175 — never a wrong binary. (DATA-side
-//!    worker-to-worker `Push`/`Wait` was lifted in cycle 149 via
-//!    HOST-RELAY — point 5 below. Barrier-side w↔w remains filed
-//!    forward as TASK-0329.)
+//!    mp-tcp-bufsync. The backend's barrier transport requires every
+//!    barrier to include the host worker because there is only one
+//!    CTRL stream per `(host, worker)` pair; a worker-to-worker
+//!    barrier would need a w↔w mesh that the star topology lacks.
+//!    Both arms of the original combined TASK-0175 filing have been
+//!    lifted upstream: DATA-side w↔w `Push`/`Wait` via the host-relay
+//!    pass cycle 149 (TASK-0327; point 5 below) plus the
+//!    in-`Repeat`-body host-mediated data-relay pass cycles 163-164b
+//!    (TASK-0329.01.02), and barrier-side host-excluding-barriers via
+//!    the host-mediation pass cycle 160 (TASK-0329, marked Done) that
+//!    adds host as a participant to every `Sync` before backend emit.
+//!    The backend's `ContractGap` rejection in `multi_worker::Plan::build`
+//!    is now defense-in-depth — never a wrong binary, but should not
+//!    fire for ACFGs that came through the driver's pipeline.
 //!
 //! 5. **Host-relay for worker-to-worker `Push`/`Wait`** (TASK-0327,
 //!    cycle 149 — mirrors mp-tcp-bufsync's cycle-148 lift): when a
@@ -115,17 +121,16 @@
 //!   two backends are the trade-off column for TCP-transport
 //!   pipelined schedules.
 //!
-//! - **Worker-to-worker channel — DATA lifted, CTRL still gated**:
+//! - **Worker-to-worker channel — DATA + CTRL both lifted upstream**:
 //!   cycle-79 left `mp-tcp-event` constrained to the host-mediated
-//!   star topology for both DATA and CTRL. **Cycle 149 (TASK-0327)
-//!   lifted the DATA arm via host-relay** — see point 5 above; the
-//!   schedule's worker-to-worker `Push`/`Wait` events now lower
-//!   correctly without a full w↔w mesh. Schedules with
-//!   *host-excluding barriers* still fail-loud with a `ContractGap`
-//!   naming TASK-0175 (CTRL arm — filed forward as TASK-0329 for
-//!   host-mediated barrier mediation). AC#2 (09/pipelined) and AC#4
-//!   (13/pipeline_parallel) of TASK-0042.05 remain blocked on the
-//!   CTRL gap, not on the DATA gap that cycle 149 lifted.
+//!   star topology for both DATA and CTRL. Cycle 149 (TASK-0327)
+//!   lifted the DATA arm via host-relay; cycles 163-164b
+//!   (TASK-0329.01.02) extended the host-relay to in-`Repeat`-body
+//!   w↔w `Push`/`Wait`; cycle 160 (TASK-0329, marked Done) lifted the
+//!   CTRL arm via `apply_host_mediation_inject` in the driver. AC#2
+//!   (09/pipelined) and AC#4 (13/pipeline_parallel) of TASK-0042.05
+//!   were both promoted bit-identical (09 cycle 163; 13 cycle 165
+//!   via TASK-0329.01.02.01); see `nuc-nucleus/e2e-matrix.toml`.
 //!
 //! - **Determinism boundary**: the wire frame ORDER per pair is
 //!   schedule-determined (the projection emits Pushes in event-list

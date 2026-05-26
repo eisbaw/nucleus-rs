@@ -47,18 +47,25 @@
 //!   mp-tcp-bufsync.
 //! - **Host-excluding barriers**: same transport limitation as
 //!   mp-tcp-bufsync — one CTRL stream per `(host, worker)` pair, so a
-//!   barrier whose participants exclude host cannot be lowered.
-//!   Fail-loud with a typed `ContractGap`. Status: the original
-//!   TASK-0175 worker-to-worker combined filing was split into a
-//!   DATA arm and a CTRL arm cycles 148/149. The DATA arm was
-//!   lifted in two phases — top-level w↔w `Push`/`Wait` via
-//!   host-relay cycle 149 (TASK-0327), and in-`Repeat`-body w↔w
-//!   `Push`/`Wait` via the `apply_host_data_relay_inject` ACFG
-//!   pass cycles 163-164b (TASK-0329.01.02). The CTRL arm —
-//!   host-mediated barrier mediation for host-excluding barriers —
-//!   is filed as TASK-0329 and still pending. See the ContractGap
-//!   site at `Plan::build` for the runtime check and its
-//!   tracker-pinned wire message.
+//!   barrier whose participants exclude host cannot be lowered
+//!   AT THE BACKEND directly. The original TASK-0175 worker-to-worker
+//!   combined filing was split into a DATA arm and a CTRL arm
+//!   cycles 148/149. The DATA arm was lifted in two phases — top-level
+//!   w↔w `Push`/`Wait` via host-relay cycle 149 (TASK-0327), and
+//!   in-`Repeat`-body w↔w `Push`/`Wait` via the
+//!   `apply_host_data_relay_inject` ACFG pass cycles 163-164b
+//!   (TASK-0329.01.02). The CTRL arm — host-mediated barrier
+//!   mediation for host-excluding barriers — was lifted cycle 160
+//!   (TASK-0329, marked Done) via the `apply_host_mediation_inject`
+//!   compiler pass at `nucleus_compiler::passes::host_mediation_inject`,
+//!   dispatched from the driver before backend emit. The pass adds
+//!   `host` as a participant to every `Sync` whose participant set
+//!   excludes it, turning each host-excluding barrier into an N+1-party
+//!   star through host that the existing barrier-shim emitter handles
+//!   transparently. The backend's `ContractGap` rejection at
+//!   `Plan::build` is now defense-in-depth — it should never fire for
+//!   ACFGs that came through the driver's pipeline. (Wire-message text
+//!   still cites TASK-0175 — test-pinned by `multi_worker_emit::host_excluding_barrier_is_typed_contract_gap`.)
 //! - **Worker-to-worker `Push`/`Wait`** (TASK-0327, cycle 149):
 //!   DATA-side w↔w lifted via HOST-RELAY. Src's `chan_<rid>.push`
 //!   uses peer_idx=0 (host); HOST's `main()` runs a synchronous
@@ -234,11 +241,16 @@ impl<'a> Plan<'a> {
 
         // Host-mediated barrier topology — every barrier must include
         // host. Mirrors mp-tcp-bufsync's check (one CTRL stream per
-        // (host,worker)). A host-excluding barrier needs host-mediated
-        // barrier mediation (TASK-0329 — CTRL arm of the cycle-148/149
-        // split of the original TASK-0175 combined filing; the DATA
-        // arm was lifted as TASK-0327 in cycles 148/149). Fail-loud
-        // rather than mis-route.
+        // (host,worker)). The CTRL-arm host-mediated barrier
+        // mediation (TASK-0329 — Done cycle 160 via
+        // `apply_host_mediation_inject`) lifts the underlying
+        // limitation by adding host to every `Sync`'s participant set
+        // before backend emit; the DATA arm was lifted as TASK-0327
+        // (cycles 148/149) plus TASK-0329.01.02 (cycles 163-164b for
+        // in-`Repeat`-body w↔w). The ContractGap below is now
+        // defense-in-depth — it should never fire for ACFGs that came
+        // through the driver's pipeline; it still bites loud if an
+        // upstream change ever removes the mediation pass.
         //
         // NB: the ContractGap message text below intentionally still
         // says "filed as TASK-0175" — test-pinned by

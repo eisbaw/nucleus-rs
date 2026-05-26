@@ -59,19 +59,26 @@
 //! between barriers) lower correctly, not just uniform ones. The old
 //! per-worker pre-order-index recovery and its non-uniform
 //! [`EmitError::ContractGap`] are removed (TASK-0172). A barrier whose
-//! participant set excludes `host` still cannot be lowered on the
-//! one-stream-per-pair topology — that is a SEPARATE, genuine
-//! transport limitation and stays a typed [`EmitError::ContractGap`]
-//! (honest limitation, not a wrong binary). The original combined
-//! TASK-0175 worker-to-worker filing was split into a DATA arm and a
-//! CTRL arm cycles 148/149: the DATA arm was lifted in two phases —
-//! top-level w↔w `Push`/`Wait` via host-relay cycle 148 (TASK-0327)
-//! and in-`Repeat`-body w↔w `Push`/`Wait` via the
+//! participant set excludes `host` cannot be lowered AT THE BACKEND
+//! directly on the one-stream-per-pair topology — that is a genuine
+//! transport limitation. The original combined TASK-0175 worker-to-
+//! worker filing was split into a DATA arm and a CTRL arm cycles
+//! 148/149: the DATA arm was lifted in two phases — top-level w↔w
+//! `Push`/`Wait` via host-relay cycle 148 (TASK-0327) and
+//! in-`Repeat`-body w↔w `Push`/`Wait` via the
 //! `apply_host_data_relay_inject` ACFG pass cycles 163-164b
 //! (TASK-0329.01.02). The CTRL arm — host-mediated barrier mediation
-//! for host-excluding barriers — is filed as TASK-0329 and still
-//! pending. See the ContractGap site at `Plan::build` for the
-//! runtime check and its tracker-pinned wire message. For a
+//! for host-excluding barriers — was lifted cycle 160 (TASK-0329,
+//! marked Done) via the `apply_host_mediation_inject` compiler pass
+//! at `nucleus_compiler::passes::host_mediation_inject`, dispatched
+//! from the driver before backend emit. The pass adds `host` as a
+//! participant to every `Sync` whose participant set excludes it,
+//! turning each host-excluding barrier into an N+1-party star through
+//! host that the existing `wire::barrier_cross` shim handles natively.
+//! The backend's [`EmitError::ContractGap`] rejection at
+//! `Plan::build` is now defense-in-depth — it should never fire for
+//! ACFGs that came through the driver's pipeline; it still bites loud
+//! if an upstream change ever removes the mediation pass. For a
 //! uniform-barrier program the tags are `0,1,2,…` in pre-order, so
 //! generated code stays byte-identical.
 //!
