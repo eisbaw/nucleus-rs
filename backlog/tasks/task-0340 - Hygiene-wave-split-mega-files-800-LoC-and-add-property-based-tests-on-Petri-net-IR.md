@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 12:47'
+updated_date: '2026-05-26 13:00'
 labels:
   - tech-debt
   - hygiene
@@ -332,4 +332,27 @@ All four classes mechanical; bodies byte-identical. Bit-identical emit verified 
 
 **Implementer-disclosure honesty (cycle-179b lesson applied):**
 Cycle 180 implementer used the enumerated-disclosure shape directly (no blanket 'verbatim move' claim). Spotted + flagged the 2 mechanical reflow + path-requalify edits (a) + (b) before review-gate-side feedback would surface them. The cycle-179 pattern (4 silent edits flagged by post-hoc review) did NOT recur — slice 5 was clean by self-audit.
+
+## Cycle 180 + 180b — slice 5 close + parent status
+
+**Slice 5 LANDED (cycle 180, commit 9a4c89d):** mp-tcp-event/multi_worker.rs split 1695 LoC → multi_worker/{mod,worker_program,relay,walkers,encode}.rs. Mirror of slice 4 template.
+
+**Cycle 180b review-gate hardening:** parallel review gate (qa-test-runner + mped-architect read-only) returned GO from both arms. The cycle-179b enumerated-disclosure discipline is empirically validated this cycle — slice-5 implementer's (a)/(b)/(c)/(d) list was COMPLETE; no silent indentation fix; no 5th edit found. Three pre-existing P3 follow-ups filed (TASK-0340.04.01/.02/.03).
+
+**AC status post-slice-5:**
+- AC#1: DONE.
+- AC#2: **3/6 files split.** Remaining originally-named: acfg.rs (1440), link.rs (1290), multi_worker_walker.rs (1263). 3 more slices to close the original 6-file scope.
+- AC#3: PENDING.
+- AC#4: PENDING.
+- AC#5: DONE; allow-list shrank 12 → 11.
+- AC#6: DONE for slice 5.
+- AC#7: PENDING.
+
+**Mega-file count after slice 5:** 11 files >1000 LoC remain in `nucleus/{backend-common,nucleus-compiler,backends}/*/src/*.rs` scope:
+- Original audit remaining: acfg.rs (1440), link.rs (1290), multi_worker_walker.rs (1263).
+- Out-of-original-audit: transfer_inject.rs (4726), reuse_inference.rs (1676), sched/lower.rs (1546), halo_inference.rs (1525), algo/lower.rs (1328), host_data_relay_inject.rs (1212), sched/ir.rs (1163), pthreads-async/multi_worker.rs (1048).
+
+**AC#2 scope question (still deferred from cycle-179b):** the original 6-file scope vs the recipe-scope (all >1000 LoC) decision was deferred to the slice-6 implementer's plan. transfer_inject.rs at 4726 LoC remains the highest-leverage out-of-original-audit candidate; slice 6 should consider taking it instead of acfg.rs.
+
+**Stop condition reached for this session:** the orchestrator has shepherded slice 4 + slice 5 + cycle-179b/180b hardening through 5 implementer/reviewer subagent cycles (1 implementer + 2 reviewers per slice = 6 spawns, +1 implementer for slice 5). The next slice (slice 6 = acfg.rs OR transfer_inject.rs) is a structurally different file (non-backend, IR/transform compiler-pass, high downstream consumer count) that warrants fresh context per the phase3-backlog-ralph stop criteria. Resuming in a new session yields cleaner brief construction.
 <!-- SECTION:NOTES:END -->
