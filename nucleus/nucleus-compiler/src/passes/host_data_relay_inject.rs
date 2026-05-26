@@ -49,14 +49,19 @@
 //! Cycle-163 picked B2 (ACFG mutation: route Xfer through host) over
 //! B1 (new `ACFGNode::Relay` variant) deliberately:
 //!
-//! - **Match-exhaustiveness audit (B2 vacuous; B1 expensive).** The
-//!   repo has ~17 distinct `match` arms on `ACFGNode` (counted via
-//!   `rg 'match.*node.*\{' nucleus/nucleus-compiler/src/passes/`).
-//!   B1 would have required adding a `Relay` arm at every site —
-//!   mostly mechanical, but each one is a structural-correctness
-//!   decision (does this analysis pass treat Relay like a Sync, like
-//!   an Xfer, or specially?). B2 only adds and removes `Xfer` siblings
-//!   in `Sequence`s; every existing walker keeps working unchanged.
+//! - **Match-exhaustiveness audit (B2 vacuous; B1 expensive).** Many
+//!   passes match on `ACFGNode` discriminants (grep
+//!   `rg -n 'ACFGNode::(Operation|Repeat|Sequence|Sync|Xfer)' nucleus/`
+//!   for current sites). B1 would have required adding a `Relay` arm
+//!   at every one — mostly mechanical, but each one is a
+//!   structural-correctness decision (does this analysis pass treat
+//!   Relay like a Sync, like an Xfer, or specially?). B2 only adds and
+//!   removes `Xfer` siblings in `Sequence`s; every existing walker
+//!   keeps working unchanged. (Cycle-163b architect P2.2 fold-back:
+//!   the originally-cited "~17" count was loose; the structural
+//!   reasoning stands regardless of the exact number — what matters is
+//!   that B2's incremental edit cost is zero arms, B1's is "every
+//!   ACFGNode match arm repo-wide".)
 //!
 //! - **Projection-side handling (B2 free; B1 requires a new arm).**
 //!   `petri_to_events::walk` already handles `ACFGNode::Xfer` by
@@ -96,11 +101,23 @@
 //! `pipeline_depth_for_seq` entry (set by `transfer_inject`'s
 //! annotator for `loop V : pipeline=D` body Xfers — TASK-0233). Both
 //! fresh seqs (the producer→host hop and the host→consumer hop)
-//! inherit the original's depth verbatim, so the sidecar's
-//! `transfer_buffer_for_seq` map (built downstream from
-//! `pipeline_depth_for_seq`) provides a buffer for every emitted
-//! `Chan` instance. Without this mirroring, `Plan::build` would fail
-//! at `chan_caps` lookup with a `ContractGap` for the fresh seqs.
+//! inherit the original's depth verbatim.
+//!
+//! **What this mirroring actually controls (cycle-163b QA P3.1
+//! correction):** the load-bearing consumer of `pipeline_depth_for_seq`
+//! is `passes::acfg_to_petri::buffer_place_for` (see
+//! `nucleus-compiler/src/passes/acfg_to_petri.rs:486-497`), which
+//! pre-seeds each buffer place with `D` initial tokens to model
+//! producer-runs-ahead semantics (TASK-0134, PRD §8.2). Without
+//! mirroring, the fresh hops' buffer places start with 0 tokens
+//! instead of `D`, so the petri-net under-models the steady-state
+//! pipeline fill; downstream runtime semantics would diverge from the
+//! original pair's pipeline depth (the failure mode is a model-vs-
+//! runtime mismatch / pipeline-stall surface, NOT a compile-time
+//! `chan_caps` ContractGap — `chan_caps` is built by
+//! `sidecar.rs:collect_transfer_buffers` walking each `XferPlaceholder`
+//! directly, so the fresh hops are covered automatically by virtue of
+//! existing in the ACFG, independent of this mirroring).
 //!
 //! ## Honest scope (AC#4 — 09 only this cycle)
 //!
@@ -198,9 +215,25 @@
 //!   mediation; this pass is the DATA-arm analogue, scope-wise).
 //! - Cycle-153 defensive guard:
 //!   `mp-tcp-event/src/multi_worker.rs:collect_w2w_pushes`
-//!   (TASK-0330; stays in place as fail-loud safety net for shapes
-//!   the pass doesn't handle, e.g. residual in-loop w2w Pushes that
-//!   could arise from future schedules).
+//!   (TASK-0330; stays in place as fail-loud safety net). The precise
+//!   residual classes this pass does NOT cover (cycle-163b architect
+//!   P2.4 fold-back, enumerated rather than hand-waved):
+//!   - **(R-bare)** A bare `Xfer` outside any `Sequence` parent
+//!     (no sibling slot to land the 4 routed nodes into) — see
+//!     `rewrite_at` early-return on the non-Sequence case.
+//!   - **(R-singleton)** A `Push` (or `Wait`) without its matching
+//!     sibling endpoint in the SAME `Sequence` — e.g. when
+//!     `transfer_inject::hoist_invariant_waits` has hoisted one
+//!     endpoint into a different scope — see
+//!     `rewrite_sequence_children`'s pair-finding skip.
+//!   - **(R-toplevel)** Top-level (depth-0) non-host pairs are not
+//!     rewritten by design (cycle-149 flat host-relay handles them);
+//!     the TASK-0330 guard does not fire here because it's scoped to
+//!     `inside_loop = true`, but the residual-class enumeration would
+//!     be incomplete without naming it.
+//!     The 13-arm follow-up (TASK-0329.01.02.01) is most likely to
+//!     surface **(R-singleton)** when inter-stage transfers get
+//!     hoist-split by `transfer_inject`.
 //! - Memory `feedback-driver-must-mirror-backend-election-exactly` —
 //!   host election in the driver uses the same rule as Plan::build.
 //! - Memory `project-mp-tcp-event-vs-bufsync-safety-profile` —
@@ -264,10 +297,21 @@ pub fn apply_host_data_relay_inject(mut acfg: ACFG, host: WorkerId) -> ACFG {
     let mut seq_map: Vec<(SeqTag, SeqTag, SeqTag)> = Vec::new();
     rewrite_at(&mut acfg.root, host, false, &mut counter, &mut seq_map);
 
-    // Phase 3: mirror pipeline_depth_for_seq onto fresh seqs so
-    // build_sidecar's transfer_buffer_for_seq map has entries for
-    // host's new Chan instances. Without this, mp-tcp-event's
-    // Plan::build chan_caps lookup would ContractGap on fresh seqs.
+    // Phase 3: mirror pipeline_depth_for_seq onto fresh seqs.
+    //
+    // The load-bearing consumer is `passes::acfg_to_petri::
+    // buffer_place_for` (see acfg_to_petri.rs:486-497), which uses the
+    // depth as the petri-net buffer place's `initial_marking` to model
+    // producer-runs-ahead semantics (TASK-0134). Without this mirror,
+    // the fresh hops' buffer places start with 0 tokens instead of D,
+    // diverging the petri model from the pair's intended pipeline
+    // depth.
+    //
+    // NB: chan_caps is built by `sidecar.rs:collect_transfer_buffers`
+    // walking every XferPlaceholder directly, so the fresh hops are
+    // included automatically by virtue of existing in the ACFG —
+    // mirroring pipeline_depth_for_seq is NOT what keeps chan_caps
+    // populated. (Cycle-163b QA P3.1 mechanism correction.)
     for (orig, to_host, from_host) in &seq_map {
         if let Some(depth) = acfg.pipeline_depth_for_seq.get(orig).copied() {
             acfg.pipeline_depth_for_seq.insert(*to_host, depth);

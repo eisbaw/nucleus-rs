@@ -1696,6 +1696,19 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 ///     different failure profile than mp-tcp-event's per-seq-demux;
 ///     enabling the pass on bufsync without a runtime verification
 ///     path is a defensible-gain-of-zero risk.
+///
+/// **Affirmative structural finding (cycle-163b architect P2.1
+/// fold-back):** the B2 rewrite splits one non-host pair `(w_src,
+/// w_dst)` into two pairs `(w_src, host)` and `(host, w_dst)`. Each
+/// resulting hop is a single-pair stream with its own monotonically-
+/// allocated `seq` (from `max_existing_seq + 1`). The per-pair
+/// FIFO invariant `wire::read_msg_expect` relies on is therefore
+/// preserved per resulting hop — the pass does NOT introduce a
+/// latent seq-mismatch panic surface on future capability-compatible
+/// schedules. Skipping the pass on bufsync today is a
+/// gain-of-zero-for-cells-that-can't-run risk-mitigation choice, not
+/// a "the pass would corrupt bufsync" structural barrier.
+///
 /// If a future cycle relaxes bufsync's capability gate (or the
 /// async/buffer/event semantics are mirrored to a poll/sync transport),
 /// re-evaluate whether to enable `apply_host_data_relay_inject` on
