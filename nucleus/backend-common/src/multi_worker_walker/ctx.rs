@@ -32,26 +32,35 @@ pub type RendezvousId = usize;
 /// verbatim across all `render_worker_events`-using backends.
 ///
 /// Grep witness (cycle 141 TASK-0322 fold-back, line stamps re-
-/// verified cycle 142b fold-back after qa P2 caught off-by-+2/+6
-/// drift): `grep -n 'rendezvous_prefix:'
-/// nucleus/backends/*/src/multi_worker.rs` yields exactly three
-/// field-init sites (pthreads-sync `"slot"` line 538, pthreads-
-/// async `"ring"` line 522, mp-tcp-event `"chan"` line 493).
+/// verified cycle 181b after cycle-180 mp-tcp-event multi_worker.rs
+/// directory-split shifted both file path and line): `grep -n
+/// 'rendezvous_prefix:'
+/// nucleus/backends/pthreads-{sync,async}/src/multi_worker.rs
+/// nucleus/backends/mp-tcp-event/src/multi_worker/*.rs` yields
+/// exactly three field-init sites (pthreads-sync
+/// `multi_worker.rs:532` `"slot"`, pthreads-async
+/// `multi_worker.rs:518` `"ring"`, mp-tcp-event
+/// `multi_worker/worker_program.rs:130` `"chan"`).
 pub struct WalkerCtx<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
     /// `"slot"` for pthreads-sync, `"ring"` for pthreads-async,
     /// `"chan"` for mp-tcp-event. Used in the two emit-string
-    /// substitutions in this file: `{prefix}{rendezvous_prefix}_{id}.push(...)`
+    /// substitutions in the sibling
+    /// [`super::event_walker`] module:
+    /// `{prefix}{rendezvous_prefix}_{id}.push(...)`
     /// (the `Event::Push` branch) and `{prefix}{rendezvous_prefix}_{id}.wait()`
     /// (the `Event::Wait` branch, fed into `render_wait_assign`).
     ///
-    /// Grep witness (cycle 141 TASK-0322 fold-back, line stamps
-    /// updated cycle 142 TASK-0323 module-doc sweep): `grep -n
+    /// Grep witness (cycle 141 TASK-0322 fold-back, file path + line
+    /// stamps re-verified cycle 181b after cycle-181
+    /// multi_worker_walker.rs directory-split shifted the emit-
+    /// template sites into sub-modules): `grep -n
     /// '{rendezvous_prefix}_' nucleus/backend-common/src/` yields
-    /// exactly two emit-template sites (Push at line 833, Wait at
-    /// line 853 — both pinned parametrically by
-    /// `task0321_*` / `task0322_*` in
+    /// exactly two emit-template sites (Push at
+    /// `multi_worker_walker/event_walker.rs:454`, Wait at
+    /// `multi_worker_walker/event_walker.rs:474` — both pinned
+    /// parametrically by `task0321_*` / `task0322_*` in
     /// `nucleus/backend-common/tests/wait_assign_slice.rs`).
     pub rendezvous_prefix: &'a str,
     /// Cross-worker Push/Wait pair -> rendezvous index. Both backends

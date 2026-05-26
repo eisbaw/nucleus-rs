@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 13:00'
+updated_date: '2026-05-26 13:57'
 labels:
   - tech-debt
   - hygiene
@@ -355,4 +355,33 @@ Cycle 180 implementer used the enumerated-disclosure shape directly (no blanket 
 **AC#2 scope question (still deferred from cycle-179b):** the original 6-file scope vs the recipe-scope (all >1000 LoC) decision was deferred to the slice-6 implementer's plan. transfer_inject.rs at 4726 LoC remains the highest-leverage out-of-original-audit candidate; slice 6 should consider taking it instead of acfg.rs.
 
 **Stop condition reached for this session:** the orchestrator has shepherded slice 4 + slice 5 + cycle-179b/180b hardening through 5 implementer/reviewer subagent cycles (1 implementer + 2 reviewers per slice = 6 spawns, +1 implementer for slice 5). The next slice (slice 6 = acfg.rs OR transfer_inject.rs) is a structurally different file (non-backend, IR/transform compiler-pass, high downstream consumer count) that warrants fresh context per the phase3-backlog-ralph stop criteria. Resuming in a new session yields cleaner brief construction.
+
+## Cycle 181 + 181b — slice 6 (TASK-0340.05) close
+
+Slice 6 implementer (mped-architect agent type, in-thread) landed commit 769d9a5: backend-common/src/multi_worker_walker.rs (1263 LoC) split into multi_worker_walker/{ctx,block_tag,event_walker,wait,collect,mod}.rs (6 files, total 1327 LoC; +64 vs pre-split = orientation docstrings + use lines + sub-module decls; no behaviour change).
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) returned GO with two P2 doc-lie findings (line-stamps stale from cycle-178/180 file shifts not carried during the slice-6 mechanical move per cycle-180 brief gotcha (B)). Cycle 181b folded them back inline; 1 additional 'in this file' deixis-lie discovered during the fold-back audit (L49 of ctx.rs pre-181b) and fixed in the same commit.
+
+Behaviour-equivalent change list cycle 181:
+- (a) 3 WalkerCtx impl methods uplifted private fn → pub(super): render_ctx, worker_name, data_name. Required because the sole cross-sub-module consumer (event_walker.rs) now lives in a different file; pub(super) is the tightest viable scope.
+- (b) enum WaitSlice co-located with its consumers (moved from old L128-140 neighbouring WalkerCtx to head of wait.rs). Module-private before and after.
+
+Cycle 181b edits (post-fold-back):
+- ctx.rs L34-43: line-citations updated for pthreads-sync (538→532), pthreads-async (522→518), mp-tcp-event (multi_worker.rs:493 → multi_worker/worker_program.rs:130 — cycle 180 file-path shift). Verification-cycle stamp updated 142b → 181b.
+- ctx.rs L49: 'in this file' → 'in the sibling [`super::event_walker`] module' (cycle-181-introduced deixis-lie; the cycle-178b/179b/180b lesson now generalises to file/module deixis in addition to numeric citations).
+- ctx.rs L53-62: emit-template citations updated to event_walker.rs:454 (Push) + event_walker.rs:474 (Wait). Verification-cycle stamp updated 142 → 181b.
+
+AC delta for TASK-0340 post-cycle-181b:
+- AC#1: DONE (cycle 176; audit list still accurate).
+- AC#2: **4/6 files split** (render.rs cycle 178; mp-tcp-bufsync/lib.rs cycle 179; mp-tcp-event/multi_worker.rs cycle 180; backend-common/multi_worker_walker.rs cycle 181). Remaining: nucleus-compiler/acfg.rs (1440 LoC), nucleus-compiler/link.rs (1290 LoC). The backend-common spine is now done; remaining 2 are nucleus-compiler IR/pass-layer — different shape than backend codegen splits 3-6.
+- AC#3 (proptest): PENDING.
+- AC#4 (e2e/main.rs report-formatter carve-out): PENDING.
+- AC#5: DONE (allow-list shrank 11 → 10 cycle 181; direction-B staleness confirms).
+- AC#6: DONE for each landed slice (no new TASK-NNNN / cycle-NNN citations introduced in slice 6 mechanical-move; cycle-181b adjustments are existing-narrative updates not new anchors).
+- AC#7: PENDING (final cycle when AC#2 + AC#3 close).
+
+Forward-carries to slices 7+ (acfg.rs, link.rs):
+- Doc-deixis audit ('this file' / 'this function' references) is now mandatory post-split audit dimension alongside the existing line-number stamp audit. Surfaced via cycle-181b discovery of 'in this file' lie at ctx.rs:L49.
+- Slices 7+ target compiler IR/pass files (not backend codegen). Comment-density at acfg.rs 0.57 is the highest in the workspace — comment-doc-lie risk is correspondingly amplified per feedback-comment-doc-lie-recurring.
+- Architect cycle-181 P3.1 (two-way dep risk if future M6 codegen amplification needs wait/block_tag/event_walker back-edges) — not actionable at slice-6 close; flag if M6 codegen work bumps wait.rs / block_tag.rs past leaf status.
 <!-- SECTION:NOTES:END -->
