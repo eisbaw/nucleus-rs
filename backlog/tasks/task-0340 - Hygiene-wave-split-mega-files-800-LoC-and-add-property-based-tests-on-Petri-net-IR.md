@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 10:33'
+updated_date: '2026-05-26 10:49'
 labels:
   - tech-debt
   - hygiene
@@ -66,4 +66,28 @@ OPEN (subsequent slices):
 
 ARCHITECT-DEFERRED FOLD-BACKS (forward-carried to slice-2):
 - P2.1: STALENESS direction not enforced — a future split could leave a stale allow-list entry for a file no longer >1000. Architect empirically verified: replaced pthreads-async/multi_worker.rs (allow-listed, 1048 LoC) with 500-LoC stub, recipe PASSED. Slice-2 should add a sibling assertion that every allow-list pattern matches a still-oversized file. Concretely: refactor the recipe to enumerate allow-list paths positively (rather than as grep -v negative filters) so the "this allow-list entry is stale" direction also fails loudly.
+
+## Cycle 177 — slice 2 staleness-check refactor landed
+
+Architect cycle-176 P2.1 fold-back complete: check-mega-files now enumerates the allow-list POSITIVELY (printf-fed bash array via temp files + `comm -23`). Both directions FAIL LOUD:
+- (A) new mega-file >1000 LoC outside allow-list.
+- (B) allow-list entry whose file is NO LONGER >1000 LoC (split landed, file deleted, file shrank).
+
+The cycle-176 architect-reproduced silent-pass case (replace pthreads-async/multi_worker.rs allow-listed 1048 LoC → 500-LoC stub) now FAILS LOUD with the precise direction-B message.
+
+Cycle-177 architect (read-only) GO with two P1 fold-backs applied this cycle:
+- P1.1 POSIX-shell portability — `comm -23 <(echo ...)` used bash process substitution; just defaults to `/bin/sh` which on dash/ash/busybox would syntax-error before either direction runs (silent-absence rather than silent-pass). Rewrote to temp-file form via `mktemp` + `trap EXIT`.
+- P1.2 memory-citation correction — initial draft cited `feedback-silent-sibling-defect` but the actual class is `feedback-opacity-gate-rot` (each per-file filter is a deferral gate that rots silently when surrounding state shifts). Swapped citation.
+- P2.1 (folded inline) — added `set -eu` + `set -o pipefail` so find-pipeline-internal errors propagate; dropped `2>/dev/null` so scope-vanish failures surface.
+
+Deferred (P2.2 cosmetic — direction-A LoC count in failure message; P2.3 informational — printf-form pin comment; P3.2 cosmetic — one memory per line). Acknowledged P3.1 — AC#5 of TASK-0340 reads "asserts no file exceeds 1000 LoC + initial pass exempts via allow-list with rationale"; the staleness direction is a strict SUPERSET of the AC text. Recording the cycle-177 implementation as "AC#5 implemented with both directions; staleness direction exceeds AC text scope" rather than rewriting the AC (per memory `feedback-ac-rewrite-on-done-task`).
+
+BITE-verified both directions on the POSIX-rewrite form:
+- 1006-LoC stub in backend-common/src/ → FAIL (direction A).
+- pthreads-async/multi_worker.rs truncated to 500 LoC → FAIL (direction B).
+
+TASK-0340 AC status post-cycle-177:
+- AC#5: DONE (both directions now), strict superset of original AC text.
+- AC#1: DONE incidentally (cycle 176).
+- AC#2-#4, #6-#7: PENDING (subsequent slices).
 <!-- SECTION:NOTES:END -->

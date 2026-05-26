@@ -385,95 +385,118 @@ check-narrative-doc-lie:
     fi; \
     echo "OK: no predictive-conclusion doc-lies in narrative TOML."
 
-# Mega-file regression-fence (TASK-0340 AC#5, slice 1, cycle 176).
+# Mega-file regression-fence (TASK-0340 AC#5; slice 1 cycle 176, slice 2
+# cycle 177).
+#
 # Asserts no file under the scoped sub-trees STRICTLY EXCEEDS 1000 LoC
-# outside an explicit allow-list. The allow-list documents the
-# as-of-filing baseline; the recipe BITES the moment a NEW file crosses
-# 1000.
+# outside an explicit allow-list. The recipe checks BOTH directions:
+#   (A) Direction "new mega-file appears" — any oversized file NOT in
+#       the allow-list FAILS LOUD.
+#   (B) Direction "allow-list entry becomes stale" — any allow-list
+#       entry whose file is NO LONGER >1000 LoC (split landed, file
+#       deleted, file shrank) FAILS LOUD.
 #
-# Threshold semantics (architect cycle-176 P2.2): the check is
-# `$1 > 1000`, i.e. STRICTLY greater. A file at exactly 1000 LoC
-# passes. AC#5 of TASK-0340 reads "no file exceeds 1000 LoC" which
-# matches `>` (exceeds = strictly more than).
+# Direction (B) was added cycle 177 (architect cycle-176 P2.1
+# fold-back) — the prior negative-filter shape (`grep -v` per allow-
+# list entry) silently passed when an allow-listed file shrank below
+# the threshold. Architect empirically reproduced this on cycle 176:
+# replaced pthreads-async/multi_worker.rs (allow-listed, 1048 LoC)
+# with a 500-LoC stub; recipe passed with stale exemption in force.
+# The positive-enumeration shape introduced cycle 177 closes that
+# silent-correctness-loss arm.
 #
-# Why 1000? Picked as the natural reading-fatigue boundary — a file
-# beyond ~1000 lines stops fitting in a single editor view + becomes
-# hard to navigate without folding. The 800-LoC smell threshold the
-# 2026-05-25 audit used is a softer warning; 1000 is the hard fence.
+# Threshold semantics: the check is `$1 > 1000`, STRICTLY greater. A
+# file at exactly 1000 LoC passes (AC#5 of TASK-0340 reads "no file
+# exceeds 1000 LoC"; "exceeds" = strictly more than). When an allow-
+# listed file shrinks to exactly 1000, direction-(B) reports it as
+# stale and the recipe FAILS — the implementer removes the entry.
 #
-# Scope (architect cycle-176 P2.3): walks `nucleus/backend-common/src`,
+# Why 1000? Natural reading-fatigue boundary — a file beyond ~1000
+# lines stops fitting in a single editor view. The 800-LoC threshold
+# the 2026-05-25 audit used is a softer warning; 1000 is the hard
+# fence.
+#
+# Scope: walks `nucleus/backend-common/src`,
 # `nucleus/nucleus-compiler/src`, and `nucleus/backends/*/src`. The
-# following sub-trees are DELIBERATELY excluded:
+# following sub-trees are DELIBERATELY excluded (architect cycle-176
+# P2.3):
 #   - `nucleus/e2e/src/` — main.rs is 7316 LoC (report-formatter test
-#     mass; the carve-out is TASK-0340 AC#4 follow-up slice).
+#     mass; carve-out is TASK-0340 AC#4 follow-up slice).
 #   - `nucleus/driver`, `nucleus/mp-tcp-common`, `nucleus/test-common`,
 #     `nucleus/nucleus` — currently NO file >1000 LoC by coincidence
-#     of size, not by rule. If any of these grows past 1000 the recipe
-#     will silently pass; widen the scope when that happens.
+#     of size, not by rule. Widen the scope when any grows past 1000.
 #
-# Allow-list (14 entries at cycle 176; reproduce with
-# `find nucleus/{backend-common,nucleus-compiler,backends}/src -name '*.rs' -exec wc -l {} \; | sort -rn | awk '$1 > 1000'`).
+# Allow-list canonical reproducer: `find
+# nucleus/{backend-common,nucleus-compiler,backends}/src -name '*.rs'
+# -exec wc -l {} \; | sort -rn | awk '$1 > 1000 {print $2}'`.
+#
 # Each entry is a TASK-0340 AC#2 split target — the allow-list shrinks
-# as splits land. Architect cycle-176 P2.1 flagged the STALENESS
-# DIRECTION: there is no enforcement that allow-list entries STILL
-# exceed 1000; a future split could leave a stale exemption.
-# Slice-2 of TASK-0340 should add a sibling assertion.
+# as splits land. The allow-list is a printf-fed bash array (not a
+# heredoc — a column-0 heredoc body crashes just's parser; see
+# justfile-history). Adding/removing an entry is a one-line edit;
+# per-file LoC numbers are deliberately NOT enumerated (architect
+# cycle-176 P3.1 — they create drift debt with no automated guard).
 #
-# Per-file LoC numbers are deliberately NOT enumerated in this comment
-# block (architect cycle-176 P3.1: they would create drift debt with
-# no automated guard — `feedback-comment-doc-lie-recurring` exposure).
-# Allow-list file paths only:
-#   - passes/transfer_inject.rs
-#   - backends/mp-tcp-bufsync/src/lib.rs
-#   - backends/mp-tcp-event/src/multi_worker.rs
-#   - backend-common/src/render.rs
-#   - passes/reuse_inference.rs
-#   - sched/lower.rs
-#   - passes/halo_inference.rs
-#   - nucleus-compiler/src/acfg.rs
-#   - algo/lower.rs
-#   - nucleus-compiler/src/link.rs
-#   - backend-common/src/multi_worker_walker.rs
-#   - passes/host_data_relay_inject.rs
-#   - sched/ir.rs
-#   - backends/pthreads-async/src/multi_worker.rs
-#
-# To add a NEW allow-list entry: edit BOTH the file list above AND the
-# recipe's grep -v patterns below; do NOT just add to the patterns.
-# The audit list is the source of truth for what the project has
-# knowingly accepted; the patterns are derived from it.
+# POSIX-shell portability (architect cycle-177 P1.1): the recipe uses
+# `comm -23` against TEMP FILES, not bash process substitution
+# `<(...)`. `just` defaults to `/bin/sh -cu`; on dash/ash/busybox-sh
+# `<(...)` would syntax-error before either direction runs, leaving
+# the regression-fence silently absent. The temp-file form via
+# `mktemp` + `trap "rm -f ... " EXIT` is POSIX-portable.
 check-mega-files:
     @echo "checking nucleus/**/src/*.rs for files exceeding 1000 LoC..."
-    @hits=$(find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src -name '*.rs' -exec wc -l {} \; 2>/dev/null \
-        | awk '$1 > 1000 { print $0 }' \
-        | grep -vE '/passes/transfer_inject\.rs$' \
-        | grep -vE '/backends/mp-tcp-bufsync/src/lib\.rs$' \
-        | grep -vE '/backends/mp-tcp-event/src/multi_worker\.rs$' \
-        | grep -vE '/backend-common/src/render\.rs$' \
-        | grep -vE '/passes/reuse_inference\.rs$' \
-        | grep -vE '/sched/lower\.rs$' \
-        | grep -vE '/passes/halo_inference\.rs$' \
-        | grep -vE '/nucleus-compiler/src/acfg\.rs$' \
-        | grep -vE '/algo/lower\.rs$' \
-        | grep -vE '/nucleus-compiler/src/link\.rs$' \
-        | grep -vE '/backend-common/src/multi_worker_walker\.rs$' \
-        | grep -vE '/passes/host_data_relay_inject\.rs$' \
-        | grep -vE '/sched/ir\.rs$' \
-        | grep -vE '/backends/pthreads-async/src/multi_worker\.rs$' \
-        || true); \
-    if [ -n "$hits" ]; then \
-        echo "FAIL: file(s) over 1000 LoC outside the allow-list (TASK-0340 mega-file regression-fence):"; \
-        echo "$hits"; \
+    @set -eu; \
+    set -o pipefail; \
+    oversized_f=$(mktemp); \
+    allow_f=$(mktemp); \
+    trap "rm -f $oversized_f $allow_f" EXIT; \
+    find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src -name '*.rs' -exec wc -l {} \; \
+        | awk '$1 > 1000 {print $2}' \
+        | sort > $oversized_f; \
+    printf '%s\n' \
+        'nucleus/nucleus-compiler/src/passes/transfer_inject.rs' \
+        'nucleus/backends/mp-tcp-bufsync/src/lib.rs' \
+        'nucleus/backends/mp-tcp-event/src/multi_worker.rs' \
+        'nucleus/backend-common/src/render.rs' \
+        'nucleus/nucleus-compiler/src/passes/reuse_inference.rs' \
+        'nucleus/nucleus-compiler/src/sched/lower.rs' \
+        'nucleus/nucleus-compiler/src/passes/halo_inference.rs' \
+        'nucleus/nucleus-compiler/src/acfg.rs' \
+        'nucleus/nucleus-compiler/src/algo/lower.rs' \
+        'nucleus/nucleus-compiler/src/link.rs' \
+        'nucleus/backend-common/src/multi_worker_walker.rs' \
+        'nucleus/nucleus-compiler/src/passes/host_data_relay_inject.rs' \
+        'nucleus/nucleus-compiler/src/sched/ir.rs' \
+        'nucleus/backends/pthreads-async/src/multi_worker.rs' \
+        | sort > $allow_f; \
+    new_megafile=$(comm -23 $oversized_f $allow_f); \
+    stale_allow=$(comm -23 $allow_f $oversized_f); \
+    fail=0; \
+    if [ -n "$new_megafile" ]; then \
+        echo "FAIL (direction A): new mega-file(s) >1000 LoC outside the allow-list:"; \
+        echo "$new_megafile" | sed 's/^/  /'; \
         echo ""; \
         echo "Fix options (in order of preference):"; \
         echo "  1. Split the file into cohesive sub-modules along seams already named by its module-level docstring (TASK-0340 AC#2 — preferred)."; \
-        echo "  2. If the file is a single coherent unit that genuinely needs to be large, add to the allow-list in BOTH the recipe comment block + the grep -v pattern at justfile:check-mega-files, with a one-line rationale for why this file is exempt."; \
+        echo "  2. If the file is a single coherent unit that genuinely needs to be large, add to the allow-list (printf list) at justfile:check-mega-files with a one-line rationale for why this file is exempt."; \
         echo "  3. If the growth is from one cycle's worth of feature additions that can be deferred, revert / postpone."; \
         echo ""; \
-        echo "(memory: feedback-comment-doc-lie-recurring — large files concentrate comment-doc-lie risk; the audit threshold is 800 LoC, the hard fence is 1000)"; \
+        fail=1; \
+    fi; \
+    if [ -n "$stale_allow" ]; then \
+        echo "FAIL (direction B): stale allow-list entr(ies) — file no longer >1000 LoC (split landed, file deleted, or file shrank):"; \
+        echo "$stale_allow" | sed 's/^/  /'; \
+        echo ""; \
+        echo "Fix: remove the entry from the allow-list (printf list) at justfile:check-mega-files. The allow-list is the project's record of what the team has knowingly accepted — entries that no longer apply must come off so the fence stays meaningful."; \
+        echo ""; \
+        fail=1; \
+    fi; \
+    if [ $fail -ne 0 ]; then \
+        echo "(memory: feedback-comment-doc-lie-recurring — large files concentrate comment-doc-lie risk."; \
+        echo " memory: feedback-opacity-gate-rot — direction-B stale-entry path added cycle 177 in response to architect cycle-176 P2.1 empirical reproduction; each grep -v / printf-list entry is a per-file opacity gate that rots silently when the underlying file shrinks below threshold.)"; \
         exit 1; \
     fi; \
-    echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC."
+    echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC; no allow-list entry is stale."
 
 # Remove build artefacts.
 clean:
