@@ -3,11 +3,11 @@ id: TASK-0329
 title: >-
   host-mediated barrier mediation for host-excluding barrier shapes (TASK-0327
   cycle-148 architect P3.1)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-26 07:24'
+updated_date: '2026-05-26 07:53'
 labels:
   - M6
   - backend
@@ -180,10 +180,47 @@ The previous note said test name 'task0329_idempotence_with_projection_acfg_to_e
 ## Cycle 166b forward-link
 
 TASK-0329.01 (child task — in-loop w2w Push redesign via slice composition) was moved to Done cycle 166. The TASK-0329 parent's OWN ACs are: AC#1 lift mp-tcp-bufsync host-excluding barrier rejection (landed cycle 160 via apply_host_mediation_inject); AC#2 promote 03-reduction/distributed × mp-tcp-bufsync from [[skip]] to [[required]]; AC#3 defensive test fixture for host-excluding barrier shape. Cycle-166 closing audit (TASK-0329.01) did not re-evaluate AC#2/AC#3 of THIS parent task; they may still be open. The next-cycle audit window should consider whether AC#2 + AC#3 are met — if so, parent task can move to Done; if not, file the precise remaining work. This note exists per cycle-166b architect P3.2 forward-link discipline (no status change this cycle).
+
+## Cycle 167 closure audit — all 3 ACs gate-verifiable as MET (orchestrator-direct)
+
+Per cycle-166b architect P3.2 forward-link ("AC#2/AC#3 of THIS parent task may still be open; next-cycle audit window should consider whether AC#2 + AC#3 are met"), re-audited each AC against current head:
+
+### AC#1: lift mp-tcp-bufsync host-excluding barrier rejection ✓ MET (cycle 160 commit 2e6df08)
+- `nucleus/nucleus-compiler/src/passes/host_mediation_inject.rs` exists (13533 bytes).
+- `driver/src/main.rs:507` dispatches `apply_host_mediation_inject` for `mp-tcp-bufsync` / `mp-tcp-event`.
+- 8 unit tests in `passes::host_mediation_inject::tests` all pass (`cargo test --lib -p nucleus-compiler passes::host_mediation_inject` → 8 passed; 0 failed). Cycle-160 note said "7 tests" — actual is 8 (benign undercount; the (a)..(g) listing collapsed the two idempotence variants).
+
+### AC#2: e2e cell promotion ✓ MET (cycle 158 commit 36a7d23 via TASK-0335)
+- `nuc-nucleus/e2e-matrix.toml:433-437` records 03-reduction/distributed × mp-tcp-bufsync as `[[required]]`.
+- Cycle-167 ground-truth `just e2e`: 112/102/0/10/0 (the cell PASSES bit-identical against reference.bin).
+- Note: AC#2 was lifted via the cycle-158 Sequence-scope Wait dedup (TASK-0335), AFTER the cycle-160 host_mediation pass landed — the dedup was the LAST remaining defect once host_mediation cleared the topology gate.
+
+### AC#3: defensive test fixture ✓ MET (cycle 160 commit 2e6df08)
+- 8 unit tests cover: host-excluding Sync top-level mediated; host-including Sync unchanged; Sync inside Sequence mediated; Sync inside Repeat body mediated; idempotence (one-pass-equals-two-passes); idempotence-with-projection-acfg_to_events stable; composed-with-petri_to_events projects Sync to host; no-Sync ACFG no-op.
+
+### Closing this task
+Sub-task TASK-0329.01 (in-loop w2w Push host-relay redesign) moved to Done cycle 166 (commit b6a189f). All 3 parent ACs of THIS task are now verifiable as met. Closing per honest-failure discipline applied positively (the work landed across cycles 160-166; this audit catches the tracker up to reality).
+
+Cross-references:
+- Cycle-160 commit 2e6df08 (initial lift + AC#1 + AC#3)
+- Cycle-158 commit 36a7d23 (Sequence-scope Wait dedup that closed AC#2)
+- Cycle-166 commit b6a189f (sub-task closing audit)
+- Cycle-166b commit 2a3e7b6 (P3.2 forward-link to this audit)
+
+Gate at closure: e2e 112/102/0/10/0; 8/8 host_mediation_inject tests green. No source change this cycle (tracker-only closure).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Cycle 160 lands the TASK-0329 lift via a new compiler-level pass apply_host_mediation_inject (nucleus/nucleus-compiler/src/passes/host_mediation_inject.rs) instead of the original AC#1 framing's per-backend Plan::build modification. The pass walks the ACFG, inserts host into every SyncPlaceholder's participants set, and the driver applies it conditionally for mp-tcp-bufsync / mp-tcp-event only (pthreads-sync and pthreads-async unchanged; their std::sync::Barrier::new(N) handles host-excluding barriers natively). Rationale: a compiler-level lift means acfg_to_events naturally places host's Sync at the structurally correct position (preserving Repeat/Sequence nesting), avoiding the cycle-148/149 splice-heuristic fragility surfaced by cycle-150 TASK-0332. The cycle-148/149 defensive rejection at both backends stays as defense-in-depth. AC status: AC#1 GREEN (pass + driver dispatch + 7 unit tests including a composed-with-acfg_to_events end-to-end pin); AC#2 BLOCKED-DIFFERENTLY (both in-tree TASK-0329 trigger cells now advance past the cycle-148 ContractGap and hit TASK-0330's defensive guard against in-loop w2w Push events; filed TASK-0329.01 as the cycle-160 fold-back blocker; cells stay [[skip]] with updated reasons citing TASK-0330 as the front blocker); AC#3 GREEN. Gates: dev/release 913/0/3 each (+7 new pass tests; baseline was 906/0/3), clippy clean, structural checks pass, e2e 112/99/0/13/0 UNCHANGED from cycle-159 baseline. Empirical verification: both trigger cells now emit the TASK-0330 ContractGap forward-link instead of the cycle-148 TASK-0175 one, confirming the front blocker has migrated. Forward-carried lessons: pass-level lift cleanly preserves paired-lift discipline (operates above the backend split); idempotence guaranteed by BTreeSet::insert; pass ordering matters (after inject_syncs / inject_transfers, before acfg_to_events). Commits: this cycle.
+
+## Cycle 167 closure addendum (orchestrator-direct, tracker-only)
+
+Per cycle-166b architect P3.2 forward-link, re-audited AC#2 + AC#3 of THIS parent task:
+- AC#2 (e2e cell promotion): MET — 03-reduction/distributed × mp-tcp-bufsync was promoted [[required]] cycle 158 (TASK-0335 Sequence-scope Wait dedup, AFTER cycle-160 host_mediation cleared the topology gate); cycle-167 e2e 112/102/0/10/0 confirms PASS bit-identical.
+- AC#3 (defensive test fixture): MET cycle 160 already (8 unit tests; cycle-160 note said "7" — benign undercount, the (a)..(g) listing collapsed the two idempotence variants).
+- AC#1: re-verified MET (file exists, driver dispatch wired, 8/8 tests pass).
+
+Sub-task TASK-0329.01 (in-loop w2w Push host-relay redesign) moved to Done cycle 166. Closing parent. Cycle-167 gate: e2e 112/102/0/10/0; tests 8/8 passes::host_mediation_inject. No source change this cycle.
 <!-- SECTION:FINAL_SUMMARY:END -->
