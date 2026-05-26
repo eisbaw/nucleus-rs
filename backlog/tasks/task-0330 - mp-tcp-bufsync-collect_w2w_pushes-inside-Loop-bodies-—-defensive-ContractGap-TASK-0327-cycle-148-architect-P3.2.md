@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-25 19:50'
+updated_date: '2026-05-26 07:10'
 labels:
   - M6
   - backend
@@ -154,4 +154,20 @@ Architect P3.3 was a no-fix observation about call-graph soundness; left as-is p
 - **For TASK-0329 (host-mediated barrier mediation, the sibling CTRL-arm task)**: when that task lands, the same paired-backend discipline applies. Its lift will likely follow the cycle-148/149 splice pattern; the cycle-153 P3.2 sibling-walker audit shape (grep for ALL recursive Event::Loop walkers, document their robustness) is a reusable hygiene step for that task too.
 
 - **For TASK-0332 AC#1 (relax the host-relay scheduling model, the wait-before-push lift)**: if AC#1 lands one of the (A) threaded / (B) interleaved / (C) pre-bar_0 alternatives, the cycle-153 "RESOLVED by TASK-0330" comment in `detect_wait_before_push_hazard` needs revisiting — the composition assumption may need re-verification depending on whether the new design still goes through `render_relay_phase`.
+
+## Cycle 166 — docstring reframe addendum (production code, no AC change)
+
+The two `collect_w2w_pushes` guard docstrings in `mp-tcp-event/src/multi_worker.rs` and `mp-tcp-bufsync/src/lib.rs` were SHARPENED in cycle 166 as part of the TASK-0329.01 closing audit. No AC change; no behavior change; no test count delta.
+
+What changed:
+
+- **mp-tcp-event `collect_w2w_pushes` docstring**: cycle-163 update was preserved; cycle-166 added explicit labels for the two cycle-163b residual classes the guard still catches after slice-2 lifts the in-Repeat-body case at the ACFG layer:
+  - **(R-bare)** A bare `Xfer` outside any parent `Sequence`.
+  - **(R-singleton)** A `Push`/`Wait` without its matching sibling endpoint in the same `Sequence`.
+
+- **mp-tcp-bufsync `collect_w2w_pushes` docstring**: cycle-163b AC#5 narrative preserved; cycle-166 added a cross-backend-asymmetry note explaining that because `apply_host_data_relay_inject` is NOT enabled on bufsync (by design — per-pair FIFO constraint 3 + capability-skip on the three trigger cells), the guard's reachable shape set is BROADER on bufsync than on mp-tcp-event. The (R-bare)/(R-singleton) labels are mirrored on bufsync for cross-backend vocabulary parity but operative only conditionally on a future cycle enabling the pass here.
+
+Per memory `feedback-ac-rewrite-on-done-task`: TASK-0330's ACs were NOT rewritten. The reframe is at the DOCSTRING level in production code only; this addendum records the cycle for tracker traceability.
+
+Verification: all gates green; baseline preserved (962/0/3 dev, 961/0/3 release, 112/102/0/10/0 e2e); test pins in `tests/loop_body_w2w_push.rs` for both backends continue to pass (the synthetic fixtures bypass the slice-1/slice-2 passes so still trigger the guard).
 <!-- SECTION:NOTES:END -->

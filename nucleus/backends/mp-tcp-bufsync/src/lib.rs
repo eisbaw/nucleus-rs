@@ -415,14 +415,26 @@ impl<'a> Plan<'a> {
         //
         // Conservative-but-sound: rejects every schedule whose first
         // top-level w2w event for ANY non-host worker is a Wait.
-        // AC#1 of TASK-0332 (threaded or interleaved host-relay)
-        // is the architectural fix that will eventually remove this
-        // detection. No in-tree mp-tcp-bufsync schedule triggers
-        // this today (the only candidate, 05-stencil/distributed-2d,
-        // is capability-skipped on TASK-0042: async + buffer + event
-        // not supported by mp-tcp-bufsync's sync transport); but
-        // adding the check to both backends in the same cycle
-        // satisfies paired-lift discipline.
+        //
+        // **Cycle-162 update (TASK-0329.01.01 slice 1, Option D):**
+        // the landed architectural fix on the sibling backend is
+        // `apply_safe_push_reorder` (a driver-side pass), which
+        // hoists hoistable w2w Pushes ahead of preceding w2w Waits.
+        // The reorder pass is NOT applied on mp-tcp-bufsync — its
+        // per-pair FIFO single-stream constraint 3 (cycle-148 design)
+        // makes the analogous splice-point lift unsafe (see memory
+        // `project-mp-tcp-event-vs-bufsync-safety-profile`). This
+        // detector on mp-tcp-bufsync therefore behaves UNCHANGED
+        // from cycle 151: it rejects every wait-before-push shape
+        // unconditionally.
+        //
+        // No in-tree mp-tcp-bufsync schedule triggers this today
+        // (the only candidate, 05-stencil/distributed-2d, is
+        // capability-skipped on TASK-0042: async + buffer + event
+        // not supported by mp-tcp-bufsync's sync transport). The
+        // guard remains paired-lifted for fail-loud hygiene if a
+        // future capability lift exposes a bufsync-compatible
+        // wait-before-push schedule.
         detect_wait_before_push_hazard(per_worker, host_worker)?;
 
         Ok(Plan {
@@ -1678,8 +1690,8 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 /// future schedule shape, with test pins in
 /// `nucleus/backends/mp-tcp-bufsync/tests/loop_body_w2w_push.rs`.
 ///
-/// **TASK-0329.01.02 cycle 163 (slice 2) AC#5 bufsync audit — guard
-/// stays as-is on bufsync; pass NOT mirrored:**
+/// **TASK-0329.01.02 cycle 163 (slice 2) AC#5 bufsync audit + cycle-166
+/// reframe — guard stays as-is on bufsync; pass NOT mirrored:**
 /// the compiler-level `apply_host_data_relay_inject` pass that lifts
 /// this guard on mp-tcp-event (sibling backend) is intentionally NOT
 /// wired into the driver for mp-tcp-bufsync. Reasoning:
@@ -1693,6 +1705,23 @@ fn relay_phase_insertion_point(events: &[Event]) -> usize {
 ///     different failure profile than mp-tcp-event's per-seq-demux;
 ///     enabling the pass on bufsync without a runtime verification
 ///     path is a defensible-gain-of-zero risk.
+///
+/// **Residual safety-net scope (cycle 166 paired with mp-tcp-event
+/// sibling).** Because the pass is NOT enabled on bufsync, this
+/// guard's reachable shape set is BROADER than the sibling's: every
+/// Loop-body w2w `Push` reaches this guard, whereas on mp-tcp-event
+/// only the cycle-163b residual classes do. For cross-backend
+/// vocabulary parity (so a future reviewer can grep both sibling
+/// docstrings consistently), those classes are:
+/// - **(R-bare)** A bare `Xfer` outside any parent `Sequence` (would
+///   only matter on this backend if the pass were eventually enabled
+///   here AND `transfer_inject`'s contract weakened).
+/// - **(R-singleton)** A `Push`/`Wait` without its matching sibling
+///   endpoint in the same `Sequence` (same conditional applies).
+///
+/// On bufsync today the operative class is simply "any Loop-body w2w
+/// Push" — the residuals (R-bare)/(R-singleton) become operative only
+/// if a future cycle enables the pass here.
 ///
 /// **Affirmative structural finding (cycle-163b architect P2.1
 /// fold-back):** the B2 rewrite splits one non-host pair `(w_src,
@@ -1828,10 +1857,18 @@ fn detect_wait_before_push_hazard(
                          dependency: host's wire::read_msg_expect blocks \
                          for this worker's first Push; this worker blocks \
                          at this Wait for host's relay of the seq from \
-                         {src:?}. Filed as TASK-0332 (mp-tcp host-relay \
-                         deadlocks on wait-before-push schedule shapes); \
-                         AC#1 (threaded or interleaved host-relay) is the \
-                         architectural fix."
+                         {src:?}. TASK-0332 cycle 151 filed this defensive \
+                         guard. Note: TASK-0329.01.01 (slice-1 Option D \
+                         push-before-wait reorder) is wired on mp-tcp-event \
+                         ONLY — bufsync's per-pair FIFO constraint 3 (per \
+                         cycle-148 design + memory \
+                         `project-mp-tcp-event-vs-bufsync-safety-profile`) \
+                         makes the splice-point lift unsafe on this \
+                         backend, so the reorder pass cannot be enabled \
+                         here. If a future capability lift exposes a \
+                         bufsync-compatible wait-before-push schedule, a \
+                         backend-specific architectural fix would be \
+                         needed."
                     )));
                 }
                 // Non-w2w events (Push/Wait with host as the other

@@ -286,16 +286,36 @@ impl<'a> Plan<'a> {
         // distributed-2d × mp-tcp-event) deadlocked at 32s with this
         // exact shape; cycle 151 converts the runtime deadlock to a
         // codegen-time fail-loud ContractGap forward-linking
-        // TASK-0332. AC#1 (threaded or interleaved host-relay) is
-        // the architectural fix that will eventually remove this
-        // detection.
+        // TASK-0332.
+        //
+        // **Cycle-162 update (TASK-0329.01.01 slice 1, Option D —
+        // RESOLVED for the cycle-150 trigger):** the landed
+        // architectural fix is the driver-side `apply_safe_push_reorder`
+        // pass (`nucleus-compiler/src/passes/safe_push_reorder.rs`),
+        // which hoists hoistable w2w Pushes above preceding w2w Waits
+        // within each non-host worker's top-level boundaries. The
+        // hoist runs BEFORE this detector (driver pipeline order;
+        // see `driver/src/main.rs` near `apply_safe_push_reorder`),
+        // so the hazard SHAPE this detector rejects is structurally
+        // unreachable for hoistable shapes — 05/distributed-2d ×
+        // mp-tcp-event is now [[required]] bit-identical.
+        //
+        // This detector STAYS in place as a residual safety net for
+        // shapes where slice-1's hoist predicate refuses to move the
+        // Push: (a) `inside_loop = true` writes by Fire / Wait /
+        // nested Loop that taint the data and make the subsequent
+        // w2w Push not-hoistable, or (b) tile-overlap dependencies
+        // between a preceding w2w Wait and the candidate Push on a
+        // shared axis. Neither residual fires on any in-tree schedule
+        // today; the detector is dormant on the post-pass matrix and
+        // exists for fail-loud hygiene per
+        // [[feedback-panic-not-diagnostic-recurring]].
         //
         // Conservative-but-sound check: rejects every schedule whose
         // first top-level w2w event for ANY non-host worker is a
         // Wait. May false-positive on hypothetical "wait-only"
         // workers (those with w2w Waits but no w2w Pushes) where the
-        // deadlock cycle would not actually close; AC#1's eventual
-        // landing eliminates this gap.
+        // deadlock cycle would not actually close.
         detect_wait_before_push_hazard(per_worker, host_worker)?;
 
         debug_assert_eq!(chan_ids.len(), chan_caps.len());
@@ -1182,10 +1202,18 @@ fn detect_wait_before_push_hazard(
                          dependency: host's relay blocks at wait(seq) for \
                          this worker's first Push; this worker blocks at \
                          this Wait for host's relay of the seq from \
-                         {src:?}. Filed as TASK-0332 (mp-tcp-event \
-                         host-relay deadlocks on wait-before-push \
-                         schedule shapes); AC#1 (threaded or interleaved \
-                         host-relay) is the architectural fix."
+                         {src:?}. TASK-0332 cycle 151 filed this defensive \
+                         guard; TASK-0329.01.01 cycle 162 (Option D) \
+                         landed `apply_safe_push_reorder` which hoists \
+                         hoistable Pushes ahead of preceding Waits before \
+                         this check runs. If you are seeing this guard \
+                         fire, the candidate Push was NOT hoistable — \
+                         likely because a preceding Fire / Wait / Loop \
+                         body writes data the Push depends on, or a \
+                         preceding w2w Wait covers an overlapping tile \
+                         on a shared axis. See \
+                         `nucleus-compiler/src/passes/safe_push_reorder.rs` \
+                         for the hoistability predicate."
                     )));
                 }
                 // Non-w2w events (Push/Wait with host as the other
@@ -1355,24 +1383,38 @@ fn relay_phase_insertion_point(
 /// the loop's nested iteration order). Fail-loud at codegen > silent
 /// miscompile, per [[feedback-panic-not-diagnostic-recurring]].
 ///
-/// **TASK-0329.01.02 cycle 163 update (slice 2 lift):** the
-/// compiler-level `apply_host_data_relay_inject` ACFG pass
+/// **TASK-0329.01.02 cycle 163 update + cycle-166 reframe (slice 2
+/// lift + residual-class enumeration):** the compiler-level
+/// `apply_host_data_relay_inject` ACFG pass
 /// (`nucleus-compiler/src/passes/host_data_relay_inject.rs`) routes
-/// every non-host-pair Push/Wait through host BEFORE projection. After
-/// the pass, every Push in any worker's event list (top-level OR
-/// inside an `Event::Loop` body) has `dst == host` OR `src == host`
-/// — i.e. the non-host-pair shape this guard fires on is structurally
-/// impossible on schedules the pass handled. The guard STAYS in place
-/// as a fail-loud safety net for residual shapes (e.g. an `Xfer` pair
-/// the pass couldn't pair within the same `Sequence` — see
-/// `host_data_relay_inject::rewrite_sequence_children` "singletons
-/// left alone" comment).
+/// every PAIRED non-host Push/Wait inside a Repeat body through host
+/// BEFORE projection. After the pass, the in-Loop-body w2w-Push shape
+/// this guard fires on is structurally impossible for shapes the pass
+/// handled. The guard STAYS in place as a fail-loud safety net for
+/// two precisely-enumerated residual classes (cycle-163b architect
+/// P2.4 → cycle 166 audit confirmed both classes still reachable in
+/// principle):
 ///
-/// In-tree schedules today: zero residual hits on the post-pass
-/// matrix (verified by `just e2e` 3-sample non-flake at cycle 163).
-/// Test pins in `nucleus/backends/mp-tcp-event/tests/loop_body_w2w_push.rs`
+/// - **(R-bare)** A bare `Xfer` outside any parent `Sequence`. The
+///   pass requires a sibling slot to land the 4 routed nodes into;
+///   `rewrite_at`'s non-`Sequence` arm early-returns. In practice
+///   every `Xfer` from `transfer_inject` is produced inside a
+///   `Sequence` — this class is reachable only if `transfer_inject`'s
+///   contract weakens.
+/// - **(R-singleton)** A `Push` (or `Wait`) without its matching
+///   sibling endpoint in the SAME `Sequence`. The pass's pair-match
+///   in `rewrite_sequence_children` requires both endpoints to live
+///   in the same `Sequence`; if `transfer_inject::hoist_invariant_waits`
+///   has hoisted one endpoint out, the unmatched endpoint is left
+///   alone and would reach this guard.
+///
+/// In-tree schedules today: ZERO residual hits on the post-pass
+/// matrix (verified across the 3 trigger cells in cycles 162/163/165
+/// and re-verified bit-identical in cycle 166's audit). Test pins in
+/// `nucleus/backends/mp-tcp-event/tests/loop_body_w2w_push.rs`
 /// continue to assert the guard's contract on synthetic
-/// pass-bypassing fixtures.
+/// pass-bypassing fixtures (those fixtures construct the Loop-body
+/// shape directly, never via the pass).
 fn collect_w2w_pushes(
     events: &[Event],
     host: WorkerId,
