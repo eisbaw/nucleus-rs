@@ -62,9 +62,18 @@
 //! participant set excludes `host` still cannot be lowered on the
 //! one-stream-per-pair topology — that is a SEPARATE, genuine
 //! transport limitation and stays a typed [`EmitError::ContractGap`]
-//! (honest limitation, not a wrong binary; worker-to-worker mesh is
-//! TASK-0175). For a uniform-barrier program the tags are `0,1,2,…`
-//! in pre-order, so generated code stays byte-identical.
+//! (honest limitation, not a wrong binary). The original combined
+//! TASK-0175 worker-to-worker filing was split into a DATA arm and a
+//! CTRL arm cycles 148/149: the DATA arm was lifted in two phases —
+//! top-level w↔w `Push`/`Wait` via host-relay cycle 148 (TASK-0327)
+//! and in-`Repeat`-body w↔w `Push`/`Wait` via the
+//! `apply_host_data_relay_inject` ACFG pass cycles 163-164b
+//! (TASK-0329.01.02). The CTRL arm — host-mediated barrier mediation
+//! for host-excluding barriers — is filed as TASK-0329 and still
+//! pending. See the ContractGap site at `Plan::build` for the
+//! runtime check and its tracker-pinned wire message. For a
+//! uniform-barrier program the tags are `0,1,2,…` in pre-order, so
+//! generated code stays byte-identical.
 //!
 //! ## Inherited caveats (identical to pthreads-sync; fail-loud)
 //!

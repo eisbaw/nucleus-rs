@@ -48,9 +48,17 @@
 //! - **Host-excluding barriers**: same transport limitation as
 //!   mp-tcp-bufsync — one CTRL stream per `(host, worker)` pair, so a
 //!   barrier whose participants exclude host cannot be lowered.
-//!   Fail-loud with a typed `ContractGap` forward-linking TASK-0175
-//!   (filed forward as TASK-0329 for host-mediated barrier
-//!   mediation, analogous to cycle-148/149's data lift).
+//!   Fail-loud with a typed `ContractGap`. Status: the original
+//!   TASK-0175 worker-to-worker combined filing was split into a
+//!   DATA arm and a CTRL arm cycles 148/149. The DATA arm was
+//!   lifted in two phases — top-level w↔w `Push`/`Wait` via
+//!   host-relay cycle 149 (TASK-0327), and in-`Repeat`-body w↔w
+//!   `Push`/`Wait` via the `apply_host_data_relay_inject` ACFG
+//!   pass cycles 163-164b (TASK-0329.01.02). The CTRL arm —
+//!   host-mediated barrier mediation for host-excluding barriers —
+//!   is filed as TASK-0329 and still pending. See the ContractGap
+//!   site at `Plan::build` for the runtime check and its
+//!   tracker-pinned wire message.
 //! - **Worker-to-worker `Push`/`Wait`** (TASK-0327, cycle 149):
 //!   DATA-side w↔w lifted via HOST-RELAY. Src's `chan_<rid>.push`
 //!   uses peer_idx=0 (host); HOST's `main()` runs a synchronous
