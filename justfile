@@ -417,17 +417,19 @@ check-narrative-doc-lie:
 # fence.
 #
 # Scope: walks `nucleus/backend-common/src`,
-# `nucleus/nucleus-compiler/src`, and `nucleus/backends/*/src`. The
-# following sub-trees are DELIBERATELY excluded (architect cycle-176
-# P2.3):
-#   - `nucleus/e2e/src/` — main.rs is 7316 LoC (report-formatter test
-#     mass; carve-out is TASK-0340 AC#4 follow-up slice).
+# `nucleus/nucleus-compiler/src`, `nucleus/backends/*/src`, and
+# `nucleus/e2e/src` (the last one added cycle 190 / TASK-0342 — qa
+# cycle-185b P3.1 surfaced the pre-cycle-190 exclusion as a
+# documentation/expectation lag after TASK-0340 slice-10 carved
+# e2e/src/main.rs from 7316→4716 LoC and added tests.rs at 2635 LoC,
+# both still >1000 and neither in the fence). The following sub-trees
+# remain DELIBERATELY excluded:
 #   - `nucleus/driver`, `nucleus/mp-tcp-common`, `nucleus/test-common`,
 #     `nucleus/nucleus` — currently NO file >1000 LoC by coincidence
 #     of size, not by rule. Widen the scope when any grows past 1000.
 #
 # Allow-list canonical reproducer: `find
-# nucleus/{backend-common,nucleus-compiler,backends}/src -name '*.rs'
+# nucleus/{backend-common,nucleus-compiler,backends,e2e}/src -name '*.rs'
 # -exec wc -l {} \; | sort -rn | awk '$1 > 1000 {print $2}'`.
 #
 # Each entry is a TASK-0340 AC#2 split target — the allow-list shrinks
@@ -450,7 +452,7 @@ check-mega-files:
     oversized_f=$(mktemp); \
     allow_f=$(mktemp); \
     trap "rm -f $oversized_f $allow_f" EXIT; \
-    find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src -name '*.rs' -exec wc -l {} \; \
+    find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src nucleus/e2e/src -name '*.rs' -exec wc -l {} \; \
         | awk '$1 > 1000 {print $2}' \
         | sort > $oversized_f; \
     printf '%s\n' \
@@ -462,6 +464,8 @@ check-mega-files:
         'nucleus/nucleus-compiler/src/passes/host_data_relay_inject.rs' \
         'nucleus/nucleus-compiler/src/sched/ir.rs' \
         'nucleus/backends/pthreads-async/src/multi_worker.rs' \
+        'nucleus/e2e/src/main.rs' \
+        'nucleus/e2e/src/tests.rs' \
         | sort > $allow_f; \
     new_megafile=$(comm -23 $oversized_f $allow_f); \
     stale_allow=$(comm -23 $allow_f $oversized_f); \

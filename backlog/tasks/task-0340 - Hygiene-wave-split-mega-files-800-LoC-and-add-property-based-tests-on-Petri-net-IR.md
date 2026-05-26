@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 16:42'
+updated_date: '2026-05-26 23:58'
 labels:
   - tech-debt
   - hygiene
@@ -519,6 +519,14 @@ NEW lesson — implementer/orchestrator coverage-math discipline (cycle 184b): w
 
 E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved cycles 178-184b, 8 cycles).
 Test counts: 979/0/3 dev + 978/0/3 release (cycle 184; cycle-184b doc-only no count change).
+
+## Cycle 190 addendum — TASK-0342 closed (AC#5 scope gap addressed)
+
+Cycle-185b qa-test-runner P3.1 surfaced that check-mega-files scope EXCLUDED nucleus/e2e/src/ — neither pre-carve main.rs (7316 LoC) nor post-carve main.rs (4716 LoC) nor new tests.rs (2638 LoC) entered the fence. Filed as TASK-0342.
+
+TASK-0342 cycle 190 (Option A): extended check-mega-files scope to include nucleus/e2e/src; allow-listed both files with rationale via recipe docstring. Recipe passes. The fence's coverage is now symmetric with the rest of nucleus/**/src.
+
+This addendum closes the documentation/expectation lag noted in cycle-185b architect P3.6 (AC#5 'no file exceeds 1000 LoC' wording previously bound a sub-tree but excluded e2e; cycle-190 lift makes the wording bind nucleus/e2e/src/ too via allow-list).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
