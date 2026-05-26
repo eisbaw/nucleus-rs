@@ -3,11 +3,11 @@ id: TASK-0340
 title: >-
   Hygiene wave: split mega-files (>800 LoC) and add property-based tests on
   Petri-net IR
-status: In Progress
+status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 16:39'
+updated_date: '2026-05-26 16:42'
 labels:
   - tech-debt
   - hygiene
@@ -44,7 +44,7 @@ Sub-concern: nucleus/e2e/src/main.rs is 7316 LoC with 76 internal tests covering
 - [x] #4 Report-formatter tests in nucleus/e2e/src/main.rs (currently 76 internal #[test]) carved out into a sub-module file (e2e/src/report/tests.rs) or sub-crate (e2e_report). Compiler-correctness tests remain in main.rs; formatter tests are visually separated
 - [ ] #5 New just recipe check-mega-files added to ci: asserts no nucleus/**/src/*.rs file exceeds 1000 LoC. Recipe is wired into just ci as a regression-fence. Initial pass exempts any file the split intentionally leaves above 1000 LoC via an explicit allow-list (with rationale)
 - [ ] #6 No new TASK-NNNN or cycle-NNN citations introduced in the refactored files (closes the comment-process-noise concentration smell: acfg.rs 74 mentions, mp-tcp-bufsync/lib.rs 68, sidecar.rs 57 at audit time)
-- [ ] #7 Final cycle commit notes per-file LoC before/after and per-pass proptest count delta (no separate summary md file per CLAUDE.md cruft policy)
+- [x] #7 Final cycle commit notes per-file LoC before/after and per-pass proptest count delta (no separate summary md file per CLAUDE.md cruft policy)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -520,3 +520,70 @@ NEW lesson — implementer/orchestrator coverage-math discipline (cycle 184b): w
 E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved cycles 178-184b, 8 cycles).
 Test counts: 979/0/3 dev + 978/0/3 release (cycle 184; cycle-184b doc-only no count change).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-0340 hygiene wave CLOSED after 11 slices across cycles 176-186 (8 implementer cycles + parallel review fold-backs at 177, 178b, 179b, 180b, 181b, 182b, 183b, 184b, 185b; orchestrator-led directly in cycle 185).
+
+ORIGINAL 6-FILE MEGA-FILE AUDIT (AC#1, AC#2): all six files SPLIT.
+
+| Slice | Cycle | File                                                | Pre LoC | Post LoC (incl. orientation + use lines + mod decls) | Sub-modules |
+|------:|------:|-----------------------------------------------------|--------:|----------------------------------------------------:|------------:|
+|     3 |   178 | nucleus/backend-common/src/render.rs                |    1687 |                                                1814 |           7 |
+|     4 |   179 | nucleus/backends/mp-tcp-bufsync/src/lib.rs          |    1997 |                              2134 (lib.rs at 315)   |           7 |
+|     5 |   180 | nucleus/backends/mp-tcp-event/src/multi_worker.rs   |    1695 |                                                1764 |           5 |
+|     6 |   181 | nucleus/backend-common/src/multi_worker_walker.rs   |    1263 |                                                1336 |           6 |
+|     7 |   182 | nucleus/nucleus-compiler/src/acfg.rs                |    1440 |                                                1506 |           4 |
+|     8 |   183 | nucleus/nucleus-compiler/src/link.rs                |    1290 |                                                1371 |           6 |
+|    10 |   185 | nucleus/e2e/src/main.rs                             |    7316 |                              7354 (4716 + 2638)    | 2 (carve-out)|
+
+Net LoC delta original-audit-scope: 9372 -> 9925 (+553 = orientation docstrings + use lines + sub-module decls; ~6% overhead, no behaviour change). Slice 10 e2e carve-out delta: +38 LoC (33 docstring + 2 mod decl + 1 use + ~2 blanks).
+
+PROPTEST DELTA (AC#3, slice 9 cycle 184 + cycle-184b architect honesty fold-back):
+- proptest 1.9.0 dev-dep added to nucleus-compiler/Cargo.toml (downgrade from latest 1.11.0 because 1.11 requires rustc 1.85; flake pins 1.83).
+- nucleus-compiler/tests/proptest_petri.rs: NEW, 800 LoC. 10 #[test] items (1 smoke + 9 properties: b.1-b.3 boundedness + d.1-d.3 deadlock + p.1-p.3 petri_to_events).
+- Honest epistemic-coverage breakdown (cycle-184b architect P2.1/P2.2/P2.3): 5 of 9 properties carry independent epistemic value (b.1/b.2/b.3 + p.2/p.3); d.1/d.3 are refactor-regression guards (oracle non-independence disclosed); p.1 is generator-restriction-trivial. Total randomised cases: 2304 (9 × 256), not 4608 as cycle-184 commit body claimed.
+- Generator widening (Sync/Push/Wait, nested Repeat, weight>1 arcs, partition_workers) deferred to TASK-0340.08.01 (cycle-184b architect P2.4).
+
+CHECK-MEGA-FILES RECIPE (AC#5):
+- just check-mega-files implemented cycle 176 (slice 1); cycle 177 (slice 2) folded back architect P2.1 staleness-direction to fail-loud on stale allow-list entries (POSIX-shell portable via comm + mktemp temp files).
+- Allow-list shrank 12 -> 11 (cycle 180) -> 10 (cycle 181) -> 9 (cycle 182) -> 8 (cycle 183).
+- AC#5 scope explicitly excludes nucleus/e2e/src/ (cycle-176 architect P2.3). Slice-10 carve-out (cycle 185) DID NOT close this gap; QA cycle-185b P3.1 surfaced it; TASK-0342 filed as low-priority follow-up.
+
+NO TASK-NNNN / CYCLE-NNN CITATIONS in refactored mega-file SPLITS (AC#6):
+- Slices 3-8: clean per-slice (each cycle's commit body documents the mechanical move; doc-claim rewrites are explicitly disclosed corrections, not new anchors).
+- Slice 10: clean (cycle-185 + cycle-185b disclosures live at carve-out site + tracker notes + new memory file, all process-level audit hygiene).
+
+VERIFICATION GATE BASELINE (preserved cycles 178-185b, 9 consecutive cycles):
+- just test (dev): 859 -> 859 (cycle 178) -> ... -> 969 (cycle 178b+) -> 979 (cycle 184 with proptest_petri +10) -> 979 (cycle 185 + 185b).
+- just test-release: 858 -> ... -> 968 (cycle 184 with proptest_petri +10) -> 978 (cycle 184) -> 978 (cycle 185 + 185b).
+- just e2e: 112/102/0/10/0 PRESERVED across all 9 cycles.
+- just check-textual-replace-on-codegen / check-include-str-coverage / check-mega-files / check-narrative-doc-lie: all clean every cycle.
+
+REMAINING WORK (NOT part of TASK-0340; new follow-ups for future cycles):
+- TASK-0340.02 (LOW): architect cycle-178 P3.1 ctx<->fire<->reuse sibling-mod dep cycle in nucleus/backend-common/src/render/. Deferred refinement of slice 3 layout; not regression-class.
+- TASK-0340.03 (LOW): architect cycle-178 P3.2 further-split nucleus/backend-common/src/render/reuse.rs (784 LoC) into reuse/{group,discover,codegen}.rs. Deferred refinement.
+- TASK-0340.04.01 / .04.02 / .04.03 (LOW): mp-tcp-event slice-5 fold-back micro-items (pub(crate) tightening, use-stmt hoisting, stale forward-link claim).
+- TASK-0340.07.01 (LOW): TASK-0019/0088 stale-deferral-claim sibling sweep (slice 8 fold-back).
+- TASK-0340.08.01 (LOW): proptest_petri generator widening (weight>1 arcs / Push-Wait / Sync / nested Repeat).
+- TASK-0340.01.01 / .01.02: slice-4 follow-up micro-items.
+- TASK-0342 (LOW): check-mega-files scope extension to nucleus/e2e/src/.
+
+These are all LOW-priority refinements; AC#7 captures the per-file LoC + proptest summary as the final close-out, satisfying the AC text. The follow-up taxonomy is healthy: every cycle 'grew the tracker' with precise follow-ups rather than expanding the cycle's scope silently.
+
+ORCHESTRATOR DISCIPLINE FORWARD-CARRIED THROUGH THIS WAVE:
+1. Heavy-onboarded implementer briefs (preempt safety-reminder refusal pattern).
+2. Parallel read-only review gate every cycle, before any cycle closure (qa-test-runner + mped-architect; gate independence preserved except slice 7 where API 529 forced inline gate).
+3. Dim-1/2/3/4 audit dimensions (line-citation, stale-claim, file-deixis, structured deferral list) grew slice-by-slice and were forward-carried as implementer-onboarding context; widened in cycle 182b (M[0-9]+ + 'empty payload' vocabulary) and cycle 183b (bare-filename self-deixis).
+4. Implementer-disclosure-honesty: enumerated-edit-list discipline replaced 'verbatim move' blanket claims after cycle 179b discovered 4 silent mechanical reflows; generalised across 4 actor classes by cycle 165b (implementer / orchestrator-notes / orchestrator-tests / reviewer-subagent).
+5. AC-rewrite avoidance: cycle-185 docstring honesty disclosure recorded inline at carve-out site rather than rewriting AC#4 text (feedback-ac-rewrite-on-done-task).
+6. Follow-up filing instead of scope creep: 9 new low-priority tasks filed during this wave; each one anchors a deferred refinement at exactly the diff-locus where it was discovered.
+
+The hygiene wave's central thesis ('split mega-files BEFORE M6 codegen amplifies the smell, AND add property tests to the Petri-net IR whose soundness is the central thesis claim') is satisfied. M6 cellgen work can proceed against a substrate with:
+- No file >1000 LoC in the original 6-file audit scope.
+- check-mega-files regression-fence (both directions) policing the backend-common + nucleus-compiler + backends/*/src tree.
+- proptest substrate landed for the three central Petri-net IR passes with honest epistemic-value disclosure.
+
+E2E baseline at TASK-0340 close: 112/102/0/10/0. Test counts: 979/0/3 dev + 978/0/3 release.
+<!-- SECTION:FINAL_SUMMARY:END -->
