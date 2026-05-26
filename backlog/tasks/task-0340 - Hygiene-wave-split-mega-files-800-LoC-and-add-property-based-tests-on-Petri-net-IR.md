@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 11:01'
+updated_date: '2026-05-26 11:32'
 labels:
   - tech-debt
   - hygiene
@@ -133,4 +133,59 @@ Remaining slices (after cycle 178):
 - slice 9: AC#3 (proptest dep + 3 properties per pass on boundedness/deadlock/petri_to_events).
 - slice 10: AC#4 (e2e/main.rs report-formatter carve-out).
 - slice 11: AC#7 final commit with per-file LoC delta + proptest count delta.
+
+## Cycle 178 + 178b — slice 3 LANDED
+
+**Slice 3 commits:**
+- c629458 — split render.rs (1687 LoC) into render/{ctx,error,expr,fire,reuse,types}.rs + mod.rs.
+- 8fd785a — fold back architect P2.1 + P2.2 + QA P3-1 doc-only repairs.
+
+**Per-file LoC** (vs old render.rs 1687):
+- render/ctx.rs    203
+- render/error.rs   70
+- render/expr.rs   148
+- render/fire.rs   466
+- render/mod.rs     71
+- render/reuse.rs  778
+- render/types.rs   69
+- (sum 1805; +118 vs pre-split = module docstrings + use statements + mod.rs re-exports; no behaviour change)
+
+**Verification gate (orchestrator-self-run, inside nix develop):**
+- just build (workspace): clean.
+- just clippy (-D warnings --all-targets): clean.
+- just test (dev): 969 / 0 / 3.
+- just test-release: 968 / 0 / 3 (-1 vs dev is the debug_assert-only #[should_panic] negative test, expected per TASK-0291).
+- just e2e: 112 / 102 / 0 / 10 / 0 — THREE independent samples across c629458 (×2) + 8fd785a (×1), all bit-identical.
+- just check-mega-files: OK both directions (render.rs comes off the allow-list; direction-B staleness check confirms).
+
+**Review gate (parallel, read-only, both spawned on c629458):**
+- qa-test-runner: GO. Found one AC#6 hairline (cycle-107 hyphenated form vs the file's existing space-form convention) — folded back in 178b.
+- mped-architect: GO. Found two P2 doc-lies the split carried verbatim from pre-split render.rs but PROMOTED the worst (mp-tcp-bufsync "does NOT yet consume" claim) into a module-level `//!` docstring. All three repaired in 178b. Filed three architect P3 follow-ups as TASK-0340.01 / .02 / .03 (substantive but not blocking):
+  - TASK-0340.01: slice 4 candidate — mp-tcp-bufsync/src/lib.rs split (1997 LoC, largest remaining mega-file).
+  - TASK-0340.02: ctx<->fire<->reuse sibling-mod dep cycle (architectural shape; Rust permits).
+  - TASK-0340.03: further-split reuse.rs (778 LoC) into reuse/{group,marker,discover,codegen}.rs (defer until M6 amplification).
+
+**Cycle 178+178b honest disclosure:**
+- Implementer (= orchestrator-main-thread, per memory `feedback-spawned-agents-refuse-code-edits`) failed to spot-check the doc claims it carried forward. The architect review caught it (good — the parallel review gate is the safety net) and the fix lived in a single fold-back commit (8fd785a). Marker for future cycles: when a mechanical split moves a multi-claim docstring, RE-VERIFY every claim against current code before promoting the comment into a more-visible position (per memory `feedback-comment-doc-lie-recurring` + `feedback-opacity-gate-rot`).
+- The architect-claimed "ctx.rs:117 was a stale field doc" was confirmed against TASK-0284 (Done cycle 107) by inspection — mp-tcp-bufsync DOES populate reuse_active via its own walker since cycle 107.
+- e2e baseline NUMERIC drift discovered while splitting: cycle-104 commentary said `88/70/0/18` (literal-pinned in ctx.rs:99 via copy-from-old-render.rs); current baseline is `112/102/0/10` (cycle 178). The numeric pin was deleted in 178b (replaced with non-baseline-bound prose) so the same staleness can't silently recur as the matrix grows further.
+
+**AC status post-cycle-178+178b:**
+- AC#1: DONE (cycle 176 + 178 update — the original 6-file audit list still accurate, with the empirically-observed M6-amplification growth on mp-tcp-bufsync/lib.rs and mp-tcp-event/multi_worker.rs surfaced).
+- AC#2: 1/6 files split (render.rs); 5 remaining. Forward-carried as slices 4-8.
+- AC#3: PENDING (slice 9: proptest dep + 3 properties per pass on boundedness/deadlock/petri_to_events).
+- AC#4: PENDING (slice 10: e2e/main.rs report-formatter carve-out).
+- AC#5: DONE (cycle 176 + 177); allow-list shrank this cycle (render.rs entry removed).
+- AC#6: DONE for the cycle-178 files (no new TASK-NNNN; one cycle-107 hyphen→space normalised in 178b).
+- AC#7: PENDING (final slice when AC#2 + AC#3 close).
+
+**Slice plan for subsequent cycles:**
+- slice 4: TASK-0340.01 mp-tcp-bufsync/src/lib.rs (1997 LoC) — substantial; biggest remaining mega-file; in the M6-amplification path.
+- slice 5: mp-tcp-event/src/multi_worker.rs (1695 LoC) — sibling shape to slice 4.
+- slice 6: nucleus-compiler/src/acfg.rs (1440 LoC, 57% comment ratio — comment-doc-lie magnet per the audit; high P2-finding rate likely).
+- slice 7: nucleus-compiler/src/link.rs (1290 LoC).
+- slice 8: backend-common/src/multi_worker_walker.rs (1263 LoC).
+- slice 9: AC#3 (proptest).
+- slice 10: AC#4 (e2e report-formatter).
+- slice 11: AC#7 (final summary commit).
 <!-- SECTION:NOTES:END -->
