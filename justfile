@@ -188,6 +188,7 @@ ci:
     just check-textual-replace-on-codegen
     just check-include-str-coverage
     just check-narrative-doc-lie
+    just check-mega-files
     just e2e
     just determinism-check
     just determinism-check-negative
@@ -383,6 +384,96 @@ check-narrative-doc-lie:
         exit 1; \
     fi; \
     echo "OK: no predictive-conclusion doc-lies in narrative TOML."
+
+# Mega-file regression-fence (TASK-0340 AC#5, slice 1, cycle 176).
+# Asserts no file under the scoped sub-trees STRICTLY EXCEEDS 1000 LoC
+# outside an explicit allow-list. The allow-list documents the
+# as-of-filing baseline; the recipe BITES the moment a NEW file crosses
+# 1000.
+#
+# Threshold semantics (architect cycle-176 P2.2): the check is
+# `$1 > 1000`, i.e. STRICTLY greater. A file at exactly 1000 LoC
+# passes. AC#5 of TASK-0340 reads "no file exceeds 1000 LoC" which
+# matches `>` (exceeds = strictly more than).
+#
+# Why 1000? Picked as the natural reading-fatigue boundary — a file
+# beyond ~1000 lines stops fitting in a single editor view + becomes
+# hard to navigate without folding. The 800-LoC smell threshold the
+# 2026-05-25 audit used is a softer warning; 1000 is the hard fence.
+#
+# Scope (architect cycle-176 P2.3): walks `nucleus/backend-common/src`,
+# `nucleus/nucleus-compiler/src`, and `nucleus/backends/*/src`. The
+# following sub-trees are DELIBERATELY excluded:
+#   - `nucleus/e2e/src/` — main.rs is 7316 LoC (report-formatter test
+#     mass; the carve-out is TASK-0340 AC#4 follow-up slice).
+#   - `nucleus/driver`, `nucleus/mp-tcp-common`, `nucleus/test-common`,
+#     `nucleus/nucleus` — currently NO file >1000 LoC by coincidence
+#     of size, not by rule. If any of these grows past 1000 the recipe
+#     will silently pass; widen the scope when that happens.
+#
+# Allow-list (14 entries at cycle 176; reproduce with
+# `find nucleus/{backend-common,nucleus-compiler,backends}/src -name '*.rs' -exec wc -l {} \; | sort -rn | awk '$1 > 1000'`).
+# Each entry is a TASK-0340 AC#2 split target — the allow-list shrinks
+# as splits land. Architect cycle-176 P2.1 flagged the STALENESS
+# DIRECTION: there is no enforcement that allow-list entries STILL
+# exceed 1000; a future split could leave a stale exemption.
+# Slice-2 of TASK-0340 should add a sibling assertion.
+#
+# Per-file LoC numbers are deliberately NOT enumerated in this comment
+# block (architect cycle-176 P3.1: they would create drift debt with
+# no automated guard — `feedback-comment-doc-lie-recurring` exposure).
+# Allow-list file paths only:
+#   - passes/transfer_inject.rs
+#   - backends/mp-tcp-bufsync/src/lib.rs
+#   - backends/mp-tcp-event/src/multi_worker.rs
+#   - backend-common/src/render.rs
+#   - passes/reuse_inference.rs
+#   - sched/lower.rs
+#   - passes/halo_inference.rs
+#   - nucleus-compiler/src/acfg.rs
+#   - algo/lower.rs
+#   - nucleus-compiler/src/link.rs
+#   - backend-common/src/multi_worker_walker.rs
+#   - passes/host_data_relay_inject.rs
+#   - sched/ir.rs
+#   - backends/pthreads-async/src/multi_worker.rs
+#
+# To add a NEW allow-list entry: edit BOTH the file list above AND the
+# recipe's grep -v patterns below; do NOT just add to the patterns.
+# The audit list is the source of truth for what the project has
+# knowingly accepted; the patterns are derived from it.
+check-mega-files:
+    @echo "checking nucleus/**/src/*.rs for files exceeding 1000 LoC..."
+    @hits=$(find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src -name '*.rs' -exec wc -l {} \; 2>/dev/null \
+        | awk '$1 > 1000 { print $0 }' \
+        | grep -vE '/passes/transfer_inject\.rs$' \
+        | grep -vE '/backends/mp-tcp-bufsync/src/lib\.rs$' \
+        | grep -vE '/backends/mp-tcp-event/src/multi_worker\.rs$' \
+        | grep -vE '/backend-common/src/render\.rs$' \
+        | grep -vE '/passes/reuse_inference\.rs$' \
+        | grep -vE '/sched/lower\.rs$' \
+        | grep -vE '/passes/halo_inference\.rs$' \
+        | grep -vE '/nucleus-compiler/src/acfg\.rs$' \
+        | grep -vE '/algo/lower\.rs$' \
+        | grep -vE '/nucleus-compiler/src/link\.rs$' \
+        | grep -vE '/backend-common/src/multi_worker_walker\.rs$' \
+        | grep -vE '/passes/host_data_relay_inject\.rs$' \
+        | grep -vE '/sched/ir\.rs$' \
+        | grep -vE '/backends/pthreads-async/src/multi_worker\.rs$' \
+        || true); \
+    if [ -n "$hits" ]; then \
+        echo "FAIL: file(s) over 1000 LoC outside the allow-list (TASK-0340 mega-file regression-fence):"; \
+        echo "$hits"; \
+        echo ""; \
+        echo "Fix options (in order of preference):"; \
+        echo "  1. Split the file into cohesive sub-modules along seams already named by its module-level docstring (TASK-0340 AC#2 — preferred)."; \
+        echo "  2. If the file is a single coherent unit that genuinely needs to be large, add to the allow-list in BOTH the recipe comment block + the grep -v pattern at justfile:check-mega-files, with a one-line rationale for why this file is exempt."; \
+        echo "  3. If the growth is from one cycle's worth of feature additions that can be deferred, revert / postpone."; \
+        echo ""; \
+        echo "(memory: feedback-comment-doc-lie-recurring — large files concentrate comment-doc-lie risk; the audit threshold is 800 LoC, the hard fence is 1000)"; \
+        exit 1; \
+    fi; \
+    echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC."
 
 # Remove build artefacts.
 clean:

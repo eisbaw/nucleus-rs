@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-26 09:46'
+updated_date: '2026-05-26 10:33'
 labels:
   - tech-debt
   - hygiene
@@ -44,3 +45,25 @@ Sub-concern: nucleus/e2e/src/main.rs is 7316 LoC with 76 internal tests covering
 - [ ] #6 No new TASK-NNNN or cycle-NNN citations introduced in the refactored files (closes the comment-process-noise concentration smell: acfg.rs 74 mentions, mp-tcp-bufsync/lib.rs 68, sidecar.rs 57 at audit time)
 - [ ] #7 Final cycle commit notes per-file LoC before/after and per-pass proptest count delta (no separate summary md file per CLAUDE.md cruft policy)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 176 — slice 1 landed (AC#5 of TASK-0340)
+
+`just check-mega-files` regression-fence recipe + ci wiring landed (commit pending).
+
+DELIVERED:
+- AC#5 (recipe + ci wiring + initial allow-list with rationale): DONE.
+
+OPEN (subsequent slices):
+- AC#1 (canonical audit list): DONE incidentally via the allow-list (14 files >1000 LoC documented).
+- AC#2 (per-file split into sub-modules): NOT-YET — substantive, slice-2+ work.
+- AC#3 (proptest dep + properties for boundedness / deadlock / petri_to_events): NOT-YET — slice-3 work.
+- AC#4 (e2e/main.rs report-formatter carve-out): NOT-YET — slice-4 work; recipe scope explicitly excludes nucleus/e2e/src per architect cycle-176 P2.3.
+- AC#6 (no new TASK/cycle citations in refactored files): NOT-YET — lands with AC#2 splits.
+- AC#7 (final commit notes per-file LoC before/after + proptest count delta): NOT-YET — final slice when AC#2 + AC#3 close.
+
+ARCHITECT-DEFERRED FOLD-BACKS (forward-carried to slice-2):
+- P2.1: STALENESS direction not enforced — a future split could leave a stale allow-list entry for a file no longer >1000. Architect empirically verified: replaced pthreads-async/multi_worker.rs (allow-listed, 1048 LoC) with 500-LoC stub, recipe PASSED. Slice-2 should add a sibling assertion that every allow-list pattern matches a still-oversized file. Concretely: refactor the recipe to enumerate allow-list paths positively (rather than as grep -v negative filters) so the "this allow-list entry is stale" direction also fails loudly.
+<!-- SECTION:NOTES:END -->
