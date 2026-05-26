@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 11:32'
+updated_date: '2026-05-26 11:59'
 labels:
   - tech-debt
   - hygiene
@@ -188,4 +188,40 @@ Remaining slices (after cycle 178):
 - slice 9: AC#3 (proptest).
 - slice 10: AC#4 (e2e report-formatter).
 - slice 11: AC#7 (final summary commit).
+
+## Cycle 179 — slice 4 LANDED (TASK-0340.01)
+
+Split nucleus/backends/mp-tcp-bufsync/src/lib.rs (1997 LoC) into 7 cohesive sub-modules along the existing '// ---' section seams. AC#2 now 2/6.
+
+**Per-file LoC after split** (vs old lib.rs 1997):
+- src/lib.rs                315
+- src/encode.rs              81
+- src/walkers.rs            394
+- src/plan/mod.rs           243
+- src/plan/worker_program.rs 388
+- src/plan/events.rs        491
+- src/plan/relay.rs         222
+- (sum 2134; +137 vs pre-split = per-file module docstrings + use statements + sub-module decls; no behaviour change)
+
+**Verification (orchestrator-self-run, all inside nix develop):**
+- just build / clippy: clean.
+- just test (dev): 969/0/3. just test-release: 968/0/3.
+- just e2e: 112/102/0/10/0 — TWO non-flake samples.
+- just check-mega-files: OK both directions; bufsync lib.rs comes off the justfile:457 allow-list.
+
+**AC status post-slice-4:**
+- AC#1: DONE.
+- AC#2: 2/6 files split.
+- AC#5: DONE (allow-list shrank further).
+- AC#6: DONE for this slice.
+- AC#3, AC#4, AC#7: PENDING (slices 9 / 10 / 11).
+
+**Remaining slices:**
+- slice 5: mp-tcp-event/src/multi_worker.rs (1695 LoC) — sibling shape; expect ~identical seam map (worker_program / events / relay / walkers).
+- slice 6: nucleus-compiler/src/acfg.rs (1440 LoC, 57% comment ratio — comment-doc-lie magnet).
+- slice 7: nucleus-compiler/src/link.rs (1290 LoC).
+- slice 8: backend-common/src/multi_worker_walker.rs (1263 LoC).
+- slice 9: AC#3 proptest.
+- slice 10: AC#4 e2e report-formatter.
+- slice 11: AC#7 final summary commit.
 <!-- SECTION:NOTES:END -->
