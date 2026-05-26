@@ -465,6 +465,34 @@ fn compat_negative_notify_not_supported() {
 }
 
 #[test]
+fn compat_positive_notify_poll_accepts_poll_request() {
+    // Sibling of `compat_negative_notify_not_supported`. The negative
+    // arm proves caps.notify=[Poll] REJECTS an Event request. This
+    // arm pins the positive sibling: caps.notify=[Poll] ACCEPTS a
+    // Poll request. TASK-0044.02.01 (the M6 mp-tcp-poll precursor)
+    // discovered that the NotifyMode enum already includes Poll (and
+    // has since the cycle-77 SUPPORTED_SCHEMA_VERSIONS landing); the
+    // missing sibling was the positive accept-pin for the
+    // `notify="poll"`-only backend case mp-tcp-poll will land.
+    // Without this pin, a future refactor that drops Poll from the
+    // NotifyMode<->NotifyKind From-impl would only break the
+    // negative arm's expected variant and the round-trip arm, not
+    // the substantive accept path — exactly the silent-sibling
+    // pattern feedback-silent-sibling-defect warns about.
+    let mut caps = example_caps();
+    caps.notify = vec![NotifyMode::Poll];
+    let mut sched = fixture_sched();
+    set_transfer_options(
+        &mut sched,
+        vec![ResolvedTransferOption::Notify(NotifyKind::Poll)],
+    );
+    assert!(
+        check_schedule_compat(&caps, &sched).is_ok(),
+        "caps.notify=[Poll] must accept a schedule requesting notify=Poll"
+    );
+}
+
+#[test]
 fn compat_negative_worker_class_not_supported() {
     // Capability declares only `compute_core`; schedule has a worker
     // bound to the synthetic default class which is reported as
