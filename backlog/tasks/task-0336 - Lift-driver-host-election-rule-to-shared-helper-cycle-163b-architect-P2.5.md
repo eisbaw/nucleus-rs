@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-26 04:56'
-updated_date: '2026-05-26 05:42'
+updated_date: '2026-05-26 06:12'
 labels: []
 dependencies: []
 priority: low
@@ -139,6 +139,47 @@ pub fn elect_host_from_name_workers(
 5. **Empirical sweep confirmed the rule was identical at all 7 sites** (no hidden `eq_ignore_ascii_case` or alternative tie-breaker found). The cycle-163b architect's P2.5 audit was structurally correct; no honest-failure surprise. `nucleus/test-common/src/lib.rs:329` `r.names.worker.values().any(|n| n == "host")` is a fixture-presence assertion, NOT an election site, so was not converted.
 
 **Memory `feedback-driver-must-mirror-backend-election-exactly` status:** the recurrence surface on the canonical path (driver wirings vs backend Plan::build host election) is now structurally retired. A 4th driver wiring or a future refactor of Plan::build's rule that uses the helper cannot drift; a hand-rolled re-inlining (the original failure mode) would be caught by code review for not consuming `backend_common::elect_host_from_*` per cross-pass convention. Promote priority on first re-firing (none expected on the canonical path).
+
+## Cycle 164b — parallel review fold-back
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) both returned GO. Architect P2.1 + P2.3 + P3.1 folded in this cycle; P2.2 acknowledged as re-discovery (no memory change).
+
+### P2.1 — stale driver prose blocks duplicated the rule
+
+Architect noted lines 481-502 + 545-548 of `nucleus/driver/src/main.rs` still inline the rule + cited stale file:line ranges (`mp-tcp-bufsync/src/lib.rs:331-338` and `mp-tcp-event/src/multi_worker.rs:153-160`). After cycle 164 those ranges contain helper calls, not the rule body — the prose duplicated what the helper docstring is now the canonical source for. `feedback-comment-doc-lie-recurring` + `feedback-opacity-gate-rot` on docs.
+
+Cycle-164b shrinks the first block to keep WHY (degenerate-mediation risk → backend defensive rejection re-fires against the BACKEND-elected host) + drops the rule restatement + drops the stale file:line cite. Second block (545-548) shrinks to a one-liner pointing at the cycle-160 wiring above.
+
+### P2.3 — e2e harness scratch lifecycle worth a memory entry
+
+Architect verified at `nucleus/e2e/src/main.rs:831-851`: `finalize_run_scratch` deletes `target/e2e-matrix/run-*/` on success; retains + stderr-prints on failure. The implementer's cycle-164 L2 disclosure captured the success-case cleanup but not the failure-case retention. Filed as new memory `project-e2e-harness-scratch-lifecycle` covering both halves + the canonical bit-identity-verification workflow (direct `nucleus build --out DIR` invocations, not post-`just e2e` diff).
+
+### P3.1 — sort invariant unenforced
+
+The helper's docstring at line 49-60 declared `used_sorted_asc` MUST be ascending; the implementation trusted it. All current callers (4 backends, 3 driver wirings) build the slice from `BTreeMap::keys()` so sort-by-construction; but a future caller passing an unsorted Vec would silently elect the FIRST element instead of the smallest.
+
+Cycle-164b adds `debug_assert!(used_sorted_asc.windows(2).all(|w| w[0] < w[1]))` to `elect_host_from_worker_names` + a `#[should_panic(expected = "must be strictly ascending")]` `#[cfg(debug_assertions)]` negative pin in the tests mod. Zero release cost, catches future caller drift in dev/test.
+
+### P2.2 — implementer L1 lesson was a RE-DISCOVERY (no memory change)
+
+Architect noted the cycle-164 L1 lesson ('cargo run --release ships stale binary') is already covered by the existing memory `feedback-stale-release-binary-during-session` — the implementer's framing inverted which case the memory documents (the memory already explicitly mentions `cargo run --release --bin nucleus-e2e`). Live instance of `feedback-implementer-disclosure-mechanism-wrong`.
+
+**Disposition**: no memory file update needed. This addendum acknowledges the re-discovery so a fresh subagent reviewing the cycle history sees the disposition. Re-validates the orchestrator-hygiene rule: read the existing memory before forward-carrying an 'L1-class' disclosure.
+
+### Cycle-164b gate results (3-sample non-flake)
+
+- `just build`: clean
+- `just clippy` (`-D warnings`): clean
+- `just test` (dev): **961 / 0 / 3** (was 960 at cycle 164; +1 sort-assert negative pin)
+- `just test-release`: **960 / 0 / 3** (intentional asymmetry: new pin is `#[cfg(debug_assertions)]` so it's compiled out of release; release count unchanged from cycle 164)
+- `just e2e`: **112 / 101 / 0 / 11 / 0** (3 non-flake samples; bit-identity preserved)
+
+### What this fold-back commit changes
+
+- `nucleus/driver/src/main.rs`: trimmed 2 inline-rule comment blocks (lines 480-498 + 545-548) to remove rule restatement + stale file:line cites; preserved WHY of host-election in each pass.
+- `nucleus/backend-common/src/host_election.rs`: added `debug_assert!` sort-invariant guard in `elect_host_from_worker_names` + 1 negative pin test.
+- New memory: `project-e2e-harness-scratch-lifecycle.md` + MEMORY.md index entry.
+- This tracker note.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

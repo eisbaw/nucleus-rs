@@ -113,6 +113,17 @@ pub fn elect_host_from_worker_names(
     worker_names: &BTreeMap<WorkerId, String>,
     used_sorted_asc: &[WorkerId],
 ) -> Option<WorkerId> {
+    // Cycle-164b architect P3.1: the docstring's "sorted ascending"
+    // invariant is load-bearing — `first()` returns "smallest used"
+    // only if the slice is sorted. All current callers build the
+    // slice from `BTreeMap::keys()` (sorted by construction), but a
+    // future caller passing an unsorted Vec would silently elect the
+    // FIRST element. Debug-assert it; zero cost in release.
+    debug_assert!(
+        used_sorted_asc.windows(2).all(|w| w[0] < w[1]),
+        "elect_host_from_worker_names: used_sorted_asc must be \
+         strictly ascending by WorkerId (got {used_sorted_asc:?})",
+    );
     let named_host_in_used = worker_names
         .iter()
         .find(|(_, n)| n.as_str() == HOST_NAME)
@@ -314,5 +325,20 @@ mod tests {
             elect_host_from_worker_names(&worker_names_with(pairs_by_id), &used_vec),
             elect_host_from_name_workers(&name_workers_with(pairs_by_name), &used_set),
         );
+    }
+
+    // --- Cycle-164b architect P3.1: sort-invariant debug-assert pin ---
+
+    #[test]
+    #[should_panic(expected = "must be strictly ascending")]
+    #[cfg(debug_assertions)]
+    fn backend_view_unsorted_used_panics_in_debug() {
+        // Negative pin for the debug_assert added cycle 164b — proves
+        // the guard bites when a future caller passes an unsorted
+        // slice. In release builds the assert is compiled out, so
+        // this test only runs in debug (cfg gate).
+        let names = worker_names_with(&[(1, "w0"), (5, "host"), (9, "w1")]);
+        let unsorted = vec![w(9), w(1), w(5)];
+        let _ = elect_host_from_worker_names(&names, &unsorted);
     }
 }

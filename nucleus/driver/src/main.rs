@@ -478,40 +478,30 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // naturally places host's Sync at the structurally correct
     // position, preserving any enclosing Repeat / Sequence nesting).
     let acfg = if backend == "mp-tcp-bufsync" || backend == "mp-tcp-event" {
-        // Host election MUST mirror the per-backend `Plan::build`
-        // election EXACTLY, otherwise a schedule whose "host" worker
-        // is declared but has zero projected events (an unusual but
-        // possible shape) would mediate against an ID the backend
-        // does not elect as host, and the backend's defensive rejection
-        // would re-fire against the *backend-elected* host (cycle-160
-        // architect P1.1).
+        // WHY this pass needs the SAME host the backend will elect:
+        // a schedule whose "host" worker is declared but has zero
+        // projected events (unusual but possible) would otherwise
+        // mediate against an ID the backend does not elect as host,
+        // and the backend's defensive rejection would re-fire
+        // against the BACKEND-elected host (cycle-160 architect
+        // P1.1). The rule itself lives in `backend_common::host_election`;
+        // here we only build the `used` set the rule consumes.
         //
-        // Backend election rule (mp-tcp-bufsync/src/lib.rs:331-338 +
-        // mp-tcp-event/src/multi_worker.rs:153-160): prefer the worker
-        // literally named "host" AND in `used_workers`; else fall
-        // back to the smallest `used_workers` entry. `used_workers` is
-        // derived from `per_worker` (non-empty event lists), so we
-        // project ONCE here to get the same set the backend will see,
-        // elect, then mediate, then re-project at line ~559 (the
-        // mediation may change which workers are non-empty by adding
-        // Sync events to host's list, so the post-mediation projection
-        // is the authoritative per_worker).
-        //
-        // Cost: one extra `acfg_to_events` call (O(ACFG nodes)). Cheap
-        // compared to the cross-backend skew this would otherwise leak
-        // into the differential.
+        // We project ONCE here (preview) to elect, then mediate, then
+        // re-project later — the mediation may add Sync events to
+        // host's list, making the post-mediation projection the
+        // authoritative per_worker. Cost: one extra `acfg_to_events`
+        // call (O(ACFG nodes)) — cheap vs the cross-backend skew this
+        // would otherwise leak into the differential.
         let preview = acfg_to_events(&acfg);
         let used: std::collections::BTreeSet<_> = preview
             .iter()
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
-        // Host election: shared helper. See
-        // `backend_common::host_election` module docstring for the
-        // canonical rule. Lifted in TASK-0336 cycle 164 so this
-        // driver wiring and the backend's own `Plan::build` cannot
-        // silently drift (memory
-        // feedback-driver-must-mirror-backend-election-exactly).
+        // Host election: shared helper (TASK-0336 cycle 164). See
+        // `backend_common::host_election` for the canonical rule
+        // (memory feedback-driver-must-mirror-backend-election-exactly).
         let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_host_mediation_inject(acfg, h),
@@ -542,10 +532,9 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // nodes). Applied BEFORE the capability check + `acfg_to_events`
     // so the projection sees the rewritten ACFG.
     //
-    // Host election mirrors mp-tcp-event Plan::build EXACTLY (worker
-    // literally named "host" AND in used; else smallest used) —
-    // memory `feedback-driver-must-mirror-backend-election-exactly`
-    // (cycle-160 architect P1.1).
+    // Host election: same shared helper as the cycle-160 wiring above
+    // (rule lives in `backend_common::host_election`; same mirroring
+    // requirement vs the backend's Plan::build).
     let acfg = if backend == "mp-tcp-event" {
         // Re-derive `used_workers` from the post-mediation ACFG. The
         // host_mediation pass may have added host to Sync participants
