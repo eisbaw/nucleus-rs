@@ -179,7 +179,7 @@ fn reorder_boundary(events: &[Event], host: WorkerId, out: &mut Vec<Event>) {
             // TASK-0329.01.02 handles in-loop w2w transfers via the
             // ACFG-layer relay-inject pass).
             Event::Loop { body, .. } => {
-                collect_loop_body_writes(body, host, &mut tainted);
+                collect_loop_body_writes(body, &mut tainted);
                 others_idx.push(i);
             }
             Event::Push { dst, data, tile, .. } if *dst != host => {
@@ -208,11 +208,16 @@ fn reorder_boundary(events: &[Event], host: WorkerId, out: &mut Vec<Event>) {
 /// IterTile)`. Used by [`reorder_boundary`] to conservatively taint
 /// a Loop event with its body's writes so subsequent w2w Pushes of
 /// any written data are correctly marked not-hoistable.
-fn collect_loop_body_writes(
-    body: &[Event],
-    host: WorkerId,
-    tainted: &mut Vec<(DataId, IterTile)>,
-) {
+///
+/// Both w2w `Wait` AND host->worker `Wait` taint here — mirrors the
+/// cycle-162a refinement in `reorder_boundary` (cycle-162b architect
+/// P2.1 fold-back). A host->worker Wait inside a Loop body writes
+/// data at runtime when the Loop executes; a subsequent top-level
+/// w2w Push of the same data would be unsound if hoisted above the
+/// Loop. The asymmetry where the top-level handler tainted but the
+/// Loop-body collector did not was the kind of silent-sibling gap
+/// memory `feedback-silent-sibling-defect` catalogues.
+fn collect_loop_body_writes(body: &[Event], tainted: &mut Vec<(DataId, IterTile)>) {
     for e in body {
         match e {
             Event::Fire { bindings, .. } => {
@@ -220,11 +225,14 @@ fn collect_loop_body_writes(
                     tainted.push((out_slice.data, IterTile::empty()));
                 }
             }
-            Event::Wait { src, data, .. } if *src != host => {
+            // Both w2w Wait and host->worker Wait inside a Loop body
+            // taint — see docstring rationale. The `src` field is
+            // intentionally not matched on; both arms taint identically.
+            Event::Wait { data, .. } => {
                 tainted.push((*data, IterTile::empty()));
             }
             Event::Loop { body: inner, .. } => {
-                collect_loop_body_writes(inner, host, tainted);
+                collect_loop_body_writes(inner, tainted);
             }
             _ => {}
         }
@@ -703,5 +711,71 @@ mod tests {
         let b = tile_1d(iv(0), 0, 5);
         assert!(tiles_may_overlap(&a, &b));
         assert!(tiles_may_overlap(&b, &a));
+    }
+
+    // ---- 2D tile-overlap tests (cycle-162b architect P2.2 fold-back) ----
+    //
+    // The 05/distributed-2d production cell uses 2D (y, x) iteration;
+    // the pass's `tiles_may_overlap` helper is exercised on 2D tiles in
+    // practice but the test fixtures pre-cycle-162b were 1D only. The
+    // tests below pin 2D behaviour: disjoint-on-x-overlap-on-y,
+    // overlap-on-both, missing-axis-in-one.
+
+    fn tile_2d(va: IterVar, ra: Range<i64>, vb: IterVar, rb: Range<i64>) -> IterTile {
+        IterTile::new(vec![(va, ra), (vb, rb)])
+    }
+
+    #[test]
+    fn tiles_may_overlap_2d_disjoint_on_one_axis_overlap_on_other() {
+        // 05/distributed-2d halo strip shape: w0's east column tile vs
+        // w1's west column tile. y overlaps (both span the same rows);
+        // x disjoint (col 7..8 vs col 8..9). → disjoint.
+        let own_east = tile_2d(iv(0), 1..8, iv(1), 7..8);
+        let neighbor_west = tile_2d(iv(0), 1..8, iv(1), 8..9);
+        assert!(!tiles_may_overlap(&own_east, &neighbor_west));
+        assert!(!tiles_may_overlap(&neighbor_west, &own_east));
+    }
+
+    #[test]
+    fn tiles_may_overlap_2d_overlap_on_both_axes() {
+        let a = tile_2d(iv(0), 0..4, iv(1), 0..4);
+        let b = tile_2d(iv(0), 2..6, iv(1), 2..6); // overlaps a on [2,4) × [2,4)
+        assert!(tiles_may_overlap(&a, &b));
+    }
+
+    #[test]
+    fn tiles_may_overlap_2d_missing_axis_in_one_is_non_restrictive() {
+        // 2D tile vs 1D tile that only constrains one axis. The 1D
+        // tile's missing axis is treated as non-restrictive (the 2D
+        // tile's other axis range is unconstrained from the 1D tile's
+        // perspective). Result depends only on the shared axis.
+        let a = tile_2d(iv(0), 0..4, iv(1), 0..4); // 2D
+        let b = tile_1d(iv(0), 5, 10); // 1D on axis 0, disjoint
+        assert!(!tiles_may_overlap(&a, &b)); // disjoint on shared axis 0
+        let c = tile_1d(iv(0), 2, 3); // 1D on axis 0, overlapping
+        assert!(tiles_may_overlap(&a, &c));
+    }
+
+    #[test]
+    fn loop_body_host_wait_taints_subsequent_push() {
+        // Cycle-162b architect P2.1: a host->worker Wait inside a Loop
+        // body writes data at runtime when the Loop executes; a
+        // subsequent top-level w2w Push of the same data must not be
+        // hoisted above the Loop.
+        let tile = tile_1d(iv(0), 0, 4);
+        let inner_wait = wait(host(), d(1), tile.clone(), seq(5));
+        let outer_loop = Event::Loop {
+            iter_var: iv(1),
+            range: 0..8,
+            body: vec![inner_wait],
+            block_tag: None,
+            check_frame: None,
+        };
+        let events = vec![outer_loop, push(w2(), d(1), tile.clone(), seq(1))];
+        let out = run_one(events.clone());
+        assert_eq!(
+            out, events,
+            "Loop body contains host->worker Wait of d(1) → Push d(1) not hoistable"
+        );
     }
 }
