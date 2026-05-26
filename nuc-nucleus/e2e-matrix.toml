@@ -816,11 +816,24 @@ milestone = "M5"
 #     was also wrong; the SECOND empirical step (reading emitted code
 #     rather than relying on cycle-148/149 narrative) caught it.
 # The two-step empirical-verification discipline is the safety net.
-[[skip]]
+#
+# Cycle-162 update (TASK-0329.01.01 slice 1, Option D): the
+# wait-before-push hazard was lifted by `apply_safe_push_reorder`, a
+# new compiler pass that hoists hoistable worker-to-worker `Push`
+# events above preceding w2w `Wait` events within each non-host
+# worker's top-level boundaries. After reorder, the worker event list
+# becomes [Push halo, Push halo, Wait halo, Wait halo, bar_0, ...],
+# breaking the wait-before-push deadlock cycle. The relay splice
+# point on mp-tcp-event is now derived from per_worker (finds the
+# first Sync after which every non-host worker has finished w2w),
+# placing the relay BEFORE bar_0 for halo-exchange shapes. Both
+# changes are mp-tcp-event-specific (driver applies the pass for
+# this backend only; mp-tcp-bufsync's splice-point stays put due to
+# its FIFO constraint 3). Cell promoted [[skip]] -> [[required]].
+[[required]]
 example  = "05-stencil"
 schedule = "distributed-2d"
 backend  = "mp-tcp-event"
-reason   = "TASK-0332 (mp-tcp-event host-relay deadlocks on wait-before-push schedule shapes — filed cycle 150 from empirical e2e + code-inspection evidence): worker events begin with chan_X.wait() for cross-worker halo strips BEFORE any push; cycle-149's host-relay splices after bar_0, so workers block at their initial waits, never reach bar_0, host blocks at bar_0 forever, relay never runs, deadlock. Cycle-150 empirical promotion test confirmed FAIL/run (32.4s timeout, workers exit 0, run.sh reports failure). Distinct from TASK-0330 (which covers Loop-body w2w Push; this cell's w2w pushes are at TOP LEVEL). Distinct from TASK-0294 (host 2D slice-paste — already covered by the shared walker since cycle 115). The DATA-arm w↔w gap was lifted cycle 149 (TASK-0327 Done) but the scatter-compute-gather TIMING MODEL of cycle 149 does not accommodate halo-exchange-shape schedules; AC#1 of TASK-0332 (threaded / interleaved / pre-bar_0 host-relay) is the substantive fix; AC#2 (defensive ContractGap detecting wait-before-push at Plan::build) is the minimum cycle-N+1 closure."
 milestone = "M5"
 
 # ---- Example 09 producer-consumer (TASK-0042.03) --------------------

@@ -73,6 +73,8 @@ pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
 pub use passes::reuse_inference::{
     apply_reuse_inference, apply_reuse_inference_advisory, ReuseInferenceError, ReuseSlot,
 };
+// TASK-0329.01.01 slice 1: safe push-before-wait reordering for mp-tcp-event.
+pub use passes::safe_push_reorder::apply_safe_push_reorder;
 pub use passes::sync_inject::inject_syncs;
 pub use passes::transfer_inject::inject_transfers;
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};

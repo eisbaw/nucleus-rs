@@ -55,9 +55,9 @@ use std::process::ExitCode;
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
     apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
-    apply_partition_workers, apply_reuse_inference, build_acfg, build_sidecar,
-    check_kernels_contract, check_schedule_compat, inject_check_frames, inject_syncs,
-    inject_transfers, link, load_capabilities,
+    apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder, build_acfg,
+    build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
+    inject_syncs, inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -590,6 +590,44 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // when `sched_ir.checks` is empty — preserves the pre-TASK-0052.02
     // e2e baseline byte-identically (no tier-1 cell uses `check loop`).
     let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
+    // TASK-0329.01.01 slice 1 — safe push-before-wait reordering for
+    // mp-tcp-event. Hoists hoistable worker-to-worker `Push` events
+    // above preceding w2w `Wait` events within each non-host worker's
+    // top-level boundaries, breaking the wait-before-push deadlock
+    // cycle on the synchronous host-relay (cycle-149) for schedules
+    // like 05-stencil/distributed-2d. Pass is mp-tcp-event-specific
+    // because (per AC#3 of TASK-0329.01.01) only mp-tcp-event's
+    // relay splice point can safely move ahead of the first
+    // wait-bearing Sync; mp-tcp-bufsync's constraint 3 (per-pair FIFO
+    // stream + host's own w2w Waits would race the moved relay) makes
+    // the analogous lift unsafe on bufsync. Other backends do NOT
+    // have the host-relay deadlock surface (pthreads-* use direct
+    // w↔w channels). Pass is observationally a no-op for schedules
+    // that have no wait-before-push shape — preserves bit-identity
+    // for every currently-passing mp-tcp-event cell.
+    let per_worker = if backend == "mp-tcp-event" {
+        // Host election: mirror Plan::build's rule (worker literally
+        // named "host" AND in used_workers, else smallest used).
+        // `used_workers` here = workers with non-empty event lists.
+        let used: std::collections::BTreeSet<_> = per_worker
+            .iter()
+            .filter(|(_, evs)| !evs.is_empty())
+            .map(|(w, _)| *w)
+            .collect();
+        let host = acfg
+            .name_workers
+            .iter()
+            .find(|(n, _)| n.as_str() == "host")
+            .map(|(_, w)| *w)
+            .filter(|w| used.contains(w))
+            .or_else(|| used.iter().next().copied());
+        match host {
+            Some(h) => apply_safe_push_reorder(per_worker, h),
+            None => per_worker,
+        }
+    } else {
+        per_worker
+    };
     let sidecar = build_sidecar(&linked, &acfg).map_err(|e| format!("sidecar error: {e}"))?;
     // Reverse name tables: invert acfg.name_* (name -> id) to
     // (id -> name) — the join key the EventList / sidecar use. Built

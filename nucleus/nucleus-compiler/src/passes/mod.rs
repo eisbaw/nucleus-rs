@@ -55,5 +55,13 @@ pub mod partition_blocks2d;
 pub mod partition_rows;
 pub mod partition_workers;
 pub mod petri_to_events;
+// TASK-0329.01.01: safe push-before-wait reordering at the event-list
+// layer. Hoists hoistable worker-to-worker Pushes above preceding w2w
+// Waits within a top-level boundary to break the wait-before-push
+// deadlock cycle on mp-tcp-event's synchronous host-relay. Backend-
+// local: driver applies for `mp-tcp-event` only (slice 1 of the
+// TASK-0329.01 keystone). See module docs for the hoistable predicate
+// (P1.1 distinguishes w2w-Wait vs host->worker-Wait).
+pub mod safe_push_reorder;
 pub mod sync_inject;
 pub mod transfer_inject;

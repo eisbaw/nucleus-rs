@@ -624,7 +624,8 @@ impl<'a> Plan<'a> {
             String::new()
         };
         if is_host && !host_relay.is_empty() {
-            let split_at = relay_phase_insertion_point(host_events);
+            let split_at =
+                relay_phase_insertion_point(host_events, self.per_worker, self.host_worker);
             let mut pre = String::new();
             walker::render_worker_events(
                 &walker_ctx,
@@ -1240,53 +1241,101 @@ struct RelayHop {
     cap: u64,
 }
 
-/// TASK-0327 (cycle 149): pick the position in HOST's top-level event
-/// list at which the host-relay phase should splice in.
+/// TASK-0327 (cycle 149) + TASK-0329.01.01 (slice 1): pick the position
+/// in HOST's top-level event list at which the host-relay phase should
+/// splice in.
 ///
-/// Same heuristic-shape as mp-tcp-bufsync's cycle-148
-/// `relay_phase_insertion_point`. Constraints 1 + 2 below are the
-/// load-bearing ones — they fire regardless of backend. Constraint 3
-/// is INERT on mp-tcp-event by construction (per-seq demux at the
-/// reactor's `inbound` map means a relay `wait(seq)` cannot interleave
-/// with another host Wait on a different seq from the same `data_<src>`
-/// socket — the same socket fans into N distinct `inbound[seq]`
-/// queues); kept in the doc only as narrative continuity with the
-/// bufsync sibling. Cycle-149 architect P2.3 fold-back.
+/// **Cycle 149 design** (scatter-compute-gather): heuristic returned the
+/// LAST top-level `Sync` index — splicing relay between pass-1 barrier
+/// and pass-2 barrier on schedules like `06-separable-filter/distributed`.
 ///
-/// 1. Workers reach their pass-2-end barrier only AFTER receiving
-///    their cross-tmps (which require relay) and computing pass 2.
-///    Relay must happen BEFORE host's LAST top-level `Event::Sync`,
-///    otherwise host blocks at that barrier waiting for workers whose
-///    progress depends on the relay we haven't run yet.
+/// **Cycle 161/162 update (TASK-0329.01.01 slice 1)**: schedules like
+/// `05-stencil/distributed-2d` exchange halo data BEFORE any barrier —
+/// after the TASK-0329.01.01 `apply_safe_push_reorder` pass hoists each
+/// worker's halo Pushes above its halo Waits, every w2w event happens
+/// strictly before the first top-level Sync. The cycle-149 LAST-Sync
+/// heuristic placed relay AFTER that Sync, leaving workers blocked at
+/// their halo Waits while host blocked at the barrier — observed as a
+/// 32s timeout deadlock (cycle 150 empirical finding, TASK-0332).
 ///
-/// 2. Workers reach their pass-1-end barrier BEFORE pushing tmps; so
-///    relay needs the workers to have crossed pass-1 — host must have
-///    crossed it too, i.e. relay AFTER host's first `Sync` (if any).
+/// The new algorithm walks host's Syncs in event-list order and returns
+/// the FIRST Sync (by host's index) such that, for every non-host
+/// worker, every w2w event in that worker's event list occurs strictly
+/// BEFORE the matching Sync (by `SyncTag` identity — TASK-0172). For
+/// schedules where workers' w2w activity is between two barriers (e.g.
+/// 06/distributed: w2w activity between bar_0 and bar_1), this still
+/// returns bar_1's index — byte-identical with the cycle-149 heuristic.
+/// For schedules where workers' w2w activity precedes the first barrier
+/// (e.g. 05/distributed-2d after `apply_safe_push_reorder`), this
+/// returns bar_0's index, enabling relay to run BEFORE the barrier.
 ///
-/// 3. (Inert on mp-tcp-event — fires on bufsync only.) bufsync uses
-///    one ordered DATA stream per `(host, worker)` pair, so relay
-///    reads from `data_<src>` would race host's own reads on the
-///    same socket. mp-tcp-event's per-seq demux removes this hazard:
-///    the relay's `wait(seq)` and any host `chan_<rid>.wait()` for a
-///    different seq drain into disjoint `inbound[seq]` queues by
-///    construction. The "before-first-Wait" fallback below is kept
-///    purely for narrative symmetry; on mp-tcp-event it would be
-///    correct anyway, but for a reason that does not bite.
+/// Constraint 3 of the cycle-149 design (per-seq demux removes the
+/// stream-race hazard that bufsync's analogous splice has — see memory
+/// `project-mp-tcp-event-vs-bufsync-safety-profile`) is still INERT on
+/// mp-tcp-event: moving the relay earlier in host's events is safe
+/// because each `relay_one(seq, ...)` drains a distinct `inbound[seq]`
+/// queue. **mp-tcp-bufsync's `relay_phase_insertion_point` is NOT
+/// updated** — see AC#3b of TASK-0329.01.01 + the comment at the
+/// bufsync splice site.
 ///
-/// Priority order: LAST top-level `Sync` (primary), then FIRST
-/// top-level `Wait` (fallback — inert hazard on mp-tcp-event but
-/// gives a sensible insertion site), then end-of-events (last resort).
-fn relay_phase_insertion_point(events: &[Event]) -> usize {
-    if let Some(idx) = events
+/// Fallbacks (preserving cycle-149 behaviour for schedules where the
+/// scan finds nothing): LAST Sync (cycle-149 primary), then FIRST
+/// top-level Wait, then end-of-events.
+fn relay_phase_insertion_point(
+    host_events: &[Event],
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    host: WorkerId,
+) -> usize {
+    'outer: for (host_idx, ev) in host_events.iter().enumerate() {
+        let Event::Sync { sync: host_tag, .. } = ev else {
+            continue;
+        };
+        for (&w, w_events) in per_worker {
+            if w == host {
+                continue;
+            }
+            // Find this worker's matching Sync by SyncTag (TASK-0172).
+            let Some(w_sync_idx) = w_events
+                .iter()
+                .position(|e| matches!(e, Event::Sync { sync, .. } if sync == host_tag))
+            else {
+                // Worker doesn't participate in this Sync. Not a hard
+                // disqualifier — host's barrier shim handles partial
+                // barriers via the `barrier_participants` set. Skip
+                // this worker for the all-complete check.
+                continue;
+            };
+            // Are there any w2w events at or after this worker's
+            // matching Sync? If yes, this host Sync is too early.
+            let has_post_w2w = w_events[w_sync_idx..].iter().any(|e| match e {
+                Event::Push { dst, .. } if *dst != host => true,
+                Event::Wait { src, .. } if *src != host => true,
+                _ => false,
+            });
+            if has_post_w2w {
+                continue 'outer;
+            }
+        }
+        // Every non-host worker has finished w2w by this Sync; relay
+        // splices at this host Sync index (= relay runs BEFORE this
+        // Sync in host's event stream).
+        return host_idx;
+    }
+    // Fallbacks (cycle-149 originals, kept for schedules that don't
+    // match the scan — e.g. relay-needed shapes without any top-level
+    // Sync would never reach `render_relay_phase` because the schedule
+    // would have rejected at `detect_wait_before_push_hazard` first
+    // for any non-trivial w2w shape).
+    if let Some(idx) = host_events
         .iter()
         .rposition(|e| matches!(e, Event::Sync { .. }))
     {
         return idx;
     }
-    if let Some(idx) = events.iter().position(|e| matches!(e, Event::Wait { .. })) {
+    if let Some(idx) = host_events.iter().position(|e| matches!(e, Event::Wait { .. })) {
         return idx;
     }
-    events.len()
+    host_events.len()
 }
 
 /// TASK-0327 (cycle 149): collect every Push event where the dst is a

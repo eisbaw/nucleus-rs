@@ -1630,6 +1630,24 @@ struct RelayHop {
 /// distributed2 reproducer + the existing 02-split (no w2w) cell +
 /// the 03-reduction/distributed cell (no w2w — blocked on
 /// host-excluding-barrier, separate gap) all satisfy it.
+///
+/// ## TASK-0329.01.01 (slice 1) — backend asymmetry NOT applied here
+///
+/// The sibling `nucleus/backends/mp-tcp-event/src/multi_worker.rs`
+/// `relay_phase_insertion_point` was updated in slice 1 of
+/// TASK-0329.01.01 to walk worker events by `SyncTag` and return the
+/// FIRST Sync after which every non-host worker has finished w2w
+/// activity. That change is mp-tcp-event-only: on mp-tcp-event,
+/// constraint 3 above is INERT (per-seq demux removes the
+/// stream-race hazard), so the relay can splice before host's own
+/// w2w Waits without a race. Bufsync uses one ordered DATA stream
+/// per `(host, worker)` pair — moving the relay earlier here would
+/// race host's own reads on `data_<src>` (constraint 3 ACTIVE). The
+/// 05/distributed-2d wait-before-push hazard would, on bufsync, need
+/// either a threaded relay or a per-pair-multiplex change to the
+/// wire codec — neither in scope for slice 1. Per memory
+/// `project-mp-tcp-event-vs-bufsync-safety-profile` the per-seq vs
+/// FIFO distinction is load-bearing for this asymmetry.
 fn relay_phase_insertion_point(events: &[Event]) -> usize {
     if let Some(idx) = events
         .iter()
