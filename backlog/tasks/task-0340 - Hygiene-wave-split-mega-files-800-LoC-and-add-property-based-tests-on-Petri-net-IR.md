@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 11:59'
+updated_date: '2026-05-26 12:21'
 labels:
   - tech-debt
   - hygiene
@@ -224,4 +224,68 @@ Split nucleus/backends/mp-tcp-bufsync/src/lib.rs (1997 LoC) into 7 cohesive sub-
 - slice 9: AC#3 proptest.
 - slice 10: AC#4 e2e report-formatter.
 - slice 11: AC#7 final summary commit.
+
+## Cycle 179b — parent-tracker hardening from slice-4 review gate
+
+(Follows cycle 179 commit 6315b1b TASK-0340.01 slice 4 Done. Review gate
+findings recorded on TASK-0340.01 notes; this is the parent-task summary.)
+
+**AC#2 correction: 2/6 files split (render.rs + mp-tcp-bufsync/lib.rs).
+Remaining originally-named-by-name: 4 files.**
+- nucleus/backends/mp-tcp-event/src/multi_worker.rs (1695 LoC)
+- nucleus/nucleus-compiler/src/acfg.rs (1440 LoC)
+- nucleus/nucleus-compiler/src/link.rs (1290 LoC)
+- nucleus/backend-common/src/multi_worker_walker.rs (1263 LoC)
+
+**Mega-file count correction: 12, NOT 13** (architect cycle-179b P2.3
+empirically verified by `find … -exec wc -l … | awk '$1 > 1000'`). The
+slice 4 commit message + slice 4 implementer's honest-limits both said
+"13 remain"; the correct number is 12. Off-by-one in the commit message.
+
+**Open scope question: should AC#2 cover all 12, or only the 4
+originally-named?** The 8 mega-files NOT in the original cycle-175 audit:
+- passes/transfer_inject.rs (4726 LoC) — >2× larger than any other
+- passes/reuse_inference.rs (1676)
+- sched/lower.rs (1546)
+- passes/halo_inference.rs (1525)
+- algo/lower.rs (1328)
+- passes/host_data_relay_inject.rs (1212)
+- sched/ir.rs (1163)
+- backends/pthreads-async/multi_worker.rs (1048)
+
+Architect cycle-179b recommends tightening AC#2 to the check-mega-files
+recipe scope (all >1000 LoC). The 800-LoC discussion target in AC#2 is a
+SMELL line, not the hard one; AC#5's recipe already polices the broader
+set. transfer_inject.rs at 4726 LoC is structurally larger than every
+file slice 1-4 has touched combined.
+
+**Decision: defer the AC#2 scope question to the next slice's plan.**
+Slice 5 implementer chooses between:
+- (a) Continue with the originally-named 4 files (mp-tcp-event/multi_worker.rs
+  next by size). Close TASK-0340 at end of slice 8.
+- (b) Tighten AC#2 to the recipe scope, take transfer_inject.rs next
+  (highest-leverage split per AC#5 reading). TASK-0340 grows by ~6 more
+  slices.
+
+**AC#6 reading clarification:** "no new TASK-NNNN or cycle-NNN citations
+introduced in the refactored files" is interpreted in the LENIENT sense
+— pre-existing anchors copied with their moved code or repeated in new
+per-file `//!` orientation docstrings are NOT new citations. Strict
+reading would forbid even copy-with-the-code, which would force
+information loss. Lenient interpretation is what cycle 178 + 179
+implementers used; making it explicit so slice 5 doesn't second-guess.
+
+**Slice 4 implementer-disclosure honesty drift** (architect cycle-179b
+P2.1): the implementer's "Every moved fn/struct/doc-comment is preserved
+verbatim" claim was falsified by 4 small reflows + 1 cosmetic indentation
+fix (see TASK-0340.01 notes). Functionally benign; e2e gate held. Per
+memory `feedback-implementer-disclosure-mechanism-wrong`, the slice-5
+implementer brief should:
+- Forbid blanket "verbatim move" claims.
+- Require enumerated disclosure: "Behaviour-equivalent change list: <none
+  | (a) ..., (b) ..., ...>" instead of "no behaviour change".
+
+This bookkeeping closes cycle 179b. Slice 5 (mp-tcp-event/multi_worker.rs
+by default, OR transfer_inject.rs if scope tightened) is the natural next
+keystone.
 <!-- SECTION:NOTES:END -->
