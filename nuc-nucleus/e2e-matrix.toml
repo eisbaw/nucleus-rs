@@ -1372,10 +1372,12 @@ milestone = "M5"
 # POST-CYCLE-148 (TASK-0327 first slice): mp-tcp-bufsync lifted via
 # host-relay (data_conn_var routes non-host peer through data_host;
 # HOST runs a synchronous 12-hop relay phase spliced between pass-1
-# barrier and pass-2 barrier). 3 of 4 tier-1 backends bit-identical
-# on 06/distributed2 (pthreads-sync, pthreads-async, mp-tcp-bufsync).
-# Only mp-tcp-event remains [[skip]], pending cycle-149 replication
-# of the host-relay shape into the mio reactor.
+# barrier and pass-2 barrier).
+# POST-CYCLE-149 (TASK-0327 second slice): mp-tcp-event lifted via
+# the same host-relay shape (see the cycle-149 narrative at the
+# mp-tcp-event cell below). All 4 tier-1 backends bit-identical on
+# 06/distributed2 (pthreads-sync, pthreads-async, mp-tcp-bufsync,
+# mp-tcp-event).
 
 [[required]]
 example  = "06-separable-filter"
