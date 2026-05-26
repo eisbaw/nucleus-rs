@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-26 01:33'
+updated_date: '2026-05-26 07:24'
 labels:
   - M6
   - backend
@@ -176,6 +176,10 @@ The previous append used double-quotes inside backticks; bash command substituti
 ## Correction: test name prefix
 
 The previous note said test name 'task0329_idempotence_with_projection_acfg_to_events_is_stable' with the task-id prefix. The actual fn name in nucleus/nucleus-compiler/src/passes/host_mediation_inject.rs (around line 246) is idempotence_with_projection_acfg_to_events_is_stable (NO task0329 prefix). Grep target: 'idempotence_with_projection'. Per feedback-comment-doc-lie-recurring: honest correction recorded.
+
+## Cycle 166b forward-link
+
+TASK-0329.01 (child task — in-loop w2w Push redesign via slice composition) was moved to Done cycle 166. The TASK-0329 parent's OWN ACs are: AC#1 lift mp-tcp-bufsync host-excluding barrier rejection (landed cycle 160 via apply_host_mediation_inject); AC#2 promote 03-reduction/distributed × mp-tcp-bufsync from [[skip]] to [[required]]; AC#3 defensive test fixture for host-excluding barrier shape. Cycle-166 closing audit (TASK-0329.01) did not re-evaluate AC#2/AC#3 of THIS parent task; they may still be open. The next-cycle audit window should consider whether AC#2 + AC#3 are met — if so, parent task can move to Done; if not, file the precise remaining work. This note exists per cycle-166b architect P3.2 forward-link discipline (no status change this cycle).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

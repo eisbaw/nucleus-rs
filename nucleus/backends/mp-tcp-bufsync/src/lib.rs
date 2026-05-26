@@ -1768,8 +1768,18 @@ fn collect_w2w_pushes_inner(
                          (seq, dst) but the worker pushes N times around \
                          the loop) or mis-order (the flat read order would \
                          not align with the loop's nested iteration order). \
-                         No in-tree schedule trips this today; file a \
-                         follow-up if one needs it."
+                         No in-tree schedule trips this today. The \
+                         mp-tcp-event sibling carries a compiler-pass \
+                         remediation (`apply_host_data_relay_inject`, \
+                         TASK-0329.01.02 cycle 163 + TASK-0329.01.02.01 \
+                         cycle 165) wired only for mp-tcp-event per the \
+                         per-pair FIFO constraint that makes splice-point \
+                         lift unsafe on bufsync (see memory \
+                         `project-mp-tcp-event-vs-bufsync-safety-profile`). \
+                         If a future bufsync-capable schedule needs the \
+                         equivalent, file a follow-up; the pass itself is \
+                         backend-agnostic at the ACFG layer and would only \
+                         require driver-side wiring + a fresh FIFO audit."
                     )));
                 }
                 out.push(RelayHop {

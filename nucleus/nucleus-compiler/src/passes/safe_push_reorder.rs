@@ -49,8 +49,18 @@
 //!
 //! `Event::Loop` bodies are NOT recursed into (the loop event itself
 //! is one event at depth 0 and is treated as opaque by this pass).
-//! Loop-body w2w Pushes are TASK-0330's surface and slice 2
-//! (TASK-0329.01.02) is the architectural fix.
+//! Loop-body w2w Pushes are TASK-0330's surface and were handled by
+//! the now-landed slice 2 (TASK-0329.01.02 cycle 163 +
+//! TASK-0329.01.02.01 cycle 165): `apply_host_data_relay_inject`
+//! routes in-Repeat-body non-host-pair Push/Wait through host at
+//! the ACFG layer BEFORE this pass runs, so by the time the worker
+//! event list reaches `apply_safe_push_reorder` the Loop-body w2w
+//! Push shape is structurally absent for any pair the upstream pass
+//! covers (cycle-163b residual class (R-singleton) is the
+//! exception). Cycle-166b: this docstring was originally
+//! "slice 2 ... is the architectural fix" — a predictive claim that
+//! became hostage to fortune; reframed to past-tense + named
+//! landed cycles per `feedback-comment-doc-lie-recurring` L3.
 //!
 //! ## Backend asymmetry (TASK-0329.01.01 AC#3)
 //!
