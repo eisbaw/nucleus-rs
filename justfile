@@ -187,6 +187,7 @@ ci:
     just test-release
     just check-textual-replace-on-codegen
     just check-include-str-coverage
+    just check-narrative-doc-lie
     just e2e
     just determinism-check
     just determinism-check-negative
@@ -323,6 +324,60 @@ check-include-str-coverage:
         exit 1; \
     fi; \
     echo "OK: every include_str! has compile coverage."
+
+# Catch the predictive-conclusion doc-lie defect class in narrative
+# TOML (memory: feedback-comment-doc-lie-recurring 12+ firings;
+# memory: feedback-silent-sibling-defect 13th firing as of cycle
+# 169). Concrete motivating cycles: TASK-0338 cycle 169 + 169b
+# closed two structurally identical stale blocks in
+# nuc-nucleus/e2e-matrix.toml. TASK-0339 (this recipe) converts
+# reactive cleanup into a gate-time check.
+#
+# Pattern set: predictive-claim phrasings whose conclusion rots when
+# the predicted event lands. The author of cycle-N narrative often
+# fails to back-edit the cycle-N-1 paragraph's predictive conclusion
+# when cycle N answers the prediction.
+#
+# Per-line allow-list: a hit is OK if the same line contains one of:
+#   - 'AT FILING TIME' marker (explicit past-tense framing)
+#   - '# Cycle-<N> filing:' time-stamp prefix (paragraph explicitly
+#     historical)
+#   - '# ALLOW narrative-doc-lie: <reason>' annotation
+#
+# Today: two `# ALLOW narrative-doc-lie:` annotated sites in
+# nuc-nucleus/e2e-matrix.toml — the Example 14 / hearing aid M11
+# placeholder (current-state-accurate) and the 13-cnn-inference /
+# pipeline_parallel × mp-tcp-event cycle-160 historical paragraph
+# (framed by the block header which states the cell is PROMOTED).
+# Grep `ALLOW narrative-doc-lie` to find them; their drift across
+# file edits is OK as long as the annotation stays on the same line.
+check-narrative-doc-lie:
+    @echo "checking for predictive-conclusion doc-lies in narrative TOML..."
+    @hits=$(rg -nH \
+        -e 'BLOCKED by TASK' \
+        -e 'CARRIED as \[\[skip\]\]' \
+        -e 'still pending' \
+        -e 'currently \[\[skip\]\]' \
+        -e 'pending cycle-?[0-9]+' \
+        -e 'Only .+ remains \[\[skip\]\]' \
+        -e '[0-9]+ of [0-9]+ tier-1 backends' \
+        nuc-nucleus/e2e-matrix.toml \
+        | grep -v 'AT FILING TIME' \
+        | grep -vE '# Cycle-[0-9]+ filing:' \
+        | grep -v 'ALLOW narrative-doc-lie' \
+        || true); \
+    if [ -n "$hits" ]; then \
+        echo "FAIL: predictive-conclusion doc-lie candidates in narrative TOML (memory: feedback-comment-doc-lie-recurring, feedback-silent-sibling-defect cycle-169 hygiene rule):"; \
+        echo "$hits"; \
+        echo ""; \
+        echo "Each hit is a paragraph whose predictive conclusion may have rotted when the predicted event landed."; \
+        echo "Fix options (any one):"; \
+        echo "  1. Convert the verb to past-tense + add 'AT FILING TIME' marker on the same line."; \
+        echo "  2. Prefix the surrounding paragraph with '# Cycle-<N> filing:' (the time-stamp pattern from cycle 169b)."; \
+        echo "  3. Annotate the line with '# ALLOW narrative-doc-lie: <reason>' (use only when the line is current-state-accurate or framed historical by a block header)."; \
+        exit 1; \
+    fi; \
+    echo "OK: no predictive-conclusion doc-lies in narrative TOML."
 
 # Remove build artefacts.
 clean:

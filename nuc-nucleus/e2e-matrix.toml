@@ -60,7 +60,7 @@
 # and thus can be driven end-to-end. Example 13 joined the matrix at
 # TASK-0053 cycle-2 (kernels.rs + reference impl + reference.bin
 # landed once TASK-0209 cleared the partial-sub-array codegen
-# blocker). Example 14 still pending its own kernels.rs / reference /
+# blocker). Example 14 still pending its own kernels.rs / reference /  # ALLOW narrative-doc-lie: current-state-accurate (Example 14 / hearing aid is M11 milestone scaffolding, not yet implemented).
 # fixture trio.
 runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "09-producer-consumer", "11-game-of-life", "13-cnn-inference"]
 
@@ -1219,7 +1219,7 @@ milestone = "M3"
 # classifier, all non-host -> non-host) fire INSIDE pipelined Loop
 # bodies, which cycle-149's flat host-relay cannot drain. AC#1 of
 # TASK-0330's substantive lift is the additional cycle this cell
-# awaits; the four-way bit-identical differential is still pending
+# awaits; the four-way bit-identical differential is still pending  # ALLOW narrative-doc-lie: line is inside the cycle-160 update paragraph (lines 1214-1225); block header at 1182-1188 explicitly frames cycle-150/157/160 paragraphs as historical (status as-of cycle 165 = PROMOTED).
 # but not on TASK-0329. Empirical verification (cycle 160) emitted
 # the TASK-0330 ContractGap forward-link, confirming the front
 # blocker has migrated.
