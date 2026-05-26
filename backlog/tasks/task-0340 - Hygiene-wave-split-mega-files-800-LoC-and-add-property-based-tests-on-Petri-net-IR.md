@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 16:05'
+updated_date: '2026-05-26 16:16'
 labels:
   - tech-debt
   - hygiene
@@ -486,4 +486,37 @@ Slice 9 implementer (in-thread, mped-architect agent type) landed: proptest=1.9.
 - AC#7: PENDING (slice 11 — close-out cycle).
 
 Remaining slices for TASK-0340: 10 (AC#4 e2e formatter carve-out) + 11 (AC#7 final summary cycle). Two slices left.
+
+## Cycle 184 + 184b — slice 9 (TASK-0340.08, AC#3 proptest) close + parallel review gate
+
+Slice 9 implementer (mped-architect, subagent) landed commit 8708979: proptest dev-dep + 9 properties + smoke + 2 oracles + 2 generators in new file nucleus/nucleus-compiler/tests/proptest_petri.rs. TASK-0340.08 marked Done by implementer.
+
+Parallel review gate (qa-test-runner + mped-architect, read-only):
+- qa-test-runner: GO. Gate numbers reproduced bit-identically. just test 979/0/3 dev; just test-release 978/0/3; e2e 112/102/0/10/0 across TWO independent samples (post cargo clean -p nucleus, 727 MiB + 692 MiB removed); proptest non-flake confirmed across THREE independent invocations (10 passed each); proptest = "=1.9.0" exact-pin matches Cargo.lock; 10 #[test] items (1 smoke + 9 properties) match AC contract exactly.
+- mped-architect: GO with 4 P2 + 3 P3 HONESTY findings (not defects of the slice; epistemic-value disclosure refinements).
+
+Cycle 184b fold-back (doc-only test-side edits to proptest_petri.rs):
+- P2.1 (d.1/d.3 oracle non-independence): rewrote file-level //! 'Oracles' section + the fn-level doc on oracle_first_stall_position to be honest that this is a refactor-regression guard, NOT independent reference (both oracle and check_deadlock_free call into the same Net::fire). The independent deadlock cross-validation (state-space search over firing-order permutations) is deferred. Promoted memory feedback-implementer-disclosure-mechanism-wrong instance (4th this slice-thread; the implementer's commit message + the 'four runs' arithmetic both inherited the trivial-coverage mis-framing).
+- P2.2 (p.1 'acyclic per worker' claim overstated): rewrote p.1 docstring to call out that it's a GENERATOR-RESTRICTED SHAPE PIN (acfg_to_events emits Fire from Operation nodes by construction; the generator never produces Push/Wait/Sync/Repeat). The nominal AC#3 'acyclic per worker' invariant is enforced by acfg_to_events's internal debug_assert!, not by this proptest. Forward-linked to TASK-0340.08.01.
+- P3.1 (bare-filename self-deixis at L686 'petri_to_events.rs::acfg_to_events'): rewrite folded into the broader p.1 docstring rewrite — the file-path reference is gone; symbol anchor only.
+- P3-from-QA (file-deixis at L18 'in this file'): rewrote to 'in this test binary' as part of the file-level //! Oracles rewrite.
+- P2.4 (generator widening filed as a tracker task): TASK-0340.08.01 filed (priority LOW; not gap-fill, hardening).
+
+Honest-coverage math correction (cycle 184b architect P2.3, sunk in commit 8708979 body — recorded here for future cycles): the commit body's '≈4608 cases' claim is wrong (9 × 256 = 2304, not 4608). The architect also correctly notes only 5 of 9 properties carry independent epistemic value (b.1 / b.2 / b.3 / p.2 / p.3); d.1 / d.3 are refactor-regression guards (P2.1); p.1 is generator-restriction-trivial (P2.2). The b.* / d.* / p.* spread is the right shape for the AC#3 contract; the honest framing is 'shape coverage with disclosed limits', not 'cross-validation across all 9'.
+
+Architect found NO defects in the three target passes — but its scope had to be narrow given the generator-trivial p.1 + non-independent d.1/d.3. Independent deadlock cross-validation + Sync/Push/Wait-aware ACFG generation are the highest-ROI future work (TASK-0340.08.01).
+
+AC delta for TASK-0340 post-cycle-184b:
+- AC#1: DONE.
+- AC#2: 6/6 (originally-named scope DONE cycle 183b).
+- **AC#3: DONE (cycle 184) — proptest dep + 9 properties; cycle-184b honesty addendum applied; TASK-0340.08.01 filed for widening.**
+- AC#4 (e2e/main.rs report-formatter carve-out): PENDING (slice 10).
+- AC#5: DONE.
+- AC#6: DONE for slice 9 (commit 8708979 + cycle-184b doc-only edits carry no new TASK/cycle anchors beyond TASK-0340 + TASK-0340.08 self-references; AC#6-compliant).
+- AC#7: PENDING (final cycle when AC#4 closes).
+
+NEW lesson — implementer/orchestrator coverage-math discipline (cycle 184b): when a proptest slice claims 'N properties × M cases = X randomised draws', verify the arithmetic AND verify each property's epistemic-class (independent reference vs refactor-regression guard vs generator-restriction shape pin). Cycle 184 had both errors: 4608 vs 2304 (raw math) and 9 vs 5 independent (epistemic). Add to implementer-disclosure-mechanism-wrong memory the proptest-specific shape.
+
+E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved cycles 178-184b, 8 cycles).
+Test counts: 979/0/3 dev + 978/0/3 release (cycle 184; cycle-184b doc-only no count change).
 <!-- SECTION:NOTES:END -->

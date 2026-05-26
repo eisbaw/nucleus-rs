@@ -15,27 +15,33 @@
 //!
 //! ## Oracles
 //!
-//! Two oracles are implemented in this file (NOT in the
-//! `nucleus-compiler` library — they are deliberately independent
-//! implementations of the same property):
+//! Two oracles live in this test binary, with DIFFERENT epistemic
+//! shapes:
 //!
-//! - [`oracle_capacity_can_be_violated`]: BFS over Petri-net markings
-//!   from the initial marking, bounded by `STATE_SPACE_CAP=10_000`
-//!   distinct markings. If the cap is hit, the result is
-//!   [`OracleResult::Inconclusive`] and the property `prop_assume!`s
-//!   the case away. The oracle reports whether ANY reachable marking
-//!   has a transition that is token-enabled but would push some output
-//!   place above its capacity — i.e. whether the only thing standing
-//!   between this net and an overflow is a `Net::fire` capacity guard.
-//!   This is the oracle that mirrors what `check_bounded` actually
-//!   detects on a chosen linear order.
-//! - [`oracle_first_stall_position`]: replay the chosen `firing_order`
-//!   against the net's initial marking and return the position of the
-//!   first step that `Net::fire` rejects (for any reason). Mirrors
-//!   `check_deadlock_free`'s replay-stall semantics exactly. NOT a
-//!   full state-space search — the deadlock oracle is per-order
-//!   because the pass is per-order; for v2 nets with a statically
-//!   determined firing order this is the right shape.
+//! - [`oracle_capacity_can_be_violated`]: an INDEPENDENT
+//!   reference. BFS over Petri-net markings from the initial marking,
+//!   bounded by `STATE_SPACE_CAP=10_000` distinct markings. If the cap
+//!   is hit, the result is [`OracleResult::Inconclusive`] and the
+//!   property `prop_assume!`s the case away. The oracle reports whether
+//!   ANY reachable marking has a transition that is token-enabled but
+//!   would push some output place above its capacity — i.e. whether the
+//!   only thing standing between this net and an overflow is a
+//!   `Net::fire` capacity guard. This is the oracle that mirrors what
+//!   `check_bounded` *should* detect on a chosen linear order, computed
+//!   by an independent BFS rather than by replaying that order.
+//! - [`oracle_first_stall_position`]: a REFACTOR-REGRESSION GUARD, not
+//!   an independent reference. The body re-implements the pass's
+//!   replay-loop (`for tid in firing_order { net.fire(tid) }`) and
+//!   returns the first stall position. Since both the oracle and
+//!   `check_deadlock_free` call into the same `Net::fire` simulator, a
+//!   defect in `Net::fire`'s enabling logic would propagate through
+//!   BOTH and the agreement check would NOT surface it. d.1 / d.3
+//!   therefore guard against accidental refactor of
+//!   `check_deadlock_free`'s control flow, not against semantically
+//!   independent reference disagreement. This shape is intentional for
+//!   v2 statically-determined firing orders (PRD §8.4); independent
+//!   deadlock cross-validation would require a full state-space search
+//!   over firing-order permutations and is deferred.
 //!
 //! The two passes-under-test consume a **single linear firing
 //! order** (PRD §8.4: statically-determined firing order). The
@@ -215,11 +221,19 @@ fn sum_arc_weights(
 /// completes.
 ///
 /// This mirrors `check_deadlock_free`'s formulation exactly — a stall
-/// is "the next required transition cannot fire". The oracle is
-/// computed by re-walking the firing order without calling into the
-/// pass; the agreement check is that the pass returns
+/// is "the next required transition cannot fire". The body IS
+/// structurally `check_deadlock_free`'s replay loop modulo variant
+/// discrimination; the agreement check is that the pass returns
 /// `Err(Stalled { position, .. })` iff the oracle returns
 /// `Some(position)`.
+///
+/// **NOT** independent of the pass under test. Both this oracle and
+/// `check_deadlock_free` call into the same `Net::fire` simulator; a
+/// defect in `Net::fire`'s enabling logic would propagate through both
+/// and pass the agreement check. d.1 / d.3 therefore guard against
+/// accidental refactor of `check_deadlock_free`'s control flow, not
+/// against an independent reference. See the file-level //! header
+/// "Oracles" section for the full epistemic-shape disclosure.
 fn oracle_first_stall_position(net: &Net, firing_order: &[TransitionId]) -> Option<usize> {
     let mut sim = net.clone();
     sim.reset_to_initial();
@@ -662,33 +676,22 @@ proptest! {
 // --------------------------------------------------------------------
 
 proptest! {
-    /// p.1 HEADLINE — every worker's projected event list contains
-    /// only event-kind sequences that respect the per-worker
-    /// invariants. For a flat linear ACFG (no Repeat / no Push /
-    /// no Wait / no Sync), the event list is itself a flat sequence
-    /// of `Fire`s; "acyclic per worker" reduces to "the list does
-    /// not contain a `Loop` event whose body contains a Loop that
-    /// references the same Loop event by structural identity"
-    /// (which is structurally impossible — `Event::Loop.body` is a
-    /// `Vec<Event>`, not a graph). The non-trivial part we pin is:
-    /// no event of any kind is *duplicated* within one worker's
-    /// list, because `acfg_to_events` projects each Operation
-    /// exactly once per participating worker; the only way a worker
-    /// gets the same `Fire` event twice is a bug. (Distinct
-    /// `Operation`s with same kernel + same workers but different
-    /// dataflow edges produce events that compare unequal because
-    /// the bindings differ; we generate operations with distinct
-    /// data_out ids per op to keep their bindings distinct.)
+    /// p.1 — **GENERATOR-RESTRICTED SHAPE PIN**, not the AC's
+    /// nominal "acyclic per worker" property. The ACFG generator
+    /// produces only `ACFGNode::Operation` children (no Repeat /
+    /// Push / Wait / Sync), and `acfg_to_events::emit_operation` only
+    /// emits `Event::Fire`. So this property asserts a tautology over
+    /// the generator's image: every event produced from an
+    /// Operation-only ACFG is a `Fire`. The strictly per-worker
+    /// acyclicity invariants are already enforced by `acfg_to_events`'s
+    /// internal `debug_assert!(validate_event_lists_strict_per_worker)`
+    /// — this proptest is NOT a replacement for that runtime check.
     ///
-    /// **Honest limit**: the strictly per-worker invariants are
-    /// already enforced by `acfg_to_events`'s internal
-    /// `debug_assert!(validate_event_lists_strict_per_worker)` (see
-    /// `petri_to_events.rs::acfg_to_events` body). This property is
-    /// a SHAPE invariant on top: every event in a worker's list
-    /// after `acfg_to_events` is a `Fire` (given our flat-linear
-    /// generator that produces only `Operation` nodes). A failure
-    /// here means the projection emitted a non-Fire kind from an
-    /// Operation-only ACFG, which would be a real defect.
+    /// Failure here would mean the projection emitted a non-`Fire`
+    /// kind from a generator that only feeds `Operation` nodes — a
+    /// real defect, but a narrow surface. Widening the generator
+    /// (Push/Wait/Sync/Repeat) is the path to genuinely testing
+    /// acyclicity; that gap is tracked at TASK-0340.08.01.
     #[test]
     fn p1_acfg_to_events_emits_only_fires_for_operation_only_acfg(
         acfg in small_acfg_strategy()
