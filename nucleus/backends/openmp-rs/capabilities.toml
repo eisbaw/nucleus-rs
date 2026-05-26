@@ -1,0 +1,27 @@
+# capabilities.toml for the openmp-rs backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1 row 1: tier-1 CPU backend, rayon threads, shared memory,
+# barrier-style notify, sync only.
+#
+# Same SCHEDULE-visible capability surface as pthreads-sync (sync only,
+# no buffer>1, barrier+blocking notify) so the IDENTICAL schedule that
+# compiles under pthreads-sync compiles under openmp-rs — that identity
+# is exactly what makes the cross-backend differential meaningful for
+# the third sync-shared-memory row. `transport = "shared-memory"` is
+# the only differential to pthreads-sync; the per-row identity to
+# pthreads-sync's cap-file is intentional (TASK-0044.01 cycle 171
+# decomposition note: PRD §7.1 lists openmp-rs notify=`barrier` but
+# pthreads-sync's actual cap-file uses `["barrier","blocking"]` — the
+# implementer brief copies the actual convention, not the narrower PRD
+# row).
+
+schema_version  = 1
+name            = "openmp-rs"
+tier            = 1
+transport       = "shared-memory"
+notify          = ["barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

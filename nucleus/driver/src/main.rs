@@ -97,7 +97,8 @@ fn print_help() {
              pthreads-sync   shared-memory threads (tier 1)\n    \
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
-             mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n"
+             mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
+             openmp-rs       rayon threads (tier 1, SKELETON — TASK-0044.01)\n"
     );
 }
 
@@ -759,9 +760,33 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // Fifth tier-1 backend (TASK-0044.01 cycle 173, M6): rayon
+        // threads + shared memory + barrier + sync — same capability
+        // surface as pthreads-sync (sync + shared-memory +
+        // barrier/blocking notify), differing only in runtime
+        // substrate (rayon scope instead of std::thread). SKELETON
+        // in this cycle — `openmp_rs::emit` returns ContractGap
+        // until subsequent cycles of TASK-0044.01 land the
+        // rayon-scope codegen. The capability matrix + dispatch
+        // wiring are real so that schedule authoring can target this
+        // backend now; the user-facing error from this arm carries
+        // the precise forward-link.
+        "openmp-rs" => {
+            let result =
+                openmp_rs::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("openmp-rs codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            println!("main_rs     = {}", result.main_rs.display());
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
-             `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`"
+             `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`, \
+             `openmp-rs`"
         )),
     }
 }

@@ -41,6 +41,12 @@ members = [
     # reactor + per-(src,dst) ring buffer over TCP loopback) is Stage 3,
     # returns ContractGap until that lands.
     "backends/mp-tcp-event",
+    # openmp-rs (TASK-0044.01 cycle 173): fifth tier-1 backend, skeleton
+    # only — same capability surface as pthreads-sync (sync + shared-
+    # memory + barrier/blocking), differing in runtime substrate (rayon
+    # threads instead of std::thread). `emit()` returns ContractGap until
+    # subsequent cycles of TASK-0044.01 land the rayon-scope codegen.
+    "backends/openmp-rs",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate
     # used by every backend's test suite. dev-dependency only.
