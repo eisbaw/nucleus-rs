@@ -3,11 +3,11 @@ id: TASK-0339
 title: >-
   Add 'just check-narrative-doc-lie' structural check recipe (cycle 169
   architect P3.2 hardening)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-26 08:40'
-updated_date: '2026-05-26 09:03'
+updated_date: '2026-05-26 09:04'
 labels:
   - hardening
   - structural-check
@@ -189,3 +189,21 @@ The orchestrator did NOT run the empirical false-positive test before dropping t
 
 Per the phase3-backlog-ralph stop conditions: 'The review gate is repeatedly catching your own overconfidence' is the operative principle now (cycle 169 architect P2.1 + cycle 170 architect P1.1/P1.2/P1.3 — two cycles back-to-back where the orchestrator-direct work shipped real defects the architect caught). Per memory.feedback-silent-sibling-defect cycle-140 lesson: 'when the architect catches a sibling defect three cycles in a row in the same session, ... stop and let a fresh session reset the frontier.' Two cycles, not three — but the cycle-170 defect is the meta-shape (recipe pattern-locked in the same way it was designed to fight), which is a stronger signal than just sibling-count. Recommend stopping after this fold-back closes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TASK-0339 closed cycle 170c after cycle 170 + 170b fold-back.
+
+CYCLE 170 (commit d50646a): added just check-narrative-doc-lie recipe + ALLOW annotations + just ci wiring. Recipe BITES on the cycle-169 phrasings. Parallel review: qa GO; architect NO-GO with three P1 findings (recipe pattern-locked, AC wording-execution mismatch, case-sensitivity silent miss).
+
+CYCLE 170b (commit 67da005): folded back all three P1 findings. Re-added 4 awaits-family patterns (empirically zero false-positive surface, contra the cycle-170 narrative); added -i for case-insensitivity; widened header allow-list to recognize all paragraph-header conventions the file uses; reconciled AC#1 wording with execution. Memory updates: feedback-silent-sibling-defect 14th firing (structural check shipping with defect class built in); feedback-orchestrator-narrative-also-wrong 16th firing (empirically false rejection-rationale).
+
+VERIFIED: nix develop --command: just check + just clippy + just test + just test-release + just e2e all green; e2e baseline 112/102/0/10/0 preserved across both cycles. Recipe BITE round-trip verified with widened patterns including phrasings the cycle-170 original silently missed.
+
+DELIVERABLES: 1 new just recipe (~30 lines + comments); 2 lines in nuc-nucleus/e2e-matrix.toml gained ALLOW annotations (honest disclosures, not gate-gaming); recipe wired into just ci aggregate; 3 memory file updates capturing cycle-170/170b lessons.
+
+ALL ACs honestly satisfied: AC#1 (recipe exists with 11 patterns covering 8 description groups); AC#2 (scope = nuc-nucleus narrative TOML; e2e-matrix.toml is the only narrative TOML today); AC#3 (wired into just ci); AC#4 (per-line allow-list with widened paragraph-header recognition); AC#5 (empirical BITE round-trip including miss-surface coverage); AC#6 (failure message references memory entries).
+
+LESSON ASYMMETRY: cycle 170 cost ~3x cycle 170b. Test-then-claim is seconds; ship-then-test-after-NO-GO is a fold-back cycle. Future cycles authoring defect-class-fighting structural checks must empirically test the claim before shipping the claim, per the cycle-128 meta-rule.
+<!-- SECTION:FINAL_SUMMARY:END -->
