@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-26 07:51'
-updated_date: '2026-05-26 08:23'
+updated_date: '2026-05-26 08:36'
 labels:
   - feedback-comment-doc-lie-recurring
   - e2e-matrix
@@ -77,4 +77,61 @@ No sibling overclaims remain in e2e-matrix.toml.
 ### Forward-carried lesson
 
 The 1372-1378 doc-lie was the conclusion line of a multi-claim narrative paragraph that was true at filing time and was invalidated by a follow-up cycle (cycle 149 replicated the host-relay shape into the mio reactor exactly as the line predicted, but the line was not re-touched to reflect that it had happened). The cycle-149 narrative was correctly added INSIDE the per-cell block (lines 1402-1409) but the preamble's predictive conclusion was not back-edited. **Forward-carried hygiene rule**: when adding a cycle-N narrative inside a per-cell block, ALSO scan the surrounding-block preamble for a predictive conclusion that cycle-N has now answered, and either delete the prediction or replace it with the outcome. The check is local (same TOML block) and cheap.
+
+## Cycle 169b architect P2.1 fold-back (sibling doc-lie at lines 1182-1217)
+
+### Architect read-only review finding (P2.1 fold-back)
+
+The mped-architect read-only review of cycle 169 (commit 3da948a) caught a **structurally identical doc-lie at nuc-nucleus/e2e-matrix.toml:1182-1217** (the 13/pipeline_parallel × mp-tcp-event block) that my cycle-169 sibling sweep had DISMISSED in the notes with weak reasoning.
+
+The block carried THREE stale current-tense claims:
+- Line 1182 lead-in: 'BLOCKED by TASK-0329'
+- Line 1201: 'CARRIED as [[skip]]-with-blocker, not as a regression of TASK-0042.05'
+- Line 1214: 'the four-way bit-identical differential is still pending'
+
+All three are contradicted by the same block's own cycle-165 PROMOTION paragraph (lines 1219-1226 in the pre-fold-back file) and the [[required]] cell directly below at line 1227.
+
+My cycle-169 dismissal — 'Line 1203 ... is in a different block ... that block has cycle-160 and cycle-165 follow-up updates — NOT a doc-lie' — was the second-order defect: appending follow-up paragraphs does NOT cure stale current-tense claims in a paragraph; the reader hitting the block top-down still encounters the stale claims first. This is the [[feedback-orchestrator-narrative-also-wrong]] pattern firing on sibling-sweep dismissal reasoning specifically.
+
+### Fold-back applied (cycle 169b)
+
+nuc-nucleus/e2e-matrix.toml:1182-1212 restructured:
+
+1. New current-state header (lines 1182-1188) STATES the cycle-165 PROMOTION outcome at the TOP of the block + explicitly frames the paragraphs below as 'historical context; the current-tense verbs inside them describe the state AT EACH CYCLE'S FILING TIME, not today'.
+2. The cycle-150 paragraph (lines 1190-1212) is now explicitly time-stamped 'Cycle-150 filing: BLOCKED by TASK-0329 ...' — the 'BLOCKED' verb is now unambiguously past-tense by framing.
+3. Line 1209: 'is therefore CARRIED' → 'was therefore CARRIED ... AT FILING TIME'.
+4. Line 1212: 'this cell's only remaining blocker is' → 'this cell's only remaining blocker AT cycle 150 was'.
+
+The cycle-160 and cycle-165 paragraphs below are unchanged — they were already explicitly time-stamped and accurate.
+
+### Wider sibling sweep (architect's broader grep patterns, re-run)
+
+Grep patterns: 'BLOCKED by TASK', 'CARRIED as \[\[skip\]\]', '(is\|was)? still pending', 'currently \[\[skip\]\]', 'awaits', 'awaiting', 'gated on', 'not yet [a-z]+', 'pending cycle-?[0-9]+', '[0-9]+ of [0-9]+ tier-1', 'Only .* remains \[\[skip\]\]'.
+
+Post-fold-back results across nuc-nucleus/*.toml:
+- e2e-matrix.toml line 1190: 'Cycle-150 filing: BLOCKED by TASK-0329' — now explicitly time-stamped, accurate-as-historical.
+- e2e-matrix.toml line 1209: 'CARRIED as [[skip]]-with-blocker AT FILING TIME' — explicit past-tense + 'AT FILING TIME' marker, accurate-as-historical.
+- e2e-matrix.toml line 63 ('Example 14 still pending its own kernels.rs / reference / fixture trio'): current-state-accurate — Example 14 (hearing aid) is genuinely M11-milestone scaffolding and not yet implemented; not a doc-lie.
+
+No further stale current-tense doc-lies remain.
+
+### Memory updates folded (cycle 169b)
+
+- feedback-silent-sibling-defect: 13th firing recorded (pattern-locked grep set in orchestrator-direct sibling sweep + insufficient-grounds dismissal). Suggested standing pattern set for predictive-claim doc-lies added to the hygiene rule.
+- feedback-orchestrator-narrative-also-wrong: 15th firing recorded (dismissal-reasoning narrative wrong). Hygiene rule extended: dismissal text must quote candidate's current-tense verbs and explain each individually; summary-level grounds insufficient.
+- project-cross-backend-differential: baseline metadata refreshed from stale 112/99/0/13/0 (cycle 160) to current 112/102/0/10/0 (cycle 169 verified). Cycle-by-cycle promotion history filled in.
+
+### Verification (cycle 169b)
+
+- nix develop --command python3 tomllib parse: OK
+- nix develop --command just e2e: total 112, pass 102, fail 0, skipped 10, required-fail 0 (baseline preserved across the in-thread fold-back; doc-only edit cannot affect pass counts)
+- Wider sibling sweep grep: clean (only the two now-historically-framed hits remain, both intentional past-tense framings)
+
+### AC re-evaluation (cycle 169b)
+
+- AC#1 (preamble at lines 1372-1378 updated): PASS (cycle 169 edit, unchanged by fold-back)
+- AC#2 (fix narrative cites cycle-149): PASS (cycle 169 edit, unchanged by fold-back)
+- AC#3 (no other comments anywhere in e2e-matrix.toml make the same overclaim): now PASS — the dismissed sibling at lines 1182-1217 was actually a sibling doc-lie of the same class, and is now folded back. Wider grep patterns confirm clean.
+
+All three ACs are NOW honestly satisfied — AC#3's satisfaction was incomplete in cycle 169 and is honestly completed in cycle 169b.
 <!-- SECTION:NOTES:END -->

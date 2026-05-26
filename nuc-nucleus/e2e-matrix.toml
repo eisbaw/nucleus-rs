@@ -1179,10 +1179,18 @@ schedule = "batch_parallel"
 backend  = "mp-tcp-event"
 milestone = "M3"
 
-# 13/pipeline_parallel × mp-tcp-event: BLOCKED by TASK-0329 (host-
-# mediated barrier mediation, sibling of TASK-0327 for the CTRL
-# arm — cycle-148/149 split of the original TASK-0175 combined
-# filing). EMPIRICALLY VERIFIED cycle 157 (TASK-0334): codegen
+# 13/pipeline_parallel × mp-tcp-event: STATUS cycle 165 — PROMOTED
+# bit-identical via TASK-0329.01.02.01 (see cycle-165 PROMOTION
+# paragraph at the bottom of this block for the verified outcome).
+# The paragraphs below preserve the cycle-150 → 157 → 160 → 165
+# blocker timeline as historical context; the current-tense verbs
+# inside them describe the state AT EACH CYCLE'S FILING TIME, not
+# today.
+#
+# Cycle-150 filing: BLOCKED by TASK-0329 (host-mediated barrier
+# mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149
+# split of the original TASK-0175 combined filing).
+# EMPIRICALLY VERIFIED cycle 157 (TASK-0334): codegen
 # fails with the verbatim ContractGap "mp-tcp-event barrier #2
 # participants {WorkerId(1), WorkerId(2), WorkerId(3)} exclude
 # the host worker; the one-CTRL-stream-per-(host,worker) topology
@@ -1198,10 +1206,10 @@ milestone = "M3"
 # the AC#4 cell of TASK-0042.05; resolution requires TASK-0329 to
 # land. The four-way bit-identical differential against reference.bin
 # sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861
-# is therefore CARRIED as [[skip]]-with-blocker, not as a regression
-# of TASK-0042.05. Note: cycle 149 lifted the DATA arm of TASK-0175
-# (TASK-0327 Done); this cell's only remaining blocker is the CTRL-
-# arm barrier mediation (TASK-0329).
+# was therefore CARRIED as [[skip]]-with-blocker AT FILING TIME, not
+# as a regression of TASK-0042.05. Note: cycle 149 lifted the DATA
+# arm of TASK-0175 (TASK-0327 Done); this cell's only remaining
+# blocker AT cycle 150 was the CTRL-arm barrier mediation (TASK-0329).
 #
 # Cycle-160 update (TASK-0329): the CTRL-arm host-excluding-barrier
 # was LIFTED via the compiler-level `host_mediation_inject` pass.
