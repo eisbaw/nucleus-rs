@@ -650,8 +650,9 @@ impl std::hash::Hash for FireBinding {
 
 /// The six event variants per PRD §8.3. Each event is the projection
 /// of a transition firing onto the worker that owns it. A worker's
-/// `EventList` is a `Vec<Event>` in execution order (TASK-0016+ owns
-/// the actual emission; this module just defines the type).
+/// `EventList` is a `Vec<Event>` in execution order (the ACFG layer
+/// — TASK-0016, Done — owns the actual emission; this module just
+/// defines the type).
 ///
 /// Wire format (with `serde` feature on): externally tagged JSON by
 /// default — e.g. `{"Fire": {"kernel": 0, "tile": {...}, "bindings":

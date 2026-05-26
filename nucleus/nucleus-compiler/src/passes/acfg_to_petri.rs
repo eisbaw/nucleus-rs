@@ -231,9 +231,11 @@
 //! - **Distributed placements treat the set as one entity**. If a
 //!    kernel is placed on `{w0, w1, w2, w3}`, the Operation transition
 //!    has arcs from/to each worker's control place. We do not (yet)
-//!    replicate the firing per worker. The transfer-injection pass
-//!    has the same limitation; both will be revisited once a
-//!    partition pass exists (TASK-0016+).
+//!    replicate the firing per worker at THIS layer; the per-worker
+//!    replication lives in the downstream `partition_workers` /
+//!    `partition_rows` / `partition_blocks2d` passes (TASK-0117 +
+//!    TASK-0258 + TASK-0259, all Done) — `acfg_to_petri` consumes
+//!    their already-replicated ACFG.
 //!
 //! - **Sync transition vs barrier place**. The PRD §8.2 mapping
 //!    speaks of "barrier place + N input arcs + N output arcs OR a
