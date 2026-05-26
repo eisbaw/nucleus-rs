@@ -1,12 +1,16 @@
 //! Reuse-widths marker emit (TASK-0265 Tier 1 Stage 2 wiring) +
 //! circular-buffer codegen (TASK-0269 cycle 103 + TASK-0270 cycle
-//! 104). Consumed by BOTH the pthreads-sync single-worker path
-//! (private [`RenderCtx`] via direct calls) AND the shared
-//! `multi_worker_walker::render_worker_events_inner` ([`RenderCtxPub`]
-//! via the `_pub` shims at the bottom of this file). mp-tcp-bufsync's
-//! per-event Plan walker does NOT yet consume these helpers — see the
-//! doc-comment block above [`render_reuse_marker_comment`] for the
-//! silent-sibling caveat.
+//! 104). Consumed by ALL FOUR tier-1 backends as of TASK-0284
+//! (cycle 107):
+//! - pthreads-sync single-worker path (private [`RenderCtx`] via
+//!   direct calls in `backends/pthreads-sync/src/lib.rs`);
+//! - the shared `multi_worker_walker::render_worker_events_inner`
+//!   ([`RenderCtxPub`] via the `_pub` shims at the bottom of this
+//!   file) — consumed by pthreads-sync multi-worker, pthreads-async,
+//!   and mp-tcp-event;
+//! - mp-tcp-bufsync's own `Plan::render_events` walker (cycle 107
+//!   lift, verified by `backends/mp-tcp-bufsync/tests/
+//!   reuse_codegen_emit.rs`).
 //!
 //! Split from `render.rs` for file-size hygiene; no behaviour change.
 
@@ -134,12 +138,14 @@ pub fn render_reuse_marker_comment(
 
 // --------------------------------------------------------------------
 // Reuse circular-buffer codegen — TASK-0269 (cycle 103) +
-// TASK-0270 (cycle 104). Consumed by BOTH the pthreads-sync
-// single-worker path (private RenderCtx via direct calls) AND the
-// shared `multi_worker_walker::render_worker_events_inner` (RenderCtxPub
-// via the `_pub` shims below). mp-tcp-bufsync's per-event Plan walker
-// does NOT yet consume these helpers — see the doc-comment block
-// above `render_reuse_marker_comment` for the silent-sibling caveat.
+// TASK-0270 (cycle 104) + TASK-0284 (cycle 107, mp-tcp-bufsync lift).
+// Consumed by ALL FOUR tier-1 backends: the pthreads-sync single-
+// worker path (private RenderCtx via direct calls), the shared
+// `multi_worker_walker::render_worker_events_inner` (RenderCtxPub
+// via the `_pub` shims below; pthreads-sync MW + pthreads-async +
+// mp-tcp-event), and mp-tcp-bufsync's own `Plan::render_events`
+// walker (cycle 107). Module-level docstring at the top of this file
+// carries the full consumer map.
 // --------------------------------------------------------------------
 
 /// One reuse rewrite group: the circular buffer that backs every
