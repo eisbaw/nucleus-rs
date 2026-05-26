@@ -349,7 +349,8 @@ pub struct DataSlice {
 ///   (example 14) ⇒ [`ArgBinding::Nested`].
 ///
 /// The nested-call form is faithfully represented here even though
-/// the tier-1 backends (pthreads-sync `render_call_arg`) currently
+/// the tier-1 backends (the shared
+/// `backend_common::render::fire::render_fire_arg` helper) currently
 /// *reject* it: the EventList contract must mirror what the program
 /// *is*, and the decision "this backend can't lower a nested call in
 /// argument position" belongs to the backend, not to ACFG/Event

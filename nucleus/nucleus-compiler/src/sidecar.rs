@@ -41,11 +41,11 @@
 //!    a backend pairs them up and renders the bound verbatim.
 //!
 //! 4. **Per-`KernelId` signature** — the declared param/return
-//!    [`ResolvedType`]s of every kernel (TASK-0169). The
-//!    pthreads-sync backend's `render_call_arg` decides a scalar
-//!    argument cast — an iter-var-derived scalar expression fed to a
-//!    scalar kernel param renders as `(expr) as usize` — by reading
-//!    `algo.kernels[callee].params[i]` and testing
+//!    [`ResolvedType`]s of every kernel (TASK-0169). The shared
+//!    `backend_common::render::fire::render_fire_arg` helper decides
+//!    a scalar argument cast — an iter-var-derived scalar expression
+//!    fed to a scalar kernel param renders as `(expr) as usize` — by
+//!    reading `algo.kernels[callee].params[i]` and testing
 //!    `ResolvedType::is_scalar`. `Event::Fire` carries the
 //!    [`KernelId`] and the argument *values* (`FireBinding`,
 //!    TASK-0156) but not the callee's declared param types. Without
@@ -172,8 +172,9 @@ pub struct NameSidecar {
     /// indexes `params[i]` for the i-th argument, and applies the
     /// scalar-cast / aggregate-dispatch rule
     /// (`KernelSig::params[i].is_scalar()`) exactly as the
-    /// AlgoIR-walking `render_call_arg` does against
-    /// `algo.kernels[callee].params[i]` today — without the AlgoIR.
+    /// AlgoIR-walking `backend_common::render::fire::render_fire_arg`
+    /// does against `algo.kernels[callee].params[i]` today — without
+    /// the AlgoIR.
     /// This is the last `algo.kernels` read pthreads-sync codegen
     /// has; with this table the contract is fully AlgoIR-free.
     pub kernel_sigs: BTreeMap<KernelId, KernelSig>,
@@ -368,7 +369,8 @@ pub struct KernelSig {
     /// Positional parameter types, in declaration order. The i-th
     /// entry types the i-th `Event::Fire` argument; `is_scalar()`
     /// drives the `(expr) as usize` scalar-arg cast vs the
-    /// whole-array dispatch in `render_call_arg`.
+    /// whole-array dispatch in
+    /// `backend_common::render::fire::render_fire_arg`.
     pub params: Vec<ResolvedType>,
     /// Return type: `None` for a unit (`()`) return, `Some(t)` for a
     /// typed return.

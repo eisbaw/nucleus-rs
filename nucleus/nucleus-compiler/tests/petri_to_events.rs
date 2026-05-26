@@ -1335,7 +1335,7 @@ fn sidecar_serde_roundtrip_is_byte_identical() {
 // --------------------------------------------------------------------
 // TASK-0169 — the NameSidecar's `kernel_sigs` table (+ Event::Fire's
 // `kernel` KernelId + `bindings`) ALONE carries enough to reproduce
-// pthreads-sync `render_call_arg`'s scalar-argument cast decision
+// the shared `render_fire_arg`'s scalar-argument cast decision
 // (`(expr) as usize` when the kernel param is scalar), WITHOUT
 // walking `ctx.algo.kernels`. This closes the last AlgoIR read in
 // pthreads-sync codegen — the contract is now fully AlgoIR-free.
@@ -1344,7 +1344,7 @@ fn sidecar_serde_roundtrip_is_byte_identical() {
 // set 01/02/03/05/07 feeds an `ArgBinding::Scalar` (iter-var/const
 // arithmetic) to a scalar kernel param — every kernel argument in
 // those 5 is an `ArgBinding::Data` element/whole-array read. So
-// `render_call_arg`'s `param_ty.is_scalar()` *cast* branch is reached
+// `render_fire_arg`'s `param_ty.is_scalar()` *cast* branch is reached
 // only from the `IrExpr::IntLit|Ident|Neg|BinOp` arm, which the e2e
 // set never hits with a scalar param. The two assertions below prove
 // (a) that finding holds across all 5, and (b) that the cast is
@@ -1384,7 +1384,7 @@ fn render_int_expr_mirror(e: &nucleus_compiler::algo::IrExpr) -> String {
     }
 }
 
-/// Reproduce pthreads-sync `render_call_arg` for ONE scalar
+/// Reproduce the shared `render_fire_arg` for ONE scalar
 /// (`ArgBinding::Scalar`) argument, sourcing the parameter type from
 /// the SIDECAR's `kernel_sigs[kid].params[i]` joined via the same
 /// `KernelId` `Event::Fire` carries — NEVER `ctx.algo.kernels`. This
@@ -1394,7 +1394,8 @@ fn render_scalar_arg_from_sidecar(
     param_ty: Option<&nucleus_compiler::algo::ResolvedType>,
 ) -> String {
     let rendered = render_int_expr_mirror(arg_expr);
-    // The exact branch from lib.rs render_call_arg (~636-642):
+    // The exact branch from backend-common's render/fire.rs
+    // `render_fire_arg` scalar-cast arm:
     if let Some(pty) = param_ty {
         if pty.is_scalar() {
             return format!("({rendered}) as {}", elem_type_from_sidecar(&pty.scalar));
@@ -1486,7 +1487,7 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
                             }
                         }
                         // FireBinding.inputs is flat (Nested args are
-                        // rejected by pthreads-sync render_call_arg
+                        // rejected by the shared render_fire_arg
                         // anyway), so no recursion into Nested needed.
                     }
                     Event::Loop { body, .. } => walk(body, sidecar, algo),
@@ -1557,7 +1558,7 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
         .expect("kernel_sigs join via Event::Fire.kernel KernelId");
 
     // Arg #1: scalar expression `i + 1` (an iter-var-derived value) —
-    // the shape `render_call_arg` casts. Reconstruct purely from the
+    // the shape `render_fire_arg` casts. Reconstruct purely from the
     // sidecar's param type.
     let scalar_arg = IrExpr::BinOp(
         IrBinOp::Add,
@@ -1566,7 +1567,7 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
     );
     let rendered_scalar = render_scalar_arg_from_sidecar(&scalar_arg, sig.params.get(1));
     // Exactly what pthreads-sync emits today: render_int_expr already
-    // parenthesises a BinOp (`(i + 1)`), then render_call_arg's cast
+    // parenthesises a BinOp (`(i + 1)`), then render_fire_arg's cast
     // wraps the whole thing again (`(<rendered>) as usize`) — hence
     // the double parens. We assert the REAL backend string, not a
     // tidied one (the contract must reproduce it byte-for-byte).
@@ -1576,7 +1577,7 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
          from NameSidecar.kernel_sigs ALONE, no ctx.algo.kernels walk"
     );
 
-    // Arg #0's param is aggregate (i32[256]) — render_call_arg's
+    // Arg #0's param is aggregate (i32[256]) — render_fire_arg's
     // DataRef arm emits the bare name and NEVER the scalar-cast
     // branch. A scalar expr against that aggregate param #0 must NOT
     // cast — proving the dispatch decision is param-type-driven, read

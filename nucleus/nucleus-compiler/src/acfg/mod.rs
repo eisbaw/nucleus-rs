@@ -40,8 +40,14 @@
 //!   in a freshly built ACFG (no `Sync` nodes are emitted by
 //!   `build_acfg`); the injection pass walks the tree and inserts
 //!   them where rules dictate.
-//! - [`ACFGNode::Xfer`] — placeholder. Empty payload at M1; populated
-//!   by TASK-0018.
+//! - [`ACFGNode::Xfer`] — transfer placeholder inserted by the
+//!   transfer-injection pass (TASK-0018). Carries an
+//!   [`XferPlaceholder`] with the matched-pair endpoint
+//!   ([`XferRole`], `seq` tag, `src`/`dst` worker, [`TransferPolicy`]).
+//!   Empty in a freshly built ACFG (no `Xfer` nodes are emitted by
+//!   `build_acfg`); transfer_inject walks the tree and inserts them
+//!   when distributed kernel placements demand cross-worker data
+//!   movement.
 //!
 //! ## DataflowDag (M1 simplification + TASK-0150 index plumbing)
 //!

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 13:57'
+updated_date: '2026-05-26 15:00'
 labels:
   - tech-debt
   - hygiene
@@ -384,4 +384,32 @@ Forward-carries to slices 7+ (acfg.rs, link.rs):
 - Doc-deixis audit ('this file' / 'this function' references) is now mandatory post-split audit dimension alongside the existing line-number stamp audit. Surfaced via cycle-181b discovery of 'in this file' lie at ctx.rs:L49.
 - Slices 7+ target compiler IR/pass files (not backend codegen). Comment-density at acfg.rs 0.57 is the highest in the workspace — comment-doc-lie risk is correspondingly amplified per feedback-comment-doc-lie-recurring.
 - Architect cycle-181 P3.1 (two-way dep risk if future M6 codegen amplification needs wait/block_tag/event_walker back-edges) — not actionable at slice-6 close; flag if M6 codegen work bumps wait.rs / block_tag.rs past leaf status.
+
+## Cycle 182 + 182b — slice 7 (TASK-0340.06) close
+
+Slice 7 implementer (mped-architect agent type) landed commit b887acf: nucleus-compiler/src/acfg.rs (1440 LoC) split into acfg/{mod,types,errors,build}.rs (4 files, total 1500 LoC; +60 vs pre-split = orientation docstrings + use lines + sub-module decls; no behaviour change). Methods sub-module skipped — impl ACFGNode + impl ACFG co-located in types.rs (cycle-178 precedent: small impls with their types when no cross-sub-module callers).
+
+Three doc-claim rewrites by the implementer (NOT verbatim moves, per cycle-181b discipline):
+- mod.rs L70-77: 'filed rather than half-implemented' -> TASK-0260/0263 anchor.
+- types.rs L113-114 (DataflowEdge): 'precise per-tile halo synthesis — deferred follow-up' -> TASK-0260/0263.
+- build.rs L250-255 (bind_arg): 'pthreads-sync render_call_arg' -> 'backend_common::render::fire::render_fire_arg ... EmitError::UnsupportedFeature'.
+
+Parallel review gate (qa-test-runner + mped-architect, read-only) returned GO with two P2 doc-lie findings the implementer's Dim-2 grep missed:
+- P2.1: silent-sibling sweep on render_call_arg — 12 sibling sites untouched in event.rs + sidecar.rs + tests/petri_to_events.rs. Cycle 182b sweep + targeted qualifier updates folded back.
+- P2.2: stale Xfer doc-claim 'empty payload at M1' in mod.rs:43-44. Cycle 182b rewrote to match Sync structural-sibling claim shape.
+
+AC delta for TASK-0340 post-cycle-182b:
+- AC#1: DONE.
+- AC#2: **5/6 files split** (render.rs cycle 178; mp-tcp-bufsync/lib.rs cycle 179; mp-tcp-event/multi_worker.rs cycle 180; backend-common/multi_worker_walker.rs cycle 181; nucleus-compiler/acfg.rs cycle 182). Remaining: nucleus-compiler/link.rs (1290 LoC) — the LAST originally-named mega-file.
+- AC#3 (proptest): PENDING.
+- AC#4 (e2e/main.rs report-formatter carve-out): PENDING.
+- AC#5: DONE (allow-list shrank 10 → 9 cycle 182; direction-B clean).
+- AC#6: DONE for slice 7 (3 enumerated doc-claim rewrites in cycle 182 + 4 silent-sibling sweep edits in 182b are explicitly disclosed corrections, not new TASK/cycle anchors).
+- AC#7: PENDING (final cycle when AC#2 + AC#3 close).
+
+Forward-carries to slice 8 (link.rs split) + slices 9-10 (AC#3 proptest + AC#4 e2e formatter):
+- **Dim-2 vocabulary extension (cycle 182b lesson):** the implementer's grep regex '(does NOT yet|will be|TODO|future work|deferred|in this cycle|NOT yet|coming)' MISSED the 'empty payload at M1' claim shape. Slice 8 brief should widen Dim-2 grep to: '(does NOT yet|will be|TODO|future work|deferred|in this cycle|NOT yet|coming|placeholder|stub|skeleton|empty payload|M[0-9]+\b)' or similar. Milestone-version pins (M1/M2/.../Mn) age fastest in this codebase since milestones land in days/weeks.
+- **Silent-sibling sweep discipline (cycle 182b lesson):** when any doc-claim rewrite mentions a renamed function/struct/path, run grep -rn '<OLD-NAME>' nucleus/ BEFORE commit and sweep all hits to current truth. The implementer's claim 3 fix was 1 of 12 siblings; 11 silent siblings shipped — caught by architect review. Specifically applies to slice 8 if link.rs's docs reference any renamed compiler-pass entry points.
+
+E2E baseline: 112 / 102 / 0 / 10 / 0 (preserved across cycles 178-182 + 182b).
 <!-- SECTION:NOTES:END -->
