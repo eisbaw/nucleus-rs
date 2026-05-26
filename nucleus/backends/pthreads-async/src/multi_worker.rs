@@ -171,25 +171,21 @@ impl<'a> Plan<'a> {
             )));
         }
 
-        // Host: the worker named "host", else the smallest used WorkerId.
-        // Same rule as pthreads-sync — keeps host-side semantics
-        // (input/output ownership, panic propagation) consistent across
-        // the two single-binary backends.
-        let host_named = names
-            .worker
-            .iter()
-            .find(|(_, n)| n.as_str() == "host")
-            .map(|(w, _)| *w)
-            .filter(|w| used_workers.contains(w));
-        // Mirror pthreads-sync's `.ok_or_else(...)` shape (cycle-20
-        // review-gate E.2): typed error instead of `.expect()` so a
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule (TASK-0336 cycle 164 lift). Same rule as
+        // pthreads-sync — keeps host-side semantics (input/output
+        // ownership, panic propagation) consistent across the two
+        // single-binary backends.
+        //
+        // The `ok_or_else(ContractGap)` arm preserves cycle-20
+        // review-gate E.2: typed error instead of `.expect()` so a
         // future refactor that breaks the `len() >= 2` guard above
         // surfaces as a typed ContractGap rather than a panic. The
         // guard is upstream; this branch is structurally unreachable
         // today, but the alignment with pthreads-sync's precedent
         // keeps error handling consistent across backends.
-        let host_worker = host_named
-            .or_else(|| used_workers.first().copied())
+        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "pthreads-async Plan: used_workers reachable to host \

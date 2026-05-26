@@ -178,16 +178,10 @@ impl<'a> Plan<'a> {
             .map(|(w, _)| *w)
             .collect();
 
-        // Host: the worker literally named "host", else the smallest
-        // used WorkerId (matches the old Plan::build choice).
-        let host_named = names
-            .worker
-            .iter()
-            .find(|(_, n)| n.as_str() == "host")
-            .map(|(w, _)| *w)
-            .filter(|w| used_workers.contains(w));
-        let host_worker = host_named
-            .or_else(|| used_workers.first().copied())
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule (TASK-0336 cycle 164 lift).
+        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "multi-worker emit requires at least one used worker".to_string(),

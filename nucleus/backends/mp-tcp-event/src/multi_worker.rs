@@ -147,17 +147,17 @@ impl<'a> Plan<'a> {
             )));
         }
 
-        // Host election: the worker literally named "host", else the
-        // smallest used WorkerId. Same rule as mp-tcp-bufsync /
-        // pthreads-sync / pthreads-async.
-        let host_named = names
-            .worker
-            .iter()
-            .find(|(_, n)| n.as_str() == "host")
-            .map(|(w, _)| *w)
-            .filter(|w| used_workers.contains(w));
-        let host_worker = host_named
-            .or_else(|| used_workers.first().copied())
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule (worker literally named "host" in
+        // used_workers, else smallest used WorkerId, else None ->
+        // ContractGap). Lifted in TASK-0336 cycle 164 — every
+        // tier-1 backend's `multi_worker::Plan::build` AND the 3
+        // compiler-level driver wirings (cycles 160 / 162 / 163)
+        // consume this one helper, retiring the
+        // feedback-driver-must-mirror-backend-election-exactly
+        // recurrence surface on the canonical path.
+        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "mp-tcp-event Plan: used_workers reachable to host \

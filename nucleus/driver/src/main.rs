@@ -506,13 +506,13 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
-        let host = acfg
-            .name_workers
-            .iter()
-            .find(|(n, _)| n.as_str() == "host")
-            .map(|(_, w)| *w)
-            .filter(|w| used.contains(w))
-            .or_else(|| used.iter().next().copied());
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule. Lifted in TASK-0336 cycle 164 so this
+        // driver wiring and the backend's own `Plan::build` cannot
+        // silently drift (memory
+        // feedback-driver-must-mirror-backend-election-exactly).
+        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_host_mediation_inject(acfg, h),
             // No `used_workers` (every per_worker entry empty). The
@@ -558,13 +558,10 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
-        let host = acfg
-            .name_workers
-            .iter()
-            .find(|(n, _)| n.as_str() == "host")
-            .map(|(_, w)| *w)
-            .filter(|w| used.contains(w))
-            .or_else(|| used.iter().next().copied());
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule (TASK-0336 cycle 164 lift).
+        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_host_data_relay_inject(acfg, h),
             None => acfg,
@@ -657,21 +654,17 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // that have no wait-before-push shape — preserves bit-identity
     // for every currently-passing mp-tcp-event cell.
     let per_worker = if backend == "mp-tcp-event" {
-        // Host election: mirror Plan::build's rule (worker literally
-        // named "host" AND in used_workers, else smallest used).
-        // `used_workers` here = workers with non-empty event lists.
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule (TASK-0336 cycle 164 lift). `used` here =
+        // workers with non-empty event lists (the same projection
+        // the backend's Plan::build will see).
         let used: std::collections::BTreeSet<_> = per_worker
             .iter()
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
-        let host = acfg
-            .name_workers
-            .iter()
-            .find(|(n, _)| n.as_str() == "host")
-            .map(|(_, w)| *w)
-            .filter(|w| used.contains(w))
-            .or_else(|| used.iter().next().copied());
+        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_safe_push_reorder(per_worker, h),
             None => per_worker,

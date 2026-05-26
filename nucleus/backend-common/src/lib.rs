@@ -40,8 +40,16 @@
 //!   the last two non-semantic shared strings out of pthreads-sync.
 //!   mp-tcp-bufsync's multi-process variant stays in mp-tcp-bufsync
 //!   (different signature, different shape).
+//! - [`host_election`] — the canonical host-election rule shared by
+//!   every tier-1 backend's `multi_worker::Plan::build` AND by the
+//!   compiler-level passes in `nucleus-driver` that mediate against
+//!   the backend-elected host (cycles 160 / 162 / 163). TASK-0336
+//!   cycle 164 lift; retires the
+//!   `feedback-driver-must-mirror-backend-election-exactly`
+//!   recurrence surface on the canonical path.
 
 pub mod check_frame;
+pub mod host_election;
 pub mod multi_worker_walker;
 pub mod project_skeleton;
 pub mod render;
@@ -55,6 +63,7 @@ pub use check_frame::{
     emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,
     CountCheckLoop,
 };
+pub use host_election::{elect_host_from_name_workers, elect_host_from_worker_names, HOST_NAME};
 pub use project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 pub use render::{
     data_name, render_array_init_for, render_const_expr, render_const_expr_pub, render_fire_args,

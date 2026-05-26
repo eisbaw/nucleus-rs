@@ -322,20 +322,17 @@ impl<'a> Plan<'a> {
             .map(|(w, _)| *w)
             .collect();
 
-        // Host: the worker literally named "host", else the smallest
-        // used WorkerId — IDENTICAL choice across all four tier-1
+        // Host election: shared helper. See
+        // `backend_common::host_election` module docstring for the
+        // canonical rule. IDENTICAL choice across all four tier-1
         // backends' `multi_worker::Plan::build` (pthreads-sync,
-        // pthreads-async, mp-tcp-event, mp-tcp-bufsync). The
-        // cross-backend bit-identical differential (PRD §10.1) needs
-        // every backend to elect the same host given the same input.
-        let host_named = names
-            .worker
-            .iter()
-            .find(|(_, n)| n.as_str() == "host")
-            .map(|(w, _)| *w)
-            .filter(|w| used_workers.contains(w));
-        let host_worker = host_named
-            .or_else(|| used_workers.first().copied())
+        // pthreads-async, mp-tcp-event, mp-tcp-bufsync) AND the
+        // three compiler-level driver wirings (cycles 160 / 162 /
+        // 163). The cross-backend bit-identical differential (PRD
+        // §10.1) needs every backend to elect the same host given
+        // the same input; the helper is the single source of truth
+        // (TASK-0336 cycle 164 lift).
+        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "multi-worker emit requires at least one used worker".to_string(),

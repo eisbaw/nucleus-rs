@@ -26,6 +26,11 @@ path = "src/main.rs"
 
 [dependencies]
 nucleus-compiler = { path = "../nucleus-compiler" }
+# TASK-0336 cycle 164: driver consumes the canonical host-election
+# helper directly (cycles 160 / 162 / 163 wirings previously inlined
+# the rule independently — see memory
+# feedback-driver-must-mirror-backend-election-exactly).
+backend-common = { path = "../backend-common" }
 pthreads-sync = { path = "../backends/pthreads-sync" }
 mp-tcp-bufsync = { path = "../backends/mp-tcp-bufsync" }
 # pthreads-async — third tier-1 backend, skeleton (TASK-0042.01 cycle 16);

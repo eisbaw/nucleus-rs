@@ -149,6 +149,7 @@ dependencies = [
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
+ "backend-common",
  "mp-tcp-bufsync",
  "mp-tcp-event",
  "nucleus-compiler",
