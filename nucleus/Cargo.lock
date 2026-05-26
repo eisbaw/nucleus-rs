@@ -154,6 +154,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp-uds-event"
+version = "0.0.0"
+dependencies = [
+ "backend-common",
+ "nucleus-compiler",
+]
+
+[[package]]
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
@@ -161,6 +169,7 @@ dependencies = [
  "mp-tcp-bufsync",
  "mp-tcp-event",
  "mp-tcp-poll",
+ "mp-uds-event",
  "nucleus-compiler",
  "openmp-rs",
  "pthreads-async",

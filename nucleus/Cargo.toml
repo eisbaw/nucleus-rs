@@ -53,6 +53,15 @@ members = [
     # instead of blocking recv). `emit()` returns ContractGap until
     # subsequent cycles of TASK-0044.02 land the substantive codegen.
     "backends/mp-tcp-poll",
+    # mp-uds-event (TASK-0044.03 cycle 175): seventh tier-1 backend,
+    # skeleton only — same capability surface as mp-tcp-event (async +
+    # buffer + event notify), differing in transport (Unix domain
+    # sockets instead of TCP loopback). `emit()` returns ContractGap
+    # until subsequent cycles of TASK-0044.03 land the substantive
+    # codegen. Inherits the (D)+(B2) compensating-pass tower from
+    # mp-tcp-event; TASK-0337 promotion-trigger guard documented on
+    # lib.rs.
+    "backends/mp-uds-event",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate
     # used by every backend's test suite. dev-dependency only.

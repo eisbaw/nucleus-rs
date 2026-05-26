@@ -4,7 +4,7 @@ title: M6 — Full tier-1 backend matrix
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-26 09:28'
+updated_date: '2026-05-26 10:20'
 labels:
   - M6
   - validation
@@ -75,3 +75,20 @@ Following the M3 / M4 / M5 capstone pattern (TASK-0041 / TASK-0042 cluster / TAS
 - [ ] #7 Implementation notes record any examples dropped or rescoped for tier-1 feasibility.
 - [ ] #8 Implementation notes record honest limitations (perf is not measured; correctness only).
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 175 status update
+
+All 3 M6 backend SKELETON slices landed (cycles 173 openmp-rs / 174 mp-tcp-poll / 175 mp-uds-event); the workspace now has 7 tier-1 backends registered. The decomposition table at the top of this brief still holds; the "execution order" notes are now historical (the sequencing they describe has been executed).
+
+Remaining work on TASK-0044:
+- Codegen cycles on each of TASK-0044.01 / 0044.02 / 0044.03 (substantive emit body + e2e cells + bit-identical differential validation).
+- TASK-0044.04 / 0044.05 / 0044.06 examples 8 / 10 / 12 (independent of backend codegen — only need pthreads-sync to author).
+- TASK-0053 (example 13 CNN tier-1 differential — In Progress, partial).
+- TASK-0054 (example 14 hearing aid — needs reopen at M6 entry).
+- TASK-0044.07 capstone — closes when all above land + `just e2e --milestone M6` green.
+
+Each skeleton's phased-AC addendum (in the respective TASK-0044.0N notes) records skeleton-cycle ACs DONE vs codegen-cycle ACs PENDING so the next-cycle implementer cannot silently close on un-met ACs.
+<!-- SECTION:NOTES:END -->

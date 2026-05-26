@@ -56,3 +56,10 @@ openmp-rs = { path = "../backends/openmp-rs" }
 # blocking recv). emit() returns ContractGap until subsequent cycles of
 # TASK-0044.02 land the substantive codegen body.
 mp-tcp-poll = { path = "../backends/mp-tcp-poll" }
+# mp-uds-event — seventh tier-1 backend, M6 (TASK-0044.03 cycle 175,
+# skeleton). Same capability surface as mp-tcp-event (async + buffer +
+# event notify); differs only in transport (Unix domain sockets instead
+# of TCP loopback). emit() returns ContractGap until subsequent cycles
+# of TASK-0044.03 land the substantive codegen body. Inherits the
+# (D)+(B2) compensating-pass tower from mp-tcp-event.
+mp-uds-event = { path = "../backends/mp-uds-event" }

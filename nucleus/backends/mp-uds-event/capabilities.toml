@@ -1,0 +1,21 @@
+# capabilities.toml for the mp-uds-event backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1 row 7: tier-1 backend, OS processes over Unix domain sockets,
+# mio/epoll event-readiness notify, async + buffered.
+#
+# Same SCHEDULE-visible capability surface as mp-tcp-event (async + buffer
+# + event notify) so the IDENTICAL schedule compiles under BOTH. The
+# cross-backend differential gains a fourth async+buffered+event row
+# (alongside pthreads-async + mp-tcp-event); the only material
+# differential is `transport = "uds"`.
+
+schema_version  = 1
+name            = "mp-uds-event"
+tier            = 1
+transport       = "uds"
+notify          = ["event"]
+supports_async  = true
+supports_buffer = true
+max_buffer      = 64
+worker_classes  = ["default"]
+memory_regions  = ["heap"]
