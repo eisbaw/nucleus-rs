@@ -119,14 +119,25 @@
 //! directly, so the fresh hops are covered automatically by virtue of
 //! existing in the ACFG, independent of this mirroring).
 //!
-//! ## Honest scope (AC#4 — 09 only this cycle)
+//! ## Honest scope (AC#4 — 09 in cycle 163; 13 in cycle 165)
 //!
-//! Cycle 163 targets `09-producer-consumer/pipelined × mp-tcp-event`
-//! only (2 workers × 1 transfer/iter — structurally the smallest case
-//! the pass needs to handle). `13-cnn-inference/pipeline_parallel ×
-//! mp-tcp-event` (4 workers × multi-stage inter-worker transfers per
-//! iter) is filed as `TASK-0329.01.02.02` for the next cycle, per
-//! parent task AC#4 P3.2 review fold-back.
+//! Cycle 163 promoted `09-producer-consumer/pipelined × mp-tcp-event`
+//! (2 workers × 1 transfer/iter — structurally the smallest case the
+//! pass needs to handle). **Cycle 165 (TASK-0329.01.02.01)** promoted
+//! `13-cnn-inference/pipeline_parallel × mp-tcp-event` (4 workers ×
+//! three inter-stage transfers per pipelined-batch iter — `input`
+//! between host and `w_stage1`, `feat1` between `w_stage1` and
+//! `w_stage2`, `feat2` between `w_stage2` and `w_stage3`) WITHOUT
+//! structural change to the pass — all three inter-stage Push/Wait
+//! pairs are SAME-Sequence in-Repeat-body, so the existing
+//! `rewrite_sequence_children` pair-matching predicate fires on every
+//! non-host pair (the host↔w_stage1 `input` pair is left alone because
+//! it has host as endpoint). The cycle-163b residual `(R-singleton)`
+//! enumeration warned that `transfer_inject::hoist_invariant_waits`
+//! might split a pair across scopes; empirically that did not surface
+//! for 13. Bit-identical against `13-cnn-inference/reference.bin` sha256
+//! `d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861`
+//! across 3 non-flake e2e samples (cycle 165).
 //!
 //! ## Cycle-163 empirical scope-limit refinement
 //!
@@ -985,6 +996,167 @@ mod tests {
             _ => panic!("kids[2] Repeat"),
         };
         assert_eq!(body_kids.len(), 4, "in-Repeat pair rewritten to 4 hops");
+    }
+
+    #[test]
+    fn task_0329_01_02_01_13_cnn_inference_pipeline_parallel_shape() {
+        // TASK-0329.01.02.01 cycle-165 regression pin for the
+        // 13-cnn-inference/pipeline_parallel × mp-tcp-event promotion.
+        //
+        // Shape: 4 workers (host + w_stage1 + w_stage2 + w_stage3), 3
+        // distinct-data inter-stage transfer pairs in the SAME Sequence
+        // inside a Repeat body (the per-batch pipelined loop):
+        //
+        //   - feat1: w_stage1 -> w_stage2  (data id 1, seq 10)
+        //   - feat2: w_stage2 -> w_stage3  (data id 2, seq 11)
+        //   - output: w_stage3 -> host    (data id 3, seq 12)  — LEFT ALONE (host endpoint)
+        //   - input: host -> w_stage1     (data id 0, seq 9)   — LEFT ALONE (host endpoint)
+        //
+        // The two NON-HOST inter-stage pairs (feat1, feat2) must each
+        // be rewritten to 4 hops via host. The two host-endpoint pairs
+        // (input, output) must be left UNCHANGED. This is the load-
+        // bearing shape the cycle-163b `(R-singleton)` enumeration
+        // warned MIGHT surface (if transfer_inject::hoist_invariant_waits
+        // had split a pair across scopes) — empirical cycle-165
+        // verification confirmed it did NOT for 13, so the existing
+        // same-Sequence pair-matching predicate is sufficient.
+        //
+        // If a future cycle changes hoist_invariant_waits to split one
+        // of these pairs across scopes, this test will still pass
+        // (it tests the in-Sequence shape directly, not the hoist
+        // behaviour) but the 13 e2e cell will regress at the
+        // TASK-0330 guard, signalling that an (R-singleton) extension
+        // is now required. The pin's role is to lock in the
+        // 4-worker 3-pair shape the cycle-165 promotion relied on,
+        // not to detect future hoist-split — that surface is the e2e
+        // gate's job.
+        let w_stage1 = WorkerId(1);
+        let w_stage2 = WorkerId(2);
+        let w_stage3 = WorkerId(3);
+        let input_data = d(0);
+        let feat1_data = d(1);
+        let feat2_data = d(2);
+        let output_data = d(3);
+        let mut body_children: Vec<ACFGNode> = Vec::new();
+        // Host -> w_stage1 (input) — host endpoint, left alone.
+        body_children.extend(pair_xfers(host(), w_stage1, input_data, 9));
+        // w_stage1 -> w_stage2 (feat1) — non-host pair, REWRITTEN.
+        body_children.extend(pair_xfers(w_stage1, w_stage2, feat1_data, 10));
+        // w_stage2 -> w_stage3 (feat2) — non-host pair, REWRITTEN.
+        body_children.extend(pair_xfers(w_stage2, w_stage3, feat2_data, 11));
+        // w_stage3 -> host (output) — host endpoint, left alone.
+        body_children.extend(pair_xfers(w_stage3, host(), output_data, 12));
+        let body = ACFGNode::Sequence(body_children);
+        let root = ACFGNode::Repeat {
+            iter_var: IterVar(0),
+            range: 0..16,
+            body: Box::new(body),
+            block_tag: None,
+        };
+        let acfg = empty_acfg(root);
+        let out = apply_host_data_relay_inject(acfg, host());
+        let kids = match &out.root {
+            ACFGNode::Repeat { body, .. } => match body.as_ref() {
+                ACFGNode::Sequence(k) => k.clone(),
+                _ => panic!("body Sequence"),
+            },
+            _ => panic!("root Repeat"),
+        };
+        // Expected children layout in order:
+        //   [0] Push(host, w_stage1, input)         — left alone
+        //   [1] Wait(host, w_stage1, input)         — left alone
+        //   [2..6] feat1 rewritten to 4 hops via host
+        //   [6..10] feat2 rewritten to 4 hops via host
+        //   [10] Push(w_stage3, host, output)       — left alone
+        //   [11] Wait(w_stage3, host, output)       — left alone
+        // Total: 2 + 4 + 4 + 2 = 12.
+        assert_eq!(
+            kids.len(),
+            12,
+            "expected 2 host-endpoint pairs + 2×(4 hops) for the non-host pairs"
+        );
+        // Verify the input pair (children[0..2]) is unchanged.
+        match (&kids[0], &kids[1]) {
+            (ACFGNode::Xfer(x0), ACFGNode::Xfer(x1)) => {
+                assert_eq!(x0.src, host(), "input Push src = host");
+                assert_eq!(x0.dst, w_stage1, "input Push dst = w_stage1");
+                assert_eq!(x0.data, input_data);
+                assert_eq!(x0.seq, SeqTag(9), "input Push seq unchanged");
+                assert_eq!(x1.src, host());
+                assert_eq!(x1.dst, w_stage1);
+                assert_eq!(x1.seq, SeqTag(9), "input Wait seq unchanged");
+            }
+            _ => panic!("input pair (kids[0], kids[1]) must remain as 2 Xfer nodes"),
+        }
+        // Verify the output pair (children[10..12]) is unchanged.
+        match (&kids[10], &kids[11]) {
+            (ACFGNode::Xfer(x0), ACFGNode::Xfer(x1)) => {
+                assert_eq!(x0.src, w_stage3, "output Push src = w_stage3");
+                assert_eq!(x0.dst, host(), "output Push dst = host");
+                assert_eq!(x0.data, output_data);
+                assert_eq!(x0.seq, SeqTag(12), "output Push seq unchanged");
+                assert_eq!(x1.src, w_stage3);
+                assert_eq!(x1.dst, host());
+                assert_eq!(x1.seq, SeqTag(12), "output Wait seq unchanged");
+            }
+            _ => panic!("output pair (kids[10], kids[11]) must remain as 2 Xfer nodes"),
+        }
+        // Verify feat1's 4 hops (kids[2..6]): w_stage1 -> host -> w_stage2.
+        let feat1_expected: [(XferRole, WorkerId, WorkerId); 4] = [
+            (XferRole::Push, w_stage1, host()),
+            (XferRole::Wait, w_stage1, host()),
+            (XferRole::Push, host(), w_stage2),
+            (XferRole::Wait, host(), w_stage2),
+        ];
+        for (i, (role, src, dst)) in feat1_expected.iter().enumerate() {
+            match &kids[2 + i] {
+                ACFGNode::Xfer(x) => {
+                    assert_eq!(x.role, *role, "feat1 kid[{i}].role");
+                    assert_eq!(x.src, *src, "feat1 kid[{i}].src");
+                    assert_eq!(x.dst, *dst, "feat1 kid[{i}].dst");
+                    assert_eq!(x.data, feat1_data, "feat1 kid[{i}].data");
+                }
+                _ => panic!("feat1 kid[{i}] must be Xfer"),
+            }
+        }
+        // Verify feat2's 4 hops (kids[6..10]): w_stage2 -> host -> w_stage3.
+        let feat2_expected: [(XferRole, WorkerId, WorkerId); 4] = [
+            (XferRole::Push, w_stage2, host()),
+            (XferRole::Wait, w_stage2, host()),
+            (XferRole::Push, host(), w_stage3),
+            (XferRole::Wait, host(), w_stage3),
+        ];
+        for (i, (role, src, dst)) in feat2_expected.iter().enumerate() {
+            match &kids[6 + i] {
+                ACFGNode::Xfer(x) => {
+                    assert_eq!(x.role, *role, "feat2 kid[{i}].role");
+                    assert_eq!(x.src, *src, "feat2 kid[{i}].src");
+                    assert_eq!(x.dst, *dst, "feat2 kid[{i}].dst");
+                    assert_eq!(x.data, feat2_data, "feat2 kid[{i}].data");
+                }
+                _ => panic!("feat2 kid[{i}] must be Xfer"),
+            }
+        }
+        // Each rewritten pair must have its own fresh-seq pair, and
+        // all four fresh seqs must be > max original seq (12).
+        let fresh_seqs: std::collections::BTreeSet<u64> = (2..6)
+            .chain(6..10)
+            .filter_map(|i| match &kids[i] {
+                ACFGNode::Xfer(x) => Some(x.seq.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fresh_seqs.len(),
+            4,
+            "exactly 4 distinct fresh seqs across 2 rewritten pairs"
+        );
+        for s in &fresh_seqs {
+            assert!(
+                *s > 12,
+                "fresh seq {s} must be > max original seq 12 (per monotonic allocator)"
+            );
+        }
     }
 
     #[test]

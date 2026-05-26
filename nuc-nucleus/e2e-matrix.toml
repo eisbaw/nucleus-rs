@@ -1215,11 +1215,19 @@ milestone = "M3"
 # but not on TASK-0329. Empirical verification (cycle 160) emitted
 # the TASK-0330 ContractGap forward-link, confirming the front
 # blocker has migrated.
-[[skip]]
+#
+# Cycle-165 PROMOTION (TASK-0329.01.02.01): the cycle-163
+# `apply_host_data_relay_inject` ACFG pass (TASK-0329.01.02 slice 2
+# Option B2) already handles this cell — empirically verified by
+# promotion + green e2e in cycle 165. 13's inter-stage Push/Wait
+# pairs are all SAME-Sequence in-Repeat-body, so the existing
+# pair-matching predicate fires on every pair (R-singleton residual
+# DID NOT surface). Bit-identical against reference.bin sha256
+# d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861.
+[[required]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-event"
-reason   = "TASK-0330 (mp-tcp-event collect_w2w_pushes inside Loop bodies — defensive ContractGap, cycle-148 architect P3.2 forward-link): cycle-149's flat host-relay cannot handle worker-to-worker Push events that fire per-iteration inside Loop bodies. This schedule's inter-stage transfers (conv_block_1 -> conv_block_2 -> classifier, all non-host -> non-host) are exactly that shape. The cycle-148 TASK-0329 CTRL-arm blocker was LIFTED cycle 160 via the compiler-level `host_mediation_inject` pass (adds host as a mediating participant to every host-excluding Sync); codegen advances past the cycle-148 ContractGap and into TASK-0330's defensive guard. AC#1 of TASK-0330's substantive lift (interleaved per-Push host-relay or a thread-the-relay redesign) is the additional cycle this cell awaits. The four-way bit-identical differential against reference.bin sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861 is still pending. Cycle 160 verified the front blocker has migrated from TASK-0329 to TASK-0330 by empirical driver run."
 milestone = "M3"
 
 # ---- M5 example 06 — distributed schedule (TASK-0296) ----------------
