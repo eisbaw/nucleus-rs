@@ -270,16 +270,17 @@
 //!   NOT by whether the tile was rewritten before the check:
 //!
 //!     - `inject_in_sequence` (Wait dedup, hoisted-drain site): keys
-//!       on full `(src, dst, data, tile)`. The dedup-set is the
-//!       entire enclosing `out: Vec<ACFGNode>` and may include
-//!       previously-emitted Waits that carry tile granularities
-//!       from EARLIER iterations (not all rewritten to this
-//!       sequence's enclosing tile). The `tile` component is
-//!       therefore part of the identity even though the inserting
-//!       site rewrites the candidate to the enclosing tile just
-//!       before the check. This is the `out.iter().any(matches!(…))`
-//!       check that drains hoisted Waits back into the parent
-//!       sequence around the inner Repeat node.
+//!       on full `(role, src, dst, data, tile)`. Delegated to
+//!       `is_duplicate_xfer_in_epoch(&out, &w)` so the dedup-set is
+//!       the current Sequence's `out` scanned from the end backward,
+//!       stopping at the first `ACFGNode::Sync`. A barrier marks a
+//!       fresh rendezvous epoch where a hoisted-drain Wait is
+//!       legitimate (different consumer phase, different buffer
+//!       place); the candidate's role is always Wait, which the
+//!       helper checks. (TASK-0335.01 cycle 159 widened this from a
+//!       whole-`out` `(src, dst, data, tile)` scan — the pre-cycle
+//!       form would silently suppress a legitimate cross-epoch
+//!       hoist-drain.)
 //!     - `inject_in_sequence` (Wait dedup, per-Op emission site):
 //!       keys on full `(role, src, dst, data, tile)`. The dedup-set
 //!       is the current Sequence's `out: Vec<ACFGNode>` scanned
@@ -287,9 +288,10 @@
 //!       `ACFGNode::Sync` — sync_inject runs BEFORE transfer_inject
 //!       and barriers mark fresh rendezvous epochs where duplicate
 //!       Waits are legitimate (different consumer phase, different
-//!       buffer place). Delegated to the helper
-//!       `is_duplicate_xfer_in_epoch(&out, &w)` so it does not
-//!       appear in the literal `XferRole::…` grep witness below.
+//!       buffer place). Delegated to the same helper
+//!       `is_duplicate_xfer_in_epoch(&out, &w)` (single source of
+//!       truth for "duplicate within an epoch"; see grep witness
+//!       below).
 //!
 //!       Cycle-158 (TASK-0335) widened this scope from
 //!       `is_duplicate_xfer(out.last(), …)` to the epoch-scoped
@@ -309,39 +311,49 @@
 //!       The tile distinguishes Pushes for distinct partition
 //!       sub-regions targeting the same consumer.
 //!     - `hoist_invariant_waits` (Wait dedup, `place_or_bubble`):
-//!       keys on `(src, dst, data)` only. The dedup-set is the
-//!       local `out: Vec<ACFGNode>` of the current `place_or_bubble`
-//!       scope; every candidate is rewritten to
+//!       delegated to `is_duplicate_xfer_in_epoch(out, &w)` since
+//!       TASK-0335.02 cycle 159. The helper's 5-tuple key includes
+//!       `tile`, which is redundant-by-construction here (every
+//!       candidate AND every member of `out` is rewritten to
 //!       `IterTile::new(enclosing_tile.to_vec())` on the immediately
-//!       preceding line, so every member of the dedup-set carries
-//!       the SAME tile by construction. Including `tile` in the key
-//!       would be redundant.
+//!       preceding line — see place_or_bubble closure body), so the
+//!       redundant tile comparison costs one extra equality per
+//!       element but keeps a single source of truth for "duplicate
+//!       within an epoch". The pre-cycle-159 form was a whole-`out`
+//!       3-tuple `(src, dst, data)` scan WITHOUT Sync-stop —
+//!       strictly more aggressive than cycle-158's inline site, and
+//!       would have silently suppressed a legitimate
+//!       far-side-of-Sync hoist target (LATENT in-tree at cycle
+//!       159; widened defensively).
 //!
-//!   Grep witness for the three LITERAL-XferRole dedup sites
+//!   Grep witness for the LITERAL-XferRole dedup sites
 //!   (function-name anchors are the stable index; line numbers are
 //!   an as-of-edit stamp, re-run the grep if they have drifted):
 //!   `grep -nE 'existing\.role == XferRole::|x\.role == XferRole::' transfer_inject.rs`
-//!   yields exactly 9 matches. The three DEDUP-CHECK matches are the
-//!   ones whose `matches!` / `if`-chain continues with
-//!   `&& src == … && dst == … && data == …`:
-//!     - in `inject_in_sequence` (hoisted-Waits-drain): the
-//!       `XferRole::Wait` match-arm (full 4-tuple including `tile`).
+//!   yields exactly 7 matches as of cycle 159. The ONE DEDUP-CHECK
+//!   match (its `matches!` / `if`-chain continues with
+//!   `&& src == … && dst == … && data == …`) is:
 //!     - in `splice_pushes_for_waits`: the `XferRole::Push` if-chain
 //!       (full 4-tuple including `tile`).
-//!     - in `hoist_invariant_waits::place_or_bubble`: the
-//!       `XferRole::Wait` match-arm (3-tuple, NO `tile`).
 //!
-//!   The fourth (cycle-158) dedup site — `inject_in_sequence`'s
-//!   per-Op Wait emission — is delegated to
-//!   `is_duplicate_xfer_in_epoch(&out, &w)` whose own role check
-//!   uses `existing.role == cand.role` (no literal `XferRole::`),
-//!   so it does NOT appear in the literal-pattern grep witness.
+//!   The three OTHER dedup sites — `inject_in_sequence`'s per-Op
+//!   Wait emission (cycle 158), `inject_in_sequence`'s hoisted-drain
+//!   (cycle 159, TASK-0335.01), and `hoist_invariant_waits`'s
+//!   `place_or_bubble` (cycle 159, TASK-0335.02) — are all delegated
+//!   to `is_duplicate_xfer_in_epoch(out, cand)` whose own role check
+//!   uses `existing.role == cand.role` (no literal `XferRole::`), so
+//!   they do NOT appear in the literal-pattern grep witness.
 //!
 //!   The other 6 grep matches are role-scans for unrelated purposes
 //!   (e.g. counting Waits, filtering Push nodes during splice) and
-//!   are NOT dedup checks. As-of-cycle-158 line stamp: dedup checks
-//!   at 1212 / 1321 / 1495; role-scans at 1264 / 1290 / 1458 / 1602
-//!   / 1692 / 1713.
+//!   are NOT dedup checks. As-of-cycle-159 line stamp: dedup check
+//!   at 1337 (`splice_pushes_for_waits` Push-dedup, the only literal
+//!   `XferRole::` dedup-check still in this file); role-scans at
+//!   1280 / 1306 / 1474 / 1638 / 1728 / 1749. The three cycle-159
+//!   Wait dedup sites — at lines 1134 (per-Op emit), 1235 (hoisted
+//!   drain), 1536 (place_or_bubble) — all delegate to one of the two
+//!   `is_duplicate_xfer_in_epoch{,_at_slot}` helpers and so do NOT
+//!   appear in the literal-XferRole grep witness.
 //!
 //!   Tests cover the cross-site invariant: see
 //!   `idempotent_on_synthetic_two_worker_case` in
@@ -1198,25 +1210,34 @@ fn inject_in_sequence(
             // listed Wait ends up first in `out`.
             for w in waits.into_iter().rev() {
                 // Idempotence: skip if `out` already contains an
-                // identical Wait *anywhere*. Re-running the pass on
-                // a hoisted ACFG re-derives the same Wait from the
-                // consumer Op; without this dedup we would emit a
-                // second copy at the same slot. We check against
-                // the entire sequence (not just `out[slot]`) because
-                // the previously-hoisted Wait may sit at a slot that
-                // shifted as siblings were rewritten.
-                let already_present = out.iter().any(|n| {
-                    matches!(
-                        n,
-                        ACFGNode::Xfer(existing)
-                            if existing.role == XferRole::Wait
-                                && existing.src == w.src
-                                && existing.dst == w.dst
-                                && existing.data == w.data
-                                && existing.tile == w.tile
-                    )
-                });
-                if already_present {
+                // identical Wait WITHIN THE EPOCH AROUND `slot`
+                // (scan backward AND forward from `slot`, both
+                // stopping at the first `ACFGNode::Sync`). The
+                // bidirectional scan is required because this site
+                // inserts AT `slot` (typically far from the tail of
+                // `out`), so the tail-scoped cycle-158 helper would
+                // find a sibling-drain's Wait on the WRONG side of
+                // an intervening Sync and silently over-suppress.
+                //
+                // TASK-0335.01 cycle 159: introduced
+                // `is_duplicate_xfer_in_epoch_at_slot` to address the
+                // LATENT cross-Sync drain bug (two block-inner
+                // sibling Repeats separated by a Sync each drain the
+                // same Wait into `hoisted_waits_to_place`; the
+                // pre-cycle-159 whole-`out` scan suppressed one of
+                // them; the cycle-158 tail-scan helper would have
+                // had the same defect, just choosing a different
+                // sibling to drop). A barrier marks a fresh
+                // rendezvous epoch where a hoisted-drain Wait is
+                // legitimate (different consumer phase, different
+                // buffer place); the slot-aware helper preserves
+                // both. Idempotence is preserved because re-running
+                // re-derives the Wait at the SAME slot; the forward
+                // scan finds the prior-run Wait at that slot before
+                // any Sync → suppress (skip the re-emit). The
+                // candidate's role is always Wait here, which the
+                // helper checks.
+                if is_duplicate_xfer_in_epoch_at_slot(&out, slot, &w) {
                     continue;
                 }
                 out.insert(slot, ACFGNode::Xfer(w));
@@ -1483,21 +1504,58 @@ fn hoist_invariant_waits(
                     if produced.contains(&w.data) {
                         // Lands here: rewrite tile to this sequence's
                         // enclosing-tile granularity and dedup against
-                        // an already-placed equivalent Wait (keeps the
-                        // pass idempotent on re-run — the regenerated
-                        // Wait carries a fresh seq, but the structural
-                        // (src,dst,data) key is stable, so we keep the
-                        // first and drop the duplicate).
+                        // an already-placed equivalent Wait WITHIN the
+                        // same sync_inject barrier epoch (scan stops at
+                        // ACFGNode::Sync — a barrier marks a fresh
+                        // rendezvous epoch where a fresh hoist target
+                        // is legitimate). Keeps the pass idempotent on
+                        // re-run: the regenerated Wait carries a fresh
+                        // seq, but the structural (role,src,dst,data,
+                        // tile) key is stable, so we keep the first
+                        // and drop the duplicate within the epoch.
+                        //
+                        // TASK-0335.02 cycle 159: routed through the
+                        // same Sync-stopping helper as cycle-158's
+                        // inline emit-site. The pre-cycle-159 form was
+                        // a whole-`out` scan keyed on (role,src,dst,
+                        // data) with NO Sync-stop — strictly more
+                        // aggressive than the cycle-158 fix. Without
+                        // the Sync-stop, a legitimate hoist target on
+                        // the FAR side of a barrier would be silently
+                        // suppressed by a matching earlier-epoch Wait
+                        // → deadlock (different buffer places).
+                        //
+                        // The `tile` component of the helper's key is
+                        // SAFE here (cycle-159 architect P2.1
+                        // correction; supersedes the cycle-159 initial
+                        // "every Wait was placed by THIS closure"
+                        // claim, which was false — `Slot::Wait` push
+                        // (the `out.push(ACFGNode::Xfer(x))` arm in
+                        // the slot loop further down) ALSO places
+                        // Waits without routing through this closure
+                        // and without rewriting tile). Why it's still
+                        // safe: a Slot::Wait-pushed Wait carries the
+                        // tile from upstream inject_in_node_with_tile
+                        // depth-tracking (Repeat→Sequence descent
+                        // appends to enclosing_tile, just as
+                        // hoist_invariant_waits's own Repeat handler
+                        // appends to its `nested` accumulator); at the
+                        // same Sequence depth, the two trackers
+                        // produce structurally identical tiles, so a
+                        // candidate rewritten to enclosing_tile
+                        // matches a Slot::Wait Wait at the SAME depth
+                        // by chance — and matches a place_or_bubble-
+                        // pushed Wait by construction. A
+                        // Slot::Wait-pushed Wait at a DIFFERENT depth
+                        // would not match the 5-tuple key, which is
+                        // the SAFE direction (less-aggressive dedup,
+                        // not silent over-suppression). Keeping the
+                        // 5-tuple helper costs one extra comparison
+                        // per element but keeps one single source of
+                        // truth for "duplicate within an epoch".
                         let mut w = w;
                         w.tile = IterTile::new(enclosing_tile.to_vec());
-                        let dup = out.iter().any(|n| {
-                            matches!(n, ACFGNode::Xfer(x)
-                                if x.role == XferRole::Wait
-                                    && x.src == w.src
-                                    && x.dst == w.dst
-                                    && x.data == w.data)
-                        });
-                        if !dup {
+                        if !is_duplicate_xfer_in_epoch(out, &w) {
                             out.push(ACFGNode::Xfer(w));
                         }
                     } else {
@@ -3594,6 +3652,31 @@ fn update_writer(state: &mut State, op: &Operation) {
 /// inject_in_sequence(x)` — on re-run, every surviving Wait already
 /// matches itself at index 0..N, and broader scan keeps suppressing.
 /// The shape under re-run is the same shape produced by the first run.
+///
+/// TASK-0335.02 cycle 159: extended as the single source of truth for
+/// "duplicate within an epoch in tail-anchored insertion shape" — the
+/// `place_or_bubble` closure in `hoist_invariant_waits` previously
+/// used an inline whole-`out` `out.iter().any(matches!(…))` scan
+/// keyed on `(role, src, dst, data)` with NO Sync-stop. That site
+/// APPENDS at the tail of `out`, so the tail-anchored backward scan
+/// here is the structurally correct shape. The cycle-158 widening
+/// pattern (4-tuple → 5-tuple) is what was applied. See
+/// `is_duplicate_xfer_in_epoch_at_slot` for the SIBLING site
+/// (`inject_in_sequence`'s hoisted-Waits-drain, TASK-0335.01) which
+/// inserts at an arbitrary slot and therefore needed a different
+/// helper rather than a parameter on this one — see that helper's
+/// docstring for the new-fn-vs-param rationale.
+///
+/// **Choice rationale (widen vs assert), TASK-0335.02 only:** the
+/// follow-up permitted either widening the helper's coverage or
+/// asserting a structural invariant that the existing `out` is never
+/// crossed by a Sync at the dedup point. We chose widen because
+/// (a) failure mode of the invariant breaking is silent deadlock —
+/// the worst kind; (b) widening is a strict superset of the pre-fix
+/// correctness (no in-tree shape exercises the new arm today, so no
+/// behaviour regresses); (c) keeps one helper as the single source
+/// of truth for the "tail-anchored append" shape so future dedup
+/// sites of that shape cannot subtly diverge again.
 fn is_duplicate_xfer_in_epoch(out: &[ACFGNode], cand: &XferPlaceholder) -> bool {
     for n in out.iter().rev() {
         match n {
@@ -3613,6 +3696,93 @@ fn is_duplicate_xfer_in_epoch(out: &[ACFGNode], cand: &XferPlaceholder) -> bool 
             // body is its own walk context with its own `out` vec; if
             // a per-iteration Wait exists inside, it is not visible
             // here.)
+            _ => {}
+        }
+    }
+    false
+}
+
+/// True iff some existing Xfer in `out` matches `cand` on
+/// (role, src, dst, data, tile) WITHIN THE EPOCH AROUND `slot` —
+/// i.e. scanning backward from `slot - 1` until the first
+/// `ACFGNode::Sync` (or start), AND forward from `slot` until the
+/// first `ACFGNode::Sync` (or end).
+///
+/// This is the slot-aware sibling of [`is_duplicate_xfer_in_epoch`].
+/// The tail-scoped variant assumes the candidate is being APPENDED
+/// at the end of `out`, so a tail-anchored backward scan covers the
+/// candidate's epoch. The slot-aware variant supports callers that
+/// insert at an arbitrary slot (notably the hoisted-Waits-drain at
+/// the tail of `inject_in_sequence` — `out.insert(slot, ...)`), where
+/// the candidate's epoch may be entirely interior to `out` and
+/// flanked by Syncs on either side.
+///
+/// TASK-0335.01 cycle 159: introduced after audit of cycle-158's
+/// helper showed it was the right shape for the per-Op inline emit
+/// site (always appends at tail) but the WRONG shape for the
+/// hoisted-Waits-drain. The drain processes sibling block-inner
+/// Repeats' waits in reverse-slot order; if two siblings flank a
+/// Sync, the first-processed (later-slot) sibling's Wait gets
+/// inserted post-Sync, and the second-processed (earlier-slot)
+/// sibling's candidate then matched it under either pre-cycle-159's
+/// whole-`out` scan OR cycle-158's tail-anchored backward scan,
+/// causing silent over-suppression of the EARLIER-slot sibling. The
+/// slot-aware bidirectional scan respects the Sync between them.
+///
+/// **Choice rationale (new helper vs `slot: Option<usize>` parameter
+/// on `is_duplicate_xfer_in_epoch`):** kept as a separate function
+/// because (a) the scan SHAPE is fundamentally different
+/// (bidirectional from slot vs tail-anchored backward), not just a
+/// scope refinement — folding both into one fn would require a
+/// runtime branch on every call and obscure each shape's
+/// invariants; (b) the per-call performance penalty of a unified
+/// helper would be non-trivial (each call pays either always-both-
+/// arms or branch-on-slot==len); (c) the two call sites are
+/// structurally distinct (append-at-tail vs insert-at-slot), so the
+/// separation matches the call-site shape rather than hiding it.
+///
+/// Idempotence is preserved (the primary purpose of the dedup): on
+/// re-run, the previously-inserted Wait sits at exactly `slot`; the
+/// forward scan starts at `slot` and finds it on the first
+/// iteration → suppress (skip the re-emit). The Sync-stop in EITHER
+/// direction does not interfere because the candidate sits between
+/// the two Syncs flanking its own epoch, same as the first-run
+/// insertion.
+///
+/// **Latent at cycle 159**: no in-tree schedule produces two
+/// block-inner sibling Repeats separated by a Sync that share a
+/// matching hoist-drain Wait key. Fixed defensively to defend
+/// against future schedules.
+fn is_duplicate_xfer_in_epoch_at_slot(
+    out: &[ACFGNode],
+    slot: usize,
+    cand: &XferPlaceholder,
+) -> bool {
+    let xfer_matches = |existing: &XferPlaceholder| -> bool {
+        existing.role == cand.role
+            && existing.src == cand.src
+            && existing.dst == cand.dst
+            && existing.data == cand.data
+            && existing.tile == cand.tile
+    };
+    // Backward from slot-1 to start, stop at first Sync.
+    if slot > 0 {
+        for n in out[..slot].iter().rev() {
+            match n {
+                ACFGNode::Sync(_) => break,
+                ACFGNode::Xfer(existing) if xfer_matches(existing) => return true,
+                _ => {}
+            }
+        }
+    }
+    // Forward from slot to end, stop at first Sync. (The new Wait
+    // would be inserted AT `slot`, so an existing Wait at `slot`
+    // sits inside the same forward span as everything else up to the
+    // next Sync.)
+    for n in out.iter().skip(slot) {
+        match n {
+            ACFGNode::Sync(_) => break,
+            ACFGNode::Xfer(existing) if xfer_matches(existing) => return true,
             _ => {}
         }
     }

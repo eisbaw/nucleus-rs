@@ -1178,3 +1178,206 @@ fn whole_symbol_finalisation_is_structurally_idempotent() {
 // (the `d` arm) and by `mixed_block_and_nonblock_program_pairs_
 // the_nonblock_transfer` (now also pinning d's Push).
 // --------------------------------------------------------------------
+
+/// TASK-0335.01 cycle 159 — slot-aware Sync-stopping arm of the
+/// `hoisted_waits_to_place` drain dedup in `inject_in_sequence`.
+///
+/// Shape (minimal — cycle-159 architect P2.2 simplification): a top
+/// Sequence containing a producer and TWO BLOCK-INNER sibling Repeats
+/// separated by an explicit `ACFGNode::Sync` barrier. The block-inner
+/// marker is on each Repeat's `iter_var` directly — so they are the
+/// direct block-inner children of the TOP Sequence, and the drain at
+/// `transfer_inject.rs`'s hoisted-Waits-drain (helper call inside the
+/// comment block opening at line ~1208) fires at the top Sequence
+/// level with slot positions sandwiching the Sync.
+///
+///   Sequence(top)                                  // drain happens HERE
+///     producer on host writes d                    // slot 0
+///     Repeat_A(y_A=0 in 0..2, BLOCK-INNER)         // slot 1
+///       Sequence(intra-tile-A)
+///         consumer_A on w0 reads d
+///     Sync(barrier)                                // slot 2
+///     Repeat_B(y_B=1 in 0..2, BLOCK-INNER)         // slot 3
+///       Sequence(intra-tile-B)
+///         consumer_B on w0 reads d
+///
+/// Both block-inner Repeats drain ONE Wait apiece (host → w0, data
+/// d) into `hoisted_waits_to_place` at slots `{1, 3}` (sandwiching
+/// the Sync at slot 2). Downstream `hoist_invariant_waits` then
+/// processes the same Sequence: producer writes `d`, so `produced`
+/// contains `d`, so each drained Wait is a `Slot::Wait` whose data is
+/// produced in this scope → pushed directly to `out` via the
+/// `Slot::Wait` arm (bypassing `place_or_bubble`). The 1-vs-2 Wait
+/// distinction is decided entirely by whether the drain at line
+/// ~1208 preserves both, which is what the slot-aware helper fixes.
+///
+/// **Pre-cycle-159** (whole-`out` 4-tuple scan, no Sync-stop): the
+/// drain processes Repeat_B's wait first (reverse-slot order, larger
+/// slot). It inserts at slot 3 (post-Sync). When Repeat_A's wait is
+/// processed at slot 1, the whole-`out` scan finds Repeat_B's
+/// just-inserted Wait (matching key) and SUPPRESSES Repeat_A's.
+/// Result: 1 Wait for `d` in the final ACFG (the post-Sync one),
+/// silently leaving the pre-Sync epoch's consumer with no buffered
+/// data → deadlock at runtime.
+///
+/// **Cycle-158 helper** (`is_duplicate_xfer_in_epoch`, tail-anchored
+/// backward scan): same defect, just choosing the OTHER sibling to
+/// drop. The tail-anchored scan from the end of `out` walks past
+/// Repeat_B (transparent) and hits Repeat_B's Wait before reaching
+/// the Sync. Match → suppress Repeat_A's Wait. Same 1-Wait result.
+///
+/// **Cycle-159 fix** (`is_duplicate_xfer_in_epoch_at_slot`, slot-aware
+/// bidirectional scan): for the Repeat_A candidate at slot 1, scan
+/// backward from slot 0 (producer, no match) AND forward from slot 1
+/// (Repeat_A transparent → Sync → STOP). No match → insert.
+/// Repeat_B's wait at slot 3: scan backward from 2 (Sync → STOP) and
+/// forward from 3 (Repeat_B transparent → end). No match → insert.
+/// Result: 2 Waits for `d`, one per epoch. Both consumers
+/// successfully rendezvous.
+///
+/// **Do NOT weaken this expectation.** A regression that returns 1
+/// Wait / 1 Push here means the slot-aware bidirectional scan has
+/// been replaced with a tail-anchored or whole-`out` scan — silent
+/// over-suppression that deadlocks any schedule producing
+/// block-inner sibling drains around a Sync.
+#[test]
+fn task0335_01_slot_aware_sync_stop_in_hoisted_waits_drain() {
+    use nucleus_compiler::acfg::SyncPlaceholder;
+    use nucleus_compiler::event::SyncTag;
+
+    let producer = op(&[0], 100, vec![], Some(0)); // host writes d
+
+    // ---- Block-inner Repeat_A: consumer_A reads d on w0.
+    let consumer_a = op(&[1], 101, vec![0], Some(1)); // w0 reads d, writes c1
+    let repeat_a = ACFGNode::Repeat {
+        iter_var: IterVar(0), // <-- inner_block iv (registered below)
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consumer_a])),
+        block_tag: None,
+    };
+
+    // ---- Sync barrier BETWEEN the two block-inner sibling Repeats.
+    // ---- THIS is the cross-Sync arm the slot-aware helper defends.
+    let sync_barrier = ACFGNode::Sync(SyncPlaceholder {
+        participants: ws(&[0, 1]),
+        sync: SyncTag(0),
+    });
+
+    // ---- Block-inner Repeat_B: consumer_B reads d on w0.
+    let consumer_b = op(&[1], 102, vec![0], Some(2)); // w0 reads d, writes c2
+    let repeat_b = ACFGNode::Repeat {
+        iter_var: IterVar(1), // <-- second inner_block iv (registered below)
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consumer_b])),
+        block_tag: None,
+    };
+
+    let root = ACFGNode::Sequence(vec![producer, repeat_a, sync_barrier, repeat_b]);
+
+    let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
+    name_data.insert("d".into(), DataId(0));
+    name_data.insert("c1".into(), DataId(1));
+    name_data.insert("c2".into(), DataId(2));
+    let mut name_workers: BTreeMap<String, WorkerId> = BTreeMap::new();
+    name_workers.insert("host".into(), WorkerId(0));
+    name_workers.insert("w0".into(), WorkerId(1));
+
+    // Mark BOTH inner iter vars as block-inner — the marker
+    // block_transform installs on a real ACFG. This is what triggers
+    // transfer_inject to hoist each consumer's Wait out of its
+    // intra-tile body into `hoisted_waits_to_place`.
+    let mut inner_block_iter_vars: BTreeSet<IterVar> = BTreeSet::new();
+    inner_block_iter_vars.insert(IterVar(0));
+    inner_block_iter_vars.insert(IterVar(1));
+
+    let acfg = ACFG {
+        root,
+        name_kernels: BTreeMap::new(),
+        name_data,
+        name_workers,
+        name_iter_vars: BTreeMap::new(),
+        inner_block_iter_vars,
+        partition_worker_ranges: std::collections::BTreeMap::new(),
+        pipeline_depth_for_seq: std::collections::BTreeMap::new(),
+        halo_widths: std::collections::BTreeMap::new(),
+        reuse_widths: std::collections::BTreeMap::new(),
+        partition_pairs: std::collections::BTreeMap::new(),
+        grid_shape_for_outer_iv: std::collections::BTreeMap::new(),
+    };
+
+    let linked = synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;");
+    let result = inject_transfers(&linked, acfg).expect("inject_transfers");
+
+    // Collect Wait + Push Xfers for `d` from the whole ACFG.
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => out.push((x.role, x.src, x.dst)),
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, DataId(0), &mut xfers);
+
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+
+    assert_eq!(
+        waits.len(),
+        2,
+        "TASK-0335.01 AC#3: expected exactly 2 Waits for `d` — ONE \
+         per block-inner sibling Repeat, separated into distinct \
+         epochs by the explicit ACFGNode::Sync between them. Got {} \
+         waits: {:?}. If you see 1 here, the hoist-drain dedup has \
+         been silently re-narrowed (whole-`out` scan OR tail-anchored \
+         scan) — silent over-suppression that deadlocks any schedule \
+         producing block-inner sibling drains around a Sync.",
+        waits.len(),
+        waits
+    );
+    assert_eq!(
+        pushes.len(),
+        2,
+        "TASK-0335.01 AC#3: 2 surviving Waits → 2 Pushes (one per \
+         seq, matched by splice_pushes_global). Got {} pushes: {:?}.",
+        pushes.len(),
+        pushes
+    );
+
+    // Idempotence: re-running inject_transfers on the result must
+    // produce the same shape (no further duplicates emitted).
+    let result2 = inject_transfers(
+        &synthetic_linked_ir(&[("d", &["host"])], "transfer d : sync;"),
+        result.clone(),
+    )
+    .expect("inject_transfers idempotent re-run");
+    let mut xfers2: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result2.root, DataId(0), &mut xfers2);
+    assert_eq!(
+        xfers2.iter().filter(|(r, _, _)| matches!(r, XferRole::Wait)).count(),
+        2,
+        "TASK-0335.01 idempotence: re-run must NOT add a third Wait. \
+         The slot-aware helper's forward scan from `slot` must find \
+         the prior-run Wait at exactly `slot` and suppress the \
+         re-emit. If you see 3 or more, the helper's forward arm is \
+         broken (the candidate's epoch around `slot` is not being \
+         scanned)."
+    );
+}

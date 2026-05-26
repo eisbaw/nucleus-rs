@@ -5276,3 +5276,177 @@ fn task0335_ac4_sync_between_consumers_separates_epochs() {
         pushes
     );
 }
+
+/// TASK-0335.02 cycle 159 — Sync-stopping arm of the place_or_bubble
+/// dedup in `hoist_invariant_waits`.
+///
+/// Shape: a top-level Sequence with a single producer Op writing `d`
+/// (on workers w0..w3), then two REPEATS each containing one consumer
+/// Op reading `d` (on host), with an explicit `ACFGNode::Sync` between
+/// the two Repeats:
+///
+///     [Op_producer, Repeat_1{Op_consumer_1}, Sync, Repeat_2{Op_consumer_2}]
+///
+/// After `inject_in_sequence`, the four per-src Waits for `d` land
+/// inside each Repeat's body (immediately before its consumer). Neither
+/// body produces `d`, so `hoist_invariant_waits` bubbles all 4 Waits
+/// up through each Repeat into the outer Sequence's `escaped_up`
+/// stream. The outer Sequence's `produced` set DOES contain `d` (the
+/// producer is a sibling), so the bubbled Waits land here via
+/// `place_or_bubble` — once for Repeat_1's 4, then the Sync, then
+/// Repeat_2's 4.
+///
+/// **Pre-cycle-159 bug** (latent in-tree at cycle 158, fixed cycle
+/// 159 for TASK-0335.02): the place_or_bubble dedup at
+/// `transfer_inject.rs:~1493` scanned the WHOLE `out` Vec keyed on
+/// `(role, src, dst, data)` with NO Sync-stop. After Repeat_1's 4
+/// Waits were placed and the Sync was pushed, each of Repeat_2's 4
+/// candidate Waits found a structural match in the pre-Sync segment
+/// and was silently suppressed. Net: 4 outer-level Waits for `d`
+/// instead of 8 → cross-epoch consumer's buffer place never filled
+/// (Petri token never deposited for epoch 2) → silent deadlock for
+/// the real schedule shape that this fixture mirrors.
+///
+/// **Post-cycle-159 fix** (TASK-0335.02): both the inline emit-site
+/// and the place_or_bubble dedup route through the same
+/// `is_duplicate_xfer_in_epoch` helper, whose backward scan stops at
+/// the first `ACFGNode::Sync`. Repeat_2's 4 candidates no longer see
+/// Repeat_1's matching Waits (the Sync between them ends the epoch),
+/// so all 8 survive.
+///
+/// **Do NOT weaken this expectation.** A regression that returns 4
+/// outer-level Waits / 4 outer-level Pushes here means the
+/// place_or_bubble dedup has been re-narrowed (whole-`out` 4-tuple
+/// scan without Sync-stop), OR `is_duplicate_xfer_in_epoch`'s
+/// `ACFGNode::Sync(_) => return false` arm has been dropped. Either
+/// regression silently deadlocks any schedule whose hoisted-Waits
+/// pattern straddles a barrier.
+#[test]
+fn task0335_02_sync_stop_in_place_or_bubble_preserves_cross_epoch_hoist() {
+    // Workers: host=0, w0=1, w1=2, w2=3, w3=4.
+    // Data:    d=0 (cross-worker), c1=1, c2=2 (consumer outputs).
+    let producer = op(&[1, 2, 3, 4], 100, vec![], Some(0)); // writes d on w0..w3
+    let consumer_1 = op(&[0], 101, vec![0], Some(1)); // host reads d, writes c1
+    let consumer_2 = op(&[0], 102, vec![0], Some(2)); // host reads d, writes c2
+
+    let repeat_1 = ACFGNode::Repeat {
+        iter_var: IterVar(7),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consumer_1])),
+        block_tag: None,
+    };
+    let repeat_2 = ACFGNode::Repeat {
+        iter_var: IterVar(8),
+        range: 0..2,
+        body: Box::new(ACFGNode::Sequence(vec![consumer_2])),
+        block_tag: None,
+    };
+    let sync_barrier = ACFGNode::Sync(nucleus_compiler::acfg::SyncPlaceholder {
+        // All 5 workers participate. Variant matters; participants
+        // don't affect the dedup scan.
+        participants: ws(&[0, 1, 2, 3, 4]),
+        sync: nucleus_compiler::event::SyncTag(0),
+    });
+
+    let root = ACFGNode::Sequence(vec![producer, repeat_1, sync_barrier, repeat_2]);
+
+    let acfg = synthetic_acfg(
+        root,
+        &[("d", 0), ("c1", 1), ("c2", 2)],
+        &[
+            ("host", 0),
+            ("w0", 1),
+            ("w1", 2),
+            ("w2", 3),
+            ("w3", 4),
+        ],
+    );
+
+    let linked = synthetic_linked_ir(
+        &acfg.name_data,
+        &acfg.name_workers,
+        &[
+            ("d", &["w0", "w1", "w2", "w3"]),
+            ("c1", &["host"]),
+            ("c2", &["host"]),
+        ],
+        "transfer d : sync;",
+    );
+
+    let result = inject_transfers(&linked, acfg)
+        .expect("TASK-0335.02 AC#3: hoist-across-Sync produces a well-formed ACFG");
+
+    // Count Wait + Push Xfers for `d` anywhere in the final ACFG.
+    fn collect_xfers_for_data(
+        node: &ACFGNode,
+        data: DataId,
+        out: &mut Vec<(XferRole, WorkerId, WorkerId)>,
+    ) {
+        match node {
+            ACFGNode::Xfer(x) if x.data == data => out.push((x.role, x.src, x.dst)),
+            ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+            ACFGNode::Repeat { body, .. } => collect_xfers_for_data(body, data, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    collect_xfers_for_data(c, data, out);
+                }
+            }
+        }
+    }
+    let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
+    collect_xfers_for_data(&result.root, DataId(0), &mut xfers);
+
+    let waits: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+        .copied()
+        .collect();
+    let pushes: Vec<_> = xfers
+        .iter()
+        .filter(|(r, _, _)| matches!(r, XferRole::Push))
+        .copied()
+        .collect();
+
+    assert_eq!(
+        waits.len(),
+        8,
+        "TASK-0335.02 AC#3: expected exactly 8 Waits for `d` (FOUR \
+         per-src-worker Waits per consumer Repeat, ×2 Repeats split \
+         into separate epochs by the explicit ACFGNode::Sync between \
+         them). Got {} waits: {:?}. If you see 4 here, the \
+         place_or_bubble dedup has been silently re-narrowed to a \
+         whole-`out` scan WITHOUT a Sync-stop — a regression that \
+         silently deadlocks any schedule whose hoisted-Wait pattern \
+         straddles a barrier.",
+        waits.len(),
+        waits
+    );
+    assert_eq!(
+        pushes.len(),
+        8,
+        "TASK-0335.02 AC#3: 8 surviving Waits → 8 Pushes (one per \
+         seq, matched by splice_pushes_global). Got {} pushes: {:?}.",
+        pushes.len(),
+        pushes
+    );
+
+    // Each (src, dst) pair must appear in both Wait epochs (4 pre-Sync
+    // and 4 post-Sync), so the per-pair count is exactly 2.
+    let mut per_pair: std::collections::BTreeMap<(WorkerId, WorkerId), usize> =
+        std::collections::BTreeMap::new();
+    for (_, s, d) in &waits {
+        *per_pair.entry((*s, *d)).or_insert(0) += 1;
+    }
+    for src in 1u64..=4 {
+        let count = per_pair.get(&(WorkerId(src), WorkerId(0))).copied().unwrap_or(0);
+        assert_eq!(
+            count, 2,
+            "TASK-0335.02 AC#3: each (w_k, host) pair must appear in \
+             BOTH epochs (one Wait before the Sync from Repeat_1, one \
+             after the Sync from Repeat_2). Got count={} for src=w{}. \
+             If 1, post-Sync epoch was over-deduped.",
+            count,
+            src - 1
+        );
+    }
+}
