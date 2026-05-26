@@ -40,12 +40,15 @@
 //     algorithm-level changes.
 //   - Distributed schedule with per-worker partial histograms +
 //     cross-worker partial-combine. AC#3 of TASK-0044.04 carries
-//     that stretch; cycle-186 ships the language-sanity slice
-//     (AC#1 + AC#2: naive on pthreads-sync + mp-tcp-bufsync). The
-//     distributed schedule is filed as `distributed.sched.nuc` —
-//     if it lowers cleanly cycle 186 it joins the matrix as a
-//     [[required]] cell; if not, the gap is filed and the cell is
-//     [[skip]]'d. See README.
+//     that stretch; cycle 186 shipped the language-sanity slice
+//     bit-identical across ALL FOUR tier-1 backends (pthreads-sync,
+//     mp-tcp-bufsync, pthreads-async, mp-tcp-event) — exceeding
+//     AC#2's pthreads-sync + mp-tcp-bufsync minimum. The
+//     distributed schedule lives at `distributed.sched.nuc`; it
+//     lowers + emits + runs on all 4 tier-1 backends, but the
+//     host-side cross-worker combine emits last-write-wins
+//     overwrites instead of element-wise sum. Filed as TASK-0343
+//     and `[[skip]]`'d across all 4 backends. See README.
 //   - Float reductions. PRD §10.1 demands bit-identity; only
 //     integer counts here.
 //

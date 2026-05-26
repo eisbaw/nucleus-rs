@@ -1,9 +1,12 @@
 // Naive schedule for example 08-histogram.
 //
 // Single worker `host`, every kernel placed there. The language-
-// sanity slice of TASK-0044.04 (AC#1 + AC#2): smoke test that the
-// algorithm parses, lowers, and emits bit-identical bytes on
-// pthreads-sync AND mp-tcp-bufsync.
+// sanity slice of TASK-0044.04: smoke test that the algorithm
+// parses, lowers, and emits bit-identical bytes. Cycle 186 shipped
+// BIT-IDENTICAL across ALL FOUR tier-1 backends (pthreads-sync,
+// mp-tcp-bufsync, pthreads-async, mp-tcp-event) — exceeded AC#2's
+// pthreads-sync + mp-tcp-bufsync minimum; all 4 promoted to
+// [[required]] in `nuc-nucleus/e2e-matrix.toml` from cycle 186.
 //
 // No `transfer` directives: with everything on one worker no data
 // crosses worker boundaries. PRD §6.3.4 only requires `transfer`

@@ -23,19 +23,31 @@
 // loop — the same shape examples 03-reduction and 04-prefix-sum
 // use.
 //
-// Honest open question (filed cycle 186 if the cell lowers but
-// emits wrong output): the cross-worker partial-histogram combine
-// is a substantively new ACFG shape vs the SCALAR-combine of
-// 03-reduction. 03-reduction reduces N i32 values into ONE i32 via
-// pairwise `combine(a, b)`; here the per-worker partial is a
-// BINS-element array that must be element-wise summed across all
-// four workers into the host's `histogram`. The current ACFG
-// machinery for the `histogram[b] <-- bin_inc(...)` statement
-// expresses this as a per-worker rectangular fold; whether the
-// cross-worker reduce phase lowers depends on whether the
-// compiler treats the LHS-indexed accumulator as a partition-
-// reducible shape. If the cell rejects with UnsupportedFeature,
-// that surface is the new gap to file.
+// Status at cycle 186 close (TASK-0343 filed):
+//   - Lowers cleanly on all 4 tier-1 backends; the cell does NOT
+//     reject with `UnsupportedFeature`.
+//   - Emits + builds + runs cleanly on all 4.
+//   - Output is WRONG on all 4: produces one worker's standalone
+//     partial histogram instead of the cross-worker element-wise
+//     sum. Symptom on the committed fixture:
+//     `[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]` (sum=64) vs reference
+//     `[25,25,24,24,24,23,23,9,9,10,10,10,10,10,10,10]` (sum=256).
+//   - Diagnosis: host-side combine emits 4 sequential
+//     `histogram = slot_N.wait()` overwrites (last-write-wins)
+//     instead of element-wise sum. The OVERLAPPING-WRITE
+//     accumulator pattern (every worker writes `histogram[0..BINS]`
+//     independently) is a substantively new ACFG / codegen shape
+//     vs the DISJOINT-WRITE accumulator of 03-reduction (each
+//     worker writes a unique `partials[w]` slot — w IS the
+//     partition variable).
+//
+// Filed as TASK-0343: cross-worker array-output accumulator
+// combine is last-write-wins instead of element-wise sum. Includes
+// the precise compiler-layer diagnosis (transfer_inject / acfg /
+// sync_inject), the substrate-level-uniform-across-4-backends
+// observation, and a regression-prevention test specification. The
+// cell will promote from `[[skip]]` to `[[required]]` when
+// TASK-0343 lands.
 
 schedule for "../prog.algo.nuc" {
     workers = { host, w0, w1, w2, w3 };
