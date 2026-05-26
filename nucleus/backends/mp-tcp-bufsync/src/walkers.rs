@@ -367,28 +367,10 @@ where
     }
 }
 
-pub(crate) fn collect_pre_init_sets(
-    events: &[Event],
-    waited: &mut BTreeSet<DataId>,
-    whole: &mut BTreeSet<DataId>,
-    indexed: &mut BTreeSet<DataId>,
-) {
-    for e in events {
-        match e {
-            Event::Wait { data, .. } => {
-                waited.insert(*data);
-            }
-            Event::Fire { bindings, .. } => {
-                if let Some(o) = &bindings.output {
-                    if o.indices.is_empty() {
-                        whole.insert(o.data);
-                    } else {
-                        indexed.insert(o.data);
-                    }
-                }
-            }
-            Event::Loop { body, .. } => collect_pre_init_sets(body, waited, whole, indexed),
-            _ => {}
-        }
-    }
-}
+// TASK-0343.05 cycle 190: `collect_pre_init_sets` lifted to
+// `backend_common::multi_worker_walker::collect_pre_init_sets` — the
+// other 3 tier-1 backends already route through it. Local duplicate
+// removed; the sole caller (plan/relay.rs) now imports the shared
+// helper directly. Closes the cycle-189 architect P3.1 silent-sibling
+// risk (a future fix to the shared helper would otherwise have
+// silently skipped mp-tcp-bufsync).

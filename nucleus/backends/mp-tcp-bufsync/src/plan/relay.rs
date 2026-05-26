@@ -20,7 +20,13 @@ use backend_common::project_skeleton::multi_binary;
 use nucleus_compiler::event::{DataId, WorkerId};
 
 use crate::encode::scalar_width;
-use crate::walkers::{collect_pre_init_sets, collect_w2w_pushes, RelayHop};
+use crate::walkers::{collect_w2w_pushes, RelayHop};
+// TASK-0343.05 cycle 190: consume the shared backend-common helper
+// instead of the local mp-tcp-bufsync duplicate. The other 3 tier-1
+// backends already route through this helper; cycle 190 retires the
+// silent-sibling-risk duplicate at walkers.rs that pre-dated the
+// TASK-0244 (backend-common) lift.
+use backend_common::multi_worker_walker::collect_pre_init_sets;
 use crate::EmitError;
 use crate::SO_BUF_COMMENT_BUFSYNC;
 
