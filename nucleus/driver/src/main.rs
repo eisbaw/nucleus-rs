@@ -34,19 +34,27 @@
 //! Registered backends: `pthreads-sync` (M1, shared-memory threads),
 //! `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
 //! TASK-0036), `pthreads-async` (M4, shared-memory + per-(DataId,
-//! SeqTag) ring buffer + Condvar — TASK-0042.01), and `mp-tcp-event`
+//! SeqTag) ring buffer + Condvar — TASK-0042.01), `mp-tcp-event`
 //! (M4, OS processes + TCP loopback + mio reactor + per-(seq, peer)
 //! outbound queue + per-seq inbound queue — TASK-0042.05 / Stage 3
-//! of TASK-0042.02 landed cycle 79). All four consume the identical
-//! EventList contract; the cross-backend differential (same source
-//! -> bit-identical output.bin) is the M3 headline (four-way) and
-//! the M4 headline (three-way today; the AC#4 fourth column,
-//! 13/pipeline_parallel × mp-tcp-event, is blocked on TASK-0329
-//! (host-mediated barrier mediation for host-excluding barriers —
-//! CTRL arm of the cycle-148/149 split of the original combined
-//! TASK-0175 filing; the DATA arm was lifted in TASK-0327 cycles
-//! 148/149). Same transport limit mp-tcp-bufsync has on similar
-//! host-excluding-barrier cells.
+//! of TASK-0042.02 landed cycle 79), `openmp-rs` (M6, rayon threads,
+//! SKELETON — TASK-0044.01 cycle 173), and `mp-tcp-poll` (M6, OS
+//! processes + TCP loopback + nonblocking poll, SKELETON —
+//! TASK-0044.02 cycle 174). The four shipped (M1-M4) backends
+//! consume the identical EventList contract; the cross-backend
+//! differential (same source -> bit-identical output.bin) is the M3
+//! headline (four-way) and the M4 headline (three-way today; the
+//! AC#4 fourth column, 13/pipeline_parallel × mp-tcp-event, is
+//! blocked on TASK-0329 (host-mediated barrier mediation for
+//! host-excluding barriers — CTRL arm of the cycle-148/149 split of
+//! the original combined TASK-0175 filing; the DATA arm was lifted
+//! in TASK-0327 cycles 148/149). Same transport limit
+//! mp-tcp-bufsync has on similar host-excluding-barrier cells. The
+//! two M6 skeletons (openmp-rs, mp-tcp-poll) do NOT yet participate
+//! in the differential — `emit()` returns `EmitError::ContractGap`
+//! until substantive codegen lands per the cycle-171 phased-AC
+//! addendum on TASK-0044.01/TASK-0044.02. The third M6 backend
+//! mp-uds-event (TASK-0044.03) is still un-skeletoned at this cycle.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -98,7 +106,8 @@ fn print_help() {
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
-             openmp-rs       rayon threads (tier 1, SKELETON — TASK-0044.01)\n"
+             openmp-rs       rayon threads (tier 1, SKELETON — TASK-0044.01)\n    \
+             mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, SKELETON — TASK-0044.02)\n"
     );
 }
 
@@ -783,10 +792,35 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // Sixth tier-1 backend (TASK-0044.02 cycle 174, M6): OS
+        // processes + TCP loopback + nonblocking poll + sync — same
+        // capability surface as mp-tcp-bufsync, differing only in the
+        // wait primitive (nonblocking-read poll loop instead of
+        // blocking recv). SKELETON in this cycle — `mp_tcp_poll::emit`
+        // returns ContractGap until subsequent cycles of TASK-0044.02
+        // land the nonblocking-read + mp-tcp-common wire framing +
+        // pthreads-sync-delegating single-worker codegen. Multi-binary
+        // shape (same dispatch fields as mp-tcp-bufsync /
+        // mp-tcp-event).
+        "mp-tcp-poll" => {
+            let result =
+                mp_tcp_poll::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("mp-tcp-poll codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            for (i, b) in result.worker_bins.iter().enumerate() {
+                println!("worker_bin{i} = {}", b.display());
+            }
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("wire_rs     = {}", result.wire_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
              `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`, \
-             `openmp-rs`"
+             `openmp-rs`, `mp-tcp-poll`"
         )),
     }
 }

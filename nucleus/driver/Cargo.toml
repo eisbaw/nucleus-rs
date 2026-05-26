@@ -50,3 +50,9 @@ mp-tcp-event = { path = "../backends/mp-tcp-event" }
 # instead of std::thread). emit() returns ContractGap until subsequent
 # cycles of TASK-0044.01 land the rayon-scope codegen body.
 openmp-rs = { path = "../backends/openmp-rs" }
+# mp-tcp-poll — sixth tier-1 backend, M6 (TASK-0044.02 cycle 174, skeleton).
+# Same capability surface as mp-tcp-bufsync (sync + tcp + no buffer);
+# differs only in wait primitive (nonblocking-read poll loop instead of
+# blocking recv). emit() returns ContractGap until subsequent cycles of
+# TASK-0044.02 land the substantive codegen body.
+mp-tcp-poll = { path = "../backends/mp-tcp-poll" }

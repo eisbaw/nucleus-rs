@@ -1,0 +1,27 @@
+# capabilities.toml for the mp-tcp-poll backend.
+# Schema: docs/capabilities-toml.md (TASK-0019).
+# PRD §7.1 row 5: tier-1 backend, OS processes over TCP loopback,
+# nonblocking-poll wait primitive, no buffer, sync.
+#
+# Same SCHEDULE-visible capability surface as mp-tcp-bufsync (sync only,
+# no buffer>1, barrier/blocking notify) so the IDENTICAL schedule
+# compiles under BOTH. The cross-backend differential gains a second
+# sync-TCP row; the only material differential is the wait primitive
+# (`poll` here; barrier/blocking lifted from mp-tcp-bufsync's actual
+# cap-file for the schema-compat sibling guarantee).
+#
+# `poll` is the cycle-171 architect-P2.3 schema variant that cycle-172
+# verified the existing NotifyMode enum (nucleus-compiler/src/
+# capabilities.rs:91) and the docs schema (docs/capabilities-toml.md:68)
+# already accept end-to-end. No schema work needed for this row.
+
+schema_version  = 1
+name            = "mp-tcp-poll"
+tier            = 1
+transport       = "tcp"
+notify          = ["poll", "barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

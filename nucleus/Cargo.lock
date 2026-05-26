@@ -146,12 +146,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp-tcp-poll"
+version = "0.0.0"
+dependencies = [
+ "backend-common",
+ "nucleus-compiler",
+]
+
+[[package]]
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
  "backend-common",
  "mp-tcp-bufsync",
  "mp-tcp-event",
+ "mp-tcp-poll",
  "nucleus-compiler",
  "openmp-rs",
  "pthreads-async",

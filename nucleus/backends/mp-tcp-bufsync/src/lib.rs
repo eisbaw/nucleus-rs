@@ -324,13 +324,17 @@ impl<'a> Plan<'a> {
 
         // Host election: shared helper. See
         // `backend_common::host_election` module docstring for the
-        // canonical rule. IDENTICAL choice across all four tier-1
-        // backends' `multi_worker::Plan::build` (pthreads-sync,
-        // pthreads-async, mp-tcp-event, mp-tcp-bufsync) AND the
-        // three compiler-level driver wirings (cycles 160 / 162 /
-        // 163). The cross-backend bit-identical differential (PRD
-        // §10.1) needs every backend to elect the same host given
-        // the same input; the helper is the single source of truth
+        // canonical rule. IDENTICAL choice across the four shipped
+        // (M1-M4) tier-1 backends' `multi_worker::Plan::build`
+        // (pthreads-sync, pthreads-async, mp-tcp-event,
+        // mp-tcp-bufsync) AND the three compiler-level driver
+        // wirings (cycles 160 / 162 / 163). The two M6 skeleton
+        // backends (openmp-rs, mp-tcp-poll) do NOT yet exercise this
+        // path — their `emit()` ContractGaps before Plan::build is
+        // ever called (per TASK-0044.01/0044.02 skeleton scope). The
+        // cross-backend bit-identical differential (PRD §10.1) needs
+        // every shipped backend to elect the same host given the
+        // same input; the helper is the single source of truth
         // (TASK-0336 cycle 164 lift).
         let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {

@@ -1,0 +1,40 @@
+# mp-tcp-poll backend crate (SKELETON). See PRD §7.1, TASK-0044.02.
+#
+# Tier-1 backend: workers are OS PROCESSES, transport is TCP loopback,
+# notify is NONBLOCKING POLL (busy/yield wait loop), no buffer, sync.
+# Same SCHEDULE-visible capability surface as mp-tcp-bufsync (sync only,
+# single-frame, barrier/blocking notify) — the cross-backend differential
+# gains a SECOND sync-TCP row. Differs from mp-tcp-bufsync only in the
+# wait primitive: where bufsync calls blocking `wire::read_msg_expect`,
+# poll calls a nonblocking-read loop with std::thread::yield_now.
+#
+# ## Current status: SKELETON (TASK-0044.02 cycle 174, 2026-05-26)
+#
+# Crate + capabilities.toml + driver dispatch arm + workspace member
+# wired through. `emit()` returns `EmitError::ContractGap` for ALL inputs
+# (single- and multi-worker) until the substantive codegen lands. The
+# capability-compat check IS real — schedules that compile against
+# mp-tcp-bufsync compat-check cleanly against mp-tcp-poll; the
+# subsequent codegen call surfaces the skeleton via the typed
+# ContractGap forward-link.
+#
+# No `mp-tcp-common` / `pthreads-sync` dep yet — added when substantive
+# codegen lands (mp-tcp-common provides wire framing reused by
+# mp-tcp-bufsync + mp-tcp-event; pthreads-sync provides the
+# render_single_worker_main delegation for the 0/1-used-worker case,
+# the same precedent mp-tcp-bufsync + mp-tcp-event + pthreads-async use).
+
+[package]
+name = "mp-tcp-poll"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mp_tcp_poll"
+path = "src/lib.rs"
+
+[dependencies]
+nucleus-compiler = { path = "../../nucleus-compiler" }
+backend-common = { path = "../../backend-common" }
