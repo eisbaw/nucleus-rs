@@ -1119,11 +1119,29 @@ milestone = "M3"
 # blocker — cycle-149 host-relay lifts the DATA-side w↔w. ONLY the
 # CTRL-side host-excluding-barrier is still gated; tracked as
 # TASK-0329, sibling of TASK-0327 for the barrier arm.
+#
+# Post-cycle-160 update (TASK-0329): the CTRL-side
+# host-excluding-barrier was LIFTED via the compiler-level
+# host_mediation_inject pass (apply_host_mediation_inject adds host
+# as a mediating participant to every Sync excluding it; pass is
+# applied by the driver for mp-tcp-bufsync / mp-tcp-event only).
+# Codegen now advances past the cycle-148 ContractGap and into the
+# TASK-0330 defensive guard: this schedule's `transfer stream` Push
+# (producer w0 -> consumer w2, non-host->non-host) fires INSIDE the
+# pipelined `for n` loop body, but cycle-149's flat host-relay
+# (`Plan::render_relay_phase`) emits one batch outside any loop —
+# the over-count / mis-order failure modes TASK-0330's defensive
+# guard rejects. AC#1 of TASK-0330's substantive lift (interleaved
+# per-Push host-relay, threaded host-relay, or a fundamental
+# redesign that splices the relay inside the loop) is the
+# additional cycle this cell awaits. Cycle 160 verified empirically:
+# the driver emits the TASK-0330 ContractGap forward-link (not the
+# TASK-0329 one) — front blocker has migrated.
 [[skip]]
 example  = "09-producer-consumer"
 schedule = "pipelined"
 backend  = "mp-tcp-event"
-reason   = "TASK-0329 (host-mediated barrier mediation, cycle-148 filing — sibling of TASK-0327 for the CTRL arm): the pipelined producer/consumer pair (workers 0 and 2, both non-host) need a barrier between them excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier on the CTRL channel. NOTE: the cross-worker `stream` w2w Push/Wait was LIFTED in cycle 149 via host-relay (TASK-0327 AC#2); only the CTRL barrier-arm remains gated. Codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (the original combined-arm filing)."
+reason   = "TASK-0330 (mp-tcp-event collect_w2w_pushes inside Loop bodies — defensive ContractGap, cycle-148 architect P3.2 forward-link): cycle-149's flat host-relay cannot handle a worker-to-worker Push that fires per-iteration inside a Loop body. This schedule's `transfer stream` is exactly that shape (producer pushes a chunk per n in 0..16). The cycle-148 TASK-0329 CTRL-arm blocker was LIFTED cycle 160 via the compiler-level `host_mediation_inject` pass (adds host as a mediating participant to every host-excluding Sync); codegen advances past the cycle-148 ContractGap and into TASK-0330's defensive guard. AC#1 of TASK-0330's substantive lift (interleaved per-Push host-relay or a thread-the-relay redesign) is the additional cycle this cell awaits; cycle 160 verified the front blocker has migrated from TASK-0329 to TASK-0330 by empirical driver run."
 milestone = "M4"
 
 [[required]]
@@ -1187,11 +1205,24 @@ milestone = "M3"
 # of TASK-0042.05. Note: cycle 149 lifted the DATA arm of TASK-0175
 # (TASK-0327 Done); this cell's only remaining blocker is the CTRL-
 # arm barrier mediation (TASK-0329).
+#
+# Cycle-160 update (TASK-0329): the CTRL-arm host-excluding-barrier
+# was LIFTED via the compiler-level `host_mediation_inject` pass.
+# Codegen advances past the cycle-148 ContractGap and into the
+# TASK-0330 defensive guard: the inter-stage `images` / `feats_1` /
+# `feats_2` Push events (per-stage, conv_block_1 -> conv_block_2 ->
+# classifier, all non-host -> non-host) fire INSIDE pipelined Loop
+# bodies, which cycle-149's flat host-relay cannot drain. AC#1 of
+# TASK-0330's substantive lift is the additional cycle this cell
+# awaits; the four-way bit-identical differential is still pending
+# but not on TASK-0329. Empirical verification (cycle 160) emitted
+# the TASK-0330 ContractGap forward-link, confirming the front
+# blocker has migrated.
 [[skip]]
 example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-event"
-reason   = "TASK-0329 (host-mediated barrier mediation, sibling of TASK-0327 for the CTRL arm — cycle-148/149 split of the original TASK-0175 combined filing): pipeline_parallel places conv_block_1/conv_block_2/classifier on three distinct non-host workers with barriers excluding host. mp-tcp-event's one-(DATA,CTRL)-pair-per-(host,worker) star topology cannot lower a host-excluding barrier on the CTRL channel. TASK-0042.05 Stage 3 LANDED cycle 79; codegen reaches Plan::build then correctly fail-loud with a typed ContractGap forward-linking TASK-0175 (original combined filing). AC#4 of TASK-0042.05 is blocked on TASK-0329 — same CTRL-arm blocker mp-tcp-bufsync has on similar w-only barriers. Cycle 149 lifted the DATA arm of TASK-0175 (TASK-0327 Done); the CTRL-arm barrier blocker remains."
+reason   = "TASK-0330 (mp-tcp-event collect_w2w_pushes inside Loop bodies — defensive ContractGap, cycle-148 architect P3.2 forward-link): cycle-149's flat host-relay cannot handle worker-to-worker Push events that fire per-iteration inside Loop bodies. This schedule's inter-stage transfers (conv_block_1 -> conv_block_2 -> classifier, all non-host -> non-host) are exactly that shape. The cycle-148 TASK-0329 CTRL-arm blocker was LIFTED cycle 160 via the compiler-level `host_mediation_inject` pass (adds host as a mediating participant to every host-excluding Sync); codegen advances past the cycle-148 ContractGap and into TASK-0330's defensive guard. AC#1 of TASK-0330's substantive lift (interleaved per-Push host-relay or a thread-the-relay redesign) is the additional cycle this cell awaits. The four-way bit-identical differential against reference.bin sha256 d893337208d7b46923581ecdea8e326e07e8c7e1204a13d867807d6795f7b861 is still pending. Cycle 160 verified the front blocker has migrated from TASK-0329 to TASK-0330 by empirical driver run."
 milestone = "M3"
 
 # ---- M5 example 06 — distributed schedule (TASK-0296) ----------------

@@ -31,6 +31,15 @@ pub mod deadlock;
 // observationally-inert in Stage 1: writes `ACFG::halo_widths` for
 // Stage 2 (transfer_inject extension, TASK-0263) to consume.
 pub mod halo_inference;
+// TASK-0329 cycle 160: backend-local host-mediation injection. Invoked
+// by the driver for `mp-tcp-bufsync` / `mp-tcp-event` (whose
+// one-CTRL-stream-per-(host,worker) star topology cannot lower a
+// host-excluding barrier without a w↔w mesh). Adds host as a
+// mediating participant in every Sync excluding it; pthreads-sync /
+// pthreads-async skip this pass (their shared-memory barrier
+// primitives handle host-excluding barriers natively). See module
+// docs for the CTRL-arm-vs-DATA-arm cycle-148/149 split rationale.
+pub mod host_mediation_inject;
 // TASK-0261 Stage 1: reuse loop-option inference (PRD §6.3.3 + §13).
 // For each `for V : reuse;` loop, walk the body's kernel-arg
 // `IrExpr::DataRef` indices, classify their affine `(coeff, offset)` in

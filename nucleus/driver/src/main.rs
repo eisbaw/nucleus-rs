@@ -54,9 +54,10 @@ use std::process::ExitCode;
 
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
-    apply_partition_blocks2d, apply_partition_rows, apply_partition_workers, apply_reuse_inference,
-    build_acfg, build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
-    inject_syncs, inject_transfers, link, load_capabilities,
+    apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
+    apply_partition_workers, apply_reuse_inference, build_acfg, build_sidecar,
+    check_kernels_contract, check_schedule_compat, inject_check_frames, inject_syncs,
+    inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -456,6 +457,70 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let acfg = inject_syncs(acfg);
     let acfg =
         inject_transfers(&linked, acfg).map_err(|e| format!("transfer-injection error: {e}"))?;
+
+    // TASK-0329 cycle 160 — host-mediation injection (CTRL arm of the
+    // cycle-148/149 split of the original TASK-0175 combined filing).
+    // For `mp-tcp-bufsync` and `mp-tcp-event`, the
+    // one-CTRL-stream-per-(host,worker) star topology cannot lower a
+    // host-excluding barrier without a worker-to-worker mesh. Adding
+    // host as a mediating hub turns each host-excluding barrier into
+    // a star-shaped N+1-party rendezvous through host, which the
+    // existing barrier-shim emitter handles transparently. The pass
+    // is structurally idempotent and a no-op for ACFGs whose every
+    // barrier already includes host. pthreads-sync / pthreads-async
+    // do NOT apply this pass — their shared-memory barrier primitives
+    // handle host-excluding barriers natively (std::sync::Barrier on
+    // an Arc shared only among the listed participants).
+    //
+    // Applied AFTER inject_syncs / inject_transfers (the passes that
+    // emit barriers) and BEFORE acfg_to_events (so the projection
+    // naturally places host's Sync at the structurally correct
+    // position, preserving any enclosing Repeat / Sequence nesting).
+    let acfg = if backend == "mp-tcp-bufsync" || backend == "mp-tcp-event" {
+        // Host election MUST mirror the per-backend `Plan::build`
+        // election EXACTLY, otherwise a schedule whose "host" worker
+        // is declared but has zero projected events (an unusual but
+        // possible shape) would mediate against an ID the backend
+        // does not elect as host, and the backend's defensive rejection
+        // would re-fire against the *backend-elected* host (cycle-160
+        // architect P1.1).
+        //
+        // Backend election rule (mp-tcp-bufsync/src/lib.rs:331-338 +
+        // mp-tcp-event/src/multi_worker.rs:153-160): prefer the worker
+        // literally named "host" AND in `used_workers`; else fall
+        // back to the smallest `used_workers` entry. `used_workers` is
+        // derived from `per_worker` (non-empty event lists), so we
+        // project ONCE here to get the same set the backend will see,
+        // elect, then mediate, then re-project at line ~559 (the
+        // mediation may change which workers are non-empty by adding
+        // Sync events to host's list, so the post-mediation projection
+        // is the authoritative per_worker).
+        //
+        // Cost: one extra `acfg_to_events` call (O(ACFG nodes)). Cheap
+        // compared to the cross-backend skew this would otherwise leak
+        // into the differential.
+        let preview = acfg_to_events(&acfg);
+        let used: std::collections::BTreeSet<_> = preview
+            .iter()
+            .filter(|(_, evs)| !evs.is_empty())
+            .map(|(w, _)| *w)
+            .collect();
+        let host = acfg
+            .name_workers
+            .iter()
+            .find(|(n, _)| n.as_str() == "host")
+            .map(|(_, w)| *w)
+            .filter(|w| used.contains(w))
+            .or_else(|| used.iter().next().copied());
+        match host {
+            Some(h) => apply_host_mediation_inject(acfg, h),
+            // No `used_workers` (every per_worker entry empty). The
+            // ACFG is degenerate (no barriers possible); pass through.
+            None => acfg,
+        }
+    } else {
+        acfg
+    };
 
     // ---- Capability check ----
     let caps_path = match a.capabilities {
