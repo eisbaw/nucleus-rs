@@ -157,6 +157,15 @@ struct Plan<'a> {
     /// nest) means "whole-array transfer"; the receiver-side
     /// `name = slot.wait();` path is taken.
     pair_tiles: BTreeMap<(DataId, SeqTag), nucleus_compiler::event::IterTile>,
+    /// Per-(worker, data, seq) overlapping-write accumulator
+    /// classification (TASK-0343 cycle 189). Populated by
+    /// `walker::collect_accumulate_waits` per worker and unioned with
+    /// `WorkerId`. Consumed by the shared event walker via
+    /// `WalkerCtx::accumulate_waits` to switch the Event::Wait emit
+    /// from whole-array overwrite assign to element-wise
+    /// `wrapping_add` accumulate. Empty for every cell without an
+    /// overlapping-write fan-in (every shipped cell pre-cycle-189).
+    accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// `SyncTag` -> participants. Keyed directly by the contract
     /// barrier identity (TASK-0172). The projection clones the same
     /// participant set into every participant's `Event::Sync`, so
@@ -221,6 +230,22 @@ impl<'a> Plan<'a> {
             });
         }
 
+        // Per-worker overlapping-write accumulator classification
+        // (TASK-0343 cycle 189). For each worker, identify the
+        // (data, seq) pairs whose Wait emit must switch from
+        // whole-array overwrite assign to element-wise
+        // `wrapping_add` accumulate. Unioned with the WorkerId so
+        // the shared walker can filter per worker without a
+        // per-worker context rebuild.
+        let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
+        for w in &used_workers {
+            let per_worker_set =
+                walker::collect_accumulate_waits(&per_worker[w], sidecar, &pair_tiles);
+            for (d, s) in per_worker_set {
+                accumulate_waits.insert((*w, d, s));
+            }
+        }
+
         Ok(Plan {
             per_worker,
             names,
@@ -230,6 +255,7 @@ impl<'a> Plan<'a> {
             slot_ids,
             pair_tiles,
             barrier_participants,
+            accumulate_waits,
         })
     }
 
@@ -532,6 +558,7 @@ impl<'a> Plan<'a> {
             rendezvous_prefix: "slot",
             rendezvous_ids: &self.slot_ids,
             pair_tiles: &self.pair_tiles,
+            accumulate_waits: &self.accumulate_waits,
         };
         walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)

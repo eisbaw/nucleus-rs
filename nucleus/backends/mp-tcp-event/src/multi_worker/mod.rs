@@ -119,6 +119,16 @@ pub(crate) struct Plan<'a> {
     pub(crate) chan_pairs: BTreeMap<(DataId, SeqTag), (WorkerId, WorkerId)>,
     /// Per-pair iteration tile (TASK-0117 host-side gather).
     pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    /// Per-(worker, data, seq) overlapping-write accumulator
+    /// classification (TASK-0343 cycle 189). Mirrors pthreads-sync's
+    /// and pthreads-async's `multi_worker::Plan::accumulate_waits`
+    /// field; populated by `walker::collect_accumulate_waits` per
+    /// worker and unioned with the WorkerId. Consumed by the shared
+    /// event walker via `WalkerCtx::accumulate_waits` to switch
+    /// Event::Wait emit from whole-array overwrite assign to
+    /// element-wise `wrapping_add` accumulate. Empty for every cell
+    /// without an overlapping-write fan-in.
+    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// SyncTag -> participants. Same shape as mp-tcp-bufsync's.
     pub(crate) barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
 }
@@ -340,6 +350,19 @@ impl<'a> Plan<'a> {
 
         debug_assert_eq!(chan_ids.len(), chan_caps.len());
 
+        // Per-worker overlapping-write accumulator classification
+        // (TASK-0343 cycle 189) — mirrors pthreads-sync's and
+        // pthreads-async's Plan::build accumulate_waits computation
+        // field-for-field.
+        let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
+        for w in &used_workers {
+            let per_worker_set =
+                walker::collect_accumulate_waits(&per_worker[w], sidecar, &pair_tiles);
+            for (d, s) in per_worker_set {
+                accumulate_waits.insert((*w, d, s));
+            }
+        }
+
         Ok(Plan {
             per_worker,
             names,
@@ -350,6 +373,7 @@ impl<'a> Plan<'a> {
             chan_caps,
             chan_pairs,
             pair_tiles,
+            accumulate_waits,
             barrier_participants,
         })
     }

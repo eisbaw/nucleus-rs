@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use nucleus_compiler::algo::{ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, IterTile, SeqTag};
 use nucleus_compiler::sidecar::NameSidecar;
 
@@ -79,6 +80,7 @@ pub fn render_wait_assign(
     data: DataId,
     seq: SeqTag,
     rhs: &str,
+    accumulate: bool,
 ) -> Result<String, EmitError> {
     let slice = match pair_tiles.get(&(data, seq)) {
         Some(tile) => wait_slice(sidecar, data, tile)?,
@@ -86,8 +88,44 @@ pub fn render_wait_assign(
     };
     match slice {
         None => {
-            // Empty tile (or whole-array match) — whole-array assign.
-            Ok(format!("{name} = {rhs};"))
+            // Empty tile (or whole-array match) — pre-cycle-189 path
+            // was whole-array assign; cycle-189 adds the accumulate
+            // dispatch.
+            if accumulate {
+                // TASK-0343 cycle 189: overlapping-write accumulator
+                // fan-in (N>=2 whole-array Waits on the same data,
+                // detected by `collect_accumulate_waits` in sibling
+                // collect.rs). Emit element-wise wrapping_add into
+                // the pre-initialised destination instead of a bare
+                // overwrite assign. Pre-cycle-189 every such Wait
+                // emitted `name = rhs;` producing last-write-wins on
+                // 08-histogram/distributed (4 sequential overwrites
+                // yielded one worker's standalone partial).
+                let ty = sidecar.data_type(data).ok_or_else(|| {
+                    EmitError::ContractGap(format!(
+                        "accumulate Wait of data {data:?} has no ResolvedType in NameSidecar"
+                    ))
+                })?;
+                render_accumulate_assign(name, rhs, ty)
+            } else {
+                Ok(format!("{name} = {rhs};"))
+            }
+        }
+        Some(_) if accumulate => {
+            // Defensive: `collect_accumulate_waits` (sibling
+            // collect.rs) only classifies whole-array Waits as
+            // accumulate, so reaching here with a slice tile means a
+            // caller fabricated the flag against a slice-paste tile.
+            // Fail LOUD so the divergence between the collector and
+            // the consumer surfaces at compile time rather than
+            // silently mis-combining a disjoint-write slice gather.
+            Err(EmitError::ContractGap(format!(
+                "render_wait_assign: accumulate=true on Wait of data {data:?} \
+                 (seq {seq:?}) whose tile resolves to a slice-paste arm; \
+                 `collect_accumulate_waits` only classifies whole-array tiles \
+                 as accumulate. This is a contract gap between the caller and \
+                 the accumulate collector (TASK-0343 cycle 189)."
+            )))
         }
         Some(WaitSlice::Flat { lo, hi }) => {
             // 1D leading-axis slice-paste — TASK-0117.
@@ -293,4 +331,84 @@ fn wait_slice(
         lo: (leading_range.start as usize).saturating_mul(stride),
         hi: (leading_range.end as usize).saturating_mul(stride),
     }))
+}
+
+/// Element-wise sum-identity accumulate emit for the overlapping-write
+/// fan-in arm of `render_wait_assign` (TASK-0343, cycle 189).
+///
+/// Emits one of:
+/// - Array: `{ let _tmp = <rhs>; for _k in 0..<LEN>usize { <name>[_k] =
+///   <name>[_k].wrapping_add(_tmp[_k]); } }`. `<LEN>` is the product of
+///   `ty.dims` (flat element count; matches `render_array_init`'s
+///   per-backend zero-init).
+/// - Scalar: `<name> = <name>.wrapping_add(<rhs>);`. The scalar case
+///   is structurally degenerate but kept for completeness — if a
+///   future schedule fans a scalar accumulator into a host worker
+///   the emit is well-defined without falling back to the array form.
+///
+/// # Scalar-type carve-out
+///
+/// Returns `EmitError::ContractGap` for floats / bool (filed as
+/// TASK-0343 follow-up). Sum identity is integer-only in v2 today:
+/// - Float addition collides with PRD §10.1 bit-identity (sum order
+///   is not associative-stable).
+/// - Bool has no canonical "sum" identity (OR vs AND vs XOR are
+///   distinct algebraic operators; the user-level intent must be
+///   declared explicitly when the follow-up lands).
+fn render_accumulate_assign(
+    name: &str,
+    rhs: &str,
+    ty: &ResolvedType,
+) -> Result<String, EmitError> {
+    let op = accumulate_op_for_scalar(&ty.scalar)?;
+    if ty.dims.is_empty() {
+        // Scalar accumulator. The pre-init in each backend has set
+        // `<name>` to the sum identity (0 for integers; see
+        // `render_array_init` / `rust_scalar_zero` in each backend's
+        // `multi_worker.rs`).
+        Ok(format!("{name} = {name}.{op}({rhs});"))
+    } else {
+        let total: usize = ty.dims.iter().copied().product();
+        Ok(format!(
+            "{{ let _tmp = {rhs}; \
+             for _k in 0..{total}usize {{ \
+             {name}[_k] = {name}[_k].{op}(_tmp[_k]); \
+             }} }}"
+        ))
+    }
+}
+
+/// Per-scalar-type accumulate operator name. Integer-only in cycle
+/// 189; float / bool carve-outs surface as `EmitError::ContractGap`
+/// pointing to the TASK-0343 follow-up bucket.
+fn accumulate_op_for_scalar(t: &ScalarType) -> Result<&'static str, EmitError> {
+    match t {
+        ScalarType::Usize
+        | ScalarType::Isize
+        | ScalarType::U8
+        | ScalarType::U16
+        | ScalarType::U32
+        | ScalarType::U64
+        | ScalarType::I8
+        | ScalarType::I16
+        | ScalarType::I32
+        | ScalarType::I64 => Ok("wrapping_add"),
+        ScalarType::F32 | ScalarType::F64 => Err(EmitError::ContractGap(
+            "render_wait_assign: accumulate fan-in on a float-scalar data symbol — \
+             sum identity collides with PRD §10.1 bit-identity invariant (float \
+             addition is not associative-stable across worker arrival order); \
+             not supported in TASK-0343 cycle 189 (filed as TASK-0343.02: float / \
+             bool follow-up — needs PRD §10.1-compatible identity declared by the \
+             user via TASK-0343.01 kernel attribute)"
+                .into(),
+        )),
+        ScalarType::Bool => Err(EmitError::ContractGap(
+            "render_wait_assign: accumulate fan-in on a bool-scalar data symbol — \
+             no canonical sum identity (OR vs AND vs XOR are distinct algebraic \
+             operators); not supported in TASK-0343 cycle 189 (filed as TASK-0343.02: \
+             float / bool follow-up — needs identity declared by the user via \
+             TASK-0343.01 kernel attribute)"
+                .into(),
+        )),
+    }
 }

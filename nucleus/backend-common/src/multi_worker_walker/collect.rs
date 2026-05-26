@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use nucleus_compiler::algo::ResolvedType;
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 use super::ctx::RendezvousId;
 
@@ -119,6 +121,164 @@ where
             _ => {}
         }
     }
+}
+
+/// Detect the **overlapping-write accumulator fan-in** pattern at the
+/// codegen layer (TASK-0343, cycle 189).
+///
+/// Returns the set of `(DataId, SeqTag)` pairs for which the
+/// receiver-side `Event::Wait` MUST emit element-wise accumulate
+/// (sum identity) instead of the default whole-array overwrite assign.
+///
+/// # The pattern this detects
+///
+/// 08-histogram/distributed: 4 compute workers each compute a local
+/// partial histogram over their input partition and Push the FULL
+/// 16-element output array to the host. The host then has 4 Waits on
+/// the same data symbol, all carrying whole-array tiles. Pre-cycle-189
+/// `render_wait_assign` emitted `histogram = slot_N.wait();` for each
+/// (last-write-wins); the cycle-189 fix replaces each with an
+/// element-wise `wrapping_add` accumulate into the host's
+/// zero-initialised destination.
+///
+/// Contrast 03-reduction's `partials[w]` shape (the DISJOINT-write
+/// accumulator, NOT this pattern): each worker pushes ONE slot of
+/// `partials`, the Wait tiles carry per-worker slice ranges (`(w,
+/// w..w+1)`), `wait_slice` returns `Some(WaitSlice::Flat)`, and the
+/// existing slice-paste arm emits the bit-correct gather. This
+/// helper does NOT classify those Waits as accumulate (the predicate
+/// requires whole-array tiles).
+///
+/// # The predicate
+///
+/// For each `DataId` that has N>=2 Waits in `events` where every Wait's
+/// tile (from `pair_tiles`) is whole-array — i.e. either has no bounds
+/// at all, OR the data is scalar (zero dims), OR every bound's range
+/// covers the corresponding data dim's full source range — all of the
+/// `(DataId, SeqTag)` pairs for those Waits enter the output set.
+///
+/// "Whole-array" here matches the same condition `wait_slice` (sibling
+/// `wait.rs`) uses to return `None` (the whole-array assign arm), so
+/// pre-cycle-189 emit identity holds for any Wait this helper does NOT
+/// classify as accumulate: every Wait that would have gone through the
+/// `name = rhs;` arm AND is not part of an N>=2 fan-in group still
+/// emits exactly that pre-cycle-189 string.
+///
+/// # Scope LIMITS (filed as TASK-0343 follow-ups)
+///
+/// - **Sum identity only**: the consumer (`render_wait_assign`) emits
+///   `wrapping_add` for integer scalar types and returns
+///   `EmitError::ContractGap` for floats / bool (sum identity is not
+///   defined; floats also collide with PRD §10.1 bit-identity).
+/// - **No algorithm-level cross-check**: detection is purely structural
+///   (N>=2 whole-array Waits). An exotic schedule that emits multiple
+///   whole-array Pushes for non-accumulator semantics would mis-combine.
+///   For every shipped schedule today (08-histogram/distributed is the
+///   load-bearing case), the structural pattern is equivalent to the
+///   algorithm-level accumulator pattern (LHS appears in RHS).
+/// - **No iterative (Repeat-body) accumulator**: Waits inside a
+///   `Event::Loop` body carry per-iter tiles (the iter-var range is one
+///   of the consulted dims), so they do NOT match the whole-array
+///   predicate and the helper does not classify them. Multi-pass
+///   time-step accumulator patterns are a separate follow-up.
+///
+/// Descends into `Event::Loop` bodies on the recursion side ONLY to
+/// gather Waits — the whole-array-tile predicate naturally excludes
+/// in-loop Waits (their tiles carry the enclosing iter-var range).
+pub fn collect_accumulate_waits(
+    events: &[Event],
+    sidecar: &NameSidecar,
+    pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
+) -> BTreeSet<(DataId, SeqTag)> {
+    // Group Waits by data: data -> Vec<seq>.
+    let mut waits_per_data: BTreeMap<DataId, Vec<SeqTag>> = BTreeMap::new();
+    walk_waits(events, &mut waits_per_data);
+
+    let mut out: BTreeSet<(DataId, SeqTag)> = BTreeSet::new();
+    for (data, seqs) in waits_per_data {
+        if seqs.len() < 2 {
+            continue;
+        }
+        let ty = match sidecar.data_type(data) {
+            Some(t) => t,
+            None => continue, // contract gap surfaces later in the emit path
+        };
+        let all_whole = seqs.iter().all(|seq| {
+            pair_tiles
+                .get(&(data, *seq))
+                .map(|tile| is_whole_array_tile(tile, ty))
+                // Conservative default (cycle-189 architect P3.2): if
+                // a Wait's (data, seq) is missing from `pair_tiles`,
+                // we have NO evidence the tile is whole-array; do NOT
+                // classify as accumulate. The branch is structurally
+                // unreachable for shipped schedules — `collect_pair_tiles`
+                // (sibling, this module) is contracted to record every
+                // (Push|Wait) pair (TASK-0018 XferPlaceholder
+                // construction). If a future projection-layer
+                // regression breaks that contract, falling back to
+                // pre-cycle-189 `name = rhs;` overwrite emit is a
+                // forward-compatible loss (the user still sees wrong
+                // output, but the cycle-189 fix does not silently
+                // change behaviour here on a different missing-tile
+                // surface).
+                .unwrap_or(false)
+        });
+        if all_whole {
+            for seq in seqs {
+                out.insert((data, seq));
+            }
+        }
+    }
+    out
+}
+
+/// Per-data Wait-seq accumulator. Descends into Loop bodies (in-loop
+/// Waits are still gathered; the whole-array predicate naturally
+/// filters them out at classification time).
+fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<SeqTag>>) {
+    for e in events {
+        match e {
+            Event::Wait { data, seq, .. } => {
+                out.entry(*data).or_default().push(*seq);
+            }
+            Event::Loop { body, .. } => walk_waits(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// True iff `tile` covers the full source range on every consulted
+/// dim of `ty` — matches the condition under which `wait_slice` (in
+/// sibling `wait.rs`) returns `None` and the whole-array assign arm
+/// fires.
+///
+/// Cases that return true:
+/// - Empty `tile.bounds` (no enclosing iteration nest).
+/// - Scalar `ty` (zero dims).
+/// - Every consulted bound's range covers the corresponding dim's
+///   full source range (`0..dims[i]`).
+fn is_whole_array_tile(tile: &IterTile, ty: &ResolvedType) -> bool {
+    if tile.bounds.is_empty() {
+        return true;
+    }
+    if ty.dims.is_empty() {
+        return true;
+    }
+    // Mirror the `wait_slice` positional convention: `tile.bounds[i]`
+    // maps to `ty.dims[i]` (cycle-115 / cycle-133 onwards). A tile
+    // axis beyond ty.dims.len() is a contract gap; treat as non-whole
+    // so the existing `wait_slice` error surface is still the
+    // authoritative reporter for that shape.
+    for (i, (_, range)) in tile.bounds.iter().enumerate() {
+        if i >= ty.dims.len() {
+            return false;
+        }
+        let dim_len = ty.dims[i] as i64;
+        if range.start != 0 || range.end != dim_len {
+            return false;
+        }
+    }
+    true
 }
 
 /// Visit every `Event::Wait` / `Event::Fire` output to build the

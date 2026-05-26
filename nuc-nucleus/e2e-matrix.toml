@@ -245,42 +245,39 @@ schedule = "naive"
 backend  = "mp-tcp-event"
 milestone = "M6"
 
-# 08-histogram/distributed: AC#3 of TASK-0044.04 — STRETCH cell.
-# The schedule lowers cleanly on all 4 tier-1 backends (no
-# capability mismatch; no UnsupportedFeature rejection), but the
-# host-side cross-worker combine emits a sequence of overwrites
-# `histogram = slot_N.wait(); ...` rather than an element-wise sum.
-# This is precisely the OVERLAPPING-WRITE accumulator gap filed as
-# TASK-0343 cycle 186. Symptom: output.bin reproduces one worker's
-# standalone partial histogram instead of the cross-worker sum.
-# All 4 tier-1 backends share the same substrate so the gap is
-# uniform.
-[[skip]]
+# 08-histogram/distributed: AC#3 of TASK-0044.04 — STRETCH cell,
+# PROMOTED to [[required]] in TASK-0343 cycle 189.
+#
+# TASK-0343 cycle 189 lifted the OVERLAPPING-WRITE accumulator gap
+# at the shared backend-common layer: `collect_accumulate_waits`
+# (new helper in `multi_worker_walker/collect.rs`) classifies the
+# N>=2 whole-array Wait fan-in pattern; `render_wait_assign` now
+# emits element-wise `wrapping_add` accumulate into the
+# pre-initialised destination instead of the pre-fix last-write-wins
+# overwrite sequence. All 4 tier-1 backends share the same helper,
+# so the cell promotes cross-backend bit-identical in one move.
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "pthreads-sync"
-reason   = "TASK-0343: cross-worker array-output accumulator combine is last-write-wins instead of element-wise sum. 08-histogram's `histogram[b]` is an LHS-accumulator whose index `b` is independent of the partition variable `i`, so every worker writes the full output array and the cross-worker fan-in MUST sum element-wise. Current codegen emits 4 sequential overwrites (one per worker) — last worker wins, producing one standalone partial histogram. TASK-0343 carries the fix; promoted when codegen lands."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0343: cross-worker array-output accumulator combine is last-write-wins instead of element-wise sum. Same compiler-level gap as the pthreads-sync sibling cell; mp-tcp-bufsync shares the host-combine code path. Promoted when TASK-0343 lands."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "pthreads-async"
-reason   = "TASK-0343: cross-worker array-output accumulator combine is last-write-wins instead of element-wise sum. Same compiler-level gap as the pthreads-sync sibling cell; pthreads-async shares the host-combine code path. Promoted when TASK-0343 lands."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0343: cross-worker array-output accumulator combine is last-write-wins instead of element-wise sum. Same compiler-level gap as the pthreads-sync sibling cell; mp-tcp-event shares the host-combine code path. Promoted when TASK-0343 lands."
 milestone = "M6"
 
 [[required]]

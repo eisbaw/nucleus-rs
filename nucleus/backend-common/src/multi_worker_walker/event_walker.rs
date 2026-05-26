@@ -465,6 +465,11 @@ fn render_worker_events_inner(
                 let name = ctx.data_name(*data)?;
                 let from = ctx.worker_name(*src);
                 // TASK-0117 host-side gather: see render_wait_assign.
+                // TASK-0343 cycle 189: pass per-(worker, data, seq)
+                // accumulate classification so overlapping-write fan-in
+                // emits element-wise wrapping_add into the
+                // pre-initialised destination instead of last-write-wins.
+                let accumulate = ctx.accumulate_waits.contains(&(worker, *data, *seq));
                 let assign = render_wait_assign(
                     ctx.sidecar,
                     ctx.pair_tiles,
@@ -472,6 +477,7 @@ fn render_worker_events_inner(
                     *data,
                     *seq,
                     &format!("{prefix}{rendezvous_prefix}_{rid}.wait()"),
+                    accumulate,
                 )?;
                 writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
             }

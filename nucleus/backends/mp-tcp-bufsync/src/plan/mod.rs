@@ -62,6 +62,17 @@ pub(crate) struct Plan<'a> {
     /// Wait emit path, that path must also call `render_wait_assign`
     /// (= the silent-sibling memory pattern that motivated this fix).
     pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    /// Per-(worker, data, seq) overlapping-write accumulator
+    /// classification (TASK-0343 cycle 189). mp-tcp-bufsync bypasses
+    /// the shared event walker (see field doc on `pair_tiles` for the
+    /// historical reason) and calls `render_wait_assign` directly from
+    /// `plan/events.rs`. The accumulate set is computed at Plan::build
+    /// time the same way the other three tier-1 backends do
+    /// (`walker::collect_accumulate_waits` per worker, unioned with
+    /// WorkerId), and consulted at the Event::Wait emit site to pass
+    /// the `accumulate: bool` flag to the shared helper. Empty for
+    /// every cell without an overlapping-write fan-in.
+    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
 }
 
 impl<'a> Plan<'a> {
@@ -200,6 +211,24 @@ impl<'a> Plan<'a> {
         // wait-before-push schedule.
         detect_wait_before_push_hazard(per_worker, host_worker)?;
 
+        // Per-worker overlapping-write accumulator classification
+        // (TASK-0343 cycle 189) — mirrors the other three tier-1
+        // backends' Plan::build accumulate_waits computation
+        // field-for-field. The actual emit-time consultation lives
+        // in `plan/events.rs` at the Event::Wait branch (since
+        // mp-tcp-bufsync bypasses the shared walker — see field doc).
+        let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
+        for w in &used_workers {
+            let per_worker_set = backend_common::multi_worker_walker::collect_accumulate_waits(
+                &per_worker[w],
+                sidecar,
+                &pair_tiles,
+            );
+            for (d, s) in per_worker_set {
+                accumulate_waits.insert((*w, d, s));
+            }
+        }
+
         Ok(Plan {
             per_worker,
             names,
@@ -208,6 +237,7 @@ impl<'a> Plan<'a> {
             host_worker,
             xfer_ids,
             pair_tiles,
+            accumulate_waits,
         })
     }
 

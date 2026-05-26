@@ -126,6 +126,16 @@ pub(crate) struct Plan<'a> {
     /// tile names the iteration-axis slice this pair is responsible
     /// for. Wave B-2 codegen consumes this for fan-out gather (TASK-0117).
     pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    /// Per-(worker, data, seq) overlapping-write accumulator
+    /// classification (TASK-0343 cycle 189). Mirrors pthreads-sync's
+    /// `multi_worker::Plan::accumulate_waits` field; populated by
+    /// `walker::collect_accumulate_waits` per worker and unioned with
+    /// the WorkerId. Consumed by the shared event walker via
+    /// `WalkerCtx::accumulate_waits` to switch Event::Wait emit from
+    /// whole-array overwrite assign to element-wise `wrapping_add`
+    /// accumulate. Empty for every cell without an overlapping-write
+    /// fan-in.
+    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// `SyncTag` -> participants. Keyed directly by the contract barrier
     /// identity (TASK-0172). The projection clones the same participant
     /// set into every participant's `Event::Sync`, so recording the set
@@ -269,6 +279,18 @@ impl<'a> Plan<'a> {
              docstring (load-bearing for TASK-0233)."
         );
 
+        // Per-worker overlapping-write accumulator classification
+        // (TASK-0343 cycle 189) — mirrors pthreads-sync's Plan::build
+        // accumulate_waits computation field-for-field.
+        let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
+        for w in &used_workers {
+            let per_worker_set =
+                walker::collect_accumulate_waits(&per_worker[w], sidecar, &pair_tiles);
+            for (d, s) in per_worker_set {
+                accumulate_waits.insert((*w, d, s));
+            }
+        }
+
         Ok(Plan {
             per_worker,
             names,
@@ -278,6 +300,7 @@ impl<'a> Plan<'a> {
             ring_ids,
             ring_caps,
             pair_tiles,
+            accumulate_waits,
             barrier_participants,
         })
     }
@@ -518,6 +541,7 @@ impl<'a> Plan<'a> {
             rendezvous_prefix: "ring",
             rendezvous_ids: &self.ring_ids,
             pair_tiles: &self.pair_tiles,
+            accumulate_waits: &self.accumulate_waits,
         };
         walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)

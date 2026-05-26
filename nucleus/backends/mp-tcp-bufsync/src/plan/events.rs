@@ -451,6 +451,15 @@ impl Plan<'_> {
                     let cv = self.data_conn_var(worker, is_host, *src)?;
                     let from = self.worker_name(*src);
                     let dec = decode_expr(ty)?;
+                    // TASK-0343 cycle 189: per-(worker, data, seq)
+                    // overlapping-write accumulator classification. Same
+                    // shape as the shared walker's Wait emit (see
+                    // multi_worker_walker/event_walker.rs Event::Wait
+                    // branch); mp-tcp-bufsync bypasses the walker but
+                    // consumes the same accumulate set populated at
+                    // Plan::build time and the same render_wait_assign
+                    // helper.
+                    let accumulate = self.accumulate_waits.contains(&(worker, *data, *seq));
                     // TASK-0296 cycle 116: route Wait gather through the
                     // shared backend-common slice-paste helper. Before
                     // this, the host-side emit was `{name} = {dec};`
@@ -471,6 +480,7 @@ impl Plan<'_> {
                         *data,
                         *seq,
                         &dec,
+                        accumulate,
                     )?;
                     writeln!(
                         out,

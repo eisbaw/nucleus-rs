@@ -130,6 +130,7 @@ impl Plan<'_> {
             rendezvous_prefix: "chan",
             rendezvous_ids: &self.chan_ids,
             pair_tiles: &self.pair_tiles,
+            accumulate_waits: &self.accumulate_waits,
         };
         // The walker emits chan_<rid>.push(...) / chan_<rid>.wait() /
         // bar_<bid>.wait() — but barriers in mp-tcp-event don't lower

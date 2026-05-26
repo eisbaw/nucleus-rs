@@ -193,6 +193,7 @@ fn render_one_wait(
         rendezvous_prefix: "ring",
         rendezvous_ids,
         pair_tiles,
+        accumulate_waits: WalkerCtx::empty_accumulate_set(),
     };
     let wait = Event::Wait {
         src: WorkerId(0),
@@ -638,6 +639,7 @@ fn task0321_rendezvous_prefix_substituted_in_2d_row_loop_arm() {
             rendezvous_prefix: prefix,
             rendezvous_ids: &ids,
             pair_tiles: &tiles,
+            accumulate_waits: WalkerCtx::empty_accumulate_set(),
         };
         let wait = Event::Wait {
             src: WorkerId(0),
@@ -732,6 +734,7 @@ fn task0322_rendezvous_prefix_substituted_on_push_emit() {
             rendezvous_prefix: prefix,
             rendezvous_ids: &ids,
             pair_tiles: &tiles,
+            accumulate_waits: WalkerCtx::empty_accumulate_set(),
         };
         let push = Event::Push {
             dst: WorkerId(1),

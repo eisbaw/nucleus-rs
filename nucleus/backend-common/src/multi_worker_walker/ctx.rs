@@ -6,7 +6,8 @@
 //! [`super`] module doc for the design rationale and per-backend
 //! cross-walks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use nucleus_compiler::event::{DataId, IterTile, SeqTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
@@ -71,6 +72,17 @@ pub struct WalkerCtx<'a> {
     /// in `render_wait_assign` (1D leading-axis path TASK-0117 + 2D
     /// row-loop path TASK-0294).
     pub pair_tiles: &'a BTreeMap<(DataId, SeqTag), IterTile>,
+    /// Per-(worker, data, seq) accumulate fan-in classification
+    /// (TASK-0343, cycle 189). A `(worker, data, seq)` triple in this
+    /// set means the per-worker Event::Wait MUST emit element-wise
+    /// `wrapping_add` accumulate (sum identity) instead of the default
+    /// whole-array overwrite assign. The set is computed per-Plan by
+    /// each backend via `collect_accumulate_waits` over each worker's
+    /// projected events and then unioned with the WorkerId.
+    ///
+    /// Empty by default — preserves pre-cycle-189 emit for every
+    /// `(worker, data, seq)` not classified as a fan-in accumulator.
+    pub accumulate_waits: &'a BTreeSet<(WorkerId, DataId, SeqTag)>,
 }
 
 impl WalkerCtx<'_> {
@@ -78,6 +90,18 @@ impl WalkerCtx<'_> {
     /// (`render_fire_args_pub`, `render_const_expr_pub`, etc.).
     pub(super) fn render_ctx(&self) -> RenderCtxPub<'_> {
         RenderCtxPub::new(self.names, self.sidecar)
+    }
+
+    /// Shared static empty accumulate-waits set (TASK-0343 cycle 189).
+    /// Convenience for tests + non-multi-worker call sites that have
+    /// no overlapping-write fan-in to classify — pre-cycle-189 emit
+    /// is identical when this set is empty, so passing this helper
+    /// is the "no accumulate" default. Production multi-worker
+    /// Plan::build builds its own per-Plan accumulate_waits set via
+    /// `collect_accumulate_waits` (sibling `collect.rs`).
+    pub fn empty_accumulate_set() -> &'static BTreeSet<(WorkerId, DataId, SeqTag)> {
+        static EMPTY: OnceLock<BTreeSet<(WorkerId, DataId, SeqTag)>> = OnceLock::new();
+        EMPTY.get_or_init(BTreeSet::new)
     }
 
     /// Worker name from the reverse NameTables, falling back to
