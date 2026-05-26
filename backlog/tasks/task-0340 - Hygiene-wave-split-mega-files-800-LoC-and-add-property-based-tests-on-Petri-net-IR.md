@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 12:21'
+updated_date: '2026-05-26 12:47'
 labels:
   - tech-debt
   - hygiene
@@ -288,4 +288,48 @@ implementer brief should:
 This bookkeeping closes cycle 179b. Slice 5 (mp-tcp-event/multi_worker.rs
 by default, OR transfer_inject.rs if scope tightened) is the natural next
 keystone.
+
+## Cycle 180 — slice 5 LANDED (TASK-0340.04)
+
+Split nucleus/backends/mp-tcp-event/src/multi_worker.rs (1695 LoC) into multi_worker/{mod,worker_program,relay,walkers,encode}.rs. AC#2 now 3/6.
+
+**Per-file LoC after split** (vs old multi_worker.rs 1695):
+- src/multi_worker/mod.rs              649
+- src/multi_worker/worker_program.rs   578
+- src/multi_worker/relay.rs            104
+- src/multi_worker/walkers.rs          355
+- src/multi_worker/encode.rs            74
+- (sum 1760; +65 vs pre-split = per-file //! docstrings + use statements + 2 sub-module impl Plan<'_> braces)
+
+**Verification gate (orchestrator-self-run, inside nix develop):**
+- just build / clippy: clean.
+- just test (dev): 969/0/3. just test-release: 968/0/3.
+- just e2e: 112/102/0/10/0 — TWO independent samples (non-flake).
+- just check-mega-files: OK both directions; allow-list shrank from 12 to 11 entries.
+
+**Behaviour-equivalent change list** (cycle-179b enumerated-disclosure discipline, empirically diffed per moved item):
+- (a) collect_pre_init signature reflowed across 4 lines from 1 (rustfmt-forced after pub(super) widening).
+- (b) Plan::max_payload_bytes: scalar_width(...) → encode::scalar_width(...) (function moved sub-module).
+- (c) 13 items had visibility uplift fn → pub(super) (required for sibling-module access).
+- (d) struct RelayHop + 4 fields uplifted to pub(super) (required for relay.rs to construct).
+All four classes mechanical; bodies byte-identical. Bit-identical emit verified by e2e.
+
+**AC status post-slice-5:**
+- AC#1: DONE (cycle 176 + 178).
+- AC#2: 3/6 files split. Remaining: acfg.rs (1440), link.rs (1290), multi_worker_walker.rs (1263).
+- AC#3, AC#4: PENDING.
+- AC#5: DONE; allow-list 12 → 11.
+- AC#6: DONE for this slice (lenient AC#6 reading).
+- AC#7: PENDING.
+
+**Remaining slices:**
+- slice 6: nucleus-compiler/src/acfg.rs (1440 LoC) — first NON-backend file in the audit; expect different seam shape than slice 4-5 (passes/types not Plan/codegen).
+- slice 7: nucleus-compiler/src/link.rs (1290 LoC).
+- slice 8: backend-common/src/multi_worker_walker.rs (1263 LoC) — shared walker substrate; very high consumer count; expect a careful split.
+- slice 9: AC#3 proptest.
+- slice 10: AC#4 e2e report-formatter.
+- slice 11: AC#7 final summary commit.
+
+**Implementer-disclosure honesty (cycle-179b lesson applied):**
+Cycle 180 implementer used the enumerated-disclosure shape directly (no blanket 'verbatim move' claim). Spotted + flagged the 2 mechanical reflow + path-requalify edits (a) + (b) before review-gate-side feedback would surface them. The cycle-179 pattern (4 silent edits flagged by post-hoc review) did NOT recur — slice 5 was clean by self-audit.
 <!-- SECTION:NOTES:END -->
