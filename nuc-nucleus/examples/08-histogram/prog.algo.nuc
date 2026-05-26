@@ -1,0 +1,96 @@
+// Histogram — array-output reduction with data-dependent indexing.
+//
+// Input is a stream of N i32 values, each constrained to the bin
+// range [0, BINS). The output is a BINS-element i32 array where
+// `histogram[bin]` is the count of input elements that equal `bin`.
+// This is PRD §9 row 8 ('reduction with shared output array'),
+// distinct from example 03 (reduction-to-scalar) by reducing to an
+// array via index-dependent accumulation.
+//
+// What this example demonstrates:
+//   - Array-output accumulator pattern: `histogram[b]` is read and
+//     written in the same dataflow statement, indexed by the inner
+//     loop variable `b`. Single-assignment (PRD §6.2.1) is on the
+//     SYMBOL `histogram`, not on individual indices. The codegen
+//     pre-initialises `histogram` to zero (the additive identity).
+//   - Data-dependent indexing handled at the KERNEL level, not at
+//     the algorithm level. The algorithm uses a rectangular
+//     accumulator nest `for i, for b` and the kernel
+//     `bin_inc(acc, value, bin)` is a masked increment: returns
+//     `acc + 1` iff `value == bin`, else `acc`. This is the same
+//     shape as example 04's `exclusive_add(acc, x, b, c)` (which
+//     adds `x` iff `c < b`) and `block_scan(acc, x, boff, i, j)`
+//     (which adds `x` iff `j <= i`). The pattern was probed and
+//     pinned in 04-prefix-sum cycle (TASK-0039): conditional /
+//     data-dependent expressions live in kernel bodies (arbitrary
+//     Rust the host toolchain compiles, PRD §6.2.2), NOT in the
+//     algorithm language (which has no conditionals — PRD §6.2.4).
+//   - Array output flowing through `save_output`. Same shape as
+//     example 04-prefix-sum's `save_output : (i32[NB][BS]) -> ()`,
+//     pinning the aggregate-typed save-kernel surface.
+//
+// What this example does NOT demonstrate:
+//   - Bin indexing with floating-point / non-trivial binning. The
+//     input fixture is pre-clipped to [0, BINS-1]; the kernel
+//     `bin_inc` does an integer equality check, no division /
+//     modulo / range bucketing. A real-world histogram on
+//     unconstrained input would either pre-process the value into
+//     a bin index in a separate kernel, or do the bucketing inside
+//     `bin_inc` directly — both are kernel-level extensions, NOT
+//     algorithm-level changes.
+//   - Distributed schedule with per-worker partial histograms +
+//     cross-worker partial-combine. AC#3 of TASK-0044.04 carries
+//     that stretch; cycle-186 ships the language-sanity slice
+//     (AC#1 + AC#2: naive on pthreads-sync + mp-tcp-bufsync). The
+//     distributed schedule is filed as `distributed.sched.nuc` —
+//     if it lowers cleanly cycle 186 it joins the matrix as a
+//     [[required]] cell; if not, the gap is filed and the cell is
+//     [[skip]]'d. See README.
+//   - Float reductions. PRD §10.1 demands bit-identity; only
+//     integer counts here.
+//
+// Numeric choice: i32 throughout. Even though the count never goes
+// negative for the committed fixture, i32 (not u32) keeps the
+// algorithm sublanguage in the same scalar type family as examples
+// 03 / 04 — the scalar-only contract pass (TASK-0012) accepts i32
+// kernels without aggregate-matching gaps. `wrapping_add` in the
+// kernel documents overflow intent; the committed fixture has
+// max-bin-count well below i32::MAX.
+
+const N    : usize = 256;     // total input length
+const BINS : usize = 16;      // histogram bin count
+
+// Input array and the BINS-wide accumulator output. Each `data`
+// symbol is assigned by exactly one dataflow statement
+// (PRD §6.2.1).
+data input     : i32[N];
+data histogram : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()          -> i32[N]    effectful;
+kernel save_output : (i32[BINS]) -> ()        effectful;
+
+// Per-element bin-increment kernel — pure, reorderable. Returns
+// `acc + 1` iff `value == bin`, else `acc`. The conditional /
+// data-dependent indexing lives in the Rust kernel body (PRD
+// §6.2.2: arbitrary Rust); the algorithm uses only the rectangular
+// masked-accumulate shape that examples 03 / 04 already prove
+// bit-identical at M1.
+kernel bin_inc     : (i32, i32, i32) -> i32   pure;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+input <-- load_input();
+
+// Per-input rectangular masked accumulator. `histogram` is
+// pre-initialised to zero by the codegen (additive identity); each
+// (i, b) iteration calls `bin_inc(histogram[b], input[i], b)` which
+// returns `histogram[b] + 1` iff `input[i] == b`, else
+// `histogram[b]`. The fold builds the full histogram across all N
+// inputs and all BINS bins.
+for i : 0 .. N {
+    for b : 0 .. BINS {
+        histogram[b] <-- bin_inc(histogram[b], input[i], b);
+    }
+}
+
+save_output(histogram);

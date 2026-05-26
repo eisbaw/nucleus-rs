@@ -1,0 +1,56 @@
+// Distributed schedule for example 08-histogram — STRETCH.
+//
+// AC#3 of TASK-0044.04 carries this schedule: 'distributed.sched.nuc
+// lowers + emits + runs bit-identical on at least one tier-1
+// backend that supports partition-then-reduce'. The pthreads-sync
+// path through TASK-0258 (partition_rows / partition_workers) is
+// the most-established route.
+//
+// The shape this aims at:
+//   host    — owns I/O (load_input / save_output).
+//   w0..w3  — each compute worker owns one partition of `input`
+//             and produces a partial bin-increment fold over its
+//             slice. The compiler partitions the outer `i` loop
+//             across the four workers.
+//
+// Cross-worker edges this schedule declares:
+//   input      host -> { w0..w3 }   (host loads, workers consume)
+//   histogram  { w0..w3 } -> host   (workers produce, host
+//                                    receives the reduced output)
+//
+// All `sync` (the pthreads-sync backend's only transfer mode).
+// `partition=workers` is the partition policy for the outer `i`
+// loop — the same shape examples 03-reduction and 04-prefix-sum
+// use.
+//
+// Honest open question (filed cycle 186 if the cell lowers but
+// emits wrong output): the cross-worker partial-histogram combine
+// is a substantively new ACFG shape vs the SCALAR-combine of
+// 03-reduction. 03-reduction reduces N i32 values into ONE i32 via
+// pairwise `combine(a, b)`; here the per-worker partial is a
+// BINS-element array that must be element-wise summed across all
+// four workers into the host's `histogram`. The current ACFG
+// machinery for the `histogram[b] <-- bin_inc(...)` statement
+// expresses this as a per-worker rectangular fold; whether the
+// cross-worker reduce phase lowers depends on whether the
+// compiler treats the LHS-indexed accumulator as a partition-
+// reducible shape. If the cell rejects with UnsupportedFeature,
+// that surface is the new gap to file.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O on host.
+    place load_input  on host;
+    place save_output on host;
+
+    // The pure step kernel distributed across compute workers.
+    place bin_inc on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one slice per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer input     : sync;
+    transfer histogram : sync;
+}

@@ -1,0 +1,36 @@
+# Standalone reference implementation for example 08-histogram.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or
+# on any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/08-histogram/reference/Cargo.toml -- \
+#     --in    nuc-nucleus/examples/08-histogram/input.bin \
+#     --out   nuc-nucleus/examples/08-histogram/reference.bin
+#
+# The crate is excluded from the parent workspace by being inside
+# `nuc-nucleus/`, which the `nucleus/` workspace does not include. An
+# explicit empty `[workspace]` table makes that intent defensive
+# against future workspace globs.
+
+[package]
+name        = "histogram-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 08-histogram."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "histogram-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"
