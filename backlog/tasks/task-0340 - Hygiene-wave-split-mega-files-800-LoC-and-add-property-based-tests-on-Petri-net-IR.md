@@ -3,10 +3,11 @@ id: TASK-0340
 title: >-
   Hygiene wave: split mega-files (>800 LoC) and add property-based tests on
   Petri-net IR
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 10:49'
+updated_date: '2026-05-26 11:01'
 labels:
   - tech-debt
   - hygiene
@@ -90,4 +91,46 @@ TASK-0340 AC status post-cycle-177:
 - AC#5: DONE (both directions now), strict superset of original AC text.
 - AC#1: DONE incidentally (cycle 176).
 - AC#2-#4, #6-#7: PENDING (subsequent slices).
+
+## Cycle 178 — slice 3 plan: split nucleus/backend-common/src/render.rs (1687 LoC → ~7 sub-modules)
+
+Slice scope: AC#2 (FIRST file). render.rs is the largest mega-file (1687 LoC) AND the shared spine of all 4 + 3 (M6 skeletons) tier-1 backends. M6 codegen WILL amplify it; splitting first prevents propagation. Per AC#2 "one atomic commit per file"; this cycle = ONE file (render.rs only).
+
+EMPIRICAL UPDATE TO AUDIT (cycle-178 measurement at slice-3 start):
+- nucleus/backend-common/src/render.rs:                1687 LoC (matches Nov-2025 audit)
+- nucleus/backends/mp-tcp-bufsync/src/lib.rs:          1997 LoC (was 1515; +482)
+- nucleus/nucleus-compiler/src/acfg.rs:                1440 LoC (was 1440; unchanged)
+- nucleus/nucleus-compiler/src/link.rs:                1290 LoC (was 1290; unchanged)
+- nucleus/backend-common/src/multi_worker_walker.rs:   1263 LoC (was 1169; +94)
+- nucleus/backends/mp-tcp-event/src/multi_worker.rs:   1695 LoC (was 1140; +555)
+- Total mega-file LoC: 9372. M6 amplification risk confirmed: mp-tcp-bufsync/lib.rs + mp-tcp-event/multi_worker.rs both crossed the original 1500 threshold further by Q1-2026 cross-pass work.
+
+PROPOSED SEAMS in render.rs (each already named by `// ---` section header):
+  1. error.rs       — EmitError + Display + Error  (~67 LoC,  L45-112)
+  2. ctx.rs         — RenderCtx + RenderCtxPub     (~187 LoC, L113-300)
+  3. fire.rs        — data_name / fire output / fire args / try_rewrite_reuse_arg / SliceForm /
+                      classify_data_slice / render_flat_index  (~370 LoC, L301-704)
+  4. expr.rs        — render_int_expr / render_loop_bounds / render_const_expr / bin_op_str (~200 LoC, L705-840)
+  5. types.rs       — rust_scalar_type[_pub] / rust_scalar_zero / rust_type_of / render_array_init_for (~67 LoC, L841-908)
+  6. pub_wrappers.rs— thin _pub shims for multi-worker callers (~88 LoC, L909-996)
+  7. reuse.rs       — reuse-widths marker emit + ReuseRewriteGroup + circular-buffer codegen
+                      (TASK-0265 Tier 1 + TASK-0269 cycle-103) (~691 LoC, L997-end)
+  + render/mod.rs   — declarations + pub re-exports preserving the existing
+                      `pub use render::{...}` set at lib.rs:68-74 (zero-churn for callers)
+
+Slice 3 limits:
+- Re-exports at backend-common/src/lib.rs:68-74 preserved verbatim — call sites in the 4 production backends + 3 M6 skeletons do NOT change.
+- No behaviour change (AC#2). `just ci` + `just check-mega-files` MUST both pass; e2e baseline preserved (currently 112/101/0/11/0 per cycle 163 carry).
+- AC#6 (no new TASK-NNNN or cycle-NNN citations in refactored files): the splits MUST NOT add new such citations; existing in-context citations carry forward unchanged in the moved code.
+- AC#5 regression-fence: `just check-mega-files` allow-list MUST shrink — render.rs comes off it. Verify allow-list also doesn't go stale (slice-2 direction-B catches that).
+
+Remaining slices (after cycle 178):
+- slice 4: split mp-tcp-bufsync/src/lib.rs (1997 LoC) — host+worker mediation seam, largest single backend file.
+- slice 5: split mp-tcp-event/src/multi_worker.rs (1695 LoC) — sibling of slice 4.
+- slice 6: split nucleus-compiler/src/acfg.rs (1440 LoC, 57% comment ratio — comment-doc-lie magnet).
+- slice 7: split nucleus-compiler/src/link.rs (1290 LoC).
+- slice 8: split backend-common/src/multi_worker_walker.rs (1263 LoC).
+- slice 9: AC#3 (proptest dep + 3 properties per pass on boundedness/deadlock/petri_to_events).
+- slice 10: AC#4 (e2e/main.rs report-formatter carve-out).
+- slice 11: AC#7 final commit with per-file LoC delta + proptest count delta.
 <!-- SECTION:NOTES:END -->
