@@ -3,11 +3,11 @@ id: TASK-0338
 title: >-
   e2e-matrix.toml:1377-1378 stale doc-comment — '\''Only mp-tcp-event remains
   [[skip]]'\'' lies about current state (06/distributed2 cell is [[required]])
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-26 07:51'
-updated_date: '2026-05-26 08:36'
+updated_date: '2026-05-26 08:37'
 labels:
   - feedback-comment-doc-lie-recurring
   - e2e-matrix
@@ -135,3 +135,9 @@ No further stale current-tense doc-lies remain.
 
 All three ACs are NOW honestly satisfied — AC#3's satisfaction was incomplete in cycle 169 and is honestly completed in cycle 169b.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Doc-lie at nuc-nucleus/e2e-matrix.toml:1372-1378 fixed in cycle 169 (commit 3da948a). Sibling sweep ran with narrow patterns (commit message + task notes). Parallel review gate (cycle 169 close): qa-test-runner GO; mped-architect GO-WITH-FOLLOWUP — found a structurally identical doc-lie at lines 1182-1217 that the cycle-169 sibling sweep had dismissed with weak summary-level reasoning. Folded back in-thread (cycle 169b, commit b4f870f): block restructured with explicit current-state header + cycle-150 paragraph time-stamped + two present-tense verbs converted to past-tense + 'AT FILING TIME' markers. Wider sibling sweep with architect's broader grep patterns now clean across nuc-nucleus/*.toml. e2e gate green (112/102/0/10/0) across both samples; baseline preserved (doc-only edits). Memory updated: feedback-silent-sibling-defect (13th firing recorded), feedback-orchestrator-narrative-also-wrong (15th firing recorded), project-cross-backend-differential (stale baseline refreshed from cycle-160's 112/99/0/13/0 to cycle-169 verified 112/102/0/10/0). All three ACs honestly satisfied. Total cycle cost: 2 commits, 2 markdown updates, 3 memory updates, 0 code change, 0 regressions.
+<!-- SECTION:FINAL_SUMMARY:END -->
