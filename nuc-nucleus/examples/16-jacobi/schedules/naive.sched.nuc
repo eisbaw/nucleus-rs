@@ -1,0 +1,17 @@
+// Naive schedule: single worker, no decomposition.
+//
+// Landed cycle 206 (TASK-0341.02 AC#1). Every kernel runs on `host`;
+// no cross-worker dataflow means no `transfer` directives. The result
+// must be bit-identical to reference.bin.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input       on host;
+    place save_output      on host;
+    place jacobi5_or_seed  on host;
+    place ident            on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

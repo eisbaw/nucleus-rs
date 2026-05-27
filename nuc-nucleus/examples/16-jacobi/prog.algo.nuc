@@ -1,0 +1,150 @@
+// Jacobi iteration on a 2D grid — fixed-iteration variant.
+//
+// Landed cycle 206 (TASK-0341.02 AC#1 language-sanity slice). Five-
+// point stencil applied repeatedly for a fixed number of iterations:
+//
+//   field[t][y][x] = (field[t-1][y-1][x]
+//                   + field[t-1][y+1][x]
+//                   + field[t-1][y][x-1]
+//                   + field[t-1][y][x+1]) / 4         (t >= 1)
+//   field[0][y][x] = seed[y][x]                       (t == 0, seed
+//                                                      via the same
+//                                                      kernel)
+//
+// What this example demonstrates:
+//   - Multi-iteration 2D stencil — same iterated-state shape as
+//     11-game-of-life (which is 1D + circular), but on a 2D bounded
+//     grid with the four-neighbour Jacobi tap pattern.
+//   - The smallest fixture combining 2D stencil access with
+//     cross-iteration data dependency: each generation reads cells of
+//     the previous generation. With ITERS=4 the algorithm walks five
+//     `field[t]` slices, each one written exactly once per (y, x)
+//     interior coordinate (PRD §6.2.1 single-assignment).
+//   - Dirichlet zero-boundary condition by construction: the loop
+//     walks `y in 1..H-1`, `x in 1..W-1`, so cells outside the
+//     interior stay at their single-assignment default of 0 (same
+//     pattern as 05-stencil; the kernel reads those 0 cells when
+//     stencilling on the inside edge).
+//
+// What this example does NOT demonstrate:
+//   - Convergence-check / data-dependent termination (AC#2). The Nuc
+//     grammar (docs/grammar-algo.md) has no `if`, no `while`, no
+//     `break`; iteration count must be a compile-time const expr
+//     (`ForStmt ::= 'for' Ident ':' ConstExpr '..' ConstExpr`). The
+//     fixed-iteration variant here is what is expressible today; the
+//     convergence variant is the gap-probe outcome filed as an
+//     honest-BLOCKED follow-up.
+//   - Multi-worker distributed schedules. Filed as the AC#3 follow-up;
+//     same precedent as 15-transpose's AC#2 (TASK-0341.01.01).
+//   - Floating-point arithmetic. Jacobi's natural "/ 4.0" average is
+//     order-of-summation sensitive under parallel reduction. We use
+//     integer `/ 4` (truncating); the precision hit is the price of
+//     bit-determinism across schedules and backends (same trade as
+//     05-stencil).
+//
+// Single-assignment shape (PRD §6.2.1)
+// ------------------------------------
+// Three top-level `data` symbols, each the LHS of exactly one
+// Dataflow stmt (statement-level, not per-iteration; the for-nest is
+// one Dataflow expanded over its iteration domain):
+//   - `seed`   — loaded once via `load_input()`.
+//   - `field`  — full per-iteration state. One Dataflow body inside
+//                the nested for-loop covers BOTH the seed-staging
+//                case (t == 0) and the iteration case (t >= 1) via a
+//                kernel-side branch on `t` (same trick as
+//                11-game-of-life's `step_or_seed`).
+//   - `result` — final generation extracted from `field[ITERS]` via
+//                an `ident` copy loop, then `save_output`'d.
+//
+// The kernel-side branch on `t` is the smallest expression of "seed
+// the t=0 slice from the input array AND step every later slice from
+// the previous slice" inside one Dataflow statement.
+
+const H     : usize = 8;       // grid height
+const W     : usize = 8;       // grid width
+const ITERS : usize = 4;       // number of Jacobi iterations
+
+
+// Whole-program input + full per-iteration state + final-iteration
+// output. Each is single-assignment at the symbol level.
+data seed   : i32[H][W];
+data field  : i32[ITERS+1][H][W];
+data result : i32[H][W];
+
+
+// Pure 5-tap Jacobi step with a seed-fallback path for t == 0.
+// Scalar signature — the contract pass (TASK-0012) accepts scalar
+// kernels of any arity. Six arguments: four prev-generation neighbour
+// taps (north, south, east, west); the corresponding seed cell; and
+// the generation index `t`.
+//
+// At t == 0 the four `prev_*` args are reads of `field[ITERS]` (the
+// last slice, pre-initialised to 0 by codegen) and are IGNORED by
+// the kernel; the kernel returns `seed_yx` directly. At t >= 1 the
+// kernel returns `(prev_n + prev_s + prev_e + prev_w) / 4` and
+// `seed_yx` is unused.
+kernel jacobi5_or_seed : (i32, i32, i32, i32, i32, i32) -> i32 pure;
+
+// Identity copy. Used to stage `field[ITERS]` into the flat `result`
+// array that `save_output` consumes (same pattern as
+// 11-game-of-life's `ident` extraction).
+kernel ident : (i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; on the Rust side `Vec<i32>` (TASK-0103
+// convention; same as every other example).
+kernel load_input  : ()         -> i32[H][W] effectful;
+kernel save_output : (i32[H][W]) -> ()        effectful;
+
+
+// Dataflow.
+//
+// 1. Load the seed.
+seed <-- load_input();
+
+// 2. Compute every generation. ONE Dataflow on `field` covers both
+//    the seed-staging case (t == 0) and the iteration case (t >= 1).
+//
+//    Index `(t + ITERS) % (ITERS + 1)` is the previous-generation
+//    index that stays in-bounds at t == 0:
+//      - At t == 0 it evaluates to ITERS — reads field[ITERS], which
+//        is pre-initialised to 0 by codegen. The kernel ignores the
+//        four prev_* taps and returns seed_yx.
+//      - At t >= 1 it evaluates to t - 1 — reads the just-written
+//        cells of the previous generation. The kernel returns the
+//        4-tap average.
+//
+//    Boundary handling: y walks 1..H-1, x walks 1..W-1. Cells outside
+//    the interior stay at their single-assignment default of 0
+//    (Dirichlet BC). The kernel reads those 0 cells through neighbour
+//    taps on the interior boundary (e.g. field[t-1][0][x] from
+//    field[t][1][x]) — that is the Dirichlet condition by
+//    construction.
+for t : 0 .. ITERS+1 {
+for y : 1 .. H-1 {
+for x : 1 .. W-1 {
+    field[t][y][x] <-- jacobi5_or_seed(
+        field[(t + ITERS) % (ITERS + 1)][y-1][x],
+        field[(t + ITERS) % (ITERS + 1)][y+1][x],
+        field[(t + ITERS) % (ITERS + 1)][y][x-1],
+        field[(t + ITERS) % (ITERS + 1)][y][x+1],
+        seed[y][x],
+        t
+    );
+}}}
+
+// 3. Extract the final generation into a flat 2D array. Each
+//    `result[ry][rx]` is written exactly once; the ry, rx walks
+//    cover the full grid (including the 0-valued boundary cells of
+//    `field[ITERS]`). Distinct loop-variable names (ry/rx, not y/x)
+//    keep this loop's bounds (0..H, 0..W) from clashing with the
+//    iteration nest's bounds (1..H-1, 1..W-1) under the
+//    one-namespace loop-variable rule (PRD §6.2.3; TASK-0171 covers
+//    multi-bound-identity support).
+for ry : 0 .. H {
+for rx : 0 .. W {
+    result[ry][rx] <-- ident(field[ITERS][ry][rx]);
+}}
+
+// 4. Save.
+save_output(result);

@@ -69,9 +69,18 @@
 # language-sanity slice: prog.algo.nuc + kernels.rs + reference impl
 # + reference.bin + naive schedule + pthreads-sync cell). The 14-slot
 # is already occupied by hearing-aid so transpose took the next free
-# slot (15). AC#2 distributed-rows schedule and AC#3 cross-backend
-# cells are deferred to a follow-up cycle.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose"]
+# slot (15). AC#2 distributed-rows schedule is deferred to
+# TASK-0341.01.01; AC#3 cross-backend promotion was completed at
+# TASK-0341.01.02 cycle 205.
+# Example 16 joined the matrix at TASK-0341.02 cycle 206 (AC#1
+# fixed-iteration language-sanity slice). 2D Jacobi iteration on an
+# H=W=8 grid with Dirichlet zero-boundary, ITERS=4 fixed; the
+# single-Dataflow-on-`field` pattern of 11-game-of-life applies (one
+# Dataflow covers all generations + seed-staging, kernel branches on
+# `t`). AC#2 (convergence variant) is a HONEST-BLOCKED follow-up:
+# data-dependent loop termination is inexpressible in Nuc's
+# const-only loop-bound grammar.
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -388,6 +397,19 @@ milestone = "M6"
 example  = "15-transpose"
 schedule = "naive"
 backend  = "mp-uds-event"
+milestone = "M6"
+
+# 16-jacobi/naive: TASK-0341.02 AC#1 language-sanity slice (cycle 206).
+# 2D Jacobi fixed-iteration (ITERS=4) on an H=W=8 grid with Dirichlet
+# zero-boundary; single-Dataflow on `field` covers all `ITERS+1`
+# generations + the seed case via kernel branch on `t` (same shape as
+# 11-game-of-life). Single-`host` schedule => shared single-worker
+# renderer => cross-backend runtime-output bit-identical (formal
+# promotion to all 7 backends deferred to AC#4 follow-up).
+[[required]]
+example  = "16-jacobi"
+schedule = "naive"
+backend  = "pthreads-sync"
 milestone = "M6"
 
 [[required]]
