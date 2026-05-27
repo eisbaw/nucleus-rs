@@ -332,12 +332,22 @@ milestone = "M6"
 # identity-passthrough `xpose` kernel; the example's structural point
 # is the 2D axis-swap `output[j][i] <-- xpose(input[i][j])` (H=8, W=16).
 # No earlier example has this output-axis-disagrees-with-input-axis
-# shape. Cross-backend bit-identity is by construction (single-`host`
-# schedule => shared single-worker renderer => byte-identical arithmetic
-# across pthreads-sync / pthreads-async / mp-tcp-bufsync / mp-tcp-event
-# / openmp-rs / mp-tcp-poll / mp-uds-event). Non-flake verified across
-# 3 e2e samples in cycle 205. AC#2 (distributed-rows on output) is a
-# separate follow-up at TASK-0341.01.01.
+# shape. Cross-backend RUNTIME-OUTPUT bit-identity is by construction:
+# the single-`host` schedule routes every backend through the shared
+# single-worker renderer (`pthreads_sync::render_single_worker_main`
+# for pthreads-async / openmp-rs and the `_with_kernels_attr` variant
+# for the mp-tcp-* / mp-uds-event families), and both variants share
+# the same private rendering core — so the compiled kernel arithmetic
+# is the same across all 7 backends, and the e2e harness's `cmp` of
+# output.bin against reference.bin passes for each. The emitted
+# scaffolding (Cargo.toml, run.sh, src layout `src/main.rs` vs
+# `src/bin/`, the `#[path]` attribute on `mod kernels;`) does differ
+# per project_skeleton family (single_binary vs multi_binary); only
+# the runtime output is the bit-identical invariant tested here.
+# Non-flake verified across 8 e2e samples (cycles 204 + 205); the
+# 15-transpose × 7 row PASSed in 100% of those samples. AC#2
+# (distributed-rows on output) is a separate follow-up at
+# TASK-0341.01.01.
 [[required]]
 example  = "15-transpose"
 schedule = "naive"
