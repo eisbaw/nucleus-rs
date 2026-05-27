@@ -49,11 +49,15 @@ members = [
     # on the 16 single-worker [[required]] cells); multi-worker arm
     # returns ContractGap forward-linking TASK-0044.01.01.
     "backends/openmp-rs",
-    # mp-tcp-poll (TASK-0044.02 cycle 174): sixth tier-1 backend, skeleton
-    # only — same capability surface as mp-tcp-bufsync (sync + tcp + no
-    # buffer), differing in wait primitive (nonblocking-read poll loop
-    # instead of blocking recv). `emit()` returns ContractGap until
-    # subsequent cycles of TASK-0044.02 land the substantive codegen.
+    # mp-tcp-poll (TASK-0044.02): sixth tier-1 backend. Same capability
+    # surface as mp-tcp-bufsync (sync + tcp + no buffer); differs in
+    # wait primitive (nonblocking-read poll loop instead of blocking
+    # recv). Status as of cycle 192: single-worker arm LANDED (delegates
+    # to pthreads-sync's render_single_worker_main_with_kernels_attr +
+    # backend-common's multi_binary skeleton, byte-identical to
+    # mp-tcp-bufsync's single-process output on the 16 single-worker
+    # [[required]] cells); multi-worker arm returns ContractGap
+    # forward-linking TASK-0044.02.02.
     "backends/mp-tcp-poll",
     # mp-uds-event (TASK-0044.03 cycle 175): seventh tier-1 backend,
     # skeleton only — same capability surface as mp-tcp-event (async +

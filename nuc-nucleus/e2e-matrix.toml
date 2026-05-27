@@ -77,7 +77,17 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-p
 # ContractGap — every multi-worker [[required]] cell on openmp-rs is
 # explicitly [[skip]]'d with "multi-worker codegen pending" until the
 # rayon-scope follow-up of TASK-0044.01 lands.
-backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs"]
+#
+# mp-tcp-poll joined the matrix in TASK-0044.02 cycle 192 (single-worker
+# codegen). Same SCHEDULE-visible capability surface as mp-tcp-bufsync
+# (sync + tcp + barrier/blocking/poll); single-worker emit is
+# byte-identical to mp-tcp-bufsync's single-process output by construction
+# (shared `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+# `backend_common::project_skeleton::multi_binary`). The multi-worker
+# arm (nonblocking-read poll loop) is still ContractGap — every
+# multi-worker [[required]] cell on mp-tcp-poll is explicitly [[skip]]'d
+# with "multi-worker codegen pending" until TASK-0044.02.02 lands.
+backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs", "mp-tcp-poll"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -1725,4 +1735,227 @@ example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "openmp-rs"
 reason   = "TASK-0042: capability mismatch — `transfer input/feat1/feat2 : async, buffer=3, notify=event` requires async + buffer + event notification, none of which openmp-rs supports. Same capability gap as pthreads-sync; only the async tier-1 backends satisfy this schedule."
+milestone = "M6"
+
+# --------------------------------------------------------------------
+# mp-tcp-poll (6th tier-1 backend, M6, TASK-0044.02). Joined the matrix
+# in cycle 192 (single-worker codegen). Same SCHEDULE-visible capability
+# surface as mp-tcp-bufsync (sync + tcp + barrier/blocking/poll);
+# single-worker emit is BYTE-IDENTICAL to mp-tcp-bufsync's single-
+# process output by construction (shared
+# `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+# `backend_common::project_skeleton::multi_binary`). The multi-worker
+# arm (nonblocking-read poll loop) is still `ContractGap` — every
+# multi-worker [[required]] cell on mp-tcp-poll is explicitly [[skip]]'d
+# below with "multi-worker codegen pending" until TASK-0044.02.02 lands.
+# --------------------------------------------------------------------
+
+# Single-worker cells (host-only schedules). Each MUST be byte-identical
+# against reference.bin (cross-backend differential invariant: same
+# shared emitter → same bytes). Mirrors every single-worker cell already
+# [[required]] on mp-tcp-bufsync. Multi-worker schedules (02/split,
+# 03/distributed, 06/distributed{,2}, 07/distributed{,-2d},
+# 08/distributed, 13/batch_parallel) handled in the skip block below.
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+# Cycle-192 filing: Multi-worker SYNC schedules: WOULD compile under
+# mp-tcp-poll's capability surface (sync + tcp + barrier/blocking/poll),
+# but the multi-worker nonblocking-poll codegen is the headline
+# follow-up of TASK-0044.02, filed as TASK-0044.02.02. ContractGap
+# forward-link from `mp_tcp_poll::emit`. Defer until the multi-worker
+# arm lands; at that point promote each of these to [[required]]
+# (mirroring mp-tcp-bufsync).
+
+[[skip]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02 nonblocking-read poll loop + wire-framed Push/Wait. ContractGap from mp_tcp_poll::emit on used_workers >= 2. Schedule compiles under the mp-tcp-poll capability surface (identical to mp-tcp-bufsync); promote to [[required]] when the multi-worker arm lands."
+milestone = "M6"
+
+[[skip]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "08-histogram"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "mp-tcp-poll"
+reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
+milestone = "M6"
+
+# Capability mismatches (TASK-0044.02 AC#6 sibling): async + buffer +
+# event schedules that mp-tcp-poll's capability surface CANNOT satisfy.
+# Driver rejects at the capability-compat check BEFORE codegen — same
+# shape as mp-tcp-bufsync's capability-mismatch skips (mirror TASK-0042
+# reason text verbatim). Promotion path: NOT through TASK-0044.02 —
+# would require expanding the mp-tcp-poll capability surface, which is
+# OUT OF SCOPE per the PRD §7.1 row mp-tcp-poll pinning (sync + tcp).
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports (sync, single-buffer, barrier/blocking/poll only — same capability surface as mp-tcp-bufsync). Driver rejects at capability check before codegen."
+milestone = "M6"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports. Same capability gap as mp-tcp-bufsync."
+milestone = "M6"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0042: capability mismatch — `transfer stream : async, buffer=4, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports. Same capability gap as mp-tcp-bufsync; only the async tier-1 backends (pthreads-async, mp-tcp-event) satisfy this schedule."
+milestone = "M6"
+
+[[skip]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0042: capability mismatch — `transfer grid : async, buffer=2, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports. Same capability gap as mp-tcp-bufsync."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0042: capability mismatch — `transfer input/feat1/feat2 : async, buffer=3, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports. Same capability gap as mp-tcp-bufsync; only the async tier-1 backends satisfy this schedule."
 milestone = "M6"

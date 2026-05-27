@@ -58,12 +58,13 @@
 //! `Plan::build` for host-excluding barriers / unmediated w↔w
 //! `Push`-`Wait` are defense-in-depth, not load-bearing. Of the
 //! three M6 backends, openmp-rs single-worker arm LANDED at cycle
-//! 191 and participates in the differential on 16 single-worker
-//! [[required]] cells (multi-worker arm still ContractGap via
-//! TASK-0044.01.01); mp-tcp-poll + mp-uds-event remain SKELETON —
-//! `emit()` returns `EmitError::ContractGap` until substantive
-//! codegen lands per the cycle-171 phased-AC addendum on
-//! TASK-0044.02/0044.03.
+//! 191 (multi-worker via TASK-0044.01.01) and mp-tcp-poll
+//! single-worker arm LANDED at cycle 192 (multi-worker via
+//! TASK-0044.02.02); both participate in the differential on 16
+//! single-worker [[required]] cells each. mp-uds-event remains
+//! SKELETON — `emit()` returns `EmitError::ContractGap` until
+//! substantive codegen lands per the cycle-171 phased-AC addendum
+//! on TASK-0044.03.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -116,7 +117,7 @@ fn print_help() {
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
              openmp-rs       rayon threads (tier 1, single-worker LANDED, multi-worker pending TASK-0044.01.01)\n    \
-             mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, SKELETON — TASK-0044.02)\n    \
+             mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker LANDED, multi-worker pending TASK-0044.02.02)\n    \
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, SKELETON — TASK-0044.03)\n"
     );
 }
@@ -803,15 +804,17 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
-        // Sixth tier-1 backend (TASK-0044.02 cycle 174, M6): OS
-        // processes + TCP loopback + nonblocking poll + sync — same
-        // capability surface as mp-tcp-bufsync, differing only in the
-        // wait primitive (nonblocking-read poll loop instead of
-        // blocking recv). SKELETON in this cycle — `mp_tcp_poll::emit`
-        // returns ContractGap until subsequent cycles of TASK-0044.02
-        // land the nonblocking-read + mp-tcp-common wire framing +
-        // pthreads-sync-delegating single-worker codegen. Multi-binary
-        // shape (same dispatch fields as mp-tcp-bufsync /
+        // Sixth tier-1 backend (TASK-0044.02, M6): OS processes + TCP
+        // loopback + nonblocking poll + sync — same capability surface
+        // as mp-tcp-bufsync, differing only in the wait primitive
+        // (nonblocking-read poll loop instead of blocking recv). Status
+        // as of cycle 192: single-worker arm LANDED (delegates to
+        // pthreads-sync's `render_single_worker_main_with_kernels_attr`
+        // + backend-common's multi_binary skeleton, byte-identical to
+        // mp-tcp-bufsync's single-process output); multi-worker arm
+        // returns `EmitError::ContractGap` forward-linking
+        // TASK-0044.02.02 (nonblocking-poll codegen pending).
+        // Multi-binary shape (same dispatch fields as mp-tcp-bufsync /
         // mp-tcp-event).
         "mp-tcp-poll" => {
             let result =

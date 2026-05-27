@@ -217,7 +217,11 @@ name = "mp-tcp-poll"
 version = "0.0.0"
 dependencies = [
  "backend-common",
+ "mp-tcp-bufsync",
+ "mp-tcp-common",
  "nucleus-compiler",
+ "pthreads-sync",
+ "test-common",
 ]
 
 [[package]]

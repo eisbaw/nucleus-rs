@@ -1,28 +1,30 @@
-# mp-tcp-poll backend crate (SKELETON). See PRD §7.1, TASK-0044.02.
+# mp-tcp-poll backend crate. See PRD §7.1, TASK-0044.02.
 #
 # Tier-1 backend: workers are OS PROCESSES, transport is TCP loopback,
 # notify is NONBLOCKING POLL (busy/yield wait loop), no buffer, sync.
 # Same SCHEDULE-visible capability surface as mp-tcp-bufsync (sync only,
-# single-frame, barrier/blocking notify) — the cross-backend differential
-# gains a SECOND sync-TCP row. Differs from mp-tcp-bufsync only in the
-# wait primitive: where bufsync calls blocking `wire::read_msg_expect`,
-# poll calls a nonblocking-read loop with std::thread::yield_now.
+# single-frame, barrier/blocking/poll notify) — the cross-backend
+# differential gains a SECOND sync-TCP row. Differs from mp-tcp-bufsync
+# only in the wait primitive: where bufsync calls blocking
+# `wire::read_msg_expect`, poll calls a nonblocking-read loop with
+# `std::thread::yield_now`.
 #
-# ## Current status: SKELETON (TASK-0044.02 cycle 174, 2026-05-26)
+# ## Current status: SINGLE-WORKER LANDED (TASK-0044.02 cycle 192)
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
-# wired through. `emit()` returns `EmitError::ContractGap` for ALL inputs
-# (single- and multi-worker) until the substantive codegen lands. The
-# capability-compat check IS real — schedules that compile against
-# mp-tcp-bufsync compat-check cleanly against mp-tcp-poll; the
-# subsequent codegen call surfaces the skeleton via the typed
-# ContractGap forward-link.
+# wired through. `emit()` dispatches on `used_workers.len()`:
+#   - `<= 1`: delegates to `pthreads_sync::render_single_worker_main_with_kernels_attr`
+#     + `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
+#     render_run_sh_single}` (same path mp-tcp-bufsync's single-process
+#     arm takes); the emitted artefact is BYTE-IDENTICAL to mp-tcp-bufsync's
+#     single-process output (and therefore byte-identical arithmetic to
+#     pthreads-sync's single process).
+#   - `>= 2`: returns `EmitError::ContractGap` forward-linking
+#     TASK-0044.02.02 (nonblocking-poll multi-worker codegen pending).
 #
-# No `mp-tcp-common` / `pthreads-sync` dep yet — added when substantive
-# codegen lands (mp-tcp-common provides wire framing reused by
-# mp-tcp-bufsync + mp-tcp-event; pthreads-sync provides the
-# render_single_worker_main delegation for the 0/1-used-worker case,
-# the same precedent mp-tcp-bufsync + mp-tcp-event + pthreads-async use).
+# `mp-tcp-common` provides wire framing reused by mp-tcp-bufsync +
+# mp-tcp-event; pthreads-sync provides the single-worker delegation —
+# the same precedent mp-tcp-bufsync + mp-tcp-event + pthreads-async use.
 
 [package]
 name = "mp-tcp-poll"
@@ -37,4 +39,28 @@ path = "src/lib.rs"
 
 [dependencies]
 nucleus-compiler = { path = "../../nucleus-compiler" }
+# Shared codegen primitives — EmitError + project_skeleton::multi_binary
+# (Cargo.toml + run.sh templates for multi-binary backends).
 backend-common = { path = "../../backend-common" }
+# Wire framing (length-prefixed framed messages over TCP, SyncTag-keyed
+# barrier protocol). Same wire-v0 mp-tcp-bufsync + mp-tcp-event emit
+# verbatim — single source of truth at `mp_tcp_common::WIRE_RUNTIME_SRC`.
+mp-tcp-common = { path = "../../mp-tcp-common" }
+# Single-worker straight-line `main.rs` emitter (with the
+# `#[path="../kernels.rs"]` attribute injection for `src/bin/`-shaped
+# multi-binary projects). Genuine semantic delegation — the same
+# precedent mp-tcp-bufsync + mp-tcp-event + pthreads-async take for
+# their single-worker arm.
+pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237) — used by
+# tests/single_worker_emit.rs to lower a real example and assert
+# byte-identical emit against mp-tcp-bufsync.
+test-common = { path = "../../test-common" }
+# mp-tcp-bufsync is the byte-identical-emit oracle for mp-tcp-poll's
+# single-process arm (both backends consume the same shared renderers;
+# their emitted artefacts MUST be byte-identical for any single-worker
+# schedule). Dev-only — no production-code dependency between the two
+# backend crates.
+mp-tcp-bufsync = { path = "../mp-tcp-bufsync" }
