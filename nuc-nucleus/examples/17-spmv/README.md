@@ -208,5 +208,14 @@ at present:
 ## Required schedules
 
 - `naive.sched.nuc` — single worker (`host`), every kernel placed
-  there. No loop transforms, no transfers. The only schedule required
-  for AC#1 conformance.
+  there. No loop transforms, no transfers. AC#1 conformance schedule;
+  cross-backend differential landed cycle 211 (TASK-0341.03.03); all
+  7 tier-1 backends [[required]] bit-identical.
+- `distributed.sched.nuc` — 4 compute workers row-band partition
+  M=8 across the outer i-loop (2-row bands, exact-divisible). The
+  data-dependent index lives in the kernel body, not at the IndexExpr
+  surface, so partition_inference / halo_inference / transfer_inject
+  see only iv-affine indices. Landed cycle 212 on pthreads-sync
+  (TASK-0341.03.02); cross-backend × 6 sibling tier-1 backends
+  landed cycle 214 (TASK-0341.03.02.01); all 7 tier-1 backends now
+  [[required]].

@@ -36,19 +36,31 @@ generations + the seed case, kernel branches on `t`.
 
 ## What this example also demonstrates (post-AC#1)
 
-- **Multi-worker distributed schedule** (partition=rows on the
-  spatial 2D grid). `distributed.sched.nuc` partitions the inner
-  spatial loop across 4 compute workers and consumes
-  `halo_inference` for the 4-neighbour stencil halo strips. Landed
-  cycle 208 (TASK-0341.02.02) on 5 of 7 tier-1 backends [[required]];
-  mp-tcp-bufsync + mp-tcp-poll honest-BLOCKED via TASK-0330 (in-Loop
-  w2w Push guard fires on the time-step Repeat body — the cycle-148
-  flat host-relay cannot handle in-Loop w2w transfers). Cross-backend
-  differential on the naive schedule landed cycle 207
-  (TASK-0341.02.03); all 7 tier-1 backends [[required]] on naive.
+- **Cross-backend differential on the naive schedule.** Landed
+  cycle 207 (TASK-0341.02.03); all 7 tier-1 backends [[required]]
+  bit-identical against `reference.bin`.
 
 ## What this example does NOT stress
 
+- **Multi-worker distributed schedule bit-identical on any tier-1
+  backend.** `schedules/distributed.sched.nuc` is filed but
+  honest-BLOCKED on all 7 tier-1 backends as of cycle 209
+  (TASK-0341.02.02 AC#3 final state, per
+  `e2e-matrix.toml:591-642`):
+    * 5 backends (pthreads-sync / pthreads-async / mp-tcp-event /
+      openmp-rs / mp-uds-event) [[skip]] on the 3D wait_slice gap.
+      `partition=rows` on `field[ITERS+1][H][W]` produces a rank-3
+      per-worker tile; the current 2D-only slice-paste rejects
+      loud. Compiler-feature extension filed as
+      **TASK-0341.02.02.01.01** (extend `wait_slice` to N-D
+      nested-loop dispatch).
+    * 2 backends (mp-tcp-bufsync / mp-tcp-poll) [[skip]] on
+      **TASK-0330** (in-Loop w2w Push guard). The flat host-relay
+      model in cycle 148 / cycle 195 emits the relay block outside
+      any loop, so an in-Loop w2w Push would over-count or
+      mis-order.
+  NO 16-jacobi/distributed cells are [[required]] today; AC#3
+  closed as honest-BLOCKED.
 - **Convergence-check / data-dependent termination** (TASK-0341.02
   AC#2 honest-BLOCKED outcome). The Nuc grammar has no `if`, no
   `while`, no `break`; loop bounds must be compile-time const

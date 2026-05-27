@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-26 11:49'
-updated_date: '2026-05-27 22:03'
+updated_date: '2026-05-27 22:15'
 labels:
   - examples
   - coverage
@@ -71,4 +71,25 @@ Cycle-178 doc-lie-promotion mitigation surface complete across all 3 showcase ex
 The cycle-217b whole-file grep + broader regex discipline was applied to all 3 examples end-to-end. The post-edit grep across all 3 example directories returned only legitimately not-stale hits (live forward-carry references to TASK-0341.02.01 / TASK-0341.03.01 honest-BLOCKED follow-ups; diagnostic literal text quotes).
 
 NOT in-place rewriting AC#3 text per memory feedback-ac-rewrite-on-done-task; this addendum records closure.
+
+=== Cycle 218b architect P1 fold-back: AC#3 UN-TICKED ===
+
+Architect cycle-218 review-gate caught P1: the cycle-218 16-jacobi narrative shipped a doc-lie ('5 of 7 [[required]]' for distributed; actual state is 0 of 7). AC#3 ('cycle-178 doc-lie-promotion mitigation; present-tense, no predictive claims') is therefore NOT closed for 16-jacobi.
+
+Un-ticking AC#3 + addendum block below.
+
+Cycle 218b corrected the 16-jacobi narrative to honest-BLOCKED state. Re-ticking AC#3 in the cycle-218b commit once all 3 examples' narratives are verified accurate against e2e-matrix.toml ground truth.
+
+=== Cycle 218b re-tick: AC#3 corrected after architect P1 fold-back ===
+
+Cycle 218b corrected the 16-jacobi narrative + the 17-spmv README 'Required schedules' section to the actual e2e-matrix.toml state.
+
+Ground-truth verification (cycle 218b):
+- 15-transpose: 14 [[required]] (naive×7 + distributed-rows×7), 0 [[skip]]. Narrative matches.
+- 16-jacobi: 7 [[required]] (naive×7), 7 [[skip]] (distributed×7). Narrative now matches (cycle-218 doc-lie corrected).
+- 17-spmv: 14 [[required]] (naive×7 + distributed×7), 0 [[skip]]. Narrative now matches (added distributed to README Required schedules per architect P3).
+
+All 3 examples //! docstrings + READMEs are present-tense + cite landing cycles + match the e2e-matrix.toml ground truth.
+
+AC#3 re-tickable. Cycle 218b applied the cycle-218 sharpened discipline (whole-file grep + per-claim ground-truth check against e2e-matrix.toml).
 <!-- SECTION:NOTES:END -->

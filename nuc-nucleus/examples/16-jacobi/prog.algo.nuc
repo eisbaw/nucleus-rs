@@ -27,14 +27,9 @@
 //     stencilling on the inside edge).
 //
 // What this example also demonstrates (post-AC#1):
-//   - Multi-worker distributed schedule (partition=rows on the spatial
-//     2D grid): landed cycle 208 (TASK-0341.02.02) on 5 of 7 tier-1
-//     backends. mp-tcp-bufsync + mp-tcp-poll honest-BLOCKED via
-//     TASK-0330 (in-Loop w2w Push guard fires on the time-step Repeat
-//     body); the other 5 backends [[required]] bit-identical. See
-//     schedules/distributed.sched.nuc.
 //   - Cross-backend differential on the naive schedule: landed cycle
-//     207 (TASK-0341.02.03); all 7 tier-1 backends [[required]].
+//     207 (TASK-0341.02.03); all 7 tier-1 backends [[required]]
+//     bit-identical.
 //
 // What this example does NOT demonstrate:
 //   - Convergence-check / data-dependent termination (AC#2). The Nuc
@@ -45,6 +40,17 @@
 //     convergence variant is the gap-probe outcome filed as an
 //     honest-BLOCKED follow-up (TASK-0341.02.01, depends on
 //     grammar-extension epic).
+//   - Multi-worker distributed schedule lowering bit-identical on any
+//     tier-1 backend. schedules/distributed.sched.nuc is FILED but
+//     honest-BLOCKED on all 7 tier-1 backends as of cycle 209
+//     (TASK-0341.02.02 AC#3 final state, per e2e-matrix.toml:591-642):
+//     5 backends (pthreads-sync / pthreads-async / mp-tcp-event /
+//     openmp-rs / mp-uds-event) blocked on the 3D wait_slice gap
+//     (rank-3 per-worker tile on `field[ITERS+1][H][W]`; compiler-
+//     feature extension filed as TASK-0341.02.02.01.01); 2 backends
+//     (mp-tcp-bufsync / mp-tcp-poll) blocked on TASK-0330 (in-Loop
+//     w2w Push guard). NO 16-jacobi/distributed cells are [[required]]
+//     today.
 //   - Floating-point arithmetic. Jacobi's natural "/ 4.0" average is
 //     order-of-summation sensitive under parallel reduction. We use
 //     integer `/ 4` (truncating); the precision hit is the price of

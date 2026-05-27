@@ -13,10 +13,13 @@
 // All transfers are `sync` (no async, no buffer>1, no event
 // notification). This matches every tier-1 backend's transfer
 // capabilities — including the two sync-only backends pthreads-sync
-// and mp-tcp-bufsync (per their capabilities.toml). The
-// pthreads-sync row is the [[required]] cell; sibling promotion to
-// the other tier-1 backends is filed as TASK-0341.02.02.01 (same
-// fold-out precedent as TASK-0341.01.02 vs TASK-0341.01.01).
+// and mp-tcp-bufsync (per their capabilities.toml). AC#3 final
+// state (cycle 209, TASK-0341.02.02): honest-BLOCKED on all 7
+// tier-1 backends — 5 on the 3D wait_slice gap
+// (TASK-0341.02.02.01.01), 2 on TASK-0330 (in-Loop w2w Push guard).
+// NO 16-jacobi/distributed cells are [[required]] today; see
+// nuc-nucleus/e2e-matrix.toml:591-642 for the per-backend [[skip]]
+// reasons.
 //
 // What this cell exercises that no existing required cell does
 // ------------------------------------------------------------
