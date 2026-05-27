@@ -1,79 +1,70 @@
 //! Smoke tests for the mp-uds-event backend.
 //!
-//! Cycle status (TASK-0044.03 cycle 194):
+//! Cycle status (TASK-0044.03.01 cycle 197):
 //! - Single-worker arm IMPLEMENTED (delegation to
 //!   `pthreads_sync::render_single_worker_main_with_kernels_attr` +
 //!   `backend_common::project_skeleton::multi_binary` — byte-identical
 //!   to mp-tcp-event's single-process emit).
-//! - Multi-worker arm: ContractGap forward-link to TASK-0044.03.01
-//!   (UDS-reactor codegen pending).
+//! - Multi-worker arm IMPLEMENTED (mio UnixStream reactor + per-(seq,
+//!   peer) outbound queue + per-seq inbound queue; structural twin of
+//!   mp-tcp-event with TCP→UDS transport swap).
 //!
 //! Tests pinned here:
-//! - Multi-worker `emit()` returns `EmitError::ContractGap` naming
-//!   `mp-uds-event` + forward-link to TASK-0044.03.
+//! - Multi-worker `emit()` succeeds and produces an EmitResult with
+//!   `runtime_rs = Some(_)` + one worker_bin per used worker.
+//! - Single-worker input still routed to the single-worker arm
+//!   (runtime_rs = None).
 //! - `EmitResult` shape pin (compile-time via constructor).
 //!
 //! Bit-identical single-worker emit differential against mp-tcp-event
 //! lives in `tests/single_worker_emit.rs`.
+//! Cross-backend structural-twin oracle for multi-worker emit lives
+//! in `tests/multi_worker_emit.rs`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use mp_uds_event::{emit, EmitError, EmitResult, NameTables};
-use nucleus_compiler::event::{DataId, Event, IterTile, WorkerId};
+use mp_uds_event::{emit, EmitResult, NameTables};
+use nucleus_compiler::event::{Event, WorkerId};
 
 #[test]
-fn multi_worker_emit_returns_contract_gap_with_forward_link() {
-    // Two non-empty worker lists -> used_workers.len() >= 2 -> multi-
-    // worker arm -> ContractGap. Cheapest legal Event variant (`Free`)
-    // so the test does not accidentally exercise downstream emit
-    // machinery — dispatch happens before any per-event walk.
+fn single_worker_input_routed_to_single_worker_arm() {
+    // Exactly one non-empty worker list with NO cross-worker events:
+    // dispatch should route to the single-worker arm (runtime_rs =
+    // None; one binary). Sentinel against a regression that
+    // routes single-worker inputs through Plan::build (would
+    // ContractGap on the >= 2 invariant).
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    let dummy = Event::Free {
-        data: DataId(0),
-        tile: IterTile::empty(),
-    };
-    per_worker.insert(WorkerId(0), vec![dummy.clone()]);
-    per_worker.insert(WorkerId(1), vec![dummy]);
+    per_worker.insert(WorkerId(0), vec![]);
+    per_worker.insert(WorkerId(1), vec![]);
 
     let names = NameTables::default();
     let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
 
-    // mp-uds-event's emit() reads kernels.rs UPFRONT (same structure as
-    // mp-tcp-event + mp-tcp-poll), so the ContractGap dispatch on the
-    // multi-worker arm needs a real kernels file. Use the workspace
-    // target/ scratch dir so the test is hermetic.
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("mp-uds-event-test-scratch/skeleton_multi_worker");
+    let stem = target.join("mp-uds-event-test-scratch/skeleton_single_worker_route");
     let _ = std::fs::remove_dir_all(&stem);
     std::fs::create_dir_all(&stem).expect("scratch dir");
     let kernels_path = stem.join("kernels.rs");
-    std::fs::write(&kernels_path, "// stub for ContractGap test\n").expect("kernels.rs stub");
+    std::fs::write(&kernels_path, "// stub for routing test\n").expect("kernels.rs stub");
     let out_dir = stem.join("out");
 
-    let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir);
-
-    let err = result.expect_err("multi-worker mp-uds-event must return ContractGap, not Ok");
-    let msg = format!("{err}");
+    let res = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+        .expect("single-worker mp-uds-event emit must succeed (zero used workers => arm 1)");
     assert!(
-        matches!(err, EmitError::ContractGap(_)),
-        "mp-uds-event multi-worker must return ContractGap variant, got: {msg}"
+        res.runtime_rs.is_none(),
+        "single-worker-route must NOT emit runtime.rs (no mio reactor for single-process), \
+         got: {:?}",
+        res.runtime_rs
     );
-    assert!(
-        msg.contains("mp-uds-event"),
-        "ContractGap message must name `mp-uds-event`, got: {msg}"
-    );
-    assert!(
-        msg.contains("TASK-0044.03"),
-        "ContractGap message must forward-link TASK-0044.03, got: {msg}"
-    );
-    assert!(
-        msg.contains("multi-worker"),
-        "ContractGap message must scope itself to the multi-worker arm, got: {msg}"
+    assert_eq!(
+        res.worker_bins.len(),
+        1,
+        "single-worker-route must emit exactly one binary"
     );
 }
 

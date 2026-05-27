@@ -159,6 +159,16 @@ mod wire_runtime;
 #[cfg(test)]
 mod runtime_src;
 
+// Multi-worker codegen (cycle 197 TASK-0044.03.01). Structural twin
+// of `mp_tcp_event::multi_worker` with TCP→UDS transport swap; the
+// Plan structure (per-worker bins, mio reactor, per-(seq, peer)
+// outbound queue, per-seq inbound queue, host election, host-relay)
+// is REUSED VERBATIM. Lift to a shared crate is tracked by
+// TASK-0044.02.03 (the 3-consumer threshold is reached by this
+// cycle; see TASK-0044.03.01 notes for the option-(b) rationale).
+mod multi_worker;
+use multi_worker::Plan;
+
 /// Paths to the files [`emit`] writes. Same shape as
 /// `mp_tcp_event::EmitResult` — multi-binary with an optional
 /// `runtime_rs` (only present on multi-worker emit, per the
@@ -253,22 +263,46 @@ pub fn emit(
     write_file(&wire_rs, WIRE_RUNTIME_SRC)?;
 
     if used_workers.len() >= 2 {
-        // ---- Multi-worker arm: UDS-reactor codegen (NOT YET LANDED). ----
-        return Err(EmitError::ContractGap(
-            "mp-uds-event codegen: multi-worker arm (used_workers >= 2) \
-             is not yet implemented — the Unix domain socket reactor + \
-             per-(DataId, SeqTag) ring buffer + epoll readiness + \
-             Plan-shaped per-worker codegen is the headline follow-up \
-             of TASK-0044.03, filed as TASK-0044.03.01 (see also \
-             cycle-171 brief: candidate for LIFTING transport layer \
-             from mp-tcp-event if its reactor is parametric over \
-             listener type via a trait). The schedule's capability \
-             compat-check has succeeded; only the multi-worker codegen \
-             body is outstanding. Single-worker schedules (used_workers \
-             <= 1) ARE supported and emit byte-identical artefacts to \
-             mp-tcp-event's single-process output."
-                .to_string(),
-        ));
+        // ---- Multi-worker arm (cycle 197 TASK-0044.03.01). ----
+        //
+        // Emit the runtime substrate (mio UnixStream reactor +
+        // Chan<T>) verbatim from `RUNTIME_SRC`, then one
+        // `src/bin/<wname>.rs` per used worker via the per-worker
+        // renderer in `multi_worker::worker_program`. The shared event
+        // walker drives Push/Wait/Loop/Fire; Sync goes through a
+        // barrier shim emitted per worker (CTRL-channel
+        // wire::barrier_cross over UnixStream).
+        let runtime_rs_path = src_dir.join("runtime.rs");
+        write_file(&runtime_rs_path, RUNTIME_SRC)?;
+
+        let plan = Plan::build(per_worker, names, sidecar)?;
+        let mut bin_names: Vec<String> = Vec::new();
+        let mut worker_bins: Vec<PathBuf> = Vec::new();
+        for w in &plan.used_workers {
+            let wname = plan.worker_name(*w);
+            let body = plan.render_worker_program(*w)?;
+            let bin_path = bin_dir.join(format!("{wname}.rs"));
+            write_file(&bin_path, &body)?;
+            bin_names.push(wname);
+            worker_bins.push(bin_path);
+        }
+
+        write_file(
+            &cargo_toml,
+            &multi_binary::render_cargo_toml(&bin_names, Some(MIO_UDS_DEPENDENCY_BLOCK)),
+        )?;
+        write_file(&run_sh, &multi_worker::render_run_sh(&plan)?)?;
+        mark_executable(&run_sh);
+
+        return Ok(EmitResult {
+            project_dir: out_dir.to_path_buf(),
+            cargo_toml,
+            worker_bins,
+            kernels_rs,
+            wire_rs,
+            runtime_rs: Some(runtime_rs_path),
+            run_sh,
+        });
     }
 
     // ---- Single-process arm (TASK-0044.03 cycle 194). ----
@@ -311,6 +345,27 @@ pub fn emit(
         run_sh,
     })
 }
+
+/// PRD §12 "one well-known crate" allowance for mp-uds-event: mio
+/// drives the UnixStream reactor + per-(seq, peer) outbound queue +
+/// per-seq inbound queue. The `os-poll` + `net` + `os-ext` features
+/// are the minimum surface the runtime uses; `os-ext` is REQUIRED
+/// for mio's `UnixListener` / `UnixStream` types (UDS-specific
+/// extension). `default` (log) is disabled to keep the emitted
+/// dependency tree small. Interpolated into the Cargo.toml's
+/// `[dependencies]` section by [`multi_binary::render_cargo_toml`]
+/// when the multi-worker arm of [`emit`] passes
+/// `Some(MIO_UDS_DEPENDENCY_BLOCK)`. The single-worker arm uses the
+/// shared single-binary skeleton (no external deps) so this block
+/// is absent there.
+pub(crate) const MIO_UDS_DEPENDENCY_BLOCK: &str =
+    "# PRD §12 \"one well-known crate\" allowance: mio drives the\n\
+     # UnixStream reactor + per-(seq, peer) outbound queue + per-seq\n\
+     # inbound queue. The `os-poll` + `net` + `os-ext` features are\n\
+     # the minimum surface the runtime uses; `os-ext` is REQUIRED\n\
+     # for mio's `UnixListener` / `UnixStream`. `default` (log) is\n\
+     # disabled to keep the emitted dependency tree small.\n\
+     mio = { version = \"0.8\", default-features = false, features = [\"os-poll\", \"net\", \"os-ext\"] }\n";
 
 /// `#[path]` attribute block that redirects the shared single-worker
 /// renderer's `mod kernels;` at the copied sibling `../kernels.rs`,
