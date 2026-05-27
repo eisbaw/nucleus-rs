@@ -2,7 +2,7 @@
 //
 // A hearing aid has three logical subsystems:
 //   - FE (front-end): analog microphone capture, speaker output.
-//   - DSP: FFT-based noise reduction, equalization, gain.
+//   - DSP: spectral-smoothing denoise, mixing, gain.
 //   - RF: Bluetooth receive (e.g. phone call) and transmit.
 //
 // Audio flows in two directions simultaneously:
@@ -11,68 +11,123 @@
 //   BT in  -> DSP -> speaker        (other-end audio mixed in)
 //
 // What this example demonstrates:
-//   - Three heterogeneous worker classes (FE, DSP, RF).
+//   - Three heterogeneous worker classes (FE, DSP, RF) — exercised
+//     by the M11 embedded_multimcu schedule.
 //   - Fork-and-merge dataflow (mic + BT merge in DSP; DSP forks to
 //     speaker and BT out).
 //   - Bidirectional flow over the same workers (RF both receives and
 //     transmits; FE both captures and emits).
-//   - Peripheral IO via effectful kernels.
 //
-// What this example does NOT demonstrate (out of v2 scope):
-//   - Real-time deadlines. A deployed hearing aid needs <10ms
+// What this example does NOT demonstrate (honest limitations):
+//   - Real-time deadlines. A deployed hearing aid needs <10 ms
 //     ear-to-ear latency; v2 has no `deadline=` directive.
 //   - Continuous unbounded operation. v2 algorithms terminate; this
 //     example uses a finite frame count for testability.
-//   - Peripheral interrupts as first-class. fe_capture / rf_receive
-//     are effectful kernels that, in the test build, read from
-//     canned input files; on Renode they read from simulated I2S
-//     and Bluetooth controllers; on real hardware they'd block on
-//     DMA-complete IRQs (a backend concern, not an algorithm one).
+//   - Peripheral interrupts as first-class. In M11/Renode mode the
+//     fe_*/rf_* kernels would block on DMA-complete IRQs; in tier-1
+//     mode (this commit) the IO is bulk-loaded from canned files at
+//     program start.
+//   - **FFT-based denoise.** Per AC#7 ("v2 is about the dataflow
+//     shape, not the audio quality"), `denoise` is a 3-wide sliding
+//     sum with edge replication (no FFT, no division, just
+//     i32::wrapping_add) — deterministic by construction. A real
+//     hearing aid would use spectral-mask noise reduction; that's
+//     out of v2's testability scope (FFT determinism is a real
+//     engineering problem the project pinned to integer-only in
+//     PRD §10.1).
+//
+// Numeric choice: i32 with `wrapping_add`. PRD §10.1 — integer
+// arithmetic is bit-deterministic across schedules and backends;
+// reorderable floating-point sum is not. Consistent with examples
+// 01..07/10/12/13 (the M3+M5+M6 example set is integer-only by
+// design). Audio samples are stored as i32 here; a real audio
+// pipeline would use i16 + fixed-point but that's not necessary for
+// the dataflow demonstration.
+//
+// Tier-1 vs M11 IO model split:
+//   - **Tier-1 (this naive schedule)**: bulk IO. `load_mic` /
+//     `load_bt` read the whole mic_in / bt_in arrays once at program
+//     start from canned binary files. `save_spk` / `save_bt_out`
+//     write the whole spk_out / bt_out arrays once at program end.
+//     This matches the example-01..13 pattern and is multi-process
+//     safe (no per-frame per-process state coordination needed).
+//   - **M11 embedded_multimcu (deferred)**: per-frame peripheral IO
+//     via fe_capture / rf_receive / fe_emit / rf_transmit kernels
+//     running on dedicated MCUs over SPI. That schedule keeps the
+//     stateful per-frame semantics; this algorithm doesn't try to
+//     express both modes in one shape.
 
 
-const SAMPLES_PER_FRAME : usize = 256;   // ~16 ms at 16 kHz
-const N_FRAMES          : usize = 1000;  // finite for the differential test
+const N_FRAMES          : usize = 4;     // small finite count for testability
+const SAMPLES_PER_FRAME : usize = 16;    // small finite buffer for testability
 
 
 // Per-frame audio buffers, indexed by frame number.
-data mic_in       : f32[N_FRAMES][SAMPLES_PER_FRAME];
-data bt_in        : f32[N_FRAMES][SAMPLES_PER_FRAME];
-data spk_out      : f32[N_FRAMES][SAMPLES_PER_FRAME];
-data bt_out       : f32[N_FRAMES][SAMPLES_PER_FRAME];
+data mic_in       : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data bt_in        : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data spk_out      : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data bt_out       : i32[N_FRAMES][SAMPLES_PER_FRAME];
+// Intermediate: the mic+BT mix before the inbound denoise. Required as
+// an explicit data symbol because v2 codegen does not support nested
+// kernel calls inside an argument expression (would need to write
+// `denoise(mix2(a, b))` otherwise — surfaces as
+// `pthreads-sync codegen error: unsupported feature: nested kernel
+// call inside an argument expression`). Introducing the intermediate
+// makes the dataflow edge explicit, which is the v2 convention
+// anyway.
+data mixed        : i32[N_FRAMES][SAMPLES_PER_FRAME];
 
 
-// Peripheral IO — effectful. In the test build, these read/write
-// canned WAV-equivalent binaries. The Rust function bodies in
-// kernels.rs decide what "read" means for the target.
-kernel fe_capture  : ()                          -> f32[SAMPLES_PER_FRAME]   effectful;
-kernel rf_receive  : ()                          -> f32[SAMPLES_PER_FRAME]   effectful;
-kernel fe_emit     : (f32[SAMPLES_PER_FRAME])    -> ()                       effectful;
-kernel rf_transmit : (f32[SAMPLES_PER_FRAME])    -> ()                       effectful;
+// Bulk IO — effectful. Read/write the whole multi-frame buffer at
+// program start/end from/to canned binary files. The Rust bodies
+// (kernels.rs) read NUC_INPUT_PATH (mic+bt concatenated) and write
+// NUC_OUTPUT_PATH (spk+bt_out concatenated). The M11 embedded
+// schedule's per-frame fe_capture / rf_receive / fe_emit /
+// rf_transmit kernels are NOT used in this naive shape.
+kernel load_mic     : ()
+                       -> i32[N_FRAMES][SAMPLES_PER_FRAME] effectful;
+kernel load_bt      : ()
+                       -> i32[N_FRAMES][SAMPLES_PER_FRAME] effectful;
+kernel save_spk     : (i32[N_FRAMES][SAMPLES_PER_FRAME])
+                       -> ()                               effectful;
+kernel save_bt_out  : (i32[N_FRAMES][SAMPLES_PER_FRAME])
+                       -> ()                               effectful;
 
-// Pure DSP — the meat of the hearing aid. Body in kernels.rs runs FFT,
-// applies a noise-reduction spectral mask, equalisation, and gain.
-kernel mix2        : (f32[SAMPLES_PER_FRAME], f32[SAMPLES_PER_FRAME])
-                                                 -> f32[SAMPLES_PER_FRAME]   pure;
-kernel denoise     : (f32[SAMPLES_PER_FRAME])    -> f32[SAMPLES_PER_FRAME]   pure;
 
+// Pure DSP — the meat of the hearing aid. Bodies in kernels.rs.
+//   - mix2:    per-sample i32::wrapping_add (mic + BT into spk path).
+//   - denoise: 3-wide sliding sum with edge replication (a
+//              deterministic spectral-smoothing stand-in; see
+//              header re: no FFT in v2 tier-1).
+kernel mix2        : (i32[SAMPLES_PER_FRAME], i32[SAMPLES_PER_FRAME])
+                       -> i32[SAMPLES_PER_FRAME] pure;
+kernel denoise     : (i32[SAMPLES_PER_FRAME])
+                       -> i32[SAMPLES_PER_FRAME] pure;
+
+
+// Dataflow. Bulk-load mic + BT, iterate per-frame through the
+// outbound + inbound branches, bulk-save spk + bt_out.
+mic_in <-- load_mic();
+bt_in  <-- load_bt();
 
 // Steady-state pipeline. Each frame:
-//   1. Capture mic and receive BT in parallel (independent peripheral reads).
-//   2. Outbound branch: denoise mic only, transmit over BT.
-//   3. Inbound branch: mix BT with mic, denoise, send to speaker.
+//   - Outbound branch: denoise mic only, transmit over BT.
+//   - Inbound branch: mix BT with mic, denoise, send to speaker.
 //
 // Note: denoise appears twice — once for the outbound path, once for
 // the inbound. Pure kernels can fire many times; the schedule decides
 // whether they share a worker.
 for frame : 0 .. N_FRAMES {
-    mic_in[frame] <-- fe_capture();
-    bt_in[frame]  <-- rf_receive();
-
     // Outbound: clean mic only -> BT.
-    bt_out[frame] <-- denoise(mic_in[frame]);
-    rf_transmit(bt_out[frame]);
+    bt_out[frame]  <-- denoise(mic_in[frame]);
 
-    // Inbound: mic + BT -> denoise -> speaker.
-    spk_out[frame] <-- denoise(mix2(mic_in[frame], bt_in[frame]));
-    fe_emit(spk_out[frame]);
+    // Inbound: mix BT with mic (explicit intermediate `mixed`), then
+    // denoise, then send to speaker. Two statements not one because v2
+    // codegen disallows nested kernel calls (see `mixed` declaration
+    // comment above).
+    mixed[frame]   <-- mix2(mic_in[frame], bt_in[frame]);
+    spk_out[frame] <-- denoise(mixed[frame]);
 }
+
+save_spk(spk_out);
+save_bt_out(bt_out);

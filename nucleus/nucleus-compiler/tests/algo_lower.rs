@@ -343,29 +343,43 @@ fn lowers_example_13_cnn_inference() {
 
 #[test]
 fn lowers_example_14_hearing_aid() {
+    // Cycle 201 (TASK-0054 reopen): example 14 was rewritten from
+    // f32 + per-frame stateful peripheral kernels to i32 + bulk IO +
+    // explicit `mixed` intermediate (the v2 codegen rejects nested
+    // kernel calls inside argument expressions; `denoise(mix2(...))`
+    // was split into two dataflow stmts via the `mixed` symbol). This
+    // test was rewritten to pin the new structure.
     let src = read_example("14-hearing-aid/prog.algo.nuc");
     let ast = parse_algo(&src).expect("14-hearing-aid must parse");
     let ir = lower_algo(&ast).expect("14-hearing-aid must lower");
 
     assert_eq!(ir.consts.len(), 2);
-    assert_eq!(ir.data.len(), 4);
+    // 5 data symbols: mic_in, bt_in, spk_out, bt_out, mixed (the
+    // cycle-201 intermediate).
+    assert_eq!(ir.data.len(), 5);
+    // 6 kernels: load_mic, load_bt, save_spk, save_bt_out (bulk IO,
+    // replacing the old per-frame fe_capture/rf_receive/fe_emit/
+    // rf_transmit), plus mix2 + denoise.
     assert_eq!(ir.kernels.len(), 6);
-    assert_eq!(ir.stmts.len(), 1);
+    // 5 top-level statements: mic_in <-- load_mic (Dataflow),
+    // bt_in <-- load_bt (Dataflow), for frame { ... } (For),
+    // save_spk(spk_out) (Effect), save_bt_out(bt_out) (Effect).
+    assert_eq!(ir.stmts.len(), 5);
 
-    // mic_in : f32[N_FRAMES][SAMPLES_PER_FRAME] = f32[1000][256].
-    assert_eq!(ir.data["mic_in"].ty.dims, vec![1000, 256]);
+    // mic_in : i32[N_FRAMES][SAMPLES_PER_FRAME] = i32[4][16] after
+    // cycle 201's bulk-IO + small-fixture rewrite.
+    assert_eq!(ir.data["mic_in"].ty.dims, vec![4, 16]);
 
-    // The single top-level statement is a `for frame : 0 .. N_FRAMES`
-    // with six body statements (two captures, two outbound, two
-    // inbound).
+    // The third top-level statement is the for-loop with three body
+    // statements (bt_out <-- denoise, mixed <-- mix2, spk_out <--
+    // denoise) — all Dataflow, no Effect (the IO is bulk + lives at
+    // top level, not per-frame).
     if let IrStmt::For {
         ref var, ref body, ..
-    } = ir.stmts[0]
+    } = ir.stmts[2]
     {
         assert_eq!(var, "frame");
-        assert_eq!(body.len(), 6);
-        // Four dataflow stmts + two effect stmts (rf_transmit and
-        // fe_emit are bare calls).
+        assert_eq!(body.len(), 3);
         let n_dataflow = body
             .iter()
             .filter(|s| matches!(s, IrStmt::Dataflow { .. }))
@@ -374,10 +388,10 @@ fn lowers_example_14_hearing_aid() {
             .iter()
             .filter(|s| matches!(s, IrStmt::Effect { .. }))
             .count();
-        assert_eq!(n_dataflow, 4);
-        assert_eq!(n_effect, 2);
+        assert_eq!(n_dataflow, 3);
+        assert_eq!(n_effect, 0);
     } else {
-        panic!("stmts[0] must be a For");
+        panic!("stmts[2] must be a For");
     }
 }
 

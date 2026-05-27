@@ -1,15 +1,19 @@
 // Naive schedule: single host worker, sequential frames.
 //
-// Reference smoke test. Used on tier-1 backends to establish the
-// reference output; later schedules must produce bit-identical output.
+// Tier-1 smoke test. Every kernel placed on host, no loop
+// transforms, no transfers. Uses the bulk-IO kernels (load_mic,
+// load_bt, save_spk, save_bt_out) per the prog.algo.nuc tier-1
+// IO model. The M11 embedded_multimcu schedule uses different
+// kernels (per-frame fe_capture / rf_receive / fe_emit /
+// rf_transmit) and is M11-deferred.
 
 schedule for "../prog.algo.nuc" {
     workers = { host };
 
-    place fe_capture  on host;
-    place rf_receive  on host;
-    place mix2        on host;
-    place denoise     on host;
-    place fe_emit     on host;
-    place rf_transmit on host;
+    place load_mic     on host;
+    place load_bt      on host;
+    place save_spk     on host;
+    place save_bt_out  on host;
+    place mix2         on host;
+    place denoise      on host;
 }

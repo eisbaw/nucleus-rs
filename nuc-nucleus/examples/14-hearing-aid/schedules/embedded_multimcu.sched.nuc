@@ -1,6 +1,21 @@
 // Embedded multi-MCU schedule: three MCUs of different classes
 // representing the three subsystems of a real hearing aid.
 //
+// **M11-aspirational — does NOT lower against the current
+// prog.algo.nuc.** Cycle 201 (TASK-0054) rewrote prog.algo.nuc
+// from f32 + per-frame stateful peripheral kernels to i32 + bulk
+// IO (for tier-1 cross-backend compatibility). This schedule still
+// references the old per-frame kernels (fe_capture / rf_receive /
+// fe_emit / rf_transmit) that no longer exist in the algorithm.
+//
+// The schedule file is preserved AS-IS as the M11 design target:
+// when M11 (Renode multi-MCU) lands, the algorithm will be re-
+// extended with per-frame peripheral kernels (likely via a
+// second-shape algorithm file or a `tier` discriminator on kernels)
+// and this schedule will lower. e2e-matrix.toml marks all 7
+// embedded_multimcu cells [[skip]] with M11-deferred reason. Filed
+// as TASK-0054.01 (M11 reinstate per-frame peripheral IO).
+//
 // This is the schedule M11 needs to compile and validate in Renode
 // co-simulation (FE_MCU + DSP_MCU + RF_MCU connected over SPI).
 //

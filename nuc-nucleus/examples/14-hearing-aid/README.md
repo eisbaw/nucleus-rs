@@ -1,85 +1,151 @@
-# Example 14 — Hearing-Aid Pipeline
+# Example 14 — Hearing-Aid Pipeline (tier-1 bulk-IO shape)
 
 A finite-frame test version of the dataflow inside a hearing aid:
-analog front-end (microphone, speaker), DSP (noise reduction, mixing),
+analog front-end (microphone, speaker), DSP (smoothing + mixing),
 RF (Bluetooth receive/transmit).
 
-## What this stresses
+**Cycle 201 reopen (TASK-0054)**: the original M11/Renode-shaped
+example was paper-Done at cycle 77 as DEFERRED-to-M6/M11. M6 capstone
+(TASK-0044.07) requires actual completion. This commit lands the
+tier-1 honest-scope shape: i32 + bulk-IO + 3-wide sliding-sum denoise
+(no FFT) + naive single-host schedule + 7 e2e cells across all tier-1
+backends. The M11 `embedded_multimcu` schedule is preserved as
+aspirational but [[skip]]'d in e2e-matrix.toml; reinstating per-frame
+peripheral kernels is filed as TASK-0054.01.
 
-| Axis | What                                                                  |
-| ---- | --------------------------------------------------------------------- |
-| Workers     | Three heterogeneous *classes*, not just three names. First example to exercise the typed worker form (§6.3.1). |
-| Dataflow    | Fork-and-merge: mic and BT converge in DSP; DSP forks to speaker and BT-out. No earlier example has a fork or a merge. |
-| Bidirectional | RF both receives and transmits; FE both captures and emits.         |
-| IO          | Peripheral IO wrapped in effectful kernels.                           |
-| Tier-3 multi-MCU | The schedule that lives or dies on Renode co-simulation (M11).   |
+## What this stresses (M6 tier-1 honest scope)
 
-## Required schedules
+- **Fork-and-merge dataflow at the algorithm level.** mic + BT
+  converge in the `mixed` intermediate; the DSP path forks to
+  spk_out (mic + BT → denoise) and bt_out (mic → denoise). No earlier
+  example has a fork or a merge — this IS the headline shape v2
+  delivers for example 14.
+- **Bidirectional flow on the data side.** Two input symbols (mic_in,
+  bt_in), two output symbols (spk_out, bt_out). The M11 schedule
+  would express "FE captures + emits" / "RF receives + transmits" as
+  the same MCU running both directions; the tier-1 shape collapses
+  that to one host.
+- **Two-stage IO via a `mixed` intermediate data symbol.** v2 codegen
+  does not support nested kernel calls inside an argument expression
+  (`denoise(mix2(a, b))` fails with `pthreads-sync codegen error:
+  unsupported feature: nested kernel call inside an argument
+  expression`). The honest fix is to introduce the intermediate as
+  a first-class data symbol — which the algorithm/schedule split
+  encourages anyway.
 
-- `naive.sched.nuc` — one host worker, sequential frames. Tier-1 smoke test, defines reference output.
-- `embedded_multimcu.sched.nuc` — three MCUs of three classes (FE, DSP, RF), `pipeline=3`, async-buffered transfers in both directions. Tier-3 / Renode target.
+## What this example does NOT demonstrate (honest limitations)
 
-A `batch_parallel` schedule does not make sense here — the algorithm is
-inherently sequential per frame (the speaker output at frame N depends
-on mic+BT at frame N). The point of this example is *heterogeneous
-spatial decomposition*, not data parallelism.
+- **Three heterogeneous worker classes.** That is the M11 story
+  (embedded_multimcu schedule); tier-1 naive uses one `host` worker.
+- **Per-frame peripheral IO.** fe_capture / rf_receive / fe_emit /
+  rf_transmit were the original M11 kernels and would require
+  stateful (per-frame counter) Rust bodies — NOT multi-process safe
+  in tier-1's mp-tcp-bufsync / mp-tcp-event / mp-tcp-poll /
+  mp-uds-event backends (each process would have its own counter).
+  The honest tier-1 shape uses bulk IO: `load_mic` / `load_bt` /
+  `save_spk` / `save_bt_out` are called once each. TASK-0054.01
+  tracks reinstating the per-frame kernels at M11 (Renode
+  multi-MCU substrate, where a single-process MCU model makes
+  stateful kernels safe).
+- **FFT-based denoise / spectral mask.** Per TASK-0054 AC#7 ("v2 is
+  about the dataflow shape, not the audio quality"), denoise is a
+  3-wide sliding sum with edge replication — deterministic by
+  construction (`wrapping_add` only, no division, no float). A real
+  hearing aid would use spectral-mask noise reduction; that is out
+  of v2's testability scope (FFT determinism across backends is a
+  real engineering problem the project pinned to integer-only in
+  PRD §10.1).
+- **Real-time deadlines.** A deployed hearing aid needs <10 ms
+  ear-to-ear latency; v2 has no `deadline=` directive. The M11
+  schedule's `check loop frame : latency_max = 10ms` is a runtime
+  assertion only — checkable, not prescriptive.
+- **Continuous unbounded operation.** v2 algorithms terminate;
+  N_FRAMES = 4 here for testability.
+- **Training / adaptation.** A real hearing aid adapts gain to
+  environment, adapts beam-forming to speaker location. All adaptive
+  behaviour is excluded — same reason ML training is excluded from
+  example 13.
 
-## Latency: checkable, not prescriptive
+## Numeric choice
 
-`embedded_multimcu.sched.nuc` ends with:
+`i32` with `wrapping_add` everywhere. PRD §10.1: integer arithmetic
+is bit-deterministic across schedules and backends; reorderable
+floating-point sum is not. Consistent with examples 01..07/10/12/13.
+The original f32 algorithm was rewritten to i32 in cycle 201 per
+project convention; for an actual deployed audio device an i16 +
+fixed-point ABI would be more natural, but the dataflow demonstration
+is the same.
+
+Range analysis: input samples in [-64, 63]. 3-wide denoise sum at
+worst |3 * 64| = 192. mix2 sum at worst |64 + 64| = 128. Composed
+denoise(mix2(...)) at worst |3 * 128| = 384. All well within i32
+range, so wrapping is impossible for the shipped fixture (but
+wrapping_add documents the contract).
+
+## Input / output format
+
+`input.bin` (512 bytes total):
+- bytes `[0, 256)`   = mic_in flat row-major (4 frames × 16 samples × 4 bytes)
+- bytes `[256, 512)` = bt_in flat row-major (same shape)
+
+`reference.bin` (512 bytes total):
+- bytes `[0, 256)`   = spk_out flat row-major
+- bytes `[256, 512)` = bt_out flat row-major
+
+### Input distribution
 
 ```
-check loop frame : latency_max = 10ms;
+mic[f][s] = ((f * 7 + s * 3 + 1) & 0x7F) - 64       (range [-64, 63])
+bt[f][s]  = ((f * 11 + s * 5 + 2) & 0x7F) - 64      (range [-64, 63])
 ```
 
-This is a **runtime assertion**, not a compiler constraint. v2 has no
-cost model and cannot schedule code to meet a latency budget. What it
-*can* do: emit measurement code at iteration boundaries and verify
-the actual wall-clock duration is within the budget. If the
-assertion fires during tier-1 testing or Renode simulation, the
-schedule needs revision by hand — increase pipeline depth, enlarge
-a buffer, move a kernel to a different worker class, etc.
+Distinct seeds so the cross-mix produces non-trivial output.
+Generated by `reference/` in `--gen-input` mode (no python step).
 
-The seed of a future prescriptive `solve_latency_max` directive is
-here. v2 ships the observation; the optimiser comes later (v3, if
-ever).
+## Schedules
 
-## What this example does NOT exercise
+- `naive.sched.nuc` — single `host` worker, sequential frames.
+  Tier-1 smoke test; the bulk-IO kernels (load_mic / load_bt /
+  save_spk / save_bt_out) + the per-frame DSP body (denoise / mix2)
+  all placed on host. Required cell on all 7 tier-1 backends.
+- `embedded_multimcu.sched.nuc` — three MCUs of three classes
+  (FE, DSP, RF), `pipeline=3`, async-buffered transfers in both
+  directions. **M11-aspirational; currently broken against the
+  tier-1 bulk-IO algorithm** (its kernel references fe_capture /
+  rf_receive / fe_emit / rf_transmit do not exist in the algorithm).
+  Preserved AS-IS as the M11 design target. e2e-matrix.toml [[skip]]
+  cells across all 7 backends with M11-deferred reason. Reinstating
+  per-frame peripheral kernels is filed as TASK-0054.01.
 
-State this so the example doesn't get over-claimed:
+## Regenerate fixtures
 
-- **Continuous operation.** A real hearing aid runs forever. v2
-  algorithms terminate. This example uses `N_FRAMES = 1000` for
-  testability. A future `forever` construct or large-N substitution
-  is a deployment concern.
-- **Peripheral interrupts as first-class.** Effectful kernels work,
-  but v2 doesn't model "this kernel blocks on a DMA-complete IRQ"
-  natively. The backend / shim handles this. The model sees
-  `fe_capture` as just an effectful function whose ordering is
-  preserved.
-- **Compiler-enforced deadlines.** The `check` directive is checkable
-  only. See "Latency: checkable, not prescriptive" above. A v3
-  prescriptive variant could be added without changing the source-
-  level syntax shape.
+```
+cargo run --release \
+  --manifest-path nuc-nucleus/examples/14-hearing-aid/reference/Cargo.toml -- \
+  --gen-input nuc-nucleus/examples/14-hearing-aid/input.bin
 
-If any of those becomes a load-bearing requirement, that's the signal
-v3 needs a streaming / IRQ / cost-model language extension.
+cargo run --release \
+  --manifest-path nuc-nucleus/examples/14-hearing-aid/reference/Cargo.toml -- \
+  --in  nuc-nucleus/examples/14-hearing-aid/input.bin \
+  --out nuc-nucleus/examples/14-hearing-aid/reference.bin
+```
 
-## Reference
+## Reference impl independence
 
-`reference/` (TODO) contains a hand-written single-threaded Rust
-implementation of the same pipeline. CI feeds canned `mic_in.bin` and
-`bt_in.bin` and diffs `spk_out.bin` / `bt_out.bin` against the
-reference.
+`reference/` is a standalone Rust crate (no nucleus deps, std-only).
+It implements the same pipeline with a DIFFERENT control structure:
+frame-by-frame functional composition with EXPLICIT local variables
+(mic_clean, mixed, mixed_clean), whereas the Nucleus
+kernel's loop body uses argument-in-place composition. Both produce
+identical output because the operations are deterministic i32
+arithmetic and function composition is order-independent for fixed
+operands. Conforms to `docs/reference-impl-policy.md` §2 (no shared
+code with kernels.rs) + §5 (integer arithmetic only, no floats).
 
-The DSP body (`denoise`, `mix2`) must be bit-deterministic. Either
-implement in fixed-point integer arithmetic or use a fixed FFT
-implementation that does not reorder reductions. See PRD §10.1.
+## Contract-check limitation
 
-## Why no training / adaptation
-
-A real hearing aid adapts gain to environment, adapts beam-forming to
-speaker location, etc. All adaptive behaviour is excluded here for
-the same reason ML training is excluded from example 13: it needs
-state that crosses frames in ways the static-schedule + affine-access
-model doesn't natively support. The example tests the fixed pipeline.
+The contract pass reports `TypeMismatch` for the aggregate-typed
+kernels (declared `i32[N_FRAMES][SAMPLES_PER_FRAME]` or
+`i32[SAMPLES_PER_FRAME]`, Rust uses `Vec<i32>`). Known TASK-0012
+limitation; identical to examples 01..07/10/12/13. Emit proceeds with
+a warning.

@@ -177,22 +177,26 @@ fn acfg_example_13_pipeline_parallel() {
 
 #[test]
 fn acfg_example_14_naive() {
-    // Hearing-aid, naive (everything on host). One top-level for-loop
-    // with six statements inside:
-    //   mic_in <-- fe_capture()
-    //   bt_in  <-- rf_receive()
-    //   bt_out <-- denoise(mic_in)
-    //   rf_transmit(bt_out)
-    //   spk_out <-- denoise(mix2(...))
-    //   fe_emit(spk_out)
-    // -> 6 operations, all inside one Repeat.
+    // Hearing-aid, naive (everything on host). Cycle 201 rewrite
+    // (TASK-0054 reopen): bulk-IO + intermediate `mixed` symbol so
+    // the for-loop body has no nested kernel call. Structure:
+    //   mic_in   <-- load_mic()                      (top-level Op)
+    //   bt_in    <-- load_bt()                       (top-level Op)
+    //   for frame {
+    //       bt_out[frame]  <-- denoise(mic_in[frame])
+    //       mixed[frame]   <-- mix2(mic_in[frame], bt_in[frame])
+    //       spk_out[frame] <-- denoise(mixed[frame])
+    //   }                                             (3 ops in Repeat)
+    //   save_spk(spk_out)                            (top-level Op)
+    //   save_bt_out(bt_out)                          (top-level Op)
+    // -> 7 operations total, 1 Repeat, max depth 1.
     let linked = linked_from_paths(
         "14-hearing-aid/prog.algo.nuc",
         "14-hearing-aid/schedules/naive.sched.nuc",
     );
     let acfg = build_acfg(&linked).expect("build_acfg");
 
-    assert_eq!(acfg.operation_count(), 6);
+    assert_eq!(acfg.operation_count(), 7);
     assert_eq!(acfg.repeat_count(), 1);
     assert_eq!(acfg.max_repeat_depth(), 1);
 }

@@ -247,19 +247,28 @@ fn parses_example_13_cnn_inference() {
 
 #[test]
 fn parses_example_14_hearing_aid() {
+    // Cycle 201 (TASK-0054 reopen): example 14 rewritten from f32 +
+    // per-frame stateful peripheral kernels (fe_capture/rf_receive/
+    // fe_emit/rf_transmit) to i32 + bulk IO (load_mic/load_bt/
+    // save_spk/save_bt_out) + explicit `mixed` intermediate symbol
+    // (v2 codegen rejects nested kernel calls inside argument
+    // expressions). This test was rewritten to pin the new structure.
     let src = read_example("14-hearing-aid/prog.algo.nuc");
     let ast = parse_algo(&src).expect("14-hearing-aid must parse");
 
     assert_eq!(ast.count_consts(), 2, "expected 2 const decls");
-    assert_eq!(ast.count_data(), 4, "expected 4 data decls");
+    // 5 data symbols: mic_in, bt_in, spk_out, bt_out, mixed.
+    assert_eq!(ast.count_data(), 5, "expected 5 data decls");
+    // 6 kernels: load_mic, load_bt, save_spk, save_bt_out, mix2, denoise.
     assert_eq!(ast.count_kernels(), 6, "expected 6 kernel decls");
-    // Only the `for frame : ...` loop at top level.
-    assert_eq!(ast.count_stmts(), 1, "expected 1 top-level statement");
+    // 5 top-level statements: mic_in <-- load_mic, bt_in <-- load_bt,
+    // for frame { ... }, save_spk(spk_out), save_bt_out(bt_out).
+    assert_eq!(ast.count_stmts(), 5, "expected 5 top-level statements");
 
-    // Inside the loop body we expect 6 statements (2 captures, 2
-    // outbound, 2 inbound).
+    // Inside the for-loop body, 3 dataflow statements (bt_out <--
+    // denoise, mixed <-- mix2, spk_out <-- denoise).
     let for_body = first_for_body(&ast);
-    assert_eq!(for_body.len(), 6, "for body should have 6 statements");
+    assert_eq!(for_body.len(), 3, "for body should have 3 statements");
 
     // mix2 has 2 params -> assert structurally.
     let mix2 = ast
@@ -274,17 +283,18 @@ fn parses_example_14_hearing_aid() {
     assert!(mix2.sig.ret.is_some(), "mix2 returns a typed value");
     assert_eq!(mix2.purity, Purity::Pure);
 
-    // rf_transmit returns unit.
-    let rf_transmit = ast
+    // save_bt_out returns unit (bulk-IO sink kernel, replaces the
+    // old per-frame rf_transmit).
+    let save_bt_out = ast
         .items
         .iter()
         .find_map(|i| match &i.node {
-            Item::Kernel(k) if k.name.node == "rf_transmit" => Some(k),
+            Item::Kernel(k) if k.name.node == "save_bt_out" => Some(k),
             _ => None,
         })
-        .expect("missing rf_transmit kernel");
-    assert!(rf_transmit.sig.ret.is_none(), "rf_transmit returns ()");
-    assert_eq!(rf_transmit.purity, Purity::Effectful);
+        .expect("missing save_bt_out kernel");
+    assert!(save_bt_out.sig.ret.is_none(), "save_bt_out returns ()");
+    assert_eq!(save_bt_out.purity, Purity::Effectful);
 }
 
 /// `05-stencil/prog.algo.nuc` was historically the legacy 2013-style
