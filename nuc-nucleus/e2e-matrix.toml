@@ -464,6 +464,92 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 16-jacobi/distributed: TASK-0341.02.02 AC#3 honest-BLOCKED (cycle
+# 208). partition=rows on the spatial y-loop + sync transfers (a
+# pthreads-sync-compatible schedule shape) is rejected at compile
+# time by the halo_inference (B) partition-policy-aware rule:
+#
+#   halo-inference error (under partitioned iv): kernel call
+#   `jacobi5_or_seed` reads `field` at axis 0 with a non-affine
+#   index expression. Halo inference accepts only `iv + b`
+#   (b constant) — see PRD §13 / TASK-0260 module docs.
+#
+# The failing read is `field[(t + ITERS) % (ITERS + 1)][..][..]` —
+# axis 0 references only iv `t` (NOT partitioned), but `y` (axis 1,
+# IS partitioned) is in the enclosing scope. The (B) rule
+# (TASK-0275 cycle 95) decides fatality from the FULL enclosing
+# scope, not from the ivs the failing index actually references —
+# so this is a precision gap, not a fundamental limit on halo
+# inference's reach into the Repeat body.
+#
+# The 16-jacobi algorithm cannot be reformulated to dodge this: the
+# modulo wrap is essential to the single-Dataflow-on-`field`
+# formulation (folds seed-staging into the iteration body via a
+# kernel branch on `t`, same shape as 11-game-of-life which uses
+# the SAME wrap but does NOT trip the (B) rule because no iv in its
+# pipelined-schedule scope is partitioned).
+#
+# Refinement filed as TASK-0341.02.02.01: change the (B) fatality
+# predicate from `scope.iter().any(iv_is_partitioned)` to
+# `ivs_used_in_index.iter().any(iv_is_partitioned)`. Cycle 208
+# verified empirically that this is the only blocker (driver
+# accepts the schedule, capability check passes; halo_inference is
+# the precise pass that fires).
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "pthreads-sync"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: halo_inference (B) partition-policy-aware rule rejects field[(t + ITERS) % (ITERS + 1)] (non-affine modulo wrap on axis 0 referencing iv t, which is NOT partitioned; partition is on y at axis 1). Compiler-feature refinement filed as TASK-0341.02.02.01 (move the fatality predicate from enclosing-scope to index-expression-referenced ivs)."
+milestone = "M6"
+
+# The halo_inference (B) rule fires upstream of backend selection, so
+# the SAME compiler error rejects this schedule on EVERY tier-1
+# backend (sync and async alike — the rule is purely a compile-time
+# property of the algorithm + schedule). Each cell carries the
+# pthreads-sync sibling's TASK-0341.02.02.01 citation so the
+# refinement task's promotion sweep can find them in one grep.
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "pthreads-async"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+milestone = "M6"
+
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"
