@@ -1,10 +1,11 @@
 ---
 id: TASK-0044
 title: M6 — Full tier-1 backend matrix
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@orchestrator'
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-26 10:20'
+updated_date: '2026-05-27 11:55'
 labels:
   - M6
   - validation
@@ -66,14 +67,14 @@ Following the M3 / M4 / M5 capstone pattern (TASK-0041 / TASK-0042 cluster / TAS
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 openmp-rs backend (rayon) lands with capabilities.toml.
-- [ ] #2 mp-tcp-poll backend lands (nonblocking sockets, busy/yield poll).
-- [ ] #3 mp-uds-event backend lands (Unix domain sockets + mio).
-- [ ] #4 Remaining examples (8 histogram, 10 wavefront, 12 bitonic sort) land with reference impls.
-- [ ] #5 Examples 13 (CNN inference) and 14 (hearing aid) compile and pass tier-1 differential test.
-- [ ] #6 Test: 'just e2e --milestone M6' shows full matrix green.
-- [ ] #7 Implementation notes record any examples dropped or rescoped for tier-1 feasibility.
-- [ ] #8 Implementation notes record honest limitations (perf is not measured; correctness only).
+- [x] #1 openmp-rs backend (rayon) lands with capabilities.toml.
+- [x] #2 mp-tcp-poll backend lands (nonblocking sockets, busy/yield poll).
+- [x] #3 mp-uds-event backend lands (Unix domain sockets + mio).
+- [x] #4 Remaining examples (8 histogram, 10 wavefront, 12 bitonic sort) land with reference impls.
+- [x] #5 Examples 13 (CNN inference) and 14 (hearing aid) compile and pass tier-1 differential test.
+- [x] #6 Test: 'just e2e --milestone M6' shows full matrix green.
+- [x] #7 Implementation notes record any examples dropped or rescoped for tier-1 feasibility.
+- [x] #8 Implementation notes record honest limitations (perf is not measured; correctness only).
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -91,4 +92,33 @@ Remaining work on TASK-0044:
 - TASK-0044.07 capstone — closes when all above land + `just e2e --milestone M6` green.
 
 Each skeleton's phased-AC addendum (in the respective TASK-0044.0N notes) records skeleton-cycle ACs DONE vs codegen-cycle ACs PENDING so the next-cycle implementer cannot silently close on un-met ACs.
+
+## Cycle 202 — M6 PARENT CLOSED (closed alongside TASK-0044.07 capstone)
+
+Same closure cluster pattern M3 / M4 / M5 used: capstone close + parent close in the same orchestrator-direct cycle. All 7 ACs of TASK-0044 mirror TASK-0044.07's verification:
+
+- AC#1 openmp-rs LANDED (TASK-0044.01 Done cycle 198, cycles 173/191/196 implementation).
+- AC#2 mp-tcp-poll LANDED (TASK-0044.02 Done cycle 198, cycles 174/192/195 implementation).
+- AC#3 mp-uds-event LANDED (TASK-0044.03 Done cycle 198, cycles 175/194/197 implementation).
+- AC#4 Examples 8 / 10 / 12 LANDED with reference impls (TASK-0044.04 Done cycle 189; TASK-0044.05 Done cycle 199 with grammar-deferred TASK-0044.05.01 follow-up; TASK-0044.06 Done cycle 200 with grammar-deferred TASK-0044.06.01 follow-up).
+- AC#5 Examples 13 + 14 compile + pass tier-1 differential (TASK-0053 Done cycle 199; TASK-0054 Done cycle 201 with M11-deferred TASK-0054.01 follow-up).
+- AC#6 \`just e2e --milestone M6\` exits 0: VERIFIED 3/3 non-flake samples at 238/211/0/27/0.
+- AC#7 implementation notes record rescoped / dropped examples: VERIFIED per-example READMEs.
+- AC#8 implementation notes record honest limitations: VERIFIED.
+
+e2e baseline at M6 close: **238 / 211 / 0 / 27 / 0** (3 non-flake samples).
+
+M6 capstone (TASK-0044.07) carries the detailed verification narrative. This parent close is the orchestrator-direct closure-cluster sibling per the M3/M4/M5 precedent (TASK-0041, TASK-0042 cluster cycle 167, TASK-0043 cycle 119).
+
+M6 milestone DECLARED. Tier-1 backend matrix STRUCTURALLY COMPLETE: 7 backends × 14 examples × required schedules all green or legitimate-SKIP. Cross-backend differential vs independent hand-written reference oracle PROVEN to bite (xbackend-check-negative + determinism-check-negative both wired into \`just ci\`). The headline thesis "v2 algorithm/schedule split delivers bit-identical output across the 7 tier-1 backends" is SUBSTANTIATED at the M6 milestone scope.
+
+Per the cycle-171 M6 brief honest-scope clauses + the cycle-202 capstone close: this milestone close intentionally does NOT block on:
+- Grammar-extension follow-ups for diagonal-parallel + stage-parallel + 1D in-array carry (TASK-0044.05.01 + TASK-0044.06.01 + TASK-0179). Tracked as one unified grammar-extension epic per memory project-grammar-deferred-cluster.
+- M11 multi-MCU peripheral-IO follow-ups (TASK-0054.01).
+- DRY cleanup follow-ups (TASK-0044.02.03 + TASK-0044.03.02; lift duplicated multi_worker/ + plan/ code to shared crates).
+- Oracle-widening follow-ups (TASK-0044.01.03 + TASK-0044.02.02.01).
+- CI-runner-gap (inherited M3 standing limitation TASK-0166 / TASK-0167 / TASK-0041).
+- Cycle-201-architect P3 follow-ups (TASK-0054.02 + TASK-0345 + TASK-0346).
+
+Each follow-up has a precise scope and dependency edge; the M6→M7 backlog wave consumes them in priority order.
 <!-- SECTION:NOTES:END -->
