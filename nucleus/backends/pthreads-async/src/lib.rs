@@ -251,7 +251,10 @@ pub fn emit(
 
         let main_rs_src = render_main_rs_multi(per_worker, names, sidecar)?;
 
-        write_file(&cargo_toml, &render_cargo_toml())?;
+        // `extra_dependencies = None`: pthreads-async's emitted
+        // Cargo.toml has no extra deps (TASK-0044.01.01 cycle 196
+        // added the parameter for openmp-rs's multi-worker `rayon`).
+        write_file(&cargo_toml, &render_cargo_toml(None))?;
         write_file(&kernels_rs, &kernels_src)?;
         write_file(&main_rs, &main_rs_src)?;
         write_file(&run_sh, &render_run_sh())?;
@@ -309,7 +312,9 @@ pub fn emit(
         .unwrap_or(&[]);
     let main_rs_src = render_single_worker_main(events, names, sidecar)?;
 
-    write_file(&cargo_toml, &render_cargo_toml())?;
+    // `extra_dependencies = None`: pthreads-async single-worker has
+    // no extra deps (TASK-0044.01.01 cycle 196 parameter).
+    write_file(&cargo_toml, &render_cargo_toml(None))?;
     write_file(&kernels_rs, &kernels_src)?;
     write_file(&main_rs, &main_rs_src)?;
     write_file(&run_sh, &render_run_sh())?;

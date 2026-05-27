@@ -199,7 +199,11 @@ pub fn emit(
     let run_sh = out_dir.join("run.sh");
 
     // ---- Render Cargo.toml ----
-    write_file(&cargo_toml, &render_cargo_toml())?;
+    // `extra_dependencies = None` keeps the emitted Cargo.toml
+    // byte-identical to its pre-cycle-196 shape (TASK-0044.01.01
+    // added the parameter for openmp-rs's multi-worker `rayon` dep;
+    // pthreads-sync has no extra dep).
+    write_file(&cargo_toml, &render_cargo_toml(None))?;
 
     // ---- Copy kernels.rs verbatim ----
     write_file(&kernels_rs, &kernels_src)?;

@@ -4,9 +4,9 @@
 # memory, notify is barrier. supports_async=false, supports_buffer=false.
 # Same capability surface as pthreads-sync (the cross-backend differential
 # gains a THIRD sync-shared-memory row). Differs only in the runtime
-# substrate: rayon::scope (or par_iter) instead of std::thread::spawn.
+# substrate: rayon::scope (instead of std::thread::spawn).
 #
-# ## Current status: SINGLE-WORKER LANDED (TASK-0044.01 cycle 191)
+# ## Current status: SINGLE- + MULTI-WORKER LANDED (TASK-0044.01.01 cycle 196)
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
 # wired through. `emit()` dispatches on `used_workers.len()`:
@@ -14,13 +14,18 @@
 #     + `backend_common::project_skeleton::single_binary::{render_cargo_toml,
 #     render_run_sh}` — emitted artefact byte-identical to pthreads-sync /
 #     pthreads-async single-worker output by construction.
-#   - `>= 2`: returns `EmitError::ContractGap` forward-linking the
-#     filed multi-worker follow-up sub-task of TASK-0044.01.
+#   - `>= 2`: renders a `main.rs` whose worker spawn site is a
+#     `rayon::scope(|s| s.spawn(move |_| { ... }))` over each non-host
+#     worker; per-pair `Slot<T> = Mutex<Option<T>> + Condvar` rendezvous
+#     + `Arc<Barrier>` for SyncTag-keyed barriers carry over verbatim
+#     from `pthreads-sync/src/multi_worker.rs` (the only substrate
+#     difference is the spawn primitive). The emitted Cargo.toml gains
+#     `rayon = "1"` in its `[dependencies]` block (the single-worker
+#     emit stays byte-identical to pthreads-sync's by passing
+#     `extra_dependencies = None`).
 #
-# `rayon` is NOT a current dependency; the single-worker arm is pure
-# delegation and needs no parallel substrate. If the multi-worker arm
-# lands per TASK-0044.01.01, rayon (the natural substrate) would join
-# the dep list at that point.
+# `rayon = "1"` is NOT a dependency of THIS crate (the host nucleus
+# compiler) — only of the emitted Cargo.toml. This crate writes a string.
 
 [package]
 name = "openmp-rs"
@@ -36,8 +41,10 @@ path = "src/lib.rs"
 [dependencies]
 nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives — `EmitError` + the project-skeleton
-# (Cargo.toml + run.sh) string templates for single-binary backends.
-# Same precedent as pthreads-async (cycle 16/17): every tier-1 backend
+# (Cargo.toml + run.sh) string templates for single-binary backends
+# + the multi-worker event walker (`multi_worker_walker`) + the
+# `check_frame` emit templates + `host_election`. Same precedent as
+# pthreads-async (cycle 16/17, cycle 37 lift): every tier-1 backend
 # depends on backend-common.
 backend-common = { path = "../../backend-common" }
 # Single-worker straight-line `main.rs` emitter. A genuine semantic

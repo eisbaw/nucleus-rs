@@ -1653,60 +1653,60 @@ milestone = "M6"
 # multi-worker arm lands; at that point promote each of these to
 # [[required]] (mirroring pthreads-sync).
 
-[[skip]]
+# Cycle 196 PROMOTION: TASK-0044.01.01 landed openmp-rs multi-worker
+# codegen (rayon::scope spawn site + verbatim Slot<T> + Arc<Barrier>
+# rendezvous from pthreads-sync). The 8 multi-worker [[skip]] entries
+# below were promoted to [[required]] after bit-identical OUTPUT.bin
+# vs reference.bin was verified. Cross-backend differential gained a
+# THIRD sync-shared-memory row (pthreads-sync + pthreads-async +
+# openmp-rs all bit-identical on these 8 schedules).
+
+[[required]]
 example  = "02-split-add"
 schedule = "split"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2. Schedule compiles under the openmp-rs capability surface (sync + shared-memory + barrier/blocking, identical to pthreads-sync); promote to [[required]] when the rayon-scope codegen lands."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "07-matmul"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "07-matmul"
 schedule = "distributed-2d"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "openmp-rs"
-reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
 milestone = "M6"
 
 # Capability mismatches (TASK-0044.01 AC#6): async + buffer + event
