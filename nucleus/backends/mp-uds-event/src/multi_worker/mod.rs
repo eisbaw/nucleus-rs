@@ -567,7 +567,21 @@ const SO_BUF_COMMENT_EVENT: &str = "# Socket buffer requirement from the schedul
 /// Multi-process run.sh: delegate to the shared
 /// [`backend_common::project_skeleton::multi_binary::render_run_sh_multi`]
 /// (lifted in TASK-0257 cycle 112), supplying the host-first worker
-/// ordering + mp-uds-event-specific SO_BUF commentary.
+/// ordering + mp-uds-event-specific SO_BUF commentary, then SWAP the
+/// shared template's `$here/.nuc-rendezvous-$$` rendezvous-dir line
+/// for a `/tmp`-rooted alternative because UDS sun_path is capped at
+/// 104 bytes (musl/macOS) — see cycle-197 step 5 AC#9 finding.
+///
+/// The shared template uses `$here/.nuc-rendezvous-$$` (mp-tcp-* needs
+/// only the rendezvous-FILE PATH, not a per-worker socket path, so
+/// the 4096-byte filesystem PATH_MAX is the binding cap there). For
+/// UDS the rendezvous DIR + socket-filename together must fit in 104
+/// bytes; with realistic worker names + the e2e harness's deep scratch
+/// hierarchy (`target/e2e-matrix/run-NNN-...../<example>__<sched>__<backend>/`)
+/// the `$here`-rooted dir is ~120-180 bytes and busts the cap. Using
+/// `/tmp/nuc-uds-$$-<run-tag>/` keeps the dir below ~25 bytes; with
+/// worker names ≤ ~60 bytes the total fits well under 104. The trap
+/// still tidies the dir on EXIT.
 pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
     let bufsz = plan.max_payload_bytes()?.max(65536);
     let host_name = plan.worker_name(plan.host_worker);
@@ -576,12 +590,43 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
         .iter()
         .map(|w| plan.worker_name(*w))
         .collect();
-    Ok(render_run_sh_multi(
+    let shared = render_run_sh_multi(
         &host_name,
         &non_host_names,
         bufsz,
         SO_BUF_COMMENT_EVENT,
-    ))
+    );
+
+    // SWAP the rendezvous-dir line for a /tmp-rooted UDS-safe path.
+    // The shared template's exact block is 4 lines (see
+    // `multi_binary::render_run_sh_multi`). We replace the whole block
+    // atomically so a future change to the shared template surfaces
+    // as a swap miss + falls back to the original (which would then
+    // bust the UDS path cap loud at runtime — fail-loud preserved).
+    let needle = "NUC_RENDEZVOUS_DIR=\"$here/.nuc-rendezvous-$$\"\n\
+                  mkdir -p \"$NUC_RENDEZVOUS_DIR\"\n\
+                  trap 'rm -rf \"$NUC_RENDEZVOUS_DIR\"' EXIT\n\
+                  export NUC_RENDEZVOUS_DIR";
+    let replacement = "# UDS-specific: rendezvous dir under /tmp because\n\
+                       # mp-uds-event's UDS sockets must fit in the\n\
+                       # 104-byte sun_path cap (musl/macOS limit); the\n\
+                       # e2e harness's deep scratch hierarchy + worker\n\
+                       # name + .sock suffix easily busts the cap if\n\
+                       # we use $here. mktemp -d picks an unused name\n\
+                       # under /tmp, guaranteed-fresh per run.\n\
+                       NUC_RENDEZVOUS_DIR=\"$(mktemp -d -t nuc-uds-XXXXXXXX)\"\n\
+                       trap 'rm -rf \"$NUC_RENDEZVOUS_DIR\"' EXIT\n\
+                       export NUC_RENDEZVOUS_DIR";
+    let out = shared.replace(needle, replacement);
+    if !out.contains("nuc-uds-XXXXXXXX") {
+        return Err(EmitError::ContractGap(format!(
+            "mp-uds-event render_run_sh: shared template's rendezvous-dir \
+             block changed shape — the cycle-197 step-5 UDS-path swap \
+             missed. Expected the literal needle:\n{needle}\n\nbut the \
+             shared template emitted:\n{shared}"
+        )));
+    }
+    Ok(out)
 }
 
 // --------------------------------------------------------------------
