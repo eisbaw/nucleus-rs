@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-27 21:12'
-updated_date: '2026-05-27 21:29'
+updated_date: '2026-05-27 21:40'
 labels:
   - hygiene
   - doc-lie
@@ -59,6 +59,26 @@ Per memory feedback-comment-doc-lie-recurring + feedback-verbatim-copy-comment-d
 - [x] #2 Sibling audit: grep across nuc-nucleus/examples/{15-transpose,16-jacobi,17-spmv}/schedules/*.sched.nuc for similar 'this cycle lands X only' staleness; no other sites found beyond the architect-flagged one
 - [x] #3 Cheap structural gate + 1 e2e sanity sample clean post-edit: just check-textual-replace-on-codegen + check-include-str-coverage + check-narrative-doc-lie + check-mega-files OK; just e2e 280/246/0/34/0 unchanged (doc-only edits)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Cycle 217b clarification addendum (architect P1.1 + P2.1 + P2.2 fold-back) ===
+
+ARCHITECT P1.1 (silent-sibling defect within the same file): cycle-217 in-cycle scope expansion fixed README.md:11-44 + prog.algo.nuc but MISSED README.md:178-185 ('Required schedules' section bullet for distributed-rows still said 'cross-backend promotion is TASK-0341.01.01.01 follow-up' — stale post-cycle-216). Folded back in cycle 217b: rewrote the bullet to cycles 215/216 dual-citation matching the wording cycle 217 used elsewhere in the same file.
+
+ARCHITECT P2.1 (AC#2 wording vs executed scope drift): AC#2 as ticked describes 'schedules/*.sched.nuc' scope — the as-planned narrow scope. The as-executed scope was wider (prog.algo.nuc + README.md within 15-transpose). NOT rewriting AC#2 in-place per feedback-ac-rewrite-on-done-task; this clarification addendum records the divergence.
+
+ARCHITECT P2.2 (process gap — window-of-edit grep not whole-file): the cycle-217 in-cycle grep covered the SECTION I was editing (README.md:11-44) but missed the same idiom 140 lines further down (README.md:178). The discipline lesson: when applying a stale-narrative sweep with in-cycle scope expansion, the grep MUST be whole-file end-to-end, not window-of-edit. The cycle-217 forward-carried lesson on TASK-0351 already mentioned the sibling-sweep discipline; cycle 217b sharpens it to 'whole-file grep' explicitly.
+
+CYCLE-217b EVIDENCE:
+- README.md:178-185 (now :178-188): rewritten to dual-cycle citation post-cycle-216.
+- Whole-file grep across 15-transpose/{prog.algo.nuc, kernels.rs, README.md, schedules/*.sched.nuc} after fold-back: 2 remaining hits, both legitimately not-stale (line 153 is the live TASK-0347 forward-carry; line 167 quotes the compiler diagnostic's literal text).
+- Cheap structural gate + 1 e2e sample re-run post-fold-back: 280/246/0/34/0 unchanged.
+
+PATTERN CLASSIFICATION:
+- This is a fresh in-file variant of feedback-silent-sibling-defect: the sibling defect was in the SAME file (README.md), 140 lines below the edited region. Distinct from the cross-file silent-sibling pattern (where the sibling lives in another module/file).
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 

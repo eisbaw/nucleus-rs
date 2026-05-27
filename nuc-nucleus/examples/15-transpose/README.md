@@ -180,6 +180,7 @@ scalar-only at present:
   / 4 = 4, exact-divisible). Input is whole-array broadcast (the
   TASK-0301/TASK-0302 axis-mapping filter falls back to broadcast
   because `j` hits input's trailing dim after a hole at dim 0);
-  output is `j`-banded on gather. Landed cycle 215 as
-  TASK-0341.01 AC#2 closure (pthreads-sync required; cross-backend
-  promotion is TASK-0341.01.01.01 follow-up).
+  output is `j`-banded on gather. Landed cycle 215 on pthreads-sync
+  (TASK-0341.01.01); cross-backend promotion to all 7 tier-1 backends
+  landed cycle 216 (TASK-0341.01.01.01); all 7 tier-1 backends
+  [[required]].

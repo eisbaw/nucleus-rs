@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-27 21:22'
+updated_date: '2026-05-27 21:40'
 labels:
   - hygiene
   - doc-lie
@@ -50,3 +51,20 @@ TASK-0350 cycle 217 closed its filed scope (distributed-rows.sched.nuc:72 + sibl
 
 Per memory feedback-comment-doc-lie-recurring: 'What this example does NOT stress (yet)' sections are particularly stale-prone because (a) they live in the example's own README/prog.algo.nuc (not in e2e-matrix.toml which gets updated each promotion cycle), and (b) the 'yet' modifier IS the time-bound claim that gets stale. The 'yet' is the recurring tell.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Cycle 217b architect P2.2 forward-carried lesson sharpening ===
+
+When applying a stale-narrative sweep with in-cycle scope expansion (cycle-117 calibration), the in-cycle grep MUST be WHOLE-FILE end-to-end, not window-of-edit.
+
+Cycle 217 failed this discipline: the in-cycle grep covered the SECTION the orchestrator was editing (README.md:11-44) but missed a structurally-identical stale-narrative site 140 lines further down in the SAME file (README.md:178-185). The architect P1.1 caught it via independent whole-file grep with a broader regex.
+
+DISCIPLINE FOR TASK-0351 IMPLEMENTER:
+- Before any commit on the 16-jacobi + 17-spmv sweep, run a whole-file grep across each touched file with the architect's broader regex: grep -nE '(follow-up|deferred|yet|will be|future|next cycle)' on each file end-to-end.
+- For each hit, verify against current state: is the referenced follow-up still LIVE (in tracker, To Do or In Progress), or has it landed (closed Done)? Only LIVE references survive; landed references must be rewritten to past-tense cycle-citation.
+- The 'yet' modifier is the recurring time-bound tell (per cycle-217's original lesson). The 'follow-up' phrase is a SECOND recurring tell (per cycle-217b sharpening). Both must be in the grep regex.
+
+The TASK-0351 implementer should also apply the cycle-215b parent-AC-tick discipline: before commit, grep TASK-0341.02 + TASK-0341 parent ACs and tick any directly closed by the cycle's work.
+<!-- SECTION:NOTES:END -->
