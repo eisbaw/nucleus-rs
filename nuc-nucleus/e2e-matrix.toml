@@ -343,10 +343,15 @@ milestone = "M6"
 # No earlier example has this output-axis-disagrees-with-input-axis
 # shape. Cross-backend RUNTIME-OUTPUT bit-identity is by construction:
 # the single-`host` schedule routes every backend through the shared
-# single-worker renderer (`pthreads_sync::render_single_worker_main`
-# for pthreads-async / openmp-rs and the `_with_kernels_attr` variant
-# for the mp-tcp-* / mp-uds-event families), and both variants share
-# the same private rendering core — so the compiled kernel arithmetic
+# single-worker renderer. Variant split (cross-checked at the call
+# sites in nucleus/backends/*/src/lib.rs): the no-attr
+# `pthreads_sync::render_single_worker_main` is called by
+# pthreads-async, openmp-rs, and mp-tcp-event; the
+# `_with_kernels_attr` variant is called by mp-tcp-bufsync,
+# mp-tcp-poll, and mp-uds-event; pthreads-sync owns both entry
+# points (`render_single_worker_main` simply delegates to
+# `_with_kernels_attr` with an empty attr) so they share the same
+# private rendering core — so the compiled kernel arithmetic
 # is the same across all 7 backends, and the e2e harness's `cmp` of
 # output.bin against reference.bin passes for each. The emitted
 # scaffolding (Cargo.toml, run.sh, src layout `src/main.rs` vs
@@ -405,13 +410,18 @@ milestone = "M6"
 # (ITERS=4) on an H=W=8 grid with Dirichlet zero-boundary;
 # single-Dataflow on `field` covers all `ITERS+1` generations + the
 # seed case via kernel branch on `t` (same shape as 11-game-of-life).
-# Single-`host` schedule => shared single-worker renderer (no-attr
-# variant for pthreads-async/openmp-rs; _with_kernels_attr variant
-# for the mp-tcp-*/mp-uds-event multi_binary families) => cross-
-# backend RUNTIME-OUTPUT bit-identical by construction; same
+# Single-`host` schedule => shared single-worker renderer. Variant
+# split (cross-checked at the call sites in
+# nucleus/backends/*/src/lib.rs): the no-attr
+# `render_single_worker_main` is used by pthreads-async, openmp-rs,
+# and mp-tcp-event; the `_with_kernels_attr` variant is used by
+# mp-tcp-bufsync, mp-tcp-poll, and mp-uds-event; pthreads-sync owns
+# both entry points (no-attr delegates to `_with_kernels_attr("")`).
+# => cross-backend RUNTIME-OUTPUT bit-identical by construction; same
 # scaffolding (Cargo.toml/run.sh/src layout) diff per project_skeleton
-# family as 15-transpose. Non-flake verified across 3 e2e samples
-# cycle 207. AC#3 (distributed schedule) is at TASK-0341.02.02.
+# family as 15-transpose. Non-flake verified across 6 e2e samples
+# (cycles 206 + 207); 16-jacobi × 7 row PASSed in 100% of samples.
+# AC#3 (distributed schedule) is at TASK-0341.02.02.
 [[required]]
 example  = "16-jacobi"
 schedule = "naive"
