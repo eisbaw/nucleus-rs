@@ -1,0 +1,92 @@
+// Bitonic sort — power-of-2 length compare-exchange network.
+//
+// Reads a length-N i32 input, returns the sorted permutation. The
+// bitonic-sort algorithm is a STATIC compare-exchange network: which
+// element pairs compare-exchange at each stage depends only on the
+// stage index, not on the values. The network has log2(N) outer
+// stages, each with k inner sub-stages, where the k-th outer stage
+// runs k inner stages (total log2(N) * (log2(N)+1) / 2 = 21 inner
+// stages for N=64).
+//
+// PRD §9 row 12: "Static communication pattern, fits SDF." Despite
+// being a SORT (each comparator's output depends on its input
+// values), the COMMUNICATION pattern is fully scheduled at compile
+// time — a clean fit for the synchronous-dataflow model.
+//
+// What this example WAS originally meant to demonstrate (per cycle-171
+// brief): a multi-stage compare-exchange network whose parallel
+// schedule places N/2 compare-exchange comparators on distinct
+// workers per stage, with a barrier between stages. The headline
+// claim is "static communication pattern fits SDF" — the schedule
+// can pre-allocate the per-stage worker assignments because they
+// are known at compile time from N alone.
+//
+// Why ONE big kernel and not stage-decomposed at the algorithm level
+// ------------------------------------------------------------------
+// Same fundamental v2 sublanguage limits hit by 04-prefix-sum
+// (TASK-0179) and 10-wavefront (TASK-0044.05.01):
+//   1. Each stage k operates on a DIFFERENT pairing of elements
+//      (the bit-pattern of k determines which pairs swap). Encoding
+//      this at the algorithm level requires either (a) log2(N) *
+//      (log2(N)+1) / 2 separate `for` blocks with hardcoded stage
+//      bit-patterns (21 blocks for N=64 — feasible but tedious and
+//      brittle), or (b) loop bounds dependent on a loop variable
+//      (`for k : 0..STAGES { for pair : 0..pair_count(k) { ... } }`)
+//      — rejected by the const-loop-bound rule (the ACFG builder
+//      only `eval_const`s bounds).
+//   2. The compare-exchange writes BOTH elements of the pair
+//      (output[a] = min, output[b] = max). v2's single-assignment-
+//      per-data-symbol rule treats `output` as one symbol; the
+//      kernel-level masking trick (see 04-prefix-sum's
+//      `block_scan`) works for accumulator-shaped reductions but
+//      NOT for permutations.
+//
+// The honest v2 encoding is therefore: ONE kernel call that takes
+// `input` and returns the whole sorted `output`. The stage-by-stage
+// compare-exchange network lives in `kernels::bitonic_sort` (real
+// Rust). The algorithm declares only the dataflow:
+//
+//   input  <-- load_input();
+//   output <-- bitonic_sort(input);
+//   save_output(output);
+//
+// The cost: there is no algorithm-level decomposition handle the
+// schedule sublanguage can use to express a stage-parallel schedule.
+// The stage-parallel schedule is GRAMMAR-DEFERRED (filed as a
+// follow-up); v2 only ships the naive schedule.
+//
+// Numeric / value choice: i32 input values, distinct (no equal-key
+// stability question to worry about). PRD §10.1 — integer arithmetic
+// is bit-deterministic across schedules and backends; comparison
+// (min/max) is bit-deterministic by language definition. The
+// committed fixture (see README) is a permutation of [0, N) plus a
+// constant offset, so sorted output is the corresponding increasing
+// sequence; sort correctness is checkable by inspection.
+
+const N : usize = 64;       // power of 2; 64 * 4 = 256 bytes input
+
+// Whole-program input/output. Single-assignment per PRD §6.2.1.
+data input  : i32[N];
+data output : i32[N];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+// Aggregate types; on the Rust side they use `Vec<i32>` (TASK-0103
+// canonical convention).
+kernel load_input  : ()       -> i32[N]   effectful;
+kernel save_output : (i32[N]) -> ()       effectful;
+
+// Pure compute kernel. Takes the input array, returns the sorted
+// array. The compare-exchange network lives entirely in kernel Rust;
+// the algorithm sees only the dataflow edge `input -> bitonic_sort ->
+// output`. Aggregate-typed both sides (TASK-0012 TypeMismatch surface,
+// identical to examples 01..07/10).
+kernel bitonic_sort : (i32[N])  -> i32[N]   pure;
+
+// Dataflow: load, sort, save. Three statements; no loops. The
+// algorithm/schedule split here reduces to "which worker runs the
+// load / sort / save" — no decomposition axis is exposed at the
+// algorithm level (would require grammar extensions for stage-by-
+// stage parallelism; see header).
+input  <-- load_input();
+output <-- bitonic_sort(input);
+save_output(output);

@@ -1,0 +1,20 @@
+// Naive schedule: one worker, no decomposition.
+//
+// The smoke-test schedule. Single `host`, every kernel placed there,
+// no loop transforms, no transfers. The bitonic-sort algorithm has
+// no loop in its dataflow (one load, one sort, one save), so there
+// is nothing for `block=` / `partition=` / `pipeline=` to attach to
+// even if a stage-parallel schedule could be expressed. The
+// stage-parallel schedule is GRAMMAR-DEFERRED (see prog.algo.nuc
+// header); v2 only ships this single schedule.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place save_output   on host;
+    place bitonic_sort  on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}

@@ -1,0 +1,44 @@
+# Standalone reference implementation for example 12-bitonic-sort.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or
+# on any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# This crate is BOTH the independent oracle AND the fixture generator
+# (subcommand `--gen-input`), so the example has NO python regeneration
+# step (the nix dev shell has no python3; a python fixture step would
+# be non-reproducible and break `just`).
+#
+# Regenerate `input.bin` then `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/12-bitonic-sort/reference/Cargo.toml -- \
+#     --gen-input nuc-nucleus/examples/12-bitonic-sort/input.bin
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/12-bitonic-sort/reference/Cargo.toml -- \
+#     --in  nuc-nucleus/examples/12-bitonic-sort/input.bin \
+#     --out nuc-nucleus/examples/12-bitonic-sort/reference.bin
+#
+# The crate is excluded from the parent workspace by being inside
+# `nuc-nucleus/`, which the `nucleus/` workspace does not include. An
+# explicit empty `[workspace]` table makes that intent defensive
+# against future workspace globs.
+
+[package]
+name        = "bitonic-sort-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference + fixture generator for nuc example 12-bitonic-sort."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "bitonic-sort-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"
