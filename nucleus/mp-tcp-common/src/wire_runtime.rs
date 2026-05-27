@@ -224,9 +224,13 @@ pub fn barrier_cross(sock: &mut TcpStream, barrier_id: u64) {
 // silent spin (AC#7 of TASK-0044.02.02; memory
 // `project-mp-tcp-event-vs-bufsync-safety-profile` analog).
 //
-// The deadline is read ONCE per process from the `NUC_POLL_DEADLINE_MS`
-// env var (default 30_000 ms = 30 s; tests can override to a small
-// value to exercise the deadline-exceeded path deterministically).
+// The deadline is read on every poll-helper invocation from the
+// `NUC_POLL_DEADLINE_MS` env var (default 30_000 ms = 30 s; tests can
+// override to a small value to exercise the deadline-exceeded path
+// deterministically). Per-call re-read is intentional: the
+// deadline-exceeded test mutates the env mid-process, and a cached-
+// once-per-process value would defeat that override. Cost is a single
+// env lookup per Wait/Push — negligible vs the I/O cost.
 
 /// Mark every subsequent read/write on `sock` nonblocking. Idempotent.
 /// Best-effort: panics LOUD on syscall failure (broken loopback

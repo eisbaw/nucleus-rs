@@ -33,7 +33,18 @@ mod tests {
     use super::wire::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Mutex;
     use std::thread;
+
+    // Serialise the 4 poll-helper tests that read or write the
+    // process-wide `NUC_POLL_DEADLINE_MS` env var. cargo test runs
+    // tests in parallel; without this, the deadline test's
+    // 50ms-override could land mid-handshake of one of the other 3
+    // poll tests, causing it to spuriously hit the deadline. The
+    // deadline test acquires the lock for its full set_var..panic..
+    // remove_var window; the 3 normal poll tests just block on it.
+    // (Review-gate cycle-195 architect P2.1 fold-back.)
+    static POLL_ENV_SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn scalar_round_trips() {
@@ -234,6 +245,7 @@ mod tests {
     /// yield_now path under normal conditions.
     #[test]
     fn framed_messages_round_trip_poll() {
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
 
@@ -274,6 +286,7 @@ mod tests {
     /// `project-mp-tcp-event-vs-bufsync-safety-profile`).
     #[test]
     fn read_msg_expect_poll_rejects_wrong_seq() {
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -304,6 +317,10 @@ mod tests {
     /// (`NUC_POLL_DEADLINE_MS=50`) so the test runs in <1 s.
     #[test]
     fn read_msg_expect_poll_panics_loud_on_deadline() {
+        // Lock the env-serial for the full set_var..panic..remove_var
+        // window so the 3 other poll tests don't see a 50ms deadline
+        // mid-handshake (architect cycle-195 P2.1 fold-back).
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // Hold a listener open without ever sending so the client's
         // read_msg_expect_poll exhausts its deadline.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -321,13 +338,10 @@ mod tests {
         let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
         apply_nonblocking(&c);
 
-        // SAFETY (test-only): set_var is unsafe in 2024; in this
-        // single-threaded #[test] body before any other code reads
-        // env we're not racing readers. The harness scopes the var to
-        // this process.
-        unsafe {
-            std::env::set_var("NUC_POLL_DEADLINE_MS", "50");
-        }
+        // Edition 2021: set_var is safe. We're already serialised
+        // against the other poll tests via POLL_ENV_SERIAL, so no
+        // reader race during this test's window.
+        std::env::set_var("NUC_POLL_DEADLINE_MS", "50");
         // Drive the deadline panic on a worker thread so we can catch
         // it via thread::join (instead of #[should_panic], which
         // would also accept *any* panic — we want the exact message).
@@ -345,15 +359,13 @@ mod tests {
             .or_else(|| err.downcast_ref::<&str>().copied())
             .unwrap_or("");
         // Restore the env so subsequent tests pick up the default.
-        // SAFETY: same justification as the set_var above.
-        unsafe {
-            std::env::remove_var("NUC_POLL_DEADLINE_MS");
-        }
+        std::env::remove_var("NUC_POLL_DEADLINE_MS");
         assert!(
             msg.contains("poll deadline exceeded")
                 && msg.contains("NUC_POLL_DEADLINE_MS=50")
-                && msg.contains("seq=7"),
-            "expected the deadline-exceeded panic naming seq+deadline; got: {msg:?}"
+                && msg.contains("seq=7")
+                && msg.contains("elapsed"),
+            "expected the deadline-exceeded panic naming seq+deadline+elapsed; got: {msg:?}"
         );
         // Clean up the server thread (it sleeps unconditionally).
         let _ = server.join();
@@ -363,6 +375,7 @@ mod tests {
     /// to `barrier_cross_two_party` for the blocking sibling.
     #[test]
     fn barrier_cross_poll_two_party() {
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {

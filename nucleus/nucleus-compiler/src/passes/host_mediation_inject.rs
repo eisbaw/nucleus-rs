@@ -2,7 +2,7 @@
 //!
 //! Add `host` as a participant to every [`ACFGNode::Sync`] whose
 //! participant set excludes it. Backend-local: invoked by
-//! `mp-tcp-bufsync` / `mp-tcp-event` whose transport topology
+//! `mp-tcp-bufsync` / `mp-tcp-event` / `mp-tcp-poll` whose transport topology
 //! (one-CTRL-stream-per-`(host, worker)` star) cannot lower a
 //! host-excluding barrier without a worker-to-worker mesh. Adding
 //! host as a mediating hub turns each host-excluding barrier into a
@@ -273,8 +273,9 @@ mod tests {
         // acfg_to_events together must place a Sync on host's
         // projected event list for every formerly-host-excluding
         // barrier. This is the contract the mp-tcp-bufsync /
-        // mp-tcp-event Plan::build relies on (rejection guard checks
-        // every Sync includes host; after this pass, every Sync does).
+        // mp-tcp-event / mp-tcp-poll Plan::build relies on (rejection
+        // guard checks every Sync includes host; after this pass,
+        // every Sync does).
         use crate::event::Event;
         use crate::passes::petri_to_events::acfg_to_events;
 

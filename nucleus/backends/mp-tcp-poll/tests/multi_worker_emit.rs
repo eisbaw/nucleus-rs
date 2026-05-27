@@ -88,13 +88,13 @@ fn poll_to_bufsync_equivalent(src: &str) -> String {
 
 /// Drop every comment line in the host-relay banner. Both backends
 /// emit a 4-7 line `// ...` block that introduces the relay phase;
-/// the exact wording differs (cycle-195 names poll-variant helpers
-/// + nonblocking-socket rationale, bufsync names TASK-0327
-/// star-topology). The hop lines themselves (`{ let __relay_payload
-/// = ... }`) are the load-bearing emit and are kept; trailing `//
-/// relay ...` end-of-line comments on the hop lines are NOT
-/// banner-line comments — they live on substantive code lines and
-/// must match.
+/// the exact wording differs: cycle-195 names poll-variant helpers
+/// and nonblocking-socket rationale; bufsync names TASK-0327
+/// star-topology. The hop lines themselves (the `{ let
+/// __relay_payload = ... }` statements) are the load-bearing emit
+/// and are kept; trailing `// relay ...` end-of-line comments on
+/// the hop lines are NOT banner-line comments — they live on
+/// substantive code lines and must match.
 ///
 /// Heuristic: a line starting with whitespace then `//` is a banner
 /// candidate. Both banner blocks contain known keywords (`host-relay
@@ -136,6 +136,55 @@ fn strip_relay_banner_comments(src: &str) -> String {
 }
 
 fn assert_poll_bin_equiv_bufsync(label: &str, poll_src: &str, bufsync_src: &str) {
+    // Cycle-195 review-gate P2.1 fold-back: guard against the
+    // regression direction the canonicaliser silently no-ops on. If
+    // poll regressed to emit blocking primitives, the `replace
+    // "_poll" -> ""` would be a no-op, both canonicalised forms would
+    // be identical, and the test would PASS while the code is wrong.
+    // Pin the load-bearing positive needles + blocking anti-needles
+    // BEFORE the swap canonicaliser runs. (Per-bin granularity here;
+    // the OR-style smoke positive needle lives in tests/skeleton.rs.)
+    //
+    // We only require poll to carry AT LEAST ONE poll-variant call:
+    // some bins (e.g. a host worker that only barrier-crosses) may
+    // not use read/write_msg_poll. Conversely the bufsync sibling
+    // must carry AT LEAST ONE blocking call; this guarantees the
+    // canonicaliser actually saw a swap to revert.
+    let poll_has_any_poll_call = poll_src.contains("wire::read_msg_expect_poll")
+        || poll_src.contains("wire::write_msg_poll")
+        || poll_src.contains("wire::barrier_cross_poll");
+    let bufsync_has_any_blocking_call = bufsync_src.contains("wire::read_msg_expect(&mut ")
+        || bufsync_src.contains("wire::write_msg(&mut ")
+        || bufsync_src.contains("wire::barrier_cross(&mut ");
+    assert!(
+        poll_has_any_poll_call,
+        "{label}: mp-tcp-poll bin carries NO wire::*_poll calls — \
+         cycle-195 swap regressed (canonicaliser would silently no-op)"
+    );
+    assert!(
+        bufsync_has_any_blocking_call,
+        "{label}: mp-tcp-bufsync bin carries NO blocking wire::* calls — \
+         oracle preconditions violated (cannot prove the swap was real)"
+    );
+    // And the inverse: poll must NOT carry blocking calls; if any
+    // bin slipped past the cycle-195 swap, the canonicaliser would
+    // mask the regression.
+    assert!(
+        !poll_src.contains("wire::read_msg_expect(&mut "),
+        "{label}: mp-tcp-poll bin contains blocking read_msg_expect \
+         — cycle-195 swap regressed in this bin"
+    );
+    assert!(
+        !poll_src.contains("wire::write_msg(&mut "),
+        "{label}: mp-tcp-poll bin contains blocking write_msg \
+         — cycle-195 swap regressed in this bin"
+    );
+    assert!(
+        !poll_src.contains("wire::barrier_cross(&mut "),
+        "{label}: mp-tcp-poll bin contains blocking barrier_cross \
+         — cycle-195 swap regressed in this bin"
+    );
+
     let poll_canon = strip_relay_banner_comments(&poll_to_bufsync_equivalent(poll_src));
     let bufsync_canon = strip_relay_banner_comments(bufsync_src);
     if poll_canon != bufsync_canon {

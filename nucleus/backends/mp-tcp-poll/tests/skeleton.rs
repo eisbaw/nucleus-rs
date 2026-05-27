@@ -94,6 +94,15 @@ fn multi_worker_emit_smoke_produces_per_worker_binaries() {
             "mp-tcp-poll bin {bin_path:?} contains blocking barrier_cross — \
              cycle-195 swap regressed:\n{src}"
         );
+        // cycle-195 (review-gate P2.2): the swap covers 3 wire
+        // primitives; without a per-bin anti-needle on write_msg, a
+        // regression that swapped write only in some bins would slip
+        // past the OR-style saw_write_poll positive-needle below.
+        assert!(
+            !src.contains("wire::write_msg(&mut "),
+            "mp-tcp-poll bin {bin_path:?} contains blocking write_msg — \
+             cycle-195 swap regressed:\n{src}"
+        );
     }
     assert!(
         saw_read_poll,
