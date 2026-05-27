@@ -326,18 +326,58 @@ schedule = "distributed"
 backend  = "mp-tcp-event"
 milestone = "M6"
 
-# 15-transpose/naive: TASK-0341.01 AC#1 language-sanity slice (cycle
-# 204). Single-`host` schedule with an identity-passthrough `xpose`
-# kernel; the example's structural point is the 2D axis-swap
-# `output[j][i] <-- xpose(input[i][j])` (H=8, W=16). No earlier example
-# has this output-axis-disagrees-with-input-axis shape. AC#2
-# (distributed-rows on output) and AC#3 (cross-backend cells)
-# deferred — single pthreads-sync cell at AC#1 closes the
-# language-sanity question; multi-worker / cross-backend follow up.
+# 15-transpose/naive: TASK-0341.01 AC#1 (pthreads-sync) landed cycle
+# 204 + TASK-0341.01.02 AC#3 (cross-backend promotion to the other 6
+# tier-1 backends) landed cycle 205. Single-`host` schedule with an
+# identity-passthrough `xpose` kernel; the example's structural point
+# is the 2D axis-swap `output[j][i] <-- xpose(input[i][j])` (H=8, W=16).
+# No earlier example has this output-axis-disagrees-with-input-axis
+# shape. Cross-backend bit-identity is by construction (single-`host`
+# schedule => shared single-worker renderer => byte-identical arithmetic
+# across pthreads-sync / pthreads-async / mp-tcp-bufsync / mp-tcp-event
+# / openmp-rs / mp-tcp-poll / mp-uds-event). Non-flake verified across
+# 3 e2e samples in cycle 205. AC#2 (distributed-rows on output) is a
+# separate follow-up at TASK-0341.01.01.
 [[required]]
 example  = "15-transpose"
 schedule = "naive"
 backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "mp-uds-event"
 milestone = "M6"
 
 [[required]]
