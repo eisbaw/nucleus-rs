@@ -17,12 +17,19 @@
 //     M1 (acfg/build.rs:325-327). So the canonical way to express a
 //     pure permutation is a kernel that returns its single argument.
 //
+// What this example also demonstrates (added post-AC#1):
+//   - Multi-worker distributed-rows partition: landed cycle 215
+//     (TASK-0341.01.01) on pthreads-sync; cross-backend × 6
+//     siblings landed cycle 216 (TASK-0341.01.01.01); all 7
+//     tier-1 backends now [[required]]. See
+//     schedules/distributed-rows.sched.nuc.
+//   - Cross-backend differential on the naive schedule: landed
+//     cycle 205 (TASK-0341.01.02); all 7 tier-1 backends
+//     [[required]].
+//
 // What this example does NOT demonstrate:
-//   - Multi-worker placement / partition=rows on the output. Filed as
-//     TASK-0341.01 AC#2 — deferred to a follow-up cycle.
-//   - Cross-backend differential beyond pthreads-sync. Filed as AC#3.
-//   - Halo, blocking, vectorising, pipelining, reuse. Not the point
-//     of this example.
+//   - Halo, blocking, vectorising, pipelining, reuse. Not the
+//     point of this example.
 //
 // Numeric choice: i32. Consistent with examples 01/02/03/05. There is
 // no reduction here, so f32 would have been deterministic too, but

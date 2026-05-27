@@ -11,27 +11,34 @@ axis-swap permutation over a 2D integer array.
 | Axis        | What                                                                           |
 | ----------- | ------------------------------------------------------------------------------ |
 | Algorithmic | 2D access on non-square dimensions with permuted LHS and RHS indices.          |
-| Scheduling  | Naive only at AC#1: every kernel on `host`. No transfers, no blocking.         |
-| Backends    | pthreads-sync only at AC#1. Other backends and `distributed-rows` deferred.    |
+| Scheduling  | `naive` (single-worker `host`) and `distributed-rows` (4 compute workers).     |
+| Backends    | All 7 tier-1 backends [[required]] on both schedules (naive + distributed-rows). |
 
 This is the smallest possible fixture for "output-axis disagrees with
 input-axis" — no other shipped example has this structural shape (01
 is 1D unit-stride; 05 is 2D but each output row reads input rows
 above/below in unit-stride, not transposed columns).
 
-## What this example does NOT stress (yet)
+## What this example also demonstrates (post-AC#1)
 
-- **Multi-worker placement / partition=rows on output.** AC#2 of
-  TASK-0341.01 — the partition would surface "output worker reads
-  non-contiguous input columns" (a strided fan-in shape). Deferred to
-  a follow-up cycle.
-- **Cross-backend differential, formally required.** AC#3 of
-  TASK-0341.01 — the same naive cell on the other six tier-1 backends.
-  All six PASSed bit-identical informationally at cycle 204 (the
-  shared single-worker renderer makes single-`host` schedules
-  byte-identical by construction). Formal promotion to [[required]]
-  is deferred to a separate follow-up cycle for multi-sample
-  verification and scope discipline.
+- **Multi-worker placement / row-band partition of the output's row
+  axis.** `distributed-rows.sched.nuc` uses `loop j : partition=workers`
+  to row-band the output's row axis (the inner j-loop). This is the
+  first shipped schedule to target an inner loop with
+  `partition=workers` — `partition_workers::find_loop`'s recursive
+  descent reaches it directly. The TASK-0301/TASK-0302 axis-mapping
+  filter handles the resulting asymmetric per-data outcome (output
+  j-banded gather, input whole-array broadcast) via the
+  contiguous-prefix invariant biting on the axis-swap shape. Landed
+  cycle 215 (TASK-0341.01.01) on pthreads-sync; cross-backend × 6
+  siblings landed cycle 216 (TASK-0341.01.01.01); all 7 tier-1
+  backends now [[required]] in the e2e matrix.
+- **Cross-backend differential on the naive schedule.** Landed cycle
+  205 (TASK-0341.01.02); all 7 tier-1 backends [[required]]
+  bit-identical against `reference.bin`.
+
+## What this example does NOT stress
+
 - **Compute.** The kernel is an identity passthrough. The point of
   the example is the dataflow shape, not the arithmetic.
 

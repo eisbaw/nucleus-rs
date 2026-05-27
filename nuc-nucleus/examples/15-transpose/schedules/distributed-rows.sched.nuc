@@ -69,8 +69,10 @@
 // Sync-only schedule lowers on every tier-1 backend
 // (pthreads-sync, mp-tcp-bufsync, pthreads-async, mp-tcp-event,
 // openmp-rs, mp-tcp-poll, mp-uds-event) without capability gaps.
-// Cross-backend promotion is the AC#3 follow-up; this cycle lands
-// pthreads-sync only.
+// Cross-backend promotion to all 7 tier-1 backends landed cycle
+// 216 (TASK-0341.01.01.01); cell-level [[required]] state in
+// nuc-nucleus/e2e-matrix.toml. Initial pthreads-sync landing was
+// cycle 215 (TASK-0341.01.01).
 
 schedule for "../prog.algo.nuc" {
     workers = { host, w0, w1, w2, w3 };
