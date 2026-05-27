@@ -40,12 +40,13 @@
 //! loopback + mio-reactor + per-(seq, peer) outbound-queue + per-seq
 //! inbound-queue backend (TASK-0042.05 / Stage 3 of TASK-0042.02
 //! landed cycle 79); `openmp-rs` is the M6 rayon-threads backend
-//! (single-worker arm landed cycle 191, multi-worker TASK-0044.01.01);
-//! `mp-tcp-poll` is the M6 OS-processes + TCP-loopback + nonblocking-
-//! poll backend (single-worker arm landed cycle 192, multi-worker
-//! TASK-0044.02.02); `mp-uds-event` is the M6 OS-processes + Unix-
-//! domain-sockets + mio backend (single-worker arm landed cycle 194,
-//! multi-worker TASK-0044.03.01).
+//! (single-worker arm landed cycle 191, multi-worker landed cycle 196
+//! via TASK-0044.01.01); `mp-tcp-poll` is the M6 OS-processes +
+//! TCP-loopback + nonblocking-poll backend (single-worker arm landed
+//! cycle 192, multi-worker landed cycle 195 via TASK-0044.02.02);
+//! `mp-uds-event` is the M6 OS-processes + Unix-domain-sockets + mio
+//! backend (single-worker arm landed cycle 194, multi-worker landed
+//! cycle 197 via TASK-0044.03.01).
 //!
 //! The four shipped (M1-M4) backends consume the identical
 //! EventList contract; the cross-backend differential (same source
@@ -62,14 +63,14 @@
 //! tier-1 backend, so the per-backend `ContractGap` rejections at
 //! `Plan::build` for host-excluding barriers / unmediated w↔w
 //! `Push`-`Wait` are defense-in-depth, not load-bearing. All three
-//! M6 backends have their single-worker arms live as of cycle 194 —
-//! openmp-rs cycle 191 (multi-worker via TASK-0044.01.01),
-//! mp-tcp-poll cycle 192 (multi-worker via TASK-0044.02.02),
-//! mp-uds-event cycle 194 (multi-worker via TASK-0044.03.01); each
-//! participates in the differential on 16 single-worker [[required]]
-//! cells (byte-identical against their respective templates:
-//! openmp-rs vs pthreads-sync, mp-tcp-poll vs mp-tcp-bufsync,
-//! mp-uds-event vs mp-tcp-event).
+//! M6 backends are fully landed as of cycle 197 (single-worker +
+//! multi-worker arms both live) — openmp-rs cycles 191/196,
+//! mp-tcp-poll cycles 192/195, mp-uds-event cycles 194/197; each
+//! participates in the cross-backend differential bit-identical
+//! against its template (openmp-rs vs pthreads-sync, mp-tcp-poll
+//! vs mp-tcp-bufsync, mp-uds-event vs mp-tcp-event). e2e baseline
+//! at the cycle-197b M6-matrix-complete milestone:
+//! 210/190/0/20/0 (total/pass/fail/skip/required-fail).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -121,9 +122,9 @@ fn print_help() {
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
-             openmp-rs       rayon threads (tier 1, single-worker LANDED, multi-worker pending TASK-0044.01.01)\n    \
-             mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker LANDED, multi-worker pending TASK-0044.02.02)\n    \
-             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker LANDED, multi-worker pending TASK-0044.03.01)\n"
+             openmp-rs       rayon threads (tier 1, single-worker + multi-worker landed cycles 191/196)\n    \
+             mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker + multi-worker landed cycles 192/195)\n    \
+             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n"
     );
 }
 
@@ -823,13 +824,13 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // shared memory + barrier + sync — same capability surface as
         // pthreads-sync (sync + shared-memory + barrier/blocking
         // notify), differing only in runtime substrate (rayon scope
-        // instead of std::thread). Status as of cycle 191:
-        // single-worker arm LANDED (delegates to pthreads-sync's
-        // `render_single_worker_main` + backend-common's
+        // instead of std::thread). Status as of cycle 197 (M6 matrix
+        // complete): single-worker arm landed cycle 191 (delegates to
+        // pthreads-sync's `render_single_worker_main` + backend-common's
         // project-skeleton, byte-identical to pthreads-sync /
-        // pthreads-async); multi-worker arm returns
-        // `EmitError::ContractGap` forward-linking TASK-0044.01.01
-        // (rayon-scope codegen pending).
+        // pthreads-async); multi-worker arm landed cycle 196 via
+        // TASK-0044.01.01 (rayon-scope codegen + 8 [[required]] cells
+        // bit-identical vs pthreads-sync template).
         "openmp-rs" => {
             let result =
                 openmp_rs::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
@@ -846,14 +847,15 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // loopback + nonblocking poll + sync — same capability surface
         // as mp-tcp-bufsync, differing only in the wait primitive
         // (nonblocking-read poll loop instead of blocking recv). Status
-        // as of cycle 192: single-worker arm LANDED (delegates to
-        // pthreads-sync's `render_single_worker_main_with_kernels_attr`
-        // + backend-common's multi_binary skeleton, byte-identical to
+        // as of cycle 197 (M6 matrix complete): single-worker arm landed
+        // cycle 192 (delegates to pthreads-sync's
+        // `render_single_worker_main_with_kernels_attr` +
+        // backend-common's multi_binary skeleton, byte-identical to
         // mp-tcp-bufsync's single-process output); multi-worker arm
-        // returns `EmitError::ContractGap` forward-linking
-        // TASK-0044.02.02 (nonblocking-poll codegen pending).
-        // Multi-binary shape (same dispatch fields as mp-tcp-bufsync /
-        // mp-tcp-event).
+        // landed cycle 195 via TASK-0044.02.02 (nonblocking-poll
+        // codegen + 8 [[required]] cells bit-identical vs mp-tcp-bufsync
+        // template). Multi-binary shape (same dispatch fields as
+        // mp-tcp-bufsync / mp-tcp-event).
         "mp-tcp-poll" => {
             let result =
                 mp_tcp_poll::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
@@ -873,16 +875,17 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // Unix domain sockets + mio/epoll + async + buffer — same
         // capability surface as mp-tcp-event, differing only in
         // transport (UDS instead of TCP loopback). Status as of cycle
-        // 194: single-worker arm LANDED (delegates to pthreads-sync's
+        // 197 (M6 matrix complete): single-worker arm landed cycle 194
+        // (delegates to pthreads-sync's
         // `render_single_worker_main_with_kernels_attr` +
         // backend-common's multi_binary skeleton, byte-identical to
         // mp-tcp-event's single-process output; wire.rs emitted from
         // mp_tcp_common::WIRE_RUNTIME_SRC verbatim for shape uniformity,
         // unused because the single-process bin does not `mod wire;`);
-        // multi-worker arm returns `EmitError::ContractGap`
-        // forward-linking TASK-0044.03.01 (UDS-reactor codegen pending;
-        // cycle-171 brief flags as candidate for lifting the transport
-        // layer from mp-tcp-event). Multi-binary shape with optional
+        // multi-worker arm landed cycle 197 via TASK-0044.03.01
+        // (UDS-reactor codegen + 13 [[required]] cells bit-identical
+        // vs mp-tcp-event template; transport-layer lift filed as
+        // TASK-0044.03.02 follow-up). Multi-binary shape with optional
         // runtime_rs (same as mp-tcp-event).
         "mp-uds-event" => {
             let result =
