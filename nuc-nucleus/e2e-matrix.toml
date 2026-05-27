@@ -578,8 +578,8 @@ milestone = "M6"
 # => cross-backend RUNTIME-OUTPUT bit-identical by construction;
 # same scaffolding (Cargo.toml/run.sh/src layout) diff per
 # project_skeleton family as 15-transpose / 16-jacobi. Non-flake
-# verified across 5 e2e samples (cycles 210 + 211); 17-spmv x 7 row
-# PASSed in 100% of samples.
+# verified across 6 e2e samples (2 in cycle 210 + 4 in cycle 211);
+# 17-spmv x 7 row PASSed in 100% of samples.
 [[required]]
 example  = "17-spmv"
 schedule = "naive"
