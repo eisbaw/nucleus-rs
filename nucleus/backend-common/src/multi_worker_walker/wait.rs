@@ -273,12 +273,24 @@ fn wait_slice(
     // Rank-3+ guard (TASK-0294 cycle-115 architect P2.1): a tile or
     // data shape with rank >= 3 would slip silently into the 2D arm,
     // consulting only the first two axes — the SAME HONEST-PARTIAL
-    // class the cycle-115 fix removed for 2-axis data. No shipped
-    // schedule constructs such a (tile, data) shape today (13-cnn-
-    // inference has rank-4 data but only rank-1 tiles via
-    // partition=workers, which hits the 1D arm below). Fail LOUD so
-    // a future schedule that does construct one is flagged at
-    // compile time rather than emitting an out-of-bounds gather.
+    // class the cycle-115 fix removed for 2-axis data.
+    //
+    // Cycle-209 update (TASK-0341.02.02.01): 16-jacobi/distributed
+    // is the FIRST in-tree schedule to construct a rank-3 (tile,
+    // data) shape — `partition=rows` on the spatial y-axis of
+    // `field[ITERS+1][H][W]` produces a per-worker rank-3 tile.
+    // The halo_inference (B') refinement (cycle 209) was the
+    // upstream unblocker; this guard is now the next-layer blocker
+    // for 16-jacobi/distributed × pthreads-sync (5 of 7 tier-1
+    // backends; the other two hit TASK-0330 first). The guard's
+    // pre-cycle-209 "No shipped schedule constructs such a (tile,
+    // data) shape today" claim no longer holds; extension to N-D
+    // nested-loop dispatch filed as TASK-0341.02.02.01.01. Until
+    // that lands, fail LOUD so a future schedule that does
+    // construct one is flagged at compile time rather than
+    // emitting an out-of-bounds gather. (The 13-cnn-inference
+    // rank-4 sibling-precedent the original comment cited still
+    // hits the 1D arm via partition=workers; no regression there.)
     if tile.bounds.len() > 2 || (tile.bounds.len() >= 2 && ty.dims.len() > 2) {
         return Err(EmitError::ContractGap(format!(
             "Wait of data {data:?}: tile rank {} and data dim rank {} \

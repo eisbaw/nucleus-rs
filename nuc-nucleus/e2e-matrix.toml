@@ -464,90 +464,87 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
-# 16-jacobi/distributed: TASK-0341.02.02 AC#3 honest-BLOCKED (cycle
-# 208). partition=rows on the spatial y-loop + sync transfers (a
-# pthreads-sync-compatible schedule shape) is rejected at compile
-# time by the halo_inference (B) partition-policy-aware rule:
+# Cycle-209 update: 16-jacobi/distributed layered honest-BLOCKED —
+# cycle 208 surfaced the halo_inference (B) rule reject; cycle 209
+# (TASK-0341.02.02.01) lifted that to (B') and re-tested all 7
+# tier-1 backends. After cycle 209 the blocker SPLITS into two
+# flavors, captured below:
 #
-#   halo-inference error (under partitioned iv): kernel call
-#   `jacobi5_or_seed` reads `field` at axis 0 with a non-affine
-#   index expression. Halo inference accepts only `iv + b`
-#   (b constant) — see PRD §13 / TASK-0260 module docs.
+# - 5 backends (pthreads-sync / pthreads-async / mp-tcp-event /
+#   openmp-rs / mp-uds-event): blocked by the 3D wait_slice gap
+#   (backend-common::multi_worker_walker::wait::wait_slice rank-3
+#   guard, TASK-0294 cycle-115 architect P2.1). The schedule
+#   constructs a rank-3 tile (partition=rows on `field[ITERS+1][H]
+#   [W]`) that the current 2D-only slice-paste code rejects loud
+#   rather than emitting an out-of-bounds gather. Lifted by
+#   TASK-0341.02.02.01.01 (extend wait_slice to N-D nested-loop
+#   dispatch).
 #
-# The failing read is `field[(t + ITERS) % (ITERS + 1)][..][..]` —
-# axis 0 references only iv `t` (NOT partitioned), but `y` (axis 1,
-# IS partitioned) is in the enclosing scope. The (B) rule
-# (TASK-0275 cycle 95) decides fatality from the FULL enclosing
-# scope, not from the ivs the failing index actually references —
-# so this is a precision gap, not a fundamental limit on halo
-# inference's reach into the Repeat body.
+# - 2 backends (mp-tcp-bufsync / mp-tcp-poll): cycle-209 empirically
+#   observed (AT FILING TIME) the TASK-0330 defensive guard fired
+#   (w2w Push inside an Event::Loop body). The flat host-relay
+#   model in cycle-148 / cycle-195 emits the relay block outside
+#   any loop, so an in-Loop w2w Push would over-count or mis-order.
+#   See memory project-mp-tcp-event-vs-bufsync-safety-profile for
+#   the safety profile difference vs mp-tcp-event (which carries
+#   the compiler-pass remediation `apply_host_data_relay_inject`).
 #
-# The 16-jacobi algorithm cannot be reformulated to dodge this: the
-# modulo wrap is essential to the single-Dataflow-on-`field`
-# formulation (folds seed-staging into the iteration body via a
-# kernel branch on `t`, same shape as 11-game-of-life which uses
-# the SAME wrap but does NOT trip the (B) rule because no iv in its
-# pipelined-schedule scope is partitioned).
-#
-# Refinement filed as TASK-0341.02.02.01: change the (B) fatality
-# predicate from `scope.iter().any(iv_is_partitioned)` to
-# `ivs_used_in_index.iter().any(iv_is_partitioned)`. Cycle 208
-# verified empirically that this is the only blocker (driver
-# accepts the schedule, capability check passes; halo_inference is
-# the precise pass that fires).
+# Cycle 209 also empirically reproduced the cycle-208 halo_inference
+# story: pre-cycle-209 every cell rejected at halo_inference; post-
+# cycle-209 every cell PROGRESSES past halo_inference and rejects at
+# the new layer. The (B') refinement landed; the next-layer gaps
+# are the precise blockers for AC#3 promotion now.
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "pthreads-sync"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: halo_inference (B) partition-policy-aware rule rejects field[(t + ITERS) % (ITERS + 1)] (non-affine modulo wrap on axis 0 referencing iv t, which is NOT partitioned; partition is on y at axis 1). Compiler-feature refinement filed as TASK-0341.02.02.01 (move the fatality predicate from enclosing-scope to index-expression-referenced ivs)."
-milestone = "M6"
-
-# The halo_inference (B) rule fires upstream of backend selection, so
-# the SAME compiler error rejects this schedule on EVERY tier-1
-# backend (sync and async alike — the rule is purely a compile-time
-# property of the algorithm + schedule). Each cell carries the
-# pthreads-sync sibling's TASK-0341.02.02.01 citation so the
-# refinement task's promotion sweep can find them in one grep.
-[[skip]]
-example  = "16-jacobi"
-schedule = "distributed"
-backend  = "mp-tcp-bufsync"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: post-cycle-209 (B') halo_inference refinement, the 3D wait_slice gap (backend-common::multi_worker_walker::wait::wait_slice rank-3 guard, TASK-0294 cycle-115 architect P2.1) is the precise blocker. partition=rows on `field[ITERS+1][H][W]` produces a rank-3 per-worker tile that the 2D-only slice-paste code rejects loud. Compiler-feature extension filed as TASK-0341.02.02.01.01 (extend wait_slice to N-D nested-loop dispatch)."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "pthreads-async"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above (the gap is in shared backend-common::wait_slice, not backend-specific). TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
-milestone = "M6"
-
-[[skip]]
-example  = "16-jacobi"
-schedule = "distributed"
-backend  = "mp-tcp-poll"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-uds-event"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 208: same halo_inference (B) rule gap as the pthreads-sync sibling above; TASK-0341.02.02.01 lifts it for ALL tier-1 backends (gap is in upstream halo_inference, not backend-specific)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
+milestone = "M6"
+
+# The two flat-host-relay sync backends hit a DIFFERENT next-layer
+# gap (TASK-0330 in-Loop w2w Push) — not the wait_slice gap. The
+# split fired in cycle 209's empirical re-test across all 7
+# backends; see the block-leading comment above.
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: TASK-0330 defensive guard fires (w2w Push inside Event::Loop body; the cycle-148 flat host-relay cannot handle in-Loop w2w transfers). Distinct from the 3D wait_slice gap that blocks the other 5 backends; bufsync inherits a per-pair FIFO constraint that makes the cycle-149 splice-point lift unsafe. See memory project-mp-tcp-event-vs-bufsync-safety-profile."
+milestone = "M6"
+
+[[skip]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Distinct from the 3D wait_slice gap that blocks the other 5 backends."
 milestone = "M6"
 
 [[required]]

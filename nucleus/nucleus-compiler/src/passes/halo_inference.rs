@@ -112,15 +112,30 @@
 //!   errors that the strict variant would have raised. Retained for
 //!   in-pass tests + direct callers that want the full error vector;
 //!   NOT called from the driver.
-//! - [`apply_halo_inference_partition_aware`] is the **(B)
-//!   partition-policy-aware** variant (TASK-0275): for each typed
-//!   error the walker raises, look at the enclosing-loop scope at the
-//!   error-push site. If ANY iv in that scope carries a
-//!   [`crate::sched::ResolvedLoopOption::Partition`] directive in the
-//!   schedule, the error is FATAL (returned as `Err` on the first such
-//!   occurrence). Otherwise the error is recorded in the advisory
-//!   vector and lowering proceeds with whatever halo widths the walker
-//!   COULD recover. This is the driver's entry point as of TASK-0275.
+//! - [`apply_halo_inference_partition_aware`] is the **(B')
+//!   partition-policy-aware** variant. Originally landed as the
+//!   (B) rule under TASK-0275 (cycle 95), refined to (B') under
+//!   TASK-0341.02.02.01 (cycle 209). For each typed error the
+//!   walker raises, the fatality predicate is one of two rules
+//!   depending on the error variant:
+//!
+//!   * For `DataDependentStride` and `UnknownKernelInCall` —
+//!     where the iv set the failing index actually depends on is
+//!     not bounded by the lexical iv walk — the rule consults the
+//!     enclosing-loop scope: if ANY iv in that scope carries a
+//!     [`crate::sched::ResolvedLoopOption::Partition`] directive,
+//!     the error is FATAL (the original cycle-95 (B) rule).
+//!   * For all other variants (`NonAffineIndex`,
+//!     `StridedAccessNotSupported`, `MultipleIterVarsInIndex`,
+//!     `UnknownLoopVar`) — where the failing index expression's iv
+//!     set is recoverable lexically via [`collect_iter_var_refs`] —
+//!     the rule consults THAT iv set: fatal iff at least one of
+//!     those ivs is partitioned. This is the cycle-209 refinement.
+//!
+//!   Otherwise the error is recorded in the advisory vector and
+//!   lowering proceeds with whatever halo widths the walker COULD
+//!   recover. This is the driver's entry point as of TASK-0275 /
+//!   TASK-0341.02.02.01.
 //!
 //! Why the driver is partition-policy-aware and NOT (A) strict
 //! (cf. TASK-0271 reuse precedent which IS (A) strict): the halo
@@ -132,14 +147,27 @@
 //! partition, so (B) degenerates into (A) for reuse and the simpler
 //! strict promotion sufficed (TASK-0271 cycle 88).
 //!
-//! Real-world reachable case the (B) policy preserves: example 11
-//! (`11-game-of-life`) reads `grid[(t + ITERS) % (ITERS + 1)]` — a
-//! compile-time-constant `Mod` wrap that the affine detector cannot
-//! fold. The naive/pipelined schedules carry ZERO `partition=`
-//! directives, so under (B) this stays in the advisory bucket and
-//! both cells stay PASS. A naive (A) strict mirror would
-//! newly-reject example 11. See TASK-0263 cycle-89 verification
-//! block for the full reasoning.
+//! Two real-world reachable cases the (B') policy preserves:
+//!
+//! - Example 11 (`11-game-of-life`) reads
+//!   `grid[(t + ITERS) % (ITERS + 1)]` — a compile-time-constant
+//!   `Mod` wrap the affine detector cannot fold. The naive/
+//!   pipelined schedules carry ZERO `partition=` directives, so the
+//!   failing-index iv set `{t}` and the scope set are both
+//!   un-partitioned; under (B') (and the cycle-95 (B)) this stays
+//!   advisory and both cells stay PASS. A naive (A) strict mirror
+//!   would newly-reject example 11. See TASK-0263 cycle-89
+//!   verification block for the full reasoning.
+//!
+//! - Example 16 (`16-jacobi`) /distributed reads
+//!   `field[(t + ITERS) % (ITERS + 1)][y-1][x]` under
+//!   `partition=rows` on `y`. The failing axis is axis 0 (iv `t`,
+//!   NOT partitioned); the partitioned iv `y` is on axis 1 (`y-1`
+//!   on axis 1 IS affine — no error there). The cycle-95 (B) rule
+//!   incorrectly classified this fatal because `y` was in the
+//!   enclosing scope; the cycle-209 (B') rule correctly classifies
+//!   it advisory because the failing-index iv set is `{t}` only,
+//!   and `t` is not partitioned. Closes TASK-0341.02.02 AC#3.
 //!
 //! ## Honest limitations (first cut)
 //!
@@ -410,7 +438,7 @@ impl std::error::Error for HaloInferenceError {}
 /// validates every kernel call up front before mutating the sidecar.
 pub fn apply_halo_inference(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, HaloInferenceError> {
     let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
-    if let Some((e, _scope)) = errors_with_scope.into_iter().next() {
+    if let Some((e, _scope, _ivs)) = errors_with_scope.into_iter().next() {
         return Err(e);
     }
     Ok(commit_halo_widths(acfg, halo))
@@ -439,48 +467,128 @@ pub fn apply_halo_inference_advisory(
 ) -> (ACFG, Vec<HaloInferenceError>) {
     let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
     let acfg = commit_halo_widths(acfg, halo);
-    let errors: Vec<HaloInferenceError> =
-        errors_with_scope.into_iter().map(|(e, _scope)| e).collect();
+    let errors: Vec<HaloInferenceError> = errors_with_scope
+        .into_iter()
+        .map(|(e, _scope, _ivs)| e)
+        .collect();
     (acfg, errors)
 }
 
-/// Partition-policy-aware variant (TASK-0275): per-error fatality
-/// decision based on whether the enclosing-loop scope at the error
-/// site contains an iv that carries a
-/// [`ResolvedLoopOption::Partition`] directive in the schedule.
+/// Partition-policy-aware variant — (B') rule as of
+/// TASK-0341.02.02.01 cycle 209. Per-error fatality decision based
+/// on whether the FAILING INDEX EXPRESSION references an iv that
+/// carries a [`ResolvedLoopOption::Partition`] directive in the
+/// schedule (refinement of the cycle-95 (B) rule, which consulted
+/// the FULL ENCLOSING SCOPE).
 ///
 /// Rationale (see module-level "Strict vs advisory vs
 /// partition-policy-aware entry points" for the full picture): the
-/// `transfer_inject` halo consumer is conditional on the iv being
-/// partitioned. A naive (A) strict promotion (mirroring the
-/// TASK-0271 reuse promotion) would newly-reject shipped examples
-/// like `11-game-of-life` whose `step_or_seed` reads
-/// `grid[(t + ITERS) % (ITERS + 1)]` (Mod wrap the affine detector
-/// cannot fold) even though no schedule for the example carries a
-/// `partition=` directive. The (B) rule preserves the baseline while
-/// still failing loudly on the cases where a backend would silently
-/// emit wrong output.
+/// `transfer_inject` halo consumer extends per-tile transfer ranges
+/// only when the iv at the kernel-call site is itself partitioned.
+/// If the failing index references only non-partitioned ivs (e.g.
+/// `field[(t + ITERS) % (ITERS + 1)][y-1][x]` where `y` IS
+/// partitioned but axis 0 references only `t`), the missing halo
+/// entry is harmless — the consumer does not fire on that axis.
 ///
-/// Returns `Ok((acfg, advisory_errors))` when no error fell under a
-/// partitioned iv; the advisory vector lists the typed errors the
-/// walker raised that the (B) policy deemed harmless. Returns
-/// `Err(e)` on the first error whose scope contained a partitioned iv
-/// — that is the fail-fast contract the driver leans on. The
-/// returned ACFG is the committed sidecar (mirrors the advisory
-/// variant: partial halo widths from the walker are preserved).
+/// The cycle-95 (B) rule's predicate `scope.iter().any(...)` was
+/// one axis-mapping degree of freedom too coarse: it fired fatal
+/// whenever ANY iv in the lexical scope was partitioned, regardless
+/// of which iv the failing index referenced. 16-jacobi/distributed
+/// (cycle 208) was the first encountered shape where a non-affine
+/// wrap on a non-partitioned axis SHARED the enclosing scope with a
+/// partitioned iv on a DIFFERENT axis; the (B) rule rejected even
+/// though no halo strip on the partitioned axis was at risk.
+///
+/// Per-variant rule split (see [`classify_index`] for the iv-set
+/// population at each push site):
+///
+/// - [`HaloInferenceError::DataDependentStride`] — index is itself
+///   a `DataRef`/`Call`; the iv set is empty (the lexical walker
+///   does not descend into data-dependent addresses). Falls back
+///   to the conservative SCOPE predicate: if any iv in scope is
+///   partitioned, fatal. Rationale: the runtime value of the
+///   data-dependent address determines which cell is read, and
+///   that is unbounded by the lexical iv set.
+/// - All other variants ([`NonAffineIndex`],
+///   [`StridedAccessNotSupported`], [`MultipleIterVarsInIndex`],
+///   [`UnknownLoopVar`]) — the iv set is populated by
+///   [`collect_iter_var_refs`] at the error-push site. Fatal iff
+///   AT LEAST ONE iv in the failing-index set is partitioned;
+///   advisory otherwise. The 11-game-of-life regression pin
+///   ("no partition + Mod wrap stays advisory") is preserved: the
+///   pipelined/naive schedules carry zero `partition=`, so no iv
+///   in the failing-index set (= `{t}`) returns `true` from
+///   [`iv_is_partitioned`].
+///
+/// Returns `Ok((acfg, advisory_errors))` when no error was
+/// classified fatal; the advisory vector lists the typed errors the
+/// walker raised that the (B') policy deemed harmless. Returns
+/// `Err(e)` on the first error classified fatal — that is the
+/// fail-fast contract the driver leans on. The returned ACFG is the
+/// committed sidecar (mirrors the advisory variant: partial halo
+/// widths from the walker are preserved).
+///
+/// [`NonAffineIndex`]: HaloInferenceError::NonAffineIndex
+/// [`StridedAccessNotSupported`]: HaloInferenceError::StridedAccessNotSupported
+/// [`MultipleIterVarsInIndex`]: HaloInferenceError::MultipleIterVarsInIndex
+/// [`UnknownLoopVar`]: HaloInferenceError::UnknownLoopVar
 pub fn apply_halo_inference_partition_aware(
     linked: &LinkedIR,
     acfg: ACFG,
 ) -> Result<(ACFG, Vec<HaloInferenceError>), HaloInferenceError> {
     let (halo, errors_with_scope) = infer_halo_widths(linked, &acfg);
     let mut advisory: Vec<HaloInferenceError> = Vec::new();
-    for (err, scope) in errors_with_scope {
-        if scope.iter().any(|iv| iv_is_partitioned(linked, iv)) {
+    for (err, scope, ivs_in_index) in errors_with_scope {
+        if error_is_fatal_under_partition(&err, &scope, &ivs_in_index, linked) {
             return Err(err);
         }
         advisory.push(err);
     }
     Ok((commit_halo_widths(acfg, halo), advisory))
+}
+
+/// (B') per-variant fatality predicate. Split from the entry-point
+/// loop so the per-variant rule is self-documenting + unit-testable
+/// without recreating an `infer_halo_widths` walk.
+///
+/// See [`apply_halo_inference_partition_aware`] for the doc on the
+/// per-variant split. The two-rule shape is intentional: `ivs_in_index`
+/// is precise but lexical, so the data-dependent variant — whose
+/// address is determined at runtime, not by lexically-visible ivs —
+/// falls back to the conservative pre-cycle-209 enclosing-scope rule.
+fn error_is_fatal_under_partition(
+    err: &HaloInferenceError,
+    scope: &[String],
+    ivs_in_index: &[String],
+    linked: &LinkedIR,
+) -> bool {
+    match err {
+        // Data-dependent address: the runtime cell the worker reads
+        // is determined by `lookup[..]` or `f(..)`, not by the
+        // lexically-visible iv set. The (B') refinement cannot
+        // safely narrow this case — keep the (B) conservative
+        // enclosing-scope rule.
+        HaloInferenceError::DataDependentStride { .. } => {
+            scope.iter().any(|iv| iv_is_partitioned(linked, iv))
+        }
+        // Link-invariant break: the kernel id was missing from
+        // `name_kernels`. Never reachable from a link-valid IR.
+        // Fall back to scope conservatively — the variant exists
+        // primarily for fail-closed diagnostics on inconsistently-
+        // constructed `(LinkedIR, ACFG)` pairs.
+        HaloInferenceError::UnknownKernelInCall { .. } => {
+            scope.iter().any(|iv| iv_is_partitioned(linked, iv))
+        }
+        // Precise variants: the iv set is populated from the
+        // failing index expression at the error-push site. Fatal
+        // iff at least one of those ivs is partitioned.
+        HaloInferenceError::NonAffineIndex { .. }
+        | HaloInferenceError::StridedAccessNotSupported { .. }
+        | HaloInferenceError::MultipleIterVarsInIndex { .. }
+        | HaloInferenceError::UnknownLoopVar { .. } => {
+            ivs_in_index.iter().any(|iv| iv_is_partitioned(linked, iv))
+        }
+    }
 }
 
 /// Does the schedule's `loops` table tag this iv with a
@@ -505,27 +613,48 @@ fn iv_is_partitioned(linked: &LinkedIR, iv: &str) -> bool {
 
 /// Halo-widths map: kernel → iter-var → halo width.
 type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
-/// Typed error paired with the enclosing-loop scope (outermost-first
-/// iter-var names) captured at the error-push site. Load-bearing for
-/// [`apply_halo_inference_partition_aware`]: the scope is the precise
-/// iv set the per-error fatality predicate consults.
-type HaloErrorWithScope = (HaloInferenceError, Vec<String>);
+/// Typed error paired with TWO iv-name vectors captured at the
+/// error-push site:
+///
+/// - The enclosing-loop scope (outermost-first iter-var names) — the
+///   pre-TASK-0341.02.02.01 fatality input. Kept for the conservative
+///   fallback on [`HaloInferenceError::DataDependentStride`] (where
+///   the index expression is itself a `DataRef`/`Call` and an
+///   iv-name walk through the data-dependent address would not
+///   surface every iv the partition impact depends on).
+/// - The ivs the FAILING INDEX EXPRESSION actually references —
+///   collected via [`collect_iter_var_refs`]. Empty when the index
+///   is a `DataDependentStride` (the walker short-circuits on
+///   data-dependent shape before iv collection) OR a pure-constant
+///   index that nonetheless trips the const-fold.
+///
+/// Load-bearing for [`apply_halo_inference_partition_aware`]'s (B')
+/// fatality predicate (TASK-0341.02.02.01 cycle 209): the precise
+/// iv set lets a non-affine wrap on a non-partitioned axis stay
+/// advisory even when a sibling axis IS partitioned (the 16-jacobi/
+/// distributed case the (B) rule incorrectly rejected). See the
+/// module-level "Strict vs advisory vs partition-policy-aware entry
+/// points" doc for the per-variant rule split.
+type HaloErrorWithScope = (HaloInferenceError, Vec<String>, Vec<String>);
 
 /// Core inference: walk `linked.algo.stmts` and return both the
 /// populated halo map AND the typed errors raised along the way,
-/// PAIRED with the enclosing-loop scope at the error-push site
-/// (outermost-first iv names). The walker is COLLECTING (does not
-/// short-circuit on the first error) so the lenient + (B)
-/// partition-policy-aware variants can both walk a per-error
+/// PAIRED with two iv-name vectors at the error-push site: the
+/// enclosing-loop scope (outermost-first) AND the ivs the failing
+/// index expression actually references. The walker is COLLECTING
+/// (does not short-circuit on the first error) so the lenient +
+/// (B') partition-policy-aware variants can both walk a per-error
 /// decision over the full error list. The strict variant short-
 /// circuits on the first error at the entry point.
 ///
-/// The paired scope is load-bearing for
-/// [`apply_halo_inference_partition_aware`]: it is the precise iv
-/// set the per-error fatality predicate consults. Both
+/// Both iv-vectors are load-bearing for
+/// [`apply_halo_inference_partition_aware`]'s per-variant (B')
+/// rule split — see that function's docstring for the per-variant
+/// rule split between scope-fallback (data-dependent /
+/// link-invariant) and ivs-in-index (precise affine variants).
 /// [`apply_halo_inference`] and [`apply_halo_inference_advisory`]
-/// strip the scope at the call site (they only need the typed
-/// error).
+/// strip both iv-vectors at their call sites (they only need the
+/// typed error).
 fn infer_halo_widths(linked: &LinkedIR, acfg: &ACFG) -> (HaloMap, Vec<HaloErrorWithScope>) {
     let ctx = WalkCtx {
         name_kernels: &acfg.name_kernels,
@@ -682,11 +811,18 @@ fn process_call(
     let kid = match ctx.name_kernels.get(callee) {
         Some(k) => *k,
         None => {
+            // Link-invariant break: empty iv set + scope kept for
+            // diagnostic only. The per-error fatality predicate
+            // would never reach this variant in practice (every
+            // production callsite checks `name_kernels` before
+            // halo_inference runs); the (B') rule's conservative
+            // fallback applies if it ever did.
             errors.push((
                 HaloInferenceError::UnknownKernelInCall {
                     callee: callee.to_string(),
                 },
                 scope.to_vec(),
+                Vec::new(),
             ));
             return;
         }
@@ -768,6 +904,16 @@ fn classify_index(
     errors: &mut Vec<HaloErrorWithScope>,
 ) {
     // Reject early: DataRef or Call inside the index = data-dependent.
+    //
+    // The (B') predicate (TASK-0341.02.02.01 cycle 209) uses the iv
+    // set the FAILING INDEX EXPRESSION references — but a data-
+    // dependent address (e.g. `grid[lookup[y]]`) makes the
+    // partition impact unknowable from the lexical iv set alone:
+    // the address depends on `lookup[y]`, and the runtime value of
+    // `lookup[y]` determines which cell of `grid` the worker reads.
+    // We push an empty iv set so the per-error fatality predicate
+    // falls back to the conservative enclosing-scope rule for this
+    // variant only (see `apply_halo_inference_partition_aware`).
     if expr_contains_dataref_or_call(e) {
         errors.push((
             HaloInferenceError::DataDependentStride {
@@ -776,6 +922,7 @@ fn classify_index(
                 ax_idx: site.ax_idx,
             },
             scope.to_vec(),
+            Vec::new(),
         ));
         return;
     }
@@ -794,7 +941,11 @@ fn classify_index(
         return;
     }
 
+    // The iv set for the failing-index payload is `ivs_used`
+    // verbatim — populated lazily as a `Vec<String>` only at each
+    // error-push site (and skipped on the success paths).
     if ivs_used.len() > 1 {
+        let iv_list: Vec<String> = ivs_used.iter().cloned().collect();
         errors.push((
             HaloInferenceError::MultipleIterVarsInIndex {
                 kernel: site.callee.to_string(),
@@ -803,6 +954,7 @@ fn classify_index(
                 iter_vars: ivs_used.into_iter().collect(),
             },
             scope.to_vec(),
+            iv_list,
         ));
         return;
     }
@@ -821,6 +973,7 @@ fn classify_index(
                     ax_idx: site.ax_idx,
                 },
                 scope.to_vec(),
+                vec![iv_name.clone()],
             ));
             return;
         }
@@ -835,6 +988,7 @@ fn classify_index(
                 coefficient: coeff,
             },
             scope.to_vec(),
+            vec![iv_name.clone()],
         ));
         return;
     }
@@ -849,9 +1003,11 @@ fn classify_index(
             // constructed `(LinkedIR, ACFG)` pair fails closed with a
             // typed error rather than panicking (cycle-81 architect
             // review F-P1).
+            let iv_payload = vec![iv_name.clone()];
             errors.push((
                 HaloInferenceError::UnknownLoopVar { var: iv_name },
                 scope.to_vec(),
+                iv_payload,
             ));
             return;
         }
@@ -1521,5 +1677,246 @@ mod tests {
         let linked = link(linked.algo, linked.sched).expect("re-link with effectful K");
         let acfg = build_acfg_and_apply(&linked).expect("halo inference succeeds");
         assert!(acfg.halo_widths.is_empty());
+    }
+
+    // ---- TASK-0341.02.02.01 (B') partition-policy-aware regression
+    // ---- pins. The cycle-209 refinement narrows the (B) fatality
+    // ---- predicate from "any iv in enclosing scope is partitioned"
+    // ---- to "the failing index expression itself references a
+    // ---- partitioned iv". Pin both edges:
+    //
+    // - `bprime_modwrap_nonpartitioned_axis_stays_advisory` is the
+    //   16-jacobi/distributed shape: a non-affine Mod-wrap on a
+    //   non-partitioned axis SHARES the lexical scope with a
+    //   partitioned iv on a DIFFERENT axis. Cycle 208 demonstrated
+    //   the (B) rule rejected this; cycle 209's (B') rule classifies
+    //   it advisory (the precise correctness condition).
+    //
+    // - `bprime_modwrap_partitioned_axis_stays_fatal` is the
+    //   complement: a non-affine Mod-wrap ON the partitioned axis
+    //   must STILL fire fatal. Verifies that the (B') refinement
+    //   does not silently weaken correctness when the gap really
+    //   matters.
+    //
+    // - `bprime_strided_on_partitioned_iv_stays_fatal` verifies the
+    //   per-variant rule applies symmetrically to
+    //   `StridedAccessNotSupported`: a stride-2 read on the
+    //   partitioned iv still rejects.
+    //
+    // - `bprime_modwrap_no_partition_at_all_stays_advisory` is the
+    //   11-game-of-life regression pin: under naive/pipelined
+    //   schedules (no partition directive anywhere) the Mod-wrap
+    //   error stays advisory (it did under (B); it must continue
+    //   to under (B')).
+
+    use crate::sched::{ResolvedLoopDirective, ResolvedLoopOption};
+
+    /// Construct a tiny ResolvedLoopDirective adding a
+    /// `partition=workers` option to the named iv. The exact
+    /// PartitionKind is irrelevant to `iv_is_partitioned` (it just
+    /// checks for any `Partition(_)`), but `Workers` is the lowest-
+    /// dependency variant for synthetic fixtures.
+    fn loop_partition_workers(iv: &str) -> ResolvedLoopDirective {
+        ResolvedLoopDirective {
+            var: iv.to_string(),
+            options: vec![ResolvedLoopOption::Partition(
+                crate::sched::PartitionKind::Workers,
+            )],
+            var_span: None,
+        }
+    }
+
+    fn ir_mod(l: IrExpr, r: IrExpr) -> IrExpr {
+        IrExpr::BinOp(IrBinOp::Mod, Box::new(l), Box::new(r))
+    }
+
+    /// 16-jacobi/distributed shape: `grid[(t + 3) % 4][y]` inside
+    /// `for t { for y { ... } }` with `y` partitioned. The failing
+    /// index is at axis 0 (the Mod wrap) and references only `t`.
+    /// Under (B') this stays advisory; under the pre-cycle-209 (B)
+    /// rule it would have been fatal.
+    #[test]
+    fn bprime_modwrap_nonpartitioned_axis_stays_advisory() {
+        // for t : 0..5 { for y : 1..7 { out[t][y] <-- K(grid[(t+3)%4][y]) } }
+        let stmts = vec![IrStmt::For {
+            var: "t".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(5),
+            body: vec![IrStmt::For {
+                var: "y".to_string(),
+                lo: ir_int(1),
+                hi: ir_int(7),
+                body: vec![IrStmt::Dataflow {
+                    lhs: lhs("out", vec![ir_id("t"), ir_id("y")]),
+                    rhs: ir_call(
+                        "K",
+                        vec![data_ref(
+                            "grid",
+                            vec![
+                                ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)),
+                                ir_id("y"),
+                            ],
+                        )],
+                    ),
+                }],
+            }],
+        }];
+        let mut linked = build_linked(stmts, vec![5, 8]);
+        // Partition the y axis, NOT the t axis.
+        linked
+            .sched
+            .loops
+            .insert("y".to_string(), loop_partition_workers("y"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let (acfg, advisory) = apply_halo_inference_partition_aware(&linked, acfg)
+            .expect("(B') must classify this advisory — y partitioned but failing axis is t");
+        // Exactly one advisory error (the NonAffineIndex on axis 0).
+        assert_eq!(
+            advisory.len(),
+            1,
+            "expected one advisory error, got: {advisory:?}"
+        );
+        assert!(
+            matches!(
+                &advisory[0],
+                HaloInferenceError::NonAffineIndex { ax_idx: 0, .. }
+            ),
+            "advisory[0] = {:?}",
+            advisory[0]
+        );
+        // The y-axis read at index 1 of `grid` is affine (bare `y`,
+        // halo 0) — halo_widths[K][y] should be recorded with width
+        // 0. The t-axis carried no halo because the Mod wrap was
+        // unfoldable and the iv is non-partitioned.
+        let k_id = *acfg.name_kernels.get("K").unwrap();
+        let y_iv = *acfg.name_iter_vars.get("y").unwrap();
+        assert_eq!(
+            acfg.halo_widths
+                .get(&k_id)
+                .and_then(|m| m.get(&y_iv))
+                .copied(),
+            Some(0)
+        );
+    }
+
+    /// Complement of the above: the partitioned iv IS `t` (the axis
+    /// the Mod wrap is on). Now (B') must classify fatal — the
+    /// partition impact on axis 0 is real, and a halo cannot be
+    /// inferred.
+    #[test]
+    fn bprime_modwrap_partitioned_axis_stays_fatal() {
+        let stmts = vec![IrStmt::For {
+            var: "t".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(5),
+            body: vec![IrStmt::For {
+                var: "y".to_string(),
+                lo: ir_int(0),
+                hi: ir_int(8),
+                body: vec![IrStmt::Dataflow {
+                    lhs: lhs("out", vec![ir_id("t"), ir_id("y")]),
+                    rhs: ir_call(
+                        "K",
+                        vec![data_ref(
+                            "grid",
+                            vec![
+                                ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)),
+                                ir_id("y"),
+                            ],
+                        )],
+                    ),
+                }],
+            }],
+        }];
+        let mut linked = build_linked(stmts, vec![5, 8]);
+        // Partition the t axis (the WRAP axis).
+        linked
+            .sched
+            .loops
+            .insert("t".to_string(), loop_partition_workers("t"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let err = apply_halo_inference_partition_aware(&linked, acfg)
+            .expect_err("(B') must classify fatal — t is partitioned and the failing index references t");
+        assert!(
+            matches!(err, HaloInferenceError::NonAffineIndex { ax_idx: 0, .. }),
+            "expected NonAffineIndex on axis 0, got: {err:?}"
+        );
+    }
+
+    /// `StridedAccessNotSupported` on the partitioned iv must still
+    /// fire fatal. Symmetric to the Mod-wrap fatal case but on the
+    /// strided variant, exercising a different error-push site.
+    #[test]
+    fn bprime_strided_on_partitioned_iv_stays_fatal() {
+        // for y : 0..15 { out[y] <-- K(grid[2*y]) } with y partitioned.
+        let stmts = vec![IrStmt::For {
+            var: "y".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(15),
+            body: vec![IrStmt::Dataflow {
+                lhs: lhs("out", vec![ir_id("y")]),
+                rhs: ir_call(
+                    "K",
+                    vec![data_ref("grid", vec![ir_mul(ir_int(2), ir_id("y"))])],
+                ),
+            }],
+        }];
+        let mut linked = build_linked(stmts, vec![32]);
+        linked
+            .sched
+            .loops
+            .insert("y".to_string(), loop_partition_workers("y"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let err = apply_halo_inference_partition_aware(&linked, acfg)
+            .expect_err("(B') must classify fatal — y is partitioned and the failing index references y");
+        assert!(
+            matches!(err, HaloInferenceError::StridedAccessNotSupported { .. }),
+            "expected StridedAccessNotSupported, got: {err:?}"
+        );
+    }
+
+    /// 11-game-of-life regression pin: Mod-wrap on iv with NO
+    /// partition directive anywhere on any iv. Stays advisory under
+    /// both (B) and (B'). Confirms the cycle-209 refinement did not
+    /// silently regress the canonical preserved case.
+    #[test]
+    fn bprime_modwrap_no_partition_at_all_stays_advisory() {
+        let stmts = vec![IrStmt::For {
+            var: "t".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(5),
+            body: vec![IrStmt::For {
+                var: "i".to_string(),
+                lo: ir_int(0),
+                hi: ir_int(32),
+                body: vec![IrStmt::Dataflow {
+                    lhs: lhs("out", vec![ir_id("t"), ir_id("i")]),
+                    rhs: ir_call(
+                        "K",
+                        vec![data_ref(
+                            "grid",
+                            vec![
+                                ir_mod(ir_add(ir_id("t"), ir_int(4)), ir_int(5)),
+                                ir_id("i"),
+                            ],
+                        )],
+                    ),
+                }],
+            }],
+        }];
+        let linked = build_linked(stmts, vec![5, 32]);
+        // No partition directives anywhere.
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let (_acfg, advisory) = apply_halo_inference_partition_aware(&linked, acfg)
+            .expect("no partition anywhere ⇒ advisory");
+        assert_eq!(
+            advisory.len(),
+            1,
+            "expected one advisory error (the Mod-wrap NonAffineIndex), got: {advisory:?}"
+        );
+        assert!(matches!(
+            advisory[0],
+            HaloInferenceError::NonAffineIndex { ax_idx: 0, .. }
+        ));
     }
 }
