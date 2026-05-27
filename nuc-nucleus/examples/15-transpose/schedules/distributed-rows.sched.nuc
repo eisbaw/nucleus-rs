@@ -45,8 +45,15 @@
 //   axis-swap shape. It is the CORRECT graceful-degradation path
 //   per the cycle-118/121 design: a non-contiguous coverage shape
 //   degrades safely to whole-array broadcast rather than emitting
-//   silently wrong tile bounds. The cell exercises this path on a
-//   real example for the first time.
+//   silently wrong tile bounds. Structural twin of 07-matmul ×
+//   distributed-2d (cycle 121, TASK-0302), where `b[k][j]` ×
+//   partition=blocks2d(i,j) hits the same sparse-coverage →
+//   Some(empty) → broadcast shape. What is structurally NEW in
+//   15-transpose vs 07-matmul/distributed-2d is the inner-loop
+//   partition target (`loop j : partition=workers` reaches the
+//   inner j-loop via partition_workers::find_loop's recursive
+//   descent — every prior `partition=workers` cell targeted the
+//   outermost loop of the for-nest).
 //
 // Why bit-identical is achievable
 // -------------------------------

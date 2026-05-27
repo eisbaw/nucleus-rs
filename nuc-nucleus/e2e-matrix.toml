@@ -439,7 +439,13 @@ milestone = "M6"
 # The asymmetric per-data outcome is the contiguous-prefix
 # invariant biting on the axis-swap shape; graceful-degradation
 # to whole-array broadcast is the CORRECT design path (not a
-# regression). First example to exercise this path empirically.
+# regression). Structural twin of 07-matmul × distributed-2d
+# (cycle 121, TASK-0302), where `b[k][j]` × partition=blocks2d(i,j)
+# hits the same sparse-coverage → Some(empty) → broadcast shape.
+# What is structurally NEW in 15-transpose vs 07-matmul/distributed-2d
+# is the inner-loop partition target — every prior partition=workers
+# cell targets the outermost loop of the for-nest; 15-transpose's
+# `loop j` is the first inner-loop partition.
 #
 # Cross-backend promotion is the AC follow-out
 # TASK-0341.01.01's-companion task; only pthreads-sync is
