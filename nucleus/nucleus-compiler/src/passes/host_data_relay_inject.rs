@@ -38,7 +38,8 @@
 //! Applied by the driver for `mp-tcp-event` ONLY (matches the slice-1
 //! `apply_safe_push_reorder` conditionality and the cycle-160
 //! `apply_host_mediation_inject` conditionality on the TCP backends).
-//! pthreads-sync / pthreads-async have native shared-memory channels
+//! pthreads-sync / pthreads-async / openmp-rs have native shared-memory
+//! channels (`Slot<T>` rendezvous via `Mutex<Option<T>>` + `Condvar`)
 //! for any (worker, worker) pair and do NOT benefit from host
 //! mediation; applying this pass on those backends would *add*
 //! unnecessary serialisation through host. mp-tcp-bufsync is excluded

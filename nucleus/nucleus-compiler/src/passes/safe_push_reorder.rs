@@ -7,7 +7,13 @@
 //! the driver only for `mp-tcp-event` (the trigger backend per
 //! TASK-0332 cycle-150 finding); other backends do not need it because
 //! their transport / sync model does not deadlock under the cycle-149
-//! synchronous host-relay's wait-before-push hazard.
+//! synchronous host-relay's wait-before-push hazard. Specifically
+//! excluded: pthreads-sync / pthreads-async / openmp-rs (shared-memory
+//! `Slot<T>` channels — no synchronous host-relay, no wait-before-push
+//! deadlock surface); mp-tcp-bufsync (blocking-read framing, single
+//! in-flight per channel — no reorder window opens); mp-tcp-poll
+//! (inherits mp-tcp-bufsync's FIFO shape per memory
+//! `project-mp-tcp-event-vs-bufsync-safety-profile`).
 //!
 //! ## Hoistable predicate (TASK-0329.01.01 AC#1)
 //!

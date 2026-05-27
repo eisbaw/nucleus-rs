@@ -69,10 +69,19 @@
 //!
 //! Verified vs the cycle-195b silent-sibling-defect recurrence:
 //! grepped `nucleus/nucleus-compiler/src/passes/host_mediation_inject.rs`
-//! for backend-name tuples — the docstring at lines 5, 15, 66-71
-//! already enumerates the {pthreads-sync, pthreads-async, openmp-rs}
-//! SHARED-MEMORY exclusion class (cycle-191 single-worker landing
-//! added openmp-rs). No widening or new docstring sites required.
+//! for backend-name tuples. The line-70 `## Backends that DO NOT use
+//! this pass` paragraph already enumerates `pthreads-sync` +
+//! `pthreads-async` + `openmp-rs` as the shared-memory exclusion class
+//! (cycle-191 single-worker landing added openmp-rs there). The line-5
+//! and line-15 sites enumerate the INCLUSION class (TCP backends) and
+//! a partial-exclusion (pthreads only), respectively — neither needs
+//! widening for cycle 196. No new docstring sites required in
+//! host_mediation_inject.rs. Cycle-196 architect review flagged the
+//! companion passes `host_data_relay_inject.rs` + `safe_push_reorder.rs`
+//! as silent on openmp-rs's exclusion class (they enumerate only the
+//! inclusion side); cycle 196 also adds a one-line "openmp-rs likewise"
+//! to each of those two pass docstrings to close the silent-sibling
+//! enumeration gap end-to-end.
 //!
 //! # Generated artefact layout
 //!
