@@ -16,21 +16,26 @@
 //! # Design notes
 //!
 //! - **Two sockets per (host, worker) pair**: DATA (mio-managed,
-//!   non-blocking) for Push/Wait; CTRL (`std::net::TcpStream`,
+//!   non-blocking) for Push/Wait; CTRL (`std::os::unix::net::UnixStream`,
 //!   blocking) for barriers via `wire::barrier_cross`. Mirrors
-//!   mp-tcp-bufsync's DATA+CTRL split — both backends need it for the
+//!   mp-tcp-event's DATA+CTRL split — both backends need it for the
 //!   same reason: producer/consumer barrier-vs-data ordering can
 //!   differ on each side of a `(host,worker)` pair, and a single FIFO
 //!   would corrupt frame demuxing. mp-uds-event's data-channel
 //!   demultiplex happens by `seq` instead of arrival order, but
 //!   barriers still need their own ordered channel.
-//! - **Rendezvous-file handshake** (TASK-0176): host binds
-//!   `127.0.0.1:0` ITSELF per non-host worker and atomically publishes
-//!   the OS-assigned port to `$NUC_RENDEZVOUS_DIR/<wname>.port`
-//!   (tmp + rename). Non-host worker polls the file (600 × 10 ms =
-//!   6 s) then `connect_retry`s. NEVER use the deleted
-//!   `__nuc_pick_port` helper — its close-then-rebind shape opened a
-//!   TOCTOU window that TASK-0176 closed.
+//! - **Path-as-rendezvous handshake** (cycle 197): host binds a
+//!   `UnixListener` per non-host worker at the well-known paths
+//!   `$NUC_RENDEZVOUS_DIR/<wname>.data.sock` and `<wname>.ctrl.sock`.
+//!   Non-host worker `connect_retry`s the same paths directly (no
+//!   port file, no port-binding race — the path itself IS the
+//!   rendezvous, which is structurally SIMPLER than mp-tcp-event's
+//!   TCP-port rendezvous). The shared multi_binary run.sh template's
+//!   `$here`-rooted rendezvous dir would bust the UDS sun_path 104
+//!   byte cap on the e2e harness's deep scratch hierarchy; mp-uds-event
+//!   post-processes run.sh to use a `/tmp`-rooted `mktemp -d -t
+//!   nuc-uds-XXXXXXXX` instead (see `render_run_sh` at the bottom of
+//!   this file + memory `project-uds-path-cap-rendezvous`).
 //! - **Reactor**: see `runtime_src.rs`. One Reactor per worker
 //!   process. The DATA socket per peer is set non-blocking and
 //!   registered with mio; readable readiness drains frames into
@@ -65,7 +70,13 @@
 //!   transparently. The backend's `ContractGap` rejection at
 //!   `Plan::build` is now defense-in-depth — it should never fire for
 //!   ACFGs that came through the driver's pipeline. (Wire-message text
-//!   still cites TASK-0175 — test-pinned by `multi_worker_emit::host_excluding_barrier_is_typed_contract_gap`.)
+//!   still cites TASK-0175. Defense-in-depth only; not test-pinned at
+//!   the integration layer in mp-uds-event (the e2e gate is the
+//!   behavioural witness, via the driver's cycle-197-widened
+//!   `apply_host_mediation_inject`). The sibling mp-tcp-event has a
+//!   `tests/multi_worker_emit.rs::host_excluding_barrier_is_typed_contract_gap`
+//!   pin; porting it to mp-uds-event is left as a defensive-coverage
+//!   follow-up if the upstream mediation gate is ever loosened.)
 //! - **Worker-to-worker `Push`/`Wait`** (TASK-0327, cycle 149):
 //!   DATA-side w↔w lifted via HOST-RELAY. Src's `chan_<rid>.push`
 //!   uses peer_idx=0 (host); HOST's `main()` runs a synchronous
@@ -265,11 +276,13 @@ impl<'a> Plan<'a> {
         // upstream change ever removes the mediation pass.
         //
         // NB: the ContractGap message text below intentionally still
-        // says "filed as TASK-0175" — test-pinned by
-        // `tests/multi_worker_emit.rs::host_excluding_barrier_is_typed_contract_gap`
-        // and `tests/host_relay_emit.rs`. The forward-link in the
-        // prose ABOVE supersedes; do not propose updating the literal
-        // message string here.
+        // says "filed as TASK-0175". Defense-in-depth only on
+        // mp-uds-event — the e2e gate is the integration-layer
+        // witness for the cycle-197-widened
+        // `apply_host_mediation_inject` driver pass that prevents
+        // ACFGs from reaching this branch in normal compilation.
+        // The forward-link in the prose ABOVE supersedes the message
+        // literal; do not propose updating the literal here.
         for (tag, parts) in &barrier_participants {
             if !parts.contains(&host_worker) {
                 let bid = tag.0;
@@ -617,7 +630,11 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
                        NUC_RENDEZVOUS_DIR=\"$(mktemp -d -t nuc-uds-XXXXXXXX)\"\n\
                        trap 'rm -rf \"$NUC_RENDEZVOUS_DIR\"' EXIT\n\
                        export NUC_RENDEZVOUS_DIR";
-    let out = shared.replace(needle, replacement);
+    // Multi-line literal shell-script block (not a rendered Rust expression);
+    // sibling-substring risk is zero. Post-replace fail-loud sentinel below
+    // catches needle-not-found. Lift target: transport-parametric
+    // render_run_sh_multi parameter (follow-up TASK-0044.03.02 filed cycle 197b).
+    let out = shared.replace(needle, replacement); // ALLOW textual replace: multi-line literal bash block (see comment above; needle is a fixed shared-template substring)
     if !out.contains("nuc-uds-XXXXXXXX") {
         return Err(EmitError::ContractGap(format!(
             "mp-uds-event render_run_sh: shared template's rendezvous-dir \
@@ -639,11 +656,13 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
 // to call Plan::build directly from inside this crate — hence this
 // in-module test.
 //
-// Branches B/C/D have integration tests in
-// `tests/multi_worker_emit.rs` (they ARE reachable from `emit()` on
-// 2+ workers, so the integration-test path is the right surface for
-// them and matches the existing `host_excluding_barrier_is_typed_contract_gap`
-// pattern).
+// Branches B/C/D have e2e coverage on 2+ workers (the integration
+// witness for them lives in the e2e harness, not a dedicated unit
+// test in mp-uds-event/tests/). Porting the
+// `host_excluding_barrier_is_typed_contract_gap` pattern from
+// mp-tcp-event/tests/multi_worker_emit.rs is left as a
+// defensive-coverage follow-up if the upstream driver mediation
+// gates are ever loosened.
 // --------------------------------------------------------------------
 
 #[cfg(test)]

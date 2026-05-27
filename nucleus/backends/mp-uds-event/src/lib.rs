@@ -7,42 +7,34 @@
 //! backend differential gains a FOURTH async+buffered+event row
 //! (alongside pthreads-async + mp-tcp-event) and the FIRST UDS row.
 //!
-//! # Implementation status (TASK-0044.03 cycle 194, 2026-05-27)
+//! # Implementation status (TASK-0044.03.01 cycle 197, M6 multi-worker LANDED)
 //!
-//! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED.
-//!   Delegates to `pthreads_sync::render_single_worker_main_with_kernels_attr`
-//!   plus `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
-//!   render_run_sh_single}` — the SAME shared renderers mp-tcp-event's
-//!   and mp-tcp-poll's single-process arms consume. SOURCE-byte-identical
+//! - **Single-worker arm** (`used_workers.len() <= 1`) — IMPLEMENTED
+//!   cycle 194. Delegates to
+//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` plus
+//!   `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
+//!   render_run_sh_single}` — the SAME shared renderers mp-tcp-event /
+//!   mp-tcp-poll single-process arms consume. SOURCE-byte-identical
 //!   to mp-tcp-event's single-process binary (pinned by
-//!   tests/single_worker_emit.rs — same emitter, same arguments).
-//!   Source diverges from pthreads-sync's single-process emit because
-//!   pthreads-sync targets `src/main.rs` with bare `mod kernels;` while
-//!   mp-uds-event targets `src/bin/nuc-generated.rs` with the
-//!   `#[path="../kernels.rs"]` attribute injection. The cross-backend
-//!   differential at the COMPILED-OUTPUT level (`output.bin` is
-//!   bit-identical across all backends per the e2e gate) is the actual
-//!   project-level invariant — pinned end-to-end by the e2e harness
-//!   running each emitted Cargo project and diffing the output.
-//! - **Multi-worker arm** (`used_workers.len() >= 2`) is NOT YET
-//!   implemented. Returns [`EmitError::ContractGap`] forward-linking
-//!   the multi-worker follow-up sub-task of TASK-0044.03
-//!   (TASK-0044.03.01 — the Unix domain socket reactor + per-(DataId,
-//!   SeqTag) ring buffer + epoll readiness codegen; cycle-171 brief
-//!   flags as candidate for lifting the transport layer from
-//!   mp-tcp-event).
+//!   tests/single_worker_emit.rs).
+//! - **Multi-worker arm** (`used_workers.len() >= 2`) — IMPLEMENTED
+//!   cycle 197. mio-based `UnixListener` / `UnixStream` reactor +
+//!   per-(seq, peer) outbound queue + per-seq inbound queue, sibling
+//!   of mp-tcp-event's multi_worker/ subtree with TCP→UDS transport
+//!   swap. 13 multi-worker cells bit-identical against reference.bin
+//!   (02/split, 03/distributed, 05/distributed{,-2d},
+//!   06/distributed{,2}, 07/distributed{,-2d}, 08/distributed,
+//!   09/pipelined, 11/pipelined, 13/batch_parallel, 13/pipeline_parallel)
+//!   over 4 non-flake e2e samples (cycle-197 baseline 210/190/0/20/0).
 //!
 //! # Why split single-worker vs multi-worker into separate cycles
 //!
-//! Single-worker mp-uds-event has NO cross-worker `Push`/`Wait` events,
-//! so the UDS-specific reactor (mio's `UnixListener` / `UnixStream`)
-//! is unused; the single-process binary delegates byte-for-byte to
-//! pthreads-sync's straight-line renderer. Splitting the single-worker
-//! arm off keeps it a genuinely single-cycle unit (mechanical
-//! delegation, no new transport substrate) and quarantines the
-//! multi-cycle UDS-reactor headline work under TASK-0044.03.01. Same
-//! precedent as cycles 191 (openmp-rs single-worker) and 192
-//! (mp-tcp-poll single-worker).
+//! Cycle 194 landed single-worker with mechanical delegation (no UDS
+//! reactor surface needed; the single-process binary delegates
+//! byte-for-byte to pthreads-sync's straight-line renderer). Cycle 197
+//! landed multi-worker with the mio reactor + UDS transport + AC#9
+//! path-cap workaround. Same precedent as cycles 191/192 (openmp-rs /
+//! mp-tcp-poll single-worker split-from-multi).
 //!
 //! # wire.rs note (cross-transport honesty — cycle 197 AC#7)
 //!
@@ -76,33 +68,39 @@
 //! `runtime.rs` file (mio reactor) is only emitted on multi-worker
 //! emit — `EmitResult::runtime_rs` is `None` for single-worker.
 //!
-//! # TASK-0337 promotion-trigger guard (inherited from cycle-171 AC#9)
+//! # TASK-0337 promotion-trigger guard (cycle-197 outcome: NOT TRIPPED)
 //!
 //! mp-uds-event INHERITS the (D)+(B2) compensating-pass tower from
 //! mp-tcp-event (cycles 149/151/162/163/165: host-relay + defensive
-//! guard + reorder + ACFG relay-inject + 13-arm). When the multi-worker
-//! arm lands (TASK-0044.03.01), if a UDS-specific schedule shape
-//! forces a 5th compensating pass, that IS the promotion trigger
-//! named in TASK-0337's "Promotion triggers" section. Single-worker
-//! does NOT exercise the tower; this guard is exclusive to
-//! TASK-0044.03.01.
+//! guard + reorder + ACFG relay-inject + 13-arm). Cycle 197 landed
+//! the multi-worker arm WITHOUT adding a 5th compensating pass: the
+//! 3-driver-gate widening (cycle-197 step 1) was sufficient to route
+//! every previously-unsupported schedule shape through the existing
+//! tower. AC#8 STOP-trigger NOT tripped — the architectural-fix
+//! prophecy TASK-0337 hedged against did not become necessary.
 //!
-//! # Honest limitations
+//! # Honest limitations (post-cycle 197)
 //!
-//! - Multi-worker async/buffered/event schedules (02/split,
-//!   03/distributed, 05/distributed{,-2d}, 06/distributed{,2},
-//!   07/distributed{,-2d}, 08/distributed, 09/pipelined, 11/pipelined,
-//!   13/batch_parallel, 13/pipeline_parallel) WOULD compile under the
-//!   mp-uds-event capability surface (which is a SUPERSET of
-//!   mp-tcp-event's; same SCHEDULE-visible surface) but currently hit
-//!   the multi-worker ContractGap — promote via TASK-0044.03.01.
-//!   There are NO capability-mismatch [[skip]] cells for mp-uds-event
-//!   (unlike openmp-rs / mp-tcp-poll) because the async + buffer +
-//!   event capabilities are exactly what mp-uds-event supports.
-//! - UDS path-length cap (~104 chars on macOS, ~108 on Linux). Not
-//!   relevant at the single-worker cycle (no socket is bound); the
-//!   multi-worker cycle's run.sh must check + reject paths exceeding
-//!   the cap. Per cycle-171 AC#8 forward-carried to TASK-0044.03.01.
+//! - **Plan / walkers / encode duplication vs mp-tcp-event** — the
+//!   `multi_worker/{mod, encode, relay, walkers, worker_program}.rs`
+//!   subtree is a sibling-copy of mp-tcp-event's with the TCP→UDS
+//!   transport swap. `encode.rs` is byte-identical; `walkers.rs` +
+//!   `relay.rs` differ only in error-message branding;
+//!   `worker_program.rs` carries the bulk of the TCP→UDS call-site
+//!   swaps. Filed for lift as TASK-0044.03.02 (cycle-197b architect
+//!   P2.1: the event+uds lift is DISTINCT from TASK-0044.02.03's
+//!   bufsync+poll lift — different Plan substrates).
+//! - **UDS path-length cap** (~104 chars musl/macOS, ~108 glibc) —
+//!   honoured by the inline `check_uds_path_len` (cap=104, smaller
+//!   for portability + margin) emitted at host + non-host arms.
+//!   Documented in new memory `project-uds-path-cap-rendezvous`.
+//! - **`render_run_sh` substring-swap** for the UDS-vs-TCP rendezvous-
+//!   dir difference: cycle 197 step 5 inlines a fail-loud substring
+//!   replacement on the shared multi_binary template's output (rather
+//!   than parameterising the shared template itself). Lift target:
+//!   transport-parametric `render_run_sh_multi(...,
+//!   RendezvousDirStrategy)` — tracked under TASK-0044.03.02
+//!   (cycle-197b architect P3.1).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -305,7 +303,7 @@ pub fn emit(
         });
     }
 
-    // ---- Single-process arm (TASK-0044.03 cycle 194). ----
+    // ---- Single-process arm (TASK-0044.03 cycle 194; multi-process arm landed cycle 197). ----
     //
     // Delegate to the SHARED renderers in pthreads-sync +
     // backend-common. The emitted binary body is byte-identical to
