@@ -80,7 +80,17 @@
 # `t`). AC#2 (convergence variant) is a HONEST-BLOCKED follow-up:
 # data-dependent loop termination is inexpressible in Nuc's
 # const-only loop-bound grammar.
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi"]
+# Example 17 joined the matrix at TASK-0341.03 cycle 210 (AC#1
+# language-sanity slice). Sparse Matrix-Vector multiply on a
+# dense-stored sparse matrix (M=N=8, NNZ=3 fixed) via the
+# rectangular masked-accumulator workaround. Companion to
+# 08-histogram for the data-dependent-indexing compiler-feature
+# class: 08-histogram pins data-dependent WRITE address;
+# 17-spmv pins data-dependent READ. AC#2 (direct x[col_idx[i][k]])
+# is HONEST-BLOCKED: grammar §1 admits only IntLit/Ident/parens
+# in IndexExpr.Atom — a nested IndexSuffix inside an IndexExpr
+# is structurally inexpressible. Filed as TASK-0341.03.01.
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -545,6 +555,25 @@ example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
 reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Distinct from the 3D wait_slice gap that blocks the other 5 backends."
+milestone = "M6"
+
+# 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210.
+# Sparse Matrix-Vector multiply (dense-stored sparse matrix, M=N=8,
+# NNZ=3 fixed) via the rectangular masked-accumulator workaround.
+# The natural y[i] = sum_k val[i][k] * x[col_idx[i][k]] is
+# grammatically inexpressible (IndexExpr.Atom does not admit nested
+# IndexSuffix); the algorithm walks for i, for k, for j and the
+# kernel `spmv_step(acc, v, c, x_j, j)` returns acc+v*x_j iff j==c
+# else acc. Companion to 08-histogram for the data-dependent-
+# indexing compiler-feature class (08 = data-dependent WRITE; 17 =
+# data-dependent READ). Single-`host` schedule => shared single-
+# worker renderer; cross-backend RUNTIME-OUTPUT bit-identical by
+# construction. Cross-backend promotion is the AC#4 follow-up; only
+# pthreads-sync is [[required]] at AC#1 closure.
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "pthreads-sync"
 milestone = "M6"
 
 [[required]]

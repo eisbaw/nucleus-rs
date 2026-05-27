@@ -1,0 +1,127 @@
+// Sparse Matrix-Vector multiply (SpMV) on a dense-stored sparse matrix.
+//
+// Landed cycle 210 (TASK-0341.03 AC#1 language-sanity slice).
+// Companion to 08-histogram: both exercise the data-dependent-
+// indexing compiler-feature class. 08-histogram pins a data-dependent
+// WRITE address (`histogram[bin] <-- bin_inc(histogram[bin], value,
+// bin)` accumulates iff `value == bin`); 17-spmv pins a data-
+// dependent READ (`y[i]` accumulates `val[i][k] * x[col_idx[i][k]]`,
+// where `col_idx[i][k]` is a value loaded from a `data` array, not
+// an iv-affine expression).
+//
+// The natural SpMV expression `y[i] = sum_k val[i][k] *
+// x[col_idx[i][k]]` is GRAMMATICALLY INEXPRESSIBLE in the v2
+// algorithm sublanguage. docs/grammar-algo.md fixes
+//   IndexExpr ::= AddExpr
+//   AddExpr   ::= MulExpr (('+'|'-') MulExpr)*
+//   ...
+//   Atom      ::= IntLit | Ident | '(' AddExpr ')'
+// — an IndexExpr's Atom rule admits only IntLit / Ident /
+// parenthesised AddExpr; a nested IndexSuffix (`col_idx[i][k]`)
+// inside an IndexExpr (`x[...]`) is not in the grammar. AC#2 of
+// TASK-0341.03 closes as honest-BLOCKED at the language-sanity
+// boundary; the missing primitive is filed as TASK-0341.03.01
+// (companion to TASK-0044.04's identical data-dependent-WRITE gap).
+//
+// What this example demonstrates
+// ------------------------------
+//   - Rectangular masked-accumulator workaround. The dataflow walks
+//     `for i, for k, for j` over the FULL (M, NNZ, N) grid; the
+//     kernel `spmv_step(acc, v, c, x_j, j)` returns `acc + v*x_j`
+//     iff `j == c` else `acc`. Per (i, k) there is exactly one j
+//     such that `j == col_idx[i][k]`, so the inner-j fold over the
+//     dense x[N] axis isolates the (single) matching contribution.
+//     Bit-identical to `sum_k val[i][k] * x[col_idx[i][k]]` by
+//     construction. Same shape as 08-histogram's `bin_inc(acc,
+//     value, bin)` and 04-prefix-sum's `exclusive_add(acc, x, b,
+//     c)`.
+//   - Three-input dataflow. `val`, `col_idx`, and `x` are each
+//     loaded by a separate effectful kernel from disjoint offsets
+//     of `input.bin` (see kernels.rs). Same multi-input pattern as
+//     07-matmul (load_a + load_b from one input.bin).
+//   - Array-output accumulator pattern on `y`. `y[i]` is read and
+//     written within the same Dataflow statement; codegen
+//     pre-initialises `y` to 0 (the additive identity), the (k, j)
+//     fold drives it to the SpMV result. Single-assignment is on
+//     the SYMBOL y (one Dataflow), not per-iteration (PRD §6.2.1).
+//
+// What this example does NOT demonstrate (yet)
+// --------------------------------------------
+//   - Variable nonzeros per row. NNZ=3 is fixed; a true CSR with
+//     `row_ptr[i+1] - row_ptr[i]` per-row arity would need a
+//     data-dependent loop bound (the same loop-bound gap as
+//     16-jacobi's convergence variant, TASK-0341.02.01).
+//   - Direct data-dependent read x[col_idx[i][k]] at the algorithm
+//     surface. The grammar gap; filed as the AC#2 honest-BLOCKED
+//     follow-up TASK-0341.03.01.
+//   - Multi-worker distributed schedules. Filed as the AC#3
+//     follow-up. partition=rows on the row index i is independent
+//     work per row (no cross-row dependencies), so the kernel-fan-
+//     out machinery already proven by 08-histogram/distributed
+//     should suffice — but verifying against this shape is its own
+//     cycle.
+//   - Floating-point arithmetic. Integer i32 with wrapping_add +
+//     wrapping_mul keeps the cross-backend differential
+//     bit-identical (PRD §10.1). Same trade as 05-stencil /
+//     07-matmul / 16-jacobi.
+
+const M    : usize = 8;     // matrix rows
+const N    : usize = 8;     // dense input vector length / matrix cols
+const NNZ  : usize = 3;     // fixed nonzeros per row (dense-stored)
+
+
+// Sparse matrix in dense-stored form + dense input vector + dense
+// output. Each `data` symbol is single-assignment at the statement
+// level (PRD §6.2.1).
+data val     : i32[M][NNZ];
+data col_idx : i32[M][NNZ];
+data x       : i32[N];
+data y       : i32[M];
+
+
+// Pure compute kernel: masked multiply-accumulate.
+//   spmv_step(acc, v, c, x_j, j) = acc + v*x_j  iff j == c
+//                                = acc          otherwise
+// Scalar signature so the contract pass (TASK-0012, scalar-only at
+// M1) PASSes on this kernel. The conditional / data-dependent
+// indexing lives in the Rust kernel body (PRD §6.2.2); the
+// algorithm uses only the rectangular masked-accumulator shape that
+// 08-histogram already proves bit-identical at M1.
+kernel spmv_step    : (i32, i32, i32, i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; on the Rust side `Vec<i32>`. Three loaders
+// share one input.bin via disjoint byte ranges — same multi-input
+// pattern as 07-matmul's load_a + load_b (see kernels.rs for the
+// input.bin layout).
+kernel load_val     : () -> i32[M][NNZ] effectful;
+kernel load_col_idx : () -> i32[M][NNZ] effectful;
+kernel load_x       : () -> i32[N]      effectful;
+kernel save_y       : (i32[M]) -> ()    effectful;
+
+
+// Dataflow.
+
+// 1. Load the three input arrays. Each loader reads its half/third
+//    of input.bin.
+val     <-- load_val();
+col_idx <-- load_col_idx();
+x       <-- load_x();
+
+// 2. Rectangular masked-accumulator nest. `y[i]` is pre-initialised
+//    to 0 by codegen (additive identity). For each (i, k, j) the
+//    kernel returns y[i] + val[i][k]*x[j] iff j == col_idx[i][k]
+//    else y[i]. Exactly one j per (i, k) matches col_idx[i][k], so
+//    the cumulative fold equals sum_k val[i][k]*x[col_idx[i][k]] —
+//    the SpMV definition, computed without a data-dependent index
+//    at the algorithm surface.
+for i : 0 .. M {
+    for k : 0 .. NNZ {
+        for j : 0 .. N {
+            y[i] <-- spmv_step(y[i], val[i][k], col_idx[i][k], x[j], j);
+        }
+    }
+}
+
+// 3. Save the result.
+save_y(y);
