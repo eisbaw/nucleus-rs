@@ -165,5 +165,14 @@ scalar-only at present:
 ## Required schedules
 
 - `naive.sched.nuc` — single worker (`host`), every kernel placed
-  there. No loop transforms, no transfers. The only schedule required
-  for AC#1 conformance.
+  there. No loop transforms, no transfers. The AC#1 conformance
+  schedule.
+- `distributed-rows.sched.nuc` — 4 compute workers
+  (`{w0, w1, w2, w3}`) row-band partition the OUTPUT's row axis (the
+  inner `j` loop). Each worker writes 4 contiguous output rows (W=16
+  / 4 = 4, exact-divisible). Input is whole-array broadcast (the
+  TASK-0301/TASK-0302 axis-mapping filter falls back to broadcast
+  because `j` hits input's trailing dim after a hole at dim 0);
+  output is `j`-banded on gather. Landed cycle 215 as
+  TASK-0341.01 AC#2 closure (pthreads-sync required; cross-backend
+  promotion is TASK-0341.01.01.01 follow-up).

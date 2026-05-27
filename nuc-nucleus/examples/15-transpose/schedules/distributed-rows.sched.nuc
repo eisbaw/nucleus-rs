@@ -1,0 +1,86 @@
+// Distributed-rows schedule: 4 compute workers row-band partition the
+// OUTPUT's row axis. Output is declared `i32[W][H]` with W=16 (rows)
+// and H=8 (cols), so the output-row index is the variable `j` (which
+// in the algorithm's for-nest sits as the INNER loop). Each worker
+// owns 4 contiguous output rows (W=16 / 4 = 4 exact-divisible).
+//
+// Landing TASK-0341.01 AC#2 follow-out, cycle 215. The schedule
+// exercises a STRUCTURAL FIRST for the cross-backend matrix: a
+// partition where the partition iv hits one data's LEADING dim and
+// another data's TRAILING dim under axis-swap permutation.
+//
+// Partition axis choice (partition=workers on the inner j-loop, NOT
+// partition=rows)
+// ----------------------------------------------------------------
+// `partition=rows` (TASK-0258, partition_rows.rs:1-30) is the
+// outer-of-2D Repeat-of-Repeat directive — it applies to the OUTER
+// loop of a 2D nest, not the inner. The transpose's output-row axis
+// is `j` (the W=16-bound index), which sits at the INNER loop
+// position in the algorithm's for-nest. `partition=workers`
+// (TASK-0212, partition_workers.rs:1-105) is the more flexible
+// directive: `find_loop` does a recursive descent and can target
+// the inner j-loop directly.
+//
+// What this exercises in the compiler
+// -----------------------------------
+// - `partition=workers` on an inner loop (no shipped schedule had
+//   done this before — every prior `partition=workers` cell hits
+//   the outer-most loop). Sanity-check that `find_loop`'s
+//   recursive descent correctly targets the inner Repeat.
+//
+// - The TASK-0301/TASK-0302 axis-mapping filter
+//   (`compute_partition_bounds_with_dim_prefix`, transfer_inject.rs:2418)
+//   under axis-swap permutation:
+//     * `output[j][i]` — dim 0 = j (partitioned), dim 1 = i (not
+//       partitioned). Walk: dim 0 Some(j_band) → push; dim 1 None →
+//       hit_hole. Final bounds = [(j, j_band)]: output is j-banded
+//       on gather (4 contiguous rows per worker).
+//     * `input[i][j]` — dim 0 = i (not partitioned), dim 1 = j
+//       (partitioned). Walk: dim 0 None → hit_hole; dim 1 Some(j_band)
+//       AFTER hole → return Some(empty). Empty bounds → whole-array
+//       broadcast.
+//
+//   The asymmetric per-data outcome (output j-banded, input
+//   whole-array) is the contiguous-prefix invariant biting on the
+//   axis-swap shape. It is the CORRECT graceful-degradation path
+//   per the cycle-118/121 design: a non-contiguous coverage shape
+//   degrades safely to whole-array broadcast rather than emitting
+//   silently wrong tile bounds. The cell exercises this path on a
+//   real example for the first time.
+//
+// Why bit-identical is achievable
+// -------------------------------
+// The xpose kernel is pure identity. Each output element
+// output[j][i] = input[i][j] depends only on a single input element;
+// no reduction, no halo, no cross-iteration carry. Each worker
+// computes a disjoint slice of output[][] (its j-band rows × full
+// i cols = 32 of 128 elements). The host gathers all 4 slices into
+// the final output buffer.
+//
+// Why sync transfers
+// ------------------
+// Sync-only schedule lowers on every tier-1 backend
+// (pthreads-sync, mp-tcp-bufsync, pthreads-async, mp-tcp-event,
+// openmp-rs, mp-tcp-poll, mp-uds-event) without capability gaps.
+// Cross-backend promotion is the AC#3 follow-up; this cycle lands
+// pthreads-sync only.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_input  on host;
+    place save_output on host;
+    place xpose       on { w0, w1, w2, w3 };
+
+    // Row-band partition the inner j axis (output's leading "row"
+    // axis under the [W][H] layout). W=16 / 4 workers → 4 j-values
+    // each, exact-divisible.
+    loop j : partition=workers;
+
+    // input is whole-array broadcast (axis-swap → trailing-dim
+    // coverage → contiguous-prefix filter returns empty bounds).
+    // output is j-banded on gather (leading-dim coverage → bounds
+    // = [(j, j_band)]).
+    transfer input  : sync;
+    transfer output : sync;
+}
