@@ -295,10 +295,12 @@ fn wait_slice(
         return Err(EmitError::ContractGap(format!(
             "Wait of data {data:?}: tile rank {} and data dim rank {} \
              exceed the 2D row-loop slice-paste's supported shape (rank \
-             <= 2 on both). No shipped schedule constructs this today; \
-             see TASK-0294 cycle-115 architect P2.1 — extend `wait_slice` \
-             to N-D nested-loop dispatch or file a follow-up before \
-             shipping a schedule that does",
+             <= 2 on both). 16-jacobi/distributed (post-cycle-209 \
+             halo_inference (B') refinement; TASK-0341.02.02.01) is the \
+             first in-tree schedule to trip this guard. Extension to N-D \
+             nested-loop dispatch filed as TASK-0341.02.02.01.01; see \
+             TASK-0294 cycle-115 architect P2.1 for the cycle-115 \
+             rationale carrying the guard until the N-D path lands",
             tile.bounds.len(),
             ty.dims.len(),
         )));
