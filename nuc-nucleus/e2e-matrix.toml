@@ -557,23 +557,69 @@ backend  = "mp-tcp-poll"
 reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Distinct from the 3D wait_slice gap that blocks the other 5 backends."
 milestone = "M6"
 
-# 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210.
-# Sparse Matrix-Vector multiply (dense-stored sparse matrix, M=N=8,
-# NNZ=3 fixed) via the rectangular masked-accumulator workaround.
-# The natural y[i] = sum_k val[i][k] * x[col_idx[i][k]] is
-# grammatically inexpressible (IndexExpr.Atom does not admit nested
-# IndexSuffix); the algorithm walks for i, for k, for j and the
-# kernel `spmv_step(acc, v, c, x_j, j)` returns acc+v*x_j iff j==c
-# else acc. Companion to 08-histogram for the data-dependent-
-# indexing compiler-feature class (08 = data-dependent WRITE; 17 =
-# data-dependent READ). Single-`host` schedule => shared single-
-# worker renderer; cross-backend RUNTIME-OUTPUT bit-identical by
-# construction. Cross-backend promotion is the AC#4 follow-up; only
-# pthreads-sync is [[required]] at AC#1 closure.
+# 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210
+# + TASK-0341.03.03 AC#4 (cross-backend promotion to the other 6
+# tier-1 backends) landed cycle 211. Sparse Matrix-Vector multiply
+# (dense-stored sparse matrix, M=N=8, NNZ=3 fixed) via the
+# rectangular masked-accumulator workaround. The natural y[i] =
+# sum_k val[i][k] * x[col_idx[i][k]] is grammatically inexpressible
+# (IndexExpr.Atom does not admit nested IndexSuffix); the algorithm
+# walks for i, for k, for j and the kernel `spmv_step(acc, v, c,
+# x_j, j)` returns acc+v*x_j iff j==c else acc. Companion to
+# 08-histogram for the data-dependent-indexing compiler-feature
+# class (08 = data-dependent WRITE; 17 = data-dependent READ).
+# Single-`host` schedule => shared single-worker renderer. Variant
+# split (cross-checked at the call sites in
+# nucleus/backends/*/src/lib.rs): the no-attr
+# `render_single_worker_main` is used by pthreads-async, openmp-rs,
+# and mp-tcp-event; the `_with_kernels_attr` variant is used by
+# mp-tcp-bufsync, mp-tcp-poll, and mp-uds-event; pthreads-sync owns
+# both entry points (no-attr delegates to `_with_kernels_attr("")`).
+# => cross-backend RUNTIME-OUTPUT bit-identical by construction;
+# same scaffolding (Cargo.toml/run.sh/src layout) diff per
+# project_skeleton family as 15-transpose / 16-jacobi. Non-flake
+# verified across 5 e2e samples (cycles 210 + 211); 17-spmv x 7 row
+# PASSed in 100% of samples.
 [[required]]
 example  = "17-spmv"
 schedule = "naive"
 backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "naive"
+backend  = "mp-uds-event"
 milestone = "M6"
 
 [[required]]
