@@ -1,0 +1,62 @@
+// Matrix transpose: out[j][i] = in[i][j].
+//
+// Landed cycle 204 (TASK-0341.01 AC#1 language-sanity slice). Pure
+// axis-swap permutation — no reduction, no compute beyond identity.
+// Sits between example 01 (1D unit-stride) and example 05 (2D stencil
+// with halo) in the dataflow-shape spectrum.
+//
+// What this example demonstrates:
+//   - 2D access on non-square dimensions where the LHS and RHS indices
+//     are permuted. The dataflow writes `out[j][i]` exactly once per
+//     (i, j); the RHS reads `in[i][j]`. This is the smallest possible
+//     fixture for "output-axis disagrees with input-axis", a structural
+//     test no earlier example covers.
+//   - Identity kernel `xpose`. The grammar allows a bare `LValue` on the
+//     RHS for identity copies (grammar-algo.md §1, `RValue ::= CallExpr
+//     | LValue`), but acfg::build::build_dataflow skips non-Call RHS at
+//     M1 (acfg/build.rs:325-327). So the canonical way to express a
+//     pure permutation is a kernel that returns its single argument.
+//
+// What this example does NOT demonstrate:
+//   - Multi-worker placement / partition=rows on the output. Filed as
+//     TASK-0341.01 AC#2 — deferred to a follow-up cycle.
+//   - Cross-backend differential beyond pthreads-sync. Filed as AC#3.
+//   - Halo, blocking, vectorising, pipelining, reuse. Not the point
+//     of this example.
+//
+// Numeric choice: i32. Consistent with examples 01/02/03/05. There is
+// no reduction here, so f32 would have been deterministic too, but
+// integer arithmetic keeps the tier-1 invariant simple and matches the
+// fixture-inspectability convention.
+
+const H : usize = 8;       // input rows / output cols
+const W : usize = 16;      // input cols / output rows
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1;
+// the dataflow writes each out[j][i] exactly once across (i, j) in the
+// for-nest below.
+data input  : i32[H][W];
+data output : i32[W][H];
+
+
+// Identity passthrough. Pure: reorderable, deduplicable, eliminable.
+// Scalar `(i32) -> i32` so the contract pass (TASK-0012) matches it
+// against `pub fn xpose(x: i32) -> i32` without aggregate machinery.
+kernel xpose : (i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; the Rust side uses `Vec<i32>` (TASK-0103
+// convention; see kernels.rs and README).
+kernel load_input  : ()         -> i32[H][W] effectful;
+kernel save_output : (i32[W][H]) -> ()        effectful;
+
+
+// Dataflow: load input, transpose element-by-element, save output.
+input <-- load_input();
+
+for i : 0 .. H {
+for j : 0 .. W {
+    output[j][i] <-- xpose(input[i][j]);
+}}
+
+save_output(output);

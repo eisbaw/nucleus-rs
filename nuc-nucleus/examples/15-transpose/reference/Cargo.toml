@@ -1,0 +1,31 @@
+# Standalone reference implementation for example 15-transpose.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or on any
+# Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/15-transpose/reference/Cargo.toml -- \
+#     --in    nuc-nucleus/examples/15-transpose/input.bin \
+#     --out   nuc-nucleus/examples/15-transpose/reference.bin
+
+[package]
+name        = "transpose-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 15-transpose."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "transpose-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"

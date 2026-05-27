@@ -65,7 +65,13 @@
 # for tier-1 bulk-IO shape; the embedded_multimcu schedule remains
 # M11-aspirational and is [[skip]]'d across all backends pending
 # TASK-0054.01 reinstate of per-frame peripheral kernels).
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid"]
+# Example 15 joined the matrix at TASK-0341.01 cycle 204 (AC#1
+# language-sanity slice: prog.algo.nuc + kernels.rs + reference impl
+# + reference.bin + naive schedule + pthreads-sync cell). The 14-slot
+# is already occupied by hearing-aid so transpose took the next free
+# slot (15). AC#2 distributed-rows schedule and AC#3 cross-backend
+# cells are deferred to a follow-up cycle.
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -318,6 +324,20 @@ milestone = "M6"
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "mp-tcp-event"
+milestone = "M6"
+
+# 15-transpose/naive: TASK-0341.01 AC#1 language-sanity slice (cycle
+# 204). Single-`host` schedule with an identity-passthrough `xpose`
+# kernel; the example's structural point is the 2D axis-swap
+# `output[j][i] <-- xpose(input[i][j])` (H=8, W=16). No earlier example
+# has this output-axis-disagrees-with-input-axis shape. AC#2
+# (distributed-rows on output) and AC#3 (cross-backend cells)
+# deferred — single pthreads-sync cell at AC#1 closes the
+# language-sanity question; multi-worker / cross-backend follow up.
+[[required]]
+example  = "15-transpose"
+schedule = "naive"
+backend  = "pthreads-sync"
 milestone = "M6"
 
 [[required]]
