@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-26 11:49'
+updated_date: '2026-05-27 22:03'
 labels:
   - examples
   - coverage
@@ -52,5 +53,22 @@ This task does NOT yet decide whether the 3 example numbers should be 14/15/16 (
 <!-- AC:BEGIN -->
 - [ ] #1 Sub-tasks TASK-0341.01 (transpose), TASK-0341.02 (Jacobi), TASK-0341.03 (SpMV) all filed with concrete prog.algo.nuc + naive.sched.nuc + AC#1 language-sanity criteria.
 - [ ] #2 Each sub-task explicitly declares its example number (e.g. 14-transpose, 15-jacobi, 16-spmv) AND a tier-1 e2e cell that must pass for AC#1 closure.
-- [ ] #3 Cycle-178 doc-lie-promotion mitigation applies: any //! module-level docstring in the new example's prog.algo.nuc / kernels.rs / schedule must be present-tense + cite the landing cycle.
+- [x] #3 Cycle-178 doc-lie-promotion mitigation applies: any //! module-level docstring in the new example's prog.algo.nuc / kernels.rs / schedule must be present-tense + cite the landing cycle.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Cycle 218 closure addendum (AC#3 cross-example doc-lie-promotion mitigation) ===
+
+AC#3 closed across cycles 217b + 218.
+
+Cycle-178 doc-lie-promotion mitigation surface complete across all 3 showcase examples:
+- 15-transpose: cycles 217b + 218 — prog.algo.nuc + README.md + schedules/distributed-rows.sched.nuc all present-tense + cite landing cycles.
+- 16-jacobi: cycle 218 — prog.algo.nuc + README.md reorganized; schedules unchanged (no stale narrative found).
+- 17-spmv: cycle 218 — prog.algo.nuc + README.md reorganized; schedules unchanged.
+
+The cycle-217b whole-file grep + broader regex discipline was applied to all 3 examples end-to-end. The post-edit grep across all 3 example directories returned only legitimately not-stale hits (live forward-carry references to TASK-0341.02.01 / TASK-0341.03.01 honest-BLOCKED follow-ups; diagnostic literal text quotes).
+
+NOT in-place rewriting AC#3 text per memory feedback-ac-rewrite-on-done-task; this addendum records closure.
+<!-- SECTION:NOTES:END -->

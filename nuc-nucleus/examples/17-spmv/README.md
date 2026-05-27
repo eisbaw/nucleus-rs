@@ -66,22 +66,31 @@ x[col_idx[i][k]]`. The kernel-side conditional is the same
 data-dependent-comparison trick 08-histogram's `bin_inc` and
 04-prefix-sum's `exclusive_add` already use.
 
-## What this example does NOT stress (yet)
+## What this example also demonstrates (post-AC#1)
+
+- **Multi-worker distributed schedule** (partition=workers on the
+  outer row index i). `distributed.sched.nuc` row-band partitions
+  M=8 across 4 compute workers (2-row bands, exact-divisible). The
+  data-dependent index lives in the kernel body (`spmv_step`'s
+  conditional return), not at the IndexExpr surface, so
+  partition_inference / halo_inference / transfer_inject see only
+  iv-affine indices. Landed cycle 212 on pthreads-sync
+  (TASK-0341.03.02); cross-backend × 6 sibling tier-1 backends
+  landed cycle 214 (TASK-0341.03.02.01); all 7 tier-1 backends now
+  [[required]]. Cross-backend differential on the naive schedule
+  landed cycle 211 (TASK-0341.03.03); all 7 tier-1 backends
+  [[required]] on naive.
+
+## What this example does NOT stress
 
 - **Variable nonzeros per row.** NNZ=3 is fixed; a true CSR with
   `row_ptr[i+1] - row_ptr[i]` per-row arity needs a data-dependent
   loop bound (the same gap as 16-jacobi's convergence variant,
   TASK-0341.02.01). Not in scope for this language-sanity slice.
 - **Direct data-dependent read x[col_idx[i][k]] at the algorithm
-  surface.** The DSL grammar gap; AC#2 honest-BLOCKED outcome with
-  the precise missing primitive filed as TASK-0341.03.01.
-- **Multi-worker distributed schedules.** Filed as a follow-up;
-  same precedent as 15-transpose's AC#2 (TASK-0341.01.01) and
-  16-jacobi's AC#3 (TASK-0341.02.02). partition=rows on the row
-  index i is independent work per row (no cross-row dependencies),
-  so the kernel-fan-out machinery already proven by
-  08-histogram/distributed should suffice — but verifying against
-  this shape is its own cycle.
+  surface.** The DSL grammar gap (IndexExpr.Atom does not admit
+  nested IndexSuffix); AC#2 honest-BLOCKED outcome with the precise
+  missing primitive filed as TASK-0341.03.01.
 - **Floating-point arithmetic.** Integer i32 with `wrapping_add` /
   `wrapping_mul` keeps the cross-backend differential
   bit-identical (PRD §10.1). Same trade as 05-stencil / 07-matmul /

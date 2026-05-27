@@ -34,20 +34,28 @@ bounded-grid Jacobi variant. Both rely on the same single-Dataflow
 trick: ONE statement on the `field` symbol covers all `ITERS+1`
 generations + the seed case, kernel branches on `t`.
 
-## What this example does NOT stress (yet)
+## What this example also demonstrates (post-AC#1)
+
+- **Multi-worker distributed schedule** (partition=rows on the
+  spatial 2D grid). `distributed.sched.nuc` partitions the inner
+  spatial loop across 4 compute workers and consumes
+  `halo_inference` for the 4-neighbour stencil halo strips. Landed
+  cycle 208 (TASK-0341.02.02) on 5 of 7 tier-1 backends [[required]];
+  mp-tcp-bufsync + mp-tcp-poll honest-BLOCKED via TASK-0330 (in-Loop
+  w2w Push guard fires on the time-step Repeat body — the cycle-148
+  flat host-relay cannot handle in-Loop w2w transfers). Cross-backend
+  differential on the naive schedule landed cycle 207
+  (TASK-0341.02.03); all 7 tier-1 backends [[required]] on naive.
+
+## What this example does NOT stress
 
 - **Convergence-check / data-dependent termination** (TASK-0341.02
-  AC#2). The Nuc grammar has no `if`, no `while`, no `break`; loop
-  bounds must be compile-time const expressions. A "run until
-  max-abs-diff < tolerance" variant is structurally inexpressible
-  today and is the AC#2 gap-probe outcome filed as an honest-BLOCKED
-  follow-up — naming the missing primitive (data-dependent loop
-  termination).
-- **Multi-worker distributed schedules.** Filed as a follow-up; same
-  precedent as 15-transpose's AC#2 (TASK-0341.01.01). The 4-neighbour
-  stencil should reuse `halo_inference` machinery the same way
-  05-stencil already does, but verifying that against a 2D
-  multi-iteration shape is its own cycle.
+  AC#2 honest-BLOCKED outcome). The Nuc grammar has no `if`, no
+  `while`, no `break`; loop bounds must be compile-time const
+  expressions. A "run until max-abs-diff < tolerance" variant is
+  structurally inexpressible today; the missing primitive
+  (data-dependent loop termination) is the grammar-extension epic
+  blocker. Filed as TASK-0341.02.01.
 - **Floating-point arithmetic.** Jacobi's natural `/ 4.0` average is
   order-of-summation sensitive under parallel reduction. We use
   integer `/ 4` (truncating); the precision hit is the price of

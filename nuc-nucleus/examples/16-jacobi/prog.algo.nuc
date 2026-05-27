@@ -26,6 +26,16 @@
 //     pattern as 05-stencil; the kernel reads those 0 cells when
 //     stencilling on the inside edge).
 //
+// What this example also demonstrates (post-AC#1):
+//   - Multi-worker distributed schedule (partition=rows on the spatial
+//     2D grid): landed cycle 208 (TASK-0341.02.02) on 5 of 7 tier-1
+//     backends. mp-tcp-bufsync + mp-tcp-poll honest-BLOCKED via
+//     TASK-0330 (in-Loop w2w Push guard fires on the time-step Repeat
+//     body); the other 5 backends [[required]] bit-identical. See
+//     schedules/distributed.sched.nuc.
+//   - Cross-backend differential on the naive schedule: landed cycle
+//     207 (TASK-0341.02.03); all 7 tier-1 backends [[required]].
+//
 // What this example does NOT demonstrate:
 //   - Convergence-check / data-dependent termination (AC#2). The Nuc
 //     grammar (docs/grammar-algo.md) has no `if`, no `while`, no
@@ -33,9 +43,8 @@
 //     (`ForStmt ::= 'for' Ident ':' ConstExpr '..' ConstExpr`). The
 //     fixed-iteration variant here is what is expressible today; the
 //     convergence variant is the gap-probe outcome filed as an
-//     honest-BLOCKED follow-up.
-//   - Multi-worker distributed schedules. Filed as the AC#3 follow-up;
-//     same precedent as 15-transpose's AC#2 (TASK-0341.01.01).
+//     honest-BLOCKED follow-up (TASK-0341.02.01, depends on
+//     grammar-extension epic).
 //   - Floating-point arithmetic. Jacobi's natural "/ 4.0" average is
 //     order-of-summation sensitive under parallel reduction. We use
 //     integer `/ 4` (truncating); the precision hit is the price of

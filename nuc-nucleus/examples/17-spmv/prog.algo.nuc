@@ -45,21 +45,31 @@
 //     fold drives it to the SpMV result. Single-assignment is on
 //     the SYMBOL y (one Dataflow), not per-iteration (PRD §6.2.1).
 //
-// What this example does NOT demonstrate (yet)
-// --------------------------------------------
+// What this example also demonstrates (post-AC#1)
+// -----------------------------------------------
+//   - Multi-worker distributed schedule (partition=workers on the
+//     outer row index i): landed cycle 212 (TASK-0341.03.02) on
+//     pthreads-sync; cross-backend × 6 sibling tier-1 backends landed
+//     cycle 214 (TASK-0341.03.02.01); all 7 tier-1 backends now
+//     [[required]]. partition=workers on i is independent work per
+//     row (no cross-row dependencies); the data-dependent index
+//     lives in the kernel body, not at the IndexExpr surface, so
+//     halo_inference + transfer_inject see only iv-affine indices.
+//     See schedules/distributed.sched.nuc.
+//   - Cross-backend differential on the naive schedule: landed
+//     cycle 211 (TASK-0341.03.03); all 7 tier-1 backends
+//     [[required]].
+//
+// What this example does NOT demonstrate
+// --------------------------------------
 //   - Variable nonzeros per row. NNZ=3 is fixed; a true CSR with
 //     `row_ptr[i+1] - row_ptr[i]` per-row arity would need a
 //     data-dependent loop bound (the same loop-bound gap as
 //     16-jacobi's convergence variant, TASK-0341.02.01).
 //   - Direct data-dependent read x[col_idx[i][k]] at the algorithm
-//     surface. The grammar gap; filed as the AC#2 honest-BLOCKED
-//     follow-up TASK-0341.03.01.
-//   - Multi-worker distributed schedules. Filed as the AC#3
-//     follow-up. partition=rows on the row index i is independent
-//     work per row (no cross-row dependencies), so the kernel-fan-
-//     out machinery already proven by 08-histogram/distributed
-//     should suffice — but verifying against this shape is its own
-//     cycle.
+//     surface. The grammar gap (IndexExpr.Atom does not admit nested
+//     IndexSuffix); AC#2 honest-BLOCKED outcome with the missing
+//     primitive filed as TASK-0341.03.01.
 //   - Floating-point arithmetic. Integer i32 with wrapping_add +
 //     wrapping_mul keeps the cross-backend differential
 //     bit-identical (PRD §10.1). Same trade as 05-stencil /
