@@ -14,11 +14,12 @@
 //
 // Why `Vec<i32>` and not `[i32; H*W]`
 // -----------------------------------
-// Same reason as examples 01 / 02 / 03: PRD const-in-Rust-generics
-// flow is unresolved (TASK-0103). `Vec<i32>` carries length at
-// runtime; we check it explicitly in `save_image`. Trade-off: shape
+// Per TASK-0103 (Done cycle 17): `Vec<i32>` + runtime length check
+// IS the canonical convention for aggregate-typed kernel signatures.
+// The PRD §6.2.2 sketch `Box<[[f32; W]; H]>` did not compile as plain
+// Rust (W and H are not Rust constants); `Vec<i32>` with explicit
+// length checks in `save_image` is the resolution. Trade-off: shape
 // errors become runtime panics rather than compile-time mismatches.
-// Resolves when TASK-0103 picks a convention.
 //
 // The algorithm declares `img_in / img_out : i32[H][W]`. On the Rust
 // side these are single flat `Vec<i32>` of length H*W = 256, laid out
@@ -57,9 +58,11 @@ use std::fs;
 use std::io::Write;
 
 /// Dimensions used by the algorithm. Mirrors `const H : usize = 16;`
-/// and `const W : usize = 16;` in `prog.algo.nuc`. Single-source-of-
-/// truth violation (TASK-0103); disappears when the const-flow
-/// convention is picked.
+/// and `const W : usize = 16;` in `prog.algo.nuc`. The doubled
+/// declaration is the v2 convention per TASK-0103 (Done cycle 17):
+/// kernels.rs is plain Rust compiled by the host toolchain
+/// unmodified — Nucleus does not text-substitute algorithm consts
+/// into kernel bodies.
 const H: usize = 16;
 const W: usize = 16;
 const N: usize = H * W;

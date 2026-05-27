@@ -19,12 +19,13 @@
 //
 // Why `Vec<i32>` and not `[i32; N]` / `[i32; BINS]`
 // --------------------------------------------------
-// Same reasoning as examples 01 / 02 / 03 / 04: PRD const-in-Rust-
-// generics flow is unresolved (TASK-0103). `Vec<i32>` carries
-// length at runtime; we check it explicitly in `load_input` and
-// `save_output` so shape drift surfaces as a runtime panic rather
-// than silent acceptance. Resolves when TASK-0103 picks a
-// convention.
+// Per TASK-0103 (Done cycle 17): `Vec<i32>` + runtime length check
+// IS the canonical convention for aggregate-typed kernel signatures.
+// The PRD §6.2.2 sketch `Box<[[f32; W]; H]>` did not compile as plain
+// Rust (W and H are not Rust constants); `Vec<i32>` with explicit
+// length checks in `load_input` and `save_output` is the resolution
+// (shape drift surfaces as a runtime panic rather than silent
+// acceptance).
 //
 // Contract pass (TASK-0012) expected behaviour at cycle 186:
 //   - PASS for `bin_inc`         — declared `(i32, i32, i32) -> i32`,
@@ -53,13 +54,14 @@ use std::fs;
 use std::io::Write;
 
 /// Input length used by the algorithm. Mirrors `const N : usize =
-/// 256;` in `prog.algo.nuc`. Single-source-of-truth violation
-/// (TASK-0103); disappears when the const-flow convention is
-/// picked.
+/// 256;` in `prog.algo.nuc`. The doubled declaration is the v2
+/// convention per TASK-0103 (Done cycle 17): kernels.rs is plain
+/// Rust compiled by the host toolchain unmodified — Nucleus does not
+/// text-substitute algorithm consts into kernel bodies.
 const N: usize = 256;
 
 /// Histogram bin count. Mirrors `const BINS : usize = 16;` in
-/// `prog.algo.nuc`. Same TASK-0103 caveat as `N`.
+/// `prog.algo.nuc`. Same TASK-0103 convention as `N`.
 const BINS: usize = 16;
 
 pub fn bin_inc(acc: i32, value: i32, bin: i32) -> i32 {

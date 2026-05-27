@@ -30,11 +30,12 @@
 //
 // Why `Vec<i32>` and not `[i32; N]`
 // ---------------------------------
-// Same reason as examples 01/02/03/05: the PRD const-in-Rust-generics
-// flow is unresolved (TASK-0103). `Vec<i32>` carries length at
-// runtime; we check it explicitly. Trade-off: shape mismatch is a
-// runtime panic, not a compile error. Resolves when TASK-0103 picks a
-// convention.
+// Per TASK-0103 (Done cycle 17): `Vec<i32>` + runtime length check
+// IS the canonical convention for aggregate-typed kernel signatures.
+// The PRD §6.2.2 sketch `Box<[[f32; W]; H]>` did not compile as plain
+// Rust (W and H are not Rust constants); `Vec<i32>` with explicit
+// length checks is the resolution. Trade-off: shape mismatch is a
+// runtime panic, not a compile error.
 //
 // The algorithm declares `in_arr / out : i32[NB][BS]`. On the Rust
 // side these are single flat `Vec<i32>` of length N = NB*BS = 256,
@@ -63,8 +64,10 @@ use std::fs;
 use std::io::Write;
 
 /// Length used by the algorithm. Mirrors `const N : usize = 256;` in
-/// `prog.algo.nuc`. Single-source-of-truth violation (TASK-0103);
-/// disappears when the const-flow convention is picked.
+/// `prog.algo.nuc`. The doubled declaration is the v2 convention per
+/// TASK-0103 (Done cycle 17): kernels.rs is plain Rust compiled by
+/// the host toolchain unmodified — Nucleus does not text-substitute
+/// algorithm consts into kernel bodies.
 const N: usize = 256;
 
 /// Pass-1 reduction fold step. Same shape/semantics as example 03's

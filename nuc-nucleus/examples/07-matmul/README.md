@@ -168,12 +168,12 @@ both are out of scope here.
 
 ## Why `Vec<i32>` and not `[i32; N*N]` in `kernels.rs`?
 
-Same reasoning as examples 01 / 02 / 03 / 05: TASK-0103. `[i32;
-N*N]` would require Nuc-side `const N` to be a Rust const in the
-same file, which the PRD §6.2.2 example sketch does not yet specify.
-`Vec<i32>` carries length at runtime; we check it explicitly in
-`save_c`. Trade-off: shape errors become runtime panics rather than
-compile-time mismatches. Resolves when TASK-0103 picks a convention.
+Per TASK-0103 (Done cycle 17): `Vec<i32>` + runtime length check IS
+the canonical convention for aggregate-typed kernel signatures. The
+PRD §6.2.2 sketch `Box<[[f32; W]; H]>` did not compile as plain Rust
+(W and H are not Rust constants); `Vec<i32>` with explicit length
+checks in `save_c` is the resolution. Trade-off: shape errors become
+runtime panics rather than compile-time mismatches.
 
 The codegen flattens the 2D `c[i][j]` to `c[i * N + j]` at compile
 time, so the runtime layout is single flat row-major Vec. File

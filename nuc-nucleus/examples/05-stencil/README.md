@@ -169,13 +169,12 @@ passes bit-identically without special-casing the boundary.
 
 ## Why `Vec<i32>` and not `[i32; H*W]` in `kernels.rs`?
 
-Same reasoning as examples 01 / 02 / 03: TASK-0103. `[i32; H*W]`
-would require Nuc-side `const H`, `const W` to be Rust consts in the
-same file, which the PRD §6.2.2 example sketch does not specify
-yet. `Vec<i32>` carries length at runtime; we check it explicitly in
-`save_image`. Trade-off: shape errors become runtime panics rather
-than compile-time mismatches. Resolves when TASK-0103 picks a
-convention.
+Per TASK-0103 (Done cycle 17): `Vec<i32>` + runtime length check IS
+the canonical convention for aggregate-typed kernel signatures. The
+PRD §6.2.2 sketch `Box<[[f32; W]; H]>` did not compile as plain Rust
+(W and H are not Rust constants); `Vec<i32>` with explicit length
+checks in `save_image` is the resolution. Trade-off: shape errors
+become runtime panics rather than compile-time mismatches.
 
 The codegen flattens the 2D `img_in[y][x]` to `img_in[y * W + x]` at
 compile time, so the runtime layout is single flat row-major Vec.
