@@ -220,4 +220,161 @@ mod tests {
         barrier_cross(&mut c, 1);
         server.join().expect("server");
     }
+
+    // ---- TASK-0044.02.02: nonblocking-poll wire helpers -----------
+    //
+    // Mirrors the existing blocking-recv tests above. mp-tcp-poll's
+    // emitted code consumes these exact helpers via the verbatim
+    // `wire.rs` copy.
+
+    /// Round-trip canned payloads through `write_msg_poll` +
+    /// `read_msg_expect_poll` over a loopback `TcpStream` pair. Both
+    /// ends call `apply_nonblocking` (the contract of the poll
+    /// helpers) so the entire exchange exercises the WouldBlock /
+    /// yield_now path under normal conditions.
+    #[test]
+    fn framed_messages_round_trip_poll() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+
+        let canned: Vec<(u64, Vec<u8>)> = vec![
+            (0, b"hello".to_vec()),
+            (1, enc_vec(&[1i32, 2, 3, 4], i32::to_le_bytes)),
+            (7, vec![]), // barrier-shaped: zero payload
+            (42, vec![0xFF; 4096]),
+        ];
+        let expect = canned.clone();
+
+        let server = thread::spawn(move || {
+            let (mut s, _) = listener.accept().expect("accept");
+            apply_nonblocking(&s);
+            for (seq, payload) in &expect {
+                let got = read_msg_expect_poll(&mut s, *seq);
+                assert_eq!(&got, payload, "payload mismatch at seq {seq}");
+            }
+            // Ack via a one-byte poll write so the client knows the
+            // server is done.
+            write_msg_poll(&mut s, u64::MAX, &[0x55]);
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        apply_nonblocking(&c);
+        for (seq, payload) in &canned {
+            write_msg_poll(&mut c, *seq, payload);
+        }
+        let ack = read_msg_expect_poll(&mut c, u64::MAX);
+        assert_eq!(ack, vec![0x55]);
+        server.join().expect("server thread");
+    }
+
+    /// The seq-tag cross-check fires loudly under poll too. Same shape
+    /// as `read_msg_expect_rejects_wrong_seq` for the blocking path —
+    /// poll must NOT silently swallow a seq mismatch as "wrong frame,
+    /// keep waiting" (would mask contract violations; see memory
+    /// `project-mp-tcp-event-vs-bufsync-safety-profile`).
+    #[test]
+    fn read_msg_expect_poll_rejects_wrong_seq() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut s, _) = listener.accept().expect("accept");
+            apply_nonblocking(&s);
+            let _ = read_msg_expect_poll(&mut s, 99);
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        apply_nonblocking(&c);
+        write_msg_poll(&mut c, 5, b"x");
+        let err = server
+            .join()
+            .expect_err("receiver must panic on seq mismatch under poll");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("seq tag mismatch") && msg.contains("poll"),
+            "expected a poll seq-tag-mismatch panic, got: {msg:?}"
+        );
+    }
+
+    /// Deadline-exceeded surfaces as a loud `panic!` naming the
+    /// expected seq + elapsed + deadline (AC#7 of TASK-0044.02.02).
+    /// Drives the never-sending-peer scenario with a tiny override
+    /// (`NUC_POLL_DEADLINE_MS=50`) so the test runs in <1 s.
+    #[test]
+    fn read_msg_expect_poll_panics_loud_on_deadline() {
+        // Hold a listener open without ever sending so the client's
+        // read_msg_expect_poll exhausts its deadline.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            // Accept the connection and then idle. The bound listener
+            // + accepted socket are dropped when the closure returns
+            // (which the client's panic timing controls indirectly).
+            let _accepted = listener.accept().expect("accept");
+            // Hold the socket open long enough for the client deadline
+            // to expire deterministically.
+            thread::sleep(std::time::Duration::from_millis(500));
+        });
+
+        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        apply_nonblocking(&c);
+
+        // SAFETY (test-only): set_var is unsafe in 2024; in this
+        // single-threaded #[test] body before any other code reads
+        // env we're not racing readers. The harness scopes the var to
+        // this process.
+        unsafe {
+            std::env::set_var("NUC_POLL_DEADLINE_MS", "50");
+        }
+        // Drive the deadline panic on a worker thread so we can catch
+        // it via thread::join (instead of #[should_panic], which
+        // would also accept *any* panic — we want the exact message).
+        // We MUST move `c` into the thread; std::panic::catch_unwind
+        // requires UnwindSafe and the easiest way is to spawn.
+        let probe = thread::spawn(move || {
+            let _ = read_msg_expect_poll(&mut c, 7);
+        });
+        let err = probe
+            .join()
+            .expect_err("read_msg_expect_poll must panic on deadline");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        // Restore the env so subsequent tests pick up the default.
+        // SAFETY: same justification as the set_var above.
+        unsafe {
+            std::env::remove_var("NUC_POLL_DEADLINE_MS");
+        }
+        assert!(
+            msg.contains("poll deadline exceeded")
+                && msg.contains("NUC_POLL_DEADLINE_MS=50")
+                && msg.contains("seq=7"),
+            "expected the deadline-exceeded panic naming seq+deadline; got: {msg:?}"
+        );
+        // Clean up the server thread (it sleeps unconditionally).
+        let _ = server.join();
+    }
+
+    /// Two-party poll-barrier completes without deadlock. Companion
+    /// to `barrier_cross_two_party` for the blocking sibling.
+    #[test]
+    fn barrier_cross_poll_two_party() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut s, _) = listener.accept().expect("accept");
+            apply_nonblocking(&s);
+            barrier_cross_poll(&mut s, 0);
+            barrier_cross_poll(&mut s, 1);
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        apply_nonblocking(&c);
+        barrier_cross_poll(&mut c, 0);
+        barrier_cross_poll(&mut c, 1);
+        server.join().expect("server");
+    }
 }

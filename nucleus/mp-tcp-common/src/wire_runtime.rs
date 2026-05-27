@@ -2,12 +2,13 @@
 // (TASK-0037). This file is the SINGLE SOURCE of the framing code:
 //   - `mp-tcp-common`'s lib `include!`s it so the round-trip unit
 //     test (AC#4) exercises exactly these bytes;
-//   - the mp-tcp-bufsync backend copies this file verbatim into each
-//     generated multi-process project as `src/wire.rs`.
+//   - the mp-tcp-bufsync + mp-tcp-poll backends copy this file
+//     verbatim into each generated multi-process project as
+//     `src/wire.rs`.
 // Keep it dependency-free (std only) and panic-on-protocol-violation
 // (fail loud: a framing mismatch is a codegen bug, never recoverable).
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
 /// Header: 8-byte LE length + 8-byte LE seq tag, then `length` bytes.
@@ -204,6 +205,272 @@ pub fn barrier_cross(sock: &mut TcpStream, barrier_id: u64) {
     let got = read_msg_expect(sock, barrier_id);
     if !got.is_empty() {
         panic!("wire: barrier {barrier_id} carried a non-empty payload");
+    }
+}
+
+// ---- Nonblocking-poll variants (TASK-0044.02.02; mp-tcp-poll). -----
+//
+// mp-tcp-poll's PRD §7.1 row 5 wait primitive is *nonblocking poll*,
+// not blocking recv. The poll-variant helpers below have the SAME
+// contract as `read_msg_expect` / `barrier_cross` but expect the
+// caller to have put the socket in nonblocking mode (via
+// `apply_nonblocking` immediately after `apply_sock_buf` on connect).
+//
+// On a `WouldBlock` error the loop yields the thread (`yield_now`),
+// NOT a sleep (which would add latency) and NOT a busy-spin (which
+// would burn a full core). After `NUC_POLL_DEADLINE_MS` total wait
+// time the loop panics LOUD naming the expected seq + the elapsed
+// time — a never-sending peer surfaces as a typed error, not a
+// silent spin (AC#7 of TASK-0044.02.02; memory
+// `project-mp-tcp-event-vs-bufsync-safety-profile` analog).
+//
+// The deadline is read ONCE per process from the `NUC_POLL_DEADLINE_MS`
+// env var (default 30_000 ms = 30 s; tests can override to a small
+// value to exercise the deadline-exceeded path deterministically).
+
+/// Mark every subsequent read/write on `sock` nonblocking. Idempotent.
+/// Best-effort: panics LOUD on syscall failure (broken loopback
+/// socket is an abort-worthy bug, same shape as `write_msg`'s I/O
+/// error handling).
+pub fn apply_nonblocking(sock: &TcpStream) {
+    sock.set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("wire: set_nonblocking(true) failed: {e}"));
+}
+
+/// Poll-friendly write helper for nonblocking sockets. Loops on
+/// `WouldBlock` with `yield_now`, bounded by the same
+/// `NUC_POLL_DEADLINE_MS` deadline as `read_msg_expect_poll` so a
+/// stuck send (full kernel send-buffer + non-draining peer) surfaces
+/// as a loud panic instead of an infinite loop. On a freshly nonblocking
+/// loopback socket the typical 64+ KiB kernel sendbuf absorbs every
+/// in-tree payload in a single write — the yield-loop is here for
+/// large-array correctness, not the common case.
+fn write_all_poll(sock: &mut TcpStream, buf: &[u8], seq: u64, what: &str) {
+    let deadline_ms = poll_deadline_ms();
+    let start = std::time::Instant::now();
+    let mut written = 0usize;
+    while written < buf.len() {
+        match sock.write(&buf[written..]) {
+            Ok(0) => panic!("wire: {what} write returned 0 (peer closed?) seq={seq}"),
+            Ok(n) => {
+                written += n;
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                let elapsed = start.elapsed().as_millis();
+                if elapsed >= deadline_ms {
+                    panic!(
+                        "wire: poll deadline exceeded on {what} write (seq={seq}): \
+                         elapsed {elapsed} ms >= NUC_POLL_DEADLINE_MS={deadline_ms} ms \
+                         after {written}/{} bytes — kernel sendbuf stayed full (peer \
+                         not draining?)",
+                        buf.len()
+                    );
+                }
+                std::thread::yield_now();
+            }
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => panic!("wire: {what} write failed (seq={seq}): {e}"),
+        }
+    }
+}
+
+/// Poll-variant of [`write_msg`]. Same wire bytes; safe to call on a
+/// nonblocking socket. Use from mp-tcp-poll codegen. mp-tcp-bufsync
+/// continues to call `write_msg` directly (blocking socket).
+pub fn write_msg_poll(sock: &mut TcpStream, seq: u64, payload: &[u8]) {
+    let mut header = [0u8; HEADER_LEN];
+    header[0..8].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+    header[8..16].copy_from_slice(&seq.to_le_bytes());
+    write_all_poll(sock, &header, seq, "header");
+    write_all_poll(sock, payload, seq, "payload");
+    // `flush` is a no-op on TcpStream (kernel buffers; no userland
+    // buffering), so we omit it here to keep the poll path free of a
+    // gratuitous syscall. mp-tcp-bufsync's `write_msg` keeps the
+    // explicit `flush()` for byte-identicality-by-history reasons.
+}
+
+/// Resolve the poll deadline in milliseconds. Default 30_000 ms (30 s);
+/// override via `NUC_POLL_DEADLINE_MS`. Values <= 0 / unparsable fall
+/// back to the default (a typo never silently disables the bound).
+fn poll_deadline_ms() -> u128 {
+    match std::env::var("NUC_POLL_DEADLINE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u128>().ok())
+    {
+        Some(v) if v > 0 => v,
+        _ => 30_000,
+    }
+}
+
+/// Nonblocking-read header+payload exactly once. Returns the parsed
+/// `(seq, payload)` once the FULL header + payload bytes are present;
+/// otherwise returns `Ok(None)` to signal "not yet, try again". I/O
+/// errors propagate `Err`.
+///
+/// The helper accumulates partial reads across calls via the
+/// `header_buf` / `payload_buf` scratch buffers + the `phase` state
+/// the caller carries — so a header that arrives split across two
+/// `WouldBlock`-returning reads is reassembled correctly. A pure
+/// `read_exact` style would not work in nonblocking mode (it would
+/// EWOULDBLOCK on the first partial header byte).
+fn try_read_msg_step(
+    sock: &mut TcpStream,
+    state: &mut ReadState,
+) -> std::io::Result<Option<(u64, Vec<u8>)>> {
+    loop {
+        match state {
+            ReadState::Header { buf, filled } => {
+                let n = match sock.read(&mut buf[*filled..]) {
+                    Ok(0) => {
+                        return Err(std::io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "wire: peer closed during header read",
+                        ));
+                    }
+                    Ok(n) => n,
+                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Ok(None),
+                    Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                };
+                *filled += n;
+                if *filled == HEADER_LEN {
+                    let len = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
+                    let seq = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+                    *state = ReadState::Payload {
+                        seq,
+                        payload: vec![0u8; len],
+                        filled: 0,
+                    };
+                    // Fall through to attempt payload read in the same call.
+                    continue;
+                }
+            }
+            ReadState::Payload {
+                seq,
+                payload,
+                filled,
+            } => {
+                if payload.len() == *filled {
+                    // Zero-length payload (e.g. barrier crossing): done.
+                    let out = (*seq, std::mem::take(payload));
+                    return Ok(Some(out));
+                }
+                let n = match sock.read(&mut payload[*filled..]) {
+                    Ok(0) => {
+                        return Err(std::io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "wire: peer closed during payload read",
+                        ));
+                    }
+                    Ok(n) => n,
+                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Ok(None),
+                    Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                };
+                *filled += n;
+                if *filled == payload.len() {
+                    let out = (*seq, std::mem::take(payload));
+                    return Ok(Some(out));
+                }
+            }
+        }
+    }
+}
+
+/// Carry-state for `try_read_msg_step` — allows accumulating partial
+/// header / payload bytes across nonblocking read attempts.
+enum ReadState {
+    Header {
+        buf: [u8; HEADER_LEN],
+        filled: usize,
+    },
+    Payload {
+        seq: u64,
+        payload: Vec<u8>,
+        filled: usize,
+    },
+}
+
+impl ReadState {
+    fn fresh() -> Self {
+        ReadState::Header {
+            buf: [0u8; HEADER_LEN],
+            filled: 0,
+        }
+    }
+}
+
+/// Poll-variant of [`read_msg_expect`]: nonblocking read loop with
+/// `std::thread::yield_now` between cycles and a deadline-bound
+/// loud-failure guarantee.
+///
+/// Contract: the caller MUST have called [`apply_nonblocking`] on
+/// `sock` after the connect/accept (typically done once in the
+/// emitted worker `main()` right after `apply_sock_buf`). A blocking
+/// socket would never return `WouldBlock` so the yield-loop would
+/// reduce to a blocking `read_exact` — defeating the purpose.
+///
+/// Deadline-exceeded surfaces as a loud `panic!` naming the expected
+/// seq + elapsed milliseconds + the configured deadline — a
+/// never-sending peer thus produces a clear error message rather
+/// than a silent spin (AC#7 of TASK-0044.02.02). Seq-tag mismatch
+/// preserves the existing fail-loud contract from
+/// [`read_msg_expect`] (`panic!` with "seq tag mismatch").
+pub fn read_msg_expect_poll(sock: &mut TcpStream, expect_seq: u64) -> Vec<u8> {
+    let deadline_ms = poll_deadline_ms();
+    let start = std::time::Instant::now();
+    let mut state = ReadState::fresh();
+    loop {
+        match try_read_msg_step(sock, &mut state) {
+            Ok(Some((seq, payload))) => {
+                // Fail-loud cross-check — same contract as
+                // `read_msg_expect`; the poll loop intentionally does NOT
+                // mask this with a "wrong seq → keep waiting" path
+                // (would mask contract violations under poll's
+                // silent-spin safety profile; per memory
+                // `project-mp-tcp-event-vs-bufsync-safety-profile`).
+                if seq != expect_seq {
+                    panic!(
+                        "wire: seq tag mismatch (poll): receiver expected {expect_seq}, \
+                         wire delivered {seq} — Push/Wait pairing diverged between the \
+                         two generated endpoints (protocol v0 contract violation)"
+                    );
+                }
+                return payload;
+            }
+            Ok(None) => {
+                let elapsed = start.elapsed().as_millis();
+                if elapsed >= deadline_ms {
+                    panic!(
+                        "wire: poll deadline exceeded waiting for seq={expect_seq}: \
+                         elapsed {elapsed} ms >= NUC_POLL_DEADLINE_MS={deadline_ms} ms \
+                         — peer did not send the expected frame (never-sending peer or \
+                         crossed-up wire ordering; mp-tcp-poll bounded-retry contract, \
+                         TASK-0044.02.02 AC#7)"
+                    );
+                }
+                std::thread::yield_now();
+            }
+            Err(e) => panic!("wire: nonblocking read failed (poll, seq={expect_seq}): {e}"),
+        }
+    }
+}
+
+/// Poll-variant of [`barrier_cross`]: send-then-recv-with-poll the
+/// zero-payload barrier token. Both the send leg
+/// ([`write_msg_poll`]) and recv leg ([`read_msg_expect_poll`]) are
+/// nonblocking-safe — the socket has had `apply_nonblocking` called
+/// on it after connect/accept. The 16-byte header against any
+/// reasonable kernel sendbuf never blocks in practice; the poll-write
+/// is here for shape uniformity with the data path's
+/// [`write_msg_poll`] (and so a single-direction WouldBlock surfaces
+/// as deadline-exceeded, not a panic from `write_msg`'s
+/// `unwrap_or_else`).
+pub fn barrier_cross_poll(sock: &mut TcpStream, barrier_id: u64) {
+    write_msg_poll(sock, barrier_id, &[]);
+    let got = read_msg_expect_poll(sock, barrier_id);
+    if !got.is_empty() {
+        panic!("wire: barrier {barrier_id} (poll) carried a non-empty payload");
     }
 }
 

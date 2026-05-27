@@ -1868,68 +1868,59 @@ schedule = "naive"
 backend  = "mp-tcp-poll"
 milestone = "M6"
 
-# Cycle-192 filing: Multi-worker SYNC schedules: WOULD compile under
-# mp-tcp-poll's capability surface (sync + tcp + barrier/blocking/poll),
-# but the multi-worker nonblocking-poll codegen is the headline
-# follow-up of TASK-0044.02, filed as TASK-0044.02.02. ContractGap
-# forward-link from `mp_tcp_poll::emit`. Defer until the multi-worker
-# arm lands; at that point promote each of these to [[required]]
-# (mirroring mp-tcp-bufsync).
+# Cycle-195 (TASK-0044.02.02): Multi-worker SYNC schedules promoted
+# from [[skip]] to [[required]]. The nonblocking-poll multi-worker
+# codegen landed in cycle 195 — Plan-shaped per-worker codegen
+# consuming wire::*_poll primitives plus apply_nonblocking sock-setup.
+# Bit-identical against reference.bin on all 8 cells (mirrors the
+# mp-tcp-bufsync requirement column 1:1).
 
-[[skip]]
+[[required]]
 example  = "02-split-add"
 schedule = "split"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02 nonblocking-read poll loop + wire-framed Push/Wait. ContractGap from mp_tcp_poll::emit on used_workers >= 2. Schedule compiles under the mp-tcp-poll capability surface (identical to mp-tcp-bufsync); promote to [[required]] when the multi-worker arm lands."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "03-reduction"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "07-matmul"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "07-matmul"
 schedule = "distributed-2d"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "08-histogram"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "13-cnn-inference"
 schedule = "batch_parallel"
 backend  = "mp-tcp-poll"
-reason   = "mp-tcp-poll multi-worker codegen pending — TASK-0044.02.02. ContractGap from mp_tcp_poll::emit on used_workers >= 2."
 milestone = "M6"
 
 # Capability mismatches (TASK-0044.02 AC#6 sibling): async + buffer +

@@ -503,7 +503,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // emit barriers) and BEFORE acfg_to_events (so the projection
     // naturally places host's Sync at the structurally correct
     // position, preserving any enclosing Repeat / Sequence nesting).
-    let acfg = if backend == "mp-tcp-bufsync" || backend == "mp-tcp-event" {
+    //
+    // **Cycle 195 (TASK-0044.02.02)**: gate widened to include
+    // `mp-tcp-poll` because the poll backend's multi-worker arm
+    // inherits the same one-CTRL-stream-per-(host,worker) star
+    // topology as mp-tcp-bufsync — its `Plan::build` carries the same
+    // defensive ContractGap on host-excluding barriers. The
+    // host-mediation pass is needed for any mp-tcp-poll schedule with
+    // a host-excluding barrier (e.g. 03-reduction/distributed) to
+    // lower correctly. mp-uds-event will join this gate in
+    // TASK-0044.03.01 once its multi-worker arm lands (same UDS-star
+    // topology rationale; capability surface mirrors mp-tcp-event).
+    let acfg = if backend == "mp-tcp-bufsync" || backend == "mp-tcp-event" || backend == "mp-tcp-poll" {
         // WHY this pass needs the SAME host the backend will elect:
         // a schedule whose "host" worker is declared but has zero
         // projected events (unusual but possible) would otherwise

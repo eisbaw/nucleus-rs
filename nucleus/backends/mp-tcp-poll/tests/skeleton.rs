@@ -1,79 +1,111 @@
 //! Smoke tests for the mp-tcp-poll backend.
 //!
-//! Cycle status (TASK-0044.02 cycle 192):
-//! - Single-worker arm IMPLEMENTED (delegation to
+//! Cycle status (TASK-0044.02.02 cycle 195):
+//! - Single-worker arm IMPLEMENTED (cycle 192): delegation to
 //!   `pthreads_sync::render_single_worker_main_with_kernels_attr` +
-//!   `backend_common::project_skeleton::multi_binary` — byte-identical
-//!   to mp-tcp-bufsync's single-process emit).
-//! - Multi-worker arm: ContractGap forward-link to TASK-0044.02.02
-//!   (nonblocking-poll codegen pending).
+//!   `backend_common::project_skeleton::multi_binary`; byte-identical
+//!   to mp-tcp-bufsync's single-process emit.
+//! - Multi-worker arm IMPLEMENTED (cycle 195): Plan-shaped codegen
+//!   consuming the nonblocking-poll wire primitives.
 //!
 //! Tests pinned here:
-//! - Multi-worker `emit()` returns `EmitError::ContractGap` naming
-//!   `mp-tcp-poll` + forward-link to TASK-0044.02.
+//! - Multi-worker `emit()` on a minimal 2-worker fixture returns Ok +
+//!   produces the expected per-worker binaries (cycle-195 promotion;
+//!   replaces the cycle-192 ContractGap pin).
 //! - `EmitResult` shape pin (compile-time via constructor).
 //!
-//! Bit-identical single-worker emit differential against
-//! mp-tcp-bufsync lives in `tests/single_worker_emit.rs`.
+//! Cross-backend bit-identicality vs reference.bin and emit-string
+//! parity vs mp-tcp-bufsync live in `tests/multi_worker_emit.rs`,
+//! `tests/pingpong.rs`, and the e2e matrix.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use mp_tcp_poll::{emit, EmitError, EmitResult, NameTables};
-use nucleus_compiler::event::{DataId, Event, IterTile, WorkerId};
+use mp_tcp_poll::{emit, EmitResult};
 
 #[test]
-fn multi_worker_emit_returns_contract_gap_with_forward_link() {
-    // Two non-empty worker lists -> used_workers.len() >= 2 -> multi-
-    // worker arm -> ContractGap. Cheapest legal Event variant (`Free`)
-    // so the test does not accidentally exercise downstream emit
-    // machinery — dispatch happens before any per-event walk.
-    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    let dummy = Event::Free {
-        data: DataId(0),
-        tile: IterTile::empty(),
-    };
-    per_worker.insert(WorkerId(0), vec![dummy.clone()]);
-    per_worker.insert(WorkerId(1), vec![dummy]);
+fn multi_worker_emit_smoke_produces_per_worker_binaries() {
+    // Drive a real (parser → lower → link → ACFG → inject → project)
+    // pipeline on the smallest in-tree multi-worker example
+    // (02-split-add / split, 2 used workers — host + w0). The cycle-192
+    // ContractGap pin is gone; we now assert that emit() returns Ok and
+    // produces 2 per-worker binaries with the expected names, AND that
+    // those binaries contain the cycle-195 poll-variant call sites.
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).expect("02 split sched");
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts::default(),
+    );
 
-    let names = NameTables::default();
-    let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
-
-    // mp-tcp-poll's emit() reads kernels.rs UPFRONT (same structure as
-    // mp-tcp-bufsync), so the ContractGap dispatch on the multi-worker
-    // arm needs a real kernels file. Use the workspace target/ scratch
-    // dir so the test is hermetic.
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("mp-tcp-poll-test-scratch/skeleton_multi_worker");
+    let stem = target.join("mp-tcp-poll-test-scratch/skeleton_multi_worker_02_split");
     let _ = std::fs::remove_dir_all(&stem);
     std::fs::create_dir_all(&stem).expect("scratch dir");
-    let kernels_path = stem.join("kernels.rs");
-    std::fs::write(&kernels_path, "// stub for ContractGap test\n").expect("kernels.rs stub");
+    let kernels_path = ex.join("kernels.rs");
     let out_dir = stem.join("out");
 
-    let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir);
+    let result = emit(&r.per_worker, &r.names, &r.sidecar, &kernels_path, &out_dir)
+        .expect("mp-tcp-poll multi-worker emit must succeed (cycle 195, TASK-0044.02.02)");
 
-    let err = result.expect_err("multi-worker mp-tcp-poll must return ContractGap, not Ok");
-    let msg = format!("{err}");
+    // 2 used workers in the split schedule => 2 per-worker binaries.
+    assert_eq!(
+        result.worker_bins.len(),
+        2,
+        "02-split-add/split must emit 2 per-worker binaries; got {}",
+        result.worker_bins.len()
+    );
+
+    // Poll-variant call sites must appear in the generated code (else
+    // the cycle-195 swap was lost). Cross-grep both bins so a future
+    // single-sided regression (e.g. one worker missing the swap)
+    // surfaces here.
+    let mut saw_read_poll = false;
+    let mut saw_write_poll = false;
+    let mut saw_nonblocking = false;
+    for bin_path in &result.worker_bins {
+        let src = std::fs::read_to_string(bin_path).expect("read bin");
+        if src.contains("wire::read_msg_expect_poll") {
+            saw_read_poll = true;
+        }
+        if src.contains("wire::write_msg_poll") {
+            saw_write_poll = true;
+        }
+        if src.contains("wire::apply_nonblocking") {
+            saw_nonblocking = true;
+        }
+        // Anti-needles: the blocking primitives must NOT appear in
+        // mp-tcp-poll's emit (they would mean the cycle-195 swap was
+        // partial — silent-sibling defect class).
+        assert!(
+            !src.contains("wire::read_msg_expect(&mut "),
+            "mp-tcp-poll bin {bin_path:?} contains blocking read_msg_expect — \
+             cycle-195 swap regressed:\n{src}"
+        );
+        assert!(
+            !src.contains("wire::barrier_cross(&mut "),
+            "mp-tcp-poll bin {bin_path:?} contains blocking barrier_cross — \
+             cycle-195 swap regressed:\n{src}"
+        );
+    }
     assert!(
-        matches!(err, EmitError::ContractGap(_)),
-        "mp-tcp-poll multi-worker must return ContractGap variant, got: {msg}"
+        saw_read_poll,
+        "no per-worker bin contains wire::read_msg_expect_poll — codegen swap missing"
     );
     assert!(
-        msg.contains("mp-tcp-poll"),
-        "ContractGap message must name `mp-tcp-poll`, got: {msg}"
+        saw_write_poll,
+        "no per-worker bin contains wire::write_msg_poll — codegen swap missing"
     );
     assert!(
-        msg.contains("TASK-0044.02"),
-        "ContractGap message must forward-link TASK-0044.02, got: {msg}"
-    );
-    assert!(
-        msg.contains("multi-worker"),
-        "ContractGap message must scope itself to the multi-worker arm, got: {msg}"
+        saw_nonblocking,
+        "no per-worker bin contains wire::apply_nonblocking — setup line missing"
     );
 }
 
@@ -100,4 +132,13 @@ fn emit_result_shape_is_multi_binary_six_field() {
         &r.wire_rs,
         &r.run_sh,
     );
+}
+
+fn repo_root() -> PathBuf {
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .expect("three ancestors above mp-tcp-poll crate")
+        .to_path_buf()
 }

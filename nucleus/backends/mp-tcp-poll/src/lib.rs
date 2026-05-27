@@ -1,106 +1,99 @@
-//! mp-tcp-poll backend. PRD §7.1 row 5, TASK-0044.02.
+//! mp-tcp-poll backend. PRD §7.1 row 5, TASK-0044.02 + TASK-0044.02.02.
 //!
 //! Tier-1 backend: workers are OS PROCESSES, transport is TCP loopback,
-//! notify is NONBLOCKING POLL (busy/yield wait loop), no buffer, sync.
+//! notify is NONBLOCKING POLL (yield wait loop), no buffer, sync.
 //! **supports_async=false, supports_buffer=false** — same SCHEDULE-
 //! visible capability surface as mp-tcp-bufsync. The cross-backend
 //! differential gains a SECOND sync-TCP row; every schedule that
 //! compiles against mp-tcp-bufsync MUST compile against mp-tcp-poll and
 //! produce bit-identical output.
 //!
-//! # Implementation status (TASK-0044.02 cycle 192, 2026-05-27)
+//! # Implementation status (TASK-0044.02.02 cycle 195, 2026-05-27)
 //!
-//! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED.
-//!   Delegates to `pthreads_sync::render_single_worker_main_with_kernels_attr`
-//!   plus `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
+//! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED
+//!   (cycle 192). Delegates to
+//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` plus
+//!   `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
 //!   render_run_sh_single}` — the SAME shared renderers
 //!   mp-tcp-bufsync's single-process arm consumes. Emitted artefact is
 //!   BYTE-IDENTICAL to mp-tcp-bufsync's single-process output (and
 //!   therefore arithmetic byte-identical to pthreads-sync's single
-//!   process). The cross-backend differential invariant ("same
-//!   algorithm + same naive schedule -> bit-identical output across
-//!   backends") holds by construction.
-//! - **Multi-worker arm** (`used_workers.len() >= 2`) is NOT YET
-//!   implemented. Returns [`EmitError::ContractGap`] forward-linking
-//!   the multi-worker follow-up sub-task of TASK-0044.02
-//!   (TASK-0044.02.02 — the nonblocking-read poll loop + wire framing
-//!   + Plan-shaped per-worker codegen).
-//!
-//! # Why split single-worker vs multi-worker into separate cycles
-//!
-//! Single-worker mp-tcp-poll has NO cross-worker `Push`/`Wait` events
-//! (mp-tcp-bufsync's single-process arm sidesteps wire framing
-//! entirely; same is true here). The nonblocking-poll wait primitive
-//! only fires across two or more workers. Splitting the single-worker
-//! arm off keeps it a genuinely single-cycle unit (mechanical
-//! delegation, no new runtime substrate) and quarantines the multi-
-//! cycle nonblocking-poll headline work under TASK-0044.02.02. Same
-//! precedent as TASK-0226 (pthreads-async single-worker) →
-//! TASK-0228 (pthreads-async multi-worker) and TASK-0044.01 cycle 191
-//! (openmp-rs single-worker) → TASK-0044.01.01 (openmp-rs
-//! multi-worker).
+//!   process).
+//! - **Multi-worker arm** (`used_workers.len() >= 2`) is IMPLEMENTED
+//!   (cycle 195). Plan-shaped per-worker codegen consuming the
+//!   nonblocking-poll wire primitives (`wire::read_msg_expect_poll`,
+//!   `wire::write_msg_poll`, `wire::barrier_cross_poll`,
+//!   `wire::apply_nonblocking`). The Plan/walkers/encode substrate is
+//!   a sibling of mp-tcp-bufsync's `plan/` subtree — copy-by-design
+//!   pending a separate lift cycle
+//!   (TASK-0044.02.02-followup-shared-plan-crate) when the duplication
+//!   has been proven painful by two consumers.
 //!
 //! # Generated artefact layout
 //!
 //! Identical to mp-tcp-bufsync's: under the user-provided `out_dir`,
 //! `Cargo.toml` + `src/bin/<worker>.rs` (per used worker; for
 //! single-worker just `src/bin/nuc-generated.rs`) + `src/wire.rs`
-//! (copied wire-v0 protocol) + `src/kernels.rs` + `run.sh`. The
-//! multi-binary shape is the same as mp-tcp-bufsync / mp-tcp-event.
+//! (copied wire-v0 protocol) + `src/kernels.rs` + `run.sh`.
 //!
-//! # Why the busy/yield poll loop?
+//! # The nonblocking-poll wait primitive
 //!
-//! PRD §7.1 row 5 fixes the wait primitive as nonblocking poll. The
-//! tradeoff vs blocking (mp-tcp-bufsync) is CPU usage during waits:
-//! nonblocking-poll BURNS CPU, blocking yields it. The honest scope
-//! note in TASK-0044.02 (cycle 171) commits to picking
-//! `std::thread::yield_now` as the yield primitive when substantive
-//! multi-worker codegen lands — not a sleep (latency hit) and not pure
-//! busy-spin (full-core burn). Hazard: a peer that never sends becomes
-//! a spin-deadlock with no error; the codegen cycle must bound the
-//! retry / add a deadline. See memory
-//! project-mp-tcp-event-vs-bufsync-safety-profile for the analog
-//! mask-failure-modes warning on the async sibling. Single-worker
-//! does not exercise this primitive — the poll-loop only fires across
-//! workers — so this hazard is exclusive to TASK-0044.02.02.
+//! PRD §7.1 row 5 fixes the wait primitive as nonblocking poll.
+//! The mp-tcp-common `wire::read_msg_expect_poll` helper loops on
+//! `WouldBlock` with `std::thread::yield_now` (not a sleep — latency
+//! hit, not a busy-spin — full-core burn). A bounded deadline
+//! (`NUC_POLL_DEADLINE_MS` env, default 30 s) ensures a never-sending
+//! peer surfaces as a loud panic naming seq + elapsed, not a silent
+//! spin (AC#7 of TASK-0044.02.02; memory
+//! `project-mp-tcp-event-vs-bufsync-safety-profile` analog).
+//!
+//! Seq-tag mismatches still panic loud — the poll loop does NOT mask
+//! contract violations as "wrong frame, keep waiting" (that would
+//! mask the fail-loud guarantee `read_msg_expect` provides on
+//! mp-tcp-bufsync). See `mp_tcp_common::wire::read_msg_expect_poll`
+//! docstring + `read_msg_expect_poll_rejects_wrong_seq` unit test.
 //!
 //! # Honest limitations
 //!
-//! - Multi-worker SYNC schedules (02/split, 03/distributed,
-//!   06/distributed, 06/distributed2, 07/distributed, 07/distributed-2d,
-//!   08/distributed, 13/batch_parallel) WOULD compile under the
-//!   mp-tcp-poll capability surface but currently hit the multi-worker
-//!   ContractGap — promote via TASK-0044.02.02.
 //! - Capability-mismatch schedules (05/distributed, 05/distributed-2d,
 //!   09/pipelined, 11/pipelined, 13/pipeline_parallel) — async +
 //!   buffer + event — are rejected upstream at the capability-compat
 //!   check, NOT at codegen, and stay [[skip]] forever per PRD §7.1
 //!   row mp-tcp-poll (sync capability surface is pinned).
+//! - The Plan/walkers/encode substrate is duplicated with
+//!   mp-tcp-bufsync's. The poll/bufsync difference lives EXCLUSIVELY
+//!   in the emit layer (wire::*_poll call-site swap +
+//!   apply_nonblocking line); analysis (host election, xfer registry,
+//!   slice-paste, accumulator classification, FIFO-shape hazards)
+//!   carries over verbatim. Lift filed forward —
+//!   TASK-0044.02.02-followup-shared-plan-crate.
+//! - Wait-before-push hazard rejection is unconditional on
+//!   mp-tcp-poll (same as mp-tcp-bufsync). The
+//!   `apply_safe_push_reorder` driver pass that lifts the constraint
+//!   on mp-tcp-event is NOT wired for mp-tcp-poll because the
+//!   per-pair FIFO single-stream topology has the same race shape as
+//!   bufsync (nonblocking-read changes how the receiver waits, NOT
+//!   the on-wire frame order). See memory
+//!   `project-mp-tcp-event-vs-bufsync-safety-profile`.
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 
-// Shared project-skeleton renderers — same single source of truth as
-// mp-tcp-bufsync and mp-tcp-event (TASK-0257, backend_common::
-// project_skeleton::multi_binary). Using these IS how the cross-
-// backend differential invariant on naive schedules holds: mp-tcp-poll's
-// emitted Cargo.toml + run.sh are byte-equal to mp-tcp-bufsync's for
-// any single-worker schedule.
 use backend_common::project_skeleton::multi_binary;
-
-// Single-worker main.rs body — the only inter-backend arrow that
-// genuinely is a semantic delegation (NOT inert string templating).
-// The `_with_kernels_attr` variant injects the `#[path="../kernels.rs"]`
-// header so the emitted file works under `src/bin/`. Same precedent as
-// mp-tcp-bufsync (cycle 24) and mp-tcp-event (cycle 41).
-use pthreads_sync::render_single_worker_main_with_kernels_attr;
-
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
+use pthreads_sync::render_single_worker_main_with_kernels_attr;
+
+mod encode;
+mod plan;
+mod walkers;
+
+use plan::Plan;
 
 /// Paths to the files [`emit`] writes. Same shape as
 /// `mp_tcp_bufsync::EmitResult` and `mp_tcp_event::EmitResult` because
@@ -127,21 +120,17 @@ pub struct EmitResult {
 /// Emit a runnable multi-process Cargo project from the per-worker
 /// EventList. Same signature/contract as `mp_tcp_bufsync::emit`.
 ///
-/// Dispatch:
-///
 /// - `used_workers <= 1` → SINGLE-PROCESS. Delegates to the SHARED
 ///   `pthreads_sync::render_single_worker_main_with_kernels_attr` so
 ///   the emitted binary body is byte-identical to mp-tcp-bufsync's
-///   single-process binary (and therefore byte-identical arithmetic
-///   to pthreads-sync's single process). The Cargo.toml + run.sh
-///   come from `backend_common::project_skeleton::multi_binary` for
-///   the same reason; `wire.rs` is copied verbatim from
-///   `mp_tcp_common::WIRE_RUNTIME_SRC` (the single-process binary
-///   does not consume any wire surface, but the file is emitted for
-///   shape uniformity with multi-process builds).
-/// - `used_workers >= 2` → MULTI-PROCESS. Returns
-///   [`EmitError::ContractGap`] pointing at the nonblocking-poll
-///   multi-worker follow-up sub-task TASK-0044.02.02.
+///   single-process body.
+/// - `used_workers >= 2` → MULTI-PROCESS. Plan-shaped per-worker
+///   codegen consuming the nonblocking-poll wire primitives. Same
+///   topology as mp-tcp-bufsync (one TcpStream per (host, worker)
+///   ordered pair; rendezvous-file port handshake; barrier-over-TCP;
+///   host-mediated star + host-relay for w2w pushes); the only
+///   schedule-visible difference is the wait-primitive swap
+///   (`*_poll` vs blocking) plus the `apply_nonblocking` setup line.
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -173,70 +162,84 @@ pub fn emit(
     let wire_rs = src_dir.join("wire.rs");
     let run_sh = out_dir.join("run.sh");
 
-    // Shared modules every worker binary `#[path]`-includes. Even the
-    // single-process path emits `wire.rs` for shape uniformity with
-    // multi-process builds (the single-process binary just does not
-    // import any wire surface). Same precedent as mp-tcp-bufsync.
+    // Shared modules every worker binary `#[path]`-includes. `wire.rs`
+    // is emitted PRISTINE: byte-for-byte copy of
+    // `mp_tcp_common::WIRE_RUNTIME_SRC` (includes the cycle-195 poll
+    // additions). Even the single-process arm emits `wire.rs` for
+    // shape uniformity with multi-process builds.
     write_file(&kernels_rs, &kernels_src)?;
     write_file(&wire_rs, mp_tcp_common::WIRE_RUNTIME_SRC)?;
 
-    if used_workers.len() >= 2 {
-        // ---- Multi-worker arm: nonblocking-poll codegen (NOT YET LANDED). ----
-        return Err(EmitError::ContractGap(
-            "mp-tcp-poll codegen: multi-worker arm (used_workers >= 2) is \
-             not yet implemented — the nonblocking-read poll loop + \
-             wire-framed Push/Wait + Plan-shaped per-worker codegen is \
-             the headline follow-up of TASK-0044.02, filed as \
-             TASK-0044.02.02 (see also AC#7 there: the deadlock-bound \
-             contract — never-sending peer MUST surface as a loud error, \
-             not a silent spin). The schedule's capability compat-check \
-             has succeeded; only the multi-worker codegen body is \
-             outstanding. Single-worker schedules (used_workers <= 1) ARE \
-             supported and emit byte-identical artefacts to \
-             mp-tcp-bufsync's single-process output."
-                .to_string(),
-        ));
+    if used_workers.len() <= 1 {
+        // ---- Single-process arm (cycle 192). ----
+        let events = used_workers
+            .first()
+            .and_then(|w| per_worker.get(w))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let body = render_single_worker_main_with_kernels_attr(
+            events,
+            names,
+            sidecar,
+            KERNELS_MOD_ATTR_FOR_SRC_BIN,
+        )?;
+        let bin_path = bin_dir.join("nuc-generated.rs");
+        write_file(&bin_path, &body)?;
+        write_file(
+            &cargo_toml,
+            &multi_binary::render_cargo_toml(&[String::from("nuc-generated")], None),
+        )?;
+        write_file(&run_sh, &multi_binary::render_run_sh_single())?;
+        mark_executable(&run_sh);
+        return Ok(EmitResult {
+            project_dir: out_dir.to_path_buf(),
+            cargo_toml,
+            worker_bins: vec![bin_path],
+            kernels_rs,
+            wire_rs,
+            run_sh,
+        });
     }
 
-    // ---- Single-process arm (TASK-0044.02 cycle 192). ----
-    //
-    // Delegate to the SHARED renderers in pthreads-sync +
-    // backend-common. The emitted binary body is byte-identical to
-    // mp-tcp-bufsync's single-process body by construction (same
-    // function, same inputs, same `KERNELS_MOD_ATTR_FOR_SRC_BIN`); the
-    // Cargo.toml + run.sh ditto. Single-worker check_frame codegen
-    // (Panic / Log / Count) is inherited from
-    // `render_single_worker_main_with_kernels_attr` automatically —
-    // no per-backend Log/Count emit needed for the single-worker case.
-    let events = used_workers
-        .first()
-        .and_then(|w| per_worker.get(w))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let body = render_single_worker_main_with_kernels_attr(
-        events,
-        names,
-        sidecar,
-        KERNELS_MOD_ATTR_FOR_SRC_BIN,
-    )?;
-    let bin_path = bin_dir.join("nuc-generated.rs");
-    write_file(&bin_path, &body)?;
+    // ---- Multi-process arm (cycle 195, TASK-0044.02.02). ----
+    let plan = Plan::build(per_worker, names, sidecar)?;
+    let mut bin_names: Vec<String> = Vec::new();
+    let mut worker_bins: Vec<PathBuf> = Vec::new();
+    for w in &plan.used_workers {
+        let wname = plan.worker_name(*w);
+        let body = plan.render_worker_program(*w)?;
+        let bin_path = bin_dir.join(format!("{wname}.rs"));
+        write_file(&bin_path, &body)?;
+        bin_names.push(wname);
+        worker_bins.push(bin_path);
+    }
+
     write_file(
         &cargo_toml,
-        &multi_binary::render_cargo_toml(&[String::from("nuc-generated")], None),
+        &multi_binary::render_cargo_toml(&bin_names, None),
     )?;
-    write_file(&run_sh, &multi_binary::render_run_sh_single())?;
+    write_file(&run_sh, &plan.render_run_sh()?)?;
     mark_executable(&run_sh);
 
     Ok(EmitResult {
         project_dir: out_dir.to_path_buf(),
         cargo_toml,
-        worker_bins: vec![bin_path],
+        worker_bins,
         kernels_rs,
         wire_rs,
         run_sh,
     })
 }
+
+/// Per-backend SO_BUF commentary block interpolated by the shared
+/// [`multi_binary::render_run_sh_multi`] before the
+/// `export NUC_SO_BUF=...` line. mp-tcp-poll has the same capability
+/// surface as mp-tcp-bufsync (sync, buffer=1) so the sizing
+/// requirement is identical: one message in flight per channel.
+pub(crate) const SO_BUF_COMMENT_POLL: &str =
+    "# Socket buffer requirement from the schedule's per-channel\n\
+     # buffer needs (largest single transfer payload, sync=1 msg).\n\
+     # mp-tcp-poll: same sizing as mp-tcp-bufsync (shared capability surface).\n";
 
 /// `#[path]` attribute block that redirects the shared single-worker
 /// renderer's `mod kernels;` at the copied sibling `../kernels.rs`,
@@ -247,8 +250,8 @@ pub fn emit(
 /// typed parameter (TASK-0177).
 ///
 /// Byte-identical to the same const in mp-tcp-bufsync (the cross-
-/// backend differential invariant: same const → same emitted
-/// header → same compilation behaviour).
+/// backend differential invariant: same const → same emitted header
+/// → same compilation behaviour).
 const KERNELS_MOD_ATTR_FOR_SRC_BIN: &str = "#[path = \"../kernels.rs\"]\n#[allow(dead_code)]\n";
 
 fn write_file(path: &Path, contents: &str) -> Result<(), EmitError> {
@@ -271,3 +274,9 @@ fn mark_executable(path: &Path) {
     #[cfg(not(unix))]
     let _ = path;
 }
+
+// `io` is referenced via `EmitError` (re-exported from backend_common)
+// for the `KernelsReadFailed`/`WriteFailed` variants; the alias keeps
+// the use explicit for readers.
+#[allow(unused_imports)]
+use io as _io;

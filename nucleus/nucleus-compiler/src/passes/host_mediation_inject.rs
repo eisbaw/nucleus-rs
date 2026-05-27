@@ -64,9 +64,11 @@ use crate::event::WorkerId;
 ///
 /// Callers (the driver) must invoke this only for backends that
 /// require host-mediated barrier topology (mp-tcp-bufsync,
-/// mp-tcp-event). pthreads-sync / pthreads-async must NOT apply this
+/// mp-tcp-event, mp-tcp-poll — same one-CTRL-stream-per-(host,worker)
+/// star topology). pthreads-sync / pthreads-async must NOT apply this
 /// pass — their shared-memory barrier primitives handle host-excluding
-/// barriers natively.
+/// barriers natively. openmp-rs likewise (shared-memory parallelism;
+/// no transport star).
 pub fn apply_host_mediation_inject(mut acfg: ACFG, host: WorkerId) -> ACFG {
     inject_at(&mut acfg.root, host);
     acfg
