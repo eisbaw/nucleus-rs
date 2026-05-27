@@ -414,46 +414,88 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
-# 15-transpose/distributed-rows: TASK-0341.01 AC#2 (pthreads-sync)
-# landed cycle 215. 4 compute workers row-band partition the OUTPUT
-# row axis. Output is `i32[W][H]` with W=16 rows; the output-row
-# index is `j` (the inner loop in the algorithm's i-outer, j-inner
-# nest). Schedule uses `loop j : partition=workers` (NOT
-# `partition=rows` — that's the outer-of-2D directive; the
-# transpose's output-row axis sits at the INNER loop, which
-# `partition=workers` via partition_workers.rs::find_loop's
-# recursive descent targets directly). W=16 / 4 workers = 4
-# j-values per worker, exact-divisible. Each worker writes 4
-# contiguous output rows = 32 of 128 elements.
+# 15-transpose/distributed-rows: TASK-0341.01.01 AC#1 (pthreads-sync)
+# landed cycle 215 + TASK-0341.01.01.01 AC (cross-backend promotion
+# to the other 6 tier-1 backends) landed cycle 216. 4 compute workers
+# row-band partition the OUTPUT row axis. Output is `i32[W][H]` with
+# W=16 rows; the output-row index is `j` (the inner loop in the
+# algorithm's i-outer, j-inner nest). Schedule uses `loop j :
+# partition=workers` (NOT `partition=rows` — that's the outer-of-2D
+# directive; the transpose's output-row axis sits at the INNER loop,
+# which `partition=workers` via partition_workers.rs::find_loop's
+# recursive descent targets directly). W=16 / 4 workers = 4 j-values
+# per worker, exact-divisible. Each worker writes 4 contiguous output
+# rows = 32 of 128 elements.
 #
-# Structural FIRST for the cross-backend matrix: a partition where
-# the partition iv `j` hits one data's LEADING dim (output[j][i]
-# → dim 0 = j) and another data's TRAILING dim (input[i][j] →
-# dim 1 = j) under axis-swap permutation. The TASK-0301/TASK-0302
-# axis-mapping filter (compute_partition_bounds_with_dim_prefix,
+# The partition iv `j` hits one data's LEADING dim (output[j][i] →
+# dim 0 = j) and another data's TRAILING dim (input[i][j] → dim 1 =
+# j) under axis-swap permutation. The TASK-0301/TASK-0302 axis-mapping
+# filter (compute_partition_bounds_with_dim_prefix,
 # transfer_inject.rs:2418) correctly emits:
-#   - output: bounds = [(j, j_band)] → j-banded gather (4 rows
-#     per worker).
-#   - input: dim 0 None → hit_hole; dim 1 Some(j_band) after hole
-#     → return Some(empty) → whole-array broadcast.
-# The asymmetric per-data outcome is the contiguous-prefix
-# invariant biting on the axis-swap shape; graceful-degradation
-# to whole-array broadcast is the CORRECT design path (not a
-# regression). Structural twin of 07-matmul × distributed-2d
-# (cycle 121, TASK-0302), where `b[k][j]` × partition=blocks2d(i,j)
-# hits the same sparse-coverage → Some(empty) → broadcast shape.
-# What is structurally NEW in 15-transpose vs 07-matmul/distributed-2d
-# is the inner-loop partition target — every prior partition=workers
-# cell targets the outermost loop of the for-nest; 15-transpose's
-# `loop j` is the first inner-loop partition.
+#   - output: bounds = [(j, j_band)] → j-banded gather (4 rows per
+#     worker).
+#   - input: dim 0 None → hit_hole; dim 1 Some(j_band) after hole →
+#     return Some(empty) → whole-array broadcast.
+# The asymmetric per-data outcome is the contiguous-prefix invariant
+# biting on the axis-swap shape; graceful-degradation to whole-array
+# broadcast is the CORRECT design path (not a regression). Structural
+# twin of 07-matmul × distributed-2d (cycle 121, TASK-0302), where
+# `b[k][j]` × partition=blocks2d(i,j) hits the same sparse-coverage
+# → Some(empty) → broadcast shape. What is structurally NEW in
+# 15-transpose vs 07-matmul/distributed-2d is the inner-loop
+# partition target — every prior partition=workers cell targets the
+# outermost loop of the for-nest; 15-transpose's `loop j` is the
+# first inner-loop partition.
 #
-# Cross-backend promotion is the AC follow-out
-# TASK-0341.01.01's-companion task; only pthreads-sync is
-# [[required]] at AC#2 closure.
+# All w2w transfers (host→worker fan-out for input; worker→host
+# gather for output) live at the TOP LEVEL of each worker's event
+# list, OUTSIDE any Event::Loop body. The TASK-0330 in-Loop w2w Push
+# guard does NOT fire (same structural reason as 17-spmv/distributed
+# — only Fire events live inside the Event::Loop). Non-flake verified
+# across 6 e2e samples total (3 cycle-215 informational PASS + 3
+# cycle-216 post-promotion verification); the 15-transpose ×
+# distributed-rows row PASSed in 100% of samples across all 7 tier-1
+# backends.
 [[required]]
 example  = "15-transpose"
 schedule = "distributed-rows"
 backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "mp-uds-event"
 milestone = "M6"
 
 # 16-jacobi/naive: TASK-0341.02 AC#1 (pthreads-sync) landed cycle 206
