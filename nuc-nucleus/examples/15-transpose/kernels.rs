@@ -17,13 +17,14 @@
 // The algorithm grammar (docs/grammar-algo.md §1) allows a bare
 // `LValue` on the RHS as an identity copy: `RValue ::= CallExpr |
 // LValue`. But `acfg::build::build_dataflow` skips non-Call RHS at
-// M1 (`nucleus/nucleus-compiler/src/acfg/build.rs:325-327`, "Identity
+// M1 (`nucleus/nucleus-compiler/src/acfg/build.rs:325-326`, "Identity
 // copy or pure-expression RHS: skipped at M1"). With the bare-LValue
-// form the ACFG would carry no Operation node for the transpose body,
-// and the codegen would emit nothing into the loop. A pure kernel
+// form the ACFG carries no Operation node for the transpose body,
+// and the codegen emits nothing into the loop. A pure kernel
 // returning its argument is the canonical way to express "permute the
-// indices and write the same value", and it lets the compiler see the
-// per-element dataflow it needs to lay out under any future schedule.
+// indices and write the same value"; the kernel form gives the
+// compiler the per-element dataflow node every shipped schedule shape
+// reads from at cycle 204.
 //
 // Why `Vec<i32>` and not `[i32; H*W]` / `[i32; W*H]`
 // --------------------------------------------------

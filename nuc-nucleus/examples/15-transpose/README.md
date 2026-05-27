@@ -25,10 +25,13 @@ above/below in unit-stride, not transposed columns).
   TASK-0341.01 — the partition would surface "output worker reads
   non-contiguous input columns" (a strided fan-in shape). Deferred to
   a follow-up cycle.
-- **Cross-backend differential.** AC#3 of TASK-0341.01 — the same
-  naive cell on pthreads-async / mp-tcp-bufsync / mp-tcp-event. Likely
-  byte-identical via the shared single-worker renderer, but not
-  verified at AC#1.
+- **Cross-backend differential, formally required.** AC#3 of
+  TASK-0341.01 — the same naive cell on the other six tier-1 backends.
+  All six PASSed bit-identical informationally at cycle 204 (the
+  shared single-worker renderer makes single-`host` schedules
+  byte-identical by construction). Formal promotion to [[required]]
+  is deferred to a separate follow-up cycle for multi-sample
+  verification and scope discipline.
 - **Compute.** The kernel is an identity passthrough. The point of
   the example is the dataflow shape, not the arithmetic.
 
@@ -128,17 +131,21 @@ RValue ::= CallExpr | LValue ;
 ```
 
 But `acfg::build::build_dataflow` skips non-`Call` RHS at M1
-([`nucleus/nucleus-compiler/src/acfg/build.rs:325-327`][acfg-skip] —
+([`nucleus/nucleus-compiler/src/acfg/build.rs:325-326`][acfg-skip] —
 "Identity copy or pure-expression RHS: skipped at M1"). With a bare
-`LValue` form the ACFG would carry no Operation node for the
-transpose body, and the codegen would emit nothing into the loop. A
-pure scalar kernel returning its argument is the canonical way to
-express "permute the indices and write the same value", and it lets
-the compiler see the per-element dataflow it needs to lay out under
-any future schedule.
+`LValue` form the ACFG carries no Operation node for the transpose
+body, and the codegen emits nothing into the loop. A pure scalar
+kernel returning its argument is the canonical way to express
+"permute the indices and write the same value"; the kernel form
+gives the compiler the per-element dataflow node every shipped
+schedule shape reads from at cycle 204.
 
-When TASK-0111 (identity-copy dataflow handling in ACFG) lands, this
-example can drop the kernel and the dataflow shape stays the same.
+TASK-0111 (identity-copy dataflow handling in ACFG) was closed cycle
+77 as DEFERRED-until-real-example: no shipped example was using the
+bare-`LValue` identity-copy syntax at the time. 15-transpose is now
+that real example — the canonical co-design follow-up (one task
+covering both ACFG and link layers, per the cycle-77 closure note)
+is filed as a forward-carry from this cycle.
 
 [acfg-skip]: ../../../nucleus/nucleus-compiler/src/acfg/build.rs
 
