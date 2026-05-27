@@ -622,6 +622,23 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 17-spmv/distributed: TASK-0341.03.02 AC#3 (pthreads-sync) landed
+# cycle 212. partition=workers on the outermost i-loop, 4 compute
+# workers row-band-partition M=8 into 2-row bands exact-divisible.
+# Structural twin of 07-matmul/distributed: val + col_idx are
+# i-banded by the TASK-0301 axis-mapping filter; x is whole-array
+# broadcast (i absent from x's index expr → empty per-worker tile
+# bounds → broadcast); y is i-banded on gather. No halo (the
+# data-dependent index lives in the kernel body, not in any
+# iv-affine index — no cross-row carry). Cross-backend promotion
+# is the AC follow-up TASK-0341.03.02.01; only pthreads-sync is
+# [[required]] at AC#3 closure.
+[[required]]
+example  = "17-spmv"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"

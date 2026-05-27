@@ -1,0 +1,65 @@
+// Distributed schedule: 4 compute workers row-band partition the
+// outer `i` axis of the SpMV triple loop. Host runs load/save.
+// TASK-0341.03.02 AC#3 cell for example 17.
+//
+// Filed cycle 210 (TASK-0341.03 AC#3 fold-out); attempted cycle
+// 212. Structural twin of 07-matmul/distributed (TASK-0297, M5
+// AC#4 closeout cycle 118) — same outermost-1D-i-loop +
+// per-i-tiled-input + whole-array-broadcast-input shape. The
+// TASK-0301 per-data axis-mapping filter (cycle 118) is what makes
+// that schedule lower bit-identical:
+//   - val[i][k]     — i-tiled on tile (filter retains i)
+//   - col_idx[i][k] — i-tiled on tile (filter retains i)
+//   - x[j]          — NOT indexed by i (filter excludes i → empty
+//                     bounds → whole-array broadcast of x)
+//   - y[i]          — i-tiled on gather (filter retains i)
+//
+// Partition shape
+// ---------------
+// `loop i : partition=workers;` on the outermost axis. M=8,
+// 4 workers, exact-divisible into 2-row bands (0..2, 2..4, 4..6,
+// 6..8). Each worker computes y[i_band] using val[i_band][full
+// k], col_idx[i_band][full k], and x[full j].
+//
+// Why this is bit-identical with naive
+// ------------------------------------
+// The (k, j) inner-fold semantics are unchanged under the i
+// partition: each y[i] is the SAME masked-accumulator sum over
+// (k, j) regardless of which worker computes it. Workers are
+// independent on i; no halo (the data-dependent index lives in
+// the kernel body, not in an iv-affine index — there are no
+// `i+1` or `i-1` reads anywhere). No cross-worker carry, no
+// reduction across i. The existing reference.bin oracle applies
+// — no new reference is needed.
+//
+// Why sync transfers
+// ------------------
+// Sync-only schedule lowers on every tier-1 backend that supports
+// `sync` (pthreads-sync, mp-tcp-bufsync, mp-tcp-poll, openmp-rs).
+// Async variants (pthreads-async, mp-tcp-event, mp-uds-event) can
+// host this same schedule by capability-match on sync; same shape
+// as 07-matmul/distributed.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_val     on host;
+    place load_col_idx on host;
+    place load_x       on host;
+    place save_y       on host;
+    place spmv_step    on { w0, w1, w2, w3 };
+
+    // Row-band partition the outer i axis. M=8, 4 workers ⇒ 2 rows
+    // each, exact-divisible (no TASK-0262 floor-with-spillover
+    // remainder).
+    loop i : partition=workers;
+
+    // All sync transfers. val + col_idx are i-banded by the
+    // axis-mapping filter (i appears in their leading index); x
+    // is whole-array broadcast (i absent from x's index → empty
+    // tile bounds → broadcast); y is i-banded on gather.
+    transfer val     : sync;
+    transfer col_idx : sync;
+    transfer x       : sync;
+    transfer y       : sync;
+}
