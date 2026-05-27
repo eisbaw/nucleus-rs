@@ -56,11 +56,14 @@
 //! at cycle 148/149; both arms are now lifted upstream of every
 //! tier-1 backend, so the per-backend `ContractGap` rejections at
 //! `Plan::build` for host-excluding barriers / unmediated w↔w
-//! `Push`-`Wait` are defense-in-depth, not load-bearing. The three
-//! M6 skeletons (openmp-rs, mp-tcp-poll, mp-uds-event) do NOT yet
-//! participate in the differential — `emit()` returns
-//! `EmitError::ContractGap` until substantive codegen lands per the
-//! cycle-171 phased-AC addendum on TASK-0044.01/0044.02/0044.03.
+//! `Push`-`Wait` are defense-in-depth, not load-bearing. Of the
+//! three M6 backends, openmp-rs single-worker arm LANDED at cycle
+//! 191 and participates in the differential on 16 single-worker
+//! [[required]] cells (multi-worker arm still ContractGap via
+//! TASK-0044.01.01); mp-tcp-poll + mp-uds-event remain SKELETON —
+//! `emit()` returns `EmitError::ContractGap` until substantive
+//! codegen lands per the cycle-171 phased-AC addendum on
+//! TASK-0044.02/0044.03.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -112,7 +115,7 @@ fn print_help() {
              mp-tcp-bufsync  OS processes over TCP loopback (tier 1)\n    \
              pthreads-async  shared-memory + ring buffer (tier 1)\n    \
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
-             openmp-rs       rayon threads (tier 1, SKELETON — TASK-0044.01)\n    \
+             openmp-rs       rayon threads (tier 1, single-worker LANDED, multi-worker pending TASK-0044.01.01)\n    \
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, SKELETON — TASK-0044.02)\n    \
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, SKELETON — TASK-0044.03)\n"
     );
@@ -777,17 +780,17 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
-        // Fifth tier-1 backend (TASK-0044.01 cycle 173, M6): rayon
-        // threads + shared memory + barrier + sync — same capability
-        // surface as pthreads-sync (sync + shared-memory +
-        // barrier/blocking notify), differing only in runtime
-        // substrate (rayon scope instead of std::thread). SKELETON
-        // in this cycle — `openmp_rs::emit` returns ContractGap
-        // until subsequent cycles of TASK-0044.01 land the
-        // rayon-scope codegen. The capability matrix + dispatch
-        // wiring are real so that schedule authoring can target this
-        // backend now; the user-facing error from this arm carries
-        // the precise forward-link.
+        // Fifth tier-1 backend (TASK-0044.01, M6): rayon threads +
+        // shared memory + barrier + sync — same capability surface as
+        // pthreads-sync (sync + shared-memory + barrier/blocking
+        // notify), differing only in runtime substrate (rayon scope
+        // instead of std::thread). Status as of cycle 191:
+        // single-worker arm LANDED (delegates to pthreads-sync's
+        // `render_single_worker_main` + backend-common's
+        // project-skeleton, byte-identical to pthreads-sync /
+        // pthreads-async); multi-worker arm returns
+        // `EmitError::ContractGap` forward-linking TASK-0044.01.01
+        // (rayon-scope codegen pending).
         "openmp-rs" => {
             let result =
                 openmp_rs::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)

@@ -1,4 +1,4 @@
-# openmp-rs backend crate (SKELETON). See PRD §7.1, TASK-0044.01.
+# openmp-rs backend crate. See PRD §7.1, TASK-0044.01.
 #
 # Tier-1 CPU backend: workers map to rayon threads, transport is shared
 # memory, notify is barrier. supports_async=false, supports_buffer=false.
@@ -6,18 +6,21 @@
 # gains a THIRD sync-shared-memory row). Differs only in the runtime
 # substrate: rayon::scope (or par_iter) instead of std::thread::spawn.
 #
-# ## Current status: SKELETON (TASK-0044.01 cycle 173, 2026-05-26)
+# ## Current status: SINGLE-WORKER LANDED (TASK-0044.01 cycle 191)
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
-# wired through. `emit()` returns `EmitError::ContractGap` for ALL inputs
-# (single- and multi-worker) until the substantive codegen lands. The
-# capability-compat check IS real — schedules that would compile against
-# pthreads-sync (sync + shared-memory + barrier/blocking) compat-check
-# cleanly against openmp-rs; the subsequent codegen call surfaces the
-# skeleton via the typed ContractGap forward-link.
+# wired through. `emit()` dispatches on `used_workers.len()`:
+#   - `<= 1`: delegates to `pthreads_sync::render_single_worker_main`
+#     + `backend_common::project_skeleton::single_binary::{render_cargo_toml,
+#     render_run_sh}` — emitted artefact byte-identical to pthreads-sync /
+#     pthreads-async single-worker output by construction.
+#   - `>= 2`: returns `EmitError::ContractGap` forward-linking the
+#     filed multi-worker follow-up sub-task of TASK-0044.01.
 #
-# No `rayon` dependency yet — it lands when real codegen does. The
-# skeleton compiles with std only.
+# `rayon` is NOT a current dependency; the single-worker arm is pure
+# delegation and needs no parallel substrate. If the multi-worker arm
+# lands per TASK-0044.01.01, rayon (the natural substrate) would join
+# the dep list at that point.
 
 [package]
 name = "openmp-rs"
@@ -32,9 +35,21 @@ path = "src/lib.rs"
 
 [dependencies]
 nucleus-compiler = { path = "../../nucleus-compiler" }
-# Shared codegen primitives. Re-exports `EmitError` so the skeleton can
-# return `ContractGap` without depending on pthreads-sync. Same precedent
-# as pthreads-async (cycle 16): every tier-1 backend depends on
-# backend-common; only the few that share semantic delegation (single-
-# worker straight-line emit) depend on pthreads-sync.
+# Shared codegen primitives — `EmitError` + the project-skeleton
+# (Cargo.toml + run.sh) string templates for single-binary backends.
+# Same precedent as pthreads-async (cycle 16/17): every tier-1 backend
+# depends on backend-common.
 backend-common = { path = "../../backend-common" }
+# Single-worker straight-line `main.rs` emitter. A genuine semantic
+# delegation: openmp-rs's single-worker arm IS pthreads-sync's
+# straight-line main.rs, byte-identical by construction (same precedent
+# as pthreads-async; see `backend_common::project_skeleton` module-doc
+# for the inter-backend arrow rationale).
+pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237). Same
+# precedent as pthreads-async/Cargo.toml: tests/single_worker_emit.rs
+# lowers a real example and asserts byte-identical emit against
+# pthreads-sync.
+test-common = { path = "../../test-common" }

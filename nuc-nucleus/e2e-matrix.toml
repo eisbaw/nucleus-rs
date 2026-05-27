@@ -67,7 +67,17 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-p
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
 # enumeration of which backend crates to consider.
-backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event"]
+#
+# openmp-rs joined the matrix in TASK-0044.01 cycle 191 (single-worker
+# codegen). Same SCHEDULE-visible capability surface as pthreads-sync
+# (sync + shared-memory + barrier/blocking); single-worker emit is
+# byte-identical to pthreads-sync's by construction (shared
+# `pthreads_sync::render_single_worker_main` + `backend_common::
+# project_skeleton::single_binary`). The multi-worker arm is still
+# ContractGap — every multi-worker [[required]] cell on openmp-rs is
+# explicitly [[skip]]'d with "multi-worker codegen pending" until the
+# rayon-scope follow-up of TASK-0044.01 lands.
+backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -1494,3 +1504,225 @@ example  = "06-separable-filter"
 schedule = "distributed2"
 backend  = "mp-tcp-event"
 milestone = "M5"
+
+# --------------------------------------------------------------------
+# openmp-rs (5th tier-1 backend, M6, TASK-0044.01). Joined the matrix
+# in cycle 191 (single-worker codegen). Same SCHEDULE-visible
+# capability surface as pthreads-sync (sync + shared-memory +
+# barrier/blocking); single-worker emit is BYTE-IDENTICAL to
+# pthreads-sync's by construction (shared
+# `pthreads_sync::render_single_worker_main` +
+# `backend_common::project_skeleton::single_binary`). The multi-worker
+# arm is still `ContractGap` — every multi-worker [[required]] cell on
+# openmp-rs is explicitly [[skip]]'d below with "multi-worker codegen
+# pending" until the rayon-scope follow-up of TASK-0044.01 lands.
+# --------------------------------------------------------------------
+
+# Single-worker cells (host-only schedules). Each MUST be byte-identical
+# against reference.bin (cross-backend differential invariant: same
+# emitter → same bytes). Mirrors every single-worker cell already
+# [[required]] on pthreads-sync. 13/batch_parallel & 13/pipeline_parallel
+# are NOT single-worker — both handled in the skip blocks below.
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+# Cycle-191 filing: Multi-worker SYNC schedules: WOULD compile under
+# openmp-rs's capability surface (sync + shared-memory +
+# barrier/blocking), but the multi-worker rayon-scope codegen is the
+# headline follow-up of TASK-0044.01, filed as TASK-0044.01.01.
+# ContractGap forward-link from `openmp_rs::emit`. Defer until the
+# multi-worker arm lands; at that point promote each of these to
+# [[required]] (mirroring pthreads-sync).
+
+[[skip]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2. Schedule compiles under the openmp-rs capability surface (sync + shared-memory + barrier/blocking, identical to pthreads-sync); promote to [[required]] when the rayon-scope codegen lands."
+milestone = "M6"
+
+[[skip]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "08-histogram"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "openmp-rs"
+reason   = "openmp-rs multi-worker codegen pending — TASK-0044.01 multi-worker follow-up. ContractGap from openmp_rs::emit on used_workers >= 2."
+milestone = "M6"
+
+# Capability mismatches (TASK-0044.01 AC#6): async + buffer + event
+# schedules that openmp-rs's capability surface CANNOT satisfy. Driver
+# rejects at the capability-compat check BEFORE codegen — same shape
+# as pthreads-sync's capability-mismatch skips (mirror TASK-0042 reason
+# text verbatim). Promotion path: NOT through TASK-0044.01 — would
+# require expanding the openmp-rs capability surface, which is OUT
+# OF SCOPE per the PRD §7.1 row openmp-rs pinning (sync + barrier).
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "openmp-rs"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which openmp-rs supports (sync, single-buffer, barrier/blocking only — same capability surface as pthreads-sync). Driver rejects at capability check before codegen."
+milestone = "M6"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "openmp-rs"
+reason   = "TASK-0042: capability mismatch — `transfer img_in : async, buffer=2, notify=event` requires async + buffer + event notification, none of which openmp-rs supports. Same capability gap as pthreads-sync."
+milestone = "M6"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "openmp-rs"
+reason   = "TASK-0042: capability mismatch — `transfer stream : async, buffer=4, notify=event` requires async + buffer + event notification, none of which openmp-rs supports. Same capability gap as pthreads-sync; only the async tier-1 backends (pthreads-async, mp-tcp-event) satisfy this schedule."
+milestone = "M6"
+
+[[skip]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "openmp-rs"
+reason   = "TASK-0042: capability mismatch — `transfer grid : async, buffer=2, notify=event` requires async + buffer + event notification, none of which openmp-rs supports. Same capability gap as pthreads-sync."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "openmp-rs"
+reason   = "TASK-0042: capability mismatch — `transfer input/feat1/feat2 : async, buffer=3, notify=event` requires async + buffer + event notification, none of which openmp-rs supports. Same capability gap as pthreads-sync; only the async tier-1 backends satisfy this schedule."
+milestone = "M6"

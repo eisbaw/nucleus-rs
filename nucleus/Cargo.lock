@@ -277,6 +277,8 @@ version = "0.0.0"
 dependencies = [
  "backend-common",
  "nucleus-compiler",
+ "pthreads-sync",
+ "test-common",
 ]
 
 [[package]]

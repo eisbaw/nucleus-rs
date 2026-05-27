@@ -41,11 +41,13 @@ members = [
     # reactor + per-(src,dst) ring buffer over TCP loopback) is Stage 3,
     # returns ContractGap until that lands.
     "backends/mp-tcp-event",
-    # openmp-rs (TASK-0044.01 cycle 173): fifth tier-1 backend, skeleton
-    # only — same capability surface as pthreads-sync (sync + shared-
-    # memory + barrier/blocking), differing in runtime substrate (rayon
-    # threads instead of std::thread). `emit()` returns ContractGap until
-    # subsequent cycles of TASK-0044.01 land the rayon-scope codegen.
+    # openmp-rs (TASK-0044.01): fifth tier-1 backend. Same capability
+    # surface as pthreads-sync (sync + shared-memory + barrier/blocking);
+    # differs in runtime substrate (rayon scope instead of std::thread).
+    # Status as of cycle 191: single-worker arm LANDED (delegates to
+    # pthreads-sync's render_single_worker_main, byte-identical artefact
+    # on the 16 single-worker [[required]] cells); multi-worker arm
+    # returns ContractGap forward-linking TASK-0044.01.01.
     "backends/openmp-rs",
     # mp-tcp-poll (TASK-0044.02 cycle 174): sixth tier-1 backend, skeleton
     # only — same capability surface as mp-tcp-bufsync (sync + tcp + no

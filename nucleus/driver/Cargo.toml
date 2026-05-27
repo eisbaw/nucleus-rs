@@ -44,11 +44,13 @@ pthreads-async = { path = "../backends/pthreads-async" }
 # (mio reactor + per-(src,dst) ring buffer over TCP loopback) returns
 # ContractGap with a precise forward-link until Stage 3 lands.
 mp-tcp-event = { path = "../backends/mp-tcp-event" }
-# openmp-rs — fifth tier-1 backend, M6 (TASK-0044.01 cycle 173, skeleton).
-# Same capability surface as pthreads-sync (sync + shared-memory +
-# barrier/blocking); differs only in runtime substrate (rayon scope
-# instead of std::thread). emit() returns ContractGap until subsequent
-# cycles of TASK-0044.01 land the rayon-scope codegen body.
+# openmp-rs — fifth tier-1 backend, M6 (TASK-0044.01). Same capability
+# surface as pthreads-sync (sync + shared-memory + barrier/blocking);
+# differs only in runtime substrate (rayon scope instead of std::thread).
+# Status as of cycle 191: single-worker arm LANDED (delegates to
+# pthreads-sync's render_single_worker_main, byte-identical artefact);
+# multi-worker arm returns ContractGap forward-linking TASK-0044.01.01
+# (rayon-scope codegen pending).
 openmp-rs = { path = "../backends/openmp-rs" }
 # mp-tcp-poll — sixth tier-1 backend, M6 (TASK-0044.02 cycle 174, skeleton).
 # Same capability surface as mp-tcp-bufsync (sync + tcp + no buffer);
