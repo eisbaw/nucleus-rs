@@ -35,15 +35,22 @@
 //!
 //! ## Backend scope (driver-conditional)
 //!
-//! Applied by the driver for `mp-tcp-event` ONLY (matches the slice-1
-//! `apply_safe_push_reorder` conditionality and the cycle-160
-//! `apply_host_mediation_inject` conditionality on the TCP backends).
-//! pthreads-sync / pthreads-async / openmp-rs have native shared-memory
-//! channels (`Slot<T>` rendezvous via `Mutex<Option<T>>` + `Condvar`)
-//! for any (worker, worker) pair and do NOT benefit from host
-//! mediation; applying this pass on those backends would *add*
-//! unnecessary serialisation through host. mp-tcp-bufsync is excluded
-//! per the AC#5 paired-lift FIFO audit (see "Bufsync audit" below).
+//! Applied by the driver for `mp-tcp-event` (cycle 163) and
+//! `mp-uds-event` (cycle 197 widening for TASK-0044.03.01). Both
+//! per-seq-demux event backends share the same synchronous
+//! host-relay shape + the same `collect_w2w_pushes` TASK-0330
+//! defensive guard that rejects in-Repeat-body w2w Push; without
+//! this pass running, 09-producer-consumer/pipelined ×
+//! mp-uds-event would hit the same ContractGap mp-tcp-event did
+//! before cycle 163. pthreads-sync / pthreads-async / openmp-rs
+//! have native shared-memory channels (`Slot<T>` rendezvous via
+//! `Mutex<Option<T>>` + `Condvar`) for any (worker, worker) pair
+//! and do NOT benefit from host mediation; applying this pass on
+//! those backends would *add* unnecessary serialisation through
+//! host. mp-tcp-bufsync is excluded per the AC#5 paired-lift FIFO
+//! audit (see "Bufsync audit" below); mp-tcp-poll likewise
+//! (per-pair FIFO stream — same exclusion rationale as bufsync,
+//! per memory `project-mp-tcp-event-vs-bufsync-safety-profile`).
 //!
 //! ## Variant choice (AC#1 — Option B2 rationale)
 //!
@@ -271,7 +278,9 @@ use crate::event::{SeqTag, WorkerId};
 ///
 /// Callers (the driver) must invoke this only for backends that
 /// benefit from host-mediated DATA topology. Currently mp-tcp-event
-/// only (see module-level "Backend scope" + "Bufsync audit").
+/// (cycle 163) and mp-uds-event (cycle 197 widening for
+/// TASK-0044.03.01) — see module-level "Backend scope" + "Bufsync
+/// audit".
 pub fn apply_host_data_relay_inject(mut acfg: ACFG, host: WorkerId) -> ACFG {
     // Phase 1: discover max_existing_seq across every Xfer in the
     // tree. Cheap (single recursive walk) and deterministic.

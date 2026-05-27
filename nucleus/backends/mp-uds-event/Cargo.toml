@@ -9,7 +9,7 @@
 # Differs from mp-tcp-event only in the transport layer (Unix domain
 # sockets via mio's UnixListener / UnixStream instead of TCP loopback).
 #
-# ## Current status: SINGLE-WORKER LANDED (TASK-0044.03 cycle 194)
+# ## Current status: SINGLE + MULTI-WORKER LANDED (cycles 194 + 197)
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
 # wired through. `emit()` dispatches on `used_workers.len()`:
@@ -18,19 +18,20 @@
 #     render_run_sh_single}` (same path mp-tcp-event's single-process arm
 #     takes); the emitted artefact is BYTE-IDENTICAL to mp-tcp-event's
 #     single-process output (and therefore byte-identical arithmetic to
-#     pthreads-sync's single process). The TCP-specific wire.rs is emitted
+#     pthreads-sync's single process). The UDS-specific wire.rs is emitted
 #     verbatim for shape uniformity with multi-process builds (cargo's
 #     reachability analysis never compiles it into the bin target — the
 #     bin does not `mod wire;`).
-#   - `>= 2`: returns `EmitError::ContractGap` forward-linking
-#     TASK-0044.03.01 (Unix domain socket reactor + per-(DataId, SeqTag)
-#     ring buffer + epoll readiness codegen pending; cycle-171 brief
-#     flags as candidate for lifting transport layer from mp-tcp-event).
+#   - `>= 2`: emits one `src/bin/<wname>.rs` per used worker plus the
+#     shared `src/runtime.rs` (mio UnixStream reactor) and `src/wire.rs`
+#     (UDS-specific framing inlined from `wire_runtime.rs`).
+#     TASK-0044.03.01 cycle 197.
 #
-# `mp-tcp-common` provides wire framing reused by mp-tcp-bufsync +
-# mp-tcp-event + mp-tcp-poll; pthreads-sync provides the single-worker
-# delegation — the same precedent every multi-binary backend's
-# single-worker arm uses.
+# `pthreads-sync` provides the single-worker delegation — the same
+# precedent every multi-binary backend's single-worker arm uses.
+# Wire framing is INLINED in this crate (option (c) of AC#7) rather
+# than lifting `mp_tcp_common` to be transport-parametric; lift filed
+# as follow-up when a third UDS-pattern consumer appears.
 
 [package]
 name = "mp-uds-event"
@@ -68,8 +69,17 @@ pthreads-sync = { path = "../pthreads-sync" }
 # byte-identical emit against mp-tcp-event.
 test-common = { path = "../../test-common" }
 # mp-tcp-event is the byte-identical-emit oracle for mp-uds-event's
-# single-process arm (both backends consume the same shared renderers;
-# their emitted artefacts MUST be byte-identical for any single-worker
-# schedule). Dev-only — no production-code dependency between the two
-# backend crates.
+# single-process arm AND the structural-twin oracle for the multi-
+# worker arm (cycle-197 TASK-0044.03.01): same Plan shape + walker,
+# differs only in the UDS-specific transport layer.
 mp-tcp-event = { path = "../mp-tcp-event" }
+# mio is a regular dep in the *generated* multi-worker project's
+# Cargo.toml (interpolated via `MIO_UDS_DEPENDENCY_BLOCK` in lib.rs);
+# the `os-ext` feature is REQUIRED for `mio::net::UnixListener` /
+# `UnixStream` (the UDS-specific reactor types). Here it is also a
+# dev-dep so the host crate can `#[cfg(test)] mod runtime_src;` to
+# compile-check the UDS-reactor substrate via `cargo test --workspace`
+# — mirrors mp-tcp-event's F1 (architect-review of TASK-0042.05)
+# pattern that keeps `runtime_src.rs` from rotting silently between
+# Stage-3 cycles.
+mio = { version = "0.8", default-features = false, features = ["os-poll", "net", "os-ext"] }

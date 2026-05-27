@@ -2,13 +2,14 @@
 //!
 //! Add `host` as a participant to every [`ACFGNode::Sync`] whose
 //! participant set excludes it. Backend-local: invoked by
-//! `mp-tcp-bufsync` / `mp-tcp-event` / `mp-tcp-poll` whose transport topology
-//! (one-CTRL-stream-per-`(host, worker)` star) cannot lower a
-//! host-excluding barrier without a worker-to-worker mesh. Adding
-//! host as a mediating hub turns each host-excluding barrier into a
-//! star-shaped N+1-party rendezvous through host, which the existing
-//! barrier-shim emitter ([`wire::barrier_cross`]) handles transparently
-//! with no per-cell code changes.
+//! `mp-tcp-bufsync` / `mp-tcp-event` / `mp-tcp-poll` / `mp-uds-event`
+//! whose transport topology (one-CTRL-stream-per-`(host, worker)`
+//! star — TCP or UDS variant) cannot lower a host-excluding barrier
+//! without a worker-to-worker mesh. Adding host as a mediating hub
+//! turns each host-excluding barrier into a star-shaped N+1-party
+//! rendezvous through host, which the existing barrier-shim emitter
+//! ([`wire::barrier_cross`]) handles transparently with no per-cell
+//! code changes.
 //!
 //! ## Backends that DO NOT use this pass
 //!
@@ -64,8 +65,10 @@ use crate::event::WorkerId;
 ///
 /// Callers (the driver) must invoke this only for backends that
 /// require host-mediated barrier topology (mp-tcp-bufsync,
-/// mp-tcp-event, mp-tcp-poll — same one-CTRL-stream-per-(host,worker)
-/// star topology). pthreads-sync / pthreads-async must NOT apply this
+/// mp-tcp-event, mp-tcp-poll, mp-uds-event — same one-CTRL-stream-
+/// per-(host,worker) star topology, varying only in the wire transport
+/// — TCP loopback for the mp-tcp-\* trio, Unix domain sockets for
+/// mp-uds-event). pthreads-sync / pthreads-async must NOT apply this
 /// pass — their shared-memory barrier primitives handle host-excluding
 /// barriers natively. openmp-rs likewise (shared-memory parallelism;
 /// no transport star).
@@ -273,9 +276,9 @@ mod tests {
         // acfg_to_events together must place a Sync on host's
         // projected event list for every formerly-host-excluding
         // barrier. This is the contract the mp-tcp-bufsync /
-        // mp-tcp-event / mp-tcp-poll Plan::build relies on (rejection
-        // guard checks every Sync includes host; after this pass,
-        // every Sync does).
+        // mp-tcp-event / mp-tcp-poll / mp-uds-event Plan::build relies
+        // on (rejection guard checks every Sync includes host; after
+        // this pass, every Sync does).
         use crate::event::Event;
         use crate::passes::petri_to_events::acfg_to_events;
 

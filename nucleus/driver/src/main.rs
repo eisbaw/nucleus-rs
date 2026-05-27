@@ -511,10 +511,21 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // defensive ContractGap on host-excluding barriers. The
     // host-mediation pass is needed for any mp-tcp-poll schedule with
     // a host-excluding barrier (e.g. 03-reduction/distributed) to
-    // lower correctly. mp-uds-event will join this gate in
-    // TASK-0044.03.01 once its multi-worker arm lands (same UDS-star
-    // topology rationale; capability surface mirrors mp-tcp-event).
-    let acfg = if backend == "mp-tcp-bufsync" || backend == "mp-tcp-event" || backend == "mp-tcp-poll" {
+    // lower correctly.
+    //
+    // **Cycle 197 (TASK-0044.03.01)**: gate widened to include
+    // `mp-uds-event` for the same reason — UDS-star topology is
+    // structurally identical to TCP-star (one-CTRL-stream-per-(host,
+    // worker) over UnixStream instead of TcpStream); capability
+    // surface mirrors mp-tcp-event. The mp-uds-event Plan::build
+    // carries the SAME defensive ContractGap on host-excluding
+    // barriers, so the pass is needed end-to-end for cells like
+    // 03-reduction/distributed × mp-uds-event.
+    let acfg = if backend == "mp-tcp-bufsync"
+        || backend == "mp-tcp-event"
+        || backend == "mp-tcp-poll"
+        || backend == "mp-uds-event"
+    {
         // WHY this pass needs the SAME host the backend will elect:
         // a schedule whose "host" worker is declared but has zero
         // projected events (unusual but possible) would otherwise
@@ -551,17 +562,22 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     };
 
     // TASK-0329.01.02 slice 2 — host-mediated data-relay injection,
-    // mp-tcp-event ONLY (AC#5 bufsync audit: bufsync 09/13 cells are
-    // capability-gated, so behavioral verification is impossible;
-    // applying the pass on bufsync would have no defensible gain
-    // today). For every Push/Wait pair whose endpoints are BOTH
-    // non-host, replaces the pair with four sibling Xfers routing the
-    // transfer through host. The new host endpoints project naturally
-    // onto host's per-worker event list including INSIDE Repeat
-    // bodies — this is what unblocks 09-producer-consumer/pipelined
-    // × mp-tcp-event (per-iter w2w Push inside `for n in 0..16`),
-    // which the TASK-0330 defensive guard at
-    // `collect_w2w_pushes` would otherwise reject.
+    // mp-tcp-event ONLY at cycle 163; widened to ALSO include
+    // mp-uds-event cycle 197 (TASK-0044.03.01). AC#5 bufsync audit:
+    // bufsync 09/13 cells are capability-gated, so behavioral
+    // verification is impossible; applying the pass on bufsync would
+    // have no defensible gain today. For every Push/Wait pair whose
+    // endpoints are BOTH non-host, replaces the pair with four sibling
+    // Xfers routing the transfer through host. The new host endpoints
+    // project naturally onto host's per-worker event list including
+    // INSIDE Repeat bodies — this is what unblocks
+    // 09-producer-consumer/pipelined × mp-tcp-event (per-iter w2w
+    // Push inside `for n in 0..16`), which the TASK-0330 defensive
+    // guard at `collect_w2w_pushes` would otherwise reject. The same
+    // defensive guard lives in mp-uds-event's collect_w2w_pushes
+    // sibling (cycle 197 copy-of-mp-tcp-event); without this pass
+    // running on mp-uds-event, 09/pipelined × mp-uds-event would hit
+    // the SAME ContractGap.
     //
     // Applied AFTER `apply_host_mediation_inject` so the CTRL-arm and
     // DATA-arm passes compose cleanly (Sync participants are already
@@ -572,7 +588,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // Host election: same shared helper as the cycle-160 wiring above
     // (rule lives in `backend_common::host_election`; same mirroring
     // requirement vs the backend's Plan::build).
-    let acfg = if backend == "mp-tcp-event" {
+    let acfg = if backend == "mp-tcp-event" || backend == "mp-uds-event" {
         // Re-derive `used_workers` from the post-mediation ACFG. The
         // host_mediation pass may have added host to Sync participants
         // but doesn't change which workers project events; nonetheless
@@ -665,21 +681,27 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // e2e baseline byte-identically (no tier-1 cell uses `check loop`).
     let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     // TASK-0329.01.01 slice 1 — safe push-before-wait reordering for
-    // mp-tcp-event. Hoists hoistable worker-to-worker `Push` events
-    // above preceding w2w `Wait` events within each non-host worker's
-    // top-level boundaries, breaking the wait-before-push deadlock
-    // cycle on the synchronous host-relay (cycle-149) for schedules
-    // like 05-stencil/distributed-2d. Pass is mp-tcp-event-specific
-    // because (per AC#3 of TASK-0329.01.01) only mp-tcp-event's
-    // relay splice point can safely move ahead of the first
-    // wait-bearing Sync; mp-tcp-bufsync's constraint 3 (per-pair FIFO
-    // stream + host's own w2w Waits would race the moved relay) makes
-    // the analogous lift unsafe on bufsync. Other backends do NOT
-    // have the host-relay deadlock surface (pthreads-* use direct
-    // w↔w channels). Pass is observationally a no-op for schedules
-    // that have no wait-before-push shape — preserves bit-identity
-    // for every currently-passing mp-tcp-event cell.
-    let per_worker = if backend == "mp-tcp-event" {
+    // mp-tcp-event (cycle 162) and mp-uds-event (cycle 197 widening
+    // for TASK-0044.03.01). Hoists hoistable worker-to-worker `Push`
+    // events above preceding w2w `Wait` events within each non-host
+    // worker's top-level boundaries, breaking the wait-before-push
+    // deadlock cycle on the synchronous host-relay (cycle-149) for
+    // schedules like 05-stencil/distributed-2d. mp-uds-event inherits
+    // the SAME per-seq-demux wait primitive + synchronous host-relay
+    // shape from its mp-tcp-event sibling (cycle 197 multi_worker/
+    // copy), so the same hoist is needed. Per AC#3 of TASK-0329.01.01:
+    // only the per-seq-demux event backends (mp-tcp-event +
+    // mp-uds-event) can safely move ahead of the first wait-bearing
+    // Sync; mp-tcp-bufsync's / mp-tcp-poll's constraint 3 (per-pair
+    // FIFO stream + host's own w2w Waits would race the moved relay)
+    // makes the analogous lift unsafe on those backends. Other
+    // backends do NOT have the host-relay deadlock surface
+    // (pthreads-* use direct w↔w channels; openmp-rs uses rayon
+    // shared-memory Slots). Pass is observationally a no-op for
+    // schedules that have no wait-before-push shape — preserves
+    // bit-identity for every currently-passing mp-tcp-event /
+    // mp-uds-event cell.
+    let per_worker = if backend == "mp-tcp-event" || backend == "mp-uds-event" {
         // Host election: shared helper. See
         // `backend_common::host_election` module docstring for the
         // canonical rule (TASK-0336 cycle 164 lift). `used` here =
