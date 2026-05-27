@@ -87,7 +87,22 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-p
 # arm (nonblocking-read poll loop) is still ContractGap — every
 # multi-worker [[required]] cell on mp-tcp-poll is explicitly [[skip]]'d
 # with "multi-worker codegen pending" until TASK-0044.02.02 lands.
-backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs", "mp-tcp-poll"]
+#
+# mp-uds-event joined the matrix in TASK-0044.03 cycle 194 (single-worker
+# codegen). Same SCHEDULE-visible capability surface as mp-tcp-event
+# (async + buffer + event); single-worker emit is byte-identical to
+# mp-tcp-event's single-process output by construction (shared
+# `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+# `backend_common::project_skeleton::multi_binary` + same
+# `mp_tcp_common::WIRE_RUNTIME_SRC` wire.rs verbatim — TCP-specific
+# code sits unused because single-process bin does not `mod wire;`).
+# The multi-worker arm (UDS reactor + per-(DataId, SeqTag) ring buffer)
+# is still ContractGap — every multi-worker [[required]] cell on
+# mp-uds-event is explicitly [[skip]]'d with "multi-worker codegen
+# pending" until TASK-0044.03.01 lands. UNLIKE openmp-rs / mp-tcp-poll,
+# there are NO capability-mismatch skips because mp-uds-event's
+# capability surface IS async + buffer + event.
+backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs", "mp-tcp-poll", "mp-uds-event"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -1958,4 +1973,222 @@ example  = "13-cnn-inference"
 schedule = "pipeline_parallel"
 backend  = "mp-tcp-poll"
 reason   = "TASK-0042: capability mismatch — `transfer input/feat1/feat2 : async, buffer=3, notify=event` requires async + buffer + event notification, none of which mp-tcp-poll supports. Same capability gap as mp-tcp-bufsync; only the async tier-1 backends satisfy this schedule."
+milestone = "M6"
+
+# --------------------------------------------------------------------
+# mp-uds-event (7th tier-1 backend, M6, TASK-0044.03). Joined the
+# matrix in cycle 194 (single-worker codegen). Same SCHEDULE-visible
+# capability surface as mp-tcp-event (async + buffer + event);
+# single-worker emit is BYTE-IDENTICAL to mp-tcp-event's single-
+# process output by construction (shared
+# `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+# `backend_common::project_skeleton::multi_binary` + same
+# `mp_tcp_common::WIRE_RUNTIME_SRC` wire.rs). The multi-worker arm
+# (UDS reactor + per-(DataId, SeqTag) ring buffer) is still
+# `ContractGap` — every multi-worker [[required]] cell on mp-uds-event
+# is explicitly [[skip]]'d below with "multi-worker codegen pending"
+# until TASK-0044.03.01 lands. UNLIKE openmp-rs / mp-tcp-poll, there
+# are NO capability-mismatch skips — mp-uds-event's capability surface
+# IS async + buffer + event (same as mp-tcp-event).
+# --------------------------------------------------------------------
+
+# Single-worker cells (host-only schedules). Each MUST be byte-identical
+# against reference.bin (cross-backend differential invariant: same
+# shared emitter -> same bytes). Mirrors every single-worker cell
+# already [[required]] on mp-tcp-event.
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "02-split-add"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "03-reduction"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "04-prefix-sum"
+schedule = "blocked-nondiv"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "05-stencil"
+schedule = "blocked"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "blocked"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "blocked"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "13-cnn-inference"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# Cycle-194 filing: Multi-worker schedules — async + buffer + event
+# AND sync — WOULD compile under mp-uds-event's capability surface
+# (which is a SUPERSET of mp-tcp-bufsync's and identical to
+# mp-tcp-event's), but the multi-worker UDS-reactor codegen is the
+# headline follow-up of TASK-0044.03, filed as TASK-0044.03.01.
+# ContractGap forward-link from `mp_uds_event::emit`. Defer until the
+# multi-worker arm lands; at that point promote each of these to
+# [[required]] (mirroring mp-tcp-event coverage).
+
+[[skip]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01 UDS-reactor + per-(DataId, SeqTag) ring buffer + epoll readiness. ContractGap from mp_uds_event::emit on used_workers >= 2. Schedule compiles under the mp-uds-event capability surface (identical to mp-tcp-event); promote to [[required]] when the multi-worker arm lands."
+milestone = "M6"
+
+[[skip]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2. (Schedule needs async + buffer + event — exactly mp-uds-event's capability surface, so this WILL promote when multi-worker lands.)"
+milestone = "M6"
+
+[[skip]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "06-separable-filter"
+schedule = "distributed2"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "07-matmul"
+schedule = "distributed-2d"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "08-histogram"
+schedule = "distributed"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "batch_parallel"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
+milestone = "M6"
+
+[[skip]]
+example  = "13-cnn-inference"
+schedule = "pipeline_parallel"
+backend  = "mp-uds-event"
+reason   = "mp-uds-event multi-worker codegen pending — TASK-0044.03.01. ContractGap from mp_uds_event::emit on used_workers >= 2."
 milestone = "M6"

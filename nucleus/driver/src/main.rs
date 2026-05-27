@@ -38,10 +38,12 @@
 //! (M4, OS processes + TCP loopback + mio reactor + per-(seq, peer)
 //! outbound queue + per-seq inbound queue — TASK-0042.05 / Stage 3
 //! of TASK-0042.02 landed cycle 79), `openmp-rs` (M6, rayon threads,
-//! SKELETON — TASK-0044.01 cycle 173), and `mp-tcp-poll` (M6, OS
-//! processes + TCP loopback + nonblocking poll, SKELETON —
-//! TASK-0044.02 cycle 174), and `mp-uds-event` (M6, OS processes +
-//! Unix domain sockets + mio, SKELETON — TASK-0044.03 cycle 175).
+//! single-worker arm landed cycle 191, multi-worker
+//! TASK-0044.01.01), `mp-tcp-poll` (M6, OS processes + TCP loopback
+//! + nonblocking poll, single-worker arm landed cycle 192, multi-
+//! worker TASK-0044.02.02), and `mp-uds-event` (M6, OS processes +
+//! Unix domain sockets + mio, single-worker arm landed cycle 194,
+//! multi-worker TASK-0044.03.01).
 //! The four shipped (M1-M4) backends consume the identical
 //! EventList contract; the cross-backend differential (same source
 //! -> bit-identical output.bin) is the M3 headline (four-way), the
@@ -56,15 +58,15 @@
 //! at cycle 148/149; both arms are now lifted upstream of every
 //! tier-1 backend, so the per-backend `ContractGap` rejections at
 //! `Plan::build` for host-excluding barriers / unmediated w↔w
-//! `Push`-`Wait` are defense-in-depth, not load-bearing. Of the
-//! three M6 backends, openmp-rs single-worker arm LANDED at cycle
-//! 191 (multi-worker via TASK-0044.01.01) and mp-tcp-poll
-//! single-worker arm LANDED at cycle 192 (multi-worker via
-//! TASK-0044.02.02); both participate in the differential on 16
-//! single-worker [[required]] cells each. mp-uds-event remains
-//! SKELETON — `emit()` returns `EmitError::ContractGap` until
-//! substantive codegen lands per the cycle-171 phased-AC addendum
-//! on TASK-0044.03.
+//! `Push`-`Wait` are defense-in-depth, not load-bearing. All three
+//! M6 backends have their single-worker arms live as of cycle 194 —
+//! openmp-rs cycle 191 (multi-worker via TASK-0044.01.01),
+//! mp-tcp-poll cycle 192 (multi-worker via TASK-0044.02.02),
+//! mp-uds-event cycle 194 (multi-worker via TASK-0044.03.01); each
+//! participates in the differential on 16 single-worker [[required]]
+//! cells (byte-identical against their respective templates:
+//! openmp-rs vs pthreads-sync, mp-tcp-poll vs mp-tcp-bufsync,
+//! mp-uds-event vs mp-tcp-event).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -118,7 +120,7 @@ fn print_help() {
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
              openmp-rs       rayon threads (tier 1, single-worker LANDED, multi-worker pending TASK-0044.01.01)\n    \
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker LANDED, multi-worker pending TASK-0044.02.02)\n    \
-             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, SKELETON — TASK-0044.03)\n"
+             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker LANDED, multi-worker pending TASK-0044.03.01)\n"
     );
 }
 
@@ -831,16 +833,21 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
-        // Seventh tier-1 backend (TASK-0044.03 cycle 175, M6): OS
-        // processes + Unix domain sockets + mio/epoll + async +
-        // buffer — same capability surface as mp-tcp-event, differing
-        // only in transport (UDS instead of TCP loopback). SKELETON
-        // in this cycle — `mp_uds_event::emit` returns ContractGap
-        // until subsequent cycles of TASK-0044.03 land the substantive
-        // codegen (Unix domain socket reactor + per-(DataId, SeqTag)
-        // ring buffer; cycle-171 brief flags as candidate for lifting
-        // the transport layer from mp-tcp-event). Multi-binary shape
-        // with optional runtime_rs (same as mp-tcp-event).
+        // Seventh tier-1 backend (TASK-0044.03, M6): OS processes +
+        // Unix domain sockets + mio/epoll + async + buffer — same
+        // capability surface as mp-tcp-event, differing only in
+        // transport (UDS instead of TCP loopback). Status as of cycle
+        // 194: single-worker arm LANDED (delegates to pthreads-sync's
+        // `render_single_worker_main_with_kernels_attr` +
+        // backend-common's multi_binary skeleton, byte-identical to
+        // mp-tcp-event's single-process output; wire.rs emitted from
+        // mp_tcp_common::WIRE_RUNTIME_SRC verbatim for shape uniformity,
+        // unused because the single-process bin does not `mod wire;`);
+        // multi-worker arm returns `EmitError::ContractGap`
+        // forward-linking TASK-0044.03.01 (UDS-reactor codegen pending;
+        // cycle-171 brief flags as candidate for lifting the transport
+        // layer from mp-tcp-event). Multi-binary shape with optional
+        // runtime_rs (same as mp-tcp-event).
         "mp-uds-event" => {
             let result =
                 mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)

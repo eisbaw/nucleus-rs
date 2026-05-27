@@ -1,4 +1,4 @@
-# mp-uds-event backend crate (SKELETON). See PRD §7.1, TASK-0044.03.
+# mp-uds-event backend crate. See PRD §7.1, TASK-0044.03.
 #
 # Tier-1 backend: workers are OS PROCESSES, transport is Unix domain
 # sockets, notify is mio/epoll event readiness, supports async + buffer
@@ -9,21 +9,28 @@
 # Differs from mp-tcp-event only in the transport layer (Unix domain
 # sockets via mio's UnixListener / UnixStream instead of TCP loopback).
 #
-# ## Current status: SKELETON (TASK-0044.03 cycle 175, 2026-05-26)
+# ## Current status: SINGLE-WORKER LANDED (TASK-0044.03 cycle 194)
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
-# wired through. `emit()` returns `EmitError::ContractGap` for ALL inputs
-# (single- and multi-worker) until the substantive codegen lands. The
-# capability-compat check IS real — schedules that compile against
-# mp-tcp-event compat-check cleanly against mp-uds-event; the subsequent
-# codegen call surfaces the skeleton via the typed ContractGap
-# forward-link.
+# wired through. `emit()` dispatches on `used_workers.len()`:
+#   - `<= 1`: delegates to `pthreads_sync::render_single_worker_main_with_kernels_attr`
+#     + `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
+#     render_run_sh_single}` (same path mp-tcp-event's single-process arm
+#     takes); the emitted artefact is BYTE-IDENTICAL to mp-tcp-event's
+#     single-process output (and therefore byte-identical arithmetic to
+#     pthreads-sync's single process). The TCP-specific wire.rs is emitted
+#     verbatim for shape uniformity with multi-process builds (cargo's
+#     reachability analysis never compiles it into the bin target — the
+#     bin does not `mod wire;`).
+#   - `>= 2`: returns `EmitError::ContractGap` forward-linking
+#     TASK-0044.03.01 (Unix domain socket reactor + per-(DataId, SeqTag)
+#     ring buffer + epoll readiness codegen pending; cycle-171 brief
+#     flags as candidate for lifting transport layer from mp-tcp-event).
 #
-# No `mio` / `mp-tcp-common` / `pthreads-sync` deps yet — added when
-# substantive codegen lands. The cycle-171 brief flags this as a
-# CANDIDATE FOR LIFTING (assess mp-tcp-event's reactor parametricity
-# before copying); the skeleton cycle defers that decision to the
-# codegen cycle.
+# `mp-tcp-common` provides wire framing reused by mp-tcp-bufsync +
+# mp-tcp-event + mp-tcp-poll; pthreads-sync provides the single-worker
+# delegation — the same precedent every multi-binary backend's
+# single-worker arm uses.
 
 [package]
 name = "mp-uds-event"
@@ -38,4 +45,31 @@ path = "src/lib.rs"
 
 [dependencies]
 nucleus-compiler = { path = "../../nucleus-compiler" }
+# Shared codegen primitives — EmitError + project_skeleton::multi_binary
+# (Cargo.toml + run.sh templates for multi-binary backends).
 backend-common = { path = "../../backend-common" }
+# Wire framing (length-prefixed framed messages, SyncTag-keyed barrier
+# protocol). Single source of truth at `mp_tcp_common::WIRE_RUNTIME_SRC`
+# — emitted verbatim by every multi-binary backend's single-process
+# arm for shape uniformity. The TCP-specific content will be REPLACED
+# with a UDS-specific runtime when TASK-0044.03.01 lands the
+# multi-worker arm.
+mp-tcp-common = { path = "../../mp-tcp-common" }
+# Single-worker straight-line `main.rs` emitter (with the
+# `#[path="../kernels.rs"]` attribute injection for `src/bin/`-shaped
+# multi-binary projects). Genuine semantic delegation — the same
+# precedent mp-tcp-bufsync + mp-tcp-event + mp-tcp-poll + pthreads-async
+# take for their single-worker arm.
+pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared lower-link-inject pipeline boilerplate (TASK-0237) — used by
+# tests/single_worker_emit.rs to lower a real example and assert
+# byte-identical emit against mp-tcp-event.
+test-common = { path = "../../test-common" }
+# mp-tcp-event is the byte-identical-emit oracle for mp-uds-event's
+# single-process arm (both backends consume the same shared renderers;
+# their emitted artefacts MUST be byte-identical for any single-worker
+# schedule). Dev-only — no production-code dependency between the two
+# backend crates.
+mp-tcp-event = { path = "../mp-tcp-event" }

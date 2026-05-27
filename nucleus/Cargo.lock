@@ -229,7 +229,11 @@ name = "mp-uds-event"
 version = "0.0.0"
 dependencies = [
  "backend-common",
+ "mp-tcp-common",
+ "mp-tcp-event",
  "nucleus-compiler",
+ "pthreads-sync",
+ "test-common",
 ]
 
 [[package]]

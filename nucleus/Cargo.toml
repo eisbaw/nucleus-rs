@@ -59,14 +59,17 @@ members = [
     # [[required]] cells); multi-worker arm returns ContractGap
     # forward-linking TASK-0044.02.02.
     "backends/mp-tcp-poll",
-    # mp-uds-event (TASK-0044.03 cycle 175): seventh tier-1 backend,
-    # skeleton only — same capability surface as mp-tcp-event (async +
-    # buffer + event notify), differing in transport (Unix domain
-    # sockets instead of TCP loopback). `emit()` returns ContractGap
-    # until subsequent cycles of TASK-0044.03 land the substantive
-    # codegen. Inherits the (D)+(B2) compensating-pass tower from
-    # mp-tcp-event; TASK-0337 promotion-trigger guard documented on
-    # lib.rs.
+    # mp-uds-event (TASK-0044.03): seventh tier-1 backend. Same
+    # capability surface as mp-tcp-event (async + buffer + event
+    # notify); differs in transport (Unix domain sockets instead of
+    # TCP loopback). Status as of cycle 194: single-worker arm LANDED
+    # (delegates to pthreads-sync's render_single_worker_main_with_kernels_attr
+    # + backend-common's multi_binary skeleton, byte-identical to
+    # mp-tcp-event's single-process output on the 16 single-worker
+    # [[required]] cells); multi-worker arm returns ContractGap
+    # forward-linking TASK-0044.03.01. Inherits the (D)+(B2)
+    # compensating-pass tower from mp-tcp-event when multi-worker
+    # lands; TASK-0337 promotion-trigger guard documented on lib.rs.
     "backends/mp-uds-event",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate

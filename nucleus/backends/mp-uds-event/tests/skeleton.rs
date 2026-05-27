@@ -1,43 +1,67 @@
-//! Skeleton smoke tests for the mp-uds-event backend (TASK-0044.03 cycle 175).
+//! Smoke tests for the mp-uds-event backend.
 //!
-//! Cycle status: SKELETON. `emit()` returns `EmitError::ContractGap` for
-//! ALL inputs. These tests pin three invariants that hold even in the
-//! skeleton phase:
+//! Cycle status (TASK-0044.03 cycle 194):
+//! - Single-worker arm IMPLEMENTED (delegation to
+//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+//!   `backend_common::project_skeleton::multi_binary` — byte-identical
+//!   to mp-tcp-event's single-process emit).
+//! - Multi-worker arm: ContractGap forward-link to TASK-0044.03.01
+//!   (UDS-reactor codegen pending).
 //!
-//! 1. Calling `emit()` on the smallest legal input (empty per-worker map)
-//!    returns `EmitError::ContractGap`, not a panic.
-//! 2. The ContractGap message names `mp-uds-event` and references
-//!    TASK-0044.03 (the precise forward-link to the work that lands the
-//!    substantive emit).
-//! 3. The `EmitResult` struct shape exists and matches the multi-binary
-//!    seven-field convention with `runtime_rs: Option<PathBuf>`
-//!    (compile-time test — if the struct changes, the driver dispatch
-//!    arm must change in lockstep).
+//! Tests pinned here:
+//! - Multi-worker `emit()` returns `EmitError::ContractGap` naming
+//!   `mp-uds-event` + forward-link to TASK-0044.03.
+//! - `EmitResult` shape pin (compile-time via constructor).
 //!
-//! When substantive emit lands in subsequent cycles of TASK-0044.03,
-//! follow the mp-tcp-event precedent (tests/multi_worker_emit.rs) and
-//! replace these aspirational tests with real emit-path smoke tests.
+//! Bit-identical single-worker emit differential against mp-tcp-event
+//! lives in `tests/single_worker_emit.rs`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mp_uds_event::{emit, EmitError, EmitResult, NameTables};
+use nucleus_compiler::event::{DataId, Event, IterTile, WorkerId};
 
 #[test]
-fn skeleton_emit_returns_contract_gap_with_forward_link() {
-    let per_worker = BTreeMap::new();
+fn multi_worker_emit_returns_contract_gap_with_forward_link() {
+    // Two non-empty worker lists -> used_workers.len() >= 2 -> multi-
+    // worker arm -> ContractGap. Cheapest legal Event variant (`Free`)
+    // so the test does not accidentally exercise downstream emit
+    // machinery — dispatch happens before any per-event walk.
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    let dummy = Event::Free {
+        data: DataId(0),
+        tile: IterTile::empty(),
+    };
+    per_worker.insert(WorkerId(0), vec![dummy.clone()]);
+    per_worker.insert(WorkerId(1), vec![dummy]);
+
     let names = NameTables::default();
     let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
-    let kernels_path = PathBuf::from("/tmp/does-not-need-to-exist-skeleton-cycle.rs");
-    let out_dir = PathBuf::from("/tmp/does-not-need-to-exist-skeleton-cycle/");
+
+    // mp-uds-event's emit() reads kernels.rs UPFRONT (same structure as
+    // mp-tcp-event + mp-tcp-poll), so the ContractGap dispatch on the
+    // multi-worker arm needs a real kernels file. Use the workspace
+    // target/ scratch dir so the test is hermetic.
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("target"))
+        .expect("workspace target/");
+    let stem = target.join("mp-uds-event-test-scratch/skeleton_multi_worker");
+    let _ = std::fs::remove_dir_all(&stem);
+    std::fs::create_dir_all(&stem).expect("scratch dir");
+    let kernels_path = stem.join("kernels.rs");
+    std::fs::write(&kernels_path, "// stub for ContractGap test\n").expect("kernels.rs stub");
+    let out_dir = stem.join("out");
 
     let result = emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir);
 
-    let err = result.expect_err("mp-uds-event skeleton must return ContractGap, not Ok");
+    let err = result.expect_err("multi-worker mp-uds-event must return ContractGap, not Ok");
     let msg = format!("{err}");
     assert!(
         matches!(err, EmitError::ContractGap(_)),
-        "mp-uds-event skeleton must return ContractGap variant, got: {msg}"
+        "mp-uds-event multi-worker must return ContractGap variant, got: {msg}"
     );
     assert!(
         msg.contains("mp-uds-event"),
@@ -47,13 +71,17 @@ fn skeleton_emit_returns_contract_gap_with_forward_link() {
         msg.contains("TASK-0044.03"),
         "ContractGap message must forward-link TASK-0044.03, got: {msg}"
     );
+    assert!(
+        msg.contains("multi-worker"),
+        "ContractGap message must scope itself to the multi-worker arm, got: {msg}"
+    );
 }
 
 #[test]
 fn emit_result_shape_is_multi_binary_seven_field_with_optional_runtime() {
     // The CONSTRUCTOR is the pin. If a field is renamed/added/removed,
-    // this fails to compile and the driver dispatch arm (driver/src/
-    // main.rs match-arm "mp-uds-event" => { ... println!(...) ... })
+    // this fails to compile and the driver dispatch arm
+    // (driver/src/main.rs match-arm "mp-uds-event" => { ... println!(...) ... })
     // must be updated in lockstep — the same shape the mp-tcp-event
     // dispatch arm uses: project_dir, cargo_toml, worker_bin0..N,
     // kernels_rs, wire_rs, runtime_rs (Option), run_sh.
