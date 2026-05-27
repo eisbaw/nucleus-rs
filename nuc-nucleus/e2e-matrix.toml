@@ -637,8 +637,9 @@ milestone = "M6"
 # the TOP LEVEL of each worker's event list, OUTSIDE the Event::Loop
 # nests (only Fire events live inside the Loops) — see TASK-0341.03.02
 # cycle-212b addendum for the corrected mechanism. Non-flake verified
-# across 4 fresh e2e samples (3 cycle-212 + 1 cycle-214 baseline);
-# 17-spmv | distributed × 7 row PASSed in 100% of samples.
+# across 7 e2e samples total (3 cycle-212 informational + 4 cycle-214
+# = 1 pre-promotion baseline + 3 post-promotion verification); 17-spmv
+# | distributed × 7 row PASSed in 100% of samples.
 [[required]]
 example  = "17-spmv"
 schedule = "distributed"
