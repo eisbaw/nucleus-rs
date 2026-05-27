@@ -3,10 +3,10 @@ id: TASK-0341
 title: >-
   Showcase example expansion: 3 new examples for compiler-pattern coverage
   (transpose, Jacobi, SpMV)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-26 11:49'
-updated_date: '2026-05-27 22:15'
+updated_date: '2026-05-27 22:55'
 labels:
   - examples
   - coverage
@@ -51,8 +51,8 @@ This task does NOT yet decide whether the 3 example numbers should be 14/15/16 (
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Sub-tasks TASK-0341.01 (transpose), TASK-0341.02 (Jacobi), TASK-0341.03 (SpMV) all filed with concrete prog.algo.nuc + naive.sched.nuc + AC#1 language-sanity criteria.
-- [ ] #2 Each sub-task explicitly declares its example number (e.g. 14-transpose, 15-jacobi, 16-spmv) AND a tier-1 e2e cell that must pass for AC#1 closure.
+- [x] #1 Sub-tasks TASK-0341.01 (transpose), TASK-0341.02 (Jacobi), TASK-0341.03 (SpMV) all filed with concrete prog.algo.nuc + naive.sched.nuc + AC#1 language-sanity criteria.
+- [x] #2 Each sub-task explicitly declares its example number (e.g. 14-transpose, 15-jacobi, 16-spmv) AND a tier-1 e2e cell that must pass for AC#1 closure.
 - [x] #3 Cycle-178 doc-lie-promotion mitigation applies: any //! module-level docstring in the new example's prog.algo.nuc / kernels.rs / schedule must be present-tense + cite the landing cycle.
 <!-- AC:END -->
 
@@ -92,4 +92,39 @@ Ground-truth verification (cycle 218b):
 All 3 examples //! docstrings + READMEs are present-tense + cite landing cycles + match the e2e-matrix.toml ground truth.
 
 AC#3 re-tickable. Cycle 218b applied the cycle-218 sharpened discipline (whole-file grep + per-claim ground-truth check against e2e-matrix.toml).
+
+=== Cycle 219 closure (orchestrator-direct; pre-commit fold-back of architect P1.1+P1.2+P2.1+P2.2+P3.1+P3.2 + qa-test-runner P2.1) — showcase example expansion epic closed ===
+
+All 3 sub-tasks Done:
+- TASK-0341.01 (15-transpose): Done cycle 219 (AC closure across cycles 204/205/215/216/218b).
+- TASK-0341.02 (16-jacobi): Done cycle 219 (AC closure across cycles 206/207/208/218b; AC#2 honest-BLOCKED via TASK-0341.02.01).
+- TASK-0341.03 (17-spmv): Done cycle 213 (AC closure across cycles 210/211/212/213; AC#2 honest-BLOCKED via TASK-0341.03.01; cycle 214 was the child TASK-0341.03.02.01 cross-backend × 6 distributed promotion, not the parent closure cycle).
+
+AC tick map (parent):
+- AC#1: ticked cycle 219 — sub-tasks filed with concrete prog.algo.nuc + naive.sched.nuc + AC#1 language-sanity criteria. All 3 examples (15-transpose, 16-jacobi, 17-spmv) have committed prog.algo.nuc + naive.sched.nuc + reference.bin + input.bin + reference/ + README.md.
+- AC#2: ticked cycle 219 — sub-tasks declared 15/16/17 (not 14/15/16; 14 taken by hearing-aid TASK-0054 cycle 201) and have tier-1 e2e cells: 15-transpose | naive | pthreads-sync (cycle 204), 16-jacobi | naive | pthreads-sync (cycle 206), 17-spmv | naive | pthreads-sync (cycle 210).
+- AC#3: ticked cycle 218b — cycle-178 doc-lie-promotion mitigation present-tense + cycle-citation across all 3 examples' module-level docstrings + READMEs + schedule files (cycles 217/217b/218/218b stale-narrative sweeps).
+
+e2e baseline at closure: 280/246/0/34/0 (cycle 219 re-ran `just e2e` once at cycle-start + QA review-gate re-ran 2 more samples, all bit-identical; non-flake confirmed across 3 total samples; tracker-only no-Rust-changes cycle). [[required]] / [[skip]] counts (ground-truth from nuc-nucleus/e2e-matrix.toml, cycle-218b verification + cycle-219 QA re-verification):
+- 15-transpose: 14 [[required]] (naive×7 + distributed-rows×7), 0 [[skip]].
+- 16-jacobi: 7 [[required]] (naive×7), 7 [[skip]] (distributed×7) — honest-BLOCKED across all 7 tier-1 backends: 5 (pthreads-sync, pthreads-async, mp-tcp-event, openmp-rs, mp-uds-event) on TASK-0341.02.02.01.01 3D wait_slice gap; 2 (mp-tcp-bufsync, mp-tcp-poll) on TASK-0330 in-Loop w2w Push.
+- 17-spmv: 14 [[required]] (naive×7 + distributed×7), 0 [[skip]].
+- Total: 35 [[required]] + 7 [[skip]] new cells across the 3 examples.
+- Unit tests: 1019 passed / 0 failed / 3 ignored (dev); 1018 passed / 0 failed / 3 ignored (release) — the 1-test delta is the known debug_assert!-gated #[should_panic] divergence per TASK-0291.
+
+Status: Done.
+
+Compiler-feature gaps surfaced by the showcase wave (filed follow-ups; deferred):
+- TASK-0341.01.01 surfaced: nothing new (axis-swap output-driven partition lowers via cycle-118/121 axis-mapping filter).
+- TASK-0341.02.01 (data-dependent loop termination grammar extension): convergence-check Jacobi requires while/break/runtime-dependent ForStmt bounds; same epic as TASK-0179/0044.05.01/0044.06.01 (project-grammar-deferred-cluster).
+- TASK-0341.02.02.01.01 (extend wait_slice to N-D nested-loop dispatch): blocks 5 of 7 16-jacobi/distributed cells; structurally relevant to other multi-dim distributed shapes. Filed cycle 209.
+- TASK-0341.03.01 (data-dependent indirect read grammar gap): SpMV's x[col_idx[i][k]] inexpressible — IndexExpr.Atom does not admit nested IndexSuffix; companion to TASK-0044.04 histogram. Stub description (filed cycle 210); backfill follow-up filed cycle 219 as TASK-0352.
+- TASK-0347 (ACFG identity-copy dataflow; cycle-77 DEFERRED trigger fired by 15-transpose): reopens both ACFG-build and link-side lower for bare-LValue dataflow; would simplify 15-transpose by dropping the xpose identity passthrough. Note: TASK-0347 has prose-only ACs (no formal tickable AC list); cycle-219 formalization filed as TASK-0353.
+- TASK-0348 (zero-init invariant behaviour-pin for 16-jacobi field/boundary cells): defensive, low priority.
+- TASK-0349 (codegen unused_assignments warning on whole-array broadcast init): cosmetic, low priority.
+
+Forward-carry lessons (for next phase3 cycle implementer briefs):
+- Showcase example AC fold-out pattern (cycle 204b precedent): AC#1 lands in a focused cycle, AC#2/#3/#4 as separate follow-up sub-tasks. Worked across all 3 examples spanning cycles 204..219 (~16 major cycles incl. b-suffix fold-backs).
+- Stale-narrative discipline: the cycles 215..218b stale-narrative sweep cluster (TASK-0350, 0351) revealed a recurring "cross-backend promotion AC follow-up filed... this cycle lands X only" pattern that becomes stale post-promotion. The whole-file grep discipline (cycle 217b) + ground-truth check against e2e-matrix.toml (cycle 218b) are the operational mitigations.
+- Doc-lie verbatim-copy pattern fired AGAIN in cycle 219 closure draft itself, TWICE (architect P1.1 + qa-test-runner P2.1, both caught pre-commit): (a) the cycle-218 doc-lie ('5 of 7 [[required]], 2 honest-BLOCKED via TASK-0330') was re-introduced into TASK-0341.02 AC#3 closure tick line ONE block below the cycle-218b correction that fixed exactly this defect — 18th firing of feedback-silent-sibling-defect; (b) the parent narrative's "TASK-0341.03 Done cycle 214" was a sibling-copy from the cross-backend promotion cycle 214 when the actual parent closure was cycle 213 — 19th firing. Both caught pre-commit by the parallel read-only review-gate (architect + qa-test-runner) and folded in-thread before commit; no cycle-219b fold-back commit required. Ground-truth check against e2e-matrix.toml + `git log --oneline --grep=TASK-X` is the discipline that should be applied to EVERY narrative making cycle-citation or [[required]] / [[skip]] count claims, including parent-AC-closure summaries. TASK-0339 (just check-narrative-doc-lie structural recipe) was filed cycle 169 and is currently a static-text-only check; the cycle-219 firings suggest promoting it to also cross-check toml-cited counts AND git-log-cited cycles is worth a follow-up if the pattern fires again.
 <!-- SECTION:NOTES:END -->
