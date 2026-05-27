@@ -13,7 +13,11 @@ field[t][y][x] = (field[t-1][y-1][x] + field[t-1][y+1][x]
 for `t in 1..=ITERS`, `y in 1..H-1`, `x in 1..W-1`. The seed-staging
 case `field[0][y][x] = seed[y][x]` lives inside the same kernel via a
 branch on `t == 0` (same single-Dataflow folding pattern as
-11-game-of-life).
+11-game-of-life). In `prog.algo.nuc` the loop walks `t : 0..ITERS+1`
+(i.e. `[0, ITERS]` inclusive) so the seed-staging slice and the
+ITERS iteration slices are written by one Dataflow; the
+"`t in 1..=ITERS`" range above is the human-readable iteration
+semantics, not the for-loop bound.
 
 ## What this example stresses
 
