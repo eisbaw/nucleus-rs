@@ -49,11 +49,25 @@
 // (decompose follows numpy.array_split policy; TASK-0262
 // floor-with-spillover puts the spill on the FIRST workers.)
 // Halo width on `y` is 1 (jacobi5_or_seed reads field[..][y-1][..]
-// and field[..][y+1][..]); the partition_rows + halo_inference
-// passes extend each worker's tile by one row on each side
-// (clamping at the bounds 0 and H), so w0 reads y=0..3, w1 reads
-// y=2..5, etc. The H=W=8 interior of length 6 across 4 workers is
-// tight but valid (every worker has >=1 row of own work).
+// and field[..][y+1][..]); `extend_xfer_tiles_for_halo` in
+// transfer_inject expands each worker's per-tile source range from
+// `[source_lo, source_hi)` to `[source_lo - halo, source_hi + halo)`
+// (per-axis, signed-saturating at 0 — see transfer_inject.rs's
+// docs on the expansion formula). For y the SOURCE range is
+// `1..7` (from the algorithm's `for y : 1..H-1` walk); halo=1
+// expansion ⇒ `[0, 8) = [0, H)` on this fixture — but the upper
+// bound coincides with H only because `source_hi == H-1 == 7` and
+// `7 + 1 == H`, not because of a `min(.., H)` clamp. If the
+// algorithm later iterates `for y : 2..H-1` the expanded range
+// would be `[1, H)`, not `[0, H)`. Per-worker expanded reads on
+// the AC#3 fixture (y in 1..7, halo=1):
+//   w0 (band 1..3): reads y in 0..4
+//   w1 (band 3..5): reads y in 2..6
+//   w2 (band 5..6): reads y in 4..7
+//   w3 (band 6..7): reads y in 5..8
+// The H=W=8 interior of length 6 across 4 workers is tight but
+// valid (every worker has >=1 row of own work; halo widening
+// stays inside `[0, H)` because halo=1 and source_lo>=1).
 
 schedule for "../prog.algo.nuc" {
     workers = { host, w0, w1, w2, w3 };
