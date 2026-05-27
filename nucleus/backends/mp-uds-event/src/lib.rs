@@ -44,20 +44,28 @@
 //! precedent as cycles 191 (openmp-rs single-worker) and 192
 //! (mp-tcp-poll single-worker).
 //!
-//! # wire.rs note (cross-transport honesty)
+//! # wire.rs note (cross-transport honesty — cycle 197 AC#7)
 //!
-//! Single-worker mp-uds-event emits `src/wire.rs` byte-identical to
-//! `mp_tcp_common::WIRE_RUNTIME_SRC` for shape uniformity with
-//! multi-process builds — the SAME pattern mp-tcp-event uses. The
-//! emitted single-process binary does NOT `mod wire;`, so the file
-//! sits as a sibling that cargo's reachability analysis never compiles
-//! into the bin target. The wire.rs content is TCP-specific code that
-//! will be REPLACED with a UDS-specific runtime when TASK-0044.03.01
-//! lands the multi-worker arm (per cycle-171 brief: "lift transport
-//! layer from mp-tcp-event" CANDIDATE). The cross-backend
-//! byte-identical invariant on single-worker artefacts holds against
-//! mp-tcp-event (both backends emit the same wire.rs verbatim from
-//! the shared const today).
+//! mp-uds-event emits `src/wire.rs` byte-identical to the INLINED
+//! UDS wire runtime [`WIRE_RUNTIME_SRC`] (this crate's
+//! `wire_runtime.rs`). Single-worker bin still does NOT `mod wire;`
+//! so the file sits unused for single-process; multi-worker bins
+//! DO `mod wire;` and use the UDS-specific helpers (apply_sock_buf
+//! no-op for UDS, write_msg/read_msg/barrier_cross over UnixStream
+//! signature, scalar/vec enc/dec macros byte-identical to TCP).
+//!
+//! Cross-backend byte-identical invariant on the EMITTED BIN holds
+//! against mp-tcp-event for SINGLE-worker (both delegate to the same
+//! shared single-worker renderer); the wire.rs FILES diverge across
+//! backends (uds-specific signatures), but the bin doesn't reference
+//! them. Cross-backend bit-identical OUTPUT (output.bin) holds
+//! across all backends per the e2e gate.
+//!
+//! AC#7 decision: option (c) — inline the UDS-specific wire emission
+//! in this crate (`wire_runtime.rs`) rather than lifting
+//! `mp_tcp_common` to be transport-parametric (~3-consumer lift cost
+//! vs ~300 LoC duplication today). If a third UDS-shape consumer
+//! appears, file the lift as a follow-up at that point.
 //!
 //! # Generated artefact layout
 //!
@@ -122,6 +130,35 @@ use pthreads_sync::render_single_worker_main_with_kernels_attr;
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
+/// UDS-specific wire framing — emitted verbatim into every generated
+/// multi-process project as `src/wire.rs`. AC#7 cycle 197 option (c):
+/// inlined here rather than lifted to `mp_tcp_common` to keep the
+/// transport-parametric refactor out of scope at the 2-consumer
+/// threshold. Same single-source-of-truth pattern as
+/// `mp_tcp_common::WIRE_RUNTIME_SRC` (TCP) — one file the host crate's
+/// `cargo test` build compiles AND the generated project includes
+/// verbatim as `src/wire.rs`; the `#[cfg(test)] mod wire_runtime;`
+/// declaration below gives the host crate compile-coverage so a typo
+/// surfaces under `cargo test`, not deferred to the first e2e cell
+/// that runs a generated project.
+pub const WIRE_RUNTIME_SRC: &str = include_str!("wire_runtime.rs");
+
+/// The mp-uds-event runtime: mio UnixStream reactor + per-(seq, peer)
+/// outbound queue + per-seq inbound queue. Emitted verbatim into every
+/// generated multi-process project as `src/runtime.rs`.
+pub const RUNTIME_SRC: &str = include_str!("runtime_src.rs");
+
+// Host-side compile-checks. Without these `mod` declarations the
+// `include_str!`'d files would never be compiled at the host crate's
+// `cargo test` gate, and a typo / mio API break / HEADER_LEN drift
+// would surface only on the first e2e cell that runs a generated
+// project. `mio` is a dev-dep (Cargo.toml step 1) so this compiles
+// under `cargo test --workspace` without widening the prod tree.
+#[cfg(test)]
+mod wire_runtime;
+#[cfg(test)]
+mod runtime_src;
+
 /// Paths to the files [`emit`] writes. Same shape as
 /// `mp_tcp_event::EmitResult` — multi-binary with an optional
 /// `runtime_rs` (only present on multi-worker emit, per the
@@ -158,15 +195,18 @@ pub struct EmitResult {
 ///   single-process binary (and therefore byte-identical arithmetic
 ///   to pthreads-sync's single process). The Cargo.toml + run.sh
 ///   come from `backend_common::project_skeleton::multi_binary` for
-///   the same reason; `wire.rs` is copied verbatim from
-///   `mp_tcp_common::WIRE_RUNTIME_SRC` (the single-process binary
-///   does not consume any wire surface, but the file is emitted for
-///   shape uniformity with multi-process builds; see module-doc
-///   "wire.rs note" for the cross-transport honesty rationale).
-///   `runtime_rs` is `None` (no mio reactor needed).
-/// - `used_workers >= 2` → MULTI-PROCESS. Returns
-///   [`EmitError::ContractGap`] pointing at the UDS-reactor multi-
-///   worker follow-up sub-task TASK-0044.03.01.
+///   the same reason; `wire.rs` is the inlined UDS [`WIRE_RUNTIME_SRC`]
+///   (the single-process binary does not consume any wire surface,
+///   but the file is emitted for shape uniformity with multi-process
+///   builds; see module-doc "wire.rs note" for the cross-transport
+///   honesty rationale). `runtime_rs` is `None` (no mio reactor needed).
+/// - `used_workers >= 2` → MULTI-PROCESS (cycle 197, TASK-0044.03.01).
+///   Emits one `src/bin/<wname>.rs` per used worker + shared
+///   `src/runtime.rs` (mio UnixStream reactor, verbatim from
+///   [`RUNTIME_SRC`]) + UDS `src/wire.rs` + run.sh. Push sites lower
+///   to `chan_<rid>.push(name.clone())`, Wait to `chan_<rid>.wait()`,
+///   barriers via per-worker `Bar<bid>` shims over the synchronous
+///   CTRL UnixStream.
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -203,11 +243,14 @@ pub fn emit(
     // multi-process builds (the single-process binary just does not
     // `mod wire;`, so cargo's reachability analysis never compiles it
     // into the bin target). Same precedent as mp-tcp-event +
-    // mp-tcp-poll. The TCP-specific wire content will be REPLACED with
-    // a UDS-specific runtime when TASK-0044.03.01 lands the multi-worker
-    // arm.
+    // mp-tcp-poll. Cycle 197 (TASK-0044.03.01 AC#7 option (c)):
+    // wire.rs content is now UDS-SPECIFIC ([`WIRE_RUNTIME_SRC`]),
+    // diverging from mp-tcp-event's TCP-specific wire.rs at the file
+    // level. The single-process binary doesn't reference it (no `mod
+    // wire;` in the delegated single-worker renderer); multi-worker
+    // bins DO reference it.
     write_file(&kernels_rs, &kernels_src)?;
-    write_file(&wire_rs, mp_tcp_common::WIRE_RUNTIME_SRC)?;
+    write_file(&wire_rs, WIRE_RUNTIME_SRC)?;
 
     if used_workers.len() >= 2 {
         // ---- Multi-worker arm: UDS-reactor codegen (NOT YET LANDED). ----

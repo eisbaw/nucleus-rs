@@ -49,13 +49,6 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives — EmitError + project_skeleton::multi_binary
 # (Cargo.toml + run.sh templates for multi-binary backends).
 backend-common = { path = "../../backend-common" }
-# Wire framing (length-prefixed framed messages, SyncTag-keyed barrier
-# protocol). Single source of truth at `mp_tcp_common::WIRE_RUNTIME_SRC`
-# — emitted verbatim by every multi-binary backend's single-process
-# arm for shape uniformity. The TCP-specific content will be REPLACED
-# with a UDS-specific runtime when TASK-0044.03.01 lands the
-# multi-worker arm.
-mp-tcp-common = { path = "../../mp-tcp-common" }
 # Single-worker straight-line `main.rs` emitter (with the
 # `#[path="../kernels.rs"]` attribute injection for `src/bin/`-shaped
 # multi-binary projects). Genuine semantic delegation — the same
@@ -73,6 +66,12 @@ test-common = { path = "../../test-common" }
 # worker arm (cycle-197 TASK-0044.03.01): same Plan shape + walker,
 # differs only in the UDS-specific transport layer.
 mp-tcp-event = { path = "../mp-tcp-event" }
+# mp-tcp-common is dev-dep only: the host-side compile-check test in
+# `src/wire_runtime.rs` re-derives the TCP wire HEADER_LEN constant
+# from `mp_tcp_common::WIRE_RUNTIME_SRC` and asserts lockstep with
+# the UDS wire HEADER_LEN — defends against transport-agnostic
+# wire-protocol-v0 drift between the TCP and UDS runtimes.
+mp-tcp-common = { path = "../../mp-tcp-common" }
 # mio is a regular dep in the *generated* multi-worker project's
 # Cargo.toml (interpolated via `MIO_UDS_DEPENDENCY_BLOCK` in lib.rs);
 # the `os-ext` feature is REQUIRED for `mio::net::UnixListener` /

@@ -4,12 +4,16 @@
 //!
 //! - Empty event-list (smallest legal input): both mp-uds-event and
 //!   mp-tcp-event must emit byte-identical Cargo.toml + binary +
-//!   run.sh + kernels.rs + wire.rs, since mp-uds-event's single-process
-//!   arm delegates to the SAME shared renderers mp-tcp-event's
-//!   single-process arm uses
+//!   run.sh + kernels.rs (NOT wire.rs — cycle 197 AC#7), since
+//!   mp-uds-event's single-process arm delegates to the SAME shared
+//!   renderers mp-tcp-event's single-process arm uses
 //!   (`pthreads_sync::render_single_worker_main_with_kernels_attr` +
-//!   `backend_common::project_skeleton::multi_binary` +
-//!   `mp_tcp_common::WIRE_RUNTIME_SRC` for the unused wire.rs).
+//!   `backend_common::project_skeleton::multi_binary`). wire.rs
+//!   CONTENT diverges by design from cycle 197 onwards: mp-uds-event
+//!   emits the inlined UDS `WIRE_RUNTIME_SRC` (UnixStream API),
+//!   mp-tcp-event emits `mp_tcp_common::WIRE_RUNTIME_SRC` (TcpStream
+//!   API). Single-process bins don't `mod wire;` so the divergence
+//!   is invisible to the BIN byte-equiv invariant.
 //!
 //! - Real non-trivial witness (01-elementwise-add / naive): the same
 //!   byte-identical assertion on a real fixture proves the invariant
@@ -106,13 +110,36 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_event() {
          mp-tcp-event's (shared render_run_sh_single)"
     );
 
+    // Cycle 197 (TASK-0044.03.01 AC#7): wire.rs CONTENT now diverges
+    // across backends — mp-tcp-event emits `mp_tcp_common::WIRE_RUNTIME_SRC`
+    // (TCP-specific TcpStream API), mp-uds-event emits the inlined
+    // UDS-specific `WIRE_RUNTIME_SRC` (UnixStream API). Single-process
+    // bin doesn't `mod wire;` so the file divergence is invisible to
+    // the single-worker BIN byte-equiv invariant above. We pin the
+    // divergence via load-bearing positive needles + the inverse
+    // positive needle on TCP. The negative-needle check ("UDS wire.rs
+    // contains NO `TcpStream`") would false-positive on the explanatory
+    // file-header docstring (which legitimately names TcpStream when
+    // explaining why we inlined), so we anchor on the function-
+    // signature substring `&mut TcpStream` instead — that token can
+    // only appear in actual API surface, not in prose.
     let uds_wire = std::fs::read_to_string(&uds_res.wire_rs).expect("uds wire.rs");
     let tcp_wire = std::fs::read_to_string(&tcp_res.wire_rs).expect("tcp wire.rs");
-    assert_eq!(
-        uds_wire, tcp_wire,
-        "mp-uds-event wire.rs must be byte-identical to mp-tcp-event's \
-         (both emit mp_tcp_common::WIRE_RUNTIME_SRC verbatim — TCP-specific \
-         content sits unused because single-process bin does not `mod wire;`)"
+    assert!(
+        uds_wire.contains("&mut UnixStream"),
+        "mp-uds-event wire.rs must carry `&mut UnixStream` function \
+         signatures (UDS-specific). Sign of regression to pre-cycle-197 \
+         shared mp_tcp_common::WIRE_RUNTIME_SRC."
+    );
+    assert!(
+        tcp_wire.contains("&mut TcpStream"),
+        "mp-tcp-event wire.rs must carry `&mut TcpStream` function \
+         signatures (TCP-specific). Oracle precondition violated."
+    );
+    assert!(
+        !uds_wire.contains("&mut TcpStream"),
+        "mp-uds-event wire.rs must NOT carry `&mut TcpStream` function \
+         signatures (cycle-197 UDS swap regressed)"
     );
 
     let uds_kernels = std::fs::read_to_string(&uds_res.kernels_rs).expect("uds kernels.rs");
