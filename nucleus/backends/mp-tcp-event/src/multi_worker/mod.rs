@@ -82,7 +82,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
+use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{self as walker, RendezvousId};
+use backend_common::project_skeleton::multi_binary::render_run_sh_multi;
 
 use crate::{EmitError, NameTables};
 
@@ -182,7 +184,7 @@ impl<'a> Plan<'a> {
         // consume this one helper, retiring the
         // feedback-driver-must-mirror-backend-election-exactly
         // recurrence surface on the canonical path.
-        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
+        let host_worker = elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "mp-tcp-event Plan: used_workers reachable to host \
@@ -574,14 +576,12 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
         .iter()
         .map(|w| plan.worker_name(*w))
         .collect();
-    Ok(
-        backend_common::project_skeleton::multi_binary::render_run_sh_multi(
-            &host_name,
-            &non_host_names,
-            bufsz,
-            SO_BUF_COMMENT_EVENT,
-        ),
-    )
+    Ok(render_run_sh_multi(
+        &host_name,
+        &non_host_names,
+        bufsz,
+        SO_BUF_COMMENT_EVENT,
+    ))
 }
 
 // --------------------------------------------------------------------

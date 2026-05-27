@@ -25,6 +25,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
+use backend_common::elect_host_from_worker_names;
+use backend_common::multi_worker_walker::{collect_accumulate_waits, collect_pair_tiles};
+
 use crate::walkers::{
     collect_barriers_by_tag, collect_xfer_data, detect_wait_before_push_hazard,
 };
@@ -102,7 +105,7 @@ impl<'a> Plan<'a> {
         // shipped backend to elect the same host given the same
         // input; the helper is the single source of truth
         // (TASK-0336 cycle 164 lift).
-        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
+        let host_worker = elect_host_from_worker_names(&names.worker, &used_workers)
             .ok_or_else(|| {
                 EmitError::ContractGap(
                     "multi-worker emit requires at least one used worker".to_string(),
@@ -122,7 +125,7 @@ impl<'a> Plan<'a> {
         // sighting-wins on `(DataId, SeqTag)`; both endpoints carry the
         // same tile by XferPlaceholder construction (TASK-0018).
         let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> =
-            backend_common::multi_worker_walker::collect_pair_tiles(per_worker.values());
+            collect_pair_tiles(per_worker.values());
 
         // Barrier identity by the contract-carried `SyncTag`
         // (TASK-0172). Each Event::Sync names its own barrier; the
@@ -219,7 +222,7 @@ impl<'a> Plan<'a> {
         // mp-tcp-bufsync bypasses the shared walker — see field doc).
         let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
         for w in &used_workers {
-            let per_worker_set = backend_common::multi_worker_walker::collect_accumulate_waits(
+            let per_worker_set = collect_accumulate_waits(
                 &per_worker[w],
                 sidecar,
                 &pair_tiles,

@@ -10,10 +10,12 @@
 
 use std::fmt::Write as _;
 
-use backend_common::multi_worker_walker::render_wait_assign;
+use backend_common::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
+use backend_common::multi_worker_walker::{compute_block_tag_abs_exprs, render_wait_assign};
 use backend_common::render::{
-    render_const_expr_pub, render_fire_args_pub, render_reuse_buf_decls_pub,
-    render_reuse_marker_comment, render_reuse_per_iter_update_pub, RenderCtxPub,
+    render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
+    render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
+    RenderCtxPub,
 };
 use nucleus_compiler::event::{Event, IterVar, WorkerId};
 
@@ -75,9 +77,7 @@ impl Plan<'_> {
                             // the cross-backend bit-identical
                             // differential (PRD §10.1) depends on.
                             let rhs = format!("kernels::{callee}({args})");
-                            let stmt = backend_common::render::render_fire_output_assign_pub(
-                                o, &rhs, ctx,
-                            )?;
+                            let stmt = render_fire_output_assign_pub(o, &rhs, ctx)?;
                             writeln!(out, "{pad}{stmt}").ok();
                         }
                     }
@@ -144,9 +144,7 @@ impl Plan<'_> {
                         // moved to the same pattern in cycle 104).
                         let var_string = var.clone();
                         let (abs, strip_lo_expr) =
-                            backend_common::multi_worker_walker::compute_block_tag_abs_exprs(
-                                *iter_var, tag, enclosing, ctx,
-                            )?;
+                            compute_block_tag_abs_exprs(*iter_var, tag, enclosing, ctx)?;
                         let reuse_groups = render_reuse_buf_decls_pub(
                             out,
                             indent,
@@ -338,7 +336,7 @@ impl Plan<'_> {
                                 // this in
                                 // `mp_tcp_bufsync_emit_includes_log_eprintln_on_check_loop`.
                                 // TASK-0222: shared template — see emit_log_branch.
-                                backend_common::check_frame::emit_log_branch(
+                                emit_log_branch(
                                     out,
                                     &body_pad,
                                     &frame.loop_var,
@@ -355,14 +353,8 @@ impl Plan<'_> {
                                 // Drop-time load both happen on the
                                 // worker process's main thread.
                                 // TASK-0222: shared template — see emit_count_branch.
-                                let id =
-                                    backend_common::check_frame::sanitize_loop_var(&frame.loop_var);
-                                backend_common::check_frame::emit_count_branch(
-                                    out,
-                                    &body_pad,
-                                    &id,
-                                    frame.latency_max_ns,
-                                );
+                                let id = sanitize_loop_var(&frame.loop_var);
+                                emit_count_branch(out, &body_pad, &id, frame.latency_max_ns);
                             }
                         }
                     } else {

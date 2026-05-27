@@ -31,19 +31,22 @@
 //! also triggering backend codegen. If both `--out` and `--emit-pn`
 //! are given, both outputs are produced.
 //!
-//! Registered backends: `pthreads-sync` (M1, shared-memory threads),
-//! `mp-tcp-bufsync` (M3, OS processes over TCP loopback —
-//! TASK-0036), `pthreads-async` (M4, shared-memory + per-(DataId,
-//! SeqTag) ring buffer + Condvar — TASK-0042.01), `mp-tcp-event`
-//! (M4, OS processes + TCP loopback + mio reactor + per-(seq, peer)
-//! outbound queue + per-seq inbound queue — TASK-0042.05 / Stage 3
-//! of TASK-0042.02 landed cycle 79), `openmp-rs` (M6, rayon threads,
-//! single-worker arm landed cycle 191, multi-worker
-//! TASK-0044.01.01), `mp-tcp-poll` (M6, OS processes + TCP loopback
-//! + nonblocking poll, single-worker arm landed cycle 192, multi-
-//! worker TASK-0044.02.02), and `mp-uds-event` (M6, OS processes +
-//! Unix domain sockets + mio, single-worker arm landed cycle 194,
+//! Registered backends (one paragraph per backend so docs and clippy
+//! agree on list structure): `pthreads-sync` is the M1 shared-memory-
+//! threads backend; `mp-tcp-bufsync` is the M3 OS-processes-over-TCP-
+//! loopback backend (TASK-0036); `pthreads-async` is the M4 shared-
+//! memory + per-(DataId, SeqTag) ring-buffer + Condvar backend
+//! (TASK-0042.01); `mp-tcp-event` is the M4 OS-processes + TCP-
+//! loopback + mio-reactor + per-(seq, peer) outbound-queue + per-seq
+//! inbound-queue backend (TASK-0042.05 / Stage 3 of TASK-0042.02
+//! landed cycle 79); `openmp-rs` is the M6 rayon-threads backend
+//! (single-worker arm landed cycle 191, multi-worker TASK-0044.01.01);
+//! `mp-tcp-poll` is the M6 OS-processes + TCP-loopback + nonblocking-
+//! poll backend (single-worker arm landed cycle 192, multi-worker
+//! TASK-0044.02.02); `mp-uds-event` is the M6 OS-processes + Unix-
+//! domain-sockets + mio backend (single-worker arm landed cycle 194,
 //! multi-worker TASK-0044.03.01).
+//!
 //! The four shipped (M1-M4) backends consume the identical
 //! EventList contract; the cross-backend differential (same source
 //! -> bit-identical output.bin) is the M3 headline (four-way), the
