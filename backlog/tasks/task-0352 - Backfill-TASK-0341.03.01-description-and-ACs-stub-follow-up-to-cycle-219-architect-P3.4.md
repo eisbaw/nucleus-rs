@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-27 22:51'
-updated_date: '2026-05-28 01:01'
+updated_date: '2026-05-28 01:02'
 labels:
   - tracker-hygiene
   - grammar-extension
@@ -60,4 +60,6 @@ Actions taken on TASK-0341.03.01:
 Both --description and --ac additions verified via 'backlog task 0341.03.01 --plain'.
 
 The previous Implementation Notes block (carrying the gap statement since cycle 210) is preserved as historical stamp; the description now carries the canonical content for future implementers.
+
+Orchestrator self-audit (cycle 222b, pre-review-gate self-discovered): the formalized AC #3 expanded the original prose AC #3's 3-pass list (halo_inference, partition_inference, transfer_inject) to a 4-pass list (added 'boundedness pass'). The 4-pass list matches the description body's 'Downstream passes that rely on affinity' enumeration; the original AC#3 prose under-listed by one. This is a minor scope expansion via formalization, justified by the description body being the more-complete source. Future cycle that closes TASK-0341.03.01 AC#3 may want to factor: should boundedness be in the AC, or only the body? If the answer is 'body-only', remove the AC#3 mention of boundedness via --uncheck-ac + --remove-ac + --ac with the original 3-pass wording.
 <!-- SECTION:NOTES:END -->

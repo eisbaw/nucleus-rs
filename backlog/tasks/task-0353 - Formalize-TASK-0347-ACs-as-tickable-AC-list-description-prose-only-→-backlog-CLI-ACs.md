@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-27 22:51'
-updated_date: '2026-05-28 01:01'
+updated_date: '2026-05-28 01:02'
 labels:
   - tracker-hygiene
   - backlog-debt
@@ -52,4 +52,6 @@ Verified via 'backlog task 0347 --plain': all 4 ACs now appear as tickable - [ ]
 The description-prose ACs at TASK-0347:31-44 are preserved as the authoritative narrative (now mirrored in the tickable section).
 
 Future cycles that close TASK-0347 ACs can tick them precisely via --check-ac N.
+
+Orchestrator self-audit (cycle 222b, pre-review-gate self-discovered): formal AC #4 simplified 'Renumber/coordinate followup' to 'Coordinate followup' — the 'Renumber/' prefix was awkward wording in the original prose with no clear meaning. The simplification is honest but is a wording change from the source. No semantic change.
 <!-- SECTION:NOTES:END -->
