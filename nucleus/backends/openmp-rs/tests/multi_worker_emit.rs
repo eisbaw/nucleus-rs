@@ -387,6 +387,109 @@ fn separable_filter_06_distributed2_openmp_equiv_pthreads_sync() {
     assert_openmp_main_equiv_sync("06-separable-filter/distributed2", &openmp_src, &sync_src);
 }
 
+/// 15-transpose/distributed-rows — the host-EXCLUDING-barrier coverage
+/// arm (TASK-0044.01.03). The two pre-existing fixtures above
+/// (02-split-add/split, 06-separable-filter/distributed2) both emit
+/// barriers that INCLUDE host: every barrier-participant union there is
+/// driven by a host-touching transfer boundary. This fixture closes the
+/// hole by pinning a schedule whose `xpose on {w0,w1,w2,w3}` placement
+/// produces a genuinely host-EXCLUDING inner barrier
+/// (`Arc::new(Barrier::new(4))`, participants `{w0,w1,w2,w3}`), the
+/// barrier-participant-count path the two existing fixtures never reach.
+///
+/// PROVENANCE / PREMISE CORRECTION (TASK-0044.01.03 cycle 231): the
+/// filed task named `03-reduction/distributed` as the host-excluding
+/// shape. That premise was empirically false — 03-reduction/distributed
+/// emits only `Arc::new(Barrier::new(5))` barriers (all four phase
+/// boundaries cross host, which owns load_input / combine), so
+/// `Arc::new(Barrier::new(4))` never appears and the original AC#2 was
+/// unsatisfiable. A scan of every multi-worker schedule found
+/// 15-transpose/distributed-rows is the ONLY schedule that is BOTH
+/// genuinely host-excluding AND a promoted `[[required]]` e2e cell on
+/// openmp-rs (see `nuc-nucleus/e2e-matrix.toml`). Retargeting here
+/// fulfils the coverage intent and is strictly stronger: this cell
+/// exercises BOTH the host-included `new(5)` shape AND the host-excluded
+/// `new(4)` shape in one emit.
+///
+/// Lowering: `lower_for_test` with `apply_partition_workers = true`.
+/// 15-transpose/distributed-rows uses only `partition=workers` (on the
+/// inner `j` loop); it has no `block=`, no `partition=rows/blocks2d`, no
+/// halo, no reuse, so the passes `lower_for_test` omits are all no-ops
+/// for this schedule — verified empirically (the openmp-rs/pthreads-sync
+/// emit via this shorter pipeline is byte-identical to the full-driver
+/// emit's barrier set).
+#[test]
+fn transpose_15_distributed_rows_openmp_equiv_pthreads_sync() {
+    let scratch = scratch_dir("transpose_15_distributed_rows");
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/15-transpose");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/distributed-rows.sched.nuc")).unwrap();
+    // `partition=workers` is the load-bearing toggle: without it the
+    // outer `j` loop is not partitioned across w0..w3 and no
+    // host-excluding compute barrier is produced. `apply_block_transforms`
+    // stays at its default `true` (no-op here — no `block=` directive).
+    let opts = test_common::LowerForTestOpts {
+        apply_partition_workers: true,
+        ..test_common::LowerForTestOpts::default()
+    };
+    let r = test_common::lower_for_test(&algo_src, &sched_src, &opts);
+    let kernels = ex.join("kernels.rs");
+
+    let openmp_out = scratch.join("openmp");
+    let sync_out = scratch.join("sync");
+    let openmp = openmp_rs::emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &openmp_out)
+        .expect("openmp-rs emit");
+    let sync = pthreads_sync::emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &sync_out)
+        .expect("pthreads-sync emit");
+
+    let openmp_src = std::fs::read_to_string(&openmp.main_rs).expect("read openmp main.rs");
+    let sync_src = std::fs::read_to_string(&sync.main_rs).expect("read sync main.rs");
+
+    // AC#2 — the host-EXCLUDING barrier shape. The inner `xpose` barrier
+    // synchronises only the four compute workers; openmp-rs (like
+    // pthreads-sync) emits it directly as `Arc::new(Barrier::new(4))`
+    // because openmp-rs is shared-memory and does NOT apply
+    // host-mediation. A regression to `new(5)` (off-by-one mediating
+    // host into a shared-memory barrier) or `new(3)` would fail HERE,
+    // before the byte-equivalence check, and before the slow e2e oracle.
+    assert!(
+        openmp_src.contains("Arc::new(Barrier::new(4)); // participants: {w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: openmp-rs main.rs MUST carry the \
+         host-EXCLUDING inner barrier `Arc::new(Barrier::new(4))` over \
+         {{w0,w1,w2,w3}} (NOT new(5)); its absence means the \
+         barrier-participant-count path regressed. main.rs:\n{openmp_src}"
+    );
+    // Negative: the off-by-one host-mediated count must NOT appear for a
+    // barrier whose participant comment is the host-excluding set. (A
+    // host-INCLUDED new(5) barrier legitimately appears elsewhere in
+    // this same emit — that is asserted positively below — so we anchor
+    // the anti-needle to the host-excluding participant comment.)
+    assert!(
+        !openmp_src.contains("Arc::new(Barrier::new(5)); // participants: {w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: a barrier over {{w0,w1,w2,w3}} must \
+         have count 4, not 5 — host must NOT be mediated into a \
+         shared-memory openmp-rs barrier. main.rs:\n{openmp_src}"
+    );
+    // This cell ALSO exercises the host-INCLUDED shape (the phase-
+    // boundary barriers that cross host on the load/gather transfers),
+    // so both barrier-participant-count paths are covered in one fixture.
+    assert!(
+        openmp_src.contains("Arc::new(Barrier::new(5)); // participants: {host,w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: openmp-rs main.rs MUST also carry \
+         a host-INCLUDED `Arc::new(Barrier::new(5))` over \
+         {{host,w0,w1,w2,w3}} (the load/gather phase boundaries) — both \
+         barrier shapes are exercised by this cell. main.rs:\n{openmp_src}"
+    );
+
+    assert_openmp_main_equiv_sync(
+        "15-transpose/distributed-rows",
+        &openmp_src,
+        &sync_src,
+    );
+}
+
 /// Cycle-193 forward-carried const-in-IndexExpr regression pin
 /// (mirrors `pthreads-async/tests/skeleton.rs::
 /// const_in_indexexpr_pthreads_async_resolves_to_literal_value`).
