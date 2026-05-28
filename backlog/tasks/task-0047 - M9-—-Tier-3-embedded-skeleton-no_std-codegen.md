@@ -1,11 +1,11 @@
 ---
 id: TASK-0047
 title: M9 — Tier 3 embedded skeleton (no_std codegen)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 11:31'
+updated_date: '2026-05-28 11:50'
 labels:
   - M9
   - backend
@@ -161,4 +161,17 @@ Per-AC status: #1 MET (crate lands, emits no_std). #2 MET (4-method trait).
 thumbv7em-none-eabihf). #5 MET (design questions recorded). #6 MET (honest
 limits recorded). NO examples deferred — both ex1 and ex5 landed (the
 2D-flatten case fit the same structural pattern cleanly).
+
+=== Cycle 236b review-gate closure (orchestrator) ===
+Parallel read-only review gate on 7382e28:
+- qa-test-runner: GO. Host gate green (build; clippy clean incl. no doc_lazy_continuation; test 1064/0/3; test-release 1063/0/3 — the -1 is the expected debug_assert #[should_panic] divergence). e2e 280/246/0/34/0 stable 2 runs. Embedded cross-check (just check-embedded under .#embedded, rustc 1.83.0 + thumbv7em-none-eabihf): BOTH ex1 + ex5 cargo check --target reach Finished. Structural isolation correct: embedded-pattern 0x in e2e-matrix.toml, NOT in just ci, thumbv7 check confined to .#embedded. Backend registered (dispatch arm + --help + unknown-backend list). The TASK-0012 aggregate-typed-I/O advisory warnings are pre-existing (shared contract.rs), not from this backend.
+- mped-architect (read-only): GO. Pure-vs-effectful structural classification (by output.indices) verified SOUND on both examples' lowered EventLists; the whole-array-pure-compute-with-inputs case is really rejected as typed UnsupportedFeature (lib.rs:511), not mislowered. No panic-not-diagnostic (all unsupported shapes typed EmitError; the only .expect are in tests; writeln!().ok() is the established infallible-String convention). Doc-lies CLEAN (6 spot-checks incl. irq_barrier-unexercised, zero-filled-inputs, capability surface). Scope honest (tests non-vacuous, multi-worker reject bites, all 6 ACs genuinely met, nothing AC-gamed). Registration complete. Forward-carries to TASK-0048/0049 accurate.
+
+P2-1 FOLDED IN-CYCLE (feedback-implementer-disclosure-mechanism-wrong recurrence): kernel_extract.rs docstring claimed the brace-matcher uniformly returns None->ContractGap on miscount; actually a stray CLOSING brace in a string/char/comment returns Some(TRUNCATED) caught only at downstream cargo check, while stray-open/genuine-imbalance returns None. Docstring corrected to state both directions; TASK-0361 item 2 note appended. Does NOT affect M9 (add/blur3 have no literal braces). P3-1 (scalar save-arg .as_ptr()) appended to TASK-0361. Re-ran post-fix: build OK, clippy clean, embedded-pattern 13/0.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+M9 LANDED: new tier-3 backend nucleus/backends/embedded-pattern emits compile-only no_std Rust against a NucleusShim stub trait (alloc_in_region/dma_push/dma_wait/irq_barrier). Data -> fixed [T;N] no_std arrays; pure compute kernels (add/blur3) extracted verbatim into a no_std lib; effectful I/O kernels -> shim hooks; Event::Loop -> for-loop; Push/Wait/Sync/multi-worker -> typed UnsupportedFeature rejects (M10/M11 forward-linked). Acceptance: just check-embedded runs cargo check --target thumbv7em-none-eabihf on ex1+ex5 under .#embedded — both Finished. no_std LIB (not bin) so no panic_handler/entry/linker (that's M10). Capability surface tier=3 minimal (accepts ex1/ex5 naive; full IRQ+DMA+async lands with M10 shim). Registered in workspace/driver/--help/unknown-list; correctly absent from e2e-matrix + just ci. Host e2e baseline 280/246/0/34/0 preserved. Both reviews GO. AC#1-6 met. Commit 7382e28 + cycle-236b doc fold-back. Scope limits filed TASK-0361.
+<!-- SECTION:FINAL_SUMMARY:END -->

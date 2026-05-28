@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-28 11:30'
+updated_date: '2026-05-28 11:49'
 labels:
   - M9
   - backend
@@ -26,3 +27,11 @@ Forward-link follow-ups carved out of TASK-0047 (M9 embedded-pattern landing). T
 
 Pick up if/when a tier-3 example exercises any of these shapes. None blocks M9 (all are precise loud rejections, not silent mis-lowerings).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Cycle 236b review-gate corrections (orchestrator, from mped-architect read-only review of 7382e28) ===
+- Item 2 MECHANISM CORRECTION (feedback-implementer-disclosure-mechanism-wrong recurrence): the extractor does NOT uniformly fail loud. Empirically: a stray *opening* brace in a literal OR a genuine missing-close returns None -> loud ContractGap (as claimed). BUT a stray *closing* brace inside a string/char/comment makes the brace-counter hit depth 0 early and return Some(TRUNCATED body) — NOT None. The truncation is caught only downstream at `cargo check` of the generated no_std lib (a Rust syntax error), not as a backend ContractGap. kernel_extract.rs module docstring corrected this cycle to state both directions accurately. The robust fix (tokeniser, or re-parse sanity check of the extracted span) remains this task's scope.
+- P3-1 (architect, new): render_fire's save path emits `{drained}.as_ptr()` (lib.rs ~478) and first_data_input (~534) returns the bare name for ANY ArgBinding::Data incl. a hypothetical scalar. A scalar `i32` has no `.as_ptr()`, so a `save_scalar(x)` shape would emit code failing at cargo check. ex1/ex5 both drain arrays so M9 is unaffected; fold into this task's aggregate-binding-contract follow-up (same family as item 1 whole-array-compute).
+<!-- SECTION:NOTES:END -->

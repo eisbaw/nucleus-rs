@@ -22,10 +22,23 @@
 //! body would miscount. The tier-1 pure kernels (`add`, `blur3`) contain
 //! none, so this is correct for the M9 examples. A kernel body that
 //! needs string/char braces would require the full-parser path — filed
-//! as a documented future-work boundary in the backend lib docs. The
-//! extractor returns `None` (→ a loud `ContractGap` at the call site)
-//! rather than emitting a truncated body, so a miscount fails LOUD, not
-//! silently.
+//! as a documented future-work boundary (TASK-0361).
+//!
+//! The failure mode is NOT uniform — be precise about which direction
+//! fails how:
+//! - A stray *opening* brace inside a literal, or a genuinely
+//!   unbalanced body (missing close), scans off the end and returns
+//!   `None` → a loud `ContractGap` at the call site.
+//! - A stray *closing* brace inside a string / char / comment makes the
+//!   matcher stop EARLY and return a TRUNCATED body (`Some(..)`). That
+//!   truncation is NOT caught here; it surfaces as a Rust syntax error
+//!   when the generated `no_std` lib is `cargo check`ed. Still loud, but
+//!   at the codegen layer, not as a backend `ContractGap`.
+//!
+//! The tier-1 pure kernels (`add`, `blur3`) contain no literal braces,
+//! so neither path triggers for the M9 examples. The robust fix (a
+//! tokeniser, or a re-parse sanity check of the extracted span) is
+//! filed as TASK-0361.
 
 /// Extract the full `pub fn <name>(...) { ... }` definition (the
 /// signature and body together, verbatim) from `src`. Returns `None` if
