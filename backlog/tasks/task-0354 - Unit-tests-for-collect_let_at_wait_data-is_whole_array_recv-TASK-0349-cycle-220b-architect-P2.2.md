@@ -3,11 +3,11 @@ id: TASK-0354
 title: >-
   Unit tests for collect_let_at_wait_data + is_whole_array_recv (TASK-0349 cycle
   220b architect P2.2)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-27 23:58'
-updated_date: '2026-05-28 00:24'
+updated_date: '2026-05-28 00:36'
 labels:
   - tests
   - backend-common
@@ -40,3 +40,39 @@ Doc-only / test-only; no Rust code changes. Defensive against future drift of th
 <!-- SECTION:PLAN:BEGIN -->
 Implementation plan (cycle 221): create one new integration test file nucleus/backend-common/tests/collect_let_at_wait_data.rs with a private make_minimal_tables helper (DataId -> name + ResolvedType{ScalarType::I32, dims}) and 7 #[test] fns mapping 1:1 to the description's 7 cases. All tests drive the PUBLIC collect_let_at_wait_data entry point (exercising the pub(super) is_whole_array_recv indirectly via the documented call site at collect.rs:392). Test names: mixed_whole_and_slice_waits_excludes_data, accumulate_fan_in_data_excluded, indexed_fire_written_data_excluded, empty_waits_yields_empty_set, shape_error_on_wait_slice_excludes_data (out-of-bounds leading range trips wait_slice:269-278 guard -> Err -> unwrap_or(false) -> excluded), whole_array_wait_inside_event_loop_body_included (Event::Loop with whole-array Wait in body -> descent + included), scalar_data_no_dims_treated_as_whole_array. Gate: nix develop --command bash -c 'just build && just clippy && just test && just test-release && just e2e' must pass; e2e baseline 120/110/0/10/0 preserved (test-only additive); cargo test +7 delta.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle 221 (commit 8ad74fa) landed all 7 cases as named in the plan; gate green end-to-end.
+
+Measured numbers:
+- cargo test (dev): 1019/0/3 → 1026/0/3 (+7 exactly as planned)
+- cargo test (release): 1018/0/3 → 1025/0/3 (+7; preserves TASK-0291 1-test debug_assert delta)
+- just e2e: 280/246/0/34/0 unchanged (preserved bit-identical baseline; test-only additive change touches no codegen)
+- just clippy --all-targets -D warnings: clean
+- just check-textual-replace-on-codegen / -include-str-coverage / -narrative-doc-lie / -mega-files: all clean
+
+Per-case status (all covered):
+1. mixed_whole_and_slice_waits_excludes_data — PASS (whole + slice tile on same DataId via two SeqTags)
+2. accumulate_fan_in_data_excluded — PASS (whole Wait + accumulate_data membership)
+3. indexed_fire_written_data_excluded — PASS (whole Wait + indexed set membership)
+4. empty_waits_yields_empty_set — PASS (events: vec![])
+5. shape_error_on_wait_slice_excludes_data — PASS (dims=[8], tile leading range 0..1024 trips wait_slice:269-278 out-of-bounds guard → Err propagates via is_whole_array_recv:381's ? → collect_let_at_wait_inner:392 .unwrap_or(false) → excluded)
+6. whole_array_wait_inside_event_loop_body_included — PASS (Event::Loop wrapping a whole-array Wait → classifier descends per collect.rs:399-401 → included)
+7. scalar_data_no_dims_treated_as_whole_array — PASS (dims=vec![], non-empty tile bounds to force the wait.rs:265-267 ty.dims.is_empty() arm to short-circuit before ty.dims[0] read)
+
+Gotchas / non-obvious bits:
+- Test 5: chose out-of-bounds range over rank-3 tile (the wait.rs:307 rank guard) because the leading-dim guard is cheaper to set up and reads clearer at the call site. The rank guard would also work observationally (same Err → same .unwrap_or(false) arm).
+- Test 5 rejected approach: omitting the data_types entry would instead trip wait_slice:259-263 (NameSidecar::data_type returns None → ContractGap). ALSO observationally equivalent for this classifier (same Err propagation). Chose out-of-bounds range so the test's intent is unambiguous about WHICH guard fires.
+- Test 7 ordering subtlety: a scalar (dims=[]) with a non-empty tile must NOT panic; the wait.rs:265-267 ty.dims.is_empty() check runs BEFORE the wait.rs:268 'let leading_dim = ty.dims[0] as i64' read. The test deliberately constructs that exact shape (non-empty tile + empty dims) to pin the ordering — if a future refactor reorders the dims read above the empty check, test 7 will panic loudly.
+- make_minimal_tables helper deliberately omits the host worker entry that tests/wait_assign_slice.rs's helper carries — collect_let_at_wait_data reads only sidecar.data_types, never names.worker (verified by greppping the implementation). Per the silent-sibling-defect discipline this divergence is intentional and documented in the helper's docstring.
+
+is_whole_array_recv visibility: kept pub(super) per architect P2.2; all 7 tests reach it only via collect_let_at_wait_data → collect_let_at_wait_inner → wait::is_whole_array_recv. No widening.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All 7 cases covered; gate green end-to-end; e2e 280/246/0/34/0 preserved bit-identical (test-only additive); cargo test +7 dev / +7 release. is_whole_array_recv visibility kept pub(super) per architect P2.2 — exercised indirectly through collect_let_at_wait_data per the documented call site at collect.rs:392. Forward-carried 5 (data, tile) shape coverage + 1 sibling-divergence keystone finding to TASK-0355 (unify is_whole_array_tile + is_whole_array_recv) so the future unification implementer doesn't re-derive them. Commit 8ad74fa.
+<!-- SECTION:FINAL_SUMMARY:END -->
