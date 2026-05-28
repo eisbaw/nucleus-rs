@@ -725,15 +725,26 @@ renode-embedded-check:
 # embedded_check_count schedule (`check loop i : latency_max=1ns,
 # on_violation=count`) via the embedded-pattern bin-emit mode (`--shim
 # stm32h7`), cross-compiles it under .#embedded, runs it headless in Renode
-# under .#renode, captures USART1, and ASSERTS the summary line reports
-# exactly 256 occurrences.
+# under .#renode, captures USART1, and ASSERTS the summary line reports the
+# expected near-trip-count number of occurrences.
 #
-# WHY EXACTLY 256 (timing-INDEPENDENT): latency_max=1ns is deliberately
-# tiny so EVERY iteration of ex1's `for i : 0..256` loop violates. The
-# count therefore equals the loop trip-count EXACTLY (256) regardless of
-# Renode's (non-cycle-accurate) timing — a deterministic check that does
-# NOT depend on any specific ns reading. This is what makes the count sink
-# robustly assertable under Renode, unlike a wall-clock-dependent figure.
+# WHY 255-or-256 (the genuinely timing-INDEPENDENT invariant): latency_max=
+# 1ns is deliberately tiny so EVERY iteration of ex1's `for i : 0..256`
+# loop that the clock can RESOLVE violates. The count therefore equals the
+# loop trip-count (256) MODULO AT MOST ONE iteration. The one exception is
+# the clock-SEEDING first iteration: `NucleusShim::monotonic_ns`'s first
+# call returns 0 to seed `last_cvr` (no bogus initial span), so iteration
+# 0's `_check_start` is 0 and its `_check_elapsed` is whatever the body
+# advanced SysTick by. Under Renode (NOT cycle-accurate) that first body
+# sometimes advances 0 ns (then iteration 0 does not exceed 1ns → 255) and
+# sometimes a few hundred ns (then it does → 256); EMPIRICALLY this fixture
+# binary deterministically yields 255 (iter-0 elapsed = 0 ns; verified by a
+# TOTAL_ITERS=256 + FIRST_ELAPSED_NS=0 diagnostic). What is robustly
+# verified is: the loop runs all 256 iterations, the AtomicU32 counter
+# increments per RESOLVED violation, and the program-exit summary flushes
+# the EXACT deterministic count — NOT a specific ns figure. Asserting the
+# 255-or-256 band (not a hard 256) keeps the check independent of Renode's
+# instruction-layout-sensitive non-cycle-accurate timing.
 #
 # NOTE: the count summary shares USART1 with ex1's raw output bytes (same
 # documented wart as the log sink): the summary line is emitted AFTER `run`
@@ -744,7 +755,7 @@ renode-embedded-check:
 # Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
 # `just ci` — same tier-3-outside-default-ci rule as renode-embedded-check.
 renode-embedded-check-count:
-    @echo "tier-3 M10 GENERATED embedded check-loop COUNT -> Renode -> assert exactly 256 violations (TASK-0048.08)"
+    @echo "tier-3 M10 GENERATED embedded check-loop COUNT -> Renode -> assert 255-or-256 violations (TASK-0048.08)"
     @set -eu; \
     resc="$(pwd)/tests/renode/embedded/run.resc"; \
     exdir="$(pwd)/nuc-nucleus/examples/01-elementwise-add"; \
@@ -767,11 +778,12 @@ renode-embedded-check-count:
         -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$resc" >"$log" 2>&1; \
     echo "=== captured USART1 count summary line(s) ==="; \
     strings "$out" | grep -a 'check loop' || true; \
-    if strings "$out" | grep -qa 'check loop `i` violated latency_max=1 ns: 256 occurrence(s)'; then \
-        echo "OK: count summary reports EXACTLY 256 violations — the AtomicU32 counter + program-exit USART1 sink fired end-to-end (TASK-0048.08, timing-independent)."; \
+    if strings "$out" | grep -qaE 'check loop `i` violated latency_max=1 ns: 25[56] occurrence\(s\)'; then \
+        n="$(strings "$out" | grep -aoE 'latency_max=1 ns: [0-9]+ occurrence' | grep -oE '[0-9]+' | tail -1)"; \
+        echo "OK: count summary reports $n violations (expected 255-or-256: trip-count 256 minus at most the clock-seeding iter-0 that Renode may resolve to 0 ns) — the AtomicU32 counter + program-exit USART1 sink fired end-to-end (TASK-0048.08)."; \
     else \
-        echo "FAIL: expected count summary 'check loop \`i\` violated latency_max=1 ns: 256 occurrence(s)' not found in captured USART1."; \
-        echo "      (latency_max=1ns => every one of ex1's 256 iterations must violate; the count is timing-independent.)"; \
+        echo "FAIL: expected count summary 'check loop \`i\` violated latency_max=1 ns: 25[56] occurrence(s)' not found in captured USART1."; \
+        echo "      (latency_max=1ns => every RESOLVED iteration of ex1's 256-iteration loop violates; at most the clock-seeding iter-0 may read 0 ns under Renode.)"; \
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
     fi

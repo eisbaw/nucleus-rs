@@ -18,9 +18,14 @@
 // deferred PART-2 follow-up (TASK-0048.09).
 //
 // latency_max = 1ns is deliberately tiny: under Renode (not cycle-accurate)
-// EVERY iteration violates, so the reported count equals the loop
-// trip-count EXACTLY (256 for ex1's `for i : 0..256`) — a timing-INDEPENDENT
-// deterministic check the `just renode-embedded-check-count` recipe asserts.
+// every RESOLVED iteration violates, so the reported count equals the loop
+// trip-count (256 for ex1's `for i : 0..256`) MODULO AT MOST ONE iteration
+// — the clock-seeding iteration 0, whose `_check_start` reads the seeding 0
+// from monotonic_ns and whose body Renode may resolve to 0 ns (then it does
+// NOT exceed 1ns). EMPIRICALLY this binary deterministically yields 255
+// (iter-0 elapsed = 0 ns; the loop still runs all 256 iterations). The
+// `just renode-embedded-check-count` recipe asserts the 255-or-256 band —
+// the genuinely timing-INDEPENDENT invariant (NOT a specific ns figure).
 //
 // This IS a runnable firmware (it cross-compiles for thumbv7em and runs in
 // Renode), unlike the embedded_check_panic NEGATIVE fixture. It is
