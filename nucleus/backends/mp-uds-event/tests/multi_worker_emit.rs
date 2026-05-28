@@ -360,9 +360,10 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
 /// that cell — it never exercises the host-EXCLUDING path. This test
 /// closes that hole by retargeting to 15-transpose/distributed-rows,
 /// whose `xpose on {w0,w1,w2,w3}` placement produces a genuinely
-/// host-EXCLUDING inner barrier (`SyncTag(2)`, participants
-/// `{w0,w1,w2,w3}`), the precise shape mediation exists to handle for
-/// the one-CTRL-stream-per-(host,worker) UDS-star topology.
+/// host-EXCLUDING inner barrier (participants `{w0,w1,w2,w3}`, host
+/// absent; its SyncTag bid is DERIVED at runtime, not pinned — see
+/// TASK-0044.11), the precise shape mediation exists to handle for the
+/// one-CTRL-stream-per-(host,worker) UDS-star topology.
 ///
 /// Strengthened over the 06 sibling: this cell asserts (a) the
 /// UNMEDIATED mp-uds-event emit FAILS (host-excluding barrier rejected
@@ -430,11 +431,12 @@ fn transpose_15_distributed_rows_uds_equiv_tcp() {
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // ---- Half (a): the UNMEDIATED mp-uds-event emit is REJECTED. ----
-    // The host-EXCLUDING barrier `SyncTag(2)` ({w0,w1,w2,w3}) cannot be
-    // lowered by the UDS-star topology (multi_worker/mod.rs:286-297),
-    // so the unmediated emit MUST fail. This is what distinguishes this
-    // cell from 06/distributed2 (where mediation is a complete no-op):
-    // if mediation were a no-op here, this `expect_err` would fail.
+    // The host-EXCLUDING inner compute barrier ({w0,w1,w2,w3}, host
+    // absent) cannot be lowered by the UDS-star topology
+    // (multi_worker/mod.rs:286-297), so the unmediated emit MUST fail.
+    // This is what distinguishes this cell from 06/distributed2 (where
+    // mediation is a complete no-op): if mediation were a no-op here,
+    // this `expect_err` would fail.
     let unmediated_pw = acfg_to_events(&acfg);
     let unmediated_sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar (unmediated)");
     let unmediated_names = NameTables::from_acfg(&acfg);
@@ -473,6 +475,16 @@ fn transpose_15_distributed_rows_uds_equiv_tcp() {
         .collect();
     let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used)
         .expect("host election must succeed on 15-transpose/distributed-rows");
+    // The host-EXCLUDING barrier's bid is the SyncTag whose participant
+    // set lacks host; the worker shim emitter renders `Bar{bid}` /
+    // `let bar_{bid}` with bid == SyncTag.0. Derive it from the UNMEDIATED
+    // projection (post-mediation the set includes host) so the
+    // post-mediation anchor stays correct under a sync-tag renumber
+    // (TASK-0044.11; was hardcoded bid=2).
+    let host_excluding_bid = test_common::host_excluding_barrier_bid(&unmediated_pw, host).expect(
+        "15-transpose/distributed-rows must carry a host-excluding barrier \
+         (its bid drives the post-mediation Bar{bid} anchor)",
+    );
     let acfg = apply_host_mediation_inject(acfg, host);
     let acfg = apply_host_data_relay_inject(acfg, host);
     let per_worker = acfg_to_events(&acfg);
@@ -488,10 +500,11 @@ fn transpose_15_distributed_rows_uds_equiv_tcp() {
         mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out).expect("tcp emit");
 
     // Anchor: host (the mediated barrier's new hub) MUST now carry the
-    // formerly host-excluding barrier shim `Bar2` — host did NOT
-    // participate in SyncTag(2) pre-mediation, so this BITES where a
-    // bare barrier-substring would pass vacuously (host already crosses
-    // the host-INCLUDED barriers). Checked on the mp-uds-event bin.
+    // formerly host-excluding barrier shim `Bar{bid}` — host did NOT
+    // participate in that barrier (bid DERIVED above, TASK-0044.11)
+    // pre-mediation, so this BITES where a bare barrier-substring would
+    // pass vacuously (host already crosses the host-INCLUDED barriers).
+    // Checked on the mp-uds-event bin.
     let host_name = names.worker.get(&host).expect("host name").clone();
     let uds_host_bin = uds
         .worker_bins
@@ -499,12 +512,14 @@ fn transpose_15_distributed_rows_uds_equiv_tcp() {
         .find(|p| p.file_name().unwrap().to_str().unwrap() == format!("{host_name}.rs"))
         .expect("host bin must be present in the mediated uds emit");
     let uds_host_src = std::fs::read_to_string(uds_host_bin).expect("read uds host bin");
+    let bar_struct = format!("struct Bar{host_excluding_bid} {{");
+    let bar_let = format!("let bar_{host_excluding_bid} = Bar{host_excluding_bid} {{");
     assert!(
-        uds_host_src.contains("struct Bar2 {") && uds_host_src.contains("let bar_2 = Bar2 {"),
+        uds_host_src.contains(&bar_struct) && uds_host_src.contains(&bar_let),
         "15-transpose/distributed-rows: after host-mediation the mp-uds-event \
          host bin ({host_name}.rs) MUST declare the barrier shim for the \
-         formerly host-EXCLUDING barrier SyncTag(2) (`struct Bar2` / \
-         `let bar_2`). host bin:\n{uds_host_src}"
+         formerly host-EXCLUDING barrier (bid {host_excluding_bid}: \
+         `{bar_struct}` / `{bar_let}`). host bin:\n{uds_host_src}"
     );
 
     let mut uds_bins = uds.worker_bins.clone();

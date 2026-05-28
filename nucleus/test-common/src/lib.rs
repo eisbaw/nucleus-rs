@@ -281,6 +281,50 @@ pub const CONST_IN_INDEXEXPR_ITERS_VALUE: u64 = 8;
 /// of this substring as the primary regression-pin.
 pub const CONST_IN_INDEXEXPR_ITERS_IDENT: &str = "ITERS";
 
+/// Find the bid (`SyncTag.0`) of the host-EXCLUDING barrier in a
+/// per-worker [`Event`] projection: the [`Event::Sync`] whose
+/// `participants` set does NOT contain `host`. Returns `None` if every
+/// barrier includes `host` (i.e. there is no host-excluding barrier).
+///
+/// # Why this exists (TASK-0044.11)
+///
+/// The host-mediation oracle tests (`transpose_15_distributed_rows_*` in
+/// the mp-tcp-event / mp-uds-event suites) assert that, after mediation,
+/// the host bin declares the per-barrier shim `Bar{bid}` for the formerly
+/// host-excluding barrier — where `worker_program.rs` emits
+/// `bid == SyncTag.0`. Hardcoding `bid = 2` let the post-mediation half
+/// SILENT-PASS under a sync-tag renumber: a host-INCLUDED barrier could
+/// inherit `bid = 2` and satisfy the `Bar2` substring without the
+/// mediated host-excluding barrier being present (architect P3-1 on
+/// TASK-0044.08). Deriving the bid from the UNMEDIATED projection
+/// re-targets the anchor to the correct barrier.
+///
+/// Must be read BEFORE mediation: `apply_host_mediation_inject` adds host
+/// to the participant set, after which no barrier is host-excluding.
+/// Recurses into [`Event::Loop`] bodies (the only nesting variant).
+pub fn host_excluding_barrier_bid(
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    host: WorkerId,
+) -> Option<u64> {
+    fn walk(events: &[Event], host: WorkerId) -> Option<u64> {
+        for ev in events {
+            match ev {
+                Event::Sync {
+                    participants, sync, ..
+                } if !participants.contains(&host) => return Some(sync.0),
+                Event::Loop { body, .. } => {
+                    if let Some(bid) = walk(body, host) {
+                        return Some(bid);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    per_worker.values().find_map(|evs| walk(evs, host))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +392,69 @@ schedule for "anything.algo.nuc" {
         );
         assert!(!opts.apply_partition_workers);
         assert!(!opts.inject_check_frames);
+    }
+
+    // ---- host_excluding_barrier_bid (TASK-0044.11) ----
+
+    use nucleus_compiler::event::{SyncKind, SyncTag};
+
+    fn sync(parts: &[WorkerId], tag: u64) -> Event {
+        Event::Sync {
+            participants: parts.iter().copied().collect(),
+            kind: SyncKind::Barrier,
+            sync: SyncTag(tag),
+        }
+    }
+
+    #[test]
+    fn host_excluding_bid_picks_the_host_absent_barrier() {
+        let host = WorkerId(0);
+        let (w1, w2, w3) = (WorkerId(1), WorkerId(2), WorkerId(3));
+        // A host-INCLUDED barrier (tag 1) and a host-EXCLUDING one (tag 7).
+        let mut pw: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+        pw.insert(host, vec![sync(&[host, w1, w2, w3], 1)]);
+        pw.insert(w1, vec![sync(&[host, w1, w2, w3], 1), sync(&[w1, w2, w3], 7)]);
+        pw.insert(w2, vec![sync(&[w1, w2, w3], 7)]);
+        assert_eq!(
+            host_excluding_barrier_bid(&pw, host),
+            Some(7),
+            "must return the SyncTag of the barrier whose participants exclude host"
+        );
+    }
+
+    #[test]
+    fn host_excluding_bid_is_none_when_every_barrier_includes_host() {
+        let host = WorkerId(0);
+        let (w1, w2) = (WorkerId(1), WorkerId(2));
+        let mut pw: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+        pw.insert(host, vec![sync(&[host, w1, w2], 1)]);
+        pw.insert(w1, vec![sync(&[host, w1, w2], 1)]);
+        assert_eq!(
+            host_excluding_barrier_bid(&pw, host),
+            None,
+            "no host-excluding barrier => None (the post-mediation oracle would \
+             then fail loud on the .expect(), not silent-pass)"
+        );
+    }
+
+    #[test]
+    fn host_excluding_bid_recurses_into_loop_body() {
+        use nucleus_compiler::event::IterVar;
+        let host = WorkerId(0);
+        let (w1, w2) = (WorkerId(1), WorkerId(2));
+        let nested = Event::Loop {
+            iter_var: IterVar(0),
+            range: 0..4,
+            body: vec![sync(&[w1, w2], 5)],
+            block_tag: None,
+            check_frame: None,
+        };
+        let mut pw: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+        pw.insert(w1, vec![nested]);
+        assert_eq!(
+            host_excluding_barrier_bid(&pw, host),
+            Some(5),
+            "a host-excluding barrier nested inside an Event::Loop body must be found"
+        );
     }
 }

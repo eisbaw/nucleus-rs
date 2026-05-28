@@ -292,7 +292,8 @@ fn host_excluding_barrier_is_typed_contract_gap() {
 /// the production one, and it exercises BOTH halves of the mediation
 /// contract on a single fixture:
 ///   (a) the UNMEDIATED ACFG carries a genuinely host-EXCLUDING barrier
-///       (`SyncTag(2)`, participants `{w0,w1,w2,w3}`), so `Plan::build`
+///       (participants `{w0,w1,w2,w3}`, host absent; its SyncTag bid is
+///       DERIVED at runtime, not pinned — TASK-0044.11), so `Plan::build`
 ///       REJECTS it with the `ContractGap("... exclude the host
 ///       worker ...")` — proving the mediation pass is load-bearing,
 ///       not cosmetic; and
@@ -372,6 +373,34 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     let acfg = inject_syncs(acfg);
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
+    // Project the UNMEDIATED ACFG once; it drives BOTH the host election
+    // (the `used` set the election rule consumes) AND the host-excluding
+    // barrier bid derivation, so the anchors below are DERIVED rather than
+    // hardcoded (TASK-0044.11; was WorkerId(1..4) literals + bid=2 —
+    // architect P3-1/P3-2 on TASK-0044.08).
+    let unmediated_pw = acfg_to_events(&acfg);
+    let used: std::collections::BTreeSet<_> = unmediated_pw
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+    // Host election: shared helper the backend + driver use (memory
+    // feedback-driver-must-mirror-backend-election-exactly). Done up-front
+    // so the pre-mediation participant-set assertion can reason about
+    // which WorkerId is host.
+    let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used)
+        .expect("host election must succeed on 15-transpose/distributed-rows");
+    // The host-EXCLUDING barrier's bid is the SyncTag whose participant
+    // set lacks host; `worker_program.rs::emit_barrier_shims` emits
+    // `Bar{bid}` / `let bar_{bid}` / `barrier_cross(_, bid)` with
+    // bid == SyncTag.0. Derive it from the UNMEDIATED projection
+    // (post-mediation the set includes host, so no barrier is
+    // host-excluding — it must be read before mediation).
+    let host_excluding_bid = test_common::host_excluding_barrier_bid(&unmediated_pw, host).expect(
+        "15-transpose/distributed-rows must carry a host-excluding barrier \
+         (its bid drives the post-mediation Bar{bid} anchor)",
+    );
+
     // ---- Half 1: the UNMEDIATED ACFG is REJECTED. ----
     // 15-transpose/distributed-rows places `xpose on {w0,w1,w2,w3}`,
     // producing a host-EXCLUDING inner compute barrier. mp-tcp-event's
@@ -381,7 +410,6 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     // the mediation pass would be a no-op here and this oracle would
     // not exercise mediation (the same vacuity that sank the original
     // 03-reduction premise — see provenance above).
-    let unmediated_pw = acfg_to_events(&acfg);
     let unmediated_sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar (unmediated)");
     let unmediated_names = NameTables::from_acfg(&acfg);
     let unmediated_emit = emit(
@@ -402,34 +430,38 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
         "15-transpose/distributed-rows: UNMEDIATED emit must fail with the \
          host-excluding-barrier ContractGap; got: {err_text}"
     );
-    // Anchor to the SPECIFIC host-excluding barrier: participants are
-    // {w0,w1,w2,w3} (the four compute workers, host absent). A
-    // regression that mediated host into the participant set upstream
-    // would change this set and the substring would not match.
+    // Anchor to the SPECIFIC host-excluding barrier by PARTICIPANT SET,
+    // not hardcoded WorkerId literals (TASK-0044.11, mirroring the
+    // cycle-233 bufsync sibling): host must be ABSENT from the rejected
+    // barrier's participants, and every other used (compute) worker must
+    // be present. A regression that mediated host into the participant
+    // set upstream would put host in the rendered set and trip the first
+    // assert; a renumber of the compute WorkerIds is tracked
+    // automatically because the anchors are derived, not literal.
     assert!(
-        err_text.contains("WorkerId(1)")
-            && err_text.contains("WorkerId(2)")
-            && err_text.contains("WorkerId(3)")
-            && err_text.contains("WorkerId(4)"),
-        "15-transpose/distributed-rows: the rejected barrier's participants \
-         must be the four compute workers {{w0..w3}} = WorkerId(1..4) (host = \
-         WorkerId(0) absent); got: {err_text}"
+        !err_text.contains(&format!("{host:?}")),
+        "15-transpose/distributed-rows: the rejected host-excluding barrier's \
+         participant set must NOT contain host ({host:?}); the whole point is \
+         host is excluded. ContractGap: {err_text}"
     );
+    for w in &used {
+        if *w == host {
+            continue;
+        }
+        assert!(
+            err_text.contains(&format!("{w:?}")),
+            "15-transpose/distributed-rows: the rejected host-excluding barrier's \
+             participant set must contain compute worker {w:?} (the compute \
+             workers are the rejected participants). ContractGap: {err_text}"
+        );
+    }
 
-    // ---- Mediate: SAME host election the backend uses. ----
-    // Shared helper `backend_common::elect_host_from_name_workers`,
-    // mirroring the driver's host-mediation gate (memory
+    // ---- Mediate: SAME host election the backend uses (elected above
+    // from the unmediated projection, mirroring the driver's
+    // host-mediation gate — memory
     // feedback-driver-must-mirror-backend-election-exactly: a compiler
     // pass mediating against a backend-elected host MUST use the
-    // identical election rule).
-    let preview = acfg_to_events(&acfg);
-    let used: std::collections::BTreeSet<_> = preview
-        .iter()
-        .filter(|(_, evs)| !evs.is_empty())
-        .map(|(w, _)| *w)
-        .collect();
-    let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used)
-        .expect("host election must succeed on 15-transpose/distributed-rows");
+    // identical election rule). ----
     let acfg = apply_host_mediation_inject(acfg, host);
     // Data-relay arm: the mp-tcp-event driver gate applies this in
     // ADDITION to mediation (driver/src/main.rs ~592-614); the poll
@@ -454,30 +486,46 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     let host_src = std::fs::read_to_string(host_bin).expect("read host bin");
 
     // BITING anchor: pre-mediation host did NOT participate in the
-    // host-excluding barrier `SyncTag(2)`, so its bin carried NO `Bar2`
+    // host-excluding barrier (bid `host_excluding_bid`, DERIVED above from
+    // the unmediated participant set), so its bin carried NO `Bar{bid}`
     // shim. After mediation host IS a participant, so its bin MUST now
-    // declare `struct Bar2` + `let bar_2 = Bar2` (the per-barrier shim
-    // for bid=2, see worker_program.rs::emit_barrier_shims). This is
-    // host-specific and barrier-specific: it cannot be satisfied by the
-    // host-INCLUDED barriers' shims (different bid), so it BITES where a
-    // bare `contains("barrier_cross")` would pass vacuously.
+    // declare `struct Bar{bid}` + `let bar_{bid} = Bar{bid}` (the
+    // per-barrier shim, see worker_program.rs::emit_barrier_shims). This
+    // is host-specific and barrier-specific: it cannot be satisfied by
+    // the host-INCLUDED barriers' shims (different bid), so it BITES where
+    // a bare `contains("barrier_cross")` would pass vacuously. The bid is
+    // DERIVED (TASK-0044.11) so a sync-tag renumber re-targets the anchor
+    // instead of silent-passing on a host-included barrier that happened
+    // to inherit the old literal bid.
+    let bar_struct = format!("struct Bar{host_excluding_bid} {{");
+    let bar_let = format!("let bar_{host_excluding_bid} = Bar{host_excluding_bid} {{");
     assert!(
-        host_src.contains("struct Bar2 {") && host_src.contains("let bar_2 = Bar2 {"),
+        host_src.contains(&bar_struct) && host_src.contains(&bar_let),
         "15-transpose/distributed-rows: after host-mediation the host bin \
          ({host_name}.rs) MUST declare the barrier shim for the formerly \
-         host-EXCLUDING barrier SyncTag(2) (`struct Bar2` / `let bar_2`); its \
-         absence means mediation did not add host to that barrier. host bin:\n{host_src}"
+         host-EXCLUDING barrier (bid {host_excluding_bid}: `{bar_struct}` / \
+         `{bar_let}`); its absence means mediation did not add host to that \
+         barrier. host bin:\n{host_src}"
     );
-    // The mediated barrier #2 shim must cross host with all four compute
-    // workers (host is now the hub of the formerly host-excluding
-    // barrier). Anchor the barrier_cross to bid=2 specifically.
-    assert!(
-        host_src.contains("wire::barrier_cross(&mut *self.ctrl_w0.borrow_mut(), 2)")
-            && host_src.contains("wire::barrier_cross(&mut *self.ctrl_w3.borrow_mut(), 2)"),
-        "15-transpose/distributed-rows: host's Bar2 shim must cross every \
-         compute worker (w0..w3) for barrier #2 — the mediated, formerly \
-         host-excluding barrier. host bin:\n{host_src}"
-    );
+    // The mediated shim must cross host with EVERY compute worker (host is
+    // now the hub of the formerly host-excluding barrier). Derive both the
+    // peer NAME and the bid rather than hardcoding `ctrl_w0 .. 2`.
+    for w in &used {
+        if *w == host {
+            continue;
+        }
+        let wn = names.worker.get(w).expect("compute worker name");
+        let cross = format!(
+            "wire::barrier_cross(&mut *self.ctrl_{wn}.borrow_mut(), {host_excluding_bid})"
+        );
+        assert!(
+            host_src.contains(&cross),
+            "15-transpose/distributed-rows: host's Bar{host_excluding_bid} shim \
+             must cross compute worker {wn} (bid {host_excluding_bid}) — the \
+             mediated, formerly host-excluding barrier. Expected `{cross}`. \
+             host bin:\n{host_src}"
+        );
+    }
 }
 
 // --------------------------------------------------------------------
