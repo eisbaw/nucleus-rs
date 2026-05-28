@@ -27,15 +27,13 @@
 //!    a Push inside a loop body still appears in the output map.
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
-use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
+use nucleus_compiler::event::{DataId, Event, IterVar, SeqTag, WorkerId};
 
 use backend_common::multi_worker_walker::collect_pair_tiles;
 
-fn tile_1d(iv: u64, range: Range<i64>) -> IterTile {
-    IterTile::new(vec![(IterVar(iv), range)])
-}
+mod common;
+use common::tile_1d;
 
 #[test]
 fn empty_input_yields_empty_map() {

@@ -30,15 +30,17 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::IrExpr;
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
     WorkerId,
 };
-use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
+use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::{render_worker_events, WalkerCtx};
+
+mod common;
 
 /// Build a minimal `(NameTables, NameSidecar)` pair populated for a
 /// single source loop variable `var` with `LO..HI` bounds, one
@@ -60,33 +62,18 @@ fn make_minimal_tables(
     kernel: KernelId,
     kernel_name: &str,
 ) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.iter_var.insert(src_iv, src_var_name.to_string());
-    names.iter_var.insert(tile_iv, tile_var_name.to_string());
-    names.kernel.insert(kernel, kernel_name.to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar.loop_bounds.insert(
-        src_iv,
-        LoopBound {
-            lo: IrExpr::IntLit(lo),
-            hi: IrExpr::IntLit(hi),
-        },
-    );
-    // Kernel signature: one scalar i64 param, unit return. The
-    // walker's render_fire_args_pub joins on this; absence would
-    // trip a different error than the one we're testing.
-    sidecar.kernel_sigs.insert(
-        kernel,
-        KernelSig {
-            params: vec![ResolvedType {
-                scalar: ScalarType::I64,
-                dims: vec![],
-            }],
-            ret: None,
-        },
-    );
-    (names, sidecar)
+    // Construction logic lives in the shared `common::Tables` builder
+    // (TASK-0358); this thin file-local adapter just names the
+    // blocked-rebind fixture shape (source + tile iter vars, an
+    // i64-sig kernel, and a LO..HI source bound). The kernel sig
+    // matters: the walker's render_fire_args_pub joins on it, so its
+    // absence would trip a different error than the one under test.
+    common::Tables::new()
+        .with_iter_var(src_iv, src_var_name)
+        .with_iter_var(tile_iv, tile_var_name)
+        .with_kernel_i64(kernel, kernel_name)
+        .with_loop_bound(src_iv, lo, hi)
+        .build()
 }
 
 type RendezvousIds = BTreeMap<(DataId, nucleus_compiler::event::SeqTag), usize>;

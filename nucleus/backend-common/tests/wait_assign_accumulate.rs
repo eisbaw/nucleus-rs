@@ -59,7 +59,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::algo::{ResolvedType, ScalarType};
+use nucleus_compiler::algo::ScalarType;
 use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -69,30 +69,32 @@ use backend_common::multi_worker_walker::{
 };
 use backend_common::render::EmitError;
 
+mod common;
+
 type RendezvousIds = BTreeMap<(DataId, SeqTag), RendezvousId>;
 type PairTiles = BTreeMap<(DataId, SeqTag), IterTile>;
 
 /// Build a synthetic `(NameTables, NameSidecar)` for the 08-histogram
-/// fan-in: 1 data symbol (`histogram`, `dims` of `i32`), 1 host
+/// fan-in: 1 data symbol (`histogram`, `dims` of `scalar`), 1 host
 /// receiver (`WorkerId(0)`), 4 sender workers (`WorkerId(1..=4)`).
+///
+/// Construction logic lives in the shared `common::Tables` builder
+/// (TASK-0358); this thin file-local adapter names the histogram
+/// fan-in fixture shape (one typed data symbol + the host/w0..w3
+/// worker layout).
 fn make_histogram_tables(
     data_id: DataId,
     dims: Vec<usize>,
     scalar: ScalarType,
 ) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.data.insert(data_id, "histogram".to_string());
-    names.worker.insert(WorkerId(0), "host".to_string());
-    names.worker.insert(WorkerId(1), "w0".to_string());
-    names.worker.insert(WorkerId(2), "w1".to_string());
-    names.worker.insert(WorkerId(3), "w2".to_string());
-    names.worker.insert(WorkerId(4), "w3".to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar
-        .data_types
-        .insert(data_id, ResolvedType { scalar, dims });
-    (names, sidecar)
+    common::Tables::new()
+        .with_data_typed(data_id, "histogram", scalar, dims)
+        .with_worker(WorkerId(0), "host")
+        .with_worker(WorkerId(1), "w0")
+        .with_worker(WorkerId(2), "w1")
+        .with_worker(WorkerId(3), "w2")
+        .with_worker(WorkerId(4), "w3")
+        .build()
 }
 
 #[test]

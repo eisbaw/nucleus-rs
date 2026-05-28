@@ -85,6 +85,8 @@ use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::{render_worker_events, WalkerCtx};
 
+mod common;
+
 type RendezvousIds = BTreeMap<(DataId, SeqTag), usize>;
 type PairTiles = BTreeMap<(DataId, SeqTag), IterTile>;
 
@@ -110,30 +112,16 @@ fn make_minimal_tables(
     kernel: KernelId,
     kernel_name: &str,
 ) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.iter_var.insert(iv, iv_name.to_string());
-    names.data.insert(data, data_name.to_string());
-    names.kernel.insert(kernel, kernel_name.to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar.loop_bounds.insert(
-        iv,
-        LoopBound {
-            lo: IrExpr::IntLit(0),
-            hi: IrExpr::IntLit(16),
-        },
-    );
-    sidecar.kernel_sigs.insert(
-        kernel,
-        KernelSig {
-            params: vec![ResolvedType {
-                scalar: ScalarType::I64,
-                dims: vec![],
-            }],
-            ret: None,
-        },
-    );
-    (names, sidecar)
+    // Construction logic lives in the shared `common::Tables` builder
+    // (TASK-0358); this thin file-local adapter just names the
+    // reuse-marker fixture shape (iv + data + i64-sig kernel + a
+    // 0..16 source bound) so the call sites stay readable.
+    common::Tables::new()
+        .with_iter_var(iv, iv_name)
+        .with_data_name(data, data_name)
+        .with_kernel_i64(kernel, kernel_name)
+        .with_loop_bound(iv, 0, 16)
+        .build()
 }
 
 #[test]

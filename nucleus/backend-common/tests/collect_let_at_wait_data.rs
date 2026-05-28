@@ -73,67 +73,13 @@
 //! isolation.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
 
-use nucleus_compiler::algo::{ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
-use nucleus_compiler::sidecar::NameSidecar;
-use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::collect_let_at_wait_data;
 
-/// Build a minimal `(NameTables, NameSidecar)` with one data symbol
-/// `data_id` named `data_name` typed as `dims` of `i32`. Differs
-/// from `tests/wait_assign_slice.rs`'s helper: we do NOT need a
-/// host worker entry — `collect_let_at_wait_data` reads only
-/// `sidecar.data_types`, not `names.worker`. We still populate
-/// `names.data` for parity (the helper is cheap and the symmetry
-/// helps debug-print if a test fails).
-fn make_minimal_tables(
-    data_id: DataId,
-    data_name: &str,
-    dims: Vec<usize>,
-) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.data.insert(data_id, data_name.to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar.data_types.insert(
-        data_id,
-        ResolvedType {
-            scalar: ScalarType::I32,
-            dims,
-        },
-    );
-    (names, sidecar)
-}
-
-fn tile_1d(iv: u64, range: Range<i64>) -> IterTile {
-    IterTile::new(vec![(IterVar(iv), range)])
-}
-
-fn tile_2d(iv0: u64, r0: Range<i64>, iv1: u64, r1: Range<i64>) -> IterTile {
-    IterTile::new(vec![(IterVar(iv0), r0), (IterVar(iv1), r1)])
-}
-
-fn tile_3d(
-    iv0: u64,
-    r0: Range<i64>,
-    iv1: u64,
-    r1: Range<i64>,
-    iv2: u64,
-    r2: Range<i64>,
-) -> IterTile {
-    IterTile::new(vec![
-        (IterVar(iv0), r0),
-        (IterVar(iv1), r1),
-        (IterVar(iv2), r2),
-    ])
-}
-
-fn empty_accumulate_and_indexed() -> (BTreeSet<DataId>, BTreeSet<DataId>) {
-    (BTreeSet::new(), BTreeSet::new())
-}
+mod common;
+use common::{empty_accumulate_and_indexed, make_minimal_tables, tile_1d, tile_2d, tile_3d};
 
 #[test]
 fn mixed_whole_and_slice_waits_excludes_data() {

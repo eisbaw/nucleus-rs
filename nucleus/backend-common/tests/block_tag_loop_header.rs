@@ -26,17 +26,23 @@
 //!    back to `0_i64` as LO and the rebinding still emits a well-
 //!    formed expression.
 
-use nucleus_compiler::algo::IrExpr;
 use nucleus_compiler::event::{BlockTag, IterVar};
-use nucleus_compiler::sidecar::{LoopBound, NameSidecar};
+use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
 use backend_common::multi_worker_walker::render_block_tag_loop_header;
 use backend_common::render::{EmitError, RenderCtxPub};
 
+mod common;
+
 /// Minimal `(NameTables, NameSidecar)` populated with one source iter
 /// var (with `LO..HI` bounds) and one enclosing tile iter var (no
 /// bounds entry, mirroring how `block_transform` emits the tile).
+///
+/// Construction logic lives in the shared `common::Tables` builder
+/// (TASK-0358); this thin file-local adapter names the block-tag
+/// loop-header fixture shape (two iter vars, a source `LO..HI` bound,
+/// no kernel or data entries).
 fn make_tables(
     src_iv: IterVar,
     src_name: &str,
@@ -45,19 +51,11 @@ fn make_tables(
     lo: i64,
     hi: i64,
 ) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.iter_var.insert(src_iv, src_name.to_string());
-    names.iter_var.insert(tile_iv, tile_name.to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar.loop_bounds.insert(
-        src_iv,
-        LoopBound {
-            lo: IrExpr::IntLit(lo),
-            hi: IrExpr::IntLit(hi),
-        },
-    );
-    (names, sidecar)
+    common::Tables::new()
+        .with_iter_var(src_iv, src_name)
+        .with_iter_var(tile_iv, tile_name)
+        .with_loop_bound(src_iv, lo, hi)
+        .build()
 }
 
 #[test]

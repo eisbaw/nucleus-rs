@@ -65,13 +65,15 @@
 //!   accumulate-detection.
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use nucleus_compiler::algo::{ResolvedType, ScalarType};
-use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
+use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::multi_worker_walker::collect_accumulate_waits;
+
+mod common;
+use common::{tile_1d, tile_2d, tile_3d};
 
 type PairTiles = BTreeMap<(DataId, SeqTag), IterTile>;
 
@@ -81,29 +83,6 @@ fn sidecar_with(data: DataId, scalar: ScalarType, dims: Vec<usize>) -> NameSidec
         .data_types
         .insert(data, ResolvedType { scalar, dims });
     sidecar
-}
-
-fn tile_1d(iv: u64, range: Range<i64>) -> IterTile {
-    IterTile::new(vec![(IterVar(iv), range)])
-}
-
-fn tile_2d(iv0: u64, r0: Range<i64>, iv1: u64, r1: Range<i64>) -> IterTile {
-    IterTile::new(vec![(IterVar(iv0), r0), (IterVar(iv1), r1)])
-}
-
-fn tile_3d(
-    iv0: u64,
-    r0: Range<i64>,
-    iv1: u64,
-    r1: Range<i64>,
-    iv2: u64,
-    r2: Range<i64>,
-) -> IterTile {
-    IterTile::new(vec![
-        (IterVar(iv0), r0),
-        (IterVar(iv1), r1),
-        (IterVar(iv2), r2),
-    ])
 }
 
 fn two_waits_with_tile(data: DataId, tile: IterTile) -> (Vec<Event>, PairTiles) {

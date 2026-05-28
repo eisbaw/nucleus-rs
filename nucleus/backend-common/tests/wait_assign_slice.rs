@@ -125,7 +125,6 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -133,33 +132,11 @@ use nucleus_compiler::NameTables;
 use backend_common::multi_worker_walker::{render_worker_events, RendezvousId, WalkerCtx};
 use backend_common::render::EmitError;
 
+mod common;
+use common::make_minimal_tables_with_workers as make_minimal_tables;
+
 type RendezvousIds = BTreeMap<(DataId, SeqTag), RendezvousId>;
 type PairTiles = BTreeMap<(DataId, SeqTag), IterTile>;
-
-/// Build a minimal `(NameTables, NameSidecar)` with one data symbol
-/// `data_iv` named `data_name` typed as `dims` of `i32`, and two
-/// workers: `WorkerId(0) -> "w0"` (the sender) + `WorkerId(1) ->
-/// "host"` (the receiver in render_worker_events).
-fn make_minimal_tables(
-    data_id: DataId,
-    data_name: &str,
-    dims: Vec<usize>,
-) -> (NameTables, NameSidecar) {
-    let mut names = NameTables::default();
-    names.data.insert(data_id, data_name.to_string());
-    names.worker.insert(WorkerId(0), "w0".to_string());
-    names.worker.insert(WorkerId(1), "host".to_string());
-
-    let mut sidecar = NameSidecar::default();
-    sidecar.data_types.insert(
-        data_id,
-        ResolvedType {
-            scalar: ScalarType::I32,
-            dims,
-        },
-    );
-    (names, sidecar)
-}
 
 /// Build the rendezvous + pair-tile maps the walker reads. One
 /// entry: `(data, seq) -> rendezvous_id` and `(data, seq) -> tile`.
