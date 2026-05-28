@@ -71,8 +71,9 @@ pub struct LinkedIR {
     /// Convenience derivation of [`Self::placements`] — derived once
     /// here so downstream passes don't re-walk targets.
     pub kernel_workers: BTreeMap<String, WorkerEntity>,
-    /// For each data symbol that has at least one producer kernel,
-    /// the worker entity that produces it. A producer is the kernel
+    /// For each data symbol that has at least one producer (directly
+    /// or transitively inherited), the worker entity that produces it.
+    /// A producer is the kernel
     /// on the RHS of `D <-- Call(...)` in the algorithm, OR — for an
     /// identity copy `D <-- E` (bare-`DataRef` RHS, no kernel) — the
     /// producer transitively inherited from the RHS's source data via

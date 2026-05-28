@@ -141,7 +141,18 @@ fn propagate_copy_edges(
     // a changed-flag would also work, but the explicit bound makes
     // non-termination structurally impossible (monotone map growth
     // cannot exceed this many distinct insertions in practice).
+    //
+    // The `converged` guard below is load-bearing for SAFETY, not just
+    // termination: if the bound were ever too small the loop would exit
+    // with the fixpoint INCOMPLETE, which under-reports producers /
+    // consumers — the dangerous direction (a missed cross-worker edge
+    // is a silent missing-transfer / data race, not a loud error). The
+    // bound is exactly tight under single-assignment (PRD §6.2.1: copy
+    // edges form a forest, longest path <= edge count), so a non-
+    // convergence means that invariant was violated upstream; surface
+    // it as a debug panic rather than silently under-propagating.
     let max_passes = edges.len() + 1;
+    let mut converged = false;
     for _ in 0..max_passes {
         let mut changed = false;
         for edge in edges {
@@ -168,9 +179,16 @@ fn propagate_copy_edges(
             }
         }
         if !changed {
+            converged = true;
             break;
         }
     }
+    debug_assert!(
+        converged,
+        "propagate_copy_edges did not reach a fixpoint within {max_passes} passes; \
+         the copy-edge graph exceeded the single-assignment forest assumption \
+         (PRD §6.2.1) — producers/consumers may be under-propagated"
+    );
 }
 
 fn walk_stmts(

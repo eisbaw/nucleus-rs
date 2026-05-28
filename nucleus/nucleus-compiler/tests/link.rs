@@ -482,6 +482,61 @@ schedule for \"../prog.algo.nuc\" {
     assert_eq!(a_cons[0].display(), "{w0}");
 }
 
+#[test]
+fn identity_copy_long_chain_propagates_at_depth() {
+    // Deeper chain: `b <-- a; c <-- b; d <-- c` (3 copy edges). Exercises
+    // the fixpoint at a higher hop count than the 2-edge chain above and
+    // pins that the `max_passes = edges.len() + 1` ceiling is large
+    // enough to converge (the `converged` debug_assert in
+    // propagate_copy_edges fires under `just test` if the bound is ever
+    // too small — this test would then panic rather than silently
+    // under-propagate). Producer of `a` (host) must reach `d`, and `d`'s
+    // consumer (w0) must reach back to `a`.
+    let algo = algo_from_str(
+        "\
+const N : usize = 8;
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+data d : i32[N];
+kernel produce : ()       -> i32[N] effectful;
+kernel consume : (i32[N]) -> ()     effectful;
+
+a <-- produce();
+b <-- a;
+c <-- b;
+d <-- c;
+consume(d);
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host, w0 };
+    place produce on host;
+    place consume on w0;
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+    transfer d : sync;
+}
+",
+    );
+    let linked = link(algo, sched).expect("3-edge copy chain with transfers must link");
+    // Producer propagated three hops: a (host) -> b -> c -> d.
+    for sym in ["a", "b", "c", "d"] {
+        assert_eq!(
+            linked.data_producers[sym].display(),
+            "{host}",
+            "producer of `{sym}` must propagate from `a` (host)"
+        );
+    }
+    // Consumer (w0 on `d`) propagated back the full chain to `a`.
+    let a_cons: Vec<_> = linked.data_consumers["a"].iter().collect();
+    assert_eq!(a_cons.len(), 1);
+    assert_eq!(a_cons[0].display(), "{w0}");
+}
+
 // --------------------------------------------------------------------
 // Negative tests — one per LinkError variant
 // --------------------------------------------------------------------
