@@ -89,9 +89,7 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use pthreads_sync::render_single_worker_main_with_kernels_attr;
 
-mod encode;
 mod plan;
-mod walkers;
 
 use plan::Plan;
 

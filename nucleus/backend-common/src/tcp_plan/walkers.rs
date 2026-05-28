@@ -1,30 +1,37 @@
-//! Event-walk helpers (recurse into Loop bodies) — same shapes as
-//! pthreads-sync's multi_worker walkers (kept here because the
-//! transport-specific Plan differs; the *expression* rendering is the
-//! shared part and is NOT re-implemented).
+//! Event-walk analysis helpers shared by the sync-TCP multi-process
+//! backends (mp-tcp-bufsync, mp-tcp-poll). These walk the per-worker
+//! `Event` lists to derive cross-worker structure (xfer data, w2w
+//! relay hops, barrier participants) and to fail-loud on schedule
+//! shapes the synchronous host-relay cannot lower.
 //!
-//! Originally inline in `lib.rs` before the slice-4 split.
+//! Wire-primitive-agnostic in BEHAVIOUR: nonblocking-read does NOT
+//! change the order of frames on the wire — it only changes how the
+//! receiver waits for them — so the FIFO-shape hazards apply
+//! identically to both backends. The ONLY per-backend variation is
+//! the `EmitError::ContractGap` MESSAGE PREFIX (the backend name),
+//! routed through [`WirePrimitives::BACKEND_NAME`]. These messages are
+//! compiler-time diagnostics, NOT text emitted into generated code.
 //!
-//! `RelayHop` is the cycle-148 host-relay descriptor (TASK-0327). It is
-//! *produced* by `collect_w2w_pushes` (walker) and *consumed* by
-//! `plan::relay::Plan::render_relay_phase` (codegen). Co-located here
-//! with its producer rather than with its consumer because the producer
-//! is the only construction site; the consumer reads a borrowed view.
+//! Lifted from the two backends' verbatim-duplicate `walkers.rs`
+//! (TASK-0044.02.03). `RelayHop` is the host-relay descriptor (TASK-
+//! 0327): produced by [`collect_w2w_pushes`], consumed by the shared
+//! `Plan::render_relay_phase`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::event::{DataId, Event, SeqTag, SyncTag, WorkerId};
 
+use crate::tcp_plan::WirePrimitives;
 use crate::EmitError;
 
 /// TASK-0327 (cycle 148): one host-relay hop = "read seq N from
 /// data_<src>, write seq N to data_<dst>". `data` is the DataId for
 /// codegen comment only; the wire pass-through is bytes-verbatim.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RelayHop {
-    pub(crate) seq: SeqTag,
-    pub(crate) dst: WorkerId,
-    pub(crate) data: DataId,
+pub struct RelayHop {
+    pub seq: SeqTag,
+    pub dst: WorkerId,
+    pub data: DataId,
 }
 
 /// **Loop-body interaction with TASK-0330**: this walker recurses into
@@ -34,7 +41,7 @@ pub(crate) struct RelayHop {
 /// the w2w-Push-in-Loop shape upstream in `collect_w2w_pushes` before
 /// it would matter; this walker's set-union shape is incidentally
 /// robust independently.
-pub(crate) fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
+pub fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
     for e in events {
         match e {
             Event::Push { data, .. } | Event::Wait { data, .. } => {
@@ -87,31 +94,21 @@ pub(crate) fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
 /// uses `rposition` for the primary (last-Sync) and `position` for
 /// the fallback (first-Wait), reflecting the priority above.
 ///
-/// Acceptable cycle-148 limitation: any schedule with a host
-/// `Sync`-or-`Wait`-AFTER-the-w2w-relay-window structure that does
-/// not match this heuristic would deadlock or race; the 06/
-/// distributed2 reproducer + the existing 02-split (no w2w) cell +
-/// the 03-reduction/distributed cell (no w2w — blocked on
-/// host-excluding-barrier, separate gap) all satisfy it.
-///
-/// ## TASK-0329.01.01 (slice 1) — backend asymmetry NOT applied here
+/// ## Backend asymmetry NOT applied here
 ///
 /// The sibling `nucleus/backends/mp-tcp-event/src/multi_worker.rs`
-/// `relay_phase_insertion_point` was updated in slice 1 of
-/// TASK-0329.01.01 to walk worker events by `SyncTag` and return the
-/// FIRST Sync after which every non-host worker has finished w2w
-/// activity. That change is mp-tcp-event-only: on mp-tcp-event,
-/// constraint 3 above is INERT (per-seq demux removes the
-/// stream-race hazard), so the relay can splice before host's own
-/// w2w Waits without a race. Bufsync uses one ordered DATA stream
-/// per `(host, worker)` pair — moving the relay earlier here would
-/// race host's own reads on `data_<src>` (constraint 3 ACTIVE). The
-/// 05/distributed-2d wait-before-push hazard would, on bufsync, need
-/// either a threaded relay or a per-pair-multiplex change to the
-/// wire codec — neither in scope for slice 1. Per memory
+/// `relay_phase_insertion_point` was updated (TASK-0329.01.01 slice 1)
+/// to walk worker events by `SyncTag` and return the FIRST Sync after
+/// which every non-host worker has finished w2w activity. That change
+/// is mp-tcp-event-only: on mp-tcp-event constraint 3 above is INERT
+/// (per-seq demux removes the stream-race hazard), so the relay can
+/// splice before host's own w2w Waits without a race. The two
+/// sync-TCP backends here use one ordered DATA stream per `(host,
+/// worker)` pair — moving the relay earlier would race host's own
+/// reads on `data_<src>` (constraint 3 ACTIVE). Per memory
 /// `project-mp-tcp-event-vs-bufsync-safety-profile` the per-seq vs
 /// FIFO distinction is load-bearing for this asymmetry.
-pub(crate) fn relay_phase_insertion_point(events: &[Event]) -> usize {
+pub fn relay_phase_insertion_point(events: &[Event]) -> usize {
     if let Some(idx) = events.iter().rposition(|e| matches!(e, Event::Sync { .. })) {
         return idx;
     }
@@ -135,71 +132,23 @@ pub(crate) fn relay_phase_insertion_point(events: &[Event]) -> usize {
 /// nested iteration order). Fail-loud at codegen > silent miscompile or
 /// runtime deadlock, per [[feedback-panic-not-diagnostic-recurring]].
 ///
-/// In-tree schedules today have all w2w Pushes at TOP LEVEL — verified
-/// by `host_relay_emit` and the cycle-148 reviewer audit — so this
-/// guard is dormant on the current matrix; it pins the contract for a
-/// future schedule shape, with test pins in
-/// `nucleus/backends/mp-tcp-bufsync/tests/loop_body_w2w_push.rs`.
-///
-/// **TASK-0329.01.02 cycle 163 (slice 2) AC#5 bufsync audit + cycle-166
-/// reframe — guard stays as-is on bufsync; pass NOT mirrored:**
-/// the compiler-level `apply_host_data_relay_inject` pass that lifts
-/// this guard on mp-tcp-event (sibling backend) is intentionally NOT
-/// wired into the driver for mp-tcp-bufsync. Reasoning:
-/// (a) mp-tcp-bufsync's 09/13 cells are capability-gated on
-///     async/buffer/event so behavioral verification of any pass
-///     effect on bufsync would be impossible (capability-skip happens
-///     BEFORE codegen);
-/// (b) bufsync's per-pair FIFO single stream + `wire::read_msg_expect`
-///     panic-on-seq-mismatch (memory
-///     `project-mp-tcp-event-vs-bufsync-safety-profile`) has a
-///     different failure profile than mp-tcp-event's per-seq-demux;
-///     enabling the pass on bufsync without a runtime verification
-///     path is a defensible-gain-of-zero risk.
-///
-/// **Residual safety-net scope (cycle 166 paired with mp-tcp-event
-/// sibling).** Because the pass is NOT enabled on bufsync, this
-/// guard's reachable shape set is BROADER than the sibling's: every
-/// Loop-body w2w `Push` reaches this guard, whereas on mp-tcp-event
-/// only the cycle-163b residual classes do. For cross-backend
-/// vocabulary parity (so a future reviewer can grep both sibling
-/// docstrings consistently), those classes are:
-/// - **(R-bare)** A bare `Xfer` outside any parent `Sequence` (would
-///   only matter on this backend if the pass were eventually enabled
-///   here AND `transfer_inject`'s contract weakened).
-/// - **(R-singleton)** A `Push`/`Wait` without its matching sibling
-///   endpoint in the same `Sequence` (same conditional applies).
-///
-/// On bufsync today the operative class is simply "any Loop-body w2w
-/// Push" — the residuals (R-bare)/(R-singleton) become operative only
-/// if a future cycle enables the pass here.
-///
-/// **Affirmative structural finding (cycle-163b architect P2.1
-/// fold-back):** the B2 rewrite splits one non-host pair `(w_src,
-/// w_dst)` into two pairs `(w_src, host)` and `(host, w_dst)`. Each
-/// resulting hop is a single-pair stream with its own monotonically-
-/// allocated `seq` (from `max_existing_seq + 1`). The per-pair
-/// FIFO invariant `wire::read_msg_expect` relies on is therefore
-/// preserved per resulting hop — the pass does NOT introduce a
-/// latent seq-mismatch panic surface on future capability-compatible
-/// schedules. Skipping the pass on bufsync today is a
-/// gain-of-zero-for-cells-that-can't-run risk-mitigation choice, not
-/// a "the pass would corrupt bufsync" structural barrier.
-///
-/// If a future cycle relaxes bufsync's capability gate (or the
-/// async/buffer/event semantics are mirrored to a poll/sync transport),
-/// re-evaluate whether to enable `apply_host_data_relay_inject` on
-/// bufsync. The pass itself is backend-agnostic — only the driver
-/// wiring is conditional.
-pub(crate) fn collect_w2w_pushes(
+/// In-tree schedules today have all w2w Pushes at TOP LEVEL on both
+/// sync-TCP backends, so this guard is dormant on the current matrix;
+/// it pins the contract for a future schedule shape. The mp-tcp-event
+/// sibling carries a compiler-pass remediation
+/// (`apply_host_data_relay_inject`) wired only for mp-tcp-event per the
+/// per-pair FIFO constraint that makes splice-point lift unsafe on the
+/// sync-TCP backends (see memory
+/// `project-mp-tcp-event-vs-bufsync-safety-profile`).
+pub fn collect_w2w_pushes<W: WirePrimitives>(
     events: &[Event],
     host: WorkerId,
     out: &mut Vec<RelayHop>,
 ) -> Result<(), EmitError> {
-    collect_w2w_pushes_inner(events, host, false, out)
+    collect_w2w_pushes_inner::<W>(events, host, false, out)
 }
 
-fn collect_w2w_pushes_inner(
+fn collect_w2w_pushes_inner<W: WirePrimitives>(
     events: &[Event],
     host: WorkerId,
     inside_loop: bool,
@@ -210,7 +159,7 @@ fn collect_w2w_pushes_inner(
             Event::Push { dst, data, seq, .. } if *dst != host => {
                 if inside_loop {
                     return Err(EmitError::ContractGap(format!(
-                        "mp-tcp-bufsync: TASK-0330 defensive guard — \
+                        "{backend}: TASK-0330 defensive guard — \
                          worker-to-worker Push (data={data:?}, dst={dst:?}, \
                          seq={seq:?}) found INSIDE an Event::Loop body. The \
                          cycle-148 host-relay (TASK-0327) emits the relay \
@@ -225,12 +174,13 @@ fn collect_w2w_pushes_inner(
                          TASK-0329.01.02 cycle 163 + TASK-0329.01.02.01 \
                          cycle 165) wired only for mp-tcp-event per the \
                          per-pair FIFO constraint that makes splice-point \
-                         lift unsafe on bufsync (see memory \
+                         lift unsafe on the sync-TCP backends (see memory \
                          `project-mp-tcp-event-vs-bufsync-safety-profile`). \
-                         If a future bufsync-capable schedule needs the \
+                         If a future sync-TCP-capable schedule needs the \
                          equivalent, file a follow-up; the pass itself is \
                          backend-agnostic at the ACFG layer and would only \
-                         require driver-side wiring + a fresh FIFO audit."
+                         require driver-side wiring + a fresh FIFO audit.",
+                        backend = W::BACKEND_NAME,
                     )));
                 }
                 out.push(RelayHop {
@@ -240,7 +190,7 @@ fn collect_w2w_pushes_inner(
                 });
             }
             Event::Loop { body, .. } => {
-                collect_w2w_pushes_inner(body, host, true, out)?;
+                collect_w2w_pushes_inner::<W>(body, host, true, out)?;
             }
             _ => {}
         }
@@ -254,20 +204,13 @@ fn collect_w2w_pushes_inner(
 /// runtime timeout. See the call site in `Plan::build` for the full
 /// design narrative; this is the conservative-but-sound implementation.
 ///
-/// Sibling: the same function exists in
-/// `nucleus/backends/mp-tcp-event/src/multi_worker.rs` with the same
-/// shape + a backend-specific message prefix. Per the cycle-148/149
-/// paired-lift discipline ([[feedback-silent-sibling-defect]] 10th
-/// firing), the two implementations were added in the same cycle.
-///
-/// Cycle-151 architect P1 fold-back: this function was originally
-/// placed BEFORE `collect_w2w_pushes` with no blank-line separator,
-/// which caused `collect_w2w_pushes`'s cycle-148 docstring to be
-/// silently absorbed into this docstring (a paired-lift sibling-
-/// defect — the mp-tcp-event sibling avoided it by accident of file
-/// structure). Folded back by moving this function AFTER
-/// `collect_w2w_pushes`, restoring the docstring boundary.
-pub(crate) fn detect_wait_before_push_hazard(
+/// On both sync-TCP backends the deadlock surface is identical because
+/// the wire ordering is FIFO per-pair (nonblocking vs blocking read
+/// does not change the order of frames on the wire — only how the
+/// receiver waits). The mp-tcp-event-only `apply_safe_push_reorder`
+/// lift is NOT applied here; the guard rejects any wait-before-push
+/// shape unconditionally on both sync-TCP backends.
+pub fn detect_wait_before_push_hazard<W: WirePrimitives>(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     host: WorkerId,
 ) -> Result<(), EmitError> {
@@ -283,17 +226,14 @@ pub(crate) fn detect_wait_before_push_hazard(
         // close a deadlock cycle from its own side. Pure-consumer
         // workers are SAFE under host-relay.
         //
-        // Cycle-151 architect P2 note (RESOLVED by TASK-0330): this
-        // precondition scans only TOP-LEVEL events for w2w Pushes; the
-        // `collect_w2w_pushes` helper recurses into Loop bodies. A
-        // worker with Wait at top level + Push inside a Loop body
-        // would be a false-negative for THIS detector — but TASK-0330
-        // now fires a fail-loud ContractGap in `collect_w2w_pushes` for
-        // any w2w Push found INSIDE a Loop body, so the Loop-body
-        // hazard is rejected later in the pipeline (in
-        // `render_relay_phase` rather than here in `Plan::build`). The
-        // composition is sound: a Loop-body w2w Push CANNOT silently
-        // reach codegen on either backend.
+        // This precondition scans only TOP-LEVEL events for w2w
+        // Pushes; the `collect_w2w_pushes` helper recurses into Loop
+        // bodies. A worker with Wait at top level + Push inside a Loop
+        // body would be a false-negative for THIS detector — but
+        // TASK-0330 fires a fail-loud ContractGap in
+        // `collect_w2w_pushes` for any w2w Push found INSIDE a Loop
+        // body, so the Loop-body hazard is rejected later in the
+        // pipeline. A Loop-body w2w Push CANNOT silently reach codegen.
         let has_w2w_push = events
             .iter()
             .any(|e| matches!(e, Event::Push { dst, .. } if *dst != host));
@@ -311,25 +251,26 @@ pub(crate) fn detect_wait_before_push_hazard(
                 // blocked at this Wait).
                 Event::Wait { src, .. } if *src != host => {
                     return Err(EmitError::ContractGap(format!(
-                        "mp-tcp-bufsync: worker {w:?} has a worker-to-worker \
+                        "{backend}: worker {w:?} has a worker-to-worker \
                          Wait (from src {src:?}) at top level before any \
                          worker-to-worker Push. Cycle-148's synchronous \
                          host-relay would deadlock on the circular seq \
-                         dependency: host's wire::read_msg_expect blocks \
-                         for this worker's first Push; this worker blocks \
-                         at this Wait for host's relay of the seq from \
-                         {src:?}. TASK-0332 cycle 151 filed this defensive \
-                         guard. Note: TASK-0329.01.01 (slice-1 Option D \
-                         push-before-wait reorder) is wired on mp-tcp-event \
-                         ONLY — bufsync's per-pair FIFO constraint 3 (per \
+                         dependency: host's read blocks for this worker's \
+                         first Push; this worker blocks at this Wait for \
+                         host's relay of the seq from {src:?}. TASK-0332 \
+                         cycle 151 filed this defensive guard. Note: the \
+                         push-before-wait reorder pass \
+                         (apply_safe_push_reorder, TASK-0329.01.01 slice-1 \
+                         Option D) is wired on mp-tcp-event ONLY — the \
+                         sync-TCP backends' per-pair FIFO constraint 3 (per \
                          cycle-148 design + memory \
                          `project-mp-tcp-event-vs-bufsync-safety-profile`) \
-                         makes the splice-point lift unsafe on this \
-                         backend, so the reorder pass cannot be enabled \
-                         here. If a future capability lift exposes a \
-                         bufsync-compatible wait-before-push schedule, a \
-                         backend-specific architectural fix would be \
-                         needed."
+                         makes the splice-point lift unsafe here, so the \
+                         reorder pass cannot be enabled. If a future \
+                         capability lift exposes a sync-TCP-compatible \
+                         wait-before-push schedule, a backend-specific \
+                         architectural fix would be needed.",
+                        backend = W::BACKEND_NAME,
                     )));
                 }
                 // Non-w2w events (Push/Wait with host as the other
@@ -349,7 +290,7 @@ pub(crate) fn detect_wait_before_push_hazard(
 /// the contract-carried [`SyncTag`] (TASK-0172) — no running index,
 /// no fallibility (every tag is an independent barrier; nothing to
 /// validate / reject here any more).
-pub(crate) fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
+pub fn collect_barriers_by_tag<F>(events: &[Event], f: &mut F)
 where
     F: FnMut(SyncTag, &BTreeSet<WorkerId>),
 {
@@ -363,11 +304,3 @@ where
         }
     }
 }
-
-// TASK-0343.05 cycle 190: `collect_pre_init_sets` lifted to
-// `backend_common::multi_worker_walker::collect_pre_init_sets` — the
-// other 3 tier-1 backends already route through it. Local duplicate
-// removed; the sole caller (plan/relay.rs) now imports the shared
-// helper directly. Closes the cycle-189 architect P3.1 silent-sibling
-// risk (a future fix to the shared helper would otherwise have
-// silently skipped mp-tcp-bufsync).

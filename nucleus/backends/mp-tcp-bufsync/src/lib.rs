@@ -102,9 +102,7 @@ pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 use pthreads_sync::render_single_worker_main_with_kernels_attr;
 
-mod encode;
 mod plan;
-mod walkers;
 
 use plan::Plan;
 

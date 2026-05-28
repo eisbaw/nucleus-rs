@@ -1,5 +1,5 @@
-//! `Plan::render_events` — the per-worker event-walk codegen.
-//! Originally inline in `lib.rs` before the slice-4 split.
+//! `Plan::render_events` — the per-worker event-walk codegen for the
+//! shared sync-TCP multi-process substrate.
 //!
 //! Walks the projection's `Event` list emitting Rust for each Fire /
 //! Loop / Sync / Push / Wait; recurses into Loop bodies with a child
@@ -7,26 +7,32 @@
 //! strip-mined block-tag loops, partition-slice override, reuse-codegen
 //! buffer prologue, check-frame instrumentation, and host-mediated
 //! barrier emission are all dispatched here.
+//!
+//! The ONLY per-backend variation is the three emitted wire calls
+//! (`read_msg_expect` / `write_msg` / `barrier_cross`), routed through
+//! [`WirePrimitives`]: mp-tcp-bufsync emits the blocking form,
+//! mp-tcp-poll appends `_poll`. Every other primitive (loop header
+//! rebinding, partition slice override, reuse codegen, check-frame
+//! instrumentation, host-mediated barrier dispatch, fire arg/output
+//! rendering) is reused VERBATIM via the shared backend-common helpers
+//! — there is no per-backend renderer to drift. Lifted from the two
+//! backends' verbatim-duplicate `plan/events.rs` (TASK-0044.02.03).
 
 use std::fmt::Write as _;
 
-use backend_common::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
-use backend_common::multi_worker_walker::{
-    compute_block_tag_abs_exprs, render_wait_assign, WalkerCtx,
-};
-use backend_common::render::{
+use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
+use crate::multi_worker_walker::{compute_block_tag_abs_exprs, render_wait_assign, WalkerCtx};
+use crate::render::{
     render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
     render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
     RenderCtxPub,
 };
+use crate::tcp_plan::encode::{decode_expr, encode_expr};
+use crate::tcp_plan::{Plan, WirePrimitives};
+use crate::EmitError;
 use nucleus_compiler::event::{Event, IterVar, WorkerId};
 
-use crate::encode::{decode_expr, encode_expr};
-use crate::EmitError;
-
-use super::Plan;
-
-impl Plan<'_> {
+impl<W: WirePrimitives> Plan<'_, W> {
     /// `enclosing` is the iter-var of the immediately-enclosing
     /// `Event::Loop` (the tile loop, when the child is a strip-mined
     /// inner-block loop with `block_tag.is_partial == false`). `None`
@@ -39,7 +45,7 @@ impl Plan<'_> {
     /// with genuine per-call inputs. Local allow (same rationale as
     /// the shared `multi_worker_walker::render_worker_events_inner`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_events(
+    pub fn render_events(
         &self,
         events: &[Event],
         out: &mut String,
@@ -98,52 +104,29 @@ impl Plan<'_> {
                     })?;
 
                     // Per-occurrence absolute-index rebinding (TASK-0181;
-                    // mirrors pthreads-sync single-worker TASK-0180). Now
-                    // delegates to the SHARED
-                    // `backend_common::multi_worker_walker::
-                    // render_block_tag_loop_header` (TASK-0253) — the same
-                    // helper the pthreads-sync / pthreads-async multi-worker
-                    // walker calls. The strip-mined inner loop HEADER and
-                    // the rebound child `RenderCtxPub` (with `abs_subst`
-                    // extended so every Fire arg / index / inner-bound site
-                    // substitutes — NOT just the header; the load-bearing
-                    // TASK-0181 review-gate finding) are emitted by the
-                    // helper. This arm owns only the body recursion through
-                    // mp-tcp-bufsync's per-backend substrate (TCP
-                    // `ctrl_<peer>` / `sock_<peer>` barriers + host-vs-
-                    // worker dispatch in `render_worker_program`) and the
-                    // closing `}`. The previous arrangement (TASK-0181
-                    // cycle 73) duplicated the rebinding arithmetic
-                    // across two files; with this delegation, the
-                    // arithmetic lives in exactly one place across all
-                    // MULTI-worker backends (cycle-75 review hardening:
-                    // a separate sibling copy persists on the
-                    // pthreads-sync SINGLE-worker render path, which
-                    // uses backend-private RenderCtx — see the helper's
-                    // doc-comment for the RenderCtx <-> RenderCtxPub
-                    // unification note).
+                    // mirrors pthreads-sync single-worker TASK-0180).
+                    // Delegates to the SHARED
+                    // `multi_worker_walker::compute_block_tag_abs_exprs`
+                    // (TASK-0253) so the rebinding arithmetic lives in
+                    // exactly one place across all MULTI-worker backends.
+                    // This arm owns only the body recursion through the
+                    // sync-TCP per-backend substrate (TCP `ctrl_<peer>` /
+                    // `sock_<peer>` barriers + host-vs-worker dispatch in
+                    // `render_worker_program`) and the closing `}`.
                     if let Some(tag) = block_tag {
                         // TASK-0284 cycle 107: parity with the shared
                         // `multi_worker_walker` strip-mine arm reuse
                         // codegen (TASK-0270 cycle 104). Buffer decls +
                         // prologue MUST live OUTSIDE the for-header (the
                         // buffer must persist across the inner loop's
-                        // iterations), so the previous wholesale
-                        // delegation to `render_block_tag_loop_header`
-                        // (which writes the header itself) is split: use
-                        // `compute_block_tag_abs_exprs` for the pure
-                        // expressions (returns abs + structurally-built
-                        // strip_lo_expr — NO textual replace, mirrors
-                        // the cycle-103 fix in pthreads-sync per
-                        // `feedback-textual-replace-codegen-unsafe`),
-                        // emit buf decls at the OUTER pad, write the
-                        // for-header inline, then emit per-iter update
+                        // iterations), so use `compute_block_tag_abs_exprs`
+                        // for the pure expressions (returns abs +
+                        // structurally-built strip_lo_expr — NO textual
+                        // replace, per `feedback-textual-replace-codegen-
+                        // unsafe`), emit buf decls at the OUTER pad, write
+                        // the for-header inline, then emit per-iter update
                         // + recurse into body with the child context
                         // carrying BOTH abs_subst AND reuse_active.
-                        // `render_block_tag_loop_header` is still
-                        // used by callers that don't want reuse codegen
-                        // (none currently — pthreads-async / mp-tcp-event
-                        // moved to the same pattern in cycle 104).
                         let var_string = var.clone();
                         let (abs, strip_lo_expr) =
                             compute_block_tag_abs_exprs(*iter_var, tag, enclosing, ctx)?;
@@ -235,8 +218,8 @@ impl Plan<'_> {
                     // the for-header; per-iter update + body recursion
                     // inside the loop with a child context carrying the
                     // reuse_active map. NO-OP when the iv carries no
-                    // reuse (preserves byte-identicality on every
-                    // mp-tcp-bufsync cell shipped pre-TASK-0284).
+                    // reuse (preserves byte-identicality on every cell
+                    // shipped pre-TASK-0284).
                     let reuse_groups =
                         render_reuse_buf_decls_pub(out, indent, *iter_var, var, &lo, body, ctx)?;
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
@@ -247,18 +230,7 @@ impl Plan<'_> {
                     // preserved: the emitted bytes on the success path
                     // are unchanged (the instant is consumed locally,
                     // never written to wire / stdout), and panic exits
-                    // with rustc's standard code 101 — the cross-backend
-                    // differential treats "exit 101 + empty stdout" as
-                    // an assertion signal, NOT a corrupt-output false
-                    // positive.
-                    //
-                    // Test coverage: the emit-string pattern is pinned
-                    // by `mp_tcp_bufsync_emit_includes_panic_instrumentation_on_check_loop`
-                    // (TASK-0052.02 review-gate finding #2). No tier-1
-                    // e2e cell uses `check loop` today; the
-                    // string-assertion test is the lower-bound
-                    // verification that this backend emits the
-                    // contracted shape.
+                    // with rustc's standard code 101.
                     let body_indent = indent + 1;
                     let body_pad = "    ".repeat(body_indent);
                     // TASK-0284 cycle 107: marker + per-iter update at
@@ -332,11 +304,8 @@ impl Plan<'_> {
                             nucleus_compiler::event::ViolationKind::Log => {
                                 // TASK-0052.04. eprintln per violation;
                                 // execution continues. Mirrors the
-                                // pthreads-sync emit verbatim — the
-                                // cross-backend differential test pins
-                                // this in
-                                // `mp_tcp_bufsync_emit_includes_log_eprintln_on_check_loop`.
-                                // TASK-0222: shared template — see emit_log_branch.
+                                // pthreads-sync emit verbatim. TASK-0222:
+                                // shared template — see emit_log_branch.
                                 emit_log_branch(
                                     out,
                                     &body_pad,
@@ -347,7 +316,7 @@ impl Plan<'_> {
                             nucleus_compiler::event::ViolationKind::Count => {
                                 // TASK-0052.04. The static counter +
                                 // Drop guard are emitted at file scope
-                                // by `render_worker_program` above
+                                // by `render_worker_program`
                                 // (`collect_count_check_frames` walks
                                 // the SAME events). Relaxed ordering is
                                 // sufficient: the fetch_add and the
@@ -388,7 +357,8 @@ impl Plan<'_> {
                     // host only. 2-party (tier-1) is the trivial
                     // case. The `barrier_cross` helper is
                     // send-then-recv on both ends — safe over a
-                    // duplex stream for a 16-byte token.
+                    // duplex stream for a 16-byte token. The blocking
+                    // vs `_poll` form is `W::barrier_cross_call`.
                     if is_host {
                         let mut peers: Vec<WorkerId> = participants
                             .iter()
@@ -398,10 +368,12 @@ impl Plan<'_> {
                         peers.sort_unstable();
                         for p in peers {
                             let cv = self.ctrl_var(true, p);
-                            writeln!(out, "{pad}wire::barrier_cross(&mut {cv}, {bid});").ok();
+                            let call = W::barrier_cross_call(&cv, bid);
+                            writeln!(out, "{pad}{call};").ok();
                         }
                     } else {
-                        writeln!(out, "{pad}wire::barrier_cross(&mut ctrl_host, {bid});").ok();
+                        let call = W::barrier_cross_call("ctrl_host", bid);
+                        writeln!(out, "{pad}{call};").ok();
                     }
                 }
                 Event::Push { data, dst, seq, .. } => {
@@ -422,12 +394,8 @@ impl Plan<'_> {
                     // (data,ctrl)-pair-per-(host,worker) topology.
                     let cv = self.data_conn_var(worker, is_host, *dst)?;
                     let to = self.worker_name(*dst);
-                    writeln!(
-                        out,
-                        "{pad}wire::write_msg(&mut {cv}, {}, &{enc}); // send `{name}` to {to}",
-                        seq.0
-                    )
-                    .ok();
+                    let call = W::write_msg_call(&cv, seq.0, &enc);
+                    writeln!(out, "{pad}{call}; // send `{name}` to {to}").ok();
                 }
                 Event::Wait { data, src, seq, .. } => {
                     let _xid = self.xfer_ids.get(data).ok_or_else(|| {
@@ -448,46 +416,27 @@ impl Plan<'_> {
                     // overlapping-write accumulator classification. Same
                     // shape as the shared walker's Wait emit (see
                     // multi_worker_walker/event_walker.rs Event::Wait
-                    // branch); mp-tcp-bufsync bypasses the walker but
-                    // consumes the same accumulate set populated at
+                    // branch); the sync-TCP backends bypass the walker
+                    // but consume the same accumulate set populated at
                     // Plan::build time and the same render_wait_assign
                     // helper.
                     let accumulate = self.accumulate_waits.contains(&(worker, *data, *seq));
                     // TASK-0296 cycle 116: route Wait gather through the
-                    // shared backend-common slice-paste helper. Before
-                    // this, the host-side emit was `{name} = {dec};`
-                    // (whole-array overwrite) regardless of the pair's
-                    // tile — partition-band gathers silently lost their
-                    // slice, e.g. 06-separable-filter/distributed × mp-
-                    // tcp-bufsync overwrote `tmp` per recv instead of
-                    // pasting each worker's hy row-band. The shared
-                    // helper dispatches whole-array vs 1D leading-axis
-                    // vs 2D row-loop slice-paste from the IterTile;
-                    // pthreads-async + mp-tcp-event already went via
-                    // this helper (silent-sibling defect closure for
-                    // mp-tcp-bufsync).
-                    // TASK-0349 cycle 220: bufsync wraps the assign in
-                    // `{ let __buf = ...; {assign} }` to scope __buf
-                    // for the decode_expr. A `let {name} = ...;` emit
-                    // would block-scope the binding to the wrap and
-                    // leave the outer-scope `{name}` unbound at the
-                    // next read — so pass the empty let-at-wait set
-                    // and keep the assign as `{name} = {dec};`. The
-                    // `unused_assignments` warning that motivated
-                    // TASK-0349 is already suppressed for the
-                    // emitted bufsync main via the per-main
+                    // shared backend-common slice-paste helper. The
+                    // shared helper dispatches whole-array vs 1D
+                    // leading-axis vs 2D row-loop slice-paste from the
+                    // IterTile.
+                    //
+                    // TASK-0349 cycle 220: the assign is wrapped in
+                    // `{ let __buf = ...; {assign} }` to scope __buf for
+                    // the decode_expr. Passing the empty let-at-wait set
+                    // keeps the assign as `{name} = {dec};` (a `let
+                    // {name} = ...;` emit would block-scope the binding
+                    // to the wrap and leave the outer-scope `{name}`
+                    // unbound at the next read). The `unused_assignments`
+                    // warning is suppressed via the per-main
                     // `#[allow(...unused_assignments...)]` attribute
-                    // (worker_program.rs:121-122 + accompanying
-                    // rationale at :114-118: "intentional — pre-init
-                    // sizes the slot; the value is the received
-                    // one"), so the cosmetic motivation does not
-                    // surface here regardless of the let-at-wait
-                    // optimization. The wrap shape itself does NOT
-                    // protect from the warning — rustc still emits
-                    // it on nested-block reassignment when the
-                    // outer `let mut` allow is absent (cycle-220b
-                    // empirical correction of an architect-flagged
-                    // P1.1 mechanism-wrong doc-lie).
+                    // emitted by `render_worker_program`.
                     let assign = render_wait_assign(
                         self.sidecar,
                         &self.pair_tiles,
@@ -498,11 +447,10 @@ impl Plan<'_> {
                         accumulate,
                         WalkerCtx::empty_let_at_wait_set(),
                     )?;
+                    let read_call = W::read_msg_expect_call(&cv, seq.0);
                     writeln!(
                         out,
-                        "{pad}{{ let __buf = wire::read_msg_expect(&mut {cv}, {}); \
-                         {assign} }} // recv `{name}` from {from}",
-                        seq.0
+                        "{pad}{{ let __buf = {read_call}; {assign} }} // recv `{name}` from {from}",
                     )
                     .ok();
                 }

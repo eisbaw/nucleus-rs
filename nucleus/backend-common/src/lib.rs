@@ -47,12 +47,20 @@
 //!   cycle 164 lift; retires the
 //!   `feedback-driver-must-mirror-backend-election-exactly`
 //!   recurrence surface on the canonical path.
+//! - [`tcp_plan`] — the shared multi-process emit `Plan` substrate for
+//!   the sync-TCP backends (mp-tcp-bufsync, mp-tcp-poll), parameterised
+//!   over the `WirePrimitives` trait (blocking vs nonblocking-poll wire
+//!   primitives). TASK-0044.02.03 lift: the ~1.4k LoC of plan / walkers
+//!   / encode logic that the two sync-TCP backends had duplicated
+//!   verbatim now lives here; each backend supplies only a
+//!   `WirePrimitives` impl + a `Plan` type alias.
 
 pub mod check_frame;
 pub mod host_election;
 pub mod multi_worker_walker;
 pub mod project_skeleton;
 pub mod render;
+pub mod tcp_plan;
 
 // Convenience top-level re-exports. Backends typically import the
 // specific items they need from `backend_common::{check_frame, render,

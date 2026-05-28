@@ -1,28 +1,25 @@
-//! Wire-encoding helpers for mp-tcp-poll.
+//! Wire-encoding helpers for the sync-TCP multi-process backends.
 //!
-//! Same wire-protocol-v0 codec as mp-tcp-bufsync; the only difference
-//! between the two backends is the WAIT primitive (nonblocking-poll vs
-//! blocking-recv), not the on-wire byte format. `scalar_width` /
-//! `scalar_fn_suffix` map [`nucleus_compiler::algo::ScalarType`] to its
-//! byte width and `wire::enc_*` / `wire::dec_*` suffix respectively;
-//! `encode_expr` / `decode_expr` build the call expression against
-//! `wire.rs` that the emitter splices into Push/Wait sites. Encoder is
-//! fixed at compile time from the sidecar (TASK-0037 AC#3) —
-//! sender/receiver agree by construction.
+//! `scalar_width` / `scalar_fn_suffix` map [`nucleus_compiler::algo::
+//! ScalarType`] to its byte width and `wire::enc_*` / `wire::dec_*`
+//! suffix respectively; `encode_expr` / `decode_expr` build the call
+//! expression against the generated crate's `wire.rs` that the emitter
+//! splices into Push/Wait sites. The encoder is fixed at compile time
+//! from the sidecar (TASK-0037 AC#3) — sender/receiver agree by
+//! construction.
 //!
-//! This file is duplicate-by-design with
-//! `nucleus/backends/mp-tcp-bufsync/src/encode.rs` (cycle 195,
-//! TASK-0044.02.02). The duplication is intentional pending a separate
-//! lift cycle (filed as TASK-0044.02.02-followup-shared-plan-crate)
-//! that promotes the entire `plan/` substrate to a shared crate when
-//! the duplication has been proven painful by two consumers — same
-//! "fail fast, lift later" precedent as the original backend-common
-//! lift (TASK-0244).
+//! Wire-primitive-agnostic: the on-wire byte format is identical for
+//! the blocking (mp-tcp-bufsync) and the nonblocking-poll
+//! (mp-tcp-poll) transports — only the WAIT primitive differs, and
+//! that lives in [`super::WirePrimitives`], not here. Lifted from the
+//! two backends' verbatim-duplicate `encode.rs` (TASK-0044.02.03).
 
+use crate::render::rust_scalar_type_pub;
 use crate::EmitError;
-use backend_common::render::rust_scalar_type_pub;
 
-pub(crate) fn scalar_width(t: &nucleus_compiler::algo::ScalarType) -> usize {
+/// Byte width of a scalar on the only supported (x86-64 loopback)
+/// target. Drives SO_*BUF sizing in `run.sh`.
+pub fn scalar_width(t: &nucleus_compiler::algo::ScalarType) -> usize {
     use nucleus_compiler::algo::ScalarType::*;
     match t {
         I8 | U8 | Bool => 1,
@@ -37,7 +34,7 @@ pub(crate) fn scalar_width(t: &nucleus_compiler::algo::ScalarType) -> usize {
 /// `wire::enc_*` / `wire::enc_vec(...)` call for a value named `name`
 /// of resolved type `ty`. Encoder is fixed at compile time from the
 /// sidecar (TASK-0037 AC#3) — sender/receiver agree by construction.
-pub(crate) fn encode_expr(
+pub fn encode_expr(
     name: &str,
     ty: &nucleus_compiler::algo::ResolvedType,
 ) -> Result<String, EmitError> {
@@ -55,7 +52,7 @@ pub(crate) fn encode_expr(
 }
 
 /// Expression that decodes `__buf` back into the value's Rust type.
-pub(crate) fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<String, EmitError> {
+pub fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<String, EmitError> {
     use nucleus_compiler::algo::ScalarType::Bool;
     let s = scalar_fn_suffix(&ty.scalar);
     if ty.is_scalar() {
@@ -68,7 +65,8 @@ pub(crate) fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<S
     }
 }
 
-pub(crate) fn scalar_fn_suffix(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
+/// `wire::enc_*` / `wire::dec_*` function-name suffix for a scalar.
+pub fn scalar_fn_suffix(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
     use nucleus_compiler::algo::ScalarType::*;
     match t {
         I8 => "i8",
