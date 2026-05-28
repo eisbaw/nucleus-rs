@@ -174,23 +174,35 @@ impl SkipEntry {
     }
 }
 
-/// A tier-1 milestone (PRD §11). Parsed from the `milestone` string
+/// A project milestone (PRD §11). Parsed from the `milestone` string
 /// on every `[[required]]`/`[[skip]]` entry and from the
 /// `--milestone` CLI flag. Ordering is the cumulative-gate ordering:
 /// `M1 < M2 < M3`, so `--milestone M3` runs the M1 ∪ M2 ∪ M3 cells.
 ///
-/// New milestones are added here as the project advances; an
-/// unrecognised tag is a typed error (never a panic, never a silent
+/// The accepted range is the full PRD §11 enum M0..M11: M0..M6 are the
+/// tier-1 milestones the matrix gates today; M7..M11 are the future
+/// tier-2 (M7/M8 MPI) and tier-3 (M9 embedded skeleton, M10 STM32H7
+/// Renode, M11 multi-MCU Renode) milestones. A `[[skip]]` entry
+/// deferred to a future milestone tags itself with that milestone
+/// (e.g. the embedded_multimcu cells tag M11) so "what is deferred to
+/// M<k>" stays greppable on the `milestone` field — TASK-0346.
+///
+/// An unrecognised tag is a typed error (never a panic, never a silent
 /// default) — a mis-typed milestone must not silently delete a cell
 /// from a gating subset, which is the TASK-0163 failure class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Milestone(u8);
 
 impl Milestone {
-    /// Parse "M<k>" (k = 0..=6 for tier-1; the manifest only uses
-    /// M1..M3 today, but the parser accepts the full tier-1 range so
-    /// adding an M4+ cell does not require a code change here). Any
-    /// other shape is a typed error.
+    /// The highest milestone the parser accepts — the PRD §11 ceiling
+    /// (M11, multi-MCU Renode). Bump this when the PRD adds a tier.
+    const MAX: u8 = 11;
+
+    /// Parse "M<k>" (k = 0..=11, the full PRD §11 enum). The matrix
+    /// only gates M1..M6 today, but the parser accepts the future
+    /// tier-2/3 range (M7..M11) so a `[[skip]]`/`[[required]]` entry
+    /// can tag its real deferral milestone without a code change here.
+    /// Any other shape is a typed error.
     fn parse(s: &str) -> Result<Milestone, String> {
         let rest = s
             .strip_prefix('M')
@@ -198,9 +210,9 @@ impl Milestone {
         let k: u8 = rest
             .parse()
             .map_err(|_| format!("milestone `{s}` is not of the form M<k> (e.g. M1, M2, M3)"))?;
-        if k > 6 {
+        if k > Self::MAX {
             return Err(format!(
-                "milestone `{s}` is out of the tier-1 range M0..M6 (PRD §11)"
+                "milestone `{s}` is out of the PRD §11 range M0..M11 (M0..M6 tier-1, M7..M11 tier-2/3)"
             ));
         }
         Ok(Milestone(k))

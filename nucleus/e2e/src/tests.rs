@@ -690,7 +690,16 @@ fn milestone_parse_accepts_valid_rejects_garbage() {
     assert_eq!(Milestone::parse("M1").unwrap(), Milestone(1));
     assert_eq!(Milestone::parse("M3").unwrap(), Milestone(3));
     assert_eq!(Milestone::parse("M0").unwrap(), Milestone(0));
-    for bad in ["m1", "M", "3", "MX", "M-1", "M99", "", "M1.0", "milestone1"] {
+    // TASK-0346: the full PRD §11 enum now parses, including the
+    // tier-2/3 future range M7..M11 (M11 = the ceiling).
+    assert_eq!(Milestone::parse("M6").unwrap(), Milestone(6));
+    assert_eq!(Milestone::parse("M7").unwrap(), Milestone(7));
+    assert_eq!(Milestone::parse("M11").unwrap(), Milestone(11));
+    // M12 is one past the ceiling: in-shape but out-of-range, the
+    // boundary that proves the clamp still bites.
+    for bad in [
+        "m1", "M", "3", "MX", "M-1", "M12", "M99", "", "M1.0", "milestone1",
+    ] {
         assert!(
             Milestone::parse(bad).is_err(),
             "`{bad}` must be a typed error, not silently accepted"
@@ -702,9 +711,11 @@ fn milestone_parse_accepts_valid_rejects_garbage() {
 /// value fails LOUD before any work, not accepted-and-ignored.
 #[test]
 fn arg_parser_rejects_bad_milestone() {
-    let argv = vec![OsString::from("--milestone"), OsString::from("M9")];
+    // M12 is one past the PRD §11 ceiling (M11) — in-shape but
+    // out-of-range, so it must fail loud at CLI parse time.
+    let argv = vec![OsString::from("--milestone"), OsString::from("M12")];
     let err = parse_args(&argv).unwrap_err();
-    assert!(err.contains("tier-1 range"), "got: {err}");
+    assert!(err.contains("M0..M11"), "got: {err}");
     let argv2 = vec![OsString::from("--milestone"), OsString::from("banana")];
     assert!(parse_args(&argv2).is_err());
 }

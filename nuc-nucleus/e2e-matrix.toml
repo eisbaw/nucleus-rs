@@ -2844,46 +2844,46 @@ example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "pthreads-sync"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-bufsync"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "pthreads-async"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-event"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "openmp-rs"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-poll"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-uds-event"
 reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
-milestone = "M6"
+milestone = "M11"
