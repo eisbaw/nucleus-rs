@@ -76,6 +76,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use backend_common::elect_host_from_name_workers;
 use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
     apply_host_data_relay_inject, apply_host_mediation_inject, apply_partition_blocks2d,
@@ -550,7 +551,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // Host election: shared helper (TASK-0336 cycle 164). See
         // `backend_common::host_election` for the canonical rule
         // (memory feedback-driver-must-mirror-backend-election-exactly).
-        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
+        let host = elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_host_mediation_inject(acfg, h),
             // No `used_workers` (every per_worker entry empty). The
@@ -603,7 +604,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // Host election: shared helper. See
         // `backend_common::host_election` module docstring for the
         // canonical rule (TASK-0336 cycle 164 lift).
-        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
+        let host = elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_host_data_relay_inject(acfg, h),
             None => acfg,
@@ -712,7 +713,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
-        let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used);
+        let host = elect_host_from_name_workers(&acfg.name_workers, &used);
         match host {
             Some(h) => apply_safe_push_reorder(per_worker, h),
             None => per_worker,
