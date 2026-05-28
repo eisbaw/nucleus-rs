@@ -46,6 +46,25 @@
 //!    `wait_slice` (`wait.rs:265..267`) which returns `Ok(None)` →
 //!    classified as whole-array → included.
 //!
+//! Cycle 223 (TASK-0357) extends the `is_whole_array_recv` guard
+//! coverage that cycle 221's cases 1, 5, 7 left structurally
+//! unexercised:
+//!
+//! 8. `rank_3_tile_shape_excludes_data` — a rank-3 tile (3 bounds
+//!    entries) on rank-2 data trips `wait_slice`'s rank-3+ guard
+//!    (`wait.rs:307`), which fires `Err(ContractGap)` because the
+//!    2D row-loop slice-paste's supported shape is rank ≤ 2 on
+//!    both. `is_whole_array_recv` propagates the Err; the
+//!    classifier's `.unwrap_or(false)` arm classifies "not whole"
+//!    → excluded. This is the cycle-209 16-jacobi/distributed
+//!    next-layer blocker; TASK-0341.02.02.01.01 lifts to N-D
+//!    nested-loop dispatch.
+//! 9. `inner_axis_oob_excludes_data` — a 2-bound tile on rank-2
+//!    data where the inner range exceeds `dims[1]` trips
+//!    `wait_slice`'s inner-axis OOB guard (`wait.rs:324..333`),
+//!    symmetric to test 5's leading-axis OOB. Err propagates →
+//!    excluded.
+//!
 //! Why drive `collect_let_at_wait_data` rather than
 //! `is_whole_array_recv` directly: visibility (above) AND the
 //! classifier's combinator semantics (waited ∩ ¬not_all_whole ∩
@@ -91,6 +110,25 @@ fn make_minimal_tables(
 
 fn tile_1d(iv: u64, range: Range<i64>) -> IterTile {
     IterTile::new(vec![(IterVar(iv), range)])
+}
+
+fn tile_2d(iv0: u64, r0: Range<i64>, iv1: u64, r1: Range<i64>) -> IterTile {
+    IterTile::new(vec![(IterVar(iv0), r0), (IterVar(iv1), r1)])
+}
+
+fn tile_3d(
+    iv0: u64,
+    r0: Range<i64>,
+    iv1: u64,
+    r1: Range<i64>,
+    iv2: u64,
+    r2: Range<i64>,
+) -> IterTile {
+    IterTile::new(vec![
+        (IterVar(iv0), r0),
+        (IterVar(iv1), r1),
+        (IterVar(iv2), r2),
+    ])
 }
 
 fn empty_accumulate_and_indexed() -> (BTreeSet<DataId>, BTreeSet<DataId>) {
@@ -340,5 +378,88 @@ fn scalar_data_no_dims_treated_as_whole_array() {
         result.contains(&data),
         "scalar (dims=[]) data must be classified whole-array → \
          included; got: {result:?}"
+    );
+}
+
+#[test]
+fn rank_3_tile_shape_excludes_data() {
+    // `wait_slice`'s rank-3+ guard at `wait.rs:307` fires
+    // `Err(ContractGap)` when either the tile or the data has rank
+    // > 2 (the 2D row-loop slice-paste's supported shape).
+    // `is_whole_array_recv` propagates the Err via `?`; the
+    // classifier's `.unwrap_or(false)` at `collect.rs:392` swallows
+    // it and the data lands in `not_all_whole` → excluded.
+    //
+    // Trigger: rank-3 tile (3 bounds entries) on rank-2 data
+    // (`dims=[16, 16]`). The condition at wait.rs:307 is
+    // `tile.bounds.len() > 2 || (tile.bounds.len() >= 2 &&
+    // ty.dims.len() > 2)` — the left disjunct fires here.
+    //
+    // Sibling case (rank-3 data + rank-2 tile) is structurally
+    // equivalent (right disjunct fires); we cover the left disjunct
+    // here because 16-jacobi/distributed (cycle 209) is the
+    // first in-tree schedule constructing a rank-3 tile, making
+    // it the more load-bearing arm.
+    let data = DataId(31);
+    let seq = SeqTag(17);
+    let (_names, sidecar) = make_minimal_tables(data, "field3d", vec![16, 16]);
+
+    let tile = tile_3d(0, 0..2, 1, 0..16, 2, 0..16);
+    let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    pair_tiles.insert((data, seq), tile.clone());
+
+    let events = vec![Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile,
+        seq,
+    }];
+
+    let (acc, indexed) = empty_accumulate_and_indexed();
+    let result = collect_let_at_wait_data(&events, &pair_tiles, &sidecar, &acc, &indexed);
+    assert!(
+        !result.contains(&data),
+        "rank-3 tile shape → wait_slice rank-3+ guard Err → \
+         unwrap_or(false) → excluded; got: {result:?}"
+    );
+}
+
+#[test]
+fn inner_axis_oob_excludes_data() {
+    // `wait_slice`'s inner-axis OOB guard at `wait.rs:324..333`
+    // fires `Err(ContractGap)` when the tile's inner-axis range
+    // is out of bounds for `ty.dims[1]`. Symmetric to test 5's
+    // leading-axis OOB; that test 5 exercises wait.rs:269..278.
+    //
+    // Trigger: dims=[8, 8]; tile leading range 0..8 (full, in-
+    // bounds) + tile inner range 0..1024 (far past inner-dim 8).
+    // The leading-axis guard (wait.rs:269) passes; the inner-axis
+    // guard (wait.rs:324) fires Err.
+    //
+    // Rejected approach: setting inner range start >= end would
+    // ALSO trip the guard (degenerate-range arm) but obscures
+    // which guard fires. The OOB form pins the dim-bounds check
+    // specifically.
+    let data = DataId(37);
+    let seq = SeqTag(19);
+    let (_names, sidecar) = make_minimal_tables(data, "mat", vec![8, 8]);
+
+    let tile = tile_2d(0, 0..8, 1, 0..1024);
+    let mut pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    pair_tiles.insert((data, seq), tile.clone());
+
+    let events = vec![Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile,
+        seq,
+    }];
+
+    let (acc, indexed) = empty_accumulate_and_indexed();
+    let result = collect_let_at_wait_data(&events, &pair_tiles, &sidecar, &acc, &indexed);
+    assert!(
+        !result.contains(&data),
+        "inner-axis OOB tile → wait_slice inner-axis guard Err → \
+         unwrap_or(false) → excluded; got: {result:?}"
     );
 }

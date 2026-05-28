@@ -3,9 +3,11 @@ id: TASK-0357
 title: >-
   Extend let-at-wait classifier defensive coverage to wait.rs rank-3+ guard and
   inner-dim OOB (TASK-0354 cycle-221b architect P2.1)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@orchestrator'
 created_date: '2026-05-28 00:48'
+updated_date: '2026-05-28 01:05'
 labels:
   - tests
   - backend-common
@@ -43,3 +45,28 @@ Test-only; no production-code edits. Closes the silent-sibling gap the architect
 - Builds on TASK-0354 (which lands cases 1-7).
 - Adjacent to TASK-0355 (unify is_whole_array_tile + is_whole_array_recv) — the unified classifier would subsume both; if TASK-0355 is picked first, this task's content moves into the unified test suite.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Cycle 223 plan — orchestrator-in-thread (test-only, no implementer spawn):
+
+1. Add `rank_3_tile_shape_excludes_data` test:
+   - Construct rank-3 tile (3-bound tile_3d helper or inline) on rank-2 data dims=[16,16].
+   - pair_tiles entry maps (data, seq) -> rank-3 tile.
+   - Wait event with rank-3 tile.
+   - Assert data excluded (wait_slice:307 rank-3+ guard fires Err, .unwrap_or(false) at collect.rs:392 propagates as "not whole" -> not_all_whole -> excluded).
+
+2. Add `inner_axis_oob_excludes_data` test:
+   - dims=[8,8] on rank-2 data; tile with bounds (iv0, 0..8) and (iv1, 0..1024). Inner range 0..1024 > dim[1]=8.
+   - wait_slice:324-333 inner-axis OOB guard fires Err.
+   - Assert data excluded.
+
+3. Update module docstring: append items 8 + 9 below the existing 1-7 list, with one-line descriptions and citations to wait.rs guard line numbers.
+
+Gate verification (cheap subset before commit):
+- `nix develop --command bash -c "just test && just clippy"` — expect +2 tests passing (1026 -> 1028) on dev, +2 on release (1025 -> 1027), clippy clean.
+- `just e2e` baseline preserved at 280/246/0/34/0 (test-only, structurally cannot regress).
+
+Forward-carry to TASK-0355 (unify is_whole_array_tile + is_whole_array_recv): the 2 new tests cover the FULL guard chain of is_whole_array_recv (now: rank-3+, both axes OOB, scalar, mixed-slice). When TASK-0355 is picked up, the unified classifier MUST exercise the same 9 cases (cycle 221's 7 + cycle 223's 2).
+<!-- SECTION:PLAN:END -->
