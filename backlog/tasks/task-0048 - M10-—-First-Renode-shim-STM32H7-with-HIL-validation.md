@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 12:59'
+updated_date: '2026-05-28 22:34'
 labels:
   - M10
   - backend
@@ -166,4 +166,16 @@ Lessons the NEXT M10 slice (TASK-0048.02/.03 or the real STM32H7 shim, AC#1) inh
 7. SHARED LOWERING: lib and bin both go through lower_kernels_and_run (single source of truth). emit_bin's single-worker guard is DUPLICATED (different return type than emit); both have sibling pin tests (rejects_multi_worker_* / bin_rejects_multi_worker_*) — keep them in lockstep.
 
 Remaining STILL-TO-DO for M10 proper (parent ACs): real STM32H7 NucleusShim DMA/IRQ/memory-map (AC#1, shims/stm32h7/ crate); computed-result + reference.bin diff (TASK-0048.02); examples 5+9 (TASK-0048.03); .resc under examples/NN/renode/ + tier-3 CI matrix row (AC#2/AC#3, TASK-0165); just e2e --milestone M10 (AC#4).
+
+=== Forward-carried from TASK-0048.04 (no_std monotonic clock for check_frame; commit 2abcc56) ===
+
+The check_frame REJECT (forward-carry note 6 from TASK-0048.01) is now LOWERED. embedded-pattern lowers Event::Loop check_frame on both lib + bin paths.
+
+CLOCK CHOICE that the parent + M11 inherit: Cortex-M SysTick (24-bit down-counter @ 0xE000_E010/14/18), exposed as NucleusShim::monotonic_ns(). NOT DWT CYCCNT — DWT CYCCNT may not advance under Renode's non-cycle-accurate timing (docs §3); SysTick advances reliably (EMPIRICALLY confirmed in Renode: ~2828-3562 ns/iter, varying nonzero). PRD §6.3.5 permits either. The shim IS the 'backend-specified monotonic clock' seam: keep Cortex-M register details in the shim, render the lowering against the trait method.
+
+on_violation tier-3 policy: log fully lowered (per-violation UART line via NucleusShim::report_violation); panic + count REJECTED (typed EmitError). panic bricks the MCU (PRD §6.3.5). count has no bare-metal Drop summary sink (firmware spins forever) — TASK-0048.08.
+
+NucleusShim is now SIX methods (was four): added monotonic_ns + report_violation. The real STM32H7 shim (AC#1, shims/stm32h7/ crate) must implement all six; the SysTick monotonic_ns + UART report_violation in Usart1Shim are the reference impls.
+
+e2e: the 3 embedded-only check fixtures (01-elementwise-add/schedules/embedded_check{,_panic,_count}) are auto-discovered by the schedule walk and declared [[skip]] M10 ×7 backends (mirrors embedded_multimcu / example 14).
 <!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: M11 — Multi-MCU Renode co-simulation (hearing aid)
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 11:30'
+updated_date: '2026-05-28 22:34'
 labels:
   - M11
   - backend
@@ -61,4 +61,6 @@ M9's embedded-pattern backend is SINGLE-WORKER compile-only. Multi-MCU
    TASK-0054.01 reinstates per-frame peripheral kernels). When M11 runs
    it through embedded-pattern, the multi-worker guard above is the first
    thing to lift.
+
+forward-carried from TASK-0048.04: the tier-3 monotonic clock for check_frame is SysTick (NucleusShim::monotonic_ns), NOT DWT CYCCNT (DWT may not advance under Renode; SysTick does — empirically confirmed). When M11 multi-MCU schedules carry a check loop (e.g. example 14 'check loop frame : latency_max=10ms'), each MCU's shim provides its own monotonic_ns. CAVEAT inherited: a multi-MCU/pipelined check loop measures per-STAGE latency on the worker that runs the loop body, NOT end-to-end frame latency (docs/check-loop-latency-max.md §2; end-to-end correlation is TASK-0106). on_violation=panic is rejected on tier-3 (bricks the MCU); use log. on_violation=count is rejected pending a bare-metal sink (TASK-0048.08). NucleusShim is now SIX methods — a multi-MCU shim must impl monotonic_ns + report_violation too.
 <!-- SECTION:NOTES:END -->
