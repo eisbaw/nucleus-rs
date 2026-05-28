@@ -78,6 +78,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-pattern"
+version = "0.0.0"
+dependencies = [
+ "backend-common",
+ "nucleus-compiler",
+ "test-common",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,6 +251,7 @@ name = "nucleus"
 version = "0.0.0"
 dependencies = [
  "backend-common",
+ "embedded-pattern",
  "mp-tcp-bufsync",
  "mp-tcp-event",
  "mp-tcp-poll",

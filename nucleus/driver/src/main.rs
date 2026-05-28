@@ -124,7 +124,8 @@ fn print_help() {
              mp-tcp-event    OS processes + TCP loopback + mio (tier 1)\n    \
              openmp-rs       rayon threads (tier 1, single-worker + multi-worker landed cycles 191/196)\n    \
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker + multi-worker landed cycles 192/195)\n    \
-             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n"
+             mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n    \
+             embedded-pattern  no_std lib + NucleusShim trait (tier 3, M9 compile-only single-worker; check via `just check-embedded`)\n"
     );
 }
 
@@ -902,10 +903,32 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // First tier-3 backend (TASK-0047, M9): the generic
+        // `embedded-pattern` backend. Emits a COMPILE-ONLY `no_std` LIB
+        // (Cargo.toml + src/lib.rs only — no main.rs, no run.sh: there
+        // is nothing to RUN for a compile-only lib; a Renode-runnable
+        // bin is M10's job, TASK-0048). Lowers the single-worker
+        // EventList against a `NucleusShim` trait + do-nothing stub
+        // shim. Acceptance: `cargo check --target thumbv7em-none-eabihf`
+        // (run under `nix develop .#embedded` via `just check-embedded`).
+        // This backend is NOT in the e2e-matrix.toml backends list — the
+        // tier-1 runtime differential runs+diffs host binaries, which is
+        // wrong for a compile-only no_std backend. Multi-MCU embedded is
+        // M11 (TASK-0049).
+        "embedded-pattern" => {
+            let result =
+                embedded_pattern::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("embedded-pattern codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            println!("lib_rs      = {}", result.lib_rs.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
              `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`, \
-             `openmp-rs`, `mp-tcp-poll`, `mp-uds-event`"
+             `openmp-rs`, `mp-tcp-poll`, `mp-uds-event`, `embedded-pattern`"
         )),
     }
 }

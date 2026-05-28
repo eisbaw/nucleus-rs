@@ -496,6 +496,50 @@ check-mega-files:
     fi; \
     echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC; no allow-list entry is stale."
 
+# Tier-3 M9 compile-only acceptance (TASK-0047 AC#4). Generates the
+# `embedded-pattern` no_std lib for the M9 acceptance examples (1 + 5,
+# their naive schedules) and runs `cargo check --target
+# thumbv7em-none-eabihf` on each generated project against the stub
+# shim. SUCCEEDS iff every generated lib cross-compiles.
+#
+# MUST be run under the embedded cross-compile shell, which provides the
+# thumbv7em-none-eabihf rust-std on the pinned 1.83.0 toolchain:
+#
+#     nix develop .#embedded --command just check-embedded
+#
+# DELIBERATELY NOT wired into `just ci` / `just e2e`: the DEFAULT dev
+# shell has NO thumbv7em-none-eabihf std (only `.#embedded` does), so the
+# cross-check would hard-fail there. Same "tier-3 checks live outside the
+# default tier-1 ci" rule TASK-0223 established for the Renode runtime.
+# The embedded-pattern backend is likewise NOT in `e2e-matrix.toml`'s
+# `backends` list — that list drives the tier-1 bit-identical RUNTIME
+# differential (it runs + diffs host binaries), which is meaningless for
+# a compile-only no_std backend (PRD §10.3 point 2 / §11 M9).
+#
+# The example set (1 + 5) is the M9 acceptance set fixed by PRD §11 M9 /
+# TASK-0047 AC#4 (the two examples most representative of embedded
+# workloads — elementwise + stencil). It is NOT per-example recipe bloat
+# (PRD §12.3 anti-bloat): this is one milestone gate. M10 (Renode runtime,
+# TASK-0048) extends it to a run-and-diff; until then compile-only is the
+# bar (PRD §10.3 point 5).
+check-embedded:
+    @echo "tier-3 M9 compile-only acceptance (embedded-pattern, TASK-0047 AC#4)"
+    @set -eu; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    for ex in 01-elementwise-add 05-stencil; do \
+        out="target/embedded-m9/$ex"; \
+        rm -rf "$out"; \
+        echo "=== generating embedded-pattern no_std lib for $ex/naive ==="; \
+        ./target/release/nucleus build \
+            --algo "../nuc-nucleus/examples/$ex/prog.algo.nuc" \
+            --sched "../nuc-nucleus/examples/$ex/schedules/naive.sched.nuc" \
+            --backend embedded-pattern \
+            --out "$out"; \
+        echo "=== cargo check --target thumbv7em-none-eabihf ($ex) ==="; \
+        (cd "$out" && cargo check --target thumbv7em-none-eabihf); \
+    done; \
+    echo "OK: embedded-pattern no_std lib cross-compiles for examples 1 + 5 (thumbv7em-none-eabihf)."
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

@@ -1,0 +1,40 @@
+# capabilities.toml for the embedded-pattern backend (tier 3, M9).
+# Schema: docs/capabilities-toml.md (TASK-0019). PRD §7.3 / §7.4 / §11.
+#
+# This is the GENERIC tier-3 backend's M9 capability surface. It is
+# deliberately MINIMAL — exactly the demands the example 1 + example 5
+# `naive` schedules make (single `host` worker => `default` worker
+# class; sync; no transfer; no buffer; heap region). That minimality is
+# the point of M9: prove the no_std event-list lowering + stub-shim
+# compile path end-to-end on the smallest representative schedules
+# before the M10 shim adds real hardware capability.
+#
+# ## What is DEFERRED to the M10 shim (TASK-0048), NOT declared here
+#
+# PRD §7.3 row `embedded-cortexm-dma-irq` advertises the full surface:
+# IRQ + completion notify, descriptor-ring buffering, async semantics,
+# and physical memory regions (`tcm_per_core`, `shared_sram`, external
+# SDRAM). NONE of that is claimed here because M9 ships a do-nothing
+# STUB shim: there is no real DMA, no real IRQ, no async runtime. A
+# schedule asking for `async` / `buffer=N>1` / `notify=irq` / a TCM
+# region MUST be rejected at the capability-compat check rather than
+# compiled against a stub that cannot honour it. The M10 reference shim
+# is what legitimately flips `supports_async`, `supports_buffer`,
+# `notify=["irq"]`, and the `memory_regions` list to the §7.3 surface.
+#
+# `transport = "embedded-dma"` is the one tier-3-specific value declared
+# now: it names the channel a future `Push` lowers onto (a DMA
+# descriptor enqueue), per the §7.4 table. It is inert at M9 (the naive
+# schedules have no cross-worker `Push`), but naming it makes the
+# backend's tier-3 identity explicit and matches the §8.3 Region note.
+
+schema_version  = 1
+name            = "embedded-pattern"
+tier            = 3
+transport       = "embedded-dma"
+notify          = ["barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

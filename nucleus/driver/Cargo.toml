@@ -73,3 +73,10 @@ mp-tcp-poll = { path = "../backends/mp-tcp-poll" }
 # pending). Inherits the (D)+(B2) compensating-pass tower from
 # mp-tcp-event when multi-worker lands.
 mp-uds-event = { path = "../backends/mp-uds-event" }
+# embedded-pattern — FIRST tier-3 backend, M9 (TASK-0047). Generic
+# embedded codegen: emits a compile-only `no_std` LIB lowering the
+# single-worker EventList against a `NucleusShim` trait + stub shim.
+# Acceptance is `cargo check --target thumbv7em-none-eabihf` (run under
+# `nix develop .#embedded` via `just check-embedded`), NOT the tier-1
+# runtime differential. Per-MCU shims + Renode runtime are M10/M11.
+embedded-pattern = { path = "../backends/embedded-pattern" }

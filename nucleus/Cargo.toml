@@ -71,6 +71,15 @@ members = [
     # compensating-pass tower from mp-tcp-event when multi-worker
     # lands; TASK-0337 promotion-trigger guard documented on lib.rs.
     "backends/mp-uds-event",
+    # embedded-pattern (TASK-0047, M9): the FIRST tier-3 backend. Generic
+    # embedded codegen — emits a compile-only `no_std` LIB lowering the
+    # single-worker EventList against a `NucleusShim` trait + do-nothing
+    # stub shim. Acceptance is `cargo check --target thumbv7em-none-eabihf`
+    # (run under `nix develop .#embedded` via `just check-embedded`), NOT
+    # the tier-1 runtime differential matrix — the e2e-matrix.toml backends
+    # list deliberately EXCLUDES it (compile-only, not run-and-diff). Per-
+    # MCU shims + Renode runtime are M10 (TASK-0048) / M11 (TASK-0049).
+    "backends/embedded-pattern",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate
     # used by every backend's test suite. dev-dependency only.

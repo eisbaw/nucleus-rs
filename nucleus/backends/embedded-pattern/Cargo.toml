@@ -1,0 +1,62 @@
+# embedded-pattern backend crate. See PRD §7.3, §11 (M9), TASK-0047.
+#
+# Tier-3 GENERIC embedded backend: emits target-agnostic `no_std` Rust
+# (a LIB crate) lowering the per-worker EventList against a `NucleusShim`
+# trait. Per-MCU hardware specifics (STM32H7 DMA/IRQ, linker script,
+# Renode `.resc`) are the job of the M10+ shim crates — NOT this backend.
+#
+# ## Current status: M9 compile-only single-worker (TASK-0047)
+#
+# Emits a SELF-CONTAINED no_std lib (`src/lib.rs`) containing:
+#   - the `NucleusShim` trait (alloc-in-region / dma-push / dma-wait /
+#     irq-barrier),
+#   - a do-nothing `StubShim` implementation (compile-only; no DMA, no
+#     IRQ, no real timing),
+#   - a `mod kernels` carrying ONLY the PURE compute kernel bodies
+#     extracted verbatim from the source kernels.rs (the effectful I/O
+#     kernels are std-bound and map to shim hooks instead — see lib.rs),
+#   - `run<S: NucleusShim>(shim)` lowering the single-worker EventList.
+#
+# Acceptance: `cargo check --target thumbv7em-none-eabihf` (run under
+# `nix develop .#embedded`) succeeds for examples 1 and 5 (naive). The
+# tier-1 runtime differential matrix (`e2e-matrix.toml` backends list)
+# deliberately EXCLUDES this backend — it is compile-only, not run-and-
+# diff. The dedicated `just check-embedded` recipe is the M9 acceptance.
+#
+# ## Why this crate is a NORMAL std crate
+#
+# The backend (this crate) runs on the HOST as part of the nucleus
+# workspace (`just build`). Only the GENERATED lib is `no_std` +
+# cross-compiled. This crate writes strings; it does not itself target
+# the MCU.
+
+[package]
+name = "embedded-pattern"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "embedded_pattern"
+path = "src/lib.rs"
+
+[dependencies]
+# The EventList / NameTables / NameSidecar contract types — the SAME
+# contract every tier-1 backend consumes (PRD §8.3). No `&ACFG` /
+# `&LinkedIR` access.
+nucleus-compiler = { path = "../../nucleus-compiler" }
+# Shared codegen primitives: the canonical `EmitError`, the RenderCtx +
+# Fire-arg / Fire-output / loop-bound / scalar-type renderers. Same
+# precedent as every tier-1 backend (TASK-0244 cycle 37 lift). The
+# embedded backend lowers the same Fire/Loop events the tier-1 backends
+# do, so it reuses the same rendering helpers — the only divergence is
+# the surrounding no_std lib skeleton + the effectful-kernel-as-shim-hook
+# mapping, which are embedded-specific and live here.
+backend-common = { path = "../../backend-common" }
+
+[dev-dependencies]
+# Shared parse -> lower -> link -> ACFG -> inject -> sidecar pipeline
+# boilerplate (TASK-0237). Same precedent as openmp-rs/Cargo.toml:
+# tests lower a real example and assert the emitted no_std lib shape.
+test-common = { path = "../../test-common" }
