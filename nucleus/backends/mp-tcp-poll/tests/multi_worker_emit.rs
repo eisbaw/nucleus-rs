@@ -331,3 +331,164 @@ fn separable_filter_06_distributed2_poll_equiv_bufsync() {
         assert_poll_bin_equiv_bufsync(p_name, &p_src, &b_src);
     }
 }
+
+/// 15-transpose/distributed-rows — the host-EXCLUDING-barrier coverage
+/// arm (TASK-0044.02.02.01). The two pre-existing fixtures above
+/// (02-split-add/split, 06-separable-filter/distributed2) both emit
+/// barriers that INCLUDE host, so the `apply_host_mediation_inject`
+/// driver pass is a no-op on them. This fixture closes the hole: its
+/// `xpose on {w0,w1,w2,w3}` placement produces a genuinely
+/// host-EXCLUDING inner barrier (participants `{w0,w1,w2,w3}`), which is
+/// precisely the shape `apply_host_mediation_inject` exists to mediate
+/// for the one-CTRL-stream-per-(host,worker) TCP star topology.
+///
+/// PROVENANCE / PREMISE CORRECTION (TASK-0044.02.02.01 cycle 231): the
+/// filed task named `03-reduction/distributed` as the host-excluding
+/// shape. Empirically false — 03-reduction/distributed's two barriers
+/// BOTH already include host, so `apply_host_mediation_inject` is a
+/// complete no-op there and the original AC#2 ("a barrier_cross_poll on
+/// host's bin NOT present in the unmediated ACFG") was unsatisfiable. A
+/// scan of every multi-worker schedule found 15-transpose/distributed-
+/// rows is the ONLY schedule that is BOTH genuinely host-excluding AND a
+/// promoted `[[required]]` e2e cell on mp-tcp-poll (see
+/// `nuc-nucleus/e2e-matrix.toml`). Retargeting here fulfils — and
+/// strengthens — the coverage intent: on this cell the UNMEDIATED poll
+/// emit does not merely "lack" a host barrier_cross_poll, it FAILS to
+/// emit at all (`Plan::build` returns a `ContractGap` on the
+/// host-excluding barrier), which proves the mediation pass is
+/// load-bearing rather than cosmetic.
+///
+/// Pass sequence MIRRORS the driver's mp-tcp-poll gate: the IR-stage
+/// passes (parse..inject_transfers) PLUS an inline
+/// `apply_host_mediation_inject`. The driver applies that pass for the
+/// {mp-tcp-bufsync, mp-tcp-event, mp-tcp-poll, mp-uds-event} backends
+/// (driver/src/main.rs host-mediation gate) but does NOT apply
+/// `apply_host_data_relay_inject` for mp-tcp-poll (that DATA-arm relay
+/// is mp-tcp-event / mp-uds-event only), so this test calls ONLY
+/// `apply_host_mediation_inject` — unlike the mp-uds-event sibling
+/// oracle which also calls the data relay. `inject_check_frames` is
+/// omitted: 15-transpose/distributed-rows has no `check loop` directive,
+/// so it would be a no-op.
+#[test]
+fn transpose_15_distributed_rows_poll_equiv_bufsync() {
+    use nucleus_compiler::{
+        acfg_to_events,
+        algo::{lower_algo, parse_algo},
+        apply_block_transforms, apply_halo_inference_partition_aware, apply_host_mediation_inject,
+        apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
+        apply_reuse_inference, build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
+        sched::{lower_sched, parse_sched},
+        NameTables,
+    };
+
+    let scratch = scratch_dir("transpose_15_distributed_rows");
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/15-transpose");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/distributed-rows.sched.nuc")).unwrap();
+    let kernels = ex.join("kernels.rs");
+
+    let algo_ast = parse_algo(&algo_src).expect("algo parse");
+    let sched_ast = parse_sched(&sched_src).expect("sched parse");
+    let algo_ir = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ir = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = apply_block_transforms(&linked, acfg).expect("block transforms");
+    let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
+    let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
+    let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
+    let (acfg, _advisory) =
+        apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
+    let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
+
+    // AC#2 (premise-correct, half 1) — the UNMEDIATED ACFG carries a
+    // host-EXCLUDING barrier, so mp-tcp-poll's `Plan::build` REJECTS it
+    // (its one-CTRL-stream-per-(host,worker) star cannot lower a barrier
+    // that excludes the hub). This is the rejection
+    // `apply_host_mediation_inject` exists to prevent; if mediation were
+    // a no-op here (as it is on 03-reduction/distributed), this emit
+    // would succeed and the test premise would be vacuous.
+    let unmediated_pw = acfg_to_events(&acfg);
+    let unmediated_sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar (unmediated)");
+    let unmediated_names = NameTables::from_acfg(&acfg);
+    let unmediated_emit = mp_tcp_poll::emit(
+        &unmediated_pw,
+        &unmediated_names,
+        &unmediated_sidecar,
+        &kernels,
+        &scratch.join("unmediated"),
+    );
+    let err = unmediated_emit.expect_err(
+        "15-transpose/distributed-rows: UNMEDIATED mp-tcp-poll emit MUST fail \
+         (host-excluding barrier rejected by Plan::build); if it succeeds, the \
+         mediation pass is a no-op and this oracle does not exercise mediation",
+    );
+    let err_text = format!("{err:?}");
+    assert!(
+        err_text.contains("exclude the host worker"),
+        "15-transpose/distributed-rows: UNMEDIATED emit must fail with the \
+         host-excluding-barrier ContractGap; got: {err_text}"
+    );
+
+    // Mediate: same host election the mp-tcp-poll backend uses (shared
+    // helper `backend_common::host_election`), mirroring the driver's
+    // host-mediation gate (driver/src/main.rs).
+    let preview = acfg_to_events(&acfg);
+    let used: std::collections::BTreeSet<_> = preview
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+    let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used)
+        .expect("host election must succeed on 15-transpose/distributed-rows");
+    let acfg = apply_host_mediation_inject(acfg, host);
+
+    let per_worker = acfg_to_events(&acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    let names = NameTables::from_acfg(&acfg);
+
+    let poll_out = scratch.join("poll");
+    let bufsync_out = scratch.join("bufsync");
+    // AC#2 (premise-correct, half 2) — after mediation the emit SUCCEEDS;
+    // host's bin now carries a `barrier_cross_poll` for the formerly
+    // host-excluding barrier (host became a participant).
+    let poll =
+        mp_tcp_poll::emit(&per_worker, &names, &sidecar, &kernels, &poll_out).expect("poll emit");
+    let bufsync = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels, &bufsync_out)
+        .expect("bufsync emit");
+
+    let host_name = names.worker.get(&host).expect("host name").clone();
+    let host_bin = poll
+        .worker_bins
+        .iter()
+        .find(|p| p.file_name().unwrap().to_str().unwrap() == format!("{host_name}.rs"))
+        .expect("host bin must be present in the mediated emit");
+    let host_src = std::fs::read_to_string(host_bin).expect("read host bin");
+    assert!(
+        host_src.contains("barrier_cross_poll"),
+        "15-transpose/distributed-rows: after host-mediation the host bin \
+         ({host_name}.rs) MUST carry a barrier_cross_poll call for the \
+         mediated (formerly host-excluding) barrier. host bin:\n{host_src}"
+    );
+
+    // poll == bufsync per-bin, after the cycle-195 swap canonicalisation.
+    let mut poll_bins = poll.worker_bins.clone();
+    poll_bins.sort();
+    let mut bufsync_bins = bufsync.worker_bins.clone();
+    bufsync_bins.sort();
+    assert_eq!(
+        poll_bins.len(),
+        bufsync_bins.len(),
+        "per-worker bin counts must match across poll/bufsync"
+    );
+    for (p, b) in poll_bins.iter().zip(bufsync_bins.iter()) {
+        let p_name = p.file_name().unwrap().to_str().unwrap();
+        let p_src = std::fs::read_to_string(p).expect("read poll bin");
+        let b_src = std::fs::read_to_string(b).expect("read bufsync bin");
+        assert_poll_bin_equiv_bufsync(p_name, &p_src, &b_src);
+    }
+}
