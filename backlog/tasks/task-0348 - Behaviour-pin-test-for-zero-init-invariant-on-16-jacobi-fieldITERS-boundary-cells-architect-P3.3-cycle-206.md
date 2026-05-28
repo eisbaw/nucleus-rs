@@ -3,11 +3,11 @@ id: TASK-0348
 title: >-
   Behaviour-pin test for zero-init invariant on 16-jacobi field[ITERS] +
   boundary cells (architect P3.3 cycle 206)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-27 14:24'
-updated_date: '2026-05-28 02:57'
+updated_date: '2026-05-28 03:14'
 labels:
   - examples
   - test-pin
@@ -73,4 +73,36 @@ AC#3 architect review-GO + no flakiness + unit-test profile.
 
 ### Gate
 build, clippy, test, test-release, e2e (280/246/0/34/0 must hold — test-only, no codegen change).
+
+## Cycle 226 + 226b closure
+
+Behaviour-pin for the zero-init allocation strategy on 16-jacobi field + 11-game-of-life grid landed. Commits:
+- d477b50 tests: cycle 226 — task0348_zero_init_invariant.rs (2 tests; values empirically verified vs artifact; pin proven to bite)
+- 5309b2e tests: cycle 226b — review-gate fold-back (architect P2 docstring overclaim correction)
+
+### Review gate
+- qa-test-runner: GO. New test 3x deterministic (no flakiness — AC#3). Dev 1037/0/3, release 1036/0/3, e2e 280/246/0/34/0, only test+tracker changed.
+- mped-architect: GO. P2 (docstring overclaimed vec![0;N] AS the invariant — folded back in 226b). P3 (result-zero-init pins are pure documentation — honestly disclosed, kept). Confirmed sizes correct (320=5*8*8, 288=9*32), kernel claims accurate, NO silent sibling (the modular-wrap shape exists in ONLY these 2 examples).
+
+### ACs (final)
+AC#1 16-jacobi field pin: TICKED.
+AC#2 11-game-of-life grid sibling pin: TICKED.
+AC#3 architect review-GO + no flakiness + unit profile: TICKED (architect GO; qa 3x deterministic; runs under just test via CARGO_BIN_EXE subprocess, cli_reuse_strict.rs precedent).
+
+### Honest scope (architect P2 — important nuance)
+This is an ALLOCATION-STRATEGY pin, NOT a full semantic-invariant pin. vec![0;N] is necessary-but-not-sufficient. The full semantic invariant (field[ITERS] never WRITTEN before the t==0 read + interior-loop bounds leave boundary cells unwritten) is guarded END-TO-END by the e2e differential vs reference.bin. A codegen that zero-filled AND populated the top slice would keep this unit test green while breaking the invariant. The 226b docstring fix states this explicitly.
+
+### Considered-but-not-filed avenue
+A deeper static pin (parse emitted main.rs, assert no write to field[ITERS] precedes the modular-wrap read) would close the proxy-vs-semantic gap at the unit layer. NOT filed: the e2e differential already guards the semantic invariant, and a structural never-written-before-read assertion against generated Rust is high-effort/low-marginal-value (would re-implement dataflow analysis the compiler already does). Mentioned here so a future cycle that wants unit-layer semantic coverage has the pointer.
+
+### Gotchas / forward-carried lessons
+1. clippy::doc_lazy_continuation (feedback-clippy-doc-lazy-continuation-recurring) bit on first draft: a paragraph following an unclosed '- ' bullet list with NO blank '//!' separator is read as a lazy list continuation. Fix: blank '//!' line between a bullet list and the following paragraph + single-line bullets. ALWAYS re-run just clippy independently after writing a multi-line //! or /// block with list items.
+2. Driver-crate tests reach the compiled nucleus binary via env!(CARGO_BIN_EXE_nucleus) — the clean unit-profile pattern for 'build an example + inspect emitted artifact' tests (no cargo-run recursion, no cargo-build of the generated project). Mirror cli_reuse_strict.rs.
+3. Behaviour-pin doc discipline: distinguish 'pins the invariant' from 'pins the allocation strategy the invariant relies on'. The architect P2 caught the conflation. When a unit pin asserts a PROXY for a semantic property, say so — and name the green-but-broken corner the pin can't catch + which layer (e2e) guards the real property.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycles 226 + 226b landed a behaviour-pin (nucleus/driver/tests/task0348_zero_init_invariant.rs, 2 tests) for the zero-fill allocation strategy on 16-jacobi field (vec![0;320]) + 11-game-of-life grid (vec![0;288]) + their result arrays. Built each example's naive/pthreads-sync schedule via CARGO_BIN_EXE subprocess, inspected emitted main.rs, asserted the vec![0; zero-fill prefix (load-bearing) + exact size (precision). Pin proven to bite (wrong-size -> FAILED, reverted). Review gate: qa GO (3x no-flakiness, 1037/0/3, e2e 280/246/0/34/0), architect GO. Architect P2 folded back in 226b: docstring corrected to label this an ALLOCATION-STRATEGY pin (necessary-but-not-sufficient proxy), with the full semantic invariant (never-written-before-read + unwritten-boundary) guarded end-to-end by the e2e differential. All 3 ACs ticked.
+<!-- SECTION:FINAL_SUMMARY:END -->
