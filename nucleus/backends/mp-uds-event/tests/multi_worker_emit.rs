@@ -350,6 +350,180 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
     }
 }
 
+/// 15-transpose/distributed-rows — the host-EXCLUDING-barrier emit
+/// oracle on a REAL `[[required]]` cell (TASK-0044.08, cycle 232).
+///
+/// Why this exists alongside `separable_filter_06_distributed2_uds_equiv_tcp`
+/// above: 06/distributed2's barriers all INCLUDE host (every barrier-
+/// participant union there is driven by a host-touching transfer
+/// boundary), so `apply_host_mediation_inject` is a complete NO-OP on
+/// that cell — it never exercises the host-EXCLUDING path. This test
+/// closes that hole by retargeting to 15-transpose/distributed-rows,
+/// whose `xpose on {w0,w1,w2,w3}` placement produces a genuinely
+/// host-EXCLUDING inner barrier (`SyncTag(2)`, participants
+/// `{w0,w1,w2,w3}`), the precise shape mediation exists to handle for
+/// the one-CTRL-stream-per-(host,worker) UDS-star topology.
+///
+/// Strengthened over the 06 sibling: this cell asserts (a) the
+/// UNMEDIATED mp-uds-event emit FAILS (host-excluding barrier rejected
+/// by `Plan::build`, multi_worker/mod.rs:286-297) — proving mediation
+/// is load-bearing, not cosmetic — THEN (b) after mediation the
+/// per-worker bins are the structural twin of mp-tcp-event's (the same
+/// transport-canonicalised equivalence the 02/06 oracles assert). If
+/// mediation were a no-op here (as on 06), half (a) would FAIL the
+/// `expect_err` (the unmediated emit would succeed), so this test
+/// cannot pass vacuously.
+///
+/// PROVENANCE (TASK-0044.08): sibling of TASK-0044.01.03 (openmp-rs) +
+/// TASK-0044.02.02.01 (mp-tcp-poll), both closed cycle 231; this task
+/// closes the last two backends (mp-tcp-event + mp-uds-event) of the
+/// family. 15-transpose/distributed-rows is the ONLY schedule that is
+/// BOTH genuinely host-excluding AND a promoted `[[required]]` e2e
+/// cell on these backends (a scan of every multi-worker schedule at
+/// cycle 231 established this; the originally-filed 03-reduction
+/// premise was empirically false — its barriers all include host).
+///
+/// Pass sequence MIRRORS the driver's mp-uds-event gate EXACTLY: the
+/// IR-stage passes (parse..inject_transfers) PLUS `apply_host_mediation_inject`
+/// PLUS `apply_host_data_relay_inject` (the mp-uds-event driver gate
+/// applies BOTH — driver/src/main.rs ~525-563 mediation gate AND
+/// ~592-614 data-relay gate, both list mp-uds-event). Identical to the
+/// 06 sibling's pipeline; the only difference is the schedule. On
+/// 15-transpose/distributed-rows data-relay is a no-op (no in-`Repeat`-
+/// body non-host↔non-host Push pair) but applied for production-ACFG
+/// fidelity.
+#[test]
+fn transpose_15_distributed_rows_uds_equiv_tcp() {
+    use nucleus_compiler::{
+        acfg_to_events,
+        algo::{lower_algo, parse_algo},
+        apply_block_transforms, apply_halo_inference_partition_aware, apply_host_data_relay_inject,
+        apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
+        apply_partition_workers, apply_reuse_inference, build_acfg, build_sidecar, inject_syncs,
+        inject_transfers, link,
+        sched::{lower_sched, parse_sched},
+        NameTables,
+    };
+
+    let scratch = scratch_dir("transpose_15_distributed_rows");
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/15-transpose");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/distributed-rows.sched.nuc")).unwrap();
+    let kernels = ex.join("kernels.rs");
+
+    let algo_ast = parse_algo(&algo_src).expect("algo parse");
+    let sched_ast = parse_sched(&sched_src).expect("sched parse");
+    let algo_ir = lower_algo(&algo_ast).expect("algo lower");
+    let sched_ir = lower_sched(&sched_ast).expect("sched lower");
+    let linked = link(algo_ir, sched_ir).expect("link");
+    let acfg = build_acfg(&linked).expect("build_acfg");
+    let acfg = apply_block_transforms(&linked, acfg).expect("block transforms");
+    let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
+    let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
+    let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
+    let (acfg, _advisory) =
+        apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
+    let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
+    let acfg = inject_syncs(acfg);
+    let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
+
+    // ---- Half (a): the UNMEDIATED mp-uds-event emit is REJECTED. ----
+    // The host-EXCLUDING barrier `SyncTag(2)` ({w0,w1,w2,w3}) cannot be
+    // lowered by the UDS-star topology (multi_worker/mod.rs:286-297),
+    // so the unmediated emit MUST fail. This is what distinguishes this
+    // cell from 06/distributed2 (where mediation is a complete no-op):
+    // if mediation were a no-op here, this `expect_err` would fail.
+    let unmediated_pw = acfg_to_events(&acfg);
+    let unmediated_sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar (unmediated)");
+    let unmediated_names = NameTables::from_acfg(&acfg);
+    let unmediated_emit = mp_uds_event::emit(
+        &unmediated_pw,
+        &unmediated_names,
+        &unmediated_sidecar,
+        &kernels,
+        &scratch.join("unmediated"),
+    );
+    let err = unmediated_emit.expect_err(
+        "15-transpose/distributed-rows: UNMEDIATED mp-uds-event emit MUST fail \
+         (host-excluding barrier rejected by Plan::build); if it succeeds, the \
+         mediation pass is a no-op and this oracle does not exercise mediation",
+    );
+    let err_text = format!("{err:?}");
+    assert!(
+        err_text.contains("exclude the host worker"),
+        "15-transpose/distributed-rows: UNMEDIATED emit must fail with the \
+         host-excluding-barrier ContractGap; got: {err_text}"
+    );
+
+    // ---- Mediate: same passes the mp-uds-event driver gate runs. ----
+    // The mp-uds-event driver wires apply_host_mediation_inject +
+    // apply_host_data_relay_inject (driver/src/main.rs ~525-563 +
+    // ~592-614); this oracle mirrors that pipeline order or the
+    // structural-twin invariant would not hold (the inputs to emit()
+    // would differ from production). Host election via the shared
+    // helper, mirroring the driver (memory
+    // feedback-driver-must-mirror-backend-election-exactly).
+    let preview = acfg_to_events(&acfg);
+    let used: std::collections::BTreeSet<_> = preview
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+    let host = backend_common::elect_host_from_name_workers(&acfg.name_workers, &used)
+        .expect("host election must succeed on 15-transpose/distributed-rows");
+    let acfg = apply_host_mediation_inject(acfg, host);
+    let acfg = apply_host_data_relay_inject(acfg, host);
+    let per_worker = acfg_to_events(&acfg);
+    let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
+    let names = NameTables::from_acfg(&acfg);
+
+    // ---- Half (b): post-mediation mp-uds-event == mp-tcp-event twin. ----
+    let uds_out = scratch.join("uds");
+    let tcp_out = scratch.join("tcp");
+    let uds =
+        mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels, &uds_out).expect("uds emit");
+    let tcp =
+        mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out).expect("tcp emit");
+
+    // Anchor: host (the mediated barrier's new hub) MUST now carry the
+    // formerly host-excluding barrier shim `Bar2` — host did NOT
+    // participate in SyncTag(2) pre-mediation, so this BITES where a
+    // bare barrier-substring would pass vacuously (host already crosses
+    // the host-INCLUDED barriers). Checked on the mp-uds-event bin.
+    let host_name = names.worker.get(&host).expect("host name").clone();
+    let uds_host_bin = uds
+        .worker_bins
+        .iter()
+        .find(|p| p.file_name().unwrap().to_str().unwrap() == format!("{host_name}.rs"))
+        .expect("host bin must be present in the mediated uds emit");
+    let uds_host_src = std::fs::read_to_string(uds_host_bin).expect("read uds host bin");
+    assert!(
+        uds_host_src.contains("struct Bar2 {") && uds_host_src.contains("let bar_2 = Bar2 {"),
+        "15-transpose/distributed-rows: after host-mediation the mp-uds-event \
+         host bin ({host_name}.rs) MUST declare the barrier shim for the \
+         formerly host-EXCLUDING barrier SyncTag(2) (`struct Bar2` / \
+         `let bar_2`). host bin:\n{uds_host_src}"
+    );
+
+    let mut uds_bins = uds.worker_bins.clone();
+    uds_bins.sort();
+    let mut tcp_bins = tcp.worker_bins.clone();
+    tcp_bins.sort();
+    assert_eq!(
+        uds_bins.len(),
+        tcp_bins.len(),
+        "per-worker bin counts must match across uds/tcp"
+    );
+    for (u, t) in uds_bins.iter().zip(tcp_bins.iter()) {
+        let u_name = u.file_name().unwrap().to_str().unwrap();
+        let u_src = std::fs::read_to_string(u).expect("read uds bin");
+        let t_src = std::fs::read_to_string(t).expect("read tcp bin");
+        assert_uds_bin_equiv_tcp(u_name, &u_src, &t_src);
+    }
+}
+
 /// AC#10 const-in-IndexExpr regression pin: any future regression in
 /// `pthreads_sync::render_const_expr_pub` (the shared renderer the
 /// multi_worker walker consumes) that fails to resolve the `ITERS`
