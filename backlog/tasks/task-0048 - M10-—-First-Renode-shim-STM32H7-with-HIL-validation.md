@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 12:16'
+updated_date: '2026-05-28 12:59'
 labels:
   - M10
   - backend
@@ -144,4 +144,26 @@ STILL TO DO for M10 proper (this task stays To Do/In Progress — the TEMPLATE i
 2. Stream the COMPUTED result (not a constant sentinel) over USART1 + diff captured bytes vs reference.bin (replace the grep with a binary diff).
 3. STM32H7 NucleusShim impl (DMA/IRQ/memory map) under backends/embedded-pattern/shims/stm32h7/.
 4. Generalise the recipe to examples 1/5/9 (PRD §11 M10 set) via the embedded-pattern emit, parameterised over example.
+
+=== Forward-carried from TASK-0048.01 (cycle 238, commit 42685fd): lib->bin transition for example 1 LANDED ===
+
+The M10 lib->bin transition (STILL-TO-DO item 1 from the cycle-237b list above) is DONE for example 1. The embedded-pattern backend now has an ADDITIVE bin-emit mode selected by driver flag --shim stm32h7 (PRD §10.3 quad's target-shim). emit_bin() in backends/embedded-pattern/src/lib.rs produces the full Renode-runnable no_std bin project; emit() (no --shim) is the UNCHANGED M9 lib. just renode-embedded-ex1 is the run-and-assert recipe (mirrors renode-uart-smoke). Captured line: 'NUC-EX1 len=1024 checksum=0'.
+
+Lessons the NEXT M10 slice (TASK-0048.02/.03 or the real STM32H7 shim, AC#1) inherits:
+
+1. THE UART HOOK IS dma_push, NOT new lowering. The save_output(c) effectful Fire already lowers (in render_fire) to shim.dma_push(0, c.as_ptr() as *const u8, size_of_val(&c)); shim.dma_wait(0). To stream the output you ONLY supply a concrete shim whose dma_push emits — no codegen change needed. The real STM32H7 shim (AC#1) replaces Usart1Shim's body, NOT the lowering. Same for the load hooks: alloc_in_region + the load dma_wait are where real input-fill (DMA from a sensor / Renode-injected region) plugs in.
+
+2. STILL-STUB INPUTS => zero output. Until alloc_in_region/load-dma_wait actually fill the arrays, the compute runs on zeros. The deterministic checksum is 0 BECAUSE of this, not despite it. TASK-0048.02 must wire a real input path (Renode sysbus WriteBytes / memory file backend / embedded input.bin bytes) BEFORE a reference.bin binary diff is meaningful.
+
+3. FRAMING CHOICE: deterministic ASCII line + grep-q, not raw bytes. Raw null bytes are fragile to assert from a shell recipe; the no_std u32->ASCII-decimal writer + wrapping checksum gives a robust, corruption-sensitive assertion. When TASK-0048.02 switches to a byte-exact reference.bin diff, the raw-byte path (stream c.as_ptr()[0..len] verbatim) is the natural replacement — keep the ASCII summary as a human-readable sentinel alongside.
+
+4. RENODE FACTS (re-confirmed, now from GENERATED firmware not just the hand template): STM32F7_USART hardwires TXE=true (TX poll never waits; back-pressure UNVALIDATED) BUT CR1=UE|TE enable IS load-bearing (drops bytes if TX disabled). RunFor 0.05 + quit; --disable-xwt --console --plain; platforms/cpus/stm32h743.repl bundled.
+
+5. memory.x: RAM<=128K (full DTCM); over-raising silently overflows DTCM (no linker error) unless axiSram@0x24000000 mapped. The generated bin MUST be its own empty [workspace] (else just build compiles ARM code on host -> fail).
+
+6. CHECK-FRAME on bin path is REJECTED with a typed EmitError forward-linking TASK-0048.04 (no_std clock). The reject is shared lib+bin (render_run_body). Naive schedules carry no check frames so it is latent; a real-time embedded schedule needs DWT CYCCNT (PRD §6.3.5: on_violation=panic BRICKS the device, prefer log/count).
+
+7. SHARED LOWERING: lib and bin both go through lower_kernels_and_run (single source of truth). emit_bin's single-worker guard is DUPLICATED (different return type than emit); both have sibling pin tests (rejects_multi_worker_* / bin_rejects_multi_worker_*) — keep them in lockstep.
+
+Remaining STILL-TO-DO for M10 proper (parent ACs): real STM32H7 NucleusShim DMA/IRQ/memory-map (AC#1, shims/stm32h7/ crate); computed-result + reference.bin diff (TASK-0048.02); examples 5+9 (TASK-0048.03); .resc under examples/NN/renode/ + tier-3 CI matrix row (AC#2/AC#3, TASK-0165); just e2e --milestone M10 (AC#4).
 <!-- SECTION:NOTES:END -->
