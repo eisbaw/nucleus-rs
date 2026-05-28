@@ -2,12 +2,15 @@
 //! state arrays of 16-jacobi and 11-game-of-life (TASK-0348, filed as
 //! TASK-0341.02 cycle-206 architect P3.3).
 //!
-//! ## The invariant
+//! ## What this pins — and what it does NOT
 //!
-//! Both examples rest on an UNSTATED codegen invariant: a data symbol
-//! that is never explicitly assigned by a Dataflow stmt before its
-//! first read is pre-initialised to all-zero by the backend's
-//! `vec![0; N]` allocation. Two consumers depend on it:
+//! This test pins the **zero-fill allocation strategy** (`vec![0; N]`)
+//! that the semantic invariant relies on — NOT the full semantic
+//! invariant itself. The distinction matters (cycle-226 architect P2):
+//! `vec![0; N]` is *necessary but not sufficient* for correctness.
+//!
+//! The full semantic invariant is two facts the codegen must jointly
+//! uphold, and which this test does NOT assert:
 //!
 //! 1. **The modular-wrap seed read.** 16-jacobi's kernel reads
 //!    `field[(t + ITERS) % (ITERS + 1)][...]` — at `t == 0` this
@@ -15,11 +18,25 @@
 //!    cells must be 0 (the kernel ignores them at `t == 0` and returns
 //!    the seed, but the READ still happens and must not be UB / garbage).
 //!    11-game-of-life has the identical `grid[(t + ITERS) % (ITERS + 1)]`
-//!    shape.
+//!    shape. The load-bearing fact is that `field[ITERS]` is *never
+//!    written before that read* — the zero-fill is what makes the read
+//!    well-defined, but a codegen that zero-filled AND then populated
+//!    the top slice would break the invariant while keeping this test
+//!    green.
 //! 2. **Dirichlet zero-boundary.** 16-jacobi's boundary cells
 //!    (`y in {0, H-1}` / `x in {0, W-1}`) are never written and must
 //!    stay 0 — the prog.algo.nuc documents this as
-//!    "Dirichlet zero-boundary condition by construction".
+//!    "Dirichlet zero-boundary condition by construction". The
+//!    load-bearing fact is the interior-loop write-bounds; a codegen
+//!    that widened the bounds to write boundary cells would break the
+//!    invariant while keeping this test green.
+//!
+//! The **semantic** invariant (1)+(2) is guarded end-to-end by the e2e
+//! differential (`just e2e` compares against `reference.bin`). THIS
+//! unit pin is the cheaper, more precise tripwire for the single most
+//! likely regression: an allocation-strategy change that drops the
+//! zero-fill (e.g. `vec![0; N]` → `Vec::with_capacity(N)` + push). It
+//! is an allocation-strategy pin, not a semantic-invariant pin.
 //!
 //! ## Why a unit-layer pin (precedent: TASK-0303 / TASK-0304)
 //!
@@ -30,7 +47,7 @@
 //! cycle swaps `vec![0; N]` for `Vec::with_capacity(N)` + push (or any
 //! non-zero-fill allocation), the emitted `main.rs` no longer carries
 //! the `vec![0; ...]` line and this test fails pointing straight at the
-//! zero-init contract.
+//! zero-fill allocation.
 //!
 //! The expected `vec![0; N]` sizes are derived from the example dims:
 //!
