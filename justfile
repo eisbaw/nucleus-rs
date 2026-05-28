@@ -575,6 +575,59 @@ renode-uart-smoke:
         exit 1; \
     fi
 
+# Tier-3 M10 GENERATED firmware -> Renode -> UART assertion (TASK-0048.01).
+# Unlike `renode-uart-smoke` (a hand-written sentinel firmware), this
+# GENERATES the example-1 (01-elementwise-add, naive) firmware via the
+# embedded-pattern backend's bin-emit mode (`--shim stm32h7`), cross-
+# compiles it under .#embedded, runs it headless in Renode under .#renode
+# on the bundled stm32h743 platform, captures USART1, and ASSERTS the
+# deterministic summary line `NUC-EX1 len=1024 checksum=0` — failing LOUD
+# on mismatch. This is the lib->bin transition closing AC#3/#4/#5.
+#
+# Self-contained: enters .#embedded for the thumbv7em cross-compile then
+# .#renode for the runtime, so it runs from the default shell:
+#   just renode-embedded-ex1
+#
+# HONEST LIMIT (TASK-0048.01 AC#7): the input-fill shim hooks are still
+# no-ops, so the output array stays zero-filled => checksum=0. This proves
+# the EMISSION pipeline (boot+run+stream+capture), NOT value-correctness;
+# streaming a COMPUTED result from real inputs + a binary diff vs
+# reference.bin is parent TASK-0048 / follow-up work.
+#
+# DELIBERATELY NOT wired into `just ci` (needs the .#embedded + .#renode
+# shells) — same tier-3-outside-default-ci rule as check-embedded /
+# renode-uart-smoke / TASK-0223. The generated project is its own empty
+# [workspace] in a scratch dir (cleaned on exit), so it never enters the
+# nucleus/ host workspace.
+renode-embedded-ex1:
+    @echo "tier-3 M10 GENERATED embedded-pattern ex1 -> Renode -> UART (TASK-0048.01)"
+    @set -eu; \
+    resc="$(pwd)/tests/renode/embedded-ex1/run.resc"; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    echo "=== generating ex1 bin (embedded-pattern --shim stm32h7) ==="; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    ./target/release/nucleus build \
+        --algo "../nuc-nucleus/examples/01-elementwise-add/prog.algo.nuc" \
+        --sched "../nuc-nucleus/examples/01-elementwise-add/schedules/naive.sched.nuc" \
+        --backend embedded-pattern --shim stm32h7 \
+        --out "$gen"; \
+    cd ..; \
+    elf="$gen/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
+    echo "=== cross-compiling generated firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$gen' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode), capturing USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$resc" >"$log" 2>&1; \
+    echo "=== captured USART1 ==="; cat "$out"; \
+    if grep -q 'NUC-EX1 len=1024 checksum=0' "$out"; then \
+        echo "OK: Renode captured the GENERATED firmware's deterministic USART1 line (M10 ex1 lib->bin + capture verified)."; \
+    else \
+        echo "FAIL: expected 'NUC-EX1 len=1024 checksum=0' not found in captured USART1 output"; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

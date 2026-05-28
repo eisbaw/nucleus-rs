@@ -23,6 +23,18 @@
 # deliberately EXCLUDES this backend — it is compile-only, not run-and-
 # diff. The dedicated `just check-embedded` recipe is the M9 acceptance.
 #
+# ## M10 additive bin-emit mode (TASK-0048.01)
+#
+# With the driver flag `--shim stm32h7` the backend ALSO emits a
+# Renode-runnable no_std BIN (cortex-m-rt #[entry] + #[panic_handler] +
+# STM32H743 memory.x + a concrete USART1 shim whose `dma_push` streams a
+# deterministic ASCII summary line) — `emit_bin` in src/lib.rs. The M9
+# lib path (`emit`, no `--shim`) is UNCHANGED; the two share the same
+# event lowering. Runtime acceptance: `just renode-embedded-ex1` (runs
+# the GENERATED example-1 firmware in Renode under `.#renode`, captures
+# USART1, asserts the line). Real STM32H7 DMA/IRQ shim + computed-result
+# streaming remain parent TASK-0048 work.
+#
 # ## Why this crate is a NORMAL std crate
 #
 # The backend (this crate) runs on the HOST as part of the nucleus

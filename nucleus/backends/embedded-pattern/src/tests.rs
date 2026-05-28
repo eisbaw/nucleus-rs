@@ -59,6 +59,48 @@ fn emit_example_naive(example: &str, scratch_leaf: &str) -> String {
     std::fs::read_to_string(&res.lib_rs).expect("read emitted lib.rs")
 }
 
+/// Lower `example`'s `naive` schedule and emit the no_std BIN (M10
+/// `--shim stm32h7`) into a scratch dir; return the emitted main.rs
+/// source. The bin path is the SAME lowering as the lib, with the
+/// bare-metal scaffolding (cortex-m-rt entry + USART1 shim) added — so
+/// the cross-compile / Renode run is the genuine acceptance (the
+/// `renode-embedded-ex1` just recipe). This is the fast shape-drift
+/// detector (TASK-0048.01).
+fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
+    use crate::emit_bin;
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(example);
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/naive.sched.nuc")).expect("sched source");
+
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
+    );
+    let kernels = ex.join("kernels.rs");
+
+    let out = root
+        .join("nucleus/target/embedded-pattern-test-scratch")
+        .join(scratch_leaf);
+    let _ = std::fs::remove_dir_all(&out);
+
+    let res =
+        emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded bin emit");
+    // Every bare-metal scaffolding file must land on disk.
+    assert!(res.main_rs.exists(), "emitted src/main.rs must exist");
+    assert!(res.cargo_toml.exists(), "emitted Cargo.toml must exist");
+    assert!(res.memory_x.exists(), "emitted memory.x must exist");
+    assert!(res.build_rs.exists(), "emitted build.rs must exist");
+    assert!(res.cargo_config.exists(), "emitted .cargo/config.toml must exist");
+    std::fs::read_to_string(&res.main_rs).expect("read emitted main.rs")
+}
+
 #[test]
 fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
     let lib = emit_example_naive("01-elementwise-add", "ex01_naive");
@@ -123,6 +165,58 @@ fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
         lib.contains("pub fn run<S: NucleusShim>(shim: &mut S) {"),
         "run entry point missing:\n{lib}"
     );
+}
+
+#[test]
+fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
+    // M10 (TASK-0048.01): the --shim stm32h7 bin path for example 1.
+    let main = emit_bin_example_naive("01-elementwise-add", "ex01_bin_naive");
+
+    // no_std / no_main firmware with cortex-m-rt entry + panic handler.
+    assert!(main.contains("#![no_std]"), "must be no_std:\n{main}");
+    assert!(main.contains("#![no_main]"), "must be no_main:\n{main}");
+    assert!(main.contains("use cortex_m_rt::entry;"), "missing cortex-m-rt:\n{main}");
+    assert!(main.contains("#[entry]"), "missing #[entry]:\n{main}");
+    assert!(main.contains("#[panic_handler]"), "missing #[panic_handler]:\n{main}");
+
+    // Same trait surface as the lib (verbatim reuse) + the concrete shim.
+    assert!(main.contains("pub trait NucleusShim"), "trait missing:\n{main}");
+    assert!(
+        main.contains("impl NucleusShim for Usart1Shim"),
+        "Usart1Shim impl missing:\n{main}"
+    );
+
+    // The pure kernel is extracted verbatim (same as the lib path).
+    assert!(
+        main.contains("pub fn add(a: i32, b: i32) -> i32"),
+        "pure kernel `add` not extracted:\n{main}"
+    );
+    assert!(main.contains("a.wrapping_add(b)"), "kernel body not verbatim:\n{main}");
+    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+
+    // The lowered run + the save Fire -> dma_push (the UART hook).
+    assert!(
+        main.contains("pub fn run<S: NucleusShim>(shim: &mut S) {"),
+        "run entry missing:\n{main}"
+    );
+    assert!(
+        main.contains("shim.dma_push(0, c.as_ptr() as *const u8"),
+        "save Fire did not lower to dma_push (the UART hook):\n{main}"
+    );
+
+    // The deterministic ASCII framing the Renode recipe asserts. (Inputs
+    // are stub-zero => the runtime line is `NUC-EX1 len=1024 checksum=0`;
+    // the byte length 1024 is asserted at RUNTIME by the recipe, not
+    // here — the source carries the format string, not the value.)
+    assert!(
+        main.contains("NUC-EX1 len="),
+        "firmware must emit the NUC-EX1 summary line:\n{main}"
+    );
+    assert!(main.contains(" checksum="), "summary line needs checksum:\n{main}");
+
+    // main enables USART then runs.
+    assert!(main.contains("let mut shim = Usart1Shim::new();"), "main must build shim:\n{main}");
+    assert!(main.contains("run(&mut shim);"), "main must call run:\n{main}");
 }
 
 #[test]
@@ -192,5 +286,36 @@ fn rejects_multi_worker_with_m11_forward_link() {
     assert!(
         msg.contains("single-worker") && msg.contains("TASK-0049"),
         "multi-worker rejection must forward-link M11 (TASK-0049): got {msg}"
+    );
+}
+
+#[test]
+fn bin_rejects_multi_worker_with_m11_forward_link() {
+    // The M10 bin path (emit_bin) must reject multi-worker IDENTICALLY
+    // to the lib path — the single-worker guard is duplicated in
+    // emit_bin (it cannot share emit's, having a different return type),
+    // so pin both so a future edit to one cannot silently diverge
+    // (feedback-silent-sibling-defect).
+    use crate::emit_bin;
+    use nucleus_compiler::event::{Event, FireBinding, IterTile, KernelId, WorkerId};
+    use std::collections::BTreeMap;
+    let bare_fire = || Event::Fire {
+        kernel: KernelId(0),
+        tile: IterTile::default(),
+        bindings: FireBinding::default(),
+    };
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(WorkerId(0), vec![bare_fire()]);
+    per_worker.insert(WorkerId(1), vec![bare_fire()]);
+    let names = crate::NameTables::default();
+    let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
+    let kernels = repo_root().join("nuc-nucleus/examples/01-elementwise-add/kernels.rs");
+    let out = repo_root().join("nucleus/target/embedded-pattern-test-scratch/reject_multi_bin");
+    let err = emit_bin(&per_worker, &names, &sidecar, &kernels, &out)
+        .expect_err("multi-worker bin must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("single-worker") && msg.contains("TASK-0049"),
+        "multi-worker bin rejection must forward-link M11 (TASK-0049): got {msg}"
     );
 }

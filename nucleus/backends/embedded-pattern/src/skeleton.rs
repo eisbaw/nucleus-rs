@@ -139,6 +139,320 @@ pub fn render_cargo_toml() -> String {
     )
 }
 
+// --------------------------------------------------------------------
+// M10 (TASK-0048.01) bin-emit templates — the Renode-runnable no_std
+// BINARY shape. ADDITIVE: these are SEPARATE functions from the M9 lib
+// templates above; the lib path (render_cargo_toml / render_lib) is
+// UNCHANGED. The bin shape is the OPPOSITE of the lib in every honest
+// respect (it HAS a [[bin]], a panic profile, a panic_handler, a
+// cortex-m-rt entry, a linker script) — so the docs here state the bin
+// facts, NOT the lib facts (feedback-verbatim-copy-comment-doc-lie).
+//
+// These mirror the PROVEN hand-written template at
+// tests/renode/uart-smoke/ (commits b57d030 + 7de02f9), verified
+// end-to-end in Renode by the cycle-237b review gate. The register
+// addresses + bits below are the SAME ones the architect verified
+// against the actual Renode STM32F7_USART.cs model source.
+
+/// The `Usart1Shim` impl emitted into the generated BIN's `main.rs`
+/// (M10, TASK-0048.01). This is the CONCRETE [`NucleusShim`] the M9
+/// `StubShim` no-ops: its `dma_push` IS the UART emission. It walks the
+/// `len` bytes of the drained output region (the `save_output(c)`
+/// effectful Fire lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
+/// size_of_val(&c)); shim.dma_wait(0)` — see lib.rs `render_fire`),
+/// accumulating a wrapping additive checksum, then prints a single
+/// DETERMINISTIC ASCII line `NUC-EX1 len=<N> checksum=<sum>\n` over
+/// USART1.
+///
+/// HONEST LIMITATION (carried from M9, TASK-0048.01 AC#7): the input-
+/// fill hooks (`alloc_in_region` / the load `dma_wait`) are still no-ops
+/// here, so the output array `c` stays zero-filled. For example 1 that
+/// is `[i32; 256]` = 1024 bytes, all zero => `len=1024 checksum=0`. This
+/// proves the EMISSION pipeline (boot -> run -> stream -> capture), NOT
+/// value-correctness. Streaming a COMPUTED result from REAL inputs (and
+/// a binary diff vs reference.bin) needs a real input path — parent
+/// TASK-0048, follow-up TASK-0048.02.
+///
+/// REGISTERS (STM32H7 USART1 @ 0x4001_1000; Renode UART.STM32F7_USART):
+/// CR1 @ +0x00 (UE bit0, TE bit3), ISR @ +0x1C (TXE bit7), TDR @ +0x28.
+/// Renode hardwires TXE=true (the TX poll never waits there; back-
+/// pressure is UNVALIDATED — but the poll is the correct pattern, so we
+/// emit it). CR1 = UE|TE enable IS load-bearing (the model DROPS bytes
+/// if the transmitter is not enabled).
+pub const USART1_SHIM_SRC: &str = "\
+// STM32H7 USART1 — Renode models it as UART.STM32F7_USART @ 0x4001_1000
+// (platforms/cpus/stm32h743.repl). Register layout (STM32F7/H7):
+//   CR1 @ +0x00  (UE = bit 0, TE = bit 3)
+//   ISR @ +0x1C  (TXE = bit 7: transmit data register empty)
+//   TDR @ +0x28  (transmit data register)
+const USART1_CR1: *mut u32 = 0x4001_1000 as *mut u32;
+const USART1_ISR: *const u32 = 0x4001_101C as *const u32;
+const USART1_TDR: *mut u32 = 0x4001_1028 as *mut u32;
+const USART1_TXE: u32 = 1 << 7;
+
+/// Push one byte out over USART1. Renode's STM32F7_USART hardwires
+/// TXE=true so this poll never actually waits there; on real silicon it
+/// blocks until the transmit register drains. The poll is the correct
+/// pattern regardless.
+fn usart1_putc(b: u8) {
+    unsafe {
+        while core::ptr::read_volatile(USART1_ISR) & USART1_TXE == 0 {}
+        core::ptr::write_volatile(USART1_TDR, b as u32);
+    }
+}
+
+/// Write a `u32` as ASCII decimal over USART1 (no `core::fmt`, no
+/// allocator — a hand-rolled no_std decimal writer). Emits at least one
+/// digit (prints `0` for zero).
+fn usart1_put_u32(mut v: u32) {
+    // u32::MAX is 10 digits; a 10-byte scratch buffer suffices.
+    let mut buf = [0u8; 10];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let mut j = i;
+    while j < buf.len() {
+        usart1_putc(buf[j]);
+        j += 1;
+    }
+}
+
+/// The CONCRETE shim for the STM32H7 Renode target. `dma_push` is the
+/// UART emission: it walks the `len` bytes of the drained region,
+/// accumulates a wrapping additive checksum, and the firmware prints
+/// `NUC-EX1 len=<len> checksum=<sum>` over USART1. `alloc_in_region` /
+/// `dma_wait` / `irq_barrier` are still no-ops (TASK-0048.01 AC#7: real
+/// DMA/IRQ is TASK-0048 AC#1).
+struct Usart1Shim;
+
+impl Usart1Shim {
+    fn new() -> Self {
+        Usart1Shim
+    }
+}
+
+impl NucleusShim for Usart1Shim {
+    fn alloc_in_region(&mut self, _region: usize, _bytes: usize) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+    fn dma_push(&mut self, _chan: usize, src: *const u8, len: usize) {
+        // Walk the drained region byte-by-byte, accumulating a wrapping
+        // additive checksum, then stream a deterministic ASCII summary
+        // line over USART1. (We do NOT stream the raw bytes: a raw-null-
+        // byte capture is fragile to assert from a shell recipe; the
+        // ASCII line is robust to `grep -q` AND the checksum changes if
+        // the stream/compute path ever corrupts a byte.)
+        let mut sum: u32 = 0;
+        let mut i = 0usize;
+        while i < len {
+            let byte = unsafe { core::ptr::read_volatile(src.add(i)) };
+            sum = sum.wrapping_add(byte as u32);
+            i += 1;
+        }
+        for &b in b\"NUC-EX1 len=\" {
+            usart1_putc(b);
+        }
+        usart1_put_u32(len as u32);
+        for &b in b\" checksum=\" {
+            usart1_putc(b);
+        }
+        usart1_put_u32(sum);
+        usart1_putc(b'\\n');
+    }
+    fn dma_wait(&mut self, _chan: usize) {}
+    fn irq_barrier(&mut self, _tag: u32) {}
+}
+";
+
+/// Assemble the full Renode-runnable `src/main.rs` for the BIN target
+/// (M10, TASK-0048.01). Mirrors the proven template at
+/// tests/renode/uart-smoke/src/main.rs: a single self-contained
+/// `#![no_std]` / `#![no_main]` file with a cortex-m-rt `#[entry]`, a
+/// `#[panic_handler]`, the `NucleusShim` trait + `StubShim` (verbatim
+/// reuse of [`NUCLEUS_SHIM_SRC`] so the trait surface is IDENTICAL to
+/// the lib path), `mod kernels` (the verbatim pure bodies), the lowered
+/// `run<S>`, and the concrete [`USART1_SHIM_SRC`] `Usart1Shim`.
+///
+/// `kernel_defs` is the already-extracted pure kernel fn text. `run_body`
+/// is the rendered body of `fn run<S: NucleusShim>(shim: &mut S)` — the
+/// SAME body the lib path emits (the only difference between lib and bin
+/// is the surrounding scaffolding, not the lowering).
+pub fn render_bin_main(kernel_defs: &str, run_body: &str) -> String {
+    let mut s = String::new();
+    s.push_str(
+        "//! Generated by the nucleus pre-compiler (embedded-pattern, M10 BIN).\n\
+         //! Do not edit; rerun `nucleus build --shim stm32h7` to regenerate.\n\
+         //!\n\
+         //! A Renode-runnable `no_std` BIN for the STM32H7 (Cortex-M7).\n\
+         //! Boots via cortex-m-rt, calls the lowered `run`, and the\n\
+         //! effectful save Fire's `dma_push` streams a deterministic\n\
+         //! ASCII summary line over USART1 (captured + asserted in Renode).\n\
+         //! Mirrors tests/renode/uart-smoke/ (the proven M10 template).\n\
+         #![no_std]\n\
+         #![no_main]\n\
+         #![allow(unused_mut, dead_code, unused_variables)]\n\
+         \n\
+         use core::panic::PanicInfo;\n\
+         use cortex_m_rt::entry;\n\
+         \n",
+    );
+    s.push_str(NUCLEUS_SHIM_SRC);
+    s.push('\n');
+    s.push_str(USART1_SHIM_SRC);
+    s.push('\n');
+    // The pure kernel bodies live in a private `mod kernels` — the same
+    // `kernels::<name>(..)` call spelling the run body emits (identical
+    // to the lib path).
+    s.push_str("/// Pure compute kernels, copied verbatim from the source\n");
+    s.push_str("/// kernels.rs (PRD \u{00A7}6.2.2: Nucleus does not interpolate kernel\n");
+    s.push_str("/// bodies). The effectful I/O kernels are NOT here — they map to\n");
+    s.push_str("/// `NucleusShim` hooks in `run` below.\n");
+    s.push_str("mod kernels {\n");
+    for line in kernel_defs.lines() {
+        if line.is_empty() {
+            s.push('\n');
+        } else {
+            s.push_str("    ");
+            s.push_str(line);
+            s.push('\n');
+        }
+    }
+    s.push_str("}\n\n");
+    // The lowered run — identical body to the lib path.
+    s.push_str(
+        "/// Lower the single-worker event list. Generic over any\n\
+         /// [`NucleusShim`]; the BIN instantiates it with the concrete\n\
+         /// `Usart1Shim` (whose `dma_push` IS the UART emission).\n\
+         pub fn run<S: NucleusShim>(shim: &mut S) {\n",
+    );
+    s.push_str(run_body);
+    s.push_str("}\n\n");
+    // The cortex-m-rt entry point: enable USART1, build the concrete
+    // shim, run, then spin. The save Fire's dma_push (inside `run`) emits
+    // the deterministic summary line.
+    s.push_str(
+        "#[entry]\n\
+         fn main() -> ! {\n    \
+             unsafe {\n        \
+                 // Enable the USART (UE = bit 0) and its transmitter (TE = bit 3).\n        \
+                 // This enable IS load-bearing under Renode (the model drops bytes\n        \
+                 // if the transmitter is not enabled).\n        \
+                 core::ptr::write_volatile(USART1_CR1, (1 << 0) | (1 << 3));\n    \
+             }\n    \
+             let mut shim = Usart1Shim::new();\n    \
+             run(&mut shim);\n    \
+             loop {}\n\
+         }\n\
+         \n\
+         #[panic_handler]\n\
+         fn panic(_: &PanicInfo) -> ! {\n    \
+             loop {}\n\
+         }\n",
+    );
+    s
+}
+
+/// The generated BIN project's `Cargo.toml` (M10, TASK-0048.01). The
+/// OPPOSITE of [`render_cargo_toml`]'s lib shape: it HAS a `[[bin]]`,
+/// the `cortex-m-rt` dependency, and `panic = "abort"` profiles (a
+/// runnable no_std bin needs all three — there is no unwinder on bare
+/// metal). Standalone empty `[workspace]` so it is NOT pulled into the
+/// nucleus/ cargo workspace (otherwise `just build` / `just ci` would
+/// try to build ARM-only code on the host and fail). Mirrors
+/// tests/renode/uart-smoke/Cargo.toml.
+pub fn render_bin_cargo_toml() -> String {
+    String::from(
+        "# Generated by the nucleus pre-compiler (embedded-pattern, M10 BIN). Do not edit; \
+         rerun `nucleus build --shim stm32h7` to regenerate.\n\
+         [package]\n\
+         name        = \"nuc-embedded-generated\"\n\
+         version     = \"0.0.0\"\n\
+         edition     = \"2021\"\n\
+         publish     = false\n\
+         \n\
+         [[bin]]\n\
+         name = \"nuc-embedded-generated\"\n\
+         path = \"src/main.rs\"\n\
+         \n\
+         [dependencies]\n\
+         cortex-m-rt = \"0.7\"\n\
+         \n\
+         [profile.dev]\n\
+         panic = \"abort\"\n\
+         \n\
+         [profile.release]\n\
+         panic = \"abort\"\n\
+         \n\
+         [workspace]\n\
+         # Empty: this crate is standalone, not part of any parent workspace\n\
+         # (it cross-compiles only for thumbv7em-none-eabihf).\n",
+    )
+}
+
+/// The STM32H743 `memory.x` linker fragment (M10, TASK-0048.01).
+/// Mirrors tests/renode/uart-smoke/memory.x EXACTLY: 128K FLASH @
+/// 0x08000000, 128K RAM @ 0x20000000 (the FULL DTCM). DO NOT raise RAM
+/// past 128K without mapping a larger region (axiSram @ 0x24000000), or
+/// the stack would silently overflow DTCM with no linker error.
+pub fn render_memory_x() -> String {
+    String::from(
+        "/* STM32H743 memory map (from Renode platforms/cpus/stm32h743.repl):\n\
+        \x20  flashBank1 @ 0x08000000 (size 0x100000 = 1024K) and DTCM @ 0x20000000\n\
+        \x20  (size 0x20000 = 128K). FLASH here is a strict subset (128K of 1024K).\n\
+        \x20  RAM here is the FULL DTCM (128K == 0x20000) — do NOT raise RAM LENGTH\n\
+        \x20  past 128K without mapping a larger region (e.g. axiSram @ 0x24000000),\n\
+        \x20  or the stack would silently overflow DTCM with no linker error. */\n\
+        MEMORY\n\
+        {\n\
+        \x20 FLASH : ORIGIN = 0x08000000, LENGTH = 128K\n\
+        \x20 RAM   : ORIGIN = 0x20000000, LENGTH = 128K\n\
+        }\n",
+    )
+}
+
+/// The generated BIN's `build.rs` (M10, TASK-0048.01). Puts `memory.x`
+/// on the linker search path so cortex-m-rt's `link.x` finds it.
+/// Mirrors tests/renode/uart-smoke/build.rs.
+pub fn render_build_rs() -> String {
+    String::from(
+        "// Put memory.x on the linker search path so cortex-m-rt's link.x finds it.\n\
+        use std::env;\n\
+        use std::fs;\n\
+        use std::path::PathBuf;\n\
+        \n\
+        fn main() {\n    \
+            let out = PathBuf::from(env::var(\"OUT_DIR\").unwrap());\n    \
+            fs::write(out.join(\"memory.x\"), include_bytes!(\"memory.x\")).unwrap();\n    \
+            println!(\"cargo:rustc-link-search={}\", out.display());\n    \
+            println!(\"cargo:rerun-if-changed=memory.x\");\n    \
+            println!(\"cargo:rerun-if-changed=build.rs\");\n\
+        }\n",
+    )
+}
+
+/// The generated BIN's `.cargo/config.toml` (M10, TASK-0048.01).
+/// Defaults the target to thumbv7em-none-eabihf and links via
+/// cortex-m-rt's bundled `link.x`. Mirrors
+/// tests/renode/uart-smoke/.cargo/config.toml.
+pub fn render_cargo_config() -> String {
+    String::from(
+        "# cortex-m-rt links via its bundled link.x (which pulls in memory.x from\n\
+        # the build-script search path). Default the target so a bare `cargo\n\
+        # build` cross-compiles for the Cortex-M7.\n\
+        [target.thumbv7em-none-eabihf]\n\
+        rustflags = [\"-C\", \"link-arg=-Tlink.x\"]\n\
+        \n\
+        [build]\n\
+        target = \"thumbv7em-none-eabihf\"\n",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +502,98 @@ mod tests {
         // The kernel def is indented inside the mod.
         assert!(s.contains("    pub fn add(a: i32, b: i32) -> i32 { a }"));
         assert!(s.contains("pub fn run<S: NucleusShim>(shim: &mut S) {"));
+    }
+
+    // ---- M10 (TASK-0048.01) bin-emit template tests ----
+
+    #[test]
+    fn render_bin_cargo_toml_is_a_runnable_bin() {
+        // The bin shape is the OPPOSITE of the lib: it HAS a [[bin]], a
+        // cortex-m-rt dep, and panic=abort profiles, and is its own
+        // empty [workspace].
+        let s = render_bin_cargo_toml();
+        assert!(s.contains("[[bin]]"), "bin Cargo.toml must declare [[bin]]");
+        assert!(
+            s.contains("cortex-m-rt = \"0.7\""),
+            "bin Cargo.toml must depend on cortex-m-rt 0.7"
+        );
+        assert!(
+            s.contains("[profile.dev]") && s.contains("[profile.release]"),
+            "bin Cargo.toml must set panic=abort on both profiles"
+        );
+        assert!(
+            s.matches("panic = \"abort\"").count() == 2,
+            "panic=abort must appear on both profiles"
+        );
+        assert!(
+            s.contains("[workspace]"),
+            "bin Cargo.toml must be its own empty [workspace] (isolation)"
+        );
+        assert!(
+            !s.contains("[lib]"),
+            "bin Cargo.toml must NOT declare [lib]"
+        );
+    }
+
+    #[test]
+    fn render_bin_main_is_a_runnable_firmware() {
+        let s = render_bin_main(
+            "pub fn add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }\n",
+            "    let mut c: [i32; 256] = [0; 256];\n",
+        );
+        // no_std / no_main firmware header.
+        assert!(s.contains("#![no_std]"), "bin main must be no_std");
+        assert!(s.contains("#![no_main]"), "bin main must be no_main");
+        // cortex-m-rt entry + panic handler (a runnable bin needs both;
+        // the lib has NEITHER — keep the docs honest per class).
+        assert!(s.contains("use cortex_m_rt::entry;"), "missing cortex-m-rt import");
+        assert!(s.contains("#[entry]"), "missing #[entry]");
+        assert!(s.contains("#[panic_handler]"), "missing #[panic_handler]");
+        // The SAME trait surface as the lib (verbatim reuse).
+        assert!(s.contains("pub trait NucleusShim"), "trait missing");
+        assert!(s.contains("struct StubShim"), "StubShim missing (verbatim reuse)");
+        // The concrete USART1 shim — its dma_push IS the UART emission.
+        assert!(s.contains("struct Usart1Shim"), "Usart1Shim missing");
+        assert!(
+            s.contains("impl NucleusShim for Usart1Shim"),
+            "Usart1Shim must impl NucleusShim"
+        );
+        // The deterministic ASCII summary framing.
+        assert!(
+            s.contains("NUC-EX1 len="),
+            "firmware must emit the deterministic NUC-EX1 summary line"
+        );
+        assert!(s.contains(" checksum="), "summary line must include checksum=");
+        // USART1 registers exactly as the proven template.
+        assert!(s.contains("0x4001_1000"), "USART1_CR1 address");
+        assert!(s.contains("0x4001_101C"), "USART1_ISR address");
+        assert!(s.contains("0x4001_1028"), "USART1_TDR address");
+        // main enables the USART then calls run.
+        assert!(s.contains("fn main() -> !"), "missing entry main");
+        assert!(s.contains("let mut shim = Usart1Shim::new();"), "main must build the shim");
+        assert!(s.contains("run(&mut shim);"), "main must call run");
+        // The kernel def is indented inside mod kernels (same as lib).
+        assert!(s.contains("    pub fn add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }"));
+        assert!(s.contains("pub fn run<S: NucleusShim>(shim: &mut S) {"));
+    }
+
+    #[test]
+    fn memory_x_pins_128k_flash_and_ram() {
+        let s = render_memory_x();
+        assert!(s.contains("ORIGIN = 0x08000000, LENGTH = 128K"), "FLASH region");
+        assert!(s.contains("ORIGIN = 0x20000000, LENGTH = 128K"), "RAM region");
+    }
+
+    #[test]
+    fn build_rs_and_cargo_config_target_thumbv7em() {
+        let b = render_build_rs();
+        assert!(b.contains("memory.x"), "build.rs must wire memory.x");
+        assert!(b.contains("rustc-link-search"), "build.rs must add link search");
+        let c = render_cargo_config();
+        assert!(
+            c.contains("[target.thumbv7em-none-eabihf]"),
+            "config must target thumbv7em-none-eabihf"
+        );
+        assert!(c.contains("-Tlink.x"), "config must link via link.x");
     }
 }

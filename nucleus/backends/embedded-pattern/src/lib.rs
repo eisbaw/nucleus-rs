@@ -1,12 +1,26 @@
 //! `embedded-pattern` backend — the GENERIC tier-3 embedded codegen
-//! (PRD §7.3 / §11 M9, TASK-0047).
+//! (PRD §7.3 / §11 M9+M10, TASK-0047 / TASK-0048.01).
 //!
-//! Emits a SELF-CONTAINED `no_std` **library** crate that lowers the
-//! per-worker [`Event`] list against a [`NucleusShim`] trait (defined in
-//! the emitted lib, not here). The acceptance is COMPILE-ONLY: the
-//! generated lib must pass `cargo check --target thumbv7em-none-eabihf`
-//! against a do-nothing STUB shim. Run that check via `just
-//! check-embedded` under `nix develop .#embedded`.
+//! Two emit modes, sharing the SAME event lowering:
+//!
+//! - [`emit`] (M9, the default, no `--shim`): a SELF-CONTAINED `no_std`
+//!   **library** crate that lowers the per-worker [`Event`] list against
+//!   a [`NucleusShim`] trait. The acceptance is COMPILE-ONLY: the
+//!   generated lib must pass `cargo check --target thumbv7em-none-eabihf`
+//!   against a do-nothing STUB shim. Run that check via `just
+//!   check-embedded` under `nix develop .#embedded`.
+//! - [`emit_bin`] (M10, `--shim stm32h7`, TASK-0048.01): a
+//!   Renode-runnable `no_std` **binary** (cortex-m-rt `#[entry]` +
+//!   `#[panic_handler]` + STM32H743 `memory.x` + a concrete `Usart1Shim`
+//!   whose `dma_push` streams a deterministic ASCII summary line over
+//!   USART1). Runtime acceptance: `just renode-embedded-ex1` (runs the
+//!   GENERATED example-1 firmware in Renode, captures USART1, asserts
+//!   the line). The two modes share kernel extraction + the `run<S>`
+//!   body via `lower_kernels_and_run`; only the surrounding scaffolding
+//!   differs. The real STM32H7 DMA/IRQ shim and computed-result
+//!   streaming (real inputs + reference.bin diff) remain parent
+//!   TASK-0048 work — the M10 slice proves the EMISSION pipeline
+//!   (boot+run+stream+capture), not value-correctness.
 //!
 //! # The std-bound-kernel problem and its resolution
 //!
@@ -110,6 +124,28 @@ pub struct EmitResult {
     pub lib_rs: PathBuf,
 }
 
+/// Paths to the files [`emit_bin`] writes (M10, TASK-0048.01). Unlike
+/// [`EmitResult`] (the compile-only LIB), this is a Renode-runnable
+/// `no_std` BIN project: a self-contained `src/main.rs` (cortex-m-rt
+/// entry + panic handler + USART1 streaming) plus the bare-metal
+/// scaffolding (`Cargo.toml` with `[[bin]]`, `memory.x`, `build.rs`,
+/// `.cargo/config.toml`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinEmitResult {
+    /// The generated Cargo project root (== input `out_dir`).
+    pub project_dir: PathBuf,
+    /// Path to the emitted `Cargo.toml` (with `[[bin]]` + cortex-m-rt).
+    pub cargo_toml: PathBuf,
+    /// Path to the emitted `src/main.rs` (the whole no_std firmware).
+    pub main_rs: PathBuf,
+    /// Path to the emitted `memory.x` linker fragment.
+    pub memory_x: PathBuf,
+    /// Path to the emitted `build.rs`.
+    pub build_rs: PathBuf,
+    /// Path to the emitted `.cargo/config.toml`.
+    pub cargo_config: PathBuf,
+}
+
 /// Emit a `no_std` lib project from the per-worker EventList.
 ///
 /// Wire contract: consumes the per-worker [`Event`] lists + the
@@ -176,6 +212,97 @@ pub fn emit(
     })
 }
 
+/// Emit a Renode-runnable `no_std` BIN project from the per-worker
+/// EventList (M10, TASK-0048.01 — the lib->bin transition).
+///
+/// ADDITIVE: this is a SEPARATE entry point from [`emit`]. The driver
+/// dispatches here when `--shim stm32h7` is passed; the bare `--backend
+/// embedded-pattern` (no `--shim`) still goes through [`emit`] (the
+/// unchanged M9 compile-only lib path). The two share the SAME lowering
+/// ([`render_run_body`] + verbatim kernel extraction); the bin adds the
+/// bare-metal scaffolding (cortex-m-rt entry, panic handler, linker
+/// script, USART1 streaming shim).
+///
+/// Wire contract is IDENTICAL to [`emit`] (no `&ACFG` / `&LinkedIR`).
+/// The single-worker / no-block / no-check-frame rejections are reused
+/// via [`render_run_body`], so an unsupported schedule fails loud with
+/// the same typed [`EmitError`] here as on the lib path.
+///
+/// SCOPE (TASK-0048.01): example 1 (01-elementwise-add) single-worker
+/// naive. The deterministic UART line is `NUC-EX1 len=<N> checksum=<sum>`;
+/// under the still-stub input hooks the output stays zero-filled, so the
+/// proven values are `len=1024 checksum=0`. This proves the EMISSION
+/// pipeline, not value-correctness (see [`skeleton::USART1_SHIM_SRC`]
+/// docs and TASK-0048.01 AC#7).
+pub fn emit_bin(
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_rs_path: &Path,
+    out_dir: &Path,
+) -> Result<BinEmitResult, EmitError> {
+    // Reuse the EXACT single-worker projection + rejection of `emit`.
+    let used_workers: Vec<WorkerId> = per_worker
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+    if used_workers.len() > 1 {
+        return Err(EmitError::UnsupportedFeature(format!(
+            "embedded-pattern (M10 bin) is single-worker; this schedule \
+             uses {} workers. Multi-MCU embedded codegen (workers on \
+             co-simulated MCUs over SPI / Ethernet) is M11 — TASK-0049.",
+            used_workers.len()
+        )));
+    }
+
+    let events: &[Event] = used_workers
+        .first()
+        .and_then(|w| per_worker.get(w))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let kernels_src =
+        fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
+            path: kernels_rs_path.to_path_buf(),
+            source: e,
+        })?;
+
+    let main_src = render_main_rs(events, names, sidecar, &kernels_src)?;
+
+    let src_dir = out_dir.join("src");
+    fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
+        path: src_dir.clone(),
+        source: e,
+    })?;
+    let cargo_dir = out_dir.join(".cargo");
+    fs::create_dir_all(&cargo_dir).map_err(|e| EmitError::OutputCreateFailed {
+        path: cargo_dir.clone(),
+        source: e,
+    })?;
+
+    let cargo_toml = out_dir.join("Cargo.toml");
+    let main_rs = src_dir.join("main.rs");
+    let memory_x = out_dir.join("memory.x");
+    let build_rs = out_dir.join("build.rs");
+    let cargo_config = cargo_dir.join("config.toml");
+
+    write_file(&cargo_toml, &skeleton::render_bin_cargo_toml())?;
+    write_file(&main_rs, &main_src)?;
+    write_file(&memory_x, &skeleton::render_memory_x())?;
+    write_file(&build_rs, &skeleton::render_build_rs())?;
+    write_file(&cargo_config, &skeleton::render_cargo_config())?;
+
+    Ok(BinEmitResult {
+        project_dir: out_dir.to_path_buf(),
+        cargo_toml,
+        main_rs,
+        memory_x,
+        build_rs,
+        cargo_config,
+    })
+}
+
 /// Render the complete `no_std` lib source: header + `NucleusShim`
 /// trait + `StubShim` + `mod kernels` (pure bodies) + `run<S>`.
 fn render_lib_rs(
@@ -184,6 +311,41 @@ fn render_lib_rs(
     sidecar: &NameSidecar,
     kernels_src: &str,
 ) -> Result<String, EmitError> {
+    let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
+    Ok(skeleton::render_lib(&kernel_defs, &run_body))
+}
+
+/// Render the complete Renode-runnable `no_std` BIN source: cortex-m-rt
+/// header + `NucleusShim` trait + `Usart1Shim` + `mod kernels` (pure
+/// bodies) + `run<S>` + `#[entry] main` (M10, TASK-0048.01).
+///
+/// Shares the SAME kernel extraction + `run<S>` body lowering as
+/// [`render_lib_rs`] (via [`lower_kernels_and_run`]) — only the
+/// surrounding scaffolding differs (the bin adds the entry point /
+/// panic handler / concrete UART shim). This shared lowering is why a
+/// schedule the lib path rejects (multi-worker / block / check-frame)
+/// is rejected IDENTICALLY on the bin path.
+fn render_main_rs(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_src: &str,
+) -> Result<String, EmitError> {
+    let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
+    Ok(skeleton::render_bin_main(&kernel_defs, &run_body))
+}
+
+/// The shared core of [`render_lib_rs`] and [`render_main_rs`]: extract
+/// the PURE kernel bodies verbatim and render the `run<S>` body. Single
+/// source of truth so the lib and bin lower IDENTICALLY (the only
+/// difference between the two emit modes is the surrounding scaffolding,
+/// not the event lowering).
+fn lower_kernels_and_run(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_src: &str,
+) -> Result<(String, String), EmitError> {
     // 1. Classify which kernels are PURE (called by an indexed-output
     //    Fire). These bodies are extracted verbatim into `mod kernels`.
     let pure_kernels = collect_pure_kernel_names(events, names)?;
@@ -209,7 +371,7 @@ fn render_lib_rs(
     // 3. Render the `run<S>` body (data decls + event lowering).
     let run_body = render_run_body(events, names, sidecar)?;
 
-    Ok(skeleton::render_lib(&kernel_defs, &run_body))
+    Ok((kernel_defs, run_body))
 }
 
 /// Walk the events and collect the names of kernels invoked by an
@@ -413,10 +575,17 @@ fn render_event(
                 ));
             }
             if check_frame.is_some() {
+                // Shared by the M9 lib and M10 bin paths. The tier-1
+                // reporter uses `std::time::Instant`, which does not
+                // exist on bare-metal Cortex-M; a no_std monotonic clock
+                // (DWT CYCCNT) is filed as TASK-0048.04. Naive schedules
+                // carry no check frames, so this is latent.
                 return Err(EmitError::UnsupportedFeature(
-                    "embedded-pattern (M9) does not lower real-time `check \
-                     loop` frames (the tier-1 std Drop-guard reporter is not \
-                     ported to no_std). Naive schedules carry none."
+                    "embedded-pattern does not lower real-time `check \
+                     loop` frames: the tier-1 std Drop-guard reporter uses \
+                     `std::time::Instant`, absent on no_std Cortex-M. A \
+                     no_std DWT-cycle-counter clock is TASK-0048.04. Naive \
+                     schedules carry none."
                         .to_string(),
                 ));
             }

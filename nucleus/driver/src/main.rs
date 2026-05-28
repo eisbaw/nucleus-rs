@@ -111,11 +111,14 @@ fn print_help() {
          USAGE:\n    \
              nucleus build --algo FILE --sched FILE --backend NAME \\\n    \
                            [--out DIR] [--kernels FILE] [--capabilities FILE] \\\n    \
-                           [--emit-pn FILE]\n\
+                           [--emit-pn FILE] [--shim NAME]\n\
          \n\
          FLAGS:\n    \
              --emit-pn FILE   Write the global Petri net to FILE as Graphviz DOT.\n    \
-                              Makes --out optional (inspection-only build).\n\
+                              Makes --out optional (inspection-only build).\n    \
+             --shim NAME      Tier-3 target shim (embedded-pattern only). `stm32h7`\n    \
+                              emits a Renode-runnable no_std BIN; omit for the M9\n    \
+                              compile-only no_std LIB.\n\
          \n\
          BACKENDS:\n    \
              pthreads-sync   shared-memory threads (tier 1)\n    \
@@ -125,7 +128,8 @@ fn print_help() {
              openmp-rs       rayon threads (tier 1, single-worker + multi-worker landed cycles 191/196)\n    \
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker + multi-worker landed cycles 192/195)\n    \
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n    \
-             embedded-pattern  no_std lib + NucleusShim trait (tier 3, M9 compile-only single-worker; check via `just check-embedded`)\n"
+             embedded-pattern  no_std lib + NucleusShim trait (tier 3, M9 compile-only single-worker; check via `just check-embedded`).\n    \
+                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, `just renode-embedded-ex1`)\n"
     );
 }
 
@@ -138,6 +142,11 @@ struct BuildArgs {
     kernels: Option<PathBuf>,
     capabilities: Option<PathBuf>,
     emit_pn: Option<PathBuf>,
+    // Target shim selector (PRD §10.3 quad: algorithm, schedule, tier-3
+    // backend, target shim). M10 (TASK-0048.01): `--shim stm32h7` makes
+    // the embedded-pattern backend emit a Renode-runnable no_std BIN
+    // instead of the M9 compile-only LIB. No `--shim` => the M9 lib.
+    shim: Option<String>,
 }
 
 fn parse_build_args(argv: &[String]) -> Result<BuildArgs, String> {
@@ -178,6 +187,10 @@ fn parse_build_args(argv: &[String]) -> Result<BuildArgs, String> {
                 a.emit_pn = Some(PathBuf::from(val()?));
                 i += 2;
             }
+            "--shim" => {
+                a.shim = Some(val()?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -193,6 +206,10 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let algo_path = a.algo.ok_or("missing required --algo")?;
     let sched_path = a.sched.ok_or("missing required --sched")?;
     let backend = a.backend.ok_or("missing required --backend")?;
+    // Optional target-shim selector (M10, TASK-0048.01). Captured here
+    // because `a` is consumed field-by-field below; the embedded-pattern
+    // dispatch arm reads it to pick the bin vs lib emit mode.
+    let shim = a.shim.clone();
     // --out is required for codegen, optional when --emit-pn alone is
     // requested (inspection-only build, TASK-0035 / PRD §8.5).
     let out_dir = match (&a.out, &a.emit_pn) {
@@ -731,6 +748,18 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // the centralized constructor.
     let names = nucleus_compiler::NameTables::from_acfg(&acfg);
 
+    // `--shim` is a tier-3 selector (M10, TASK-0048.01). A `--shim` on a
+    // backend that has no shim concept is a user error — reject it loudly
+    // rather than silently ignore it (PRD fail-fast rule). Only the
+    // embedded-pattern backend consults `shim` below.
+    if shim.is_some() && backend != "embedded-pattern" {
+        return Err(format!(
+            "--shim is only meaningful for the embedded-pattern backend \
+             (a tier-3 target shim, PRD \u{00A7}10.3); backend `{backend}` does \
+             not take a shim"
+        ));
+    }
+
     match backend.as_str() {
         "pthreads-sync" => {
             let result =
@@ -916,14 +945,54 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // wrong for a compile-only no_std backend. Multi-MCU embedded is
         // M11 (TASK-0049).
         "embedded-pattern" => {
-            let result =
-                embedded_pattern::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+            // --shim selects the emit mode (PRD §10.3 quad's "target
+            // shim", M10 TASK-0048.01):
+            //   --shim stm32h7  -> Renode-runnable no_std BIN (cortex-m-rt
+            //                      entry + panic handler + memory.x +
+            //                      USART1 streaming).
+            //   (no --shim)     -> the M9 compile-only no_std LIB
+            //                      (UNCHANGED — `just check-embedded`).
+            // An unrecognised shim name is a typed (not panicking) error.
+            match shim.as_deref() {
+                None => {
+                    let result = embedded_pattern::emit(
+                        &per_worker,
+                        &names,
+                        &sidecar,
+                        &kernels_path,
+                        &out_dir,
+                    )
                     .map_err(|e| format!("embedded-pattern codegen error: {e}"))?;
-            println!("nucleus: ok");
-            println!("project_dir = {}", result.project_dir.display());
-            println!("cargo_toml  = {}", result.cargo_toml.display());
-            println!("lib_rs      = {}", result.lib_rs.display());
-            Ok(())
+                    println!("nucleus: ok");
+                    println!("project_dir = {}", result.project_dir.display());
+                    println!("cargo_toml  = {}", result.cargo_toml.display());
+                    println!("lib_rs      = {}", result.lib_rs.display());
+                    Ok(())
+                }
+                Some("stm32h7") => {
+                    let result = embedded_pattern::emit_bin(
+                        &per_worker,
+                        &names,
+                        &sidecar,
+                        &kernels_path,
+                        &out_dir,
+                    )
+                    .map_err(|e| format!("embedded-pattern (stm32h7 bin) codegen error: {e}"))?;
+                    println!("nucleus: ok");
+                    println!("project_dir  = {}", result.project_dir.display());
+                    println!("cargo_toml   = {}", result.cargo_toml.display());
+                    println!("main_rs      = {}", result.main_rs.display());
+                    println!("memory_x     = {}", result.memory_x.display());
+                    println!("build_rs     = {}", result.build_rs.display());
+                    println!("cargo_config = {}", result.cargo_config.display());
+                    Ok(())
+                }
+                Some(other) => Err(format!(
+                    "unknown --shim `{other}` for backend embedded-pattern; \
+                     registered shims: `stm32h7` (Renode-runnable no_std bin, \
+                     M10 TASK-0048.01). Omit --shim for the M9 compile-only lib."
+                )),
+            }
         }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
