@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 22:34'
+updated_date: '2026-05-28 23:29'
 labels:
   - M10
   - backend
@@ -178,4 +178,18 @@ on_violation tier-3 policy: log fully lowered (per-violation UART line via Nucle
 NucleusShim is now SIX methods (was four): added monotonic_ns + report_violation. The real STM32H7 shim (AC#1, shims/stm32h7/ crate) must implement all six; the SysTick monotonic_ns + UART report_violation in Usart1Shim are the reference impls.
 
 e2e: the 3 embedded-only check fixtures (01-elementwise-add/schedules/embedded_check{,_panic,_count}) are auto-discovered by the schedule walk and declared [[skip]] M10 ×7 backends (mirrors embedded_multimcu / example 14).
+
+=== Forward-carried from TASK-0048.08 (tier-3 on_violation=count sink; commits 3c2ef66 + ecaa3d1) ===
+
+on_violation=count now LOWERS on embedded-pattern (lib + bin). The count rejection arm in render_event is GONE; panic stays rejected (bricks the MCU). NucleusShim stays SIX methods — count needs NO 7th method.
+
+THE BARE-METAL COUNT SINK that the real STM32H7 shim (AC#1) + M11 inherit:
+- Counter: a MODULE-scope 'static NUC_CHECK_COUNT_<ident>: core::sync::atomic::AtomicU32 = AtomicU32::new(0)' (NOT AtomicU64 — absent on thumbv7em; Relaxed — single-core, read only after run()). Emitted by BOTH render_lib (lib compiles; never flushed) AND render_bin_main.
+- Summary SINK: the cortex-m-rt #[entry] flushes a one-line USART1 summary per count loop AFTER run(&mut shim) returns and BEFORE loop {} — the bare-metal program-exit equivalent of the tier-1 Drop-guard (which never fires: firmware spins forever). Uses the existing usart1_puts/usart1_put_u64 helpers; the counter is the shared lib+bin seam, the summary is bin-only inline code.
+
+RENODE TIMING ARTIFACT (important for any future tier-3 timing assertion): with latency_max=1ns the count is 255 NOT 256, deterministically. The loop runs all 256 iterations but iteration 0 — the clock-seeding iteration (first monotonic_ns()==0) — has its body resolve to 0 ns under Renode's non-cycle-accurate timing, so it doesn't exceed 1ns. The log fixture resolves iter-0 to 218 ns (256 lines) purely by instruction layout, proving the exact count is a Renode artifact. The timing-INDEPENDENT invariant is trip-count MODULO at most the seeding iter-0 (255-or-256). DO NOT assert exact Renode timing-derived counts; assert a band or the structural invariant (loop ran N iterations / counter flushed exactly).
+
+SHARED-CHANNEL WART (both log + count): diagnostics share USART1 with raw output; summary lines come after raw bytes, distinguishable by the 'check loop ' prefix. A separate physical channel (2nd UART / RTT / SWO) is TASK-0048.09 (PART 2).
+
+New recipe: just renode-embedded-check-count (asserts 255-256 band). e2e unchanged 301/246/0/55/0.
 <!-- SECTION:NOTES:END -->
