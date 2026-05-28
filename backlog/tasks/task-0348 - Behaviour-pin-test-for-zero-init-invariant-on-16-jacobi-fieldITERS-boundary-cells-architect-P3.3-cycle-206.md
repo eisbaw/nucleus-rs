@@ -3,9 +3,11 @@ id: TASK-0348
 title: >-
   Behaviour-pin test for zero-init invariant on 16-jacobi field[ITERS] +
   boundary cells (architect P3.3 cycle 206)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-27 14:24'
+updated_date: '2026-05-28 02:57'
 labels:
   - examples
   - test-pin
@@ -41,3 +43,34 @@ Same precedent as TASK-0303 / TASK-0304 narrative-pin tests for the M5 stencil e
 
 - This is a defensive pin, not a feature. Low priority — file only if the zero-init contract is shaping or changing in a future cycle.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Cycle 226 implementation plan (orchestrator-direct)
+
+Empirically verified BEFORE writing any assertion (Layer-3 discipline, per the cycle-225 18th-firing lesson in feedback-orchestrator-narrative-also-wrong — verify equivalence/behaviour claims against the actual artifact, not the narrative):
+
+Built both examples via release binary + inspected emitted main.rs:
+- 16-jacobi/naive/pthreads-sync: `let mut field = vec![0; 320];` (line 9) + `let mut result = vec![0; 64];` (line 10). 320 = (ITERS+1)*H*W = 5*8*8; 64 = H*W = 8*8. Confirmed data decls: field: i32[ITERS+1][H][W], result: i32[H][W].
+- 11-game-of-life/naive/pthreads-sync: `let mut grid = vec![0; 288];` (line 9) + `let mut result = vec![0; 32];` (line 10). 288 = (ITERS+1)*N = 9*32; 32 = N. Confirmed data decls: grid: i32[ITERS+1][N], result: i32[N].
+
+### Test design
+
+Location: nucleus/driver/tests/task0348_zero_init_invariant.rs (driver crate can see the compiled nucleus binary via env!(CARGO_BIN_EXE_nucleus); mirrors cli_reuse_strict.rs subprocess pattern — runs in unit-test profile under `just test`, no cargo-run recursion).
+
+Per example: run `nucleus build --backend pthreads-sync --out <tmp>` on the naive schedule, read <tmp>/src/main.rs, assert:
+1. Primary (load-bearing invariant): main.rs contains `let mut field = vec![0;` (resp. grid) — the zero-fill that makes (a) field[ITERS] read at t==0 via the (t+ITERS)%(ITERS+1) wrap return 0, and (b) Dirichlet boundary cells stay 0.
+2. Precision pin: exact line `let mut field = vec![0; 320];` (resp. `grid ... 288`).
+3. result zero-init: `let mut result = vec![0;`.
+
+Message distinguishes 'zero-init contract broke (real regression)' from 'dimensions changed (update expected size)'.
+
+### AC mapping
+AC#1 16-jacobi pin: this test.
+AC#2 game-of-life sibling: same test, second case.
+AC#3 architect review-GO + no flakiness + unit-test profile.
+
+### Gate
+build, clippy, test, test-release, e2e (280/246/0/34/0 must hold — test-only, no codegen change).
+<!-- SECTION:NOTES:END -->
