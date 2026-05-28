@@ -119,10 +119,15 @@
 //!   §6.2.4). Adding `If` to [`ACFGNode`] later is a sum-type
 //!   extension; the rest of the IR doesn't have to change.
 //! - **Identity copies** (`d <-- e` with a bare DataRef RHS). The
-//!   link pass already calls this out as an unexercised corner; the
-//!   ACFG pass currently treats such statements as no-ops (no
-//!   kernel, no Operation). Filed as a follow-up if a real example
-//!   needs it.
+//!   ACFG pass treats such statements as no-ops (no kernel, no
+//!   `Operation`) because a kernel-less Operation is not representable
+//!   today — `Operation.kernel` / `DataflowEdge.kernel` /
+//!   `Event::Fire.kernel` are non-optional `KernelId`s, and no schedule
+//!   directive maps a data symbol to a worker set. (The *link* pass, by
+//!   contrast, DOES now record an identity copy's producer/consumer
+//!   transitively — `link::dataflow::propagate_copy_edges`, TASK-0347 —
+//!   so a cross-worker copy is caught by the MissingCrossWorkerTransfer
+//!   check.) The ACFG/codegen half is filed as TASK-0360.
 //! - **Constant folding beyond what loop bounds require.** Loop
 //!   bounds are evaluated to `i64` here because [`Repeat::range`] is
 //!   `Range<i64>` (matching [`crate::event::IterTile`]'s element

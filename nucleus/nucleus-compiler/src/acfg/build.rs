@@ -322,7 +322,18 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                 dataflow: DataflowDag { edges: vec![edge] },
             }))
         }
-        // Identity copy or pure-expression RHS: skipped at M1.
+        // Identity copy or pure-expression RHS: still skipped here.
+        // A kernel-less data-move is not representable as an
+        // `Operation` today — `Operation.kernel` / `DataflowEdge.kernel`
+        // / `Event::Fire.kernel` are non-optional `KernelId`s and there
+        // is no schedule directive mapping a data symbol to a worker set
+        // (only `place_data D in REGION`, a memory region not a worker).
+        // The LINK layer DOES now record this edge's producer/consumer
+        // transitively (link::dataflow::propagate_copy_edges, TASK-0347),
+        // so a cross-worker identity copy is caught by the
+        // MissingCrossWorkerTransfer existence check; the ACFG/codegen
+        // half is filed as TASK-0360 (kernel-optional Operation + the
+        // worker-set derivation blocker).
         _ => None,
     }
 }

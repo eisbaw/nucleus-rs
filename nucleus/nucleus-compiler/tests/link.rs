@@ -318,6 +318,171 @@ fn derived_data_for_cnn_batch_parallel() {
 }
 
 // --------------------------------------------------------------------
+// Identity-copy dataflow (TASK-0347; reopens TASK-0097)
+// --------------------------------------------------------------------
+//
+// A bare-`LValue` identity copy (`D <-- E`, no kernel on the RHS) has
+// no `place` directive of its own. The link pass attributes its
+// producer/consumer transitively (`propagate_copy_edges`): `D` inherits
+// its source's producer, and the source inherits `D`'s consumers. The
+// `MissingCrossWorkerTransfer` existence check then sees the copy's
+// cross-worker flow exactly as it would a kernel-call edge.
+//
+// No in-tree example uses bare-`LValue` dataflow today (15-transpose
+// uses the `xpose` identity kernel — a Call RHS — pending the ACFG /
+// codegen follow-out TASK-0360), so these fixtures are synthetic.
+
+/// Shared algorithm: `produce -> src`, identity copy `mid <-- src`,
+/// `consume(mid)`. `extra` is appended verbatim before the closing
+/// brace so a test can add a different consumer / a second copy.
+fn identity_copy_algo() -> &'static str {
+    "\
+const N : usize = 8;
+data src : i32[N];
+data mid : i32[N];
+kernel produce : ()       -> i32[N] effectful;
+kernel consume : (i32[N]) -> ()     effectful;
+
+src <-- produce();
+mid <-- src;
+consume(mid);
+"
+}
+
+#[test]
+fn identity_copy_same_worker_no_transfer_needed() {
+    // produce, the copy, and consume all on host: no worker boundary
+    // is crossed, so no transfer directive is required and the link
+    // succeeds. Pins that the copy-edge propagation does NOT spuriously
+    // manufacture a cross-worker edge in the single-worker case.
+    let algo = algo_from_str(identity_copy_algo());
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place produce on host;
+    place consume on host;
+}
+",
+    );
+    let linked = link(algo, sched).expect("same-worker identity copy must link");
+
+    // `mid` (the copy target) inherits `src`'s producer (host) via the
+    // transitive propagation — previously it had NO producer at all.
+    assert_eq!(linked.data_producers["mid"].display(), "{host}");
+    assert_eq!(linked.data_producers["src"].display(), "{host}");
+    // `mid` is consumed by `consume` on host; `src` transitively gains
+    // that consumer through the copy.
+    let mid_cons: Vec<_> = linked.data_consumers["mid"].iter().collect();
+    assert_eq!(mid_cons.len(), 1);
+    assert_eq!(mid_cons[0].display(), "{host}");
+    let src_cons: Vec<_> = linked.data_consumers["src"].iter().collect();
+    assert_eq!(src_cons.len(), 1);
+    assert_eq!(src_cons[0].display(), "{host}");
+}
+
+#[test]
+fn identity_copy_cross_worker_missing_transfer_is_link_error() {
+    // produce on host, consume on w0: the identity copy `mid <-- src`
+    // carries a value from host (src's producer) to w0 (mid's
+    // consumer). Without a `transfer` directive that is a hard link
+    // error — the same MissingCrossWorkerTransfer a kernel-call edge
+    // would raise. This is the silent-invisibility gap TASK-0097 filed.
+    let algo = algo_from_str(identity_copy_algo());
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host, w0 };
+    place produce on host;
+    place consume on w0;
+    // no transfer directives
+}
+",
+    );
+    let errs = link(algo, sched).expect_err("cross-worker identity copy without transfer must fail");
+    // Both `mid` (host -> w0 via the copy) and `src` (host produced,
+    // transitively consumed on w0) cross a worker boundary with no
+    // transfer. At minimum the copy target `mid` must be flagged.
+    assert!(
+        errs.iter().any(|e| matches!(
+            &e.kind,
+            LinkErrorKind::MissingCrossWorkerTransfer { data, .. } if data == "mid"
+        )),
+        "expected MissingCrossWorkerTransfer(mid); got {errs:?}"
+    );
+}
+
+#[test]
+fn identity_copy_cross_worker_with_transfers_links() {
+    // Same cross-worker shape as the negative case, but now both
+    // crossing symbols have a `transfer` directive — the link must
+    // succeed. Pins that declaring the transfers is the actionable fix
+    // (not a workaround), matching the kernel-call edge contract.
+    let algo = algo_from_str(identity_copy_algo());
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host, w0 };
+    place produce on host;
+    place consume on w0;
+    transfer src : sync;
+    transfer mid : sync;
+}
+",
+    );
+    let linked = link(algo, sched).expect("cross-worker identity copy with transfers must link");
+    // Producer of `mid` is host (inherited from src); consumer is w0.
+    assert_eq!(linked.data_producers["mid"].display(), "{host}");
+    let mid_cons: Vec<_> = linked.data_consumers["mid"].iter().collect();
+    assert_eq!(mid_cons.len(), 1);
+    assert_eq!(mid_cons[0].display(), "{w0}");
+}
+
+#[test]
+fn identity_copy_chain_propagates_producer_transitively() {
+    // Copy CHAIN: `b <-- a; c <-- b`. The producer of `a` (host) must
+    // propagate two hops to `c`, and `c`'s consumer (w0) must propagate
+    // back to `a`. Pins that `propagate_copy_edges` runs to a fixpoint
+    // rather than a single pass.
+    let algo = algo_from_str(
+        "\
+const N : usize = 8;
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+kernel produce : ()       -> i32[N] effectful;
+kernel consume : (i32[N]) -> ()     effectful;
+
+a <-- produce();
+b <-- a;
+c <-- b;
+consume(c);
+",
+    );
+    let sched = sched_from_str(
+        "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host, w0 };
+    place produce on host;
+    place consume on w0;
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}
+",
+    );
+    let linked = link(algo, sched).expect("copy chain with transfers must link");
+    // Producer propagated two hops: a (host) -> b -> c.
+    assert_eq!(linked.data_producers["a"].display(), "{host}");
+    assert_eq!(linked.data_producers["b"].display(), "{host}");
+    assert_eq!(linked.data_producers["c"].display(), "{host}");
+    // Consumer (w0 on `c`) propagated back the chain to `a`.
+    let a_cons: Vec<_> = linked.data_consumers["a"].iter().collect();
+    assert_eq!(a_cons.len(), 1);
+    assert_eq!(a_cons[0].display(), "{w0}");
+}
+
+// --------------------------------------------------------------------
 // Negative tests — one per LinkError variant
 // --------------------------------------------------------------------
 

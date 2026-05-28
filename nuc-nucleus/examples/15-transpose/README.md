@@ -137,22 +137,29 @@ form:
 RValue ::= CallExpr | LValue ;
 ```
 
-But `acfg::build::build_dataflow` skips non-`Call` RHS at M1
-([`nucleus/nucleus-compiler/src/acfg/build.rs:325-326`][acfg-skip] —
-"Identity copy or pure-expression RHS: skipped at M1"). With a bare
-`LValue` form the ACFG carries no Operation node for the transpose
-body, and the codegen emits nothing into the loop. A pure scalar
-kernel returning its argument is the canonical way to express
-"permute the indices and write the same value"; the kernel form
-gives the compiler the per-element dataflow node every shipped
-schedule shape reads from at cycle 204.
+But the ACFG builder [`acfg::build::build_dataflow`][acfg-skip] still
+skips a non-`Call` RHS: a kernel-less identity-copy `Operation` is not
+representable today (`Operation.kernel` / `Event::Fire.kernel` are
+non-optional `KernelId`s, and no schedule directive maps a data symbol
+to a worker set). With a bare `LValue` form the ACFG therefore carries
+no Operation node for the transpose body, and the codegen emits nothing
+into the loop. A pure scalar kernel returning its argument is the
+canonical way to express "permute the indices and write the same
+value"; the kernel form gives the compiler the per-element dataflow
+node every shipped schedule shape reads from at cycle 204.
 
-TASK-0111 (identity-copy dataflow handling in ACFG) was closed cycle
-77 as DEFERRED-until-real-example: no shipped example was using the
-bare-`LValue` identity-copy syntax at the time. 15-transpose is now
-that real example — the canonical co-design follow-up (one task
-covering both ACFG and link layers, per the cycle-77 closure note)
-is filed as a forward-carry from this cycle.
+TASK-0111 (ACFG identity-copy handling) + TASK-0097 (the parallel
+link-side gap) were closed cycle 77 as DEFERRED-until-real-example:
+no shipped example used the bare-`LValue` identity-copy syntax at the
+time. 15-transpose is that real example; the canonical co-design
+follow-up (one task covering both layers, per the cycle-77 closure
+note) is TASK-0347. TASK-0347 (cycle 230) landed the **link half**:
+`link::dataflow::propagate_copy_edges` now attributes an identity
+copy's producer/consumer transitively, so a cross-worker identity copy
+is caught by the `MissingCrossWorkerTransfer` check. The **ACFG /
+codegen half** — making `Operation` kernel-optional and resolving the
+worker-set derivation blocker, after which this example could drop
+`xpose` for the bare-`LValue` form — is filed as TASK-0360.
 
 [acfg-skip]: ../../../nucleus/nucleus-compiler/src/acfg/build.rs
 

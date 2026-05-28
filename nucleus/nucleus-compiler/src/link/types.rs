@@ -73,10 +73,15 @@ pub struct LinkedIR {
     pub kernel_workers: BTreeMap<String, WorkerEntity>,
     /// For each data symbol that has at least one producer kernel,
     /// the worker entity that produces it. A producer is the kernel
-    /// on the RHS of `D <-- Call(...)` in the algorithm.
+    /// on the RHS of `D <-- Call(...)` in the algorithm, OR — for an
+    /// identity copy `D <-- E` (bare-`DataRef` RHS, no kernel) — the
+    /// producer transitively inherited from the RHS's source data via
+    /// `analyse_dataflow::propagate_copy_edges` (TASK-0347; reopens
+    /// TASK-0097).
     ///
-    /// Symbols with no producer (e.g. read-only inputs, identity-
-    /// copy targets) are omitted. Symbols with multiple producers
+    /// Symbols with no producer (e.g. read-only inputs, or an identity-
+    /// copy target whose source itself has no producer) are omitted.
+    /// Symbols with multiple producers
     /// across statements: the AlgoIR lowering pass enforces single-
     /// assignment per scope (PRD §6.2.1), so this is unique per
     /// scope, but a `For`-loop body assigning `D[n]` per iteration
