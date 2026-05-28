@@ -24,8 +24,10 @@
 //!
 //! ## What this file pins (TASK-0355 AC#4)
 //!
-//! The 6 edge-case shapes the cycle-220b architect P3.1 narrative
-//! flagged as the pre-unification divergence surface:
+//! The edge-case shapes the cycle-220b architect P3.1 narrative
+//! flagged as the pre-unification divergence surface, plus the one
+//! genuine behaviour-divergence corner found by the cycle-225 architect
+//! P2 review:
 //!
 //! 1. `whole_via_empty_bounds` — IterTile::empty() → whole.
 //! 2. `whole_via_scalar_with_non_empty_bounds` — ty.dims=[] +
@@ -35,9 +37,19 @@
 //!    (wait_slice:337 both-axes-full → None).
 //! 5. `not_whole_via_rank3_guard` — rank-3 shape → wait_slice ERR
 //!    (wait_slice:307 rank-3+ guard), swallowed to `false` at the
-//!    call site = not-whole-array, accumulate NOT detected.
-//! 6. `not_whole_via_oob_leading_range` — leading range OOB →
-//!    wait_slice ERR (wait_slice:269-278), swallowed to false.
+//!    call site = not-whole-array, accumulate NOT detected. THE
+//!    genuine pre-unification divergence pin (OLD is_whole_array_tile
+//!    = true; NEW = Err→false).
+//! 6. `not_whole_via_oob_leading_range_err_swallow_path` — leading
+//!    range OOB → wait_slice ERR (wait_slice:269-278), swallowed to
+//!    false. A PATH pin, not a divergence pin (OLD also returned false).
+//! 7. `accumulate_classifies_empty_tile_even_when_data_type_absent` —
+//!    DELIBERATE-DECISION pin for the ONE behaviour-divergence corner
+//!    (cycle-225 architect P2): empty-tile fan-in on a data symbol with
+//!    absent ResolvedType. OLD skipped it (silent `name = rhs;`
+//!    overwrite); NEW classifies accumulate → render_wait_assign
+//!    surfaces a LOUD ContractGap. Fail-loud preferred over
+//!    silent-wrong.
 //!
 //! ## What this does NOT pin
 //!
@@ -222,16 +234,18 @@ fn not_whole_via_rank3_guard() {
 }
 
 #[test]
-fn not_whole_via_oob_leading_range() {
+fn not_whole_via_oob_leading_range_err_swallow_path() {
     // OOB leading range: tile [0..8] over data dims [4]. wait_slice:269-278
     // returns Err(ContractGap). Cycle-225 unified-classifier call site
     // swallows with `.unwrap_or(false)`. Net: NOT classified as accumulate.
     //
-    // Pre-cycle-225 divergence pin: the removed `is_whole_array_tile`
-    // would have checked `range.start != 0 || range.end != dim_len` —
-    // range 0..8 has end=8 != 4, so it returned false (not whole-array).
-    // Same end-result behaviour as the unified classifier on this shape,
-    // but the path is different (silent-false vs explicit-Err).
+    // NOT a pre-unification divergence pin (cf. `not_whole_via_rank3_guard`,
+    // which IS): the removed `is_whole_array_tile` ALSO returned false here
+    // (its loop checked `range.start != 0 || range.end != dim_len` — range
+    // 0..8 has end=8 != 4 → false). Same end-result on this shape; the test
+    // pins the new Err-swallow PATH, not a behaviour change. Named
+    // `_err_swallow_path` to avoid implying divergence (cycle-225 architect
+    // P3.3).
     let data = DataId(0);
     let sidecar = sidecar_with(data, ScalarType::I32, vec![4]);
     let tile = tile_1d(0, 0..8);
@@ -243,5 +257,46 @@ fn not_whole_via_oob_leading_range() {
         "OOB leading range (0..8 over dims [4]) MUST NOT classify as \
          whole-array (wait_slice:269-278 returns Err; cycle-225 call site \
          swallows to false). Got: {acc:?}"
+    );
+}
+
+#[test]
+fn accumulate_classifies_empty_tile_even_when_data_type_absent() {
+    // DELIBERATE-DECISION PIN (cycle-225 architect P2): empty-tile fan-in
+    // on a data symbol with NO ResolvedType in the sidecar (a contract
+    // gap — build_sidecar is contracted to carry every ACFG data symbol,
+    // so this is structurally unreachable for a link-valid program).
+    //
+    // This is the ONE corner where the cycle-225 unification changed
+    // behaviour vs the removed `is_whole_array_tile`:
+    //   - OLD: collect_accumulate_waits did `match sidecar.data_type(data)
+    //     { None => continue }` BEFORE the tile classification, so a
+    //     None-data-type group was skipped → NOT accumulate → emit fell
+    //     to the silent `name = rhs;` last-write-wins overwrite.
+    //   - NEW: is_whole_array_recv → wait_slice checks `tile.bounds.first()`
+    //     FIRST (empty tile → Ok(None) → whole) BEFORE the sidecar lookup
+    //     (wait.rs:256 precedes wait.rs:259), so the group IS classified
+    //     accumulate. render_wait_assign then surfaces the missing
+    //     ResolvedType as EmitError::ContractGap (wait.rs:106-110) —
+    //     fail-LOUD instead of silent last-write-wins.
+    //
+    // The new behaviour is deliberately preferred: fail-loud on a
+    // contract gap beats silently emitting a wrong overwrite. This test
+    // PINS that decision so a future cycle that re-introduces the
+    // None-data-type early-skip does so consciously (and updates this
+    // test), rather than silently reverting to the silent-overwrite path.
+    let data = DataId(0);
+    let sidecar = NameSidecar::default(); // no data_type entry for `data`
+
+    let (events, tiles) = two_waits_with_tile(data, IterTile::empty());
+
+    let acc = collect_accumulate_waits(&events, &sidecar, &tiles);
+    assert_eq!(
+        acc.len(),
+        2,
+        "Empty-tile fan-in with absent ResolvedType is classified as \
+         accumulate post-cycle-225 (wait_slice's empty-tile early-return \
+         precedes the sidecar lookup); the downstream render_wait_assign \
+         surfaces the missing type as a LOUD ContractGap. Got: {acc:?}"
     );
 }
