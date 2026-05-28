@@ -21,9 +21,15 @@
 //! 2. `accumulate_fan_in_data_excluded` — accumulate-fan-in DataId
 //!    stays OUT even when every Wait on it is whole-array (the
 //!    `wrapping_add` identity needs the zero-init to be live).
-//! 3. `indexed_fire_written_data_excluded` — DataId in the indexed
-//!    Fire-write set stays OUT (the indexed assigns need the
-//!    zero-init).
+//!    Test drives the classifier via direct `accumulate_data`
+//!    input-arg insertion (the upstream `collect_accumulate_waits`
+//!    is not exercised here — that helper has its own tests).
+//! 3. `indexed_input_data_excluded` — DataId in the indexed-input
+//!    arg (computed upstream from indexed Fire-writes) stays OUT
+//!    (the indexed assigns need the zero-init). Test drives the
+//!    classifier via direct input-arg insertion, not by
+//!    constructing an Event::Fire — the helper signature takes
+//!    `indexed` as a precomputed input.
 //! 4. `empty_waits_yields_empty_set` — no Wait events → empty set.
 //! 5. `shape_error_on_wait_slice_excludes_data` — an out-of-bounds
 //!    leading-axis range trips `wait_slice`'s guard
@@ -166,11 +172,14 @@ fn accumulate_fan_in_data_excluded() {
 }
 
 #[test]
-fn indexed_fire_written_data_excluded() {
+fn indexed_input_data_excluded() {
     // Symmetric to `accumulate_fan_in_data_excluded`: a whole-array
     // Wait that would otherwise qualify is excluded purely because
-    // the data is in the indexed-Fire-write set (`collect.rs:370-
-    // 372`). The indexed assigns need the zero-init to be live.
+    // the data is in the `indexed` input arg (computed upstream from
+    // indexed Fire-writes by `collect_pre_init_sets`; `collect.rs:
+    // 370-372`). Test drives the classifier via direct input-arg
+    // insertion, not by building an Event::Fire — the helper's
+    // signature takes `indexed` as precomputed input.
     let data = DataId(13);
     let seq = SeqTag(5);
     let (_names, sidecar) = make_minimal_tables(data, "out", vec![8]);
@@ -191,7 +200,7 @@ fn indexed_fire_written_data_excluded() {
         collect_let_at_wait_data(&events, &pair_tiles, &sidecar, &accumulate_data, &indexed);
     assert!(
         !result.contains(&data),
-        "indexed-Fire-write data must be excluded; got: {result:?}"
+        "indexed-input data must be excluded; got: {result:?}"
     );
 }
 
@@ -204,9 +213,6 @@ fn empty_waits_yields_empty_set() {
     let data = DataId(17);
     let (_names, sidecar) = make_minimal_tables(data, "tmp", vec![4]);
 
-    // Non-Wait events present (a Fire) to prove the classifier
-    // doesn't accidentally include data named on other event
-    // shapes.
     let events: Vec<Event> = vec![];
     let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
     let (acc, indexed) = empty_accumulate_and_indexed();

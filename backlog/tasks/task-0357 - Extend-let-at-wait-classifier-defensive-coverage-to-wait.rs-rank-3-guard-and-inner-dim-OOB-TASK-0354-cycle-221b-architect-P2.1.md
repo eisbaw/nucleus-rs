@@ -1,0 +1,45 @@
+---
+id: TASK-0357
+title: >-
+  Extend let-at-wait classifier defensive coverage to wait.rs rank-3+ guard and
+  inner-dim OOB (TASK-0354 cycle-221b architect P2.1)
+status: To Do
+assignee: []
+created_date: '2026-05-28 00:48'
+labels:
+  - tests
+  - backend-common
+  - defensive
+  - cycle-221b-follow-up
+dependencies: []
+priority: low
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Cycle-221b architect P2.1: TASK-0354 cycle-221 added 7 unit tests for `collect_let_at_wait_data` but only 3 of them (tests 1, 5, 7) actually reach the `is_whole_array_recv` -> `wait_slice` code path. Tests 2, 3, 4, 6 all use empty `pair_tiles` so the `None` arm at `collect.rs:389-390` fires and `wait_slice` is never invoked.
+
+The following `wait_slice` guards are therefore **structurally unexercised** by the new test file:
+
+1. Rank-3+ guard at `wait.rs:307-320` — `Err(ContractGap)` when `tile.bounds.len() > 2` or `tile.bounds.len() >= 2 && ty.dims.len() > 2`. The cycle-209 16-jacobi/distributed unblocker explicitly cited this as the next-layer blocker. TASK-0341.02.02.01.01 lifts to N-D nested-loop dispatch; until then the guard fires LOUD for any rank-3 shape.
+
+2. Inner-axis OOB at `wait.rs:324-333` — `Err(ContractGap)` when `inner_range.start < 0`, `inner_range.end > inner_dim`, or `inner_range.start >= inner_range.end`. Symmetric to the leading-axis OOB guard test 5 already covers.
+
+## Acceptance
+
+1. Add a `rank_3_tile_shape_excludes_data` test driving `collect_let_at_wait_data` with a rank-3 tile (3 bounds entries) on rank-2 data, OR a 2-bound tile on rank-3 data. Confirm `wait_slice:307` fires `Err`, `.unwrap_or(false)` swallows, data excluded.
+
+2. Add an `inner_axis_oob_excludes_data` test with a 2-bound tile on rank-2 data where the inner range exceeds `dims[1]`. Confirm `wait_slice:324-333` fires `Err`, data excluded.
+
+3. Module docstring updated to enumerate the new cases as items 8 + 9 below the existing 1-7 list.
+
+## Honest scope
+
+Test-only; no production-code edits. Closes the silent-sibling gap the architect flagged in TASK-0354's review.
+
+## Dependencies
+
+- Builds on TASK-0354 (which lands cases 1-7).
+- Adjacent to TASK-0355 (unify is_whole_array_tile + is_whole_array_recv) — the unified classifier would subsume both; if TASK-0355 is picked first, this task's content moves into the unified test suite.
+<!-- SECTION:DESCRIPTION:END -->
