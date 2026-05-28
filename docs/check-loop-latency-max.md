@@ -131,6 +131,18 @@ will need a different sink (UART line on first violation, RTT channel,
 in-flash counter dumped on watchdog reset). TASK-0048's forward-carry
 covers this.
 
+RESOLVED (TASK-0048.04 + TASK-0048.08): the embedded-pattern backend
+uses SysTick (not DWT_CYCCNT — DWT may not advance under Renode's
+non-cycle-accurate timing), exposed as `NucleusShim::monotonic_ns`.
+`on_violation=count` lowers to a module-scope `AtomicU32` counter (NOT
+`AtomicU64`, which is absent on `thumbv7em-none-eabihf`); the summary
+sink is the cortex-m-rt `#[entry]`, which flushes a one-line USART1
+summary AFTER `run` returns and BEFORE the `loop {}` spin — the
+bare-metal program-exit equivalent of the tier-1 Drop-guard. A SEPARATE
+physical diagnostic channel (2nd UART / RTT / SWO) so the summary is not
+interleaved with raw USART1 output is the deferred PART-2 follow-up
+(TASK-0048.09). `on_violation=panic` stays rejected (it bricks the MCU).
+
 ## 4. `on_violation` trade-offs
 
 Three actions, three different operational profiles. Pick by what you

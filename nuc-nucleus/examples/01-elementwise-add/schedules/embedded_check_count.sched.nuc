@@ -1,16 +1,33 @@
-// AC#4 NEGATIVE fixture (TASK-0048.04) — `on_violation = count` must be
-// REJECTED on tier-3 (no Drop-guard summary sink on bare metal).
+// Embedded check-loop COUNT fixture (TASK-0048.08) — `on_violation =
+// count` lowered on the tier-3 embedded-pattern backend.
 //
 // Identical placement to naive.sched.nuc plus a `check loop i :
-// on_violation = count` directive. The tier-1 count action prints its
-// summary at a Drop-guard's `main`-return Drop; a bare-metal firmware
-// spins forever in `loop {}` so that Drop never fires
-// (docs/check-loop-latency-max.md §3). The embedded backend rejects this
-// with a typed EmitError forward-linking the tier-3 count-sink follow-up
-// (TASK-0048.08) and directing the user to on_violation=log. This schedule
-// is used ONLY by the check_loop_count_is_rejected_with_followup_link unit
-// test; it does NOT produce a runnable firmware (it is meant to be
-// rejected).
+// on_violation = count` directive. The tier-1 count action increments a
+// static AtomicU64 and prints a summary at a Drop-guard's `main`-return
+// Drop; NEITHER ports to bare metal: (a) AtomicU64 is unavailable on
+// thumbv7em-none-eabihf (only 32-bit atomics — the embedded backend uses
+// AtomicU32), and (b) a firmware spins forever in `loop {}` so a Rust Drop
+// at `main` return never fires (docs/check-loop-latency-max.md §3).
+//
+// THE TIER-3 SINK (TASK-0048.08, PART 1): each count check loop increments
+// a module-scope `static NUC_CHECK_COUNT_i: AtomicU32` on violation, and
+// the cortex-m-rt `#[entry]` flushes a one-line summary over USART1 AFTER
+// `run(&mut shim)` returns and BEFORE the `loop {}` spin — the bare-metal
+// program-exit equivalent. The summary shares USART1 with raw output (same
+// documented wart as the log sink); a separate diagnostic channel is the
+// deferred PART-2 follow-up (TASK-0048.09).
+//
+// latency_max = 1ns is deliberately tiny: under Renode (not cycle-accurate)
+// EVERY iteration violates, so the reported count equals the loop
+// trip-count EXACTLY (256 for ex1's `for i : 0..256`) — a timing-INDEPENDENT
+// deterministic check the `just renode-embedded-check-count` recipe asserts.
+//
+// This IS a runnable firmware (it cross-compiles for thumbv7em and runs in
+// Renode), unlike the embedded_check_panic NEGATIVE fixture. It is
+// exercised by `just renode-embedded-check-count` (TASK-0048.08) and the
+// embedded-pattern unit test
+// check_loop_count_lowers_to_atomic_u32_static_and_program_exit_summary,
+// NOT the tier-1 e2e matrix (it is embedded-only).
 
 schedule for "../prog.algo.nuc" {
     workers = { host };
@@ -20,5 +37,9 @@ schedule for "../prog.algo.nuc" {
     place save_output   on host;
     place add           on host;
 
+    // Real-time assertion: one iteration of the `i` loop must take
+    // ≤ latency_max; on violation, increment a counter (do NOT panic —
+    // that bricks the MCU on tier-3, PRD §6.3.5). The count is summarised
+    // over USART1 at program exit.
     check loop i : latency_max = 1ns, on_violation = count;
 }

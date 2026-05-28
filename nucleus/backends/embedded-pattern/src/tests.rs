@@ -583,19 +583,65 @@ fn check_loop_panic_is_rejected_with_brick_warning() {
 }
 
 #[test]
-fn check_loop_count_is_rejected_with_followup_link() {
-    // AC#4: count needs an end-of-run summary sink that does not exist on
-    // a bare-metal firmware spinning forever (no Drop). Reject loudly with
-    // the TASK-0048.08 follow-up link rather than silently mis-lowering.
-    let err = try_emit_bin_ex1_with_check("embedded_check_count.sched.nuc", "ex01_check_count")
-        .expect_err("on_violation=count must be rejected on tier-3 (no Drop sink)");
-    let msg = format!("{err}");
+fn check_loop_count_lowers_to_atomic_u32_static_and_program_exit_summary() {
+    // TASK-0048.08, PART 1 (flipped from the former negative rejection
+    // test): on_violation=count now LOWERS on tier-3. The bin emits (a) a
+    // module-scope AtomicU32 counter, (b) a per-iteration fetch_add on
+    // violation (same SysTick timing as the log path), and (c) a USART1
+    // summary after run() returns and before the loop {} spin (the
+    // bare-metal program-exit sink — a firmware spins forever so the
+    // tier-1 Drop-guard summary never fires).
+    let main = try_emit_bin_ex1_with_check("embedded_check_count.sched.nuc", "ex01_check_count")
+        .expect("on_violation=count must LOWER on the embedded bin path (TASK-0048.08)");
+
+    // Same SysTick per-iteration wall-clock as the log path.
     assert!(
-        msg.contains("count") && msg.contains("TASK-0048.08"),
-        "count rejection must forward-link the tier-3 count-sink follow-up: got {msg}"
+        main.contains("let _check_start = shim.monotonic_ns();"),
+        "count frame must start the per-iteration clock via shim.monotonic_ns():\n{main}"
     );
     assert!(
-        msg.contains("on_violation = log"),
-        "count rejection must direct the user to on_violation=log: got {msg}"
+        main.contains("let _check_elapsed = shim.monotonic_ns().wrapping_sub(_check_start);"),
+        "count frame must compute elapsed via shim.monotonic_ns():\n{main}"
+    );
+    // (a) module-scope AtomicU32 counter — AtomicU64 is absent on thumbv7em.
+    assert!(
+        main.contains(
+            "static NUC_CHECK_COUNT_i: core::sync::atomic::AtomicU32 = \
+             core::sync::atomic::AtomicU32::new(0);"
+        ),
+        "count frame must emit a module-scope AtomicU32 counter:\n{main}"
+    );
+    assert!(
+        !main.contains("AtomicU64"),
+        "AtomicU64 (unavailable on thumbv7em) must NOT appear:\n{main}"
+    );
+    // (b) the on-violation branch increments the counter (NOT report_violation).
+    assert!(
+        main.contains(
+            "NUC_CHECK_COUNT_i.fetch_add(1, core::sync::atomic::Ordering::Relaxed);"
+        ),
+        "count on-violation branch must fetch_add the AtomicU32 counter:\n{main}"
+    );
+    assert!(
+        !main.contains("shim.report_violation"),
+        "count must NOT route through the log report_violation sink:\n{main}"
+    );
+    // (c) the program-exit summary over USART1 reads the counter.
+    assert!(
+        main.contains(
+            "usart1_put_u64(NUC_CHECK_COUNT_i.load(core::sync::atomic::Ordering::Relaxed) \
+             as u64);"
+        ),
+        "count must flush a USART1 summary reading the counter at program exit:\n{main}"
+    );
+    // No tier-1 Drop-guard / std atomic machinery (does not port to no_std).
+    assert!(
+        !main.contains("Drop for") && !main.contains("std::sync::atomic"),
+        "the tier-1 Drop-guard / std-atomic count sink must NOT appear:\n{main}"
+    );
+    // The compute still lowers (the count wrapping is additive).
+    assert!(
+        main.contains("c[(i) as usize] = kernels::add("),
+        "the wrapped loop body must still lower the compute Fire:\n{main}"
     );
 }

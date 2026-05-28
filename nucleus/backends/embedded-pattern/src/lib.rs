@@ -201,7 +201,14 @@ pub fn emit(
             source: e,
         })?;
 
-    let lib_src = render_lib_rs(events, names, sidecar, &kernels_src)?;
+    // The `on_violation=count` check loops drive module-scope AtomicU32
+    // statics emitted into the lib (TASK-0048.08). The lib path has no
+    // `main` (compile-only, StubShim), so the statics are never flushed —
+    // but they MUST be in scope so the lib still cross-compiles when the
+    // schedule carries a count check frame.
+    let count_loops = collect_count_check_loops(events);
+
+    let lib_src = render_lib_rs(events, names, sidecar, &kernels_src, &count_loops)?;
 
     let src_dir = out_dir.join("src");
     fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
@@ -284,7 +291,14 @@ pub fn emit_bin(
             source: e,
         })?;
 
-    let main_src = render_main_rs(events, names, sidecar, &kernels_src)?;
+    // The `on_violation=count` check loops drive (a) module-scope
+    // AtomicU32 statics and (b) the per-loop summary emitted over USART1
+    // after `run(&mut shim)` returns and before the `loop {}` spin — the
+    // bare-metal program-exit equivalent of the tier-1 Drop-guard summary
+    // (TASK-0048.08).
+    let count_loops = collect_count_check_loops(events);
+
+    let main_src = render_main_rs(events, names, sidecar, &kernels_src, &count_loops)?;
 
     let src_dir = out_dir.join("src");
     fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
@@ -326,9 +340,11 @@ fn render_lib_rs(
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_src: &str,
+    count_loops: &[CountCheckLoop],
 ) -> Result<String, EmitError> {
     let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
-    Ok(skeleton::render_lib(&kernel_defs, &run_body))
+    let count_idents: Vec<&str> = count_loops.iter().map(|c| c.ident.as_str()).collect();
+    Ok(skeleton::render_lib(&kernel_defs, &run_body, &count_idents))
 }
 
 /// Render the complete Renode-runnable `no_std` BIN source: cortex-m-rt
@@ -346,9 +362,18 @@ fn render_main_rs(
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_src: &str,
+    count_loops: &[CountCheckLoop],
 ) -> Result<String, EmitError> {
     let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
-    Ok(skeleton::render_bin_main(&kernel_defs, &run_body))
+    let summaries: Vec<skeleton::CountSummary> = count_loops
+        .iter()
+        .map(|c| skeleton::CountSummary {
+            ident: c.ident.clone(),
+            loop_var: c.loop_var.clone(),
+            latency_max_ns: c.latency_max_ns,
+        })
+        .collect();
+    Ok(skeleton::render_bin_main(&kernel_defs, &run_body, &summaries))
 }
 
 /// The shared core of [`render_lib_rs`] and [`render_main_rs`]: extract
@@ -388,6 +413,64 @@ fn lower_kernels_and_run(
     let run_body = render_run_body(events, names, sidecar)?;
 
     Ok((kernel_defs, run_body))
+}
+
+/// One `on_violation=count` check-loop, materialised for the tier-3
+/// embedded count sink (TASK-0048.08, PART 1).
+///
+/// Deliberately a backend-LOCAL type rather than reusing
+/// [`backend_common::check_frame::CountCheckLoop`]: the tier-1 type drives
+/// an `AtomicU64` + `Drop`-guard summary that DOES NOT port to bare-metal
+/// (a) `AtomicU64` is unavailable on `thumbv7em-none-eabihf` — only 32-bit
+/// `LDREX`/`STREX` atomics, so the static must be `AtomicU32`; (b) a
+/// firmware spins forever in `loop {}`, so a Rust `Drop` at `main` return
+/// never fires (docs/check-loop-latency-max.md §3). The shared
+/// [`backend_common::check_frame::sanitize_loop_var`] IS reused for the
+/// ident (no drift on the sanitisation rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CountCheckLoop {
+    /// Sanitised identifier — appears in the static name
+    /// `NUC_CHECK_COUNT_<ident>`.
+    ident: String,
+    /// Original loop-variable name, carried verbatim into the bin-path
+    /// summary line so the user sees the directive they wrote.
+    loop_var: String,
+    /// Threshold in nanoseconds (post unit-normalisation, same as
+    /// [`nucleus_compiler::event::CheckFrame::latency_max_ns`]).
+    latency_max_ns: u64,
+}
+
+/// Walk `events` recursively; collect every `on_violation=count` check
+/// frame in EventList order (deterministic across builds — the same
+/// guarantee the rest of codegen relies on). Mirrors
+/// [`backend_common::check_frame::collect_count_check_frames`] in SHAPE,
+/// but yields the backend-local [`CountCheckLoop`] (AtomicU32, not the
+/// tier-1 AtomicU64 + Drop summary).
+fn collect_count_check_loops(events: &[Event]) -> Vec<CountCheckLoop> {
+    let mut out = Vec::new();
+    fn walk(events: &[Event], out: &mut Vec<CountCheckLoop>) {
+        for e in events {
+            if let Event::Loop {
+                body, check_frame, ..
+            } = e
+            {
+                if let Some(frame) = check_frame {
+                    if matches!(frame.on_violation, ViolationKind::Count) {
+                        out.push(CountCheckLoop {
+                            ident: backend_common::check_frame::sanitize_loop_var(
+                                &frame.loop_var,
+                            ),
+                            loop_var: frame.loop_var.clone(),
+                            latency_max_ns: frame.latency_max_ns,
+                        });
+                    }
+                }
+                walk(body, out);
+            }
+        }
+    }
+    walk(events, &mut out);
+    out
 }
 
 /// Walk the events and collect the names of kernels invoked by an
@@ -628,31 +711,56 @@ fn render_event(
                              on_violation=panic` on tier-3: a panic on a \
                              bare-metal MCU bricks the device (PRD §6.3.5). \
                              `on_violation` defaults to `panic`, so add an \
-                             explicit `on_violation = log` to the `check loop \
-                             {lv}` directive. (`count` is a filed follow-up — \
-                             TASK-0048.08 — pending a bare-metal summary sink; \
-                             the tier-1 Drop-guard summary does not fire on an \
-                             MCU that spins forever.)",
+                             explicit `on_violation = log` (per-violation UART \
+                             line) or `on_violation = count` (a violation \
+                             counter summarised over USART1 at program exit, \
+                             TASK-0048.08) to the `check loop {lv}` directive.",
                             lv = frame.loop_var,
                         )));
                     }
-                    // count needs an end-of-run summary sink; on a bare-metal
-                    // firmware that spins in `loop {}` forever, Rust Drops at
-                    // `main` return never fire (docs/check-loop-latency-max.md
-                    // §3). Reject loudly (AC#4) and direct to `log`; wiring a
-                    // real tier-3 count sink is TASK-0048.08.
+                    // count: fully lowered on tier-3 (TASK-0048.08, PART 1).
+                    // SAME SysTick per-iteration timing as the Log arm; on
+                    // violation, atomically increment a MODULE-scope
+                    // `static NUC_CHECK_COUNT_<ident>: AtomicU32` instead of
+                    // calling report_violation. AtomicU32 (not the tier-1
+                    // AtomicU64) because AtomicU64 is unavailable on
+                    // thumbv7em-none-eabihf; Relaxed because the firmware is
+                    // single-core and the counter is only read after run()
+                    // returns on the SAME core. The bare-metal summary sink
+                    // (the tier-1 Drop-guard does not fire — firmware spins
+                    // forever) is emitted by `render_bin_main` AFTER
+                    // `run(&mut shim)` and BEFORE `loop {}`. This arm is
+                    // SHARED lib+bin: the lib path emits the same static (so
+                    // it cross-compiles) but, being a `StubShim` lib with no
+                    // `main`, never flushes a summary — fine for compile-only.
                     ViolationKind::Count => {
-                        return Err(EmitError::UnsupportedFeature(format!(
-                            "embedded-pattern does not yet lower `check loop \
-                             {lv} : on_violation=count` on tier-3: the tier-1 \
-                             Drop-guard summary fires at `main` return, but a \
-                             bare-metal firmware spins forever (no Drop). A \
-                             tier-3 count sink (per-N UART summary / in-flash \
-                             counter dumped on watchdog reset) is TASK-0048.08. \
-                             Use `on_violation = log` for a per-violation UART \
-                             line.",
-                            lv = frame.loop_var,
-                        )));
+                        let ident =
+                            backend_common::check_frame::sanitize_loop_var(&frame.loop_var);
+                        let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
+                        let body_pad = "    ".repeat(indent + 1);
+                        writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
+                        writeln!(out, "{body_pad}let _check_start = shim.monotonic_ns();").ok();
+                        render_events(body, out, indent + 1, ctx)?;
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_elapsed = \
+                             shim.monotonic_ns().wrapping_sub(_check_start);"
+                        )
+                        .ok();
+                        // `ident` is built structurally from the sanitised
+                        // loop_var (no textual replace on a rendered
+                        // expression — feedback-textual-replace-codegen-unsafe).
+                        writeln!(
+                            out,
+                            "{body_pad}if _check_elapsed > {ns}_u64 {{ \
+                             NUC_CHECK_COUNT_{id}.fetch_add(1, \
+                             core::sync::atomic::Ordering::Relaxed); }}",
+                            ns = frame.latency_max_ns,
+                            id = ident,
+                        )
+                        .ok();
+                        writeln!(out, "{pad}}}").ok();
+                        return Ok(());
                     }
                     // log: fully lowered. Per-iteration wall-clock via the
                     // tier-3 monotonic clock; on violation, one UART line.

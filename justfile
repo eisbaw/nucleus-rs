@@ -719,6 +719,63 @@ renode-embedded-check:
         exit 1; \
     fi
 
+# Tier-3 M10 GENERATED check-loop COUNT firmware -> Renode -> assert the
+# on_violation=count program-exit UART summary reports EXACTLY 256
+# violations (TASK-0048.08, PART 1). Generates example 1's
+# embedded_check_count schedule (`check loop i : latency_max=1ns,
+# on_violation=count`) via the embedded-pattern bin-emit mode (`--shim
+# stm32h7`), cross-compiles it under .#embedded, runs it headless in Renode
+# under .#renode, captures USART1, and ASSERTS the summary line reports
+# exactly 256 occurrences.
+#
+# WHY EXACTLY 256 (timing-INDEPENDENT): latency_max=1ns is deliberately
+# tiny so EVERY iteration of ex1's `for i : 0..256` loop violates. The
+# count therefore equals the loop trip-count EXACTLY (256) regardless of
+# Renode's (non-cycle-accurate) timing — a deterministic check that does
+# NOT depend on any specific ns reading. This is what makes the count sink
+# robustly assertable under Renode, unlike a wall-clock-dependent figure.
+#
+# NOTE: the count summary shares USART1 with ex1's raw output bytes (same
+# documented wart as the log sink): the summary line is emitted AFTER `run`
+# streams all raw output, distinguishable by the `check loop ` ASCII prefix
+# which raw i32 output cannot spuriously produce. A separate diagnostic
+# channel is the TASK-0048.09 follow-up.
+#
+# Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
+# `just ci` — same tier-3-outside-default-ci rule as renode-embedded-check.
+renode-embedded-check-count:
+    @echo "tier-3 M10 GENERATED embedded check-loop COUNT -> Renode -> assert exactly 256 violations (TASK-0048.08)"
+    @set -eu; \
+    resc="$(pwd)/tests/renode/embedded/run.resc"; \
+    exdir="$(pwd)/nuc-nucleus/examples/01-elementwise-add"; \
+    input="$exdir/input.bin"; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    echo "=== generating embedded_check_count bin (embedded-pattern --shim stm32h7) ==="; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    ./target/release/nucleus build \
+        --algo "$exdir/prog.algo.nuc" \
+        --sched "$exdir/schedules/embedded_check_count.sched.nuc" \
+        --backend embedded-pattern --shim stm32h7 \
+        --out "$gen"; \
+    cd ..; \
+    elf="$gen/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
+    echo "=== cross-compiling generated firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$gen' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode): inject input.bin, capture USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$resc" >"$log" 2>&1; \
+    echo "=== captured USART1 count summary line(s) ==="; \
+    strings "$out" | grep -a 'check loop' || true; \
+    if strings "$out" | grep -qa 'check loop `i` violated latency_max=1 ns: 256 occurrence(s)'; then \
+        echo "OK: count summary reports EXACTLY 256 violations — the AtomicU32 counter + program-exit USART1 sink fired end-to-end (TASK-0048.08, timing-independent)."; \
+    else \
+        echo "FAIL: expected count summary 'check loop \`i\` violated latency_max=1 ns: 256 occurrence(s)' not found in captured USART1."; \
+        echo "      (latency_max=1ns => every one of ex1's 256 iterations must violate; the count is timing-independent.)"; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

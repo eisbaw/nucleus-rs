@@ -2889,14 +2889,15 @@ reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame periph
 milestone = "M11"
 
 # ----------------------------------------------------------------------
-# TASK-0048.04: embedded-only check-loop fixtures for the tier-3
-# embedded-pattern backend. These three 01-elementwise-add schedules
+# TASK-0048.04 / TASK-0048.08: embedded-only check-loop fixtures for the
+# tier-3 embedded-pattern backend. These three 01-elementwise-add schedules
 # (embedded_check / embedded_check_panic / embedded_check_count) exercise
 # the no_std monotonic-clock `check loop` lowering and the on_violation
-# tier-3 policy (log lowers; panic + count are rejected). They are
-# embedded-only (verified via `just renode-embedded-check`, not the
-# tier-1 RUNTIME differential), so all three × all 7 tier-1 backends are
-# [[skip]] M10. Mirrors the embedded_multimcu (example 14) skip block:
+# tier-3 policy (log + count lower; panic is rejected — it bricks the MCU).
+# They are embedded-only (verified via `just renode-embedded-check` /
+# `just renode-embedded-check-count`, not the tier-1 RUNTIME differential),
+# so all three × all 7 tier-1 backends are [[skip]] M10. Mirrors the
+# embedded_multimcu (example 14) skip block:
 # the discovery walk lists every schedules/*.sched.nuc, so an embedded-
 # only fixture MUST be declared-skipped or it pollutes the tier-1 matrix.
 
@@ -3002,47 +3003,47 @@ milestone = "M10"
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "pthreads-sync"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "pthreads-async"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-event"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "openmp-rs"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-poll"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-uds-event"
-reason   = "TASK-0048.04: tier-3 embedded-only NEGATIVE fixture (on_violation=count is rejected on tier-3 — no bare-metal Drop summary sink, TASK-0048.08). Exercised by the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts exactly 256 violations) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
