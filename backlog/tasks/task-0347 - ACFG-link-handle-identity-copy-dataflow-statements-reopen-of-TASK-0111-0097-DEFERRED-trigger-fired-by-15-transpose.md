@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-05-27 12:45'
-updated_date: '2026-05-28 05:22'
+updated_date: '2026-05-28 05:50'
 labels:
   - compiler
   - ir
@@ -197,6 +197,38 @@ GOTCHAS / REJECTED APPROACHES:
 Leaving In Progress: AC#1/#2/#3 are honestly deferred (not all ACs met),
 per the task's Honest scope LIMITS which explicitly permit this
 half-state.
+
+=== cycle 230b — review-gate outcome + fold-back ===
+Parallel read-only review gate (qa-test-runner + mped-architect) both
+returned GO. qa re-ran the full gate independently: just test 1041/0/3,
+just test-release 1040/0/3 (-1 = known #[should_panic] dev/release
+divergence, TASK-0291), just e2e 280/246/0/34/0 across 2 runs (fail=0,
+required-fail=0, no flake), clippy force-verified clean (no
+doc_lazy_continuation). architect verified the structural blocker is real
+(not effort-avoidance), the propagate_copy_edges fixpoint is correct +
+terminating, the over-report direction claim holds (cannot silently
+under-report a transfer), no silent-sibling (other IrStmt::Dataflow
+consumers already handle bare-LValue), no panic-not-diagnostic, AC#4
+genuinely MET (not AC-gamed).
+
+Three P3 nits folded back in-thread (cycle 230b, this commit range):
+- P3-1: link/types.rs data_producers header said 'producer kernel' — a
+  copy target inherits transitively, has no producer kernel of its own.
+  Reworded to 'at least one producer (directly or transitively
+  inherited)'.
+- P3-2: propagate_copy_edges had a ceiling + changed-flag but exited
+  SILENTLY if the ceiling were ever too small (under-converge = the
+  dangerous under-report direction). Added a  debug_assert
+  that surfaces non-convergence as a debug panic; documented why it is
+  safety-load-bearing. Added identity_copy_long_chain_propagates_at_depth
+  (3-edge chain) to exercise the fixpoint at greater depth — now 5
+  identity_copy_* tests, all pass.
+- P3-3: appended a note to TASK-0360 that resolution option (c) leaves
+  the link-half machinery as test-only code.
+
+Status stays In Progress: AC#1-3 genuinely unmet (structural, carried by
+TASK-0360); AC#4 met + gate-verified + review GO. Not marked Done because
+3 of 4 ACs are deferred — honest-partial, not AC-gamed.
 <!-- SECTION:NOTES:END -->
 
 - [ ] #1 ACFG: build_dataflow accepts bare-LValue RHS and emits an Operation with no kernel firing + a 'data move' DataflowEdge. Unit test fixture exercising 'out <-- in' with both same-worker and cross-worker placements

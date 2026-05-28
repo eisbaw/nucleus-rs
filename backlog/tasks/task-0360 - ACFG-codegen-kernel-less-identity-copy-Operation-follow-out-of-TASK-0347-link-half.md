@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-28 05:07'
-updated_date: '2026-05-28 05:23'
+updated_date: '2026-05-28 05:42'
 labels:
   - compiler
   - ir
@@ -71,4 +71,13 @@ blockers from the cycle-230 investigation:
    this in a design slice BEFORE coding (options (a)/(b)/(c) in the task
    description). build_dataflow's `_ => None` skip site
    (nucleus-compiler/src/acfg/build.rs) carries a // TASK-0360 reference.
+
+=== cycle-230b architect review fold-back (P3-3) ===
+Resolution option (c) (keep the xpose identity-kernel convention, close
+kernel-less codegen as wont-fix) has a cost worth stating: it leaves the
+TASK-0347 link-half machinery (propagate_copy_edges + the identity-copy
+CopyEdge path) as TEST-ONLY code — no in-tree example exercises a
+bare-LValue RHS, so the only callers are the synthetic identity_copy_*
+tests in nucleus-compiler/tests/link.rs. Options (a)/(b) give the link
+half a production exerciser; (c) does not. Weigh that when choosing.
 <!-- SECTION:NOTES:END -->
