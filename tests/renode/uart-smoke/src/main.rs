@@ -22,6 +22,13 @@ const USART1_TDR: *mut u32 = 0x4001_1028 as *mut u32;
 
 const TXE: u32 = 1 << 7;
 
+// NOTE for the M10 author: Renode's STM32F7_USART model hardwires TXE
+// to `true`, so this poll NEVER actually waits under Renode — the
+// back-pressure path is unexercised here (it would block on real
+// silicon where TXE clears). The poll is still the correct pattern to
+// emit; just don't assume Renode validated it. (Conversely, the
+// `CR1 = UE|TE` enable below IS load-bearing: the model drops the byte
+// if the transmitter is not enabled.)
 fn putc(b: u8) {
     unsafe {
         while core::ptr::read_volatile(USART1_ISR) & TXE == 0 {}

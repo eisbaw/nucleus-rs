@@ -559,19 +559,20 @@ renode-uart-smoke:
     @set -eu; \
     fw="$(pwd)/tests/renode/uart-smoke"; \
     elf="$fw/target/thumbv7em-none-eabihf/release/uart-smoke"; \
-    out="$(mktemp)"; \
+    out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -f "$out" "$log"' EXIT; \
     echo "=== cross-compiling firmware (.#embedded) ==="; \
     nix develop .#embedded --command bash -c "cd '$fw' && cargo build --release --quiet"; \
     echo "=== running in Renode (.#renode), capturing USART1 ==="; \
     nix develop .#renode --command renode --disable-xwt --console --plain \
-        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$fw/run.resc" >/dev/null 2>&1; \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$fw/run.resc" >"$log" 2>&1; \
     echo "=== captured USART1 ==="; cat "$out"; \
     if grep -q 'NUCLEUS-M10-OK' "$out"; then \
         echo "OK: Renode captured the firmware's USART1 sentinel (M10 lib->bin + capture template verified)."; \
-        rm -f "$out"; \
     else \
         echo "FAIL: expected sentinel 'NUCLEUS-M10-OK' not found in captured USART1 output"; \
-        rm -f "$out"; exit 1; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
     fi
 
 # Remove build artefacts.
