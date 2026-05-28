@@ -540,6 +540,40 @@ check-embedded:
     done; \
     echo "OK: embedded-pattern no_std lib cross-compiles for examples 1 + 5 (thumbv7em-none-eabihf)."
 
+# Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
+# minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
+# uart-smoke/, runs it headless in Renode on the bundled stm32h743
+# platform, captures USART1 to a file, and ASSERTS the sentinel — failing
+# LOUD on mismatch. Self-contained: it enters the .#embedded shell (for
+# the thumbv7em cross-compile) then the .#renode shell (for the Renode
+# runtime), so it runs from the default shell:  just renode-uart-smoke
+#
+# DELIBERATELY NOT wired into `just ci`: it needs the .#embedded +
+# .#renode shells (heavy ARM-std + Mono closures) — same tier-3-outside-
+# default-ci rule as check-embedded / TASK-0223. This is the lib->bin +
+# UART-capture TEMPLATE the embedded-pattern backend's M10 codegen
+# (TASK-0048) will follow; here the firmware's "computation" is a
+# constant sentinel (no codegen yet — that is M10 proper).
+renode-uart-smoke:
+    @echo "tier-3 M10 firmware -> Renode -> UART smoke (TASK-0048)"
+    @set -eu; \
+    fw="$(pwd)/tests/renode/uart-smoke"; \
+    elf="$fw/target/thumbv7em-none-eabihf/release/uart-smoke"; \
+    out="$(mktemp)"; \
+    echo "=== cross-compiling firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$fw' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode), capturing USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$fw/run.resc" >/dev/null 2>&1; \
+    echo "=== captured USART1 ==="; cat "$out"; \
+    if grep -q 'NUCLEUS-M10-OK' "$out"; then \
+        echo "OK: Renode captured the firmware's USART1 sentinel (M10 lib->bin + capture template verified)."; \
+        rm -f "$out"; \
+    else \
+        echo "FAIL: expected sentinel 'NUCLEUS-M10-OK' not found in captured USART1 output"; \
+        rm -f "$out"; exit 1; \
+    fi
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

@@ -1,0 +1,22 @@
+# Minimal STM32H7 (Cortex-M7) no_std firmware — the M10 lib->bin + Renode
+# UART-capture TEMPLATE (TASK-0048). Hand-written proof that a no_std bin
+# emits over USART1 and Renode captures it; the embedded-pattern backend's
+# generated firmware will follow this shape. Standalone (own [workspace])
+# so it is NOT part of the nucleus/ cargo workspace — it cross-compiles
+# only under `nix develop .#embedded` (thumbv7em-none-eabihf), never in
+# the default `just ci`.
+[package]
+name = "uart-smoke"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+cortex-m-rt = "0.7"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]

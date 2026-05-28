@@ -1,0 +1,21 @@
+:name: nucleus-m10-uart-smoke
+:description: Load the minimal STM32H7 UART firmware, run bounded, capture USART1.
+
+# Caller injects two path variables before `include`-ing this script:
+#   $bin      = @<path to the cross-compiled firmware ELF>
+#   $uartFile = @<path the USART1 file backend writes to>
+# (see the `renode-uart-smoke` just recipe).
+
+mach create "h7"
+machine LoadPlatformDescription @platforms/cpus/stm32h743.repl
+
+# Deterministic file capture of USART1 (the STM32F7_USART model at
+# 0x40011000). Second arg = overwrite-existing.
+usart1 CreateFileBackend $uartFile true
+
+sysbus LoadELF $bin
+
+# Bounded virtual-time run — the firmware emits its sentinel in
+# microseconds, then spins. No wall-clock dependence, fully determinate.
+emulation RunFor "0.05"
+quit
