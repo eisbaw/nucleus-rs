@@ -720,8 +720,9 @@ renode-embedded-check:
     fi
 
 # Tier-3 M10 GENERATED check-loop COUNT firmware -> Renode -> assert the
-# on_violation=count program-exit UART summary reports EXACTLY 256
-# violations (TASK-0048.08, PART 1). Generates example 1's
+# on_violation=count program-exit UART summary reports a 255-or-256
+# violation count (TASK-0048.08, PART 1; band per the WHY block below).
+# Generates example 1's
 # embedded_check_count schedule (`check loop i : latency_max=1ns,
 # on_violation=count`) via the embedded-pattern bin-emit mode (`--shim
 # stm32h7`), cross-compiles it under .#embedded, runs it headless in Renode
