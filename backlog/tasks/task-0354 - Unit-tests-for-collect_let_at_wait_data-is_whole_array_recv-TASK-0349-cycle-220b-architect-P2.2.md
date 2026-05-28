@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-27 23:58'
-updated_date: '2026-05-28 00:36'
+updated_date: '2026-05-28 00:54'
 labels:
   - tests
   - backend-common
@@ -69,6 +69,16 @@ Gotchas / non-obvious bits:
 - make_minimal_tables helper deliberately omits the host worker entry that tests/wait_assign_slice.rs's helper carries — collect_let_at_wait_data reads only sidecar.data_types, never names.worker (verified by greppping the implementation). Per the silent-sibling-defect discipline this divergence is intentional and documented in the helper's docstring.
 
 is_whole_array_recv visibility: kept pub(super) per architect P2.2; all 7 tests reach it only via collect_let_at_wait_data → collect_let_at_wait_inner → wait::is_whole_array_recv. No widening.
+
+Cycle 221b — review-gate fold-back: architect P1.1 (phantom-Fire comment-doc-lie at tests/collect_let_at_wait_data.rs:207-210) removed; P2.3 (test 3 name oversells) renamed indexed_fire_written_data_excluded -> indexed_input_data_excluded + symmetric docstring clarification on test 2. P2.1 + P2.2 filed as TASK-0357 + TASK-0358 (not folded — would expand scope; precedent: cycle-220b filed TASK-0354/0355/0356 rather than expanding cycle-220).
+
+Re-run gate after fold-back: cargo test 1026/0/3 preserved exactly (no test count drift), clippy clean, just e2e 280/246/0/34/0 bit-identical to cycle-221 baseline.
+
+Commit: d3719e8.
+
+Memory update: feedback-comment-doc-lie-recurring 18th firing; in this case ALSO caught independently by the orchestrator's pre-review skim before the architect report landed — two independent reads on a 338 LoC test file beat one.
+
+All 7 numbered cases covered + cycle-221b architect-review findings folded back (P1.1 doc-lie + P2.3 test name + symmetric test 2 docstring clarification). P2.1 + P2.2 architect findings filed as TASK-0357 + TASK-0358 (test-only coverage extension + helper consolidation; do not block closure of TASK-0354 since they extend coverage beyond the 7 originally-scoped cases). Gate green end-to-end: cargo test 1026/0/3 (dev), 1025/0/3 (release), clippy clean, just e2e 280/246/0/34/0 bit-identical across 2 independent runs. Commits: 8ad74fa (cycle 221 implementation) + ded21ee (cycle 221 tracker notes) + d3719e8 (cycle 221b fold-back + 2 follow-up tasks filed).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
