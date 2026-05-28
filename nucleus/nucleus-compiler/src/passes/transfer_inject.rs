@@ -373,11 +373,13 @@
 //!   `negative_mutually_exclusive_transfer_sync_async` in
 //!   `nucleus-compiler/tests/sched_lower.rs`.
 //!
-//! - **Capability check deferred.** Per the task spec, the backend
-//!   isn't chosen at this point. We carry the schedule's stated
-//!   policy onto every placeholder; codegen-time TASK-0019+ rejects
-//!   `async`/`buffer>1`/`notify=event` against backends whose
-//!   `capabilities.toml` doesn't list them.
+//! - **Capability check is the driver's job, not this pass's.** The
+//!   backend isn't chosen at this point, so this pass carries the
+//!   schedule's stated policy onto every placeholder unchanged. The
+//!   driver's capability gate (`check_schedule_compat`, TASK-0019,
+//!   Done) rejects `async`/`buffer>1`/`notify=event` against backends
+//!   whose `capabilities.toml` doesn't list them, once the backend is
+//!   chosen (before codegen).
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -23,7 +23,8 @@
 //! What this file does NOT test:
 //! - Snapshot of the full tree — structural assertions are preferred.
 //! - Capability mismatch errors — by task spec, capability checks are
-//!   deferred to codegen-time (TASK-0019+).
+//!   the driver's job (`check_schedule_compat`, TASK-0019, Done), run
+//!   once the backend is chosen.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -47,9 +47,9 @@
 //!   algorithm's kernel set; the second needs the algorithm's
 //!   placement-by-kernel + data-flow graph. Link step.
 //! - Capability-matrix validation (e.g. `async` on a sync-only
-//!   backend, `notify=event` on a poll-only backend). Belongs to a
-//!   later pass that has the backend's `capabilities.toml` in hand.
-//!   Filed as follow-up (TASK-0019 in M1 per task spec).
+//!   backend, `notify=event` on a poll-only backend). Done as the
+//!   driver's capability gate (`check_schedule_compat`, TASK-0019),
+//!   which runs once the backend's `capabilities.toml` is in hand.
 //!
 //! Design choice — separate IR types vs annotated AST: separate, same
 //! reasoning as the algorithm side (`crate::algo::ir`). The AST keeps
@@ -87,7 +87,8 @@ pub const DEFAULT_WORKER_CLASS: &str = "__default";
 /// The `simd` and `memory` fields are kept as `Option` because the
 /// grammar permits an empty class body (`worker_class X {};`). Whether
 /// downstream backends require both fields is a capability-matrix
-/// concern (TASK-0019), not a lowering concern.
+/// concern (handled by `crate::capabilities`, TASK-0019), not a
+/// lowering concern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWorkerClass {
     pub name: String,

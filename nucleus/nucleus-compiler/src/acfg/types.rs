@@ -285,10 +285,14 @@ pub struct SyncPlaceholder {
 }
 
 /// Notification policy on a transfer. Mirrors the schedule's
-/// `notify=event|poll` directive (PRD §6.3.4). `Default` is the
-/// backend's choice when the schedule did not specify a notify mode;
-/// the codegen-time capability check (TASK-0019+) resolves it against
-/// the backend's `capabilities.toml`.
+/// `notify=event|poll` directive (PRD §6.3.4). `Default` means the
+/// schedule stated no notify mode, so it carries no constraint and is
+/// always satisfiable — the choice is nominally the backend's, though
+/// no tier-1 backend currently specialises on this field (it is
+/// carried for completeness but unread at codegen today). The driver's
+/// capability gate (`check_schedule_compat`, TASK-0019, Done) validates
+/// only an *explicit* `notify=` against the chosen backend's
+/// `capabilities.toml`, before codegen.
 ///
 /// The variants intentionally do NOT re-use [`crate::sched::NotifyKind`]
 /// — we want a third "no preference" state for schedules that didn't
@@ -333,7 +337,9 @@ impl From<NotifyKind> for NotifyMode {
 /// Conflicts between `sync` and `async` in the schedule are not
 /// caught at this layer — the linker/lowering passes can deduplicate
 /// or reject those; TASK-0018 deliberately leaves capability checking
-/// to TASK-0019+ at codegen time when the backend is in hand.
+/// to the driver's capability gate (`check_schedule_compat`, TASK-0019,
+/// Done), which runs once the backend is in hand (after selection,
+/// before codegen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TransferPolicy {
