@@ -1,11 +1,11 @@
 ---
 id: TASK-0064
 title: Add Renode to flake for tier-3 runtime validation
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-17 23:24'
-updated_date: '2026-05-21 17:09'
+updated_date: '2026-05-28 21:04'
 labels:
   - M10
   - infra
@@ -25,7 +25,7 @@ Tier-3 (M10+) per PRD §10.3 uses Renode as the default runtime validation harne
 <!-- AC:BEGIN -->
 - [x] #1 renode binary available in a dev shell
 - [x] #2 renode --version works
-- [ ] #3 An example .resc script in the repo loads, runs to completion, and the harness can capture UART output
+- [x] #3 An example .resc script in the repo loads, runs to completion, and the harness can capture UART output
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -94,4 +94,6 @@ Gate at hand-off:
   just test 539/0/2; just e2e 36/29/0/7 required-fail:0; just ci exit 0; nix flake check clean.
 
 Next-cycle plan: pick up TASK-0223 OR allow TASK-0048 (M10 STM32H7 shim) to consume just AC#1+AC#2 as the unblock signal it needed.
+
+AC#3 reconciled to MET (2026-05-28). Verified empirically this session: `nix develop --command just renode-uart-smoke` cross-compiled the thumbv7em-none-eabihf no_std firmware (.#embedded), booted it headless in Renode on the bundled stm32h743 (.#renode), and the harness captured USART1 -> 'NUCLEUS-M10-OK' sentinel, exit 0. The AC#3 design pass was split to TASK-0223 (Done) and consumed by the M10 arc (TASK-0048.01/02/03); the `just renode-uart-smoke` (hand-written template) and `just renode-embedded EX` (generated-project -> reference.bin diff for ex1/5/9) recipes are the landed realisation. .resc loads firmware, runs to completion, quits cleanly, UART captured to file deterministically. TASK-0064 moved Done; all 3 ACs met.
 <!-- SECTION:NOTES:END -->
