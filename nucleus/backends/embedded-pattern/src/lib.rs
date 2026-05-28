@@ -65,12 +65,14 @@
 //! `img[y][x]` index flattens to `img[y*W + x]` exactly as the tier-1
 //! backends do (same shared `render_fire_args` / `render_flat_index`).
 //!
-//! # Scope (M9): single-worker, compile-only
+//! # Scope: single-worker
 //!
-//! Only the single-`host` naive schedules of examples 1 and 5 are in
-//! scope. Multi-worker embedded (workers on different MCUs over SPI /
-//! Ethernet) is M11 (TASK-0049) and is REJECTED here with a forward
-//! link. `Push` / `Wait` / `Sync` (cross-worker) and `Alloc` / `Free`
+//! The lowering handles single-`host` naive schedules generally. The
+//! M9 compile-only acceptance set (`check-embedded`) is examples 1 and
+//! 5; the M10 bin runtime set (`renode-embedded`) is examples 1, 5, and
+//! 9 (TASK-0048.03). Multi-worker embedded (workers on different MCUs
+//! over SPI / Ethernet) is M11 (TASK-0049) and is REJECTED here with a
+//! forward link. `Push` / `Wait` / `Sync` (cross-worker) and `Alloc` / `Free`
 //! (explicit region management) do not occur in the naive single-worker
 //! event lists and are likewise rejected with forward links — they
 //! arrive with the M10 shim (TASK-0048) / M11.
@@ -85,8 +87,9 @@
 //!   compile-only validation, exactly the M9 bar (PRD §10.3 point 2 /
 //!   §11 M9). Real DMA/IRQ + a Renode-runnable bin (panic_handler +
 //!   entry point + linker script + `.resc`) is M10 (TASK-0048).
-//! - **`irq_barrier` is defined but UNEXERCISED** by examples 1 and 5:
-//!   the naive single-worker schedules have no [`Event::Sync`] barrier.
+//! - **`irq_barrier` is defined but UNEXERCISED** by the naive
+//!   single-worker examples (1, 5, 9): they have no [`Event::Sync`]
+//!   barrier.
 //!   The method is declared on the trait for M10/M11 (where partitioned
 //!   multi-MCU schedules emit barriers); declaring it now fixes the
 //!   trait shape early so the M10 shim implements a stable surface.
