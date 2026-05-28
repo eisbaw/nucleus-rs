@@ -3,10 +3,11 @@ id: TASK-0347
 title: >-
   ACFG + link: handle identity-copy dataflow statements (reopen of
   TASK-0111/0097 DEFERRED trigger fired by 15-transpose)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-27 12:45'
-updated_date: '2026-05-28 01:01'
+updated_date: '2026-05-28 05:22'
 labels:
   - compiler
   - ir
@@ -52,6 +53,151 @@ Both layers must be co-designed (per cycle-77 closure note):
 - Predates cycle 204: TASK-0111 (Done DEFERRED cycle 77, ACFG side), TASK-0097 (Done DEFERRED cycle 77, link side).
 - Triggered by: cycle 204 TASK-0341.01 (15-transpose AC#1) — first real example with identity-copy semantics.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+=== Cycle-230 implementation plan (TASK-0347) ===
+
+DESIGN FINDING (the central subtlety, investigated before coding):
+
+A kernel-less identity-copy Operation is NOT directly representable in the
+current IR. `Operation.kernel`, `DataflowEdge.kernel`, and the presentation
+`Event::Fire.kernel` are all non-optional `KernelId`. Making any of them
+`Option<KernelId>` ripples through ~17 compiler files (acfg_to_petri label,
+petri_to_events Fire emit, transfer_inject consumer index, sync_inject,
+the 3 partition passes, block/halo/reuse passes), the sidecar `kernel_sigs`
+join, the presentation Event contract, AND all 7 tier-1 backends' fire
+renderers. That is a major structural change far beyond a Low-priority node
+and risks the 280/246/0/34/0 e2e baseline.
+
+WORKER-SET PROBLEM (gates AC#3): a bare-LValue data-move has no `place
+<kernel> on <workers>` directive, so `resolve_worker_set` has nothing to
+resolve from. The only data-oriented schedule directive is `place_data D
+in REGION`, which maps a data symbol to an opaque MEMORY REGION, NOT a
+worker set. There is genuinely NO schedule-language concept that maps a
+data symbol -> worker set today. AC#1's "the Operation's worker set is the
+LHS's worker placement" is therefore under-specified: data placement is not
+a first-class schedule concept the way kernel placement is.
+
+DECISION (honest partial, explicitly permitted by the task's Honest scope
+LIMITS):
+
+- AC#1 (kernel-less ACFG Operation): DEFERRED. The clean form needs the
+  Option<KernelId> structural change + a data->worker schedule directive.
+  File as a scoped follow-up with a dependency edge. Do NOT smuggle in a
+  half-baked sentinel-kernel hack (that is the very `xpose` workaround the
+  task wants to remove).
+- AC#2 (cross-worker data-move lowering): DEFERRED, depends on AC#1.
+- AC#3 (drop xpose, bit-identical): DEFERRED, depends on AC#1+#2. Leave
+  15-transpose's xpose kernel in place; do NOT touch prog.algo.nuc /
+  kernels.rs / README / schedules (their "skipped at M1" comments stay
+  TRUE because the behaviour is unchanged).
+- AC#4 / TASK-0097 link side: LAND the root fix that CAN land cleanly --
+  record identity-copy producer/consumer edges in `analyse_dataflow` via a
+  last-writer-worker map, so a future cross-worker identity-copy is caught
+  by the MissingCrossWorkerTransfer existence check instead of being
+  silently invisible. This is exactly TASK-0097's original concern and
+  needs NO new IR shape (it works on String worker entities, not KernelId).
+
+WHY THIS IS A SUCCESS, NOT A FAILURE: a correct precisely-scoped partial is
+what the task explicitly asks for over a faked AC#3. The link-side fix
+removes a real silent-invisibility defect at root; the ACFG/codegen side is
+filed with an honest dependency chain.
+
+STEPS:
+1. Plan + In Progress (done).
+2. link/dataflow.rs: thread a last-writer-worker map through walk_stmts;
+   on an identity-copy `D <-- E` (bare DataRef / arithmetic RHS), attribute
+   D's producer to the last-writer worker of the RHS's source data, and
+   record the RHS data symbols as consumers of that same worker. Update the
+   (now-stale) module + analyse_dataflow docstrings to present tense.
+3. Unit tests in tests/link.rs (or wherever analyse_dataflow is tested):
+   same-worker identity-copy (no MissingCrossWorkerTransfer) + cross-worker
+   identity-copy (MissingCrossWorkerTransfer fires).
+4. Silent-sibling sweep: build.rs:164-166 + acfg/build.rs:325 docstrings
+   stay TRUE (ACFG behaviour unchanged); verify no other site newly lies.
+5. Full gate (build/clippy/test/test-release/e2e). Baseline must hold.
+6. File follow-up task for AC#1/#2/#3 (kernel-less Operation + data->worker
+   schedule directive) with dependency edge; reference its id in a code
+   comment at build.rs:325.
+7. Commit per logical unit; record gotchas + forward-carry notes.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+=== Cycle 230 outcome — PARTIAL (link half landed, ACFG/codegen half deferred to TASK-0360) ===
+
+Commit: bcde6b9 (link: TASK-0347 cycle 230 ...).
+
+WORKER-SET DESIGN OUTCOME (the central subtlety): outcome (b) of the
+brief. A kernel-less identity-copy Operation is NOT representable in the
+current IR — `acfg::Operation.kernel`, `acfg::DataflowEdge.kernel`, and
+the presentation `event::Event::Fire.kernel` are all non-optional
+`KernelId`. There is also NO schedule directive mapping a data symbol to
+a worker set: the only data-oriented directive is `place_data D in
+REGION`, which maps to an opaque MEMORY REGION (per Event::Alloc), not a
+worker. So AC#1's "the Operation's worker set is the LHS's worker
+placement" is under-specified — data placement is not a first-class
+schedule concept the way kernel placement (`place <kernel> on <workers>`
+-> resolve_worker_set) is. I did NOT smuggle in a sentinel-kernel hack
+(that is the very `xpose` workaround the task wants to remove). The clean
+ACFG/codegen path needs the Option<KernelId> structural change (ripples
+~17 compiler files + sidecar + presentation Event contract + all 7
+tier-1 backend fire renderers) AND a resolution of the worker-set
+blocker — filed as TASK-0360 with a dependency edge on this task.
+
+PER-AC STATUS:
+- AC#1 (kernel-less ACFG Operation + unit fixture): DEFERRED to TASK-0360.
+  build_dataflow still returns None for a bare-LValue RHS. The acfg/mod.rs
+  + build.rs skip-site docstrings now reference TASK-0360 and the
+  worker-set blocker (no longer claim "unexercised corner").
+- AC#2 (cross-worker data-move codegen lowering): DEFERRED to TASK-0360
+  (depends on AC#1).
+- AC#3 (drop xpose, bit-identical): DEFERRED to TASK-0360. 15-transpose
+  keeps `xpose`. Its prog.algo.nuc / kernels.rs / README "skipped at M1"
+  claims were swept: the behaviour claim stays TRUE (ACFG genuinely still
+  skips), but the stale verbatim comment-quote + the fragile
+  build.rs:325-327 line-number citations were corrected and the link-half
+  / TASK-0360 split-state recorded.
+- AC#4 (TASK-0097's link-side identity-copy gap): MET. `analyse_dataflow`
+  now records identity-copy producer/consumer transitively via the new
+  `propagate_copy_edges` fixpoint. A cross-worker identity copy is now
+  caught by the MissingCrossWorkerTransfer existence check. 4 inline link
+  tests pin same-worker (no spurious edge), cross-worker missing transfer
+  (error fires), cross-worker with transfers (links), and a copy chain
+  (transitive producer to a fixpoint).
+
+GATE (my run): just build OK, just clippy clean, just test 1041 passed /
+0 failed / 3 ignored, just test-release 1040 passed / 0 failed / 3 ignored
+(the 1-test delta is the known dev-vs-release #[should_panic] divergence),
+just e2e 280/246/0/34/0 — baseline EXACTLY held. check-textual-replace +
+check-include-str-coverage both OK.
+
+SAFETY ARGUMENT (why e2e is provably unchanged): grepped all
+examples/*/prog.algo.nuc — ZERO use a bare-LValue dataflow statement
+(15-transpose uses `xpose`, a Call). So `data_producers`/`data_consumers`
+are byte-identical for every shipped example; the change is purely
+additive for synthetic / future identity-copy programs.
+
+GOTCHAS / REJECTED APPROACHES:
+- Rejected: making KernelId optional in this cycle. Too large for a Low
+  task; high regression risk to the 280/246 baseline; the worker-set
+  blocker would still gate AC#3. Filed as TASK-0360 instead.
+- Rejected: a "place_data D on W" reinterpretation of the existing
+  region directive. place_data is region-keyed by contract; conflating it
+  with worker placement would be a silent semantic overload.
+- Known limitation (documented in propagate_copy_edges docstring):
+  multi-source arithmetic RHS (`d <-- a+b`) with differently-placed
+  producers is the same ambiguous worker-set question; last-source-wins
+  feeds only the advisory existence check (over-reports, never silently
+  under-reports), precise policy rides with TASK-0360.
+
+Leaving In Progress: AC#1/#2/#3 are honestly deferred (not all ACs met),
+per the task's Honest scope LIMITS which explicitly permit this
+half-state.
+<!-- SECTION:NOTES:END -->
 
 - [ ] #1 ACFG: build_dataflow accepts bare-LValue RHS and emits an Operation with no kernel firing + a 'data move' DataflowEdge. Unit test fixture exercising 'out <-- in' with both same-worker and cross-worker placements
 - [ ] #2 Link / codegen: cross-worker data-move lowers to the same Xfer pair a Call would. Same-worker case lowers to an in-place assignment (or is structurally elided if the LHS and RHS are the same DataId)
