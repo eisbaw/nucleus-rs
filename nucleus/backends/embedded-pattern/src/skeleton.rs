@@ -159,7 +159,8 @@ pub fn render_cargo_toml() -> String {
 /// `StubShim` no-ops: its `dma_push` IS the UART emission. It walks the
 /// `len` bytes of the drained output region (the `save_output(c)`
 /// effectful Fire lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
-/// size_of_val(&c)); shim.dma_wait(0)` — see lib.rs `render_fire`),
+/// core::mem::size_of_val(&c)); shim.dma_wait(0)` — see lib.rs
+/// `render_fire`),
 /// accumulating a wrapping additive checksum, then prints a single
 /// DETERMINISTIC ASCII line `NUC-EX1 len=<N> checksum=<sum>\n` over
 /// USART1.
@@ -246,8 +247,12 @@ impl NucleusShim for Usart1Shim {
         // additive checksum, then stream a deterministic ASCII summary
         // line over USART1. (We do NOT stream the raw bytes: a raw-null-
         // byte capture is fragile to assert from a shell recipe; the
-        // ASCII line is robust to `grep -q` AND the checksum changes if
-        // the stream/compute path ever corrupts a byte.)
+        // ASCII line is robust to `grep -q`.) NOTE: under the M9 stub-zero
+        // inputs the output is all-zeros, so `checksum` is identically 0
+        // and carries NO value-correctness signal yet — the biting tokens
+        // are `NUC-EX1`+`len`. The checksum only distinguishes a corrupt
+        // from a correct stream once REAL (non-zero) inputs land
+        // (TASK-0048.02).
         let mut sum: u32 = 0;
         let mut i = 0usize;
         while i < len {
