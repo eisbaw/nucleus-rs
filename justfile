@@ -575,24 +575,28 @@ renode-uart-smoke:
         exit 1; \
     fi
 
-# Tier-3 M10 GENERATED firmware -> Renode -> UART assertion (TASK-0048.01).
-# Unlike `renode-uart-smoke` (a hand-written sentinel firmware), this
-# GENERATES the example-1 (01-elementwise-add, naive) firmware via the
+# Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
+# (TASK-0048.01 emission + TASK-0048.02 value-correctness). Unlike
+# `renode-uart-smoke` (a hand-written sentinel firmware), this GENERATES
+# the example-1 (01-elementwise-add, naive) firmware via the
 # embedded-pattern backend's bin-emit mode (`--shim stm32h7`), cross-
-# compiles it under .#embedded, runs it headless in Renode under .#renode
-# on the bundled stm32h743 platform, captures USART1, and ASSERTS the
-# deterministic summary line `NUC-EX1 len=1024 checksum=0` — failing LOUD
-# on mismatch. This is the lib->bin transition closing AC#3/#4/#5.
+# compiles it under .#embedded, injects example 1's input.bin into the
+# emulated MCU's axiSram, runs it headless in Renode under .#renode on the
+# bundled stm32h743 platform, captures the RAW USART1 output bytes, and
+# `cmp`s them BYTE-EXACT against reference.bin — failing LOUD on mismatch.
+# This is PRD §10.3 point 3 ("captures output ... diffs against
+# reference.bin. Must be bit-identical").
+#
+# REAL INPUT PATH (TASK-0048.02): the .resc does `sysbus LoadBinary
+# @input.bin 0x24000000` into axiSram (mapped in the platform, NOT in the
+# firmware's memory.x — so the linker never collides). The firmware's
+# Usart1Shim::alloc_in_region reads sequential slices of that region (a's
+# N words then b's N words, matching input.bin's layout), computes
+# c[i]=a[i]+b[i], and dma_push streams the RAW 1024 output bytes verbatim.
 #
 # Self-contained: enters .#embedded for the thumbv7em cross-compile then
 # .#renode for the runtime, so it runs from the default shell:
 #   just renode-embedded-ex1
-#
-# HONEST LIMIT (TASK-0048.01 AC#7): the input-fill shim hooks are still
-# no-ops, so the output array stays zero-filled => checksum=0. This proves
-# the EMISSION pipeline (boot+run+stream+capture), NOT value-correctness;
-# streaming a COMPUTED result from real inputs + a binary diff vs
-# reference.bin is parent TASK-0048 / follow-up work.
 #
 # DELIBERATELY NOT wired into `just ci` (needs the .#embedded + .#renode
 # shells) — same tier-3-outside-default-ci rule as check-embedded /
@@ -600,9 +604,11 @@ renode-uart-smoke:
 # [workspace] in a scratch dir (cleaned on exit), so it never enters the
 # nucleus/ host workspace.
 renode-embedded-ex1:
-    @echo "tier-3 M10 GENERATED embedded-pattern ex1 -> Renode -> UART (TASK-0048.01)"
+    @echo "tier-3 M10 GENERATED embedded-pattern ex1 -> Renode -> reference.bin diff (TASK-0048.02)"
     @set -eu; \
     resc="$(pwd)/tests/renode/embedded-ex1/run.resc"; \
+    input="$(pwd)/nuc-nucleus/examples/01-elementwise-add/input.bin"; \
+    reference="$(pwd)/nuc-nucleus/examples/01-elementwise-add/reference.bin"; \
     gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
     trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
     echo "=== generating ex1 bin (embedded-pattern --shim stm32h7) ==="; \
@@ -616,14 +622,21 @@ renode-embedded-ex1:
     elf="$gen/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
     echo "=== cross-compiling generated firmware (.#embedded) ==="; \
     nix develop .#embedded --command bash -c "cd '$gen' && cargo build --release --quiet"; \
-    echo "=== running in Renode (.#renode), capturing USART1 ==="; \
+    echo "=== running in Renode (.#renode): inject input.bin, capture USART1 ==="; \
     nix develop .#renode --command renode --disable-xwt --console --plain \
-        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$resc" >"$log" 2>&1; \
-    echo "=== captured USART1 ==="; cat "$out"; \
-    if grep -q 'NUC-EX1 len=1024 checksum=0' "$out"; then \
-        echo "OK: Renode captured the GENERATED firmware's deterministic USART1 line (M10 ex1 lib->bin + capture verified)."; \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$resc" >"$log" 2>&1; \
+    captured="$(wc -c < "$out")"; expected="$(wc -c < "$reference")"; \
+    echo "=== captured $captured bytes over USART1 (reference.bin is $expected bytes) ==="; \
+    if [ "$captured" -ne "$expected" ]; then \
+        echo "FAIL: captured $captured bytes, expected exactly $expected (reference.bin). The firmware did not stream the full output region."; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi; \
+    if cmp -s "$out" "$reference"; then \
+        echo "OK: captured USART1 bytes are BYTE-EXACT identical to reference.bin ($expected bytes) — M10 ex1 value-correctness verified (PRD §10.3 point 3)."; \
     else \
-        echo "FAIL: expected 'NUC-EX1 len=1024 checksum=0' not found in captured USART1 output"; \
+        echo "FAIL: captured USART1 output differs from reference.bin (first differing byte):"; \
+        cmp "$out" "$reference" || true; \
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
     fi

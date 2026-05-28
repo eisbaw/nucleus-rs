@@ -155,24 +155,33 @@ pub fn render_cargo_toml() -> String {
 // against the actual Renode STM32F7_USART.cs model source.
 
 /// The `Usart1Shim` impl emitted into the generated BIN's `main.rs`
-/// (M10, TASK-0048.01). This is the CONCRETE [`NucleusShim`] the M9
-/// `StubShim` no-ops: its `dma_push` IS the UART emission. It walks the
-/// `len` bytes of the drained output region (the `save_output(c)`
-/// effectful Fire lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
-/// core::mem::size_of_val(&c)); shim.dma_wait(0)` — see lib.rs
-/// `render_fire`),
-/// accumulating a wrapping additive checksum, then prints a single
-/// DETERMINISTIC ASCII line `NUC-EX1 len=<N> checksum=<sum>\n` over
-/// USART1.
+/// (M10, TASK-0048.01 / TASK-0048.02). This is the CONCRETE
+/// [`NucleusShim`] the M9 `StubShim` no-ops:
 ///
-/// HONEST LIMITATION (carried from M9, TASK-0048.01 AC#7): the input-
-/// fill hooks (`alloc_in_region` / the load `dma_wait`) are still no-ops
-/// here, so the output array `c` stays zero-filled. For example 1 that
-/// is `[i32; 256]` = 1024 bytes, all zero => `len=1024 checksum=0`. This
-/// proves the EMISSION pipeline (boot -> run -> stream -> capture), NOT
-/// value-correctness. Streaming a COMPUTED result from REAL inputs (and
-/// a binary diff vs reference.bin) needs a real input path — parent
-/// TASK-0048, follow-up TASK-0048.02.
+/// - `alloc_in_region` IS the REAL input path (TASK-0048.02): it hands
+///   back a pointer into the Renode-injected input region (axiSram @
+///   0x2400_0000, where the `.resc` `sysbus LoadBinary @input.bin`s the
+///   fixture) and advances an internal byte cursor by `bytes`. The load
+///   lowering then copies those `bytes` into the data array (see lib.rs
+///   `render_fire`'s effectful-input arm). Sequential loads (`a <--
+///   load_input(); b <-- load_input_b()`) consume the region in order,
+///   matching `input.bin`'s layout (a's N words then b's N words —
+///   exactly the advancing offsets `kernels.rs::read_i32_le_slice`
+///   uses, WITHOUT this backend parsing kernel bodies).
+/// - `dma_push` IS the UART emission: it streams the `len` RAW bytes of
+///   the drained output region (the `save_output(c)` effectful Fire
+///   lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
+///   core::mem::size_of_val(&c)); shim.dma_wait(0)` — see lib.rs
+///   `render_fire`) verbatim over USART1. The `renode-embedded-ex1`
+///   recipe captures those bytes and `cmp`s them BYTE-EXACT against
+///   `reference.bin` (PRD §10.3 point 3). Raw (not ASCII): a byte-exact
+///   reference diff is the value-correctness bar, and Renode's USART
+///   file backend captures raw bytes faithfully (proven in the
+///   TASK-0048.02 de-risk: a hand firmware streamed c and the capture
+///   was `cmp -s`-identical to reference.bin).
+/// - `dma_wait` / `irq_barrier` are no-ops: the injection is synchronous
+///   (the region is populated before the CPU starts), so there is
+///   nothing to block on. Real async DMA/IRQ is parent TASK-0048 AC#1.
 ///
 /// REGISTERS (STM32H7 USART1 @ 0x4001_1000; Renode UART.STM32F7_USART):
 /// CR1 @ +0x00 (UE bit0, TE bit3), ISR @ +0x1C (TXE bit7), TDR @ +0x28.
@@ -180,6 +189,11 @@ pub fn render_cargo_toml() -> String {
 /// pressure is UNVALIDATED — but the poll is the correct pattern, so we
 /// emit it). CR1 = UE|TE enable IS load-bearing (the model DROPS bytes
 /// if the transmitter is not enabled).
+///
+/// INPUT REGION: axiSram @ 0x2400_0000 (512K, mapped in the platform but
+/// NOT in `memory.x`, so the firmware's stack/.bss never collide with
+/// the injected fixture). The `.resc` injects the fixture there before
+/// the CPU runs.
 pub const USART1_SHIM_SRC: &str = "\
 // STM32H7 USART1 — Renode models it as UART.STM32F7_USART @ 0x4001_1000
 // (platforms/cpus/stm32h743.repl). Register layout (STM32F7/H7):
@@ -190,6 +204,13 @@ const USART1_CR1: *mut u32 = 0x4001_1000 as *mut u32;
 const USART1_ISR: *const u32 = 0x4001_101C as *const u32;
 const USART1_TDR: *mut u32 = 0x4001_1028 as *mut u32;
 const USART1_TXE: u32 = 1 << 7;
+
+// The Renode-injected input region: axiSram @ 0x2400_0000 (mapped in the
+// stm32h743 platform, NOT in memory.x — so the linker never places the
+// stack/.bss here and the injected fixture is safe). The `.resc` does
+// `sysbus LoadBinary @input.bin 0x2400_0000` BEFORE the CPU starts, so by
+// the time `run` executes the bytes are already present (no DMA wait).
+const NUC_INPUT_REGION: *const u8 = 0x2400_0000 as *const u8;
 
 /// Push one byte out over USART1. Renode's STM32F7_USART hardwires
 /// TXE=true so this poll never actually waits there; on real silicon it
@@ -202,73 +223,51 @@ fn usart1_putc(b: u8) {
     }
 }
 
-/// Write a `u32` as ASCII decimal over USART1 (no `core::fmt`, no
-/// allocator — a hand-rolled no_std decimal writer). Emits at least one
-/// digit (prints `0` for zero).
-fn usart1_put_u32(mut v: u32) {
-    // u32::MAX is 10 digits; a 10-byte scratch buffer suffices.
-    let mut buf = [0u8; 10];
-    let mut i = buf.len();
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-        if v == 0 {
-            break;
-        }
-    }
-    let mut j = i;
-    while j < buf.len() {
-        usart1_putc(buf[j]);
-        j += 1;
-    }
+/// The CONCRETE shim for the STM32H7 Renode target.
+///
+/// - `alloc_in_region` is the REAL input path: it returns a pointer into
+///   the injected input region (`NUC_INPUT_REGION`) at the current cursor
+///   and advances the cursor by `bytes`. Sequential loads consume the
+///   region in order (matching `input.bin`'s array-concatenation layout).
+/// - `dma_push` is the UART emission: it streams the `len` RAW bytes of
+///   the drained region verbatim over USART1 (captured + `cmp`'d
+///   byte-exact vs reference.bin by `just renode-embedded-ex1`).
+/// - `dma_wait` / `irq_barrier` are no-ops (synchronous injection; real
+///   DMA/IRQ is parent TASK-0048 AC#1).
+struct Usart1Shim {
+    // Byte offset into NUC_INPUT_REGION consumed so far. Each effectful
+    // load advances it by the loaded array's byte length.
+    input_cursor: usize,
 }
-
-/// The CONCRETE shim for the STM32H7 Renode target. `dma_push` is the
-/// UART emission: it walks the `len` bytes of the drained region,
-/// accumulates a wrapping additive checksum, and the firmware prints
-/// `NUC-EX1 len=<len> checksum=<sum>` over USART1. `alloc_in_region` /
-/// `dma_wait` / `irq_barrier` are still no-ops (TASK-0048.01 AC#7: real
-/// DMA/IRQ is TASK-0048 AC#1).
-struct Usart1Shim;
 
 impl Usart1Shim {
     fn new() -> Self {
-        Usart1Shim
+        Usart1Shim { input_cursor: 0 }
     }
 }
 
 impl NucleusShim for Usart1Shim {
-    fn alloc_in_region(&mut self, _region: usize, _bytes: usize) -> *mut u8 {
-        core::ptr::null_mut()
+    fn alloc_in_region(&mut self, _region: usize, bytes: usize) -> *mut u8 {
+        // Hand back the next `bytes`-sized slice of the injected input
+        // region and advance the cursor. The load lowering copies from
+        // this pointer into the data array. (Cast away const: the load
+        // lowering only READS through it; mut is the trait's contract.)
+        let p = unsafe { NUC_INPUT_REGION.add(self.input_cursor) } as *mut u8;
+        self.input_cursor += bytes;
+        p
     }
     fn dma_push(&mut self, _chan: usize, src: *const u8, len: usize) {
-        // Walk the drained region byte-by-byte, accumulating a wrapping
-        // additive checksum, then stream a deterministic ASCII summary
-        // line over USART1. (We do NOT stream the raw bytes: a raw-null-
-        // byte capture is fragile to assert from a shell recipe; the
-        // ASCII line is robust to `grep -q`.) NOTE: under the M9 stub-zero
-        // inputs the output is all-zeros, so `checksum` is identically 0
-        // and carries NO value-correctness signal yet — the biting tokens
-        // are `NUC-EX1`+`len`. The checksum only distinguishes a corrupt
-        // from a correct stream once REAL (non-zero) inputs land
-        // (TASK-0048.02).
-        let mut sum: u32 = 0;
+        // Stream the drained output region's RAW bytes verbatim over
+        // USART1. The `renode-embedded-ex1` recipe captures these and
+        // `cmp`s them BYTE-EXACT against reference.bin (PRD §10.3 point 3
+        // value-correctness). `read_volatile` so the byte loads are not
+        // reordered/elided across the MMIO writes in `usart1_putc`.
         let mut i = 0usize;
         while i < len {
             let byte = unsafe { core::ptr::read_volatile(src.add(i)) };
-            sum = sum.wrapping_add(byte as u32);
+            usart1_putc(byte);
             i += 1;
         }
-        for &b in b\"NUC-EX1 len=\" {
-            usart1_putc(b);
-        }
-        usart1_put_u32(len as u32);
-        for &b in b\" checksum=\" {
-            usart1_putc(b);
-        }
-        usart1_put_u32(sum);
-        usart1_putc(b'\\n');
     }
     fn dma_wait(&mut self, _chan: usize) {}
     fn irq_barrier(&mut self, _tag: u32) {}
@@ -295,10 +294,11 @@ pub fn render_bin_main(kernel_defs: &str, run_body: &str) -> String {
          //! Do not edit; rerun `nucleus build --shim stm32h7` to regenerate.\n\
          //!\n\
          //! A Renode-runnable `no_std` BIN for the STM32H7 (Cortex-M7).\n\
-         //! Boots via cortex-m-rt, calls the lowered `run`, and the\n\
-         //! effectful save Fire's `dma_push` streams a deterministic\n\
-         //! ASCII summary line over USART1 (captured + asserted in Renode).\n\
-         //! Mirrors tests/renode/uart-smoke/ (the proven M10 template).\n\
+         //! Boots via cortex-m-rt, loads REAL input from the Renode-injected\n\
+         //! region (axiSram @ 0x2400_0000), calls the lowered `run`, and the\n\
+         //! effectful save Fire's `dma_push` streams the RAW output bytes\n\
+         //! over USART1 (captured + diffed BYTE-EXACT vs reference.bin in\n\
+         //! Renode). Mirrors tests/renode/uart-smoke/ (the proven M10 template).\n\
          #![no_std]\n\
          #![no_main]\n\
          #![allow(unused_mut, dead_code, unused_variables)]\n\
@@ -339,8 +339,9 @@ pub fn render_bin_main(kernel_defs: &str, run_body: &str) -> String {
     s.push_str(run_body);
     s.push_str("}\n\n");
     // The cortex-m-rt entry point: enable USART1, build the concrete
-    // shim, run, then spin. The save Fire's dma_push (inside `run`) emits
-    // the deterministic summary line.
+    // shim, run, then spin. Inside `run` the load Fires fill the arrays
+    // from the injected input region (via the shim) and the save Fire's
+    // dma_push streams the RAW computed output bytes over USART1.
     s.push_str(
         "#[entry]\n\
          fn main() -> ! {\n    \
@@ -563,12 +564,24 @@ mod tests {
             s.contains("impl NucleusShim for Usart1Shim"),
             "Usart1Shim must impl NucleusShim"
         );
-        // The deterministic ASCII summary framing.
+        // TASK-0048.02: dma_push streams RAW output bytes (the byte-exact
+        // reference.bin diff is the value-correctness bar); the old ASCII
+        // summary framing (NUC-EX1 / checksum) is GONE.
         assert!(
-            s.contains("NUC-EX1 len="),
-            "firmware must emit the deterministic NUC-EX1 summary line"
+            s.contains("usart1_putc(byte);"),
+            "dma_push must stream raw output bytes over USART1"
         );
-        assert!(s.contains(" checksum="), "summary line must include checksum=");
+        assert!(!s.contains("NUC-EX1"), "ASCII summary framing must be GONE");
+        assert!(!s.contains("checksum="), "ASCII checksum framing must be GONE");
+        // TASK-0048.02: the shim reads REAL input from the injected region.
+        assert!(
+            s.contains("const NUC_INPUT_REGION: *const u8 = 0x2400_0000 as *const u8;"),
+            "shim must read injected input from axiSram @ 0x2400_0000"
+        );
+        assert!(
+            s.contains("input_cursor"),
+            "shim must track an input cursor across sequential loads"
+        );
         // USART1 registers exactly as the proven template.
         assert!(s.contains("0x4001_1000"), "USART1_CR1 address");
         assert!(s.contains("0x4001_101C"), "USART1_ISR address");

@@ -204,15 +204,52 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
         "save Fire did not lower to dma_push (the UART hook):\n{main}"
     );
 
-    // The deterministic ASCII framing the Renode recipe asserts. (Inputs
-    // are stub-zero => the runtime line is `NUC-EX1 len=1024 checksum=0`;
-    // the byte length 1024 is asserted at RUNTIME by the recipe, not
-    // here — the source carries the format string, not the value.)
+    // TASK-0048.02: the load Fire fills the array from the shim's input
+    // source (alloc_in_region returns a pointer into the Renode-injected
+    // region; the lowering copies into the array under a null-guard so
+    // the stub-shim lib path is unaffected). BOTH inputs a + b are loaded.
     assert!(
-        main.contains("NUC-EX1 len="),
-        "firmware must emit the NUC-EX1 summary line:\n{main}"
+        main.contains("let __src = shim.alloc_in_region(0, core::mem::size_of_val(&a));"),
+        "load `a` did not request its input slice from the shim:\n{main}"
     );
-    assert!(main.contains(" checksum="), "summary line needs checksum:\n{main}");
+    assert!(
+        main.contains("let __src = shim.alloc_in_region(0, core::mem::size_of_val(&b));"),
+        "load `b` did not request its input slice from the shim:\n{main}"
+    );
+    assert!(
+        main.contains("core::ptr::copy_nonoverlapping(__src,"),
+        "load lowering must copy the injected input bytes into the array:\n{main}"
+    );
+    assert!(
+        main.contains("if !__src.is_null() {"),
+        "load copy must be null-guarded (stub shim returns null => no copy):\n{main}"
+    );
+
+    // TASK-0048.02: dma_push streams the RAW output bytes verbatim (the
+    // byte-exact reference.bin diff is the value-correctness bar); the
+    // old ASCII summary line (NUC-EX1 / checksum) is GONE.
+    assert!(
+        main.contains("usart1_putc(byte);"),
+        "dma_push must stream raw output bytes over USART1:\n{main}"
+    );
+    assert!(
+        !main.contains("NUC-EX1"),
+        "the ASCII summary framing must be GONE (raw-byte stream now):\n{main}"
+    );
+    assert!(
+        !main.contains("checksum="),
+        "the ASCII checksum framing must be GONE (raw-byte stream now):\n{main}"
+    );
+
+    // The concrete shim reads from the injected input region (axiSram).
+    assert!(
+        main.contains("const NUC_INPUT_REGION: *const u8 = 0x2400_0000 as *const u8;"),
+        "shim must read from the injected input region axiSram @ 0x2400_0000:\n{main}"
+    );
+    assert!(
+        main.contains("input_cursor"),
+        "shim must track an input cursor across sequential loads:\n{main}"
+    );
 
     // main enables USART then runs.
     assert!(main.contains("let mut shim = Usart1Shim::new();"), "main must build shim:\n{main}");

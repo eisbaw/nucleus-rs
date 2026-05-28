@@ -949,7 +949,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             // shim", M10 TASK-0048.01):
             //   --shim stm32h7  -> Renode-runnable no_std BIN (cortex-m-rt
             //                      entry + panic handler + memory.x +
-            //                      USART1 streaming).
+            //                      real-input load from the injected region
+            //                      + raw USART1 output streaming).
             //   (no --shim)     -> the M9 compile-only no_std LIB
             //                      (UNCHANGED — `just check-embedded`).
             // An unrecognised shim name is a typed (not panicking) error.

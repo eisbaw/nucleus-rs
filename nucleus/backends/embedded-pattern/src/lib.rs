@@ -9,18 +9,20 @@
 //!   generated lib must pass `cargo check --target thumbv7em-none-eabihf`
 //!   against a do-nothing STUB shim. Run that check via `just
 //!   check-embedded` under `nix develop .#embedded`.
-//! - [`emit_bin`] (M10, `--shim stm32h7`, TASK-0048.01): a
+//! - [`emit_bin`] (M10, `--shim stm32h7`, TASK-0048.01 / TASK-0048.02): a
 //!   Renode-runnable `no_std` **binary** (cortex-m-rt `#[entry]` +
 //!   `#[panic_handler]` + STM32H743 `memory.x` + a concrete `Usart1Shim`
-//!   whose `dma_push` streams a deterministic ASCII summary line over
-//!   USART1). Runtime acceptance: `just renode-embedded-ex1` (runs the
-//!   GENERATED example-1 firmware in Renode, captures USART1, asserts
-//!   the line). The two modes share kernel extraction + the `run<S>`
-//!   body via `lower_kernels_and_run`; only the surrounding scaffolding
-//!   differs. The real STM32H7 DMA/IRQ shim and computed-result
-//!   streaming (real inputs + reference.bin diff) remain parent
-//!   TASK-0048 work — the M10 slice proves the EMISSION pipeline
-//!   (boot+run+stream+capture), not value-correctness.
+//!   whose `alloc_in_region` reads the Renode-injected input region and
+//!   whose `dma_push` streams the RAW computed output bytes over USART1).
+//!   Runtime acceptance: `just renode-embedded-ex1` (runs the GENERATED
+//!   example-1 firmware in Renode on REAL injected input, captures
+//!   USART1, and `cmp`s the captured bytes BYTE-EXACT against
+//!   `reference.bin` — PRD §10.3 point 3 value-correctness). The two
+//!   modes share kernel extraction + the `run<S>` body via
+//!   `lower_kernels_and_run`; only the surrounding scaffolding differs.
+//!   The real STM32H7 DMA/IRQ shim remains parent TASK-0048 AC#1 work
+//!   (the current `Usart1Shim` reads a memory-mapped injected region
+//!   synchronously rather than driving a real async DMA controller).
 //!
 //! # The std-bound-kernel problem and its resolution
 //!
@@ -228,12 +230,14 @@ pub fn emit(
 /// via [`render_run_body`], so an unsupported schedule fails loud with
 /// the same typed [`EmitError`] here as on the lib path.
 ///
-/// SCOPE (TASK-0048.01): example 1 (01-elementwise-add) single-worker
-/// naive. The deterministic UART line is `NUC-EX1 len=<N> checksum=<sum>`;
-/// under the still-stub input hooks the output stays zero-filled, so the
-/// proven values are `len=1024 checksum=0`. This proves the EMISSION
-/// pipeline, not value-correctness (see [`skeleton::USART1_SHIM_SRC`]
-/// docs and TASK-0048.01 AC#7).
+/// SCOPE (TASK-0048.01 + TASK-0048.02): example 1 (01-elementwise-add)
+/// single-worker naive. The firmware loads REAL input from the
+/// Renode-injected region (axiSram @ 0x2400_0000), computes
+/// `c[i]=a[i]+b[i]`, and streams the RAW output bytes over USART1; the
+/// `renode-embedded-ex1` recipe `cmp`s the captured bytes BYTE-EXACT
+/// against `reference.bin` (PRD §10.3 point 3 value-correctness). See
+/// [`skeleton::USART1_SHIM_SRC`] for the input-region / streaming
+/// mechanism.
 pub fn emit_bin(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -655,20 +659,39 @@ fn render_fire(
             let name = data_name(o.data, ctx)?;
             if bindings.inputs.is_empty() {
                 // Effectful INPUT (load): `a <-- load_input()`. Fill the
-                // region from a sensor/DMA source via shim hooks. The
-                // stub no-ops; the array stays zero-filled (honest M9
-                // limitation: compile-only, no real input).
+                // region `name` from the shim's input source. The shim's
+                // `alloc_in_region` hands back a pointer into the
+                // Renode-injected input region (advancing an internal
+                // cursor by the array's byte length); we copy those bytes
+                // into the array. Sequential loads consume the region in
+                // order, matching input.bin's array-concatenation layout
+                // (a's N words, then b's N words) — exactly the advancing
+                // offsets kernels.rs::read_i32_le_slice uses, WITHOUT this
+                // backend parsing kernel bodies (PRD §6.2.2). The stub
+                // shim returns null + the copy is guarded by it, so the
+                // M9 compile-only lib still compiles (array stays zero-
+                // filled there; honest compile-only limit). TASK-0048.02.
                 writeln!(
                     out,
-                    "{pad}// effectful input `{callee}`: fill region `{name}` via shim."
+                    "{pad}// effectful input `{callee}`: fill region `{name}` from the shim's input source."
                 )
                 .ok();
                 writeln!(
                     out,
-                    "{pad}let _ = shim.alloc_in_region(0, core::mem::size_of_val(&{name}));"
+                    "{pad}let __src = shim.alloc_in_region(0, core::mem::size_of_val(&{name}));"
                 )
                 .ok();
                 writeln!(out, "{pad}shim.dma_wait(0);").ok();
+                // Copy the loaded bytes into the array IFF the shim handed
+                // back a non-null source (the stub returns null => no copy,
+                // so the compile-only lib's zero-fill is preserved).
+                writeln!(out, "{pad}if !__src.is_null() {{").ok();
+                writeln!(
+                    out,
+                    "{pad}    unsafe {{ core::ptr::copy_nonoverlapping(__src, {name}.as_mut_ptr() as *mut u8, core::mem::size_of_val(&{name})); }}"
+                )
+                .ok();
+                writeln!(out, "{pad}}}").ok();
                 Ok(())
             } else {
                 // A whole-array PURE compute (no tier-1 example hits this
