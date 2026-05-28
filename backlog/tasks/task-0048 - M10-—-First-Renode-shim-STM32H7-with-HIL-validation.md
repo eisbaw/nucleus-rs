@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 11:30'
+updated_date: '2026-05-28 11:56'
 labels:
   - M10
   - backend
@@ -119,4 +119,19 @@ runnable-BIN transition + a real STM32H7 shim. Concrete carry-overs:
    to the PRD §7.3 `embedded-cortexm-dma-irq` surface (irq notify, async,
    buffer ring, tcm_per_core/shared_sram regions) when the real shim can
    honour them.
+
+=== Cycle 237 Renode harness de-risk (orchestrator, this session 2026-05-28) ===
+Proved the M10 Renode loop is viable IN THIS SANDBOX before building the codegen (analog of the M9 no_std cross-compile smoke). Headless smoke: `renode --disable-xwt --console --plain <script.resc>` on the bundled stm32f746.resc platform (STM32F746 = Cortex-M7, same core family as the STM32H7 target).
+VERIFIED:
+- Renode 1.16.1 runs HEADLESS here (no X/GUI), exit 0, clean quit via `emulation RunFor "0.2"; quit`.
+- Network fetch works: the script's `@https://dl.antmicro.com/.../dartino-lines.elf` downloaded + loaded.
+- Real Cortex-M7 EMULATION: CPU executed instructions (trace shows `[cpu: 0x801C8E4]` PCs + firmware driving rcc/gpioPortH/DCMI/ethernet.phy peripherals).
+- UART file backend creatable: `usart1 CreateFileBackend @/tmp/uart.txt true` accepted; file created (0 bytes here only because the dartino LCD demo doesn't write usart1).
+- Bundled platforms live under <renode-store>/lib/renode/{scripts,platforms}; stm32f7_discovery-bb.repl + many single-node .resc (stm32f746, stm32f103, nrf52840, miv, ...).
+STILL TO DO for M10 (the real codegen work, NOT yet done):
+1. lib->bin: emit embedded-pattern as a `#![no_main]` cortex-m bin (#[entry] via cortex-m-rt, #[panic_handler], STM32H7 memory.x linker). M9 emits a no_std LIB only.
+2. STM32H7 NucleusShim impl (DMA/IRQ/memory map) under backends/embedded-pattern/shims/stm32h7/.
+3. UART OUTPUT path: the generated firmware must write its result over USART1 so `reference.bin` can be diffed against captured UART. (UART *capture* mechanics proven; UART *emission* from our firmware is unproven — needs the bin.)
+4. A committed .resc + a `just` recipe (under .#renode) that loads our firmware, RunFor a bounded time, captures UART to a file, diffs vs reference, fails LOUD on mismatch. (This is the TASK-0223 harness that was closed deferred.)
+Recommended first M10 slice: a minimal hand-written STM32H7/F7 no_std bin that prints a known byte sequence over USART1, run in Renode, UART captured + asserted — proving emission+capture end-to-end and establishing the bin template — BEFORE wiring embedded-pattern's emit to it.
 <!-- SECTION:NOTES:END -->
