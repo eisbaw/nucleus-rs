@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 11:56'
+updated_date: '2026-05-28 12:16'
 labels:
   - M10
   - backend
@@ -134,4 +134,14 @@ STILL TO DO for M10 (the real codegen work, NOT yet done):
 3. UART OUTPUT path: the generated firmware must write its result over USART1 so `reference.bin` can be diffed against captured UART. (UART *capture* mechanics proven; UART *emission* from our firmware is unproven — needs the bin.)
 4. A committed .resc + a `just` recipe (under .#renode) that loads our firmware, RunFor a bounded time, captures UART to a file, diffs vs reference, fails LOUD on mismatch. (This is the TASK-0223 harness that was closed deferred.)
 Recommended first M10 slice: a minimal hand-written STM32H7/F7 no_std bin that prints a known byte sequence over USART1, run in Renode, UART captured + asserted — proving emission+capture end-to-end and establishing the bin template — BEFORE wiring embedded-pattern's emit to it.
+
+=== Cycle 237b: M10 firmware->Renode->UART TEMPLATE landed (commits b57d030 + 7de02f9) ===
+First tier-3 RUNTIME slice proven end-to-end IN-SANDBOX (the user chose the bounded UART-firmware slice). Hand-written minimal STM32H743 (Cortex-M7) no_std firmware at tests/renode/uart-smoke/ (cortex-m-rt vector table + #[entry] + panic handler; memory.x FLASH@0x08000000 / DTCM RAM@0x20000000) emits sentinel "NUCLEUS-M10-OK" over USART1 (raw regs: CR1=UE|TE @0x40011000, poll ISR.TXE @+0x1C, write TDR @+0x28). New `just renode-uart-smoke` recipe: cross-compiles under .#embedded, runs headless in Renode (--disable-xwt --console) on bundled platforms/cpus/stm32h743.repl under .#renode, captures USART1 to a file backend, asserts the sentinel (fail-loud grep||exit1 + dumps renode log on failure).
+PROVEN (both reviews GO; architect verified every register/mem claim vs the actual Renode STM32F7_USART.cs model source): lib->bin transition, Renode Cortex-M7 emulation, USART1 emission + deterministic file capture, bounded RunFor + clean quit, fail-loud assertion. Host gate unaffected (firmware crate is its own [workspace], outside nucleus/; recipe NOT in just ci; target/ gitignored). e2e still 280/246/0/34/0.
+KEY FACT for real M10: Renode STM32F7_USART hardwires TXE=true (the TX poll never waits in Renode; back-pressure unvalidated) BUT CR1=UE|TE enable IS load-bearing (model drops bytes if TX disabled).
+STILL TO DO for M10 proper (this task stays To Do/In Progress — the TEMPLATE is a prerequisite, not the milestone):
+1. embedded-pattern backend emits a no_std BIN (this firmware shape) instead of the M9 LIB — wire #[entry]/panic_handler/memory.x into the generated project + a USART-streaming output path.
+2. Stream the COMPUTED result (not a constant sentinel) over USART1 + diff captured bytes vs reference.bin (replace the grep with a binary diff).
+3. STM32H7 NucleusShim impl (DMA/IRQ/memory map) under backends/embedded-pattern/shims/stm32h7/.
+4. Generalise the recipe to examples 1/5/9 (PRD §11 M10 set) via the embedded-pattern emit, parameterised over example.
 <!-- SECTION:NOTES:END -->
