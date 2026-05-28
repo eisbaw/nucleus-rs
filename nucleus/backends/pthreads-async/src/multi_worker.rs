@@ -195,14 +195,16 @@ impl<'a> Plan<'a> {
         // guard is upstream; this branch is structurally unreachable
         // today, but the alignment with pthreads-sync's precedent
         // keeps error handling consistent across backends.
-        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
-            .ok_or_else(|| {
-                EmitError::ContractGap(
-                    "pthreads-async Plan: used_workers reachable to host \
+        let host_worker =
+            backend_common::elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
+                || {
+                    EmitError::ContractGap(
+                        "pthreads-async Plan: used_workers reachable to host \
                      election but empty — invariant len() >= 2 violated"
-                        .to_string(),
-                )
-            })?;
+                            .to_string(),
+                    )
+                },
+            )?;
 
         // Collect cross-worker (DataId, SeqTag) pairs from every
         // Push/Wait in every worker's events via the shared backend-
@@ -515,7 +517,11 @@ impl<'a> Plan<'a> {
         // Pre-init: cross-worker inputs the worker Waits on + data it
         // writes via an indexed Fire output and never whole-array.
         // Same set semantics as pthreads-sync; sorted by name.
-        let pre_init = self.collect_pre_init(worker)?;
+        //
+        // TASK-0349 cycle 220: whole-array-recv-only data EXCLUDED
+        // from pre-init and emitted as `let <name> = <rhs>;` at recv
+        // site (see `collect_pre_init` doc).
+        let (pre_init, let_at_wait) = self.collect_pre_init(worker)?;
         for (name, did) in &pre_init {
             let ty = self.sidecar.data_type(*did).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -542,6 +548,7 @@ impl<'a> Plan<'a> {
             rendezvous_ids: &self.ring_ids,
             pair_tiles: &self.pair_tiles,
             accumulate_waits: &self.accumulate_waits,
+            let_at_wait_data: &let_at_wait,
         };
         walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)
@@ -550,15 +557,39 @@ impl<'a> Plan<'a> {
     /// Per-worker pre-init set: cross-worker inputs Waited on + data
     /// written via an indexed Fire output and never whole-array.
     /// Sorted by name (matches pthreads-sync's `collect_pre_init`).
-    fn collect_pre_init(&self, worker: WorkerId) -> Result<Vec<(String, DataId)>, EmitError> {
+    /// Returns (pre_init_vec, let_at_wait_set) where the second set
+    /// is the per-worker DataIds whose pre-init is provably dead and
+    /// will be `let`-bound at recv site (TASK-0349 cycle 220).
+    #[allow(clippy::type_complexity)]
+    fn collect_pre_init(
+        &self,
+        worker: WorkerId,
+    ) -> Result<(Vec<(String, DataId)>, BTreeSet<DataId>), EmitError> {
         let evs = &self.per_worker[&worker];
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
         walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
 
+        // TASK-0349 cycle 220
+        let accumulate_data: BTreeSet<DataId> = self
+            .accumulate_waits
+            .iter()
+            .filter_map(|(w, d, _)| if *w == worker { Some(*d) } else { None })
+            .collect();
+        let let_at_wait = walker::collect_let_at_wait_data(
+            evs,
+            &self.pair_tiles,
+            self.sidecar,
+            &accumulate_data,
+            &indexed,
+        );
+
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
+            if let_at_wait.contains(d) {
+                continue;
+            }
             ids.insert(*d);
         }
         for d in &indexed {
@@ -571,7 +602,7 @@ impl<'a> Plan<'a> {
             out.push((self.data_name(*d)?, *d));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
+        Ok((out, let_at_wait))
     }
 }
 

@@ -124,12 +124,14 @@ impl<'a> Plan<'a> {
         // the EXACT SAME rule as pthreads-sync so the host-election
         // mirror invariant (driver vs backend) holds trivially —
         // neither side overrides the helper.
-        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
-            .ok_or_else(|| {
-                EmitError::ContractGap(
-                    "multi-worker emit requires at least one used worker".to_string(),
-                )
-            })?;
+        let host_worker =
+            backend_common::elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
+                || {
+                    EmitError::ContractGap(
+                        "multi-worker emit requires at least one used worker".to_string(),
+                    )
+                },
+            )?;
 
         // Cross-worker pairs: every (DataId, SeqTag) appearing on a
         // Push or Wait event. Sorted by (DataId, SeqTag) so slot
@@ -359,7 +361,11 @@ impl<'a> Plan<'a> {
             }
             for tag in &used_barriers {
                 let bid = tag.0;
-                writeln!(out, "        let {wname}_bar_{bid} = Arc::clone(&bar_{bid});").ok();
+                writeln!(
+                    out,
+                    "        let {wname}_bar_{bid} = Arc::clone(&bar_{bid});"
+                )
+                .ok();
             }
             // `move |_|` — rayon::Scope::spawn passes a &Scope to the
             // closure; we don't need it (no nested spawns), so bind
@@ -449,7 +455,10 @@ impl<'a> Plan<'a> {
         let pad = "    ".repeat(base_indent);
         let evs = &self.per_worker[&worker];
 
-        let pre_init = self.collect_pre_init(worker)?;
+        // TASK-0349 cycle 220: whole-array-recv-only data EXCLUDED
+        // from pre-init and emitted as `let <name> = <rhs>;` at recv
+        // site (see `collect_pre_init` doc).
+        let (pre_init, let_at_wait) = self.collect_pre_init(worker)?;
         for (name, did) in &pre_init {
             let ty = self.sidecar.data_type(*did).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -471,21 +480,45 @@ impl<'a> Plan<'a> {
             rendezvous_ids: &self.slot_ids,
             pair_tiles: &self.pair_tiles,
             accumulate_waits: &self.accumulate_waits,
+            let_at_wait_data: &let_at_wait,
         };
         walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)
     }
 
-    /// Pre-init set — same derivation as pthreads-sync.
-    fn collect_pre_init(&self, worker: WorkerId) -> Result<Vec<(String, DataId)>, EmitError> {
+    /// Pre-init set — same derivation as pthreads-sync. Returns the
+    /// pre-init Vec and the per-worker let-at-wait DataId set
+    /// (TASK-0349 cycle 220).
+    #[allow(clippy::type_complexity)]
+    fn collect_pre_init(
+        &self,
+        worker: WorkerId,
+    ) -> Result<(Vec<(String, DataId)>, BTreeSet<DataId>), EmitError> {
         let evs = &self.per_worker[&worker];
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
         walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
 
+        // TASK-0349 cycle 220
+        let accumulate_data: BTreeSet<DataId> = self
+            .accumulate_waits
+            .iter()
+            .filter_map(|(w, d, _)| if *w == worker { Some(*d) } else { None })
+            .collect();
+        let let_at_wait = walker::collect_let_at_wait_data(
+            evs,
+            &self.pair_tiles,
+            self.sidecar,
+            &accumulate_data,
+            &indexed,
+        );
+
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
+            if let_at_wait.contains(d) {
+                continue;
+            }
             ids.insert(*d);
         }
         for d in &indexed {
@@ -498,7 +531,7 @@ impl<'a> Plan<'a> {
             out.push((self.data_name(*d)?, *d));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
+        Ok((out, let_at_wait))
     }
 }
 

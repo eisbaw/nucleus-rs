@@ -52,9 +52,8 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_bufsync() {
 
     let poll_res =
         emit(&per_worker, &names, &sidecar, &kernels, &poll_out).expect("mp-tcp-poll emit");
-    let bufsync_res =
-        mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels, &bufsync_out)
-            .expect("mp-tcp-bufsync emit");
+    let bufsync_res = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels, &bufsync_out)
+        .expect("mp-tcp-bufsync emit");
 
     // ---- The invariant: byte-identical binary + Cargo.toml + run.sh +
     //                     wire.rs + kernels.rs ----
@@ -71,10 +70,8 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_bufsync() {
         bufsync_res.worker_bins.len()
     );
 
-    let poll_bin =
-        std::fs::read_to_string(&poll_res.worker_bins[0]).expect("poll binary");
-    let bufsync_bin =
-        std::fs::read_to_string(&bufsync_res.worker_bins[0]).expect("bufsync binary");
+    let poll_bin = std::fs::read_to_string(&poll_res.worker_bins[0]).expect("poll binary");
+    let bufsync_bin = std::fs::read_to_string(&bufsync_res.worker_bins[0]).expect("bufsync binary");
     assert_eq!(
         poll_bin, bufsync_bin,
         "mp-tcp-poll single-process binary must be byte-identical to \
@@ -107,8 +104,7 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_bufsync() {
          (both emit mp_tcp_common::WIRE_RUNTIME_SRC verbatim)"
     );
 
-    let poll_kernels =
-        std::fs::read_to_string(&poll_res.kernels_rs).expect("poll kernels.rs");
+    let poll_kernels = std::fs::read_to_string(&poll_res.kernels_rs).expect("poll kernels.rs");
     let bufsync_kernels =
         std::fs::read_to_string(&bufsync_res.kernels_rs).expect("bufsync kernels.rs");
     assert_eq!(
@@ -154,8 +150,7 @@ fn single_worker_real_example_emits_byte_identical_to_mp_tcp_bufsync() {
             .expect("mp-tcp-bufsync emit (same input)");
 
     let poll_bin = std::fs::read_to_string(&poll_res.worker_bins[0]).expect("poll binary");
-    let bufsync_bin =
-        std::fs::read_to_string(&bufsync_res.worker_bins[0]).expect("bufsync binary");
+    let bufsync_bin = std::fs::read_to_string(&bufsync_res.worker_bins[0]).expect("bufsync binary");
     assert_eq!(
         poll_bin, bufsync_bin,
         "mp-tcp-poll single-process binary on 01-elementwise-add/naive MUST \

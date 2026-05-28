@@ -317,10 +317,9 @@ fn positive_6_workers_records_2x3_per_worker_ranges() {
 fn positive_4_workers_sidecar_mirrors_pair_and_grid_shape() {
     let acfg = build_2d_acfg("y", 7, 0..16, "x", 8, 0..32, &[1, 2, 3, 4]);
     let linked = linked_with_blocks2d_directive("y");
-    let acfg = nucleus_compiler::passes::partition_blocks2d::apply_partition_blocks2d(
-        &linked, acfg,
-    )
-    .expect("partition_blocks2d must accept 4 workers");
+    let acfg =
+        nucleus_compiler::passes::partition_blocks2d::apply_partition_blocks2d(&linked, acfg)
+            .expect("partition_blocks2d must accept 4 workers");
 
     let sidecar = nucleus_compiler::build_sidecar(&linked, &acfg).expect("build_sidecar");
 

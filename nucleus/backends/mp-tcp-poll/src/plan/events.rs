@@ -161,9 +161,8 @@ impl Plan<'_> {
                             None => (format!("{}_i64", range.start), format!("{}_i64", range.end)),
                         },
                     };
-                    let reuse_groups = render_reuse_buf_decls_pub(
-                        out, indent, *iter_var, var, &lo, body, ctx,
-                    )?;
+                    let reuse_groups =
+                        render_reuse_buf_decls_pub(out, indent, *iter_var, var, &lo, body, ctx)?;
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                     let body_indent = indent + 1;
                     let body_pad = "    ".repeat(body_indent);
@@ -267,12 +266,10 @@ impl Plan<'_> {
                         peers.sort_unstable();
                         for p in peers {
                             let cv = self.ctrl_var(true, p);
-                            writeln!(out, "{pad}wire::barrier_cross_poll(&mut {cv}, {bid});")
-                                .ok();
+                            writeln!(out, "{pad}wire::barrier_cross_poll(&mut {cv}, {bid});").ok();
                         }
                     } else {
-                        writeln!(out, "{pad}wire::barrier_cross_poll(&mut ctrl_host, {bid});")
-                            .ok();
+                        writeln!(out, "{pad}wire::barrier_cross_poll(&mut ctrl_host, {bid});").ok();
                     }
                 }
                 Event::Push { data, dst, seq, .. } => {
@@ -316,6 +313,20 @@ impl Plan<'_> {
                     let from = self.worker_name(*src);
                     let dec = decode_expr(ty)?;
                     let accumulate = self.accumulate_waits.contains(&(worker, *data, *seq));
+                    // TASK-0349 cycle 220: same wire-read wrap shape as
+                    // mp-tcp-bufsync — pass empty let-at-wait set to
+                    // keep `{name} = {dec};` emit. The
+                    // `unused_assignments` warning that motivated
+                    // TASK-0349 is already suppressed for the
+                    // emitted poll main via the per-main
+                    // `#[allow(...unused_assignments...)]` attribute
+                    // (worker_program.rs:89-90), so the cosmetic
+                    // motivation does not surface here regardless of
+                    // the let-at-wait optimization. The wrap shape
+                    // itself does NOT protect from the warning
+                    // (cycle-220b empirical correction of an
+                    // architect-flagged P1.1 mechanism-wrong
+                    // doc-lie).
                     let assign = render_wait_assign(
                         self.sidecar,
                         &self.pair_tiles,
@@ -324,6 +335,7 @@ impl Plan<'_> {
                         *seq,
                         &dec,
                         accumulate,
+                        backend_common::multi_worker_walker::WalkerCtx::empty_let_at_wait_set(),
                     )?;
                     // POLL variant: read_msg_expect_poll is the
                     // wait-primitive headline of TASK-0044.02.02 —

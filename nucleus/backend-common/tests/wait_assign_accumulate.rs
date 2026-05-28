@@ -146,6 +146,7 @@ fn accumulate_emit_replaces_overwrite_for_array_fan_in() {
         rendezvous_ids: &ids,
         pair_tiles: &tiles,
         accumulate_waits: &walker_accumulate,
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -271,6 +272,7 @@ fn accumulate_emit_float_returns_contract_gap() {
         seq,
         "slot_0.wait()",
         true, // accumulate
+        WalkerCtx::empty_let_at_wait_set(),
     )
     .expect_err("float accumulate MUST return ContractGap");
 
@@ -308,6 +310,7 @@ fn accumulate_emit_scalar_uses_wrapping_add_directly() {
         seq,
         "slot_0.wait()",
         true,
+        WalkerCtx::empty_let_at_wait_set(),
     )
     .expect("scalar accumulate must render");
 

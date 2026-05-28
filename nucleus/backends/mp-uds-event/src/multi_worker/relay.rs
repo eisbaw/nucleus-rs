@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 
 use nucleus_compiler::event::WorkerId;
 
+use super::walkers::{collect_w2w_pushes, RelayHop};
 use super::Plan;
-use super::walkers::{RelayHop, collect_w2w_pushes};
 use crate::EmitError;
 
 impl Plan<'_> {
@@ -81,13 +81,15 @@ impl Plan<'_> {
             for hop in hops {
                 let dst_name = self.worker_name(hop.dst);
                 let data_name = self.data_name(hop.data)?;
-                let dst_peer = self.peer_index_for(self.host_worker, hop.dst).ok_or_else(|| {
-                    EmitError::ContractGap(format!(
-                        "mp-uds-event relay: host has no peer index for dst {:?} \
+                let dst_peer = self
+                    .peer_index_for(self.host_worker, hop.dst)
+                    .ok_or_else(|| {
+                        EmitError::ContractGap(format!(
+                            "mp-uds-event relay: host has no peer index for dst {:?} \
                          on hop seq={:?} data={:?}",
-                        hop.dst, hop.seq, hop.data
-                    ))
-                })?;
+                            hop.dst, hop.seq, hop.data
+                        ))
+                    })?;
                 writeln!(
                     out,
                     "{pad}    __relay.relay_one({seq}u64, {dst_peer}usize, {cap}usize); \

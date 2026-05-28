@@ -53,10 +53,9 @@ fn scratch_dir(name: &str) -> PathBuf {
 /// as Strings.
 fn emit_06_distributed2(scratch: &Path) -> (String, String) {
     let root = repo_root();
-    let algo_src = fs::read_to_string(
-        root.join("nuc-nucleus/examples/06-separable-filter/prog.algo.nuc"),
-    )
-    .expect("read prog.algo.nuc");
+    let algo_src =
+        fs::read_to_string(root.join("nuc-nucleus/examples/06-separable-filter/prog.algo.nuc"))
+            .expect("read prog.algo.nuc");
     let sched_src = fs::read_to_string(
         root.join("nuc-nucleus/examples/06-separable-filter/schedules/distributed2.sched.nuc"),
     )
@@ -133,14 +132,10 @@ fn host_emit_includes_task_0327_relay_phase_with_12_hops() {
     // (`read_msg_expect`, not `read_msg`).
     for w in ["w0", "w1", "w2", "w3"] {
         let src_reads = host_src
-            .matches(&format!(
-                "wire::read_msg_expect(&mut data_{w}, "
-            ))
+            .matches(&format!("wire::read_msg_expect(&mut data_{w}, "))
             .count();
         let dst_writes = host_src
-            .matches(&format!(
-                "wire::write_msg(&mut data_{w}, "
-            ))
+            .matches(&format!("wire::write_msg(&mut data_{w}, "))
             .count();
         assert!(
             src_reads >= 3,
@@ -214,7 +209,9 @@ fn non_host_worker_routes_w2w_through_data_host_only() {
     // w0 only has connections named `data_host` + `ctrl_host`. Any
     // sibling `data_w*` / `ctrl_w*` would be a regression (worker
     // trying to talk to a peer socket that doesn't exist on its end).
-    for forbidden in ["data_w1", "data_w2", "data_w3", "ctrl_w1", "ctrl_w2", "ctrl_w3"] {
+    for forbidden in [
+        "data_w1", "data_w2", "data_w3", "ctrl_w1", "ctrl_w2", "ctrl_w3",
+    ] {
         assert!(
             !w0_src.contains(forbidden),
             "w0.rs must NOT reference `{forbidden}` — non-host workers \

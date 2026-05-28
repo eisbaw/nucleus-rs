@@ -346,7 +346,12 @@ fn inject_in_sequence(
         // could itself be a Sync this pass inserted on a previous
         // iteration. Computing prior_writes after the rule but before
         // recursion is the correct ordering.
-        let child = inject_in_node(child, &prior_writes, partitioned_iter_vars, inside_partition);
+        let child = inject_in_node(
+            child,
+            &prior_writes,
+            partitioned_iter_vars,
+            inside_partition,
+        );
 
         // Sequence rule: insert a Sync between `out.last()` and
         // `child` if their worker sets disagree on the write/read

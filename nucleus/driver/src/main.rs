@@ -80,8 +80,7 @@ use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
     apply_host_data_relay_inject, apply_host_mediation_inject, apply_partition_blocks2d,
     apply_partition_rows, apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder,
-    build_acfg,
-    build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
+    build_acfg, build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
     inject_syncs, inject_transfers, link, load_capabilities,
 };
 
@@ -832,9 +831,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // TASK-0044.01.01 (rayon-scope codegen + 8 [[required]] cells
         // bit-identical vs pthreads-sync template).
         "openmp-rs" => {
-            let result =
-                openmp_rs::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
-                    .map_err(|e| format!("openmp-rs codegen error: {e}"))?;
+            let result = openmp_rs::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                .map_err(|e| format!("openmp-rs codegen error: {e}"))?;
             println!("nucleus: ok");
             println!("project_dir = {}", result.project_dir.display());
             println!("cargo_toml  = {}", result.cargo_toml.display());
@@ -857,9 +855,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // template). Multi-binary shape (same dispatch fields as
         // mp-tcp-bufsync / mp-tcp-event).
         "mp-tcp-poll" => {
-            let result =
-                mp_tcp_poll::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
-                    .map_err(|e| format!("mp-tcp-poll codegen error: {e}"))?;
+            let result = mp_tcp_poll::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                .map_err(|e| format!("mp-tcp-poll codegen error: {e}"))?;
             println!("nucleus: ok");
             println!("project_dir = {}", result.project_dir.display());
             println!("cargo_toml  = {}", result.cargo_toml.display());
@@ -888,9 +885,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         // TASK-0044.03.02 follow-up). Multi-binary shape with optional
         // runtime_rs (same as mp-tcp-event).
         "mp-uds-event" => {
-            let result =
-                mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
-                    .map_err(|e| format!("mp-uds-event codegen error: {e}"))?;
+            let result = mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                .map_err(|e| format!("mp-uds-event codegen error: {e}"))?;
             println!("nucleus: ok");
             println!("project_dir = {}", result.project_dir.display());
             println!("cargo_toml  = {}", result.cargo_toml.display());

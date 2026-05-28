@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@mped-orchestrator'
 created_date: '2026-05-24 09:51'
-updated_date: '2026-05-24 11:49'
+updated_date: '2026-05-28 00:14'
 labels:
   - infra
   - tooling
@@ -87,4 +87,10 @@ TASK-0256 (cycle 91) added the \`just fmt-check\` recipe. On its first run it bi
 
 ### Cycle 97 outcome
 TASK-0276 Done; gate effective; no hardening required (both reviewers GO with zero material findings).
+
+=== Cycle 220b closure ===
+
+`cargo fmt --workspace` run as part of TASK-0349 cycle 220b's P2.3 fold-back (architect-flagged 14 new fmt-drift sites introduced by the sed-batch test fixup). The sweep also cleaned up the pre-existing accumulated workspace drift this task tracked (TASK-0256 follow-up). 60+ files normalized in one pass; no functional changes.
+
+Closed as side effect of TASK-0349 cycle 220b. e2e baseline 280/246/0/34/0 unchanged.
 <!-- SECTION:NOTES:END -->

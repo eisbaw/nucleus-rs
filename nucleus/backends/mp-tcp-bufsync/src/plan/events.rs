@@ -235,9 +235,8 @@ impl Plan<'_> {
                     // reuse_active map. NO-OP when the iv carries no
                     // reuse (preserves byte-identicality on every
                     // mp-tcp-bufsync cell shipped pre-TASK-0284).
-                    let reuse_groups = render_reuse_buf_decls_pub(
-                        out, indent, *iter_var, var, &lo, body, ctx,
-                    )?;
+                    let reuse_groups =
+                        render_reuse_buf_decls_pub(out, indent, *iter_var, var, &lo, body, ctx)?;
                     writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                     // Real-time `check loop V : latency_max=T` codegen
                     // (TASK-0052.02). Mirrors the pthreads-sync
@@ -465,6 +464,28 @@ impl Plan<'_> {
                     // pthreads-async + mp-tcp-event already went via
                     // this helper (silent-sibling defect closure for
                     // mp-tcp-bufsync).
+                    // TASK-0349 cycle 220: bufsync wraps the assign in
+                    // `{ let __buf = ...; {assign} }` to scope __buf
+                    // for the decode_expr. A `let {name} = ...;` emit
+                    // would block-scope the binding to the wrap and
+                    // leave the outer-scope `{name}` unbound at the
+                    // next read — so pass the empty let-at-wait set
+                    // and keep the assign as `{name} = {dec};`. The
+                    // `unused_assignments` warning that motivated
+                    // TASK-0349 is already suppressed for the
+                    // emitted bufsync main via the per-main
+                    // `#[allow(...unused_assignments...)]` attribute
+                    // (worker_program.rs:121-122 + accompanying
+                    // rationale at :114-118: "intentional — pre-init
+                    // sizes the slot; the value is the received
+                    // one"), so the cosmetic motivation does not
+                    // surface here regardless of the let-at-wait
+                    // optimization. The wrap shape itself does NOT
+                    // protect from the warning — rustc still emits
+                    // it on nested-block reassignment when the
+                    // outer `let mut` allow is absent (cycle-220b
+                    // empirical correction of an architect-flagged
+                    // P1.1 mechanism-wrong doc-lie).
                     let assign = render_wait_assign(
                         self.sidecar,
                         &self.pair_tiles,
@@ -473,6 +494,7 @@ impl Plan<'_> {
                         *seq,
                         &dec,
                         accumulate,
+                        backend_common::multi_worker_walker::WalkerCtx::empty_let_at_wait_set(),
                     )?;
                     writeln!(
                         out,

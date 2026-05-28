@@ -357,7 +357,6 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
     );
 }
 
-
 /// TASK-0283 cycle 105 (cross-pass agreement): the codegen rewrite
 /// site must recognise an `iv + STRIDE` reuse-axis index when
 /// `const STRIDE = 1` is declared in the sidecar consts table. Pre-

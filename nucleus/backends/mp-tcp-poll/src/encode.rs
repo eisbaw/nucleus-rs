@@ -54,9 +54,7 @@ pub(crate) fn encode_expr(
 }
 
 /// Expression that decodes `__buf` back into the value's Rust type.
-pub(crate) fn decode_expr(
-    ty: &nucleus_compiler::algo::ResolvedType,
-) -> Result<String, EmitError> {
+pub(crate) fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<String, EmitError> {
     use nucleus_compiler::algo::ScalarType::Bool;
     let s = scalar_fn_suffix(&ty.scalar);
     if ty.is_scalar() {

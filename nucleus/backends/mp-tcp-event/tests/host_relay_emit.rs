@@ -58,10 +58,9 @@ fn scratch_dir(name: &str) -> PathBuf {
 /// test (driver/src/main.rs pipeline).
 fn emit_06_distributed2(scratch: &Path) -> (String, String) {
     let root = repo_root();
-    let algo_src = fs::read_to_string(
-        root.join("nuc-nucleus/examples/06-separable-filter/prog.algo.nuc"),
-    )
-    .expect("read prog.algo.nuc");
+    let algo_src =
+        fs::read_to_string(root.join("nuc-nucleus/examples/06-separable-filter/prog.algo.nuc"))
+            .expect("read prog.algo.nuc");
     let sched_src = fs::read_to_string(
         root.join("nuc-nucleus/examples/06-separable-filter/schedules/distributed2.sched.nuc"),
     )

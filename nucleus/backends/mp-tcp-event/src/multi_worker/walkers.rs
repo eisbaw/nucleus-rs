@@ -234,7 +234,10 @@ pub(super) fn relay_phase_insertion_point(
     {
         return idx;
     }
-    if let Some(idx) = host_events.iter().position(|e| matches!(e, Event::Wait { .. })) {
+    if let Some(idx) = host_events
+        .iter()
+        .position(|e| matches!(e, Event::Wait { .. }))
+    {
         return idx;
     }
     host_events.len()

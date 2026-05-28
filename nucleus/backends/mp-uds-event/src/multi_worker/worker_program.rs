@@ -20,9 +20,9 @@ use backend_common::check_frame::{
 use backend_common::multi_worker_walker::{self as walker, WalkerCtx};
 use backend_common::render::{render_array_init_for, rust_type_of};
 
-use super::Plan;
 use super::encode::encode_decode_paths;
 use super::walkers::relay_phase_insertion_point;
+use super::Plan;
 use crate::EmitError;
 
 impl Plan<'_> {
@@ -108,7 +108,11 @@ impl Plan<'_> {
         writeln!(out).ok();
 
         // ---- Pre-init locals (Wait targets + indexed Fire writes). ----
-        let pre_init = self.collect_pre_init(worker)?;
+        //
+        // TASK-0349 cycle 220: whole-array-recv-only data EXCLUDED
+        // from pre-init and emitted as `let <name> = <rhs>;` at recv
+        // site (see `collect_pre_init` doc).
+        let (pre_init, let_at_wait) = self.collect_pre_init(worker)?;
         for (name, did) in &pre_init {
             let ty = self.sidecar.data_type(*did).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -131,6 +135,7 @@ impl Plan<'_> {
             rendezvous_ids: &self.chan_ids,
             pair_tiles: &self.pair_tiles,
             accumulate_waits: &self.accumulate_waits,
+            let_at_wait_data: &let_at_wait,
         };
         // The walker emits chan_<rid>.push(...) / chan_<rid>.wait() /
         // bar_<bid>.wait() — but barriers in mp-uds-event don't lower
@@ -207,14 +212,7 @@ impl Plan<'_> {
         } else {
             let body = {
                 let mut buf = String::new();
-                walker::render_worker_events(
-                    &walker_ctx,
-                    worker,
-                    host_events,
-                    &mut buf,
-                    1,
-                    "",
-                )?;
+                walker::render_worker_events(&walker_ctx, worker, host_events, &mut buf, 1, "")?;
                 buf
             };
             out.push_str(&body);
@@ -251,7 +249,6 @@ impl Plan<'_> {
         worker: WorkerId,
         is_host: bool,
     ) -> Result<(), EmitError> {
-
         let wname = self.worker_name(worker);
         if is_host {
             writeln!(
@@ -573,7 +570,11 @@ impl Plan<'_> {
                 writeln!(out, "    struct Bar{bid} {{").ok();
                 for p in &peers {
                     let pn = self.worker_name(*p);
-                    writeln!(out, "        ctrl_{pn}: Rc<RefCell<std::os::unix::net::UnixStream>>,").ok();
+                    writeln!(
+                        out,
+                        "        ctrl_{pn}: Rc<RefCell<std::os::unix::net::UnixStream>>,"
+                    )
+                    .ok();
                 }
                 writeln!(out, "    }}").ok();
                 writeln!(out, "    impl Bar{bid} {{").ok();
@@ -596,7 +597,11 @@ impl Plan<'_> {
                 writeln!(out, "    }};").ok();
             } else {
                 writeln!(out, "    struct Bar{bid} {{").ok();
-                writeln!(out, "        ctrl_host: Rc<RefCell<std::os::unix::net::UnixStream>>,").ok();
+                writeln!(
+                    out,
+                    "        ctrl_host: Rc<RefCell<std::os::unix::net::UnixStream>>,"
+                )
+                .ok();
                 writeln!(out, "    }}").ok();
                 writeln!(out, "    impl Bar{bid} {{").ok();
                 writeln!(out, "        fn wait(&self) {{").ok();

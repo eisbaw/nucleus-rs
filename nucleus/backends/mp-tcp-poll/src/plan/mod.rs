@@ -29,9 +29,7 @@ use nucleus_compiler::sidecar::NameSidecar;
 use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{collect_accumulate_waits, collect_pair_tiles};
 
-use crate::walkers::{
-    collect_barriers_by_tag, collect_xfer_data, detect_wait_before_push_hazard,
-};
+use crate::walkers::{collect_barriers_by_tag, collect_xfer_data, detect_wait_before_push_hazard};
 use crate::EmitError;
 use crate::NameTables;
 
@@ -84,8 +82,8 @@ impl<'a> Plan<'a> {
         // `multi_worker::Plan::build` AND the driver's pre-codegen
         // pass wirings (TASK-0336 cycle 164 lift). mp-tcp-poll joins
         // that set at TASK-0044.02.02 cycle 195.
-        let host_worker = elect_host_from_worker_names(&names.worker, &used_workers)
-            .ok_or_else(|| {
+        let host_worker =
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(|| {
                 EmitError::ContractGap(
                     "multi-worker emit requires at least one used worker".to_string(),
                 )
@@ -151,8 +149,7 @@ impl<'a> Plan<'a> {
         // (TASK-0343 cycle 189) — same shape as mp-tcp-bufsync.
         let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
         for w in &used_workers {
-            let per_worker_set =
-                collect_accumulate_waits(&per_worker[w], sidecar, &pair_tiles);
+            let per_worker_set = collect_accumulate_waits(&per_worker[w], sidecar, &pair_tiles);
             for (d, s) in per_worker_set {
                 accumulate_waits.insert((*w, d, s));
             }

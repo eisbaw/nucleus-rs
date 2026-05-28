@@ -195,8 +195,8 @@ impl<'a> Plan<'a> {
         // consume this one helper, retiring the
         // feedback-driver-must-mirror-backend-election-exactly
         // recurrence surface on the canonical path.
-        let host_worker = elect_host_from_worker_names(&names.worker, &used_workers)
-            .ok_or_else(|| {
+        let host_worker =
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(|| {
                 EmitError::ContractGap(
                     "mp-uds-event Plan: used_workers reachable to host \
                      election but empty — invariant len() >= 2 violated"
@@ -503,17 +503,39 @@ impl<'a> Plan<'a> {
     /// Pre-init set per worker: cross-worker inputs Waited on + data
     /// written via indexed Fire output and never whole-array. Sorted
     /// by name. Same definition as mp-tcp-bufsync / pthreads-async.
+    /// Returns (pre_init_vec, let_at_wait_set); the second set is
+    /// per-worker DataIds with provably-dead pre-init that get
+    /// declare-and-assigned at recv site (TASK-0349 cycle 220).
+    #[allow(clippy::type_complexity)]
     pub(super) fn collect_pre_init(
         &self,
         worker: WorkerId,
-    ) -> Result<Vec<(String, DataId)>, EmitError> {
+    ) -> Result<(Vec<(String, DataId)>, BTreeSet<DataId>), EmitError> {
         let evs = &self.per_worker[&worker];
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
         walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
+
+        // TASK-0349 cycle 220
+        let accumulate_data: BTreeSet<DataId> = self
+            .accumulate_waits
+            .iter()
+            .filter_map(|(w, d, _)| if *w == worker { Some(*d) } else { None })
+            .collect();
+        let let_at_wait = walker::collect_let_at_wait_data(
+            evs,
+            &self.pair_tiles,
+            self.sidecar,
+            &accumulate_data,
+            &indexed,
+        );
+
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
+            if let_at_wait.contains(d) {
+                continue;
+            }
             ids.insert(*d);
         }
         for d in &indexed {
@@ -526,7 +548,7 @@ impl<'a> Plan<'a> {
             out.push((self.data_name(*d)?, *d));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
+        Ok((out, let_at_wait))
     }
 
     /// Largest single cross-worker payload in bytes — drives SO_*BUF
@@ -603,12 +625,7 @@ pub(crate) fn render_run_sh(plan: &Plan<'_>) -> Result<String, EmitError> {
         .iter()
         .map(|w| plan.worker_name(*w))
         .collect();
-    let shared = render_run_sh_multi(
-        &host_name,
-        &non_host_names,
-        bufsz,
-        SO_BUF_COMMENT_EVENT,
-    );
+    let shared = render_run_sh_multi(&host_name, &non_host_names, bufsz, SO_BUF_COMMENT_EVENT);
 
     // SWAP the rendezvous-dir line for a /tmp-rooted UDS-safe path.
     // The shared template's exact block is 4 lines (see

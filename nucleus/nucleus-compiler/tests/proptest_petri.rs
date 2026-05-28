@@ -797,4 +797,3 @@ proptest! {
         prop_assert!(x.checked_add(1).is_some() || x == u32::MAX);
     }
 }
-

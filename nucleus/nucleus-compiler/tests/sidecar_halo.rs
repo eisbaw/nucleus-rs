@@ -954,10 +954,8 @@ fn task0304_06_separable_filter_distributed_transfer_inject_no_halo_extension_on
     // partition=rows), so this test does NOT hardcode the band
     // arithmetic — it stays robust to TASK-0262 remainder-policy
     // changes and band-count changes.
-    let (_linked, acfg) = lower_partition_aware(
-        "06-separable-filter",
-        "schedules/distributed.sched.nuc",
-    );
+    let (_linked, acfg) =
+        lower_partition_aware("06-separable-filter", "schedules/distributed.sched.nuc");
 
     let in_arr_id = *acfg
         .name_data
@@ -978,16 +976,13 @@ fn task0304_06_separable_filter_distributed_transfer_inject_no_halo_extension_on
         if x.role != XferRole::Push || x.data != in_arr_id {
             continue;
         }
-        let expected_band = bands
-            .get(&x.dst)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "Push of in_arr to dst={:?} but dst is NOT a partition \
+        let expected_band = bands.get(&x.dst).cloned().unwrap_or_else(|| {
+            panic!(
+                "Push of in_arr to dst={:?} but dst is NOT a partition \
                      worker; partition_worker_ranges[hy] = {:?}",
-                    x.dst, bands
-                )
-            });
+                x.dst, bands
+            )
+        });
         let actual_hy_bound = x
             .tile
             .bounds
@@ -1002,7 +997,8 @@ fn task0304_06_separable_filter_distributed_transfer_inject_no_halo_extension_on
                 )
             });
         assert_eq!(
-            actual_hy_bound, expected_band,
+            actual_hy_bound,
+            expected_band,
             "Push of in_arr to {:?}: hy bound MUST EQUAL the partition band \
              (no halo extension because halo_widths[hblur_acc][hy] = 0). \
              Defends the second conjunct of \
@@ -1076,16 +1072,13 @@ fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_
         if x.role != XferRole::Push || x.data != img_in_id {
             continue;
         }
-        let band = bands
-            .get(&x.dst)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "Push of img_in to dst={:?} but dst is NOT a partition \
+        let band = bands.get(&x.dst).cloned().unwrap_or_else(|| {
+            panic!(
+                "Push of img_in to dst={:?} but dst is NOT a partition \
                      worker; partition_worker_ranges[y] = {:?}",
-                    x.dst, bands
-                )
-            });
+                x.dst, bands
+            )
+        });
         let actual_y_bound = x
             .tile
             .bounds
@@ -1101,7 +1094,8 @@ fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_
             });
         let expected = (band.start - 1)..(band.end + 1);
         assert_eq!(
-            actual_y_bound, expected,
+            actual_y_bound,
+            expected,
             "Push of img_in to {:?}: y bound MUST EQUAL band±1 \
              (halo_widths[blur3][y] = 1; extension expected by \
              transfer_inject::extend_xfer_tiles_inner). Defends the \
@@ -1206,8 +1200,14 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
         .name_data
         .get("img_in")
         .expect("img_in in ACFG name_data");
-    let y_iv = *acfg.name_iter_vars.get("y").expect("y in ACFG name_iter_vars");
-    let x_iv = *acfg.name_iter_vars.get("x").expect("x in ACFG name_iter_vars");
+    let y_iv = *acfg
+        .name_iter_vars
+        .get("y")
+        .expect("y in ACFG name_iter_vars");
+    let x_iv = *acfg
+        .name_iter_vars
+        .get("x")
+        .expect("x in ACFG name_iter_vars");
 
     let y_bands = acfg
         .partition_worker_ranges
@@ -1287,7 +1287,8 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
         let expected_y = (y_band.start - 1)..(y_band.end + 1);
         let expected_x = (x_band.start - 1)..(x_band.end + 1);
         assert_eq!(
-            actual_y_bound, expected_y,
+            actual_y_bound,
+            expected_y,
             "Push of img_in to {:?}: y bound MUST EQUAL band_y±1 \
              (halo_widths[blur3][y] = 1; extension expected by \
              transfer_inject::extend_xfer_tiles_inner on the 2D-grid \
@@ -1297,13 +1298,17 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
              Got y={}..{}, expected={}..{} (band was {}..{}). Full \
              tile.bounds={:?}.",
             x.dst,
-            actual_y_bound.start, actual_y_bound.end,
-            expected_y.start, expected_y.end,
-            y_band.start, y_band.end,
+            actual_y_bound.start,
+            actual_y_bound.end,
+            expected_y.start,
+            expected_y.end,
+            y_band.start,
+            y_band.end,
             x.tile.bounds,
         );
         assert_eq!(
-            actual_x_bound, expected_x,
+            actual_x_bound,
+            expected_x,
             "Push of img_in to {:?}: x bound MUST EQUAL band_x±1 \
              (halo_widths[blur3][x] = 1; the 2D analog of the y axis \
              above). Defends the cycle-83 TASK-0263 narrative on the \
@@ -1312,9 +1317,12 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
              Got x={}..{}, expected={}..{} (band was {}..{}). Full \
              tile.bounds={:?}.",
             x.dst,
-            actual_x_bound.start, actual_x_bound.end,
-            expected_x.start, expected_x.end,
-            x_band.start, x_band.end,
+            actual_x_bound.start,
+            actual_x_bound.end,
+            expected_x.start,
+            expected_x.end,
+            x_band.start,
+            x_band.end,
             x.tile.bounds,
         );
         seen_workers.insert(x.dst);
@@ -1370,7 +1378,10 @@ fn task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i() {
     let (_linked, acfg) = lower_partition_aware("07-matmul", "schedules/distributed.sched.nuc");
 
     let a_id = *acfg.name_data.get("a").expect("a in ACFG name_data");
-    let i_iv = *acfg.name_iter_vars.get("i").expect("i in ACFG name_iter_vars");
+    let i_iv = *acfg
+        .name_iter_vars
+        .get("i")
+        .expect("i in ACFG name_iter_vars");
 
     let bands = acfg
         .partition_worker_ranges
@@ -1405,7 +1416,8 @@ fn task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i() {
                 )
             });
         assert_eq!(
-            actual_i_bound, expected_band,
+            actual_i_bound,
+            expected_band,
             "Push of a to {:?}: i bound MUST EQUAL the partition band \
              (no halo extension because halo_widths[madd][i] = 0). \
              Defends the second conjunct of \
@@ -1414,8 +1426,10 @@ fn task0310_07_matmul_distributed_transfer_inject_no_halo_extension_on_a_i() {
              task0303_07 (VALUE half) does not cover. Got bound={}..{}, \
              expected={}..{}. Full tile.bounds={:?}.",
             x.dst,
-            actual_i_bound.start, actual_i_bound.end,
-            expected_band.start, expected_band.end,
+            actual_i_bound.start,
+            actual_i_bound.end,
+            expected_band.start,
+            expected_band.end,
             x.tile.bounds,
         );
         seen_workers.insert(x.dst);

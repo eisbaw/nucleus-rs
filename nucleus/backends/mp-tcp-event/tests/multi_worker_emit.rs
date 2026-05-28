@@ -875,8 +875,8 @@ fn pure_consumer_wait_only_does_not_trigger_wait_before_push_check() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/pure_consumer_wait_only");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/pure_consumer_wait_only");
     let _ = std::fs::remove_dir_all(&scratch);
 
     emit(&per_worker, &names, &sidecar, &kernels, &scratch).expect(

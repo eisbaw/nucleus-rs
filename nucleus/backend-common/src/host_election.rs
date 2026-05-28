@@ -170,11 +170,17 @@ mod tests {
     }
 
     fn worker_names_with(pairs: &[(u64, &str)]) -> BTreeMap<WorkerId, String> {
-        pairs.iter().map(|(i, n)| (w(*i), (*n).to_string())).collect()
+        pairs
+            .iter()
+            .map(|(i, n)| (w(*i), (*n).to_string()))
+            .collect()
     }
 
     fn name_workers_with(pairs: &[(&str, u64)]) -> BTreeMap<String, WorkerId> {
-        pairs.iter().map(|(n, i)| ((*n).to_string(), w(*i))).collect()
+        pairs
+            .iter()
+            .map(|(n, i)| ((*n).to_string(), w(*i)))
+            .collect()
     }
 
     // --- Backend view (worker_names: WorkerId -> name) ---

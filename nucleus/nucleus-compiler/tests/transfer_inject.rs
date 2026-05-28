@@ -1470,13 +1470,7 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
     let mut acfg = synthetic_acfg(
         root,
         &[("a", 0), ("b", 1), ("c", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("i".to_string(), IV_I);
     acfg.name_iter_vars.insert("j".to_string(), IV_J);
@@ -1493,7 +1487,11 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
-        &[("a", &["host"]), ("b", &["host"]), ("c", &["w0", "w1", "w2", "w3"])],
+        &[
+            ("a", &["host"]),
+            ("b", &["host"]),
+            ("c", &["w0", "w1", "w2", "w3"]),
+        ],
         "transfer a : sync; transfer b : sync; transfer c : sync;",
     );
 
@@ -1714,13 +1712,7 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
     let mut acfg = synthetic_acfg(
         root,
         &[("a", 0), ("b", 1), ("c", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("i".to_string(), IV_I);
     acfg.name_iter_vars.insert("j".to_string(), IV_J);
@@ -1750,7 +1742,11 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
     let linked = synthetic_linked_ir(
         &acfg.name_data,
         &acfg.name_workers,
-        &[("a", &["host"]), ("b", &["host"]), ("c", &["w0", "w1", "w2", "w3"])],
+        &[
+            ("a", &["host"]),
+            ("b", &["host"]),
+            ("c", &["w0", "w1", "w2", "w3"]),
+        ],
         "transfer a : sync; transfer b : sync; transfer c : sync;",
     );
 
@@ -1907,13 +1903,7 @@ fn rewrite_partition_tiles_drops_ambiguous_multi_partitioned_iv_per_dim() {
     let mut acfg = synthetic_acfg(
         root,
         &[("a", 0)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("i".to_string(), IV_I);
     acfg.name_iter_vars.insert("j".to_string(), IV_J);
@@ -2265,7 +2255,9 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
     let hblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(200),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![hblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![hblur_edge],
+        },
     });
 
     // Pass-2 op: vblur_acc reads tmp[vm][vx] (the offending non-
@@ -2282,7 +2274,9 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
     let vblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(201),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![vblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![vblur_edge],
+        },
     });
 
     // Pass-1 nest: for hy : 0..16 { for hx : 0..16 { hblur_op } }
@@ -2356,23 +2350,12 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
         })
     }
 
-    let root = ACFGNode::Sequence(vec![
-        host_loader(D_IN_ARR),
-        pass1,
-        pass2,
-        host_saver(D_OUT),
-    ]);
+    let root = ACFGNode::Sequence(vec![host_loader(D_IN_ARR), pass1, pass2, host_saver(D_OUT)]);
 
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -2408,8 +2391,9 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
 
     // Cycle-147 AC#3 lift: inject_transfers now returns Ok, and
     // build_waits_for_op emits N*(N-1) cross-worker pairs for `tmp`.
-    let result = inject_transfers(&linked, acfg)
-        .expect("AC#3 cycle 147: same-set unsafe shape now emits cross-worker pairs (no rejection)");
+    let result = inject_transfers(&linked, acfg).expect(
+        "AC#3 cycle 147: same-set unsafe shape now emits cross-worker pairs (no rejection)",
+    );
 
     // Walk the resulting ACFG and count Xfer placeholders for `tmp`,
     // partitioned by role + (src, dst) shape.
@@ -2534,7 +2518,9 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
     let cb1_op = ACFGNode::Operation(Operation {
         kernel: KernelId(300),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![cb1_edge] },
+        dataflow: DataflowDag {
+            edges: vec![cb1_edge],
+        },
     });
     // conv_block_2: reads feat1[n], writes feat2[n] on {w0..w3}.
     let cb2_edge = DataflowEdge {
@@ -2548,7 +2534,9 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
     let cb2_op = ACFGNode::Operation(Operation {
         kernel: KernelId(301),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![cb2_edge] },
+        dataflow: DataflowDag {
+            edges: vec![cb2_edge],
+        },
     });
     // classifier: reads feat2[n], writes output[n] on {w0..w3}.
     let cls_edge = DataflowEdge {
@@ -2562,7 +2550,9 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
     let cls_op = ACFGNode::Operation(Operation {
         kernel: KernelId(302),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![cls_edge] },
+        dataflow: DataflowDag {
+            edges: vec![cls_edge],
+        },
     });
 
     let body = ACFGNode::Sequence(vec![cb1_op, cb2_op, cls_op]);
@@ -2613,22 +2603,12 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
         })
     }
 
-    let root = ACFGNode::Sequence(vec![
-        host_loader(D_INPUT),
-        n_loop,
-        host_saver(D_OUTPUT),
-    ]);
+    let root = ACFGNode::Sequence(vec![host_loader(D_INPUT), n_loop, host_saver(D_OUTPUT)]);
 
     let mut acfg = synthetic_acfg(
         root,
         &[("input", 0), ("feat1", 1), ("feat2", 2), ("output", 3)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("n".to_string(), IV_N);
 
@@ -2742,7 +2722,9 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
     let hblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(400),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![hblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![hblur_edge],
+        },
     });
 
     // Pass-2 op on the {w0..w3, w4} side: reads tmp[vm][vx] —
@@ -2762,7 +2744,9 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
     let vblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(401),
         workers: ws(&[1, 2, 3, 4, 5]),
-        dataflow: DataflowDag { edges: vec![vblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![vblur_edge],
+        },
     });
 
     let pass1 = ACFGNode::Repeat {
@@ -2833,12 +2817,7 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
         })
     }
 
-    let root = ACFGNode::Sequence(vec![
-        host_loader(D_IN_ARR),
-        pass1,
-        pass2,
-        host_saver(D_OUT),
-    ]);
+    let root = ACFGNode::Sequence(vec![host_loader(D_IN_ARR), pass1, pass2, host_saver(D_OUT)]);
 
     let mut acfg = synthetic_acfg(
         root,
@@ -2958,7 +2937,9 @@ fn task0325_ac2_negative_partial_overlap_aligned_read() {
     let cb1_op = ACFGNode::Operation(Operation {
         kernel: KernelId(500),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![cb1_edge] },
+        dataflow: DataflowDag {
+            edges: vec![cb1_edge],
+        },
     });
     // Consumer on {w0..w3, w4}: reads feat1[n] with the SAME iv name —
     // the per-element self-pair elision (w_i, w_i) for i in 0..3 is
@@ -2976,7 +2957,9 @@ fn task0325_ac2_negative_partial_overlap_aligned_read() {
     let cb2_op = ACFGNode::Operation(Operation {
         kernel: KernelId(501),
         workers: ws(&[1, 2, 3, 4, 5]),
-        dataflow: DataflowDag { edges: vec![cb2_edge] },
+        dataflow: DataflowDag {
+            edges: vec![cb2_edge],
+        },
     });
 
     let body = ACFGNode::Sequence(vec![cb1_op, cb2_op]);
@@ -3027,11 +3010,7 @@ fn task0325_ac2_negative_partial_overlap_aligned_read() {
         })
     }
 
-    let root = ACFGNode::Sequence(vec![
-        host_loader(D_INPUT),
-        n_loop,
-        host_saver(D_OUTPUT),
-    ]);
+    let root = ACFGNode::Sequence(vec![host_loader(D_INPUT), n_loop, host_saver(D_OUTPUT)]);
 
     let mut acfg = synthetic_acfg(
         root,
@@ -3125,7 +3104,9 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
     let hblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(600),
         workers: ws(&[1, 2, 3, 4, 5]),
-        dataflow: DataflowDag { edges: vec![hblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![hblur_edge],
+        },
     });
 
     // Consumer on {w0..w3} — the SUBSET side. Reads tmp[vm][vx] with
@@ -3141,7 +3122,9 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
     let vblur_op = ACFGNode::Operation(Operation {
         kernel: KernelId(601),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![vblur_edge] },
+        dataflow: DataflowDag {
+            edges: vec![vblur_edge],
+        },
     });
 
     let pass1 = ACFGNode::Repeat {
@@ -3212,12 +3195,7 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
         })
     }
 
-    let root = ACFGNode::Sequence(vec![
-        host_loader(D_IN_ARR),
-        pass1,
-        pass2,
-        host_saver(D_OUT),
-    ]);
+    let root = ACFGNode::Sequence(vec![host_loader(D_IN_ARR), pass1, pass2, host_saver(D_OUT)]);
 
     let mut acfg = synthetic_acfg(
         root,
@@ -3367,7 +3345,9 @@ fn task0328_ac2_positive_partition_producer_topfile_consumer() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(700),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
 
     // Producer nest: for hy : 0..16 { for hx : 0..16 { writer_op } }
@@ -3398,7 +3378,9 @@ fn task0328_ac2_positive_partition_producer_topfile_consumer() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(701),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -3453,13 +3435,7 @@ fn task0328_ac2_positive_partition_producer_topfile_consumer() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -3608,7 +3584,9 @@ fn task0328_ac2_negative_no_partition_anywhere() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(800),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
 
     // No partition on either iv. Whole-array write semantics on every
@@ -3639,7 +3617,9 @@ fn task0328_ac2_negative_no_partition_anywhere() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(801),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -3692,13 +3672,7 @@ fn task0328_ac2_negative_no_partition_anywhere() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -3815,7 +3789,9 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(900),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
 
     let producer_nest = ACFGNode::Repeat {
@@ -3843,7 +3819,9 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(901),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
 
     // Consumer wrapper: for k : 0..16 { for j : 0..16 { reader_op } }
@@ -3911,13 +3889,7 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -4070,7 +4042,9 @@ fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1000),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
 
     // Producer nest: for hy : 0..16 { for hx : 0..16 { writer_op } }.
@@ -4102,7 +4076,9 @@ fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1001),
         workers: ws(&[1, 2, 3, 4, 5]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -4331,7 +4307,9 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1100),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
 
     let producer_nest = ACFGNode::Repeat {
@@ -4363,7 +4341,9 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1101),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
     let consumer_nest = ACFGNode::Repeat {
         iter_var: IV_HY,
@@ -4427,13 +4407,7 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -4489,11 +4463,7 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
     let mut xfers: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
     collect_xfers_for_data(&result.root, D_TMP, &mut xfers);
 
-    let cross_pairs: Vec<_> = xfers
-        .iter()
-        .filter(|(_, s, d)| s != d)
-        .copied()
-        .collect();
+    let cross_pairs: Vec<_> = xfers.iter().filter(|(_, s, d)| s != d).copied().collect();
     assert_eq!(
         cross_pairs.len(),
         0,
@@ -4574,7 +4544,9 @@ fn task0326_ac1_negative_arithmetic_mismatched_iv() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1200),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
     let producer_nest = ACFGNode::Repeat {
         iter_var: IV_HY,
@@ -4610,7 +4582,9 @@ fn task0326_ac1_negative_arithmetic_mismatched_iv() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1201),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
     let consumer_nest = ACFGNode::Repeat {
         iter_var: IV_OTHER,
@@ -4674,13 +4648,7 @@ fn task0326_ac1_negative_arithmetic_mismatched_iv() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -4827,7 +4795,9 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
     let writer_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1300),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![writer_edge] },
+        dataflow: DataflowDag {
+            edges: vec![writer_edge],
+        },
     });
     let producer_nest = ACFGNode::Repeat {
         iter_var: IV_HY,
@@ -4863,7 +4833,9 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
     let reader_op = ACFGNode::Operation(Operation {
         kernel: KernelId(1301),
         workers: ws(&[1, 2, 3, 4]),
-        dataflow: DataflowDag { edges: vec![reader_edge] },
+        dataflow: DataflowDag {
+            edges: vec![reader_edge],
+        },
     });
     let consumer_nest = ACFGNode::Repeat {
         iter_var: IV_HY,
@@ -4927,13 +4899,7 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
     let mut acfg = synthetic_acfg(
         root,
         &[("in_arr", 0), ("tmp", 1), ("out", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
     acfg.name_iter_vars.insert("hy".to_string(), IV_HY);
     acfg.name_iter_vars.insert("hx".to_string(), IV_HX);
@@ -5052,13 +5018,7 @@ fn task0335_ac4_dedupes_multi_consume_in_same_sequence() {
     let acfg = synthetic_acfg(
         root,
         &[("partials", 0), ("half1", 1), ("half2", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
 
     let linked = synthetic_linked_ir(
@@ -5192,23 +5152,12 @@ fn task0335_ac4_sync_between_consumers_separates_epochs() {
         sync: nucleus_compiler::event::SyncTag(0),
     });
 
-    let root = ACFGNode::Sequence(vec![
-        producer,
-        consumer_half1,
-        sync_barrier,
-        consumer_half2,
-    ]);
+    let root = ACFGNode::Sequence(vec![producer, consumer_half1, sync_barrier, consumer_half2]);
 
     let acfg = synthetic_acfg(
         root,
         &[("partials", 0), ("half1", 1), ("half2", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
 
     let linked = synthetic_linked_ir(
@@ -5353,13 +5302,7 @@ fn task0335_02_sync_stop_in_place_or_bubble_preserves_cross_epoch_hoist() {
     let acfg = synthetic_acfg(
         root,
         &[("d", 0), ("c1", 1), ("c2", 2)],
-        &[
-            ("host", 0),
-            ("w0", 1),
-            ("w1", 2),
-            ("w2", 3),
-            ("w3", 4),
-        ],
+        &[("host", 0), ("w0", 1), ("w1", 2), ("w2", 3), ("w3", 4)],
     );
 
     let linked = synthetic_linked_ir(
@@ -5438,9 +5381,13 @@ fn task0335_02_sync_stop_in_place_or_bubble_preserves_cross_epoch_hoist() {
         *per_pair.entry((*s, *d)).or_insert(0) += 1;
     }
     for src in 1u64..=4 {
-        let count = per_pair.get(&(WorkerId(src), WorkerId(0))).copied().unwrap_or(0);
+        let count = per_pair
+            .get(&(WorkerId(src), WorkerId(0)))
+            .copied()
+            .unwrap_or(0);
         assert_eq!(
-            count, 2,
+            count,
+            2,
             "TASK-0335.02 AC#3: each (w_k, host) pair must appear in \
              BOTH epochs (one Wait before the Sync from Repeat_1, one \
              after the Sync from Repeat_2). Got count={} for src=w{}. \

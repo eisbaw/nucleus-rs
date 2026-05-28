@@ -119,8 +119,7 @@ fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
     );
     let kernels = ex.join("kernels.rs");
 
-    let scratch =
-        root.join("nucleus/target/openmp-rs-test-scratch/single_worker_01_naive");
+    let scratch = root.join("nucleus/target/openmp-rs-test-scratch/single_worker_01_naive");
     let openmp_out = scratch.join("openmp");
     let sync_out = scratch.join("sync");
     let _ = std::fs::remove_dir_all(&openmp_out);

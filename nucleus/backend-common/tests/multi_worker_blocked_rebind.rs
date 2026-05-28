@@ -152,6 +152,7 @@ fn rebinds_full_nest_in_loop_header_and_fire_body() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -237,6 +238,7 @@ fn rebinds_partial_nest_constant_base() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -303,6 +305,7 @@ fn full_nest_without_enclosing_tile_returns_contract_gap() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -350,6 +353,7 @@ fn non_blocked_loop_unchanged_partition_slice_path() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();

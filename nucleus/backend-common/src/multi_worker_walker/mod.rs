@@ -87,8 +87,8 @@ pub mod wait;
 
 pub use block_tag::{compute_block_tag_abs_exprs, render_block_tag_loop_header};
 pub use collect::{
-    collect_accumulate_waits, collect_barriers_by_tag, collect_pair_tiles, collect_pre_init_sets,
-    collect_worker_rendezvous, collect_xfer_pairs,
+    collect_accumulate_waits, collect_barriers_by_tag, collect_let_at_wait_data,
+    collect_pair_tiles, collect_pre_init_sets, collect_worker_rendezvous, collect_xfer_pairs,
 };
 pub use ctx::{RendezvousId, WalkerCtx};
 pub use event_walker::render_worker_events;

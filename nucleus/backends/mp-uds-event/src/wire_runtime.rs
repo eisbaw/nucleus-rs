@@ -155,7 +155,10 @@ pub fn enc_bool(v: bool) -> Vec<u8> {
 }
 pub fn dec_bool(b: &[u8]) -> bool {
     if b.len() != 1 {
-        panic!("wire(uds): bool decode width mismatch: got {} bytes, want 1", b.len());
+        panic!(
+            "wire(uds): bool decode width mismatch: got {} bytes, want 1",
+            b.len()
+        );
     }
     match b[0] {
         0 => false,

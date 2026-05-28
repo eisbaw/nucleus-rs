@@ -733,8 +733,8 @@ mod tests {
         // non-empty body for that Repeat (else petri_to_events
         // suppresses host's Loop entirely — the "empty body skip"
         // rule).
-        use crate::passes::petri_to_events::acfg_to_events;
         use crate::event::Event;
+        use crate::passes::petri_to_events::acfg_to_events;
 
         let body = ACFGNode::Sequence(pair_xfers(w1(), w2(), d(7), 3));
         let mut name_workers = BTreeMap::new();
@@ -755,7 +755,11 @@ mod tests {
         let per_worker = acfg_to_events(&out);
         // host MUST have an Event::Loop with non-empty body.
         let host_evs = per_worker.get(&host()).expect("host events");
-        assert_eq!(host_evs.len(), 1, "host has exactly one top-level event (the Loop)");
+        assert_eq!(
+            host_evs.len(),
+            1,
+            "host has exactly one top-level event (the Loop)"
+        );
         let host_body = match &host_evs[0] {
             Event::Loop { body, .. } => body,
             other => panic!("expected Event::Loop at host[0], got {other:?}"),
@@ -795,8 +799,7 @@ mod tests {
         // A Push without a matching Wait in the same Sequence is
         // NOT rewritten (the pair must be in the same scope). Wrap
         // in Repeat to put it in scope of the pass.
-        let body =
-            ACFGNode::Sequence(vec![xfer(XferRole::Push, w1(), w2(), d(7), 3)]);
+        let body = ACFGNode::Sequence(vec![xfer(XferRole::Push, w1(), w2(), d(7), 3)]);
         let root = ACFGNode::Repeat {
             iter_var: IterVar(0),
             range: 0..4,

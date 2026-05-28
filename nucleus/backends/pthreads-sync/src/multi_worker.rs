@@ -190,12 +190,14 @@ impl<'a> Plan<'a> {
         // Host election: shared helper. See
         // `backend_common::host_election` module docstring for the
         // canonical rule (TASK-0336 cycle 164 lift).
-        let host_worker = backend_common::elect_host_from_worker_names(&names.worker, &used_workers)
-            .ok_or_else(|| {
-                EmitError::ContractGap(
-                    "multi-worker emit requires at least one used worker".to_string(),
-                )
-            })?;
+        let host_worker =
+            backend_common::elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
+                || {
+                    EmitError::ContractGap(
+                        "multi-worker emit requires at least one used worker".to_string(),
+                    )
+                },
+            )?;
 
         // Cross-worker pairs: every (DataId, SeqTag) appearing on a
         // Push or Wait event (a Push and its matching Wait carry the
@@ -534,7 +536,15 @@ impl<'a> Plan<'a> {
         // output and never whole-array. Sorted by name. With explicit
         // `: <ty>` annotation (matches the old multi-worker emitter,
         // which differs from the single-worker emitter here).
-        let pre_init = self.collect_pre_init(worker)?;
+        //
+        // TASK-0349 cycle 220: data symbols whose ONLY Wait(s) are
+        // whole-array recv (and which are not accumulate-fan-in nor
+        // indexed-Fire-written) are EXCLUDED from pre-init and emitted
+        // as `let <name> = <rhs>;` (declare-and-assign) at their recv
+        // site instead. This eliminates the dead `vec![0; N]` init
+        // that triggered `unused_assignments` warnings on cargo build
+        // of the emitted project.
+        let (pre_init, let_at_wait) = self.collect_pre_init(worker)?;
         for (name, did) in &pre_init {
             let ty = self.sidecar.data_type(*did).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -559,6 +569,7 @@ impl<'a> Plan<'a> {
             rendezvous_ids: &self.slot_ids,
             pair_tiles: &self.pair_tiles,
             accumulate_waits: &self.accumulate_waits,
+            let_at_wait_data: &let_at_wait,
         };
         walker::render_worker_events(&walker_ctx, worker, evs, &mut out, base_indent, prefix)?;
         Ok(out)
@@ -566,16 +577,41 @@ impl<'a> Plan<'a> {
 
     /// Pre-init set for a worker: cross-worker inputs it Waits on +
     /// data it writes via an indexed Fire output and never
-    /// whole-array. Sorted by name.
-    fn collect_pre_init(&self, worker: WorkerId) -> Result<Vec<(String, DataId)>, EmitError> {
+    /// whole-array. Sorted by name. Returns the pre-init Vec and the
+    /// per-worker let-at-wait DataId set; together they partition the
+    /// worker's WAITed data into "needs zero-init pre-decl" and
+    /// "declare at first .wait()" (TASK-0349 cycle 220).
+    #[allow(clippy::type_complexity)]
+    fn collect_pre_init(
+        &self,
+        worker: WorkerId,
+    ) -> Result<(Vec<(String, DataId)>, BTreeSet<DataId>), EmitError> {
         let evs = &self.per_worker[&worker];
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
         let mut indexed: BTreeSet<DataId> = BTreeSet::new();
         walker::collect_pre_init_sets(evs, &mut waited, &mut whole, &mut indexed);
 
+        // TASK-0349 cycle 220: classify whole-array-recv-only data and
+        // exclude from pre-init.
+        let accumulate_data: BTreeSet<DataId> = self
+            .accumulate_waits
+            .iter()
+            .filter_map(|(w, d, _)| if *w == worker { Some(*d) } else { None })
+            .collect();
+        let let_at_wait = walker::collect_let_at_wait_data(
+            evs,
+            &self.pair_tiles,
+            self.sidecar,
+            &accumulate_data,
+            &indexed,
+        );
+
         let mut ids: BTreeSet<DataId> = BTreeSet::new();
         for d in &waited {
+            if let_at_wait.contains(d) {
+                continue;
+            }
             ids.insert(*d);
         }
         for d in &indexed {
@@ -588,7 +624,7 @@ impl<'a> Plan<'a> {
             out.push((self.data_name(*d)?, *d));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
+        Ok((out, let_at_wait))
     }
 }
 

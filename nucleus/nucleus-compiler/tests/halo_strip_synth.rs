@@ -270,25 +270,63 @@ fn unique_wait_tile(
 #[test]
 fn positive_3x3_halo_1_per_worker_pair_counts() {
     let acfg = build_2d_acfg_with_partition_and_halo(
-        3, 3,    // grid
-        0..30,   // outer y range (divisible by 3)
-        0..30,   // inner x range (divisible by 3)
-        1, 1,    // halo widths
+        3,
+        3,     // grid
+        0..30, // outer y range (divisible by 3)
+        0..30, // inner x range (divisible by 3)
+        1,
+        1, // halo widths
     );
     let linked = empty_linked();
 
     let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Pin the per-worker pair counts.
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(1)), 2, "w1 (0,0) corner");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(2)), 3, "w2 (0,1) edge");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(3)), 2, "w3 (0,2) corner");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(4)), 3, "w4 (1,0) edge");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(5)), 4, "w5 (1,1) center");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(6)), 3, "w6 (1,2) edge");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(7)), 2, "w7 (2,0) corner");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(8)), 3, "w8 (2,1) edge");
-    assert_eq!(count_pairs_for_worker(&after, WorkerId(9)), 2, "w9 (2,2) corner");
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(1)),
+        2,
+        "w1 (0,0) corner"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(2)),
+        3,
+        "w2 (0,1) edge"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(3)),
+        2,
+        "w3 (0,2) corner"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(4)),
+        3,
+        "w4 (1,0) edge"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(5)),
+        4,
+        "w5 (1,1) center"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(6)),
+        3,
+        "w6 (1,2) edge"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(7)),
+        2,
+        "w7 (2,0) corner"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(8)),
+        3,
+        "w8 (2,1) edge"
+    );
+    assert_eq!(
+        count_pairs_for_worker(&after, WorkerId(9)),
+        2,
+        "w9 (2,2) corner"
+    );
 
     // Aggregate: 24 Push + 24 Wait = 48 Xfers total.
     assert_eq!(after.push_count(), 24, "total Push count");
@@ -759,13 +797,8 @@ fn build_2x2_acfg_with_indexed_access(
     index_names: &[&str],
     extra_name_iter_vars: &[(&str, IterVar)],
 ) -> ACFG {
-    let mut acfg = build_2d_acfg_with_partition_and_halo(
-        2, 2,
-        outer_range,
-        inner_range,
-        halo_y,
-        halo_x,
-    );
+    let mut acfg =
+        build_2d_acfg_with_partition_and_halo(2, 2, outer_range, inner_range, halo_y, halo_x);
     // Augment name_iter_vars with any extra (non-partitioned) ivs the
     // caller wants to reference from the access indices.
     for (n, iv) in extra_name_iter_vars {
@@ -839,11 +872,7 @@ fn build_2x2_acfg_with_indexed_access(
 #[test]
 fn task0306_ac3_inner_axis_leading_layout_emits_in_dim_order() {
     // Indices `[x, y]` ⇒ data dim 0 = x (inner_iv), data dim 1 = y (outer_iv).
-    let acfg = build_2x2_acfg_with_indexed_access(
-        0..16, 0..16, 1, 1,
-        &["x", "y"],
-        &[],
-    );
+    let acfg = build_2x2_acfg_with_indexed_access(0..16, 0..16, 1, 1, &["x", "y"], &[]);
     let linked = empty_linked();
     let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
@@ -923,11 +952,7 @@ fn task0306_ac4_non_prefix_data_layout_drops_to_whole_array() {
     // index the data as `[k, x]`. Dim 0 = k (unpartitioned),
     // dim 1 = inner_iv (x, partitioned).
     let k_iv = IterVar(42);
-    let acfg = build_2x2_acfg_with_indexed_access(
-        0..16, 0..16, 1, 1,
-        &["k", "x"],
-        &[("k", k_iv)],
-    );
+    let acfg = build_2x2_acfg_with_indexed_access(0..16, 0..16, 1, 1, &["k", "x"], &[("k", k_iv)]);
     let linked = empty_linked();
     let after = inject_transfers(&linked, acfg).expect("inject_transfers");
 
@@ -955,7 +980,10 @@ fn task0306_ac4_non_prefix_data_layout_drops_to_whole_array() {
              k NOT partitioned) MUST drop halo-strip tile to whole-array \
              (empty bounds). Got bounds={:?} on Wait src={:?} dst={:?} \
              seq={:?}",
-            w.tile.bounds, w.src, w.dst, w.seq,
+            w.tile.bounds,
+            w.src,
+            w.dst,
+            w.seq,
         );
     }
 }
@@ -969,8 +997,11 @@ fn task0306_ac4_non_prefix_data_layout_drops_to_whole_array() {
 #[test]
 fn task0306_ac5_canonical_outer_leading_layout_preserves_emit_order() {
     let acfg = build_2x2_acfg_with_indexed_access(
-        0..16, 0..16, 1, 1,
-        &["y", "x"],  // canonical: [outer_iv][inner_iv]
+        0..16,
+        0..16,
+        1,
+        1,
+        &["y", "x"], // canonical: [outer_iv][inner_iv]
         &[],
     );
     let linked = empty_linked();

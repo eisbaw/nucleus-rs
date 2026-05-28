@@ -196,8 +196,8 @@ fn render_worker_events_inner(
                     for (data_id, gs) in reuse_groups.clone() {
                         child_reuse.insert(data_id, gs);
                     }
-                    let child = render_ctx
-                        .with_abs_subst_and_reuse_active(child_subst, child_reuse);
+                    let child =
+                        render_ctx.with_abs_subst_and_reuse_active(child_subst, child_reuse);
                     // Header line: concrete folded range
                     // (`{start}_i64..{end}_i64`) — NOT the source-form
                     // bound (would re-introduce the full range) and
@@ -242,13 +242,7 @@ fn render_worker_events_inner(
                     // ABSOLUTE expression (so the source-array index
                     // reflects the strip-mined coordinate), NOT the
                     // bare `var`.
-                    render_reuse_per_iter_update_pub(
-                        out,
-                        indent + 1,
-                        &reuse_groups,
-                        &abs,
-                        &child,
-                    )?;
+                    render_reuse_per_iter_update_pub(out, indent + 1, &reuse_groups, &abs, &child)?;
                     render_worker_events_inner(
                         ctx,
                         worker,
@@ -312,15 +306,8 @@ fn render_worker_events_inner(
                 // for the prologue fill. NO-OP when the iv carries no
                 // reuse (every shipped multi-worker schedule pre-
                 // TASK-0270).
-                let reuse_groups = render_reuse_buf_decls_pub(
-                    out,
-                    indent,
-                    *iter_var,
-                    var,
-                    &lo,
-                    body,
-                    render_ctx,
-                )?;
+                let reuse_groups =
+                    render_reuse_buf_decls_pub(out, indent, *iter_var, var, &lo, body, render_ctx)?;
                 writeln!(out, "{pad}for {var} in ({lo})..({hi}) {{").ok();
                 let body_indent = indent + 1;
                 let body_pad = "    ".repeat(body_indent);
@@ -359,13 +346,7 @@ fn render_worker_events_inner(
                 // element into the buffer slot before any Fire arg
                 // reads it. Iv expression here is the bare var (no
                 // abs_subst rebinding on this non-strip-mine path).
-                render_reuse_per_iter_update_pub(
-                    out,
-                    body_indent,
-                    &reuse_groups,
-                    var,
-                    &body_ctx,
-                )?;
+                render_reuse_per_iter_update_pub(out, body_indent, &reuse_groups, var, &body_ctx)?;
                 if let Some(frame) = check_frame {
                     // TASK-0221 defensive — `var` (NameTables) and
                     // `frame.loop_var` (CheckFrame) must name the same
@@ -478,6 +459,7 @@ fn render_worker_events_inner(
                     *seq,
                     &format!("{prefix}{rendezvous_prefix}_{rid}.wait()"),
                     accumulate,
+                    ctx.let_at_wait_data,
                 )?;
                 writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
             }

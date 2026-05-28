@@ -578,8 +578,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
     // per-element skip in the cartesian-product fan-out — grep
     // `if producer_workers == &consumer_workers` and `if src == dst`
     // for the witness anchors).
-    let partition_iter_vars: BTreeSet<IterVar> =
-        partition_worker_ranges.keys().copied().collect();
+    let partition_iter_vars: BTreeSet<IterVar> = partition_worker_ranges.keys().copied().collect();
     let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
     collect_producer_writes(&root, &mut producer_writes);
     check_no_silent_elision_risk(
@@ -697,11 +696,8 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         // partitioned iv covering dim 0) also drops safely to a
         // whole-array broadcast rather than slicing the wrong dim.
         let data_dim_iv_map = collect_data_dim_iv_map(&spliced, &name_iter_vars);
-        let partitioned = rewrite_partition_tiles(
-            spliced,
-            &partition_worker_ranges,
-            &data_dim_iv_map,
-        );
+        let partitioned =
+            rewrite_partition_tiles(spliced, &partition_worker_ranges, &data_dim_iv_map);
         // TASK-0263 Stage 2 halo extension. For each XferPlaceholder
         // whose tile axis carries a non-zero halo entry (the data
         // symbol's consumer kernel's halo widths along that
@@ -2966,7 +2962,8 @@ fn collect_producer_writes(node: &ACFGNode, out: &mut BTreeMap<DataId, DataAcces
         ACFGNode::Operation(op) => {
             for edge in &op.dataflow.edges {
                 if let Some(out_access) = &edge.data_out_access {
-                    out.entry(out_access.data).or_insert_with(|| out_access.clone());
+                    out.entry(out_access.data)
+                        .or_insert_with(|| out_access.clone());
                 }
             }
         }
@@ -4277,8 +4274,7 @@ fn prepend_strip_pairs(
                 // Halo data symbols this group carries — used to
                 // identify producing Operations in the parent
                 // Sequence.
-                let halo_data: BTreeSet<DataId> =
-                    group.iter().map(|p| p.data).collect();
+                let halo_data: BTreeSet<DataId> = group.iter().map(|p| p.data).collect();
                 // Find the LAST direct-child Operation that writes any
                 // symbol in `halo_data`. We walk all edges (not just
                 // edges[0]) — a future multi-edge DAG may carry the
@@ -4288,14 +4284,9 @@ fn prepend_strip_pairs(
                 let mut last_producer_idx: Option<usize> = None;
                 for (idx, child) in children.iter().enumerate() {
                     if let ACFGNode::Operation(op) = child {
-                        let writes_halo = op
-                            .dataflow
-                            .edges
-                            .iter()
-                            .any(|e| {
-                                e.data_out
-                                    .map(|d| halo_data.contains(&d))
-                                    .unwrap_or(false)
+                        let writes_halo =
+                            op.dataflow.edges.iter().any(|e| {
+                                e.data_out.map(|d| halo_data.contains(&d)).unwrap_or(false)
                             });
                         if writes_halo {
                             last_producer_idx = Some(idx);
@@ -4492,9 +4483,7 @@ mod tests {
         let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
         map.insert(data, vec![iv_set(&[outer_iv]), iv_set(&[inner_iv])]);
 
-        let got = order_halo_strip_bounds_by_data_dim(
-            data, outer_iv, 8..9, inner_iv, 0..8, &map,
-        );
+        let got = order_halo_strip_bounds_by_data_dim(data, outer_iv, 8..9, inner_iv, 0..8, &map);
 
         assert_eq!(
             got,
@@ -4521,9 +4510,7 @@ mod tests {
         // dim 0 = inner_iv, dim 1 = outer_iv (inner-axis-leading layout).
         map.insert(data, vec![iv_set(&[inner_iv]), iv_set(&[outer_iv])]);
 
-        let got = order_halo_strip_bounds_by_data_dim(
-            data, outer_iv, 8..9, inner_iv, 0..8, &map,
-        );
+        let got = order_halo_strip_bounds_by_data_dim(data, outer_iv, 8..9, inner_iv, 0..8, &map);
 
         assert_eq!(
             got,
@@ -4549,9 +4536,7 @@ mod tests {
         let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
         map.insert(data, Vec::new());
 
-        let got = order_halo_strip_bounds_by_data_dim(
-            data, outer_iv, 8..9, inner_iv, 0..8, &map,
-        );
+        let got = order_halo_strip_bounds_by_data_dim(data, outer_iv, 8..9, inner_iv, 0..8, &map);
 
         assert_eq!(
             got,
@@ -4571,9 +4556,7 @@ mod tests {
         let data = DataId(99);
         let map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
 
-        let got = order_halo_strip_bounds_by_data_dim(
-            data, outer_iv, 8..9, inner_iv, 0..8, &map,
-        );
+        let got = order_halo_strip_bounds_by_data_dim(data, outer_iv, 8..9, inner_iv, 0..8, &map);
 
         assert_eq!(
             got,
@@ -4605,8 +4588,7 @@ mod tests {
     ) -> BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> {
         let mut out: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> = BTreeMap::new();
         for (iv, per_worker) in entries {
-            let map: BTreeMap<_, _> =
-                per_worker.iter().map(|(w, r)| (*w, r.clone())).collect();
+            let map: BTreeMap<_, _> = per_worker.iter().map(|(w, r)| (*w, r.clone())).collect();
             out.insert(*iv, map);
         }
         out
@@ -4629,9 +4611,7 @@ mod tests {
             (inner_iv, &[(worker, 0..8)]),
         ]);
 
-        let got = compute_partition_bounds_with_dim_prefix(
-            data, &map, &partition_ranges, worker,
-        );
+        let got = compute_partition_bounds_with_dim_prefix(data, &map, &partition_ranges, worker);
 
         assert_eq!(
             got,
@@ -4650,12 +4630,9 @@ mod tests {
         let data = DataId(99);
         let worker = WorkerId(2);
         let map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
-        let partition_ranges =
-            make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
+        let partition_ranges = make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
 
-        let got = compute_partition_bounds_with_dim_prefix(
-            data, &map, &partition_ranges, worker,
-        );
+        let got = compute_partition_bounds_with_dim_prefix(data, &map, &partition_ranges, worker);
 
         assert_eq!(
             got, None,
@@ -4676,12 +4653,9 @@ mod tests {
         let worker = WorkerId(2);
         let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
         map.insert(data, Vec::new());
-        let partition_ranges =
-            make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
+        let partition_ranges = make_partition_ranges(&[(outer_iv, &[(worker, 8..16)])]);
 
-        let got = compute_partition_bounds_with_dim_prefix(
-            data, &map, &partition_ranges, worker,
-        );
+        let got = compute_partition_bounds_with_dim_prefix(data, &map, &partition_ranges, worker);
 
         assert_eq!(
             got, None,
@@ -4711,12 +4685,11 @@ mod tests {
             (inner_iv, &[(worker, 0..8)]),
         ]);
 
-        let got = compute_partition_bounds_with_dim_prefix(
-            data, &map, &partition_ranges, worker,
-        );
+        let got = compute_partition_bounds_with_dim_prefix(data, &map, &partition_ranges, worker);
 
         assert_eq!(
-            got, Some(Vec::new()),
+            got,
+            Some(Vec::new()),
             "TASK-0317 sparse: dim 0 has no partitioned iv covering it \
              (k is unpartitioned), dim 1 does. Sparse coverage triggers \
              the safe whole-array drop per compute_partition_bounds_with_\

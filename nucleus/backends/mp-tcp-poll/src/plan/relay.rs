@@ -48,9 +48,7 @@ impl Plan<'_> {
     /// for every w2w Push event in src's event list. Event-list order
     /// equals TCP wire order on src's `data_host` stream — host's
     /// relay reads in this order.
-    pub(crate) fn relay_schedule(
-        &self,
-    ) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
+    pub(crate) fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
         let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
         for (src, events) in self.per_worker.iter() {
             if *src == self.host_worker {

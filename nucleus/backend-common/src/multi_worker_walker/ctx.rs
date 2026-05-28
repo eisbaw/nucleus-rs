@@ -83,6 +83,21 @@ pub struct WalkerCtx<'a> {
     /// Empty by default — preserves pre-cycle-189 emit for every
     /// `(worker, data, seq)` not classified as a fan-in accumulator.
     pub accumulate_waits: &'a BTreeSet<(WorkerId, DataId, SeqTag)>,
+    /// Per-worker classification (TASK-0349, cycle 220) of DataIds
+    /// whose pre-init `let mut <name>: Vec<..> = vec![0; N];` is
+    /// provably dead because every Wait of them is a whole-array
+    /// recv (and they are NOT accumulate-fan-in nor indexed-Fire-
+    /// written). For these data the walker emits
+    /// `let <name> = <rhs>;` (declare-and-assign) at the first Wait
+    /// site, and the per-backend pre-init pass omits them. Computed
+    /// per-(Plan, worker) via `collect_let_at_wait_data` (sibling
+    /// `collect.rs`). The set is keyed on `DataId` alone — Plan-side
+    /// each worker has its own set, so passing-by-reference per
+    /// worker is the natural shape.
+    ///
+    /// Empty by default — preserves pre-cycle-220 emit (`<name> =
+    /// <rhs>;`) for every Wait whose `data` is not in this set.
+    pub let_at_wait_data: &'a BTreeSet<DataId>,
 }
 
 impl WalkerCtx<'_> {
@@ -101,6 +116,18 @@ impl WalkerCtx<'_> {
     /// `collect_accumulate_waits` (sibling `collect.rs`).
     pub fn empty_accumulate_set() -> &'static BTreeSet<(WorkerId, DataId, SeqTag)> {
         static EMPTY: OnceLock<BTreeSet<(WorkerId, DataId, SeqTag)>> = OnceLock::new();
+        EMPTY.get_or_init(BTreeSet::new)
+    }
+
+    /// Shared static empty let-at-wait set (TASK-0349 cycle 220).
+    /// Convenience for tests + non-multi-worker call sites that have
+    /// no whole-array-recv pre-init candidates to classify — pre-
+    /// cycle-220 emit is identical when this set is empty, so passing
+    /// this helper is the "no let-at-wait" default. Production multi-
+    /// worker Plan::build builds its own per-worker let_at_wait set
+    /// via `collect_let_at_wait_data` (sibling `collect.rs`).
+    pub fn empty_let_at_wait_set() -> &'static BTreeSet<DataId> {
+        static EMPTY: OnceLock<BTreeSet<DataId>> = OnceLock::new();
         EMPTY.get_or_init(BTreeSet::new)
     }
 

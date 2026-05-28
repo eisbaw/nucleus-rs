@@ -66,9 +66,8 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_event() {
 
     let uds_res =
         emit(&per_worker, &names, &sidecar, &kernels, &uds_out).expect("mp-uds-event emit");
-    let tcp_res =
-        mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out)
-            .expect("mp-tcp-event emit");
+    let tcp_res = mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out)
+        .expect("mp-tcp-event emit");
 
     // ---- The invariant: byte-identical binary + Cargo.toml + run.sh
     //                     + wire.rs + kernels.rs ----
@@ -189,9 +188,8 @@ fn single_worker_real_example_emits_byte_identical_to_mp_tcp_event() {
 
     let uds_res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &uds_out)
         .expect("mp-uds-event emit (single-worker real example)");
-    let tcp_res =
-        mp_tcp_event::emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &tcp_out)
-            .expect("mp-tcp-event emit (same input)");
+    let tcp_res = mp_tcp_event::emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &tcp_out)
+        .expect("mp-tcp-event emit (same input)");
 
     let uds_bin = std::fs::read_to_string(&uds_res.worker_bins[0]).expect("uds binary");
     let tcp_bin = std::fs::read_to_string(&tcp_res.worker_bins[0]).expect("tcp binary");

@@ -26,9 +26,9 @@ use crate::walkers::{collect_w2w_pushes, RelayHop};
 // backends already route through this helper; cycle 190 retires the
 // silent-sibling-risk duplicate at walkers.rs that pre-dated the
 // TASK-0244 (backend-common) lift.
-use backend_common::multi_worker_walker::collect_pre_init_sets;
 use crate::EmitError;
 use crate::SO_BUF_COMMENT_BUFSYNC;
+use backend_common::multi_worker_walker::collect_pre_init_sets;
 
 use super::Plan;
 
@@ -80,9 +80,7 @@ impl Plan<'_> {
     /// Empty for any src with no w2w pushes. Empty overall if the
     /// schedule has no w2w transfers (the common host↔worker-only
     /// case), and then `render_relay_phase` is a no-op.
-    pub(crate) fn relay_schedule(
-        &self,
-    ) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
+    pub(crate) fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
         let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
         for (src, events) in self.per_worker.iter() {
             if *src == self.host_worker {

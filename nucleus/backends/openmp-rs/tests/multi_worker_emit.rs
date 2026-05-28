@@ -290,11 +290,7 @@ fn assert_openmp_main_equiv_sync(label: &str, openmp_src: &str, sync_src: &str) 
             }
         }
         if ol.len() != sl.len() {
-            diff.push_str(&format!(
-                "\nlength: openmp={} sync={}",
-                ol.len(),
-                sl.len()
-            ));
+            diff.push_str(&format!("\nlength: openmp={} sync={}", ol.len(), sl.len()));
         }
         panic!(
             "{label}: openmp-rs main.rs (after rayon-canonicalisation) differs from \
@@ -320,8 +316,7 @@ fn split_02_openmp_equiv_pthreads_sync() {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/02-split-add");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
-    let sched_src =
-        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).unwrap();
+    let sched_src = std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).unwrap();
     let r = test_common::lower_for_test(
         &algo_src,
         &sched_src,
@@ -349,9 +344,9 @@ fn separable_filter_06_distributed2_openmp_equiv_pthreads_sync() {
     use nucleus_compiler::{
         acfg_to_events,
         algo::{lower_algo, parse_algo},
-        apply_block_transforms, apply_halo_inference_partition_aware,
-        apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
-        apply_reuse_inference, build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
+        apply_block_transforms, apply_halo_inference_partition_aware, apply_partition_blocks2d,
+        apply_partition_rows, apply_partition_workers, apply_reuse_inference, build_acfg,
+        build_sidecar, inject_syncs, inject_transfers, link,
         sched::{lower_sched, parse_sched},
         NameTables,
     };
@@ -360,8 +355,7 @@ fn separable_filter_06_distributed2_openmp_equiv_pthreads_sync() {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/06-separable-filter");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
-    let sched_src =
-        std::fs::read_to_string(ex.join("schedules/distributed2.sched.nuc")).unwrap();
+    let sched_src = std::fs::read_to_string(ex.join("schedules/distributed2.sched.nuc")).unwrap();
     let kernels = ex.join("kernels.rs");
 
     let algo_ir = lower_algo(&parse_algo(&algo_src).expect("parse")).expect("lower");

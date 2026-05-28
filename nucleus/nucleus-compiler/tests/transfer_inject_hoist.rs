@@ -1371,7 +1371,10 @@ fn task0335_01_slot_aware_sync_stop_in_hoisted_waits_drain() {
     let mut xfers2: Vec<(XferRole, WorkerId, WorkerId)> = Vec::new();
     collect_xfers_for_data(&result2.root, DataId(0), &mut xfers2);
     assert_eq!(
-        xfers2.iter().filter(|(r, _, _)| matches!(r, XferRole::Wait)).count(),
+        xfers2
+            .iter()
+            .filter(|(r, _, _)| matches!(r, XferRole::Wait))
+            .count(),
         2,
         "TASK-0335.01 idempotence: re-run must NOT add a third Wait. \
          The slot-aware helper's forward scan from `slot` must find \

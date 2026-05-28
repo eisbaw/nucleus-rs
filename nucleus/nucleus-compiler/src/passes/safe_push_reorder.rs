@@ -142,7 +142,9 @@ fn reorder_boundary(events: &[Event], host: WorkerId, out: &mut Vec<Event>) {
 
     for (i, e) in events.iter().enumerate() {
         match e {
-            Event::Wait { src, data, tile, .. } if *src != host => {
+            Event::Wait {
+                src, data, tile, ..
+            } if *src != host => {
                 tainted.push((*data, tile.clone()));
                 others_idx.push(i);
             }
@@ -201,7 +203,9 @@ fn reorder_boundary(events: &[Event], host: WorkerId, out: &mut Vec<Event>) {
                 collect_loop_body_writes(body, &mut tainted);
                 others_idx.push(i);
             }
-            Event::Push { dst, data, tile, .. } if *dst != host => {
+            Event::Push {
+                dst, data, tile, ..
+            } if *dst != host => {
                 let is_dependent = tainted
                     .iter()
                     .any(|(d, t)| *d == *data && tiles_may_overlap(t, tile));
@@ -266,10 +270,8 @@ fn tiles_may_overlap(a: &IterTile, b: &IterTile) -> bool {
     if a.is_empty() || b.is_empty() {
         return true;
     }
-    let a_map: BTreeMap<IterVar, &Range<i64>> =
-        a.bounds.iter().map(|(v, r)| (*v, r)).collect();
-    let b_map: BTreeMap<IterVar, &Range<i64>> =
-        b.bounds.iter().map(|(v, r)| (*v, r)).collect();
+    let a_map: BTreeMap<IterVar, &Range<i64>> = a.bounds.iter().map(|(v, r)| (*v, r)).collect();
+    let b_map: BTreeMap<IterVar, &Range<i64>> = b.bounds.iter().map(|(v, r)| (*v, r)).collect();
     for (v, ra) in &a_map {
         if let Some(rb) = b_map.get(v) {
             if ra.end <= rb.start || rb.end <= ra.start {
@@ -682,7 +684,7 @@ mod tests {
         };
         let events = vec![
             wait(w2(), d(1), tile_1d(iv(0), 5, 6), seq(2)), // Wait w2w on d(1) tile [5,6)
-            fire,                                            // Fire writes d(2)
+            fire,                                           // Fire writes d(2)
             push(w2(), d(1), tile.clone(), seq(1)),         // Push d(1) tile [0,4)
         ];
         // Push d(1) tile [0,4) vs Wait d(1) tile [5,6) — disjoint.
@@ -721,7 +723,10 @@ mod tests {
         };
         let events = vec![outer_loop, push(w2(), d(1), tile.clone(), seq(1))];
         let out = run_one(events.clone());
-        assert_eq!(out, events, "Loop body writes d(1) → Push d(1) not hoistable");
+        assert_eq!(
+            out, events,
+            "Loop body writes d(1) → Push d(1) not hoistable"
+        );
     }
 
     #[test]

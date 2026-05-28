@@ -4,7 +4,7 @@
 //! [`super::event_walker::render_worker_events`] and calls
 //! [`render_wait_assign`] from its own event walker).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::algo::{ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, IterTile, SeqTag};
@@ -73,6 +73,7 @@ enum WaitSlice {
 ///   copies one row's inner-axis sub-range. The 1D leading-axis
 ///   path would paste each worker's whole y-band (overwriting
 ///   adjacent workers' columns with default-zero values).
+#[allow(clippy::too_many_arguments)]
 pub fn render_wait_assign(
     sidecar: &NameSidecar,
     pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
@@ -81,6 +82,7 @@ pub fn render_wait_assign(
     seq: SeqTag,
     rhs: &str,
     accumulate: bool,
+    let_at_wait: &BTreeSet<DataId>,
 ) -> Result<String, EmitError> {
     let slice = match pair_tiles.get(&(data, seq)) {
         Some(tile) => wait_slice(sidecar, data, tile)?,
@@ -107,6 +109,17 @@ pub fn render_wait_assign(
                     ))
                 })?;
                 render_accumulate_assign(name, rhs, ty)
+            } else if let_at_wait.contains(&data) {
+                // TASK-0349 cycle 220: whole-array recv on a data
+                // symbol whose ONLY Waits are whole-array (and which
+                // is not accumulate-fan-in and not indexed-Fire-
+                // written). The per-backend pre-init pass omits the
+                // `let mut <name>: Vec<..> = vec![0; N];` line for
+                // these data; the emit MUST declare-and-assign in
+                // one statement so the variable comes into scope at
+                // the recv site. Type inference picks up the Vec<T>
+                // from the rendezvous slot's `.wait()` return type.
+                Ok(format!("let {name} = {rhs};"))
             } else {
                 Ok(format!("{name} = {rhs};"))
             }
@@ -347,6 +360,27 @@ fn wait_slice(
     }))
 }
 
+/// Module-private classifier wrapping `wait_slice` for sibling
+/// collect-pass consumers (TASK-0349 cycle 220
+/// `collect_let_at_wait_data` in `super::collect`). Returns
+/// `Ok(true)` when the (data, tile) pair resolves to whole-array
+/// recv (the `None` arm of `wait_slice`); `Ok(false)` when it
+/// resolves to slice-paste; `Err` on shape-error or sidecar-lookup
+/// invariant violations (wait_slice's Err arms span both classes —
+/// rank > 2, out-of-bounds range, AND `NameSidecar::data_type`
+/// returning `None`).
+///
+/// Visibility narrowed to `pub(super)` cycle 220b per architect P2.2
+/// — no consumer outside `multi_worker_walker` needs to call this
+/// directly; the only call site is `super::collect::collect_let_at_wait_inner`.
+pub(super) fn is_whole_array_recv(
+    sidecar: &NameSidecar,
+    data: DataId,
+    tile: &IterTile,
+) -> Result<bool, EmitError> {
+    Ok(wait_slice(sidecar, data, tile)?.is_none())
+}
+
 /// Element-wise sum-identity accumulate emit for the overlapping-write
 /// fan-in arm of `render_wait_assign` (TASK-0343, cycle 189).
 ///
@@ -369,11 +403,7 @@ fn wait_slice(
 /// - Bool has no canonical "sum" identity (OR vs AND vs XOR are
 ///   distinct algebraic operators; the user-level intent must be
 ///   declared explicitly when the follow-up lands).
-fn render_accumulate_assign(
-    name: &str,
-    rhs: &str,
-    ty: &ResolvedType,
-) -> Result<String, EmitError> {
+fn render_accumulate_assign(name: &str, rhs: &str, ty: &ResolvedType) -> Result<String, EmitError> {
     let op = accumulate_op_for_scalar(&ty.scalar)?;
     if ty.dims.is_empty() {
         // Scalar accumulator. The pre-init in each backend has set

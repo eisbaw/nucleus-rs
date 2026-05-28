@@ -204,9 +204,7 @@ pub struct ReuseRewriteGroup {
 ///
 /// `pub(super)` so [`super::fire::try_rewrite_reuse_arg`] can call it
 /// at the Fire-arg rewrite boundary.
-pub(super) fn sidecar_consts_to_resolved(
-    sidecar: &NameSidecar,
-) -> BTreeMap<String, ResolvedConst> {
+pub(super) fn sidecar_consts_to_resolved(sidecar: &NameSidecar) -> BTreeMap<String, ResolvedConst> {
     sidecar
         .consts
         .iter()
@@ -421,9 +419,7 @@ fn walk_event_for_reuse(
         }
         Event::Loop { body, .. } => {
             for child in body {
-                walk_event_for_reuse(
-                    child, data_id, data_name, iv_name, per_axis, found, consts,
-                );
+                walk_event_for_reuse(child, data_id, data_name, iv_name, per_axis, found, consts);
             }
         }
         // Sync / Push / Wait / Alloc / Free carry no Fire-arg DataRefs.

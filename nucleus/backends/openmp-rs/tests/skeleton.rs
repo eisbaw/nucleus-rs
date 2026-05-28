@@ -122,7 +122,13 @@ fn emit_result_shape_is_single_binary_five_field() {
         kernels_rs: PathBuf::from("/p/src/kernels.rs"),
         run_sh: PathBuf::from("/p/run.sh"),
     };
-    let _ = (&r.project_dir, &r.cargo_toml, &r.main_rs, &r.kernels_rs, &r.run_sh);
+    let _ = (
+        &r.project_dir,
+        &r.cargo_toml,
+        &r.main_rs,
+        &r.kernels_rs,
+        &r.run_sh,
+    );
 }
 
 /// Empty per-worker map MUST still succeed via the single-worker arm
@@ -142,8 +148,14 @@ fn empty_per_worker_succeeds_via_single_worker_arm() {
     std::fs::create_dir_all(&scratch).expect("scratch dir");
     std::fs::write(&kernels, "// empty\n").expect("kernels stub");
 
-    let result = emit(&per_worker, &names, &sidecar, &kernels, &scratch.join("out"))
-        .expect("empty per_worker must succeed (single-worker arm)");
+    let result = emit(
+        &per_worker,
+        &names,
+        &sidecar,
+        &kernels,
+        &scratch.join("out"),
+    )
+    .expect("empty per_worker must succeed (single-worker arm)");
     let cargo_toml = std::fs::read_to_string(&result.cargo_toml).expect("read Cargo.toml");
     // No rayon dep on the single-worker arm — byte-identical to
     // pthreads-sync's Cargo.toml.

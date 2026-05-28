@@ -1752,10 +1752,7 @@ mod tests {
                         "K",
                         vec![data_ref(
                             "grid",
-                            vec![
-                                ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)),
-                                ir_id("y"),
-                            ],
+                            vec![ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)), ir_id("y")],
                         )],
                     ),
                 }],
@@ -1819,10 +1816,7 @@ mod tests {
                         "K",
                         vec![data_ref(
                             "grid",
-                            vec![
-                                ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)),
-                                ir_id("y"),
-                            ],
+                            vec![ir_mod(ir_add(ir_id("t"), ir_int(3)), ir_int(4)), ir_id("y")],
                         )],
                     ),
                 }],
@@ -1835,8 +1829,9 @@ mod tests {
             .loops
             .insert("t".to_string(), loop_partition_workers("t"));
         let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
-        let err = apply_halo_inference_partition_aware(&linked, acfg)
-            .expect_err("(B') must classify fatal — t is partitioned and the failing index references t");
+        let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+            "(B') must classify fatal — t is partitioned and the failing index references t",
+        );
         assert!(
             matches!(err, HaloInferenceError::NonAffineIndex { ax_idx: 0, .. }),
             "expected NonAffineIndex on axis 0, got: {err:?}"
@@ -1867,8 +1862,9 @@ mod tests {
             .loops
             .insert("y".to_string(), loop_partition_workers("y"));
         let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
-        let err = apply_halo_inference_partition_aware(&linked, acfg)
-            .expect_err("(B') must classify fatal — y is partitioned and the failing index references y");
+        let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+            "(B') must classify fatal — y is partitioned and the failing index references y",
+        );
         assert!(
             matches!(err, HaloInferenceError::StridedAccessNotSupported { .. }),
             "expected StridedAccessNotSupported, got: {err:?}"
@@ -1895,10 +1891,7 @@ mod tests {
                         "K",
                         vec![data_ref(
                             "grid",
-                            vec![
-                                ir_mod(ir_add(ir_id("t"), ir_int(4)), ir_int(5)),
-                                ir_id("i"),
-                            ],
+                            vec![ir_mod(ir_add(ir_id("t"), ir_int(4)), ir_int(5)), ir_id("i")],
                         )],
                     ),
                 }],

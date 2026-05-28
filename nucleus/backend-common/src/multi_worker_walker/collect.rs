@@ -318,3 +318,88 @@ pub fn collect_pre_init_sets(
         }
     }
 }
+
+/// TASK-0349 cycle 220: classify which DataIds have a provably-dead
+/// pre-init `let mut <name>: Vec<..> = vec![0; N];` because every
+/// `Event::Wait` on them is a whole-array recv (and they are not in
+/// the accumulate-fan-in set nor the indexed-Fire-write set, both of
+/// which need the zero-init to be live).
+///
+/// For DataIds in the returned set, the per-backend pre-init pass
+/// omits the `let mut` line and the walker's `render_wait_assign`
+/// emits `let <name> = <rhs>;` at the recv site (declare-and-assign in
+/// one statement). The result is a Vec<T> coming into scope at the
+/// first .wait() call, no dead zero-init, no `unused_assignments`
+/// warning on cargo build of the emitted project.
+///
+/// Conservative on shape-errors: if `wait_slice` returns Err for any
+/// of the data's Waits, the data is kept OUT of the returned set (the
+/// pre-init stays — emit-time render_wait_assign will surface the
+/// same error to the caller).
+///
+/// Inputs:
+/// - `events`: the worker's projected event list (descends into Loop
+///   bodies).
+/// - `pair_tiles`: `(DataId, SeqTag) -> IterTile` map; missing entry
+///   means no tile (whole-array transfer).
+/// - `sidecar`: needed by `is_whole_array_recv` to read data dims.
+/// - `accumulate_data`: DataIds classified as accumulate-fan-in
+///   anywhere in this worker (passed as a flat-by-data slice of the
+///   per-(worker, data, seq) accumulate set; the caller filters on
+///   `WorkerId` upstream).
+/// - `indexed`: DataIds the worker writes via indexed Fire output
+///   (computed by `collect_pre_init_sets`).
+pub fn collect_let_at_wait_data(
+    events: &[Event],
+    pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
+    sidecar: &NameSidecar,
+    accumulate_data: &BTreeSet<DataId>,
+    indexed: &BTreeSet<DataId>,
+) -> BTreeSet<DataId> {
+    let mut waited: BTreeSet<DataId> = BTreeSet::new();
+    let mut not_all_whole: BTreeSet<DataId> = BTreeSet::new();
+    collect_let_at_wait_inner(events, pair_tiles, sidecar, &mut waited, &mut not_all_whole);
+    let mut out: BTreeSet<DataId> = BTreeSet::new();
+    for d in &waited {
+        if not_all_whole.contains(d) {
+            continue;
+        }
+        if accumulate_data.contains(d) {
+            continue;
+        }
+        if indexed.contains(d) {
+            continue;
+        }
+        out.insert(*d);
+    }
+    out
+}
+
+fn collect_let_at_wait_inner(
+    events: &[Event],
+    pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
+    sidecar: &NameSidecar,
+    waited: &mut BTreeSet<DataId>,
+    not_all_whole: &mut BTreeSet<DataId>,
+) {
+    for e in events {
+        match e {
+            Event::Wait { data, seq, .. } => {
+                waited.insert(*data);
+                let is_whole = match pair_tiles.get(&(*data, *seq)) {
+                    None => true,
+                    Some(tile) => {
+                        super::wait::is_whole_array_recv(sidecar, *data, tile).unwrap_or(false)
+                    }
+                };
+                if !is_whole {
+                    not_all_whole.insert(*data);
+                }
+            }
+            Event::Loop { body, .. } => {
+                collect_let_at_wait_inner(body, pair_tiles, sidecar, waited, not_all_whole);
+            }
+            _ => {}
+        }
+    }
+}

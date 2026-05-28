@@ -112,10 +112,7 @@ pub(crate) fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
 /// `project-mp-tcp-event-vs-bufsync-safety-profile` the per-seq vs
 /// FIFO distinction is load-bearing for this asymmetry.
 pub(crate) fn relay_phase_insertion_point(events: &[Event]) -> usize {
-    if let Some(idx) = events
-        .iter()
-        .rposition(|e| matches!(e, Event::Sync { .. }))
-    {
+    if let Some(idx) = events.iter().rposition(|e| matches!(e, Event::Sync { .. })) {
         return idx;
     }
     if let Some(idx) = events.iter().position(|e| matches!(e, Event::Wait { .. })) {

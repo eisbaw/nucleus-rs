@@ -153,9 +153,9 @@ pub const RUNTIME_SRC: &str = include_str!("runtime_src.rs");
 // project. `mio` is a dev-dep (Cargo.toml step 1) so this compiles
 // under `cargo test --workspace` without widening the prod tree.
 #[cfg(test)]
-mod wire_runtime;
-#[cfg(test)]
 mod runtime_src;
+#[cfg(test)]
+mod wire_runtime;
 
 // Multi-worker codegen (cycle 197 TASK-0044.03.01). Structural twin
 // of `mp_tcp_event::multi_worker` with TCP→UDS transport swap; the

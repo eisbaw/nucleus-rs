@@ -185,6 +185,7 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -257,6 +258,7 @@ fn multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -369,6 +371,7 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_bloc
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -523,6 +526,7 @@ fn multi_worker_walker_regular_arm_emits_real_buffer_codegen() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -673,6 +677,7 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();
@@ -857,6 +862,7 @@ fn multi_worker_walker_dedupes_canonical_outer_axes_add_zero() {
         rendezvous_ids: &rendezvous_ids,
         pair_tiles: &pair_tiles,
         accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: WalkerCtx::empty_let_at_wait_set(),
     };
 
     let mut out = String::new();

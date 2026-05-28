@@ -65,10 +65,7 @@ pub(crate) fn collect_xfer_data(events: &[Event], out: &mut BTreeSet<DataId>) {
 /// `nucleus/backends/mp-tcp-event/src/multi_worker.rs` is NOT used
 /// here.
 pub(crate) fn relay_phase_insertion_point(events: &[Event]) -> usize {
-    if let Some(idx) = events
-        .iter()
-        .rposition(|e| matches!(e, Event::Sync { .. }))
-    {
+    if let Some(idx) = events.iter().rposition(|e| matches!(e, Event::Sync { .. })) {
         return idx;
     }
     if let Some(idx) = events.iter().position(|e| matches!(e, Event::Wait { .. })) {

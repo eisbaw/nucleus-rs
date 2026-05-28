@@ -229,8 +229,7 @@ fn split_02_uds_equiv_tcp() {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/02-split-add");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
-    let sched_src =
-        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).unwrap();
+    let sched_src = std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).unwrap();
     let r = test_common::lower_for_test(
         &algo_src,
         &sched_src,
@@ -284,10 +283,10 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
     use nucleus_compiler::{
         acfg_to_events,
         algo::{lower_algo, parse_algo},
-        apply_block_transforms, apply_halo_inference_partition_aware,
-        apply_host_data_relay_inject, apply_host_mediation_inject,
-        apply_partition_blocks2d, apply_partition_rows, apply_partition_workers,
-        apply_reuse_inference, build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
+        apply_block_transforms, apply_halo_inference_partition_aware, apply_host_data_relay_inject,
+        apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
+        apply_partition_workers, apply_reuse_inference, build_acfg, build_sidecar, inject_syncs,
+        inject_transfers, link,
         sched::{lower_sched, parse_sched},
         NameTables,
     };
@@ -296,8 +295,7 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/06-separable-filter");
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).unwrap();
-    let sched_src =
-        std::fs::read_to_string(ex.join("schedules/distributed2.sched.nuc")).unwrap();
+    let sched_src = std::fs::read_to_string(ex.join("schedules/distributed2.sched.nuc")).unwrap();
     let kernels = ex.join("kernels.rs");
 
     let algo_ast = parse_algo(&algo_src).expect("algo parse");
@@ -335,10 +333,10 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
 
     let uds_out = scratch.join("uds");
     let tcp_out = scratch.join("tcp");
-    let uds = mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels, &uds_out)
-        .expect("uds emit");
-    let tcp = mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out)
-        .expect("tcp emit");
+    let uds =
+        mp_uds_event::emit(&per_worker, &names, &sidecar, &kernels, &uds_out).expect("uds emit");
+    let tcp =
+        mp_tcp_event::emit(&per_worker, &names, &sidecar, &kernels, &tcp_out).expect("tcp emit");
 
     let mut uds_bins = uds.worker_bins.clone();
     uds_bins.sort();

@@ -905,9 +905,7 @@ fn required_counts_strictly_grow_per_milestone() {
     let top: Milestone = manifest
         .required
         .iter()
-        .map(|r| {
-            Milestone::parse(&r.milestone).expect("manifest milestone tags must parse")
-        })
+        .map(|r| Milestone::parse(&r.milestone).expect("manifest milestone tags must parse"))
         .max()
         .expect("manifest must contain at least one [[required]] cell");
 
@@ -2148,8 +2146,7 @@ fn compute_delta_rows_handles_new_and_removed() {
     // 0%), ex-c is "(new)" (tier 2), ex-b is "(removed)"
     // (tier 1). Tier 1 sorts before tier 2 so removed appears
     // before new in the output.
-    let by_ex =
-        |name: &str| -> &DeltaRow { rows.iter().find(|r| r.example == name).expect(name) };
+    let by_ex = |name: &str| -> &DeltaRow { rows.iter().find(|r| r.example == name).expect(name) };
     let a = by_ex("ex-a");
     assert_eq!(a.baseline_ms, Some(100));
     assert_eq!(a.current_ms, Some(100));

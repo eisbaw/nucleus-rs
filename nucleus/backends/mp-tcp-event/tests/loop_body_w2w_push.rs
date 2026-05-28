@@ -263,8 +263,8 @@ fn host_bound_push_inside_loop_does_not_trigger_guard() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/loop_body_host_push_negative");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/loop_body_host_push_negative");
     let _ = std::fs::remove_dir_all(&scratch);
 
     emit(&per_worker, &names, &sidecar, &kernels, &scratch).expect(
@@ -350,8 +350,8 @@ fn multi_iter_loop_body_w2w_push_is_typed_contract_gap() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root()
-        .join("nucleus/target/mp-tcp-event-test-scratch/multi_iter_loop_body_hazard");
+    let scratch =
+        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/multi_iter_loop_body_hazard");
     let _ = std::fs::remove_dir_all(&scratch);
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
