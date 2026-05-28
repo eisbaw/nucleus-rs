@@ -3,9 +3,11 @@ id: TASK-0353
 title: >-
   Formalize TASK-0347 ACs as tickable AC list (description-prose-only → backlog
   CLI ACs)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@orchestrator'
 created_date: '2026-05-27 22:51'
+updated_date: '2026-05-28 01:01'
 labels:
   - tracker-hygiene
   - backlog-debt
@@ -32,3 +34,22 @@ The cycle-219 review-gate caught that TASK-0341.01's cycle-219 closure note refe
 - Doc-only. No ACFG / link work happens here.
 - Low priority because TASK-0347 itself is To Do, not in progress. File only when TASK-0347 is about to be picked up (the formalization will be the first step of that cycle anyway).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle 222: backfill landed in-thread (orchestrator-self, no implementer spawn).
+
+Actions taken on TASK-0347:
+1. 4 formal --ac entries added (matching the description's 'Acceptance criteria' prose block at lines 31-44):
+   #1 ACFG: build_dataflow accepts bare-LValue RHS
+   #2 Link / codegen: cross-worker data-move lowers via Xfer pair
+   #3 15-transpose simplification + bit-identity regression-pin
+   #4 Coordinate followup: ALSO close TASK-0097's identity-copy gap
+
+Verified via 'backlog task 0347 --plain': all 4 ACs now appear as tickable - [ ] entries.
+
+The description-prose ACs at TASK-0347:31-44 are preserved as the authoritative narrative (now mirrored in the tickable section).
+
+Future cycles that close TASK-0347 ACs can tick them precisely via --check-ac N.
+<!-- SECTION:NOTES:END -->

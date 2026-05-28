@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-27 12:45'
+updated_date: '2026-05-28 01:01'
 labels:
   - compiler
   - ir
@@ -34,8 +35,8 @@ Both layers must be co-designed (per cycle-77 closure note):
 1. **ACFG layer** (`nucleus/nucleus-compiler/src/acfg/build.rs:325-326` "Identity copy or pure-expression RHS: skipped at M1"): identity-copy dataflow should produce an Operation node with no kernel firing but with a `data move` DataflowEdge. The Operation's worker set is the LHS's worker placement; the DataflowEdge's `data_in` is the RHS's data ref.
 2. **Link layer** (TASK-0097 was the parallel limitation, also closed DEFERRED cycle 77): when the producer and consumer worker sets differ, the data move lowers to a Xfer/Push/Wait pair, same as for a kernel-call Operation.
 
-## Acceptance criteria
-
+## Acceptance Criteria
+<!-- AC:BEGIN -->
 1. **ACFG**: `build_dataflow` accepts bare-`LValue` RHS and emits an Operation with no kernel firing + a `data move` DataflowEdge. Unit test fixture exercising `out <-- in` with both same-worker and cross-worker placements.
 2. **Link / codegen**: cross-worker data-move lowers to the same Xfer pair a Call would. Same-worker case lowers to an in-place assignment (or is structurally elided if the LHS and RHS are the same DataId).
 3. **15-transpose simplification**: when AC#1 + AC#2 close, 15-transpose's prog.algo.nuc can drop the `xpose` kernel and use the bare-LValue form; the new naive schedule emits identical output.bin (regression-pin the bit-identity).
@@ -51,3 +52,9 @@ Both layers must be co-designed (per cycle-77 closure note):
 - Predates cycle 204: TASK-0111 (Done DEFERRED cycle 77, ACFG side), TASK-0097 (Done DEFERRED cycle 77, link side).
 - Triggered by: cycle 204 TASK-0341.01 (15-transpose AC#1) — first real example with identity-copy semantics.
 <!-- SECTION:DESCRIPTION:END -->
+
+- [ ] #1 ACFG: build_dataflow accepts bare-LValue RHS and emits an Operation with no kernel firing + a 'data move' DataflowEdge. Unit test fixture exercising 'out <-- in' with both same-worker and cross-worker placements
+- [ ] #2 Link / codegen: cross-worker data-move lowers to the same Xfer pair a Call would. Same-worker case lowers to an in-place assignment (or is structurally elided if the LHS and RHS are the same DataId)
+- [ ] #3 15-transpose simplification: when AC#1 + AC#2 close, 15-transpose's prog.algo.nuc can drop the xpose kernel and use the bare-LValue form; the new naive schedule emits identical output.bin (regression-pin the bit-identity)
+- [ ] #4 Coordinate followup: if implementer chooses, ALSO close TASK-0097's original concern (link-side identity-copy gap, parallel limitation Done DEFERRED cycle 77)
+<!-- AC:END -->
