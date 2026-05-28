@@ -59,6 +59,7 @@ use backend_common::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
     emit_count_static, CountCheckLoop,
 };
+use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
 use backend_common::render::{rust_scalar_type, EmitError};
 
@@ -125,7 +126,7 @@ impl<'a> Plan<'a> {
         // mirror invariant (driver vs backend) holds trivially —
         // neither side overrides the helper.
         let host_worker =
-            backend_common::elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
                 || {
                     EmitError::ContractGap(
                         "multi-worker emit requires at least one used worker".to_string(),

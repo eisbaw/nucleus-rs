@@ -9,6 +9,7 @@
 //! `lib.rs` before the slice-4 split.
 
 use crate::EmitError;
+use backend_common::render::rust_scalar_type_pub;
 
 pub(crate) fn scalar_width(t: &nucleus_compiler::algo::ScalarType) -> usize {
     use nucleus_compiler::algo::ScalarType::*;
@@ -37,7 +38,7 @@ pub(crate) fn encode_expr(
         // `bool` has no `to_le_bytes`; dedicated 1-byte-per-element.
         Ok(format!("wire::enc_vec_bool(&{name})"))
     } else {
-        let rs = backend_common::render::rust_scalar_type_pub(&ty.scalar);
+        let rs = rust_scalar_type_pub(&ty.scalar);
         Ok(format!("wire::enc_vec(&{name}, {rs}::to_le_bytes)"))
     }
 }
@@ -51,7 +52,7 @@ pub(crate) fn decode_expr(ty: &nucleus_compiler::algo::ResolvedType) -> Result<S
     } else if ty.scalar == Bool {
         Ok("wire::dec_vec_bool(&__buf)".to_string())
     } else {
-        let rs = backend_common::render::rust_scalar_type_pub(&ty.scalar);
+        let rs = rust_scalar_type_pub(&ty.scalar);
         Ok(format!("wire::dec_vec(&__buf, {rs}::from_le_bytes)"))
     }
 }

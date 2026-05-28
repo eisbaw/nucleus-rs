@@ -11,7 +11,9 @@
 use std::fmt::Write as _;
 
 use backend_common::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
-use backend_common::multi_worker_walker::{compute_block_tag_abs_exprs, render_wait_assign};
+use backend_common::multi_worker_walker::{
+    compute_block_tag_abs_exprs, render_wait_assign, WalkerCtx,
+};
 use backend_common::render::{
     render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
     render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
@@ -494,7 +496,7 @@ impl Plan<'_> {
                         *seq,
                         &dec,
                         accumulate,
-                        backend_common::multi_worker_walker::WalkerCtx::empty_let_at_wait_set(),
+                        WalkerCtx::empty_let_at_wait_set(),
                     )?;
                     writeln!(
                         out,

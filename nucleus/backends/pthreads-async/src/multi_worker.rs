@@ -51,8 +51,9 @@ use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
-    emit_count_static,
+    emit_count_static, CountCheckLoop,
 };
+use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
 use backend_common::render::{render_array_init_for, rust_type_of};
 
@@ -196,7 +197,7 @@ impl<'a> Plan<'a> {
         // today, but the alignment with pthreads-sync's precedent
         // keeps error handling consistent across backends.
         let host_worker =
-            backend_common::elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
                 || {
                     EmitError::ContractGap(
                         "pthreads-async Plan: used_workers reachable to host \
@@ -631,9 +632,8 @@ impl<'a> Plan<'a> {
 /// once per UNIQUE ident.
 fn collect_unique_count_check_frames(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
-) -> Vec<backend_common::check_frame::CountCheckLoop> {
-    let mut by_ident: BTreeMap<String, backend_common::check_frame::CountCheckLoop> =
-        BTreeMap::new();
+) -> Vec<CountCheckLoop> {
+    let mut by_ident: BTreeMap<String, CountCheckLoop> = BTreeMap::new();
     for evs in per_worker.values() {
         for cf in collect_count_check_frames(evs) {
             by_ident.entry(cf.ident.clone()).or_insert(cf);

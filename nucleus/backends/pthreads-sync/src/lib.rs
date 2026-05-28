@@ -102,8 +102,9 @@ use backend_common::check_frame::{
 };
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use backend_common::render::{
-    data_name, render_const_expr, render_fire_args, render_fire_output_assign, render_loop_bounds,
-    render_reuse_buf_decls, render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
+    data_name, render_array_init_for, render_const_expr, render_fire_args,
+    render_fire_output_assign, render_loop_bounds, render_reuse_buf_decls,
+    render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
 };
 // Re-export the codegen-time error type so downstream callers (the
 // driver, tests, other backends that delegate to this crate's
@@ -466,7 +467,7 @@ fn render_array_init(did: DataId, sidecar: &NameSidecar, name: &str) -> Result<S
              (build_sidecar should carry every ACFG data symbol)"
         ))
     })?;
-    Ok(backend_common::render::render_array_init_for(ty))
+    Ok(render_array_init_for(ty))
 }
 
 // `rust_scalar_zero`, `bin_op_str`, `render_int_expr`,
