@@ -23,11 +23,11 @@
 //!   (cycle 195). Plan-shaped per-worker codegen consuming the
 //!   nonblocking-poll wire primitives (`wire::read_msg_expect_poll`,
 //!   `wire::write_msg_poll`, `wire::barrier_cross_poll`,
-//!   `wire::apply_nonblocking`). The Plan/walkers/encode substrate is
-//!   a sibling of mp-tcp-bufsync's `plan/` subtree — copy-by-design
-//!   pending a separate lift cycle
-//!   (TASK-0044.02.02-followup-shared-plan-crate) when the duplication
-//!   has been proven painful by two consumers.
+//!   `wire::apply_nonblocking`). The Plan/walkers/encode substrate now
+//!   lives ONCE in `backend_common::tcp_plan`, parameterised over the
+//!   `WirePrimitives` trait (lifted TASK-0044.02.03, cycle 235); this
+//!   crate's `plan.rs` supplies only the `PollWire` impl plus a `Plan`
+//!   type alias.
 //!
 //! # Generated artefact layout
 //!
@@ -60,13 +60,12 @@
 //!   buffer + event — are rejected upstream at the capability-compat
 //!   check, NOT at codegen, and stay [[skip]] forever per PRD §7.1
 //!   row mp-tcp-poll (sync capability surface is pinned).
-//! - The Plan/walkers/encode substrate is duplicated with
-//!   mp-tcp-bufsync's. The poll/bufsync difference lives EXCLUSIVELY
-//!   in the emit layer (wire::*_poll call-site swap +
-//!   apply_nonblocking line); analysis (host election, xfer registry,
-//!   slice-paste, accumulator classification, FIFO-shape hazards)
-//!   carries over verbatim. Lift filed forward —
-//!   TASK-0044.02.02-followup-shared-plan-crate.
+//! - The poll/bufsync difference lives EXCLUSIVELY in the
+//!   `WirePrimitives` impl (the `wire::*_poll` call-site swap and the
+//!   `apply_nonblocking` line); all analysis (host election, xfer
+//!   registry, slice-paste, accumulator classification, FIFO-shape
+//!   hazards) is the shared `backend_common::tcp_plan` substrate
+//!   (lifted TASK-0044.02.03, cycle 235 — no longer duplicated).
 //! - Wait-before-push hazard rejection is unconditional on
 //!   mp-tcp-poll (same as mp-tcp-bufsync). The
 //!   `apply_safe_push_reorder` driver pass that lifts the constraint

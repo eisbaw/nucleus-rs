@@ -17,7 +17,7 @@
 //! mp-tcp-bufsync's one-CTRL-stream-per-(host,worker) star topology
 //! CANNOT lower a barrier that excludes the hub: `Plan::build` carries a
 //! defensive `ContractGap` on any host-excluding barrier
-//! (`src/plan/mod.rs` "exclude the host worker"). The driver mediates by
+//! (`backend_common::tcp_plan::Plan::build` "exclude the host worker"). The driver mediates by
 //! running `apply_host_mediation_inject` (driver/src/main.rs host-
 //! mediation gate — bufsync IS listed) which turns each host-excluding
 //! barrier into a star-shaped N+1-party rendezvous through host. bufsync
