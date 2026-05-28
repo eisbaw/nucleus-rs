@@ -505,3 +505,113 @@ fn wave_b2_multi_emit_compiles() {
         scratch.display(),
     );
 }
+
+// --------------------------------------------------------------------
+// Host-EXCLUDING-barrier oracle (TASK-0044.09 cycle 233) — completes the
+// 7-backend host-excluding-barrier fast-emit-oracle family.
+//
+// The Wave B-2 fixtures above cover only 02-split-add/split, whose three
+// barriers all emit `Arc::new(Barrier::new(2))` over {host,w0} (host
+// INCLUDED). So no existing pthreads-async fixture exercises the
+// host-EXCLUDING barrier shape: a worker-only `Arc::new(Barrier::new(4))`
+// over {w0,w1,w2,w3}. A barrier-participant off-by-one on that shape
+// (e.g. `new(5)` mediating host into a shared-memory barrier, or `new(3)`
+// dropping a worker) would slip the fast emit oracle and only bite the
+// slow e2e gate. This test closes that hole.
+//
+// pthreads-async is SHARED-MEMORY and does NOT apply
+// `apply_host_mediation_inject` (driver/src/main.rs host-mediation gate
+// lists only the four mp-* star-topology backends). Like openmp-rs it
+// emits the host-excluding `Arc::new(Barrier::new(4))` DIRECTLY — its
+// `std::sync::Barrier` on an Arc shared only among the listed
+// participants handles a host-excluding barrier natively, with no
+// ContractGap and no mediation pass. So this test mirrors the openmp-rs
+// template `openmp-rs/tests/multi_worker_emit.rs::
+// transpose_15_distributed_rows_openmp_equiv_pthreads_sync`, NOT the
+// reactor-backend mediation pattern.
+// --------------------------------------------------------------------
+
+/// 15-transpose/distributed-rows — the host-EXCLUDING-barrier coverage
+/// arm. Its `xpose on {w0,w1,w2,w3}` placement (with the inner `j` loop
+/// partitioned across the four compute workers) produces a genuinely
+/// host-EXCLUDING inner barrier alongside the host-INCLUDED phase-boundary
+/// barriers, so this single emit exercises BOTH participant-count paths.
+///
+/// `apply_partition_workers = true` is the load-bearing toggle: the
+/// `LowerForTestOpts` default is `false`, and without it the inner `j`
+/// loop is NOT partitioned across w0..w3 — the partition silently no-ops,
+/// no host-excluding compute barrier materialises, and this test would
+/// pass VACUOUSLY (asserting `new(4)` against an emit that only ever
+/// contains `new(5)`/`new(1)` barriers). `apply_block_transforms` stays
+/// at its default `true` (a no-op here — 15-transpose has no `block=`
+/// directive, no halo, no reuse).
+///
+/// Assertion anchor: the participant SET comment (`{w0,w1,w2,w3}`), NOT a
+/// hardcoded `bar_<n>` index. Anchoring on the bid (e.g. `bar_2`) would
+/// SILENT-PASS under a future sync-tag renumber that reorders the four
+/// barriers; the participant-set comment is invariant under renumbering.
+#[test]
+fn transpose_15_distributed_rows_host_excluding_barrier_pthreads_async() {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/15-transpose");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("15 algo");
+    let sched_src = std::fs::read_to_string(ex.join("schedules/distributed-rows.sched.nuc"))
+        .expect("15 distributed-rows sched");
+    // partition=workers is the load-bearing toggle (see fn docstring).
+    let opts = test_common::LowerForTestOpts {
+        apply_partition_workers: true,
+        ..test_common::LowerForTestOpts::default()
+    };
+    let r = test_common::lower_for_test(&algo_src, &sched_src, &opts);
+
+    let scratch = root.join(
+        "nucleus/target/pthreads-async-test-scratch/\
+         transpose_15_distributed_rows_host_excluding_barrier",
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+    let result = emit(
+        &r.per_worker,
+        &r.names,
+        &r.sidecar,
+        &ex.join("kernels.rs"),
+        &scratch,
+    )
+    .expect("pthreads-async emit must succeed for 15-transpose/distributed-rows");
+    let main_rs = std::fs::read_to_string(&result.main_rs).expect("read main.rs");
+
+    // The host-EXCLUDING barrier. pthreads-async (like openmp-rs) emits
+    // it DIRECTLY as `Arc::new(Barrier::new(4))` over {w0,w1,w2,w3}
+    // because it is shared-memory and does NOT apply host-mediation. A
+    // regression to `new(5)` (off-by-one mediating host into a shared-
+    // memory barrier) or `new(3)` (dropping a worker) fails HERE, before
+    // the slow e2e oracle.
+    assert!(
+        main_rs.contains("Arc::new(Barrier::new(4)); // participants: {w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: pthreads-async main.rs MUST carry the \
+         host-EXCLUDING inner barrier `Arc::new(Barrier::new(4))` over \
+         {{w0,w1,w2,w3}} (NOT new(5)); its absence means the \
+         barrier-participant-count path regressed. main.rs:\n{main_rs}"
+    );
+    // Negative: the off-by-one host-mediated count must NOT appear for a
+    // barrier whose participant comment is the host-excluding set. (A
+    // host-INCLUDED new(5) barrier legitimately appears elsewhere in this
+    // same emit — asserted positively below — so the anti-needle is
+    // anchored to the host-excluding participant comment, not bare
+    // `new(5)`.)
+    assert!(
+        !main_rs.contains("Arc::new(Barrier::new(5)); // participants: {w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: a barrier over {{w0,w1,w2,w3}} must \
+         have count 4, not 5 — host must NOT be mediated into a \
+         shared-memory pthreads-async barrier. main.rs:\n{main_rs}"
+    );
+    // This cell ALSO exercises the host-INCLUDED shape (the load/gather
+    // phase-boundary barriers that cross host), so both barrier-
+    // participant-count paths are covered in one fixture.
+    assert!(
+        main_rs.contains("Arc::new(Barrier::new(5)); // participants: {host,w0,w1,w2,w3}"),
+        "15-transpose/distributed-rows: pthreads-async main.rs MUST also carry \
+         a host-INCLUDED `Arc::new(Barrier::new(5))` over {{host,w0,w1,w2,w3}} \
+         (the load/gather phase boundaries) — both barrier shapes are \
+         exercised by this cell. main.rs:\n{main_rs}"
+    );
+}
