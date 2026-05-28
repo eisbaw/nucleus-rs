@@ -75,8 +75,10 @@
 //! # Honest limitations (AC#6)
 //!
 //! - **No DMA, no IRQ, no real timing.** The `StubShim` hooks are
-//!   no-ops; the generated lib compiles but computes on zero-filled
-//!   input arrays (the input-fill hook does nothing). This is
+//!   no-ops; in particular `alloc_in_region` returns null, so the
+//!   null-guarded input-fill copy is skipped and the arrays stay
+//!   zero-filled — the generated lib compiles but computes on
+//!   zero-filled input arrays. This is
 //!   compile-only validation, exactly the M9 bar (PRD §10.3 point 2 /
 //!   §11 M9). Real DMA/IRQ + a Renode-runnable bin (panic_handler +
 //!   entry point + linker script + `.resc`) is M10 (TASK-0048).

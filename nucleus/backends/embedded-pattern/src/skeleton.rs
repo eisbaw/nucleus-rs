@@ -252,6 +252,10 @@ impl NucleusShim for Usart1Shim {
         // region and advance the cursor. The load lowering copies from
         // this pointer into the data array. (Cast away const: the load
         // lowering only READS through it; mut is the trait's contract.)
+        // ASSUMES input.bin == the effectful-load arrays concatenated in
+        // EventList load order (exact for ex1: a then b). Verify per
+        // example before trusting the cmp when generalising to ex5/ex9
+        // (TASK-0048.06).
         let p = unsafe { NUC_INPUT_REGION.add(self.input_cursor) } as *mut u8;
         self.input_cursor += bytes;
         p
