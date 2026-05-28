@@ -3,11 +3,11 @@ id: TASK-0357
 title: >-
   Extend let-at-wait classifier defensive coverage to wait.rs rank-3+ guard and
   inner-dim OOB (TASK-0354 cycle-221b architect P2.1)
-status: In Progress
+status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-28 00:48'
-updated_date: '2026-05-28 01:05'
+updated_date: '2026-05-28 01:23'
 labels:
   - tests
   - backend-common
@@ -70,3 +70,28 @@ Gate verification (cheap subset before commit):
 
 Forward-carry to TASK-0355 (unify is_whole_array_tile + is_whole_array_recv): the 2 new tests cover the FULL guard chain of is_whole_array_recv (now: rank-3+, both axes OOB, scalar, mixed-slice). When TASK-0355 is picked up, the unified classifier MUST exercise the same 9 cases (cycle 221's 7 + cycle 223's 2).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle 223 closure — Done after parallel review gate landed double-GO.
+
+Gate (orchestrator pre-commit + qa-test-runner independent re-verification + mped-architect read-only):
+- cargo test (dev): 1026/0/3 -> 1028/0/3 (+2 exactly, both reviewers confirmed).
+- cargo test (release): 1025/0/3 -> 1027/0/3 (+2 exactly).
+- just clippy --all-targets -D warnings: clean.
+- just e2e: 280/246/0/34/0 bit-identical across 2 independent runs (non-flake).
+- 4 structural checks (textual-replace, include-str, narrative-doc-lie, mega-files): all clean.
+
+Architect P1 = none (all claims verified: wait.rs:307 LEFT disjunct fires for test 8; wait.rs:324 inner-axis OOB fires for test 9; tile_3d arg order verified; module docstring + commit msg cross-check).
+
+Architect P2 = 2 honest-not-silent deferrals (no action):
+  - Test 8 right-disjunct (rank-2 tile on rank-3 data): empirically structurally equivalent (same Err propagation, same .unwrap_or(false) arm).
+  - Test 9 rejected degenerate-range arm: symmetric to OOB, same arm.
+
+Architect P3.2: tile_2d + tile_3d helpers join the shared-helper migration scope — forward-carried to TASK-0358 (commit d3719e8's filed task).
+
+Architect P3.3: TASK-0357's AC formalization deliberately NOT done in this cycle (per feedback-ac-rewrite-on-done-task: avoid AC-rewrite on a near-Done task). Tracker-hygiene sweep candidate for a future cycle.
+
+Commits: c45a5e4 (cycle 223 implementation) + TASK-0358 forward-carry md edit being committed alongside this closure note.
+<!-- SECTION:NOTES:END -->
