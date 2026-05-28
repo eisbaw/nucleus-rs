@@ -111,7 +111,7 @@ pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 
 use backend_common::render::{data_name, render_fire_args, render_loop_bounds, RenderCtx};
-use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, WorkerId};
+use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, ViolationKind, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 mod kernel_extract;
@@ -590,26 +590,103 @@ fn render_event(
                         .to_string(),
                 ));
             }
-            if check_frame.is_some() {
-                // Shared by the M9 lib and M10 bin paths. The tier-1
-                // reporter uses `std::time::Instant`, which does not
-                // exist on bare-metal Cortex-M; a no_std monotonic clock
-                // (DWT CYCCNT) is filed as TASK-0048.04. Naive schedules
-                // carry no check frames, so this is latent.
-                return Err(EmitError::UnsupportedFeature(
-                    "embedded-pattern does not lower real-time `check \
-                     loop` frames: the tier-1 std Drop-guard reporter uses \
-                     `std::time::Instant`, absent on no_std Cortex-M. A \
-                     no_std DWT-cycle-counter clock is TASK-0048.04. Naive \
-                     schedules carry none."
-                        .to_string(),
-                ));
-            }
             let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                 EmitError::ContractGap(format!(
                     "iter var {iter_var:?} in an Event::Loop has no name in NameTables"
                 ))
             })?;
+            // Real-time `check loop V : latency_max=T` frame (TASK-0048.04).
+            // Shared by the M9 lib (StubShim) and M10 bin (Usart1Shim) paths
+            // — both consume only the trait methods `shim.monotonic_ns()`
+            // (PRD §6.3.5 tier-3 backend-specified clock) and
+            // `shim.report_violation()` (the `on_violation=log` sink), so
+            // the lowering is identical on both. The tier-1 std Drop-guard
+            // reporter (`std::time::Instant` + `AtomicU64`) is NOT ported:
+            // neither exists on no_std Cortex-M (and `AtomicU64` is absent on
+            // thumbv7em — only 32-bit atomics). We render against the trait
+            // instead, keeping Cortex-M register details inside the shim.
+            if let Some(frame) = check_frame {
+                // CheckFrame::loop_var (carried by value) MUST name the same
+                // identifier as NameTables.iter_var[iter_var] — see the
+                // CheckFrame docstring (TASK-0221). Dev builds catch
+                // projection-layer divergence loudly; release builds skip it.
+                debug_assert_eq!(
+                    var.as_str(),
+                    frame.loop_var.as_str(),
+                    "check-frame loop_var diverges from the Event::Loop iter_var name"
+                );
+                match frame.on_violation {
+                    // tier-3 on_violation policy (AC#2, PRD §6.3.5):
+                    // panic BRICKS the MCU — reject loudly rather than
+                    // silently remap to log (a banned silent semantic
+                    // change). The default ViolationKind is Panic
+                    // (materialised at sched-lower), so an embedded check
+                    // loop MUST explicitly pick log.
+                    ViolationKind::Panic => {
+                        return Err(EmitError::UnsupportedFeature(format!(
+                            "embedded-pattern rejects `check loop {lv} : \
+                             on_violation=panic` on tier-3: a panic on a \
+                             bare-metal MCU bricks the device (PRD §6.3.5). \
+                             `on_violation` defaults to `panic`, so add an \
+                             explicit `on_violation = log` to the `check loop \
+                             {lv}` directive. (`count` is a filed follow-up — \
+                             TASK-0048.08 — pending a bare-metal summary sink; \
+                             the tier-1 Drop-guard summary does not fire on an \
+                             MCU that spins forever.)",
+                            lv = frame.loop_var,
+                        )));
+                    }
+                    // count needs an end-of-run summary sink; on a bare-metal
+                    // firmware that spins in `loop {}` forever, Rust Drops at
+                    // `main` return never fire (docs/check-loop-latency-max.md
+                    // §3). Reject loudly (AC#4) and direct to `log`; wiring a
+                    // real tier-3 count sink is TASK-0048.08.
+                    ViolationKind::Count => {
+                        return Err(EmitError::UnsupportedFeature(format!(
+                            "embedded-pattern does not yet lower `check loop \
+                             {lv} : on_violation=count` on tier-3: the tier-1 \
+                             Drop-guard summary fires at `main` return, but a \
+                             bare-metal firmware spins forever (no Drop). A \
+                             tier-3 count sink (per-N UART summary / in-flash \
+                             counter dumped on watchdog reset) is TASK-0048.08. \
+                             Use `on_violation = log` for a per-violation UART \
+                             line.",
+                            lv = frame.loop_var,
+                        )));
+                    }
+                    // log: fully lowered. Per-iteration wall-clock via the
+                    // tier-3 monotonic clock; on violation, one UART line.
+                    ViolationKind::Log => {
+                        let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
+                        let body_pad = "    ".repeat(indent + 1);
+                        writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
+                        writeln!(out, "{body_pad}let _check_start = shim.monotonic_ns();").ok();
+                        render_events(body, out, indent + 1, ctx)?;
+                        writeln!(
+                            out,
+                            "{body_pad}let _check_elapsed = \
+                             shim.monotonic_ns().wrapping_sub(_check_start);"
+                        )
+                        .ok();
+                        // The loop_var bytes are emitted as a byte-string
+                        // literal so the no_std `report_violation` can write
+                        // them over UART without `core::fmt`. Sanitisation:
+                        // the iter-var name is a parsed identifier
+                        // ([A-Za-z0-9_]), so it is already a valid byte-string
+                        // literal body; no escaping required.
+                        writeln!(
+                            out,
+                            "{body_pad}if _check_elapsed > {ns}_u64 {{ \
+                             shim.report_violation(b\"{lv}\", _check_elapsed, {ns}_u64); }}",
+                            ns = frame.latency_max_ns,
+                            lv = frame.loop_var,
+                        )
+                        .ok();
+                        writeln!(out, "{pad}}}").ok();
+                        return Ok(());
+                    }
+                }
+            }
             let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
             writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();
             render_events(body, out, indent + 1, ctx)?;

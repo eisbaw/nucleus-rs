@@ -14,12 +14,18 @@
 /// suite can pin its exact shape and the M10 shim author has one
 /// canonical reference for the trait surface.
 ///
-/// The four methods (AC#2): `alloc_in_region` (reserve backing storage
+/// The SIX methods: `alloc_in_region` (reserve backing storage
 /// in a named region — a TCM / shared-SRAM / SDRAM address on real
 /// hardware), `dma_push` (enqueue a DMA descriptor draining a buffer to
 /// a peripheral / peer), `dma_wait` (block until a DMA channel
-/// completes), `irq_barrier` (an IRQ-completion control barrier). The
-/// `StubShim` no-ops all four — compile-only (AC#3 / AC#6).
+/// completes), `irq_barrier` (an IRQ-completion control barrier),
+/// `monotonic_ns` (the PRD §6.3.5 tier-3 backend-specified monotonic
+/// clock that `check loop V : latency_max=T` measures against — TASK-
+/// 0048.04), and `report_violation` (the `on_violation=log` sink). The
+/// `StubShim` no-ops all six — `monotonic_ns` returns 0 and
+/// `report_violation` does nothing (M9 AC#6 "no real timing"; a
+/// generated lib that carries a check_frame compiles but does not
+/// measure or report), compile-only (AC#3 / AC#6).
 pub const NUCLEUS_SHIM_SRC: &str = "\
 /// The hardware-abstraction trait the generated `no_std` code lowers
 /// against. A per-MCU SHIM crate (M10+, TASK-0048) implements this with
@@ -46,12 +52,36 @@ pub trait NucleusShim {
     /// the single-worker examples 1 + 5 (no `Event::Sync` in a naive
     /// schedule); declared for the M10/M11 multi-MCU barrier surface.
     fn irq_barrier(&mut self, tag: u32);
+    /// The tier-3 backend-specified monotonic clock (PRD \u{00A7}6.3.5).
+    /// Returns a nanosecond reading that increases monotonically across
+    /// calls. `check loop V : latency_max=T` lowers to
+    /// `let _start = shim.monotonic_ns(); ...body...; let _elapsed =
+    /// shim.monotonic_ns().wrapping_sub(_start);` (TASK-0048.04). The
+    /// `StubShim` returns 0 (M9 compile-only, no real timing). The
+    /// concrete `Usart1Shim` reads the Cortex-M SysTick down-counter (see
+    /// `Usart1Shim::monotonic_ns`); under Renode SysTick advances
+    /// reliably, unlike DWT CYCCNT.
+    fn monotonic_ns(&mut self) -> u64;
+    /// The tier-3 `on_violation=log` sink (TASK-0048.04). Called once per
+    /// violating loop iteration with the source loop-var name, the
+    /// measured ns, and the threshold ns. The tier-1 analogue is
+    /// `eprintln!` — but no_std has no stderr, so the concrete shim writes
+    /// a line over its diagnostic channel (USART1). The `StubShim` no-ops
+    /// it (M9 compile-only, no real reporting). Panic is rejected at
+    /// codegen (it bricks the device, PRD \u{00A7}6.3.5) and Count is a filed
+    /// follow-up (the bare-metal Drop-summary sink problem,
+    /// docs/check-loop-latency-max.md \u{00A7}3), so `log` is the only
+    /// on-violation action that reaches this method in M10.
+    fn report_violation(&mut self, loop_var: &[u8], measured_ns: u64, threshold_ns: u64);
 }
 
 /// Do-nothing shim satisfying [`NucleusShim`] — the M9 compile-only
 /// target (AC#3). No DMA, no IRQ, no real timing (AC#6): every method
 /// is a no-op, so the generated `run` compiles and executes on
-/// zero-filled input arrays.
+/// zero-filled input arrays. `monotonic_ns` returns 0, so a generated
+/// lib that DOES carry a `check loop` frame still compiles (the
+/// _elapsed always reads 0, i.e. never exceeds a positive latency_max —
+/// honest: M9 is compile-only, no real timing).
 pub struct StubShim;
 
 impl NucleusShim for StubShim {
@@ -61,6 +91,10 @@ impl NucleusShim for StubShim {
     fn dma_push(&mut self, _chan: usize, _src: *const u8, _len: usize) {}
     fn dma_wait(&mut self, _chan: usize) {}
     fn irq_barrier(&mut self, _tag: u32) {}
+    fn monotonic_ns(&mut self) -> u64 {
+        0
+    }
+    fn report_violation(&mut self, _loop_var: &[u8], _measured_ns: u64, _threshold_ns: u64) {}
 }
 ";
 
@@ -182,6 +216,17 @@ pub fn render_cargo_toml() -> String {
 /// - `dma_wait` / `irq_barrier` are no-ops: the injection is synchronous
 ///   (the region is populated before the CPU starts), so there is
 ///   nothing to block on. Real async DMA/IRQ is parent TASK-0048 AC#1.
+/// - `monotonic_ns` (TASK-0048.04) IS the tier-3 monotonic clock (PRD
+///   §6.3.5): it reads the Cortex-M SysTick 24-bit down-counter and
+///   accumulates elapsed ticks across calls into a monotonically
+///   increasing ns reading. SysTick (not DWT CYCCNT) because Renode
+///   models SysTick reliably whereas DWT CYCCNT may not advance under
+///   Renode's non-cycle-accurate timing (docs/check-loop-latency-max.md
+///   §3). cycles→ns uses `SYSTEM_CORE_CLOCK_HZ`, a CALIBRATION ASSUMPTION
+///   pinned to the STM32H7 HSI reset default (64 MHz); under Renode the
+///   ns figure is NOT physically meaningful (Renode is not cycle-
+///   accurate) — what tier-3 verifies is the lowering correctness + that
+///   the clock ADVANCES, not timing fidelity.
 ///
 /// REGISTERS (STM32H7 USART1 @ 0x4001_1000; Renode UART.STM32F7_USART):
 /// CR1 @ +0x00 (UE bit0, TE bit3), ISR @ +0x1C (TXE bit7), TDR @ +0x28.
@@ -212,6 +257,29 @@ const USART1_TXE: u32 = 1 << 7;
 // the time `run` executes the bytes are already present (no DMA wait).
 const NUC_INPUT_REGION: *const u8 = 0x2400_0000 as *const u8;
 
+// --- Tier-3 monotonic clock: Cortex-M SysTick (TASK-0048.04) ---------
+// SysTick is the ARMv7-M architectural 24-bit DOWN-counter in the System
+// Control Space (same on every Cortex-M; Renode models it reliably,
+// unlike DWT CYCCNT under its non-cycle-accurate timing).
+//   SYST_CSR @ 0xE000_E010  (ENABLE bit0, TICKINT bit1, CLKSOURCE bit2,
+//                            COUNTFLAG bit16: set when the counter reached
+//                            0 since last read; reading CSR clears it)
+//   SYST_RVR @ 0xE000_E014  (reload value, 24-bit)
+//   SYST_CVR @ 0xE000_E018  (current value, 24-bit; writing clears it +
+//                            COUNTFLAG)
+const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
+const SYST_RVR: *mut u32 = 0xE000_E014 as *mut u32;
+const SYST_CVR: *mut u32 = 0xE000_E018 as *mut u32;
+const SYST_RELOAD: u32 = 0x00FF_FFFF; // full 24-bit span
+const SYST_COUNTFLAG: u32 = 1 << 16;
+// CALIBRATION ASSUMPTION (TASK-0048.04): cycles->ns needs a core-clock
+// frequency. Pinned to the STM32H7 HSI reset default (64 MHz). Under
+// Renode this ns figure is NOT physically meaningful (Renode is not
+// cycle-accurate); tier-3 verifies lowering correctness + that the clock
+// ADVANCES, not timing fidelity. On real silicon, recalibrate to the
+// configured SystemCoreClock.
+const SYSTEM_CORE_CLOCK_HZ: u64 = 64_000_000;
+
 /// Push one byte out over USART1. Renode's STM32F7_USART hardwires
 /// TXE=true so this poll never actually waits there; on real silicon it
 /// blocks until the transmit register drains. The poll is the correct
@@ -220,6 +288,50 @@ fn usart1_putc(b: u8) {
     unsafe {
         while core::ptr::read_volatile(USART1_ISR) & USART1_TXE == 0 {}
         core::ptr::write_volatile(USART1_TDR, b as u32);
+    }
+}
+
+/// Push a byte slice out over USART1 (the `on_violation=log` sink — the
+/// tier-3 analogue of tier-1's `eprintln!`, since no_std has no stderr).
+fn usart1_puts(s: &[u8]) {
+    let mut i = 0usize;
+    while i < s.len() {
+        usart1_putc(s[i]);
+        i += 1;
+    }
+}
+
+/// Write `n` as decimal ASCII over USART1 (no_std, alloc-free) — used by
+/// the `on_violation=log` violation line to report the measured ns.
+fn usart1_put_u64(mut n: u64) {
+    if n == 0 {
+        usart1_putc(b'0');
+        return;
+    }
+    // Up to 20 decimal digits for a u64.
+    let mut buf = [0u8; 20];
+    let mut len = 0usize;
+    while n > 0 {
+        buf[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    // Digits were produced least-significant first; emit reversed.
+    while len > 0 {
+        len -= 1;
+        usart1_putc(buf[len]);
+    }
+}
+
+/// Enable SysTick as a free-running monotonic source: reload = full
+/// 24-bit, processor clock, counting, no interrupt. Called once from
+/// `main` before `run`. Idempotent.
+fn systick_init() {
+    unsafe {
+        core::ptr::write_volatile(SYST_RVR, SYST_RELOAD);
+        core::ptr::write_volatile(SYST_CVR, 0); // clears CVR + COUNTFLAG
+        // ENABLE (bit0) | CLKSOURCE=processor (bit2). TICKINT stays 0.
+        core::ptr::write_volatile(SYST_CSR, (1 << 0) | (1 << 2));
     }
 }
 
@@ -234,15 +346,32 @@ fn usart1_putc(b: u8) {
 ///   byte-exact vs reference.bin by `just renode-embedded <example>`).
 /// - `dma_wait` / `irq_barrier` are no-ops (synchronous injection; real
 ///   DMA/IRQ is parent TASK-0048 AC#1).
+/// - `monotonic_ns` accumulates SysTick down-counter ticks into a
+///   monotonic ns reading (TASK-0048.04).
 struct Usart1Shim {
     // Byte offset into NUC_INPUT_REGION consumed so far. Each effectful
     // load advances it by the loaded array's byte length.
     input_cursor: usize,
+    // --- SysTick monotonic-clock accumulator state (TASK-0048.04) ---
+    // SysTick counts DOWN and reloads; to expose a monotonic UP clock we
+    // accumulate ticks elapsed since the previous `monotonic_ns` call.
+    // `clock_started` is false until the first call (which seeds last_cvr
+    // without counting a bogus initial delta); `accum_ticks` is the
+    // running total elapsed tick count; `last_cvr` is the CVR at the
+    // previous call.
+    clock_started: bool,
+    accum_ticks: u64,
+    last_cvr: u32,
 }
 
 impl Usart1Shim {
     fn new() -> Self {
-        Usart1Shim { input_cursor: 0 }
+        Usart1Shim {
+            input_cursor: 0,
+            clock_started: false,
+            accum_ticks: 0,
+            last_cvr: 0,
+        }
     }
 }
 
@@ -278,6 +407,67 @@ impl NucleusShim for Usart1Shim {
     }
     fn dma_wait(&mut self, _chan: usize) {}
     fn irq_barrier(&mut self, _tag: u32) {}
+    fn monotonic_ns(&mut self) -> u64 {
+        // Read SysTick's CVR (down-counter) + COUNTFLAG, accumulate the
+        // ticks elapsed since the previous call, and convert to ns.
+        // SysTick reloads from SYST_RELOAD when it hits 0; COUNTFLAG (set
+        // on the wrap, cleared by reading CSR) tells us whether AT LEAST
+        // one reload happened since the previous read.
+        let (csr, cvr) = unsafe {
+            let csr = core::ptr::read_volatile(SYST_CSR); // reading clears COUNTFLAG
+            let cvr = core::ptr::read_volatile(SYST_CVR);
+            (csr, cvr)
+        };
+        if !self.clock_started {
+            // First call: seed last_cvr; no delta yet (avoids a bogus
+            // initial span). Returns 0 — the loop's `_start` reading.
+            self.clock_started = true;
+            self.last_cvr = cvr;
+            return 0;
+        }
+        let wrapped = (csr & SYST_COUNTFLAG) != 0;
+        // Ticks elapsed since last_cvr. Counter goes DOWN, so without a
+        // wrap the delta is last_cvr - cvr. With a wrap the counter went
+        // last_cvr -> 0 (last_cvr ticks) then RELOAD -> cvr ((RELOAD+1) -
+        // cvr ticks). LIMIT: COUNTFLAG only says >=1 wrap; if >1 reload
+        // occurred between calls (a span longer than ~0.26s at 64 MHz)
+        // this UNDER-counts. The check-loop bodies are microsecond-class,
+        // so a single span never spans >1 reload — documented limit.
+        let delta = if wrapped {
+            (self.last_cvr as u64) + ((SYST_RELOAD as u64) + 1 - (cvr as u64))
+        } else if self.last_cvr >= cvr {
+            (self.last_cvr - cvr) as u64
+        } else {
+            // CVR went UP without COUNTFLAG: should not happen on real
+            // SysTick (monotonic down between reloads). Treat as a missed
+            // wrap rather than a negative delta.
+            (self.last_cvr as u64) + ((SYST_RELOAD as u64) + 1 - (cvr as u64))
+        };
+        self.accum_ticks += delta;
+        self.last_cvr = cvr;
+        // ticks -> ns. Multiply first (u64 headroom: accum_ticks * 1e9
+        // overflows only past ~1.8e10 ticks ~= 287s at 64 MHz; bounded
+        // runs stay well under). On real silicon recalibrate the clock.
+        self.accum_ticks * 1_000_000_000 / SYSTEM_CORE_CLOCK_HZ
+    }
+    fn report_violation(&mut self, loop_var: &[u8], measured_ns: u64, threshold_ns: u64) {
+        // The tier-3 `on_violation=log` sink: a one-line UART message, the
+        // no_std analogue of tier-1's `eprintln!`. Captured by the same
+        // Renode USART1 file backend the firmware's output uses. NOTE: if
+        // a schedule ALSO streams raw output bytes over the SAME USART1
+        // (e.g. ex1's save_output), the captured stream interleaves the
+        // ASCII violation lines with the raw output bytes — distinguishable
+        // by the `check loop ` ASCII prefix, but a real deployment would
+        // route diagnostics to a separate channel (a 2nd UART / RTT). That
+        // separation is a TASK-0048.08 follow-up; M10 streams both on USART1.
+        usart1_puts(b\"check loop `\");
+        usart1_puts(loop_var);
+        usart1_puts(b\"` violated latency_max=\");
+        usart1_put_u64(threshold_ns);
+        usart1_puts(b\" ns: iteration took \");
+        usart1_put_u64(measured_ns);
+        usart1_puts(b\" ns\\n\");
+    }
 }
 ";
 
@@ -358,6 +548,10 @@ pub fn render_bin_main(kernel_defs: &str, run_body: &str) -> String {
                  // if the transmitter is not enabled).\n        \
                  core::ptr::write_volatile(USART1_CR1, (1 << 0) | (1 << 3));\n    \
              }\n    \
+             // Start the SysTick monotonic clock (TASK-0048.04) before run so a\n    \
+             // `check loop` frame's `shim.monotonic_ns()` reads a running counter.\n    \
+             // Harmless no-op cost when the schedule carries no check_frame.\n    \
+             systick_init();\n    \
              let mut shim = Usart1Shim::new();\n    \
              run(&mut shim);\n    \
              loop {}\n\
@@ -485,14 +679,17 @@ mod tests {
     }
 
     #[test]
-    fn shim_trait_declares_all_four_methods() {
-        // AC#2: the four shim methods are present in the canonical
-        // trait source.
+    fn shim_trait_declares_all_six_methods() {
+        // The six shim methods are present in the canonical trait source:
+        // the four M9 methods + the two M10 TASK-0048.04 tier-3 methods
+        // (monotonic_ns clock + report_violation log sink).
         for m in [
             "fn alloc_in_region",
             "fn dma_push",
             "fn dma_wait",
             "fn irq_barrier",
+            "fn monotonic_ns",
+            "fn report_violation",
         ] {
             assert!(
                 NUCLEUS_SHIM_SRC.contains(m),
@@ -502,6 +699,13 @@ mod tests {
         assert!(
             NUCLEUS_SHIM_SRC.contains("struct StubShim"),
             "StubShim impl missing"
+        );
+        // The StubShim's clock is honestly inert (M9 AC#6 "no real timing"):
+        // monotonic_ns returns 0 so a lib carrying a check_frame still
+        // compiles + never spuriously reports.
+        assert!(
+            NUCLEUS_SHIM_SRC.contains("fn monotonic_ns(&mut self) -> u64 {\n        0\n    }"),
+            "StubShim monotonic_ns must return 0 (compile-only, no real timing)"
         );
     }
 

@@ -659,6 +659,66 @@ renode-embedded EX="01-elementwise-add":
         exit 1; \
     fi
 
+# Tier-3 M10 GENERATED check-loop firmware -> Renode -> assert the
+# on_violation=log UART line (TASK-0048.04). Generates example 1's
+# embedded_check schedule (a `check loop i : latency_max=1ns,
+# on_violation=log` directive) via the embedded-pattern bin-emit mode
+# (`--shim stm32h7`), cross-compiles it under .#embedded, runs it headless
+# in Renode under .#renode on the bundled stm32h743 platform, captures
+# USART1, and ASSERTS the violation line is present — proving the no_std
+# SysTick monotonic clock ADVANCED across the loop body and the
+# report_violation hook fired end-to-end (AC#3).
+#
+# WHY a violation IS expected: latency_max=1ns is deliberately tiny so any
+# nonzero per-iteration SysTick reading trips the check. The reported ns
+# figure is NOT physically meaningful under Renode (not cycle-accurate) —
+# what is verified is lowering correctness + that the clock advances, not
+# timing fidelity. If NO violation line appears, the clock did not advance
+# under Renode (a real Renode-timing limitation to investigate / fall back
+# to a different source) and this recipe FAILS LOUD.
+#
+# NOTE: the firmware streams ex1's raw output bytes over the SAME USART1,
+# so the captured stream interleaves the ASCII violation line(s) with raw
+# output bytes; the assertion greps for the `check loop ` ASCII prefix
+# which raw i32 output cannot spuriously produce. A separate diagnostic
+# channel is the TASK-0048.08 follow-up.
+#
+# Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
+# `just ci` — same tier-3-outside-default-ci rule as renode-embedded.
+renode-embedded-check:
+    @echo "tier-3 M10 GENERATED embedded check-loop -> Renode -> assert on_violation=log UART line (TASK-0048.04)"
+    @set -eu; \
+    resc="$(pwd)/tests/renode/embedded/run.resc"; \
+    exdir="$(pwd)/nuc-nucleus/examples/01-elementwise-add"; \
+    input="$exdir/input.bin"; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    echo "=== generating embedded_check bin (embedded-pattern --shim stm32h7) ==="; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    ./target/release/nucleus build \
+        --algo "$exdir/prog.algo.nuc" \
+        --sched "$exdir/schedules/embedded_check.sched.nuc" \
+        --backend embedded-pattern --shim stm32h7 \
+        --out "$gen"; \
+    cd ..; \
+    elf="$gen/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
+    echo "=== cross-compiling generated firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$gen' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode): inject input.bin, capture USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$resc" >"$log" 2>&1; \
+    echo "=== captured USART1 (raw output bytes + any violation lines) ==="; \
+    strings "$out" | grep -a 'check loop' || true; \
+    if strings "$out" | grep -qa 'check loop `i` violated latency_max=1 ns'; then \
+        echo "OK: captured the on_violation=log UART line — the no_std SysTick clock ADVANCED across the loop body + the report_violation hook fired end-to-end (AC#3)."; \
+    else \
+        echo "FAIL: expected on_violation=log violation line not found in captured USART1."; \
+        echo "      This means the SysTick clock did not advance under Renode (a real Renode-timing"; \
+        echo "      limitation: AC#3 would be honestly BLOCKED — investigate / try a different clock source)."; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean

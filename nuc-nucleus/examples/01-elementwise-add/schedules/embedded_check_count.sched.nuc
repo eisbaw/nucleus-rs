@@ -1,0 +1,24 @@
+// AC#4 NEGATIVE fixture (TASK-0048.04) — `on_violation = count` must be
+// REJECTED on tier-3 (no Drop-guard summary sink on bare metal).
+//
+// Identical placement to naive.sched.nuc plus a `check loop i :
+// on_violation = count` directive. The tier-1 count action prints its
+// summary at a Drop-guard's `main`-return Drop; a bare-metal firmware
+// spins forever in `loop {}` so that Drop never fires
+// (docs/check-loop-latency-max.md §3). The embedded backend rejects this
+// with a typed EmitError forward-linking the tier-3 count-sink follow-up
+// (TASK-0048.08) and directing the user to on_violation=log. This schedule
+// is used ONLY by the check_loop_count_is_rejected_with_followup_link unit
+// test; it does NOT produce a runnable firmware (it is meant to be
+// rejected).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    check loop i : latency_max = 1ns, on_violation = count;
+}

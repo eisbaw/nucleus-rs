@@ -1,0 +1,21 @@
+// AC#4 NEGATIVE fixture (TASK-0048.04) — `on_violation = panic` must be
+// REJECTED on tier-3.
+//
+// Identical placement to naive.sched.nuc plus a `check loop i :
+// on_violation = panic` directive. On a bare-metal MCU a panic bricks the
+// device (PRD §6.3.5), so the embedded-pattern backend rejects this with a
+// typed EmitError directing the user to on_violation=log — it must NOT
+// silently remap panic->log. This schedule is used ONLY by the
+// check_loop_panic_is_rejected_with_brick_warning unit test; it does NOT
+// produce a runnable firmware (it is meant to be rejected).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    check loop i : latency_max = 1ns, on_violation = panic;
+}

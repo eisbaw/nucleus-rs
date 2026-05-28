@@ -1,0 +1,39 @@
+// Embedded check-loop schedule (TASK-0048.04) — single worker + a
+// real-time `check loop` frame for the tier-3 embedded-pattern backend.
+//
+// Identical placement to naive.sched.nuc (everything on `host`), plus a
+// `check loop i : latency_max=…, on_violation=log` directive. This is the
+// AC#3 fixture: it cross-compiles for thumbv7em-none-eabihf and runs in
+// Renode, where the per-iteration SysTick-measured latency is checked and
+// a violation emits a one-line UART message via the shim's
+// report_violation hook (the no_std analogue of tier-1's eprintln!).
+//
+// on_violation = log (NOT panic): on tier-3 a panic bricks the device
+// (PRD §6.3.5). `on_violation` defaults to panic, so the embedded backend
+// REJECTS a defaulted/explicit panic check loop — this directive must
+// pick log explicitly.
+//
+// latency_max = 1ns is deliberately tiny: under Renode (not cycle-
+// accurate) we want any nonzero per-iteration SysTick reading to TRIP the
+// check, so the captured UART line proves the clock advanced + the
+// lowering fired end-to-end. The ns figure reported is NOT physically
+// meaningful under Renode (it is the lowering-correctness + clock-advance
+// behaviour being verified, not timing fidelity).
+//
+// NOT a tier-1 [[required]] e2e cell — this is embedded-only and would
+// not run on the tier-1 backends. It is exercised by
+// `just renode-embedded-check` (TASK-0048.04), not the e2e matrix.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    // Real-time assertion: one iteration of the `i` loop must take
+    // ≤ latency_max; on violation, log a UART line (do NOT panic — that
+    // bricks the MCU on tier-3, PRD §6.3.5).
+    check loop i : latency_max = 1ns, on_violation = log;
+}

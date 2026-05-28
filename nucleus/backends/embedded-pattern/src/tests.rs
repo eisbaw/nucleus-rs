@@ -106,7 +106,9 @@ fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
 fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
     let lib = emit_example_naive("01-elementwise-add", "ex01_naive");
 
-    // no_std + the four-method shim trait + stub (AC#1/#2/#3).
+    // no_std + the six-method shim trait + stub (AC#1/#2/#3). The four
+    // M9 methods plus the two M10 TASK-0048.04 tier-3 methods
+    // (monotonic_ns + report_violation).
     assert!(lib.contains("#![no_std]"), "must be no_std:\n{lib}");
     assert!(lib.contains("pub trait NucleusShim"), "trait missing:\n{lib}");
     for m in [
@@ -114,6 +116,8 @@ fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
         "fn dma_push",
         "fn dma_wait",
         "fn irq_barrier",
+        "fn monotonic_ns",
+        "fn report_violation",
     ] {
         assert!(lib.contains(m), "shim method {m} missing:\n{lib}");
     }
@@ -458,5 +462,140 @@ fn bin_rejects_multi_worker_with_m11_forward_link() {
     assert!(
         msg.contains("single-worker") && msg.contains("TASK-0049"),
         "multi-worker bin rejection must forward-link M11 (TASK-0049): got {msg}"
+    );
+}
+
+// ---- TASK-0048.04: no_std monotonic clock for Event::Loop check_frame ----
+
+/// Lower example 1 with `schedule_file` (a schedule under
+/// 01-elementwise-add/schedules/) WITH check frames injected, and emit
+/// the no_std BIN. Returns the `emit_bin` Result so a caller can assert
+/// either the emitted source (Log path) or a typed rejection (Panic /
+/// Count). `inject_check_frames: true` so the `check loop` directive in
+/// the schedule projects into `Event::Loop.check_frame` exactly as the
+/// driver does (driver main.rs runs inject_check_frames unconditionally).
+fn try_emit_bin_ex1_with_check(
+    schedule_file: &str,
+    scratch_leaf: &str,
+) -> Result<String, crate::EmitError> {
+    use crate::emit_bin;
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/01-elementwise-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules").join(schedule_file)).expect("sched source");
+
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: true,
+        },
+    );
+    let kernels = ex.join("kernels.rs");
+    let out = root
+        .join("nucleus/target/embedded-pattern-test-scratch")
+        .join(scratch_leaf);
+    let _ = std::fs::remove_dir_all(&out);
+
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out)
+        .map(|res| std::fs::read_to_string(&res.main_rs).expect("read emitted main.rs"))
+}
+
+#[test]
+fn check_loop_log_lowers_to_systick_clock_and_uart_report() {
+    // AC#1 + AC#2: a `check loop i : latency_max=…, on_violation=log`
+    // frame lowers using the no_std SysTick clock (via the trait method
+    // shim.monotonic_ns) and the report_violation UART sink — NOT
+    // std::time::Instant and NOT a Drop-guard AtomicU64 reporter.
+    let main = try_emit_bin_ex1_with_check("embedded_check.sched.nuc", "ex01_check_log")
+        .expect("check-loop log frame must lower on the embedded bin path");
+
+    // The per-iteration wall-clock wrapping uses the trait clock method.
+    assert!(
+        main.contains("let _check_start = shim.monotonic_ns();"),
+        "check frame must start the per-iteration clock via shim.monotonic_ns():\n{main}"
+    );
+    assert!(
+        main.contains("let _check_elapsed = shim.monotonic_ns().wrapping_sub(_check_start);"),
+        "check frame must compute elapsed via shim.monotonic_ns():\n{main}"
+    );
+    // The on-violation branch routes to the report_violation UART sink,
+    // carrying the loop_var name as a byte-string literal.
+    assert!(
+        main.contains("shim.report_violation(b\"i\", _check_elapsed,"),
+        "log on-violation branch must call shim.report_violation(b\"i\", ...):\n{main}"
+    );
+    // The clock is SysTick (the chosen tier-3 source), wired by main.
+    assert!(
+        main.contains("systick_init();"),
+        "main must start the SysTick monotonic clock before run:\n{main}"
+    );
+    assert!(
+        main.contains("const SYST_CVR:"),
+        "the SysTick current-value register must be defined:\n{main}"
+    );
+    // CRITICAL no_std invariants: the tier-1 std clock + atomic must be
+    // ABSENT — they do not exist / compile on no_std thumbv7em.
+    assert!(
+        !main.contains("std::time::Instant"),
+        "std::time::Instant must NOT appear in a no_std firmware:\n{main}"
+    );
+    assert!(
+        !main.contains("AtomicU64"),
+        "AtomicU64 (unavailable on thumbv7em) must NOT appear:\n{main}"
+    );
+    // The eprintln! MACRO CALL must not appear (no stderr on no_std). The
+    // `eprintln!` token does appear in docstrings as the named tier-1
+    // analogue we are NOT using; match the call form `eprintln!(` to
+    // exclude those backtick-quoted comment references.
+    assert!(
+        !main.contains("eprintln!("),
+        "an eprintln! macro call (no stderr on no_std) must NOT appear:\n{main}"
+    );
+    // The compute still lowers (the check wrapping is additive).
+    assert!(
+        main.contains("c[(i) as usize] = kernels::add("),
+        "the wrapped loop body must still lower the compute Fire:\n{main}"
+    );
+}
+
+#[test]
+fn check_loop_panic_is_rejected_with_brick_warning() {
+    // AC#2 + AC#4: on_violation=panic (explicit OR defaulted) bricks the
+    // device on tier-3; the embedded backend REJECTS it with a typed
+    // EmitError directing the user to on_violation=log — it must NOT
+    // silently remap panic->log. naive.sched.nuc carries no check frame,
+    // so a panic frame is exercised via a dedicated fixture schedule.
+    let err = try_emit_bin_ex1_with_check("embedded_check_panic.sched.nuc", "ex01_check_panic")
+        .expect_err("on_violation=panic must be rejected on tier-3");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("panic") && msg.contains("brick"),
+        "panic rejection must explain that panic bricks the device: got {msg}"
+    );
+    assert!(
+        msg.contains("on_violation = log"),
+        "panic rejection must direct the user to on_violation=log: got {msg}"
+    );
+}
+
+#[test]
+fn check_loop_count_is_rejected_with_followup_link() {
+    // AC#4: count needs an end-of-run summary sink that does not exist on
+    // a bare-metal firmware spinning forever (no Drop). Reject loudly with
+    // the TASK-0048.08 follow-up link rather than silently mis-lowering.
+    let err = try_emit_bin_ex1_with_check("embedded_check_count.sched.nuc", "ex01_check_count")
+        .expect_err("on_violation=count must be rejected on tier-3 (no Drop sink)");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("count") && msg.contains("TASK-0048.08"),
+        "count rejection must forward-link the tier-3 count-sink follow-up: got {msg}"
+    );
+    assert!(
+        msg.contains("on_violation = log"),
+        "count rejection must direct the user to on_violation=log: got {msg}"
     );
 }
