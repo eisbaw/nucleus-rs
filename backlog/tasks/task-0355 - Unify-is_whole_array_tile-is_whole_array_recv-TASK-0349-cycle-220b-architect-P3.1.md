@@ -3,11 +3,11 @@ id: TASK-0355
 title: >-
   Unify is_whole_array_tile + is_whole_array_recv (TASK-0349 cycle 220b
   architect P3.1)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-27 23:58'
-updated_date: '2026-05-28 02:21'
+updated_date: '2026-05-28 02:53'
 labels:
   - backend-common
   - refactor
@@ -86,4 +86,38 @@ Alternative considered + rejected: surfacing Err to callers would change behavio
    - OOB leading range → Err
 5. Run gate: build, clippy, test, test-release, e2e. e2e baseline 280/246/0/34/0 must hold bit-identical (no shipped schedule trips a divergence between the two classifiers per cycle-220b architect P3.1 narrative; behaviour change is invisible to e2e gate).
 6. Commit. Then parallel reviewer gate (qa + architect).
+
+## Cycle 225 + 225b closure
+
+Unified whole-array classifier on is_whole_array_recv. Commits:
+- 07e541d backend-common: cycle 225 — migrate collect_accumulate_waits to is_whole_array_recv, remove is_whole_array_tile, +6 unit pins
+- 7fe44ec backend-common tests: cycle 225b — review-gate fold-back (architect P2 divergence-corner guard test + P3 test rename)
+
+### Review gate
+- qa-test-runner: GO. 1035/0/3 dev, 1033/0/3 release (documented dev-only should_panic), e2e 280/246/0/34/0 bit-identical x2.
+- mped-architect: GO with P2 + 2x P3 (all folded back in 225b).
+
+### ACs (final)
+AC#1 canonical classifier = is_whole_array_recv: TICKED.
+AC#2 migrate deprecated call site: TICKED (collect.rs accumulator-detection arm).
+AC#3 remove is_whole_array_tile: TICKED.
+AC#4 sibling test for edge-case shapes (rank>2, OOB, scalar, empty bounds): TICKED — 7 pins in tests/whole_array_classifier.rs (architect verified all 4 named shapes covered + the P2 divergence corner).
+
+### Architect P2 finding (folded back, NOT a defect left open)
+The cycle-225 commit's 'preserves pre-cycle-225 emit behaviour' was overstated. ONE corner diverges: empty-tile fan-in + absent-data_type. OLD skipped (silent name=rhs overwrite); NEW classifies accumulate -> render_wait_assign surfaces LOUD ContractGap (wait.rs:106-110). Verified empirically (accumulate=2 not 0). Fail-loud is the deliberately-preferred behaviour; pinned by new test accumulate_classifies_empty_tile_even_when_data_type_absent. 18th firing of feedback-orchestrator-narrative-also-wrong (behaviour-equivalence claim wrong on a guard-ORDER corner).
+
+### Architect P3 findings
+- not_whole_via_oob_leading_range renamed -> _err_swallow_path (it is a path pin, NOT a divergence pin; OLD classifier also returned false there).
+- Commit-message line drift: cycle-225 commit cited sibling let-at-wait site as collect.rs:392; actual post-edit line is collect.rs:364 (the cycle removed ~28 lines). Doc-lie class, cosmetic — disclosed here, not amended.
+
+### Gotchas / forward-carried lessons
+1. wait_slice's guard ORDER (tile.bounds.first() at :256 BEFORE sidecar lookup at :259) is the keystone divergence vs the OLD is_whole_array_tile (sidecar-first). Any future classifier-unification must empirically test corners where the two paths' internal step order differs.
+2. is_whole_array_recv stays pub(super) (cycle-220b architect P2.2). Tests exercise it indirectly via pub collect_accumulate_waits. Future unifications: keep visibility as narrow as the consolidation allows.
+3. The .unwrap_or(false) swallow convention (Err = not-whole-array) is the cycle-225 keystone for wait_slice-wrapping classifiers. Surface the ContractGap to the user (via EmitError) only when the caller specifically needs to fail-loud at that site.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycles 225 + 225b unified the two whole-array-vs-slice classifiers in backend-common::multi_worker_walker onto the canonical is_whole_array_recv (routes through wait_slice's guard chain), removing the divergence-prone sibling is_whole_array_tile. Migrated the accumulator-detection call site with the .unwrap_or(false) swallow convention (Err = not-whole-array, matching the sibling let-at-wait site). Added 7 unit pins (tests/whole_array_classifier.rs) covering all 4 AC#4-named edge-case shapes plus the one genuine behaviour-divergence corner the architect P2 review found (empty-tile + absent-data_type: OLD silent-overwrite, NEW fail-loud ContractGap — deliberately preferred). Gate: 1035/0/3 tests, e2e 280/246/0/34/0 bit-identical. All 4 ACs ticked. The cycle's commit-message 'preserves behaviour' overstatement is disclosed as the 18th firing of feedback-orchestrator-narrative-also-wrong.
+<!-- SECTION:FINAL_SUMMARY:END -->
