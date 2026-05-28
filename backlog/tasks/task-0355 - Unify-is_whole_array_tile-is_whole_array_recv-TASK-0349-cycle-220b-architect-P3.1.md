@@ -3,10 +3,11 @@ id: TASK-0355
 title: >-
   Unify is_whole_array_tile + is_whole_array_recv (TASK-0349 cycle 220b
   architect P3.1)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-05-27 23:58'
-updated_date: '2026-05-28 00:36'
+updated_date: '2026-05-28 02:21'
 labels:
   - backend-common
   - refactor
@@ -52,4 +53,37 @@ Forward-carried from TASK-0354 (cycle 221): the 7 new unit pins for collect_let_
 Sibling-divergence finding (the keystone fact for TASK-0355 per the task brief's forward-carry guidance): is_whole_array_recv currently goes through wait_slice's FULL guard chain (rank-3+ guard at :307, out-of-bounds at :269-278/:324-327, sidecar lookup at :259-263) — i.e. it conservatively classifies any shape wait_slice can't handle as 'not whole'. If is_whole_array_tile lives elsewhere and applies a SUBSET of those guards (e.g. only checks bounds-len > 0), unifying them changes the Err-on-shape-X behaviour at one of the call sites. Audit the existing is_whole_array_tile call sites for which Err arms they tolerate before swapping in a unified helper.
 
 Visibility note: is_whole_array_recv is pub(super) (narrowed cycle 220b architect P2.2). If the unified helper is moved to a shared location, keep visibility minimal (pub(crate) at widest); no out-of-crate consumer exists today and adding one without need re-opens the surface architect P2.2 just closed.
+
+## Cycle 225 implementation plan (orchestrator-direct)
+
+Picked TASK-0355 as the next-cycle task per user direction 'continue with structurally-different' (TASK-0344 cite-sweep just landed; this is semantic classifier consolidation, structurally distinct defect surface).
+
+### Design decision
+
+**Canonical classifier: `is_whole_array_recv` (wait.rs:376).**
+
+Rationale per the cycle-220b architect's P3.1 forward-carry + the task brief's analysis:
+- Routes through wait_slice's established shape-error invariants (rank-3+ guard at wait.rs:307; OOB at wait.rs:269-278/324-327; sidecar lookup at :259-263).
+- The deprecated `is_whole_array_tile` (collect.rs:260) silently returns false on axis-beyond-dims; the unified classifier surfaces this as an explicit `Err` arm. Callers choose Err semantics.
+
+**Err semantics: swallow with `.unwrap_or(false)` at both call sites.**
+
+Rationale: matches the existing collect.rs:392 site's swallow convention. Conservative: Err = 'shape wait_slice can't classify' = treat as not-whole-array. Forward-compatible: when a future wait_slice extension (e.g. TASK-0341.02.02.01.01's N-D dispatch) opportunistically classifies a previously-Err shape, the migration auto-benefits without site-by-site updates.
+
+Alternative considered + rejected: surfacing Err to callers would change behaviour at collect.rs:209's accumulator-detection arm (currently never sees Err; would now propagate Err up). The brief's accumulator-detection ContractGap surfaces 'later in the emit path' per the existing comment — keeping that contract.
+
+### Steps
+
+1. Migrate collect.rs:209 call from `is_whole_array_tile(tile, ty)` to `super::wait::is_whole_array_recv(sidecar, data, tile).unwrap_or(false)`. Thread `data` (already in scope from line 198 `for (data, seqs)`).
+2. Remove `ty` binding at collect.rs:202-205 (no longer needed; is_whole_array_recv looks up sidecar internally).
+3. Remove `is_whole_array_tile` fn from collect.rs (lines ~250-282).
+4. Add tests/whole_array_classifier.rs exercising:
+   - Whole via empty bounds → true
+   - Whole via scalar (empty dims) + non-empty bounds → true (wait_slice:265 early-return)
+   - Slice (non-full leading range, rank-1) → false
+   - 2D both-axes-full → true
+   - Rank-3+ shape → Err (sanity-check that wait.rs:307 guard fires; verifies the migration's conservative semantic)
+   - OOB leading range → Err
+5. Run gate: build, clippy, test, test-release, e2e. e2e baseline 280/246/0/34/0 must hold bit-identical (no shipped schedule trips a divergence between the two classifiers per cycle-220b architect P3.1 narrative; behaviour change is invisible to e2e gate).
+6. Commit. Then parallel reviewer gate (qa + architect).
 <!-- SECTION:NOTES:END -->

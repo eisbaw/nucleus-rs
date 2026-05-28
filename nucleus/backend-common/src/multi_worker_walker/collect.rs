@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::algo::ResolvedType;
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
@@ -199,28 +198,35 @@ pub fn collect_accumulate_waits(
         if seqs.len() < 2 {
             continue;
         }
-        let ty = match sidecar.data_type(data) {
-            Some(t) => t,
-            None => continue, // contract gap surfaces later in the emit path
-        };
         let all_whole = seqs.iter().all(|seq| {
             pair_tiles
                 .get(&(data, *seq))
-                .map(|tile| is_whole_array_tile(tile, ty))
-                // Conservative default (cycle-189 architect P3.2): if
-                // a Wait's (data, seq) is missing from `pair_tiles`,
-                // we have NO evidence the tile is whole-array; do NOT
-                // classify as accumulate. The branch is structurally
-                // unreachable for shipped schedules — `collect_pair_tiles`
-                // (sibling, this module) is contracted to record every
-                // (Push|Wait) pair (TASK-0018 XferPlaceholder
-                // construction). If a future projection-layer
-                // regression breaks that contract, falling back to
-                // pre-cycle-189 `name = rhs;` overwrite emit is a
-                // forward-compatible loss (the user still sees wrong
-                // output, but the cycle-189 fix does not silently
+                // Unified classifier (TASK-0355 cycle 225): route through
+                // `is_whole_array_recv` so both this accumulator-detection
+                // call site AND the let-at-wait classifier at
+                // `collect_let_at_wait_inner` (collect.rs:392) consult the
+                // same guard chain in `wait_slice` (rank, OOB, sidecar
+                // lookup). `Err` arms swallowed to `false` — matches the
+                // sibling site's `.unwrap_or(false)` convention and the
+                // pre-cycle-225 `is_whole_array_tile` silent-false on
+                // axis-beyond-dims (now an explicit `Err` from wait_slice
+                // that is treated as not-whole-array here).
+                //
+                // Conservative-default rationale (cycle-189 architect P3.2,
+                // preserved across the cycle-225 unification): if a Wait's
+                // (data, seq) is missing from `pair_tiles`, we have NO
+                // evidence the tile is whole-array; do NOT classify as
+                // accumulate. The branch is structurally unreachable for
+                // shipped schedules — `collect_pair_tiles` (sibling, this
+                // module) is contracted to record every (Push|Wait) pair
+                // (TASK-0018 XferPlaceholder construction). If a future
+                // projection-layer regression breaks that contract,
+                // falling back to pre-cycle-189 `name = rhs;` overwrite
+                // emit is a forward-compatible loss (the user still sees
+                // wrong output, but the cycle-189 fix does not silently
                 // change behaviour here on a different missing-tile
                 // surface).
+                .map(|tile| super::wait::is_whole_array_recv(sidecar, data, tile).unwrap_or(false))
                 .unwrap_or(false)
         });
         if all_whole {
@@ -245,40 +251,6 @@ fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<SeqTag>>) {
             _ => {}
         }
     }
-}
-
-/// True iff `tile` covers the full source range on every consulted
-/// dim of `ty` — matches the condition under which `wait_slice` (in
-/// sibling `wait.rs`) returns `None` and the whole-array assign arm
-/// fires.
-///
-/// Cases that return true:
-/// - Empty `tile.bounds` (no enclosing iteration nest).
-/// - Scalar `ty` (zero dims).
-/// - Every consulted bound's range covers the corresponding dim's
-///   full source range (`0..dims[i]`).
-fn is_whole_array_tile(tile: &IterTile, ty: &ResolvedType) -> bool {
-    if tile.bounds.is_empty() {
-        return true;
-    }
-    if ty.dims.is_empty() {
-        return true;
-    }
-    // Mirror the `wait_slice` positional convention: `tile.bounds[i]`
-    // maps to `ty.dims[i]` (cycle-115 / cycle-133 onwards). A tile
-    // axis beyond ty.dims.len() is a contract gap; treat as non-whole
-    // so the existing `wait_slice` error surface is still the
-    // authoritative reporter for that shape.
-    for (i, (_, range)) in tile.bounds.iter().enumerate() {
-        if i >= ty.dims.len() {
-            return false;
-        }
-        let dim_len = ty.dims[i] as i64;
-        if range.start != 0 || range.end != dim_len {
-            return false;
-        }
-    }
-    true
 }
 
 /// Visit every `Event::Wait` / `Event::Fire` output to build the
