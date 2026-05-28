@@ -14,3 +14,8 @@ Cargo.lock.bak
 # CLI writes a local email-preferences file when a task is --assignee'd.
 # Per-user local state, not part of project history.
 backlog/email-preferences.json
+
+# Per-user Claude Code session state (lockfiles, scheduled-task
+# tracker, etc.). Created by the harness; never load-bearing for
+# the project.
+.claude/scheduled_tasks.lock
