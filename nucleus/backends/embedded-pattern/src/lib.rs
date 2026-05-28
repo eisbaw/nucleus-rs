@@ -14,12 +14,15 @@
 //!   `#[panic_handler]` + STM32H743 `memory.x` + a concrete `Usart1Shim`
 //!   whose `alloc_in_region` reads the Renode-injected input region and
 //!   whose `dma_push` streams the RAW computed output bytes over USART1).
-//!   Runtime acceptance: `just renode-embedded-ex1` (runs the GENERATED
-//!   example-1 firmware in Renode on REAL injected input, captures
-//!   USART1, and `cmp`s the captured bytes BYTE-EXACT against
-//!   `reference.bin` — PRD §10.3 point 3 value-correctness). The two
-//!   modes share kernel extraction + the `run<S>` body via
-//!   `lower_kernels_and_run`; only the surrounding scaffolding differs.
+//!   Runtime acceptance: `just renode-embedded <example>` (the example
+//!   dir is a positional arg, default 01-elementwise-add; runs the
+//!   GENERATED firmware in Renode on REAL injected input, captures
+//!   USART1, and `cmp`s the captured bytes BYTE-EXACT against the
+//!   example's `reference.bin` — PRD §10.3 point 3 value-correctness).
+//!   Covers the PRD §11 M10 set: examples 1, 5, 9 (TASK-0048.03;
+//!   EX defaults to 01-elementwise-add). The two modes share kernel
+//!   extraction + the `run<S>` body via `lower_kernels_and_run`; only the
+//!   surrounding scaffolding differs.
 //!   The real STM32H7 DMA/IRQ shim remains parent TASK-0048 AC#1 work
 //!   (the current `Usart1Shim` reads a memory-mapped injected region
 //!   synchronously rather than driving a real async DMA controller).
@@ -232,14 +235,18 @@ pub fn emit(
 /// via [`render_run_body`], so an unsupported schedule fails loud with
 /// the same typed [`EmitError`] here as on the lib path.
 ///
-/// SCOPE (TASK-0048.01 + TASK-0048.02): example 1 (01-elementwise-add)
-/// single-worker naive. The firmware loads REAL input from the
-/// Renode-injected region (axiSram @ 0x2400_0000), computes
-/// `c[i]=a[i]+b[i]`, and streams the RAW output bytes over USART1; the
-/// `renode-embedded-ex1` recipe `cmp`s the captured bytes BYTE-EXACT
-/// against `reference.bin` (PRD §10.3 point 3 value-correctness). See
-/// [`skeleton::USART1_SHIM_SRC`] for the input-region / streaming
-/// mechanism.
+/// SCOPE (TASK-0048.01/.02/.03): the PRD §11 M10 single-worker naive
+/// set — example 1 (01-elementwise-add), example 5 (05-stencil, 2D
+/// blur3), example 9 (09-producer-consumer, two-stage produce/transform
+/// pipe). The firmware loads REAL input from the Renode-injected region
+/// (axiSram @ 0x2400_0000), computes the example's kernels, and streams
+/// the RAW output bytes over USART1; the `renode-embedded` recipe
+/// (parameterised over the example dir as a positional arg) `cmp`s the
+/// captured bytes BYTE-EXACT against the example's `reference.bin` (PRD §10.3 point 3
+/// value-correctness). Nothing here is example-specific — the lowering
+/// reads the EventList — so generalising across the set was recipe
+/// parameterisation only. See [`skeleton::USART1_SHIM_SRC`] for the
+/// input-region / streaming mechanism.
 pub fn emit_bin(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,

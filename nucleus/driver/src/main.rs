@@ -129,7 +129,7 @@ fn print_help() {
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker + multi-worker landed cycles 192/195)\n    \
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n    \
              embedded-pattern  no_std lib + NucleusShim trait (tier 3, M9 compile-only single-worker; check via `just check-embedded`).\n    \
-                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, `just renode-embedded-ex1`)\n"
+                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, `just renode-embedded <example>`; examples 1/5/9)\n"
     );
 }
 

@@ -576,46 +576,64 @@ renode-uart-smoke:
     fi
 
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
-# (TASK-0048.01 emission + TASK-0048.02 value-correctness). Unlike
-# `renode-uart-smoke` (a hand-written sentinel firmware), this GENERATES
-# the example-1 (01-elementwise-add, naive) firmware via the
-# embedded-pattern backend's bin-emit mode (`--shim stm32h7`), cross-
-# compiles it under .#embedded, injects example 1's input.bin into the
-# emulated MCU's axiSram, runs it headless in Renode under .#renode on the
-# bundled stm32h743 platform, captures the RAW USART1 output bytes, and
-# `cmp`s them BYTE-EXACT against reference.bin — failing LOUD on mismatch.
-# This is PRD §10.3 point 3 ("captures output ... diffs against
-# reference.bin. Must be bit-identical").
+# (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
+# generalisation to examples 1/5/9). Unlike `renode-uart-smoke` (a hand-
+# written sentinel firmware), this GENERATES the chosen example's firmware
+# via the embedded-pattern backend's bin-emit mode (`--shim stm32h7`),
+# cross-compiles it under .#embedded, injects that example's input.bin into
+# the emulated MCU's axiSram, runs it headless in Renode under .#renode on
+# the bundled stm32h743 platform, captures the RAW USART1 output bytes, and
+# `cmp`s them BYTE-EXACT against THAT example's reference.bin — failing LOUD
+# on mismatch. This is PRD §10.3 point 3 ("captures output ... diffs
+# against reference.bin. Must be bit-identical").
+#
+# PARAMETERISED over the example (PRD §12.3 anti-bloat: ONE recipe, not
+# three near-duplicates). The single positional argument `EX` selects the
+# PRD §11 M10 example directory under nuc-nucleus/examples/; it defaults
+# to 01-elementwise-add so the bare `just renode-embedded` preserves the
+# original ex1 gate behaviour. just takes the argument POSITIONALLY (not
+# `EX=...`):
+#   just renode-embedded                       # ex1 (default)
+#   just renode-embedded 05-stencil            # ex5: 2D blur3 stencil
+#   just renode-embedded 09-producer-consumer  # ex9: two-stage pipe
+# The firmware emit is example-agnostic (it streams the save Fire's output
+# region as raw bytes; the load Fire fills from the injected region); only
+# the --algo/--sched generated and the reference.bin diffed differ per
+# example. The expected byte count is derived from each example's
+# reference.bin, so ex9's 64-byte output and ex1/ex5's 1024-byte output are
+# both handled with no per-example length constant.
 #
 # REAL INPUT PATH (TASK-0048.02): the .resc does `sysbus LoadBinary
 # @input.bin 0x24000000` into axiSram (mapped in the platform, NOT in the
 # firmware's memory.x — so the linker never collides). The firmware's
-# Usart1Shim::alloc_in_region reads sequential slices of that region (a's
-# N words then b's N words, matching input.bin's layout), computes
-# c[i]=a[i]+b[i], and dma_push streams the RAW 1024 output bytes verbatim.
+# Usart1Shim::alloc_in_region reads sequential slices of that region; for
+# the M10 examples every naive schedule has exactly ONE effectful load, so
+# the cursor starts at 0 and consumes the whole injected region (the
+# multi-load concatenation-order assumption is only exercised by ex1's two
+# loads — TASK-0048.06).
 #
 # Self-contained: enters .#embedded for the thumbv7em cross-compile then
-# .#renode for the runtime, so it runs from the default shell:
-#   just renode-embedded-ex1
+# .#renode for the runtime, so it runs from the default shell.
 #
 # DELIBERATELY NOT wired into `just ci` (needs the .#embedded + .#renode
 # shells) — same tier-3-outside-default-ci rule as check-embedded /
 # renode-uart-smoke / TASK-0223. The generated project is its own empty
 # [workspace] in a scratch dir (cleaned on exit), so it never enters the
 # nucleus/ host workspace.
-renode-embedded-ex1:
-    @echo "tier-3 M10 GENERATED embedded-pattern ex1 -> Renode -> reference.bin diff (TASK-0048.02)"
+renode-embedded EX="01-elementwise-add":
+    @echo "tier-3 M10 GENERATED embedded-pattern {{EX}} -> Renode -> reference.bin diff (TASK-0048.03)"
     @set -eu; \
-    resc="$(pwd)/tests/renode/embedded-ex1/run.resc"; \
-    input="$(pwd)/nuc-nucleus/examples/01-elementwise-add/input.bin"; \
-    reference="$(pwd)/nuc-nucleus/examples/01-elementwise-add/reference.bin"; \
+    resc="$(pwd)/tests/renode/embedded/run.resc"; \
+    exdir="$(pwd)/nuc-nucleus/examples/{{EX}}"; \
+    input="$exdir/input.bin"; \
+    reference="$exdir/reference.bin"; \
     gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
     trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
-    echo "=== generating ex1 bin (embedded-pattern --shim stm32h7) ==="; \
+    echo "=== generating {{EX}} bin (embedded-pattern --shim stm32h7) ==="; \
     cd nucleus && cargo build --release --bin nucleus --quiet; \
     ./target/release/nucleus build \
-        --algo "../nuc-nucleus/examples/01-elementwise-add/prog.algo.nuc" \
-        --sched "../nuc-nucleus/examples/01-elementwise-add/schedules/naive.sched.nuc" \
+        --algo "$exdir/prog.algo.nuc" \
+        --sched "$exdir/schedules/naive.sched.nuc" \
         --backend embedded-pattern --shim stm32h7 \
         --out "$gen"; \
     cd ..; \
@@ -633,7 +651,7 @@ renode-embedded-ex1:
         exit 1; \
     fi; \
     if cmp -s "$out" "$reference"; then \
-        echo "OK: captured USART1 bytes are BYTE-EXACT identical to reference.bin ($expected bytes) — M10 ex1 value-correctness verified (PRD §10.3 point 3)."; \
+        echo "OK: captured USART1 bytes are BYTE-EXACT identical to reference.bin ($expected bytes) — M10 {{EX}} value-correctness verified (PRD §10.3 point 3)."; \
     else \
         echo "FAIL: captured USART1 output differs from reference.bin (first differing byte):"; \
         cmp "$out" "$reference" || true; \

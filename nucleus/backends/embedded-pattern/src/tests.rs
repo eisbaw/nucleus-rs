@@ -64,8 +64,9 @@ fn emit_example_naive(example: &str, scratch_leaf: &str) -> String {
 /// source. The bin path is the SAME lowering as the lib, with the
 /// bare-metal scaffolding (cortex-m-rt entry + USART1 shim) added — so
 /// the cross-compile / Renode run is the genuine acceptance (the
-/// `renode-embedded-ex1` just recipe). This is the fast shape-drift
-/// detector (TASK-0048.01).
+/// `renode-embedded` just recipe, parameterised over the example dir as
+/// a positional arg). This is the fast shape-drift detector
+/// (TASK-0048.01 / .03).
 fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
     use crate::emit_bin;
     let root = repo_root();
@@ -254,6 +255,109 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
     // main enables USART then runs.
     assert!(main.contains("let mut shim = Usart1Shim::new();"), "main must build shim:\n{main}");
     assert!(main.contains("run(&mut shim);"), "main must call run:\n{main}");
+}
+
+#[test]
+fn ex05_bin_emits_renode_runnable_firmware_with_flattened_blur3() {
+    // M10 (TASK-0048.03): the --shim stm32h7 bin path for example 5
+    // (05-stencil). The firm bar of TASK-0048.03 — ex5's lib already
+    // cross-compiles (check-embedded), so the bin scaffolding transfers.
+    let main = emit_bin_example_naive("05-stencil", "ex05_bin_naive");
+
+    // no_std / no_main firmware with cortex-m-rt entry + panic handler.
+    assert!(main.contains("#![no_std]"), "must be no_std:\n{main}");
+    assert!(main.contains("#![no_main]"), "must be no_main:\n{main}");
+    assert!(main.contains("#[entry]"), "missing #[entry]:\n{main}");
+    assert!(main.contains("#[panic_handler]"), "missing #[panic_handler]:\n{main}");
+
+    // The PURE blur3 kernel extracted verbatim (9-param multiline sig + body).
+    assert!(main.contains("pub fn blur3("), "pure kernel `blur3` not extracted:\n{main}");
+    assert!(main.contains("sum / 9"), "blur3 body not copied verbatim:\n{main}");
+    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+
+    // 2D flatten: img[y][x] -> img[y*16 + x] (same flatten as tier-1 / the lib).
+    assert!(main.contains("* 16 +"), "2D index not flattened row-major:\n{main}");
+    assert!(main.contains("kernels::blur3("), "compute Fire did not call kernels::blur3:\n{main}");
+    // 16*16 = 256-element fixed arrays.
+    assert!(
+        main.contains("[i32; 256] = [0; 256]"),
+        "stencil arrays not fixed-size [i32; 256]:\n{main}"
+    );
+
+    // The single effectful load (load_image -> img_in) fills from the
+    // injected region; the single effectful save (save_image) streams
+    // raw bytes. Exactly ONE load => cursor trivially starts at 0
+    // (TASK-0048.06 load-order confirmation).
+    assert!(
+        main.contains("let __src = shim.alloc_in_region(0, core::mem::size_of_val(&img_in));"),
+        "load `img_in` did not request its input slice from the shim:\n{main}"
+    );
+    assert!(
+        main.contains("shim.dma_push(0, img_out.as_ptr() as *const u8"),
+        "save Fire did not lower to dma_push streaming img_out:\n{main}"
+    );
+    assert!(main.contains("usart1_putc(byte);"), "dma_push must stream raw bytes:\n{main}");
+}
+
+#[test]
+fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
+    // M10 (TASK-0048.03): the --shim stm32h7 bin path for example 9
+    // (09-producer-consumer). This was the RISK arm — ex9 had never been
+    // through embedded codegen. It lowers cleanly: a two-stage pipe
+    // (produce -> stream -> transform -> result) where `stream` is an
+    // intermediate data array written by produce and read by transform in
+    // the SAME loop. Both produce + transform are indexed-output PURE
+    // compute Fires (extracted verbatim); `stream` is collected as a
+    // fixed-size local. This test pins that two-stage shape.
+    let main = emit_bin_example_naive("09-producer-consumer", "ex09_bin_naive");
+
+    assert!(main.contains("#![no_std]"), "must be no_std:\n{main}");
+    assert!(main.contains("#![no_main]"), "must be no_main:\n{main}");
+    assert!(main.contains("#[entry]"), "missing #[entry]:\n{main}");
+
+    // BOTH pure compute kernels extracted verbatim (the two-op transform
+    // body is the load-bearing one — a bug that drops `rec` shows here).
+    assert!(main.contains("pub fn produce(seed: i32) -> i32"), "produce not extracted:\n{main}");
+    assert!(main.contains("seed.wrapping_mul(3)"), "produce body not verbatim:\n{main}");
+    assert!(
+        main.contains("pub fn transform(rec: i32) -> i32"),
+        "transform not extracted:\n{main}"
+    );
+    assert!(
+        main.contains("rec.wrapping_mul(7).wrapping_add(rec)"),
+        "transform body not verbatim:\n{main}"
+    );
+    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+
+    // The intermediate `stream` array is a fixed [i32; 16] local — NOT a
+    // shim hook (it is internal dataflow, neither loaded nor saved).
+    assert!(
+        main.contains("let mut stream: [i32; 16] = [0; 16];"),
+        "intermediate `stream` not laid out as a fixed-size local:\n{main}"
+    );
+    // The loop fires BOTH stages: produce writes stream[n], transform
+    // reads stream[n] and writes result[n] — in the same iteration.
+    assert!(
+        main.contains("stream[(n) as usize] = kernels::produce(seeds[(n) as usize]);"),
+        "stage-1 produce Fire missing / mis-lowered:\n{main}"
+    );
+    assert!(
+        main.contains("result[(n) as usize] = kernels::transform(stream[(n) as usize]);"),
+        "stage-2 transform Fire missing / mis-lowered:\n{main}"
+    );
+
+    // Single effectful load (load_input -> seeds), single effectful save
+    // (save_output -> result). Exactly ONE load => cursor trivially
+    // starts at 0 (TASK-0048.06 load-order confirmation).
+    assert!(
+        main.contains("let __src = shim.alloc_in_region(0, core::mem::size_of_val(&seeds));"),
+        "load `seeds` did not request its input slice from the shim:\n{main}"
+    );
+    assert!(
+        main.contains("shim.dma_push(0, result.as_ptr() as *const u8"),
+        "save Fire did not lower to dma_push streaming result:\n{main}"
+    );
+    assert!(main.contains("usart1_putc(byte);"), "dma_push must stream raw bytes:\n{main}");
 }
 
 #[test]

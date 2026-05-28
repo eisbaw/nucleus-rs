@@ -23,17 +23,22 @@
 # deliberately EXCLUDES this backend — it is compile-only, not run-and-
 # diff. The dedicated `just check-embedded` recipe is the M9 acceptance.
 #
-# ## M10 additive bin-emit mode (TASK-0048.01)
+# ## M10 additive bin-emit mode (TASK-0048.01 / .02 / .03)
 #
 # With the driver flag `--shim stm32h7` the backend ALSO emits a
 # Renode-runnable no_std BIN (cortex-m-rt #[entry] + #[panic_handler] +
-# STM32H743 memory.x + a concrete USART1 shim whose `dma_push` streams a
-# deterministic ASCII summary line) — `emit_bin` in src/lib.rs. The M9
-# lib path (`emit`, no `--shim`) is UNCHANGED; the two share the same
-# event lowering. Runtime acceptance: `just renode-embedded-ex1` (runs
-# the GENERATED example-1 firmware in Renode under `.#renode`, captures
-# USART1, asserts the line). Real STM32H7 DMA/IRQ shim + computed-result
-# streaming remain parent TASK-0048 work.
+# STM32H743 memory.x + a concrete USART1 shim whose `dma_push` streams the
+# RAW computed output bytes and whose `alloc_in_region` reads REAL input
+# from the Renode-injected region) — `emit_bin` in src/lib.rs. The M9 lib
+# path (`emit`, no `--shim`) is UNCHANGED; the two share the same event
+# lowering. Runtime acceptance: `just renode-embedded <example>` (the
+# example dir is a positional arg, default 01-elementwise-add; runs the
+# GENERATED firmware in Renode under `.#renode`, injects the example's
+# input.bin, captures USART1, and `cmp`s BYTE-EXACT against the example's
+# reference.bin). Covers the PRD §11 M10 set: examples 1, 5, 9 (default
+# EX=01-elementwise-add). Real STM32H7 DMA/IRQ shim remains parent
+# TASK-0048 AC#1 work (the current shim reads a memory-mapped injected
+# region synchronously rather than driving a real async DMA controller).
 #
 # ## Why this crate is a NORMAL std crate
 #

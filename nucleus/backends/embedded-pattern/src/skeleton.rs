@@ -172,9 +172,9 @@ pub fn render_cargo_toml() -> String {
 ///   the drained output region (the `save_output(c)` effectful Fire
 ///   lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
 ///   core::mem::size_of_val(&c)); shim.dma_wait(0)` — see lib.rs
-///   `render_fire`) verbatim over USART1. The `renode-embedded-ex1`
-///   recipe captures those bytes and `cmp`s them BYTE-EXACT against
-///   `reference.bin` (PRD §10.3 point 3). Raw (not ASCII): a byte-exact
+///   `render_fire`) verbatim over USART1. The `renode-embedded`
+///   recipe captures those bytes and `cmp`s them BYTE-EXACT against the
+///   example's `reference.bin` (PRD §10.3 point 3). Raw (not ASCII): a byte-exact
 ///   reference diff is the value-correctness bar, and Renode's USART
 ///   file backend captures raw bytes faithfully (proven in the
 ///   TASK-0048.02 de-risk: a hand firmware streamed c and the capture
@@ -231,7 +231,7 @@ fn usart1_putc(b: u8) {
 ///   region in order (matching `input.bin`'s array-concatenation layout).
 /// - `dma_push` is the UART emission: it streams the `len` RAW bytes of
 ///   the drained region verbatim over USART1 (captured + `cmp`'d
-///   byte-exact vs reference.bin by `just renode-embedded-ex1`).
+///   byte-exact vs reference.bin by `just renode-embedded <example>`).
 /// - `dma_wait` / `irq_barrier` are no-ops (synchronous injection; real
 ///   DMA/IRQ is parent TASK-0048 AC#1).
 struct Usart1Shim {
@@ -253,16 +253,19 @@ impl NucleusShim for Usart1Shim {
         // this pointer into the data array. (Cast away const: the load
         // lowering only READS through it; mut is the trait's contract.)
         // ASSUMES input.bin == the effectful-load arrays concatenated in
-        // EventList load order (exact for ex1: a then b). Verify per
-        // example before trusting the cmp when generalising to ex5/ex9
-        // (TASK-0048.06).
+        // EventList load order. Exact for ex1 (two loads: a then b).
+        // CONFIRMED single-load for ex5 (load_image -> img_in) and ex9
+        // (load_input -> seeds) in TASK-0048.03: exactly one effectful
+        // load, so the cursor starts at 0 and consumes the whole injected
+        // region trivially — the concatenation-order assumption is only
+        // exercised by ex1's two loads (TASK-0048.06).
         let p = unsafe { NUC_INPUT_REGION.add(self.input_cursor) } as *mut u8;
         self.input_cursor += bytes;
         p
     }
     fn dma_push(&mut self, _chan: usize, src: *const u8, len: usize) {
         // Stream the drained output region's RAW bytes verbatim over
-        // USART1. The `renode-embedded-ex1` recipe captures these and
+        // USART1. The `renode-embedded` recipe captures these and
         // `cmp`s them BYTE-EXACT against reference.bin (PRD §10.3 point 3
         // value-correctness). `read_volatile` so the byte loads are not
         // reordered/elided across the MMIO writes in `usart1_putc`.
