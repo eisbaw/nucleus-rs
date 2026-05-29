@@ -148,8 +148,9 @@ pub use ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
 // Multi-worker codegen (TASK-0228 Waves B-1 + B-2, cycles 20-26).
 // Wave B-1 landed the Plan data structure; Wave B-2 lands the
 // `render_main_rs_multi` entry point + the per-worker thread::spawn
-// emission. The Plan stays `pub(crate)`; the entry point is the
-// only multi-worker symbol consumed below.
+// emission. The Plan is module-private (TASK-0340.04.04); the entry
+// point `render_main_rs_multi` is the only multi-worker symbol
+// consumed below.
 mod multi_worker;
 use multi_worker::render_main_rs_multi;
 
