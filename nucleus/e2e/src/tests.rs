@@ -2644,3 +2644,118 @@ fn req_cov_inject_errs_loud_on_degenerate_manifest() {
          must surface a loud Err, got {r:?}"
     );
 }
+
+// --------------------------------------------------------------------
+// resolve_algo_path (TASK-0049.03): per-cell algorithm selection from
+// the schedule's `schedule for "<path>"` directive. These synthetic
+// temp-file tests are the LOAD-BEARING coverage — the e2e totals do
+// NOT move (no current cell drives a non-default algo), so the matrix
+// gate is insufficient to prove this helper. See main.rs `resolve_algo_path`.
+// --------------------------------------------------------------------
+
+/// Unique per-call temp file path for a synthetic sched. Mirrors the
+/// PID+nanos convention of `nondet_tmp`; best-effort cleanup at the
+/// end of each test.
+fn resolve_algo_tmp_sched(tag: &str, body: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "nucleus-e2e-resolve-algo-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&dir).expect("mk tmp sched dir");
+    let sched = dir.join("x.sched.nuc");
+    fs::write(&sched, body).expect("write tmp sched");
+    sched
+}
+
+#[test]
+fn resolve_algo_path_positive_default() {
+    // The common case: every existing repo sched declares
+    // `schedule for "../prog.algo.nuc"`. Resolving against the sched
+    // file's parent yields <parent>/../prog.algo.nuc — the exact
+    // (un-canonicalised) path the harness used to hardcode.
+    let sched = resolve_algo_tmp_sched(
+        "default",
+        "// a leading comment line\nschedule for \"../prog.algo.nuc\" {\n    workers = { host };\n}\n",
+    );
+    let resolved = resolve_algo_path(&sched).expect("resolve default");
+    let parent = sched.parent().expect("sched parent");
+    assert_eq!(
+        resolved,
+        parent.join("../prog.algo.nuc"),
+        "resolved path must be sched_parent/../prog.algo.nuc verbatim (no canonicalisation)"
+    );
+    // The trailing components are the load-bearing assertion.
+    assert!(
+        resolved.ends_with("../prog.algo.nuc"),
+        "resolved {resolved:?} must end with ../prog.algo.nuc"
+    );
+    let _ = fs::remove_dir_all(parent);
+}
+
+#[test]
+fn resolve_algo_path_skips_comment_and_honours_non_default() {
+    // THE BITE (and the whole point of TASK-0049.03): a `//` comment
+    // line that contains the literal QUOTED text `schedule for "WRONG"`
+    // sits ABOVE the real directive targeting a NON-default algo. The
+    // resolver must NOT latch onto the comment — it must return the
+    // embedded path, NOT "WRONG". This proves (a) a non-default algo
+    // is honoured (the task's purpose) and (b) a comment carrying the
+    // quoted form does not win.
+    //
+    // NOTE this is a SYNTHETIC stress case, deliberately harder than
+    // the real repo files: example 14's embedded_multimcu*.sched.nuc
+    // mention `schedule for` in a header comment but NOT in the quoted
+    // form (verified TASK-0049.03). The rejection here is via the
+    // `trimmed.starts_with("schedule")` gate (the comment's trimmed
+    // start is `//`, not `schedule`); the explicit `//`-skip is
+    // belt-and-suspenders. See `resolve_algo_path`'s docstring.
+    let sched = resolve_algo_tmp_sched(
+        "comment-skip",
+        "// header line\n\
+         // this comment literally says schedule for \"WRONG\" but is a // comment\n\
+         //\n\
+         schedule for \"../prog.embedded.algo.nuc\" {\n    workers = { fe, dsp, rf };\n}\n",
+    );
+    let resolved = resolve_algo_path(&sched).expect("resolve embedded");
+    let parent = sched.parent().expect("sched parent");
+    assert_eq!(
+        resolved,
+        parent.join("../prog.embedded.algo.nuc"),
+        "resolver must honour the directive's non-default algo, not the // comment's WRONG"
+    );
+    let resolved_str = resolved.to_string_lossy();
+    assert!(
+        !resolved_str.contains("WRONG"),
+        "resolved {resolved_str:?} must NOT contain the commented-out WRONG path"
+    );
+    assert!(
+        resolved.ends_with("../prog.embedded.algo.nuc"),
+        "resolved {resolved:?} must end with the embedded algo path"
+    );
+    let _ = fs::remove_dir_all(parent);
+}
+
+#[test]
+fn resolve_algo_path_fails_loud_on_missing_directive() {
+    // FAIL-LOUD: a sched with no `schedule for "..."` directive must
+    // return Err, never silently fall back to prog.algo.nuc.
+    let sched = resolve_algo_tmp_sched(
+        "no-directive",
+        "// nothing here\n// just comments, no directive\n",
+    );
+    let r = resolve_algo_path(&sched);
+    assert!(
+        r.is_err(),
+        "a sched with no `schedule for \"...\"` directive must Err, got {r:?}"
+    );
+    let msg = r.unwrap_err();
+    assert!(
+        msg.contains("no `schedule for"),
+        "error message should name the missing directive, got: {msg}"
+    );
+    let _ = fs::remove_dir_all(sched.parent().expect("sched parent"));
+}

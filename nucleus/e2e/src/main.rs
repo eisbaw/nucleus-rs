@@ -1203,6 +1203,97 @@ fn required_coverage_gaps(
 // Cell execution
 // --------------------------------------------------------------------
 
+/// Resolve the algorithm-source path a schedule file targets via its
+/// `schedule for "<path>"` directive (TASK-0049.03).
+///
+/// The sched AST stores this string verbatim as `SchedAst::algo_path`
+/// and the *driver* ignores it (`--algo` is authoritative — see
+/// `nucleus-compiler/src/sched/ast.rs:60-80`). This resolver is a
+/// pure e2e-harness convenience: it lets a cell drive a non-default
+/// algorithm (e.g. example 14's `prog.embedded.algo.nuc`) instead of
+/// the hardcoded `prog.algo.nuc`, by honouring the schedule's own
+/// declaration. It does NOT change driver/compiler behaviour.
+///
+/// Scanning rule (NOT a full parse — deliberately a thin line-scan):
+///   - read the file; a read error propagates as `Err`;
+///   - the FIRST line whose trimmed start is NOT a `//` line-comment,
+///     begins with the `schedule` keyword, also contains `for`, and
+///     contains a `"` is the directive.
+///   - the path is the substring between the first `"` and the next
+///     `"` on that directive line.
+///
+/// On comment handling, the honest accounting (TASK-0049.03): the
+/// `trimmed.starts_with("schedule")` gate is the PRIMARY filter — no
+/// `//` (or `/* */`) comment line survives it, because a comment's
+/// trimmed start is `//` / `/*`, never `schedule`. The explicit
+/// `//`-skip is therefore belt-and-suspenders, not the sole defence;
+/// it is kept because the brief asked for it and it makes intent
+/// obvious. As of 2026-05 the only repo comment carrying the keyword
+/// pair is line 7 of
+/// `examples/14-hearing-aid/schedules/embedded_multimcu.sched.nuc`
+/// (`// ... the \`schedule for\` target below points at`) — unquoted,
+/// and rejected by BOTH the `//`-skip and the `starts_with` gate. No
+/// repo sched carries the *quoted* `schedule for "..."` form inside a
+/// comment (verified against both embedded_multimcu*.sched.nuc); an
+/// earlier draft of this doc overstated that it did.
+///
+/// Resolution base is the sched file's PARENT directory:
+/// `sched_path.parent().join(extracted)`. For `"../prog.algo.nuc"`
+/// with a sched at `ex_dir/schedules/x.sched.nuc` this yields
+/// `ex_dir/schedules/../prog.algo.nuc` — functionally
+/// `ex_dir/prog.algo.nuc`, identical to the path the harness used to
+/// hardcode. The `..` is deliberately NOT canonicalised: canonicalize
+/// would fail if the target did not yet exist and would diverge from
+/// the `..`-bearing string the downstream existence check + `nucleus
+/// build` already accept.
+///
+/// FAIL-LOUD: a sched with no `schedule for "..."` directive (or an
+/// unterminated quote) returns `Err`; the resolver never silently
+/// falls back to `prog.algo.nuc` — a malformed sched must surface.
+fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
+    let src = fs::read_to_string(sched_path)
+        .map_err(|e| format!("read sched {}: {e}", sched_path.display()))?;
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        // Skip `//` line-comments (defence-in-depth — see the fn
+        // docstring; the keyword pair `schedule`/`for` is common
+        // prose and a comment could carry a quoted example path).
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        // The directive's trimmed line must START with the `schedule`
+        // keyword and also contain `for`. This `starts_with` gate is
+        // the PRIMARY comment-rejector: no `//`-comment (nor a `/* */`
+        // block-comment line) survives it, since their trimmed start
+        // is `//` / `/*`, not `schedule`. The `//`-skip above is thus
+        // belt-and-suspenders, not the sole defence. Requiring the
+        // keyword pair (plus a quote below) avoids latching onto
+        // unrelated lines.
+        if !(trimmed.starts_with("schedule") && trimmed.contains("for")) {
+            continue;
+        }
+        let Some(open_rel) = line.find('"') else {
+            continue;
+        };
+        let after_open = &line[open_rel + 1..];
+        let Some(close_rel) = after_open.find('"') else {
+            return Err(format!(
+                "unterminated `schedule for \"...\"` quote in {}",
+                sched_path.display()
+            ));
+        };
+        let extracted = &after_open[..close_rel];
+        let base = sched_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        return Ok(base.join(extracted));
+    }
+
+    Err(format!(
+        "no `schedule for \"...\"` directive in {}",
+        sched_path.display()
+    ))
+}
+
 fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     let cell = planned.cell.clone();
     // Set true only by the harness-side NUC_XBACKEND_NEGATIVE
@@ -1283,10 +1374,32 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     // Sanity-check the example fixtures exist before we burn time on
     // a doomed compile.
     let ex_dir = paths.example_dir(&cell.example);
-    let algo = ex_dir.join("prog.algo.nuc");
+    // `sched` is computed BEFORE `algo` (TASK-0049.03): the algorithm
+    // source is resolved FROM the schedule's `schedule for "<path>"`
+    // directive, not hardcoded to `prog.algo.nuc`. This lets a cell
+    // drive a non-default algo (e.g. ex14's prog.embedded.algo.nuc).
     let sched = ex_dir
         .join("schedules")
         .join(format!("{}.sched.nuc", cell.schedule));
+    let algo = match resolve_algo_path(&sched) {
+        Ok(p) => p,
+        Err(detail) => {
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Compile,
+                    detail,
+                },
+                timings: Timings::default(),
+                corrupted,
+            };
+        }
+    };
+    // TODO(TASK-0049.08): kernels file is still hardcoded; embedded
+    // cells need a per-cell kernels.embedded.rs override (the silent
+    // sibling of the TASK-0049.03 algo-selection fix). Until then no
+    // embedded_multimcu cell can be promoted from [[skip]].
     let kernels = ex_dir.join("kernels.rs");
     let input_bin = ex_dir.join("input.bin");
     let reference_bin = ex_dir.join("reference.bin");
@@ -1763,10 +1876,29 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
     // Sanity-check fixtures (subset of run-mode's check — we don't
     // need input.bin/reference.bin since we never run the binary).
     let ex_dir = paths.example_dir(&cell.example);
-    let algo = ex_dir.join("prog.algo.nuc");
+    // `sched` first, then resolve `algo` from its `schedule for`
+    // directive (TASK-0049.03) — same convention as run_cell. A
+    // malformed sched is reported as Skipped here (mirroring this
+    // site's missing-fixture early-return), since determinism mode
+    // never hard-fails on fixture issues.
     let sched = ex_dir
         .join("schedules")
         .join(format!("{}.sched.nuc", cell.schedule));
+    let algo = match resolve_algo_path(&sched) {
+        Ok(p) => p,
+        Err(reason) => {
+            return DetCellResult {
+                cell,
+                required: planned.required,
+                status: DetCellStatus::Skipped { reason },
+                elapsed: started.elapsed(),
+                perturbed: false,
+            };
+        }
+    };
+    // TODO(TASK-0049.08): hardcoded kernels file — same per-cell
+    // override gap as run_cell (silent sibling of TASK-0049.03's
+    // algo-selection fix); blocks embedded_multimcu promotion.
     let kernels = ex_dir.join("kernels.rs");
     for (label, p) in [("algo", &algo), ("sched", &sched), ("kernels", &kernels)] {
         if !p.exists() {
