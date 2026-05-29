@@ -3,11 +3,11 @@ id: TASK-0363
 title: >-
   check_kernels_contract rustc_check breaks on --kernels filenames with dots
   (e.g. kernels.embedded.rs -> invalid crate name)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-29 08:00'
-updated_date: '2026-05-29 09:24'
+updated_date: '2026-05-29 09:28'
 labels:
   - backend
   - tech-debt
@@ -22,8 +22,8 @@ DISCOVERED in TASK-0049.06. The contract check phase 1 (nucleus-compiler/src/con
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 rustc_check passes an explicit --crate-name (sanitised: dots/dashes -> underscores) so a --kernels file with a dotted stem (kernels.embedded.rs) passes phase-1 rustc check
-- [ ] #2 A test pins a dotted-stem kernels file no longer triggers RustCheckFailed
+- [x] #1 rustc_check passes an explicit --crate-name (sanitised: dots/dashes -> underscores) so a --kernels file with a dotted stem (kernels.embedded.rs) passes phase-1 rustc check
+- [x] #2 A test pins a dotted-stem kernels file no longer triggers RustCheckFailed
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -33,3 +33,9 @@ Architect P2.2 (TASK-0049.06 review): the driver warning text at nucleus/driver/
 
 IMPL PLAN (cycle): Added sanitise_crate_name(path) in contract.rs: maps file_stem non-[A-Za-z0-9_] chars to '_', prefixes '_' if empty or leading-digit. rustc_check passes --crate-name <sanitised>. Removed the KNOWN GAP comment (replaced with a TASK-0363 one-liner stating crate-name is now sanitised). Driver warning at main.rs:~339 de-conflated: dropped the hardcoded 'aggregate-typed I/O is a known gap, TASK-0012' parenthetical -> generic 'see individual issues below'. Test dotted_stem_kernels_file_does_not_trip_rust_check in tests/contract.rs: writes good/kernels.rs content to a temp kernels.embedded.rs, asserts no RustCheckFailed. SIBLING CHECK: workspace-wide grep — contract.rs rustc_check is the ONLY rustc-by-file-stem call site; all cargo build/run invocations (e2e/main.rs, backend tests, justfile check-embedded thumbv7em cross-compile) derive crate names from Cargo.toml, not file stems — safe.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE. Commit 88fc406. AC#1 MET: rustc_check passes --crate-name from sanitise_crate_name(path) — file_stem with non-[A-Za-z0-9_] -> '_', leading-digit/empty -> '_'-prefixed (kernels.embedded -> kernels_embedded; 3d -> _3d). AC#2 MET: dotted_stem_kernels_file_does_not_trip_rust_check (writes good/kernels.rs to a temp kernels.embedded.rs, asserts no RustCheckFailed). Architect note DONE: driver warning de-conflated (dropped the TASK-0012 parenthetical -> 'see individual issues below'). SIBLING CHECK: workspace-wide grep — contract.rs rustc_check is the ONLY rustc-by-file-stem call site; all cargo build/run invocations (e2e/main.rs x3, backend pingpong/multi_worker tests, justfile check-embedded thumbv7em cross-compile) derive crate names from Cargo.toml package names, NOT file stems — confirmed safe, no follow-up needed. Gate: build ok, clippy clean, test 1091/0/3, test-release 1090/0/3, e2e 308/246/0/62/0. GOTCHA for next: test runs rustc directly via check_kernels_contract (no PATH gate — rustc assumed present, which it is in the Nix dev shell; mirrors the existing bad-rust-check-failed test). Sanitisation collisions across distinct stems (a.b and a-b both -> a_b) are harmless: each rustc invocation compiles exactly one file, the crate name is internal to a throwaway .rmeta.
+<!-- SECTION:FINAL_SUMMARY:END -->
