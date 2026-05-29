@@ -677,3 +677,96 @@ impl std::fmt::Display for LowerErrors {
 }
 
 impl std::error::Error for LowerErrors {}
+
+#[cfg(test)]
+mod walk_dataref_names_tests {
+    //! TASK-0343.03.01 cycle-223 architect P2: discriminating pin for the
+    //! ORDER + DUPLICATES invariant of the shared [`walk_dataref_names`]
+    //! recursion that both former sibling walkers now delegate to (the
+    //! set-sink [`collect_dataref_names`] here and `link::dataflow`'s
+    //! Vec-sink `collect_dataref_names`, whose output feeds the
+    //! order-and-duplicate-sensitive `CopyEdge.srcs` value-flow list,
+    //! TASK-0347).
+    //!
+    //! Why a UNIT pin and not e2e: NO in-tree example exercises the
+    //! Vec-sink path. Every dataflow RHS in the e2e matrix — including
+    //! 15-transpose — is a `Call` (`load_input()`, `xpose(...)`,
+    //! `save_output(...)`) handled by `collect_dataref_consumers`, NOT
+    //! the bare-LValue identity-copy `other` arm (`link::dataflow`) that
+    //! reaches the Vec sink. So e2e bit-identity does NOT cover a reorder
+    //! / dropped-duplicate regression in this recursion (correcting the
+    //! cycle-223 commit's "15-transpose verifies it" overclaim,
+    //! `feedback-orchestrator-narrative-also-wrong`). These tests are the
+    //! only thing that bites on such a regression.
+
+    use super::{collect_dataref_names, walk_dataref_names, IndexedRef, IrBinOp, IrExpr};
+    use std::collections::BTreeSet;
+
+    fn dref(n: &str) -> IrExpr {
+        IrExpr::DataRef(IndexedRef {
+            name: n.to_string(),
+            indices: vec![],
+        })
+    }
+
+    /// `(a + b) + a` — a multi-source RHS with a DUPLICATE `a`, chosen so
+    /// both order (BinOp visits `l` before `r`) and duplicate-preservation
+    /// are observable in the Vec sink.
+    fn a_plus_b_plus_a() -> IrExpr {
+        IrExpr::BinOp(
+            IrBinOp::Add,
+            Box::new(IrExpr::BinOp(
+                IrBinOp::Add,
+                Box::new(dref("a")),
+                Box::new(dref("b")),
+            )),
+            Box::new(dref("a")),
+        )
+    }
+
+    #[test]
+    fn vec_sink_preserves_left_to_right_order_and_duplicates() {
+        let e = a_plus_b_plus_a();
+        let mut got: Vec<String> = Vec::new();
+        walk_dataref_names(&e, &mut |n| got.push(n.to_string()));
+        // In-order l-before-r over `(a + b) + a` yields a, b, a. An l/r
+        // swap would give a, a, b; a set/dedup would drop the second a.
+        assert_eq!(
+            got,
+            vec!["a".to_string(), "b".to_string(), "a".to_string()],
+            "Vec sink must see DataRefs in left-to-right source order with \
+             duplicates preserved; a reorder or dropped duplicate would \
+             corrupt CopyEdge.srcs value-flow (TASK-0347)"
+        );
+    }
+
+    #[test]
+    fn set_sink_dedups_to_unique_symbols() {
+        let e = a_plus_b_plus_a();
+        let mut got: BTreeSet<String> = BTreeSet::new();
+        collect_dataref_names(&e, &mut got);
+        let want: BTreeSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            got, want,
+            "set sink dedups to the unique data-symbol set (the second `a` \
+             collapses)"
+        );
+    }
+
+    #[test]
+    fn dataref_name_visited_before_its_index_exprs() {
+        // The DataRef arm must emit `name` BEFORE recursing its index
+        // exprs. `m[a]` (m indexed by a bare DataRef a) is not producible
+        // under today's grammar — indices are iter-var/const arithmetic —
+        // but the walker is defined to recurse indices, so this pins the
+        // name-before-indices order if the grammar ever admits data reads
+        // in index position.
+        let e = IrExpr::DataRef(IndexedRef {
+            name: "m".to_string(),
+            indices: vec![dref("a")],
+        });
+        let mut got: Vec<String> = Vec::new();
+        walk_dataref_names(&e, &mut |n| got.push(n.to_string()));
+        assert_eq!(got, vec!["m".to_string(), "a".to_string()]);
+    }
+}
