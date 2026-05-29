@@ -109,29 +109,29 @@ use walkers::{collect_push_pairs, detect_wait_before_push_hazard};
 /// Stable identifier for one mp-uds-event channel — the runtime
 /// `chan_<id>` variable that wraps `(DataId, SeqTag)`'s reactor route.
 /// `usize` alias for [`RendezvousId`] (the shared walker key type).
-pub(crate) type ChanId = RendezvousId;
+type ChanId = RendezvousId;
 
 /// Per-worker codegen Plan: every fact needed to emit one
 /// `src/bin/<wname>.rs`. Field set mirrors `pthreads-async`'s Plan
 /// modulo the per-pair PEER index needed for mp-tcp's per-(src,dst)
 /// outbound queue and the host-mediated barrier topology check.
 pub(crate) struct Plan<'a> {
-    pub(crate) per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
-    pub(crate) names: &'a NameTables,
-    pub(crate) sidecar: &'a NameSidecar,
+    per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
+    names: &'a NameTables,
+    sidecar: &'a NameSidecar,
     pub(crate) used_workers: Vec<WorkerId>,
-    pub(crate) host_worker: WorkerId,
+    host_worker: WorkerId,
     /// Cross-worker Push/Wait pairs `(DataId, SeqTag) -> chan index`.
-    pub(crate) chan_ids: BTreeMap<(DataId, SeqTag), ChanId>,
+    chan_ids: BTreeMap<(DataId, SeqTag), ChanId>,
     /// Per-pair channel capacity from `transfer DATA : buffer=N`
     /// (TASK-0233).
-    pub(crate) chan_caps: BTreeMap<(DataId, SeqTag), u64>,
+    chan_caps: BTreeMap<(DataId, SeqTag), u64>,
     /// Per-pair (src, dst) workers. The reactor's outbound queue is
     /// keyed on `(seq, peer_idx)`; the producer side puts (seq, dst)
     /// and the consumer side reads inbound[seq] (independent of src).
-    pub(crate) chan_pairs: BTreeMap<(DataId, SeqTag), (WorkerId, WorkerId)>,
+    chan_pairs: BTreeMap<(DataId, SeqTag), (WorkerId, WorkerId)>,
     /// Per-pair iteration tile (TASK-0117 host-side gather).
-    pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
     /// Per-(worker, data, seq) overlapping-write accumulator
     /// classification (TASK-0343 cycle 189). Mirrors pthreads-sync's
     /// and pthreads-async's `multi_worker::Plan::accumulate_waits`
@@ -141,9 +141,9 @@ pub(crate) struct Plan<'a> {
     /// Event::Wait emit from whole-array overwrite assign to
     /// element-wise `wrapping_add` accumulate. Empty for every cell
     /// without an overlapping-write fan-in.
-    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
+    accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// SyncTag -> participants. Same shape as mp-tcp-bufsync's.
-    pub(crate) barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
+    barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
 }
 
 impl<'a> Plan<'a> {
@@ -401,14 +401,14 @@ impl<'a> Plan<'a> {
             .unwrap_or_else(|| format!("w{}", w.0))
     }
 
-    pub(crate) fn data_name(&self, d: DataId) -> Result<String, EmitError> {
+    fn data_name(&self, d: DataId) -> Result<String, EmitError> {
         self.names.data.get(&d).cloned().ok_or_else(|| {
             EmitError::ContractGap(format!("data id {d:?} has no name in NameTables"))
         })
     }
 
     /// Non-host workers in ascending WorkerId order.
-    pub(crate) fn non_host_workers(&self) -> Vec<WorkerId> {
+    fn non_host_workers(&self) -> Vec<WorkerId> {
         self.used_workers
             .iter()
             .copied()
@@ -419,7 +419,7 @@ impl<'a> Plan<'a> {
     /// Per-worker subset of `chan_ids` — the channels this worker
     /// touches via Push or Wait. Same shape as pthreads-async's
     /// `worker_rings`.
-    pub(super) fn worker_chans(&self, w: WorkerId) -> BTreeSet<ChanId> {
+    fn worker_chans(&self, w: WorkerId) -> BTreeSet<ChanId> {
         let mut out: BTreeSet<ChanId> = BTreeSet::new();
         if let Some(evs) = self.per_worker.get(&w) {
             walker::collect_worker_rendezvous(evs, &self.chan_ids, &mut out);
@@ -431,7 +431,7 @@ impl<'a> Plan<'a> {
     /// the worker's Reactor corresponds to each peer WorkerId. Host
     /// has one peer per non-host worker (assigned ascending). A
     /// non-host worker has exactly one peer: the host (index 0).
-    pub(super) fn peer_index_for(&self, worker: WorkerId, peer: WorkerId) -> Option<usize> {
+    fn peer_index_for(&self, worker: WorkerId, peer: WorkerId) -> Option<usize> {
         if worker == self.host_worker {
             self.non_host_workers().iter().position(|w| *w == peer)
         } else if peer == self.host_worker {
@@ -463,7 +463,7 @@ impl<'a> Plan<'a> {
     /// toward dst. For dst, peer_idx is irrelevant (wait reads
     /// `inbound[seq]`); for src, peer_idx = 0 routes the push to
     /// host's `data_<src>` socket. Mirrors mp-tcp-bufsync cycle 148.
-    pub(super) fn chan_peer_index(
+    fn chan_peer_index(
         &self,
         worker: WorkerId,
         chan_key: (DataId, SeqTag),
@@ -507,7 +507,7 @@ impl<'a> Plan<'a> {
     /// per-worker DataIds with provably-dead pre-init that get
     /// declare-and-assigned at recv site (TASK-0349 cycle 220).
     #[allow(clippy::type_complexity)]
-    pub(super) fn collect_pre_init(
+    fn collect_pre_init(
         &self,
         worker: WorkerId,
     ) -> Result<(Vec<(String, DataId)>, BTreeSet<DataId>), EmitError> {
@@ -573,7 +573,7 @@ impl<'a> Plan<'a> {
     }
 
     /// SyncTags this worker participates in, ascending order.
-    pub(super) fn barriers_used_by(&self, w: WorkerId) -> Vec<SyncTag> {
+    fn barriers_used_by(&self, w: WorkerId) -> Vec<SyncTag> {
         let mut out: Vec<SyncTag> = self
             .barrier_participants
             .iter()

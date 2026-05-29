@@ -82,7 +82,7 @@ pub(crate) fn render_main_rs_multi(
 /// all three prefix-using backends (pthreads-sync, pthreads-async,
 /// mp-tcp-event) use the same `BTreeMap<(DataId, SeqTag),
 /// RendezvousId>` map type for their per-pair rendezvous index.
-pub(crate) type RingId = RendezvousId;
+type RingId = RendezvousId;
 
 /// Data structure capturing every fact a Wave B-2 emit() needs to
 /// produce a multi-worker pthreads-async binary, derived purely from
@@ -106,27 +106,27 @@ pub(crate) type RingId = RendezvousId;
 /// B-2 emits `std::sync::Barrier` from the same `barrier_participants`
 /// shape pthreads-sync already proves works.
 #[derive(Debug)]
-pub(crate) struct Plan<'a> {
-    pub(crate) per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
-    pub(crate) names: &'a NameTables,
-    pub(crate) sidecar: &'a NameSidecar,
+struct Plan<'a> {
+    per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
+    names: &'a NameTables,
+    sidecar: &'a NameSidecar,
     /// Workers with a non-empty EventList, in WorkerId order.
-    pub(crate) used_workers: Vec<WorkerId>,
+    used_workers: Vec<WorkerId>,
     /// The host (worker named "host", else smallest used WorkerId).
     /// Same election rule as pthreads-sync's multi_worker::Plan.
-    pub(crate) host_worker: WorkerId,
+    host_worker: WorkerId,
     /// Cross-worker Push/Wait pairs `(DataId, SeqTag) -> ring index`.
     /// Sorted ascending by `(DataId, SeqTag)` for deterministic IDs.
-    pub(crate) ring_ids: BTreeMap<(DataId, SeqTag), RingId>,
+    ring_ids: BTreeMap<(DataId, SeqTag), RingId>,
     /// Per-pair ring capacity from `transfer DATA : buffer=N`. Joined
     /// from `NameSidecar::transfer_buffer_for_seq` (TASK-0233). One
     /// entry per `ring_ids` key — Wave B-2 will pass this directly to
     /// `ring_buffer::emit_ring_instance_decl(..., cap)`.
-    pub(crate) ring_caps: BTreeMap<(DataId, SeqTag), u64>,
+    ring_caps: BTreeMap<(DataId, SeqTag), u64>,
     /// Per-pair tile carried on the originating XferPlaceholder. The
     /// tile names the iteration-axis slice this pair is responsible
     /// for. Wave B-2 codegen consumes this for fan-out gather (TASK-0117).
-    pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
     /// Per-(worker, data, seq) overlapping-write accumulator
     /// classification (TASK-0343 cycle 189). Mirrors pthreads-sync's
     /// `multi_worker::Plan::accumulate_waits` field; populated by
@@ -136,7 +136,7 @@ pub(crate) struct Plan<'a> {
     /// whole-array overwrite assign to element-wise `wrapping_add`
     /// accumulate. Empty for every cell without an overlapping-write
     /// fan-in.
-    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
+    accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// `SyncTag` -> participants. Keyed directly by the contract barrier
     /// identity (TASK-0172). The projection clones the same participant
     /// set into every participant's `Event::Sync`, so recording the set
@@ -146,7 +146,7 @@ pub(crate) struct Plan<'a> {
     /// `multi_worker::Plan::barrier_participants` field-for-field —
     /// Wave B-2 emits `std::sync::Barrier::new(N)` keyed by `SyncTag`
     /// the same way pthreads-sync does (TASK-0172).
-    pub(crate) barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
+    barrier_participants: BTreeMap<SyncTag, BTreeSet<WorkerId>>,
 }
 
 impl<'a> Plan<'a> {
@@ -161,7 +161,7 @@ impl<'a> Plan<'a> {
     ///   `sidecar.transfer_buffer_for_seq` — that would mean
     ///   `build_sidecar` missed an Xfer placeholder (TASK-0233's
     ///   walker invariant is violated), and the ring cannot be sized.
-    pub(crate) fn build(
+    fn build(
         per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
         names: &'a NameTables,
         sidecar: &'a NameSidecar,
@@ -315,7 +315,7 @@ impl<'a> Plan<'a> {
     ///
     /// Mirrors pthreads-sync's `collect_worker_slots` in
     /// multi_worker.rs:1028.
-    pub(crate) fn worker_rings(&self, w: WorkerId) -> BTreeSet<RingId> {
+    fn worker_rings(&self, w: WorkerId) -> BTreeSet<RingId> {
         let mut out: BTreeSet<RingId> = BTreeSet::new();
         if let Some(evs) = self.per_worker.get(&w) {
             walker::collect_worker_rendezvous(evs, &self.ring_ids, &mut out);
@@ -650,8 +650,10 @@ fn collect_unique_count_check_frames(
 // 02-split-add/split (two workers, sync transfers, default buffer=1)
 // and 13-cnn-inference/pipeline_parallel (four workers, mix of async
 // buffer=3 + sync buffer=1). They are unit tests at the crate-private
-// level because the Plan struct is `pub(crate)` — Wave B-2 will keep
-// it that way and expose only render_main_rs_multi.
+// level because the Plan struct is private (TASK-0340.04.04 tightened
+// it from `pub(crate)`) — the crate exposes only render_main_rs_multi;
+// Plan and its fields/methods are reachable solely within this module
+// and this `tests` descendant.
 
 #[cfg(test)]
 mod tests {
