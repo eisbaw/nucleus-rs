@@ -154,10 +154,15 @@ fn render_fire_args_with(
     // Per-param types come from the sidecar's kernel signature, NOT
     // `algo.kernels` (AC#2). Absent only if the contract regressed.
     let sig = ctx.sidecar.kernel_sig(kernel);
+    // Kernel name purely for the FixedArray shape-mismatch diagnostic
+    // (TASK-0049.07). `None` if the contract dropped the name — the
+    // mismatch message degrades to the (load-bearing) lengths + data
+    // name rather than failing the whole render on a missing name.
+    let kernel_name = ctx.names.kernel.get(&kernel).map(String::as_str);
     let mut parts = Vec::with_capacity(inputs.len());
     for (i, arg) in inputs.iter().enumerate() {
         let param_ty = sig.and_then(|s| s.params.get(i));
-        parts.push(render_fire_arg(arg, param_ty, ctx, sub_array_form)?);
+        parts.push(render_fire_arg(arg, param_ty, kernel_name, ctx, sub_array_form)?);
     }
     Ok(parts.join(", "))
 }
@@ -229,6 +234,7 @@ fn try_rewrite_reuse_arg(s: &DataSlice, ctx: &RenderCtx<'_>) -> Option<String> {
 fn render_fire_arg(
     arg: &ArgBinding,
     param_ty: Option<&ResolvedType>,
+    kernel_name: Option<&str>,
     ctx: &RenderCtx<'_>,
     sub_array_form: SubArrayForm,
 ) -> Result<String, EmitError> {
@@ -288,27 +294,55 @@ fn render_fire_arg(
                             // `<[T]>::try_into` (core, alloc-free). The
                             // target length `N` is inferred by rustc from
                             // the kernel signature's `[T; N]` param at the
-                            // call site. WARNING (TASK-0049.07): the
-                            // `.unwrap()` is NOT statically proven safe.
-                            // `sub_len` derives from the DATA trailing
-                            // dims (`sidecar.data_types`); `N` derives from
-                            // the KERNEL signature (`sidecar.kernel_sigs`)
-                            // — two different sidecar tables that NOTHING
-                            // in contract/link/type checking cross-
-                            // validates for equality. For a shape-matched
-                            // schedule (e.g. ex14: both 16) they agree and
-                            // this is correct; a shape-MISMATCHED schedule
-                            // would make `try_into::<[T; N]>()` of a
-                            // `sub_len`-length slice return `Err` and panic
-                            // at RUNTIME on-device (cargo check cannot
-                            // catch a runtime slice length). TASK-0049.07
-                            // tracks replacing this with an emit-time
-                            // typed `EmitError` on `sub_len != N`. Until
-                            // then this is a LATENT panic, not a proven
-                            // invariant. TASK-0049.06.
-                            SubArrayForm::FixedArray => Ok(format!(
-                                "{name}[{start}..{start} + {sub_len}usize].try_into().unwrap()"
-                            )),
+                            // call site. `sub_len` derives from the DATA
+                            // trailing dims (`sidecar.data_types`); `N`
+                            // derives from the KERNEL signature
+                            // (`sidecar.kernel_sigs`) — two different
+                            // sidecar tables. Nothing in
+                            // contract/link/type checking cross-validates
+                            // them (contract.rs only matches SCALAR sigs;
+                            // aggregate params get a non-fatal
+                            // TypeMismatch warning), so a
+                            // shape-MISMATCHED-but-otherwise-legal
+                            // schedule would historically make
+                            // `try_into::<[T; N]>()` of a `sub_len`-length
+                            // slice return `Err` and panic at RUNTIME
+                            // on-device (cargo check cannot catch a
+                            // runtime slice length).
+                            //
+                            // TASK-0049.07: that equality is now ENFORCED
+                            // at emit time. When `param_ty` is `Some` and
+                            // aggregate, we compute `N = product(dims)`
+                            // and return a typed `EmitError::ContractGap`
+                            // on `sub_len != N` — a shape-mismatched
+                            // schedule now fails loudly at CODEGEN, not as
+                            // an on-device runtime panic. When `param_ty`
+                            // is `None` (no sig available) the check is
+                            // skipped (cannot validate) and the prior
+                            // behaviour is preserved. For a shape-matched
+                            // schedule (e.g. ex14: both 16) the check is a
+                            // no-op and the emitted `.try_into().unwrap()`
+                            // is identical to before. TASK-0049.06.
+                            SubArrayForm::FixedArray => {
+                                if let Some(pt) = param_ty {
+                                    if !pt.is_scalar() {
+                                        let n: usize = pt.dims.iter().product();
+                                        if sub_len != n {
+                                            let kname = kernel_name.unwrap_or("<unknown-kernel>");
+                                            return Err(EmitError::ContractGap(format!(
+                                                "no_std fixed-array kernel arg shape mismatch: \
+                                                 data sub-array length {sub_len} != kernel-sig \
+                                                 param array length {n} for arg '{name}' of \
+                                                 kernel '{kname}' — sidecar.data_types and \
+                                                 sidecar.kernel_sigs disagree (TASK-0049.07)"
+                                            )));
+                                        }
+                                    }
+                                }
+                                Ok(format!(
+                                    "{name}[{start}..{start} + {sub_len}usize].try_into().unwrap()"
+                                ))
+                            }
                         }
                     }
                 }

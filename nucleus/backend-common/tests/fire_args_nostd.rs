@@ -26,7 +26,7 @@ use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use nucleus_compiler::name_tables::NameTables;
 use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
 
-use backend_common::render::{render_fire_args, render_fire_args_nostd, RenderCtx};
+use backend_common::render::{render_fire_args, render_fire_args_nostd, EmitError, RenderCtx};
 
 /// Build a `(NameTables, NameSidecar)` describing one data symbol `D`
 /// of shape `dims` and one kernel `k` whose i-th param type is
@@ -145,5 +145,101 @@ fn scalar_arg_identical_vec_vs_fixed_array() {
         vec_form, nostd_form,
         "scalar (full-rank) args MUST render identically in both forms — only \
          sub-array materialisation differs"
+    );
+}
+
+#[test]
+fn nostd_sub_array_length_mismatch_is_contract_gap() {
+    // TASK-0049.07: data `D : i32[4][16]` indexed `D[frame]` yields a
+    // contiguous 16-element sub-array (`sub_len = 16`), but the kernel
+    // param is typed `[i32; 8]` (`dims = [8]`, so `N = 8`). The two
+    // sidecar tables disagree on the array length. The historical
+    // emission `<slice>.try_into::<[i32; 8]>().unwrap()` of a 16-length
+    // slice would return `Err` and PANIC on-device at runtime; this is
+    // now caught at emit time as a typed `EmitError::ContractGap`.
+    let data = DataId(0);
+    let kernel = KernelId(0);
+    let (names, sidecar) = fixtures(
+        data,
+        vec![4, 16], // data trailing-dim product = 16
+        kernel,
+        ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![8], // kernel-sig array length = 8 (mismatch!)
+        },
+    );
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let inputs = vec![ArgBinding::Data(DataSlice {
+        data,
+        indices: vec![IrExpr::Ident("frame".to_string())],
+    })];
+
+    // The no_std form must FAIL LOUD (typed error), not emit a latent
+    // runtime-panicking `.try_into().unwrap()`.
+    let err = render_fire_args_nostd(kernel, &inputs, &ctx)
+        .expect_err("a sub_len/N mismatch must be a typed EmitError, not a latent panic");
+    match err {
+        EmitError::ContractGap(msg) => {
+            // The lengths + data name are the load-bearing diagnostic.
+            assert!(
+                msg.contains("16") && msg.contains('8'),
+                "message must name both lengths (sub_len 16, N 8): {msg}"
+            );
+            assert!(
+                msg.contains("'D'") && msg.contains("'k'"),
+                "message must name the data arg and kernel: {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0049.07"),
+                "message must be greppable to the tracker id: {msg}"
+            );
+        }
+        other => panic!("expected EmitError::ContractGap, got {other:?}"),
+    }
+
+    // The tier-1 std (`SubArrayForm::Vec`) path is UNTOUCHED: it still
+    // emits `.to_vec()` and lets the compiler catch the mismatch at
+    // build time as E0308 — no emit-time check, by design.
+    let vec_form = render_fire_args(kernel, &inputs, &ctx)
+        .expect("tier-1 vec form still renders (mismatch caught later by rustc E0308)");
+    assert!(
+        vec_form.contains(".to_vec()"),
+        "tier-1 path must still emit `.to_vec()`: {vec_form}"
+    );
+}
+
+#[test]
+fn nostd_sub_array_length_match_still_renders() {
+    // TASK-0049.07 positive case: data `D : i32[4][16]` indexed
+    // `D[frame]` yields `sub_len = 16`; the kernel param is `[i32; 16]`
+    // (`dims = [16]`, `N = 16`). The lengths AGREE, so the emit-time
+    // check is a no-op and the rendered `.try_into().unwrap()` is
+    // identical to the pre-TASK-0049.07 emission — proving the check
+    // bites ONLY on a mismatch.
+    let data = DataId(0);
+    let kernel = KernelId(0);
+    let (names, sidecar) = fixtures(
+        data,
+        vec![4, 16],
+        kernel,
+        ResolvedType {
+            scalar: ScalarType::I32,
+            dims: vec![16], // matches the 16-length sub-array
+        },
+    );
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let inputs = vec![ArgBinding::Data(DataSlice {
+        data,
+        indices: vec![IrExpr::Ident("frame".to_string())],
+    })];
+
+    let nostd_form = render_fire_args_nostd(kernel, &inputs, &ctx)
+        .expect("matching lengths must still render the fixed-array form");
+    assert_eq!(
+        nostd_form,
+        "D[((frame) * 16) as usize..((frame) * 16) as usize + 16usize].try_into().unwrap()",
+        "a shape-matched no_std sub-array arg renders the unchanged `.try_into().unwrap()`"
     );
 }
