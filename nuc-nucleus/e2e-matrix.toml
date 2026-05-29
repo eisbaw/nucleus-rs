@@ -62,9 +62,10 @@
 # landed once TASK-0209 cleared the partial-sub-array codegen
 # blocker). Example 14 joined the matrix at TASK-0054 cycle 201
 # (kernels.rs + reference impl + reference.bin + naive cells landed
-# for tier-1 bulk-IO shape; the embedded_multimcu schedule remains
-# M11-aspirational and is [[skip]]'d across all backends pending
-# TASK-0054.01 reinstate of per-frame peripheral kernels).
+# for tier-1 bulk-IO shape; the embedded_multimcu schedule now lowers
+# against prog.embedded.algo.nuc (TASK-0054.01 / TASK-0192) but stays
+# [[skip]]'d across all backends pending harness `schedule for` support
+# (TASK-0049.03) + M11 multi-MCU codegen (TASK-0049)).
 # Example 15 joined the matrix at TASK-0341.01 cycle 204 (AC#1
 # language-sanity slice: prog.algo.nuc + kernels.rs + reference impl
 # + reference.bin + naive schedule + pthreads-sync cell). The 14-slot
@@ -2782,13 +2783,14 @@ milestone = "M6"
 # explicit local variables — different control structure from the
 # kernels' loop body (policy §2 independence).
 #
-# The embedded_multimcu schedule remains M11-aspirational. Its kernel
-# references (fe_capture / rf_receive / fe_emit / rf_transmit) do
-# NOT exist in the current bulk-IO algorithm — the schedule file
-# carries an explicit header comment marking the broken-vs-current-
-# algo state. All 7 embedded_multimcu cells are [[skip]] with the
-# M11-deferred reason; reinstating per-frame peripheral kernels is
-# filed as TASK-0054.01.
+# The embedded_multimcu schedule now LOWERS (TASK-0192 / TASK-0054.01
+# landed: it points at prog.embedded.algo.nuc, which declares the
+# per-frame peripheral kernels fe_capture / rf_receive / fe_emit /
+# rf_transmit). All 7 embedded_multimcu cells nonetheless stay [[skip]]
+# because the e2e harness still hardcodes prog.algo.nuc and cannot yet
+# honour the schedule's `schedule for` per-cell algo selection
+# (TASK-0049.03), and the embedded-pattern multi-worker / cross-MCU
+# codegen is M11 deep-codegen work (TASK-0049).
 
 [[required]]
 example  = "14-hearing-aid"
@@ -2832,60 +2834,59 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
-# embedded_multimcu × all 7 backends [[skip]] M11-deferred. The
-# schedule references kernels (fe_capture / rf_receive / fe_emit /
-# rf_transmit) that the current tier-1 bulk-IO algorithm does not
-# declare. M11 (Renode multi-MCU) will reinstate the per-frame
-# peripheral kernels and unblock these cells — tracked as
-# TASK-0054.01.
+# embedded_multimcu × all 7 backends [[skip]]. The schedule now lowers
+# against prog.embedded.algo.nuc (TASK-0192 / TASK-0054.01); these cells
+# stay skipped until the e2e harness honours `schedule for` per-cell
+# algo selection (TASK-0049.03) AND the M11 multi-MCU backend codegen
+# lands (TASK-0049). See the per-cell reason strings below.
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "pthreads-sync"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "pthreads-async"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-event"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "openmp-rs"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-tcp-poll"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 [[skip]]
 example  = "14-hearing-aid"
 schedule = "embedded_multimcu"
 backend  = "mp-uds-event"
-reason   = "TASK-0054.01: M11-aspirational schedule. References per-frame peripheral kernels (fe_capture / rf_receive / fe_emit / rf_transmit) not declared by the current tier-1 bulk-IO algorithm. Reinstate at M11 (Renode multi-MCU substrate)."
+reason   = "TASK-0049.03: schedule now lowers + links + acfg-admits — it points at prog.embedded.algo.nuc, which DOES declare the per-frame peripheral kernels (TASK-0192 / TASK-0054.01 landed). Cells stay skipped because (a) the e2e harness hardcodes prog.algo.nuc and cannot yet honour `schedule for` per-cell algo selection (TASK-0049.03), and (b) the embedded-pattern multi-worker / cross-MCU codegen is unbuilt (M11 deep codegen, TASK-0049). Reinstate when both land."
 milestone = "M11"
 
 # ----------------------------------------------------------------------

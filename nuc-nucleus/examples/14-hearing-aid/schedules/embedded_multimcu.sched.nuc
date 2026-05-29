@@ -31,8 +31,13 @@
 //     declare what each MCU is good at: FE has analog IO and small
 //     memory, DSP has SIMD + TCM, RF has the radio.
 //   - Memory regions are explicit. The frame buffers live in shared
-//     SRAM accessible to both FE and DSP; FFT scratch lives in DSP's
-//     tightly-coupled memory.
+//     SRAM accessible to all three MCUs. The dsp_core class also
+//     declares a per-worker tightly-coupled (TCM) region, but no data
+//     is placed there in this schedule — the i32 denoise is a 3-wide
+//     sliding sum needing no scratch (there is NO FFT; see the
+//     prog.embedded.algo.nuc header re: PRD §10.1 integer-only). The
+//     TCM region is kept as a topology declaration for the M11 design
+//     target, not because anything currently uses it.
 //   - Async transfers with buffering so producer MCUs don't stall
 //     waiting for consumer MCUs.
 

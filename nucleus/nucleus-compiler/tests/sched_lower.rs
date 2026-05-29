@@ -347,6 +347,14 @@ fn lowers_14_hearing_aid_embedded_multimcu() {
     // Six placements (the 6 hearing-aid kernels).
     assert_eq!(ir.places.len(), 6);
 
+    // Two memory regions (sram_shared + the per-worker dsp_tcm), as the
+    // docstring narrates. Pinned so a dropped region fails the test
+    // (TASK-0192 review P3-2: the narrative previously out-ran the
+    // assertions here).
+    assert_eq!(ir.memory_regions.len(), 2);
+    assert!(ir.memory_regions.contains_key("sram_shared"));
+    assert!(ir.memory_regions.contains_key("dsp_tcm"));
+
     // Four buffered async transfers, all notify=event, buffer=3
     // (raised from the original buffer=2 at TASK-0192 — see the
     // schedule's inline note and link.rs PipelineExceedsBuffer
