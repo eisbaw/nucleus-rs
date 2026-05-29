@@ -59,8 +59,9 @@ pub use ctx::{RenderCtx, RenderCtxPub};
 pub use error::EmitError;
 pub use expr::{render_const_expr, render_const_expr_pub, render_int_expr, render_loop_bounds};
 pub use fire::{
-    data_name, render_fire_args, render_fire_args_pub, render_fire_output_assign,
-    render_fire_output_assign_pub, render_flat_index, render_flat_index_pub, write_file,
+    data_name, render_fire_args, render_fire_args_nostd, render_fire_args_pub,
+    render_fire_output_assign, render_fire_output_assign_pub, render_flat_index,
+    render_flat_index_pub, write_file, SubArrayForm,
 };
 pub use reuse::{
     render_reuse_buf_decls, render_reuse_buf_decls_pub, render_reuse_marker_comment,

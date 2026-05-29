@@ -75,8 +75,8 @@ pub use host_election::{elect_host_from_name_workers, elect_host_from_worker_nam
 pub use project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 pub use render::{
     data_name, render_array_init_for, render_const_expr, render_const_expr_pub, render_fire_args,
-    render_fire_args_pub, render_fire_output_assign, render_fire_output_assign_pub,
-    render_flat_index, render_flat_index_pub, render_int_expr, render_loop_bounds,
-    rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of, write_file, EmitError,
-    RenderCtx, RenderCtxPub,
+    render_fire_args_nostd, render_fire_args_pub, render_fire_output_assign,
+    render_fire_output_assign_pub, render_flat_index, render_flat_index_pub, render_int_expr,
+    render_loop_bounds, rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of,
+    write_file, EmitError, RenderCtx, RenderCtxPub, SubArrayForm,
 };

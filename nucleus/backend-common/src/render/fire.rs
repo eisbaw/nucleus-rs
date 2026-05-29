@@ -85,15 +85,71 @@ pub fn render_fire_output_assign(
 // Fire arguments
 // --------------------------------------------------------------------
 
+/// How a contiguous PREFIX sub-array Fire argument is materialised at
+/// the call site (TASK-0049.06). A partial-rank DataRef (e.g.
+/// `mic_in[frame]` where `mic_in : i32[N_FRAMES][16]`) is a contiguous
+/// `[start .. start + sub_len]` window of the flat backing store; the
+/// two backend families pass it to the kernel differently:
+///
+/// - [`SubArrayForm::Vec`] — `<slice>.to_vec()`, an owned `Vec<T>`.
+///   This is the TIER-1 std convention (kernel params are `Vec<T>` per
+///   TASK-0103). It is the default and keeps the cross-backend
+///   bit-identical differential (PRD §10.1) on the existing matrix.
+/// - [`SubArrayForm::FixedArray`] — `<slice>.try_into().unwrap()`, an
+///   owned fixed `[T; sub_len]`. This is the no_std/embedded
+///   convention: kernel params are `[T; N]` (alloc-free), and
+///   `<[T]>::try_into::<[T; N]>` is `core`-available (no `Vec`, no
+///   `alloc`). The target array length is inferred from the kernel
+///   signature param type at the call site. Used ONLY by the
+///   embedded-pattern backend's `no_std` lowering — it MUST NOT change
+///   the tier-1 emission, so it is reached only through
+///   [`render_fire_args_nostd`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubArrayForm {
+    /// `<slice>.to_vec()` — owned `Vec<T>` (tier-1 std default).
+    Vec,
+    /// `<slice>.try_into().unwrap()` — owned `[T; N]` (no_std/embedded).
+    FixedArray,
+}
+
 /// Render a kernel call's argument list from its [`FireBinding`]
 /// inputs. `Data` → indexed/whole-array read; `Scalar` → integer
 /// expression with a param-type cast decided via the SIDECAR's
 /// kernel signature (TASK-0169, AlgoIR-free); `Nested` → rejected
 /// (tier-1 backends do not lower a nested call in argument position).
+///
+/// Sub-array (partial-rank) arguments materialise as `.to_vec()`
+/// (tier-1 std). The embedded `no_std` backend uses
+/// [`render_fire_args_nostd`] instead, which renders fixed arrays.
 pub fn render_fire_args(
     kernel: KernelId,
     inputs: &[ArgBinding],
     ctx: &RenderCtx<'_>,
+) -> Result<String, EmitError> {
+    render_fire_args_with(kernel, inputs, ctx, SubArrayForm::Vec)
+}
+
+/// no_std variant of [`render_fire_args`]: contiguous-prefix sub-array
+/// arguments materialise as fixed `[T; N]` arrays (`.try_into().unwrap()`)
+/// rather than `Vec<T>` (`.to_vec()`), so the call typechecks against a
+/// `no_std` kernel signature with `[T; N]` params and the generated lib
+/// needs no allocator (TASK-0049.06; the array-typed pure-kernel
+/// lowering gap the M11 real-example-14 cross-compile surfaced). Scalar
+/// (full-rank) and whole-array arguments render IDENTICALLY to the
+/// tier-1 path — only the sub-array materialisation differs.
+pub fn render_fire_args_nostd(
+    kernel: KernelId,
+    inputs: &[ArgBinding],
+    ctx: &RenderCtx<'_>,
+) -> Result<String, EmitError> {
+    render_fire_args_with(kernel, inputs, ctx, SubArrayForm::FixedArray)
+}
+
+fn render_fire_args_with(
+    kernel: KernelId,
+    inputs: &[ArgBinding],
+    ctx: &RenderCtx<'_>,
+    sub_array_form: SubArrayForm,
 ) -> Result<String, EmitError> {
     // Per-param types come from the sidecar's kernel signature, NOT
     // `algo.kernels` (AC#2). Absent only if the contract regressed.
@@ -101,7 +157,7 @@ pub fn render_fire_args(
     let mut parts = Vec::with_capacity(inputs.len());
     for (i, arg) in inputs.iter().enumerate() {
         let param_ty = sig.and_then(|s| s.params.get(i));
-        parts.push(render_fire_arg(arg, param_ty, ctx)?);
+        parts.push(render_fire_arg(arg, param_ty, ctx, sub_array_form)?);
     }
     Ok(parts.join(", "))
 }
@@ -174,6 +230,7 @@ fn render_fire_arg(
     arg: &ArgBinding,
     param_ty: Option<&ResolvedType>,
     ctx: &RenderCtx<'_>,
+    sub_array_form: SubArrayForm,
 ) -> Result<String, EmitError> {
     match arg {
         ArgBinding::Data(s) => {
@@ -212,19 +269,33 @@ fn render_fire_arg(
                 match classify_data_slice(s, ctx)? {
                     SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}]")),
                     SliceForm::SubArray { start, sub_len } => {
-                        // Owned `Vec<T>` matches `rust_type_of` for an
-                        // aggregate kernel param (`Vec<T>`); the call
-                        // moves it, consistent with the whole-array
-                        // case above. PRD §6.2.1 single-assignment
-                        // permits the move semantics.
-                        //
                         // The literal `{sub_len}usize` makes the upper
                         // bound a `usize` so the `start..start+sub_len`
                         // range typechecks (`start` is already `as
                         // usize` from `classify_data_slice`).
-                        Ok(format!(
-                            "{name}[{start}..{start} + {sub_len}usize].to_vec()"
-                        ))
+                        match sub_array_form {
+                            // Tier-1 std: owned `Vec<T>` matches
+                            // `rust_type_of` for an aggregate kernel
+                            // param (`Vec<T>`); the call moves it,
+                            // consistent with the whole-array case
+                            // above. PRD §6.2.1 single-assignment
+                            // permits the move semantics. Byte-identical
+                            // to the pre-TASK-0049.06 emission.
+                            SubArrayForm::Vec => Ok(format!(
+                                "{name}[{start}..{start} + {sub_len}usize].to_vec()"
+                            )),
+                            // no_std/embedded: owned `[T; sub_len]` via
+                            // `<[T]>::try_into` (core, alloc-free). The
+                            // target length is inferred from the kernel
+                            // signature's `[T; N]` param at the call
+                            // site; `.unwrap()` is correct because the
+                            // slice length (`sub_len`) provably matches
+                            // the declared shape (both derive from the
+                            // sidecar `dims`). TASK-0049.06.
+                            SubArrayForm::FixedArray => Ok(format!(
+                                "{name}[{start}..{start} + {sub_len}usize].try_into().unwrap()"
+                            )),
+                        }
                     }
                 }
             }
