@@ -632,10 +632,12 @@ fn is_pure_compute_fire(bindings: &FireBinding) -> bool {
     matches!(&bindings.output, Some(o) if !o.indices.is_empty())
 }
 
-/// `pub(crate)` (TASK-0340.10 split) so the sibling [`render`] module's
-/// `render_fire` can resolve a `KernelId` to its source name; also used
-/// by `collect_pure_kernel_names_in` in this module.
-pub(crate) fn kernel_name(kid: KernelId, names: &NameTables) -> Result<String, EmitError> {
+/// Resolve a `KernelId` to its source name. Used by
+/// `collect_pure_kernel_names_in` here and by the sibling [`render`]
+/// module's `render_fire`. Crate-root-private suffices: `render` is a
+/// descendant module, so a private `fn` is reachable without any
+/// visibility widening (TASK-0340.10 split — verified).
+fn kernel_name(kid: KernelId, names: &NameTables) -> Result<String, EmitError> {
     names.kernel.get(&kid).cloned().ok_or_else(|| {
         EmitError::ContractGap(format!("kernel id {kid:?} has no name in NameTables"))
     })

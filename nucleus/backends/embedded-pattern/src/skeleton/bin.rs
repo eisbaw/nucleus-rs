@@ -29,7 +29,7 @@ use super::{render_count_statics, NUCLEUS_SHIM_SRC};
 ///   back a pointer into the Renode-injected input region (axiSram @
 ///   0x2400_0000, where the `.resc` `sysbus LoadBinary @input.bin`s the
 ///   fixture) and advances an internal byte cursor by `bytes`. The load
-///   lowering then copies those `bytes` into the data array (see lib.rs
+///   lowering then copies those `bytes` into the data array (see render.rs
 ///   `render_fire`'s effectful-input arm). Sequential loads (`a <--
 ///   load_input(); b <-- load_input_b()`) consume the region in order,
 ///   matching `input.bin`'s layout (a's N words then b's N words —
@@ -38,7 +38,7 @@ use super::{render_count_statics, NUCLEUS_SHIM_SRC};
 /// - `dma_push` IS the UART emission: it streams the `len` RAW bytes of
 ///   the drained output region (the `save_output(c)` effectful Fire
 ///   lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
-///   core::mem::size_of_val(&c)); shim.dma_wait(0)` — see lib.rs
+///   core::mem::size_of_val(&c)); shim.dma_wait(0)` — see render.rs
 ///   `render_fire`) verbatim over USART1. The `renode-embedded`
 ///   recipe captures those bytes and `cmp`s them BYTE-EXACT against the
 ///   example's `reference.bin` (PRD §10.3 point 3). Raw (not ASCII): a byte-exact
