@@ -3,10 +3,11 @@ id: TASK-0363
 title: >-
   check_kernels_contract rustc_check breaks on --kernels filenames with dots
   (e.g. kernels.embedded.rs -> invalid crate name)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-05-29 08:00'
-updated_date: '2026-05-29 09:00'
+updated_date: '2026-05-29 09:24'
 labels:
   - backend
   - tech-debt
@@ -29,4 +30,6 @@ DISCOVERED in TASK-0049.06. The contract check phase 1 (nucleus-compiler/src/con
 
 <!-- SECTION:NOTES:BEGIN -->
 Architect P2.2 (TASK-0049.06 review): the driver warning text at nucleus/driver/src/main.rs:339 hardcodes "(aggregate-typed I/O is a known gap, TASK-0012)" — so when this dotted-stem rustc_check failure fires, the build output MISATTRIBUTES it to TASK-0012. When fixing this task (sanitised --crate-name), also fix/disambiguate that warning text so the dotted-stem cause is not conflated with the TASK-0012 aggregate-typed-IO gap. Also: documenting-not-fixing was accepted for the TASK-0049.06 cycle, but the consequence is rustc_check ALWAYS fails for kernels.embedded.rs, so a real Rust syntax error in that file would NOT be caught at phase 1 (only later at the embedded cross-compile) — mild safety-net erosion, another reason to do the one-call-site fix.
+
+IMPL PLAN (cycle): Added sanitise_crate_name(path) in contract.rs: maps file_stem non-[A-Za-z0-9_] chars to '_', prefixes '_' if empty or leading-digit. rustc_check passes --crate-name <sanitised>. Removed the KNOWN GAP comment (replaced with a TASK-0363 one-liner stating crate-name is now sanitised). Driver warning at main.rs:~339 de-conflated: dropped the hardcoded 'aggregate-typed I/O is a known gap, TASK-0012' parenthetical -> generic 'see individual issues below'. Test dotted_stem_kernels_file_does_not_trip_rust_check in tests/contract.rs: writes good/kernels.rs content to a temp kernels.embedded.rs, asserts no RustCheckFailed. SIBLING CHECK: workspace-wide grep — contract.rs rustc_check is the ONLY rustc-by-file-stem call site; all cargo build/run invocations (e2e/main.rs, backend tests, justfile check-embedded thumbv7em cross-compile) derive crate names from Cargo.toml, not file stems — safe.
 <!-- SECTION:NOTES:END -->

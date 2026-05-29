@@ -587,3 +587,60 @@ fn missing_kernels_file_produces_unreadable() {
         "expected KernelsFileUnreadable; got {errs:?}"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0363: a kernels file whose stem contains a dot (e.g.
+// `kernels.embedded.rs`, used by the M11 ex14 sync sibling via
+// `--kernels`) must NOT trip a spurious RustCheckFailed. Previously
+// rustc derived the crate name from the file stem and rejected it
+// with "invalid character `.` in crate name". `rustc_check` now passes
+// a sanitised `--crate-name`, so the dotted-stem file passes phase-1.
+// --------------------------------------------------------------------
+
+#[test]
+fn dotted_stem_kernels_file_does_not_trip_rust_check() {
+    // Reuse the `good` algo + its (compiling) kernels.rs SOURCE, but
+    // place it at a path whose stem has a dot. The CONTENT is identical
+    // to the positive `good` fixture, so the only thing under test is
+    // whether the dotted stem alone causes a rustc crate-name rejection.
+    let algo = algo_for("good");
+    let good_src = std::fs::read_to_string(kernels_rs_for("good"))
+        .expect("good/kernels.rs must be readable");
+
+    // Unique temp dir so parallel test threads don't collide on the
+    // fixed `kernels.embedded.rs` filename. The filename — not the
+    // directory — is what carries the dot under test.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "nucleus_task0363_{}_{}",
+        std::process::id(),
+        nanos
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dotted = dir.join("kernels.embedded.rs");
+    std::fs::write(&dotted, &good_src).expect("write dotted-stem kernels file");
+
+    let result = check_kernels_contract(&algo, &dotted);
+
+    // Best-effort cleanup before asserting (so a failure still cleans up).
+    let _ = std::fs::remove_file(&dotted);
+    let _ = std::fs::remove_dir(&dir);
+
+    match result {
+        Ok(()) => {} // identical content to `good` → contract holds
+        Err(errs) => {
+            // The whole point of TASK-0363: the dotted stem must NOT
+            // produce a RustCheckFailed. (Any OTHER error here would be
+            // a real regression in the shared `good` fixture.)
+            assert!(
+                !errs
+                    .iter()
+                    .any(|e| matches!(e, ContractError::RustCheckFailed { .. })),
+                "dotted-stem kernels file must NOT trip RustCheckFailed (TASK-0363); got {errs:?}"
+            );
+        }
+    }
+}

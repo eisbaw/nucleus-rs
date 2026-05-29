@@ -322,11 +322,15 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         s
     })?;
 
-    // ---- Contract check (best-effort; aggregate kernels report
-    //      TypeMismatch — see TASK-0012; we surface for visibility
-    //      but do not fail the build, as M1 example 01's aggregate
-    //      I/O kernels intentionally trip this until aggregate
-    //      matching lands). ----
+    // ---- Contract check (best-effort; surfaced for visibility but
+    //      does NOT fail the build). Issues can have MULTIPLE distinct
+    //      causes — e.g. aggregate-typed I/O still reports a non-fatal
+    //      TypeMismatch (TASK-0012, until aggregate matching lands).
+    //      The warning text below is deliberately GENERIC so it does
+    //      not misattribute every issue to one cause: each individual
+    //      issue is printed below the header (TASK-0363 — a dotted-stem
+    //      kernels-file rustc rejection was previously conflated with
+    //      the TASK-0012 aggregate gap). ----
     if !kernels_path.exists() {
         return Err(format!(
             "could not find kernels.rs at {}\n\
@@ -336,7 +340,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     }
     if let Err(errs) = check_kernels_contract(&algo_ir, &kernels_path) {
         eprintln!(
-            "warning: contract check reported {} issue(s) (proceeding; aggregate-typed I/O is a known gap, TASK-0012):",
+            "warning: contract check reported {} issue(s) (proceeding; see individual issues below):",
             errs.len()
         );
         for e in errs.iter().take(8) {

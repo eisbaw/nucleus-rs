@@ -268,8 +268,34 @@ pub fn check_kernels_contract(
 // Phase 1: rustc compile-check
 // --------------------------------------------------------------------
 
-/// Invoke `rustc --emit=metadata --crate-type=rlib --edition 2021` on
-/// the file. Output goes to a temp path that we discard.
+/// Derive a valid Rust crate-name identifier from a kernels-file path
+/// (TASK-0363). rustc's `--crate-name` (and the default derived from
+/// the file stem) must be a valid identifier: only `[A-Za-z0-9_]`, and
+/// not starting with a digit. We map every other character of the file
+/// STEM to `_`, then prefix `_` if the result is empty or starts with a
+/// digit. So `kernels.embedded.rs` → stem `kernels.embedded` →
+/// `kernels_embedded`; a stem like `3d` → `_3d`. The resulting name is
+/// internal to the throwaway metadata build, so collisions across two
+/// different stems (e.g. `a.b` and `a-b` both → `a_b`) are harmless —
+/// each rustc invocation compiles exactly one file.
+fn sanitise_crate_name(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("kernels");
+    let mut name: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if name.is_empty() || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// Invoke `rustc --crate-name <sanitised> --emit=metadata
+/// --crate-type=rlib --edition 2021` on the file. Output goes to a temp
+/// path that we discard.
 ///
 /// Returns `Err(stderr)` on non-zero exit, `Ok(())` on success. The
 /// stderr includes warnings too; we deliberately do not filter for
@@ -291,15 +317,18 @@ fn rustc_check(path: &Path) -> Result<(), String> {
         nanos
     ));
 
-    // KNOWN GAP (TASK-0363): no explicit `--crate-name` is passed, so
-    // rustc derives the crate name from the file stem. A `--kernels`
+    // TASK-0363: pass an explicit sanitised `--crate-name`. Without it
+    // rustc derives the crate name from the file STEM, so a `--kernels`
     // file with a dot in its stem (e.g. `kernels.embedded.rs`, used by
-    // the M11 ex14 sync sibling — TASK-0049.06) makes rustc reject with
-    // "invalid character `.` in crate name". This is non-fatal in the
-    // driver (cmd_build surfaces contract errors as a warning and
-    // proceeds), but it defeats the phase-1 compile-check for dotted
-    // kernels files. Fix is to pass a sanitised `--crate-name`.
+    // the M11 ex14 sync sibling — TASK-0049.06) was rejected with
+    // "invalid character `.` in crate name" — a spurious
+    // RustCheckFailed that defeated the phase-1 compile-check for any
+    // dotted-stem kernels file. `sanitise_crate_name` maps the stem to
+    // a valid Rust identifier so rustc accepts it.
+    let crate_name = sanitise_crate_name(path);
     let output = Command::new("rustc")
+        .arg("--crate-name")
+        .arg(&crate_name)
         .arg("--emit=metadata")
         .arg("--crate-type=rlib")
         .arg("--edition=2021")
