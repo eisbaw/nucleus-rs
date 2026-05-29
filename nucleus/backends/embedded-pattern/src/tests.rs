@@ -709,7 +709,21 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
         "dsp must lower its cross-worker Wait/Push to the stub-shim hooks:\n{dsp}"
     );
 
-    // --- every worker is a no_std lib with the shim trait + no std leak.
+    // --- producer-side transport: fe (mic_in) and rf (bt_in) must Push
+    //     their captured frames to dsp — the transport is not dsp-only
+    //     (TASK-0049.06 review P3.3: pin the producer side too). ---
+    for name in ["fe", "rf"] {
+        let src = read(name);
+        assert!(
+            src.contains("shim.dma_push("),
+            "producer worker `{name}` must Push its captured data over the \
+             stub-shim hook:\n{src}"
+        );
+    }
+
+    // --- every worker is a no_std lib with the shim trait + no std leak,
+    //     and lowers its Event::Sync barriers to shim.irq_barrier (the
+    //     cross-MCU ordering primitive; TASK-0049.06 review P3.3). ---
     for name in ["fe", "dsp", "rf"] {
         let src = read(name);
         assert!(src.contains("#![no_std]"), "worker `{name}` must be no_std:\n{src}");
@@ -720,6 +734,11 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
         assert!(
             !src.contains("std::fs") && !src.contains(".to_vec()"),
             "worker `{name}` must not leak std / use Vec into the no_std lib:\n{src}"
+        );
+        assert!(
+            src.contains("shim.irq_barrier("),
+            "worker `{name}` must lower Event::Sync to shim.irq_barrier (the \
+             cross-MCU ordering barrier):\n{src}"
         );
     }
 }

@@ -63,7 +63,11 @@
 //! no_std-clean — no `Vec`, no global allocator. 2D data (example 5
 //! `i32[16][16]`) flattens to `[i32; 256]` row-major, and the
 //! `img[y][x]` index flattens to `img[y*W + x]` exactly as the tier-1
-//! backends do (same shared `render_fire_args` / `render_flat_index`).
+//! backends do (same shared `render_flat_index`; the no_std lowering
+//! calls `render_fire_args_nostd`, the fixed-array `[T; N]` sibling of
+//! the tier-1 `render_fire_args`, so array-typed pure-kernel sub-array
+//! args materialise alloc-free via `try_into` instead of `to_vec` —
+//! TASK-0049.06).
 //!
 //! # Scope: LIB path is multi-worker (M11 slice A); BIN path is still single-worker
 //!

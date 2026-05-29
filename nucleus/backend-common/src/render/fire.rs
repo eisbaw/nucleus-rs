@@ -284,14 +284,28 @@ fn render_fire_arg(
                             SubArrayForm::Vec => Ok(format!(
                                 "{name}[{start}..{start} + {sub_len}usize].to_vec()"
                             )),
-                            // no_std/embedded: owned `[T; sub_len]` via
+                            // no_std/embedded: owned `[T; N]` via
                             // `<[T]>::try_into` (core, alloc-free). The
-                            // target length is inferred from the kernel
-                            // signature's `[T; N]` param at the call
-                            // site; `.unwrap()` is correct because the
-                            // slice length (`sub_len`) provably matches
-                            // the declared shape (both derive from the
-                            // sidecar `dims`). TASK-0049.06.
+                            // target length `N` is inferred by rustc from
+                            // the kernel signature's `[T; N]` param at the
+                            // call site. WARNING (TASK-0049.07): the
+                            // `.unwrap()` is NOT statically proven safe.
+                            // `sub_len` derives from the DATA trailing
+                            // dims (`sidecar.data_types`); `N` derives from
+                            // the KERNEL signature (`sidecar.kernel_sigs`)
+                            // — two different sidecar tables that NOTHING
+                            // in contract/link/type checking cross-
+                            // validates for equality. For a shape-matched
+                            // schedule (e.g. ex14: both 16) they agree and
+                            // this is correct; a shape-MISMATCHED schedule
+                            // would make `try_into::<[T; N]>()` of a
+                            // `sub_len`-length slice return `Err` and panic
+                            // at RUNTIME on-device (cargo check cannot
+                            // catch a runtime slice length). TASK-0049.07
+                            // tracks replacing this with an emit-time
+                            // typed `EmitError` on `sub_len != N`. Until
+                            // then this is a LATENT panic, not a proven
+                            // invariant. TASK-0049.06.
                             SubArrayForm::FixedArray => Ok(format!(
                                 "{name}[{start}..{start} + {sub_len}usize].try_into().unwrap()"
                             )),
