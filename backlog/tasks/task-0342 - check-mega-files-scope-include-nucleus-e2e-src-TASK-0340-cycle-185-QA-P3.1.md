@@ -4,7 +4,7 @@ title: 'check-mega-files scope: include nucleus/e2e/src/ (TASK-0340 cycle-185 QA
 status: Done
 assignee: []
 created_date: '2026-05-26 16:38'
-updated_date: '2026-05-26 23:57'
+updated_date: '2026-05-29 16:26'
 labels:
   - tech-debt
   - hygiene
@@ -42,6 +42,8 @@ Why Option A over Option B (document the exclusion): Option A keeps the fence's 
 - AC#1: scope extended (justfile:check-mega-files find arguments now include nucleus/e2e/src).
 - AC#2: Option A landed (allow-list extended with both files + recipe docstring updated).
 - AC#3: addendum on TASK-0340 — to be done in same commit.
+
+Forward-carried from TASK-0340.08.01 review (cycle, qa-test-runner + mped-architect P3): the check-mega-files 'find' scope is nucleus/**/src only — it does NOT scan tests/. After TASK-0340.08.01's proptest widening, nucleus/nucleus-compiler/tests/proptest_petri.rs is now 1774 LoC (>1000 threshold) and sits UNGUARDED. Not a current ci failure (out of scope), but the same scope-widening rationale that motivates including e2e/src/ applies to tests/. If this task widens the scope, decide tests/ too (and likely allow-list proptest_petri.rs with a rationale — it is a single cohesive property-test binary whose size is earned by two oracles + widened generators + honest-limit docstrings).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
