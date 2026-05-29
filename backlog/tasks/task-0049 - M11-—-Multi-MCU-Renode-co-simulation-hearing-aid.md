@@ -4,7 +4,7 @@ title: M11 — Multi-MCU Renode co-simulation (hearing aid)
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-29 00:48'
+updated_date: '2026-05-29 05:28'
 labels:
   - M11
   - backend
@@ -75,4 +75,9 @@ Verified from bundled Renode 1.16.1 source/scripts (see TASK-0049.01 for detail)
 - Multi-MCU co-sim IS supported (multiple `mach create`; bundled scripts/multi-node/ co-simulate even heterogeneous MCU families over a wired UART hub).
 - Wired cross-machine interconnects that EXIST: UART hub (byte/word/dword), CAN hub, LIN hub, GPIO connector, USB connector (+ BLE / 802.15.4 wireless).
 - CRITICAL: there is NO MCU-to-MCU SPI link in Renode (no SPIHub/SPIConnector anywhere). SPI is intra-machine only. So AC#2 / PRD 'over SPI' is NOT directly modellable — the interconnect must be re-decided (UART hub is the natural supported choice, matching AC#2's flexible 'shared interconnect' wording). Filed as TASK-0049.01 (medium); this is a PRD-level decision to make BEFORE the deep M11 codegen.
+
+=== Forward-carried from TASK-0049.01 (inter-MCU transport de-risk, DONE): startup-ordering discipline the M11 codegen MUST emit ===
+Interconnect DECIDED = UART hub (Renode has no MCU-to-MCU SPI link; user choice). The empirical 2x-STM32H743 + UARTHub smoke (tests/renode/multimcu-uart-smoke/, just renode-multimcu-uart-smoke) proved wired cross-MCU UART transport works end-to-end.
+DURABLE GOTCHA the generated multi-MCU firmware/.resc MUST handle: Renode's UARTBase.WriteChar DROPS a received char when the receiver's RX is not yet enabled (IsReceiveEnabled = RE && UE) — pre-enable arrivals are NOT queued. So a generated sender that transmits before the generated receiver has enabled its USART RX loses the opening bytes (a silent, scheduler-luck-dependent corruption). The de-risk harness fixes this in run.resc by start-gating the sender (`cpu IsHalted true` until the receiver boots) + a fine SetGlobalQuantum, mirroring the bundled nrf52840-ble-hci-uart reference. When M11 codegen emits the multi-MCU project, the generated .resc (or the firmware's own handshake) MUST guarantee every receiver has RX-enabled before any sender transmits to it — e.g. start-gate non-host workers' transmit, or have the host/coordinator barrier on receiver-ready. This is the cross-MCU analogue of the Event::Sync barrier; Sync->irq_barrier wiring should subsume it once real.
+TRANSPORT SHAPE for the lowering: USART1 on a CreateUARTHub bus (byte hub); TX via TDR poll-on-TXE (Renode hardwires TXE=true), RX via poll-on-RXNE + read RDR. Push -> transmit over the hub; Wait -> poll RX until the expected bytes arrive; Sync -> irq_barrier (cross-MCU). See tests/renode/multimcu-uart-smoke/src/lib.rs for the reference register helpers.
 <!-- SECTION:NOTES:END -->
