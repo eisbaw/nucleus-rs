@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::types::WorkerEntity;
-use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt};
+use crate::algo::{walk_dataref_names, AlgoIR, IndexedRef, IrExpr, IrStmt};
 
 /// Walk every `for VAR : ...` (including nested) and collect the
 /// iteration variable names. Used to validate schedule `loop` and
@@ -302,34 +302,21 @@ fn collect_dataref_consumers(
 }
 
 /// Recursively visit an expression and push every `DataRef`'s data
-/// symbol name onto `out`, in left-to-right source order. The
-/// worker-less analogue of [`collect_dataref_consumers`] — used by the
-/// identity-copy walk, which has no kernel worker entity to attribute
-/// reads to and instead records the bare source-symbol set for the
-/// transitive [`propagate_copy_edges`] pass (TASK-0347).
+/// symbol name onto `out`, in left-to-right source order (duplicates
+/// preserved). The worker-less analogue of [`collect_dataref_consumers`]
+/// — used by the identity-copy walk, which has no kernel worker entity
+/// to attribute reads to and instead records the bare source-symbol
+/// list for the transitive [`propagate_copy_edges`] pass (TASK-0347).
 ///
-/// Index expressions inside a `DataRef` are walked too (defensive: the
-/// current grammar restricts indices to iter-var/const arithmetic, so
-/// this is a no-op today, but it keeps the source-symbol set honest if
-/// the grammar ever admits data reads in index position).
+/// Order AND duplicates are load-bearing here (unlike the set-sink
+/// public [`crate::algo::collect_dataref_names`]): the `CopyEdge.srcs`
+/// value-flow list is consumed verbatim. This Vec-sink wrapper and the
+/// public set-sink wrapper both delegate to the single shared
+/// [`crate::algo::walk_dataref_names`] recursion (consolidated
+/// TASK-0343.03.01, retiring the former silent-sibling pair
+/// `feedback-silent-sibling-defect`); the shared walker visits in
+/// left-to-right source order and calls the sink once per occurrence,
+/// so `push`ing each preserves order + dups exactly.
 fn collect_dataref_names(e: &IrExpr, out: &mut Vec<String>) {
-    match e {
-        IrExpr::DataRef(IndexedRef { name, indices }) => {
-            out.push(name.clone());
-            for idx in indices {
-                collect_dataref_names(idx, out);
-            }
-        }
-        IrExpr::Call { args, .. } => {
-            for a in args {
-                collect_dataref_names(a, out);
-            }
-        }
-        IrExpr::Neg(inner) => collect_dataref_names(inner, out),
-        IrExpr::BinOp(_, l, r) => {
-            collect_dataref_names(l, out);
-            collect_dataref_names(r, out);
-        }
-        IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
-    }
+    walk_dataref_names(e, &mut |name| out.push(name.to_string()));
 }

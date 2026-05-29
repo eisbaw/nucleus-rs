@@ -48,8 +48,9 @@ pub use ast::{
     ScalarType, Stmt, Type, UnaryOp,
 };
 pub use ir::{
-    collect_dataref_names, AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind,
-    LowerErrors, ResolvedConst, ResolvedData, ResolvedKernel, ResolvedType,
+    collect_dataref_names, walk_dataref_names, AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt,
+    LowerError, LowerErrorKind, LowerErrors, ResolvedConst, ResolvedData, ResolvedKernel,
+    ResolvedType,
 };
 pub use lower::lower_algo;
 pub use parser::{parse_algo, ParseError, ParseErrorKind, ParseErrors};

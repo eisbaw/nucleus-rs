@@ -251,32 +251,55 @@ pub struct AlgoIR {
 /// recursion is a no-op today; it is kept so the collected set stays
 /// honest if the grammar ever admits data reads in index position.
 ///
-/// # Known remaining sibling (silent-sibling hygiene)
+/// # Consolidated sibling (TASK-0343.03.01)
 ///
-/// `link::dataflow`'s private `collect_dataref_names` is a DISTINCT
-/// walker with a `Vec<String>` sink (it must preserve source order +
-/// duplicates for the `CopyEdge` value-flow propagation, TASK-0347), so
-/// it is NOT collapsed into this set-sink helper. Consolidating the two
-/// into one generic-sink walker is filed as TASK-0343.03.01; doing it
-/// here would change the dataflow pass's behaviour (Vec order/dups) and
-/// is out of scope for the accumulator cross-check.
+/// This is now a thin set-sink wrapper over the single generic
+/// [`walk_dataref_names`] recursion. `link::dataflow`'s private
+/// `collect_dataref_names` (a `Vec<String>` sink that must preserve
+/// source order + duplicates for the `CopyEdge` value-flow propagation,
+/// TASK-0347) delegates to the SAME `walk_dataref_names`, so the two
+/// former silent-sibling copies (`feedback-silent-sibling-defect`) now
+/// share one recursion: any future change to the `DataRef` / `Call` /
+/// `Neg` / `BinOp` arms is made in exactly one place.
 pub fn collect_dataref_names(e: &IrExpr, out: &mut BTreeSet<String>) {
+    walk_dataref_names(e, &mut |name| {
+        out.insert(name.to_string());
+    });
+}
+
+/// The single generic-sink `IrExpr` data-ref-name recursion
+/// (TASK-0343.03.01). Visits every `DataRef`'s data-symbol name in
+/// left-to-right source order, calling `sink` once per occurrence —
+/// INCLUDING duplicates and in source order; the sink decides whether
+/// to dedup (set sink) or preserve order + dups (Vec sink). Index
+/// expressions inside a `DataRef` are walked too (a no-op under the
+/// current grammar, which restricts indices to iter-var / const
+/// arithmetic, but kept so the visited set stays honest if the grammar
+/// ever admits data reads in index position).
+///
+/// Both former copies — the public set-sink [`collect_dataref_names`]
+/// above and `link::dataflow`'s private ordered-Vec-sink
+/// `collect_dataref_names` — are thin wrappers over this function. The
+/// `&mut dyn FnMut(&str)` sink keeps the recursion sink-agnostic (a
+/// trait object, so the recursive calls do not re-monomorphise per
+/// caller).
+pub fn walk_dataref_names(e: &IrExpr, sink: &mut dyn FnMut(&str)) {
     match e {
         IrExpr::DataRef(IndexedRef { name, indices }) => {
-            out.insert(name.clone());
+            sink(name);
             for idx in indices {
-                collect_dataref_names(idx, out);
+                walk_dataref_names(idx, sink);
             }
         }
         IrExpr::Call { args, .. } => {
             for a in args {
-                collect_dataref_names(a, out);
+                walk_dataref_names(a, sink);
             }
         }
-        IrExpr::Neg(inner) => collect_dataref_names(inner, out),
+        IrExpr::Neg(inner) => walk_dataref_names(inner, sink),
         IrExpr::BinOp(_, l, r) => {
-            collect_dataref_names(l, out);
-            collect_dataref_names(r, out);
+            walk_dataref_names(l, sink);
+            walk_dataref_names(r, sink);
         }
         IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
     }
