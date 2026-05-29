@@ -182,8 +182,12 @@ fn nostd_sub_array_length_mismatch_is_contract_gap() {
     match err {
         EmitError::ContractGap(msg) => {
             // The lengths + data name are the load-bearing diagnostic.
+            // Assert the specific phrasings ("length 16" / "length 8")
+            // rather than a bare `contains('8')` — a stray digit
+            // elsewhere in the message must not be able to satisfy this
+            // (TASK-0049.07 architect P3.3).
             assert!(
-                msg.contains("16") && msg.contains('8'),
+                msg.contains("length 16") && msg.contains("length 8"),
                 "message must name both lengths (sub_len 16, N 8): {msg}"
             );
             assert!(

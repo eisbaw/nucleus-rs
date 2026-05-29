@@ -301,8 +301,9 @@ fn render_fire_arg(
                             // sidecar tables. Nothing in
                             // contract/link/type checking cross-validates
                             // them (contract.rs only matches SCALAR sigs;
-                            // aggregate params get a non-fatal
-                            // TypeMismatch warning), so a
+                            // aggregate params yield a `TypeMismatch`
+                            // that the DRIVER — not contract.rs —
+                            // surfaces non-fatally), so a
                             // shape-MISMATCHED-but-otherwise-legal
                             // schedule would historically make
                             // `try_into::<[T; N]>()` of a `sub_len`-length
@@ -311,7 +312,9 @@ fn render_fire_arg(
                             // runtime slice length).
                             //
                             // TASK-0049.07: that equality is now ENFORCED
-                            // at emit time. When `param_ty` is `Some` and
+                            // at emit time for THIS path — the sub-array
+                            // data arg meeting an AGGREGATE (non-scalar)
+                            // kernel param. When `param_ty` is `Some` and
                             // aggregate, we compute `N = product(dims)`
                             // and return a typed `EmitError::ContractGap`
                             // on `sub_len != N` — a shape-mismatched
@@ -319,7 +322,12 @@ fn render_fire_arg(
                             // an on-device runtime panic. When `param_ty`
                             // is `None` (no sig available) the check is
                             // skipped (cannot validate) and the prior
-                            // behaviour is preserved. For a shape-matched
+                            // behaviour is preserved; a sub-array arg
+                            // meeting a SCALAR param is also skipped here
+                            // and falls through to a cargo-build E0308 (a
+                            // compile-time error for the generated crate,
+                            // not the on-device runtime panic this guard
+                            // targets). For a shape-matched
                             // schedule (e.g. ex14: both 16) the check is a
                             // no-op and the emitted `.try_into().unwrap()`
                             // is identical to before. TASK-0049.06.
