@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-29 15:13'
+updated_date: '2026-05-29 15:35'
 labels:
   - tests
   - backend-common
@@ -35,3 +36,9 @@ Characterization pin lives in backend-common/tests/wait_let_at_wait_loop_scope.r
 - [ ] #2 The TASK-0356 characterization pin (wait_let_at_wait_loop_scope.rs) is updated to assert the new correct behaviour (well-scoped emit or EmitError) instead of the broken-scope footprint.
 - [ ] #3 A regression test constructs the at-risk shape via a real lower/link path (or a synthetic ACFG run through inject_transfers) IF a producing pass is ever added; otherwise the synthetic walker-level pin from TASK-0356 suffices and is updated in place.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carry (from TASK-0356 cycle-222 architect P3.1): the let-at-wait emit path is reached by FIVE backends that build a populated WalkerCtx.let_at_wait_data via collect_let_at_wait_data — pthreads-sync, pthreads-async, mp-tcp-event, mp-uds-event, openmp-rs (NOT three). mp-tcp-bufsync is the only multi-worker backend that bypasses (tcp_plan/events.rs, empty_let_at_wait_set). When fixing this hazard, audit ALL FIVE populated-set callers. Option A (scope-aware classifier exclusion in collect_let_at_wait_data) fixes all five at once (shared helper); option B (typed EmitError in render_wait_assign) also covers all five via the shared walker. The characterization test wait_let_at_wait_loop_scope.rs pins option-A bite via classifier_includes_in_loop_whole_array_wait_for_at_risk_shape and option-B bite via at_risk_shape_emits_broken_scope_no_emit_error — re-characterize both when this lands.
+<!-- SECTION:NOTES:END -->

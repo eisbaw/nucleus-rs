@@ -79,18 +79,26 @@
 //!
 //! ## Sibling audit (silent-sibling discipline)
 //!
-//! The `let {name} = {rhs};` let-at-wait emit is reached ONLY by the
-//! three `render_worker_events`-using backends (pthreads-sync,
-//! pthreads-async, mp-tcp-event). The fourth tier-1 backend,
-//! mp-tcp-bufsync, bypasses the walker and calls `render_wait_assign`
-//! directly (`backend-common/src/tcp_plan/events.rs`), and it passes
+//! The `let {name} = {rhs};` let-at-wait emit is reached by the FIVE
+//! backends that build a populated let-at-wait `WalkerCtx` from
+//! `collect_let_at_wait_data` and call `render_worker_events`
+//! (verified by grepping the `collect_let_at_wait_data` / `let_at_wait_data`
+//! call sites under `nucleus/backends/*/src/`, cycle 222 architect P3.1):
+//! pthreads-sync, pthreads-async, mp-tcp-event, mp-uds-event, and
+//! openmp-rs. (An earlier draft of this doc undercounted to "three"
+//! — `feedback-comment-doc-lie-recurring`.) mp-tcp-bufsync bypasses the
+//! walker and calls `render_wait_assign` directly
+//! (`backend-common/src/tcp_plan/events.rs`), passing
 //! `WalkerCtx::empty_let_at_wait_set()` UNCONDITIONALLY — it never
 //! classifies any data as let-at-wait, precisely because its Wait emit
 //! wraps the assign in a `{ let __buf = ...; <assign> }` block and a
 //! `let {name}` would be block-scoped to that wrap (documented at the
 //! cycle-220 comment in `events.rs`). So mp-tcp-bufsync is
-//! structurally immune to this hazard; there is no untouched sibling
-//! that also emits the broken-scope `let {name}` inside a loop.
+//! structurally immune to this hazard. All five populated-set callers
+//! share the same upstream `transfer_inject` co-location protection, so
+//! none emits the broken-scope `let {name}` inside a loop from valid
+//! lower/link output today; the TASK-0364 fix-author must audit all
+//! five if the protection ever weakens.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -218,6 +226,16 @@ fn at_risk_shape_emits_broken_scope_no_emit_error() {
     rendezvous_ids.insert((data, seq), 0usize);
     let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
     let mut let_at_wait: BTreeSet<DataId> = BTreeSet::new();
+    // NOTE (cycle 222 architect P3.2): this inserts `data` DIRECTLY,
+    // bypassing the `collect_let_at_wait_data` classifier. Consequence
+    // for the TASK-0364 fix-author: a classifier-side fix (option A —
+    // exclude an in-loop Wait with an outer consumer from the set) will
+    // NOT break THIS test (it forces the set membership), but WILL break
+    // the sibling `classifier_includes_in_loop_whole_array_wait_for_at_risk_shape`
+    // (which drives the real classifier). An emit-side fix (option B —
+    // a typed EmitError) WILL break this test (the `.expect()` below
+    // fails). So the two tests together cover both fix options; neither
+    // alone guards both. Re-characterize both when TASK-0364 lands.
     let_at_wait.insert(data);
 
     let ctx = WalkerCtx {
