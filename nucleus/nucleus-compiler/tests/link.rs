@@ -6,12 +6,14 @@
 //!   parses and lowers cleanly must also link cleanly. The matrix
 //!   includes 05-stencil × {naive, blocked, distributed},
 //!   13-cnn-inference × {naive, batch_parallel, pipeline_parallel},
-//!   and 14-hearing-aid × {naive}.
-//!   `14-hearing-aid/embedded_multimcu.sched.nuc` is excluded by
-//!   scope: it is a far-future M11 multi-MCU schedule, not part of
-//!   the M3 lower/link matrix. (It now parses cleanly — TASK-0079
-//!   reconciled its `check loop` form; covered by the parser test.
-//!   Bringing it into the lower/link matrix is follow-up TASK-0192.)
+//!   and 14-hearing-aid × {naive, embedded_multimcu}.
+//!   `14-hearing-aid/embedded_multimcu.sched.nuc` (the M11 multi-MCU
+//!   schedule, linked against the per-frame `prog.embedded.algo.nuc`)
+//!   was ADMITTED into the link matrix at TASK-0192 — see
+//!   `links_14_hearing_aid_embedded_multimcu`. The de-risk surfaced
+//!   one latent example bug (pipeline=3 vs buffer=2 →
+//!   PipelineExceedsBuffer) that was fixed in the schedule (buffer
+//!   raised to 3); the lowering machinery itself needed no change.
 //!
 //! - Negative: at least one hand-written invalid (algorithm, schedule)
 //!   pair per [`LinkError`] variant. Inline sources for terseness; the
@@ -280,6 +282,29 @@ fn links_14_hearing_aid_naive() {
     link_example(
         "14-hearing-aid/prog.algo.nuc",
         "14-hearing-aid/schedules/naive.sched.nuc",
+    );
+}
+
+/// TASK-0192 (M11 lowering-admission de-risk): the M11 multi-MCU
+/// `embedded_multimcu` schedule links cleanly against the per-frame
+/// `prog.embedded.algo.nuc` (NOT the tier-1 bulk-IO `prog.algo.nuc`,
+/// whose load_*/save_* kernels the schedule does not place).
+///
+/// This pins the LINK arm of the de-risk. Bringing it in originally
+/// failed with `PipelineExceedsBuffer` (the schedule kept `pipeline=3`
+/// but only `buffer=2` on its four transfers — a latent inconsistency
+/// dating to the initial commit, before the link invariant existed,
+/// contradicted by the schedule's own "three frames in flight" prose).
+/// The schedule was fixed (`buffer` 2 → 3, matching the convention of
+/// examples 09/11/13) rather than the assertion weakened; with that
+/// fix the cross-worker pipelined transfers satisfy `buffer >= depth`
+/// and the pair links. See `tests/sched_lower.rs` and `tests/acfg.rs`
+/// for the other two arms.
+#[test]
+fn links_14_hearing_aid_embedded_multimcu() {
+    link_example(
+        "14-hearing-aid/prog.embedded.algo.nuc",
+        "14-hearing-aid/schedules/embedded_multimcu.sched.nuc",
     );
 }
 

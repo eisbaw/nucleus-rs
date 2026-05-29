@@ -13,11 +13,11 @@
 //!   assert `==`. The deterministic name -> ID mapping (see
 //!   `crate::acfg` docs) must produce identical IDs across runs.
 //!
-//! Excluded examples mirror `tests/link.rs`:
-//! - `14-hearing-aid/embedded_multimcu.sched.nuc` — excluded by scope
-//!   (far-future M11 multi-MCU schedule, not the M3 matrix). It now
-//!   parses cleanly (TASK-0079); follow-up TASK-0192 tracks bringing
-//!   it into the lower/link/ACFG matrix.
+//! M11 admission (mirrors `tests/link.rs`):
+//! - `14-hearing-aid/embedded_multimcu.sched.nuc` (the M11 multi-MCU
+//!   schedule, built against the per-frame `prog.embedded.algo.nuc`)
+//!   was ADMITTED into the ACFG matrix at TASK-0192 — see
+//!   `acfg_example_14_embedded_multimcu`.
 //!
 //! 05-stencil was historically a parse failure (legacy 2013 syntax);
 //! TASK-0078 / TASK-0031 rewrote it into v2 form. Adding a dedicated
@@ -193,6 +193,38 @@ fn acfg_example_14_naive() {
     let linked = linked_from_paths(
         "14-hearing-aid/prog.algo.nuc",
         "14-hearing-aid/schedules/naive.sched.nuc",
+    );
+    let acfg = build_acfg(&linked).expect("build_acfg");
+
+    assert_eq!(acfg.operation_count(), 7);
+    assert_eq!(acfg.repeat_count(), 1);
+    assert_eq!(acfg.max_repeat_depth(), 1);
+}
+
+/// TASK-0192 (M11 lowering-admission de-risk): build an ACFG for the
+/// M11 multi-MCU `embedded_multimcu` schedule × the per-frame
+/// `prog.embedded.algo.nuc`. This is the ACFG arm of the de-risk
+/// (sched_lower + link arms live in `tests/sched_lower.rs` /
+/// `tests/link.rs`).
+///
+/// Structure (per-frame IO, unlike the naive bulk-IO shape above):
+///   for frame {
+///       mic_in[frame]  <-- fe_capture()            (Op)
+///       bt_in[frame]   <-- rf_receive()            (Op)
+///       bt_out[frame]  <-- denoise(mic_in[frame])  (Op)
+///       rf_transmit(bt_out[frame])                 (Op, effect)
+///       mixed[frame]   <-- mix2(mic_in, bt_in)     (Op)
+///       spk_out[frame] <-- denoise(mixed[frame])   (Op)
+///       fe_emit(spk_out[frame])                    (Op, effect)
+///   }
+/// -> 7 operations total, ALL inside 1 Repeat, max depth 1. (The naive
+/// shape also has 7 ops / 1 repeat, but split 4 top-level + 3 in the
+/// repeat; here all 7 are per-frame, so all 7 live in the repeat.)
+#[test]
+fn acfg_example_14_embedded_multimcu() {
+    let linked = linked_from_paths(
+        "14-hearing-aid/prog.embedded.algo.nuc",
+        "14-hearing-aid/schedules/embedded_multimcu.sched.nuc",
     );
     let acfg = build_acfg(&linked).expect("build_acfg");
 

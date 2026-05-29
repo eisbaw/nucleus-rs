@@ -8,11 +8,12 @@
 //! - Negative: one hand-written invalid source per [`SchedLowerError`]
 //!   variant we care to defend.
 //!
-//! `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` is excluded
-//! from the positive set by scope (far-future M11 multi-MCU schedule,
-//! not the M3 lower matrix). It now parses cleanly — TASK-0079
-//! reconciled its `check loop` form, pinned by the parser test.
-//! Follow-up TASK-0192 tracks adding it to the lower matrix.
+//! `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` (the M11
+//! multi-MCU schedule) was ADMITTED into this positive set at
+//! TASK-0192 (M11 lowering-admission de-risk) — see
+//! `lowers_14_hearing_aid_embedded_multimcu`. It lowers cleanly
+//! despite its complex shape (3 worker classes, memory_region /
+//! place_data, pipeline=3, async buffered transfers, a check loop).
 
 use nucleus_compiler::error::offset_to_line_col;
 use nucleus_compiler::sched::{
@@ -53,9 +54,9 @@ fn lower_str(src: &str) -> Result<SchedIR, SchedLowerErrors> {
 // Positive: existing example schedules lower
 // --------------------------------------------------------------------
 //
-// 14-hearing-aid/embedded_multimcu.sched.nuc is omitted by scope
-// (far-future M11 multi-MCU schedule). It parses cleanly post
-// TASK-0079; lower-matrix inclusion is follow-up TASK-0192.
+// 14-hearing-aid/embedded_multimcu.sched.nuc (M11 multi-MCU) is in the
+// positive set as of TASK-0192 — see
+// `lowers_14_hearing_aid_embedded_multimcu` below.
 
 #[test]
 fn lowers_01_elementwise_add_naive() {
@@ -322,6 +323,68 @@ fn lowers_14_hearing_aid_naive() {
     let ir = lower_str(&src).expect("14-hearing-aid/naive must lower");
     assert_eq!(ir.places.len(), 6);
     assert!(ir.transfers.is_empty());
+}
+
+/// TASK-0192 (M11 lowering-admission de-risk): the M11 multi-MCU
+/// `embedded_multimcu` schedule lowers cleanly. This is the most
+/// complex schedule shape in the example set — 3 typed worker classes,
+/// two `memory_region`s + `place_data` directives, `pipeline=3`, four
+/// async buffered `notify=event` transfers, and a `check loop` with a
+/// `latency_max` assertion. Pinning that ALL of this lowers (not just
+/// the simple naive form) is the sched_lower arm of the M11 de-risk;
+/// the link + acfg arms are in `tests/link.rs` / `tests/acfg.rs`.
+#[test]
+fn lowers_14_hearing_aid_embedded_multimcu() {
+    let src = read_example("14-hearing-aid/schedules/embedded_multimcu.sched.nuc");
+    let ir = lower_str(&src).expect("14-hearing-aid/embedded_multimcu must lower");
+
+    // Three workers (one per MCU class: fe / dsp / rf).
+    assert_eq!(ir.workers.len(), 3);
+    assert_eq!(ir.workers["fe"].class, "fe_core");
+    assert_eq!(ir.workers["dsp"].class, "dsp_core");
+    assert_eq!(ir.workers["rf"].class, "rf_core");
+
+    // Six placements (the 6 hearing-aid kernels).
+    assert_eq!(ir.places.len(), 6);
+
+    // Four buffered async transfers, all notify=event, buffer=3
+    // (raised from the original buffer=2 at TASK-0192 — see the
+    // schedule's inline note and link.rs PipelineExceedsBuffer
+    // rationale).
+    assert_eq!(ir.transfers.len(), 4);
+    for name in ["mic_in", "bt_in", "spk_out", "bt_out"] {
+        let tx = &ir.transfers[name];
+        assert!(
+            tx.options.contains(&ResolvedTransferOption::Async),
+            "{name} must be async"
+        );
+        assert!(
+            tx.options.contains(&ResolvedTransferOption::Buffer(3)),
+            "{name} must have buffer=3, got {:?}",
+            tx.options
+        );
+        assert!(
+            tx.options
+                .contains(&ResolvedTransferOption::Notify(NotifyKind::Event)),
+            "{name} must notify=event"
+        );
+    }
+
+    // One pipelined loop: `loop frame : pipeline=3`.
+    assert_eq!(ir.loops.len(), 1);
+    let frame_loop = &ir.loops["frame"];
+    assert!(
+        frame_loop
+            .options
+            .contains(&ResolvedLoopOption::Pipeline(3)),
+        "frame loop must have pipeline=3, got {:?}",
+        frame_loop.options
+    );
+
+    // One check loop: `check loop frame : latency_max = 10ms`.
+    assert_eq!(ir.checks.len(), 1);
+    assert_eq!(ir.checks["frame"].var, "frame");
+    assert_eq!(ir.checks["frame"].asserts.len(), 1);
 }
 
 // --------------------------------------------------------------------

@@ -1,23 +1,30 @@
 // Embedded multi-MCU schedule: three MCUs of different classes
 // representing the three subsystems of a real hearing aid.
 //
-// **M11-aspirational — does NOT lower against the current
-// prog.algo.nuc.** Cycle 201 (TASK-0054) rewrote prog.algo.nuc
-// from f32 + per-frame stateful peripheral kernels to i32 + bulk
-// IO (for tier-1 cross-backend compatibility). This schedule still
-// references the old per-frame kernels (fe_capture / rf_receive /
-// fe_emit / rf_transmit) that no longer exist in the algorithm.
+// **M11 design target.** This schedule places the per-frame
+// peripheral kernels (fe_capture / rf_receive / fe_emit /
+// rf_transmit) that the EMBEDDED algorithm shape declares. As of
+// TASK-0054.01 (M11 entry) the `schedule for` target below points at
+// the dedicated `../prog.embedded.algo.nuc` (the per-frame variant),
+// NOT the tier-1 `../prog.algo.nuc` (bulk IO). The two algorithm
+// shapes share `mix2` + `denoise` but differ in IO kernels; the
+// option-(a) separate-file decision is recorded in
+// prog.embedded.algo.nuc's header.
 //
-// The schedule file is preserved AS-IS as the M11 design target:
-// when M11 (Renode multi-MCU) lands, the algorithm will be re-
-// extended with per-frame peripheral kernels (likely via a
-// second-shape algorithm file or a `tier` discriminator on kernels)
-// and this schedule will lower. e2e-matrix.toml marks all 7
-// embedded_multimcu cells [[skip]] with M11-deferred reason. Filed
-// as TASK-0054.01 (M11 reinstate per-frame peripheral IO).
+// As of TASK-0054.01 every kernel placed below resolves against
+// prog.embedded.algo.nuc. Whether this schedule LOWERS cleanly
+// through sched_lower / link / acfg is the subject of TASK-0192
+// (M11 lowering-admission de-risk); deep-codegen gaps discovered
+// there are filed as TASK-0049 subtasks. e2e-matrix.toml still marks
+// all 7 embedded_multimcu cells [[skip]] (the e2e harness hardcodes
+// prog.algo.nuc per example, so it cannot drive this variant yet —
+// harness + stateful kernels.rs + Renode substrate are TASK-0049 /
+// TASK-0054.01 part 2-4 deep-codegen follow-ups).
 //
 // This is the schedule M11 needs to compile and validate in Renode
-// co-simulation (FE_MCU + DSP_MCU + RF_MCU connected over SPI).
+// co-simulation. Interconnect DECIDED = UART hub (Renode has no
+// MCU-to-MCU SPI link — TASK-0049.01); FE_MCU + DSP_MCU + RF_MCU
+// connected over the wired UART hub.
 //
 // What's new compared to earlier examples:
 //   - Three worker CLASSES, not just three workers. The classes
@@ -29,7 +36,7 @@
 //   - Async transfers with buffering so producer MCUs don't stall
 //     waiting for consumer MCUs.
 
-schedule for "../prog.algo.nuc" {
+schedule for "../prog.embedded.algo.nuc" {
 
     // ---------- worker topology ----------
 
@@ -68,7 +75,8 @@ schedule for "../prog.algo.nuc" {
     // ---------- data placement ----------
 
     // Audio frame buffers must be reachable by both producer and
-    // consumer MCUs over SPI, so they live in shared SRAM.
+    // consumer MCUs over the inter-MCU transport (UART hub —
+    // TASK-0049.01), so they live in shared SRAM.
     place_data mic_in  in sram_shared;
     place_data bt_in   in sram_shared;
     place_data spk_out in sram_shared;
@@ -94,15 +102,31 @@ schedule for "../prog.algo.nuc" {
 
     // ---------- IO semantics ----------
 
-    // Mic and BT data into DSP: async with 2-deep buffering so FE/RF
-    // can produce the next frame while DSP works on the current one.
-    transfer mic_in  : async, buffer=2, notify=event;
-    transfer bt_in   : async, buffer=2, notify=event;
+    // Mic and BT data into DSP: async with 3-deep buffering so FE/RF
+    // can produce the next two frames while DSP works on the current
+    // one. The buffer MUST be >= the loop's pipeline depth (3 above):
+    // the link gate (TASK-0134 / PipelineExceedsBuffer) rejects a
+    // pipelined cross-worker transfer whose ring is shallower than the
+    // number of frames the schedule keeps in flight — otherwise frame
+    // N+2's Push would overwrite frame N's still-unread slot. Matches
+    // the pipeline-depth == buffer-capacity convention of examples
+    // 09 (pipeline=4/buffer=4), 11 (2/2), 13 (3/3).
+    //
+    // NOTE (TASK-0192 M11 lowering-admission de-risk): the original
+    // shape (initial commit 2cc372c, authored before the
+    // PipelineExceedsBuffer link invariant existed) declared buffer=2
+    // here while keeping pipeline=3 above — internally inconsistent
+    // ("Three frames in flight" topology comment vs "2-deep buffering"
+    // transfer comment). Bringing this schedule into the link/acfg
+    // matrix surfaced the contradiction; buffer raised 2 -> 3 to match
+    // the documented pipeline depth.
+    transfer mic_in  : async, buffer=3, notify=event;
+    transfer bt_in   : async, buffer=3, notify=event;
 
     // DSP output back to FE (speaker) and RF (Bluetooth tx): same
-    // async pattern in the other direction.
-    transfer spk_out : async, buffer=2, notify=event;
-    transfer bt_out  : async, buffer=2, notify=event;
+    // async pattern in the other direction (buffer == pipeline depth).
+    transfer spk_out : async, buffer=3, notify=event;
+    transfer bt_out  : async, buffer=3, notify=event;
 
     // ---------- runtime assertions (checkable, not prescriptive) ----------
 
