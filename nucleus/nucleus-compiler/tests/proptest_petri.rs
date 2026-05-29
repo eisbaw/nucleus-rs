@@ -20,7 +20,7 @@
 //!
 //! - [`oracle_capacity_can_be_violated`]: an INDEPENDENT
 //!   reference. BFS over Petri-net markings from the initial marking,
-//!   bounded by `STATE_SPACE_CAP=10_000` distinct markings. If the cap
+//!   bounded by `STATE_SPACE_CAP=50_000` distinct markings. If the cap
 //!   is hit, the result is [`OracleResult::Inconclusive`] and the
 //!   property `prop_assume!`s the case away. The oracle reports whether
 //!   ANY reachable marking has a transition that is token-enabled but
@@ -64,23 +64,37 @@
 //!
 //! ## Generator honest limits
 //!
-//! - The Petri-net generator produces small nets (`MAX_PLACES=4`,
+//! The file carries TWO generator tiers. The NARROW generators
+//! (`small_net_strategy`, `small_acfg_strategy`) feed the original nine
+//! properties (b.1-3 / d.1-3 / p.1-3) and keep the limits below for
+//! oracle tractability. The WIDENED generators (`weighted_net_strategy`,
+//! `widened_acfg_strategy`; TASK-0340.08.01) feed b.4 / d.4 / p.4 and
+//! deliberately LIFT several of those limits — so "the generator does
+//! not do X" below is scoped to the named narrow generator, NOT the
+//! whole file.
+//!
+//! - `small_net_strategy` produces small nets (`MAX_PLACES=4`,
 //!   `MAX_TRANSITIONS=4`, capacities 1..=3, weight=1 arcs only) so the
-//!   state-space oracle stays under the 10_000-marking cap on the
+//!   state-space oracle stays under the 50_000-marking cap on the
 //!   vast majority of cases. It does NOT generate:
-//!   * Weight-`n` arcs (`n > 1`). All arcs are weight 1.
+//!   * Weight-`n` arcs (`n > 1`); all its arcs are weight 1.
+//!     (`weighted_net_strategy` DOES — weight∈1..=`MAX_ARC_WEIGHT`=3 — for b.4.)
 //!   * Multi-arc bundles from the same place to the same transition
 //!     (the generator dedups by `(kind, place_idx, transition_idx)`).
 //!   * Unbounded places (capacity = None) — every generated place has
 //!     a capacity in 1..=3.
 //!   * Nets larger than `MAX_PLACES × MAX_TRANSITIONS = 4×4` —
 //!     needed to keep the oracle tractable.
-//! - The ACFG generator produces a linear `Sequence` of `Operation`s
+//! - `small_acfg_strategy` produces a linear `Sequence` of `Operation`s
 //!   on 1-3 workers; it does NOT generate Push/Wait pairs, Sync,
-//!   nested `Repeat`, or `partition_workers` overrides. Those are
-//!   exercised by the existing hand-curated tests; here we exercise
-//!   the projection's shape-invariants (workers coverage,
-//!   determinism, no spurious events) on bulk-randomised inputs.
+//!   nested `Repeat`, or `partition_workers` overrides. Here we exercise
+//!   the projection's shape-invariants (workers coverage, determinism,
+//!   no spurious events) on bulk-randomised inputs.
+//!   (`widened_acfg_strategy` DOES generate Sync barriers, Push/Wait
+//!   `Xfer` pairs, circular deadlock cycles, and depth-≤2 nested
+//!   `Repeat` — kept ≤ ~8×8 transitions for d.4-oracle tractability —
+//!   for d.4 / p.4. `partition_workers` overrides remain exercised only
+//!   by the hand-curated tests.)
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
