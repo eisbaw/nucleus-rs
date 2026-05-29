@@ -395,6 +395,57 @@ fn lowers_example_14_hearing_aid() {
     }
 }
 
+#[test]
+fn lowers_example_14_hearing_aid_embedded() {
+    // TASK-0054.01 (M11 entry): the per-frame EMBEDDED variant of
+    // example 14 lowers in isolation (AC#4 evidence). Unlike the tier-1
+    // bulk-IO file, IO is per-frame: the four peripheral kernels
+    // (fe_capture/rf_receive/fe_emit/rf_transmit) fire INSIDE the
+    // `for frame` loop, so the loop body carries Effect statements
+    // (rf_transmit, fe_emit) alongside the Dataflow assignments.
+    let src = read_example("14-hearing-aid/prog.embedded.algo.nuc");
+    let ast = parse_algo(&src).expect("14-hearing-aid/embedded must parse");
+    let ir = lower_algo(&ast).expect("14-hearing-aid/embedded must lower");
+
+    assert_eq!(ir.consts.len(), 2);
+    // Same 5 data symbols as tier-1 (mic_in, bt_in, spk_out, bt_out,
+    // mixed) so the M11 schedule's place_data directives resolve.
+    assert_eq!(ir.data.len(), 5);
+    // 6 kernels: the 4 per-frame peripherals + mix2 + denoise.
+    assert_eq!(ir.kernels.len(), 6);
+    // Exactly ONE top-level statement: the `for frame` loop (no bulk
+    // load/save bookends, unlike tier-1's 5 top-level statements).
+    assert_eq!(ir.stmts.len(), 1);
+
+    // Same resolved frame-buffer shape as tier-1: i32[4][16].
+    assert_eq!(ir.data["mic_in"].ty.dims, vec![4, 16]);
+    assert_eq!(ir.data["mic_in"].ty.scalar, ScalarType::I32);
+
+    // The single top-level statement is the for-loop with 7 body
+    // statements: 5 Dataflow (mic_in <-- fe_capture, bt_in <--
+    // rf_receive, bt_out <-- denoise, mixed <-- mix2, spk_out <--
+    // denoise) and 2 Effect (rf_transmit(bt_out), fe_emit(spk_out)).
+    if let IrStmt::For {
+        ref var, ref body, ..
+    } = ir.stmts[0]
+    {
+        assert_eq!(var, "frame");
+        assert_eq!(body.len(), 7);
+        let n_dataflow = body
+            .iter()
+            .filter(|s| matches!(s, IrStmt::Dataflow { .. }))
+            .count();
+        let n_effect = body
+            .iter()
+            .filter(|s| matches!(s, IrStmt::Effect { .. }))
+            .count();
+        assert_eq!(n_dataflow, 5, "5 per-frame dataflow assignments");
+        assert_eq!(n_effect, 2, "rf_transmit + fe_emit are per-frame effects");
+    } else {
+        panic!("stmts[0] must be a For");
+    }
+}
+
 // --------------------------------------------------------------------
 // Negative cases
 // --------------------------------------------------------------------

@@ -1,0 +1,140 @@
+// Hearing-aid pipeline — M11 multi-MCU EMBEDDED variant (per-frame IO).
+//
+// This is the SECOND algorithm shape for example 14. The tier-1
+// `prog.algo.nuc` (bulk IO) is the cross-backend differential workhorse
+// for the 7 passing M6 naive cells; THIS file expresses the per-frame
+// peripheral-IO dataflow that the M11 `embedded_multimcu.sched.nuc`
+// schedule places across three MCUs (FE / DSP / RF).
+//
+// ---------------------------------------------------------------------
+// Why a SEPARATE file (design decision — option (a), recorded per
+// TASK-0054.01 AC#4):
+//
+//   (a) [CHOSEN] separate algorithm file. The tier-1 and M11 worlds
+//       share `mix2` + `denoise` but differ in their IO kernels
+//       (bulk load_*/save_* vs per-frame fe_*/rf_*). Two files keep
+//       each world's kernel set minimal and let the tier-1 file stay
+//       byte-stable (it backs 7 passing naive e2e cells that must not
+//       move). Cost: a second file to maintain, and the example dir
+//       now has two `*.algo.nuc` — see the harness note below.
+//   (b) [rejected] a `tier` discriminator selecting bulk vs per-frame
+//       kernel sets at compile time. Cleanest conceptually but needs
+//       an algorithm-sublanguage extension (conditional declarations)
+//       that does not exist in v2 today — out of scope for a
+//       low-risk M11-entry slice.
+//   (c) [rejected] add fe_*/rf_* back to the SHARED tier-1 algorithm.
+//       The per-frame peripheral kernels are STATEFUL (a call-count
+//       cursor into canned frame buffers); that breaks the
+//       multi-process tier-1 backends (mp-tcp-bufsync etc.), which
+//       give every process its own kernels.rs instance with no shared
+//       cursor. Would regress the passing M6 matrix.
+//
+// HARNESS INTERACTION NOTE (gotcha, forward-carried from TASK-0054.01):
+// the e2e harness (`nucleus/e2e/src/main.rs`) hardcodes
+// `ex_dir.join("prog.algo.nuc")` as the algorithm for EVERY cell of an
+// example — it does NOT read the schedule's `schedule for "..."` path
+// to pick the algorithm. So this `prog.embedded.algo.nuc` is invisible
+// to the e2e matrix today; the 7 `embedded_multimcu` cells stay
+// `[[skip]]`. Promoting them (which requires the harness to honour the
+// schedule's `schedule for` target, plus the stateful kernels.rs, plus
+// the Renode multi-MCU substrate) is deep-codegen follow-up work filed
+// under TASK-0049 / TASK-0054.01 part 2-4. This slice is ALGORITHM +
+// LOWERING-ADMISSION only.
+//
+// ---------------------------------------------------------------------
+// Numeric choice: i32 with `wrapping_add` (PRD §10.1). Integer
+// arithmetic is bit-deterministic across schedules and backends;
+// reorderable floating-point sum is not. The ORIGINAL pre-cycle-201
+// shape (recovered from commit 2cc372c) used f32 + a 256-sample /
+// 1000-frame FFT-flavoured denoise; this port keeps the f32 shape's
+// DATAFLOW (the four peripheral kernels, fork/merge, bidirectional
+// flow) but switches to i32 and the small finite frame counts so the
+// per-frame variant stays consistent with the tier-1 file and is
+// cross-backend differential-testable when the deep-codegen work lands.
+//
+// Subsystems / dataflow (identical SHAPE to the tier-1 file, but the
+// IO endpoints are per-frame peripherals instead of bulk files):
+//   - FE (front-end): per-frame mic capture (fe_capture) + speaker
+//     emit (fe_emit).
+//   - DSP: spectral-smoothing denoise + mixing (mix2/denoise, shared
+//     with the tier-1 file).
+//   - RF: per-frame Bluetooth receive (rf_receive) + transmit
+//     (rf_transmit).
+//
+// Audio flows in two directions simultaneously:
+//   mic    -> DSP -> speaker        (hear yourself + ambient + BT)
+//   BT in  -> DSP -> speaker        (other-end audio mixed in)
+//   mic    -> DSP -> BT out         (your voice to the other end)
+
+
+const N_FRAMES          : usize = 4;     // small finite count for testability
+const SAMPLES_PER_FRAME : usize = 16;    // small finite buffer for testability
+
+
+// Per-frame audio buffers, indexed by frame number. Same symbol names
+// and shapes as the tier-1 prog.algo.nuc so the M11 schedule's
+// `place_data` directives (mic_in/bt_in/spk_out/bt_out) resolve and a
+// future shared reference impl can compare against the tier-1 output.
+data mic_in       : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data bt_in        : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data spk_out      : i32[N_FRAMES][SAMPLES_PER_FRAME];
+data bt_out       : i32[N_FRAMES][SAMPLES_PER_FRAME];
+// Intermediate: the mic+BT mix before the inbound denoise. Required as
+// an explicit data symbol because v2 codegen does not support nested
+// kernel calls inside an argument expression (would otherwise need
+// `denoise(mix2(a, b))`, which surfaces as
+// `... codegen error: unsupported feature: nested kernel call inside an
+// argument expression`). The explicit edge is the v2 convention; the
+// tier-1 file makes the same choice.
+data mixed        : i32[N_FRAMES][SAMPLES_PER_FRAME];
+
+
+// Per-frame peripheral IO — effectful. UNLIKE the tier-1 bulk
+// load_*/save_* kernels, these fire once PER FRAME and (in M11/Renode
+// mode) read/write a single frame from/to a simulated peripheral:
+//   - fe_capture : reads one frame from the simulated I2S microphone.
+//   - rf_receive : reads one frame from the simulated Bluetooth radio.
+//   - fe_emit    : writes one frame to the simulated speaker DAC.
+//   - rf_transmit: writes one frame to the simulated Bluetooth radio.
+// The Rust bodies (a future stateful kernels.rs — TASK-0054.01 part 2,
+// single-process / Renode mode ONLY) track a per-kernel call cursor.
+kernel fe_capture  : ()                       -> i32[SAMPLES_PER_FRAME] effectful;
+kernel rf_receive  : ()                       -> i32[SAMPLES_PER_FRAME] effectful;
+kernel fe_emit     : (i32[SAMPLES_PER_FRAME]) -> ()                     effectful;
+kernel rf_transmit : (i32[SAMPLES_PER_FRAME]) -> ()                     effectful;
+
+
+// Pure DSP — the meat of the hearing aid. Bodies in kernels.rs. SAME
+// signatures as the tier-1 file (so a shared kernels.rs can provide
+// them):
+//   - mix2:    per-sample i32::wrapping_add (mic + BT into spk path).
+//   - denoise: 3-wide sliding sum with edge replication (a
+//              deterministic spectral-smoothing stand-in; no FFT, per
+//              PRD §10.1 integer-only determinism).
+kernel mix2        : (i32[SAMPLES_PER_FRAME], i32[SAMPLES_PER_FRAME])
+                       -> i32[SAMPLES_PER_FRAME] pure;
+kernel denoise     : (i32[SAMPLES_PER_FRAME])
+                       -> i32[SAMPLES_PER_FRAME] pure;
+
+
+// Dataflow. Per-frame: capture mic + receive BT, run the outbound and
+// inbound branches, emit speaker + transmit BT — all PER FRAME (no
+// bulk load/save bookends, unlike the tier-1 file).
+for frame : 0 .. N_FRAMES {
+    // Per-frame peripheral reads (independent: mic and BT capture in
+    // parallel on FE and RF respectively).
+    mic_in[frame]  <-- fe_capture();
+    bt_in[frame]   <-- rf_receive();
+
+    // Outbound branch: denoise mic only, transmit over BT.
+    bt_out[frame]  <-- denoise(mic_in[frame]);
+    rf_transmit(bt_out[frame]);
+
+    // Inbound branch: mix BT with mic (explicit `mixed` intermediate —
+    // NO nested kernel call), denoise, send to speaker. Two statements
+    // not one because v2 codegen disallows nested kernel calls in an
+    // argument expression (see the `mixed` declaration comment).
+    mixed[frame]   <-- mix2(mic_in[frame], bt_in[frame]);
+    spk_out[frame] <-- denoise(mixed[frame]);
+    fe_emit(spk_out[frame]);
+}

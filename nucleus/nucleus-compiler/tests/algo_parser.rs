@@ -297,6 +297,64 @@ fn parses_example_14_hearing_aid() {
     assert_eq!(save_bt_out.purity, Purity::Effectful);
 }
 
+/// TASK-0054.01 (M11 entry): example 14 grew a SECOND algorithm shape,
+/// `prog.embedded.algo.nuc`, for the M11 multi-MCU `embedded_multimcu`
+/// schedule. It declares the per-frame peripheral kernels
+/// (fe_capture / rf_receive / fe_emit / rf_transmit) that the tier-1
+/// bulk-IO `prog.algo.nuc` does NOT, while reusing mix2/denoise. This
+/// test is the AC#4 "parses in isolation" evidence; the tier-1 file's
+/// own test (`parses_example_14_hearing_aid`) stays untouched.
+#[test]
+fn parses_example_14_hearing_aid_embedded() {
+    let src = read_example("14-hearing-aid/prog.embedded.algo.nuc");
+    let ast = parse_algo(&src).expect("14-hearing-aid/embedded must parse");
+
+    // Same 2 consts (N_FRAMES, SAMPLES_PER_FRAME) and 5 data symbols
+    // (mic_in, bt_in, spk_out, bt_out, mixed) as the tier-1 file.
+    assert_eq!(ast.count_consts(), 2, "expected 2 const decls");
+    assert_eq!(ast.count_data(), 5, "expected 5 data decls");
+
+    // 6 kernels, but a DIFFERENT set from tier-1: the 4 per-frame
+    // peripherals (fe_capture/rf_receive/fe_emit/rf_transmit) replace
+    // the 4 bulk-IO kernels (load_mic/load_bt/save_spk/save_bt_out);
+    // mix2/denoise are shared.
+    assert_eq!(ast.count_kernels(), 6, "expected 6 kernel decls");
+
+    // Top level is a single `for frame` loop (no bulk load/save
+    // bookends, unlike tier-1 which has 5 top-level statements).
+    assert_eq!(ast.count_stmts(), 1, "expected 1 top-level statement");
+
+    // The 4 per-frame peripheral kernels must be present with the
+    // signatures the AC pins:
+    //   fe_capture/rf_receive : ()                       -> i32[SPF] effectful
+    //   fe_emit/rf_transmit   : (i32[SPF])               -> ()       effectful
+    let ks = kernels(&ast);
+    let by_name = |n: &str| {
+        ks.iter()
+            .find(|k| k.name.node == n)
+            .unwrap_or_else(|| panic!("missing kernel {n}"))
+    };
+    for n in ["fe_capture", "rf_receive"] {
+        let k = by_name(n);
+        assert_eq!(k.sig.params.len(), 0, "{n} takes no args");
+        assert!(k.sig.ret.is_some(), "{n} returns a frame buffer");
+        assert_eq!(k.purity, Purity::Effectful, "{n} is effectful");
+    }
+    for n in ["fe_emit", "rf_transmit"] {
+        let k = by_name(n);
+        assert_eq!(k.sig.params.len(), 1, "{n} takes one frame buffer");
+        assert!(k.sig.ret.is_none(), "{n} returns ()");
+        assert_eq!(k.purity, Purity::Effectful, "{n} is effectful");
+    }
+
+    // The for-body has 7 statements (2 captures + outbound denoise +
+    // rf_transmit + mix2 + inbound denoise + fe_emit). Critically the
+    // inbound path uses the explicit `mixed` intermediate (AC#2: NO
+    // nested kernel call inside an argument expression).
+    let for_body = first_for_body(&ast);
+    assert_eq!(for_body.len(), 7, "for body should have 7 statements");
+}
+
 /// `05-stencil/prog.algo.nuc` was historically the legacy 2013-style
 /// `kernel foo(a,b) -> out where pure {{ ... }};` syntax. TASK-0078 /
 /// TASK-0031 rewrote it into the v2 form (signature-only kernels,

@@ -409,6 +409,77 @@ fn parses_14_hearing_aid_embedded_multimcu() {
     }
 }
 
+/// TASK-0054.01 AC#3 evidence: every kernel the M11 `embedded_multimcu`
+/// schedule PLACES (`place K on W;`) must now resolve to a kernel
+/// DECLARED by the per-frame embedded algorithm
+/// (`prog.embedded.algo.nuc`), whose `schedule for` target this
+/// schedule points at as of TASK-0054.01.
+///
+/// This is a pure name-set cross-resolution check at the parser layer —
+/// it deliberately does NOT lower or link. Full lowering admission into
+/// the sched_lower / link / acfg matrices (which probes the COMPLEX M11
+/// schedule shape: 3 worker classes, memory_region/place_data,
+/// pipeline=3, async buffered transfers, the check loop) is the
+/// separate de-risk task TASK-0192; deep gaps it finds are filed as
+/// TASK-0049 subtasks. Here we only pin the kernel-reference closure
+/// that TASK-0054.01 part 1 (the new algorithm file) delivers.
+#[test]
+fn embedded_multimcu_places_resolve_against_embedded_algo() {
+    use nucleus_compiler::algo::{parse_algo, Item};
+
+    let sched_src = read_example("14-hearing-aid/schedules/embedded_multimcu.sched.nuc");
+    let sched = parse_sched(&sched_src).expect("embedded_multimcu must parse");
+
+    let algo_src = read_example("14-hearing-aid/prog.embedded.algo.nuc");
+    let algo = parse_algo(&algo_src).expect("prog.embedded.algo.nuc must parse");
+
+    // Kernel names DECLARED by the embedded algorithm.
+    let declared: std::collections::BTreeSet<&str> = algo
+        .items
+        .iter()
+        .filter_map(|i| match &i.node {
+            Item::Kernel(k) => Some(k.name.node.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Kernel names PLACED by the schedule.
+    let placed: Vec<&str> = sched
+        .directives
+        .iter()
+        .filter_map(|d| match &d.node {
+            Directive::Place(p) => Some(p.kernel.node.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // The schedule places exactly the 6 hearing-aid kernels.
+    assert_eq!(
+        placed.len(),
+        6,
+        "embedded_multimcu places 6 kernels, got {placed:?}"
+    );
+
+    // EVERY placed kernel resolves to a declared kernel (AC#3 closure).
+    for k in &placed {
+        assert!(
+            declared.contains(k),
+            "placed kernel `{k}` not declared in prog.embedded.algo.nuc \
+             (declared: {declared:?})"
+        );
+    }
+
+    // Spot-check the four per-frame peripherals are among the placed
+    // set — these are exactly the kernels the tier-1 bulk-IO algorithm
+    // does NOT declare, so this is the load-bearing part of AC#3.
+    for k in ["fe_capture", "fe_emit", "rf_receive", "rf_transmit"] {
+        assert!(
+            placed.contains(&k),
+            "expected per-frame peripheral `{k}` to be placed"
+        );
+    }
+}
+
 // --------------------------------------------------------------------
 // Negative tests (>= 4)
 // --------------------------------------------------------------------
