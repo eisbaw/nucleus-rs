@@ -9,9 +9,14 @@
 // the bytes crossed the inter-MCU hub AND this MCU received + acted on
 // them — i.e. wired MCU-to-MCU transport works end-to-end in Renode.
 //
-// The relay loop is unbounded (Renode's RunFor bounds wall time); the
-// UARTBase receive queue buffers, so ordering between the two machines is
-// forgiving — bytes sent before this loop first polls are still queued.
+// The relay loop is unbounded (Renode's RunFor bounds wall time). ORDERING
+// CAVEAT (NOT forgiving): Renode's UARTBase.WriteChar DROPS a received char
+// when RX is not yet enabled (IsReceiveEnabled = RE && UE) — pre-enable
+// arrivals are discarded, NOT queued. The receive queue only buffers bytes
+// that arrive AFTER RE is set, protecting against this loop's poll latency,
+// not against bytes sent before the CR1 RE-enable below executes. So the
+// sender must not transmit until this MCU has enabled RX; run.resc enforces
+// that BY CONSTRUCTION (it halts the sender until the receiver has booted).
 
 use core::panic::PanicInfo;
 use cortex_m_rt::entry;

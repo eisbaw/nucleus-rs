@@ -26,14 +26,34 @@ connector Connect usart1 link
 # Capture the receiver's relay channel (USART2 @ 0x40004400), NOT on the hub.
 usart2 CreateFileBackend $uartFile true
 
+# Fine global quantum so the two machines interleave finely (mirrors the
+# bundled scripts/multi-node/*.resc, which lower the quantum for exactly
+# this multi-MCU UART case).
+emulation SetGlobalQuantum "0.00001"
+
 mach set "sender"
 sysbus LoadELF $senderBin
+# START-ORDERING (load-bearing): hold the sender halted while the receiver
+# boots. Renode's UARTBase.WriteChar DROPS a received char when the
+# receiver's RX is not yet enabled (RE&&UE) — it does NOT queue pre-enable
+# arrivals. So the sender MUST NOT transmit until the receiver has executed
+# its CR1 RE-enable. Halting the sender + running the receiver alone first
+# makes "receiver enables RX before sender transmits" hold BY CONSTRUCTION,
+# not by scheduler luck (mirrors the nrf52840-ble-hci-uart reference, whose
+# comment notes the initial bytes are dropped without this).
+cpu IsHalted true
 
 mach set "receiver"
 sysbus LoadELF $receiverBin
 
-# Bounded virtual-time run — sender transmits in microseconds, the hub
-# delivers to the receiver's USART1 queue, the receiver relays to USART2.
-# Fully determinate, no wall-clock dependence.
+# Let the receiver alone boot, enable USART1 RX (RE|UE) + USART2 TX, and
+# enter its relay poll loop. 1ms of virtual time is ample for cortex-m-rt
+# init + a few register writes; the sender is still halted here.
+emulation RunFor "0.001"
+
+# Release the sender; now it transmits into a receiver that is already
+# RX-enabled and polling. Bounded run, fully determinate.
+mach set "sender"
+cpu IsHalted false
 emulation RunFor "0.1"
 quit
