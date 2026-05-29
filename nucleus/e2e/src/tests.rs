@@ -2814,4 +2814,12 @@ fn kernels_filename_for_algo_falls_back_to_default() {
         kernels_filename_for_algo(std::path::Path::new("weird.txt")),
         "kernels.rs"
     );
+    //   (d) THE BITE for the loose-prefix guard (architect P3.1):
+    //   `program.algo.nuc` shares the `prog` prefix but the remainder
+    //   `ram` is NOT empty and NOT dotted, so it must fall back to the
+    //   default — NOT mis-derive `kernelsram.rs`.
+    assert_eq!(
+        kernels_filename_for_algo(std::path::Path::new("program.algo.nuc")),
+        "kernels.rs"
+    );
 }

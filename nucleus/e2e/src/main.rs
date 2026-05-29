@@ -1308,10 +1308,18 @@ fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
 /// `file_name()` is used so the `..`-bearing resolved path that
 /// `resolve_algo_path` returns does not perturb the result):
 ///   - take `algo_path.file_name()`;
-///   - if it ends with `.algo.nuc` and the remaining stem starts with
-///     `prog`, the variant is whatever follows `prog` in that stem
-///     (`""` for the default, `.embedded` for the embedded pair, etc.);
+///   - if it ends with `.algo.nuc` and the remaining stem is `prog`
+///     (default) or `prog` followed by a DOTTED variant suffix (e.g.
+///     `prog.embedded`), the variant is whatever follows `prog`
+///     (`""` for the default, `.embedded` for the embedded pair);
 ///   - the kernels filename is then `format!("kernels{variant}.rs")`.
+///
+/// The variant is required to be empty or to begin with `.` (TASK-0049.08
+/// architect P3.1): `strip_prefix("prog")` alone is a loose PREFIX match,
+/// so a hypothetical `program.algo.nuc` would otherwise mis-derive
+/// `kernelsram.rs`. Requiring a dotted (or empty) variant makes a
+/// non-conventional `prog`-prefixed name fall back cleanly to the default
+/// rather than fabricating a garbled kernels filename.
 ///
 /// FALLBACK: any filename that does NOT match the `prog[<variant>].algo.nuc`
 /// shape (a missing `file_name()`, a non-`prog` stem, or no `.algo.nuc`
@@ -1340,6 +1348,13 @@ fn kernels_filename_for_algo(algo_path: &std::path::Path) -> String {
     let Some(variant) = stem.strip_prefix(PROG_STEM) else {
         return DEFAULT.to_string();
     };
+    // Guard the loose prefix match (TASK-0049.08 architect P3.1): the
+    // variant must be empty or DOTTED, else `program.algo.nuc` would
+    // mis-derive `kernelsram.rs`. A non-dotted remainder is an
+    // off-convention name → fall back to the default.
+    if !(variant.is_empty() || variant.starts_with('.')) {
+        return DEFAULT.to_string();
+    }
     format!("kernels{variant}.rs")
 }
 
