@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-24 19:27'
+updated_date: '2026-05-29 23:20'
 labels:
   - backend-common
   - project_skeleton
@@ -39,3 +40,9 @@ Today two callers: mp-tcp-bufsync passes None, mp-tcp-event passes a mio block. 
 
 ## Forward-carried from TASK-0257 architect P2.1
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0044.03.02 (event_plan lift, cycle of commit b1c2ffe): the cycle-197b architect P3.1 RendezvousDirStrategy idea (parameterise render_run_sh_multi so mp-uds-event need not substring-swap the shared template output) is now subsumed at the EVENT-BACKEND layer by the EventTransport::render_run_sh_post trait method in backend_common::event_plan — TCP returns the shared run.sh unchanged, UDS does the /tmp-rooted mktemp swap (still a single ALLOW-annotated String::replace on a FIXED bash-literal block, fail-loud on needle-miss). So the run.sh divergence is no longer duplicated across the two event backends, but it is STILL a post-hoc substring swap rather than a typed slot in render_run_sh_multi itself. If TASK-0288 lands a typed extra-sections / typed-rendezvous-strategy slot in the shared multi_binary template, EventTransport::render_run_sh_post on the UDS impl becomes a candidate to retire (replace the swap with a typed RendezvousDirStrategy::TmpMktemp arg). Single consumer today (UDS only); low priority.
+<!-- SECTION:NOTES:END -->
