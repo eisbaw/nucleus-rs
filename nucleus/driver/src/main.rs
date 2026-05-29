@@ -769,16 +769,23 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // for NON-accumulator semantics, which the structural detector would
     // otherwise silently mis-combine as a sum (a silent miscompile).
     //
-    // Gated ONCE here, backend-independently, BEFORE the codegen
-    // dispatch below: the structural detector is shared across all
-    // backends (backend-common), the algorithm-IR is the same for any
-    // backend choice, and `per_worker` / `sidecar` / `names` are already
-    // built. The check reuses the EXACT structural detector the backends
-    // consume (`collect_pair_tiles` + `collect_accumulate_waits`) — no
-    // duplicated detection logic — and consults `linked.algo` for the
-    // LHS-appears-in-RHS accumulator shape via
-    // `names.data` (DataId -> name) as the bridge between the codegen
+    // Gated ONCE here, BEFORE the codegen dispatch below: the structural
+    // detector is shared across all backends (backend-common), the
+    // algorithm-IR is the same for any backend choice, and `per_worker` /
+    // `sidecar` / `names` are already built. The check reuses the EXACT
+    // structural detector the backends consume (`collect_pair_tiles` +
+    // `collect_accumulate_waits`) — no duplicated detection logic — and
+    // consults `linked.algo` for the LHS-appears-in-RHS accumulator shape
+    // via `names.data` (DataId -> name) as the bridge between the codegen
     // DataId space and the algorithm-IR String-name space.
+    //
+    // NOTE on the `per_worker` it reads: for mp-tcp-event / mp-uds-event
+    // this is the `safe_push_reorder`-transformed map (built above), not
+    // the raw projection. That is fine — the detector is order-insensitive
+    // (`walk_waits` count + `.all()` whole-array predicate + `BTreeSet`
+    // output) and the reorder never changes a Wait's data/seq/tile — so
+    // the cross-check RESULT is backend-independent even though the input
+    // map differs per backend.
     backend_common::multi_worker_walker::check_accumulator_consistency(
         &linked.algo,
         &per_worker,
