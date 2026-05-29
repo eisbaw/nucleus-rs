@@ -1,0 +1,24 @@
+# Minimal STM32H7 (Cortex-M7) no_std firmware — the M10 AC#1 DE-RISK smoke
+# (TASK-0048.11). Sibling of tests/renode/uart-smoke/ but emits over USART1
+# via the DMA ENGINE (MemoryToPeripheral DMA1 stream -> USART1 TDR) instead
+# of a polled CPU store loop. It PROVES, empirically and before any change
+# to the working synchronous Usart1Shim, that Renode's bundled stm32h743
+# model drives a DMA-to-peripheral USART1 transmit end-to-end. Standalone
+# (own [workspace]) so it is NOT part of the nucleus/ cargo workspace — it
+# cross-compiles only under `nix develop .#embedded`
+# (thumbv7em-none-eabihf), never in the default `just ci`.
+[package]
+name = "dma-uart-smoke"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+cortex-m-rt = "0.7"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]

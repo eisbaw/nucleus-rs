@@ -1,0 +1,29 @@
+:name: nucleus-m10-dma-uart-smoke
+:description: Load the DMA-driven STM32H7 UART firmware, run bounded, capture USART1.
+
+# M10 AC#1 DE-RISK harness (TASK-0048.11). Mirrors
+# tests/renode/uart-smoke/run.resc, but the loaded firmware emits over
+# USART1 via a DMA1 MemoryToPeripheral transfer rather than a CPU store
+# loop. If the captured file contains the payload, Renode's stm32h743
+# model drives DMA-to-peripheral USART1 TX end-to-end.
+#
+# Caller injects two path variables before `include`-ing this script:
+#   $bin      = @<path to the cross-compiled firmware ELF>
+#   $uartFile = @<path the USART1 file backend writes to>
+# (see the `renode-dma-uart-smoke` just recipe).
+
+mach create "h7"
+machine LoadPlatformDescription @platforms/cpus/stm32h743.repl
+
+# Deterministic file capture of USART1 (the STM32F7_USART model at
+# 0x40011000). Second arg = overwrite-existing.
+usart1 CreateFileBackend $uartFile true
+
+sysbus LoadELF $bin
+
+# Bounded virtual-time run — the firmware programs the DMA stream and the
+# transfer completes synchronously on the EN write, so the bytes are
+# emitted in microseconds, then the firmware spins. No wall-clock
+# dependence, fully determinate.
+emulation RunFor "0.05"
+quit

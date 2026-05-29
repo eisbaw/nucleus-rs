@@ -575,6 +575,37 @@ renode-uart-smoke:
         exit 1; \
     fi
 
+# Tier-3 M10 AC#1 DE-RISK: DMA-driven firmware -> Renode -> UART smoke
+# (TASK-0048.11). Sibling of renode-uart-smoke, but the firmware under
+# tests/renode/dma-uart-smoke/ emits over USART1 via a DMA1
+# MemoryToPeripheral transfer (into USART1's TDR) instead of a polled CPU
+# store loop. It PROVES, before the real async STM32H7 DMA shim (parent
+# TASK-0048 AC#1) touches the working synchronous Usart1Shim, that Renode's
+# bundled stm32h743 model drives DMA-to-peripheral USART1 TX end-to-end.
+# Same tier-3-outside-default-ci rule (needs .#embedded + .#renode); a
+# multi-char sentinel proves the DMA wrote every byte to the fixed TDR
+# (non-incrementing destination), not just the first.
+renode-dma-uart-smoke:
+    @echo "tier-3 M10 AC#1 de-risk: DMA-driven firmware -> Renode -> UART smoke (TASK-0048.11)"
+    @set -eu; \
+    fw="$(pwd)/tests/renode/dma-uart-smoke"; \
+    elf="$fw/target/thumbv7em-none-eabihf/release/dma-uart-smoke"; \
+    out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -f "$out" "$log"' EXIT; \
+    echo "=== cross-compiling firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$fw' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode), capturing USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "include @$fw/run.resc" >"$log" 2>&1; \
+    echo "=== captured USART1 ==="; cat "$out"; \
+    if grep -q 'NUC-DMA-OK' "$out"; then \
+        echo "OK: Renode captured the DMA-transmitted USART1 payload (real-DMA USART1 TX is modellable; M10 AC#1 de-risk GO)."; \
+    else \
+        echo "FAIL: expected DMA payload 'NUC-DMA-OK' not found in captured USART1 output"; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
 # generalisation to examples 1/5/9). Unlike `renode-uart-smoke` (a hand-
