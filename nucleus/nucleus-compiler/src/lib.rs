@@ -77,7 +77,7 @@ pub use passes::reuse_inference::{
 };
 // TASK-0329.01.01 slice 1: safe push-before-wait reordering for mp-tcp-event.
 pub use passes::safe_push_reorder::apply_safe_push_reorder;
-pub use passes::sync_inject::inject_syncs;
+pub use passes::sync_inject::{inject_syncs, SyncInjectError};
 pub use passes::transfer_inject::inject_transfers;
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};
 pub use sidecar::{build_sidecar, ConstValue, KernelSig, LoopBound, NameSidecar, SidecarError};

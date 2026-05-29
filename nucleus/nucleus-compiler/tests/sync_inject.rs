@@ -31,8 +31,14 @@
 //! What this file does NOT test:
 //! - Snapshot of the full tree. Like `tests/acfg.rs`, structural
 //!   assertions are preferred over full-tree snapshots.
-//! - Negative paths inside `inject_syncs` — the pass is total and
-//!   has no error returns.
+//!
+//! Negative path (TASK-0281): `inject_syncs` is NO LONGER total — it
+//! returns [`SyncInjectError::UncoveredCrossPartitionReducer`] on the
+//! one shape it refuses to lower (an uncovered cross-partition cross-
+//! worker reducer nested inside a partitioned scope). The two tests at
+//! the end of this file pin that fail-loud behaviour and pin that the
+//! benign single-worker-set partitioned body still lowers to `Ok` with
+//! zero body syncs (the codegen-inert guarantee).
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -41,7 +47,7 @@ use nucleus_compiler::acfg::{build_acfg, ACFGNode, DataflowDag, DataflowEdge, Op
 use nucleus_compiler::algo::{lower_algo, parse_algo};
 use nucleus_compiler::event::{DataId, IterVar, KernelId, WorkerId};
 use nucleus_compiler::link;
-use nucleus_compiler::passes::sync_inject::inject_syncs;
+use nucleus_compiler::passes::sync_inject::{inject_syncs, SyncInjectError};
 use nucleus_compiler::sched::{lower_sched, parse_sched};
 
 // --------------------------------------------------------------------
@@ -126,7 +132,7 @@ fn sequence_boundary_elides_sync_when_push_wait_pair_will_cover() {
         op(&[0], 100, vec![], Some(0)),  // writer on w0
         op(&[1], 101, vec![0], Some(1)), // reader on w1
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
 
     assert_eq!(
         result.sync_count(),
@@ -164,7 +170,7 @@ fn sequence_boundary_injects_sync_when_no_dataflow_between_ops() {
         op(&[0], 100, vec![], Some(0)),  // writes data 0 on w0
         op(&[1], 101, vec![9], Some(1)), // reads UNRELATED data 9 on w1
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
 
     assert_eq!(
         result.sync_count(),
@@ -184,7 +190,7 @@ fn sequence_boundary_same_worker_injects_nothing() {
         op(&[0], 100, vec![], Some(0)),
         op(&[0], 101, vec![0], Some(1)),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
     assert_eq!(result.sync_count(), 0);
 }
 
@@ -197,7 +203,7 @@ fn sequence_boundary_writer_without_reader_injects_nothing() {
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![], Some(1)),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
     assert_eq!(result.sync_count(), 0);
 }
 
@@ -213,7 +219,7 @@ fn sequence_boundary_three_ops_two_syncs_all_elided_by_dataflow() {
         op(&[1], 101, vec![0], Some(1)),
         op(&[2], 102, vec![1], Some(2)),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
     assert_eq!(
         result.sync_count(),
         0,
@@ -237,7 +243,7 @@ fn repeat_entry_injects_sync_when_workers_differ() {
         op(&[0], 100, vec![], Some(0)),
         repeat(vec![op(&[1], 101, vec![0], Some(1))]),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
 
     // We expect 2 syncs: one outside the Repeat (Sequence rule
     // because the Repeat reads data 0 on w1 while w0 wrote it) and
@@ -286,7 +292,7 @@ fn repeat_exit_injects_sync_when_body_has_cross_worker_writes() {
         op(&[0], 100, vec![], Some(0)),
         op(&[1], 101, vec![], Some(1)),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
 
     // Expect exactly one Sync (the body-exit one). prior_writes at
     // the program root is empty, so no entry sync, and no
@@ -319,7 +325,7 @@ fn repeat_exit_no_sync_if_only_one_worker_writes_inside() {
         op(&[0], 100, vec![], Some(0)),
         op(&[0], 101, vec![0], Some(1)),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
     assert_eq!(result.sync_count(), 0);
 }
 
@@ -339,7 +345,7 @@ fn single_worker_acfg_produces_no_syncs() {
         ]),
         op(&[0], 103, vec![2], None),
     ]);
-    let result = inject_syncs(empty_acfg(root));
+    let result = inject_syncs(empty_acfg(root)).expect("inject_syncs");
     assert_eq!(
         result.sync_count(),
         0,
@@ -358,8 +364,8 @@ fn idempotent_on_synthetic_sequence_case() {
         op(&[1], 101, vec![0], Some(1)),
         op(&[2], 102, vec![1], Some(2)),
     ]);
-    let once = inject_syncs(empty_acfg(root));
-    let twice = inject_syncs(once.clone());
+    let once = inject_syncs(empty_acfg(root)).expect("inject_syncs");
+    let twice = inject_syncs(once.clone()).expect("inject_syncs");
     assert_eq!(once, twice, "inject_syncs must be idempotent");
 }
 
@@ -372,8 +378,8 @@ fn idempotent_on_synthetic_repeat_case() {
             op(&[2], 102, vec![1], Some(2)),
         ]),
     ]);
-    let once = inject_syncs(empty_acfg(root));
-    let twice = inject_syncs(once.clone());
+    let once = inject_syncs(empty_acfg(root)).expect("inject_syncs");
+    let twice = inject_syncs(once.clone()).expect("inject_syncs");
     assert_eq!(once, twice, "inject_syncs must be idempotent");
 }
 
@@ -403,7 +409,7 @@ fn linked_from_paths(algo_rel: &str, sched_rel: &str) -> nucleus_compiler::Linke
 
 fn acfg_with_syncs(algo_rel: &str, sched_rel: &str) -> ACFG {
     let linked = linked_from_paths(algo_rel, sched_rel);
-    inject_syncs(build_acfg(&linked).expect("build_acfg"))
+    inject_syncs(build_acfg(&linked).expect("build_acfg")).expect("inject_syncs")
 }
 
 #[test]
@@ -468,7 +474,7 @@ fn example_13_batch_parallel_injects_cross_worker_syncs() {
     );
 
     // Idempotence on the real example.
-    let twice = inject_syncs(acfg.clone());
+    let twice = inject_syncs(acfg.clone()).expect("inject_syncs");
     assert_eq!(acfg, twice);
 }
 
@@ -495,7 +501,7 @@ fn example_13_pipeline_parallel_injects_cross_worker_syncs() {
     }
 
     // Idempotence.
-    let twice = inject_syncs(acfg.clone());
+    let twice = inject_syncs(acfg.clone()).expect("inject_syncs");
     assert_eq!(acfg, twice);
 }
 
@@ -520,7 +526,7 @@ fn inject_syncs_preserves_name_tables_on_real_examples() {
         "13-cnn-inference/schedules/batch_parallel.sched.nuc",
     );
     let before = build_acfg(&linked).expect("build_acfg");
-    let after = inject_syncs(before.clone());
+    let after = inject_syncs(before.clone()).expect("inject_syncs");
     assert_eq!(before.name_kernels, after.name_kernels);
     assert_eq!(before.name_data, after.name_data);
     assert_eq!(before.name_workers, after.name_workers);
@@ -555,7 +561,7 @@ fn inject_syncs_preserves_operation_count_on_real_examples() {
     ] {
         let linked = linked_from_paths(algo, sched);
         let before = build_acfg(&linked).expect("build_acfg");
-        let after = inject_syncs(before.clone());
+        let after = inject_syncs(before.clone()).expect("inject_syncs");
         assert_eq!(
             before.operation_count(),
             after.operation_count(),
@@ -567,4 +573,159 @@ fn inject_syncs_preserves_operation_count_on_real_examples() {
             "repeat count must be preserved (algo={algo}, sched={sched})"
         );
     }
+}
+
+// --------------------------------------------------------------------
+// TASK-0281: fail-loud guard on the cross-partition reducer shape
+// --------------------------------------------------------------------
+
+/// Build a synthetic ACFG whose root Sequence holds a single Repeat
+/// over `IterVar(7)` (marked partitioned via `partition_worker_ranges`)
+/// whose body is `body`. `partitioned` selects whether the sidecar is
+/// populated for `IterVar(7)` (true) or left empty (false). The
+/// per-worker ranges, when populated, cover the union of the body's
+/// worker ids with a trivial disjoint split — the band values are
+/// irrelevant to the sync-injection guard, which keys off the iter var
+/// being present in the sidecar, not the band shape.
+fn partitioned_repeat_acfg(body: Vec<ACFGNode>, partitioned: bool, worker_ids: &[u64]) -> ACFG {
+    use std::collections::BTreeMap;
+
+    let mut acfg = empty_acfg(ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: IterVar(7),
+        range: Range { start: 0, end: 16 },
+        body: Box::new(ACFGNode::Sequence(body)),
+        block_tag: None,
+    }]));
+
+    if partitioned {
+        let mut per_worker: BTreeMap<WorkerId, Range<i64>> = BTreeMap::new();
+        // Trivial disjoint split across the listed workers; the exact
+        // bands are immaterial to the guard (it only checks that the
+        // outer iter var is partitioned + the boundary's worker sets).
+        let n = worker_ids.len().max(1) as i64;
+        let step = 16 / n;
+        for (i, w) in worker_ids.iter().enumerate() {
+            let lo = i as i64 * step;
+            let hi = if i + 1 == worker_ids.len() {
+                16
+            } else {
+                (i as i64 + 1) * step
+            };
+            per_worker.insert(WorkerId(*w), lo..hi);
+        }
+        acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
+    }
+
+    acfg
+}
+
+#[test]
+fn partitioned_cross_partition_reducer_is_refused_loudly() {
+    // AC#3: the genuinely-dangerous cross-partition reducer nested
+    // inside a partitioned scope. Inside the partitioned Repeat body,
+    // op_A on {w1,w2} writes data 0; op_B on a DIFFERENT worker set
+    // {w3,w4} reads data 9 — a symbol op_A does NOT write. The
+    // worker sets differ (cross-worker rendezvous) AND there is NO
+    // shared dataflow symbol, so `push_wait_pair_covers` returns FALSE:
+    // transfer_inject will emit NO Push/Wait pair around this boundary.
+    //
+    // This is the precise envelope limit TASK-0268's comment named:
+    // "an edge crossing the partition boundary NOT covered by the
+    // TASK-0117 fan-out Push/Wait pairs". Outside a partition this
+    // shape gets a Sequence-rule barrier (see
+    // `sequence_boundary_injects_sync_when_no_dataflow_between_ops`);
+    // inside a partition the barrier would deadlock under floor-with-
+    // spillover (TASK-0268), so pre-TASK-0281 it was SILENTLY dropped
+    // — a latent loss of synchronisation. Post-fix: refuse loudly.
+    //
+    // (A shared-symbol cross-worker edge, by contrast, IS covered by
+    // transfer_inject's Push/Wait and is correctly NOT refused — see
+    // `partitioned_covered_cross_worker_edge_still_lowers_ok`.)
+    let body = vec![
+        op(&[1, 2], 100, vec![], Some(0)),  // op_A writes data 0 on {w1,w2}
+        op(&[3, 4], 101, vec![9], Some(1)), // op_B reads UNRELATED data 9 on {w3,w4}
+    ];
+    let acfg = partitioned_repeat_acfg(body, true, &[1, 2, 3, 4]);
+
+    let err = inject_syncs(acfg).expect_err("cross-partition reducer must be refused");
+    // `SyncInjectError` is `#[non_exhaustive]`, so destructure with
+    // `if let` + an explicit fail rather than a wildcard `match` arm.
+    let SyncInjectError::UncoveredCrossPartitionReducer {
+        writers, readers, ..
+    } = err
+    else {
+        panic!("expected UncoveredCrossPartitionReducer, got {err:?}");
+    };
+    assert_eq!(writers, ws(&[1, 2]), "writers must be op_A's worker set");
+    assert_eq!(readers, ws(&[3, 4]), "readers must be op_B's worker set");
+}
+
+#[test]
+fn partitioned_covered_cross_worker_edge_still_lowers_ok() {
+    // Precision pin: a cross-worker write -> read inside a partition
+    // where the consumer reads EXACTLY the symbol the producer wrote
+    // (op_A writes data 0 on {w1,w2}; op_B reads data 0 on {w3,w4}).
+    // `push_wait_pair_covers` returns TRUE here (two bare Operations
+    // sharing data 0), so transfer_inject WILL emit a Push/Wait pair
+    // around the boundary and the rendezvous is provided. The
+    // TASK-0281 guard must NOT fire on this covered shape — refusing
+    // it would be over-broad (it would reject the very fan-out
+    // dataflow the partition relies on). Returns Ok, zero body syncs.
+    let body = vec![
+        op(&[1, 2], 100, vec![], Some(0)),  // op_A writes data 0 on {w1,w2}
+        op(&[3, 4], 101, vec![0], Some(1)), // op_B reads SAME data 0 on {w3,w4}
+    ];
+    let acfg = partitioned_repeat_acfg(body, true, &[1, 2, 3, 4]);
+
+    let result =
+        inject_syncs(acfg).expect("covered cross-worker edge inside a partition must lower Ok");
+    assert_eq!(
+        result.sync_count(),
+        0,
+        "covered cross-worker edge: no in-partition barrier (Push/Wait covers it)"
+    );
+}
+
+#[test]
+fn partitioned_single_worker_set_body_still_lowers_ok() {
+    // Codegen-inert pin: the benign shipped shape (every body op on
+    // the SAME worker set — e.g. 13-cnn batch_parallel, all body ops
+    // on {w1,w2,w3,w4}) must still lower to Ok with ZERO body syncs.
+    // op_A writes data 0; op_B reads data 0; both on {w1,w2,w3,w4}, so
+    // writing_workers == reading_workers and the boundary rule never
+    // fires — no refusal, no barrier.
+    let body = vec![
+        op(&[1, 2, 3, 4], 100, vec![], Some(0)),
+        op(&[1, 2, 3, 4], 101, vec![0], Some(1)),
+    ];
+    let acfg = partitioned_repeat_acfg(body, true, &[1, 2, 3, 4]);
+
+    let result = inject_syncs(acfg).expect("benign single-worker-set partitioned body must lower");
+    assert_eq!(
+        result.sync_count(),
+        0,
+        "single-worker-set partitioned body must inject zero syncs (codegen-inert)"
+    );
+}
+
+#[test]
+fn cross_worker_reducer_outside_partition_keeps_normal_behaviour() {
+    // The same op_A/op_B cross-worker reducer shape, but NOT inside a
+    // partitioned scope (sidecar empty). Here inside_partition == false
+    // throughout, so the normal Sequence rule applies: the worker sets
+    // differ AND no Push/Wait pair covers the *Repeat-body* boundary
+    // (push_wait_pair_covers only fires for bare Operation neighbours
+    // at the same Sequence level, which this is). The guard must NOT
+    // fire (it is partition-scoped); the pass returns Ok and the
+    // ordinary barrier machinery runs. This pins that the TASK-0281
+    // refusal is partition-scoped, not a blanket cross-worker-reducer
+    // rejection.
+    let body = vec![
+        op(&[1, 2], 100, vec![], Some(0)),
+        op(&[3, 4], 101, vec![0], Some(1)),
+    ];
+    let acfg = partitioned_repeat_acfg(body, false, &[1, 2, 3, 4]);
+
+    // Must NOT error — outside a partition this is a normal schedule.
+    let _result = inject_syncs(acfg).expect("cross-worker reducer outside a partition must lower");
 }

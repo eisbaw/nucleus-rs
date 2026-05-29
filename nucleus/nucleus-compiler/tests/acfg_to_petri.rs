@@ -481,7 +481,7 @@ fn pipeline_to_net(algo_rel: &str, sched_rel: &str) -> Net {
     let sched = lower_sched(&sched_ast).expect("sched lower");
     let linked = link::link(algo, sched).expect("link");
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     acfg_to_net(&acfg)
 }

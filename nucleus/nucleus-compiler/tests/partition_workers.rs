@@ -555,7 +555,7 @@ fn partitioned_repeat_skips_body_entry_exit_syncs() {
     per_worker.insert(WorkerId(4), 12..16);
     acfg.partition_worker_ranges.insert(IterVar(7), per_worker);
 
-    let after = inject_syncs(acfg);
+    let after = inject_syncs(acfg).expect("inject_syncs");
 
     // The Repeat's body must contain ZERO Sync nodes.
     if let ACFGNode::Sequence(children) = &after.root {
@@ -634,7 +634,7 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
         grid_shape_for_outer_iv: BTreeMap::new(),
     };
 
-    let after = inject_syncs(acfg);
+    let after = inject_syncs(acfg).expect("inject_syncs");
 
     if let ACFGNode::Sequence(children) = &after.root {
         let repeat = children

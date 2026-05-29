@@ -75,7 +75,7 @@ fn lower(
     let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
     let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
     let (acfg, _) = apply_halo_inference_partition_aware(&linked, acfg).expect("halo_inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     (linked, acfg)
 }

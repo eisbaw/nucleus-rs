@@ -97,7 +97,7 @@ fn link_example_01_naive() -> (
     let sched_ir = lower_sched(&sched_ast).unwrap();
     let linked = link(algo_ir, sched_ir).unwrap();
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     (linked, acfg, ex.join("kernels.rs"))
 }
@@ -123,7 +123,7 @@ fn link_example(
     let linked = link(algo_ir, sched_ir).unwrap();
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = nucleus_compiler::apply_block_transforms(&linked, acfg).unwrap();
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     (linked, acfg, ex.join("kernels.rs"))
 }
@@ -307,7 +307,7 @@ pub fn classifier(_x: Vec<i32>) -> Vec<i32> { vec![0; N_CLASSES] }
     let sched_ir = lower_sched(&parse_sched(&sched_src).unwrap()).unwrap();
     let linked = link(algo_ir, sched_ir).unwrap();
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let out_dir = scratch.join("emit");

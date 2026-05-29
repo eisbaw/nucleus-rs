@@ -505,7 +505,7 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // has no real substance to lift.
     let acfg =
         apply_reuse_inference(&linked, acfg).map_err(|e| format!("reuse-inference error: {e}"))?;
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).map_err(|e| format!("sync-injection error: {e}"))?;
     let acfg =
         inject_transfers(&linked, acfg).map_err(|e| format!("transfer-injection error: {e}"))?;
 

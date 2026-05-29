@@ -311,7 +311,7 @@ fn separable_filter_06_distributed2_uds_equiv_tcp() {
     let (acfg, _advisory) =
         apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
     let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     // The mp-uds-event driver wires apply_host_mediation_inject +
     // apply_host_data_relay_inject (cycle 197 step 1); this oracle
@@ -427,7 +427,7 @@ fn transpose_15_distributed_rows_uds_equiv_tcp() {
     let (acfg, _advisory) =
         apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
     let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // ---- Half (a): the UNMEDIATED mp-uds-event emit is REJECTED. ----

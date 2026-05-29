@@ -159,7 +159,7 @@ fn two_worker_pingpong_compiles_and_runs() {
     let sched_ir = lower_sched(&sched_ast).expect("sched lower");
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let out_dir = scratch.join("gen");
@@ -372,7 +372,7 @@ fn partial_nonuniform_barrier_multi_worker_lowers_correctly() {
     let sched_ir = lower_sched(&sched_ast).expect("sched lower");
     let linked = link(algo_ir, sched_ir).expect("link");
     let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let per_worker = acfg_to_events(&acfg);
@@ -664,7 +664,7 @@ fn multi_worker_check_loop_panics_per_thread_with_loop_var_and_numbers() {
     let acfg = build_acfg(&linked).expect("build_acfg");
     let acfg = apply_block_transforms(&linked, acfg).expect("block-transform");
     let acfg = apply_partition_workers(&linked, acfg).expect("partition-workers");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let per_worker = acfg_to_events(&acfg);
     let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);

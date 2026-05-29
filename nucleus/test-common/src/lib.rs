@@ -159,7 +159,7 @@ pub fn lower_for_test(
     } else {
         acfg
     };
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     let per_worker = acfg_to_events(&acfg);

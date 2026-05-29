@@ -370,7 +370,7 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     let (acfg, _advisory) =
         apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
     let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Project the UNMEDIATED ACFG once; it drives BOTH the host election

@@ -26,13 +26,18 @@
 //!
 //! ## Idempotence
 //!
-//! `inject_syncs(inject_syncs(x)) == inject_syncs(x)` for any ACFG
-//! `x`. This holds because:
+//! For any ACFG `x` that lowers successfully (`inject_syncs(x)` is
+//! `Ok`), feeding the unwrapped result back in yields a structurally
+//! equal ACFG. This holds because:
 //!
 //! - Sync nodes have empty reads/writes, so they never trigger a
 //!   new Sync between themselves and neighbours on a re-run.
 //! - Each rule checks whether the placeholder it would place is
 //!   already there. The pass therefore replaces rather than appends.
+//!
+//! (TASK-0281: the pass is no longer total — it may return
+//! [`SyncInjectError`] on the one cross-partition-reducer shape it
+//! refuses; idempotence is stated over the `Ok` subset.)
 //!
 //! Both behaviours are tested in `tests/sync_inject.rs`.
 //!
@@ -74,6 +79,63 @@ use crate::acfg::{ACFGNode, SyncPlaceholder, ACFG};
 use crate::event::{IterVar, SyncTag, WorkerId};
 
 // --------------------------------------------------------------------
+// Errors
+// --------------------------------------------------------------------
+
+/// Typed error from [`inject_syncs`]. Mirrors the structural-error
+/// convention used by [`crate::passes::transfer_inject::TransferInjectError`]
+/// and [`crate::passes::partition_workers::PartitionError`] (those
+/// passes already return `Result<ACFG, _>`).
+///
+/// `#[non_exhaustive]` so a future participant-correct conditional-Sync
+/// (option D, the deferred follow-up) can add variants without breaking
+/// downstream `match` exhaustiveness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SyncInjectError {
+    /// TASK-0281 fail-loud guard. Inside a partitioned scope a
+    /// Sequence boundary writes on workers `W1` and the next sibling
+    /// reads on a DIFFERENT worker set `W2` (a cross-partition cross-
+    /// worker reducer), and that dataflow edge is NOT covered by a
+    /// `transfer_inject` Push/Wait pair ([`push_wait_pair_covers`] is
+    /// false).
+    ///
+    /// Pre-TASK-0281 this shape was SILENTLY skipped (the unconditional
+    /// `if !inside_partition` short-circuit). The skip is sound for
+    /// every shipped schedule (PRD §6.2.1 single-assignment + every
+    /// cross-worker edge crossing the partition boundary is covered by
+    /// the TASK-0117 fan-out Push/Wait pairs), but a future M6+ schedule
+    /// nesting a genuine cross-partition reducer would silently lose
+    /// synchronisation and miscompile. We refuse loudly rather than
+    /// emit an in-partition barrier, because a participant-correct
+    /// in-partition barrier is genuinely hard under floor-with-spillover
+    /// unequal per-worker iteration counts (the TASK-0268 short-barrier
+    /// deadlock) — that participant-correct conditional-Sync (option D)
+    /// is the deferred follow-up TASK-0365 (depends on TASK-0281).
+    UncoveredCrossPartitionReducer {
+        /// Workers writing on the producer side of the boundary (`W1`).
+        writers: BTreeSet<WorkerId>,
+        /// Workers reading on the consumer side of the boundary (`W2`).
+        readers: BTreeSet<WorkerId>,
+        /// Diagnosis-quality message (participant sets + reason +
+        /// TASK-0281 / option-D follow-up forward-link).
+        message: String,
+    },
+}
+
+impl std::fmt::Display for SyncInjectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncInjectError::UncoveredCrossPartitionReducer { message, .. } => {
+                write!(f, "sync_inject cross-partition reducer: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SyncInjectError {}
+
+// --------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------
 
@@ -83,7 +145,13 @@ use crate::event::{IterVar, SyncTag, WorkerId};
 ///
 /// Idempotent: `inject_syncs(inject_syncs(x))` is structurally equal
 /// to `inject_syncs(x)`.
-pub fn inject_syncs(acfg: ACFG) -> ACFG {
+///
+/// Returns [`SyncInjectError`] (TASK-0281) on the one shape the pass
+/// refuses to lower: an uncovered cross-partition cross-worker reducer
+/// nested inside a partitioned scope. Total (`Ok`) for every shipped
+/// schedule — the refusal is unreachable from any `.nuc` schedule
+/// today (see the variant doc).
+pub fn inject_syncs(acfg: ACFG) -> Result<ACFG, SyncInjectError> {
     let ACFG {
         root,
         name_kernels,
@@ -161,7 +229,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
     // `prior_writes` for the outer-most call is empty: there is no
     // statement before the program root. `inside_partition=false` at
     // the root — only set to true on entering a partitioned Repeat.
-    let mut new_root = inject_in_node(root, &BTreeSet::new(), &partitioned_iter_vars, false);
+    let mut new_root = inject_in_node(root, &BTreeSet::new(), &partitioned_iter_vars, false)?;
 
     // Assign the stable cross-worker barrier identity (TASK-0172).
     //
@@ -190,7 +258,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
     let mut next_sync: u64 = 0;
     assign_sync_tags(&mut new_root, &mut next_sync);
 
-    ACFG {
+    Ok(ACFG {
         root: new_root,
         name_kernels,
         name_data,
@@ -203,7 +271,7 @@ pub fn inject_syncs(acfg: ACFG) -> ACFG {
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-    }
+    })
 }
 
 // --------------------------------------------------------------------
@@ -223,13 +291,13 @@ fn inject_in_node(
     prior_writes: &BTreeSet<WorkerId>,
     partitioned_iter_vars: &BTreeSet<IterVar>,
     inside_partition: bool,
-) -> ACFGNode {
+) -> Result<ACFGNode, SyncInjectError> {
     match node {
-        ACFGNode::Sequence(children) => ACFGNode::Sequence(inject_in_sequence(
+        ACFGNode::Sequence(children) => Ok(ACFGNode::Sequence(inject_in_sequence(
             children,
             partitioned_iter_vars,
             inside_partition,
-        )),
+        )?)),
         ACFGNode::Repeat {
             iter_var,
             range,
@@ -258,7 +326,7 @@ fn inject_in_node(
                 &BTreeSet::new(),
                 partitioned_iter_vars,
                 inner_inside_partition,
-            );
+            )?;
 
             // 2) Apply Repeat entry/exit rules. The result is still a
             //    Sequence (the body of a Repeat is always a Sequence
@@ -276,7 +344,7 @@ fn inject_in_node(
                 wrap_repeat_body(inner, prior_writes)
             };
 
-            ACFGNode::Repeat {
+            Ok(ACFGNode::Repeat {
                 iter_var,
                 range,
                 body: Box::new(wrapped),
@@ -284,10 +352,10 @@ fn inject_in_node(
                 // strip-mine rebinding tag is structural and survives
                 // verbatim (TASK-0180).
                 block_tag,
-            }
+            })
         }
         // Leaves: nothing to inject inside.
-        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_)) => leaf,
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_)) => Ok(leaf),
     }
 }
 
@@ -332,7 +400,7 @@ fn inject_in_sequence(
     children: Vec<ACFGNode>,
     partitioned_iter_vars: &BTreeSet<IterVar>,
     inside_partition: bool,
-) -> Vec<ACFGNode> {
+) -> Result<Vec<ACFGNode>, SyncInjectError> {
     let mut out: Vec<ACFGNode> = Vec::with_capacity(children.len());
 
     for child in children {
@@ -351,7 +419,7 @@ fn inject_in_sequence(
             &prior_writes,
             partitioned_iter_vars,
             inside_partition,
-        );
+        )?;
 
         // Sequence rule: insert a Sync between `out.last()` and
         // `child` if their worker sets disagree on the write/read
@@ -367,24 +435,39 @@ fn inject_in_sequence(
         // would guard is already covered by the Push/Wait pair
         // (TASK-0117 fan-out around the partitioned loop boundary).
         //
-        // ENVELOPE LIMIT — TASK-0281: this skip is UNCONDITIONAL
-        // inside a partitioned scope; `push_wait_pair_covers` is not
-        // consulted. Today the skip is sound because all shipped
-        // partitioned schedules satisfy PRD §6.2.1 single-assignment
-        // AND every cross-worker dataflow edge crossing the
-        // partitioned-loop boundary is already covered by the
-        // TASK-0117 fan-out Push/Wait pairs (verified: 03-reduction's
-        // distributed reduction lives OUTSIDE the partitioned scope;
-        // 05-stencil's blur3 is single-assignment per-output-cell).
-        // A future M6+ schedule that nests a cross-partition reducer
-        // (an inner Sequence writing to a shared output region placed
-        // on a worker set DIFFERENT from the partition's inner-body
-        // worker set, NOT covered by Push/Wait) would silently lose
-        // synchronisation. Filed as TASK-0281 — if an M6 schedule
-        // exercises this shape, replace the unconditional skip with
-        // `push_wait_pair_covers || partitioned_scope_covers` (the
-        // latter is the deeper participants-aware check option D
-        // from cycle-85 analysis).
+        // ENVELOPE LIMIT — TASK-0281 (now a FAIL-LOUD guard, not a
+        // silent skip). Inside a partitioned scope the Sequence-rule
+        // barrier is NOT emitted (it would fire per outer partition
+        // iteration and, under floor-with-spillover unequal per-worker
+        // iter counts (4/4/3/3), deadlock — TASK-0268). For every
+        // shipped schedule that is sound: PRD §6.2.1 single-assignment
+        // holds AND every cross-worker dataflow edge crossing the
+        // partitioned-loop boundary is already covered by the TASK-0117
+        // fan-out Push/Wait pairs (verified: 03-reduction's distributed
+        // reduction lives OUTSIDE the partitioned scope; 05-stencil's
+        // blur3 is single-assignment per-output-cell; 13-cnn batch_parallel
+        // writes disjoint output[n] with every body op on the same
+        // {w0..w3} so w1==w2 and the boundary rule never even applies).
+        //
+        // Pre-TASK-0281 this skip was UNCONDITIONAL — a future M6+
+        // schedule nesting a genuine cross-partition reducer (a Sequence
+        // boundary writing on workers W1 and read on a DIFFERENT worker
+        // set W2, NOT covered by Push/Wait) would have SILENTLY lost
+        // synchronisation and miscompiled. TASK-0281 turns that latent
+        // silent loss into a LOUD typed diagnostic
+        // (SyncInjectError::UncoveredCrossPartitionReducer): we refuse
+        // rather than guess, because inserting a participant-correct
+        // in-partition barrier is genuinely hard under unequal per-worker
+        // iteration counts. That participant-correct conditional-Sync
+        // (`push_wait_pair_covers || partitioned_scope_covers`, option D
+        // from the cycle-85 analysis) is the EXPLICITLY-DEFERRED
+        // follow-up TASK-0365 (depends on TASK-0281). The refusal is
+        // unreachable from any `.nuc` schedule today (reachability
+        // finding (b): IR/ACFG-constructible only — apply_partition_workers
+        // takes the UNION of body worker sets and splits the range
+        // disjointly across all of them, so a coherent reducer with
+        // disjoint producer/consumer subsets is not expressible as a
+        // sound schedule).
         if !inside_partition {
             if let Some(prev) = out.last() {
                 if !matches!(prev, ACFGNode::Sync(_)) && !matches!(child, ACFGNode::Sync(_)) {
@@ -405,12 +488,57 @@ fn inject_in_sequence(
                     }
                 }
             }
+        } else if let Some(prev) = out.last() {
+            // inside_partition == true: the barrier insertion is
+            // skipped (would deadlock per above). But detect the one
+            // dangerous shape the skip would otherwise swallow: a
+            // cross-worker write -> read boundary that NO Push/Wait
+            // pair covers. `push_wait_pair_covers` is FALSE exactly
+            // when either neighbour is non-bare (Sequence/Repeat) OR
+            // the consumer reads no symbol the producer wrote — i.e.
+            // transfer_inject will emit NO Push/Wait pair around this
+            // boundary, so the cross-worker rendezvous is genuinely
+            // unprovided. That is the cross-partition reducer; refuse
+            // loudly rather than silently lose synchronisation. (A
+            // SHARED-symbol bare-Operation edge, by contrast, IS
+            // covered by the fan-out Push/Wait and must NOT be refused
+            // — over-broad refusal would reject the very dataflow the
+            // partition relies on.) Mirrors the !inside_partition
+            // guard's predicate exactly (Sync-neighbour skip, non-empty
+            // W1/W2, W1 != W2, >= 2 participants, push_wait_pair_covers
+            // false) so the two branches stay structurally aligned and
+            // a future edit to the predicate cannot silently desync
+            // them.
+            if !matches!(prev, ACFGNode::Sync(_)) && !matches!(child, ACFGNode::Sync(_)) {
+                let w1 = writing_workers(prev);
+                let w2 = reading_workers(&child);
+                if !w1.is_empty() && !w2.is_empty() && w1 != w2 {
+                    let participants: BTreeSet<WorkerId> = w1.union(&w2).copied().collect();
+                    if participants.len() >= 2 && !push_wait_pair_covers(prev, &child) {
+                        return Err(SyncInjectError::UncoveredCrossPartitionReducer {
+                            writers: w1.clone(),
+                            readers: w2.clone(),
+                            message: format!(
+                                "a Sequence boundary inside a partitioned scope writes on \
+                                 workers {w1:?} and is read on a DIFFERENT worker set {w2:?} \
+                                 with no transfer_inject Push/Wait pair covering the edge \
+                                 (a cross-partition reducer). sync_inject cannot insert a \
+                                 participant-correct barrier here without risking the \
+                                 floor-with-spillover short-barrier deadlock (TASK-0268), so \
+                                 it refuses rather than silently lose synchronisation. The \
+                                 participant-correct conditional-Sync (option D) is deferred \
+                                 to TASK-0365 (depends on TASK-0281)."
+                            ),
+                        });
+                    }
+                }
+            }
         }
 
         out.push(child);
     }
 
-    out
+    Ok(out)
 }
 
 /// TASK-0218: would the Push/Wait pair `transfer_inject` will later

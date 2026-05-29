@@ -84,7 +84,7 @@ fn emit_06_distributed2(scratch: &Path) -> (String, String) {
     let (acfg, _advisory) =
         apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
     let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let per_worker = acfg_to_events(&acfg);
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");

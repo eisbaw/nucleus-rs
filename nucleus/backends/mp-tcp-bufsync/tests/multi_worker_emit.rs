@@ -117,7 +117,7 @@ fn transpose_15_distributed_rows_host_excluding_barrier_bufsync() {
     let (acfg, _advisory) =
         apply_halo_inference_partition_aware(&linked, acfg).expect("halo inference");
     let acfg = apply_reuse_inference(&linked, acfg).expect("reuse inference");
-    let acfg = inject_syncs(acfg);
+    let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
 
     // Host election: same shared helper the bufsync backend + the driver
