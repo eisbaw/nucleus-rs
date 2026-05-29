@@ -56,6 +56,16 @@
 //!   safely without consulting the global Push/Wait coverage. PRD §8
 //!   places sync only at "control-flow joins where no data crosses";
 //!   we still err on the side of safety on the nested shapes.
+//! - **Fail-loud guard is Sequence-boundary-only (TASK-0281).** The
+//!   `inside_partition` refusal ([`SyncInjectError`]) covers only the
+//!   *Sequence* rule. The Repeat entry/exit barriers are still
+//!   *silently* elided inside a partition (same `inside_partition`
+//!   short-circuit, no refusal) — sound today because the cross-worker
+//!   dataflow those barriers would protect is re-caught at the
+//!   enclosing Sequence boundary (`writing_workers` recurses into a
+//!   Repeat body). If a future schedule makes a Repeat-local
+//!   cross-partition reducer reachable, this asymmetry must be lifted
+//!   alongside TASK-0365's participant-correct fix.
 //! - **No conditionals.** The algorithm grammar has no `if` (PRD
 //!   §6.2.4), so [`ACFGNode`] has no `If` variant; this pass has
 //!   no `If` arm.
@@ -143,8 +153,9 @@ impl std::error::Error for SyncInjectError {}
 /// the module docs. Consumes the input and returns a new ACFG; the
 /// name-table maps are forwarded unchanged.
 ///
-/// Idempotent: `inject_syncs(inject_syncs(x))` is structurally equal
-/// to `inject_syncs(x)`.
+/// Idempotent over the `Ok` subset: for any `x` that lowers
+/// successfully, `inject_syncs(inject_syncs(x).unwrap())` is
+/// structurally equal to `inject_syncs(x).unwrap()`.
 ///
 /// Returns [`SyncInjectError`] (TASK-0281) on the one shape the pass
 /// refuses to lower: an uncovered cross-partition cross-worker reducer
