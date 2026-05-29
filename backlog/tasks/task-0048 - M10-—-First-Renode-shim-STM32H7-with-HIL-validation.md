@@ -4,7 +4,7 @@ title: M10 — First Renode shim (STM32H7) with HIL validation
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 23:29'
+updated_date: '2026-05-28 23:59'
 labels:
   - M10
   - backend
@@ -192,4 +192,6 @@ RENODE TIMING ARTIFACT (important for any future tier-3 timing assertion): with 
 SHARED-CHANNEL WART (both log + count): diagnostics share USART1 with raw output; summary lines come after raw bytes, distinguishable by the 'check loop ' prefix. A separate physical channel (2nd UART / RTT / SWO) is TASK-0048.09 (PART 2).
 
 New recipe: just renode-embedded-check-count (asserts 255-256 band). e2e unchanged 301/246/0/55/0.
+
+CORRECTION (TASK-0048.10, cycle docs-sweep) — SUPERSEDES the earlier 'RENODE TIMING ARTIFACT' note's clock-seeding framing. The count being 255 (not 256) is NOT caused by clock seeding. `_check_elapsed = monotonic_ns().wrapping_sub(_check_start)`, so iteration 0's seeded `_check_start = 0` (monotonic_ns's first call returns 0) is CANCELLED by the subtraction; the seeding contributes nothing to the elapsed measurement. The real cause is Renode's coarse, non-cycle-accurate SysTick stepping: SysTick DOES advance, but in quanta, so an iteration whose two clock reads fall within one un-stepped SysTick counter quantum (CVR unchanged -> delta 0) measures elapsed 0 ns and so does NOT exceed 1ns and is not counted. WHICH iteration (if any) lands in such a quantum is instruction-layout-dependent (the log fixture happens to resolve all 256 -> 256 lines; the count binary resolves one to 0 ns -> 255), hence the count is 255 OR 256. Operational conclusion UNCHANGED: assert the 255-or-256 band, never an exact timing-derived count; the loop still runs all 256 iterations and the counter/summary fire end-to-end.
 <!-- SECTION:NOTES:END -->

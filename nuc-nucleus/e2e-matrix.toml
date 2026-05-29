@@ -3003,47 +3003,47 @@ milestone = "M10"
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "pthreads-sync"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "pthreads-async"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-event"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "openmp-rs"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-tcp-poll"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
 
 [[skip]]
 example  = "01-elementwise-add"
 schedule = "embedded_check_count"
 backend  = "mp-uds-event"
-reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most the clock-seeding iter-0 Renode may resolve to 0 ns) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
+reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"

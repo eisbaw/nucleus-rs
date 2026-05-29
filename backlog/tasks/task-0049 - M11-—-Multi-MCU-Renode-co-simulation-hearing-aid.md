@@ -4,7 +4,7 @@ title: M11 — Multi-MCU Renode co-simulation (hearing aid)
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-28 23:29'
+updated_date: '2026-05-28 23:59'
 labels:
   - M11
   - backend
@@ -67,4 +67,6 @@ forward-carried from TASK-0048.04: the tier-3 monotonic clock for check_frame is
 === Forward-carried from TASK-0048.08 (tier-3 on_violation=count sink) ===
 
 When M11 multi-MCU embedded check loops land: the tier-3 count sink pattern is established — a MODULE-scope AtomicU32 counter per count check loop (AtomicU64 is absent on thumbv7em) + a program-exit USART1 summary emitted in the cortex-m-rt #[entry] AFTER run() returns and BEFORE loop {} (a spinning firmware never fires a Rust Drop, so the tier-1 Drop-guard summary does NOT port). Counter is the shared lib+bin seam; summary is bin-only inline code; NucleusShim stays 6 methods. PER-MCU caveat for M11: each MCU's firmware has its OWN program-exit sink, so a multi-MCU count check loop would summarise PER-MCU (no cross-MCU aggregation) unless a coordinator collects them — mirrors the tier-1 'each process gets its own counter + Drop summary' note (docs/check-loop-latency-max.md §count). RENODE TIMING: do not assert exact timing-derived counts (Renode is not cycle-accurate; the clock-seeding iteration may resolve to 0 ns — count was 255 not 256 for the single-MCU ex1 fixture); assert a band or a structural invariant.
+
+CORRECTION (TASK-0048.10, cycle docs-sweep) — SUPERSEDES the 'RENODE TIMING' clock-seeding framing in the M11 forward-carry note. A future M11 multi-MCU implementer must NOT reason from the seeding model. The single-MCU ex1 count was 255 (not 256) NOT because the clock-seeding iteration resolves to 0 ns. `_check_elapsed = monotonic_ns().wrapping_sub(_check_start)` CANCELS iteration 0's seeded `_check_start = 0`, so seeding contributes nothing. The real cause is Renode's coarse, non-cycle-accurate SysTick stepping: an iteration whose two clock reads fall within one un-stepped SysTick counter quantum (CVR unchanged -> delta 0) measures elapsed 0 ns and is not counted; which iteration (if any) is instruction-layout-dependent, hence 255 OR 256. For M11: per-MCU count check loops summarise PER-MCU and EACH is subject to the same SysTick quantization band — assert a 255-or-256-style band or a structural invariant (loop ran N iters / counter flushed), never an exact timing-derived count.
 <!-- SECTION:NOTES:END -->

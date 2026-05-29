@@ -732,19 +732,24 @@ renode-embedded-check:
 # WHY 255-or-256 (the genuinely timing-INDEPENDENT invariant): latency_max=
 # 1ns is deliberately tiny so EVERY iteration of ex1's `for i : 0..256`
 # loop that the clock can RESOLVE violates. The count therefore equals the
-# loop trip-count (256) MODULO AT MOST ONE iteration. The one exception is
-# the clock-SEEDING first iteration: `NucleusShim::monotonic_ns`'s first
-# call returns 0 to seed `last_cvr` (no bogus initial span), so iteration
-# 0's `_check_start` is 0 and its `_check_elapsed` is whatever the body
-# advanced SysTick by. Under Renode (NOT cycle-accurate) that first body
-# sometimes advances 0 ns (then iteration 0 does not exceed 1ns → 255) and
-# sometimes a few hundred ns (then it does → 256); EMPIRICALLY this fixture
-# binary deterministically yields 255 (iter-0 elapsed = 0 ns; verified by a
-# TOTAL_ITERS=256 + FIRST_ELAPSED_NS=0 diagnostic). What is robustly
-# verified is: the loop runs all 256 iterations, the AtomicU32 counter
-# increments per RESOLVED violation, and the program-exit summary flushes
-# the EXACT deterministic count — NOT a specific ns figure. Asserting the
-# 255-or-256 band (not a hard 256) keeps the check independent of Renode's
+# loop trip-count (256) MODULO AT MOST ONE iteration. The exception is NOT
+# the clock-seeding iteration: `_check_elapsed =
+# monotonic_ns().wrapping_sub(_check_start)`, so iteration 0's seeded
+# `_check_start = 0` (`NucleusShim::monotonic_ns`'s first call returns 0 to
+# seed `last_cvr` without a bogus initial span) is CANCELLED by the
+# subtraction — the seeding does NOT cause the zero. The real cause is
+# Renode's coarse, non-cycle-accurate SysTick stepping: SysTick DOES
+# advance, but in quanta, so an iteration whose two clock reads fall within
+# one un-stepped counter quantum (CVR unchanged → delta 0) measures elapsed
+# 0 ns and so does NOT exceed 1ns (not counted). WHICH iteration (if any)
+# lands in such a quantum is instruction-layout-dependent, so the count is
+# 255 OR 256. EMPIRICALLY this fixture binary deterministically yields 255
+# (one iteration measures 0 ns; verified earlier by a TOTAL_ITERS=256 +
+# FIRST_ELAPSED_NS=0 diagnostic, since removed). What is robustly verified
+# is: the loop runs all 256 iterations, the AtomicU32 counter increments
+# per RESOLVED violation, and the program-exit summary flushes the EXACT
+# deterministic count — NOT a specific ns figure. Asserting the 255-or-256
+# band (not a hard 256) keeps the check independent of Renode's
 # instruction-layout-sensitive non-cycle-accurate timing.
 #
 # NOTE: the count summary shares USART1 with ex1's raw output bytes (same
@@ -781,10 +786,10 @@ renode-embedded-check-count:
     strings "$out" | grep -a 'check loop' || true; \
     if strings "$out" | grep -qaE 'check loop `i` violated latency_max=1 ns: 25[56] occurrence\(s\)'; then \
         n="$(strings "$out" | grep -aoE 'latency_max=1 ns: [0-9]+ occurrence' | grep -oE '[0-9]+' | tail -1)"; \
-        echo "OK: count summary reports $n violations (expected 255-or-256: trip-count 256 minus at most the clock-seeding iter-0 that Renode may resolve to 0 ns) — the AtomicU32 counter + program-exit USART1 sink fired end-to-end (TASK-0048.08)."; \
+        echo "OK: count summary reports $n violations (expected 255-or-256: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring 0 ns elapsed) — the AtomicU32 counter + program-exit USART1 sink fired end-to-end (TASK-0048.08)."; \
     else \
         echo "FAIL: expected count summary 'check loop \`i\` violated latency_max=1 ns: 25[56] occurrence(s)' not found in captured USART1."; \
-        echo "      (latency_max=1ns => every RESOLVED iteration of ex1's 256-iteration loop violates; at most the clock-seeding iter-0 may read 0 ns under Renode.)"; \
+        echo "      (latency_max=1ns => every RESOLVED iteration of ex1's 256-iteration loop violates; at most one iteration measures 0 ns when its two clock reads fall in one un-stepped Renode SysTick quantum.)"; \
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
     fi

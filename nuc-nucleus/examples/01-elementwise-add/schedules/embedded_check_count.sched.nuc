@@ -19,13 +19,20 @@
 //
 // latency_max = 1ns is deliberately tiny: under Renode (not cycle-accurate)
 // every RESOLVED iteration violates, so the reported count equals the loop
-// trip-count (256 for ex1's `for i : 0..256`) MODULO AT MOST ONE iteration
-// — the clock-seeding iteration 0, whose `_check_start` reads the seeding 0
-// from monotonic_ns and whose body Renode may resolve to 0 ns (then it does
-// NOT exceed 1ns). EMPIRICALLY this binary deterministically yields 255
-// (iter-0 elapsed = 0 ns; the loop still runs all 256 iterations). The
-// `just renode-embedded-check-count` recipe asserts the 255-or-256 band —
-// the genuinely timing-INDEPENDENT invariant (NOT a specific ns figure).
+// trip-count (256 for ex1's `for i : 0..256`) MODULO AT MOST ONE iteration.
+// The cause is NOT clock seeding: `_check_elapsed =
+// monotonic_ns().wrapping_sub(_check_start)`, so iteration 0's seeded
+// `_check_start = 0` (monotonic_ns's first call returns 0) is CANCELLED by
+// the subtraction. The real cause is Renode's coarse, non-cycle-accurate
+// SysTick stepping — an iteration whose two clock reads fall within one
+// un-stepped SysTick counter quantum (CVR unchanged → delta 0) measures
+// elapsed 0 ns and so does NOT exceed 1ns, and is not counted. WHICH
+// iteration (if any) lands in such a quantum is instruction-layout-
+// dependent, so the count is 255 OR 256. EMPIRICALLY this binary
+// deterministically yields 255 (one iteration measures 0 ns; the loop
+// still runs all 256 iterations). The `just renode-embedded-check-count`
+// recipe asserts the 255-or-256 band — the genuinely timing-INDEPENDENT
+// invariant (NOT a specific ns figure).
 //
 // This IS a runnable firmware (it cross-compiles for thumbv7em and runs in
 // Renode), unlike the embedded_check_panic NEGATIVE fixture. It is
