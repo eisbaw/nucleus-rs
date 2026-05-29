@@ -371,3 +371,140 @@ for t in (0_i64)..(4_i64) {
          in-loop consumer inside the `for` block; got:\n{out}"
     );
 }
+
+#[test]
+fn sibling_loop_wait_and_consumer_fires_guard() {
+    // TASK-0364 EDGE pin (cycle-222 architect P3): the per-occurrence
+    // scope-path counter (NOT `iter_var`) is load-bearing for the
+    // sibling-loop shape. `buf` is Wait-recv'd inside loop A and
+    // consumed inside a SEPARATE sibling loop B at the SAME nesting
+    // depth. The in-loop `let buf` in A is block-scoped to A's `for`
+    // and does NOT dominate the consumer in B — so the emitted Rust
+    // would not compile, and the guard MUST fire. The two sibling loops
+    // get DISTINCT occurrence indices (`[0]` vs `[1]`), so neither
+    // Wait-path is a prefix of the other consumer-path → not dominated
+    // → unsafe. (If the path used `iter_var` instead of a fresh
+    // occurrence index and the two loops happened to share an iter_var,
+    // this case would be silently mis-classified as safe — hence the
+    // counter.)
+    let (names, sidecar, data, seq, iv, kernel) = at_risk_tables();
+
+    let wait_in_a = Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile: IterTile::empty(),
+        seq,
+    };
+    let consume_in_b = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![],
+            })],
+            output: None,
+        },
+    };
+    // Loop A (Wait) and a sibling Loop B (consumer) reusing the SAME
+    // iter_var `t` — the occurrence counter still disambiguates them.
+    let loop_a = Event::loop_over(iv, 0..4, vec![wait_in_a]);
+    let loop_b = Event::loop_over(iv, 0..4, vec![consume_in_b]);
+    let events = vec![loop_a, loop_b];
+
+    let mut rendezvous_ids: BTreeMap<(DataId, SeqTag), usize> = BTreeMap::new();
+    rendezvous_ids.insert((data, seq), 0usize);
+    let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    let mut let_at_wait: BTreeSet<DataId> = BTreeSet::new();
+    let_at_wait.insert(data);
+
+    let ctx = WalkerCtx {
+        names: &names,
+        sidecar: &sidecar,
+        rendezvous_prefix: "ring",
+        rendezvous_ids: &rendezvous_ids,
+        pair_tiles: &pair_tiles,
+        accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: &let_at_wait,
+    };
+
+    let mut out = String::new();
+    let res = render_worker_events(&ctx, WorkerId(1), &events, &mut out, 0, "");
+    match res {
+        Err(EmitError::ContractGap(msg)) => {
+            assert!(
+                msg.contains("buf") && msg.contains("TASK-0364"),
+                "sibling-loop guard error must name `buf` + TASK-0364; got: {msg}"
+            );
+        }
+        other => panic!(
+            "guard MUST fire on the sibling-loop shape (consumer in a \
+             different loop than the Wait); got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn two_waits_root_and_in_loop_with_root_consumer_does_not_fire() {
+    // TASK-0364 EDGE pin (cycle-222 architect P3): false-positive
+    // guard. `buf` has TWO Waits — one at the ROOT scope (path `[]`)
+    // and one inside a loop (path `[L0]`) — and a consumer at the root
+    // scope. The root Wait's `let buf` lexically dominates the root
+    // consumer (`[]` is a prefix of `[]`), so the shape is SAFE and the
+    // guard MUST NOT fire, even though the in-loop Wait alone would not
+    // dominate the consumer. This pins that domination is satisfied by
+    // ANY one Wait (the `.any()` in the rule), not ALL Waits — guarding
+    // against a future tightening to `.all()` that would false-reject.
+    let (names, sidecar, data, seq, iv, kernel) = at_risk_tables();
+
+    let root_wait = Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile: IterTile::empty(),
+        seq,
+    };
+    let in_loop_wait = Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile: IterTile::empty(),
+        seq,
+    };
+    let root_consumer = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![],
+            })],
+            output: None,
+        },
+    };
+    // Root Wait, then a loop containing a second Wait, then the root
+    // consumer — all of `buf`.
+    let events = vec![
+        root_wait,
+        Event::loop_over(iv, 0..4, vec![in_loop_wait]),
+        root_consumer,
+    ];
+
+    let mut rendezvous_ids: BTreeMap<(DataId, SeqTag), usize> = BTreeMap::new();
+    rendezvous_ids.insert((data, seq), 0usize);
+    let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    let mut let_at_wait: BTreeSet<DataId> = BTreeSet::new();
+    let_at_wait.insert(data);
+
+    let ctx = WalkerCtx {
+        names: &names,
+        sidecar: &sidecar,
+        rendezvous_prefix: "ring",
+        rendezvous_ids: &rendezvous_ids,
+        pair_tiles: &pair_tiles,
+        accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: &let_at_wait,
+    };
+
+    let mut out = String::new();
+    render_worker_events(&ctx, WorkerId(1), &events, &mut out, 0, "")
+        .expect("guard must NOT fire when a root-scope Wait dominates the root consumer");
+}

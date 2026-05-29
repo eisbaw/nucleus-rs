@@ -595,7 +595,12 @@ fn collect_let_at_wait_inner(
 /// of scope here because the let-at-wait classifier already excludes
 /// indexed-Fire-written and accumulate-fan-in data (the only
 /// read-modify shapes), so a `let_at_wait` datum is never both
-/// classified and Fire-output-written.
+/// classified and indexed-Fire-written or accumulate-fan-in. (A
+/// *whole-array* Fire output CAN be classified let-at-wait — the
+/// classifier only excludes the *indexed* output case — but a
+/// whole-array output that purely writes is not a read-modify shape and
+/// needs no `let` to dominate it for reading, so ignoring it as a
+/// consumer is correct.)
 ///
 /// # No-op on the empty set
 ///
