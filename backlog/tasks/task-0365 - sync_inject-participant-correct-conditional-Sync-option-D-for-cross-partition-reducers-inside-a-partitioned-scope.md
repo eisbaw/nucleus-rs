@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-29 21:33'
-updated_date: '2026-05-29 21:34'
+updated_date: '2026-05-29 22:23'
 labels:
   - M6
   - compiler
@@ -40,3 +40,9 @@ Trigger: an M6+ schedule that actually exercises a cross-partition reducer. Unti
 - [ ] #2 Inserted sync does not deadlock under floor-with-spillover (Petri-net checker + e2e)
 - [ ] #3 e2e baseline holds; TASK-0281 refusal tests updated to assert accept-and-synchronise
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0281 (cycle close, architect P3.3a): the TASK-0281 fail-loud guard leans on push_wait_pair_covers as the coverage oracle. That oracle is the pre-existing TASK-0218 elision oracle and inherits its known risk direction: it could in principle return true (=> guard does NOT fire / barrier elided) when transfer_inject actually SUPPRESSES the Push/Wait for that edge via the TASK-0301/0302 axis-mapping contiguous-prefix filter or a src==dst filter. For TASK-0281 this is a SAFE direction today (the guard only refuses; it never silently miscompiles a shipped schedule). But the option-D participant-correct fix landed here MUST re-audit push_wait_pair_covers rather than trusting it as a sound coverage proxy -- the deeper fix needs to know the rendezvous is genuinely present, not merely that the oracle thinks an elision is safe.
+<!-- SECTION:NOTES:END -->
