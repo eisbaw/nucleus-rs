@@ -496,12 +496,16 @@ pub enum ViolationKind {
     /// `eprintln!` once per violation; execution continues. The
     /// generated stdout is unchanged on violation, so determinism on
     /// the output channel is preserved (the message goes to stderr).
-    /// NOT wired in this cycle — TASK-0052.04.
+    /// Wired at tier-1 (`backend-common::check_frame`, TASK-0052.04)
+    /// and tier-3 embedded (TASK-0048.04, per-violation UART line).
     Log,
     /// Increment an atomic counter; print a one-line summary to
     /// stderr at run end (`Drop` on a guard struct). Determinism on
     /// stdout is preserved (the count goes to stderr).
-    /// NOT wired in this cycle — TASK-0052.04.
+    /// Wired at tier-1 (`backend-common::check_frame` AtomicU64 + Drop
+    /// summary, TASK-0052.04) and tier-3 embedded (TASK-0048.08,
+    /// AtomicU32 + program-exit USART1 summary; AtomicU64 is absent on
+    /// thumbv7em and a spinning firmware never fires a `Drop`).
     Count,
 }
 

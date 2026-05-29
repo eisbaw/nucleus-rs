@@ -3,9 +3,11 @@ id: TASK-0362
 title: >-
   Doc-lie sweep: event.rs ViolationKind Log/Count docstrings say 'NOT wired in
   this cycle — TASK-0052.04' but tier-1 log/count ARE wired
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-05-28 22:50'
+updated_date: '2026-05-28 23:58'
 labels:
   - tech-debt
   - doc-lie
@@ -17,3 +19,9 @@ dependencies: []
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Architect P3.2 from the TASK-0048.04 cycle-242 review gate (read-only, out of that commit's range; PRE-EXISTING). nucleus/nucleus-compiler/src/event.rs:499 and :504 — the ViolationKind::Log and ::Count doc comments still read 'NOT wired in this cycle (TASK-0052.04)'. Per the project narrative TASK-0052.02/.04 already landed tier-1 panic/log/count codegen end-to-end (and TASK-0048.04 just landed tier-3 log), so these docstrings are stale comment-lies on the canonical contract enum. Recurring defect class feedback-comment-doc-lie-recurring. Fix: update the two doc comments to reflect that Log/Count ARE wired at tier-1 (backend-common/src/check_frame.rs) and, for Log, now tier-3 embedded (embedded-pattern). LOW / docs-only; verify with 'just check-narrative-doc-lie' (note: that arm only scans e2e-matrix.toml, so the real guard is the unit suite + grep) and 'just clippy'.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle plan (docs-only, batched with TASK-0048.10). event.rs:499/:504 — both ViolationKind::Log and ::Count docstrings say 'NOT wired in this cycle — TASK-0052.04', a lie. Verified wiring: tier-1 Log = eprintln! (check_frame.rs:184), Count = AtomicU64 + Drop summary (check_frame.rs:109-119); tier-3 embedded Log = TASK-0048.04, Count = TASK-0048.08 (AtomicU32 + program-exit USART1 summary). Fix both doc comments to state they ARE wired at tier-1 (backend-common::check_frame, TASK-0052.04) + tier-3 embedded (Log TASK-0048.04 / Count TASK-0048.08); keep each variant's accurate WHAT description. No enum/logic change.
+<!-- SECTION:NOTES:END -->
