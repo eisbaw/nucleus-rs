@@ -1293,6 +1293,56 @@ fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
     ))
 }
 
+/// Derive the kernels-source FILENAME paired with a resolved algorithm
+/// path (TASK-0049.08) — the silent sibling of `resolve_algo_path`,
+/// which selected the algo only and left the kernels file hardcoded.
+///
+/// The repo follows a strict naming convention: an algorithm file named
+/// `prog<variant>.algo.nuc` pairs with a kernels file named
+/// `kernels<variant>.rs`, where `<variant>` is the empty string for the
+/// default pair (`prog.algo.nuc` <-> `kernels.rs`) or a dotted suffix
+/// for a variant (e.g. `prog.embedded.algo.nuc` <-> `kernels.embedded.rs`,
+/// the no_std/stateful kernels of the embedded multi-MCU path).
+///
+/// Derivation rule (a pure function of the algo path's FINAL component —
+/// `file_name()` is used so the `..`-bearing resolved path that
+/// `resolve_algo_path` returns does not perturb the result):
+///   - take `algo_path.file_name()`;
+///   - if it ends with `.algo.nuc` and the remaining stem starts with
+///     `prog`, the variant is whatever follows `prog` in that stem
+///     (`""` for the default, `.embedded` for the embedded pair, etc.);
+///   - the kernels filename is then `format!("kernels{variant}.rs")`.
+///
+/// FALLBACK: any filename that does NOT match the `prog[<variant>].algo.nuc`
+/// shape (a missing `file_name()`, a non-`prog` stem, or no `.algo.nuc`
+/// suffix) yields the historical universal default `"kernels.rs"`. This
+/// preserves the harness's pre-TASK-0049.08 behaviour for any
+/// unconventional algo, and is safe because the caller's
+/// fixture-existence check still validates the derived path — a wrong
+/// derivation surfaces as a "missing kernels at <path>" failure, never
+/// a silent miscompile against the wrong kernels. Unlike
+/// `resolve_algo_path`, this does NOT fail loud: the default is the
+/// honest, behaviour-preserving choice for an off-convention name.
+fn kernels_filename_for_algo(algo_path: &std::path::Path) -> String {
+    const DEFAULT: &str = "kernels.rs";
+    const ALGO_SUFFIX: &str = ".algo.nuc";
+    const PROG_STEM: &str = "prog";
+
+    let Some(name) = algo_path.file_name().and_then(|n| n.to_str()) else {
+        return DEFAULT.to_string();
+    };
+    // Strip the `.algo.nuc` suffix; a name without it is off-convention.
+    let Some(stem) = name.strip_suffix(ALGO_SUFFIX) else {
+        return DEFAULT.to_string();
+    };
+    // The stem must begin with `prog`; the variant is the remainder
+    // (`""` for the default pair, `.embedded` for the embedded pair).
+    let Some(variant) = stem.strip_prefix(PROG_STEM) else {
+        return DEFAULT.to_string();
+    };
+    format!("kernels{variant}.rs")
+}
+
 fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     let cell = planned.cell.clone();
     // Set true only by the harness-side NUC_XBACKEND_NEGATIVE
@@ -1395,11 +1445,12 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
             };
         }
     };
-    // TODO(TASK-0049.08): kernels file is still hardcoded; embedded
-    // cells need a per-cell kernels.embedded.rs override (the silent
-    // sibling of the TASK-0049.03 algo-selection fix). Until then no
-    // embedded_multimcu cell can be promoted from [[skip]].
-    let kernels = ex_dir.join("kernels.rs");
+    // Kernels file is derived from the resolved algo's variant
+    // (TASK-0049.08): `prog.algo.nuc` -> `kernels.rs`,
+    // `prog.embedded.algo.nuc` -> `kernels.embedded.rs`. This closes the
+    // silent sibling of the TASK-0049.03 algo-selection fix; the
+    // fixture-existence check below validates the derived path.
+    let kernels = ex_dir.join(kernels_filename_for_algo(&algo));
     let input_bin = ex_dir.join("input.bin");
     let reference_bin = ex_dir.join("reference.bin");
     for (label, p) in [
@@ -1895,10 +1946,10 @@ fn check_cell_determinism(paths: &Paths, planned: &PlannedCell) -> DetCellResult
             };
         }
     };
-    // TODO(TASK-0049.08): hardcoded kernels file — same per-cell
-    // override gap as run_cell (silent sibling of TASK-0049.03's
-    // algo-selection fix); blocks embedded_multimcu promotion.
-    let kernels = ex_dir.join("kernels.rs");
+    // Kernels file derived from the resolved algo variant
+    // (TASK-0049.08) — same convention as run_cell; the
+    // fixture-existence check below validates the derived path.
+    let kernels = ex_dir.join(kernels_filename_for_algo(&algo));
     for (label, p) in [("algo", &algo), ("sched", &sched), ("kernels", &kernels)] {
         if !p.exists() {
             return DetCellResult {

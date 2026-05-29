@@ -2760,3 +2760,58 @@ fn resolve_algo_path_fails_loud_on_missing_directive() {
     );
     let _ = fs::remove_dir_all(sched.parent().expect("sched parent"));
 }
+
+// --------------------------------------------------------------------
+// kernels_filename_for_algo (TASK-0049.08): per-cell kernels-file
+// selection derived from the resolved algo's `prog<variant>.algo.nuc`
+// name. The silent sibling of resolve_algo_path. Pure-filename tests
+// are the LOAD-BEARING coverage — the e2e totals do NOT move (no
+// current cell drives a non-default algo/kernels pair), so the matrix
+// gate is insufficient. See main.rs `kernels_filename_for_algo`.
+// --------------------------------------------------------------------
+
+#[test]
+fn kernels_filename_for_algo_default_pair() {
+    // The common case: every default repo example pairs
+    // `prog.algo.nuc` with `kernels.rs`. The `..`-bearing path mimics
+    // the un-canonicalised string `resolve_algo_path` actually returns
+    // (sched_parent/../prog.algo.nuc) — file_name() must ignore it.
+    let algo = std::path::Path::new("examples/01-elementwise-add/schedules/../prog.algo.nuc");
+    assert_eq!(kernels_filename_for_algo(algo), "kernels.rs");
+}
+
+#[test]
+fn kernels_filename_for_algo_embedded_variant() {
+    // THE BITE (and the whole point of TASK-0049.08): the non-default
+    // embedded variant `prog.embedded.algo.nuc` must derive
+    // `kernels.embedded.rs` (example 14's no_std/stateful kernels),
+    // NOT the hardcoded `kernels.rs`. A `..`-bearing path again exercises
+    // file_name() robustness against the resolved path shape.
+    let algo = std::path::Path::new("examples/14-hearing-aid/schedules/../prog.embedded.algo.nuc");
+    assert_eq!(kernels_filename_for_algo(algo), "kernels.embedded.rs");
+}
+
+#[test]
+fn kernels_filename_for_algo_falls_back_to_default() {
+    // FALLBACK (documented, behaviour-preserving): any filename that
+    // does NOT match the `prog[<variant>].algo.nuc` shape yields the
+    // historical universal default `kernels.rs`. Three off-convention
+    // shapes, all of which must NOT fail-loud (unlike resolve_algo_path)
+    // — the default is the honest choice and the caller's
+    // fixture-existence check still guards a genuinely wrong path.
+    //   (a) right suffix, wrong stem prefix (does not start with `prog`)
+    assert_eq!(
+        kernels_filename_for_algo(std::path::Path::new("foo.algo.nuc")),
+        "kernels.rs"
+    );
+    //   (b) `prog`-prefixed stem but missing the `.algo.nuc` suffix
+    assert_eq!(
+        kernels_filename_for_algo(std::path::Path::new("prog.nuc")),
+        "kernels.rs"
+    );
+    //   (c) entirely unconventional name
+    assert_eq!(
+        kernels_filename_for_algo(std::path::Path::new("weird.txt")),
+        "kernels.rs"
+    );
+}
