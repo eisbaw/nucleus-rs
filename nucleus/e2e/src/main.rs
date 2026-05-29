@@ -1222,20 +1222,19 @@ fn required_coverage_gaps(
 ///   - the path is the substring between the first `"` and the next
 ///     `"` on that directive line.
 ///
-/// On comment handling, the honest accounting (TASK-0049.03): the
-/// `trimmed.starts_with("schedule")` gate is the PRIMARY filter — no
-/// `//` (or `/* */`) comment line survives it, because a comment's
-/// trimmed start is `//` / `/*`, never `schedule`. The explicit
-/// `//`-skip is therefore belt-and-suspenders, not the sole defence;
-/// it is kept because the brief asked for it and it makes intent
-/// obvious. As of 2026-05 the only repo comment carrying the keyword
-/// pair is line 7 of
-/// `examples/14-hearing-aid/schedules/embedded_multimcu.sched.nuc`
-/// (`// ... the \`schedule for\` target below points at`) — unquoted,
-/// and rejected by BOTH the `//`-skip and the `starts_with` gate. No
-/// repo sched carries the *quoted* `schedule for "..."` form inside a
-/// comment (verified against both embedded_multimcu*.sched.nuc); an
-/// earlier draft of this doc overstated that it did.
+/// On comment handling (TASK-0049.03): a comment line is rejected by
+/// TWO independent gates — the explicit `//`-skip (which runs FIRST in
+/// the loop) AND the directive gate, which requires the trimmed line
+/// to START with the `schedule` keyword (a `//` or `/* */` line fails
+/// that too, since its trimmed start is `//` / `/*`, not `schedule`).
+/// Either gate alone rejects every comment; both are kept as cheap
+/// defence-in-depth, and neither is "the sole" defence. Several repo
+/// scheds DO mention `schedule for` in prose comments (e.g. `// Naive
+/// schedule for example 02-split-add`), so comment-rejection is
+/// load-bearing, not hypothetical — it is the directive's leading
+/// `schedule` keyword plus a quoted path that distinguishes the real
+/// directive from any such prose. (No per-file comment census is kept
+/// here: a count of "which scheds mention it" would go stale.)
 ///
 /// Resolution base is the sched file's PARENT directory:
 /// `sched_path.parent().join(extracted)`. For `"../prog.algo.nuc"`
@@ -1263,13 +1262,13 @@ fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
             continue;
         }
         // The directive's trimmed line must START with the `schedule`
-        // keyword and also contain `for`. This `starts_with` gate is
-        // the PRIMARY comment-rejector: no `//`-comment (nor a `/* */`
-        // block-comment line) survives it, since their trimmed start
-        // is `//` / `/*`, not `schedule`. The `//`-skip above is thus
-        // belt-and-suspenders, not the sole defence. Requiring the
-        // keyword pair (plus a quote below) avoids latching onto
-        // unrelated lines.
+        // keyword and also contain `for`. This gate independently
+        // rejects every comment too (a `//` / `/* */` line's trimmed
+        // start is not `schedule`), so together with the `//`-skip
+        // above it is two-gate defence-in-depth — neither is the sole
+        // defence, and the `//`-skip is the one that fires first at
+        // runtime. Requiring the keyword (plus a quote below) avoids
+        // latching onto unrelated lines.
         if !(trimmed.starts_with("schedule") && trimmed.contains("for")) {
             continue;
         }

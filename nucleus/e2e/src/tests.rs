@@ -2709,10 +2709,11 @@ fn resolve_algo_path_skips_comment_and_honours_non_default() {
     // NOTE this is a SYNTHETIC stress case, deliberately harder than
     // the real repo files: example 14's embedded_multimcu*.sched.nuc
     // mention `schedule for` in a header comment but NOT in the quoted
-    // form (verified TASK-0049.03). The rejection here is via the
-    // `trimmed.starts_with("schedule")` gate (the comment's trimmed
-    // start is `//`, not `schedule`); the explicit `//`-skip is
-    // belt-and-suspenders. See `resolve_algo_path`'s docstring.
+    // form. Here the WRONG-bearing line is a `//` comment, so the
+    // `//`-skip gate (which runs FIRST in the loop) is what rejects it
+    // at runtime; the `trimmed.starts_with("schedule")` gate would
+    // independently reject it too (its trimmed start is `//`). Two-gate
+    // defence-in-depth — see `resolve_algo_path`'s docstring.
     let sched = resolve_algo_tmp_sched(
         "comment-skip",
         "// header line\n\
