@@ -1,13 +1,33 @@
 # capabilities.toml for the embedded-pattern backend (tier 3, M9).
 # Schema: docs/capabilities-toml.md (TASK-0019). PRD §7.3 / §7.4 / §11.
 #
-# This is the GENERIC tier-3 backend's M9 capability surface. It is
-# deliberately MINIMAL — exactly the demands the example 1 + example 5
-# `naive` schedules make (single `host` worker => `default` worker
-# class; sync; no transfer; no buffer; heap region). That minimality is
-# the point of M9: prove the no_std event-list lowering + stub-shim
-# compile path end-to-end on the smallest representative schedules
-# before the M10 shim adds real hardware capability.
+# This is the GENERIC tier-3 backend's M9/M11-slice-A capability
+# surface. It is deliberately MINIMAL — exactly the demands the
+# example 1 + example 5 `naive` schedules make (`default` worker class;
+# sync; no async; no buffer>1; heap region). That minimality is the
+# point: prove the no_std event-list lowering + stub-shim compile path
+# end-to-end on the smallest representative schedules before a shim adds
+# real hardware capability.
+#
+# ## Multi-worker is now lowered on the LIB path (TASK-0049.04), but the
+# ## capability VALUES below are unchanged and still load-bearing.
+#
+# As of TASK-0049.04 (M11 backend slice A) the LIB emit path
+# (`--backend embedded-pattern` with no `--shim`) lowers a MULTI-worker
+# schedule (one no_std lib per worker, Push/Wait/Sync -> stub-shim
+# hooks). That does NOT change this file: a multi-worker schedule over
+# the `default` class with `sync` transfers (e.g.
+# 02-split-add/split.sched.nuc) already satisfied these capabilities and
+# now reaches the multi-worker emit. The values stay MINIMAL precisely
+# so the heterogeneous real example-14 `embedded_multimcu` schedule
+# (worker classes fe_core/dsp_core/rf_core + async + buffer=3 +
+# notify=event + sram_shared/dsp_tcm regions) is STILL correctly
+# rejected at this gate — admitting those would be a LIE against the
+# synchronous stub shim. The synchronous-vs-async transport decision +
+# the heterogeneous worker classes (plus no_std-clean per-frame kernel
+# bodies) are filed as TASK-0049.06 (real-ex14 LIB cross-compile
+# follow-up) and TASK-0049.05 (the BIN slice); do NOT widen these to
+# make ex14 pass without making that decision.
 #
 # ## What is DEFERRED to the M10 shim (TASK-0048), NOT declared here
 #

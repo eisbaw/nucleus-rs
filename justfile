@@ -496,11 +496,23 @@ check-mega-files:
     fi; \
     echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC; no allow-list entry is stale."
 
-# Tier-3 M9 compile-only acceptance (TASK-0047 AC#4). Generates the
-# `embedded-pattern` no_std lib for the M9 acceptance examples (1 + 5,
-# their naive schedules) and runs `cargo check --target
-# thumbv7em-none-eabihf` on each generated project against the stub
-# shim. SUCCEEDS iff every generated lib cross-compiles.
+# Tier-3 compile-only acceptance. Two arms, both real
+# `cargo check --target thumbv7em-none-eabihf` cross-compiles against
+# the stub shim. SUCCEEDS iff every generated lib cross-compiles.
+#
+#   1. M9 single-worker (TASK-0047 AC#4): the `embedded-pattern` no_std
+#      lib for examples 1 + 5 (their naive schedules) at the out_dir
+#      root.
+#   2. M11 backend slice A multi-worker (TASK-0049.04): 02-split-add's
+#      `split` schedule (host + w0, sync transfers a/b/c) emits ONE
+#      no_std lib PER worker under out_dir/<worker>/, with Push/Wait/Sync
+#      lowered to the stub-shim hooks (dma_push/dma_wait/irq_barrier).
+#      The real example-14 embedded_multimcu schedule is NOT cross-
+#      compiled here — it is blocked on a capability decision
+#      (async/buffer/event vs the synchronous stub) and on no_std-clean
+#      stateful per-frame kernels; both are TASK-0049.05 / TASK-0054.01
+#      follow-ups (see those tasks). 02-split-add is the no_std-clean
+#      fixture that isolates the structural backend change.
 #
 # MUST be run under the embedded cross-compile shell, which provides the
 # thumbv7em-none-eabihf rust-std on the pinned 1.83.0 toolchain:
@@ -516,12 +528,12 @@ check-mega-files:
 # differential (it runs + diffs host binaries), which is meaningless for
 # a compile-only no_std backend (PRD §10.3 point 2 / §11 M9).
 #
-# The example set (1 + 5) is the M9 acceptance set fixed by PRD §11 M9 /
-# TASK-0047 AC#4 (the two examples most representative of embedded
-# workloads — elementwise + stencil). It is NOT per-example recipe bloat
-# (PRD §12.3 anti-bloat): this is one milestone gate. M10 (Renode runtime,
-# TASK-0048) extends it to a run-and-diff; until then compile-only is the
-# bar (PRD §10.3 point 5).
+# The M9 example set (1 + 5) is fixed by PRD §11 M9 / TASK-0047 AC#4 (the
+# two examples most representative of embedded workloads — elementwise +
+# stencil). It is NOT per-example recipe bloat (PRD §12.3 anti-bloat):
+# this is one milestone gate. M10 (Renode runtime, TASK-0048) extends it
+# to a run-and-diff; until then compile-only is the bar (PRD §10.3
+# point 5).
 check-embedded:
     @echo "tier-3 M9 compile-only acceptance (embedded-pattern, TASK-0047 AC#4)"
     @set -eu; \
@@ -538,7 +550,27 @@ check-embedded:
         echo "=== cargo check --target thumbv7em-none-eabihf ($ex) ==="; \
         (cd "$out" && cargo check --target thumbv7em-none-eabihf); \
     done; \
-    echo "OK: embedded-pattern no_std lib cross-compiles for examples 1 + 5 (thumbv7em-none-eabihf)."
+    echo "OK: embedded-pattern no_std lib cross-compiles for examples 1 + 5 (thumbv7em-none-eabihf)."; \
+    echo ""; \
+    echo "=== M11 backend slice A: multi-worker compile-only LIB (TASK-0049.04) ==="; \
+    mout="target/embedded-m11/02-split-add"; \
+    rm -rf "$mout"; \
+    echo "=== generating per-worker no_std libs for 02-split-add/split (2 workers) ==="; \
+    ./target/release/nucleus build \
+        --algo "../nuc-nucleus/examples/02-split-add/prog.algo.nuc" \
+        --sched "../nuc-nucleus/examples/02-split-add/schedules/split.sched.nuc" \
+        --backend embedded-pattern \
+        --out "$mout"; \
+    for w in host w0; do \
+        if [ ! -d "$mout/$w" ]; then \
+            echo "FAIL: expected per-worker project $mout/$w (TASK-0049.04 N-projects layout)"; \
+            exit 1; \
+        fi; \
+        echo "=== cargo check --target thumbv7em-none-eabihf (02-split-add/$w) ==="; \
+        (cd "$mout/$w" && cargo check --target thumbv7em-none-eabihf); \
+    done; \
+    echo "OK: embedded-pattern emits + cross-compiles N per-worker no_std libs"; \
+    echo "    with stub-shim Push/Wait/Sync transport (TASK-0049.04, thumbv7em-none-eabihf)."
 
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
