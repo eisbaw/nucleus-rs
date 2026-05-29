@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@Claude'
 created_date: '2026-05-19 14:39'
-updated_date: '2026-05-29 05:59'
+updated_date: '2026-05-29 06:48'
 labels:
   - M11
   - test
@@ -66,6 +66,11 @@ forward-carried from TASK-0192 (bears on deep-codegen M11 follow-ups under TASK-
 3. buffer==pipeline-depth is now pinned for this schedule; if a future cycle changes pipeline depth, buffer must move with it (the PipelineExceedsBuffer gate will catch a regression).
 
 GATE (full): build OK; clippy OK; test 1085/0/3; test-release 1084/0/3; e2e 301/246/0/55/0 (unchanged; 7 embedded cells stay [[skip]]).
+
+=== Review gate (orchestrator, post-landing) — both GO ===
+qa-test-runner GO: full gate re-run, e2e sampled 4x all identical (301/246/0/55/0, required-fail 0), clippy genuinely 0 (forced recompile), +6 tests confirmed running, e2e enumeration NOT perturbed by the new prog.embedded.algo.nuc (the 7 embedded_multimcu cells stay non-required [[skip]]). test 1085/0/3, test-release 1084/0/3.
+mped-architect GO: no P1/P2. Confirmed the buffer 2->3 change is a LEGITIMATE root-cause fix not AC-gaming (link invariant is buffer>=pipeline_depth at link/pipeline.rs:162; all 4 transfers genuinely cross-worker in produced-cap-consumed; siblings 09/11/13 use buffer==depth; initial commit shipped the pipeline=3/buffer=2 contradiction). Confirmed honest closure (all 3 suites genuinely ADMIT, no force-pass), tier-1 prog.algo.nuc UNTOUCHED, TASK-0049.03 harness-hardcode finding REAL (e2e/src/main.rs:1286,1766) with no mis-driving of the 7 tier-1 cells. Raised 3 P3 doc-lies, ALL fixed in-thread (commit 41fec26): P3-1 schedule-header FFT/TCM lie + "both FE and DSP"->all three; P3-2 added ir.memory_regions.len()==2 assertion to lowers_14_hearing_aid_embedded_multimcu (narrative previously out-ran assertions); P3-3 e2e-matrix.toml 7 skip-reasons + 3 comment blocks rewritten to the true gating reason (TASK-0049.03 + TASK-0049, not "kernels undeclared"). Gate re-run after fix: e2e 301/246/0/55/0 unchanged.
+Reviewer info note (for next cycle): the brief's commit range "e772b2c..0bf0d3d" is git-exclusive = only 2 commits; the load-bearing new algo file is in e772b2c itself. Use e772b2c^..0bf0d3d to capture all 3.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

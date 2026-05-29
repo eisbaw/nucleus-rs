@@ -4,7 +4,7 @@ title: M11 — Multi-MCU Renode co-simulation (hearing aid)
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-29 05:28'
+updated_date: '2026-05-29 06:51'
 labels:
   - M11
   - backend
@@ -80,4 +80,19 @@ Verified from bundled Renode 1.16.1 source/scripts (see TASK-0049.01 for detail)
 Interconnect DECIDED = UART hub (Renode has no MCU-to-MCU SPI link; user choice). The empirical 2x-STM32H743 + UARTHub smoke (tests/renode/multimcu-uart-smoke/, just renode-multimcu-uart-smoke) proved wired cross-MCU UART transport works end-to-end.
 DURABLE GOTCHA the generated multi-MCU firmware/.resc MUST handle: Renode's UARTBase.WriteChar DROPS a received char when the receiver's RX is not yet enabled (IsReceiveEnabled = RE && UE) — pre-enable arrivals are NOT queued. So a generated sender that transmits before the generated receiver has enabled its USART RX loses the opening bytes (a silent, scheduler-luck-dependent corruption). The de-risk harness fixes this in run.resc by start-gating the sender (`cpu IsHalted true` until the receiver boots) + a fine SetGlobalQuantum, mirroring the bundled nrf52840-ble-hci-uart reference. When M11 codegen emits the multi-MCU project, the generated .resc (or the firmware's own handshake) MUST guarantee every receiver has RX-enabled before any sender transmits to it — e.g. start-gate non-host workers' transmit, or have the host/coordinator barrier on receiver-ready. This is the cross-MCU analogue of the Event::Sync barrier; Sync->irq_barrier wiring should subsume it once real.
 TRANSPORT SHAPE for the lowering: USART1 on a CreateUARTHub bus (byte hub); TX via TDR poll-on-TXE (Renode hardwires TXE=true), RX via poll-on-RXNE + read RDR. Push -> transmit over the hub; Wait -> poll RX until the expected bytes arrive; Sync -> irq_barrier (cross-MCU). See tests/renode/multimcu-uart-smoke/src/lib.rs for the reference register helpers.
+
+=== Forward-carried from SLICE 1 (TASK-0054.01 + TASK-0192 DONE, commits e772b2c+8e2893c+0bf0d3d + P3 fold-back 41fec26; both reviews GO) — M11 front-end is DONE ===
+The M11 multi-MCU schedule FRONT-END is fully de-risked. KEY: the full embedded_multimcu shape (3 typed worker classes, 2 memory_region+place_data, pipeline=3, 4 async buffered notify=event transfers, check loop latency_max) LOWERS + LINKS + ACFG-ADMITS with ZERO new front-end machinery — proven by 7 new positive tests (lowers_/links_/acfg_*_14_hearing_aid_embedded_multimcu + algo parse/lower + place-resolve). So ALL remaining M11 work for THIS parent is purely BACK-END.
+
+What exists now: nuc-nucleus/examples/14-hearing-aid/prog.embedded.algo.nuc (per-frame peripheral kernels fe_capture/rf_receive/fe_emit/rf_transmit + reused mix2/denoise, i32+wrapping, explicit `mixed` intermediate); embedded_multimcu.sched.nuc `schedule for` now points at it; buffer 2->3 latent-bug fixed (link invariant buffer>=pipeline_depth at link/pipeline.rs:162).
+
+DEEP-CODEGEN TODO (this parent, FRESH CONTEXT — deep/high-regression-risk, warrants full attention):
+1. Lift the single-worker guard at backends/embedded-pattern/src/lib.rs:183 (currently rejects used_workers>1 with a forward link to THIS task).
+2. Lower Event::Push/Wait -> cross-MCU UART-hub transport (TX poll-on-TXE+write TDR; RX poll-on-RXNE+read RDR — see TASK-0049.01 transport shape + the receiver-RX-enabled-before-sender-TX start-gating discipline the generated .resc MUST emit).
+3. Lower Event::Sync -> shim.irq_barrier (cross-MCU; the analogue of the start-gate).
+4. Generate the multi-MCU project: N firmware bins (one per MCU class fe/dsp/rf) + a .resc wiring them on a CreateUARTHub, mirroring tests/renode/multimcu-uart-smoke/.
+
+TWO ENABLERS (both LATENT-value — only pay off once the backend above emits; can be done in any order, ideally before AC#3 e2e validation):
+- TASK-0049.03 (harness `schedule for`): the e2e harness HARDCODES prog.algo.nuc at nucleus/e2e/src/main.rs:1286 (run) + :1766 (determinism). Until it honours the schedule's `schedule for` clause, the 7 embedded_multimcu e2e cells CANNOT be driven (they stay [[skip]]). Low-risk but touches every cell's algo resolution — verify the 246 passing cells stay byte-identical (existing schedules `schedule for "../prog.algo.nuc"` resolve to the SAME path = provably no behaviour change).
+- TASK-0049.02 (stateful per-frame kernels.rs): SUBTLE — a shared AtomicUsize call-cursor in fe_capture/etc. breaks the MULTI-PROCESS tier-1 backends (each process gets its own cursor). The 7 e2e cells span all 7 tier-1 backends (cross-backend differential), several multi-process. Resolve the differential strategy (single-process-only? per-backend kernel variant?) before promoting the cells.
 <!-- SECTION:NOTES:END -->
