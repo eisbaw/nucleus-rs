@@ -23,30 +23,43 @@
 //! `<name>` AFTER the loop closes — i.e. out of scope. The generated
 //! Rust does not compile.
 //!
-//! ## What this file establishes (OUTCOME-MATRIX branch d)
+//! ## What this file establishes (OUTCOME-MATRIX branch d — now guarded)
 //!
 //! TASK-0356 AC#2 asked for either (a) an `EmitError` contract-gap or
-//! (b) a correct outer-scope `let mut` fallback. This file
-//! characterizes the ACTUAL behaviour, which is NEITHER:
+//! (b) a correct outer-scope `let mut` fallback. TASK-0356 (cycle 222)
+//! characterized the ACTUAL cycle-222 behaviour as NEITHER (the walker
+//! had no scope-tracking, so it emitted the broken-scope Rust and
+//! returned `Ok`). TASK-0364 (this landing) closes that with OPTION (a):
+//! a typed `EmitError::ContractGap` fail-loud guard.
 //!
-//! - `render_worker_events` returns `Ok` (no `EmitError`) — the
-//!   walker has no scope-tracking that would detect the cross-scope
-//!   use. Pinned by `at_risk_shape_emits_broken_scope_no_emit_error`.
-//! - The emit is the BROKEN scope: `let <name>` inside the `for`
-//!   block, consumer reading `<name>` after it. Pinned, with the
-//!   exact emitted string, by the same test. This broken Rust was
-//!   independently confirmed non-compiling (rustc `E0425: cannot find
-//!   value` … `in this scope`) during cycle-222 implementation — see
-//!   the commit message for the standalone reproducer.
+//! - `render_worker_events` now returns `Err(EmitError::ContractGap)`
+//!   for the at-risk shape — `collect::check_let_at_wait_scope_safety`,
+//!   called once at the walker entry, detects a let-at-wait Wait whose
+//!   value is consumed at an enclosing (non-dominated) scope. Pinned by
+//!   `at_risk_shape_emits_scope_gap_error`.
+//! - The previously-characterized BROKEN emit (`let <name>` inside the
+//!   `for` block, consumer reading `<name>` after it — rustc `E0425`,
+//!   confirmed non-compiling during cycle-222) is now UNREACHABLE: the
+//!   guard fails loud BEFORE any code is emitted, so there is no
+//!   broken-footprint string to pin anymore.
 //!
-//! The protection against this in shipped code is therefore NOT the
-//! emit and NOT an `EmitError` — it is an UPSTREAM CO-LOCATION
-//! INVARIANT enforced by the transfer-injection pass: every cross-
-//! worker `Wait` is placed into the SAME sequence (same scope) as its
-//! consuming `Operation`, immediately before it. A consumer at the
+//! The shipped-code protection is UNCHANGED and is still the UPSTREAM
+//! CO-LOCATION INVARIANT enforced by the transfer-injection pass: every
+//! cross-worker `Wait` is placed into the SAME sequence (same scope) as
+//! its consuming `Operation`, immediately before it. A consumer at the
 //! outer scope therefore gets its Wait at the outer scope, never in a
 //! nested loop body. The at-risk shape this file hand-builds is NOT
-//! producible by `inject_transfers`.
+//! producible by `inject_transfers` today. TASK-0364's guard is the
+//! second line of defence for a FUTURE pass that breaks the invariant
+//! (e.g. a hoist) — it converts a latent miscompile into a fail-loud
+//! contract gap. OPTION (a) (typed `EmitError`) was chosen over the
+//! classifier-side OPTION (A) (scope-aware exclusion) precisely because
+//! the shape is non-producible: failing loud carries near-zero
+//! regression risk and matches the project's panic-not-diagnostic
+//! response to contract gaps, whereas a silent classifier transform
+//! would alter a code path no shipped schedule exercises. The classifier
+//! is therefore UNCHANGED (it still includes `buf`; see
+//! `classifier_includes_in_loop_whole_array_wait_for_at_risk_shape`).
 //!
 //! Enforcement site (verified against code, cycle 222, NOT just the
 //! docstring claim): `nucleus-compiler/src/passes/transfer_inject.rs`,
@@ -69,13 +82,14 @@
 //! an executable characterization. If a FUTURE pass ever does
 //! construct the at-risk shape (e.g. a hoist that lifts a consumer
 //! out of a loop while leaving its Wait behind), the
-//! `at_risk_shape_emits_broken_scope_no_emit_error` pin documents
-//! exactly what breaks and where the real fix belongs
-//! (TASK-0364, filed cycle 222): make the let-at-wait classifier
-//! scope-aware (exclude an in-loop Wait whose data is consumed at an
-//! outer scope) OR emit a typed `EmitError` for the cross-scope use.
-//! A code comment at `wait.rs` (the `let {name} = {rhs};` emit site)
-//! and `collect.rs` (the loop descent) cross-references TASK-0364.
+//! `at_risk_shape_emits_scope_gap_error` pin proves the TASK-0364 guard
+//! converts it into a fail-loud `EmitError::ContractGap` instead of a
+//! silent miscompile, and `safe_in_loop_wait_and_consumer_emits_ok`
+//! proves the guard does NOT over-fire on the well-scoped shape. The
+//! guard lives in `collect::check_let_at_wait_scope_safety`, called
+//! once at the `event_walker::render_worker_events` entry. A code
+//! comment at `wait.rs` (the `let {name} = {rhs};` emit site) and
+//! `collect.rs` (the loop descent) cross-references TASK-0364.
 //!
 //! ## Sibling audit (silent-sibling discipline)
 //!
@@ -110,6 +124,7 @@ use nucleus_compiler::event::{
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 use nucleus_compiler::NameTables;
 
+use backend_common::render::EmitError;
 use backend_common::multi_worker_walker::{collect_let_at_wait_data, render_worker_events, WalkerCtx};
 
 /// Build the at-risk fixture: a whole-array data `buf : i32[8]`, a
@@ -215,10 +230,13 @@ fn classifier_includes_in_loop_whole_array_wait_for_at_risk_shape() {
 }
 
 #[test]
-fn at_risk_shape_emits_broken_scope_no_emit_error() {
-    // CHARACTERIZATION (OUTCOME-MATRIX branch d): drive
-    // `render_worker_events` on the at-risk shape with `buf`
-    // classified let-at-wait. Pin the ACTUAL emit.
+fn at_risk_shape_emits_scope_gap_error() {
+    // TASK-0364 (OPTION B) GUARD PIN: drive `render_worker_events` on
+    // the at-risk shape with `buf` classified let-at-wait. The walker's
+    // entry chokepoint (`collect::check_let_at_wait_scope_safety`) MUST
+    // now reject this with `EmitError::ContractGap` BEFORE any code is
+    // emitted — the in-loop Wait of `buf` is consumed by a Fire at the
+    // enclosing root scope that no Wait of `buf` lexically dominates.
     let (names, sidecar, data, seq, iv, kernel) = at_risk_tables();
     let events = at_risk_events(data, seq, iv, kernel);
 
@@ -226,16 +244,17 @@ fn at_risk_shape_emits_broken_scope_no_emit_error() {
     rendezvous_ids.insert((data, seq), 0usize);
     let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
     let mut let_at_wait: BTreeSet<DataId> = BTreeSet::new();
-    // NOTE (cycle 222 architect P3.2): this inserts `data` DIRECTLY,
-    // bypassing the `collect_let_at_wait_data` classifier. Consequence
-    // for the TASK-0364 fix-author: a classifier-side fix (option A —
-    // exclude an in-loop Wait with an outer consumer from the set) will
-    // NOT break THIS test (it forces the set membership), but WILL break
-    // the sibling `classifier_includes_in_loop_whole_array_wait_for_at_risk_shape`
-    // (which drives the real classifier). An emit-side fix (option B —
-    // a typed EmitError) WILL break this test (the `.expect()` below
-    // fails). So the two tests together cover both fix options; neither
-    // alone guards both. Re-characterize both when TASK-0364 lands.
+    // NOTE (cycle 222 architect P3.2; re-characterized cycle 222
+    // TASK-0364): this inserts `data` DIRECTLY, bypassing the
+    // `collect_let_at_wait_data` classifier. OPTION B (the landed fix)
+    // is an EMIT-SIDE guard, so it fires on whatever is IN the
+    // let_at_wait set regardless of how it got there — forcing the set
+    // membership here is exactly the right driver for the guard. The
+    // sibling `classifier_includes_in_loop_whole_array_wait_for_at_risk_shape`
+    // separately pins that the real classifier ALSO includes `buf` (so
+    // the guard is reachable from a real schedule, not just this forced
+    // set). OPTION B leaves the classifier UNCHANGED, so that sibling
+    // stays green.
     let_at_wait.insert(data);
 
     let ctx = WalkerCtx {
@@ -249,60 +268,106 @@ fn at_risk_shape_emits_broken_scope_no_emit_error() {
     };
 
     let mut out = String::new();
-    // FACT 1: the walker returns Ok — there is NO EmitError for this
-    // shape. AC#2(a) is NOT met (the walker has no scope-tracking).
+    let err = render_worker_events(&ctx, WorkerId(1), &events, &mut out, 0, "")
+        .expect_err("TASK-0364 guard must reject the at-risk cross-scope shape");
+
+    match &err {
+        EmitError::ContractGap(msg) => {
+            // The message must name the data and the scope hazard and be
+            // greppable to TASK-0364 (project comment/doc-lie discipline:
+            // every claim here is checked against the emitted string).
+            assert!(
+                msg.contains("buf"),
+                "ContractGap must name the offending data `buf`; got: {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0364"),
+                "ContractGap must reference TASK-0364 for greppability; got: {msg}"
+            );
+            assert!(
+                msg.contains("scope") && msg.contains("Wait"),
+                "ContractGap must describe the let-at-wait Wait / enclosing-scope \
+                 hazard; got: {msg}"
+            );
+        }
+        other => panic!("expected EmitError::ContractGap, got {other:?}"),
+    }
+
+    // The guard fails BEFORE emit, so nothing is written: the
+    // previously-characterized broken-scope footprint is now
+    // unreachable. (We do not assert `out.is_empty()` because the guard
+    // runs first and short-circuits — but it must NOT contain the
+    // broken in-loop `let buf` that the consumer would read out of
+    // scope.)
+    assert!(
+        !out.contains("let buf"),
+        "guard must short-circuit before emitting the broken-scope `let buf`; \
+         got:\n{out}"
+    );
+}
+
+#[test]
+fn safe_in_loop_wait_and_consumer_emits_ok() {
+    // TASK-0364 BOUNDARY / over-fire pin (AC#3): the SAFE shape where
+    // the Wait of `buf` AND its consuming Fire are BOTH inside the SAME
+    // loop body (scope-path `[L0]` each). The in-loop Wait's `let buf`
+    // lexically dominates the in-loop consumer, so the guard MUST NOT
+    // fire — `render_worker_events` returns Ok and emits the
+    // declare-and-assign `let buf = ...;` followed by
+    // `kernels::consume(buf);` BOTH inside the `for { }` block.
+    let (names, sidecar, data, seq, iv, kernel) = at_risk_tables();
+
+    // Safe event shape: Loop { body: [Wait(buf), Fire(consume buf)] }.
+    let inner_wait = Event::Wait {
+        src: WorkerId(0),
+        data,
+        tile: IterTile::empty(),
+        seq,
+    };
+    let inner_consumer = Event::Fire {
+        kernel,
+        tile: IterTile::empty(),
+        bindings: FireBinding {
+            inputs: vec![ArgBinding::Data(DataSlice {
+                data,
+                indices: vec![],
+            })],
+            output: None,
+        },
+    };
+    let events = vec![Event::loop_over(iv, 0..4, vec![inner_wait, inner_consumer])];
+
+    let mut rendezvous_ids: BTreeMap<(DataId, SeqTag), usize> = BTreeMap::new();
+    rendezvous_ids.insert((data, seq), 0usize);
+    let pair_tiles: BTreeMap<(DataId, SeqTag), IterTile> = BTreeMap::new();
+    let mut let_at_wait: BTreeSet<DataId> = BTreeSet::new();
+    let_at_wait.insert(data);
+
+    let ctx = WalkerCtx {
+        names: &names,
+        sidecar: &sidecar,
+        rendezvous_prefix: "ring",
+        rendezvous_ids: &rendezvous_ids,
+        pair_tiles: &pair_tiles,
+        accumulate_waits: WalkerCtx::empty_accumulate_set(),
+        let_at_wait_data: &let_at_wait,
+    };
+
+    let mut out = String::new();
     render_worker_events(&ctx, WorkerId(1), &events, &mut out, 0, "")
-        .expect("walker emits without error for the at-risk shape (no EmitError guard)");
+        .expect("guard must NOT fire on the well-scoped in-loop Wait+consumer shape");
 
-    // FACT 2: the `let buf = ...` declaration lands INSIDE the `for`
-    // block (declare-and-assign at the Wait's scope, per the
-    // let-at-wait emit). AC#2(b) is NOT met (no outer-scope `let mut`
-    // fallback — the pre-init drop omitted it).
-    assert!(
-        out.contains("for t in (0_i64)..(4_i64) {\n    let buf = ring_0.wait();"),
-        "let-at-wait emit must declare `buf` INSIDE the `for` block \
-         (declare-and-assign at the Wait scope); this is the broken-\
-         scope footprint; got:\n{out}"
-    );
-
-    // FACT 3: the outer consumer reads bare `buf` AFTER the loop
-    // closes — out of scope relative to the in-loop `let buf`. The
-    // emitted Rust does not compile (E0425, confirmed by a standalone
-    // rustc reproducer during cycle-222 implementation; see commit
-    // message). Pin the exact broken footprint.
-    assert!(
-        out.contains("}\nkernels::consume(buf);"),
-        "the outer consumer must read bare `buf` AFTER the `for` block \
-         closes — the use-before/out-of-scope footprint; got:\n{out}"
-    );
-
-    // ABSENCE pins: neither AC#2(a) nor AC#2(b) machinery exists. No
-    // outer-scope `let mut buf` fallback was emitted (would be the
-    // AC#2(b) fix), and the consumer is NOT inside the loop (which
-    // would make it well-scoped but is not what the walker produces).
-    assert!(
-        !out.contains("let mut buf"),
-        "no outer-scope `let mut buf` fallback is emitted (AC#2(b) is \
-         NOT met — the per-backend pre-init drop omits it for \
-         let-at-wait data); got:\n{out}"
-    );
-
-    // Whole-program footprint, pinned exactly (single source of truth
-    // for what branch-d actually produces). If a FUTURE cycle lands
-    // the TASK-0364 scope-aware fix, this exact-string pin will fail
-    // loudly and force the fix-author to re-characterize here.
+    // Both the `let buf` declare-and-assign AND the consumer land
+    // inside the `for { }` block — well-scoped, compiles.
     let expected = "\
 for t in (0_i64)..(4_i64) {
     let buf = ring_0.wait(); // recv `buf` from w0
+    kernels::consume(buf);
 }
-kernels::consume(buf);
 ";
     assert_eq!(
         out, expected,
-        "branch-d emit footprint drift: the at-risk shape no longer \
-         produces the characterized broken-scope string. If this is \
-         the TASK-0364 scope-aware fix landing, re-characterize this \
-         test (and flip it to assert the EmitError / outer-scope \
-         fallback per whichever option TASK-0364 chose)."
+        "well-scoped shape must emit both the in-loop `let buf` and the \
+         in-loop consumer inside the `for` block; got:\n{out}"
     );
 }

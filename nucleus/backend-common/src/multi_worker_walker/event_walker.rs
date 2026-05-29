@@ -16,6 +16,7 @@ use crate::render::{
 };
 
 use super::block_tag::compute_block_tag_abs_exprs;
+use super::collect::check_let_at_wait_scope_safety;
 use super::ctx::WalkerCtx;
 use super::wait::render_wait_assign;
 
@@ -67,6 +68,15 @@ pub fn render_worker_events(
     indent: usize,
     prefix: &str,
 ) -> Result<(), EmitError> {
+    // TASK-0364 single chokepoint: fail loud if any let-at-wait datum
+    // has an in-loop Wait whose value is consumed at an enclosing scope
+    // (the declare-and-assign `let <name>` would be out of scope at the
+    // consumer — rustc E0425). No-op when `let_at_wait_data` is empty.
+    // All FIVE populated-set backends (pthreads-sync, pthreads-async,
+    // mp-tcp-event, mp-uds-event, openmp-rs) route through here;
+    // mp-tcp-bufsync bypasses the walker and always passes the empty
+    // set, so it is unaffected. See `collect::check_let_at_wait_scope_safety`.
+    check_let_at_wait_scope_safety(events, ctx.let_at_wait_data, ctx.names)?;
     let render_ctx = ctx.render_ctx();
     render_worker_events_inner(ctx, worker, events, out, indent, prefix, &render_ctx, None)
 }

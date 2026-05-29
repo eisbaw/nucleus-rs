@@ -3,10 +3,11 @@ id: TASK-0364
 title: >-
   Scope-aware let-at-wait classification OR typed EmitError for cross-scope
   in-loop Wait
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-05-29 15:13'
-updated_date: '2026-05-29 15:35'
+updated_date: '2026-05-29 19:02'
 labels:
   - tests
   - backend-common
@@ -41,4 +42,17 @@ Characterization pin lives in backend-common/tests/wait_let_at_wait_loop_scope.r
 
 <!-- SECTION:NOTES:BEGIN -->
 Forward-carry (from TASK-0356 cycle-222 architect P3.1): the let-at-wait emit path is reached by FIVE backends that build a populated WalkerCtx.let_at_wait_data via collect_let_at_wait_data — pthreads-sync, pthreads-async, mp-tcp-event, mp-uds-event, openmp-rs (NOT three). mp-tcp-bufsync is the only multi-worker backend that bypasses (tcp_plan/events.rs, empty_let_at_wait_set). When fixing this hazard, audit ALL FIVE populated-set callers. Option A (scope-aware classifier exclusion in collect_let_at_wait_data) fixes all five at once (shared helper); option B (typed EmitError in render_wait_assign) also covers all five via the shared walker. The characterization test wait_let_at_wait_loop_scope.rs pins option-A bite via classifier_includes_in_loop_whole_array_wait_for_at_risk_shape and option-B bite via at_risk_shape_emits_broken_scope_no_emit_error — re-characterize both when this lands.
+
+Implementation plan (cycle 222 follow-up) — OPTION B chosen (typed EmitError, fail-loud).
+
+Decision: B over A. Shape is non-producible today (transfer_inject co-locates Wait+consumer). Failing loud with EmitError::ContractGap is the project panic-not-diagnostic response to contract gaps; near-zero regression risk vs a scope-aware silent classifier transform. Do NOT change classifier behaviour; do NOT change emitted code for any shipped schedule.
+
+Steps:
+1. collect.rs: add pub fn check_let_at_wait_scope_safety(events, let_at_wait: &BTreeSet<DataId>, names) -> Result<(), EmitError>. No-op on empty set. Walk events maintaining a lexical scope-path = stack of per-occurrence loop identities (fresh pre-order occurrence index pushed on entering a Loop body, popped on exit). For each D in let_at_wait record scope-paths of every Wait of D and every consumer of D (Fire input ArgBinding::Data{data:D} OR Push{data:D}; Fire OUTPUT not a consumer). D unsafe iff some consumer path c has NO Wait whose path is a non-strict prefix of c. Return Err on FIRST unsafe D, message names data (names.data.get), states let-at-wait Wait nested in loop consumed at enclosing scope, references TASK-0364.
+2. event_walker.rs render_worker_events: call check_let_at_wait_scope_safety(events, ctx.let_at_wait_data, ctx.names)? at top (single chokepoint for all 5 populated-set backends).
+3. mod.rs: export the new fn.
+4. Re-characterize tests/wait_let_at_wait_loop_scope.rs: keep classifier_includes_* green; flip at_risk test to assert Err(ContractGap); add a SAFE-shape boundary test (Wait+consumer both in same loop body => Ok + in-loop let). Update module docstring branch-d section.
+5. Update cross-ref comments in collect.rs + wait.rs to "guard LANDED" (honest: classifier still descends unchanged; guard fails loud at render entry).
+
+Verified pre-impl: all 5 backends (pthreads-sync/async, mp-tcp-event, mp-uds-event, openmp-rs) route through render_worker_events (grep nucleus/backends/*/src). mp-tcp-bufsync calls render_wait_assign directly via backend-common/src/tcp_plan/events.rs with empty_let_at_wait_set() — structurally immune.
 <!-- SECTION:NOTES:END -->

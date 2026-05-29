@@ -6,8 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::algo::{collect_dataref_names, AlgoIR, IrStmt};
-use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
+use nucleus_compiler::event::{ArgBinding, DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::NameTables;
 
 use super::ctx::RendezvousId;
 use crate::render::EmitError;
@@ -503,9 +504,11 @@ fn collect_let_at_wait_inner(
             Event::Loop { body, .. } => {
                 // Descend into the loop body: a whole-array Wait
                 // buried inside a loop body IS classified let-at-wait.
+                // This classification is UNCHANGED by TASK-0364.
+                //
                 // SCOPE HAZARD (TASK-0356 cycle 222, characterized;
-                // fix filed as TASK-0364): classifying an in-loop Wait
-                // as let-at-wait means the sibling `wait::
+                // guard LANDED as TASK-0364, OPTION B): classifying an
+                // in-loop Wait as let-at-wait means the sibling `wait::
                 // render_wait_assign` emits its `let {name} = {rhs};`
                 // INSIDE the emitted `for { }` block. A consumer of
                 // that data at the ENCLOSING outer scope would read it
@@ -513,11 +516,239 @@ fn collect_let_at_wait_inner(
                 // `transfer_inject` co-locates each Wait with its
                 // consumer (see the TASK-0356 note at the `wait.rs`
                 // emit site and `tests/wait_let_at_wait_loop_scope.rs`).
-                // A scope-aware fix would exclude such a Wait here when
-                // its data is consumed at an outer scope.
+                // Rather than make the classifier scope-aware (option
+                // A, NOT taken), the sibling
+                // `check_let_at_wait_scope_safety` (below) fails LOUD
+                // with `EmitError::ContractGap` at render entry if this
+                // at-risk shape ever arises — so the classifier keeps
+                // descending unconditionally here and the guard is the
+                // single chokepoint that rejects the bad scope.
                 collect_let_at_wait_inner(body, pair_tiles, sidecar, waited, not_all_whole);
             }
             _ => {}
         }
     }
+}
+
+/// TASK-0364 cycle 222 follow-up: fail-loud scope-safety guard for the
+/// let-at-wait EMIT hazard characterized by TASK-0356 (OUTCOME-MATRIX
+/// branch d).
+///
+/// # The hazard this guards
+///
+/// For a DataId in `let_at_wait`, the per-backend pre-init pass OMITS
+/// the outer `let mut <name>: Vec<..> = vec![0; N];`, so the sibling
+/// [`super::wait::render_wait_assign`] emits a declare-and-assign `let
+/// <name> = <rhs>;` AT THE WAIT'S lexical scope. When that Wait sits
+/// inside an `Event::Loop` body, the `let` lands inside the emitted
+/// `for { }` block. If a CONSUMER of the same data (a `Fire` whose
+/// kernel-arg reads it, or a `Push` of it) sits at the ENCLOSING outer
+/// scope, the consumer references `<name>` after the loop closes — out
+/// of scope — and the generated Rust does not compile (rustc E0425,
+/// confirmed empirically cycle 222).
+///
+/// This shape is NOT producible today: `transfer_inject`
+/// (`inject_in_sequence`) co-locates every cross-worker `Wait` in the
+/// SAME sequence (same scope) as its consuming Operation. So this is a
+/// DEFENSIVE guard for a FUTURE pass (e.g. a hoist that lifts a
+/// consumer out of a loop while leaving its Wait behind) that would
+/// otherwise ship a latent miscompile. OPTION B (typed `EmitError`,
+/// fail loud) was chosen over OPTION A (a scope-aware classifier
+/// exclusion): the shape is non-producible, so failing loud with a
+/// `ContractGap` carries near-zero regression risk and matches the
+/// project's panic-not-diagnostic response to contract gaps, whereas a
+/// silent classifier transform would change a code path no shipped
+/// schedule exercises.
+///
+/// # Detection rule
+///
+/// Walk `events` maintaining a lexical scope-path: a stack of
+/// per-occurrence loop identities. A FRESH pre-order occurrence index
+/// is pushed when entering an `Event::Loop` body and popped on exit
+/// (the occurrence index — NOT the `iter_var` — gives an unambiguous
+/// identity even when `iter_var`s repeat across sibling/nested loops).
+/// The root scope is the empty path `[]`.
+///
+/// For each `D` in `let_at_wait`, collect the scope-path of every
+/// `Wait` of `D` and the scope-path of every CONSUMER of `D`. A
+/// consumer is an `Event::Fire` whose `bindings.inputs` reads `D`
+/// (`ArgBinding::Data(DataSlice { data: D, .. })`, recursing into
+/// `ArgBinding::Nested` args), OR an `Event::Push { data: D, .. }`. A
+/// `Fire` OUTPUT write is NOT a consumer (it produces, not reads).
+///
+/// `D` is **scope-unsafe** iff there exists a consumer of `D` at
+/// scope-path `c` such that NO `Wait` of `D` has a scope-path that is a
+/// (non-strict) prefix of `c`. Prefix-domination means the Wait's `let`
+/// lexically dominates the consumer; the empty root path is a prefix of
+/// every path. This fires on the at-risk shape (in-loop Wait path
+/// `[L0]`, consumer path `[]` root → not dominated → unsafe) and does
+/// NOT fire on the shipped-safe shape (in-loop Wait + in-loop consumer,
+/// both `[L0]` → dominated), nor on root-Wait+root-consumer, nor on
+/// root-Wait+nested-consumer.
+///
+/// # Conservatism / what it deliberately does NOT do
+///
+/// The rule is structural (lexical scope only): it does not reason
+/// about whether a consumer is actually reachable, nor about value
+/// liveness. It treats a `Fire` output as a non-consumer even though a
+/// later in-place read-modify-write would also need scope; that is out
+/// of scope here because the let-at-wait classifier already excludes
+/// indexed-Fire-written and accumulate-fan-in data (the only
+/// read-modify shapes), so a `let_at_wait` datum is never both
+/// classified and Fire-output-written.
+///
+/// # No-op on the empty set
+///
+/// Returns `Ok(())` immediately when `let_at_wait` is empty, so
+/// mp-tcp-bufsync (which always passes
+/// [`super::WalkerCtx::empty_let_at_wait_set`] and also bypasses the
+/// walker entirely) is unaffected even if it were ever routed through
+/// this guard.
+pub fn check_let_at_wait_scope_safety(
+    events: &[Event],
+    let_at_wait: &BTreeSet<DataId>,
+    names: &NameTables,
+) -> Result<(), EmitError> {
+    if let_at_wait.is_empty() {
+        return Ok(());
+    }
+
+    // Per-data: scope-paths of Waits, and scope-paths of consumers.
+    let mut wait_paths: BTreeMap<DataId, Vec<Vec<usize>>> = BTreeMap::new();
+    let mut consumer_paths: BTreeMap<DataId, Vec<Vec<usize>>> = BTreeMap::new();
+
+    // `next_occurrence` is a single monotonically-increasing counter so
+    // every Loop body entered in pre-order gets a distinct identity,
+    // even sibling loops that reuse the same iter_var.
+    let mut next_occurrence: usize = 0;
+    let mut path: Vec<usize> = Vec::new();
+    collect_scope_paths(
+        events,
+        let_at_wait,
+        &mut path,
+        &mut next_occurrence,
+        &mut wait_paths,
+        &mut consumer_paths,
+    );
+
+    for d in let_at_wait {
+        let waits = match wait_paths.get(d) {
+            Some(w) => w,
+            // A let_at_wait datum with no Wait sighted here cannot have
+            // a scope hazard from THIS event list (it is classified
+            // let-at-wait on some other worker / event list). Nothing
+            // to check.
+            None => continue,
+        };
+        let Some(consumers) = consumer_paths.get(d) else {
+            continue;
+        };
+        for c in consumers {
+            let dominated = waits.iter().any(|w| is_prefix(w, c));
+            if !dominated {
+                let name = names
+                    .data
+                    .get(d)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{d:?}"));
+                return Err(EmitError::ContractGap(format!(
+                    "let-at-wait scope hazard (TASK-0364): data `{name}` ({d:?}) \
+                     has a whole-array Wait nested in a loop (let-at-wait \
+                     declare-and-assign emits `let {name} = ...;` inside the \
+                     `for {{ }}` block), but a consumer of `{name}` sits at an \
+                     ENCLOSING scope no Wait lexically dominates — the emitted \
+                     `let {name}` would be out of scope at the consumer \
+                     (rustc E0425). This shape is not producible by \
+                     `transfer_inject` today; if a future pass (e.g. a hoist) \
+                     constructs it, make the consumer's scope dominated by a \
+                     Wait or retain the outer-scope `let mut {name}` pre-init."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pre-order walk for [`check_let_at_wait_scope_safety`]. Records, per
+/// DataId in `let_at_wait`, the current scope-`path` at every Wait of
+/// the data and at every consumer of the data. `next_occurrence` is the
+/// shared occurrence counter that stamps each entered Loop body with a
+/// fresh identity (pushed on entry, popped on exit).
+fn collect_scope_paths(
+    events: &[Event],
+    let_at_wait: &BTreeSet<DataId>,
+    path: &mut Vec<usize>,
+    next_occurrence: &mut usize,
+    wait_paths: &mut BTreeMap<DataId, Vec<Vec<usize>>>,
+    consumer_paths: &mut BTreeMap<DataId, Vec<Vec<usize>>>,
+) {
+    for e in events {
+        match e {
+            Event::Wait { data, .. } => {
+                if let_at_wait.contains(data) {
+                    wait_paths.entry(*data).or_default().push(path.clone());
+                }
+            }
+            Event::Push { data, .. } => {
+                if let_at_wait.contains(data) {
+                    consumer_paths.entry(*data).or_default().push(path.clone());
+                }
+            }
+            Event::Fire { bindings, .. } => {
+                // A consumer is a READ of the data among the kernel
+                // inputs (Fire OUTPUT writes are NOT consumers). Recurse
+                // into Nested args so a data read inside a nested call
+                // in argument position is counted at this Fire's scope.
+                let mut reads: BTreeSet<DataId> = BTreeSet::new();
+                for arg in &bindings.inputs {
+                    collect_arg_data_reads(arg, &mut reads);
+                }
+                for d in reads {
+                    if let_at_wait.contains(&d) {
+                        consumer_paths.entry(d).or_default().push(path.clone());
+                    }
+                }
+            }
+            Event::Loop { body, .. } => {
+                let occ = *next_occurrence;
+                *next_occurrence += 1;
+                path.push(occ);
+                collect_scope_paths(
+                    body,
+                    let_at_wait,
+                    path,
+                    next_occurrence,
+                    wait_paths,
+                    consumer_paths,
+                );
+                path.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect every DataId read by an `ArgBinding`, recursing into
+/// `ArgBinding::Nested` argument lists. `ArgBinding::Scalar` reads no
+/// data.
+fn collect_arg_data_reads(arg: &ArgBinding, out: &mut BTreeSet<DataId>) {
+    match arg {
+        ArgBinding::Data(slice) => {
+            out.insert(slice.data);
+        }
+        ArgBinding::Nested { args, .. } => {
+            for a in args {
+                collect_arg_data_reads(a, out);
+            }
+        }
+        ArgBinding::Scalar(_) => {}
+    }
+}
+
+/// `true` iff `prefix` is a (non-strict) prefix of `full` — i.e. the
+/// scope at `prefix` lexically dominates (encloses, or equals) the
+/// scope at `full`. The empty path (root scope) is a prefix of every
+/// path.
+fn is_prefix(prefix: &[usize], full: &[usize]) -> bool {
+    prefix.len() <= full.len() && full[..prefix.len()] == *prefix
 }

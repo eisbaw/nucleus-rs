@@ -121,17 +121,24 @@ pub fn render_wait_assign(
                 // from the rendezvous slot's `.wait()` return type.
                 //
                 // SCOPE HAZARD (TASK-0356 cycle 222, characterized;
-                // fix filed as TASK-0364): this `let {name}` comes
-                // into scope at the WAIT'S lexical position. When the
-                // Wait sits inside an `Event::Loop` body, the `let`
-                // lands inside the emitted `for { }` block; a consumer
-                // of `{name}` at the ENCLOSING outer scope would then
-                // read it out of scope (non-compiling Rust). This is
-                // NOT producible today — `transfer_inject`
-                // (`inject_in_sequence`) co-locates every cross-worker
-                // Wait in the SAME sequence as its consuming
-                // Operation, so an outer-scope consumer gets its Wait
-                // at the outer scope, never in a nested loop. The
+                // guard LANDED as TASK-0364, OPTION B): this `let
+                // {name}` comes into scope at the WAIT'S lexical
+                // position. When the Wait sits inside an `Event::Loop`
+                // body, the `let` lands inside the emitted `for { }`
+                // block; a consumer of `{name}` at the ENCLOSING outer
+                // scope would then read it out of scope (non-compiling
+                // Rust). This is NOT producible today —
+                // `transfer_inject` (`inject_in_sequence`) co-locates
+                // every cross-worker Wait in the SAME sequence as its
+                // consuming Operation, so an outer-scope consumer gets
+                // its Wait at the outer scope, never in a nested loop.
+                // This emit is therefore unchanged by TASK-0364; the
+                // guard is the sibling
+                // `super::collect::check_let_at_wait_scope_safety`,
+                // called once at `super::event_walker::
+                // render_worker_events` entry, which fails LOUD with
+                // `EmitError::ContractGap` BEFORE this emit runs if a
+                // future pass ever constructs the at-risk scope. The
                 // boundary is pinned by
                 // `tests/wait_let_at_wait_loop_scope.rs`.
                 Ok(format!("let {name} = {rhs};"))
