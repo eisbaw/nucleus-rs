@@ -53,10 +53,61 @@ fn emit_example_naive(example: &str, scratch_leaf: &str) -> String {
     let _ = std::fs::remove_dir_all(&out);
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded emit");
+    // A naive single-worker schedule emits EXACTLY ONE project, at the
+    // out_dir root (worker_name None) — the M9 single-worker output is
+    // unchanged by the TASK-0049.04 N-projects refactor.
+    assert_eq!(
+        res.workers.len(),
+        1,
+        "a naive single-worker schedule must emit exactly one lib project"
+    );
+    let w = &res.workers[0];
+    assert!(
+        w.worker_name.is_none(),
+        "single-worker project must be emitted at the out_dir root (no worker subdir)"
+    );
+    assert_eq!(
+        w.project_dir, out,
+        "single-worker project_dir must equal out_dir (root), not a worker subdir"
+    );
     // The lib path returned must exist on disk.
-    assert!(res.lib_rs.exists(), "emitted lib.rs must exist on disk");
-    assert!(res.cargo_toml.exists(), "emitted Cargo.toml must exist");
-    std::fs::read_to_string(&res.lib_rs).expect("read emitted lib.rs")
+    assert!(w.lib_rs.exists(), "emitted lib.rs must exist on disk");
+    assert!(w.cargo_toml.exists(), "emitted Cargo.toml must exist");
+    std::fs::read_to_string(&w.lib_rs).expect("read emitted lib.rs")
+}
+
+/// Lower `example`'s `schedule_file` schedule (a MULTI-worker one) and
+/// emit the per-worker no_std libs into a scratch dir; return the
+/// [`MultiEmitResult`]. The TASK-0049.04 multi-worker LIB path
+/// (one project per used worker under `out_dir/<worker>/`, with
+/// Push/Wait/Sync lowered to stub-shim hooks). `apply_partition_workers`
+/// stays false (the 02-split fixture splits across worker boundaries
+/// only — no `partition=` directive), matching how the driver lowers a
+/// non-partitioned multi-worker schedule.
+fn emit_example_multi(example: &str, schedule_file: &str, scratch_leaf: &str) -> crate::MultiEmitResult {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(example);
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules").join(schedule_file)).expect("sched source");
+
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
+    );
+    let kernels = ex.join("kernels.rs");
+
+    let out = root
+        .join("nucleus/target/embedded-pattern-test-scratch")
+        .join(scratch_leaf);
+    let _ = std::fs::remove_dir_all(&out);
+
+    emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-worker emit")
 }
 
 /// Lower `example`'s `naive` schedule and emit the no_std BIN (M10
@@ -405,33 +456,129 @@ fn ex05_emits_no_std_lib_with_flattened_blur3() {
 }
 
 #[test]
-fn rejects_multi_worker_with_m11_forward_link() {
-    // A 2-worker schedule must be rejected with a precise M11 forward
-    // link rather than mis-lowered (M9 is single-worker only). Build a
-    // minimal 2-used-worker per_worker map directly: two workers each
-    // carrying one bare Fire. (We avoid the full pipeline here — the
-    // point is the used_workers > 1 guard.)
-    use nucleus_compiler::event::{Event, FireBinding, IterTile, KernelId, WorkerId};
-    use std::collections::BTreeMap;
-    let bare_fire = || Event::Fire {
-        kernel: KernelId(0),
-        tile: IterTile::default(),
-        bindings: FireBinding::default(),
-    };
-    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    per_worker.insert(WorkerId(0), vec![bare_fire()]);
-    per_worker.insert(WorkerId(1), vec![bare_fire()]);
-    let names = crate::NameTables::default();
-    let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
-    let kernels = repo_root().join("nuc-nucleus/examples/01-elementwise-add/kernels.rs");
-    let out = repo_root().join("nucleus/target/embedded-pattern-test-scratch/reject_multi");
-    let err = emit(&per_worker, &names, &sidecar, &kernels, &out)
-        .expect_err("multi-worker must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("single-worker") && msg.contains("TASK-0049"),
-        "multi-worker rejection must forward-link M11 (TASK-0049): got {msg}"
+fn multi_worker_lib_emits_one_project_per_worker_with_transport_hooks() {
+    // TASK-0049.04 (M11 backend slice A): the formerly-rejecting
+    // multi-worker case now SUCCEEDS on the LIB path. The 02-split-add
+    // `split` schedule is a no_std-clean 2-worker SYNC fixture (host +
+    // w0, `default` class, `heap` region, sync transfers a/b/c, no
+    // block=/async/buffer/event, `add:(i32,i32)->i32` pure). It passes
+    // the capability gate and exercises exactly the structural change.
+    //
+    // This REPLACES the former `rejects_multi_worker_with_m11_forward_link`
+    // lib-path rejection test (the guard at lib.rs emit() is LIFTED). The
+    // BIN-path sibling `bin_rejects_multi_worker_with_m11_forward_link`
+    // still asserts rejection (the bin guard is retained — TASK-0049.05).
+    let res = emit_example_multi("02-split-add", "split.sched.nuc", "split_multi");
+
+    // Exactly two projects, one per used worker (host + w0).
+    assert_eq!(
+        res.workers.len(),
+        2,
+        "the 2-worker split schedule must emit exactly two lib projects"
     );
+    // Each is emitted under out_dir/<worker_name>/ (NOT the root — that
+    // is the single-worker shape). Names come from NameTables.
+    let mut names: Vec<&str> = res
+        .workers
+        .iter()
+        .map(|w| {
+            w.worker_name
+                .as_deref()
+                .expect("a multi-worker project must carry its worker name")
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["host", "w0"],
+        "the two projects must be named for the two used workers (host, w0)"
+    );
+    for w in &res.workers {
+        let name = w.worker_name.as_deref().unwrap();
+        assert!(
+            w.project_dir.ends_with(name),
+            "worker `{name}` project must be nested under out_dir/{name}/: {}",
+            w.project_dir.display()
+        );
+        assert!(w.lib_rs.exists(), "worker `{name}` lib.rs must exist on disk");
+        assert!(w.cargo_toml.exists(), "worker `{name}` Cargo.toml must exist");
+    }
+
+    // The two libs' sources, by worker name.
+    let read = |name: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|w| w.worker_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("worker `{name}` project missing"));
+        std::fs::read_to_string(&w.lib_rs).expect("read worker lib.rs")
+    };
+    let host = read("host");
+    let w0 = read("w0");
+
+    // --- AC#2: Push/Wait/Sync lower to the stub-shim hooks. ---
+    // host loads a + b then PUSHES them to w0; the Push lowers to
+    // dma_push with the data-ptr template (mirrors the save->dma_push).
+    assert!(
+        host.contains("shim.dma_push(0, a.as_ptr() as *const u8, core::mem::size_of_val(&a));"),
+        "host must Push `a` via dma_push (data-ptr template):\n{host}"
+    );
+    assert!(
+        host.contains("shim.dma_push(1, b.as_ptr() as *const u8, core::mem::size_of_val(&b));"),
+        "host must Push `b` via dma_push:\n{host}"
+    );
+    // host WAITs for the computed `c` back from w0.
+    assert!(
+        host.contains("shim.dma_wait(2);"),
+        "host must Wait (dma_wait) for `c` on its Push/Wait seq:\n{host}"
+    );
+    // w0 WAITs for a + b, computes, then PUSHES c back.
+    assert!(
+        w0.contains("shim.dma_wait(0);") && w0.contains("shim.dma_wait(1);"),
+        "w0 must Wait (dma_wait) for both `a` and `b`:\n{w0}"
+    );
+    assert!(
+        w0.contains("shim.dma_push(2, c.as_ptr() as *const u8, core::mem::size_of_val(&c));"),
+        "w0 must Push the computed `c` back via dma_push:\n{w0}"
+    );
+    // The compute Fire still lowers on the worker that owns it (w0).
+    assert!(
+        w0.contains("c[(i) as usize] = kernels::add(a[(i) as usize], b[(i) as usize]);"),
+        "w0 must lower the pure `add` compute Fire:\n{w0}"
+    );
+    // Sync barriers lower to irq_barrier on BOTH workers (matching tags
+    // — they are the cross-worker join key).
+    assert!(
+        host.contains("shim.irq_barrier(") && w0.contains("shim.irq_barrier("),
+        "Sync must lower to irq_barrier on both workers"
+    );
+
+    // --- per-worker receive locals (the Wait-side data must be in scope) ---
+    // w0 never loads a/b itself (host does) — they arrive via Wait — so
+    // w0 must still DECLARE a + b as zero-init fixed locals (the receive
+    // buffers). Likewise host must declare c (the Wait receive local).
+    assert!(
+        w0.contains("let mut a: [i32; 256] = [0; 256];")
+            && w0.contains("let mut b: [i32; 256] = [0; 256];"),
+        "w0 must declare the Wait receive locals a + b as zero-init fixed arrays:\n{w0}"
+    );
+    assert!(
+        host.contains("let mut c: [i32; 256] = [0; 256];"),
+        "host must declare the Wait receive local c as a zero-init fixed array:\n{host}"
+    );
+
+    // --- both libs are no_std with the shim trait (compile-only shape) ---
+    for (name, src) in [("host", &host), ("w0", &w0)] {
+        assert!(src.contains("#![no_std]"), "worker `{name}` must be no_std:\n{src}");
+        assert!(
+            src.contains("pub trait NucleusShim"),
+            "worker `{name}` must carry the NucleusShim trait:\n{src}"
+        );
+        assert!(
+            !src.contains("std::fs"),
+            "worker `{name}` must not leak std into the no_std lib:\n{src}"
+        );
+    }
 }
 
 #[test]

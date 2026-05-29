@@ -65,17 +65,38 @@
 //! `img[y][x]` index flattens to `img[y*W + x]` exactly as the tier-1
 //! backends do (same shared `render_fire_args` / `render_flat_index`).
 //!
-//! # Scope: single-worker
+//! # Scope: LIB path is multi-worker (M11 slice A); BIN path is still single-worker
 //!
-//! The lowering handles single-`host` naive schedules generally. The
-//! M9 compile-only acceptance set (`check-embedded`) is examples 1 and
-//! 5; the M10 bin runtime set (`renode-embedded`) is examples 1, 5, and
-//! 9 (TASK-0048.03). Multi-worker embedded (workers on different MCUs
-//! over SPI / Ethernet) is M11 (TASK-0049) and is REJECTED here with a
-//! forward link. `Push` / `Wait` / `Sync` (cross-worker) and `Alloc` / `Free`
-//! (explicit region management) do not occur in the naive single-worker
-//! event lists and are likewise rejected with forward links — they
-//! arrive with the M10 shim (TASK-0048) / M11.
+//! The lowering handles single-`host` naive schedules generally, and —
+//! since TASK-0049.04 (M11 backend slice A) — the LIB path
+//! ([`emit`]) ALSO handles multi-worker schedules: one `no_std` lib
+//! project is emitted PER used worker (`out_dir/<worker_name>/`), and
+//! the cross-worker `Push` / `Wait` / `Sync` events lower to the stub
+//! [`skeleton::NucleusShim`] hooks (`dma_push` / `dma_wait` /
+//! `irq_barrier`). A single-worker schedule still emits ONE project at
+//! `out_dir` root (unchanged observable output — `check-embedded`
+//! examples 1 + 5 are byte-stable). The M9 compile-only acceptance set
+//! (`check-embedded`) is examples 1 and 5; the M10 bin runtime set
+//! (`renode-embedded`) is examples 1, 5, and 9 (TASK-0048.03).
+//!
+//! The BIN path ([`emit_bin`]) is STILL single-worker: the multi-MCU
+//! BIN + Renode multi-machine `.resc` + real UART-hub transport shim is
+//! the NEXT slice (TASK-0049.05), so `emit_bin` RETAINS its
+//! multi-worker rejection (lifting it without that machinery would emit
+//! broken firmware). `Alloc` / `Free` (explicit region management) do
+//! not occur in the schedules this backend admits and are still
+//! rejected with a forward link.
+//!
+//! ## What the LIB-path multi-worker lowering is, and is NOT
+//!
+//! It is COMPILE-ONLY against the do-nothing [`skeleton::StubShim`]:
+//! `dma_push` / `dma_wait` / `irq_barrier` are all no-ops, so a
+//! [`Event::Wait`]'s receive local stays zero-filled (the stub does not
+//! actually receive). That is honest for this slice: AC#3 is a REAL
+//! cross-compile (`cargo check --target thumbv7em-none-eabihf`), NOT
+//! value-correctness or a Renode run. The transport channel ids come
+//! straight from the events (`SeqTag` -> dma channel, `SyncTag` -> irq
+//! barrier tag) — there is no channel allocator.
 //!
 //! # Honest limitations (AC#6)
 //!
@@ -87,12 +108,11 @@
 //!   compile-only validation, exactly the M9 bar (PRD §10.3 point 2 /
 //!   §11 M9). Real DMA/IRQ + a Renode-runnable bin (panic_handler +
 //!   entry point + linker script + `.resc`) is M10 (TASK-0048).
-//! - **`irq_barrier` is defined but UNEXERCISED** by the naive
-//!   single-worker examples (1, 5, 9): they have no [`Event::Sync`]
-//!   barrier.
-//!   The method is declared on the trait for M10/M11 (where partitioned
-//!   multi-MCU schedules emit barriers); declaring it now fixes the
-//!   trait shape early so the M10 shim implements a stable surface.
+//! - **`irq_barrier` is UNEXERCISED by the single-worker examples**
+//!   (1, 5, 9): they have no [`Event::Sync`] barrier. It IS exercised
+//!   on the LIB path by a multi-worker schedule that carries an
+//!   [`Event::Sync`] (TASK-0049.04): `Sync` -> `shim.irq_barrier(tag)`.
+//!   The `StubShim` no-ops it.
 //! - **`alloc_in_region` / `dma_push` / `dma_wait` ARE exercised** by
 //!   the effectful-kernel hooks, but against the stub they are no-ops.
 //!
@@ -120,18 +140,43 @@ mod skeleton;
 #[cfg(test)]
 mod tests;
 
-/// Paths to the files [`emit`] writes. Unlike the tier-1 backends this
-/// is a `no_std` LIB project: `Cargo.toml` + `src/lib.rs` only (no
-/// `main.rs`, no `run.sh` — there is nothing to run for a compile-only
-/// lib; a runnable Renode bin is M10's job, TASK-0048).
+/// Paths to the files emitted for ONE worker's `no_std` LIB project.
+/// Unlike the tier-1 backends this is a `no_std` LIB project:
+/// `Cargo.toml` + `src/lib.rs` only (no `main.rs`, no `run.sh` — there
+/// is nothing to run for a compile-only lib; a runnable Renode bin is
+/// M10's job, TASK-0048).
+///
+/// [`emit`] returns a [`MultiEmitResult`] carrying one of these per
+/// USED worker (one for a single-worker schedule, N for a multi-worker
+/// schedule — TASK-0049.04).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmitResult {
-    /// The generated Cargo project root (== input `out_dir`).
+    /// The worker this project was emitted for. `None` for the
+    /// single-worker case (emitted at `out_dir` root, no worker
+    /// sub-directory — keeps the M9 single-worker output unchanged);
+    /// `Some(name)` for a multi-worker schedule (emitted under
+    /// `out_dir/<name>/`).
+    pub worker_name: Option<String>,
+    /// The generated Cargo project root (`out_dir` for the single
+    /// worker, `out_dir/<worker_name>` for a multi-worker schedule).
     pub project_dir: PathBuf,
     /// Path to the emitted `Cargo.toml`.
     pub cargo_toml: PathBuf,
     /// Path to the emitted `src/lib.rs` (the whole no_std lib).
     pub lib_rs: PathBuf,
+}
+
+/// The full result of [`emit`]: one [`EmitResult`] per USED worker
+/// (TASK-0049.04, M11 backend slice A). A single-worker schedule yields
+/// exactly one (emitted at `out_dir` root); a multi-worker schedule
+/// yields one per used worker, each under `out_dir/<worker_name>/`.
+/// Declared-but-unused workers (empty event list) are skipped, matching
+/// the tier-1 `used_workers` convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiEmitResult {
+    /// One project per used worker, in deterministic worker-id order.
+    /// Never empty for a schedule with at least one firing.
+    pub workers: Vec<EmitResult>,
 }
 
 /// Paths to the files [`emit_bin`] writes (M10, TASK-0048.01). Unlike
@@ -156,7 +201,8 @@ pub struct BinEmitResult {
     pub cargo_config: PathBuf,
 }
 
-/// Emit a `no_std` lib project from the per-worker EventList.
+/// Emit one `no_std` lib project per USED worker from the per-worker
+/// EventList (TASK-0049.04, M11 backend slice A).
 ///
 /// Wire contract: consumes the per-worker [`Event`] lists + the
 /// [`NameTables`] (reverse `name_*`) + the [`NameSidecar`] — the SAME
@@ -164,43 +210,98 @@ pub struct BinEmitResult {
 /// `&LinkedIR` access.** `kernels_rs_path` is read to extract the PURE
 /// kernel bodies verbatim (see module docs); `out_dir` is the generated
 /// project root.
+///
+/// LAYOUT (TASK-0049.04 N-projects decision): a SINGLE-worker schedule
+/// emits ONE project at `out_dir` root — the M9 single-worker output is
+/// observationally UNCHANGED (`check-embedded` examples 1 + 5 stay
+/// byte-stable, and `just renode-embedded` continues to find the project
+/// at `out_dir`). A MULTI-worker schedule emits one project per used
+/// worker under `out_dir/<worker_name>/`. Declared-but-unused workers
+/// (empty event list) are skipped — `acfg_to_events` seeds every
+/// declared worker with an empty list, so the same `used_workers` filter
+/// every tier-1 backend uses applies here.
+///
+/// The cross-worker `Push` / `Wait` / `Sync` events in each worker's list
+/// lower to the stub [`skeleton::NucleusShim`] hooks (see
+/// [`render_event`]); they are compile-only no-ops against the
+/// [`skeleton::StubShim`] (AC#3 is a real cross-compile, not a Renode
+/// run — see module docs).
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_rs_path: &Path,
     out_dir: &Path,
-) -> Result<EmitResult, EmitError> {
-    // M9 is single-worker. `acfg_to_events` seeds every declared worker
-    // with an empty list, so a declared-but-unused worker must not trip
-    // the multi-worker rejection — same `used_workers` filter as every
-    // tier-1 backend.
+) -> Result<MultiEmitResult, EmitError> {
+    // Same `used_workers` filter as every tier-1 backend: a
+    // declared-but-unused worker carries an empty event list and is
+    // skipped (no project emitted for it).
     let used_workers: Vec<WorkerId> = per_worker
         .iter()
         .filter(|(_, evs)| !evs.is_empty())
         .map(|(w, _)| *w)
         .collect();
-    if used_workers.len() > 1 {
-        return Err(EmitError::UnsupportedFeature(format!(
-            "embedded-pattern (M9) is single-worker compile-only; this \
-             schedule uses {} workers. Multi-MCU embedded codegen (workers \
-             on co-simulated MCUs over SPI / Ethernet) is M11 — TASK-0049.",
-            used_workers.len()
-        )));
-    }
 
-    let events: &[Event] = used_workers
-        .first()
-        .and_then(|w| per_worker.get(w))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-
+    // Read the source kernels ONCE; every per-worker project extracts
+    // the PURE kernel bodies it uses from the same source text.
     let kernels_src =
         fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
             path: kernels_rs_path.to_path_buf(),
             source: e,
         })?;
 
+    let multi_worker = used_workers.len() > 1;
+    let mut results = Vec::with_capacity(used_workers.len().max(1));
+
+    if used_workers.is_empty() {
+        // No firing at all (e.g. an --emit-pn-style empty projection):
+        // emit a single empty-body project at the root, preserving the
+        // historical single-worker behaviour for a degenerate schedule.
+        results.push(emit_one_worker_lib(&[], names, sidecar, &kernels_src, out_dir, None)?);
+        return Ok(MultiEmitResult { workers: results });
+    }
+
+    for w in &used_workers {
+        let events: &[Event] = per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]);
+        // Single worker -> root; multi-worker -> out_dir/<worker_name>/.
+        // The worker NAME comes from NameTables (reverse WorkerId->name),
+        // the same source every other backend uses for worker identity.
+        let (project_dir, worker_name) = if multi_worker {
+            let name = names.worker.get(w).cloned().ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "worker id {w:?} has an event list but no name in NameTables; \
+                     the embedded backend names per-worker project directories \
+                     from NameTables (TASK-0049.04)"
+                ))
+            })?;
+            (out_dir.join(&name), Some(name))
+        } else {
+            (out_dir.to_path_buf(), None)
+        };
+        results.push(emit_one_worker_lib(
+            events,
+            names,
+            sidecar,
+            &kernels_src,
+            &project_dir,
+            worker_name,
+        )?);
+    }
+
+    Ok(MultiEmitResult { workers: results })
+}
+
+/// Emit ONE worker's `no_std` lib project (`Cargo.toml` + `src/lib.rs`)
+/// into `project_dir`. Shared by the single- and multi-worker arms of
+/// [`emit`] so the per-worker project shape is a single source of truth.
+fn emit_one_worker_lib(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_src: &str,
+    project_dir: &Path,
+    worker_name: Option<String>,
+) -> Result<EmitResult, EmitError> {
     // The `on_violation=count` check loops drive module-scope AtomicU32
     // statics emitted into the lib (TASK-0048.08). The lib path has no
     // `main` (compile-only, StubShim), so the statics are never flushed —
@@ -208,22 +309,23 @@ pub fn emit(
     // schedule carries a count check frame.
     let count_loops = collect_count_check_loops(events);
 
-    let lib_src = render_lib_rs(events, names, sidecar, &kernels_src, &count_loops)?;
+    let lib_src = render_lib_rs(events, names, sidecar, kernels_src, &count_loops)?;
 
-    let src_dir = out_dir.join("src");
+    let src_dir = project_dir.join("src");
     fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
         path: src_dir.clone(),
         source: e,
     })?;
 
-    let cargo_toml = out_dir.join("Cargo.toml");
+    let cargo_toml = project_dir.join("Cargo.toml");
     let lib_rs = src_dir.join("lib.rs");
 
     write_file(&cargo_toml, &skeleton::render_cargo_toml())?;
     write_file(&lib_rs, &lib_src)?;
 
     Ok(EmitResult {
-        project_dir: out_dir.to_path_buf(),
+        worker_name,
+        project_dir: project_dir.to_path_buf(),
         cargo_toml,
         lib_rs,
     })
@@ -264,7 +366,15 @@ pub fn emit_bin(
     kernels_rs_path: &Path,
     out_dir: &Path,
 ) -> Result<BinEmitResult, EmitError> {
-    // Reuse the EXACT single-worker projection + rejection of `emit`.
+    // The BIN path is STILL single-worker. The LIB path ([`emit`])
+    // lifted this guard in TASK-0049.04 (M11 slice A: N compile-only
+    // libs + stub-shim Push/Wait/Sync), but the multi-MCU BIN + Renode
+    // multi-machine `.resc` + real UART-hub transport shim is the NEXT
+    // slice (TASK-0049.05). Lifting THIS guard without that machinery
+    // would emit broken firmware (N bins with no inter-MCU wiring), so
+    // it is RETAINED — deliberately diverging from `emit`'s lifted guard
+    // (the divergence is pinned by `bin_rejects_multi_worker_*` in
+    // tests.rs so a future edit cannot silently re-unify them).
     let used_workers: Vec<WorkerId> = per_worker
         .iter()
         .filter(|(_, evs)| !evs.is_empty())
@@ -273,8 +383,11 @@ pub fn emit_bin(
     if used_workers.len() > 1 {
         return Err(EmitError::UnsupportedFeature(format!(
             "embedded-pattern (M10 bin) is single-worker; this schedule \
-             uses {} workers. Multi-MCU embedded codegen (workers on \
-             co-simulated MCUs over SPI / Ethernet) is M11 — TASK-0049.",
+             uses {} workers. The multi-MCU BIN + Renode multi-machine \
+             .resc + UART-hub transport shim is M11 backend slice B — \
+             TASK-0049.05. (The compile-only multi-worker LIB path landed \
+             in TASK-0049.04; use the bare `--backend embedded-pattern` \
+             lib emit for that.)",
             used_workers.len()
         )));
     }
@@ -595,7 +708,12 @@ fn collect_data_decls(
 }
 
 /// Gather every `DataId` referenced (input or output) by any `Fire` in
-/// the event tree.
+/// the event tree, PLUS every data symbol crossing a worker boundary via
+/// `Push` / `Wait` (TASK-0049.04). A `Push` drains a local buffer and a
+/// `Wait` receives into one; both need the symbol declared as a fixed
+/// `[T; N]` local in the run body (the `Wait` receive local stays
+/// zero-initialised — the StubShim no-ops the receive, honest for a
+/// compile-only slice).
 fn collect_referenced_data(events: &[Event], out: &mut BTreeSet<DataId>) {
     for ev in events {
         match ev {
@@ -606,6 +724,9 @@ fn collect_referenced_data(events: &[Event], out: &mut BTreeSet<DataId>) {
                 for inp in &bindings.inputs {
                     collect_arg_data(inp, out);
                 }
+            }
+            Event::Push { data, .. } | Event::Wait { data, .. } => {
+                out.insert(*data);
             }
             Event::Loop { body, .. } => collect_referenced_data(body, out),
             _ => {}
@@ -801,13 +922,65 @@ fn render_event(
             writeln!(out, "{pad}}}").ok();
             Ok(())
         }
-        Event::Push { .. } | Event::Wait { .. } | Event::Sync { .. } => {
-            Err(EmitError::UnsupportedFeature(
-                "embedded-pattern (M9) is single-worker; cross-worker \
-                 Push/Wait/Sync events do not occur in the naive single-\
-                 worker event list. Multi-MCU transfers are M11 (TASK-0049)."
-                    .to_string(),
-            ))
+        // Cross-worker transport (TASK-0049.04, M11 backend slice A).
+        // Lowered to the stub NucleusShim hooks; compile-only no-ops
+        // against StubShim (this slice is a real cross-compile, NOT a
+        // Renode run — see module docs). Channel/tag come STRAIGHT from
+        // the events: SeqTag is the dma channel id (a Push/Wait pair
+        // shares its `seq`), SyncTag is the irq_barrier tag — there is no
+        // channel allocator.
+        Event::Push { data, seq, .. } => {
+            // Drain the local data buffer to the peer over the DMA
+            // channel. Mirrors the effectful-save `dma_push` template
+            // (the data symbol is a fixed `[T; N]` local, sized by the
+            // run-body data decls; `collect_referenced_data` includes
+            // Push/Wait data so the symbol is in scope).
+            let name = data_name(*data, ctx)?;
+            let chan = seq.0;
+            writeln!(
+                out,
+                "{pad}// Push `{name}` (seq {chan}) to peer worker via the inter-MCU transport."
+            )
+            .ok();
+            writeln!(
+                out,
+                "{pad}shim.dma_push({chan}, {name}.as_ptr() as *const u8, \
+                 core::mem::size_of_val(&{name}));"
+            )
+            .ok();
+            Ok(())
+        }
+        Event::Wait { data, seq, .. } => {
+            // Block until the peer's matching Push (same `seq`) lands in
+            // the receive buffer `name`. The receive local is declared
+            // zero-initialised by the run-body data decls (the StubShim
+            // no-ops dma_wait, so zero-init is correct for a compile-only
+            // slice — see module docs). We do NOT re-declare it here;
+            // declaring it at the top of `run` keeps a single home for
+            // every data symbol (loads, computes, and now Waits).
+            let name = data_name(*data, ctx)?;
+            let chan = seq.0;
+            writeln!(
+                out,
+                "{pad}// Wait for `{name}` (seq {chan}) from peer worker; receive into the local."
+            )
+            .ok();
+            writeln!(out, "{pad}shim.dma_wait({chan});").ok();
+            Ok(())
+        }
+        Event::Sync { sync, .. } => {
+            // Cross-worker control barrier -> the IRQ-completion barrier
+            // hook. The SyncTag is the stable cross-worker barrier
+            // identity (every participant carries the same tag), used
+            // verbatim as the irq_barrier tag.
+            let tag = sync.0;
+            writeln!(
+                out,
+                "{pad}// Cross-worker barrier (sync tag {tag}) -> irq_barrier."
+            )
+            .ok();
+            writeln!(out, "{pad}shim.irq_barrier({tag} as u32);").ok();
+            Ok(())
         }
         Event::Alloc { .. } | Event::Free { .. } => Err(EmitError::UnsupportedFeature(
             "embedded-pattern (M9) lays data out as fixed `[T; N]` locals; \

@@ -128,8 +128,9 @@ fn print_help() {
              openmp-rs       rayon threads (tier 1, single-worker + multi-worker landed cycles 191/196)\n    \
              mp-tcp-poll     OS processes + TCP loopback + nonblocking poll (tier 1, single-worker + multi-worker landed cycles 192/195)\n    \
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n    \
-             embedded-pattern  no_std lib + NucleusShim trait (tier 3, M9 compile-only single-worker; check via `just check-embedded`).\n    \
-                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, `just renode-embedded <example>`; examples 1/5/9)\n"
+             embedded-pattern  no_std lib + NucleusShim trait (tier 3, compile-only; check via `just check-embedded`).\n    \
+                               LIB path: single-worker (M9) OR multi-worker (M11 slice A, TASK-0049.04 — one lib per worker, Push/Wait/Sync -> stub-shim hooks).\n    \
+                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, single-worker only; `just renode-embedded <example>`; examples 1/5/9)\n"
     );
 }
 
@@ -933,17 +934,22 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             Ok(())
         }
         // First tier-3 backend (TASK-0047, M9): the generic
-        // `embedded-pattern` backend. Emits a COMPILE-ONLY `no_std` LIB
-        // (Cargo.toml + src/lib.rs only — no main.rs, no run.sh: there
-        // is nothing to RUN for a compile-only lib; a Renode-runnable
-        // bin is M10's job, TASK-0048). Lowers the single-worker
-        // EventList against a `NucleusShim` trait + do-nothing stub
-        // shim. Acceptance: `cargo check --target thumbv7em-none-eabihf`
-        // (run under `nix develop .#embedded` via `just check-embedded`).
-        // This backend is NOT in the e2e-matrix.toml backends list — the
+        // `embedded-pattern` backend. The LIB path emits COMPILE-ONLY
+        // `no_std` lib project(s) (Cargo.toml + src/lib.rs only — no
+        // main.rs, no run.sh: there is nothing to RUN for a compile-only
+        // lib; a Renode-runnable bin is M10's job, TASK-0048). It lowers
+        // the per-worker EventList against a `NucleusShim` trait +
+        // do-nothing stub shim. As of TASK-0049.04 (M11 backend slice A)
+        // the LIB path is MULTI-worker: a multi-worker schedule emits ONE
+        // lib per used worker (under out_dir/<worker>/) and lowers the
+        // cross-worker Push/Wait/Sync to the stub-shim hooks; a
+        // single-worker schedule still emits ONE project at out_dir root.
+        // Acceptance: `cargo check --target thumbv7em-none-eabihf` (run
+        // under `nix develop .#embedded` via `just check-embedded`). This
+        // backend is NOT in the e2e-matrix.toml backends list — the
         // tier-1 runtime differential runs+diffs host binaries, which is
-        // wrong for a compile-only no_std backend. Multi-MCU embedded is
-        // M11 (TASK-0049).
+        // wrong for a compile-only no_std backend. The Renode MULTI-MCU
+        // bin (`--shim stm32h7` multi-worker) is M11 slice B (TASK-0049.05).
         "embedded-pattern" => {
             // --shim selects the emit mode (PRD §10.3 quad's "target
             // shim", M10 TASK-0048.01):
@@ -956,6 +962,12 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             // An unrecognised shim name is a typed (not panicking) error.
             match shim.as_deref() {
                 None => {
+                    // TASK-0049.04: emit() now returns ONE lib project
+                    // per used worker (single-worker -> one project at
+                    // out_dir root; multi-worker -> one under
+                    // out_dir/<worker_name>/ each). Print every project
+                    // so a caller (e.g. `just check-embedded`) can locate
+                    // and cross-compile each one.
                     let result = embedded_pattern::emit(
                         &per_worker,
                         &names,
@@ -965,9 +977,16 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
                     )
                     .map_err(|e| format!("embedded-pattern codegen error: {e}"))?;
                     println!("nucleus: ok");
-                    println!("project_dir = {}", result.project_dir.display());
-                    println!("cargo_toml  = {}", result.cargo_toml.display());
-                    println!("lib_rs      = {}", result.lib_rs.display());
+                    println!("worker_projects = {}", result.workers.len());
+                    for w in &result.workers {
+                        match &w.worker_name {
+                            Some(name) => println!("worker      = {name}"),
+                            None => println!("worker      = (single)"),
+                        }
+                        println!("project_dir = {}", w.project_dir.display());
+                        println!("cargo_toml  = {}", w.cargo_toml.display());
+                        println!("lib_rs      = {}", w.lib_rs.display());
+                    }
                     Ok(())
                 }
                 Some("stm32h7") => {
