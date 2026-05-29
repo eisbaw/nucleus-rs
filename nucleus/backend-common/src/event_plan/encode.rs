@@ -1,7 +1,12 @@
-//! Wire-format helpers used by [`super::Plan::emit_reactor_and_chans`]
-//! (via [`super::worker_program`]) and [`super::Plan::max_payload_bytes`]
-//! (via [`super`]) for per-channel `encode` / `decode` paths and scalar
-//! width sizing.
+//! Wire-format helpers used by [`super::Plan`]'s worker-program emit
+//! (per-channel `encode` / `decode` paths) and `max_payload_bytes`
+//! (scalar width sizing) for the async event-reactor backends.
+//!
+//! Transport-agnostic: the on-wire byte format is identical for TCP
+//! loopback (mp-tcp-event) and Unix domain sockets (mp-uds-event) —
+//! only the socket TYPE differs, and that lives in
+//! [`super::EventTransport`], not here. Lifted from the two backends'
+//! verbatim-duplicate `multi_worker/encode.rs` (TASK-0044.03.02).
 
 use nucleus_compiler::algo::{ResolvedType, ScalarType};
 
@@ -10,7 +15,7 @@ use nucleus_compiler::algo::{ResolvedType, ScalarType};
 ///
 /// The encoder takes `&T` (where `T = rust_type_of(ty)`) and returns
 /// `Vec<u8>`. The decoder takes `&[u8]` and returns `T`.
-pub(super) fn encode_decode_paths(ty: &ResolvedType) -> (String, String) {
+pub fn encode_decode_paths(ty: &ResolvedType) -> (String, String) {
     let s = scalar_fn_suffix(&ty.scalar);
     if ty.is_scalar() {
         // Encoder: |v: &T| wire::enc_<s>(*v); Decoder: wire::dec_<s>.
@@ -64,7 +69,7 @@ fn scalar_fn_suffix(t: &ScalarType) -> &'static str {
     }
 }
 
-pub(super) fn scalar_width(t: &ScalarType) -> usize {
+pub fn scalar_width(t: &ScalarType) -> usize {
     match t {
         ScalarType::I8 | ScalarType::U8 | ScalarType::Bool => 1,
         ScalarType::I16 | ScalarType::U16 => 2,

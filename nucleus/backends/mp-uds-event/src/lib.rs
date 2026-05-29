@@ -157,14 +157,16 @@ mod runtime_src;
 #[cfg(test)]
 mod wire_runtime;
 
-// Multi-worker codegen (cycle 197 TASK-0044.03.01). Structural twin
-// of `mp_tcp_event::multi_worker` with TCP→UDS transport swap; the
-// Plan structure (per-worker bins, mio reactor, per-(seq, peer)
-// outbound queue, per-seq inbound queue, host election, host-relay)
-// is REUSED VERBATIM. Lift to a shared crate is tracked by
-// TASK-0044.02.03 (the 3-consumer threshold is reached by this
-// cycle; see TASK-0044.03.01 notes for the option-(b) rationale).
+// Multi-worker codegen. The Plan substrate (per-worker bins, mio
+// reactor, per-(seq, peer) outbound queue, per-seq inbound queue, host
+// election, host-relay) is SHARED with mp-tcp-event in
+// `backend_common::event_plan`, parameterised over the `EventTransport`
+// trait (TASK-0044.03.02 lift — retires the ~3000 LoC cycle-197
+// TCP→UDS verbatim copy). mp-uds-event's UDS `EventTransport` impl +
+// the `Plan` type alias live in `crate::plan`; `multi_worker` is a thin
+// re-export shim so `lib.rs` resolves unchanged.
 mod multi_worker;
+mod plan;
 use multi_worker::Plan;
 
 /// Paths to the files [`emit`] writes. Same shape as

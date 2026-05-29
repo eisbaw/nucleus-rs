@@ -1,22 +1,28 @@
 //! TASK-0327 (cycle 149) host-relay codegen for worker-to-worker
-//! Push/Wait pairs. Host runs a synchronous relay phase that drains
-//! `inbound[seq]` from src and re-pushes to
-//! `outbound[(seq, dst_peer_idx_at_host)]` toward dst.
+//! Push/Wait pairs, for the shared async event-reactor substrate. Host
+//! runs a synchronous relay phase that drains `inbound[seq]` from src
+//! and re-pushes to `outbound[(seq, dst_peer_idx_at_host)]` toward dst.
 //!
 //! The schedule of hops is computed by [`Plan::relay_schedule`]; the
 //! emitted code is produced by [`Plan::render_relay_phase`]. Both
-//! methods live on [`super::Plan`].
+//! methods live on [`super::Plan`]. The relay block is bytes-verbatim
+//! forwarding through `Reactor::relay_one` — transport-agnostic, so the
+//! only per-backend variation is the `ContractGap` message prefix
+//! routed through [`EventTransport::BACKEND_NAME`].
+//!
+//! Lifted from the two backends' verbatim-duplicate
+//! `multi_worker/relay.rs` (TASK-0044.03.02).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use nucleus_compiler::event::WorkerId;
 
-use super::walkers::{collect_w2w_pushes, RelayHop};
-use super::Plan;
+use crate::event_plan::walkers::{collect_w2w_pushes, RelayHop};
+use crate::event_plan::{EventTransport, Plan};
 use crate::EmitError;
 
-impl Plan<'_> {
+impl<T: EventTransport> Plan<'_, T> {
     /// TASK-0327 (cycle 149): per non-host src worker, the ordered
     /// list of (seq, dst, data, cap) for every w2w Push event in src's
     /// event list (src != host && dst != host). Event-list order
@@ -28,14 +34,14 @@ impl Plan<'_> {
     /// Empty for any src with no w2w pushes. Empty overall if the
     /// schedule has no w2w transfers (the common host↔worker-only
     /// case), and then `render_relay_phase` is a no-op.
-    pub(super) fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
+    pub(crate) fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
         let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
         for (src, events) in self.per_worker.iter() {
             if *src == self.host_worker {
                 continue;
             }
             let mut hops: Vec<RelayHop> = Vec::new();
-            collect_w2w_pushes(events, self.host_worker, &self.chan_caps, &mut hops)?;
+            collect_w2w_pushes::<T>(events, self.host_worker, &self.chan_caps, &mut hops)?;
             if !hops.is_empty() {
                 out.insert(*src, hops);
             }
@@ -58,7 +64,7 @@ impl Plan<'_> {
     /// emit path. Cycle-148 architect P2.2 lesson applies: bubble
     /// data_name errors rather than silently inlining a `{DataId:?}`
     /// fallback in the comment.
-    pub(super) fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
+    pub(crate) fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
         let pad = "    ".repeat(indent);
         let schedule = self.relay_schedule()?;
         if schedule.is_empty() {
@@ -85,9 +91,12 @@ impl Plan<'_> {
                     .peer_index_for(self.host_worker, hop.dst)
                     .ok_or_else(|| {
                         EmitError::ContractGap(format!(
-                            "mp-uds-event relay: host has no peer index for dst {:?} \
+                            "{backend} relay: host has no peer index for dst {:?} \
                          on hop seq={:?} data={:?}",
-                            hop.dst, hop.seq, hop.data
+                            hop.dst,
+                            hop.seq,
+                            hop.data,
+                            backend = T::BACKEND_NAME,
                         ))
                     })?;
                 writeln!(

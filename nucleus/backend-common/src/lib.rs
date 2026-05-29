@@ -54,8 +54,18 @@
 //!   / encode logic that the two sync-TCP backends had duplicated
 //!   verbatim now lives here; each backend supplies only a
 //!   `WirePrimitives` impl + a `Plan` type alias.
+//! - [`event_plan`] — the shared multi-process emit `Plan` substrate
+//!   for the async event-reactor backends (mp-tcp-event, mp-uds-event),
+//!   parameterised over the `EventTransport` trait (TCP loopback vs
+//!   Unix domain sockets). TASK-0044.03.02 lift: the ~3k LoC of mio
+//!   reactor Plan / walkers / encode / relay / worker-program logic the
+//!   two event backends had duplicated verbatim now lives here; each
+//!   backend supplies only an `EventTransport` impl + a `Plan` type
+//!   alias. A SEPARATE substrate from `tcp_plan` (per-seq-demux reactor
+//!   vs FIFO).
 
 pub mod check_frame;
+pub mod event_plan;
 pub mod host_election;
 pub mod multi_worker_walker;
 pub mod project_skeleton;

@@ -1,17 +1,27 @@
-//! Event-tree walkers and pure analyses used by [`super::Plan::build`] +
-//! [`super::Plan::relay_schedule`] + [`super::worker_program`].
+//! Event-tree walkers and pure analyses used by [`super::Plan::build`],
+//! [`super::Plan`]'s `relay_schedule`, and the worker-program emit, for
+//! the shared async event-reactor backends.
 //!
 //! All functions here are pure over `&[Event]` and `&BTreeMap<…>` — no
 //! `Plan` self-reference, no codegen. The codegen-using methods on
-//! [`super::Plan`] consume the outputs of these walkers (see
-//! `Plan::relay_schedule`, `Plan::render_relay_phase`, and the
-//! `relay_phase_insertion_point` invocation in
-//! `Plan::render_worker_program`).
+//! [`super::Plan`] consume the outputs of these walkers.
+//!
+//! Transport-agnostic in BEHAVIOUR: TCP-vs-UDS socket type does not
+//! change the order of frames on the wire or the relay topology — so
+//! the FIFO-shape hazards and the relay analysis apply identically to
+//! both backends. The ONLY per-backend variation is the
+//! `EmitError::ContractGap` MESSAGE PREFIX (the backend name), routed
+//! through [`EventTransport::BACKEND_NAME`]. These messages are
+//! compiler-time diagnostics, NOT text emitted into generated code.
+//!
+//! Lifted from the two backends' verbatim-duplicate
+//! `multi_worker/walkers.rs` (TASK-0044.03.02).
 
 use std::collections::BTreeMap;
 
 use nucleus_compiler::event::{DataId, Event, SeqTag, WorkerId};
 
+use crate::event_plan::EventTransport;
 use crate::EmitError;
 
 /// TASK-0332 (cycle 151 AC#2): detect the wait-before-push hazard at
@@ -20,12 +30,12 @@ use crate::EmitError;
 /// runtime timeout. See the call site in `Plan::build` for the full
 /// design narrative; this is the conservative-but-sound implementation.
 ///
-/// Sibling: the same function exists in
-/// `nucleus/backends/mp-tcp-bufsync/src/lib.rs` with the same shape +
-/// a backend-specific message prefix. Per the cycle-148/149 paired-lift
-/// discipline ([[feedback-silent-sibling-defect]] 10th firing), the
-/// two implementations were added in the same cycle.
-pub(super) fn detect_wait_before_push_hazard(
+/// The `apply_safe_push_reorder` driver pass (TASK-0329.01.01 slice 1,
+/// Option D) hoists hoistable Pushes ahead of preceding Waits before
+/// this check runs, so the guard fires only on a NON-hoistable
+/// wait-before-push shape. The message prefix routes through
+/// [`EventTransport::BACKEND_NAME`].
+pub fn detect_wait_before_push_hazard<T: EventTransport>(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     host: WorkerId,
 ) -> Result<(), EmitError> {
@@ -69,7 +79,7 @@ pub(super) fn detect_wait_before_push_hazard(
                 // blocked at this Wait).
                 Event::Wait { src, .. } if *src != host => {
                     return Err(EmitError::ContractGap(format!(
-                        "mp-uds-event: worker {w:?} has a worker-to-worker \
+                        "{backend}: worker {w:?} has a worker-to-worker \
                          Wait (from src {src:?}) at top level before any \
                          worker-to-worker Push. Cycle-149's synchronous \
                          host-relay would deadlock on the circular seq \
@@ -87,7 +97,8 @@ pub(super) fn detect_wait_before_push_hazard(
                          preceding w2w Wait covers an overlapping tile \
                          on a shared axis. See \
                          `nucleus-compiler/src/passes/safe_push_reorder.rs` \
-                         for the hoistability predicate."
+                         for the hoistability predicate.",
+                        backend = T::BACKEND_NAME,
                     )));
                 }
                 // Non-w2w events (Push/Wait with host as the other
@@ -103,8 +114,8 @@ pub(super) fn detect_wait_before_push_hazard(
 }
 
 /// Per-pair Push collector: records the (src, dst) of every cross-
-/// worker Push. Mirrors `collect_xfer_pairs` but the dst comes from
-/// the Push event itself (not from the worker doing the visit).
+/// worker Push. The dst comes from the Push event itself (not from the
+/// worker doing the visit).
 ///
 /// **Loop-body interaction with TASK-0330**: this walker recurses into
 /// `Event::Loop` bodies and uses `or_insert`, so a w2w Push appearing
@@ -113,7 +124,7 @@ pub(super) fn detect_wait_before_push_hazard(
 /// before host emit reaches `render_relay_phase`, so this walker's
 /// duplicate-tolerance is incidentally robust but not load-bearing for
 /// the Loop-body case.
-pub(super) fn collect_push_pairs(
+pub fn collect_push_pairs(
     events: &[Event],
     src: WorkerId,
     out: &mut BTreeMap<(DataId, SeqTag), (WorkerId, WorkerId)>,
@@ -130,17 +141,17 @@ pub(super) fn collect_push_pairs(
 }
 
 /// TASK-0327 (cycle 149): one host-relay hop for a worker-to-worker
-/// `Push`/`Wait` pair on the mp-uds-event star topology — "drain
+/// `Push`/`Wait` pair on the host-mediated star topology — "drain
 /// `inbound[seq]` from src worker, re-push to `outbound[(seq, dst_peer
 /// at host)]` toward dst worker". `data` is for codegen-comment
-/// disambiguation only; the wire pass-through is bytes-verbatim.
-/// Cap is the chan's per-pair `outbound` bound (`chan_caps`).
+/// disambiguation only; the wire pass-through is bytes-verbatim. `cap`
+/// is the chan's per-pair `outbound` bound (`chan_caps`).
 #[derive(Debug, Clone, Copy)]
-pub(super) struct RelayHop {
-    pub(super) seq: SeqTag,
-    pub(super) dst: WorkerId,
-    pub(super) data: DataId,
-    pub(super) cap: u64,
+pub struct RelayHop {
+    pub seq: SeqTag,
+    pub dst: WorkerId,
+    pub data: DataId,
+    pub cap: u64,
 }
 
 /// TASK-0327 (cycle 149) + TASK-0329.01.01 (slice 1): pick the position
@@ -172,18 +183,17 @@ pub(super) struct RelayHop {
 /// returns bar_0's index, enabling relay to run BEFORE the barrier.
 ///
 /// Constraint 3 of the cycle-149 design (per-seq demux removes the
-/// stream-race hazard that bufsync's analogous splice has — see memory
-/// `project-mp-uds-event-vs-bufsync-safety-profile`) is still INERT on
-/// mp-uds-event: moving the relay earlier in host's events is safe
-/// because each `relay_one(seq, ...)` drains a distinct `inbound[seq]`
-/// queue. **mp-tcp-bufsync's `relay_phase_insertion_point` is NOT
-/// updated** — see AC#3b of TASK-0329.01.01 + the comment at the
-/// bufsync splice site.
+/// stream-race hazard the sync-TCP backends' analogous splice has)
+/// is INERT on the event backends: moving the relay earlier in host's
+/// events is safe because each `relay_one(seq, ...)` drains a distinct
+/// `inbound[seq]` queue. The sibling sync-TCP
+/// `tcp_plan::walkers::relay_phase_insertion_point` is NOT lifted with
+/// this signature precisely because that constraint is ACTIVE there.
 ///
 /// Fallbacks (preserving cycle-149 behaviour for schedules where the
 /// scan finds nothing): LAST Sync (cycle-149 primary), then FIRST
 /// top-level Wait, then end-of-events.
-pub(super) fn relay_phase_insertion_point(
+pub fn relay_phase_insertion_point(
     host_events: &[Event],
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     host: WorkerId,
@@ -285,23 +295,20 @@ pub(super) fn relay_phase_insertion_point(
 ///   has hoisted one endpoint out, the unmatched endpoint is left
 ///   alone and would reach this guard.
 ///
-/// In-tree schedules today: ZERO residual hits on the post-pass
-/// matrix (verified across the 3 trigger cells in cycles 162/163/165
-/// and re-verified bit-identical in cycle 166's audit). Test pins in
-/// `nucleus/backends/mp-uds-event/tests/loop_body_w2w_push.rs`
-/// continue to assert the guard's contract on synthetic
-/// pass-bypassing fixtures (those fixtures construct the Loop-body
-/// shape directly, never via the pass).
-pub(super) fn collect_w2w_pushes(
+/// The driver wires `apply_host_data_relay_inject` for both event
+/// backends (cycle-197 widening for mp-uds-event), so on the post-pass
+/// matrix there are ZERO residual hits. The message prefix routes
+/// through [`EventTransport::BACKEND_NAME`].
+pub fn collect_w2w_pushes<T: EventTransport>(
     events: &[Event],
     host: WorkerId,
     chan_caps: &BTreeMap<(DataId, SeqTag), u64>,
     out: &mut Vec<RelayHop>,
 ) -> Result<(), EmitError> {
-    collect_w2w_pushes_inner(events, host, false, chan_caps, out)
+    collect_w2w_pushes_inner::<T>(events, host, false, chan_caps, out)
 }
 
-fn collect_w2w_pushes_inner(
+fn collect_w2w_pushes_inner<T: EventTransport>(
     events: &[Event],
     host: WorkerId,
     inside_loop: bool,
@@ -313,7 +320,7 @@ fn collect_w2w_pushes_inner(
             Event::Push { dst, data, seq, .. } if *dst != host => {
                 if inside_loop {
                     return Err(EmitError::ContractGap(format!(
-                        "mp-uds-event: TASK-0330 defensive guard — \
+                        "{backend}: TASK-0330 defensive guard — \
                          worker-to-worker Push (data={data:?}, dst={dst:?}, \
                          seq={seq:?}) found INSIDE an Event::Loop body. The \
                          cycle-149 host-relay (TASK-0327) emits the relay \
@@ -326,20 +333,21 @@ fn collect_w2w_pushes_inner(
                          pass `apply_host_data_relay_inject` routes every \
                          non-host-pair Push/Wait through host at the ACFG \
                          layer; if you are seeing this guard fire on an \
-                         in-tree schedule, the pass either didn't run \
-                         (driver wiring is mp-uds-event-only — check \
-                         driver/src/main.rs near `apply_host_data_relay_inject`) \
-                         or the pair predicate didn't fire (Push/Wait not in \
-                         the same Sequence — see \
+                         in-tree schedule, the pass either didn't run (check \
+                         the driver's apply_host_data_relay_inject gate \
+                         includes this backend) or the pair predicate didn't \
+                         fire (Push/Wait not in the same Sequence — see \
                          `host_data_relay_inject::rewrite_sequence_children` \
-                         singleton-left-alone comment for the residual class)."
+                         singleton-left-alone comment for the residual class).",
+                        backend = T::BACKEND_NAME,
                     )));
                 }
                 let cap = chan_caps.get(&(*data, *seq)).copied().ok_or_else(|| {
                     EmitError::ContractGap(format!(
-                        "mp-uds-event relay schedule: missing chan_caps for \
+                        "{backend} relay schedule: missing chan_caps for \
                          (data={data:?}, seq={seq:?}) — Push collected but \
-                         Plan::build did not populate the cap"
+                         Plan::build did not populate the cap",
+                        backend = T::BACKEND_NAME,
                     ))
                 })?;
                 out.push(RelayHop {
@@ -350,7 +358,7 @@ fn collect_w2w_pushes_inner(
                 });
             }
             Event::Loop { body, .. } => {
-                collect_w2w_pushes_inner(body, host, true, chan_caps, out)?;
+                collect_w2w_pushes_inner::<T>(body, host, true, chan_caps, out)?;
             }
             _ => {}
         }

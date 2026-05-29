@@ -178,6 +178,7 @@ use pthreads_sync::render_single_worker_main;
 // runtime_src` below). The Plan + per-worker emitter live in
 // `multi_worker.rs`.
 mod multi_worker;
+mod plan;
 use multi_worker::Plan;
 
 /// The mp-tcp-event runtime: mio reactor + per-(seq, peer) outbound
