@@ -1,0 +1,8 @@
+# cortex-m-rt links via its bundled link.x (which pulls in memory.x from
+# the build-script search path). Default the target so a bare `cargo
+# build` cross-compiles both bins for the Cortex-M7.
+[target.thumbv7em-none-eabihf]
+rustflags = ["-C", "link-arg=-Tlink.x"]
+
+[build]
+target = "thumbv7em-none-eabihf"

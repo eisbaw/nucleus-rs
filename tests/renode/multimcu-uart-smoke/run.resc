@@ -1,0 +1,39 @@
+:name: nucleus-m11-multimcu-uart-smoke
+:description: Two co-simulated STM32H7 MCUs wired by a UARTHub; sender TX -> hub -> receiver RX -> relay out USART2 (captured).
+
+# M11 inter-MCU transport DE-RISK harness (TASK-0049.01). Proves Renode
+# co-simulates multiple STM32H7 machines with a WIRED inter-MCU link (a
+# UARTHub — the supported cross-machine bus; Renode has no MCU-to-MCU SPI
+# link). Mirrors the bundled scripts/multi-node/*.resc pattern
+# (emulation CreateUARTHub + connector Connect).
+#
+# Caller injects three path variables before `include`-ing this script:
+#   $senderBin   = @<path to the cross-compiled sender ELF>
+#   $receiverBin = @<path to the cross-compiled receiver ELF>
+#   $uartFile    = @<path the receiver's USART2 file backend writes to>
+# (see the `renode-multimcu-uart-smoke` just recipe).
+
+# The shared wired inter-MCU bus. Both MCUs' USART1 attach to it.
+emulation CreateUARTHub "link"
+
+mach create "sender"
+machine LoadPlatformDescription @platforms/cpus/stm32h743.repl
+connector Connect usart1 link
+
+mach create "receiver"
+machine LoadPlatformDescription @platforms/cpus/stm32h743.repl
+connector Connect usart1 link
+# Capture the receiver's relay channel (USART2 @ 0x40004400), NOT on the hub.
+usart2 CreateFileBackend $uartFile true
+
+mach set "sender"
+sysbus LoadELF $senderBin
+
+mach set "receiver"
+sysbus LoadELF $receiverBin
+
+# Bounded virtual-time run — sender transmits in microseconds, the hub
+# delivers to the receiver's USART1 queue, the receiver relays to USART2.
+# Fully determinate, no wall-clock dependence.
+emulation RunFor "0.1"
+quit

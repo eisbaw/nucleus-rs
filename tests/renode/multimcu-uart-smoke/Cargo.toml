@@ -1,0 +1,26 @@
+# Minimal multi-MCU STM32H7 (Cortex-M7) no_std firmware — the M11 inter-MCU
+# transport DE-RISK smoke (TASK-0049.01). Two binaries (sender, receiver)
+# co-simulated as two separate Renode machines wired by a UARTHub: the
+# sender transmits a sentinel over USART1, the receiver reads it off the
+# hub (USART1 RX) and relays it to USART2 (captured). Proves Renode models
+# wired MCU-to-MCU transport end-to-end with OUR firmware — the gating
+# prerequisite for M11 cross-MCU codegen (parent TASK-0049). The shared
+# register helpers live in src/lib.rs so the two bins cannot drift.
+# Standalone (own [workspace]) so it is NOT part of the nucleus/ cargo
+# workspace — cross-compiles only under `nix develop .#embedded`
+# (thumbv7em-none-eabihf), never in the default `just ci`.
+[package]
+name = "multimcu-uart-smoke"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+cortex-m-rt = "0.7"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]

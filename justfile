@@ -606,6 +606,37 @@ renode-dma-uart-smoke:
         exit 1; \
     fi
 
+# Tier-3 M11 inter-MCU transport DE-RISK: two co-simulated STM32H7 MCUs
+# wired by a UARTHub (TASK-0049.01). The sender bin transmits a sentinel
+# over USART1 -> CreateUARTHub -> the receiver bin reads it off the hub
+# (USART1 RX) and relays it out USART2, which the .resc captures. A
+# captured sentinel proves Renode models WIRED MCU-to-MCU transport
+# end-to-end with our own firmware — the gating prerequisite for M11
+# cross-MCU codegen (parent TASK-0049). NB Renode has NO MCU-to-MCU SPI
+# link, so M11's interconnect is a UART hub (user decision, TASK-0049.01).
+# Same tier-3-outside-default-ci rule (needs .#embedded + .#renode).
+renode-multimcu-uart-smoke:
+    @echo "tier-3 M11 inter-MCU de-risk: 2x STM32H7 + UARTHub -> Renode -> relay capture (TASK-0049.01)"
+    @set -eu; \
+    fw="$(pwd)/tests/renode/multimcu-uart-smoke"; \
+    snd="$fw/target/thumbv7em-none-eabihf/release/sender"; \
+    rcv="$fw/target/thumbv7em-none-eabihf/release/receiver"; \
+    out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -f "$out" "$log"' EXIT; \
+    echo "=== cross-compiling both firmwares (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$fw' && cargo build --release --quiet"; \
+    echo "=== running 2-machine co-sim in Renode (.#renode), capturing receiver USART2 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$senderBin=@$snd" -e "\$receiverBin=@$rcv" -e "\$uartFile=@$out" -e "include @$fw/run.resc" >"$log" 2>&1; \
+    echo "=== captured receiver USART2 (relayed from the hub) ==="; cat "$out"; \
+    if grep -q 'M11-LINK-OK' "$out"; then \
+        echo "OK: the sentinel crossed the inter-MCU UARTHub and the receiver relayed it (M11 inter-MCU transport de-risk GO)."; \
+    else \
+        echo "FAIL: expected sentinel 'M11-LINK-OK' not found in the receiver's relay output"; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
 # generalisation to examples 1/5/9). Unlike `renode-uart-smoke` (a hand-
