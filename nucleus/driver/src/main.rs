@@ -753,6 +753,40 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // the centralized constructor.
     let names = nucleus_compiler::NameTables::from_acfg(&acfg);
 
+    // ---- Overlapping-write accumulator algorithm-level cross-check
+    //      (TASK-0343.03; hardens the cycle-189 structural detector
+    //      TASK-0343). ----
+    //
+    // The backends classify the overlapping-write accumulator fan-in
+    // pattern PURELY STRUCTURALLY (per worker, >=2 whole-array Waits on
+    // one data symbol ⇒ element-wise sum combine at the host —
+    // `backend_common::multi_worker_walker::collect_accumulate_waits`).
+    // For every shipped schedule that structural shape coincides with
+    // the algorithm-level accumulator shape (LHS-appears-in-RHS, e.g.
+    // 08-histogram's `histogram[b] <-- bin_inc(histogram[b], ...)`), so
+    // this gate is a NO-OP on the entire e2e matrix. It exists to FAIL
+    // LOUD if an exotic schedule ever emits multiple whole-array pushes
+    // for NON-accumulator semantics, which the structural detector would
+    // otherwise silently mis-combine as a sum (a silent miscompile).
+    //
+    // Gated ONCE here, backend-independently, BEFORE the codegen
+    // dispatch below: the structural detector is shared across all
+    // backends (backend-common), the algorithm-IR is the same for any
+    // backend choice, and `per_worker` / `sidecar` / `names` are already
+    // built. The check reuses the EXACT structural detector the backends
+    // consume (`collect_pair_tiles` + `collect_accumulate_waits`) — no
+    // duplicated detection logic — and consults `linked.algo` for the
+    // LHS-appears-in-RHS accumulator shape via
+    // `names.data` (DataId -> name) as the bridge between the codegen
+    // DataId space and the algorithm-IR String-name space.
+    backend_common::multi_worker_walker::check_accumulator_consistency(
+        &linked.algo,
+        &per_worker,
+        &sidecar,
+        &names.data,
+    )
+    .map_err(|e| format!("accumulator cross-check error: {e}"))?;
+
     // `--shim` is a tier-3 selector (M10, TASK-0048.01). A `--shim` on a
     // backend that has no shim concept is a user error — reject it loudly
     // rather than silently ignore it (PRD fail-fast rule). Only the

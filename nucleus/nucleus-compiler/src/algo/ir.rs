@@ -51,7 +51,7 @@
 //! not be resolved' cases. A clean type boundary is cheaper.
 
 use core::ops::Range;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -231,6 +231,55 @@ pub struct AlgoIR {
     pub kernels: BTreeMap<String, ResolvedKernel>,
     /// Top-level statements in source order.
     pub stmts: Vec<IrStmt>,
+}
+
+/// Recursively visit an [`IrExpr`] and insert every [`IrExpr::DataRef`]'s
+/// data-symbol name into `out` (descending into `Call` args, `Neg`,
+/// `BinOp`, and `DataRef` index expressions).
+///
+/// This is the canonical, public IrExpr data-ref-name walker. It was
+/// promoted from `link::pipeline`'s private `collect_data_refs`
+/// (verbatim shape; the pipeline pass now delegates here) so that
+/// out-of-crate consumers — specifically the backend-common
+/// overlapping-write-accumulator cross-check
+/// [`backend_common::multi_worker_walker::check_accumulator_consistency`]
+/// (TASK-0343.03) — can reuse ONE walker instead of growing a third
+/// silent-sibling copy.
+///
+/// Index expressions inside a `DataRef` are walked too. The current
+/// grammar restricts indices to iter-var / const arithmetic, so that
+/// recursion is a no-op today; it is kept so the collected set stays
+/// honest if the grammar ever admits data reads in index position.
+///
+/// # Known remaining sibling (silent-sibling hygiene)
+///
+/// `link::dataflow`'s private `collect_dataref_names` is a DISTINCT
+/// walker with a `Vec<String>` sink (it must preserve source order +
+/// duplicates for the `CopyEdge` value-flow propagation, TASK-0347), so
+/// it is NOT collapsed into this set-sink helper. Consolidating the two
+/// into one generic-sink walker is filed as TASK-0343.03.01; doing it
+/// here would change the dataflow pass's behaviour (Vec order/dups) and
+/// is out of scope for the accumulator cross-check.
+pub fn collect_dataref_names(e: &IrExpr, out: &mut BTreeSet<String>) {
+    match e {
+        IrExpr::DataRef(IndexedRef { name, indices }) => {
+            out.insert(name.clone());
+            for idx in indices {
+                collect_dataref_names(idx, out);
+            }
+        }
+        IrExpr::Call { args, .. } => {
+            for a in args {
+                collect_dataref_names(a, out);
+            }
+        }
+        IrExpr::Neg(inner) => collect_dataref_names(inner, out),
+        IrExpr::BinOp(_, l, r) => {
+            collect_dataref_names(l, out);
+            collect_dataref_names(r, out);
+        }
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
+    }
 }
 
 /// The semantic-violation *kind* produced by the lowering pass.

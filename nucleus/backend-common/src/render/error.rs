@@ -29,6 +29,24 @@ pub enum EmitError {
     /// the fail-loud seam for a contract regression — NEVER paper
     /// over it with a default (CLAUDE.md: no workarounds).
     ContractGap(String),
+    /// The structural overlapping-write-accumulator detector
+    /// ([`crate::multi_worker_walker::collect_accumulate_waits`]) fired
+    /// for a data symbol — `N>=2` whole-array `Wait`s — but the
+    /// algorithm-IR shows the symbol is NOT an algorithm-level
+    /// accumulator (its `Dataflow` LHS name does not appear among the
+    /// RHS data references). Emitting element-wise `wrapping_add`
+    /// combine here would be a SILENT miscompile (sum-combining values
+    /// that are not accumulator partials), so the driver-level
+    /// cross-check
+    /// ([`crate::multi_worker_walker::check_accumulator_consistency`],
+    /// TASK-0343.03) rejects loudly BEFORE any backend codegen.
+    ///
+    /// For every shipped schedule the structural pattern and the
+    /// algorithm-level accumulator shape coincide (08-histogram/
+    /// distributed), so this never fires on the e2e matrix; it guards
+    /// against an exotic future schedule that emits multiple whole-array
+    /// pushes for non-accumulator semantics.
+    AccumulatorShapeMismatch(String),
 }
 
 impl std::fmt::Display for EmitError {
@@ -62,6 +80,9 @@ impl std::fmt::Display for EmitError {
             }
             EmitError::ContractGap(msg) => {
                 write!(f, "EventList/sidecar contract gap: {msg}")
+            }
+            EmitError::AccumulatorShapeMismatch(msg) => {
+                write!(f, "accumulator shape mismatch: {msg}")
             }
         }
     }

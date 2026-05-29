@@ -5,10 +5,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use nucleus_compiler::algo::{collect_dataref_names, AlgoIR, IrStmt};
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use super::ctx::RendezvousId;
+use crate::render::EmitError;
 
 /// Collect every `(DataId, SeqTag)` pair appearing on a Push or Wait
 /// event in `events` (descending into Loop bodies). The map's value is
@@ -249,6 +251,136 @@ fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<SeqTag>>) {
             }
             Event::Loop { body, .. } => walk_waits(body, out),
             _ => {}
+        }
+    }
+}
+
+/// Algorithm-level cross-check for the structural overlapping-write
+/// accumulator detector (TASK-0343.03; hardens the cycle-189 structural
+/// landing TASK-0343).
+///
+/// [`collect_accumulate_waits`] detects the accumulator-fan-in pattern
+/// PURELY STRUCTURALLY: per worker, `N>=2` whole-array `Wait`s on one
+/// data symbol ⇒ classify all as element-wise (`wrapping_add`) combine.
+/// For every shipped schedule today (08-histogram/distributed is the
+/// load-bearing case) that structural pattern is EQUIVALENT to the
+/// algorithm-level accumulator shape: the data's `Dataflow` LHS name
+/// also appears among its RHS data references, e.g.
+/// `histogram[b] <-- bin_inc(histogram[b], input[i], b)`.
+///
+/// But the structural detector has no algorithm-level evidence: an
+/// exotic schedule that emits multiple whole-array Pushes for a
+/// NON-accumulator data symbol would be silently mis-combined as an
+/// element-wise sum — a silent miscompile. This cross-check closes that
+/// gap. It consults the algorithm-IR and FAILS LOUD
+/// ([`EmitError::AccumulatorShapeMismatch`]) when the structural
+/// accumulate pattern fires on a data symbol whose algorithm-level shape
+/// is NOT an accumulator.
+///
+/// # What "algorithm-level accumulator" means here
+///
+/// A data symbol is an accumulator iff it is the LHS of some
+/// `IrStmt::Dataflow { lhs, rhs }` where `lhs.name` also appears among
+/// the RHS's referenced data symbols (the LHS-appears-in-RHS shape). The
+/// RHS data references are collected with the canonical
+/// [`nucleus_compiler::algo::collect_dataref_names`] walker (the SAME
+/// walker `link::pipeline` uses), so there is no second, drifting copy
+/// of the IrExpr walk. `IrStmt::For` bodies are descended; `Effect`
+/// statements never write a data symbol so are irrelevant to the
+/// LHS-in-RHS test.
+///
+/// # Reuse of the structural detector (NO duplicated logic)
+///
+/// For each worker this calls the EXISTING [`collect_pair_tiles`] +
+/// [`collect_accumulate_waits`] verbatim — the very functions the
+/// backends consume — so the check and the codegen agree by
+/// construction. It does NOT reimplement the whole-array predicate.
+///
+/// # Scope LIMIT (filed: TASK-0343.03.02)
+///
+/// The accumulator test is exactly LHS-appears-in-RHS. It does NOT yet
+/// recognise a transitive accumulator (e.g. `acc <-- f(tmp)` where
+/// `tmp <-- g(acc)` earlier in the same scope). No shipped schedule
+/// needs this; a transitive-accumulator generalisation is filed as
+/// TASK-0343.03.02. Because the conservative direction of this check is
+/// to REJECT (it only adds a reject path), a transitive accumulator that
+/// the LHS-in-RHS test misses would be a FALSE REJECT, not a silent
+/// miscompile — so the failure mode stays fail-loud, never silent.
+///
+/// # Inputs
+///
+/// - `algo_ir`: the lowered algorithm (the driver's `linked.algo`).
+/// - `per_worker`: the projected per-worker event lists (after
+///   check-frame / host-mediation injection — the SAME map the backend
+///   `emit()` receives).
+/// - `sidecar`: needed by [`collect_accumulate_waits`] →
+///   `is_whole_array_recv` to read data dims.
+/// - `data_names`: `DataId -> name` (the driver's `NameTables::data`),
+///   the bridge between the codegen `DataId` space and the algorithm-IR
+///   `String`-name space. A `DataId` missing here is itself a contract
+///   regression and is reported as [`EmitError::ContractGap`] (NEVER
+///   silently skipped — CLAUDE.md no-workarounds).
+pub fn check_accumulator_consistency(
+    algo_ir: &AlgoIR,
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    sidecar: &NameSidecar,
+    data_names: &BTreeMap<DataId, String>,
+) -> Result<(), EmitError> {
+    // 1. Algorithm-level accumulator name set: LHS-appears-in-RHS.
+    let mut accumulator_names: BTreeSet<String> = BTreeSet::new();
+    collect_accumulator_names(&algo_ir.stmts, &mut accumulator_names);
+
+    // 2. Per worker, reuse the EXACT structural detector the backends
+    //    use, then cross-check each detected DataId against the
+    //    algorithm-level accumulator name set.
+    for events in per_worker.values() {
+        let pair_tiles = collect_pair_tiles([events.as_slice()]);
+        let detected = collect_accumulate_waits(events, sidecar, &pair_tiles);
+        for (data, _seq) in &detected {
+            let name = data_names.get(data).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "accumulator cross-check: DataId {data:?} structurally classified as an \
+                     overlapping-write accumulator has no entry in the DataId->name table \
+                     (NameTables::data); cannot cross-check its algorithm-level shape"
+                ))
+            })?;
+            if !accumulator_names.contains(name) {
+                return Err(EmitError::AccumulatorShapeMismatch(format!(
+                    "data symbol `{name}` is structurally classified as an overlapping-write \
+                     accumulator (>=2 whole-array Waits on it ⇒ element-wise sum combine at the \
+                     host), but the algorithm-IR shows it is NOT an accumulator: no `<--` \
+                     statement writing `{name}` reads `{name}` on its own RHS \
+                     (LHS-appears-in-RHS). Element-wise summing here would be a silent \
+                     miscompile. This is a defensive tightening (TASK-0343.03) over the \
+                     structural-only cycle-189 detector; for every shipped schedule the two \
+                     shapes coincide, so this rejection means an exotic schedule has emitted \
+                     multiple whole-array pushes for non-accumulator semantics"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk `stmts` (descending into `IrStmt::For` bodies) and insert into
+/// `out` every data symbol that is an algorithm-level accumulator: the
+/// LHS of an `IrStmt::Dataflow` whose own name also appears among the
+/// RHS data references (LHS-appears-in-RHS). Reuses the canonical
+/// [`collect_dataref_names`] walker for the RHS read set.
+fn collect_accumulator_names(stmts: &[IrStmt], out: &mut BTreeSet<String>) {
+    for s in stmts {
+        match s {
+            IrStmt::Dataflow { lhs, rhs } => {
+                let mut rhs_refs: BTreeSet<String> = BTreeSet::new();
+                collect_dataref_names(rhs, &mut rhs_refs);
+                if rhs_refs.contains(&lhs.name) {
+                    out.insert(lhs.name.clone());
+                }
+            }
+            IrStmt::For { body, .. } => collect_accumulator_names(body, out),
+            // `Effect` statements never write a data symbol (no LHS), so
+            // they cannot introduce an accumulator.
+            IrStmt::Effect { .. } => {}
         }
     }
 }

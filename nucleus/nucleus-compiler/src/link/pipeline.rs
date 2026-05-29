@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::errors::{LinkError, LinkErrorKind, LinkErrorSource};
-use crate::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt};
+use crate::algo::{collect_dataref_names, AlgoIR, IrExpr, IrStmt};
 use crate::sched::{ResolvedLoopOption, ResolvedTransferOption, SchedIR};
 
 /// Append [`LinkErrorKind::PipelineExceedsBuffer`] for each `loop V :
@@ -331,14 +331,14 @@ fn collect_data_in_loop(
         match s {
             IrStmt::Dataflow { lhs, rhs } if inside => {
                 produced.insert(lhs.name.clone());
-                collect_data_refs(rhs, consumed);
+                collect_dataref_names(rhs, consumed);
                 for idx in &lhs.indices {
-                    collect_data_refs(idx, consumed);
+                    collect_dataref_names(idx, consumed);
                 }
             }
             IrStmt::Effect { args, .. } if inside => {
                 for a in args {
-                    collect_data_refs(a, consumed);
+                    collect_dataref_names(a, consumed);
                 }
             }
             IrStmt::For { var, body, .. } => {
@@ -353,25 +353,11 @@ fn collect_data_in_loop(
     }
 }
 
-/// Recursively visit an expression and record every `DataRef`'s name.
-fn collect_data_refs(e: &IrExpr, out: &mut BTreeSet<String>) {
-    match e {
-        IrExpr::DataRef(IndexedRef { name, indices }) => {
-            out.insert(name.clone());
-            for idx in indices {
-                collect_data_refs(idx, out);
-            }
-        }
-        IrExpr::Call { args, .. } => {
-            for a in args {
-                collect_data_refs(a, out);
-            }
-        }
-        IrExpr::Neg(inner) => collect_data_refs(inner, out),
-        IrExpr::BinOp(_, l, r) => {
-            collect_data_refs(l, out);
-            collect_data_refs(r, out);
-        }
-        IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
-    }
-}
+// The private `collect_data_refs` (IrExpr -> BTreeSet<String> data-ref
+// names) was promoted to the public, canonical
+// `crate::algo::collect_dataref_names` (TASK-0343.03) so the
+// backend-common accumulator cross-check can reuse the same walker. The
+// three former call sites above now call it directly. The `dataflow.rs`
+// Vec-sink sibling (`collect_dataref_names`, order+dups for CopyEdge)
+// is a DISTINCT walker and intentionally not collapsed; see the
+// promoted helper's docstring.
