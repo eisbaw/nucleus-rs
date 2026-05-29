@@ -110,6 +110,46 @@ fn emit_example_multi(example: &str, schedule_file: &str, scratch_leaf: &str) ->
     emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-worker emit")
 }
 
+/// Lower a MULTI-worker schedule against an EXPLICIT algorithm +
+/// kernels file (NOT the default `prog.algo.nuc` / `kernels.rs`) and
+/// emit the per-worker no_std libs. Used by the TASK-0049.06 real
+/// example-14 test, where the embedded shape uses
+/// `prog.embedded.algo.nuc` + the no_std-clean `kernels.embedded.rs`
+/// (the tier-1 `kernels.rs` has `Vec<i32>` bodies that are not extracted
+/// for the embedded backend). Mirrors `emit_example_multi` but with the
+/// two filenames parameterised.
+fn emit_example_multi_with_files(
+    example: &str,
+    algo_file: &str,
+    schedule_file: &str,
+    kernels_file: &str,
+    scratch_leaf: &str,
+) -> crate::MultiEmitResult {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(example);
+    let algo_src = std::fs::read_to_string(ex.join(algo_file)).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules").join(schedule_file)).expect("sched source");
+
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
+    );
+    let kernels = ex.join(kernels_file);
+
+    let out = root
+        .join("nucleus/target/embedded-pattern-test-scratch")
+        .join(scratch_leaf);
+    let _ = std::fs::remove_dir_all(&out);
+
+    emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-worker emit")
+}
+
 /// Lower `example`'s `naive` schedule and emit the no_std BIN (M10
 /// `--shim stm32h7`) into a scratch dir; return the emitted main.rs
 /// source. The bin path is the SAME lowering as the lib, with the
@@ -577,6 +617,109 @@ fn multi_worker_lib_emits_one_project_per_worker_with_transport_hooks() {
         assert!(
             !src.contains("std::fs"),
             "worker `{name}` must not leak std into the no_std lib:\n{src}"
+        );
+    }
+}
+
+#[test]
+fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
+    // TASK-0049.06 (M11 backend slice A follow-up): the REAL example-14
+    // hearing-aid, via the SYNCHRONOUS sibling schedule
+    // `embedded_multimcu_sync` (3 default-class workers fe/dsp/rf, sync
+    // transfers, NO async/buffer/event/named-regions) + the no_std-clean
+    // `kernels.embedded.rs` (mix2/denoise as fixed-array `[i32; 16]`
+    // in/out). This is the literal 3-worker ex14 cross-compile that
+    // TASK-0049.04 AC#3 demanded (the structural slice proved it with
+    // the 02-split-add proxy; this closes it on the real algorithm).
+    //
+    // The KEY assertion: array-typed PURE kernel Fire args lower to the
+    // no_std fixed-array form `.try_into().unwrap()` — NOT the tier-1
+    // `.to_vec()`, which needs `alloc`/`Vec` and would not cross-compile
+    // under no_std (the GAP-C lowering gap this task surfaced + fixed in
+    // backend_common::render_fire_args_nostd / SubArrayForm::FixedArray).
+    let res = emit_example_multi_with_files(
+        "14-hearing-aid",
+        "prog.embedded.algo.nuc",
+        "embedded_multimcu_sync.sched.nuc",
+        "kernels.embedded.rs",
+        "ex14_sync_multi",
+    );
+
+    // Exactly three projects, one per used worker (fe, dsp, rf).
+    let mut names: Vec<&str> = res
+        .workers
+        .iter()
+        .map(|w| {
+            w.worker_name
+                .as_deref()
+                .expect("a multi-worker project must carry its worker name")
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["dsp", "fe", "rf"],
+        "the real ex14 sync schedule must emit exactly three per-worker projects (fe/dsp/rf)"
+    );
+
+    let read = |name: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|w| w.worker_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("worker `{name}` project missing"));
+        std::fs::read_to_string(&w.lib_rs).expect("read worker lib.rs")
+    };
+    let dsp = read("dsp");
+
+    // --- GAP C: array-typed pure-kernel Fire args use the no_std
+    //     fixed-array form, NOT `.to_vec()`. The dsp worker runs both
+    //     pure kernels (mix2 + the two denoise firings), each taking a
+    //     `[i32; 16]` row of a 2D `i32[N_FRAMES][16]` datum. ---
+    assert!(
+        dsp.contains(".try_into().unwrap()"),
+        "dsp must lower array-typed pure-kernel args as no_std fixed arrays \
+         (.try_into().unwrap()):\n{dsp}"
+    );
+    assert!(
+        !dsp.contains(".to_vec()"),
+        "dsp must NOT use `.to_vec()` (needs alloc/Vec, not no_std-clean) for \
+         array-typed pure-kernel args:\n{dsp}"
+    );
+    // The pure kernels are extracted verbatim into mod kernels with the
+    // fixed-array (NOT Vec) signature from kernels.embedded.rs.
+    assert!(
+        dsp.contains("pub fn mix2(a: [i32; 16], b: [i32; 16]) -> [i32; 16]"),
+        "mix2 not extracted with the no_std fixed-array signature:\n{dsp}"
+    );
+    assert!(
+        dsp.contains("pub fn denoise(buf: [i32; 16]) -> [i32; 16]"),
+        "denoise not extracted with the no_std fixed-array signature:\n{dsp}"
+    );
+    // The pure compute Fires call the extracted kernels.
+    assert!(
+        dsp.contains("kernels::mix2(") && dsp.contains("kernels::denoise("),
+        "dsp must call the extracted pure kernels mix2 + denoise:\n{dsp}"
+    );
+
+    // --- cross-worker transport: dsp Waits its inputs and Pushes its
+    //     outputs over the stub-shim hooks (the inter-MCU transport). ---
+    assert!(
+        dsp.contains("shim.dma_wait(") && dsp.contains("shim.dma_push("),
+        "dsp must lower its cross-worker Wait/Push to the stub-shim hooks:\n{dsp}"
+    );
+
+    // --- every worker is a no_std lib with the shim trait + no std leak.
+    for name in ["fe", "dsp", "rf"] {
+        let src = read(name);
+        assert!(src.contains("#![no_std]"), "worker `{name}` must be no_std:\n{src}");
+        assert!(
+            src.contains("pub trait NucleusShim"),
+            "worker `{name}` must carry the NucleusShim trait:\n{src}"
+        );
+        assert!(
+            !src.contains("std::fs") && !src.contains(".to_vec()"),
+            "worker `{name}` must not leak std / use Vec into the no_std lib:\n{src}"
         );
     }
 }

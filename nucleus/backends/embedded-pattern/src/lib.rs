@@ -130,7 +130,7 @@ use std::path::{Path, PathBuf};
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 
-use backend_common::render::{data_name, render_fire_args, render_loop_bounds, RenderCtx};
+use backend_common::render::{data_name, render_fire_args_nostd, render_loop_bounds, RenderCtx};
 use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, ViolationKind, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
@@ -1081,7 +1081,16 @@ fn render_fire(
         }
         // ---- Indexed OUTPUT (pure compute): `c[i] <-- add(..)` ----
         Some(o) => {
-            let rendered_args = render_fire_args(kernel, &bindings.inputs, ctx)?;
+            // no_std arg materialisation: a contiguous-prefix sub-array
+            // argument (e.g. `mic_in[frame]` of an `i32[N_FRAMES][16]`
+            // datum, an array-typed pure kernel param) renders as a
+            // fixed `[T; N]` via `.try_into().unwrap()` — NOT the tier-1
+            // `.to_vec()`, which needs `alloc`/`Vec`. Scalar (full-rank)
+            // args render identically to tier-1. This is what makes the
+            // real example-14 array-typed mix2/denoise pure kernels
+            // cross-compile under `no_std` (TASK-0049.06; the lowering
+            // gap the M11 cross-compile surfaced).
+            let rendered_args = render_fire_args_nostd(kernel, &bindings.inputs, ctx)?;
             let rhs = format!("kernels::{callee}({rendered_args})");
             let stmt = backend_common::render::render_fire_output_assign(o, &rhs, ctx)?;
             writeln!(out, "{pad}{stmt}").ok();

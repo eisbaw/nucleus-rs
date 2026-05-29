@@ -291,6 +291,14 @@ fn rustc_check(path: &Path) -> Result<(), String> {
         nanos
     ));
 
+    // KNOWN GAP (TASK-0363): no explicit `--crate-name` is passed, so
+    // rustc derives the crate name from the file stem. A `--kernels`
+    // file with a dot in its stem (e.g. `kernels.embedded.rs`, used by
+    // the M11 ex14 sync sibling — TASK-0049.06) makes rustc reject with
+    // "invalid character `.` in crate name". This is non-fatal in the
+    // driver (cmd_build surfaces contract errors as a warning and
+    // proceeds), but it defeats the phase-1 compile-check for dotted
+    // kernels files. Fix is to pass a sanitised `--crate-name`.
     let output = Command::new("rustc")
         .arg("--emit=metadata")
         .arg("--crate-type=rlib")

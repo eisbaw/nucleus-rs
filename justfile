@@ -496,7 +496,7 @@ check-mega-files:
     fi; \
     echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC; no allow-list entry is stale."
 
-# Tier-3 compile-only acceptance. Two arms, both real
+# Tier-3 compile-only acceptance. Three arms, all real
 # `cargo check --target thumbv7em-none-eabihf` cross-compiles against
 # the stub shim. SUCCEEDS iff every generated lib cross-compiles.
 #
@@ -507,14 +507,21 @@ check-mega-files:
 #      `split` schedule (host + w0, sync transfers a/b/c) emits ONE
 #      no_std lib PER worker under out_dir/<worker>/, with Push/Wait/Sync
 #      lowered to the stub-shim hooks (dma_push/dma_wait/irq_barrier).
-#      The real example-14 embedded_multimcu schedule is NOT cross-
-#      compiled here — it is blocked on a capability decision
-#      (async/buffer/event vs the synchronous stub) and on no_std-clean
-#      stateful per-frame kernels; both are tracked as TASK-0049.06
-#      (capability decision + no_std-clean ex14 kernels). 02-split-add is
-#      the no_std-clean fixture that isolates the structural backend
-#      change. (The BIN / Renode multi-MCU path is the separate slice
-#      TASK-0049.05.)
+#      This is the no_std-clean fixture that isolates the structural
+#      backend change.
+#   3. M11 backend slice A follow-up (TASK-0049.06): the REAL example-14
+#      hearing-aid, via the SYNCHRONOUS sibling schedule
+#      `embedded_multimcu_sync` (3 default-class workers fe/dsp/rf, sync
+#      transfers, no async/buffer/event/named-regions) + the no_std-clean
+#      `kernels.embedded.rs` (`--kernels`; mix2/denoise as fixed-array
+#      `[i32; 16]` in/out). Three per-worker no_std libs cross-compile,
+#      exercising array-typed pure-kernel Fire lowering (fixed-array
+#      `.try_into()` args, alloc-free). The ASYNC `embedded_multimcu`
+#      schedule is deliberately NOT cross-compiled — its async/buffer=3/
+#      notify=event/heterogeneous-class demands are correctly REJECTED at
+#      check_schedule_compat against the synchronous stub (admitting them
+#      would be a capability lie). The async transport + the BIN/Renode
+#      multi-MCU path are the separate slice TASK-0049.05.
 #
 # MUST be run under the embedded cross-compile shell, which provides the
 # thumbv7em-none-eabihf rust-std on the pinned 1.83.0 toolchain:
@@ -572,7 +579,29 @@ check-embedded:
         (cd "$mout/$w" && cargo check --target thumbv7em-none-eabihf); \
     done; \
     echo "OK: embedded-pattern emits + cross-compiles N per-worker no_std libs"; \
-    echo "    with stub-shim Push/Wait/Sync transport (TASK-0049.04, thumbv7em-none-eabihf)."
+    echo "    with stub-shim Push/Wait/Sync transport (TASK-0049.04, thumbv7em-none-eabihf)."; \
+    echo ""; \
+    echo "=== M11 backend slice A follow-up: REAL example-14 multi-MCU LIB (TASK-0049.06) ==="; \
+    eout="target/embedded-m11-ex14"; \
+    rm -rf "$eout"; \
+    echo "=== generating 3 per-worker no_std libs for 14-hearing-aid/embedded_multimcu_sync (fe/dsp/rf) ==="; \
+    ./target/release/nucleus build \
+        --algo "../nuc-nucleus/examples/14-hearing-aid/prog.embedded.algo.nuc" \
+        --sched "../nuc-nucleus/examples/14-hearing-aid/schedules/embedded_multimcu_sync.sched.nuc" \
+        --backend embedded-pattern \
+        --kernels "../nuc-nucleus/examples/14-hearing-aid/kernels.embedded.rs" \
+        --out "$eout"; \
+    for w in fe dsp rf; do \
+        if [ ! -d "$eout/$w" ]; then \
+            echo "FAIL: expected per-worker project $eout/$w (TASK-0049.06 real-ex14 3-MCU layout)"; \
+            exit 1; \
+        fi; \
+        echo "=== cargo check --target thumbv7em-none-eabihf (14-hearing-aid/$w) ==="; \
+        (cd "$eout/$w" && cargo check --target thumbv7em-none-eabihf); \
+    done; \
+    echo "OK: embedded-pattern cross-compiles the REAL example-14 multi-MCU"; \
+    echo "    hearing-aid (fe/dsp/rf, array-typed mix2/denoise pure kernels,"; \
+    echo "    no_std-clean fixed-array args) — TASK-0049.06, thumbv7em-none-eabihf."
 
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/

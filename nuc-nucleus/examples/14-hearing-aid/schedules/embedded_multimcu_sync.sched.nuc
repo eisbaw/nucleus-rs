@@ -1,0 +1,112 @@
+// Embedded multi-MCU schedule — SYNCHRONOUS-STUB-compatible sibling of
+// embedded_multimcu.sched.nuc (TASK-0049.06).
+//
+// WHAT THIS IS (and what it is NOT — read before editing):
+//
+//   This is the synchronous, default-worker-class variant of the
+//   three-MCU hearing-aid schedule. It places the SAME per-frame
+//   peripheral dataflow (`../prog.embedded.algo.nuc`: fe_capture /
+//   rf_receive / fe_emit / rf_transmit + the shared mix2 / denoise)
+//   across three workers (fe / dsp / rf), but using ONLY the
+//   capability surface the synchronous M9/M11-slice-A `StubShim`
+//   backend can HONESTLY honour:
+//
+//     - the DEFAULT worker class for ALL three workers (NO neon128,
+//       NO tightly-coupled/TCM memory, NO named worker classes). The
+//       StubShim has no SIMD and no TCM; declaring fe_core/dsp_core/
+//       rf_core would be a capability LIE.
+//     - SYNCHRONOUS cross-worker transfers (NO async, NO buffer=N>1,
+//       NO notify=event). The StubShim's dma_push/dma_wait are
+//       blocking no-ops — exactly `sync` semantics, nothing more.
+//     - NO named memory regions (NO sram_shared, NO dsp_tcm). The
+//       backend lays every data symbol out as a fixed `[T; N]` local;
+//       there is no region allocator to honour a placement directive.
+//
+// WHY A SEPARATE SYNC SIBLING (decision recorded TASK-0049.06, NOT to
+// be re-litigated): the async embedded_multimcu schedule demands
+// async + buffer=3 + notify=event + fe_core/dsp_core/rf_core +
+// sram_shared/dsp_tcm. embedded-pattern's capabilities.toml declares
+// ONLY {default class, heap region, sync, no async/buffer/event}.
+// Admitting the async demands into capabilities.toml would be a LIE
+// against the synchronous StubShim (it cannot deliver async DMA, ring
+// buffers, IRQ-completion notify, SIMD, or TCM). So the async schedule
+// stays CORRECTLY REJECTED at check_schedule_compat; this sync sibling
+// is the variant that legitimately cross-compiles. This MIRRORS the
+// accepted M10 precedent (TASK-0048.11): the synchronous shim is the
+// honest tier-3 Definition of Done; the real async transport is the
+// later BIN slice (TASK-0049.05).
+//
+// HONEST SCOPE: compile-only (`cargo check --target
+// thumbv7em-none-eabihf`) of three per-worker no_std libs. This is NOT
+// value-correct, NOT a Renode multi-MCU run, NOT the async transport.
+// The async embedded_multimcu schedule + the real UART-hub transport
+// remain TASK-0049.05 (BIN slice). The e2e harness still hardcodes
+// prog.algo.nuc, so this schedule is [[skip]]'d in e2e-matrix.toml
+// (additive skips, NOT runtime cells).
+
+schedule for "../prog.embedded.algo.nuc" {
+
+    // ---------- worker topology ----------
+    //
+    // Three workers, ALL on the synthetic DEFAULT class (no class
+    // annotation). The async sibling splits these into fe_core /
+    // dsp_core / rf_core; here they are deliberately homogeneous so the
+    // schedule passes the StubShim's `worker_classes = ["default"]`
+    // capability surface without a lie.
+    workers = { fe, dsp, rf };
+
+    // ---------- data placement ----------
+    //
+    // NO `place_data ... in <region>` directives: the StubShim has no
+    // named memory regions (only the implicit `heap` the backend's
+    // fixed-`[T; N]` locals satisfy). The async sibling places the
+    // frame buffers in `sram_shared`; that region does not exist on
+    // this synchronous backend.
+
+    // ---------- kernel placement ----------
+    //
+    // Identical placement to the async sibling: front-end IO on fe,
+    // radio IO on rf, the pure DSP (mix2 + both denoise firings) on dsp.
+    place fe_capture  on fe;
+    place fe_emit     on fe;
+
+    place rf_receive  on rf;
+    place rf_transmit on rf;
+
+    place mix2        on dsp;
+    place denoise     on dsp;   // both denoise firings (outbound + inbound) run on dsp
+
+    // ---------- cross-worker data — one `sync` transfer per crossing ----------
+    //
+    // PRD §6.3.4: every data symbol that crosses a worker boundary needs
+    // an explicit transfer (omitting one is a hard error, not a silent
+    // default). The four crossings (matching the async sibling's four
+    // transfers; `mixed` stays on dsp and needs none):
+    //
+    //   mic_in  (fe  -> dsp)  fe_capture on fe, read by denoise+mix2 on dsp
+    //   bt_in   (rf  -> dsp)  rf_receive on rf, read by mix2 on dsp
+    //   bt_out  (dsp -> rf)   denoise on dsp, drained by rf_transmit on rf
+    //   spk_out (dsp -> fe)   denoise on dsp, drained by fe_emit on fe
+    //
+    // All `sync`: the producer blocks until the consumer has received.
+    // This is the minimum semantic the synchronous StubShim offers
+    // (dma_push then a blocking dma_wait) — NO async, NO buffer=N>1, NO
+    // notify=event (which the async sibling uses and which this backend
+    // cannot honour).
+    transfer mic_in  : sync;
+    transfer bt_in   : sync;
+    transfer bt_out  : sync;
+    transfer spk_out : sync;
+
+    // ---------- intentionally NOT here ----------
+    //
+    //   - NO `loop frame : pipeline=3;`  (pipelining demands the
+    //     buffer>=pipeline_depth ring the StubShim has no buffer for;
+    //     the async sibling carries it).
+    //   - NO `check loop frame : latency_max = 10ms;`  (the tier-3
+    //     check-frame lowering is exercised by the dedicated
+    //     embedded_check* fixtures; latency_max defaults to
+    //     on_violation=panic, which tier-3 rejects — out of scope for
+    //     this compile-only cross-compile slice).
+    //   - NO async / buffer / notify=event transfers (capability lie).
+}
