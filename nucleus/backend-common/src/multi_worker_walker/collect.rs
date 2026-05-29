@@ -369,6 +369,20 @@ fn collect_let_at_wait_inner(
                 }
             }
             Event::Loop { body, .. } => {
+                // Descend into the loop body: a whole-array Wait
+                // buried inside a loop body IS classified let-at-wait.
+                // SCOPE HAZARD (TASK-0356 cycle 222, characterized;
+                // fix filed as TASK-0364): classifying an in-loop Wait
+                // as let-at-wait means the sibling `wait::
+                // render_wait_assign` emits its `let {name} = {rhs};`
+                // INSIDE the emitted `for { }` block. A consumer of
+                // that data at the ENCLOSING outer scope would read it
+                // out of scope. NOT producible today —
+                // `transfer_inject` co-locates each Wait with its
+                // consumer (see the TASK-0356 note at the `wait.rs`
+                // emit site and `tests/wait_let_at_wait_loop_scope.rs`).
+                // A scope-aware fix would exclude such a Wait here when
+                // its data is consumed at an outer scope.
                 collect_let_at_wait_inner(body, pair_tiles, sidecar, waited, not_all_whole);
             }
             _ => {}

@@ -119,6 +119,21 @@ pub fn render_wait_assign(
                 // one statement so the variable comes into scope at
                 // the recv site. Type inference picks up the Vec<T>
                 // from the rendezvous slot's `.wait()` return type.
+                //
+                // SCOPE HAZARD (TASK-0356 cycle 222, characterized;
+                // fix filed as TASK-0364): this `let {name}` comes
+                // into scope at the WAIT'S lexical position. When the
+                // Wait sits inside an `Event::Loop` body, the `let`
+                // lands inside the emitted `for { }` block; a consumer
+                // of `{name}` at the ENCLOSING outer scope would then
+                // read it out of scope (non-compiling Rust). This is
+                // NOT producible today — `transfer_inject`
+                // (`inject_in_sequence`) co-locates every cross-worker
+                // Wait in the SAME sequence as its consuming
+                // Operation, so an outer-scope consumer gets its Wait
+                // at the outer scope, never in a nested loop. The
+                // boundary is pinned by
+                // `tests/wait_let_at_wait_loop_scope.rs`.
                 Ok(format!("let {name} = {rhs};"))
             } else {
                 Ok(format!("{name} = {rhs};"))
