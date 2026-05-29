@@ -510,9 +510,11 @@ check-mega-files:
 #      The real example-14 embedded_multimcu schedule is NOT cross-
 #      compiled here — it is blocked on a capability decision
 #      (async/buffer/event vs the synchronous stub) and on no_std-clean
-#      stateful per-frame kernels; both are TASK-0049.05 / TASK-0054.01
-#      follow-ups (see those tasks). 02-split-add is the no_std-clean
-#      fixture that isolates the structural backend change.
+#      stateful per-frame kernels; both are tracked as TASK-0049.06
+#      (capability decision + no_std-clean ex14 kernels). 02-split-add is
+#      the no_std-clean fixture that isolates the structural backend
+#      change. (The BIN / Renode multi-MCU path is the separate slice
+#      TASK-0049.05.)
 #
 # MUST be run under the embedded cross-compile shell, which provides the
 # thumbv7em-none-eabihf rust-std on the pinned 1.83.0 toolchain:
