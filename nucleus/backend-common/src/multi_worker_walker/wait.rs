@@ -308,34 +308,45 @@ fn wait_slice(
     // Rank-3+ guard (TASK-0294 cycle-115 architect P2.1): a tile or
     // data shape with rank >= 3 would slip silently into the 2D arm,
     // consulting only the first two axes — the SAME HONEST-PARTIAL
-    // class the cycle-115 fix removed for 2-axis data.
+    // class the cycle-115 fix removed for 2-axis data. A future
+    // schedule with a BANDED rank >= 3 tile needs the N-D nested-loop
+    // dispatch filed as TASK-0341.02.02.01.01; until that lands, fail
+    // LOUD rather than emit an out-of-bounds gather. (The
+    // 13-cnn-inference rank-4 sibling-precedent the original comment
+    // cited still hits the 1D arm via partition=workers; no
+    // regression there.)
     //
-    // Cycle-209 update (TASK-0341.02.02.01): 16-jacobi/distributed
-    // is the FIRST in-tree schedule to construct a rank-3 (tile,
-    // data) shape — `partition=rows` on the spatial y-axis of
-    // `field[ITERS+1][H][W]` produces a per-worker rank-3 tile.
-    // The halo_inference (B') refinement (cycle 209) was the
-    // upstream unblocker; this guard is now the next-layer blocker
-    // for 16-jacobi/distributed × pthreads-sync (5 of 7 tier-1
-    // backends; the other two hit TASK-0330 first). The guard's
-    // pre-cycle-209 "No shipped schedule constructs such a (tile,
-    // data) shape today" claim no longer holds; extension to N-D
-    // nested-loop dispatch filed as TASK-0341.02.02.01.01. Until
-    // that lands, fail LOUD so a future schedule that does
-    // construct one is flagged at compile time rather than
-    // emitting an out-of-bounds gather. (The 13-cnn-inference
-    // rank-4 sibling-precedent the original comment cited still
-    // hits the 1D arm via partition=workers; no regression there.)
+    // 16-jacobi/distributed RED HERRING (cycle 211b empirical re-test,
+    // TASK-0341.02.02.01.02): `partition=rows` on the spatial y-axis
+    // of `field[ITERS+1][H][W]` DOES construct a rank-3 tile, so
+    // 16-jacobi/distributed is the first in-tree schedule to TRIP this
+    // guard — but that tile is WHOLE-ARRAY (`bounds=[(t,0..T),(y,0..H),
+    // (x,0..W)]`, every axis full; reproduced 48/48 across the 5
+    // wait_slice backends). If it reached the dispatch it would
+    // collapse to `Ok(None)`, NOT a banded N-D gather. So this guard
+    // is merely the FIRST error hit, NOT the operative blocker: with
+    // the guard bypassed, codegen completes and the emitted program
+    // DEADLOCKS, because `transfer_inject` places the worker-to-worker
+    // `field` Push/Wait INSIDE the partitioned inner loop, giving
+    // unequal per-worker exchange counts (same in-Loop-w2w family as
+    // TASK-0330 on bufsync/poll, which fail LOUD at a compile guard
+    // instead of hanging). The real 16-jacobi blocker is therefore
+    // TASK-0341.02.02.01.02 (hoist the exchange out of the inner
+    // loop), NOT this guard / TASK-0341.02.02.01.01. N-D dispatch is
+    // co-required for 16-jacobi ONLY IF that hoist later produces a
+    // banded (non-whole-array) rank-3 tile — see .02 AC#4.
     if tile.bounds.len() > 2 || (tile.bounds.len() >= 2 && ty.dims.len() > 2) {
         return Err(EmitError::ContractGap(format!(
             "Wait of data {data:?}: tile rank {} and data dim rank {} \
              exceed the 2D row-loop slice-paste's supported shape (rank \
-             <= 2 on both). 16-jacobi/distributed (post-cycle-209 \
-             halo_inference (B') refinement; TASK-0341.02.02.01) is the \
-             first in-tree schedule to trip this guard. Extension to N-D \
-             nested-loop dispatch filed as TASK-0341.02.02.01.01; see \
-             TASK-0294 cycle-115 architect P2.1 for the cycle-115 \
-             rationale carrying the guard until the N-D path lands",
+             <= 2 on both). A schedule with a BANDED rank >= 3 tile \
+             needs the N-D nested-loop dispatch filed as \
+             TASK-0341.02.02.01.01; see TASK-0294 cycle-115 architect \
+             P2.1 for the cycle-115 rationale carrying the guard until \
+             the N-D path lands. (16-jacobi/distributed trips this guard \
+             first, but its rank-3 tile is whole-array; its operative \
+             blocker is the transfer_inject deadlock TASK-0341.02.02.01.02, \
+             not this guard.)",
             tile.bounds.len(),
             ty.dims.len(),
         )));

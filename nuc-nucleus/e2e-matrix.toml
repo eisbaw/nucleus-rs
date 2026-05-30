@@ -566,14 +566,22 @@ milestone = "M6"
 # flavors, captured below:
 #
 # - 5 backends (pthreads-sync / pthreads-async / mp-tcp-event /
-#   openmp-rs / mp-uds-event): blocked by the 3D wait_slice gap
-#   (backend-common::multi_worker_walker::wait::wait_slice rank-3
-#   guard, TASK-0294 cycle-115 architect P2.1). The schedule
-#   constructs a rank-3 tile (partition=rows on `field[ITERS+1][H]
-#   [W]`) that the current 2D-only slice-paste code rejects loud
-#   rather than emitting an out-of-bounds gather. Lifted by
-#   TASK-0341.02.02.01.01 (extend wait_slice to N-D nested-loop
-#   dispatch).
+#   openmp-rs / mp-uds-event): the FIRST error hit is the 3D
+#   wait_slice rank-3 guard (TASK-0294 cycle-115 architect P2.1) —
+#   partition=rows on `field[ITERS+1][H][W]` constructs a rank-3
+#   tile. BUT cycle 211b (TASK-0341.02.02.01.02) empirically proved
+#   that guard is NOT the operative blocker: the rank-3 tile is
+#   WHOLE-ARRAY (every axis full, reproduced 48/48), so lifting the
+#   guard collapses it to Ok(None) and codegen completes — then the
+#   emitted program DEADLOCKS. The real blocker is transfer_inject
+#   placing the worker-to-worker `field` Push/Wait INSIDE the
+#   partitioned inner loop, giving unequal per-worker exchange
+#   counts (same in-Loop-w2w family as the 2 bufsync/poll backends
+#   below, which fail LOUD instead of hanging). Operative blocker:
+#   TASK-0341.02.02.01.02 (hoist the exchange out of the inner loop).
+#   The N-D wait_slice extension (TASK-0341.02.02.01.01) is co-
+#   required ONLY IF that hoist later produces a banded (non-whole-
+#   array) rank-3 tile — see .02 AC#4.
 #
 # - 2 backends (mp-tcp-bufsync / mp-tcp-poll): cycle-209 empirically
 #   observed (AT FILING TIME) the TASK-0330 defensive guard fired
@@ -587,59 +595,65 @@ milestone = "M6"
 # Cycle 209 also empirically reproduced the cycle-208 halo_inference
 # story: pre-cycle-209 every cell rejected at halo_inference; post-
 # cycle-209 every cell PROGRESSES past halo_inference and rejects at
-# the new layer. The (B') refinement landed; the next-layer gaps
-# are the precise blockers for AC#3 promotion now.
+# the new layer. Cycle 211b drilled one layer further on the 5
+# wait_slice backends: their next-layer ERROR (the rank-3 guard) is a
+# tripwire, NOT the operative blocker — the precise blocker is the
+# transfer_inject w2w-in-inner-loop deadlock (TASK-0341.02.02.01.02).
+# For the 2 bufsync/poll backends the TASK-0330 guard IS the precise
+# (loud) blocker.
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "pthreads-sync"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: post-cycle-209 (B') halo_inference refinement, the 3D wait_slice gap (backend-common::multi_worker_walker::wait::wait_slice rank-3 guard, TASK-0294 cycle-115 architect P2.1) is the precise blocker. partition=rows on `field[ITERS+1][H][W]` produces a rank-3 per-worker tile that the 2D-only slice-paste code rejects loud. Compiler-feature extension filed as TASK-0341.02.02.01.01 (extend wait_slice to N-D nested-loop dispatch)."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED. The FIRST error hit is the 3D wait_slice rank-3 guard (TASK-0294 cycle-115 architect P2.1) — partition=rows on `field[ITERS+1][H][W]` produces a rank-3 per-worker tile. BUT cycle 211b (TASK-0341.02.02.01.02) empirically proved that guard is NOT the operative blocker: the rank-3 tile is whole-array (would collapse to Ok(None) if reached); lifting the guard lets codegen complete and the emitted program DEADLOCKS. Operative blocker: transfer_inject places the w2w `field` Push/Wait inside the partitioned inner loop -> unequal per-worker exchange counts -> deadlock. Fix filed as TASK-0341.02.02.01.02 (hoist the exchange out of the inner loop). N-D wait_slice (TASK-0341.02.02.01.01) is co-required only IF the hoist later yields a banded rank-3 tile."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "pthreads-async"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above (the gap is in shared backend-common::wait_slice, not backend-specific). TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, same root cause as the pthreads-sync sibling above (the deadlock is in shared backend-common transfer_inject placement, not backend-specific): the wait_slice rank-3 guard is the first error hit but NOT the operative blocker (the rank-3 tile is whole-array). Operative fix: TASK-0341.02.02.01.02 (hoist the w2w exchange out of the inner loop). N-D wait_slice (TASK-0341.02.02.01.01) co-required only IF the hoist yields a banded rank-3 tile."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-event"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, same root cause as the pthreads-sync sibling above: the wait_slice rank-3 guard is the first error hit but NOT the operative blocker (the rank-3 tile is whole-array); the deadlock is in shared transfer_inject w2w-in-inner-loop placement. Operative fix: TASK-0341.02.02.01.02. N-D wait_slice (TASK-0341.02.02.01.01) co-required only IF the hoist yields a banded rank-3 tile."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "openmp-rs"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, same root cause as the pthreads-sync sibling above: the wait_slice rank-3 guard is the first error hit but NOT the operative blocker (the rank-3 tile is whole-array); the deadlock is in shared transfer_inject w2w-in-inner-loop placement. Operative fix: TASK-0341.02.02.01.02. N-D wait_slice (TASK-0341.02.02.01.01) co-required only IF the hoist yields a banded rank-3 tile."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-uds-event"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same 3D wait_slice gap as the pthreads-sync sibling above. TASK-0341.02.02.01.01 lifts it for all 5 wait_slice-using backends in one fix."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, same root cause as the pthreads-sync sibling above: the wait_slice rank-3 guard is the first error hit but NOT the operative blocker (the rank-3 tile is whole-array); the deadlock is in shared transfer_inject w2w-in-inner-loop placement. Operative fix: TASK-0341.02.02.01.02. N-D wait_slice (TASK-0341.02.02.01.01) co-required only IF the hoist yields a banded rank-3 tile."
 milestone = "M6"
 
-# The two flat-host-relay sync backends hit a DIFFERENT next-layer
-# gap (TASK-0330 in-Loop w2w Push) — not the wait_slice gap. The
-# split fired in cycle 209's empirical re-test across all 7
-# backends; see the block-leading comment above.
+# The two flat-host-relay sync backends fail at the SAME root as the
+# other 5 (in-Loop w2w Push — cycle 211b unified the diagnosis), but
+# fail LOUD at the TASK-0330 compile guard rather than deadlocking at
+# runtime. Their remediation differs (host-relay model + per-pair FIFO
+# constraint, NOT a wait_slice change); see the block-leading comment
+# above and memory project-mp-tcp-event-vs-bufsync-safety-profile.
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-bufsync"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: TASK-0330 defensive guard fires (w2w Push inside Event::Loop body; the cycle-148 flat host-relay cannot handle in-Loop w2w transfers). Distinct from the 3D wait_slice gap that blocks the other 5 backends; bufsync inherits a per-pair FIFO constraint that makes the cycle-149 splice-point lift unsafe. See memory project-mp-tcp-event-vs-bufsync-safety-profile."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: TASK-0330 defensive guard fires (w2w Push inside Event::Loop body; the cycle-148 flat host-relay cannot handle in-Loop w2w transfers). Same in-Loop-w2w root as the other 5 backends (cycle 211b unified the diagnosis) but fails LOUD here vs their runtime deadlock; bufsync's remediation differs — a per-pair FIFO constraint makes the cycle-149 splice-point lift unsafe (NOT a wait_slice change). See memory project-mp-tcp-event-vs-bufsync-safety-profile."
 milestone = "M6"
 
 [[skip]]
 example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
-reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Distinct from the 3D wait_slice gap that blocks the other 5 backends."
+reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Same in-Loop-w2w root as the 5 wait_slice backends (cycle 211b) but fails LOUD vs their runtime deadlock; remediation is the host-relay model, NOT a wait_slice change."
 milestone = "M6"
 
 # 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210
