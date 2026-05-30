@@ -79,11 +79,20 @@
 //! not need a rendezvous-id alias because it bypasses
 //! `render_worker_events`.
 
-pub mod block_tag;
-pub mod collect;
-pub mod ctx;
-pub mod event_walker;
-pub mod wait;
+// TASK-0044.03.02.03 (silent-sibling visibility sweep, matching event_plan /
+// tcp_plan from TASK-0044.03.02.01): the submodules are crate-internal
+// substrate. Every external consumer reaches items only through the
+// `pub use` re-exports below (tests import `backend_common::
+// multi_worker_walker::<fn>`, never `::collect::<fn>` direct paths), and no
+// in-crate module references `multi_worker_walker::<submod>::` either — so the
+// modules are `pub(crate) mod`. The `pub use` re-exports stay `pub` (the
+// re-exported items are themselves `pub`), keeping the public API surface
+// stable.
+pub(crate) mod block_tag;
+pub(crate) mod collect;
+pub(crate) mod ctx;
+pub(crate) mod event_walker;
+pub(crate) mod wait;
 
 pub use block_tag::{compute_block_tag_abs_exprs, render_block_tag_loop_header};
 pub use collect::{

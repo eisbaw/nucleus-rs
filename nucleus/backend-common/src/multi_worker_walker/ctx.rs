@@ -48,7 +48,7 @@ pub struct WalkerCtx<'a> {
     /// `"slot"` for pthreads-sync, `"ring"` for pthreads-async,
     /// `"chan"` for mp-tcp-event. Used in the two emit-string
     /// substitutions in the sibling
-    /// [`super::event_walker`] module:
+    /// `event_walker` module (`super::event_walker`):
     /// `{prefix}{rendezvous_prefix}_{id}.push(...)`
     /// (the `Event::Push` branch) and `{prefix}{rendezvous_prefix}_{id}.wait()`
     /// (the `Event::Wait` branch, fed into `render_wait_assign`).

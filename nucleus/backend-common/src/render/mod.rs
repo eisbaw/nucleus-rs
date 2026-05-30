@@ -33,27 +33,43 @@
 //!
 //! # Sub-module map
 //!
-//! - [`error`] — [`EmitError`], the codegen-time error type.
-//! - [`ctx`]   — [`RenderCtx`] + [`RenderCtxPub`] context structs.
-//! - [`fire`]  — Name resolution, Fire output/argument rendering,
+//! - `error` — [`EmitError`], the codegen-time error type.
+//! - `ctx`   — [`RenderCtx`] + [`RenderCtxPub`] context structs.
+//! - `fire`  — Name resolution, Fire output/argument rendering,
 //!   DataSlice classification (scalar vs sub-array), flat-index
 //!   rendering, and the `write_file` filesystem helper.
-//! - [`expr`]  — Integer / const expression and loop-bound renderers
+//! - `expr`  — Integer / const expression and loop-bound renderers
 //!   (`render_int_expr`, `render_loop_bounds`, `render_const_expr`).
-//! - [`types`] — Rust type / zero-literal / init-expression renderers
+//! - `types` — Rust type / zero-literal / init-expression renderers
 //!   (`rust_scalar_type`, `rust_type_of`, `render_array_init_for`).
-//! - [`reuse`] — Reuse-widths marker emit + circular-buffer codegen
+//! - `reuse` — Reuse-widths marker emit + circular-buffer codegen
 //!   (TASK-0265 / TASK-0269 / TASK-0270 / TASK-0282).
 //!
 //! All public symbols are re-exported below so `backend_common::
 //! render::{...}` import paths stay stable for every external caller.
 
-pub mod ctx;
-pub mod error;
-pub mod expr;
-pub mod fire;
-pub mod reuse;
-pub mod types;
+// TASK-0044.03.02.03 (silent-sibling visibility sweep, matching event_plan /
+// tcp_plan from TASK-0044.03.02.01): the submodules are crate-internal
+// substrate. Every external consumer reaches items only through the `pub use`
+// re-exports below (`backend_common::render::<fn>`, never `::fire::<fn>` direct
+// paths), so the modules are `pub(crate) mod`. The `pub use` re-exports stay
+// `pub` (the re-exported items are themselves `pub`), keeping the public API
+// surface stable. NOTE: the cross-crate prose references to
+// `backend_common::render::fire::render_fire_arg` (in nucleus-compiler) are
+// backtick CODE SPANS, not bracketed intra-doc-links, and `render_fire_arg`
+// (singular) is a private helper — so narrowing changes no public path and
+// breaks no `broken_intra_doc_links`. The submodule names in this module's own
+// `# Sub-module map` header are written as backtick CODE SPANS (not bracketed
+// links) because a public-module doc that bracket-links a now-`pub(crate)`
+// submodule emits a `private_intra_doc_links` rustdoc warning; the re-exported
+// public items (`EmitError`, `RenderCtx`, …) stay bracketed links since
+// `pub use` keeps them public.
+pub(crate) mod ctx;
+pub(crate) mod error;
+pub(crate) mod expr;
+pub(crate) mod fire;
+pub(crate) mod reuse;
+pub(crate) mod types;
 
 pub use ctx::{RenderCtx, RenderCtxPub};
 pub use error::EmitError;
