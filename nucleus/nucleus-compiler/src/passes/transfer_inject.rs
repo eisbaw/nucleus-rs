@@ -745,8 +745,14 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         //       send-then-recv, so each worker performs an EQUAL number
         //       of exchanges (the in-`for x` per-(y,x) placement gives
         //       unequal band-size-dependent counts => deadlock).
-        // No-op when the algorithm has no cumulative array (every
-        // example except 16-jacobi). See the three co-landed tasks.
+        // No-op when the algorithm has no cumulative array. Today the
+        // cumulative SET is {16-jacobi `field`, 11-game-of-life `grid`}
+        // (both have a cross-iteration self-read), but game-of-life ships
+        // no `partition=` schedule, so `partition_worker_ranges` is empty
+        // and both passes below short-circuit to a structural no-op there.
+        // It is therefore "no partitioned cumulative array" — NOT "only
+        // 16-jacobi" — that makes this branch inert. See the three
+        // co-landed tasks (TASK-0341.02.02.01.{01,02,03}).
         let mut cumulative_names: BTreeSet<String> = BTreeSet::new();
         crate::sidecar::collect_cumulative_data_names(
             &linked.algo.stmts,
@@ -2755,6 +2761,30 @@ fn rewrite_cumulative_band_tiles(
                         partition_ranges,
                     ) {
                         x.tile = IterTile::new(bounds);
+                    } else {
+                        // LATENT xN RISK (TASK-0366; cycle-213 architect
+                        // P3): a CUMULATIVE symbol's transfer for which we
+                        // could NOT derive a write-band tile keeps its
+                        // incoming (whole-array) tile. For a cumulative
+                        // array a whole-array transfer re-introduces the
+                        // xN double-count this pass exists to remove —
+                        // silently. It cannot fire for any shipped schedule
+                        // (16-jacobi `field` always has a 3-dim iv map with
+                        // a partitioned y band on every compute-worker src;
+                        // game-of-life ships no partitioned schedule so it
+                        // never reaches here), so this is provably dead
+                        // today. Make it OBSERVABLE rather than silent; the
+                        // e2e bit-identity differential would also catch the
+                        // resulting xN. TASK-0366 tracks upgrading this to a
+                        // fail-loud EmitError (the pass entry already
+                        // returns Result).
+                        crate::nuc_trace!(
+                            "cumulative-band-rewrite: data {:?} (src {:?}) is cumulative \
+                             but cumulative_band_bounds returned None — tile left \
+                             whole-array (LATENT xN; TASK-0366)",
+                            x.data,
+                            x.src
+                        );
                     }
                 }
             }
@@ -5172,8 +5202,10 @@ mod tests {
         );
     }
 
-    /// A NON-cumulative (empty cumulative set) tree is left byte-identical
-    /// by the hoist pass (no-op for every example except 16-jacobi).
+    /// A tree with an empty cumulative set is left byte-identical by the
+    /// hoist pass (the partition-guarded no-op path taken by every example
+    /// that ships no partitioned cumulative array — i.e. all but
+    /// 16-jacobi/distributed today).
     #[test]
     fn task034102_hoist_noop_when_no_cumulative_data() {
         let field = DataId(0);

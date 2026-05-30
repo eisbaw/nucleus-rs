@@ -694,8 +694,13 @@ pub fn build_sidecar(
     //     cumulative iff it is the LHS of a `<--` nested inside a `for`
     //     loop AND reads itself on the RHS at an index expression that
     //     DIFFERS from the LHS index along that loop's iteration axis.
-    //     Resolve names -> DataId via acfg.name_data. Empty for every
-    //     non-cumulative algorithm (every example except 16-jacobi).
+    //     Resolve names -> DataId via acfg.name_data. Non-empty only for
+    //     algorithms with a cross-iteration self-read: 16-jacobi (`field`)
+    //     AND 11-game-of-life (`grid`) both match the shape. game-of-life
+    //     ships no `partition=` schedule, so its cumulative classification
+    //     is inert downstream (the band-rewrite / hoist passes are
+    //     partition-guarded no-ops) — but the SET is not "16-jacobi only".
+    //     Pinned by `cumulative_tests::{jacobi_field,game_of_life_grid}_*`.
     let mut cumulative_names: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     collect_cumulative_data_names(&linked.algo.stmts, &[], &mut cumulative_names);
@@ -1030,6 +1035,58 @@ mod cumulative_tests {
         }]
     }
 
+    /// 11-game-of-life shape: `grid[t][i] <-- step_or_seed(grid[(t+ITERS)
+    /// %(ITERS+1)][(i+N-1)%N], ...)` nested inside `for t { for i { ... }
+    /// }`. The self-read dim-0 index `(t+ITERS)%(ITERS+1)` differs from
+    /// the LHS dim-0 index `t` ⇒ cumulative — STRUCTURALLY IDENTICAL to
+    /// jacobi (cycle-213 architect P2: the cumulative set is NOT
+    /// "16-jacobi only"). game-of-life ships no partitioned schedule, so
+    /// the classification is inert downstream — but it MUST be pinned so a
+    /// future `partition=` game-of-life schedule inherits the correct
+    /// COPY-not-accumulate behaviour rather than silently regressing.
+    fn game_of_life_like_stmts() -> Vec<IrStmt> {
+        use crate::algo::IrBinOp::{Add, Mod};
+        let prev_t = IrExpr::BinOp(
+            Mod,
+            Box::new(IrExpr::BinOp(
+                Add,
+                Box::new(ident("t")),
+                Box::new(ident("ITERS")),
+            )),
+            Box::new(IrExpr::BinOp(
+                Add,
+                Box::new(ident("ITERS")),
+                Box::new(IrExpr::IntLit(1)),
+            )),
+        );
+        let self_read = IrExpr::DataRef(IndexedRef {
+            name: "grid".to_string(),
+            indices: vec![prev_t, ident("i")],
+        });
+        let rhs = IrExpr::Call {
+            callee: "step_or_seed".to_string(),
+            args: vec![self_read, ident("t")],
+        };
+        let df = IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "grid".to_string(),
+                indices: vec![ident("t"), ident("i")],
+            },
+            rhs,
+        };
+        vec![IrStmt::For {
+            var: "t".to_string(),
+            lo: IrExpr::IntLit(0),
+            hi: ident("ITERS"),
+            body: vec![IrStmt::For {
+                var: "i".to_string(),
+                lo: IrExpr::IntLit(0),
+                hi: ident("N"),
+                body: vec![df],
+            }],
+        }]
+    }
+
     #[test]
     fn jacobi_field_is_cumulative() {
         let mut out = BTreeSet::new();
@@ -1051,6 +1108,23 @@ mod cumulative_tests {
             "histogram's same-index read-modify accumulator must NOT be classified \
              cumulative (it stays an accumulate fan-in); got {out:?}"
         );
+    }
+
+    #[test]
+    fn game_of_life_grid_is_cumulative() {
+        // cycle-213 architect P2 pin: game-of-life's `grid` is the SECOND
+        // cumulative symbol in the tree (the discriminator is not
+        // jacobi-specific). Inert today (no partitioned game-of-life
+        // schedule) but must classify correctly for a future one.
+        let mut out = BTreeSet::new();
+        collect_cumulative_data_names(&game_of_life_like_stmts(), &[], &mut out);
+        assert!(
+            out.contains("grid"),
+            "game-of-life's cross-iteration `grid` (self-read at a SHIFTED dim-0 \
+             index) must be classified cumulative, exactly like jacobi's `field`; \
+             got {out:?}"
+        );
+        assert_eq!(out.len(), 1, "only `grid` should be cumulative; got {out:?}");
     }
 
     #[test]
