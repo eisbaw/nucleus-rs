@@ -176,4 +176,105 @@ mod tests {
             Ok(_) => panic!("expected ContractGap on zero-worker Plan::build; got Ok(Plan)"),
         }
     }
+
+    /// TASK-0044.03.02.02: golden pin of the transport-divergent
+    /// `emit_handshake` block (the most divergent emitted surface).
+    /// A behavior-preserving edit to `emit_handshake` is otherwise
+    /// caught by NOTHING: e2e checks runtime output not emitted
+    /// source, and the integration emit-pinning tests deliberately
+    /// strip this prelude (`strip_transport_prelude`). Inputs match
+    /// the `worker_program.rs` call site (host: is_host=true;
+    /// non-host: is_host=false; non_host_names carries the peer
+    /// list). To regenerate after a legitimate emit_handshake change,
+    /// see the capture recipe in the TASK-0044.03.02.02 notes.
+    #[test]
+    fn emit_handshake_golden() {
+        use backend_common::event_plan::EventTransport;
+        const GOLDEN_HOST: &str = r#"    let rendezvous_dir: PathBuf = std::env::var_os("NUC_RENDEZVOUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("host: NUC_RENDEZVOUS_DIR not set (run.sh must export it)"));
+    let _ = &rendezvous_dir;
+    fn check_uds_path_len(p: &std::path::Path, who: &str) {
+        // AC#9 (cycle-197 TASK-0044.03.01): UDS sun_path is
+        // capped at 108 bytes on Linux glibc and 104 on
+        // musl/macOS. Use the smaller cap to defend against
+        // silent breakage when a generated project is run
+        // on a musl distro after development on glibc.
+        const UDS_PATH_CAP: usize = 104;
+        let bytes = p.as_os_str().len();
+        if bytes >= UDS_PATH_CAP {
+            panic!(
+                "{who}: UDS rendezvous path `{path}` is {bytes} bytes long, which meets-or-exceeds the {cap}-byte UDS sun_path cap (musl/macOS limit; Linux glibc is 108 but we take the smaller for portability + margin). Shorten NUC_RENDEZVOUS_DIR or move scratch to /tmp.",
+                who = who, path = p.display(), bytes = bytes, cap = UDS_PATH_CAP
+            );
+        }
+    }
+    let data_path_w0 = rendezvous_dir.join("w0.data.sock");
+    let ctrl_path_w0 = rendezvous_dir.join("w0.ctrl.sock");
+    check_uds_path_len(&data_path_w0, "host: bind DATA to w0");
+    check_uds_path_len(&ctrl_path_w0, "host: bind CTRL to w0");
+    let data_listener_w0 = UnixListener::bind(&data_path_w0)
+        .unwrap_or_else(|e| panic!("host: bind DATA UDS `{}` for w0 failed: {e}", data_path_w0.display()));
+    let ctrl_listener_w0 = UnixListener::bind(&ctrl_path_w0)
+        .unwrap_or_else(|e| panic!("host: bind CTRL UDS `{}` for w0 failed: {e}", ctrl_path_w0.display()));
+    let (data_w0_std, _) = data_listener_w0.accept()
+        .unwrap_or_else(|e| panic!("host: accept DATA from w0 failed: {e}"));
+    let (ctrl_w0_raw, _) = ctrl_listener_w0.accept()
+        .unwrap_or_else(|e| panic!("host: accept CTRL from w0 failed: {e}"));
+    wire::apply_sock_buf(&data_w0_std);
+    wire::apply_sock_buf(&ctrl_w0_raw);
+    let ctrl_w0: Rc<RefCell<std::os::unix::net::UnixStream>> = Rc::new(RefCell::new(ctrl_w0_raw));
+    data_w0_std.set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("host: set_nonblocking on DATA to w0 failed: {e}"));
+    let data_w0 = mio::net::UnixStream::from_std(data_w0_std);
+"#;
+        const GOLDEN_NONHOST: &str = r#"    let rendezvous_dir: PathBuf = std::env::var_os("NUC_RENDEZVOUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("w0: NUC_RENDEZVOUS_DIR not set (run.sh must export it)"));
+    let data_path = rendezvous_dir.join("w0.data.sock");
+    let ctrl_path = rendezvous_dir.join("w0.ctrl.sock");
+    fn check_uds_path_len(p: &std::path::Path, who: &str) {
+        const UDS_PATH_CAP: usize = 104;
+        let bytes = p.as_os_str().len();
+        if bytes >= UDS_PATH_CAP {
+            panic!(
+                "{who}: UDS rendezvous path `{path}` is {bytes} bytes long, which meets-or-exceeds the {cap}-byte UDS sun_path cap (musl/macOS limit). Shorten NUC_RENDEZVOUS_DIR.",
+                who = who, path = p.display(), bytes = bytes, cap = UDS_PATH_CAP
+            );
+        }
+    }
+    check_uds_path_len(&data_path, "w0: connect DATA");
+    check_uds_path_len(&ctrl_path, "w0: connect CTRL");
+    fn connect_retry(path: &std::path::Path, who: &str, role: &str) -> StdUnixStream {
+        let mut attempt = 0u32;
+        loop {
+            match StdUnixStream::connect(path) {
+              Ok(s) => return s,
+              Err(e) => {
+                attempt += 1;
+                if attempt > 600 { panic!("{who}: cannot connect {role} UDS `{path}` after {attempt} tries: {err}", who = who, role = role, path = path.display(), attempt = attempt, err = e); }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            }
+        }
+    }
+    let data_host_std = connect_retry(&data_path, "w0", "DATA");
+    let ctrl_host_raw = connect_retry(&ctrl_path, "w0", "CTRL");
+    wire::apply_sock_buf(&data_host_std);
+    wire::apply_sock_buf(&ctrl_host_raw);
+    data_host_std.set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("w0: set_nonblocking on DATA to host failed: {e}"));
+    let data_host = mio::net::UnixStream::from_std(data_host_std);
+    let ctrl_host: Rc<RefCell<std::os::unix::net::UnixStream>> = Rc::new(RefCell::new(ctrl_host_raw));
+"#;
+        let mut host = String::new();
+        crate::plan::UdsEventTransport::emit_handshake(&mut host, "host", true, &["w0".to_string()]);
+        assert_eq!(host, GOLDEN_HOST, "mp-uds-event host emit_handshake drifted from golden");
+        let mut nonhost = String::new();
+        crate::plan::UdsEventTransport::emit_handshake(&mut nonhost, "w0", false, &["w0".to_string()]);
+        assert_eq!(
+            nonhost, GOLDEN_NONHOST,
+            "mp-uds-event non-host emit_handshake drifted from golden"
+        );
+    }
 }

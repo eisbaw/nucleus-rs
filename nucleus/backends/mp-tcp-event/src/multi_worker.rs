@@ -165,4 +165,114 @@ mod tests {
             Ok(_) => panic!("expected ContractGap on zero-worker Plan::build; got Ok(Plan)"),
         }
     }
+
+    /// TASK-0044.03.02.02: golden pin of the transport-divergent
+    /// `emit_handshake` block (the most divergent emitted surface).
+    /// A behavior-preserving edit to `emit_handshake` is otherwise
+    /// caught by NOTHING: e2e checks runtime output not emitted
+    /// source, and the integration emit-pinning tests deliberately
+    /// strip this prelude (`strip_transport_prelude`). Inputs match
+    /// the `worker_program.rs` call site (host: is_host=true;
+    /// non-host: is_host=false; non_host_names carries the peer
+    /// list). To regenerate after a legitimate emit_handshake change,
+    /// see the capture recipe in the TASK-0044.03.02.02 notes.
+    #[test]
+    fn emit_handshake_golden() {
+        use backend_common::event_plan::EventTransport;
+        const GOLDEN_HOST: &str = r#"    let rendezvous_dir: PathBuf = std::env::var_os("NUC_RENDEZVOUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("host: NUC_RENDEZVOUS_DIR not set (run.sh must export it)"));
+    let _ = &rendezvous_dir;
+    let listener_w0 = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|e| panic!("host: bind 127.0.0.1:0 for w0 failed: {e}"));
+    let port_w0: u16 = listener_w0.local_addr()
+        .unwrap_or_else(|e| panic!("host: local_addr for w0 listener failed: {e}"))
+        .port();
+    {
+        let rdv_final = rendezvous_dir.join("w0.port");
+        let rdv_tmp = rendezvous_dir.join("w0.port.tmp");
+        let mut f = fs::File::create(&rdv_tmp)
+            .unwrap_or_else(|e| panic!("host: create rendezvous tmp `{}` for w0 failed: {e}", rdv_tmp.display()));
+        write!(f, "{}", port_w0)
+            .unwrap_or_else(|e| panic!("host: write port {} to rendezvous tmp `{}` for w0 failed: {e}", port_w0, rdv_tmp.display()));
+        drop(f);
+        fs::rename(&rdv_tmp, &rdv_final)
+            .unwrap_or_else(|e| panic!("host: rename rendezvous `{}` -> `{}` for w0 failed: {e}", rdv_tmp.display(), rdv_final.display()));
+    }
+    let (data_w0_std, _) = listener_w0.accept()
+        .unwrap_or_else(|e| panic!("host: accept DATA from w0 failed: {e}"));
+    let (ctrl_w0_raw, _) = listener_w0.accept()
+        .unwrap_or_else(|e| panic!("host: accept CTRL from w0 failed: {e}"));
+    data_w0_std.set_nodelay(true).ok();
+    ctrl_w0_raw.set_nodelay(true).ok();
+    wire::apply_sock_buf(&data_w0_std);
+    wire::apply_sock_buf(&ctrl_w0_raw);
+    let ctrl_w0: Rc<RefCell<std::net::TcpStream>> = Rc::new(RefCell::new(ctrl_w0_raw));
+    data_w0_std.set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("host: set_nonblocking on DATA to w0 failed: {e}"));
+    let data_w0 = mio::net::TcpStream::from_std(data_w0_std);
+"#;
+        const GOLDEN_NONHOST: &str = r#"    let rendezvous_dir: PathBuf = std::env::var_os("NUC_RENDEZVOUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("w0: NUC_RENDEZVOUS_DIR not set (run.sh must export it)"));
+    let rdv_path = rendezvous_dir.join("w0.port");
+    fn read_rendezvous_port(path: &std::path::Path, who: &str) -> u16 {
+        let mut attempt = 0u32;
+        loop {
+            match fs::read_to_string(path) {
+              Ok(s) => {
+                let trimmed = s.trim();
+                return trimmed.parse::<u16>().unwrap_or_else(|e| panic!(
+                  "{}: rendezvous file `{}` contained `{}` which is not a u16: {}",
+                  who, path.display(), trimmed, e
+                ));
+              }
+              Err(_e) => {
+                attempt += 1;
+                if attempt > 600 {
+                  panic!(
+                    "{}: rendezvous file `{}` did not appear within 6s ({} attempts x 10ms) — host worker did not start or failed to bind",
+                    who, path.display(), attempt
+                  );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+              }
+            }
+        }
+    }
+    let port: u16 = read_rendezvous_port(&rdv_path, "w0");
+    fn connect_retry(port: u16, role: &str) -> StdTcpStream {
+        let mut attempt = 0u32;
+        loop {
+            match StdTcpStream::connect(("127.0.0.1", port)) {
+              Ok(s) => return s,
+              Err(e) => {
+                attempt += 1;
+                if attempt > 600 { panic!("w0: cannot connect {role} to host 127.0.0.1:{port} after {attempt} tries: {e}"); }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            }
+        }
+    }
+    let data_host_std = connect_retry(port, "DATA");
+    let ctrl_host_raw = connect_retry(port, "CTRL");
+    data_host_std.set_nodelay(true).ok();
+    ctrl_host_raw.set_nodelay(true).ok();
+    wire::apply_sock_buf(&data_host_std);
+    wire::apply_sock_buf(&ctrl_host_raw);
+    data_host_std.set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("w0: set_nonblocking on DATA to host failed: {e}"));
+    let data_host = mio::net::TcpStream::from_std(data_host_std);
+    let ctrl_host: Rc<RefCell<std::net::TcpStream>> = Rc::new(RefCell::new(ctrl_host_raw));
+"#;
+        let mut host = String::new();
+        crate::plan::TcpEventTransport::emit_handshake(&mut host, "host", true, &["w0".to_string()]);
+        assert_eq!(host, GOLDEN_HOST, "mp-tcp-event host emit_handshake drifted from golden");
+        let mut nonhost = String::new();
+        crate::plan::TcpEventTransport::emit_handshake(&mut nonhost, "w0", false, &["w0".to_string()]);
+        assert_eq!(
+            nonhost, GOLDEN_NONHOST,
+            "mp-tcp-event non-host emit_handshake drifted from golden"
+        );
+    }
 }
