@@ -78,7 +78,7 @@ by build and by running on the target where feasible.
 | Data transfers inferred but not scheduled     | Transfers scheduled at compile time. Deadlock-free.     |
 | IO as API-level afterthought                  | IO semantics first-class in schedule (sync/async/buf/notify). |
 | Decomposition tangled into the source         | Algorithm and schedule are separate files.              |
-| Ad-hoc deadlock / buffer-sufficiency analyses | One Petri-net IR; analyses fall out as standard properties. |
+| Ad-hoc deadlock / buffer-sufficiency analyses | One Petri-net IR; the boundedness + deadlock analyses run as a per-build gate (§8.1, §8.4) — a failure is a compile error, not a runtime surprise. |
 
 The point of v2 is **not** to redo the thesis. It is to build the thing the
 thesis only sketched, on hardware everyone has, with the genericity claim
@@ -172,8 +172,12 @@ and backend are the knobs**. The compiler does the rewriting.
   [ build global Petri net ]   -- transitions: firings/xfers/syncs
        |                          places:      data slots/channels/barriers
        v
-  [ analyse net ]              -- boundedness, deadlock, liveness;
-       |                          failures here are compile errors
+  [ analyse net ]              -- per-build gate: boundedness + deadlock
+       |                          (exact-replay over the deterministic
+       |                          firing order, §8.4 / §8.6). A failure
+       |                          is a compile error. Liveness is a
+       |                          modelled property (§8.2) but not yet a
+       |                          gate arm.
        v
   [ project per worker ]       -- worker_id -> ordered EventList
        |
@@ -747,11 +751,18 @@ inspection.
 
 What this gets us, mechanically, that hand-rolled analyses didn't:
 
-- **Deadlock check** = reachability of a deadlocked marking. Decidable
-  for v2's restricted nets (acyclic firing order, bounded places).
+- **Deadlock check** = absence of a reachable deadlocked marking.
+  Decidable for v2's restricted nets (statically determined firing
+  order, bounded places); the compiler implements it as a stall check
+  while replaying the one deterministic firing order — exactly
+  equivalent to reachability for this subclass, and much cheaper (see
+  §8.4 / §8.6). Runs as a per-build gate (§8.1): a stall is a compile
+  error.
 - **Buffer-sufficiency check** = boundedness check against declared
-  `buffer=N`. Reject at compile time with a message naming the
-  offending place and the marking that overflows it.
+  `buffer=N`. The compiler replays the deterministic firing order and
+  rejects at compile time — a per-build gate arm (§8.1) — with a
+  message naming the offending place and the marking that overflows
+  it.
 - **Schedule equivalence** = net isomorphism. Two schedules are "the
   same" iff their nets are isomorphic up to worker renaming. Useful
   for caching, regression testing, and reasoning about refactors.
@@ -863,11 +874,23 @@ v2 nets are deliberately a small subclass of general Petri nets:
 - **Statically determined firing order.** Order is decided at compile
   time, not by token availability at run time. No free-choice, no
   confusion, no conflicts.
-- **Bounded by construction.** Every place has a stated capacity. A
-  reachable marking that exceeds capacity is a compile error.
+- **Bounded by construction.** Every place has a stated capacity. The
+  per-build boundedness gate (§8.1) replays the one deterministic
+  firing order and rejects any firing that would exceed a place's
+  capacity — a compile error naming the place, the firing, and the
+  marking before the overflow. (Because the firing order is static,
+  this single-order replay is equivalent to checking every reachable
+  marking; see §8.6.)
 - **Acyclic global event DAG.** Per-worker order plus `Push`→`Wait`
-  arcs form a DAG. Cycle = deadlock = compile error pointing at the
-  cycle.
+  arcs form a DAG; a cycle in that DAG is a deadlock. The per-build
+  deadlock gate (§8.1) detects it by replaying the deterministic
+  firing order and observing the first stall (a required transition
+  whose input place lacks tokens) — a compile error naming the
+  *stalled transition and the deficit place*. Note it pinpoints the
+  stall, not the full cycle: when the underlying bug is a missing
+  `Push` the "cycle" is degenerate (no producer exists at all), so the
+  deficit-place message is the honest diagnostic in both the
+  missing-producer and the genuine-cycle cases.
 - **No coloured, stochastic, probabilistic, or hierarchical extensions.**
   Plain place/transition nets with capacities and initial markings.
   The Petri-net library v2 needs is small (~500 lines), not an academic
@@ -896,7 +919,12 @@ deadlocking?" or "what does `pipeline=2` actually do here?"
 
 - **Firing-order linearisation is NP-hard in general.** v2 picks a
   deterministic greedy order (source order + dataflow constraints) and
-  validates that order against the net properties above. Not optimal.
+  validates that order against the net properties above. This
+  validation is the per-build soundness gate (§8.1): the boundedness
+  and deadlock checks are an exact replay of this single order, not a
+  general reachability/coverability search — sound precisely because
+  the order is statically determined for v2's restricted nets, and not
+  to be read as a general Petri-net model checker. Not optimal.
   Reproducible. Inspectable.
 - **TCP kernel-level backpressure.** Application-level place capacity
   must be ≤ kernel socket buffer / typical message size. v2 computes
