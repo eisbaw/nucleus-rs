@@ -57,13 +57,15 @@ mod encode;
 mod plan;
 mod relay;
 mod transport;
-pub mod walkers;
+pub(crate) mod walkers;
 mod worker_program;
 
-pub use encode::{encode_decode_paths, scalar_width};
+// TASK-0044.03.02.01: only the Plan API is re-exported `pub` for the backend
+// shims. The walker/encode helpers are crate-internal substrate (reached by
+// the sibling event_plan submodules via the `walkers::`/`encode::` module
+// paths directly) and the `walkers` module is `pub(crate)`, so no substrate
+// internals leak across the backend-common crate boundary. The earlier
+// top-level walker/encode re-exports here were a dead external surface (no
+// in-crate consumer) — removed rather than kept as unused `pub(crate)`.
 pub use plan::{ChanId, Plan};
 pub use transport::EventTransport;
-pub use walkers::{
-    collect_push_pairs, collect_w2w_pushes, detect_wait_before_push_hazard,
-    relay_phase_insertion_point, RelayHop,
-};

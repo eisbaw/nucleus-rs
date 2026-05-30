@@ -40,14 +40,15 @@ mod encode;
 mod events;
 mod plan;
 mod relay;
-pub mod walkers;
+pub(crate) mod walkers;
 mod wire_primitives;
 mod worker_program;
 
-pub use encode::{decode_expr, encode_expr, scalar_fn_suffix, scalar_width};
+// TASK-0044.03.02.01 (silent-sibling pair with event_plan): only the Plan API
+// is re-exported `pub` for the backend shims. The walker/encode helpers are
+// crate-internal substrate (reached by the sibling tcp_plan submodules via the
+// `walkers::`/`encode::` module paths directly) and the `walkers` module is
+// `pub(crate)`. The earlier top-level walker/encode re-exports here were a dead
+// external surface (no in-crate consumer) — removed rather than kept unused.
 pub use plan::{Plan, XferId};
-pub use walkers::{
-    collect_barriers_by_tag, collect_w2w_pushes, collect_xfer_data,
-    detect_wait_before_push_hazard, relay_phase_insertion_point, RelayHop,
-};
 pub use wire_primitives::WirePrimitives;
