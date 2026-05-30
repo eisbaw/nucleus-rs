@@ -17,8 +17,8 @@
 
 use nucleus_compiler::algo::span::Spanned;
 use nucleus_compiler::algo::{
-    parse_algo, AlgoAst, Item, KernelDecl, ParseError, ParseErrorKind, ParseErrors, Purity,
-    ScalarType, Stmt,
+    parse_algo, AlgoAst, Expr, IndexedLValue, Item, KernelDecl, ParseError, ParseErrorKind,
+    ParseErrors, Purity, ScalarType, Stmt,
 };
 
 /// The body of the first top-level `for` loop. Spans (TASK-0082) mean
@@ -1152,4 +1152,97 @@ for i : 0 .. N {
          contribute follow-on errors: {es:?}"
     );
     assert_eq!(es[0].line, 2, "primary on line 2 (the `?`): {es:?}");
+}
+
+// --------------------------------------------------------------------
+// TASK-0341.03.01: nested-index (gather) parses to a nested Expr::LValue.
+// --------------------------------------------------------------------
+
+/// Return the first kernel-call argument of the first dataflow statement
+/// in the first top-level `for` body (the `src[idx[i]]` arg below).
+fn first_for_dataflow_first_arg(ast: &AlgoAst) -> &Expr {
+    let body = first_for_body(ast);
+    let rhs = body
+        .iter()
+        .find_map(|s| match &s.node {
+            Stmt::Dataflow { rhs, .. } => Some(&rhs.node),
+            _ => None,
+        })
+        .expect("for body must hold a dataflow statement");
+    match rhs {
+        Expr::Call(c) => &c.args.first().expect("call must have an arg").node,
+        other => panic!("expected a kernel call rhs, got {other:?}"),
+    }
+}
+
+/// AC#2 (positive): a data-dependent gather `g(src[idx[i]])` PARSES — the
+/// parser admits a nested index because `index_tail` uses the full
+/// recursive expression grammar (the rejection was only ever in
+/// lowering, now lifted for subscript position). The arg must be an
+/// `Expr::LValue` (`src`) whose FIRST index is ITSELF an indexed
+/// `Expr::LValue` (`idx[i]`) — the nested-gather AST shape. Pins the
+/// parser against a future tightening of `index_tail` to int/ident-only
+/// that would "enforce" the stale grammar-doc and silently break gather.
+#[test]
+fn task0341_0301_nested_gather_index_parses_to_nested_lvalue() {
+    let src = "\
+const N : usize = 4;
+data src : i32[N];
+data idx : i32[N];
+data out : i32[N];
+kernel g : (i32) -> i32 pure;
+for i : 0 .. N {
+    out[i] <-- g(src[idx[i]]);
+}
+";
+    let ast = parse_algo(src).expect("a gather `src[idx[i]]` must parse");
+    let arg = first_for_dataflow_first_arg(&ast);
+    match arg {
+        Expr::LValue(IndexedLValue { name, indices }) => {
+            assert_eq!(name.node, "src", "outer ref must be `src`");
+            assert_eq!(indices.len(), 1, "`src` has one index");
+            match &indices[0].node {
+                Expr::LValue(inner) => {
+                    assert_eq!(inner.name.node, "idx", "the index must be the data ref `idx`");
+                    assert_eq!(inner.indices.len(), 1, "`idx[i]` has one (affine) index");
+                }
+                other => panic!(
+                    "the index of `src` must be a NESTED indexed LValue `idx[i]` (the \
+                     gather), got {other:?}"
+                ),
+            }
+        }
+        other => panic!("expected `src[idx[i]]` as an Expr::LValue, got {other:?}"),
+    }
+}
+
+/// AC#2 (negative): an AFFINE index `g(src[i])` is NOT misclassified as a
+/// gather — its single index is a BARE `Expr::LValue` (`i`, empty
+/// indices), not a nested indexed ref. Guards against treating every
+/// `Expr::LValue` index as data-dependent.
+#[test]
+fn task0341_0301_affine_index_is_not_a_nested_gather() {
+    let src = "\
+const N : usize = 4;
+data src : i32[N];
+data out : i32[N];
+kernel g : (i32) -> i32 pure;
+for i : 0 .. N {
+    out[i] <-- g(src[i]);
+}
+";
+    let ast = parse_algo(src).expect("an affine `src[i]` must parse");
+    let arg = first_for_dataflow_first_arg(&ast);
+    match arg {
+        Expr::LValue(IndexedLValue { indices, .. }) => match &indices[0].node {
+            Expr::LValue(inner) => assert!(
+                inner.indices.is_empty(),
+                "an affine index `i` must be a BARE LValue (empty indices), not a \
+                 nested gather; got indices {:?}",
+                inner.indices
+            ),
+            other => panic!("affine index `i` should be a bare LValue, got {other:?}"),
+        },
+        other => panic!("expected `src[i]` as an Expr::LValue, got {other:?}"),
+    }
 }
