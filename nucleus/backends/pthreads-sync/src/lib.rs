@@ -15,7 +15,7 @@
 //! and the per-worker EventList did not yet carry loop structure or
 //! value bindings. Three contract extensions closed that gap:
 //!
-//! - **TASK-0156** put the per-firing value binding ([`FireBinding`])
+//! - **TASK-0156** put the per-firing value binding (`FireBinding`)
 //!   on [`Event::Fire`] — a backend reconstructs the exact kernel
 //!   call (callee, indexed args, output slice) from the event alone.
 //! - **TASK-0159** made the projection structure-preserving:
@@ -23,7 +23,7 @@
 //!   nested body) instead of unrolling it, so a rolled `for` is
 //!   re-emittable.
 //! - **TASK-0160/0169** added the [`NameSidecar`]: per-`DataId`
-//!   [`ResolvedType`] (pre-init sizing + slot typing + scalar casts),
+//!   `ResolvedType` (pre-init sizing + slot typing + scalar casts),
 //!   const values, the *unevaluated* symbolic loop bounds (so
 //!   `for y : 1 .. H-1` re-renders as `(1_i64)..((16_i64 - 1_i64))`
 //!   verbatim, not the folded `1..15`), and per-`KernelId`

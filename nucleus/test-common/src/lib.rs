@@ -38,9 +38,9 @@
 //! # Scope vs the driver's pipeline
 //!
 //! `lower_for_test` runs the IR-stage subsequence the driver runs:
-//! parse → lower → link → build_acfg → [apply_block_transforms] →
-//! [apply_partition_workers] → inject_syncs → inject_transfers →
-//! acfg_to_events → [inject_check_frames] → build_sidecar. Bracketed
+//! parse → lower → link → build_acfg → `apply_block_transforms` →
+//! `apply_partition_workers` → inject_syncs → inject_transfers →
+//! acfg_to_events → `inject_check_frames` → build_sidecar. Bracketed
 //! stages are gated by `LowerForTestOpts` (cycle-24 review-gate A.2).
 //!
 //! The driver ALSO runs `check_kernels_contract` (warning-only, no IR

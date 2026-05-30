@@ -58,7 +58,7 @@
 //! - Capability-mismatch schedules (05/distributed, 05/distributed-2d,
 //!   09/pipelined, 11/pipelined, 13/pipeline_parallel) — async +
 //!   buffer + event — are rejected upstream at the capability-compat
-//!   check, NOT at codegen, and stay [[skip]] forever per PRD §7.1
+//!   check, NOT at codegen, and stay `skip` forever per PRD §7.1
 //!   row mp-tcp-poll (sync capability surface is pinned).
 //! - The poll/bufsync difference lives EXCLUSIVELY in the
 //!   `WirePrimitives` impl (the `wire::*_poll` call-site swap and the

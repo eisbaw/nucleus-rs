@@ -5,7 +5,7 @@
 //!
 //! - [`emit`] (M9, the default, no `--shim`): a SELF-CONTAINED `no_std`
 //!   **library** crate that lowers the per-worker [`Event`] list against
-//!   a [`NucleusShim`] trait. The acceptance is COMPILE-ONLY: the
+//!   a `NucleusShim` trait. The acceptance is COMPILE-ONLY: the
 //!   generated lib must pass `cargo check --target thumbv7em-none-eabihf`
 //!   against a do-nothing STUB shim. Run that check via `just
 //!   check-embedded` under `nix develop .#embedded`.
@@ -51,7 +51,7 @@
 //! - A kernel called by an **effectful** `Fire` — a top-level
 //!   output-less `Fire` (`save_output(c)`) or a top-level whole-array
 //!   `Fire` with no data-reading inputs (`a <-- load_input()`) — is an
-//!   I/O kernel. It maps to a [`NucleusShim`] hook (an embedded "input"
+//!   I/O kernel. It maps to a `NucleusShim` hook (an embedded "input"
 //!   is a DMA/sensor fill of a region; an "output" is a DMA push to a
 //!   peripheral). The effectful kernel body is NOT extracted; the stub
 //!   shim's hook is a no-op.
@@ -76,7 +76,7 @@
 //! ([`emit`]) ALSO handles multi-worker schedules: one `no_std` lib
 //! project is emitted PER used worker (`out_dir/<worker_name>/`), and
 //! the cross-worker `Push` / `Wait` / `Sync` events lower to the stub
-//! [`skeleton::NucleusShim`] hooks (`dma_push` / `dma_wait` /
+//! `skeleton::NucleusShim` hooks (`dma_push` / `dma_wait` /
 //! `irq_barrier`). A single-worker schedule still emits ONE project at
 //! `out_dir` root (unchanged observable output — `check-embedded`
 //! examples 1 + 5 are byte-stable). The M9 compile-only acceptance set
@@ -93,7 +93,7 @@
 //!
 //! ## What the LIB-path multi-worker lowering is, and is NOT
 //!
-//! It is COMPILE-ONLY against the do-nothing [`skeleton::StubShim`]:
+//! It is COMPILE-ONLY against the do-nothing `skeleton::StubShim`:
 //! `dma_push` / `dma_wait` / `irq_barrier` are all no-ops, so a
 //! [`Event::Wait`]'s receive local stays zero-filled (the stub does not
 //! actually receive). That is honest for this slice: AC#3 is a REAL
@@ -227,9 +227,9 @@ pub struct BinEmitResult {
 /// every tier-1 backend uses applies here.
 ///
 /// The cross-worker `Push` / `Wait` / `Sync` events in each worker's list
-/// lower to the stub [`skeleton::NucleusShim`] hooks (see
-/// [`render::render_event`]); they are compile-only no-ops against the
-/// [`skeleton::StubShim`] (AC#3 is a real cross-compile, not a Renode
+/// lower to the stub `skeleton::NucleusShim` hooks (see
+/// `render::render_event`); they are compile-only no-ops against the
+/// `skeleton::StubShim` (AC#3 is a real cross-compile, not a Renode
 /// run — see module docs).
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
@@ -343,13 +343,13 @@ fn emit_one_worker_lib(
 /// dispatches here when `--shim stm32h7` is passed; the bare `--backend
 /// embedded-pattern` (no `--shim`) still goes through [`emit`] (the
 /// unchanged M9 compile-only lib path). The two share the SAME lowering
-/// ([`render_run_body`] + verbatim kernel extraction); the bin adds the
+/// (`render_run_body` + verbatim kernel extraction); the bin adds the
 /// bare-metal scaffolding (cortex-m-rt entry, panic handler, linker
 /// script, USART1 streaming shim).
 ///
 /// Wire contract is IDENTICAL to [`emit`] (no `&ACFG` / `&LinkedIR`).
 /// The single-worker / no-block / no-check-frame rejections are reused
-/// via [`render_run_body`], so an unsupported schedule fails loud with
+/// via `render_run_body`, so an unsupported schedule fails loud with
 /// the same typed [`EmitError`] here as on the lib path.
 ///
 /// SCOPE (TASK-0048.01/.02/.03): the PRD §11 M10 single-worker naive
@@ -362,7 +362,7 @@ fn emit_one_worker_lib(
 /// captured bytes BYTE-EXACT against the example's `reference.bin` (PRD §10.3 point 3
 /// value-correctness). Nothing here is example-specific — the lowering
 /// reads the EventList — so generalising across the set was recipe
-/// parameterisation only. See [`skeleton::USART1_SHIM_SRC`] for the
+/// parameterisation only. See `skeleton::USART1_SHIM_SRC` for the
 /// input-region / streaming mechanism.
 pub fn emit_bin(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,

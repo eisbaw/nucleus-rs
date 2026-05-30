@@ -27,7 +27,7 @@
 //!   `std::thread::spawn` + `handle.join()` to `rayon::scope` +
 //!   `s.spawn(move |_| ...)`. The emitted Cargo.toml gains
 //!   `rayon = "1"` in its `[dependencies]` block via the cycle-196
-//!   addition `extra_dependencies = Some(_)`. Slot<T> + Arc<Barrier>
+//!   addition `extra_dependencies = Some(_)`. `Slot<T>` + `Arc<Barrier>`
 //!   primitives carry over verbatim (std::sync — work identically
 //!   inside rayon::scope). Bit-identical OUTPUT on the 8 multi-worker
 //!   SYNC schedules (02/split, 03/distributed, 06/distributed +
@@ -58,7 +58,7 @@
 //!
 //! - `apply_host_mediation_inject` is for TCP-star backends
 //!   (mp-tcp-bufsync / mp-tcp-event / mp-tcp-poll). openmp-rs uses
-//!   shared-memory Arc<Barrier>, which handles host-excluding
+//!   shared-memory `Arc<Barrier>`, which handles host-excluding
 //!   barriers natively (same path pthreads-sync / pthreads-async take).
 //! - `apply_host_data_relay_inject` is mp-tcp-event-specific (routes
 //!   w↔w Push through host as 4 hops). openmp-rs has direct
@@ -111,7 +111,7 @@
 //!   05/distributed-2d, 09/pipelined, 11/pipelined,
 //!   13/pipeline_parallel) — async + buffer + event — are rejected
 //!   upstream at the capability-compat check, NOT at codegen, and
-//!   stay [[skip]] forever per PRD §7.1 row openmp-rs (sync + barrier
+//!   stay `skip` forever per PRD §7.1 row openmp-rs (sync + barrier
 //!   capability surface is pinned).
 //! - **The `rayon = "1"` dep tracks rayon 1.x** (broadly compatible
 //!   API surface). A future rayon 2.0 release would require bumping
@@ -192,7 +192,7 @@ pub struct EmitResult {
 ///   `extra_dependencies = None` for the same byte-identity reason.
 /// - `used_workers >= 2` → MULTI-WORKER. Delegates to
 ///   `multi_worker::render_main_rs_multi` (rayon::scope spawn site +
-///   verbatim Slot<T> / Arc<Barrier> rendezvous). The emitted
+///   verbatim `Slot<T>` / `Arc<Barrier>` rendezvous). The emitted
 ///   Cargo.toml gains `rayon = "1"` via `extra_dependencies = Some(_)`.
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
