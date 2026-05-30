@@ -172,10 +172,15 @@ mod tests {
     /// caught by NOTHING: e2e checks runtime output not emitted
     /// source, and the integration emit-pinning tests deliberately
     /// strip this prelude (`strip_transport_prelude`). Inputs match
-    /// the `worker_program.rs` call site (host: is_host=true;
-    /// non-host: is_host=false; non_host_names carries the peer
-    /// list). To regenerate after a legitimate emit_handshake change,
-    /// see the capture recipe in the TASK-0044.03.02.02 notes.
+    /// the `worker_program.rs` call site: `non_host_names` is the full
+    /// list of non-host workers (the host branch loops it once per
+    /// peer; the non-host branch ignores it and uses only `wname`), so
+    /// a single-element list pins the whole emitted template.
+    /// To regenerate after an INTENTIONAL `emit_handshake` change:
+    /// temporarily swap an `assert_eq!` for
+    /// `std::fs::write("/tmp/g.txt", &host).unwrap();`, run this test,
+    /// and paste `/tmp/g.txt`'s exact bytes back into the matching
+    /// `GOLDEN_*` raw-string const.
     #[test]
     fn emit_handshake_golden() {
         use backend_common::event_plan::EventTransport;
