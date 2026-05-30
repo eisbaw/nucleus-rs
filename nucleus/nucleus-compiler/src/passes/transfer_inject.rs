@@ -443,6 +443,40 @@ pub enum TransferInjectError {
         /// forward-link).
         message: String,
     },
+    /// TASK-0366 cycle-214 fold-back (cycle-213 architect P3). A
+    /// CUMULATIVE data symbol (a `NameSidecar::cumulative_data` member)
+    /// has an `Xfer` for which [`cumulative_band_bounds`] returned
+    /// `None` (no partitioned iv covers any data dim on this `src` →
+    /// `saw_band == false`) WHILE A PARTITION IS ACTIVE
+    /// (`partition_ranges` is non-empty). The cumulative array is then
+    /// REPLICATED whole across the partition workers, so leaving the
+    /// incoming WHOLE-ARRAY tile in place would silently re-introduce
+    /// the xN double-count `rewrite_cumulative_band_tiles` exists to
+    /// remove (the host gather / w2w exchange of N identical full
+    /// slices).
+    ///
+    /// This is distinct from the UNPARTITIONED cumulative case
+    /// (`partition_ranges` EMPTY, e.g. 11-game-of-life/pipelined: a
+    /// single compute worker owns all of `grid`, transferred whole over
+    /// the async double-buffer channel) — there the whole-array tile is
+    /// CORRECT and the pass keeps it silently, never reaching this
+    /// variant. The guard fires only on the partitioned-replicated
+    /// shape, which is provably dead for every shipped schedule today
+    /// (16-jacobi `field` always derives a 3-dim iv map with a
+    /// partitioned y-band on every compute-worker `src`). Reaching this
+    /// variant means a NEW partitioned-cumulative shape has hit the
+    /// gap — fail at compile time rather than emit xN-wrong output.
+    CumulativeWholeArrayFallback {
+        /// The cumulative data symbol whose band tile could not be
+        /// derived.
+        data: DataId,
+        /// The transfer's `src` (the band-owning compute worker for a
+        /// cumulative gather / w2w-send).
+        src: WorkerId,
+        /// Diagnosis-quality message (DataId + src + xN-risk reason +
+        /// TASK-0366 forward-link).
+        message: String,
+    },
 }
 
 impl std::fmt::Display for TransferInjectError {
@@ -450,6 +484,9 @@ impl std::fmt::Display for TransferInjectError {
         match self {
             TransferInjectError::SameSetSilentElisionRisk { message, .. } => {
                 write!(f, "transfer_inject silent-elision risk: {message}")
+            }
+            TransferInjectError::CumulativeWholeArrayFallback { message, .. } => {
+                write!(f, "transfer_inject cumulative whole-array fallback: {message}")
             }
         }
     }
@@ -747,12 +784,26 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         //       unequal band-size-dependent counts => deadlock).
         // No-op when the algorithm has no cumulative array. Today the
         // cumulative SET is {16-jacobi `field`, 11-game-of-life `grid`}
-        // (both have a cross-iteration self-read), but game-of-life ships
-        // no `partition=` schedule, so `partition_worker_ranges` is empty
-        // and both passes below short-circuit to a structural no-op there.
-        // It is therefore "no partitioned cumulative array" — NOT "only
-        // 16-jacobi" — that makes this branch inert. See the three
-        // co-landed tasks (TASK-0341.02.02.01.{01,02,03}).
+        // (both have a cross-iteration self-read).
+        //
+        // CORRECTION (TASK-0366 cycle-214): the original cycle-213 comment
+        // here claimed game-of-life "short-circuits to a structural no-op"
+        // because `partition_worker_ranges` is empty. That was a comment
+        // lie. 11-game-of-life/pipelined DOES emit a cross-worker `grid`
+        // transfer (async double-buffer, compute -> host), so
+        // `rewrite_cumulative_band_tiles` below DOES walk into `grid`'s
+        // Xfer arm and `cumulative_band_bounds` DOES return `None` (no
+        // partitioned iv covers any `grid` dim — there is no `partition=`
+        // at all). The pass does NOT short-circuit; it falls through and
+        // (correctly) keeps the whole-array tile, because with a single
+        // compute worker owning all of `grid` there is nothing to xN-
+        // double-count. The fail-loud error introduced by TASK-0366
+        // therefore guards the `partition_ranges`-NON-EMPTY shape ONLY
+        // (a replicated-across-partition-workers cumulative array) — the
+        // empty-`partition_ranges` game-of-life case stays whole-array,
+        // silent, correct. See `rewrite_cumulative_band_tiles` for the
+        // A/B discriminator. (TASK-0341.02.02.01.{01,02,03} co-landed the
+        // original cycle-213 machinery.)
         let mut cumulative_names: BTreeSet<String> = BTreeSet::new();
         crate::sidecar::collect_cumulative_data_names(
             &linked.algo.stmts,
@@ -786,7 +837,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
                 &partition_worker_ranges,
                 &data_dim_iv_map,
                 &data_dims,
-            );
+            )?;
             hoist_cumulative_w2w_to_repeat_body(banded, &cumulative_data, &partition_worker_ranges)
         }
     };
@@ -2748,7 +2799,7 @@ fn rewrite_cumulative_band_tiles(
     partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
     data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
     data_dims: &BTreeMap<DataId, Vec<i64>>,
-) -> ACFGNode {
+) -> Result<ACFGNode, TransferInjectError> {
     match node {
         ACFGNode::Xfer(mut x) => {
             if cumulative_data.contains(&x.data) {
@@ -2761,36 +2812,67 @@ fn rewrite_cumulative_band_tiles(
                         partition_ranges,
                     ) {
                         x.tile = IterTile::new(bounds);
-                    } else {
-                        // LATENT xN RISK (TASK-0366; cycle-213 architect
-                        // P3): a CUMULATIVE symbol's transfer for which we
-                        // could NOT derive a write-band tile keeps its
-                        // incoming (whole-array) tile. For a cumulative
-                        // array a whole-array transfer re-introduces the
-                        // xN double-count this pass exists to remove —
-                        // silently. It cannot fire for any shipped schedule
-                        // (16-jacobi `field` always has a 3-dim iv map with
-                        // a partitioned y band on every compute-worker src;
-                        // game-of-life ships no partitioned schedule so it
-                        // never reaches here), so this is provably dead
-                        // today. Make it OBSERVABLE rather than silent; the
-                        // e2e bit-identity differential would also catch the
-                        // resulting xN. TASK-0366 tracks upgrading this to a
-                        // fail-loud EmitError (the pass entry already
-                        // returns Result).
-                        crate::nuc_trace!(
-                            "cumulative-band-rewrite: data {:?} (src {:?}) is cumulative \
-                             but cumulative_band_bounds returned None — tile left \
-                             whole-array (LATENT xN; TASK-0366)",
-                            x.data,
-                            x.src
-                        );
+                    } else if !partition_ranges.is_empty() {
+                        // FAIL-LOUD on the genuine xN-risk shape only
+                        // (TASK-0366 cycle-214; cycle-213 architect P3).
+                        //
+                        // A `None` from `cumulative_band_bounds` means we
+                        // could NOT derive a per-src write band for this
+                        // cumulative symbol. There are TWO distinct ways to
+                        // get here, and only ONE is a defect:
+                        //
+                        //   (A) `partition_ranges` is NON-EMPTY (some loop
+                        //       carries `partition=`) yet no partitioned iv
+                        //       covers any dim of THIS cumulative array — so
+                        //       the array is REPLICATED whole across the
+                        //       partition workers. Keeping the whole-array
+                        //       tile would make the host gather (and any w2w
+                        //       exchange) copy N identical full replicas,
+                        //       silently re-introducing the xN double-count
+                        //       this pass exists to remove. That is a
+                        //       miscompile — fail at COMPILE time (recurring
+                        //       defect pattern #3: silent fallback -> typed
+                        //       error) so the write-band derivation gets
+                        //       extended rather than shipping xN-wrong output.
+                        //
+                        //   (B) `partition_ranges` is EMPTY (no `partition=`
+                        //       anywhere, e.g. 11-game-of-life/pipelined:
+                        //       `grid` is cumulative and cross-worker via the
+                        //       async double-buffer channel, but there is a
+                        //       SINGLE compute worker owning all of `grid`).
+                        //       There is no partition to double-count against,
+                        //       so the WHOLE-ARRAY tile is the CORRECT
+                        //       transfer shape. This is the `else` fall-
+                        //       through below — keep the tile unchanged,
+                        //       silently. (The cycle-213 comment claimed this
+                        //       case "short-circuits to a no-op"; it does not
+                        //       short-circuit — it reaches here and the
+                        //       whole-array tile is simply correct.)
+                        return Err(TransferInjectError::CumulativeWholeArrayFallback {
+                            data: x.data,
+                            src: x.src,
+                            message: format!(
+                                "cumulative data {:?} (src {:?}) is in cumulative_data and a \
+                                 partition is active (partition_ranges non-empty) but \
+                                 cumulative_band_bounds returned None (no partitioned iv covers \
+                                 any data dim on this src). The array is replicated whole across \
+                                 the partition workers; keeping the whole-array tile would \
+                                 silently re-introduce the xN double-count the cumulative-band \
+                                 rewrite removes. TASK-0366: a new partitioned-cumulative shape \
+                                 reached this branch; the write-band derivation must be extended \
+                                 for it.",
+                                x.data, x.src
+                            ),
+                        });
                     }
+                    // else: partition_ranges empty (case B) — unpartitioned
+                    // cumulative symbol; the whole-array tile already on `x`
+                    // is correct. Leave it unchanged.
                 }
             }
-            ACFGNode::Xfer(x)
+            Ok(ACFGNode::Xfer(x))
         }
-        ACFGNode::Sequence(children) => ACFGNode::Sequence(
+        ACFGNode::Sequence(children) => Ok(ACFGNode::Sequence(
             children
                 .into_iter()
                 .map(|c| {
@@ -2802,14 +2884,14 @@ fn rewrite_cumulative_band_tiles(
                         data_dims,
                     )
                 })
-                .collect(),
-        ),
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
         ACFGNode::Repeat {
             iter_var,
             range,
             body,
             block_tag,
-        } => ACFGNode::Repeat {
+        } => Ok(ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(rewrite_cumulative_band_tiles(
@@ -2818,10 +2900,10 @@ fn rewrite_cumulative_band_tiles(
                 partition_ranges,
                 data_dim_iv_map,
                 data_dims,
-            )),
+            )?),
             block_tag,
-        },
-        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
+        }),
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => Ok(leaf),
     }
 }
 
@@ -5098,6 +5180,180 @@ mod tests {
             "cumulative write-band tile must be FULL on t/x and BANDED (1..3) on \
              the partition axis y, keyed on the SENDER (w1) write band; got {got:?}"
         );
+    }
+
+    /// TASK-0366 cycle-214 (cycle-213 architect P3), CASE (A) — the
+    /// genuine xN-risk shape. The formerly-silent whole-array fallback in
+    /// `rewrite_cumulative_band_tiles` is now a fail-loud typed error WHEN
+    /// A PARTITION IS ACTIVE but no band could be derived. Drive a single
+    /// cumulative `Xfer` whose `cumulative_band_bounds` returns `None`
+    /// WITH `partition_ranges` NON-EMPTY, and assert the new
+    /// `CumulativeWholeArrayFallback` variant fires.
+    ///
+    /// Forcing the `None` path: `data_dim_iv_map[data]` has the right dim
+    /// count (so the `per_dim.len() != dims.len()` early-`None` is NOT the
+    /// cause), but the (decoy) partitioned iv does NOT index this data —
+    /// so no dim resolves to a band, `saw_band` stays `false`, and
+    /// `cumulative_band_bounds` returns `None`. The data is BOTH in
+    /// `cumulative_data` AND `data_dims` (the two preconditions to reach
+    /// the inner branch), and `partition_ranges` is non-empty (a real
+    /// partition is active → the array is replicated-across-workers → the
+    /// whole-array tile WOULD xN-double-count). This is the provably-dead-
+    /// today branch; the test pins that, were a future partitioned-
+    /// cumulative schedule to reach it, the compiler rejects rather than
+    /// emitting an xN-double-counted whole-array tile.
+    #[test]
+    fn task0366_partitioned_cumulative_none_band_raises_fail_loud_error() {
+        let t_iv = IterVar(2);
+        let y_iv = IterVar(4);
+        let x_iv = IterVar(3);
+        let field = DataId(0);
+        let src = WorkerId(1);
+        let cumulative: BTreeSet<DataId> = [field].into_iter().collect();
+
+        // data_dim_iv_map: 3 dims, matching dims.len() below — so the
+        // dim-count early-None does NOT fire. But the partition_ranges
+        // below cover NONE of {t,y,x}, so no dim resolves to a band.
+        let mut data_dim_iv_map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        data_dim_iv_map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
+        let mut data_dims: BTreeMap<DataId, Vec<i64>> = BTreeMap::new();
+        data_dims.insert(field, vec![5i64, 8, 8]);
+
+        // A partition on an iv that does NOT index `field` (decoy) —
+        // ensures the helper iterates the partitioned-iv filter but finds
+        // no covering iv per dim, so saw_band == false → None. Crucially
+        // `partition_ranges` is NON-EMPTY, so this is CASE (A): the array
+        // is replicated across the (decoy_iv) partition workers and the
+        // whole-array tile would xN-double-count.
+        let decoy_iv = IterVar(99);
+        let partition_ranges =
+            make_partition_ranges(&[(decoy_iv, &[(WorkerId(1), 0..4), (WorkerId(2), 4..8)])]);
+
+        let policy = TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        };
+        let xfer = ACFGNode::Xfer(XferPlaceholder {
+            role: XferRole::Push,
+            src,
+            dst: WorkerId(0),
+            data: field,
+            // Incoming whole-array tile — exactly the tile that would be
+            // silently kept (xN risk) before TASK-0366.
+            tile: IterTile::new(vec![(t_iv, 0..5), (y_iv, 0..8), (x_iv, 0..8)]),
+            seq: SeqTag(0),
+            policy,
+        });
+
+        let result = rewrite_cumulative_band_tiles(
+            xfer,
+            &cumulative,
+            &partition_ranges,
+            &data_dim_iv_map,
+            &data_dims,
+        );
+
+        match result {
+            Err(TransferInjectError::CumulativeWholeArrayFallback {
+                data,
+                src: err_src,
+                message,
+            }) => {
+                assert_eq!(
+                    data, field,
+                    "the error must name the offending cumulative DataId (field)"
+                );
+                assert_eq!(
+                    err_src, src,
+                    "the error must carry the transfer's src worker (band owner)"
+                );
+                assert!(
+                    message.contains("TASK-0366"),
+                    "message must forward-link TASK-0366; got: {message}"
+                );
+                assert!(
+                    message.contains("xN"),
+                    "message must name the xN double-count risk; got: {message}"
+                );
+            }
+            other => panic!(
+                "TASK-0366 case A: a partitioned cumulative Xfer with no derivable write band \
+                 MUST raise CumulativeWholeArrayFallback, not silently keep the whole-array \
+                 tile; got: {other:?}"
+            ),
+        }
+    }
+
+    /// TASK-0366 cycle-214, CASE (B) — the UNPARTITIONED cumulative
+    /// symbol (11-game-of-life/pipelined `grid`). Same `None` from
+    /// `cumulative_band_bounds`, but `partition_ranges` is EMPTY: there
+    /// is no partition to double-count against, so the whole-array tile
+    /// is CORRECT and the pass must keep it SILENTLY (NOT raise the
+    /// error). This pins the A/B discriminator — without it, the
+    /// `!partition_ranges.is_empty()` guard would silently regress to
+    /// rejecting the game-of-life shape (which the e2e gate caught when
+    /// the first TASK-0366 draft made the branch unconditional).
+    #[test]
+    fn task0366_unpartitioned_cumulative_keeps_whole_array_no_error() {
+        let t_iv = IterVar(2);
+        let i_iv = IterVar(3);
+        let grid = DataId(0);
+        let compute = WorkerId(1);
+        let cumulative: BTreeSet<DataId> = [grid].into_iter().collect();
+
+        // grid[ITERS+1][N] indexed dim0=t, dim1=i — both ivs present, so
+        // the dim-count early-None does NOT fire, but with NO partition
+        // active `cumulative_band_bounds` still returns None (saw_band
+        // false).
+        let mut data_dim_iv_map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        data_dim_iv_map.insert(grid, vec![iv_set(&[t_iv]), iv_set(&[i_iv])]);
+        let mut data_dims: BTreeMap<DataId, Vec<i64>> = BTreeMap::new();
+        data_dims.insert(grid, vec![9i64, 32]);
+
+        // EMPTY partition_ranges — the game-of-life/pipelined shape.
+        let partition_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>> =
+            BTreeMap::new();
+
+        let policy = TransferPolicy {
+            synchronous: false,
+            buffer: 2,
+            notify: NotifyMode::Default,
+        };
+        let whole_array_tile = IterTile::new(vec![(t_iv, 0..9), (i_iv, 0..32)]);
+        let xfer = ACFGNode::Xfer(XferPlaceholder {
+            role: XferRole::Push,
+            src: compute,
+            dst: WorkerId(0),
+            data: grid,
+            tile: whole_array_tile.clone(),
+            seq: SeqTag(0),
+            policy,
+        });
+
+        let result = rewrite_cumulative_band_tiles(
+            xfer,
+            &cumulative,
+            &partition_ranges,
+            &data_dim_iv_map,
+            &data_dims,
+        );
+
+        match result {
+            Ok(ACFGNode::Xfer(x)) => {
+                assert_eq!(
+                    x.tile, whole_array_tile,
+                    "TASK-0366 case B: an UNPARTITIONED cumulative symbol must keep its \
+                     whole-array tile unchanged (no partition to xN-double-count against); \
+                     got tile {:?}",
+                    x.tile
+                );
+            }
+            other => panic!(
+                "TASK-0366 case B: an unpartitioned cumulative Xfer must be kept as a \
+                 whole-array transfer (Ok), NOT rejected; got: {other:?}"
+            ),
+        }
     }
 
     /// `strip_cumulative_xfers` lifts the cumulative-data Xfers out of a
