@@ -358,7 +358,7 @@ fn walk_arg_for_reuse(
     }
 }
 
-/// Emit Vec<T> circular-buffer declarations + initial-fill prologue
+/// Emit `Vec<T>` circular-buffer declarations + initial-fill prologue
 /// for every reuse group active on `iter_var` in `body`. Returns the
 /// `reuse_active` map the caller seeds into the child `RenderCtx` it
 /// recurses into the body with.

@@ -433,7 +433,7 @@ pub fn collect_pre_init_sets(
 /// For DataIds in the returned set, the per-backend pre-init pass
 /// omits the `let mut` line and the walker's `render_wait_assign`
 /// emits `let <name> = <rhs>;` at the recv site (declare-and-assign in
-/// one statement). The result is a Vec<T> coming into scope at the
+/// one statement). The result is a `Vec<T>` coming into scope at the
 /// first .wait() call, no dead zero-init, no `unused_assignments`
 /// warning on cargo build of the emitted project.
 ///

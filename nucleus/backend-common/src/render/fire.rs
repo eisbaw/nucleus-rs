@@ -112,7 +112,7 @@ pub enum SubArrayForm {
     FixedArray,
 }
 
-/// Render a kernel call's argument list from its [`FireBinding`]
+/// Render a kernel call's argument list from its [`FireBinding`](nucleus_compiler::event::FireBinding)
 /// inputs. `Data` → indexed/whole-array read; `Scalar` → integer
 /// expression with a param-type cast decided via the SIDECAR's
 /// kernel signature (TASK-0169, AlgoIR-free); `Nested` → rejected

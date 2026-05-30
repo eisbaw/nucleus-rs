@@ -25,7 +25,7 @@
 //!
 //! - [`single_binary`] — Cargo.toml + run.sh for backends that emit
 //!   ONE binary into a single Cargo project (`pthreads-sync`,
-//!   `pthreads-async`). The shape is "one [[bin]] target named
+//!   `pthreads-async`). The shape is "one `[[bin]]` target named
 //!   `nuc-generated` at `src/main.rs`, panic = abort release profile,
 //!   run.sh that wraps `cargo build --release` +
 //!   `target/release/nuc-generated`".

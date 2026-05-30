@@ -12,7 +12,7 @@
 //!    (i.e. `used.first()` for the sorted-ascending `Vec`/`BTreeSet`).
 //! 3. If `used` is empty, return `None`. Each caller handles `None`
 //!    differently:
-//!    - backends raise [`EmitError::ContractGap`];
+//!    - backends raise [`EmitError::ContractGap`](crate::EmitError::ContractGap);
 //!    - driver wirings pass the ACFG / per-worker through unchanged.
 //!
 //! # Why a shared helper exists (TASK-0336 cycle 164)
@@ -99,7 +99,7 @@ fn elect_host_core(
 /// Backend view of the canonical host-election rule. Use this in
 /// every tier-1 backend's `multi_worker::Plan::build`.
 ///
-/// `worker_names` is the [`NameTables::worker`] map (WorkerId ->
+/// `worker_names` is the `NameTables::worker` map (WorkerId ->
 /// name). `used_sorted_asc` is the slice of `WorkerId`s with
 /// non-empty event lists, in ascending `WorkerId` order — backends
 /// build this from `per_worker.iter().filter(...)`, and BTreeMap
@@ -108,7 +108,7 @@ fn elect_host_core(
 ///
 /// Returns the elected host or `None` if `used_sorted_asc` is
 /// empty. The caller is responsible for raising
-/// [`EmitError::ContractGap`] on `None`.
+/// [`EmitError::ContractGap`](crate::EmitError::ContractGap) on `None`.
 pub fn elect_host_from_worker_names(
     worker_names: &BTreeMap<WorkerId, String>,
     used_sorted_asc: &[WorkerId],

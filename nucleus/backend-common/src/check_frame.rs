@@ -173,7 +173,7 @@ pub fn emit_count_guard_local(out: &mut String, ident: &str, loop_var: &str, lat
 ///
 /// `body_pad` is the caller's indentation string (e.g. `"        "`
 /// for two nested fors). `loop_var` appears verbatim in the
-/// `\`check loop \`<lv>\`\`` backticks of the user-visible message.
+/// `\`check loop \`&lt;lv&gt;\`\`` backticks of the user-visible message.
 /// `latency_max_ns` appears twice: in the threshold compare and in
 /// the printed line. Mirrors pre-extraction pthreads-sync at
 /// lib.rs:991-997 and mp-tcp-bufsync at lib.rs:809-815 (TASK-0052.04).

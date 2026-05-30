@@ -53,7 +53,7 @@ enum WaitSlice {
 /// Render the receiver-side assignment statement for one Wait event.
 /// Returns one statement (no trailing newline).
 ///
-/// Three shapes, dispatched by [`wait_slice`]:
+/// Three shapes, dispatched by `wait_slice`:
 /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
 ///   single-pair behaviour. Selected when the pair's tile is empty
 ///   (no enclosing iteration nest, e.g. a top-level load_input ⇒ host
