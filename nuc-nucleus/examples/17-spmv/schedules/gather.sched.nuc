@@ -1,0 +1,27 @@
+// Native-gather schedule — single worker, no decomposition.
+//
+// Drives `prog.gather.algo.nuc` (the native data-dependent-read SpMV,
+// TASK-0341.03.01) rather than the masked `prog.algo.nuc`. The e2e
+// harness selects the algorithm from this `schedule for` path
+// (TASK-0049.03 per-cell algo selection), so a `17-spmv/gather` cell
+// compiles the gather variant while `17-spmv/naive` keeps the masked
+// form.
+//
+// Single worker (`host`): the data-dependent read `x[col_idx[i][k]]`
+// needs the whole of `x` available, which the single-worker placement
+// trivially satisfies (no transfers). A distributed gather is the
+// "broaden" follow-up (whole-array broadcast of `x`); under a
+// partitioned schedule the data-dependent index is fail-loud rejected
+// today. Output is bit-identical to 17-spmv/naive and reference.bin.
+
+schedule for "../prog.gather.algo.nuc" {
+    workers = { host };
+
+    place load_val     on host;
+    place load_col_idx on host;
+    place load_x       on host;
+    place save_y       on host;
+    place gather_madd  on host;
+
+    // No loop transforms, no transfer directives (single worker).
+}

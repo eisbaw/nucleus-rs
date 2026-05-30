@@ -726,6 +726,62 @@ schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 17-spmv/gather: TASK-0341.03.01 — the NATIVE data-dependent read.
+# Drives prog.gather.algo.nuc (selected via the schedule's `schedule
+# for`, TASK-0049.03; kernels.gather.rs paired by the variant rule,
+# TASK-0049.08). The data-dependent gather `x[col_idx[i][k]]` is now
+# expressed DIRECTLY at the algorithm surface (lower_index_expr admits
+# a data ref in subscript position; backend render_int_expr emits a
+# flat scalar load `x[col_idx[<flat>] as usize]`), replacing the
+# rectangular masked-accumulator the grammar once forced. Single-worker
+# (no transfers); the data-dependent read needs whole-`x`, trivially
+# satisfied. Output is bit-identical to 17-spmv/naive and reference.bin
+# (same SpMV math), so it pins the gather codegen across all 7 tier-1
+# backends via the shared single-worker render path. A DISTRIBUTED
+# gather is the broaden follow-up (whole-array broadcast; fail-loud
+# rejected under a partitioned schedule today).
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "gather"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 # 17-spmv/distributed: TASK-0341.03.02 AC#3 (pthreads-sync) landed
 # cycle 212 + TASK-0341.03.02.01 AC (cross-backend promotion to the
 # other 6 tier-1 backends) landed cycle 214. partition=workers on

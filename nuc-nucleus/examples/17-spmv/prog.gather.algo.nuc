@@ -1,0 +1,78 @@
+// Sparse Matrix-Vector multiply (SpMV) — NATIVE DATA-DEPENDENT READ.
+//
+// Landed TASK-0341.03.01: the data-dependent gather `x[col_idx[i][k]]`
+// is now expressible DIRECTLY at the algorithm surface. This is the
+// native form of the SpMV the sibling `prog.algo.nuc` emulated with a
+// rectangular masked-accumulator (the `for j` dense scan + `spmv_step`
+// mask). Both compute the SAME result; this variant runs in O(M*NNZ)
+// instead of O(M*NNZ*N) and reads `x` by the loaded column index.
+//
+// What changed (vs prog.algo.nuc)
+// -------------------------------
+//   - The index of `x` is itself a runtime data read: `col_idx[i][k]`
+//     is loaded from a `data` array and used to index `x`. The v2
+//     grammar already PARSES this (an index is a full expression); the
+//     lowering pass (`lower_index_expr`) admits a data-dependent index
+//     in array-subscript position (NOT in loop-bound position — a
+//     data-dependent trip count is a separate feature), and the
+//     backend renders it as a flat scalar load `x[col_idx[<flat>] as
+//     usize]`. See TASK-0341.03.01.
+//   - The compute kernel is `gather_madd(acc, v, x_val) = acc +
+//     v*x_val` — a plain MAC with NO mask, NO `j`-fold. The gather
+//     isolates the single contributing `x` element; there is nothing
+//     to mask.
+//
+// Bit-identical to prog.algo.nuc's masked form and to reference.bin:
+// for each (i, k) the masked nest contributed `val[i][k]*x[j]` only at
+// `j == col_idx[i][k]`, which is exactly `val[i][k]*x[col_idx[i][k]]`.
+// Same input.bin, same reference.bin, same M/N/NNZ.
+//
+// Single-worker only (the `gather.sched.nuc` naive schedule). A
+// DISTRIBUTED gather (partition over a data-dependent read) requires
+// the conservative whole-array-broadcast transfer path and is fail-loud
+// rejected under a partitioned schedule today (halo_inference's
+// data-dependent-stride rule is fatal under a partitioned scope) — that
+// is the "broaden" follow-up, not this concept-proof.
+
+const M    : usize = 8;     // matrix rows
+const N    : usize = 8;     // dense input vector length / matrix cols
+const NNZ  : usize = 3;     // fixed nonzeros per row (dense-stored)
+
+
+// Same data symbols + same input.bin layout as prog.algo.nuc.
+data val     : i32[M][NNZ];
+data col_idx : i32[M][NNZ];
+data x       : i32[N];
+data y       : i32[M];
+
+
+// Pure MAC kernel: acc + v*x_val. No mask, no j (the gather at the
+// algorithm surface already selects the right x element).
+kernel gather_madd  : (i32, i32, i32) -> i32 pure;
+
+// I/O kernels — identical to prog.algo.nuc (shared kernels.rs).
+kernel load_val     : () -> i32[M][NNZ] effectful;
+kernel load_col_idx : () -> i32[M][NNZ] effectful;
+kernel load_x       : () -> i32[N]      effectful;
+kernel save_y       : (i32[M]) -> ()    effectful;
+
+
+// Dataflow.
+
+// 1. Load the three input arrays (same loaders as the masked variant).
+val     <-- load_val();
+col_idx <-- load_col_idx();
+x       <-- load_x();
+
+// 2. Native gather MAC. `y[i]` is pre-initialised to 0 (additive
+//    identity). For each (i, k) accumulate val[i][k] * x[col_idx[i][k]]
+//    — the SpMV definition, with the data-dependent read written
+//    directly. No `for j`, no mask.
+for i : 0 .. M {
+    for k : 0 .. NNZ {
+        y[i] <-- gather_madd(y[i], val[i][k], x[col_idx[i][k]]);
+    }
+}
+
+// 3. Save the result.
+save_y(y);
