@@ -332,41 +332,45 @@ check-include-str-coverage:
 # build NO docs, so a visibility tighten or a renamed item that breaks an
 # intra-doc-link — or angle-bracket prose rustdoc reads as an unclosed
 # HTML tag — ships green and SILENT. The TASK-0340.11 epic drove both
-# classes to zero across all 14 workspace crates; this PROVEN-BITING arm
-# locks that in by building the whole workspace's docs under two denied
-# lints (negative arms verified TASK-0340.11.02 — both make the build
-# exit 101):
-#   - broken_intra_doc_links: a [`Foo`] link whose target moved/renamed,
-#     or any unresolved explicit-path link [`X`](made_up::Item).
-#   - invalid_html_tags: `<name>` / `slot_<id>` prose parsed as HTML.
+# classes to zero across all 14 workspace crates. This arm has TWO
+# independent guards, BOTH proven to bite (TASK-0340.11.02):
 #
-# WHY --workspace (not per-crate -p): the dead-cross-crate-href trap that
-# bit the backend-common slice (an explicit [`X`](sibling_crate::path)
-# link renders a literal href="sibling::path" that 404s with NO lint
-# warning under a SINGLE-crate `-p ... --no-deps` build) is STRUCTURALLY
-# closed by --workspace: every member is co-documented, so a sibling-crate
-# link resolves to a real relative href (empirically verified
-# TASK-0340.11.02: [`DataId`](nucleus_compiler::event::DataId) from
-# backend-common renders ../../nucleus_compiler/event/struct.DataId.html,
-# no warning, no dead href). So the --workspace build is itself the fix,
-# not just a check.
+# 1. Two denied rustdoc lints on the whole-workspace doc build:
+#      - broken_intra_doc_links: a [`Foo`] link whose target moved or was
+#        renamed, or an unresolved explicit-path link [`X`](made_up::Item).
+#      - invalid_html_tags: `<name>` / `slot_<id>` prose parsed as HTML.
+#    Negative arm proven: a broken [`Foo`] link makes the build exit 101.
 #
-# The trailing dead-href grep is cheap DEFENSE-IN-DEPTH for the one
-# residual the lint is still blind to AND --workspace cannot co-document:
-# an explicit-path link to a NON-workspace dependency that has no docs.rs
-# resolution (a path/git dep), which would render a literal href="dep::..."
-# . The project currently has NO such dep, so this arm is a no-op safety
-# net today — retained per the feedback-visibility-tighten-doclink-trap
-# DoD and to fail loud the day a path-dep + such a link is added. (Real
-# crates.io deps like serde resolve to https://docs.rs/..., excluded by
-# the word::... pattern.) Asserts rustdoc EXIT==0 BEFORE the grep — an
-# empty grep on a failed build is VACUOUS, not clean (TASK-0340.11.03
-# method correction): the cargo doc line fails the recipe first.
+# 2. A dead-cross-crate-href grep on the rendered HTML — the PRIMARY (and
+#    only) catch for the trap that bit the backend-common slice, which the
+#    lint in (1) is STRUCTURALLY BLIND to. An explicit-path link
+#    [`X`](other_crate::path) to a real dependency crate with no docs.rs
+#    resolution — i.e. a WORKSPACE-SIBLING path-dep such as nucleus_compiler
+#    — renders a literal href="other_crate::path" that 404s, and rustdoc
+#    emits NO warning (it trusts the author-supplied path and does NOT
+#    resolve it, EVEN under --workspace where the sibling IS co-documented).
+#    Negative arm proven TASK-0340.11.02: [`DataId`](nucleus_compiler::event::DataId)
+#    injected into backend-common keeps the build exit-0 yet renders
+#    href="nucleus_compiler::event::DataId" — caught ONLY by this grep,
+#    which makes the recipe exit 1 and prints the dead href.
+#    Any rendered href of the form word::... is a guaranteed-dead
+#    cross-crate link; real crates.io deps (serde, mio) resolve to
+#    https://docs.rs/..., which the word::... pattern excludes.
+#    Important: --workspace co-resolves AUTO-LINKED (bare [`X`] /
+#    use-imported) cross-crate references to relative hrefs, but NOT the
+#    explicit-path [`X`](crate::path) form — so the grep is genuinely the
+#    catch for the explicit-path class, NOT redundant with the lint.
+#
+# Asserts rustdoc EXIT==0 BEFORE the grep — an empty grep on a failed
+# (exit-101) build is VACUOUS, not clean (TASK-0340.11.03 method
+# correction): the cargo doc line fails the recipe first, and `rm -rf
+# target/doc` precedes it so no stale HTML can falsely pass the grep.
 #
 # Lint-set decision (TASK-0340.11.01/.02): gates the DEFAULT public-API
-# doc surface, NOT --document-private-items. private_intra_doc_links and
-# rustdoc::all (unescaped-backtick; backend-common still carries 2, a
-# deferred decision) are deliberately NOT denied here.
+# doc surface only — NOT --document-private-items, so broken doc-links on
+# PRIVATE items are deliberately NOT gated (a documented scope boundary).
+# private_intra_doc_links and rustdoc::all (unescaped-backtick;
+# backend-common still carries 2, a deferred decision) are also NOT denied.
 check-doc-links:
     @echo "checking workspace cargo-doc (broken_intra_doc_links + invalid_html_tags + dead cross-crate hrefs)..."
     cd nucleus && rm -rf target/doc && RUSTDOCFLAGS='-D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags' cargo doc --no-deps --workspace
