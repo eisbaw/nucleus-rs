@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::algo::{ResolvedType, ScalarType};
-use nucleus_compiler::event::{DataId, IterTile, SeqTag};
+use nucleus_compiler::event::{DataId, IterTile, IterVar, SeqTag};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use crate::render::EmitError;
@@ -47,6 +47,29 @@ enum WaitSlice {
         row_stride: usize,
         inner_lo_off: usize,
         inner_hi_off: usize,
+    },
+    /// N-D nested-loop slice-paste (TASK-0341.02.02.01.01). The
+    /// general shape: one or more FULL leading axes (each emitted as a
+    /// `for` loop accumulating a flat base offset), exactly ONE BANDED
+    /// axis (the partitioned axis — a contiguous sub-range), and zero
+    /// or more FULL trailing axes (absorbed into the contiguous copy
+    /// span). The 16-jacobi/distributed `field[ITERS+1][H][W]` ×
+    /// `partition=rows(y)` tile `[(t, 0..T FULL), (y, band), (x, 0..W
+    /// FULL)]` is the load-bearing case: `t` is a full leading axis
+    /// (one loop), `y` is the banded axis, `x` is a full trailing axis
+    /// (folded into the per-`t` contiguous span).
+    ///
+    /// - `leading`: per full-leading-axis `(dim, stride)`. `dim` is
+    ///   `ty.dims[k]` (the loop count); `stride` is `product(ty.dims[k+1..])`
+    ///   (the flat-element step per unit of that axis). Outer-to-inner.
+    /// - `band_lo_off` / `band_hi_off`: the banded-axis range
+    ///   pre-multiplied by `product(ty.dims[banded+1..])` (the
+    ///   banded-axis-element stride), i.e. the contiguous flat span to
+    ///   copy WITHIN each leading base block.
+    NestedRows {
+        leading: Vec<(usize, usize)>,
+        band_lo_off: usize,
+        band_hi_off: usize,
     },
 }
 
@@ -198,6 +221,49 @@ pub fn render_wait_assign(
                  }} }}"
             ))
         }
+        Some(WaitSlice::NestedRows {
+            leading,
+            band_lo_off,
+            band_hi_off,
+        }) => {
+            // N-D nested-loop slice-paste (TASK-0341.02.02.01.01). Emit
+            // one `for _aK in 0..dim` loop per full leading axis,
+            // accumulating a flat `_base` offset, then a single
+            // contiguous `copy_from_slice` over the banded span within
+            // each base block. The `_aK` / `_base` locals are
+            // underscore-prefixed AND inside a `{ ... }` block (Rust
+            // block-shadowing makes them collision-safe wherever this
+            // Wait is placed). 16-jacobi/distributed: `leading = [(5,
+            // 64)]` (the t axis), `band_lo_off..band_hi_off` = the
+            // per-row y-band flat span (e.g. `8..24` for band 1..3 on a
+            // [.][8][8] data symbol).
+            let mut s = String::from("{ let _tmp = ");
+            s.push_str(rhs);
+            s.push_str("; ");
+            // `_base` starts at 0 and each loop level adds `_aK * stride`.
+            // We open the loops, accumulating the base via a fresh
+            // shadowed binding at each level so the innermost `_base`
+            // sees the full accumulation.
+            s.push_str("let _base = 0usize; ");
+            let mut closers = 0usize;
+            for (lvl, (dim, stride)) in leading.iter().enumerate() {
+                s.push_str(&format!(
+                    "for _a{lvl} in 0usize..{dim}usize {{ let _base = _base + _a{lvl} * {stride}usize; "
+                ));
+                closers += 1;
+            }
+            s.push_str(&format!(
+                "{name}[_base + {band_lo_off}usize.._base + {band_hi_off}usize]\
+                 .copy_from_slice(\
+                 &_tmp[_base + {band_lo_off}usize.._base + {band_hi_off}usize]); "
+            ));
+            for _ in 0..closers {
+                s.push('}');
+                s.push(' ');
+            }
+            s.push('}');
+            Ok(s)
+        }
     }
 }
 
@@ -305,51 +371,28 @@ fn wait_slice(
     // assumed to map to `ty.dims[1]` — same axis-ordering convention
     // the 1D path applies to `tile.bounds[0]` ↔ ty.dims[0].
     //
-    // Rank-3+ guard (TASK-0294 cycle-115 architect P2.1): a tile or
-    // data shape with rank >= 3 would slip silently into the 2D arm,
-    // consulting only the first two axes — the SAME HONEST-PARTIAL
-    // class the cycle-115 fix removed for 2-axis data. A future
-    // schedule with a BANDED rank >= 3 tile needs the N-D nested-loop
-    // dispatch filed as TASK-0341.02.02.01.01; until that lands, fail
-    // LOUD rather than emit an out-of-bounds gather. (The
-    // 13-cnn-inference rank-4 sibling-precedent the original comment
-    // cited still hits the 1D arm via partition=workers; no
-    // regression there.)
+    // N-D nested-loop dispatch (TASK-0341.02.02.01.01, cycle 213): a
+    // tile/data shape with rank >= 3 (or a rank-2 tile against rank
+    // >= 3 data) is routed to [`nd_banded_slice`], which validates
+    // each positional axis range against its dim and emits the
+    // [`WaitSlice::NestedRows`] full-leading + one-banded + full-
+    // trailing slice-paste. A whole-array rank-N tile collapses to
+    // `Ok(None)` there (every axis full). 16-jacobi/distributed's
+    // `field[ITERS+1][H][W]` × `partition=rows(y)` write-band tile
+    // `[(t, 0..T), (y, band), (x, 0..W)]` is the load-bearing case (t
+    // full leading, y banded, x full trailing). Shapes the N-D path
+    // does NOT yet support (multiple banded axes at rank >= 3) still
+    // fail LOUD inside `nd_banded_slice` rather than emit a wrong
+    // gather.
     //
-    // 16-jacobi/distributed RED HERRING (cycle 211b empirical re-test,
-    // TASK-0341.02.02.01.02): `partition=rows` on the spatial y-axis
-    // of `field[ITERS+1][H][W]` DOES construct a rank-3 tile, so
-    // 16-jacobi/distributed is the first in-tree schedule to TRIP this
-    // guard — but that tile is WHOLE-ARRAY (`bounds=[(t,0..T),(y,0..H),
-    // (x,0..W)]`, every axis full; reproduced 48/48 across the 5
-    // wait_slice backends). If it reached the dispatch it would
-    // collapse to `Ok(None)`, NOT a banded N-D gather. So this guard
-    // is merely the FIRST error hit, NOT the operative blocker: with
-    // the guard bypassed, codegen completes and the emitted program
-    // DEADLOCKS, because `transfer_inject` places the worker-to-worker
-    // `field` Push/Wait INSIDE the partitioned inner loop, giving
-    // unequal per-worker exchange counts (same in-Loop-w2w family as
-    // TASK-0330 on bufsync/poll, which fail LOUD at a compile guard
-    // instead of hanging). The real 16-jacobi blocker is therefore
-    // TASK-0341.02.02.01.02 (hoist the exchange out of the inner
-    // loop), NOT this guard / TASK-0341.02.02.01.01. N-D dispatch is
-    // co-required for 16-jacobi ONLY IF that hoist later produces a
-    // banded (non-whole-array) rank-3 tile — see .02 AC#4.
-    if tile.bounds.len() > 2 || (tile.bounds.len() >= 2 && ty.dims.len() > 2) {
-        return Err(EmitError::ContractGap(format!(
-            "Wait of data {data:?}: tile rank {} and data dim rank {} \
-             exceed the 2D row-loop slice-paste's supported shape (rank \
-             <= 2 on both). A schedule with a BANDED rank >= 3 tile \
-             needs the N-D nested-loop dispatch filed as \
-             TASK-0341.02.02.01.01; see TASK-0294 cycle-115 architect \
-             P2.1 for the cycle-115 rationale carrying the guard until \
-             the N-D path lands. (16-jacobi/distributed trips this guard \
-             first, but its rank-3 tile is whole-array; its operative \
-             blocker is the transfer_inject deadlock TASK-0341.02.02.01.02, \
-             not this guard.)",
-            tile.bounds.len(),
-            ty.dims.len(),
-        )));
+    // Pre-cycle-213 this region was a hard `ContractGap` reject for
+    // every rank >= 3 shape (TASK-0294 cycle-115 architect P2.1). The
+    // 16-jacobi/distributed blocker required THREE co-landed fixes:
+    // the placement hoist (TASK-0341.02.02.01.02), the cumulative-
+    // array COPY-not-accumulate classifier (TASK-0341.02.02.01.03),
+    // and this N-D dispatch — see those tasks for the full chain.
+    if tile.bounds.len() >= 3 || (tile.bounds.len() >= 2 && ty.dims.len() > 2) {
+        return nd_banded_slice(data, &ty.dims, &tile.bounds);
     }
     if tile.bounds.len() >= 2 && ty.dims.len() >= 2 {
         let inner_range = &tile.bounds[1].1;
@@ -390,6 +433,97 @@ fn wait_slice(
     Ok(Some(WaitSlice::Flat {
         lo: (leading_range.start as usize).saturating_mul(stride),
         hi: (leading_range.end as usize).saturating_mul(stride),
+    }))
+}
+
+/// N-D nested-loop slice-paste dispatch (TASK-0341.02.02.01.01, cycle
+/// 213). The tile carries positional `(iv, range)` bounds with the
+/// convention `bounds[i] ↔ dims[i]` (row-major nest order, the same
+/// convention `wait_slice`'s 1D/2D arms use). Each axis is classified
+/// full (range covers `0..dims[i]`) or banded (a strict sub-range).
+///
+/// Supported shape: ANY number of FULL leading axes + exactly ONE
+/// BANDED axis + ANY number of FULL trailing axes. This is the
+/// `partition=rows(y)` write-band shape on a `[t][y][x]` (or deeper)
+/// cumulative array — one partitioned spatial axis banded, the
+/// iteration axis (`t`) and the inner spatial axis (`x`) full.
+///
+/// - All axes full ⇒ `Ok(None)` (whole-array assign, byte-identical
+///   with the rank <= 2 degenerate-full collapse).
+/// - Exactly one banded axis ⇒ `Ok(Some(NestedRows { .. }))`. The full
+///   leading axes become nested `for` loops accumulating a flat base;
+///   the banded axis contributes the contiguous copy span (its range ×
+///   the product of all trailing dims); full trailing axes are folded
+///   into that span. The 16-jacobi case `[(t,0..5),(y,1..3),(x,0..8)]`
+///   on dims `[5,8,8]` ⇒ `leading=[(5,64)]`, `band_lo_off=1*8=8`,
+///   `band_hi_off=3*8=24`.
+/// - Two or more banded axes ⇒ `Err(ContractGap)` (no shipped schedule
+///   constructs a multi-banded rank >= 3 tile; the 2D two-banded case
+///   is the rank-2 `Rows` arm; fail LOUD rather than emit a
+///   multi-banded gather this path does not yet support).
+/// - Tile rank != data dim rank ⇒ `Err(ContractGap)` (the positional
+///   convention requires one bound per dim; a partial-rank tile would
+///   silently mis-map axes).
+/// - Any axis range out of bounds / empty ⇒ `Err(ContractGap)`.
+fn nd_banded_slice(
+    data: DataId,
+    dims: &[usize],
+    bounds: &[(IterVar, std::ops::Range<i64>)],
+) -> Result<Option<WaitSlice>, EmitError> {
+    if bounds.len() != dims.len() {
+        return Err(EmitError::ContractGap(format!(
+            "Wait of data {data:?}: N-D banded slice needs one tile bound per data \
+             dim (tile rank {}, data dim rank {}); the positional axis-mapping \
+             convention `bounds[i] <-> dims[i]` cannot resolve a partial-rank tile \
+             (TASK-0341.02.02.01.01)",
+            bounds.len(),
+            dims.len(),
+        )));
+    }
+    // Classify each axis full vs banded; validate ranges.
+    let mut banded_axis: Option<usize> = None;
+    for (i, (_iv, range)) in bounds.iter().enumerate() {
+        let dim = dims[i] as i64;
+        if range.start < 0 || range.end > dim || range.start >= range.end {
+            return Err(EmitError::ContractGap(format!(
+                "Wait of data {data:?}: tile axis {i} range {range:?} out of bounds \
+                 for data dims {dims:?} (dim {dim}) (TASK-0341.02.02.01.01)"
+            )));
+        }
+        let full = range.start == 0 && range.end == dim;
+        if !full {
+            if banded_axis.is_some() {
+                return Err(EmitError::ContractGap(format!(
+                    "Wait of data {data:?}: tile has >=2 banded axes (axis {} and axis \
+                     {i}); the N-D nested-loop slice-paste supports exactly one banded \
+                     axis (full-leading + one-banded + full-trailing). No shipped \
+                     schedule constructs a multi-banded rank >= 3 tile \
+                     (TASK-0341.02.02.01.01)",
+                    banded_axis.unwrap(),
+                )));
+            }
+            banded_axis = Some(i);
+        }
+    }
+    // All axes full ⇒ whole-array.
+    let Some(b) = banded_axis else {
+        return Ok(None);
+    };
+    // Stride of the banded axis = product of all trailing dims.
+    let band_stride: usize = dims[b + 1..].iter().product();
+    let band_lo_off = (bounds[b].1.start as usize).saturating_mul(band_stride);
+    let band_hi_off = (bounds[b].1.end as usize).saturating_mul(band_stride);
+    // Full leading axes (those BEFORE the banded axis) become loops.
+    // Each carries (dim, stride) where stride = product of dims after it.
+    let mut leading: Vec<(usize, usize)> = Vec::with_capacity(b);
+    for (i, d) in dims.iter().enumerate().take(b) {
+        let stride: usize = dims[i + 1..].iter().product();
+        leading.push((*d, stride));
+    }
+    Ok(Some(WaitSlice::NestedRows {
+        leading,
+        band_lo_off,
+        band_hi_off,
     }))
 }
 

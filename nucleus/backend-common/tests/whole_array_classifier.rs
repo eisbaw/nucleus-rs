@@ -35,11 +35,15 @@
 //! 3. `not_whole_via_partial_leading_range` — rank-1 slice → not whole.
 //! 4. `whole_via_2d_both_axes_full` — rank-2 [full, full] → whole
 //!    (wait_slice:337 both-axes-full → None).
-//! 5. `not_whole_via_rank3_guard` — rank-3 shape → wait_slice ERR
-//!    (wait_slice:307 rank-3+ guard), swallowed to `false` at the
-//!    call site = not-whole-array, accumulate NOT detected. THE
-//!    genuine pre-unification divergence pin (OLD is_whole_array_tile
-//!    = true; NEW = Err→false).
+//! 5. `whole_via_rank3_all_axes_full` — all-axes-full rank-3 tile →
+//!    whole (cycle-213 N-D dispatch `Ok(None)`); both Waits accumulate.
+//!    `banded_rank3_is_not_whole_array_so_not_accumulate` — a BANDED
+//!    rank-3 tile is a slice-paste → not whole → not accumulate.
+//!    `cumulative_data_whole_array_fan_in_is_excluded_from_accumulate`
+//!    — TASK-0341.02.02.01.03: a cumulative-marked symbol's whole-array
+//!    fan-in is excluded from accumulate (COPY combine). Pre-cycle-213
+//!    a rank-3 tile returned ERR (the rank-3+ guard) → swallowed false;
+//!    cycle 213 lifted that guard to the N-D nested-loop dispatch.
 //! 6. `not_whole_via_oob_leading_range_err_swallow_path` — leading
 //!    range OOB → wait_slice ERR (wait_slice:269-278), swallowed to
 //!    false. A PATH pin, not a divergence pin (OLD also returned false).
@@ -180,35 +184,92 @@ fn whole_via_2d_both_axes_full() {
 }
 
 #[test]
-fn not_whole_via_rank3_guard() {
-    // Rank-3 tile + rank-3 data dims. wait_slice:307 rank-3+ guard
-    // returns Err(ContractGap). is_whole_array_recv propagates Err;
-    // collect_accumulate_waits's call site swallows with
-    // `.unwrap_or(false)` (cycle-225 unified-classifier site convention).
-    // Net: NOT classified as accumulate.
+fn whole_via_rank3_all_axes_full() {
+    // Rank-3 tile + rank-3 data dims, ALL axes full. Cycle 213
+    // (TASK-0341.02.02.01.01) replaced the pre-cycle-213 rank-3+ ERR
+    // guard with the N-D nested-loop dispatch: an all-axes-full rank-3
+    // tile now collapses to `Ok(None)` (whole-array), so
+    // `is_whole_array_recv` returns `Ok(true)` and the two whole-array
+    // Waits ARE classified accumulate.
     //
-    // Pre-cycle-225 divergence pin: the removed `is_whole_array_tile`
-    // would have classified [full, full, full] over dims [4, 4, 4] as
-    // whole-array (its loop checked each consulted bound against the
-    // corresponding dim without an explicit rank-3+ guard). The unified
-    // classifier surfaces the rank-3+ shape as Err — conservative
-    // semantic, breaks accumulate-detection on this shape.
+    // Pre-cycle-213 this returned Err (the rank-3+ guard) and the call
+    // site swallowed to `false` => NOT accumulate. The cycle-213 lift
+    // updates this test (the pre-cycle-213 comment explicitly predicted
+    // it would need updating "alongside that lift").
     //
-    // Today no shipped schedule trips this (cycle-220b architect P3.1
-    // narrative); a future cycle that extends wait_slice to N-D dispatch
-    // (TASK-0341.02.02.01.01) would lift the Err and this test would
-    // need to be updated alongside that lift.
+    // NOTE: this is the WHOLE-ARRAY rank-3 shape. A BANDED rank-3 tile
+    // (one axis a strict sub-range) is a slice-paste, NOT whole-array —
+    // pinned by `banded_rank3_is_not_whole_array_so_not_accumulate`
+    // below.
     let data = DataId(0);
     let sidecar = sidecar_with(data, ScalarType::I32, vec![4, 4, 4]);
     let tile = tile_3d(0, 0..4, 1, 0..4, 2, 0..4);
     let (events, tiles) = two_waits_with_tile(data, tile);
 
     let acc = collect_accumulate_waits(&events, &sidecar, &tiles);
+    assert_eq!(
+        acc.len(),
+        2,
+        "all-axes-full rank-3 tile MUST collapse to whole-array (N-D dispatch \
+         `Ok(None)`), so both Waits classify accumulate. Got: {acc:?}"
+    );
+}
+
+#[test]
+fn banded_rank3_is_not_whole_array_so_not_accumulate() {
+    // A BANDED rank-3 tile (the 16-jacobi write-band shape:
+    // [(t, 0..4 FULL), (y, 1..3 BANDED), (x, 0..4 FULL)] on dims
+    // [4,4,4]) is a slice-paste, NOT whole-array. `is_whole_array_recv`
+    // returns `Ok(false)`, so it is NOT classified as an accumulate
+    // fan-in. (For a cumulative array the cumulative-data sidecar
+    // exclusion ALSO suppresses accumulate, but this test pins the
+    // structural slice-paste path independent of that exclusion.)
+    let data = DataId(0);
+    let sidecar = sidecar_with(data, ScalarType::I32, vec![4, 4, 4]);
+    let tile = tile_3d(0, 0..4, 1, 1..3, 2, 0..4);
+    let (events, tiles) = two_waits_with_tile(data, tile);
+
+    let acc = collect_accumulate_waits(&events, &sidecar, &tiles);
     assert!(
         acc.is_empty(),
-        "Rank-3 tile + rank-3 data MUST NOT classify as whole-array \
-         (wait_slice:307 rank-3+ guard returns Err; cycle-225 call site \
-         swallows to false). Got: {acc:?}"
+        "banded rank-3 tile is a slice-paste (not whole-array), so it MUST NOT \
+         classify as accumulate. Got: {acc:?}"
+    );
+}
+
+#[test]
+fn cumulative_data_whole_array_fan_in_is_excluded_from_accumulate() {
+    // TASK-0341.02.02.01.03 cycle 213: even a WHOLE-ARRAY fan-in on a
+    // data symbol marked cumulative (sidecar.cumulative_data) must be
+    // EXCLUDED from accumulate classification — the cumulative array's
+    // shared history would be xN-double-counted by `wrapping_add`. It
+    // falls through to the slice-paste / whole-array-assign arm
+    // instead. This pins the discriminator that keeps 16-jacobi's
+    // `field` COPY while 08-histogram (NOT cumulative) stays accumulate.
+    let data = DataId(0);
+    let mut sidecar = sidecar_with(data, ScalarType::I32, vec![16]);
+    // Empty-tile whole-array fan-in that WOULD be accumulate (cf.
+    // `whole_via_empty_bounds`) — but mark the data cumulative.
+    sidecar.cumulative_data.insert(data);
+    let (events, tiles) = two_waits_with_tile(data, IterTile::empty());
+
+    let acc = collect_accumulate_waits(&events, &sidecar, &tiles);
+    assert!(
+        acc.is_empty(),
+        "a cumulative data symbol's whole-array fan-in MUST be excluded from \
+         accumulate (COPY combine, not wrapping_add). Got: {acc:?}"
+    );
+
+    // Control: the SAME shape WITHOUT the cumulative mark IS accumulate.
+    let mut sidecar2 = sidecar_with(data, ScalarType::I32, vec![16]);
+    sidecar2.cumulative_data.clear();
+    let (events2, tiles2) = two_waits_with_tile(data, IterTile::empty());
+    let acc2 = collect_accumulate_waits(&events2, &sidecar2, &tiles2);
+    assert_eq!(
+        acc2.len(),
+        2,
+        "control: the identical whole-array fan-in WITHOUT the cumulative mark \
+         MUST classify accumulate (08-histogram shape). Got: {acc2:?}"
     );
 }
 

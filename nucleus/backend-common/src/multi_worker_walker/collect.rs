@@ -172,11 +172,23 @@ where
 ///   `wrapping_add` for integer scalar types and returns
 ///   `EmitError::ContractGap` for floats / bool (sum identity is not
 ///   defined; floats also collide with PRD §10.1 bit-identity).
-/// - **No algorithm-level cross-check**: detection is purely structural
-///   (N>=2 whole-array Waits). An exotic schedule that emits multiple
-///   whole-array Pushes for non-accumulator semantics would mis-combine.
-///   For every shipped schedule today (08-histogram/distributed is the
-///   load-bearing case), the structural pattern is equivalent to the
+/// - **Cumulative-array exclusion (TASK-0341.02.02.01.03, cycle 213)**:
+///   a data symbol in `sidecar.cumulative_data` (a CUMULATIVE
+///   cross-iteration array — reads itself at a shifted outer-loop index,
+///   e.g. 16-jacobi `field[t] <-- f(field[t-1], ...)`) is EXCLUDED from
+///   accumulate classification even when its Waits are whole-array. Its
+///   Waits fall through to the slice-paste / whole-array assign arm; the
+///   correct combine for a cumulative partition-band exchange is COPY
+///   (the `wait_slice` N-D banded path), not `wrapping_add` (which would
+///   xN-double-count the shared history). Disjoint single-pass
+///   accumulators (08-histogram's same-index read-modify) are NOT
+///   cumulative and stay accumulate.
+/// - **No structural-only algorithm cross-check beyond cumulative**:
+///   detection is otherwise structural (N>=2 whole-array Waits). An
+///   exotic schedule that emits multiple whole-array Pushes for
+///   non-accumulator semantics would mis-combine. For every shipped
+///   schedule today (08-histogram/distributed is the load-bearing
+///   accumulate case), the structural pattern is equivalent to the
 ///   algorithm-level accumulator pattern (LHS appears in RHS).
 /// - **No iterative (Repeat-body) accumulator**: Waits inside a
 ///   `Event::Loop` body carry per-iter tiles (the iter-var range is one
@@ -199,6 +211,23 @@ pub fn collect_accumulate_waits(
     let mut out: BTreeSet<(DataId, SeqTag)> = BTreeSet::new();
     for (data, seqs) in waits_per_data {
         if seqs.len() < 2 {
+            continue;
+        }
+        // TASK-0341.02.02.01.03 cycle 213: a CUMULATIVE cross-iteration
+        // array (the data symbol reads itself at a SHIFTED outer-loop
+        // index — e.g. 16-jacobi's `field[t] <-- f(field[t-1], ...)`)
+        // must NOT be classified accumulate. Every worker holds the
+        // full shared history after each exchange, so summing whole
+        // local arrays double-counts the history across N workers (the
+        // empirically-observed xN). The correct combine is COPY (banded
+        // slice-paste via the `wait_slice` N-D path), so we exclude
+        // cumulative arrays here and let their Waits fall through to the
+        // slice-paste arm. Disjoint single-pass accumulators
+        // (08-histogram's same-index read-modify) are NOT cumulative and
+        // stay accumulate. The `cumulative_data` set is computed once
+        // from the algorithm-IR at `build_sidecar` time (sidecar.rs
+        // `collect_cumulative_data_names`).
+        if sidecar.cumulative_data.contains(&data) {
             continue;
         }
         let all_whole = seqs.iter().all(|seq| {

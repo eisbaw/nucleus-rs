@@ -722,7 +722,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         // `partition_pairs` (AC#3 additive-only contract: every shipped
         // schedule today has empty pairs and therefore sees no change
         // in injected XferPlaceholders).
-        inject_halo_strip_xfers(
+        let with_strips = inject_halo_strip_xfers(
             with_halo,
             &halo_widths,
             &partition_pairs,
@@ -731,7 +731,58 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
             &policies_by_data,
             &data_dim_iv_map,
             &mut state,
-        )
+        );
+        // TASK-0341.02.02.01.{02,03} cycle 213 — cumulative-array
+        // partition-band exchange. For a CUMULATIVE cross-iteration
+        // array (16-jacobi's `field[t] <-- f(field[t-1], ...)` under
+        // `partition=rows(y)`), the w2w + host-gather transfers must:
+        //   (1) carry the SENDER's WRITE BAND tile [(t, full), (y,
+        //       src-band), (x, full)] — NOT halo-expanded (overlapping
+        //       bands would double-write), NOT whole-array (whole-array
+        //       accumulate xN-double-counts the shared history); and
+        //   (2) the w2w exchange must be HOISTED out of the partition
+        //       spatial loops to the enclosing Repeat (for t) body,
+        //       send-then-recv, so each worker performs an EQUAL number
+        //       of exchanges (the in-`for x` per-(y,x) placement gives
+        //       unequal band-size-dependent counts => deadlock).
+        // No-op when the algorithm has no cumulative array (every
+        // example except 16-jacobi). See the three co-landed tasks.
+        let mut cumulative_names: BTreeSet<String> = BTreeSet::new();
+        crate::sidecar::collect_cumulative_data_names(
+            &linked.algo.stmts,
+            &[],
+            &mut cumulative_names,
+        );
+        let cumulative_data: BTreeSet<DataId> = cumulative_names
+            .iter()
+            .filter_map(|n| name_data.get(n).copied())
+            .collect();
+        if cumulative_data.is_empty() {
+            with_strips
+        } else {
+            // Per-DataId dim sizes (i64), resolved via name_data ->
+            // linked.algo.data[name].ty.dims. Needed to fill FULL
+            // ranges (0..dim) for the non-partitioned axes of the
+            // write-band tile.
+            let data_dims: BTreeMap<DataId, Vec<i64>> = name_data
+                .iter()
+                .filter_map(|(n, id)| {
+                    linked
+                        .algo
+                        .data
+                        .get(n)
+                        .map(|rd| (*id, rd.ty.dims.iter().map(|d| *d as i64).collect()))
+                })
+                .collect();
+            let banded = rewrite_cumulative_band_tiles(
+                with_strips,
+                &cumulative_data,
+                &partition_worker_ranges,
+                &data_dim_iv_map,
+                &data_dims,
+            );
+            hoist_cumulative_w2w_to_repeat_body(banded, &cumulative_data, &partition_worker_ranges)
+        }
     };
 
     // TASK-0134 — populate the pipeline-depth sidecar AFTER all the
@@ -2597,6 +2648,291 @@ fn collect_ivs_from_expr(
                 collect_ivs_from_expr(a, name_iter_vars, out);
             }
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// TASK-0341.02.02.01.{02,03} cycle 213 — cumulative-array
+// partition-band exchange (16-jacobi/distributed)
+// --------------------------------------------------------------------
+
+/// Build the SENDER write-band tile for a cumulative data symbol's
+/// transfer from compute worker `src`. (TASK-0341.02.02.01.03 cycle 213)
+///
+/// The tile has one bound per data dim (positional `bounds[i] <->
+/// dims[i]`, the `wait_slice` convention):
+/// - A dim covered by a PARTITIONED iv (per `data_dim_iv_map`) gets the
+///   SRC worker's WRITE BAND `partition_ranges[iv][src]` — NOT the
+///   halo-expanded read range (the architect's write-band-not-halo
+///   point: halo-expanded bands OVERLAP across workers and a slice-paste
+///   COPY over them would double-write the boundary rows).
+/// - Every other dim gets the FULL range `0..dims[i]` with the dim's
+///   observed iv (or a fallback iv if none observed — the iv is
+///   decorative for `wait_slice`, only the range is load-bearing).
+///
+/// For 16-jacobi `field[5][8][8]` × `partition=rows(y)` from w1 (band
+/// 1..3): `[(t, 0..5), (y, 1..3), (x, 0..8)]`. Returns `None` if the
+/// data has no partitioned dim on this worker (then the caller leaves
+/// the tile unchanged — should not happen for a partitioned cumulative
+/// array, but stays total).
+fn cumulative_band_bounds(
+    data: DataId,
+    src: WorkerId,
+    dims: &[i64],
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+) -> Option<Vec<(IterVar, std::ops::Range<i64>)>> {
+    let per_dim = data_dim_iv_map.get(&data)?;
+    // The data must have a per-dim iv map covering all its dims for the
+    // positional construction to be sound.
+    if per_dim.len() != dims.len() {
+        return None;
+    }
+    let mut bounds: Vec<(IterVar, std::ops::Range<i64>)> = Vec::with_capacity(dims.len());
+    let mut saw_band = false;
+    for (d, iv_set) in per_dim.iter().enumerate() {
+        // Find the (unique) partitioned iv covering this dim, if any.
+        let partitioned: Vec<IterVar> = iv_set
+            .iter()
+            .copied()
+            .filter(|iv| partition_ranges.contains_key(iv))
+            .collect();
+        if partitioned.len() == 1 {
+            let iv = partitioned[0];
+            if let Some(band) = partition_ranges.get(&iv).and_then(|m| m.get(&src)).cloned() {
+                bounds.push((iv, band));
+                saw_band = true;
+                continue;
+            }
+        }
+        // Full range for this dim. Use the first observed iv as the
+        // decorative carrier; fall back to the partitioned iv (just to
+        // have *some* iv) if the dim observed none. The iv is never
+        // consulted by `wait_slice` (only the range is), so any iv is
+        // sound for a FULL axis.
+        let carrier = iv_set
+            .iter()
+            .copied()
+            .next()
+            .or_else(|| partition_ranges.keys().copied().next())
+            .unwrap_or(IterVar(0));
+        bounds.push((carrier, 0..dims[d]));
+    }
+    if saw_band {
+        Some(bounds)
+    } else {
+        None
+    }
+}
+
+/// Rewrite every cumulative-array Xfer's tile to the SENDER write band
+/// (TASK-0341.02.02.01.03 cycle 213). Applies to BOTH the w2w exchange
+/// AND the worker->host gather (architect P1-2: the host gather of
+/// identical full slices is itself an xN source; copying disjoint write
+/// bands instead reconstructs the full array on the host). Runs AFTER
+/// the partition / halo / strip passes so it OVERRIDES any halo-expanded
+/// or whole-array tile those passes set on a cumulative symbol.
+///
+/// The compute (band-owning) worker is the Xfer's `src` for a gather/
+/// w2w-send. For a cumulative symbol every transfer is a band-send from
+/// its producing compute worker, so `src` is always the band owner.
+fn rewrite_cumulative_band_tiles(
+    node: ACFGNode,
+    cumulative_data: &BTreeSet<DataId>,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+    data_dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+    data_dims: &BTreeMap<DataId, Vec<i64>>,
+) -> ACFGNode {
+    match node {
+        ACFGNode::Xfer(mut x) => {
+            if cumulative_data.contains(&x.data) {
+                if let Some(dims) = data_dims.get(&x.data) {
+                    if let Some(bounds) = cumulative_band_bounds(
+                        x.data,
+                        x.src,
+                        dims,
+                        data_dim_iv_map,
+                        partition_ranges,
+                    ) {
+                        x.tile = IterTile::new(bounds);
+                    }
+                }
+            }
+            ACFGNode::Xfer(x)
+        }
+        ACFGNode::Sequence(children) => ACFGNode::Sequence(
+            children
+                .into_iter()
+                .map(|c| {
+                    rewrite_cumulative_band_tiles(
+                        c,
+                        cumulative_data,
+                        partition_ranges,
+                        data_dim_iv_map,
+                        data_dims,
+                    )
+                })
+                .collect(),
+        ),
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            block_tag,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(rewrite_cumulative_band_tiles(
+                *body,
+                cumulative_data,
+                partition_ranges,
+                data_dim_iv_map,
+                data_dims,
+            )),
+            block_tag,
+        },
+        leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
+    }
+}
+
+/// Hoist cumulative-array worker-to-worker `Xfer`s out of the partition
+/// spatial loops to the enclosing `Repeat` body (TASK-0341.02.02.01.02
+/// cycle 213).
+///
+/// For 16-jacobi/distributed the w2w `field` Push/Wait are emitted
+/// INSIDE `for x` inside `for y` (the partition iv), giving each worker
+/// `band_rows * x_span` exchanges — unequal across workers (bands differ
+/// in size) — which deadlocks on the single-element rendezvous slot
+/// (cycle 211b/212 empirical). Hoisting them to the `for t` body (once
+/// per t, equal counts on every worker) with SEND-then-RECV ordering
+/// (Push then Wait, both after the band compute) fixes the deadlock: the
+/// non-blocking Slot push lets every worker fill its outgoing slots
+/// before any worker waits on an incoming one.
+///
+/// # The transform
+///
+/// In every `Sequence`, when a child is a `Repeat` whose `iter_var` is a
+/// PARTITION iv (in `partition_ranges`), STRIP every cumulative-data
+/// `Xfer` from that Repeat's subtree (recursively) and re-insert them in
+/// the enclosing Sequence IMMEDIATELY AFTER the Repeat: all Pushes
+/// first, then all Waits (send-then-recv). The Operation (band compute)
+/// and the loop structure stay; only the cumulative w2w transfers move.
+///
+/// Worker->host gather Xfers of the cumulative symbol live OUTSIDE any
+/// partition-iv Repeat (at the worker's top-level sequence, after the
+/// outer Repeat), so they are NOT inside a partition-iv loop and are
+/// left in place (their tile is already the write band from
+/// `rewrite_cumulative_band_tiles`).
+fn hoist_cumulative_w2w_to_repeat_body(
+    node: ACFGNode,
+    cumulative_data: &BTreeSet<DataId>,
+    partition_ranges: &BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
+) -> ACFGNode {
+    match node {
+        ACFGNode::Sequence(children) => {
+            let mut out: Vec<ACFGNode> = Vec::with_capacity(children.len());
+            for child in children {
+                // Recurse first so nested Sequences (e.g. the for-t body)
+                // are processed.
+                let child = hoist_cumulative_w2w_to_repeat_body(
+                    child,
+                    cumulative_data,
+                    partition_ranges,
+                );
+                match child {
+                    ACFGNode::Repeat {
+                        iter_var,
+                        range,
+                        body,
+                        block_tag,
+                    } if partition_ranges.contains_key(&iter_var) => {
+                        // Strip cumulative w2w Xfers from the partition
+                        // Repeat's subtree; collect them.
+                        let mut stripped: Vec<XferPlaceholder> = Vec::new();
+                        let body = strip_cumulative_xfers(*body, cumulative_data, &mut stripped);
+                        out.push(ACFGNode::Repeat {
+                            iter_var,
+                            range,
+                            body: Box::new(body),
+                            block_tag,
+                        });
+                        // SEND-then-RECV: all Pushes, then all Waits.
+                        // Within each role preserve discovery order
+                        // (deterministic — pre-order strip).
+                        for x in stripped.iter().filter(|x| x.role == XferRole::Push) {
+                            out.push(ACFGNode::Xfer(x.clone()));
+                        }
+                        for x in stripped.iter().filter(|x| x.role == XferRole::Wait) {
+                            out.push(ACFGNode::Xfer(x.clone()));
+                        }
+                    }
+                    other => out.push(other),
+                }
+            }
+            ACFGNode::Sequence(out)
+        }
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            block_tag,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(hoist_cumulative_w2w_to_repeat_body(
+                *body,
+                cumulative_data,
+                partition_ranges,
+            )),
+            block_tag,
+        },
+        leaf => leaf,
+    }
+}
+
+/// Remove every cumulative-data `Xfer` from `node`'s subtree, appending
+/// each removed placeholder (in pre-order) to `out`. Returns the subtree
+/// with those Xfers excised. Used by
+/// [`hoist_cumulative_w2w_to_repeat_body`] to lift the in-`for x` w2w
+/// exchange up to the `for t` body. Sync / Operation nodes are kept;
+/// only `Xfer` nodes whose `data` is cumulative are pulled out.
+fn strip_cumulative_xfers(
+    node: ACFGNode,
+    cumulative_data: &BTreeSet<DataId>,
+    out: &mut Vec<XferPlaceholder>,
+) -> ACFGNode {
+    match node {
+        ACFGNode::Xfer(x) if cumulative_data.contains(&x.data) => {
+            out.push(x);
+            // Replace with an empty Sequence (flattened away by the
+            // projection / downstream; an empty Sequence is inert).
+            ACFGNode::Sequence(Vec::new())
+        }
+        ACFGNode::Sequence(children) => {
+            let mut kept: Vec<ACFGNode> = Vec::with_capacity(children.len());
+            for c in children {
+                let c = strip_cumulative_xfers(c, cumulative_data, out);
+                // Drop the inert empty-Sequence placeholders left by a
+                // stripped Xfer so the body stays clean.
+                if matches!(&c, ACFGNode::Sequence(v) if v.is_empty()) {
+                    continue;
+                }
+                kept.push(c);
+            }
+            ACFGNode::Sequence(kept)
+        }
+        ACFGNode::Repeat {
+            iter_var,
+            range,
+            body,
+            block_tag,
+        } => ACFGNode::Repeat {
+            iter_var,
+            range,
+            body: Box::new(strip_cumulative_xfers(*body, cumulative_data, out)),
+            block_tag,
+        },
+        leaf => leaf,
     }
 }
 
@@ -4697,5 +5033,174 @@ mod tests {
              the safe whole-array drop per compute_partition_bounds_with_\
              dim_prefix's hole-after-cover policy.",
         );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0341.02.02.01.{02,03} cycle 213: cumulative-array band tile +
+    // w2w hoist (16-jacobi/distributed).
+    // ----------------------------------------------------------------
+
+    /// `cumulative_band_bounds` for the 16-jacobi `field[5][8][8]` ×
+    /// `partition=rows(y)` shape from w1 (write band 1..3): the tile must
+    /// be `[(t, 0..5 FULL), (y, 1..3 BAND), (x, 0..8 FULL)]` — the
+    /// SENDER write band, NOT halo-expanded, NOT whole-array.
+    #[test]
+    fn task034102_cumulative_band_bounds_field_write_band() {
+        let t_iv = IterVar(2);
+        let y_iv = IterVar(4);
+        let x_iv = IterVar(3);
+        let field = DataId(0);
+        let w1 = WorkerId(1);
+        // field indexed dim0=t, dim1=y, dim2=x.
+        let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
+        let partition_ranges = make_partition_ranges(&[(
+            y_iv,
+            &[(WorkerId(1), 1..3), (WorkerId(2), 3..5)],
+        )]);
+        let dims = vec![5i64, 8, 8];
+
+        let got = cumulative_band_bounds(field, w1, &dims, &map, &partition_ranges)
+            .expect("cumulative band tile must be constructible");
+        assert_eq!(
+            got,
+            vec![(t_iv, 0..5), (y_iv, 1..3), (x_iv, 0..8)],
+            "cumulative write-band tile must be FULL on t/x and BANDED (1..3) on \
+             the partition axis y, keyed on the SENDER (w1) write band; got {got:?}"
+        );
+    }
+
+    /// `strip_cumulative_xfers` lifts the cumulative-data Xfers out of a
+    /// nested loop subtree and leaves the rest intact; `hoist_cumulative_
+    /// w2w_to_repeat_body` then re-places them AFTER the partition Repeat
+    /// in SEND-then-RECV order. Synthetic minimal shape:
+    ///   Repeat(t) { [ Repeat(y=partition) { [ Wait(field), Op, Push(field) ] } ] }
+    /// →
+    ///   Repeat(t) { [ Repeat(y) { [ Op ] }, Push(field), Wait(field) ] }
+    #[test]
+    fn task034102_hoist_w2w_send_then_recv_after_partition_repeat() {
+        let field = DataId(0);
+        let t_iv = IterVar(2);
+        let y_iv = IterVar(4);
+        let cumulative: BTreeSet<DataId> = [field].into_iter().collect();
+        let partition_ranges =
+            make_partition_ranges(&[(y_iv, &[(WorkerId(1), 1..3), (WorkerId(2), 3..5)])]);
+
+        let policy = TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        };
+        let wait = ACFGNode::Xfer(XferPlaceholder {
+            role: XferRole::Wait,
+            src: WorkerId(2),
+            dst: WorkerId(1),
+            data: field,
+            tile: IterTile::empty(),
+            seq: SeqTag(3),
+            policy,
+        });
+        let push = ACFGNode::Xfer(XferPlaceholder {
+            role: XferRole::Push,
+            src: WorkerId(1),
+            dst: WorkerId(2),
+            data: field,
+            tile: IterTile::empty(),
+            seq: SeqTag(0),
+            policy,
+        });
+        // A non-Xfer leaf standing in for the band-compute Operation.
+        let compute = ACFGNode::Sync(crate::acfg::SyncPlaceholder::default());
+        let inner_y = ACFGNode::Repeat {
+            iter_var: y_iv,
+            range: 1..3,
+            body: Box::new(ACFGNode::Sequence(vec![
+                wait.clone(),
+                compute.clone(),
+                push.clone(),
+            ])),
+            block_tag: None,
+        };
+        let for_t = ACFGNode::Repeat {
+            iter_var: t_iv,
+            range: 0..5,
+            body: Box::new(ACFGNode::Sequence(vec![inner_y])),
+            block_tag: None,
+        };
+        let root = ACFGNode::Sequence(vec![for_t]);
+
+        let hoisted = hoist_cumulative_w2w_to_repeat_body(root, &cumulative, &partition_ranges);
+
+        // Expected: Repeat(t) { Sequence[ Repeat(y){ Sequence[ compute ] },
+        // Push, Wait ] }.
+        let ACFGNode::Sequence(top) = hoisted else {
+            panic!("expected top Sequence")
+        };
+        let ACFGNode::Repeat { body, .. } = &top[0] else {
+            panic!("expected for_t Repeat")
+        };
+        let ACFGNode::Sequence(t_body) = body.as_ref() else {
+            panic!("expected for_t body Sequence")
+        };
+        // t_body = [ Repeat(y), Push, Wait ] — send (Push) BEFORE recv (Wait).
+        assert_eq!(t_body.len(), 3, "for_t body should be [Repeat(y), Push, Wait]; got {t_body:?}");
+        assert!(
+            matches!(&t_body[0], ACFGNode::Repeat { iter_var, .. } if *iter_var == y_iv),
+            "first child must be the partition Repeat (compute stays); got {:?}",
+            t_body[0]
+        );
+        assert!(
+            matches!(&t_body[1], ACFGNode::Xfer(x) if x.role == XferRole::Push),
+            "SEND-then-recv: the Push must come BEFORE the Wait; got {:?}",
+            t_body[1]
+        );
+        assert!(
+            matches!(&t_body[2], ACFGNode::Xfer(x) if x.role == XferRole::Wait),
+            "the Wait must come AFTER the Push; got {:?}",
+            t_body[2]
+        );
+        // The partition Repeat's body must no longer contain the field Xfers.
+        let ACFGNode::Repeat { body: y_body, .. } = &t_body[0] else {
+            unreachable!()
+        };
+        let mut leftover: Vec<XferPlaceholder> = Vec::new();
+        let _ = strip_cumulative_xfers((**y_body).clone(), &cumulative, &mut leftover);
+        assert!(
+            leftover.is_empty(),
+            "the partition Repeat body must have NO cumulative Xfers left after the \
+             hoist; got {leftover:?}"
+        );
+    }
+
+    /// A NON-cumulative (empty cumulative set) tree is left byte-identical
+    /// by the hoist pass (no-op for every example except 16-jacobi).
+    #[test]
+    fn task034102_hoist_noop_when_no_cumulative_data() {
+        let field = DataId(0);
+        let y_iv = IterVar(4);
+        let partition_ranges = make_partition_ranges(&[(y_iv, &[(WorkerId(1), 1..3)])]);
+        let policy = TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        };
+        let inner = ACFGNode::Repeat {
+            iter_var: y_iv,
+            range: 1..3,
+            body: Box::new(ACFGNode::Sequence(vec![ACFGNode::Xfer(XferPlaceholder {
+                role: XferRole::Push,
+                src: WorkerId(1),
+                dst: WorkerId(2),
+                data: field,
+                tile: IterTile::empty(),
+                seq: SeqTag(0),
+                policy,
+            })])),
+            block_tag: None,
+        };
+        let root = ACFGNode::Sequence(vec![inner]);
+        let empty: BTreeSet<DataId> = BTreeSet::new();
+        let got = hoist_cumulative_w2w_to_repeat_body(root.clone(), &empty, &partition_ranges);
+        assert_eq!(got, root, "empty cumulative set MUST leave the tree unchanged");
     }
 }

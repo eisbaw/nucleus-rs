@@ -352,11 +352,14 @@ fn leading_axis_out_of_bounds_returns_contract_gap() {
 }
 
 #[test]
-fn rank_3_or_higher_tile_returns_contract_gap() {
-    // TASK-0294 cycle-115 architect P2.1: a rank-3+ tile or rank-
-    // 3+ data shape would slip silently into the 2D arm, consulting
-    // only the first two axes. The cycle-115 fix-loud guard rejects
-    // it at compile time. Two sub-cases:
+fn rank_mismatch_tile_returns_contract_gap() {
+    // TASK-0341.02.02.01.01 cycle 213: the N-D nested-loop dispatch
+    // (`nd_banded_slice`) replaced the pre-cycle-213 hard rank-3+
+    // reject (TASK-0294 cycle-115 architect P2.1). A tile whose rank
+    // does NOT equal the data's dim rank still fails LOUD — the
+    // positional axis-mapping convention `bounds[i] <-> dims[i]`
+    // cannot resolve a partial-rank tile. Two sub-cases (both now hit
+    // the rank-mismatch arm of `nd_banded_slice`):
     //   (a) rank-3 tile on rank-2 data
     //   (b) rank-2 tile on rank-3 data
     let data = DataId(7);
@@ -370,12 +373,12 @@ fn rank_3_or_higher_tile_returns_contract_gap() {
     let tile_3 = IterTile::new(vec![(y_iv, 1..8), (x_iv, 1..8), (z_iv, 0..4)]);
     let (ids, tiles) = one_pair(data, seq, 0, tile_3.clone());
     let err = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile_3)
-        .expect_err("rank-3 tile must fail loud");
+        .expect_err("rank-3 tile on rank-2 data must fail loud");
     let msg = format!("{err}");
     assert!(
-        msg.contains("tile rank 3") && msg.contains("2D row-loop"),
-        "expected ContractGap mentioning the rank-3 tile + 2D-only support; \
-         got: {msg}"
+        msg.contains("one tile bound per data") && msg.contains("tile rank 3"),
+        "expected ContractGap mentioning the rank mismatch (tile rank 3 vs data \
+         dim rank 2); got: {msg}"
     );
 
     // ---- (b) rank-2 tile on rank-3 data ----
@@ -383,12 +386,108 @@ fn rank_3_or_higher_tile_returns_contract_gap() {
     let tile_2 = IterTile::new(vec![(y_iv, 1..8), (x_iv, 1..8)]);
     let (ids, tiles) = one_pair(data, seq, 0, tile_2.clone());
     let err = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile_2)
-        .expect_err("rank-3 data must fail loud");
+        .expect_err("rank-2 tile on rank-3 data must fail loud");
     let msg = format!("{err}");
     assert!(
-        msg.contains("data dim rank 3") && msg.contains("2D row-loop"),
-        "expected ContractGap mentioning the rank-3 data + 2D-only support; \
-         got: {msg}"
+        msg.contains("one tile bound per data") && msg.contains("data dim rank 3"),
+        "expected ContractGap mentioning the rank mismatch (tile rank 2 vs data \
+         dim rank 3); got: {msg}"
+    );
+}
+
+#[test]
+fn nd_banded_rank3_emits_nested_rows_slice_paste() {
+    // TASK-0341.02.02.01.01 cycle 213 POSITIVE pin: the 16-jacobi/
+    // distributed write-band shape. `field[ITERS+1][H][W]` = dims
+    // [5,8,8], `partition=rows(y)` write-band tile
+    // [(t, 0..5 FULL), (y, 1..3 BANDED), (x, 0..8 FULL)]. The N-D
+    // dispatch must emit ONE leading `for` loop over t (full), and a
+    // single contiguous per-t `copy_from_slice` over the y-band span
+    // (rows 1..3 = flat [8..24] within each 64-element t-slice). x is
+    // a full trailing axis folded into the band span.
+    let data = DataId(0);
+    let seq = SeqTag(3);
+    let t_iv = IterVar(2);
+    let y_iv = IterVar(4);
+    let x_iv = IterVar(3);
+    let (names, sidecar) = make_minimal_tables(data, "field", vec![5, 8, 8]);
+    let tile = IterTile::new(vec![(t_iv, 0..5), (y_iv, 1..3), (x_iv, 0..8)]);
+    let (ids, tiles) = one_pair(data, seq, 7, tile.clone());
+
+    let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect("rank-3 banded Wait must render the N-D nested-loop slice-paste");
+
+    // leading = [(5, 64)] (t axis: dim 5, stride = 8*8 = 64).
+    // band on y: band_lo_off = 1 * 8 = 8, band_hi_off = 3 * 8 = 24
+    // (the y-element stride = product(dims[2..]) = 8).
+    assert!(
+        out.contains(
+            "{ let _tmp = ring_7.wait(); \
+             let _base = 0usize; \
+             for _a0 in 0usize..5usize { let _base = _base + _a0 * 64usize; \
+             field[_base + 8usize.._base + 24usize].copy_from_slice(\
+             &_tmp[_base + 8usize.._base + 24usize]); } }"
+        ),
+        "rank-3 banded tile must emit the N-D nested-loop slice-paste with \
+         leading t-loop (dim 5, stride 64) and per-t y-band span [8..24]; got:\n{out}"
+    );
+    // ABSENCE: must NOT collapse to a whole-array assign (the wrong
+    // model that double-counts the cumulative history => xN).
+    assert!(
+        !out.contains("field = ring_7.wait();"),
+        "regression: banded rank-3 tile collapsed to whole-array assign; got:\n{out}"
+    );
+}
+
+#[test]
+fn nd_banded_rank3_full_collapses_to_whole_array() {
+    // A rank-3 tile whose every axis is FULL must collapse to the
+    // whole-array assign (emit-identity with the rank <= 2 degenerate
+    // collapse). This is the WHOLE-ARRAY rank-3 shape cycle-211b
+    // observed BEFORE the write-band tile construction landed.
+    let data = DataId(0);
+    let seq = SeqTag(3);
+    let t_iv = IterVar(2);
+    let y_iv = IterVar(4);
+    let x_iv = IterVar(3);
+    let (names, sidecar) = make_minimal_tables(data, "field", vec![5, 8, 8]);
+    let tile = IterTile::new(vec![(t_iv, 0..5), (y_iv, 0..8), (x_iv, 0..8)]);
+    let (ids, tiles) = one_pair(data, seq, 7, tile.clone());
+
+    let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect("full rank-3 tile must render");
+    assert!(
+        out.contains("field = ring_7.wait();"),
+        "all-axes-full rank-3 tile must collapse to whole-array assign; got:\n{out}"
+    );
+    assert!(
+        !out.contains("copy_from_slice"),
+        "all-axes-full rank-3 tile must NOT emit a slice-paste; got:\n{out}"
+    );
+}
+
+#[test]
+fn nd_banded_rank3_two_banded_axes_returns_contract_gap() {
+    // A rank-3 tile with TWO banded axes is not supported by the N-D
+    // path (full-leading + ONE banded + full-trailing). It must fail
+    // LOUD rather than emit a wrong multi-banded gather. No shipped
+    // schedule constructs this; the rank-2 two-banded case is the
+    // separate `Rows` arm.
+    let data = DataId(0);
+    let seq = SeqTag(3);
+    let t_iv = IterVar(2);
+    let y_iv = IterVar(4);
+    let x_iv = IterVar(3);
+    let (names, sidecar) = make_minimal_tables(data, "field", vec![5, 8, 8]);
+    let tile = IterTile::new(vec![(t_iv, 0..5), (y_iv, 1..3), (x_iv, 1..7)]);
+    let (ids, tiles) = one_pair(data, seq, 7, tile.clone());
+
+    let err = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect_err("two banded axes must fail loud");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains(">=2 banded axes"),
+        "expected ContractGap mentioning >=2 banded axes; got: {msg}"
     );
 }
 

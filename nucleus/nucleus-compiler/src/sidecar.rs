@@ -343,6 +343,37 @@ pub struct NameSidecar {
     /// iteration is in numeric order.
     #[cfg_attr(feature = "serde", serde(default))]
     pub grid_shape_for_outer_iv: BTreeMap<IterVar, (u32, u32)>,
+
+    /// DataIds whose algorithm-IR shape is a **cumulative
+    /// cross-iteration** array (TASK-0341.02.02.01.03, cycle 213): the
+    /// data symbol is the LHS of a `<--` inside a `for` loop AND reads
+    /// itself on the RHS at a DIFFERENT index expression along that
+    /// loop's iteration axis (e.g. 16-jacobi's `field[t][y][x] <--
+    /// jacobi5_or_seed(field[(t+ITERS)%(ITERS+1)][y-1][x], ...)` —
+    /// `field` self-read at dim 0 index `(t+ITERS)%(ITERS+1)` != the
+    /// LHS write index `t`).
+    ///
+    /// Consumed by
+    /// [`crate::sidecar`]-aware
+    /// `backend_common::multi_worker_walker::collect_accumulate_waits`
+    /// to EXCLUDE such arrays from the overlapping-write accumulator
+    /// (`wrapping_add` fan-in) classification. For a cumulative array
+    /// every worker holds the FULL shared history after each exchange;
+    /// summing whole local arrays double-counts that history across N
+    /// workers (the empirically-observed xN on 16-jacobi). The correct
+    /// combine for a cumulative partition-band exchange is COPY
+    /// (banded slice-paste, the `wait_slice` N-D path), NOT accumulate.
+    ///
+    /// Contrast a DISJOINT single-pass accumulator
+    /// (08-histogram's `histogram[b] <-- bin_inc(histogram[b], ...)`):
+    /// the self-read uses the SAME index `b` as the LHS write (no
+    /// cross-iteration index shift), so it is NOT cumulative and stays
+    /// accumulate.
+    ///
+    /// serde-default so an older wire payload (no field) deserialises
+    /// as empty.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cumulative_data: std::collections::BTreeSet<DataId>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -658,6 +689,21 @@ pub fn build_sidecar(
     //     `partition=blocks2d` directives.
     let grid_shape_for_outer_iv = acfg.grid_shape_for_outer_iv.clone();
 
+    // (k) Cumulative cross-iteration data symbols (TASK-0341.02.02.01.03,
+    //     cycle 213). Walk the source statements: a data symbol is
+    //     cumulative iff it is the LHS of a `<--` nested inside a `for`
+    //     loop AND reads itself on the RHS at an index expression that
+    //     DIFFERS from the LHS index along that loop's iteration axis.
+    //     Resolve names -> DataId via acfg.name_data. Empty for every
+    //     non-cumulative algorithm (every example except 16-jacobi).
+    let mut cumulative_names: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    collect_cumulative_data_names(&linked.algo.stmts, &[], &mut cumulative_names);
+    let cumulative_data: std::collections::BTreeSet<DataId> = cumulative_names
+        .iter()
+        .filter_map(|n| acfg.name_data.get(n).copied())
+        .collect();
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -669,7 +715,88 @@ pub fn build_sidecar(
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
+        cumulative_data,
     })
+}
+
+/// Walk `stmts` (descending into `IrStmt::For` bodies, carrying the
+/// stack of enclosing loop-variable names `enclosing_fors`) and insert
+/// into `out` every data symbol that is a **cumulative cross-iteration**
+/// array (TASK-0341.02.02.01.03, cycle 213).
+///
+/// A data symbol `D` is cumulative iff there is an
+/// `IrStmt::Dataflow { lhs, rhs }` with `lhs.name == D` nested inside at
+/// least one `for` loop, where the RHS contains a self-read
+/// `IrExpr::DataRef { name: D, indices }` whose index expression along
+/// SOME enclosing-loop axis DIFFERS from the LHS index at the same
+/// dimension position. "Differs" is structural `IrExpr` inequality.
+///
+/// # Discriminator rationale (the histogram vs jacobi distinction)
+///
+/// - 16-jacobi: `field[t][y][x] <-- jacobi5_or_seed(field[(t+ITERS)%
+///   (ITERS+1)][y-1][x], ...)`. The self-read at dim 0 is
+///   `(t+ITERS)%(ITERS+1)`, structurally != the LHS dim-0 index `t`
+///   ⇒ CUMULATIVE. (`t` is an enclosing-for var, so the index shift is
+///   a cross-iteration read.)
+/// - 08-histogram: `histogram[b] <-- bin_inc(histogram[b], input[i],
+///   b)`. The self-read index `[b]` is IDENTICAL to the LHS index `[b]`
+///   ⇒ NOT cumulative (a same-slice read-modify-write disjoint
+///   accumulator — stays `wrapping_add` fan-in).
+///
+/// # Conservatism
+///
+/// The test requires (a) the dataflow is inside ≥1 `for` AND (b) a
+/// self-read index that differs from the LHS at the same dim. A data
+/// symbol read at the SAME index everywhere (pure read-modify) is not
+/// classified. The differing index must reference an enclosing-for var
+/// to be a genuine cross-iteration read, but the simpler structural
+/// "index differs" test already separates every shipped schedule
+/// correctly and is more robust to const-fold/grammar drift; the
+/// enclosing-for guard (a) prevents a top-level non-iterated self-read
+/// from being mistaken for cumulative.
+pub(crate) fn collect_cumulative_data_names(
+    stmts: &[crate::algo::IrStmt],
+    enclosing_fors: &[String],
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    use crate::algo::{IndexedRef, IrExpr, IrStmt};
+
+    // Recurse the RHS, collecting every self-read `DataRef` whose name
+    // matches `lhs_name`, comparing each index vector against the LHS.
+    fn rhs_self_read_differs(rhs: &IrExpr, lhs: &IndexedRef) -> bool {
+        match rhs {
+            IrExpr::DataRef(r) => {
+                if r.name == lhs.name && r.indices != lhs.indices {
+                    return true;
+                }
+                // Descend into index expressions defensively (a future
+                // grammar may nest data reads in index position).
+                r.indices.iter().any(|ix| rhs_self_read_differs(ix, lhs))
+            }
+            IrExpr::Call { args, .. } => args.iter().any(|a| rhs_self_read_differs(a, lhs)),
+            IrExpr::BinOp(_, a, b) => {
+                rhs_self_read_differs(a, lhs) || rhs_self_read_differs(b, lhs)
+            }
+            IrExpr::Neg(inner) => rhs_self_read_differs(inner, lhs),
+            IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
+        }
+    }
+
+    for s in stmts {
+        match s {
+            IrStmt::Dataflow { lhs, rhs } => {
+                if !enclosing_fors.is_empty() && rhs_self_read_differs(rhs, lhs) {
+                    out.insert(lhs.name.clone());
+                }
+            }
+            IrStmt::For { var, body, .. } => {
+                let mut nested: Vec<String> = enclosing_fors.to_vec();
+                nested.push(var.clone());
+                collect_cumulative_data_names(body, &nested, out);
+            }
+            IrStmt::Effect { .. } => {}
+        }
+    }
 }
 
 /// Walk an ACFG subtree, populating `out` with `(seq -> policy.buffer)`
@@ -762,4 +889,202 @@ fn collect_loop_bounds(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cumulative_tests {
+    //! TASK-0341.02.02.01.03 cycle 213: pin the cumulative-array
+    //! discriminator that drives the COPY-not-accumulate combine for
+    //! 16-jacobi/distributed. The discriminator MUST classify jacobi's
+    //! cross-iteration `field` as cumulative while leaving histogram's
+    //! same-index read-modify accumulator NON-cumulative (so 08-histogram
+    //! / 05-stencil keep their accumulate / non-fan-in behaviour).
+
+    use super::collect_cumulative_data_names;
+    use crate::algo::{IndexedRef, IrExpr, IrStmt};
+    use std::collections::BTreeSet;
+
+    fn ident(s: &str) -> IrExpr {
+        IrExpr::Ident(s.to_string())
+    }
+
+    /// jacobi shape: `field[t][y][x] <-- f(field[(t+ITERS)%(ITERS+1)][y-1][x], ...)`
+    /// nested inside `for t { for y { for x { ... } } }`. The self-read
+    /// dim-0 index differs from the LHS dim-0 index `t` ⇒ cumulative.
+    fn jacobi_like_stmts() -> Vec<IrStmt> {
+        use crate::algo::IrBinOp::{Add, Mod, Sub};
+        let prev_t = IrExpr::BinOp(
+            Mod,
+            Box::new(IrExpr::BinOp(
+                Add,
+                Box::new(ident("t")),
+                Box::new(ident("ITERS")),
+            )),
+            Box::new(IrExpr::BinOp(
+                Add,
+                Box::new(ident("ITERS")),
+                Box::new(IrExpr::IntLit(1)),
+            )),
+        );
+        let self_read = IrExpr::DataRef(IndexedRef {
+            name: "field".to_string(),
+            indices: vec![
+                prev_t,
+                IrExpr::BinOp(Sub, Box::new(ident("y")), Box::new(IrExpr::IntLit(1))),
+                ident("x"),
+            ],
+        });
+        let rhs = IrExpr::Call {
+            callee: "jacobi5_or_seed".to_string(),
+            args: vec![self_read, ident("t")],
+        };
+        let df = IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "field".to_string(),
+                indices: vec![ident("t"), ident("y"), ident("x")],
+            },
+            rhs,
+        };
+        vec![IrStmt::For {
+            var: "t".to_string(),
+            lo: IrExpr::IntLit(0),
+            hi: ident("ITERS"),
+            body: vec![IrStmt::For {
+                var: "y".to_string(),
+                lo: IrExpr::IntLit(1),
+                hi: ident("H"),
+                body: vec![IrStmt::For {
+                    var: "x".to_string(),
+                    lo: IrExpr::IntLit(1),
+                    hi: ident("W"),
+                    body: vec![df],
+                }],
+            }],
+        }]
+    }
+
+    /// histogram shape: `histogram[b] <-- bin_inc(histogram[b], input[i], b)`
+    /// nested inside `for i { ... }`. The self-read index `[b]` is
+    /// IDENTICAL to the LHS index ⇒ NOT cumulative (disjoint single-pass
+    /// accumulator — stays `wrapping_add` fan-in).
+    fn histogram_like_stmts() -> Vec<IrStmt> {
+        let self_read = IrExpr::DataRef(IndexedRef {
+            name: "histogram".to_string(),
+            indices: vec![ident("b")],
+        });
+        let input_read = IrExpr::DataRef(IndexedRef {
+            name: "input".to_string(),
+            indices: vec![ident("i")],
+        });
+        let rhs = IrExpr::Call {
+            callee: "bin_inc".to_string(),
+            args: vec![self_read, input_read, ident("b")],
+        };
+        let df = IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "histogram".to_string(),
+                indices: vec![ident("b")],
+            },
+            rhs,
+        };
+        vec![IrStmt::For {
+            var: "i".to_string(),
+            lo: IrExpr::IntLit(0),
+            hi: ident("N"),
+            body: vec![df],
+        }]
+    }
+
+    /// 05-stencil shape: `img_out[y][x] <-- blur3(img_in[y-1][x], ...)`.
+    /// img_out is NOT self-read (reads img_in, a different symbol) ⇒ NOT
+    /// cumulative (and not even an accumulator).
+    fn stencil_like_stmts() -> Vec<IrStmt> {
+        use crate::algo::IrBinOp::Sub;
+        let in_read = IrExpr::DataRef(IndexedRef {
+            name: "img_in".to_string(),
+            indices: vec![
+                IrExpr::BinOp(Sub, Box::new(ident("y")), Box::new(IrExpr::IntLit(1))),
+                ident("x"),
+            ],
+        });
+        let df = IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "img_out".to_string(),
+                indices: vec![ident("y"), ident("x")],
+            },
+            rhs: IrExpr::Call {
+                callee: "blur3".to_string(),
+                args: vec![in_read],
+            },
+        };
+        vec![IrStmt::For {
+            var: "y".to_string(),
+            lo: IrExpr::IntLit(1),
+            hi: ident("H"),
+            body: vec![IrStmt::For {
+                var: "x".to_string(),
+                lo: IrExpr::IntLit(1),
+                hi: ident("W"),
+                body: vec![df],
+            }],
+        }]
+    }
+
+    #[test]
+    fn jacobi_field_is_cumulative() {
+        let mut out = BTreeSet::new();
+        collect_cumulative_data_names(&jacobi_like_stmts(), &[], &mut out);
+        assert!(
+            out.contains("field"),
+            "jacobi's cross-iteration `field` (self-read at a SHIFTED dim-0 index) \
+             must be classified cumulative ⇒ COPY combine; got {out:?}"
+        );
+        assert_eq!(out.len(), 1, "only `field` should be cumulative; got {out:?}");
+    }
+
+    #[test]
+    fn histogram_accumulator_is_not_cumulative() {
+        let mut out = BTreeSet::new();
+        collect_cumulative_data_names(&histogram_like_stmts(), &[], &mut out);
+        assert!(
+            out.is_empty(),
+            "histogram's same-index read-modify accumulator must NOT be classified \
+             cumulative (it stays an accumulate fan-in); got {out:?}"
+        );
+    }
+
+    #[test]
+    fn stencil_output_is_not_cumulative() {
+        let mut out = BTreeSet::new();
+        collect_cumulative_data_names(&stencil_like_stmts(), &[], &mut out);
+        assert!(
+            out.is_empty(),
+            "05-stencil's img_out (not self-read) must NOT be cumulative; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_self_read_outside_for_is_not_cumulative() {
+        // A self-read at top level (no enclosing `for`) is NOT a
+        // cross-iteration read — the enclosing-for guard excludes it.
+        let df = IrStmt::Dataflow {
+            lhs: IndexedRef {
+                name: "acc".to_string(),
+                indices: vec![IrExpr::IntLit(0)],
+            },
+            rhs: IrExpr::Call {
+                callee: "f".to_string(),
+                args: vec![IrExpr::DataRef(IndexedRef {
+                    name: "acc".to_string(),
+                    indices: vec![IrExpr::IntLit(1)],
+                })],
+            },
+        };
+        let mut out = BTreeSet::new();
+        collect_cumulative_data_names(&[df], &[], &mut out);
+        assert!(
+            out.is_empty(),
+            "a top-level (non-iterated) self-read must NOT be cumulative; got {out:?}"
+        );
+    }
 }
