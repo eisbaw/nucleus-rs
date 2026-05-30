@@ -144,10 +144,14 @@ impl std::error::Error for PetriAnalysisError {}
 /// sentinel. That sentinel falls through to `check_deadlock_free` for
 /// the precise `Stalled` diagnosis.
 ///
-/// This function never panics and never mutates `net`: both underlying
-/// passes clone the net and replay against a private copy. The error is
-/// typed ([`PetriAnalysisError`]); the driver stringifies it into its
-/// `Err(String)` channel.
+/// This function never mutates `net` (both underlying passes clone the
+/// net and replay against a private copy) and does not itself panic on
+/// any well-formed net: it returns the typed [`PetriAnalysisError`] for
+/// every soundness failure, which the driver stringifies into its
+/// `Err(String)` channel. (The only transitive panic path is
+/// [`Net::fire`]'s `u32` arc-weight/marking overflow guards — genuinely
+/// unreachable on v2's small-weight, capacity-bounded nets; an invariant
+/// guard, not a valid-input crash.)
 ///
 /// ## What this does and does not prove
 ///
