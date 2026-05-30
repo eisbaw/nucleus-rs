@@ -69,9 +69,9 @@ pub struct ReuseRewriteGroup {
     pub iv_name: String,
 }
 
-/// Convert the sidecar's [`ConstValue`](nucleus_compiler::sidecar::ConstValue)
+/// Convert the sidecar's `ConstValue`
 /// table to the [`ResolvedConst`] table shape
-/// [`affine_decompose`](nucleus_compiler::affine_decompose) consumes.
+/// `affine_decompose` consumes.
 /// They carry the same `(ty, value)` data; `ResolvedConst` additionally
 /// names itself. Trivial O(n) materialise on a small per-program table.
 ///

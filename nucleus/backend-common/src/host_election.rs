@@ -35,7 +35,7 @@
 //! # Two view variants
 //!
 //! Backends iterate
-//! [`NameTables::worker`](nucleus_compiler::NameTables::worker), which
+//! `NameTables::worker`, which
 //! is `BTreeMap<WorkerId, String>` (key = WorkerId, value = name).
 //! The driver iterates `ACFG::name_workers`, which is
 //! `BTreeMap<String, WorkerId>` (key = name, value = WorkerId).
