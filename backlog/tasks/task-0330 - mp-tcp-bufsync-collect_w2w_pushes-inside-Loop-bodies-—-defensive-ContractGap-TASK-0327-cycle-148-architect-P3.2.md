@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-25 17:40'
-updated_date: '2026-05-26 07:10'
+updated_date: '2026-05-30 07:41'
 labels:
   - M6
   - backend
@@ -170,4 +170,10 @@ What changed:
 Per memory `feedback-ac-rewrite-on-done-task`: TASK-0330's ACs were NOT rewritten. The reframe is at the DOCSTRING level in production code only; this addendum records the cycle for tracker traceability.
 
 Verification: all gates green; baseline preserved (962/0/3 dev, 961/0/3 release, 112/102/0/10/0 e2e); test pins in `tests/loop_body_w2w_push.rs` for both backends continue to pass (the synthetic fixtures bypass the slice-1/slice-2 passes so still trigger the guard).
+
+FORWARD-CARRIED from TASK-0341.02.02.01.02 (cycle 212), informational: the in-Loop w2w Push your defensive guard rejects for 16-jacobi/distributed (bufsync/poll host-relay path) is the SAME exchange whose CORRECT semantics were pinned down this cycle. The exchange must be a BANDED slice-paste COPY of each worker band row of field[t] (NOT a whole-array accumulate, which xN-double-counts the cumulative cross-iteration field history — proven: output == 4x reference on the 4-worker pthreads-sync emit). When the host-relay model is extended to admit in-Loop w2w transfers (the bufsync/poll fix), it must relay band-row COPIES, not whole-array sums; and per-pair FIFO ordering must follow the compute->send->recv-per-t structure (memory project-mp-tcp-event-vs-bufsync-safety-profile). No code change here; this is the durable semantics for whoever lifts the guard.
+
+=== Forward-carried from TASK-0341.02.02.01.02 cycle 212 (keep in sync with .01/.03 — memory feedback-verbatim-copy-comment-doc-lie) ===
+
+When the bufsync/poll host-relay model is extended to handle the in-Loop w2w field exchange for 16-jacobi/distributed, the relay must transport per-worker BAND-ROW COPIES (each worker's WRITE band of field[t], slice-paste OVERWRITE), NOT whole-array sums. The read-only architect proved (cycle 212) that a whole-array ACCUMULATE combine xN-double-counts the cumulative cross-iteration field history, and that the workers->host GATHER of field is ALSO an accumulate that must flip to disjoint band-copy (it is the operative source of the xN on the extracted output). Same cumulative-vs-disjoint COPY semantics as TASK-0341.02.02.01.03. So this is NOT only a placement/over-count problem (the TASK-0330 loud guard) — the combine/relay VALUE model is wrong for cumulative cross-iteration arrays too.
 <!-- SECTION:NOTES:END -->
