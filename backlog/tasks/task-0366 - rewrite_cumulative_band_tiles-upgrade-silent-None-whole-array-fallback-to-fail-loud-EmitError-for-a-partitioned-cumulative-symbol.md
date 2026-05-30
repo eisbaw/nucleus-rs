@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-30 09:53'
-updated_date: '2026-05-30 17:52'
+updated_date: '2026-05-30 18:30'
 labels:
   - compiler
   - transfer_inject
@@ -52,6 +52,8 @@ FIX: the None branch now distinguishes two cases. (A) partition_ranges NON-EMPTY
 SUBTLETIES for future cycles: (1) recursion threading — Sequence arm uses .collect::<Result<Vec<_>,_>>()?, Repeat boxes the recursive ?, leaf arms wrap in Ok(). Entry call site at ~834 uses ? (enclosing inject_transfers already returns Result). (2) forcing case A None in the unit test: give data_dim_iv_map the right dim count (avoid the per_dim.len()!=dims.len() early-None) but partition on a DECOY iv that does not index the data, so saw_band stays false. (3) case B test uses EMPTY partition_ranges and asserts Ok(Xfer) with the tile UNCHANGED — this pins the discriminator (without it a future edit could silently regress to rejecting game-of-life). (4) no clippy quirks; build/clippy clean first try after the A/B fix.
 
 GATE (actual): just build OK; just clippy OK (-D warnings clean); just test 1141 passed/0 failed/3 ignored (dev); just test-release 1140 passed/0 failed/3 ignored (the -1 is the known dev-only debug_assert-gated should_panic divergence, TASK-0291); just e2e total: 322 pass: 265 fail: 0 skipped: 57 required-fail: 0 — reproduced 2x.
+
+CYCLE-214 ORCHESTRATOR REVIEW-GATE CLOSE (commit cc0d20d folds back the gate findings on b605490). Parallel read-only gate: qa-test-runner GO (build/clippy clean; dev test 1141/0/3 release 1140/0/3 on b605490; e2e 322/265/0/57/0 reproduced 2x) + mped-architect GO. Architect P2 (recurring pattern #1 comment-lie): the CumulativeWholeArrayFallback variant doc + runtime message asserted the array is REPLICATED whole across partition workers as fact, but the guard (partition_ranges non-empty) only proves some partition is active in-pass AND no band covers this array (whole-program granularity, not per-array). FOLDED BACK in cc0d20d: reworded both sites to describe a CONSERVATIVE tripwire that over-rejects a hypothetical single-worker-cumulative-alongside-unrelated-partition shape on purpose. Architect P3 (test gap): added task0366_fail_loud_error_propagates_through_nested_sequence_and_repeat pinning the ?-threading through Sequence collect and Repeat boxed-?. Post-foldback gate: dev 1142/0/3, release 1141/0/3, e2e 322/265/0/57/0 reproduced 2x. AC#1 TEXT CLARIFICATION (architect P3, addendum not rewrite): AC#1 says raises EmitError::ContractGap; the shipped + correct type is TransferInjectError::CumulativeWholeArrayFallback (EmitError would hit the dev/release should_panic trap; TransferInjectError is the pass-local non_exhaustive error). AC#1 satisfied via that variant. Architect silent-sibling sweep CLEAN: cumulative_band_bounds has exactly one production None-consumer (the touched site); hoist_cumulative_w2w_to_repeat_body and strip_cumulative_xfers only relocate/excise Xfers (correctly stay infallible).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
