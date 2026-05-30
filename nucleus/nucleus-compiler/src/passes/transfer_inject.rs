@@ -448,12 +448,23 @@ pub enum TransferInjectError {
     /// has an `Xfer` for which [`cumulative_band_bounds`] returned
     /// `None` (no partitioned iv covers any data dim on this `src` →
     /// `saw_band == false`) WHILE A PARTITION IS ACTIVE
-    /// (`partition_ranges` is non-empty). The cumulative array is then
-    /// REPLICATED whole across the partition workers, so leaving the
-    /// incoming WHOLE-ARRAY tile in place would silently re-introduce
-    /// the xN double-count `rewrite_cumulative_band_tiles` exists to
-    /// remove (the host gather / w2w exchange of N identical full
-    /// slices).
+    /// (`partition_ranges` is non-empty).
+    ///
+    /// This is a CONSERVATIVE tripwire, not a precise per-array
+    /// diagnosis: the guard proves only that *some* partition is active
+    /// *somewhere in this pass invocation* AND no band covers *this*
+    /// cumulative array — it does NOT itself prove the array is
+    /// replicated across the partition workers. For every shipped
+    /// schedule today the only way to reach it WOULD be the
+    /// replicated-across-workers shape (where the host gather / w2w
+    /// exchange of N identical full slices re-introduces the xN
+    /// double-count `rewrite_cumulative_band_tiles` exists to remove),
+    /// so failing loud here is strictly safer than silently keeping the
+    /// whole-array tile. A future program could in principle reach it
+    /// with a single-worker cumulative array sitting alongside an
+    /// unrelated partitioned array; that case is over-rejected on
+    /// purpose (it forces the write-band derivation to be extended
+    /// rather than shipping a possibly-xN-wrong tile).
     ///
     /// This is distinct from the UNPARTITIONED cumulative case
     /// (`partition_ranges` EMPTY, e.g. 11-game-of-life/pipelined: a
@@ -2855,12 +2866,16 @@ fn rewrite_cumulative_band_tiles(
                                 "cumulative data {:?} (src {:?}) is in cumulative_data and a \
                                  partition is active (partition_ranges non-empty) but \
                                  cumulative_band_bounds returned None (no partitioned iv covers \
-                                 any data dim on this src). The array is replicated whole across \
-                                 the partition workers; keeping the whole-array tile would \
-                                 silently re-introduce the xN double-count the cumulative-band \
-                                 rewrite removes. TASK-0366: a new partitioned-cumulative shape \
-                                 reached this branch; the write-band derivation must be extended \
-                                 for it.",
+                                 any data dim on this src). For every shipped schedule today this \
+                                 is the replicated-across-workers shape, where keeping the \
+                                 whole-array tile would silently re-introduce the xN double-count \
+                                 the cumulative-band rewrite removes (host gather / w2w exchange \
+                                 of N identical full slices). This guard is a CONSERVATIVE \
+                                 tripwire — it does not itself prove this array is replicated, so \
+                                 a single-worker cumulative array alongside an unrelated \
+                                 partitioned array is over-rejected on purpose. TASK-0366: a new \
+                                 partitioned-cumulative shape reached this branch; extend the \
+                                 write-band derivation (or narrow this guard) for it.",
                                 x.data, x.src
                             ),
                         });
@@ -5354,6 +5369,78 @@ mod tests {
                  whole-array transfer (Ok), NOT rejected; got: {other:?}"
             ),
         }
+    }
+
+    /// TASK-0366 cycle-214 architect P3 fold-back — confirm the
+    /// fail-loud error PROPAGATES through the recursive `Sequence` /
+    /// `Repeat` arms (the `?`-threading), not just from a bare top-level
+    /// `Xfer` leaf. Case A and B drive the function with a leaf node; if
+    /// a future edit broke the `collect::<Result<Vec<_>, _>>()?` in the
+    /// `Sequence` arm or the boxed `?` in the `Repeat` arm, those two
+    /// tests would still pass and only the e2e gate would (indirectly)
+    /// catch it. Here the Case-A Xfer is buried inside
+    /// `Sequence([ Repeat(t) { Sequence([ Xfer ]) } ])`, so an `Err`
+    /// reaching the caller proves both recursive arms re-raise.
+    #[test]
+    fn task0366_fail_loud_error_propagates_through_nested_sequence_and_repeat() {
+        let t_iv = IterVar(2);
+        let y_iv = IterVar(4);
+        let x_iv = IterVar(3);
+        let field = DataId(0);
+        let src = WorkerId(1);
+        let cumulative: BTreeSet<DataId> = [field].into_iter().collect();
+
+        let mut data_dim_iv_map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+        data_dim_iv_map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
+        let mut data_dims: BTreeMap<DataId, Vec<i64>> = BTreeMap::new();
+        data_dims.insert(field, vec![5i64, 8, 8]);
+
+        // Decoy partition (non-empty → Case A) on an iv that does NOT
+        // index `field`, so `cumulative_band_bounds` returns None.
+        let decoy_iv = IterVar(99);
+        let partition_ranges =
+            make_partition_ranges(&[(decoy_iv, &[(WorkerId(1), 0..4), (WorkerId(2), 4..8)])]);
+
+        let policy = TransferPolicy {
+            synchronous: true,
+            buffer: 1,
+            notify: NotifyMode::Default,
+        };
+        let xfer = ACFGNode::Xfer(XferPlaceholder {
+            role: XferRole::Push,
+            src,
+            dst: WorkerId(0),
+            data: field,
+            tile: IterTile::new(vec![(t_iv, 0..5), (y_iv, 0..8), (x_iv, 0..8)]),
+            seq: SeqTag(0),
+            policy,
+        });
+        // Bury the offending Xfer two levels deep: Sequence -> Repeat ->
+        // Sequence -> Xfer. Reaching it exercises BOTH the Sequence
+        // `collect::<Result>?` and the Repeat boxed `?`.
+        let nested = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: t_iv,
+            range: 0..5,
+            body: Box::new(ACFGNode::Sequence(vec![xfer])),
+            block_tag: None,
+        }]);
+
+        let result = rewrite_cumulative_band_tiles(
+            nested,
+            &cumulative,
+            &partition_ranges,
+            &data_dim_iv_map,
+            &data_dims,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(TransferInjectError::CumulativeWholeArrayFallback { data, .. }) if data == field
+            ),
+            "TASK-0366 P3: the fail-loud error must propagate out of a nested \
+             Sequence/Repeat (the `?`-threading), not be swallowed; got: {result:?}"
+        );
     }
 
     /// `strip_cumulative_xfers` lifts the cumulative-data Xfers out of a
