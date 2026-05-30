@@ -189,6 +189,7 @@ ci:
     just check-include-str-coverage
     just check-narrative-doc-lie
     just check-mega-files
+    just check-doc-links
     just e2e
     just determinism-check
     just determinism-check-negative
@@ -325,6 +326,59 @@ check-include-str-coverage:
         exit 1; \
     fi; \
     echo "OK: every include_str! has compile coverage."
+
+# Catch the silent doc-link / HTML-tag breakage class (memory:
+# feedback-visibility-tighten-doclink-trap). `just check` / `just clippy`
+# build NO docs, so a visibility tighten or a renamed item that breaks an
+# intra-doc-link — or angle-bracket prose rustdoc reads as an unclosed
+# HTML tag — ships green and SILENT. The TASK-0340.11 epic drove both
+# classes to zero across all 14 workspace crates; this PROVEN-BITING arm
+# locks that in by building the whole workspace's docs under two denied
+# lints (negative arms verified TASK-0340.11.02 — both make the build
+# exit 101):
+#   - broken_intra_doc_links: a [`Foo`] link whose target moved/renamed,
+#     or any unresolved explicit-path link [`X`](made_up::Item).
+#   - invalid_html_tags: `<name>` / `slot_<id>` prose parsed as HTML.
+#
+# WHY --workspace (not per-crate -p): the dead-cross-crate-href trap that
+# bit the backend-common slice (an explicit [`X`](sibling_crate::path)
+# link renders a literal href="sibling::path" that 404s with NO lint
+# warning under a SINGLE-crate `-p ... --no-deps` build) is STRUCTURALLY
+# closed by --workspace: every member is co-documented, so a sibling-crate
+# link resolves to a real relative href (empirically verified
+# TASK-0340.11.02: [`DataId`](nucleus_compiler::event::DataId) from
+# backend-common renders ../../nucleus_compiler/event/struct.DataId.html,
+# no warning, no dead href). So the --workspace build is itself the fix,
+# not just a check.
+#
+# The trailing dead-href grep is cheap DEFENSE-IN-DEPTH for the one
+# residual the lint is still blind to AND --workspace cannot co-document:
+# an explicit-path link to a NON-workspace dependency that has no docs.rs
+# resolution (a path/git dep), which would render a literal href="dep::..."
+# . The project currently has NO such dep, so this arm is a no-op safety
+# net today — retained per the feedback-visibility-tighten-doclink-trap
+# DoD and to fail loud the day a path-dep + such a link is added. (Real
+# crates.io deps like serde resolve to https://docs.rs/..., excluded by
+# the word::... pattern.) Asserts rustdoc EXIT==0 BEFORE the grep — an
+# empty grep on a failed build is VACUOUS, not clean (TASK-0340.11.03
+# method correction): the cargo doc line fails the recipe first.
+#
+# Lint-set decision (TASK-0340.11.01/.02): gates the DEFAULT public-API
+# doc surface, NOT --document-private-items. private_intra_doc_links and
+# rustdoc::all (unescaped-backtick; backend-common still carries 2, a
+# deferred decision) are deliberately NOT denied here.
+check-doc-links:
+    @echo "checking workspace cargo-doc (broken_intra_doc_links + invalid_html_tags + dead cross-crate hrefs)..."
+    cd nucleus && rm -rf target/doc && RUSTDOCFLAGS='-D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags' cargo doc --no-deps --workspace
+    @cd nucleus && dead=$(grep -rhoE 'href="[a-z_]+::[^"]*"' target/doc/ 2>/dev/null | sort -u || true); \
+    if [ -n "$dead" ]; then \
+        echo "FAIL: dead cross-crate intra-doc hrefs in rendered docs — the -D broken_intra_doc_links lint is blind to these (memory: feedback-visibility-tighten-doclink-trap):"; \
+        echo "$dead"; \
+        echo ""; \
+        echo "A cross-crate intra-doc link to a non-workspace dep renders a literal-path href that 404s under --no-deps. Use a backtick code span for the out-of-crate reference, not a [link](dep::path)."; \
+        exit 1; \
+    fi; \
+    echo "OK: workspace docs clean (0 broken-link / html-tag warnings, 0 dead cross-crate hrefs)."
 
 # Catch the predictive-conclusion doc-lie defect class in narrative
 # TOML (memory: feedback-comment-doc-lie-recurring 12+ firings;
