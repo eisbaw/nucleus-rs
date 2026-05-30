@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-30 11:08'
-updated_date: '2026-05-30 20:59'
+updated_date: '2026-05-30 22:49'
 labels:
   - docs
   - PRD
@@ -63,10 +63,14 @@ GATE NUMBERS (all green): build+clippy clean (fixed one doc_lazy_continuation - 
 HONEST LIMITATIONS: (1) gate is a provably-dead-today tripwire on shipping schedules - structural inject-pass guards mean no valid schedule produces an unsound net (cannot e2e-test the reject path through the driver; pinned at function level only). (2) exact-replay not full reachability. (3) deadlock diagnostic names stall point not full cycle.
 
 CYCLE-216 IMPLEMENTATION COMPLETE + ARCHITECT GO; AC#2 GATE-VERIFICATION PENDING (batched). AC#1 (decision): Option A chosen by user — wire check_bounded+check_deadlock_free as a per-build compile gate. Commits 8903076 (net_soundness.rs check_net_sound + PetriAnalysisError + driver gate after emit-pn before out_dir dispatch, on FINAL acfg; 4 tests; 02-split test tightened to assert Ok) + 8d0419d (PRD section 2/8.1/8.2/8.4/8.6 reconciled) + f41c7b1 (architect P3 docstring softening). ORCHESTRATOR DE-RISK: ran a report-mode sweep over all 17 examples x schedules x 7 tier-1 backends (288 nets) — every one bounded+deadlock-free, so the hard gate rejects nothing shipping (02-split InvalidFiringOrder caveat is STALE). mped-architect read-only review = GO: independently verified every changed PRD claim TRUE vs code (incl. the real section-8.4 cycle->stall doc-lie correction + the section-8.1 liveness-overclaim removal), fall-through error-labelling provably sound (no false-accept; DeadlockError::CapacityExceeded dead in the composition), single shippable entry point gated (e2e harness shells out to the driver — no silent sibling), no panic on the gate path, 02-split tightening rationale grounded. Implementer-reported gate (NOT yet orchestrator-re-run, per batched-QA cadence): dev 1147/0/3, release 1146/0/3, e2e 322/265/0/57/0. AC#2 stays unticked + task In Progress until the batched gate re-runs these numbers (memory feedback-batch-qa-gate-not-per-task).
+
+AC#2 GATE-VERIFIED + DONE (cycle-217 batched gate, orchestrator-run x2). The batched verification (held per the new batch-QA cadence) ran build+clippy clean, dev test 1149/0/3, release 1148/0/3 (the net_soundness 4 tests + check_net_sound gate all green), and e2e reproduced 2x. The Petri soundness gate (check_bounded+check_deadlock_free per build, commits 8903076/8d0419d/f41c7b1) rejects NOTHING shipping — the e2e total moved 322/265/0/57/0 -> 329/272/0/57/0 only because the co-landed 17-spmv/gather cells (TASK-0341.03.01) added +7 PASS; every one of the 329 cells passes the soundness gate. Architect review was GO (independently verified PRD honesty, fall-through soundness, no silent-sibling, no panic) at landing. AC#1 (decision Option A) + AC#2 (executed: wire-in + negative tests + PRD reconcile) both met.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 DONE cycle-215. AC#1: Option A (wire-in) recorded as user-decided. AC#2: executed - check_net_sound gate wired into driver on every build (commit 8903076), negative tests prove rejection of unbounded + deadlocking nets at the function level, PRD section 8/section 2 + docstrings reconciled honestly with the now-true behaviour (commit 8d0419d). Gate green: e2e 322/265/0/57/0 unchanged, dev 1147/0/3, release 1146/0/3, clippy clean. Gate is exact-replay over one deterministic firing order (sound for v2 statically-ordered nets, not a general reachability engine) and a provably-dead-today tripwire on shipping schedules - pinned at function level. Independent orchestrator review gate (qa-test-runner + mped-architect) to run after.
+
+DONE cycle-217. check_bounded + check_deadlock_free now run as a per-build compile gate (check_net_sound) on the final ACFG of every build, making PRD section 8 literally true of the shipping compiler. Provably-dead tripwire on shipping schedules (structural guards mean no valid schedule produces an unsound net; gate rejects nothing across all 329 e2e cells); negative tests pin the reject path at the function level. PRD section 2/8 reconciled honestly (incl. correcting a real section-8.4 doc-lie). Gate exact-replay over one deterministic firing order, sound for v2 restricted nets.
 <!-- SECTION:FINAL_SUMMARY:END -->
