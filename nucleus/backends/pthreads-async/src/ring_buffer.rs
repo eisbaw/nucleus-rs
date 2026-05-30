@@ -143,7 +143,7 @@ pub fn emit_ring_struct_decl(out: &mut String) {
 
 /// Emit a per-instance `Arc<Ring<T>>` declaration with the documented
 /// capacity. The instance lives in the host thread's setup phase
-/// (mirrors `pthreads_sync::multi_worker::Plan`'s slot_<id> per-slot
+/// (mirrors `pthreads_sync::multi_worker::Plan`'s `slot_<id>` per-slot
 /// `Arc<Slot<T>>` declaration at multi_worker.rs:392), and gets
 /// cloned into each `thread::spawn` closure for the producer +
 /// consumer workers.

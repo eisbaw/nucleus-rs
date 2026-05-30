@@ -185,7 +185,7 @@ impl SkipEntry {
 /// Renode, M11 multi-MCU Renode) milestones. A `[[skip]]` entry
 /// deferred to a future milestone tags itself with that milestone
 /// (e.g. the embedded_multimcu cells tag M11) so "what is deferred to
-/// M<k>" stays greppable on the `milestone` field — TASK-0346.
+/// `M<k>`" stays greppable on the `milestone` field — TASK-0346.
 ///
 /// An unrecognised tag is a typed error (never a panic, never a silent
 /// default) — a mis-typed milestone must not silently delete a cell
@@ -198,7 +198,7 @@ impl Milestone {
     /// (M11, multi-MCU Renode). Bump this when the PRD adds a tier.
     const MAX: u8 = 11;
 
-    /// Parse "M<k>" (k = 0..=11, the full PRD §11 enum). The matrix
+    /// Parse "`M<k>`" (k = 0..=11, the full PRD §11 enum). The matrix
     /// only gates M1..M6 today, but the parser accepts the future
     /// tier-2/3 range (M7..M11) so a `[[skip]]`/`[[required]]` entry
     /// can tag its real deferral milestone without a code change here.
@@ -633,14 +633,16 @@ fn print_help() {
 
 /// Layout the harness depends on:
 ///
-///   <repo_root>/
-///     nucleus/                  # cargo workspace
-///       Cargo.toml
-///       e2e/                    # this crate
-///       backends/<name>/capabilities.toml
-///     nuc-nucleus/
-///       e2e-matrix.toml
-///       examples/<NN-name>/...
+/// ```text
+/// <repo_root>/
+///   nucleus/                  # cargo workspace
+///     Cargo.toml
+///     e2e/                    # this crate
+///     backends/<name>/capabilities.toml
+///   nuc-nucleus/
+///     e2e-matrix.toml
+///     examples/<NN-name>/...
+/// ```
 ///
 /// `Clone`: required so `execute_cells_parallel` can stash a snapshot
 /// inside an `Arc` for the worker pool. Cheap — two heap strings.
@@ -1327,7 +1329,7 @@ fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
 /// preserves the harness's pre-TASK-0049.08 behaviour for any
 /// unconventional algo, and is safe because the caller's
 /// fixture-existence check still validates the derived path — a wrong
-/// derivation surfaces as a "missing kernels at <path>" failure, never
+/// derivation surfaces as a "missing kernels at `<path>`" failure, never
 /// a silent miscompile against the wrong kernels. Unlike
 /// `resolve_algo_path`, this does NOT fail loud: the default is the
 /// honest, behaviour-preserving choice for an off-convention name.
