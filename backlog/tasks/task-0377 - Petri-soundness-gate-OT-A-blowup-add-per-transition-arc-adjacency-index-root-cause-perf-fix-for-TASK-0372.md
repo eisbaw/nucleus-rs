@@ -3,11 +3,11 @@ id: TASK-0377
 title: >-
   Petri soundness gate O(T*A) blowup: add per-transition arc adjacency index
   (root-cause perf fix for TASK-0372)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-30 23:06'
-updated_date: '2026-05-30 23:35'
+updated_date: '2026-05-30 23:37'
 labels:
   - perf
   - petri
@@ -35,11 +35,11 @@ ACCEPTANCE: gate cost on dist8 drops from ~440ms to a small fraction (target <40
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Net::fire (or a new fire_in_place) consults a per-transition arc adjacency index; no O(A) all-arcs scan remains on the analysis hot path
-- [ ] #2 Per-build Petri gate cost on 07-matmul/distributed8 drops from ~440ms to <40ms (measured, report before/after numbers)
-- [ ] #3 All existing boundedness/deadlock/net_soundness unit tests pass; behavior bit-identical (gate accepts/rejects the same nets)
-- [ ] #4 just test + just test-release + just e2e green; e2e totals + bit-identity unchanged across 7 tier-1 backends
-- [ ] #5 A perf regression pin (test or documented benchmark cmd) records the near-linear expectation so a future O(A)-reintroduction is catchable
+- [x] #1 Net::fire (or a new fire_in_place) consults a per-transition arc adjacency index; no O(A) all-arcs scan remains on the analysis hot path
+- [x] #2 Per-build Petri gate cost on 07-matmul/distributed8 drops from ~440ms to <40ms (measured, report before/after numbers)
+- [x] #3 All existing boundedness/deadlock/net_soundness unit tests pass; behavior bit-identical (gate accepts/rejects the same nets)
+- [x] #4 just test + just test-release + just e2e green; e2e totals + bit-identity unchanged across 7 tier-1 backends
+- [x] #5 A perf regression pin (test or documented benchmark cmd) records the near-linear expectation so a future O(A)-reintroduction is catchable
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -87,3 +87,25 @@ GATE GREEN: just build OK; just clippy OK (0 warnings, re-run independently); ju
 
 OUT-OF-SCOPE FINDING (pre-existing, NOT mine): cargo fmt --check reports drift in lib.rs/transfer_inject.rs/sidecar.rs/algo_lower.rs/algo_parser.rs (all unmodified by this task, drift is vs HEAD). My 4 changed files are fmt-clean. Filing a follow-up.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE (cycle 218). Root-cause perf fix landed in commit 29d6e8a. Petri soundness gate is now near-linear.
+
+WHAT: petri.rs gained ArcIndex (per-transition in/out incident-arc lists, Vec<Vec<usize>> into net.arcs) + Net::build_arc_index() (O(A), insertion-order-preserving) + Net::fire_in_place(t,&index) (O(deg(t)), no marking clone, marking left unmutated on failure). Public fire() delegates to fire_in_place + one final clone so all Marking-consuming tests/callers are unchanged. All three gate hot paths (check_bounded, derive_firing_order with an added contiguous-fired scan cursor, check_deadlock_free) build the index once and use fire_in_place; the per-step marking_before clone became lazy (failure arm only). enabled_transitions deliberately left un-indexed (off hot path) with a // TASK-0377 note.
+
+NUMBERS (dist8 T=4149/A=65722, prebuilt release binary, 30 reps, LC_ALL=C): isolated gate cost 435ms->16ms (27x); full build 439ms->26ms (16.6x). <40ms target MET; 15ms stretch just-missed (residual = 3x net.clone + 3x O(A) index build + derive replay, NOT any O(A)/fire scan).
+
+INVARIANT: pure perf — gate accepts/rejects identical nets, identical FireError/BoundednessError/DeadlockError variants. e2e 329/272/0/57/0 unchanged; 7-backend bit-identity preserved (0 differential failures). Determinism kept (index in arc-insertion order; needs/produces BTreeMap-summed). Index valid across net.clone() because TransitionId==vec index and clone preserves arcs+transitions.
+
+GATE: build OK; clippy 0-warn (independently re-run); test 1152/0; test-release 1151/0; e2e green. My 4 files fmt-clean.
+
+AC#5 PIN: tests/boundedness.rs::gate_stays_near_linear_under_large_net (4000-transition fan, check_net_sound<1s; old O(T*A)~=T^2 blows past). Docstring records the dist8 macro-bench command.
+
+FOLLOW-UPS FILED: TASK-0378 (pre-existing rustfmt drift in untouched files lib.rs/transfer_inject.rs/sidecar.rs/algo_lower.rs/algo_parser.rs, surfaced by fmt-check, overlaps older TASK-0276).
+
+RE TASK-0372 (the flag-it-off workaround this supersedes): the gate is now always-on AND cheap (16ms even on the worst-case net), so 0372s CLI flag + e2e split is no longer warranted on perf grounds. Recommend the orchestrator close TASK-0372 as superseded-by-0377. Left to orchestrator since 0372 is not in this task scope.
+
+LIMITATIONS / HONESTY: (1) review-gate subagents (qa-test-runner/mped-architect) were NOT available as tools in this implementer session; I self-performed the full verification gate + a recurring-defect self-audit (silent-sibling: 0 .fire( left on any non-test hot path; clone-validity + panic-path re-verified). Independent review remains the orchestrators to run. (2) The 16ms gate could be pushed lower by threading ONE index through all 3 passes instead of building it 3x, but that would change check_bounded/check_deadlock_free public signatures used by tests; declined as not worth the API churn given the target is met.
+<!-- SECTION:FINAL_SUMMARY:END -->
