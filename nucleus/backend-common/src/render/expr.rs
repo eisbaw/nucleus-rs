@@ -58,10 +58,83 @@ pub fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitEr
             let rs = render_int_expr(r, ctx)?;
             Ok(format!("({ls} {} {rs})", bin_op_str(op)))
         }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
-            "data-ref / call inside an integer index expression".to_string(),
+        // TASK-0341.03.01: a DATA-DEPENDENT (gather) index — `x[col[k]]`,
+        // where the index of `x` is itself a runtime data read `col[k]`.
+        // The inner ref `col[k]` lowers to this `IrExpr::DataRef`; we
+        // render it as a flat row-major load `col[(<flat>) as usize]`
+        // (an `i32`), which the surrounding subscript then casts to
+        // `usize` in turn. The inner read MUST be FULL-RANK (every axis
+        // of the index array indexed to a single scalar slot) — a
+        // partial-rank gather index would be a sub-array, not an integer
+        // index value, so it is rejected fail-loud. Kernel calls in index
+        // position remain unsupported.
+        IrExpr::DataRef(iref) => render_gather_index_load(iref, ctx),
+        IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
+            "kernel call inside an integer index expression".to_string(),
         )),
     }
+}
+
+/// Render a data-dependent (gather) index load `col[(<flat>) as usize]`
+/// for an inner [`IrExpr::DataRef`] appearing in index position
+/// (TASK-0341.03.01). The result is an `i32`-valued Rust expression
+/// (the loaded index value); the caller wraps it in the outer
+/// subscript and its own `as usize` cast.
+///
+/// Requires a FULL-RANK index (every dim of the inner array indexed to
+/// a scalar slot): a partial-rank inner ref is a sub-array, not a
+/// single integer index, and is rejected with [`EmitError`] rather
+/// than silently emitting a wrong (sub-array-start) offset.
+fn render_gather_index_load(
+    iref: &nucleus_compiler::algo::IndexedRef,
+    ctx: &RenderCtx<'_>,
+) -> Result<String, EmitError> {
+    if iref.indices.is_empty() {
+        return Err(EmitError::UnsupportedFeature(format!(
+            "whole-array reference `{}` used as an integer index (a gather \
+             index must be a fully-indexed scalar load like `col[k]`)",
+            iref.name
+        )));
+    }
+    // Resolve the inner array's DataId by inverting NameTables.data
+    // (DataId -> name); data symbols are few, a linear scan is fine.
+    let did = ctx
+        .names
+        .data
+        .iter()
+        .find(|(_, n)| n.as_str() == iref.name)
+        .map(|(d, _)| *d)
+        .ok_or_else(|| {
+            EmitError::ContractGap(format!(
+                "gather index array `{}` has no DataId in NameTables",
+                iref.name
+            ))
+        })?;
+    let ty = ctx.sidecar.data_type(did).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "gather index array `{}` ({did:?}) has no ResolvedType in the NameSidecar",
+            iref.name
+        ))
+    })?;
+    if iref.indices.len() != ty.dims.len() {
+        return Err(EmitError::UnsupportedFeature(format!(
+            "gather index array `{}` indexed with {} expression(s) but has rank {} \
+             (a gather index must be a FULL-RANK scalar load; sidecar dims={:?})",
+            iref.name,
+            iref.indices.len(),
+            ty.dims.len(),
+            ty.dims
+        )));
+    }
+    // Reuse the shared row-major flattener (it renders each inner index
+    // via `render_int_expr`, so a nested gather `x[a[b[k]]]` terminates
+    // by structural recursion). Yields `(<flat>) as usize`.
+    let slice = nucleus_compiler::event::DataSlice {
+        data: did,
+        indices: iref.indices.clone(),
+    };
+    let flat = super::fire::render_flat_index(&slice, ctx)?;
+    Ok(format!("{}[{flat}]", iref.name))
 }
 
 /// The `(lo, hi)` source strings for an `Event::Loop`.

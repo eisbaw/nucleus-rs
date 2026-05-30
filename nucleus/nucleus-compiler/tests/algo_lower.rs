@@ -877,6 +877,102 @@ for j : 0 .. f() {
 }
 
 // --------------------------------------------------------------------
+// TASK-0341.03.01: data-dependent (gather) index lowering.
+// --------------------------------------------------------------------
+
+/// A data-dependent index `out[i] <-- g(src[idx[i]])` (a gather) lowers
+/// cleanly: the inner `idx[i]` becomes a NESTED `IrExpr::DataRef` sitting
+/// in the index list of the outer `src` DataRef. This is the lowering
+/// half of TASK-0341.03.01 (the parser already admits the syntax; only
+/// `lower_index_expr` previously rejected a data ref in index position).
+#[test]
+fn gather_index_lowers_to_nested_dataref() {
+    use nucleus_compiler::algo::{IrExpr, IrStmt};
+    let src = "\
+const N : usize = 4;
+data src : i32[N];
+data idx : i32[N];
+data out : i32[N];
+kernel g : (i32) -> i32 pure;
+for i : 0 .. N {
+    out[i] <-- g(src[idx[i]]);
+}
+";
+    let ir = lower_str(src).expect("a gather in subscript position must lower");
+
+    // Walk to the Fire's kernel-arg `src[idx[i]]` and assert the index
+    // is a nested DataRef (the gather), not an affine expr.
+    fn find_nested_gather(stmts: &[IrStmt]) -> bool {
+        fn expr_is_gather(e: &IrExpr) -> bool {
+            // `src[ idx[i] ]`: a DataRef whose first index is itself a
+            // non-empty-index DataRef.
+            if let IrExpr::DataRef(outer) = e {
+                if let Some(IrExpr::DataRef(inner)) = outer.indices.first() {
+                    return inner.name == "idx" && !inner.indices.is_empty();
+                }
+            }
+            false
+        }
+        fn scan_expr(e: &IrExpr) -> bool {
+            match e {
+                IrExpr::Call { args, .. } => args.iter().any(scan_expr) || args.iter().any(expr_is_gather),
+                IrExpr::DataRef(r) => r.indices.iter().any(scan_expr) || expr_is_gather(e),
+                _ => false,
+            }
+        }
+        stmts.iter().any(|s| match s {
+            IrStmt::For { body, .. } => find_nested_gather(body),
+            IrStmt::Dataflow { rhs, .. } => scan_expr(rhs),
+            _ => false,
+        })
+    }
+    assert!(
+        find_nested_gather(&ir.stmts),
+        "the gather `src[idx[i]]` must lower to a DataRef whose index is a \
+         nested DataRef `idx[i]`; got IR: {:#?}",
+        ir.stmts
+    );
+}
+
+/// The gather admission is SCOPED to array-subscript position. A
+/// data-dependent LOOP BOUND `for i : 0 .. b[0]` must STILL be rejected
+/// at lowering (a clean located `NonIntegerShapeExpr`), NOT lowered —
+/// admitting it would push the failure into the const-evaluator
+/// downstream (worse diagnostic), and a data-dependent trip count is a
+/// separate, unimplemented feature. Pins the `allow_gather = false`
+/// loop-bound path of `lower_index_expr`.
+#[test]
+fn data_dependent_loop_bound_is_still_rejected() {
+    let src = "\
+const N : usize = 4;
+data b : i32[N];
+data out : i32[N];
+kernel g : () -> i32 pure;
+for i : 0 .. b[0] {
+    out[i] <-- g();
+}
+";
+    let err = lower_str(src)
+        .expect_err("a data-dependent loop bound `b[0]` must be rejected at lowering")
+        .first()
+        .clone();
+    match &err.kind {
+        LowerErrorKind::NonIntegerShapeExpr { reason, .. } => {
+            assert_eq!(
+                reason, "data references are not allowed here",
+                "a data-ref loop bound must give the data-ref rejection, not the \
+                 kernel-call one"
+            );
+        }
+        other => panic!("expected NonIntegerShapeExpr for a data-dependent loop bound, got {other:?}"),
+    }
+    assert!(
+        err.span.is_some(),
+        "the loop-bound rejection must stay LOCATED (Some(span)), not regress to None"
+    );
+}
+
+// --------------------------------------------------------------------
 // TASK-0092: multi-error accumulation + cascade discipline.
 //
 // The project's #1 recurring defect (memory

@@ -950,14 +950,17 @@ fn lower_for_into(
     // them. We remember whether a bound failed so we know not to emit
     // an `IrStmt::For` for this statement, but we always descend into
     // the body — that's the TASK-0205 fix.
-    let lo_ir = match lower_index_expr(lo, ir, scope) {
+    // Loop-bound position: a data-dependent bound stays rejected with a
+    // clean located error (allow_gather = false) — TASK-0341.03.01 admits
+    // gather only in array-subscript position.
+    let lo_ir = match lower_index_expr(lo, ir, scope, false) {
         Ok(v) => Some(v),
         Err(e) => {
             acc.record_stmt_error(e);
             None
         }
     };
-    let hi_ir = match lower_index_expr(hi, ir, scope) {
+    let hi_ir = match lower_index_expr(hi, ir, scope, false) {
         Ok(v) => Some(v),
         Err(e) => {
             acc.record_stmt_error(e);
@@ -1126,7 +1129,9 @@ fn lower_indices(
 ) -> Result<Vec<IrExpr>, LowerError> {
     indices
         .iter()
-        .map(|e| lower_index_expr(e, ir, scope))
+        // Subscript position: a data-dependent (gather) index is legal
+        // here (TASK-0341.03.01).
+        .map(|e| lower_index_expr(e, ir, scope, true))
         .collect()
 }
 
@@ -1135,22 +1140,38 @@ fn lower_indices(
 /// integer literals, consts, iteration variables in scope, arithmetic,
 /// and (for kernel arguments) data references and nested calls.
 ///
-/// For index/loop-bound positions, calls and data-refs are rejected
-/// (they would be runtime values, not iteration-space arithmetic).
-fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, LowerError> {
+/// `allow_gather` controls the ONE context-dependent case: a
+/// data-dependent (gather) index `x[col[k]]`, where an array's index
+/// is itself a runtime data read. It is legal ONLY in array-subscript
+/// position (`allow_gather == true`, set by [`lower_indices`] /
+/// [`lower_data_ref`]); in LOOP-BOUND position (`allow_gather ==
+/// false`, set by [`lower_for_into`]) a data ref stays rejected with a
+/// clean located [`LowerError`] — a data-dependent loop trip count is
+/// a separate, unimplemented feature, and admitting it here would push
+/// the failure downstream into the const-evaluator (worse diagnostic).
+/// Kernel calls are rejected in BOTH positions.
+fn lower_index_expr(
+    expr: &SpExpr,
+    ir: &AlgoIR,
+    scope: &Scope,
+    allow_gather: bool,
+) -> Result<IrExpr, LowerError> {
     // Errors are located at the offending sub-expression (`expr.span`);
     // identifier failures pass the identifier's own span down so an
     // out-of-scope / unknown reference points at the reference itself
     // (TASK-0090).
     match &expr.node {
         Expr::IntLit(n) => Ok(IrExpr::IntLit(*n)),
-        Expr::Unary(UnaryOp::Neg, inner) => {
-            Ok(IrExpr::Neg(Box::new(lower_index_expr(inner, ir, scope)?)))
-        }
+        Expr::Unary(UnaryOp::Neg, inner) => Ok(IrExpr::Neg(Box::new(lower_index_expr(
+            inner,
+            ir,
+            scope,
+            allow_gather,
+        )?))),
         Expr::Binary(op, lhs, rhs) => Ok(IrExpr::BinOp(
             ast_binop_to_ir(*op),
-            Box::new(lower_index_expr(lhs, ir, scope)?),
-            Box::new(lower_index_expr(rhs, ir, scope)?),
+            Box::new(lower_index_expr(lhs, ir, scope, allow_gather)?),
+            Box::new(lower_index_expr(rhs, ir, scope, allow_gather)?),
         )),
         // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
         // bare identifier in index/loop-bound position is the
@@ -1164,10 +1185,21 @@ fn lower_index_expr(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr,
         )),
         Expr::LValue(lv) => {
             // Bare identifier (parser models it as zero-indexed
-            // lvalue). At an index/loop-bound position, an indexed
-            // data reference is illegal.
+            // lvalue) resolves to a const / iter-var. An INDEXED data
+            // reference is a gather: legal only in subscript position.
             if lv.indices.is_empty() {
                 resolve_ident(&lv.name.node, lv.name.span.clone(), ir, scope)
+            } else if allow_gather && ir.data.contains_key(&lv.name.node) {
+                // TASK-0341.03.01: a DATA-DEPENDENT (gather) index — the
+                // index of an array is itself a runtime data read, e.g.
+                // `x[col_idx[i][k]]`. Lower the inner data ref to a
+                // nested `IrExpr::DataRef` (its own indices recurse
+                // through `lower_index_expr` with `allow_gather` still
+                // set, so `x[a[b[k]]]` nests and a bare iter-var index on
+                // the inner array still takes the affine path). Backend
+                // `render_int_expr` emits it as a flat scalar load
+                // `col_idx[<flat>] as usize`.
+                lower_data_ref(lv, ir, scope)
             } else {
                 Err(LowerError::at(
                     LowerErrorKind::NonIntegerShapeExpr {
@@ -1240,7 +1272,10 @@ fn lower_data_ref(lv: &IndexedLValue, ir: &AlgoIR, scope: &Scope) -> Result<IrEx
     let indices = lv
         .indices
         .iter()
-        .map(|e| lower_index_expr(e, ir, scope))
+        // Subscript position: nested data-dependent (gather) indices are
+        // legal here (TASK-0341.03.01); a bare iter-var index still takes
+        // the affine path inside `lower_index_expr`.
+        .map(|e| lower_index_expr(e, ir, scope, true))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(IrExpr::DataRef(IndexedRef {
         name: lv_name.clone(),

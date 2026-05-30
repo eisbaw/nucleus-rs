@@ -9,19 +9,21 @@
 // where `col_idx[i][k]` is a value loaded from a `data` array, not
 // an iv-affine expression).
 //
-// The natural SpMV expression `y[i] = sum_k val[i][k] *
-// x[col_idx[i][k]]` is GRAMMATICALLY INEXPRESSIBLE in the v2
-// algorithm sublanguage. docs/grammar-algo.md fixes
-//   IndexExpr ::= AddExpr
-//   AddExpr   ::= MulExpr (('+'|'-') MulExpr)*
-//   ...
-//   Atom      ::= IntLit | Ident | '(' AddExpr ')'
-// — an IndexExpr's Atom rule admits only IntLit / Ident /
-// parenthesised AddExpr; a nested IndexSuffix (`col_idx[i][k]`)
-// inside an IndexExpr (`x[...]`) is not in the grammar. AC#2 of
-// TASK-0341.03 closes as honest-BLOCKED at the language-sanity
-// boundary; the missing primitive is filed as TASK-0341.03.01
-// (companion to TASK-0044.04's identical data-dependent-WRITE gap).
+// This file keeps the masked-accumulator form for comparison. The
+// NATIVE expression `y[i] = sum_k val[i][k] * x[col_idx[i][k]]` is now
+// directly expressible — see the sibling `prog.gather.algo.nuc`
+// (TASK-0341.03.01). HISTORY: AC#2 of TASK-0341.03 originally closed
+// honest-BLOCKED, framed as a GRAMMAR gap. That framing was wrong: the
+// SYNTAX always parsed (`col_idx[i][k]` inside `x[...]` is a normal
+// nested-index expression — the index parser uses the full recursive
+// expression grammar); the real gate was the LOWERING pass
+// (`lower_index_expr` rejected a data ref in index position).
+// TASK-0341.03.01 lifted that gate for array-subscript position, so the
+// natural gather form ships too (loop-bound position stays rejected — a
+// data-dependent trip count is a separate feature). This masked variant
+// survives as the language-sanity / cross-check artifact; both are
+// bit-identical to reference.bin. (08-histogram's data-dependent-WRITE /
+// scatter gap, TASK-0044.04, is still open.)
 //
 // What this example demonstrates
 // ------------------------------
