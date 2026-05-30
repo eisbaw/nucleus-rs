@@ -16,7 +16,7 @@ use nucleus_compiler::event::DataId;
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
-use super::reuse::ReuseRewriteGroup;
+use super::group::ReuseRewriteGroup;
 
 /// The full rendering context. Carries the `abs_subst` map used by
 /// strip-mined absolute-index rebinding (TASK-0180). Single-worker

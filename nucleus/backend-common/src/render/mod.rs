@@ -42,6 +42,11 @@
 //!   (`render_int_expr`, `render_loop_bounds`, `render_const_expr`).
 //! - `types` — Rust type / zero-literal / init-expression renderers
 //!   (`rust_scalar_type`, `rust_type_of`, `render_array_init_for`).
+//! - `group` — Leaf module: the [`ReuseRewriteGroup`] descriptor + the
+//!   affine / canonicalisation helpers it is built from
+//!   (`sidecar_consts_to_resolved`, `try_reuse_axis_offset`,
+//!   `canonicalise_outer_axis`). Split out of `reuse` (TASK-0340.02)
+//!   to break the `ctx <-> reuse` and `fire <-> reuse` sibling cycles.
 //! - `reuse` — Reuse-widths marker emit + circular-buffer codegen
 //!   (TASK-0265 / TASK-0269 / TASK-0270 / TASK-0282).
 //!
@@ -68,6 +73,7 @@ pub(crate) mod ctx;
 pub(crate) mod error;
 pub(crate) mod expr;
 pub(crate) mod fire;
+pub(crate) mod group;
 pub(crate) mod reuse;
 pub(crate) mod types;
 
@@ -79,9 +85,10 @@ pub use fire::{
     render_fire_output_assign, render_fire_output_assign_pub, render_flat_index,
     render_flat_index_pub, write_file, SubArrayForm,
 };
+pub use group::ReuseRewriteGroup;
 pub use reuse::{
     render_reuse_buf_decls, render_reuse_buf_decls_pub, render_reuse_marker_comment,
-    render_reuse_per_iter_update, render_reuse_per_iter_update_pub, ReuseRewriteGroup,
+    render_reuse_per_iter_update, render_reuse_per_iter_update_pub,
 };
 pub use types::{
     render_array_init_for, rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of,

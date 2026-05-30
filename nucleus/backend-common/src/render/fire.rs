@@ -15,7 +15,7 @@ use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use super::ctx::{RenderCtx, RenderCtxPub};
 use super::error::EmitError;
 use super::expr::render_int_expr;
-use super::reuse::{sidecar_consts_to_resolved, try_reuse_axis_offset};
+use super::group::{sidecar_consts_to_resolved, try_reuse_axis_offset};
 use super::types::rust_scalar_type;
 
 // --------------------------------------------------------------------
