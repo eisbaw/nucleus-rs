@@ -88,9 +88,12 @@
 # 08-histogram for the data-dependent-indexing compiler-feature
 # class: 08-histogram pins data-dependent WRITE address;
 # 17-spmv pins data-dependent READ. AC#2 (direct x[col_idx[i][k]])
-# is HONEST-BLOCKED: grammar §1 admits only IntLit/Ident/parens
-# in IndexExpr.Atom — a nested IndexSuffix inside an IndexExpr
-# is structurally inexpressible. Filed as TASK-0341.03.01.
+# LANDED via TASK-0341.03.01: the native gather is expressible (see the
+# 17-spmv/gather cells below + prog.gather.algo.nuc). The earlier
+# "grammar gap" framing was wrong — the syntax always parsed; the gate
+# was the lowering pass, now lifted for array-subscript position.
+# (08-histogram's data-dependent WRITE / scatter is still open,
+# TASK-0044.04.)
 runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv"]
 
 # Backends to evaluate. The harness will read each backend's

@@ -68,10 +68,10 @@
 //     `row_ptr[i+1] - row_ptr[i]` per-row arity would need a
 //     data-dependent loop bound (the same loop-bound gap as
 //     16-jacobi's convergence variant, TASK-0341.02.01).
-//   - Direct data-dependent read x[col_idx[i][k]] at the algorithm
-//     surface. The grammar gap (IndexExpr.Atom does not admit nested
-//     IndexSuffix); AC#2 honest-BLOCKED outcome with the missing
-//     primitive filed as TASK-0341.03.01.
+//   - (No longer a gap) Direct data-dependent read x[col_idx[i][k]] at
+//     the algorithm surface — that NOW ships in the sibling
+//     prog.gather.algo.nuc (TASK-0341.03.01). THIS masked variant keeps
+//     emulating it with the for-j mask as the cross-check artifact.
 //   - Floating-point arithmetic. Integer i32 with wrapping_add +
 //     wrapping_mul keeps the cross-backend differential
 //     bit-identical (PRD §10.1). Same trade as 05-stencil /
