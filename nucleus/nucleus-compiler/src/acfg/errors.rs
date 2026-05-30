@@ -31,7 +31,7 @@ impl std::fmt::Display for LoopBoundEnd {
     }
 }
 
-/// Errors produced by [`build_acfg`].
+/// Errors produced by [`build_acfg`](crate::acfg::build_acfg).
 ///
 /// Each variant carries enough context to produce a user-facing
 /// diagnostic without the caller needing to thread additional state —
@@ -40,7 +40,7 @@ impl std::fmt::Display for LoopBoundEnd {
 /// [`crate::sidecar::SidecarError`].
 ///
 /// This enum exists for the *diagnosable user-input* failure only. The
-/// other `panic!`s reachable from [`build_acfg`] (a kernel with no
+/// other `panic!`s reachable from [`build_acfg`](crate::acfg::build_acfg) (a kernel with no
 /// placement, an undeclared bound symbol, a worker not in the name
 /// table) are genuine link-pass invariant violations — `link` rejects
 /// such programs first — so they stay `panic!`s, not variants here.

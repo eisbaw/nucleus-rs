@@ -2,10 +2,10 @@
 //!
 //! Two passes over the algorithm IR:
 //!
-//! - [`collect_loop_vars`] walks every `for VAR : ...` (including
+//! - `collect_loop_vars` walks every `for VAR : ...` (including
 //!   nested) and returns the set of iteration variables — used to
 //!   validate schedule `loop` and `check loop` references.
-//! - [`analyse_dataflow`] walks every statement and records, for
+//! - `analyse_dataflow` walks every statement and records, for
 //!   each data symbol, the producer worker entity (the kernel on the
 //!   RHS of a `D <-- Call(...)`) and the set of consumer worker
 //!   entities (kernels that read `D` either as a `Call` argument or

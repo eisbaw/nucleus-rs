@@ -4,7 +4,7 @@
 //! `linked.sched.loops` and records a per-(IterVar, WorkerId) loop-range
 //! override on the ACFG's [`crate::acfg::ACFG::partition_worker_ranges`]
 //! sidecar. The override is honoured at projection time by
-//! [`crate::passes::petri_to_events::walk`] when it emits one
+//! `crate::passes::petri_to_events::walk` when it emits one
 //! [`crate::event::Event::Loop`] per worker, so each worker sees its own
 //! exclusive slice of the source range.
 //!
@@ -44,7 +44,7 @@
 //!   ("last-worker-gets-remainder" — option (a); "trailing-partial-tile
 //!   sibling" — option (c)) leave the last worker carrying the entire
 //!   residue (e.g. 14 rows / 4 workers under (a) is 3,3,3,5; under (b)
-//!   it is 4,4,3,3). See [`crate::passes::common::compute_partition_bands`]
+//!   it is 4,4,3,3). See `crate::passes::common::compute_partition_bands`
 //!   for the full rationale. The `L % N == 0` divisible case reduces to
 //!   the pre-TASK-0262 exact-split behaviour (no spillover); cells like
 //!   13-cnn-inference/batch_parallel that hit the divisible path are

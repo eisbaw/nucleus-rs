@@ -4,7 +4,7 @@
 //! `linked.sched.loops` and records a per-(IterVar, WorkerId) loop-range
 //! override on the ACFG's [`crate::acfg::ACFG::partition_worker_ranges`]
 //! sidecar. The override is honoured at projection time by
-//! [`crate::passes::petri_to_events::walk`] when it emits one
+//! `crate::passes::petri_to_events::walk` when it emits one
 //! [`crate::event::Event::Loop`] per worker, so each worker sees its
 //! own exclusive row-band of the OUTER axis.
 //!
@@ -38,8 +38,8 @@
 //!
 //! ## Helper sharing with `partition_blocks2d`
 //!
-//! TASK-0259 (cycle 80) lifted [`find_outer_of_2d`], [`contains_repeat`]
-//! and [`collect_op_workers`] to `pub(crate)` so the
+//! TASK-0259 (cycle 80) lifted `find_outer_of_2d`, `contains_repeat`
+//! and `collect_op_workers` to `pub(crate)` so the
 //! [`crate::passes::partition_blocks2d`] sibling consumes the same
 //! helpers without triple-duplication. The structural pre-condition
 //! (outer-of-2D Repeat-of-Repeat with a multi-worker inner body) is
@@ -47,7 +47,7 @@
 //! only the per-worker range computation diverges (1D row-bands vs 2D
 //! grid-block decomposition).
 //!
-//! The byte-identical [`collect_op_workers`] in
+//! The byte-identical `collect_op_workers` in
 //! [`crate::passes::partition_workers`] (TASK-0212) remains as a third
 //! local copy. Lifting it across all three passes belongs to the
 //! TASK-0244 backend-common-style cleanup track — touching
@@ -90,7 +90,7 @@
 //!   cells exercising `partition=rows` on a stencil cannot be
 //!   bit-identical to reference.bin. See the task brief for the
 //!   carry-over: 05-stencil/distributed is restored to carry the
-//!   directive but the cell remains [[skip]] for sibling reasons.
+//!   directive but the cell remains `[[skip]]` for sibling reasons.
 //! - **`partition=blocks2d` is the 2D-grid sibling.** TASK-0259
 //!   (cycle 80) landed [`crate::passes::partition_blocks2d`], which
 //!   uses the same outer-of-2D structural check as this pass but
@@ -401,7 +401,7 @@ pub(crate) fn find_outer_of_2d(
 
 /// Map a [`PartitionBandError`] (from the shared band-computation
 /// helper) onto this pass's typed error. Mirrors
-/// [`crate::passes::partition_workers::map_band_error`] exactly — the
+/// `crate::passes::partition_workers::map_band_error` exactly — the
 /// L<N case surfaces as `InsufficientWork`; the defensive variants
 /// (ZeroWorkers / InvalidRange) also map to `InsufficientWork` to keep
 /// the error surface narrow at this layer (they're guarded upstream

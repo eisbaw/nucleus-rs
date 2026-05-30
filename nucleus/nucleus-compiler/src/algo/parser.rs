@@ -50,7 +50,7 @@
 //! # Recovery shape (TASK-0199 — brace-balanced sync)
 //!
 //! Recovery uses a brace-balanced `skip_parser` (see
-//! [`brace_balanced_recovery`]) — NOT a `;`-only `skip_until`.
+//! `brace_balanced_recovery`) — NOT a `;`-only `skip_until`.
 //! When a top-level item fails, recovery consumes ONE "logical item
 //! span": either a bare stray `;`, or one-or-more outer atoms
 //! followed by an optional terminating `;`. An outer atom is either

@@ -16,8 +16,8 @@
 //! algorithm parser recovers at statement/item boundaries
 //! (TASK-0080 / TASK-0081) and the schedule parser at the directive
 //! `;` boundary (TASK-0087), each reporting every error in one pass.
-//! The atomic per-error mapping ([`map_one_chumsky_error`]) and the
-//! deterministic message builder ([`chumsky_message`]) are shared by
+//! The atomic per-error mapping (`map_one_chumsky_error`) and the
+//! deterministic message builder (`chumsky_message`) are shared by
 //! both via [`map_all_chumsky_errors`].
 
 /// A parse error with `(line, column)` source location.

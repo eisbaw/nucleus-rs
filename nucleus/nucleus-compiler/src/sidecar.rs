@@ -5,7 +5,7 @@
 //! ## Why this exists
 //!
 //! The per-worker `EventList` ([`crate::event::Event`]) is, after
-//! TASK-0156 (value bindings) and TASK-0159 ([`Event::Loop`]
+//! TASK-0156 (value bindings) and TASK-0159 ([`Event::Loop`](crate::event::Event::Loop)
 //! structure), a faithful *control + value* contract: a backend can
 //! reconstruct every kernel call and every rolled loop from it
 //! alone. But the pthreads-sync backend also needs three things the
@@ -185,10 +185,10 @@ pub struct NameSidecar {
     /// codegen contract surface for that ACFG sidecar. A backend
     /// rendering an `Event::Loop` for a worker whose `iter_var` has
     /// an entry here MUST prefer the concrete per-worker range over
-    /// the symbolic [`loop_bounds`] entry (the symbolic bound names
+    /// the symbolic [`loop_bounds`](Self::loop_bounds) entry (the symbolic bound names
     /// the SOURCE range, not the partitioned per-worker slice).
     /// Workers not listed in the inner map (e.g. host) and iter vars
-    /// without an outer entry fall back to [`loop_bounds`] /
+    /// without an outer entry fall back to [`loop_bounds`](Self::loop_bounds) /
     /// `Event::Loop.range` exactly as before TASK-0212.
     ///
     /// Why a separate sidecar field and not e.g. overloading the

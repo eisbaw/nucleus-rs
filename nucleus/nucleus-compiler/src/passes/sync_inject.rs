@@ -49,7 +49,7 @@
 //!   a data symbol that crosses the worker boundary — `transfer_inject`
 //!   will emit a Push/Wait pair for that symbol, and the Push/Wait
 //!   pair already supplies the rendezvous the barrier would have
-//!   added. See [`push_wait_pair_covers`] for the exact condition.
+//!   added. See `push_wait_pair_covers` for the exact condition.
 //!   The pre-TASK-0218 over-sync still applies to Sequence boundaries
 //!   where prev/curr are nested (Sequence/Repeat) and to Repeat
 //!   entry/exit barriers — those are more involved to reason about
@@ -107,7 +107,7 @@ pub enum SyncInjectError {
     /// Sequence boundary writes on workers `W1` and the next sibling
     /// reads on a DIFFERENT worker set `W2` (a cross-partition cross-
     /// worker reducer), and that dataflow edge is NOT covered by a
-    /// `transfer_inject` Push/Wait pair ([`push_wait_pair_covers`] is
+    /// `transfer_inject` Push/Wait pair (`push_wait_pair_covers` is
     /// false).
     ///
     /// Pre-TASK-0281 this shape was SILENTLY skipped (the unconditional

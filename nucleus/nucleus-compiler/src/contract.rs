@@ -198,7 +198,7 @@ impl std::error::Error for ContractError {}
 /// Returns `Ok(())` if every declared kernel has a matching
 /// `pub fn` with compatible scalar signature AND `rustc` accepts the
 /// file. Otherwise returns every contract violation found in one
-/// pass — no fail-fast (parity with [`crate::link`]).
+/// pass — no fail-fast (parity with [`crate::link`](crate::link())).
 ///
 /// Errors are deterministically ordered: file-level errors
 /// (unreadable, unparseable, rustc rejection) appear first in the

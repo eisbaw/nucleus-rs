@@ -3581,7 +3581,7 @@ fn build_waits_for_op(
 // Helpers
 // --------------------------------------------------------------------
 
-/// Convert a [`WorkerEntity`] (BTreeSet<String>) to a
+/// Convert a [`WorkerEntity`] (`BTreeSet<String>`) to a
 /// `BTreeSet<WorkerId>` using the ACFG's name table. Skip names that
 /// aren't in the table — that would be a link-pass invariant
 /// violation; we don't loudly panic so downstream tests that build

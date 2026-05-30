@@ -65,7 +65,8 @@
 //! **index expressions** recovered from the AlgoIR — `data_in_access`
 //! (parallel to `data_in`) and `data_out_access` (parallel to
 //! `data_out`), each a [`DataAccess`] carrying the resolved
-//! [`DataId`] plus the verbatim [`IrExpr`] index list (e.g.
+//! [`DataId`](crate::event::DataId) plus the verbatim
+//! [`IrExpr`](crate::algo::ir::IrExpr) index list (e.g.
 //! `img_in[y-1][x+1]` ⇒ `indices = [y-1, x+1]`). This is *plumbing
 //! only*: this pass now records the access pattern; it does not yet
 //! act on it. The two consumers are:
@@ -97,8 +98,10 @@
 //! ## ID assignment
 //!
 //! Kernel/data/worker/iter-var names are turned into opaque `u64` IDs
-//! ([`KernelId`], [`DataId`], [`WorkerId`], [`IterVar`]) inside this
-//! pass. The mapping is built deterministically from the [`LinkedIR`]
+//! ([`KernelId`](crate::event::KernelId), [`DataId`](crate::event::DataId),
+//! [`WorkerId`](crate::event::WorkerId), [`IterVar`](crate::event::IterVar))
+//! inside this
+//! pass. The mapping is built deterministically from the [`LinkedIR`](crate::LinkedIR)
 //! input: names are sorted lexicographically, then assigned 0, 1, 2,
 //! … in order. Determinism matters because:
 //!
@@ -129,12 +132,12 @@
 //!   so a cross-worker copy is caught by the MissingCrossWorkerTransfer
 //!   check.) The ACFG/codegen half is filed as TASK-0360.
 //! - **Constant folding beyond what loop bounds require.** Loop
-//!   bounds are evaluated to `i64` here because [`Repeat::range`] is
+//!   bounds are evaluated to `i64` here because `Repeat::range` is
 //!   `Range<i64>` (matching [`crate::event::IterTile`]'s element
 //!   shape). Index expressions inside a basic block are NOT folded
 //!   — they're left as IR expressions so the access-pattern analysis
 //!   (a later pass) can inspect them.
-//! - **Validation.** This pass assumes its input [`LinkedIR`] is
+//! - **Validation.** This pass assumes its input [`LinkedIR`](crate::LinkedIR) is
 //!   already validated by `link`. It panics on `Operation`s built
 //!   from unplaced kernels, because `link` would have rejected the
 //!   program before reaching this pass.

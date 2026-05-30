@@ -17,10 +17,10 @@
 //! - [`affine_decompose`]: try to decompose an [`IrExpr`] as
 //!   `coefficient * iv + offset`, returning `Some((coeff, offset))` on
 //!   success.
-//! - [`eval_const_int`]: try to evaluate an [`IrExpr`] as a pure integer
+//! - `eval_const_int`: try to evaluate an [`IrExpr`] as a pure integer
 //!   constant (no iter-var, no DataRef, no Call), const-folding through
 //!   the algorithm's `consts` table.
-//! - [`expr_mentions`]: a syntactic predicate — does the expression
+//! - `expr_mentions`: a syntactic predicate — does the expression
 //!   contain an `Ident(iv)` anywhere in its tree?
 //!
 //! None of these mutate. All operate on borrowed [`IrExpr`] + a

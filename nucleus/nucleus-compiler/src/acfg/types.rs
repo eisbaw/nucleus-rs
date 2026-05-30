@@ -70,7 +70,7 @@ pub struct DataflowDag {
 }
 
 /// A single indexed access to a data symbol inside a firing — the
-/// ACFG-level projection of an AlgoIR [`IndexedRef`] (PRD §6.2.3).
+/// ACFG-level projection of an AlgoIR [`IndexedRef`](crate::algo::ir::IndexedRef) (PRD §6.2.3).
 ///
 /// **This is an alias of [`crate::event::DataSlice`]** — the same
 /// struct the presentation-layer Event contract uses (TASK-0156).
@@ -82,11 +82,11 @@ pub struct DataflowDag {
 /// TASK-0150 call sites and the public re-export do not churn.
 ///
 /// `data` is the resolved [`DataId`]; `indices` carries the per-axis
-/// AlgoIR [`IrExpr`] index expressions verbatim (e.g.
+/// AlgoIR [`IrExpr`](crate::algo::ir::IrExpr) index expressions verbatim (e.g.
 /// `img_in[y-1][x+1]` ⇒ `[y-1, x+1]`, outer dimension first). A
 /// scalar / whole-array read has an empty `indices`.
 ///
-/// The AlgoIR [`IrExpr`] tree is carried directly rather than
+/// The AlgoIR [`IrExpr`](crate::algo::ir::IrExpr) tree is carried directly rather than
 /// re-encoded: the index grammar lives once, in `algo::ir`; the
 /// expressions are inert data at this layer (no pass folds them).
 ///
@@ -427,7 +427,7 @@ pub enum ACFGNode {
         /// produced by [`crate::passes::block_transform`]; carries the
         /// per-occurrence absolute-index rebinding facts threaded onto
         /// the projected [`crate::event::Event::Loop`] (TASK-0180).
-        /// `None` for every source loop (built by [`build_acfg`]) and
+        /// `None` for every source loop (built by [`build_acfg`](crate::acfg::build_acfg)) and
         /// for every synthesised *tile* loop — neither needs
         /// rebinding. serde-default so an old wire payload (no field)
         /// deserialises as `None`.
@@ -460,7 +460,7 @@ pub enum ACFGNode {
 /// [`ACFGNode::Operation`]/`Repeat` if the program had exactly one
 /// top-level statement; we keep `Sequence` even for length-1 input so
 /// downstream passes have a uniform top-level shape — see
-/// [`build_acfg`] notes).
+/// [`build_acfg`](crate::acfg::build_acfg) notes).
 ///
 /// The `name_*` maps expose the deterministic name <-> ID mapping
 /// computed during construction. Useful for diagnostics and for
@@ -485,7 +485,7 @@ pub struct ACFG {
     /// transfer-injection pass consults this set to hoist Push/Wait
     /// placeholders out of intra-tile loops up to per-tile
     /// granularity (TASK-0143). Empty for ACFGs built directly from
-    /// [`build_acfg`] (i.e. before block-transform has run) and for
+    /// [`build_acfg`](crate::acfg::build_acfg) (i.e. before block-transform has run) and for
     /// programs whose schedule carries no `block=` directive.
     ///
     /// Why a sidecar set instead of a flag on [`ACFGNode::Repeat`]:

@@ -68,7 +68,7 @@
 //!
 //! ### Buffer place capacity
 //!
-//! [`TransferPolicy::buffer`] is `u64`; Petri-net place capacity is
+//! `TransferPolicy::buffer` is `u64`; Petri-net place capacity is
 //! `Option<NonZeroU32>` ([`crate::petri::Place::capacity`]). We
 //! convert by clamping to `u32::MAX` and rejecting `buffer == 0` (an
 //! upstream invariant — `TransferPolicy::default().buffer == 1` and
@@ -89,7 +89,7 @@
 //! Buffer places NOT in the sidecar map start at 0 tokens (every
 //! pre-TASK-0134 example continues to lower identically). The depth
 //! is clamped from `NonZeroU64` to `u32` for the Petri-net layer the
-//! same way [`TransferPolicy::buffer`] is clamped (see "Buffer place
+//! same way `TransferPolicy::buffer` is clamped (see "Buffer place
 //! capacity" above): values above `u32::MAX` saturate, and that
 //! saturation is impossible to reach with real schedules — the link
 //! step rejects `pipeline=D` whose `D > buffer=N` (where `N` is
@@ -121,7 +121,7 @@
 //! redundant Sequence-rule barrier between two bare Operations whose
 //! dataflow already shares a data symbol (the Push/Wait pair that
 //! will be inserted later supplies the rendezvous on its own — see
-//! [`crate::passes::sync_inject::push_wait_pair_covers`]). With the
+//! `crate::passes::sync_inject::push_wait_pair_covers`). With the
 //! structural cycle gone, `boundedness::derive_firing_order`'s
 //! marking-aware reordering (path 1) resolves example-13 directly,
 //! and the path-2 TtoP elision is no longer needed. Every Push now

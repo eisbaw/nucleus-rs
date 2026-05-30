@@ -152,7 +152,7 @@ pub struct Capabilities {
     /// Backend identifier; matches the crate name.
     pub name: String,
     /// Target tier (1, 2, or 3). Validated post-deserialise via
-    /// [`Capabilities::validate`]; the raw type is `u8` because TOML
+    /// `Capabilities::validate`; the raw type is `u8` because TOML
     /// integers parse to a signed range that we widen here.
     pub tier: u8,
     /// Wire / channel kind.

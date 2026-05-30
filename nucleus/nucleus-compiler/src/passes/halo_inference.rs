@@ -128,7 +128,7 @@
 //!   * For all other variants (`NonAffineIndex`,
 //!     `StridedAccessNotSupported`, `MultipleIterVarsInIndex`,
 //!     `UnknownLoopVar`) — where the failing index expression's iv
-//!     set is recoverable lexically via [`collect_iter_var_refs`] —
+//!     set is recoverable lexically via `collect_iter_var_refs` —
 //!     the rule consults THAT iv set: fatal iff at least one of
 //!     those ivs is partitioned. This is the cycle-209 refinement.
 //!
@@ -172,18 +172,18 @@
 //! ## Honest limitations (first cut)
 //!
 //! - **Coefficient must be +1.** `2*iv + 1`, `iv * 2`, and `-iv` are
-//!   rejected as [`StridedAccessNotSupported`]. Strided reads have
+//!   rejected as [`HaloInferenceError::StridedAccessNotSupported`]. Strided reads have
 //!   well-defined halo semantics (`|b|` is still the offset, but the
 //!   distributed transfer pattern differs from the contiguous-strip case
 //!   stencils need) — out of scope for Stage 1.
 //! - **Single iter-var per index.** `grid[y + x][x]` (or any index whose
 //!   tree contains TWO different enclosing iter-var Idents) is rejected
-//!   as [`MultipleIterVarsInIndex`] because the offset `b` would not be a
+//!   as [`HaloInferenceError::MultipleIterVarsInIndex`] because the offset `b` would not be a
 //!   compile-time constant.
 //! - **No DataRef inside an index.** `grid[lookup[y]]` (an index that
-//!   itself reads data) is rejected as [`DataDependentStride`]. PRD §13.
+//!   itself reads data) is rejected as [`HaloInferenceError::DataDependentStride`]. PRD §13.
 //! - **No Call inside an index.** `grid[f(y)]` is rejected as
-//!   [`DataDependentStride`] (a runtime call cannot be folded; same harm
+//!   [`HaloInferenceError::DataDependentStride`] (a runtime call cannot be folded; same harm
 //!   class as a DataRef).
 //! - **Kernel call must sit inside a `for` nest.** A kernel call at
 //!   top-level scope (no enclosing loop) has no IterVar to key halo
@@ -499,7 +499,7 @@ pub fn apply_halo_inference_advisory(
 /// partitioned iv on a DIFFERENT axis; the (B) rule rejected even
 /// though no halo strip on the partitioned axis was at risk.
 ///
-/// Per-variant rule split (see [`classify_index`] for the iv-set
+/// Per-variant rule split (see `classify_index` for the iv-set
 /// population at each push site):
 ///
 /// - [`HaloInferenceError::DataDependentStride`] — index is itself
@@ -512,13 +512,13 @@ pub fn apply_halo_inference_advisory(
 /// - All other variants ([`NonAffineIndex`],
 ///   [`StridedAccessNotSupported`], [`MultipleIterVarsInIndex`],
 ///   [`UnknownLoopVar`]) — the iv set is populated by
-///   [`collect_iter_var_refs`] at the error-push site. Fatal iff
+///   `collect_iter_var_refs` at the error-push site. Fatal iff
 ///   AT LEAST ONE iv in the failing-index set is partitioned;
 ///   advisory otherwise. The 11-game-of-life regression pin
 ///   ("no partition + Mod wrap stays advisory") is preserved: the
 ///   pipelined/naive schedules carry zero `partition=`, so no iv
 ///   in the failing-index set (= `{t}`) returns `true` from
-///   [`iv_is_partitioned`].
+///   `iv_is_partitioned`.
 ///
 /// Returns `Ok((acfg, advisory_errors))` when no error was
 /// classified fatal; the advisory vector lists the typed errors the

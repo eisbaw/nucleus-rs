@@ -23,7 +23,7 @@
 //! - Type-check expressions or kernel signatures (TASK-0009).
 //! - Enforce single-assignment (TASK-0009).
 //!
-//! Per-node source spans ARE tracked, via [`Spanned`][crate::span::Spanned]
+//! Per-node source spans ARE tracked, via [`Spanned`]
 //! (TASK-0082); `parse_algo` populates byte ranges. Lowering still
 //! ignores them — threading spans into `LowerError` is TASK-0090.
 

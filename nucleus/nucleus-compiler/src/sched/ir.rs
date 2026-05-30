@@ -1,7 +1,7 @@
 //! SchedIR: the semantically-validated intermediate representation of a
 //! schedule program.
 //!
-//! Produced by [`crate::sched::lower_sched`] from a [`SchedAst`]
+//! Produced by [`crate::sched::lower_sched`] from a [`SchedAst`](crate::sched::ast::SchedAst)
 //! (TASK-0008 output). Compared to the AST, the IR:
 //!
 //! - Resolves the typed-vs-simple worker form into a single shape:
@@ -72,7 +72,7 @@ use super::ast::{MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, Viola
 /// in source is allowed. The name is namespaced enough that an
 /// accidental collision is extremely unlikely; if a real example
 /// declares a class with this exact name, the lowering pass will
-/// reject the collision via [`SchedLowerError::DuplicateWorkerClass`].
+/// reject the collision via [`SchedLowerErrorKind::DuplicateWorkerClass`].
 /// That's the safest failure mode — loud, not silent.
 pub const DEFAULT_WORKER_CLASS: &str = "__default";
 
@@ -1030,7 +1030,7 @@ impl std::error::Error for SchedLowerError {}
 ///
 /// # Why a new owner and NOT a re-use
 ///
-/// `ParseErrors` is the *parser* layer's owner ([`ParseError`], not
+/// `ParseErrors` is the *parser* layer's owner ([`ParseError`](crate::error::ParseError), not
 /// [`SchedLowerError`]); [`crate::algo::ir::LowerErrors`] is the
 /// *algorithm* lowering layer's owner. They are different types at
 /// different pipeline stages. The SURFACING pattern (non-empty owner,
@@ -1043,7 +1043,7 @@ impl std::error::Error for SchedLowerError {}
 ///
 /// A `SchedLowerErrors` is constructed *only* when lowering actually
 /// failed, so the inner `Vec` is never empty. The single constructor
-/// [`SchedLowerErrors::from_nonempty`] is the sole entry point and
+/// `SchedLowerErrors::from_nonempty` is the sole entry point and
 /// `debug_assert!`s this; [`SchedLowerErrors::first`] therefore never
 /// has an empty slice to handle. Construction is `pub(crate)` so no
 /// external caller can forge an empty bundle.

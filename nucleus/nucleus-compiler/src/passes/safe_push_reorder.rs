@@ -27,7 +27,7 @@
 //! 1. `Wait.src != host` (i.e. the Wait is itself a w2w transfer, not
 //!    host's broadcast / scatter of input data), AND
 //! 2. `Wait.data == Push.data` AND `Wait.tile` may overlap `Push.tile`
-//!    on any shared iteration-variable axis (per [`tiles_may_overlap`]).
+//!    on any shared iteration-variable axis (per `tiles_may_overlap`).
 //!
 //! Condition 1 is the load-bearing distinction from cycle-161's first
 //! design draft (cycle-161b architect P1.1): the 05/distributed-2d
@@ -77,7 +77,7 @@
 //! adjustment that pairs with this reorder lives in `mp-tcp-event`'s
 //! `relay_phase_insertion_point` and is NOT mirrored on
 //! `mp-tcp-bufsync`. Bufsync's constraint 3 (per cycle-148 design:
-//! "relay reads from data_<src> would race host's own reads on the
+//! "relay reads from `data_<src>` would race host's own reads on the
 //! same socket") makes moving its splice point unsafe even though
 //! the workers' event reordering would itself be sound on bufsync.
 //! See memory `project-mp-tcp-event-vs-bufsync-safety-profile` for

@@ -1,4 +1,4 @@
-//! Typed validator for the [`Event`](crate::event::Event) contract
+//! Typed validator for the [`Event`] contract
 //! (TASK-0107, PRD §8.2 / §8.3 / §8.4).
 //!
 //! [`crate::event`] is deliberately a contract module: it defines the
@@ -46,7 +46,7 @@
 //! ## What is NOT checked (gaps recorded honestly)
 //!
 //! - **Cross-worker Sync participant agreement.** Two Sync events that
-//!   share a [`SyncTag`](crate::event::SyncTag) on different workers
+//!   share a [`SyncTag`] on different workers
 //!   should have participant sets that agree (TASK-0172 made
 //!   `SyncTag` the cross-worker join key). This module does NOT yet
 //!   check that agreement; (3) only checks the per-event non-emptiness
@@ -63,7 +63,7 @@
 //! ## How this is wired (and why not as a hard release-build assert)
 //!
 //! [`validate_event_lists_strict_per_worker`] is wired as a
-//! `debug_assert!` at the output of [`passes::acfg_to_events`]
+//! `debug_assert!` at the output of [`acfg_to_events`](crate::passes::petri_to_events::acfg_to_events)
 //! (see `petri_to_events.rs`). It runs invariants (1), (3), (4), (5)
 //! — the *strictly per-worker* ones that hold across the entire
 //! pipeline.

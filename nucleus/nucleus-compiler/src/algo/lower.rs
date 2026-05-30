@@ -86,7 +86,7 @@ use super::ir::{
 /// `ConstRefersToNonConst`, `UnknownIdent`, `AssignmentTargetNotData`)
 /// that is **not an independent violation** — it is purely a
 /// consequence of the already-reported root failure. We therefore
-/// track [`Accum::failed_decls`]: the names of declarations that were
+/// track `Accum::failed_decls`: the names of declarations that were
 /// *declared but failed to evaluate*. A reference error whose
 /// referenced identifier is in `failed_decls` is **suppressed** (the
 /// user already has the root diagnostic for that name).
@@ -104,7 +104,7 @@ use super::ir::{
 ///   poisoned and dependents stay cascade-suppressed. The duplicate
 ///   itself is one independent error — emitted regardless of the
 ///   first decl's success (TASK-0206 cascade-aware duplicate
-///   detection; see [`is_failed_decl`] and the `K + K*M` rule below).
+///   detection; see `is_failed_decl` and the `K + K*M` rule below).
 /// - A name that is in neither the symbol table nor `failed_decls` is
 ///   a genuinely-never-declared identifier: that IS an independent
 ///   error and is reported (suppressing it would be undercount).
@@ -121,7 +121,7 @@ use super::ir::{
 ///   dependants (statements *or* downstream decls) → exactly **1**
 ///   error (not `1 + K + K*L`), for any K, L. Cascade-decls have no
 ///   independent meaning and are transitively poisoned (see
-///   [`Accum::record_decl_failure`] case 1). TASK-0204 broadened the
+///   `Accum::record_decl_failure` case 1). TASK-0204 broadened the
 ///   pinning fixture (`transitive_cascade_collapses_for_any_k_l`)
 ///   over a third dimension — cascade-kind ∈ {data-via-shape,
 ///   kernel-via-signature-shape, const-via-other-const} — and a
@@ -138,9 +138,9 @@ use super::ir::{
 ///   re-decls). Duplicate detection IS symmetric in the first decl's
 ///   evaluation status: a `const N = 1/0; const N = 7;` fixture emits
 ///   **2** errors (`ConstDivByZero` + `DuplicateConst`), not 1.
-///   Implementation: [`lower_const`] / [`lower_data`] / [`lower_kernel`]
+///   Implementation: `lower_const` / `lower_data` / `lower_kernel`
 ///   consult `Accum::failed_decls` in addition to `ir.X` via
-///   [`is_failed_decl`]; the failed re-decl is rejected before
+///   `is_failed_decl`; the failed re-decl is rejected before
 ///   evaluation so it does not pollute `ir.X` and the cascade-suppress
 ///   discipline for downstream references is unchanged. The pinning
 ///   fixture is `duplicate_of_failed_decl_fires_for_any_k_m`.
@@ -153,7 +153,7 @@ use super::ir::{
 ///   evaluation cascade itself is suppressed; the body is **always**
 ///   visited (with the iter-var in scope) so independent body errors
 ///   surface even when the for-statement cannot emit an `IrStmt::For`.
-///   Implementation: [`lower_for_into`] in place of `?`-on-bounds; the
+///   Implementation: `lower_for_into` in place of `?`-on-bounds; the
 ///   iter-var is `push_loop`-ed regardless of bound-eval success, so
 ///   body uses of the iter-var resolve cleanly via the PRD §6.2.3
 ///   scoping rule. The pinning fixture is
@@ -261,7 +261,7 @@ impl Accum {
     ///    is no value, shape, or kernel signature behind it. Every
     ///    downstream reference is, by definition, a transitive
     ///    cascade of the upstream root that was already reported.
-    ///    Inserting `name` into [`failed_decls`] here makes the
+    ///    Inserting `name` into `failed_decls` here makes the
     ///    existing cascade-suppression rule
     ///    ([`Accum::is_cascade_of_failed_decl`]) cover those
     ///    transitive references too. Without it, downstream uses

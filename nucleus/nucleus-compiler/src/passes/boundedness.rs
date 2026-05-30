@@ -248,7 +248,7 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 ///    is a legal firing sequence), or
 /// 2. no remaining transition is firable. We append the remaining
 ///    transitions in source order so that [`check_bounded`] /
-///    [`check_deadlock_free`] still surface a precise diagnostic at
+///    [`check_deadlock_free`](crate::passes::deadlock::check_deadlock_free) still surface a precise diagnostic at
 ///    the stall point (`BoundednessError::CapacityExceeded` or
 ///    `BoundednessError::InvalidFiringOrder` /
 ///    `DeadlockError::Stalled`) rather than silently truncating.

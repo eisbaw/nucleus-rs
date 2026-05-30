@@ -24,13 +24,13 @@
 //! genuinely-independent [`SchedLowerError`] across the whole pass and
 //! returns them together as [`SchedLowerErrors`]. The cascade
 //! infrastructure mirrors the algorithm cycle-3 design (TASK-0092)
-//! verbatim — a [`failed_decls`](Accum::failed_decls) `BTreeMap`
+//! verbatim — a `failed_decls` (`Accum::failed_decls`) `BTreeMap`
 //! poisoned-name set, four reference-resolution variants
 //! (`UnknownWorkerClass`, `UnknownMemoryRegion`, `UnknownPlaceWorker`,
 //! `UnknownAccessibleByName`) recognised as cascade-candidates, and
 //! transitive-poison case-1 logic.
 //!
-//! Today's cascade landscape has TWO paths (see [`Accum`] type docs):
+//! Today's cascade landscape has TWO paths (see `Accum` type docs):
 //!
 //! 1. `failed_decls`-keyed name cascade (the algo cycle-3 design,
 //!    transferred verbatim): NO live trigger today — every sched
@@ -82,7 +82,7 @@ use super::ir::{
 ///   that fails to lower would (in the algo precedent) not be
 ///   inserted into `ir.worker_classes` / `ir.memory_regions` /
 ///   `ir.workers` etc., and its name would go into
-///   [`Accum::failed_decls`].
+///   `Accum::failed_decls`.
 /// - **Reference errors are suppressed when the referenced name is
 ///   poisoned.** The four reference-resolution variants —
 ///   [`SchedLowerErrorKind::UnknownWorkerClass`],
@@ -92,7 +92,7 @@ use super::ir::{
 ///   cascade-candidate kinds; every other variant is independent.
 /// - **Duplicate-decl errors do NOT poison** (first decl is valid in
 ///   the table; suppressing dependents here would be undercount).
-/// - **Transitive poison** ([`Accum::record_decl_failure`] case 1):
+/// - **Transitive poison** (`Accum::record_decl_failure` case 1):
 ///   a declaration that fails ONLY because it refers to an already-
 ///   poisoned upstream is ITSELF inserted into `failed_decls`.
 ///   Cascade-decls have no independent meaning; every downstream
@@ -115,8 +115,8 @@ use super::ir::{
 /// **Cascade-aware duplicate detection (TASK-0208, sched parity with
 /// TASK-0206 algo)**: the three pass-1 `Duplicate*` arms
 /// (`DuplicateWorkerClass` / `DuplicateMemoryRegion` /
-/// `DuplicateWorker`) consult [`Accum::failed_decls`] in addition to
-/// the successful symbol table via [`is_failed_sched_decl`]. A
+/// `DuplicateWorker`) consult `Accum::failed_decls` in addition to
+/// the successful symbol table via `is_failed_sched_decl`. A
 /// re-declaration of a poisoned name STILL fires the Duplicate* error
 /// — the source-text re-use of the name is the violation, not whether
 /// the first decl evaluated. Behaviour-equivalent to the algo-layer
@@ -136,7 +136,7 @@ use super::ir::{
 /// the already-reported `MissingWorkersDecl` root. Suppressed.
 /// `UnknownAccessibleByName` is NOT suppressed at this path (the
 /// name could be a class OR a worker — see
-/// [`Accum::is_cascade_of_failed_decl`] for the soundness argument).
+/// `Accum::is_cascade_of_failed_decl` for the soundness argument).
 ///
 /// Per-variant classification:
 ///
@@ -677,7 +677,7 @@ impl Accum {
     ///    is no resolved class / region / worker / placement behind
     ///    it. Every downstream reference is, by definition, a
     ///    transitive cascade of the upstream root that was already
-    ///    reported. Inserting `name` into [`failed_decls`] here makes
+    ///    reported. Inserting `name` into `failed_decls` here makes
     ///    the existing cascade-suppression rule
     ///    ([`Accum::is_cascade_of_failed_decl`]) cover those
     ///    transitive references too. Without it, downstream uses

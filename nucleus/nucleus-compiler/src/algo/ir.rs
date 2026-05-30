@@ -1,7 +1,7 @@
 //! AlgoIR: the semantically-validated intermediate representation of
 //! an algorithm program.
 //!
-//! The IR is produced by [`crate::algo::lower_algo`] from an [`AlgoAst`]
+//! The IR is produced by [`crate::algo::lower_algo`] from an [`AlgoAst`](crate::algo::ast::AlgoAst)
 //! (TASK-0007 output). Compared to the AST, the IR:
 //!
 //! - Resolves const expressions in data shape declarations to concrete
@@ -22,11 +22,11 @@
 //!   (whether `conv_block_1(input[n])` matches the declared parameter
 //!   shape). Filed as a follow-up task.
 //! - Resolve which kernel a `Call` actually refers to (the IR keeps
-//!   the textual name; binding to a [`KernelDecl`] is straightforward
+//!   the textual name; binding to a [`KernelDecl`](crate::algo::ast::KernelDecl) is straightforward
 //!   but we don't store the back-reference yet).
 //!
 //! Kernel-purity vs statement-form enforcement (TASK-0089) lives in
-//! [`crate::algo::lower::lower_stmt`]: an `EffectStmt` (bare-call
+//! `crate::algo::lower::lower_stmt`: an `EffectStmt` (bare-call
 //! statement) callee MUST be an [`super::ast::Purity::Effectful`]
 //! kernel — the grammar §2 note 5 rule, the only direction the formal
 //! grammar specifies. A bare-call to a [`super::ast::Purity::Pure`]
@@ -242,7 +242,7 @@ pub struct AlgoIR {
 /// (verbatim shape; the pipeline pass now delegates here) so that
 /// out-of-crate consumers — specifically the backend-common
 /// overlapping-write-accumulator cross-check
-/// [`backend_common::multi_worker_walker::check_accumulator_consistency`]
+/// `backend_common::multi_worker_walker::check_accumulator_consistency`
 /// (TASK-0343.03) — can reuse ONE walker instead of growing a third
 /// silent-sibling copy.
 ///
@@ -584,7 +584,7 @@ impl std::error::Error for LowerError {}
 ///
 /// # Why a new owner and NOT `crate::error::ParseErrors`
 ///
-/// `ParseErrors` is the *parser* layer's owner ([`ParseError`], not
+/// `ParseErrors` is the *parser* layer's owner ([`ParseError`](crate::error::ParseError), not
 /// [`LowerError`]); they are different types at a different pipeline
 /// stage. The SURFACING pattern (non-empty owner, `.errors()`,
 /// driver iterates one located line per error) is the proven template
@@ -595,7 +595,7 @@ impl std::error::Error for LowerError {}
 ///
 /// A `LowerErrors` is constructed *only* when lowering actually
 /// failed, so the inner `Vec` is never empty. The single constructor
-/// [`LowerErrors::from_nonempty`] is the sole entry point and
+/// `LowerErrors::from_nonempty` is the sole entry point and
 /// `debug_assert!`s this; [`LowerErrors::first`] therefore never has
 /// an empty slice to handle. Construction is private to the crate so
 /// no external caller can forge an empty bundle.

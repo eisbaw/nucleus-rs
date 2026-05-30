@@ -8,7 +8,7 @@
 //! without a worker-to-worker mesh. Adding host as a mediating hub
 //! turns each host-excluding barrier into a star-shaped N+1-party
 //! rendezvous through host, which the existing barrier-shim emitter
-//! ([`wire::barrier_cross`]) handles transparently with no per-cell
+//! (`wire::barrier_cross`) handles transparently with no per-cell
 //! code changes.
 //!
 //! ## Backends that DO NOT use this pass

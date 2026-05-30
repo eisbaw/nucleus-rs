@@ -11,7 +11,7 @@
 //! [`crate::acfg::ACFG::partition_worker_ranges`] sidecar — a
 //! `BTreeMap<IterVar, BTreeMap<WorkerId, Range<i64>>>` consumed at
 //! projection time by [`crate::passes::petri_to_events`] and the
-//! [`backend_common::multi_worker_walker`] (which honours the override
+//! `backend_common::multi_worker_walker` (which honours the override
 //! when it emits one `Event::Loop` per worker).
 //!
 //! - `partition=workers` (TASK-0212): 1D compiler-choice row-band on
@@ -34,7 +34,7 @@
 //! `partition_worker_ranges_2d: BTreeMap<(IterVar_y, IterVar_x), BTreeMap<WorkerId, (Range, Range)>>`
 //! field plus its serde + walker consumer. Option A reuses the
 //! existing per-iter_var per-worker map: the walker
-//! ([`backend_common::multi_worker_walker::render_worker_events_inner`])
+//! (`backend_common::multi_worker_walker::render_worker_events_inner`)
 //! already keys on `(iter_var, worker_id)` independently for each
 //! `Event::Loop` it emits — verified in cycle 80 by reading the
 //! `Event::Loop` match-arm inside `render_worker_events_inner`
@@ -79,7 +79,7 @@
 //! ## Worker → (row, col) assignment
 //!
 //! The body's worker union (collected with
-//! [`crate::passes::partition_rows::collect_op_workers`]) is iterated
+//! `crate::passes::partition_rows::collect_op_workers`) is iterated
 //! in `BTreeSet<WorkerId>` numeric order. Worker `i` (0-indexed) is
 //! assigned grid cell `(row = i / C, col = i % C)`. The cell owns
 //! `y_band = y_lo + row * (y_len / R) .. y_lo + (row + 1) * (y_len / R)`
