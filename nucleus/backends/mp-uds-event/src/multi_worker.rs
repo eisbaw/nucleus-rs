@@ -273,10 +273,23 @@ mod tests {
     let ctrl_host: Rc<RefCell<std::os::unix::net::UnixStream>> = Rc::new(RefCell::new(ctrl_host_raw));
 "#;
         let mut host = String::new();
-        crate::plan::UdsEventTransport::emit_handshake(&mut host, "host", true, &["w0".to_string()]);
-        assert_eq!(host, GOLDEN_HOST, "mp-uds-event host emit_handshake drifted from golden");
+        crate::plan::UdsEventTransport::emit_handshake(
+            &mut host,
+            "host",
+            true,
+            &["w0".to_string()],
+        );
+        assert_eq!(
+            host, GOLDEN_HOST,
+            "mp-uds-event host emit_handshake drifted from golden"
+        );
         let mut nonhost = String::new();
-        crate::plan::UdsEventTransport::emit_handshake(&mut nonhost, "w0", false, &["w0".to_string()]);
+        crate::plan::UdsEventTransport::emit_handshake(
+            &mut nonhost,
+            "w0",
+            false,
+            &["w0".to_string()],
+        );
         assert_eq!(
             nonhost, GOLDEN_NONHOST,
             "mp-uds-event non-host emit_handshake drifted from golden"

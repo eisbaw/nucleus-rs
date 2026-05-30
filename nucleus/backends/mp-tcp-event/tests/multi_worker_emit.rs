@@ -474,14 +474,22 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     let names = NameTables::from_acfg(&acfg);
 
     // ---- Half 2: after mediation the emit SUCCEEDS. ----
-    let result = emit(&per_worker, &names, &sidecar, &kernels, &scratch.join("mediated"))
-        .expect("post-mediation mp-tcp-event emit must succeed");
+    let result = emit(
+        &per_worker,
+        &names,
+        &sidecar,
+        &kernels,
+        &scratch.join("mediated"),
+    )
+    .expect("post-mediation mp-tcp-event emit must succeed");
 
     let host_name = names.worker.get(&host).expect("host name").clone();
     let host_bin = result
         .worker_bins
         .iter()
-        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some(format!("{host_name}.rs").as_str()))
+        .find(|p| {
+            p.file_name().and_then(|s| s.to_str()) == Some(format!("{host_name}.rs").as_str())
+        })
         .expect("host bin must be present in the mediated emit");
     let host_src = std::fs::read_to_string(host_bin).expect("read host bin");
 
@@ -515,9 +523,8 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
             continue;
         }
         let wn = names.worker.get(w).expect("compute worker name");
-        let cross = format!(
-            "wire::barrier_cross(&mut *self.ctrl_{wn}.borrow_mut(), {host_excluding_bid})"
-        );
+        let cross =
+            format!("wire::barrier_cross(&mut *self.ctrl_{wn}.borrow_mut(), {host_excluding_bid})");
         assert!(
             host_src.contains(&cross),
             "15-transpose/distributed-rows: host's Bar{host_excluding_bid} shim \

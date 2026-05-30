@@ -90,8 +90,7 @@ fn sub_array_arg_diverges_vec_vs_fixed_array() {
     // `((frame) * 16) as usize` (classify_data_slice bakes the stride
     // into the `start` and casts to usize).
     assert_eq!(
-        vec_form,
-        "D[((frame) * 16) as usize..((frame) * 16) as usize + 16usize].to_vec()",
+        vec_form, "D[((frame) * 16) as usize..((frame) * 16) as usize + 16usize].to_vec()",
         "tier-1 sub-array arg must materialise as `.to_vec()` (Vec<T>)"
     );
     // no_std/embedded: owned fixed array via `.try_into().unwrap()`,
@@ -103,7 +102,10 @@ fn sub_array_arg_diverges_vec_vs_fixed_array() {
     );
     // The whole point: the two forms DIVERGE on a sub-array arg, and the
     // no_std form is alloc-free (no `.to_vec()`).
-    assert_ne!(vec_form, nostd_form, "the two arg forms must diverge on a sub-array arg");
+    assert_ne!(
+        vec_form, nostd_form,
+        "the two arg forms must diverge on a sub-array arg"
+    );
     assert!(
         !nostd_form.contains(".to_vec()"),
         "the no_std form must NOT use `.to_vec()` (needs alloc): {nostd_form}"

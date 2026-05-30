@@ -64,7 +64,11 @@ fn example_files() -> (PathBuf, PathBuf, PathBuf) {
 
 fn fresh_outdir(tag: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("nucleus-shim-reject-{}-{}", tag, std::process::id()));
+    p.push(format!(
+        "nucleus-shim-reject-{}-{}",
+        tag,
+        std::process::id()
+    ));
     if p.exists() {
         let _ = std::fs::remove_dir_all(&p);
     }

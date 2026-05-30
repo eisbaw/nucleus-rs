@@ -192,13 +192,11 @@ impl<'a> Plan<'a> {
         // `backend_common::host_election` module docstring for the
         // canonical rule (TASK-0336 cycle 164 lift).
         let host_worker =
-            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
-                || {
-                    EmitError::ContractGap(
-                        "multi-worker emit requires at least one used worker".to_string(),
-                    )
-                },
-            )?;
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(|| {
+                EmitError::ContractGap(
+                    "multi-worker emit requires at least one used worker".to_string(),
+                )
+            })?;
 
         // Cross-worker pairs: every (DataId, SeqTag) appearing on a
         // Push or Wait event (a Push and its matching Wait carry the

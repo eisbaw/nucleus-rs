@@ -1285,7 +1285,9 @@ fn resolve_algo_path(sched_path: &std::path::Path) -> Result<PathBuf, String> {
             ));
         };
         let extracted = &after_open[..close_rel];
-        let base = sched_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let base = sched_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""));
         return Ok(base.join(extracted));
     }
 

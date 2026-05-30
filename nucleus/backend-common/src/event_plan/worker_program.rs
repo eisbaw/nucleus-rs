@@ -420,8 +420,7 @@ impl<T: EventTransport> Plan<'_, T> {
             .iter()
             .map(|w| self.worker_name(*w))
             .collect();
-        let shared =
-            render_run_sh_multi(&host_name, &non_host_names, bufsz, T::SO_BUF_COMMENT);
+        let shared = render_run_sh_multi(&host_name, &non_host_names, bufsz, T::SO_BUF_COMMENT);
         T::render_run_sh_post(shared)
     }
 }

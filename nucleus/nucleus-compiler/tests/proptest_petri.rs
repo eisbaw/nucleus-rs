@@ -106,7 +106,9 @@ use nucleus_compiler::acfg::{
     ACFGNode, DataflowDag, DataflowEdge, Operation, SyncPlaceholder, TransferPolicy,
     XferPlaceholder, XferRole, ACFG,
 };
-use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, KernelId, SeqTag, SyncTag, WorkerId};
+use nucleus_compiler::event::{
+    DataId, Event, IterTile, IterVar, KernelId, SeqTag, SyncTag, WorkerId,
+};
 use nucleus_compiler::passes::acfg_to_petri::acfg_to_net;
 use nucleus_compiler::passes::boundedness::check_bounded;
 use nucleus_compiler::passes::deadlock::{check_deadlock_free, DeadlockError};
@@ -373,8 +375,10 @@ fn oracle_can_reach_all_fired(net: &Net) -> OracleResult<bool> {
             if let Ok(next_marking) = sim.fire(t.id) {
                 let mut next_fired = fired.clone();
                 next_fired.insert(t.id.0);
-                let key: StateKey =
-                    (marking_key(&next_marking), next_fired.iter().copied().collect());
+                let key: StateKey = (
+                    marking_key(&next_marking),
+                    next_fired.iter().copied().collect(),
+                );
                 if !visited.contains(&key) {
                     if visited.len() >= STATE_SPACE_CAP {
                         return OracleResult::Inconclusive;
@@ -711,8 +715,8 @@ fn wide_item_strategy(nw: u64, heavy: bool) -> impl Strategy<Value = WideItem> {
     // `prop_filter_map` keeps only the distinct-pair draws; on `nw>=2`
     // the keep rate is high (1 - 1/nw), so discards are negligible.
     let op = (0..nw, 0u64..3).prop_map(|(w, kernel)| WideItem::Op { w, kernel });
-    let sync = proptest::collection::btree_set(0u64..nw, 2..=(nw as usize))
-        .prop_map(|s| WideItem::Sync {
+    let sync =
+        proptest::collection::btree_set(0u64..nw, 2..=(nw as usize)).prop_map(|s| WideItem::Sync {
             participants: s.into_iter().collect(),
         });
     let xfer = (0..nw, 0..nw, any::<bool>()).prop_filter_map(
@@ -769,8 +773,7 @@ fn build_wide_nodes(items: &[WideItem], next_seq: &mut u64) -> Vec<ACFGNode> {
                 }));
             }
             WideItem::Sync { participants } => {
-                let set: BTreeSet<WorkerId> =
-                    participants.iter().copied().map(WorkerId).collect();
+                let set: BTreeSet<WorkerId> = participants.iter().copied().map(WorkerId).collect();
                 nodes.push(ACFGNode::Sync(SyncPlaceholder {
                     participants: set,
                     // SyncTag does not affect net topology (acfg_to_net
@@ -938,9 +941,7 @@ fn widened_acfg_strategy() -> impl Strategy<Value = ACFG> {
             0i64..=2,
             proptest::option::of((wide_item_strategy(nw, false), 0i64..=2)),
         ));
-        (top, loop_spec).prop_map(move |(top, loop_spec)| {
-            build_widened_acfg(nw, top, loop_spec)
-        })
+        (top, loop_spec).prop_map(move |(top, loop_spec)| build_widened_acfg(nw, top, loop_spec))
     })
 }
 
@@ -1224,7 +1225,9 @@ fn weight_widened_oracle_discard_rate_is_low() {
     let mut conclusive = 0usize;
     let mut discarded = 0usize;
     for _ in 0..samples {
-        let tree = strat.new_tree(&mut runner).expect("strategy produced a value");
+        let tree = strat
+            .new_tree(&mut runner)
+            .expect("strategy produced a value");
         let net = tree.current();
         match oracle_capacity_can_be_violated(&net) {
             OracleResult::Conclusive(_) => conclusive += 1,
@@ -1484,7 +1487,9 @@ fn widened_acfg_net_stays_small() {
     let mut deadlocking = 0usize;
     let mut oracle_inconclusive = 0usize;
     for _ in 0..samples {
-        let tree = strat.new_tree(&mut runner).expect("strategy produced a value");
+        let tree = strat
+            .new_tree(&mut runner)
+            .expect("strategy produced a value");
         let acfg = tree.current();
         let net = acfg_to_net(&acfg);
         max_transitions = max_transitions.max(net.transitions.len());

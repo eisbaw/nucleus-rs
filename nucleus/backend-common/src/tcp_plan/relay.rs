@@ -118,8 +118,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
             for hop in hops {
                 let dst_name = self.worker_name(hop.dst);
                 let data_name = self.data_name(hop.data)?;
-                let read_call =
-                    W::read_msg_expect_call(&format!("data_{src_name}"), hop.seq.0);
+                let read_call = W::read_msg_expect_call(&format!("data_{src_name}"), hop.seq.0);
                 let write_call =
                     W::write_msg_call(&format!("data_{dst_name}"), hop.seq.0, "__relay_payload");
                 writeln!(

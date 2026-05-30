@@ -483,11 +483,7 @@ fn transpose_15_distributed_rows_openmp_equiv_pthreads_sync() {
          barrier shapes are exercised by this cell. main.rs:\n{openmp_src}"
     );
 
-    assert_openmp_main_equiv_sync(
-        "15-transpose/distributed-rows",
-        &openmp_src,
-        &sync_src,
-    );
+    assert_openmp_main_equiv_sync("15-transpose/distributed-rows", &openmp_src, &sync_src);
 }
 
 /// Cycle-193 forward-carried const-in-IndexExpr regression pin

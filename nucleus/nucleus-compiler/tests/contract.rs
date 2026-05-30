@@ -604,8 +604,8 @@ fn dotted_stem_kernels_file_does_not_trip_rust_check() {
     // to the positive `good` fixture, so the only thing under test is
     // whether the dotted stem alone causes a rustc crate-name rejection.
     let algo = algo_for("good");
-    let good_src = std::fs::read_to_string(kernels_rs_for("good"))
-        .expect("good/kernels.rs must be readable");
+    let good_src =
+        std::fs::read_to_string(kernels_rs_for("good")).expect("good/kernels.rs must be readable");
 
     // Unique temp dir so parallel test threads don't collide on the
     // fixed `kernels.embedded.rs` filename. The filename — not the
@@ -614,11 +614,8 @@ fn dotted_stem_kernels_file_does_not_trip_rust_check() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "nucleus_task0363_{}_{}",
-        std::process::id(),
-        nanos
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("nucleus_task0363_{}_{}", std::process::id(), nanos));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let dotted = dir.join("kernels.embedded.rs");
     std::fs::write(&dotted, &good_src).expect("write dotted-stem kernels file");

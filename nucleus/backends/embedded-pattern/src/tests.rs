@@ -84,7 +84,11 @@ fn emit_example_naive(example: &str, scratch_leaf: &str) -> String {
 /// stays false (the 02-split fixture splits across worker boundaries
 /// only — no `partition=` directive), matching how the driver lowers a
 /// non-partitioned multi-worker schedule.
-fn emit_example_multi(example: &str, schedule_file: &str, scratch_leaf: &str) -> crate::MultiEmitResult {
+fn emit_example_multi(
+    example: &str,
+    schedule_file: &str,
+    scratch_leaf: &str,
+) -> crate::MultiEmitResult {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples").join(example);
     let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("algo source");
@@ -189,7 +193,10 @@ fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
     assert!(res.cargo_toml.exists(), "emitted Cargo.toml must exist");
     assert!(res.memory_x.exists(), "emitted memory.x must exist");
     assert!(res.build_rs.exists(), "emitted build.rs must exist");
-    assert!(res.cargo_config.exists(), "emitted .cargo/config.toml must exist");
+    assert!(
+        res.cargo_config.exists(),
+        "emitted .cargo/config.toml must exist"
+    );
     std::fs::read_to_string(&res.main_rs).expect("read emitted main.rs")
 }
 
@@ -201,7 +208,10 @@ fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
     // M9 methods plus the two M10 TASK-0048.04 tier-3 methods
     // (monotonic_ns + report_violation).
     assert!(lib.contains("#![no_std]"), "must be no_std:\n{lib}");
-    assert!(lib.contains("pub trait NucleusShim"), "trait missing:\n{lib}");
+    assert!(
+        lib.contains("pub trait NucleusShim"),
+        "trait missing:\n{lib}"
+    );
     for m in [
         "fn alloc_in_region",
         "fn dma_push",
@@ -271,12 +281,21 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
     // no_std / no_main firmware with cortex-m-rt entry + panic handler.
     assert!(main.contains("#![no_std]"), "must be no_std:\n{main}");
     assert!(main.contains("#![no_main]"), "must be no_main:\n{main}");
-    assert!(main.contains("use cortex_m_rt::entry;"), "missing cortex-m-rt:\n{main}");
+    assert!(
+        main.contains("use cortex_m_rt::entry;"),
+        "missing cortex-m-rt:\n{main}"
+    );
     assert!(main.contains("#[entry]"), "missing #[entry]:\n{main}");
-    assert!(main.contains("#[panic_handler]"), "missing #[panic_handler]:\n{main}");
+    assert!(
+        main.contains("#[panic_handler]"),
+        "missing #[panic_handler]:\n{main}"
+    );
 
     // Same trait surface as the lib (verbatim reuse) + the concrete shim.
-    assert!(main.contains("pub trait NucleusShim"), "trait missing:\n{main}");
+    assert!(
+        main.contains("pub trait NucleusShim"),
+        "trait missing:\n{main}"
+    );
     assert!(
         main.contains("impl NucleusShim for Usart1Shim"),
         "Usart1Shim impl missing:\n{main}"
@@ -287,8 +306,14 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
         main.contains("pub fn add(a: i32, b: i32) -> i32"),
         "pure kernel `add` not extracted:\n{main}"
     );
-    assert!(main.contains("a.wrapping_add(b)"), "kernel body not verbatim:\n{main}");
-    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+    assert!(
+        main.contains("a.wrapping_add(b)"),
+        "kernel body not verbatim:\n{main}"
+    );
+    assert!(
+        !main.contains("std::fs"),
+        "std::fs leaked into no_std bin:\n{main}"
+    );
 
     // The lowered run + the save Fire -> dma_push (the UART hook).
     assert!(
@@ -348,8 +373,14 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
     );
 
     // main enables USART then runs.
-    assert!(main.contains("let mut shim = Usart1Shim::new();"), "main must build shim:\n{main}");
-    assert!(main.contains("run(&mut shim);"), "main must call run:\n{main}");
+    assert!(
+        main.contains("let mut shim = Usart1Shim::new();"),
+        "main must build shim:\n{main}"
+    );
+    assert!(
+        main.contains("run(&mut shim);"),
+        "main must call run:\n{main}"
+    );
 }
 
 #[test]
@@ -363,16 +394,34 @@ fn ex05_bin_emits_renode_runnable_firmware_with_flattened_blur3() {
     assert!(main.contains("#![no_std]"), "must be no_std:\n{main}");
     assert!(main.contains("#![no_main]"), "must be no_main:\n{main}");
     assert!(main.contains("#[entry]"), "missing #[entry]:\n{main}");
-    assert!(main.contains("#[panic_handler]"), "missing #[panic_handler]:\n{main}");
+    assert!(
+        main.contains("#[panic_handler]"),
+        "missing #[panic_handler]:\n{main}"
+    );
 
     // The PURE blur3 kernel extracted verbatim (9-param multiline sig + body).
-    assert!(main.contains("pub fn blur3("), "pure kernel `blur3` not extracted:\n{main}");
-    assert!(main.contains("sum / 9"), "blur3 body not copied verbatim:\n{main}");
-    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+    assert!(
+        main.contains("pub fn blur3("),
+        "pure kernel `blur3` not extracted:\n{main}"
+    );
+    assert!(
+        main.contains("sum / 9"),
+        "blur3 body not copied verbatim:\n{main}"
+    );
+    assert!(
+        !main.contains("std::fs"),
+        "std::fs leaked into no_std bin:\n{main}"
+    );
 
     // 2D flatten: img[y][x] -> img[y*16 + x] (same flatten as tier-1 / the lib).
-    assert!(main.contains("* 16 +"), "2D index not flattened row-major:\n{main}");
-    assert!(main.contains("kernels::blur3("), "compute Fire did not call kernels::blur3:\n{main}");
+    assert!(
+        main.contains("* 16 +"),
+        "2D index not flattened row-major:\n{main}"
+    );
+    assert!(
+        main.contains("kernels::blur3("),
+        "compute Fire did not call kernels::blur3:\n{main}"
+    );
     // 16*16 = 256-element fixed arrays.
     assert!(
         main.contains("[i32; 256] = [0; 256]"),
@@ -391,7 +440,10 @@ fn ex05_bin_emits_renode_runnable_firmware_with_flattened_blur3() {
         main.contains("shim.dma_push(0, img_out.as_ptr() as *const u8"),
         "save Fire did not lower to dma_push streaming img_out:\n{main}"
     );
-    assert!(main.contains("usart1_putc(byte);"), "dma_push must stream raw bytes:\n{main}");
+    assert!(
+        main.contains("usart1_putc(byte);"),
+        "dma_push must stream raw bytes:\n{main}"
+    );
 }
 
 #[test]
@@ -412,8 +464,14 @@ fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
 
     // BOTH pure compute kernels extracted verbatim (the two-op transform
     // body is the load-bearing one — a bug that drops `rec` shows here).
-    assert!(main.contains("pub fn produce(seed: i32) -> i32"), "produce not extracted:\n{main}");
-    assert!(main.contains("seed.wrapping_mul(3)"), "produce body not verbatim:\n{main}");
+    assert!(
+        main.contains("pub fn produce(seed: i32) -> i32"),
+        "produce not extracted:\n{main}"
+    );
+    assert!(
+        main.contains("seed.wrapping_mul(3)"),
+        "produce body not verbatim:\n{main}"
+    );
     assert!(
         main.contains("pub fn transform(rec: i32) -> i32"),
         "transform not extracted:\n{main}"
@@ -422,7 +480,10 @@ fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
         main.contains("rec.wrapping_mul(7).wrapping_add(rec)"),
         "transform body not verbatim:\n{main}"
     );
-    assert!(!main.contains("std::fs"), "std::fs leaked into no_std bin:\n{main}");
+    assert!(
+        !main.contains("std::fs"),
+        "std::fs leaked into no_std bin:\n{main}"
+    );
 
     // The intermediate `stream` array is a fixed [i32; 16] local — NOT a
     // shim hook (it is internal dataflow, neither loaded nor saved).
@@ -452,7 +513,10 @@ fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
         main.contains("shim.dma_push(0, result.as_ptr() as *const u8"),
         "save Fire did not lower to dma_push streaming result:\n{main}"
     );
-    assert!(main.contains("usart1_putc(byte);"), "dma_push must stream raw bytes:\n{main}");
+    assert!(
+        main.contains("usart1_putc(byte);"),
+        "dma_push must stream raw bytes:\n{main}"
+    );
 }
 
 #[test]
@@ -540,8 +604,14 @@ fn multi_worker_lib_emits_one_project_per_worker_with_transport_hooks() {
             "worker `{name}` project must be nested under out_dir/{name}/: {}",
             w.project_dir.display()
         );
-        assert!(w.lib_rs.exists(), "worker `{name}` lib.rs must exist on disk");
-        assert!(w.cargo_toml.exists(), "worker `{name}` Cargo.toml must exist");
+        assert!(
+            w.lib_rs.exists(),
+            "worker `{name}` lib.rs must exist on disk"
+        );
+        assert!(
+            w.cargo_toml.exists(),
+            "worker `{name}` Cargo.toml must exist"
+        );
     }
 
     // The two libs' sources, by worker name.
@@ -609,7 +679,10 @@ fn multi_worker_lib_emits_one_project_per_worker_with_transport_hooks() {
 
     // --- both libs are no_std with the shim trait (compile-only shape) ---
     for (name, src) in [("host", &host), ("w0", &w0)] {
-        assert!(src.contains("#![no_std]"), "worker `{name}` must be no_std:\n{src}");
+        assert!(
+            src.contains("#![no_std]"),
+            "worker `{name}` must be no_std:\n{src}"
+        );
         assert!(
             src.contains("pub trait NucleusShim"),
             "worker `{name}` must carry the NucleusShim trait:\n{src}"
@@ -726,7 +799,10 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
     //     cross-MCU ordering primitive; TASK-0049.06 review P3.3). ---
     for name in ["fe", "dsp", "rf"] {
         let src = read(name);
-        assert!(src.contains("#![no_std]"), "worker `{name}` must be no_std:\n{src}");
+        assert!(
+            src.contains("#![no_std]"),
+            "worker `{name}` must be no_std:\n{src}"
+        );
         assert!(
             src.contains("pub trait NucleusShim"),
             "worker `{name}` must carry the NucleusShim trait:\n{src}"
@@ -926,9 +1002,7 @@ fn check_loop_count_lowers_to_atomic_u32_static_and_program_exit_summary() {
     );
     // (b) the on-violation branch increments the counter (NOT report_violation).
     assert!(
-        main.contains(
-            "NUC_CHECK_COUNT_i.fetch_add(1, core::sync::atomic::Ordering::Relaxed);"
-        ),
+        main.contains("NUC_CHECK_COUNT_i.fetch_add(1, core::sync::atomic::Ordering::Relaxed);"),
         "count on-violation branch must fetch_add the AtomicU32 counter:\n{main}"
     );
     assert!(

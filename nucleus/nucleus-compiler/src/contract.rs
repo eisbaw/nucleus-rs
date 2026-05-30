@@ -285,7 +285,13 @@ fn sanitise_crate_name(path: &Path) -> String {
         .unwrap_or("kernels");
     let mut name: String = stem
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if name.is_empty() || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         name.insert(0, '_');

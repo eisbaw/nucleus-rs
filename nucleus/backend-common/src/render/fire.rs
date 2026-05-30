@@ -162,7 +162,13 @@ fn render_fire_args_with(
     let mut parts = Vec::with_capacity(inputs.len());
     for (i, arg) in inputs.iter().enumerate() {
         let param_ty = sig.and_then(|s| s.params.get(i));
-        parts.push(render_fire_arg(arg, param_ty, kernel_name, ctx, sub_array_form)?);
+        parts.push(render_fire_arg(
+            arg,
+            param_ty,
+            kernel_name,
+            ctx,
+            sub_array_form,
+        )?);
     }
     Ok(parts.join(", "))
 }

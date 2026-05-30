@@ -424,7 +424,8 @@ schedule for \"../prog.algo.nuc\" {
 }
 ",
     );
-    let errs = link(algo, sched).expect_err("cross-worker identity copy without transfer must fail");
+    let errs =
+        link(algo, sched).expect_err("cross-worker identity copy without transfer must fail");
     // Both `mid` (host -> w0 via the copy) and `src` (host produced,
     // transitively consumed on w0) cross a worker boundary with no
     // transfer. At minimum the copy target `mid` must be flagged.

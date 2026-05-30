@@ -413,7 +413,10 @@ schedule for "anything.algo.nuc" {
         // A host-INCLUDED barrier (tag 1) and a host-EXCLUDING one (tag 7).
         let mut pw: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
         pw.insert(host, vec![sync(&[host, w1, w2, w3], 1)]);
-        pw.insert(w1, vec![sync(&[host, w1, w2, w3], 1), sync(&[w1, w2, w3], 7)]);
+        pw.insert(
+            w1,
+            vec![sync(&[host, w1, w2, w3], 1), sync(&[w1, w2, w3], 7)],
+        );
         pw.insert(w2, vec![sync(&[w1, w2, w3], 7)]);
         assert_eq!(
             host_excluding_barrier_bid(&pw, host),

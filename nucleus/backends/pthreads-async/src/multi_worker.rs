@@ -197,15 +197,13 @@ impl<'a> Plan<'a> {
         // today, but the alignment with pthreads-sync's precedent
         // keeps error handling consistent across backends.
         let host_worker =
-            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
-                || {
-                    EmitError::ContractGap(
-                        "pthreads-async Plan: used_workers reachable to host \
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(|| {
+                EmitError::ContractGap(
+                    "pthreads-async Plan: used_workers reachable to host \
                      election but empty — invariant len() >= 2 violated"
-                            .to_string(),
-                    )
-                },
-            )?;
+                        .to_string(),
+                )
+            })?;
 
         // Collect cross-worker (DataId, SeqTag) pairs from every
         // Push/Wait in every worker's events via the shared backend-

@@ -124,8 +124,10 @@ use nucleus_compiler::event::{
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 use nucleus_compiler::NameTables;
 
+use backend_common::multi_worker_walker::{
+    collect_let_at_wait_data, render_worker_events, WalkerCtx,
+};
 use backend_common::render::EmitError;
-use backend_common::multi_worker_walker::{collect_let_at_wait_data, render_worker_events, WalkerCtx};
 
 /// Build the at-risk fixture: a whole-array data `buf : i32[8]`, a
 /// loop var `t : 0..4`, and a kernel `consume` taking one aggregate
@@ -173,12 +175,7 @@ fn at_risk_tables() -> (NameTables, NameSidecar, DataId, SeqTag, IterVar, Kernel
 
 /// The at-risk event sequence: `Loop { body: [Wait(buf)] }` followed
 /// at the OUTER scope by a `Fire` whose kernel input reads `buf`.
-fn at_risk_events(
-    data: DataId,
-    seq: SeqTag,
-    iv: IterVar,
-    kernel: KernelId,
-) -> Vec<Event> {
+fn at_risk_events(data: DataId, seq: SeqTag, iv: IterVar, kernel: KernelId) -> Vec<Event> {
     let inner_wait = Event::Wait {
         src: WorkerId(0),
         data,

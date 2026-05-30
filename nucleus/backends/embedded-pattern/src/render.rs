@@ -241,8 +241,7 @@ fn render_event(
                     // it cross-compiles) but, being a `StubShim` lib with no
                     // `main`, never flushes a summary — fine for compile-only.
                     ViolationKind::Count => {
-                        let ident =
-                            backend_common::check_frame::sanitize_loop_var(&frame.loop_var);
+                        let ident = backend_common::check_frame::sanitize_loop_var(&frame.loop_var);
                         let (lo_s, hi_s) = render_loop_bounds(*iter_var, range, ctx)?;
                         let body_pad = "    ".repeat(indent + 1);
                         writeln!(out, "{pad}for {var} in ({lo_s})..({hi_s}) {{").ok();

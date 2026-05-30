@@ -86,9 +86,10 @@ fn find_pub_fn_start(src: &str, name: &str) -> Option<usize> {
         // The byte AFTER `fn <name>` must not be an identifier
         // continuation (so `fn add` does not match inside `fn address`).
         let after = fn_pos + needle.len();
-        let boundary_ok = src.as_bytes().get(after).is_none_or(|b| {
-            !(b.is_ascii_alphanumeric() || *b == b'_')
-        });
+        let boundary_ok = src
+            .as_bytes()
+            .get(after)
+            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
         if boundary_ok && is_pub_before(src, fn_pos) {
             // Anchor the returned span at `pub` so the emitted def keeps
             // the visibility modifier (it lives in a private `mod
@@ -123,7 +124,10 @@ mod tests {
     fn extracts_single_line_fn() {
         let src = "use std::env;\n\npub fn add(a: i32, b: i32) -> i32 {\n    a.wrapping_add(b)\n}\n\npub fn other() {}\n";
         let got = extract_pub_fn(src, "add").expect("add present");
-        assert_eq!(got, "pub fn add(a: i32, b: i32) -> i32 {\n    a.wrapping_add(b)\n}");
+        assert_eq!(
+            got,
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a.wrapping_add(b)\n}"
+        );
     }
 
     #[test]

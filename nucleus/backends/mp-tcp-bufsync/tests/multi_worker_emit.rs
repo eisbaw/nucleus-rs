@@ -196,8 +196,14 @@ fn transpose_15_distributed_rows_host_excluding_barrier_bufsync() {
     // Post-mediation (half 2) — the emit now SUCCEEDS, and host's bin
     // carries a `barrier_cross` for the formerly host-excluding barrier
     // (host became a participant of the mediated star rendezvous).
-    let bufsync = mp_tcp_bufsync::emit(&per_worker, &names, &sidecar, &kernels, &scratch.join("gen"))
-        .expect("mediated mp-tcp-bufsync emit must succeed");
+    let bufsync = mp_tcp_bufsync::emit(
+        &per_worker,
+        &names,
+        &sidecar,
+        &kernels,
+        &scratch.join("gen"),
+    )
+    .expect("mediated mp-tcp-bufsync emit must succeed");
 
     let host_name = names.worker.get(&host).expect("host name").clone();
     let host_bin = bufsync

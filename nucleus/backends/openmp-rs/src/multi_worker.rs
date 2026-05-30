@@ -126,13 +126,11 @@ impl<'a> Plan<'a> {
         // mirror invariant (driver vs backend) holds trivially —
         // neither side overrides the helper.
         let host_worker =
-            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(
-                || {
-                    EmitError::ContractGap(
-                        "multi-worker emit requires at least one used worker".to_string(),
-                    )
-                },
-            )?;
+            elect_host_from_worker_names(&names.worker, &used_workers).ok_or_else(|| {
+                EmitError::ContractGap(
+                    "multi-worker emit requires at least one used worker".to_string(),
+                )
+            })?;
 
         // Cross-worker pairs: every (DataId, SeqTag) appearing on a
         // Push or Wait event. Sorted by (DataId, SeqTag) so slot

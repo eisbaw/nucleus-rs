@@ -262,7 +262,14 @@ pub fn emit(
         // No firing at all (e.g. an --emit-pn-style empty projection):
         // emit a single empty-body project at the root, preserving the
         // historical single-worker behaviour for a degenerate schedule.
-        results.push(emit_one_worker_lib(&[], names, sidecar, &kernels_src, out_dir, None)?);
+        results.push(emit_one_worker_lib(
+            &[],
+            names,
+            sidecar,
+            &kernels_src,
+            out_dir,
+            None,
+        )?);
         return Ok(MultiEmitResult { workers: results });
     }
 
@@ -491,7 +498,11 @@ fn render_main_rs(
             latency_max_ns: c.latency_max_ns,
         })
         .collect();
-    Ok(skeleton::render_bin_main(&kernel_defs, &run_body, &summaries))
+    Ok(skeleton::render_bin_main(
+        &kernel_defs,
+        &run_body,
+        &summaries,
+    ))
 }
 
 /// The shared core of [`render_lib_rs`] and [`render_main_rs`]: extract
@@ -575,9 +586,7 @@ fn collect_count_check_loops(events: &[Event]) -> Vec<CountCheckLoop> {
                 if let Some(frame) = check_frame {
                     if matches!(frame.on_violation, ViolationKind::Count) {
                         out.push(CountCheckLoop {
-                            ident: backend_common::check_frame::sanitize_loop_var(
-                                &frame.loop_var,
-                            ),
+                            ident: backend_common::check_frame::sanitize_loop_var(&frame.loop_var),
                             loop_var: frame.loop_var.clone(),
                             latency_max_ns: frame.latency_max_ns,
                         });

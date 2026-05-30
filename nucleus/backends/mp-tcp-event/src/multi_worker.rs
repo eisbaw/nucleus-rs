@@ -271,10 +271,23 @@ mod tests {
     let ctrl_host: Rc<RefCell<std::net::TcpStream>> = Rc::new(RefCell::new(ctrl_host_raw));
 "#;
         let mut host = String::new();
-        crate::plan::TcpEventTransport::emit_handshake(&mut host, "host", true, &["w0".to_string()]);
-        assert_eq!(host, GOLDEN_HOST, "mp-tcp-event host emit_handshake drifted from golden");
+        crate::plan::TcpEventTransport::emit_handshake(
+            &mut host,
+            "host",
+            true,
+            &["w0".to_string()],
+        );
+        assert_eq!(
+            host, GOLDEN_HOST,
+            "mp-tcp-event host emit_handshake drifted from golden"
+        );
         let mut nonhost = String::new();
-        crate::plan::TcpEventTransport::emit_handshake(&mut nonhost, "w0", false, &["w0".to_string()]);
+        crate::plan::TcpEventTransport::emit_handshake(
+            &mut nonhost,
+            "w0",
+            false,
+            &["w0".to_string()],
+        );
         assert_eq!(
             nonhost, GOLDEN_NONHOST,
             "mp-tcp-event non-host emit_handshake drifted from golden"

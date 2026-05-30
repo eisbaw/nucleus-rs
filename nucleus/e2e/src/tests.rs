@@ -698,7 +698,16 @@ fn milestone_parse_accepts_valid_rejects_garbage() {
     // M12 is one past the ceiling: in-shape but out-of-range, the
     // boundary that proves the clamp still bites.
     for bad in [
-        "m1", "M", "3", "MX", "M-1", "M12", "M99", "", "M1.0", "milestone1",
+        "m1",
+        "M",
+        "3",
+        "MX",
+        "M-1",
+        "M12",
+        "M99",
+        "",
+        "M1.0",
+        "milestone1",
     ] {
         assert!(
             Milestone::parse(bad).is_err(),
