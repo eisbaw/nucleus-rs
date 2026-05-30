@@ -3,7 +3,7 @@
 //! templates in the parent [`super`] module; the lib path
 //! ([`super::render_cargo_toml`] / [`super::render_lib`]) is UNCHANGED.
 //! The bin shape is the OPPOSITE of the lib in every honest respect (it
-//! HAS a [[bin]], a panic profile, a panic_handler, a cortex-m-rt entry,
+//! HAS a `[[bin]]`, a panic profile, a panic_handler, a cortex-m-rt entry,
 //! a linker script) — so the docs here state the bin facts, NOT the lib
 //! facts (feedback-verbatim-copy-comment-doc-lie).
 //!
@@ -23,7 +23,7 @@ use super::{render_count_statics, NUCLEUS_SHIM_SRC};
 
 /// The `Usart1Shim` impl emitted into the generated BIN's `main.rs`
 /// (M10, TASK-0048.01 / TASK-0048.02). This is the CONCRETE
-/// [`super::NucleusShim`] the M9 [`super::StubShim`] no-ops:
+/// `NucleusShim` the M9 `StubShim` no-ops:
 ///
 /// - `alloc_in_region` IS the REAL input path (TASK-0048.02): it hands
 ///   back a pointer into the Renode-injected input region (axiSram @

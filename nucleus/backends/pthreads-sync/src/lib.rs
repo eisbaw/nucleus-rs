@@ -281,7 +281,7 @@ pub fn emit(
 ///   `Fire` output (`D[i] <-- k(...)`) and never as a whole-array
 ///   output gets `let mut D = vec![<zero>; product(dims)];` up front,
 ///   sorted by name. Size + element type come from the sidecar.
-/// - **Fire**: reconstruct the call from [`FireBinding`] + name
+/// - **Fire**: reconstruct the call from `FireBinding` + name
 ///   tables (exactly `eventlist_alone_reconstructs_stencil_kernel_call`).
 ///   Whole-array output → `let mut D = kernels::k(args);`; indexed
 ///   output → `D[idx] = kernels::k(args);`; no output → effect call.
