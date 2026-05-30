@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-30 20:53'
+updated_date: '2026-05-30 23:06'
 labels: []
 dependencies: []
 references:
@@ -41,3 +42,9 @@ Acceptance:
 - [ ] #3 just e2e-full runs every cell with net-soundness pass enabled; bit-identity holds across the matrix
 - [ ] #4 README / justfile help text documents when each recipe is appropriate
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle-218 orchestrator investigation: the premise (gate slows builds) is CONFIRMED, but the proposed solution (CLI flag + e2e cheap/full split) is a WORKAROUND for an O(T*A) performance bug, not a root-cause fix. Measured: 07-matmul/distributed8 gate-on 473ms vs gate-off 34ms (~439ms = 93% of build); root cause is Net::fire scanning ALL arcs per call (no per-transition adjacency index). Filed TASK-0377 as the root-cause near-linear fix (keeps the gate always-on per TASK-0368 defense-in-depth AND makes e2e fast). RECOMMENDATION: hold this task; if TASK-0377 brings the always-on gate cost under target, this flag/e2e-split is UNNECESSARY and 0372 should close as superseded. Only revive the flag if a residual cost remains after 0377.
+<!-- SECTION:NOTES:END -->
