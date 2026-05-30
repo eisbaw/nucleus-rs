@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-30 11:08'
-updated_date: '2026-05-30 11:34'
+updated_date: '2026-05-30 11:54'
 labels:
   - compiler
   - e2e
@@ -77,6 +77,16 @@ GOTCHAS / SUBTLETIES for next cold session:
 GATE NUMBERS (cycle 214): build OK; clippy CLEAN (-D warnings, independently re-grepped); just test all green (0 failed); just test-release all green; e2e 322/265/0/57/0 (fail 0, required-fail 0). 5 new partition unit tests pass dev+release.
 
 LIMITS / honest caveats: (a) only 07-matmul exercised — 03-reduction/08-histogram still N=4-only, but the shared compute_partition_bands is now proven for N in {3,8} + the existing {4} so the decompose generalises; (b) the new cells over-transfer b (whole-array broadcast) same as the 4-worker cell — that is bit-correct, not a regression; (c) empty-band is a REJECT not a runnable cell, so AC#4's 'bit-identical OR fail-loud' is satisfied via the fail-loud branch.
+
+=== Cycle 214 ORCHESTRATOR review-gate close ===
+
+Outcome: GO (both reviews). Parallel read-only gate on e40331a (source) + cff2d5d (tracker):
+- qa-test-runner GO: clippy 0 warnings (forced full re-analysis); just test 1139/0/3; just test-release 1138/0/3; just e2e 322/265/0/57/0 reproduced TWICE deterministically; all 14 new cells (07-matmul distributed3 + distributed8 x 7 backends) PASS as required; direct cmp distributed3 x pthreads-sync output.bin == reference.bin BIT-IDENTICAL (sha256 8037cf28...); purely additive (pass 251->265 = +14, skip 57 unchanged); empty-band 17-worker reject verified at the DRIVER level = exit 1, typed PartitionError::InsufficientWork, ZERO panic markers (RUST_BACKTRACE=1).
+- mped-architect GO: traced compute_partition_bands (common.rs) end-to-end — genuinely worker-count-agnostic (base=len/n, extras=len%n, cursor-walk; band START is accumulated cursor NOT worker_id*uniform, so the uneven 6/5/5 is correct by construction, not luck); confirmed sidecar partition_worker_ranges + wait_slice Flat + event_walker all read per-worker bands directly with no even-division assumption. Empty-band reject is fail-loud-TYPED (PartitionError::InsufficientWork -> driver map_err -> exit 1), not a panic. Header arithmetic verified; matrix honest (14 required, 0 hidden skip); no AC-gaming; the 4 tests bite.
+
+CORRECTION (architect P2, commit-message coverage-math discipline): this cycle added 4 new regression tests, NOT 5 as stated in the e40331a/cff2d5d commit messages and this tasks earlier Final Summary. The actual 4: bands_07_matmul_3_workers_returns_6_5_5, bands_07_matmul_8_workers_returns_2_each, bands_07_matmul_17_workers_empty_band_rejects (common.rs) + empty_band_geometry_fails_loud_not_panic (partition_workers.rs). The "5" double-counted the 17-worker reject test (it is both the 3rd geometry pin and the helper-level reject). Commit messages are immutable; this note is the durable correction.
+
+P3 (non-blocking): distributed8 (N=8, even 2-each) is partly redundant with the existing N=4 cell — its only novel axis is N>4 gather scaling; distributed3 (uneven N=3) is the genuine new coverage and the one satisfying AC#1 "does not divide evenly". Kept distributed8 (cheap, real N>4 coverage). Driver-level empty-band negative regression test filed as TASK-0371 (the reject is pass-level pinned today).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
