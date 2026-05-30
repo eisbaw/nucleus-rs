@@ -200,48 +200,38 @@ fn back_to_back_produce_into_cap1_buffer_is_rejected() {
 #[test]
 fn e2e_example_02_split_never_overflows_capacity() {
     // Example 02 under the `split` schedule is bounded by construction
-    // (PRD §8.4). What we assert here is the *boundedness* property:
-    // no firing in the derived order would push a place above its
-    // capacity.
+    // (PRD §8.4). We assert the *boundedness* property directly: the
+    // derived firing order replays to completion with no place ever
+    // exceeding its capacity — i.e. `check_bounded` returns `Ok(())`.
     //
-    // Caveat (upstream): at the time of writing TASK-0028,
-    // `transfer_inject` does not splice a Push placeholder when the
-    // matching Wait is inside a `Repeat` body and its producer is in
-    // the outer sequence. The net thus contains `wait_seq*`
-    // transitions with no producer-side `push_seq*` peers, and the
-    // first Wait fires against an empty buffer place. That manifests
-    // here as `BoundednessError::InvalidFiringOrder` — a deadlock
-    // shape, not an overflow.
+    // Caveat RESOLVED (TASK-0368): an earlier version of this test
+    // (TASK-0028 era) tolerated `BoundednessError::InvalidFiringOrder`
+    // because `transfer_inject` did not splice a Push placeholder when
+    // the matching Wait was inside a `Repeat` body whose producer sat
+    // in the outer sequence — the net carried `wait_seq*` transitions
+    // with no `push_seq*` peers and the first Wait fired against an
+    // empty buffer place. TASK-0136/0139's whole-symbol Push/Wait
+    // pairing fixed that; today's rebuilt net is well-formed and
+    // replays fully. The companion deadlock test
+    // (`tests/deadlock.rs::e2e_example_02_split_is_deadlock_free`)
+    // already asserts the no-stall half; this test now asserts the
+    // no-overflow half with the same strictness.
     //
-    // The boundedness check is still meaningful: regardless of
-    // whether the run completes, no step ever produces a capacity
-    // violation. Filed as a follow-up against transfer_inject; the
-    // boundedness pass itself is complete.
+    // This tightening is load-bearing: the production driver runs
+    // `check_net_sound` (boundedness + deadlock) on every build as of
+    // TASK-0368, so accepting a stalled firing order here would mask a
+    // regression the shipping gate must reject.
     let net = pipeline_to_net(
         "02-split-add/prog.algo.nuc",
         "02-split-add/schedules/split.sched.nuc",
     );
     let order = derive_firing_order(&net);
-    match check_bounded(&net, &order) {
-        Ok(()) => { /* ideal: full firing without overflow */ }
-        Err(BoundednessError::InvalidFiringOrder { .. }) => {
-            // Upstream limitation; documented above.
-        }
-        Err(BoundednessError::CapacityExceeded {
-            place_name,
-            transition_name,
-            would_be,
-            capacity,
-            ..
-        }) => panic!(
-            "example 02 split must be bounded by construction; got overflow: \
-             place '{}' would reach {} (cap {}), via transition '{}'",
-            place_name, would_be, capacity, transition_name
-        ),
-        Err(BoundednessError::UnknownTransition(t)) => {
-            panic!("derive_firing_order produced unknown transition {:?}", t)
-        }
-    }
+    check_bounded(&net, &order).expect(
+        "example 02 split must be bounded by construction and replay to \
+         completion (TASK-0136/0139 whole-symbol Push/Wait pairing); an \
+         InvalidFiringOrder or CapacityExceeded here is a regression in \
+         transfer_inject's cross-scope finalisation",
+    );
 }
 
 #[test]

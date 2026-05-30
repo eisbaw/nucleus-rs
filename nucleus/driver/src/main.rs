@@ -4,8 +4,16 @@
 //!
 //!   parse algo + sched -> lower -> link -> build ACFG ->
 //!   inject syncs -> inject transfers -> load backend capabilities ->
-//!   check schedule/backend compat -> backend `emit(...)` ->
+//!   check schedule/backend compat -> Petri-net soundness gate
+//!   (boundedness + deadlock; TASK-0368) -> backend `emit(...)` ->
 //!   emit a `run.sh` to the output directory.
+//!
+//! The Petri-net soundness gate (TASK-0368, PRD §8.1 / §8.4) runs on
+//! every build: it builds the global net from the final ACFG and
+//! rejects any net that overflows a place's capacity or deadlocks. A
+//! failure is a compile error. The check is exact-replay over one
+//! deterministic firing order — sound for v2's statically-ordered
+//! restricted nets, not a general reachability engine.
 //!
 //! Usage:
 //!
@@ -81,8 +89,8 @@ use nucleus_compiler::{
     acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
     apply_host_data_relay_inject, apply_host_mediation_inject, apply_partition_blocks2d,
     apply_partition_rows, apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder,
-    build_acfg, build_sidecar, check_kernels_contract, check_schedule_compat, inject_check_frames,
-    inject_syncs, inject_transfers, link, load_capabilities,
+    build_acfg, build_sidecar, check_kernels_contract, check_net_sound, check_schedule_compat,
+    inject_check_frames, inject_syncs, inject_transfers, link, load_capabilities,
 };
 
 fn main() -> ExitCode {
@@ -677,6 +685,37 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         write_emit_pn(pn_path, &dot)?;
         println!("emit_pn     = {}", pn_path.display());
     }
+
+    // ---- Petri-net soundness gate (TASK-0368, PRD §8.1 / §8.4) ----
+    //
+    // Build the global net from the FINAL post-transform ACFG (after
+    // every pass, including the backend-conditional host-mediation /
+    // host-data-relay injections above) and check it is bounded and
+    // deadlock-free. This is what makes PRD §8's "analyses fall out as
+    // standard properties; failures are compile errors" literally true
+    // of the shipping compiler, not just the test suite.
+    //
+    // The gate runs on EVERY build — both inspection-only (`--emit-pn`,
+    // no `--out`) and full codegen builds — and deliberately AFTER the
+    // `--emit-pn` DOT dump above, so a user inspecting an unsound net
+    // still gets the DOT file for debugging before the build errors.
+    //
+    // `acfg_to_net` is recomputed here (the net inside the `--emit-pn`
+    // block is scoped to that `if let`); construction is O(net) and the
+    // replay is O(firing_order), so a fresh build is cheap. The gate is
+    // exact-replay over one deterministic firing order — sound for v2's
+    // statically-ordered restricted nets, NOT a general reachability
+    // engine (see `passes::net_soundness` module doc). On the shipping
+    // pipeline it is a provably-dead-today tripwire: the structural
+    // inject-pass guards mean no valid schedule produces an unsound net
+    // (empirically verified over all examples x schedules x 7 tier-1
+    // backends, TASK-0368). The negative test in
+    // `nucleus-compiler/tests/net_soundness.rs` pins the reject path at
+    // the function level so a future inject-pass regression that DID
+    // emit an unsound net would surface as a compile error here rather
+    // than as a runtime hang or buffer overrun.
+    let gate_net = acfg_to_net(&acfg);
+    check_net_sound(&gate_net).map_err(|e| format!("petri-net soundness check failed: {e}"))?;
 
     // ---- Dispatch on backend (skipped for inspection-only builds) ----
     let Some(out_dir) = out_dir else {

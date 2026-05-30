@@ -60,6 +60,10 @@ pub use passes::block_transform::{apply_block_transforms, BlockTransformError};
 pub use passes::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 pub use passes::common::affine_decompose;
 pub use passes::deadlock::{check_deadlock_free, DeadlockError};
+// TASK-0368: the combined soundness gate the driver runs on every
+// build. `check_net_sound` = derive_firing_order + check_bounded +
+// check_deadlock_free, with a typed `PetriAnalysisError`.
+pub use passes::net_soundness::{check_net_sound, PetriAnalysisError};
 pub use passes::halo_inference::{
     apply_halo_inference, apply_halo_inference_advisory, apply_halo_inference_partition_aware,
     HaloInferenceError,

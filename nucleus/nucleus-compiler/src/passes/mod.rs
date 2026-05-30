@@ -25,6 +25,15 @@ pub mod boundedness;
 // pass-level validation that wraps them.
 pub mod common;
 pub mod deadlock;
+// TASK-0368: combined Petri-net soundness gate. Bundles `boundedness`
+// + `deadlock` into one `check_net_sound` entry point that the driver
+// runs on EVERY build (a failure is a compile error). Wires PRD §8's
+// "analyses fall out as standard properties; failures are compile
+// errors" into the shipping path, not just the test suite. Exact-
+// replay over one deterministic firing order — sound for v2's
+// statically-ordered restricted nets, NOT a general reachability
+// engine. See module doc.
+pub mod net_soundness;
 // TASK-0260 Stage 1: halo region inference from kernel access patterns.
 // Runs AFTER `apply_partition_blocks2d` (driver pass order), AFTER
 // `build_acfg` (needs name_iter_vars / name_kernels). Pure +
