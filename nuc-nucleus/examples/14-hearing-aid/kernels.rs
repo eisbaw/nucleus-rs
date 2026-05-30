@@ -165,17 +165,32 @@ fn save_chunk(v: Vec<i32>, start: usize) {
         BUFFER_LEN
     );
     let path = env::var("NUC_OUTPUT_PATH").unwrap_or_else(|_| "output.bin".to_string());
-    // The two save_* kernels write disjoint chunks at known offsets.
-    // To make the file's final size deterministic regardless of which
-    // kernel fires first (the schedule decides), we open in
-    // create-if-needed mode, seek to the chunk start, write the chunk,
-    // and let the OS file-size logic do the rest. The two
-    // (save_spk, save_bt_out) chunks together cover [0, 2 * BUFFER_BYTES).
+    // The two save_* kernels write disjoint chunks at known offsets;
+    // together (save_spk, save_bt_out) they cover [0, 2 * BUFFER_BYTES).
+    // We open in create-if-needed mode, then PIN the file to exactly
+    // 2 * BUFFER_BYTES via set_len before seeking. This makes the final
+    // size deterministic regardless of which kernel fires first (the
+    // schedule decides) AND independent of any pre-existing file at
+    // NUC_OUTPUT_PATH:
+    //   - a longer prior file is truncated to 2 * BUFFER_BYTES (the
+    //     TASK-0054.02 robustness fix: residual bytes past the two
+    //     chunks no longer survive);
+    //   - a shorter prior file is zero-extended;
+    //   - both chunks live within [0, 2 * BUFFER_BYTES), so set_len
+    //     never drops the *other* kernel's chunk — this is why we use
+    //     set_len(2*BUFFER_BYTES) rather than truncate(true), which
+    //     would wipe the first chunk when the second kernel reopens.
+    // On the e2e harness's fresh per-run scratch file the set_len is a
+    // no-op on the final bytes (0 -> zero-filled -> both chunks fully
+    // overwrite [0, 2*BUFFER_BYTES)), so emitted output.bin is
+    // byte-identical to the pre-fix behaviour.
     let mut f = OpenOptions::new()
         .create(true)
         .write(true)
         .open(&path)
         .unwrap_or_else(|e| panic!("save_chunk: cannot open {}: {}", path, e));
+    f.set_len((2 * BUFFER_BYTES) as u64)
+        .unwrap_or_else(|e| panic!("save_chunk: set_len to {} failed: {}", 2 * BUFFER_BYTES, e));
     f.seek(SeekFrom::Start(start as u64))
         .unwrap_or_else(|e| panic!("save_chunk: seek to {} failed: {}", start, e));
     let mut bytes = Vec::with_capacity(BUFFER_BYTES);
