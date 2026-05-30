@@ -230,13 +230,18 @@ pub fn check_deadlock_free(net: &Net, firing_order: &[TransitionId]) -> Result<(
     let mut sim = net.clone();
     sim.reset_to_initial();
 
-    for (position, &tid) in firing_order.iter().enumerate() {
-        // Snapshot the marking *before* the firing. Kept on the
-        // stack; only retained in the error payload on failure.
-        let marking_before = sim.current_marking.clone();
+    // Build the per-transition arc index ONCE (O(A)) so each fire is
+    // O(deg(t)) instead of an all-arcs scan (TASK-0377). Keyed by
+    // TransitionId; valid against the clone `sim` — see `check_bounded`.
+    let index = net.build_arc_index();
 
-        match sim.fire(tid) {
-            Ok(_) => {}
+    for (position, &tid) in firing_order.iter().enumerate() {
+        // `fire_in_place` leaves `sim.current_marking` unmutated on
+        // failure, so inside the Stalled arm `sim.current_marking` IS
+        // the marking *before* the stall — clone it lazily there rather
+        // than every step (TASK-0377).
+        match sim.fire_in_place(tid, &index) {
+            Ok(()) => {}
             Err(FireError::UnknownTransition(t)) => {
                 return Err(DeadlockError::UnknownTransition(t));
             }
@@ -253,7 +258,7 @@ pub fn check_deadlock_free(net: &Net, firing_order: &[TransitionId]) -> Result<(
                     place_name: name_of_place(net, place),
                     have,
                     need,
-                    marking_before,
+                    marking_before: sim.current_marking.clone(),
                     position,
                 });
             }

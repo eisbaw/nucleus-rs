@@ -502,3 +502,82 @@ fn derive_firing_order_appends_stuck_leftovers_so_check_bounded_diagnoses() {
         other => panic!("expected CapacityExceeded at overfill, got {:?}", other),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0377 perf-regression pin: the gate must stay near-linear
+// --------------------------------------------------------------------
+
+/// Catch a re-introduction of the O(T·A) all-arcs-scan in
+/// `Net::fire` (TASK-0377).
+///
+/// ## Why this test exists
+///
+/// The cycle-217 per-build Petri gate (`check_net_sound` =
+/// `derive_firing_order` + `check_bounded` + `check_deadlock_free`)
+/// originally fired each of ~T transitions by scanning ALL arcs twice
+/// per fire — O(A) per fire, O(T·A) per pass. On 07-matmul/distributed8
+/// (T=4149, A=65722) the gate cost was ~435 ms (99% of build).
+/// TASK-0377 added a per-transition arc-adjacency index so each fire is
+/// O(deg(t)); the gate dropped to ~16 ms (27×).
+///
+/// This test builds a large net (T transitions, A = 2·T arcs) on which
+/// the OLD O(T·A) gate did ~T·A·3 ≈ 192M arc comparisons and took on
+/// the order of seconds, while the near-linear gate finishes in a few
+/// milliseconds. The wall-clock budget below is deliberately loose
+/// (1 s) so it does not flake on a slow/loaded CI box, yet an
+/// accidental return to O(T·A) — which scales as T² here — blows past
+/// it by a wide margin.
+///
+/// ## Manual macro-benchmark (the headline TASK-0377 number)
+///
+/// The end-to-end gate cost on the real worst-case net is measured by
+/// timing the prebuilt release binary directly (NOT `cargo run`):
+///
+/// ```text
+/// LC_ALL=C
+/// BIN=nucleus/target/release/nucleus
+/// E=nuc-nucleus/examples/07-matmul
+/// # 30 reps, wall clock via $EPOCHREALTIME / 30:
+/// "$BIN" build --algo "$E/prog.algo.nuc" \
+///   --sched "$E/schedules/distributed8.sched.nuc" \
+///   --kernels "$E/kernels.rs" --backend pthreads-sync --out "$(mktemp -d)"
+/// ```
+///
+/// Before TASK-0377: build ≈ 439 ms (gate ≈ 435 ms).
+/// After  TASK-0377: build ≈ 27 ms  (gate ≈ 16 ms).
+#[test]
+fn gate_stays_near_linear_under_large_net() {
+    use nucleus_compiler::passes::net_soundness::check_net_sound;
+
+    // T independent fire-once transitions. Each consumes 1 token from
+    // its own pre-marked source place and deposits 1 token into its own
+    // sink place: deg(t) = 2, source-order is a legal firing order, and
+    // the whole net is bounded + deadlock-free. A = 2·T arcs.
+    const T: usize = 4000;
+    let mut net = Net::new();
+    let mut ts = Vec::with_capacity(T);
+    for i in 0..T {
+        let src = net.add_place(format!("src_{i}"), cap(1), 1);
+        let snk = net.add_place(format!("snk_{i}"), cap(1), 0);
+        let t = net.add_transition(format!("t_{i}"), None);
+        net.add_arc(ArcKind::PtoT, src, t, 1);
+        net.add_arc(ArcKind::TtoP, snk, t, 1);
+        ts.push(t);
+    }
+
+    // Run the real production gate entry point (all three passes).
+    let start = std::time::Instant::now();
+    check_net_sound(&net).expect("large fan net is sound");
+    let elapsed = start.elapsed();
+
+    // O(T·A) on this net is ~T² · const ≈ seconds; the near-linear gate
+    // is a few ms. 1 s is a generous, non-flaky ceiling that still
+    // catches an O(T·A) regression by a wide margin.
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "TASK-0377 perf-regression: check_net_sound on a {T}-transition / {} -arc net \
+         took {elapsed:?} (> 1 s) — the per-transition arc index in `Net::fire_in_place` \
+         was likely lost, reintroducing the O(T·A) all-arcs scan",
+        2 * T
+    );
+}

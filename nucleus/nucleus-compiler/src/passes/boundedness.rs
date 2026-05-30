@@ -181,14 +181,21 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
     let mut sim = net.clone();
     sim.reset_to_initial();
 
-    for &tid in firing_order {
-        // Snapshot the marking *before* the firing — useful diagnostic
-        // payload if this step fails. Cheap (BTreeMap clone) and only
-        // retained on failure.
-        let marking_before = sim.current_marking.clone();
+    // Build the per-transition arc index ONCE (O(A)) so each fire is
+    // O(deg(t)) instead of an all-arcs scan (TASK-0377). The index is
+    // keyed by TransitionId and built from `net`; it stays valid
+    // against the clone `sim` (transition ids == vec index, preserved
+    // by clone — see `petri::ArcIndex`).
+    let index = net.build_arc_index();
 
-        match sim.fire(tid) {
-            Ok(_) => {}
+    for &tid in firing_order {
+        // `fire_in_place` leaves `sim.current_marking` unmutated on
+        // failure (all failure modes are checked before any token
+        // moves), so on the CapacityExceeded arm `sim.current_marking`
+        // IS the marking *before* the offending firing — clone it
+        // lazily there rather than every step (TASK-0377).
+        match sim.fire_in_place(tid, &index) {
+            Ok(()) => {}
             Err(FireError::UnknownTransition(t)) => {
                 return Err(BoundednessError::UnknownTransition(t));
             }
@@ -218,7 +225,7 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
                     place_name: name_of_place(net, place),
                     transition,
                     transition_name: name_of_transition(net, transition),
-                    marking_before,
+                    marking_before: sim.current_marking.clone(),
                     would_be,
                     capacity,
                 });
@@ -324,18 +331,38 @@ pub fn derive_firing_order(net: &Net) -> Vec<TransitionId> {
     let mut sim = net.clone();
     sim.reset_to_initial();
 
+    // Build the per-transition arc index ONCE (O(A)) so the firability
+    // oracle below is O(deg(t)) per probe instead of an all-arcs scan
+    // (TASK-0377). Valid against the clone `sim` — see `check_bounded`.
+    let index = net.build_arc_index();
+
+    // Scan cursor: `start` is the lowest index still `false` in
+    // `fired`. Each outer iteration scans from `start` rather than 0,
+    // which removes the O(T²) re-skipping of the already-fired
+    // contiguous prefix (TASK-0377 tertiary win). This is BYTE-IDENTICAL
+    // to scanning from 0: indices below `start` are all `fired == true`,
+    // which the old `if fired[idx] { continue; }` would skip anyway, so
+    // the "first firable un-fired transition" chosen is unchanged.
+    let mut start = 0usize;
+
     'outer: loop {
-        // Scan in source order; the first firable un-fired transition
-        // wins. `Net::fire` commits on success and leaves the marking
-        // alone on failure, so we can use it as the firability oracle
-        // directly without an extra `enabled_transitions` call.
-        for (idx, t) in net.transitions.iter().enumerate() {
+        // Scan in source order from the cursor; the first firable
+        // un-fired transition wins. `Net::fire_in_place` commits on
+        // success and leaves the marking alone on failure, so we can
+        // use it as the firability oracle directly without an extra
+        // `enabled_transitions` call.
+        for (idx, t) in net.transitions.iter().enumerate().skip(start) {
             if fired[idx] {
                 continue;
             }
-            if sim.fire(t.id).is_ok() {
+            if sim.fire_in_place(t.id, &index).is_ok() {
                 order.push(t.id);
                 fired[idx] = true;
+                // Advance the cursor past any now-contiguous fired
+                // prefix so future scans skip it in O(1).
+                while start < total && fired[start] {
+                    start += 1;
+                }
                 continue 'outer;
             }
         }

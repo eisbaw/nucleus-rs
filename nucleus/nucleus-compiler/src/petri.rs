@@ -229,6 +229,52 @@ impl std::error::Error for FireError {}
 // Net
 // --------------------------------------------------------------------
 
+/// Per-transition incident-arc adjacency index (TASK-0377).
+///
+/// `Net::fire` originally scanned *all* arcs twice per call (once for
+/// the `PtoT` inputs, once for the `TtoP` outputs) to find the arcs
+/// incident to the transition being fired — O(A) per fire. The three
+/// analysis passes ([`crate::passes::boundedness::check_bounded`],
+/// [`crate::passes::boundedness::derive_firing_order`],
+/// [`crate::passes::deadlock::check_deadlock_free`]) each fire ~T
+/// transitions, so the gate was O(T·A) and dominated build time on
+/// large multi-worker nets (435 ms / 99% of build on 07-matmul
+/// distributed8: T=4149, A=65722).
+///
+/// This index lets [`Net::fire_in_place`] find a transition's incident
+/// arcs in O(deg(t)). Build it ONCE per analysis (or thread one through
+/// all three, since it is keyed by [`TransitionId`] which is stable
+/// across [`Net::clone`]) via [`Net::build_arc_index`].
+///
+/// ## Determinism (load-bearing)
+///
+/// The per-transition arc-index vectors are populated by iterating
+/// `net.arcs` in insertion order, so each `in_arcs[t]` / `out_arcs[t]`
+/// list preserves arc-insertion order. `fire_in_place` sums arc
+/// weights into a `BTreeMap` keyed by place (order-independent), so the
+/// firing result is byte-identical to the old all-arcs-scan path
+/// regardless — but keeping insertion order means any future
+/// order-sensitive reader sees the same sequence the scan produced.
+///
+/// ## Validity across `Net::clone`
+///
+/// The index stores `usize` indices into `net.arcs` and is keyed by
+/// transition index (== `TransitionId.0`). [`TransitionId`]s equal
+/// their position in `net.transitions`, and `Clone` preserves both
+/// `transitions` and `arcs` element-for-element, so an index built from
+/// the original net is valid against a clone of it. The analysis passes
+/// rely on this: they `net.clone()` + `reset_to_initial()` then replay
+/// on the clone using an index built from the original.
+#[derive(Debug, Clone)]
+pub struct ArcIndex {
+    /// `in_arcs[t.0]` = indices into `net.arcs` of the `PtoT` arcs
+    /// whose `transition == t`, in arc-insertion order.
+    in_arcs: Vec<Vec<usize>>,
+    /// `out_arcs[t.0]` = indices into `net.arcs` of the `TtoP` arcs
+    /// whose `transition == t`, in arc-insertion order.
+    out_arcs: Vec<Vec<usize>>,
+}
+
 /// The Petri net container. Built incrementally via `add_place`,
 /// `add_transition`, `add_arc`. Its `initial_marking` is computed
 /// from each `Place::initial_marking` at the first `reset_to_initial`
@@ -334,23 +380,74 @@ impl Net {
         self.current_marking = self.initial_marking.clone();
     }
 
+    /// Build the per-transition incident-arc index (TASK-0377).
+    ///
+    /// O(A): one pass over `self.arcs` in insertion order, appending
+    /// each arc's index to the input- or output-list of its transition.
+    /// See [`ArcIndex`] for why insertion order is preserved and why
+    /// the index stays valid across [`Net::clone`].
+    pub fn build_arc_index(&self) -> ArcIndex {
+        let n = self.transitions.len();
+        let mut in_arcs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut out_arcs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (ai, a) in self.arcs.iter().enumerate() {
+            // add_arc asserts the transition id is in range, so this
+            // index is always valid for arcs already in the net.
+            let ti = a.transition.0 as usize;
+            match a.kind {
+                ArcKind::PtoT => in_arcs[ti].push(ai),
+                ArcKind::TtoP => out_arcs[ti].push(ai),
+            }
+        }
+        ArcIndex { in_arcs, out_arcs }
+    }
+
     /// Fire transition `t` against `current_marking`. On success the
     /// new marking is committed and returned (cloned). On failure
     /// nothing is mutated — the failure modes are all checked before
     /// any token moves.
+    ///
+    /// This is the convenience entry point for ad-hoc callers and
+    /// tests that want the resulting [`Marking`]. It builds a one-shot
+    /// [`ArcIndex`] (O(A)) and delegates to [`Net::fire_in_place`],
+    /// then clones the committed marking. Hot paths that fire many
+    /// transitions (the analysis passes) should build the index ONCE
+    /// via [`Net::build_arc_index`] and call `fire_in_place` directly,
+    /// avoiding both the per-fire index rebuild and the marking clone
+    /// (TASK-0377).
     pub fn fire(&mut self, t: TransitionId) -> Result<Marking, FireError> {
+        let index = self.build_arc_index();
+        self.fire_in_place(t, &index)?;
+        Ok(self.current_marking.clone())
+    }
+
+    /// Fire transition `t` against `current_marking`, consulting a
+    /// prebuilt [`ArcIndex`] to find `t`'s incident arcs in O(deg(t))
+    /// instead of scanning all arcs (TASK-0377). On success the new
+    /// marking is committed *in place* (no clone is returned). On
+    /// failure nothing is mutated — every failure mode is checked
+    /// before any token moves, so the caller may treat
+    /// `current_marking` as the pre-firing ("before") state inside an
+    /// `Err` arm.
+    ///
+    /// Behaviour is identical to the old all-arcs-scan `fire`: `needs`
+    /// and `produces` are summed into `BTreeMap`s keyed by place
+    /// (order-independent), capacity is checked against the
+    /// post-firing token count (deltas first, so a self-looping buffer
+    /// is checked at its settled count not a transient peak), and the
+    /// same `FireError` variants are produced. `index` MUST have been
+    /// built from this net (or a clone of it); see [`ArcIndex`].
+    pub fn fire_in_place(&mut self, t: TransitionId, index: &ArcIndex) -> Result<(), FireError> {
         if (t.0 as usize) >= self.transitions.len() {
             return Err(FireError::UnknownTransition(t));
         }
+        let ti = t.0 as usize;
 
         // 1. Check enabled: every PtoT arc's source has enough tokens.
         //    Multiple arcs from the same place sum their weights.
         let mut needs: BTreeMap<PlaceId, u32> = BTreeMap::new();
-        for a in self
-            .arcs
-            .iter()
-            .filter(|a| a.transition == t && a.kind == ArcKind::PtoT)
-        {
+        for &ai in &index.in_arcs[ti] {
+            let a = &self.arcs[ai];
             *needs.entry(a.place).or_insert(0) = needs
                 .get(&a.place)
                 .copied()
@@ -377,11 +474,8 @@ impl Net {
         //    itself) is checked at its post-firing count, not at a
         //    transient peak.
         let mut produces: BTreeMap<PlaceId, u32> = BTreeMap::new();
-        for a in self
-            .arcs
-            .iter()
-            .filter(|a| a.transition == t && a.kind == ArcKind::TtoP)
-        {
+        for &ai in &index.out_arcs[ti] {
+            let a = &self.arcs[ai];
             *produces.entry(a.place).or_insert(0) = produces
                 .get(&a.place)
                 .copied()
@@ -426,13 +520,20 @@ impl Net {
             self.current_marking.set(*place, new);
         }
 
-        Ok(self.current_marking.clone())
+        Ok(())
     }
 
     /// Return every transition that would succeed if fired against
     /// `marking`. Useful for tests and for the linearisation pass's
     /// validation step ("is the order I picked a legal interleaving?").
     /// Does *not* mutate the net.
+    ///
+    // TASK-0377: not indexed (off gate hot path). This still does the
+    // O(T·A) all-arcs scan, but it is never called by the per-build
+    // soundness gate (`check_net_sound`) — only by unit tests and the
+    // linearisation validation path that runs on tiny nets. Indexing it
+    // would be a behaviour-neutral mechanical change; deliberately left
+    // un-indexed to keep the diff scoped to the measured hot path.
     pub fn enabled_transitions(&self, marking: &Marking) -> Vec<TransitionId> {
         let mut out = Vec::new();
         for t in &self.transitions {
