@@ -472,4 +472,31 @@ mod tests {
         };
         assert!(find_loop(&inner, IterVar(99)).is_none());
     }
+
+    #[test]
+    fn empty_band_geometry_fails_loud_not_panic() {
+        // TASK-0367 AC#4 EMPTY-BAND PROBE (pass level). The shared band
+        // helper rejects 16 rows across 17 workers (L < N) with
+        // PartitionBandError::InsufficientWork; map_band_error must turn
+        // that into a typed PartitionError::InsufficientWork carrying the
+        // loop var + geometry — NOT a panic, NOT a silent skip. This pins
+        // the 07-matmul-shaped geometry (i dim = 0..16) that the driver
+        // empirically surfaces as `partition-workers error: ...` exit 1.
+        let band_err = crate::passes::common::compute_partition_bands(0, 16, 17)
+            .expect_err("L<N must reject at the helper");
+        let pass_err = map_band_error("i", 0, 16, 17, band_err);
+        assert!(
+            matches!(pass_err, PartitionError::InsufficientWork { ref var, lo: 0, hi: 16, workers: 17 } if var == "i"),
+            "expected InsufficientWork{{var:i, 0..16, 17}}, got {pass_err:?}"
+        );
+        // The Display message must be actionable (fail-loud, no-silent-
+        // miscompile standard): it names the geometry and the two fixes.
+        let msg = pass_err.to_string();
+        assert!(msg.contains("range 0..16 (length 16)"), "msg: {msg}");
+        assert!(msg.contains("strictly less than 17 workers"), "msg: {msg}");
+        assert!(
+            msg.contains("reduce the worker count") && msg.contains("widen the loop range"),
+            "msg must offer both fixes: {msg}"
+        );
+    }
 }

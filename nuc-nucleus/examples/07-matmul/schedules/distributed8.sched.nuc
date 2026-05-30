@@ -1,0 +1,58 @@
+// Distributed schedule, EIGHT compute workers — the >4-worker
+// robustness cell (TASK-0367). A row-band partition of the outer `i`
+// axis across {w0..w7}; host runs load/save.
+//
+// Why this cell exists
+// --------------------
+// Companion to distributed3.sched.nuc. Where distributed3 probes a
+// worker count BELOW 4 (and uneven), this probes a worker count
+// ABOVE 4. Together they prove the partition-decompose + transfer/
+// gather codegen generalises across worker counts, not just at the
+// single N=4 every other multi-worker schedule used. See TASK-0367
+// (cycle-213 strategic-analysis finding F1).
+//
+// Partition shape
+// ---------------
+// `loop i : partition=workers;` on the outer axis. N=16 rows, 8
+// workers. base = 16/8 = 2, extras = 16 % 8 = 0 → every worker gets
+// exactly 2 rows (this count divides evenly, so no spillover):
+//
+//     w0: i = 0..2     w1: i = 2..4     w2: i = 4..6     w3: i = 6..8
+//     w4: i = 8..10    w5: i = 10..12   w6: i = 12..14   w7: i = 14..16
+//
+// Even division — the spillover residual is exercised by
+// distributed3 (bands 6,5,5); this cell's novelty is purely the
+// worker COUNT (8 > 4), proving the per-worker emit + N-way gather
+// scale past 4 workers.
+//
+// Why this is bit-identical with naive/distributed (no new reference)
+// -------------------------------------------------------------------
+// As with distributed.sched.nuc and distributed3.sched.nuc: each
+// output c[i][j] is the SAME sum over k regardless of which (or how
+// many) workers compute row i. Workers independent on i; no halo, no
+// cross-worker carry. The existing 07-matmul/reference.bin oracle
+// applies verbatim — no new reference, no algorithm/kernel change.
+//
+// `b` (indexed [k][j]) is whole-array broadcast via the TASK-0301
+// filter; `a`/`c` (indexed by i) carry the per-worker i_band slice.
+// Worker-count-independent.
+//
+// Sync transfers only — lowers on every tier-1 backend without
+// capability gaps.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3, w4, w5, w6, w7 };
+
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+    place madd   on { w0, w1, w2, w3, w4, w5, w6, w7 };
+
+    // Row-band partition the outer i axis. N=16, 8 workers → 2 rows
+    // each (even division, N > 4).
+    loop i : partition=workers;
+
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

@@ -535,6 +535,62 @@ mod tests {
     }
 
     #[test]
+    fn bands_07_matmul_3_workers_returns_6_5_5() {
+        // TASK-0367 AC#1: 07-matmul's outer i dim (16 rows) across THREE
+        // workers. Floor = 16/3 = 5, extras = 16 % 3 = 1 → first worker
+        // gets the spillover row (6), the other two get 5 each. Pins the
+        // worker-count-!=4 geometry the distributed3.sched.nuc cell emits.
+        let bands = compute_partition_bands(0, 16, 3).expect("16/3 accepted");
+        assert_eq!(bands, vec![(0, 6), (6, 11), (11, 16)]);
+        assert_eq!(
+            bands.iter().map(|(lo, hi)| hi - lo).sum::<i64>(),
+            16,
+            "bands total width equals source length"
+        );
+    }
+
+    #[test]
+    fn bands_07_matmul_8_workers_returns_2_each() {
+        // TASK-0367: 16 rows across EIGHT workers — even division, 2 rows
+        // each, no spillover. Pins distributed8.sched.nuc's geometry and
+        // proves >4-worker decompose.
+        let bands = compute_partition_bands(0, 16, 8).expect("16/8 accepted");
+        assert_eq!(
+            bands,
+            vec![
+                (0, 2),
+                (2, 4),
+                (4, 6),
+                (6, 8),
+                (8, 10),
+                (10, 12),
+                (12, 14),
+                (14, 16)
+            ]
+        );
+    }
+
+    #[test]
+    fn bands_07_matmul_17_workers_empty_band_rejects() {
+        // TASK-0367 AC#4 EMPTY-BAND PROBE (helper level). 16 rows across
+        // 17 workers: L (16) < N (17), so even the floor-with-spillover
+        // policy cannot give every worker one row. The policy is REJECT
+        // (not "emit a 0-width band") — there is no silently-empty
+        // worker. Surfaces upstream as a fail-loud
+        // PartitionError::InsufficientWork (see the partition_workers
+        // map_band_error test); empirically verified at the driver level
+        // to exit 1 with an actionable message and NO panic.
+        let err = compute_partition_bands(0, 16, 17).expect_err("L<N must reject");
+        assert_eq!(
+            err,
+            PartitionBandError::InsufficientWork {
+                len: 16,
+                workers: 17
+            }
+        );
+    }
+
+    #[test]
     fn bands_equal_to_workers_one_each() {
         // L == N → 1 row per worker, no spillover.
         let bands = compute_partition_bands(0, 4, 4).expect("L==N OK");

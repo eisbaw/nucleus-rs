@@ -1,0 +1,75 @@
+// Distributed schedule, THREE compute workers — the worker-COUNT
+// robustness cell (TASK-0367). A row-band partition of the outer `i`
+// axis across {w0, w1, w2}; host runs load/save.
+//
+// Why this cell exists
+// --------------------
+// Every other multi-worker schedule in the tree uses the identical
+// workers={host,w0,w1,w2,w3} shape (N=4 compute workers). The
+// partition-decompose + transfer/gather codegen was therefore proven
+// for exactly one worker count. 16-jacobi/distributed already
+// exercises an UNEVEN 4-worker partition (interior 6 rows / 4 →
+// bands 2,2,1,1), so "uneven at N=4" is covered. The genuinely
+// untested dimension this cell adds is the worker COUNT itself: a
+// 3-worker partition. See TASK-0367 (cycle-213 strategic-analysis
+// finding F1).
+//
+// Partition shape
+// ---------------
+// `loop i : partition=workers;` on the outer axis. N=16 rows, 3
+// workers. The floor-with-spillover policy (TASK-0262,
+// `compute_partition_bands`) gives base = 16/3 = 5, extras = 16 % 3
+// = 1 → the first worker gets 6 rows, the other two get 5:
+//
+//     w0: i = 0..6   (6 rows)
+//     w1: i = 6..11  (5 rows)
+//     w2: i = 11..16 (5 rows)
+//
+// This is BOTH uneven (the spillover residual lands on w0) AND a
+// worker count != 4 — exercising the residual policy under a new
+// geometry. The decompose helper is worker-count-agnostic by
+// construction (no 4 / power-of-2 / even-division assumption
+// anywhere), so this cell needs NO compiler change.
+//
+// Why this is bit-identical with naive/distributed (no new reference)
+// -------------------------------------------------------------------
+// The k-accumulator semantics are unchanged under the i partition:
+// each output c[i][j] is the SAME sum over k = 0..N regardless of
+// which worker computes row i, or HOW MANY workers there are. Workers
+// are independent on i; no halo, no cross-worker carry, no reduction
+// across i. The existing 07-matmul/reference.bin oracle therefore
+// applies verbatim — exactly as the 4-worker distributed.sched.nuc
+// header states. No new reference.bin, no algorithm/kernel change.
+//
+// Axis-mapping (TASK-0301) is worker-count-independent
+// ----------------------------------------------------
+// `b` is indexed [k][j] (not by i) → the per-symbol filter excludes i
+// from b's tile bounds → empty bounds → whole-array broadcast of b.
+// `a` (indexed [i][k]) and `c` (indexed [i][j]) carry the per-worker
+// i_band slice on their tiles. None of that depends on the worker
+// count — it is the SAME filter the 4-worker cell uses.
+//
+// Why sync transfers
+// ------------------
+// Sync-only schedule lowers on every tier-1 backend without
+// capability gaps (same rationale as distributed.sched.nuc). Async
+// variants are out of scope for this coverage cell.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2 };
+
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+    place madd   on { w0, w1, w2 };
+
+    // Row-band partition the outer i axis. N=16, 3 workers →
+    // floor-with-spillover bands 6, 5, 5 (uneven AND N != 4).
+    loop i : partition=workers;
+
+    // All sync transfers. a is row-banded by i, b is whole-array
+    // broadcast (not indexed by i), c is row-banded by i on gather.
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

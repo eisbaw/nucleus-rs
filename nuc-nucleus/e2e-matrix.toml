@@ -2070,6 +2070,122 @@ schedule = "distributed-2d"
 backend  = "mp-tcp-event"
 milestone = "M5"
 
+# ---- M6 example 07 — distributed3 / distributed8 (TASK-0367) --------
+#
+# Worker-COUNT robustness cells (cycle-213 strategic-analysis finding
+# F1). Every OTHER multi-worker schedule in the tree uses the identical
+# workers={host,w0,w1,w2,w3} shape, so the partition-decompose +
+# transfer/gather codegen was proven for exactly one worker count (N=4).
+# 16-jacobi/distributed already exercises an UNEVEN 4-worker partition
+# (bands 2,2,1,1), so the residual/last-band path IS covered at N=4 —
+# the genuinely-untested dimension is the worker COUNT itself.
+#
+#   - distributed3: N=16 rows / 3 workers → floor-with-spillover
+#     (TASK-0262) bands 6, 5, 5 — uneven AND a worker count != 4.
+#   - distributed8: N=16 rows / 8 workers → 2 rows each (even, N > 4) —
+#     proves the per-worker emit + N-way gather scale past 4 workers.
+#
+# Both are bit-identical to the existing 07-matmul/reference.bin on all
+# 7 tier-1 backends (k-accumulator semantics are worker-count-invariant;
+# the TASK-0301 axis-mapping filter on `b` [k][j] is worker-count-
+# independent). VERIFIED by `cmp` against reference.bin on every backend
+# below (cycle 214). The decompose helper is worker-count-agnostic by
+# construction — no compiler change was needed.
+#
+# EMPTY-BAND policy (AC#4): a worker count EXCEEDING the partitioned dim
+# (e.g. 17 workers over 16 rows ⇒ L < N) is REJECTED fail-loud as
+# `partition-workers error: ... strictly less than N workers ...`
+# (PartitionError::InsufficientWork, exit 1, NO panic, NO silent
+# miscompile) — the policy is reject-before-empty-band, not emit-a-
+# zero-width-worker. Pinned by passes::common::tests::
+# bands_07_matmul_17_workers_empty_band_rejects +
+# partition_workers::tests::empty_band_geometry_fails_loud_not_panic.
+# No empty-band [[required]] cell is shipped (it does not exist).
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed3"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed8"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 # ---- 06-separable-filter / distributed2 — TASK-0298 cycle-143 ------
 #
 # Investigation reproducer for TASK-0324. The schedule places BOTH
