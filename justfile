@@ -587,6 +587,24 @@ check-doc-citation-staleness:
 # Over-skipping is SAFE (a missed validation, never a false alarm);
 # under-skipping risks an FP, so the tie always breaks toward SKIP.
 #
+# MAINTENANCE CONTRACT (the price of prose-dependence; architect
+# cycle-221 P2). Unlike the FQ sibling — which derives the crate
+# STRUCTURALLY from the path and cannot drift — this fence's zero-FP
+# property is LOAD-BEARING on prose layout for the cross-crate bare
+# `lib.rs:N` cites in `nucleus/backend-common/src/check_frame.rs`
+# (lines ~133/148/149/179/194/200/201: historical pre-extraction
+# provenance pointing at pthreads-sync / mp-tcp-bufsync `lib.rs`, NOT
+# backend-common's own 92-line lib.rs). Today each names its crate
+# within WIN lines, so all SKIP correctly. If you REWORD those
+# docstrings, keep the crate name (`pthreads-sync`/`pthreads_sync`,
+# dash or underscore) within WIN lines of the cite — otherwise this
+# fence misattributes the bare `lib.rs:N` to backend-common's short
+# lib.rs and FALSE-POSITIVES `just ci`. (Empirically reproduced: crate
+# name pushed 4+ lines above the cite -> validate -> FP. Do NOT
+# fully-qualify these cites to silence it: their line numbers are
+# pre-extraction-historical and would then FAIL the FQ sibling's
+# range check.)
+#
 # DEFERRED (filed as TASK-0382.01, honest coverage limits — all SAFE
 # skips, none can produce a false POSITIVE):
 #   - PARTIAL-PATH citations (`multi_worker/mod.rs:N`, `sched/ir.rs:N`):

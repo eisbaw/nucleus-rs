@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-31 02:20'
-updated_date: '2026-05-31 04:06'
+updated_date: '2026-05-31 04:24'
 labels:
   - tooling
   - ci
@@ -77,6 +77,15 @@ AC#3 — DECISION: explicit out-of-scope. Present-tense narrative-prose scanning
 FOLLOW-UP filed: TASK-0382.01 (partial-path-prefix-honouring resolver + the no-:N bare-basename-as-location variant from the Implementation Notes). Both are SAFE coverage gaps (currently SKIP, never FP), purely additive.
 
 VERIFICATION done: just check-doc-citation-staleness-bare OK (zero-FP) + bite-tested + cross-crate-guard-tested (a pthreads-sync-named past-EOF cite injected into a backend-common file is correctly SKIPPED, no false alarm). Sibling cheap fences green: check-doc-citation-staleness, check-narrative-doc-lie, check-mega-files, check-doc-links all OK. Change is justfile/shell ONLY (no .rs edits) so clippy/test/e2e/codegen are unaffected — I did NOT run the full heavy just ci (e2e/determinism); the read-only review gate will.
+
+Cycle-221 orchestrator review gate (GO, independently verified):
+- Architect read-only adversarial FP-hunt: GO. Reproduced counts EXACTLY (165 total / 111 validated / 0 stale / 54 skipped); audited the VALIDATED set (all genuine same-crate self-refs, smallest EOF margin 18 lines); recipe shell-correct (set -eu, mktemp+trap, POSIX set-- list); crate-scoping correct for BOTH nucleus/<crate> and nucleus/backends/<crate> layouts; bites (injected wait.rs:99999 -> exit 1). All 3 AC ticks honest (AC#1 implemented zero-FP; AC#2/#3 reasoned documented decisions per AC wording, not gamed).
+- Orchestrator self-ran FULL just ci (commit a826817): CI_EXIT=0. New check-doc-citation-staleness-bare arm ran + OK in-gate; e2e 329/272/0/57/0 (baseline preserved); all 3 negative arms bit. Confirms zero-FP end-to-end.
+- P2 hardening applied in-thread (separate commit): added a MAINTENANCE CONTRACT caveat to the recipe header — the zero-FP property for the 9 cross-crate lib.rs:N cites in backend-common/src/check_frame.rs is prose-layout-dependent (crate name must stay within WIN=3 lines of the cite); architect empirically reproduced the latent FP (crate name 4+ lines away -> validate -> FP). Re-ran both citation fences post-edit: both OK.
+
+CORRECTIONS to earlier Plan/Final-Summary prose on this task (addendum, not rewrite — feedback-ac-rewrite-on-done-task):
+- Final Summary says "commit dae8404" — the actual landed recipe commit is cc91dd5 (dae8404 was a pre-amend hash). Ironic stale-citation in a doc-citation task; recorded per honesty discipline.
+- Plan says "File TASK-0384" — the follow-up was actually filed as TASK-0382.01 (exists, To Do, captures partial-path-prefix resolver + no-:N prose-location variant).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
