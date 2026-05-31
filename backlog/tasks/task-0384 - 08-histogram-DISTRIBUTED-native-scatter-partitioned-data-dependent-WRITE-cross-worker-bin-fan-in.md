@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-31 05:03'
-updated_date: '2026-05-31 15:42'
+updated_date: '2026-05-31 16:42'
 labels:
   - compiler
   - scatter
@@ -85,6 +85,8 @@ AC#3+#4 BYTE-IDENTITY: all 7 backends emit AND run byte-identical to reference.b
 GATE (re-run, not transcribed): build OK, clippy OK (-D warnings clean), dev test 1199 passed/0 failed, release test 1198 passed/0 failed (the -1 is the known TASK-0291 dev-only debug_assert #[should_panic], NOT a regression). e2e 364/307/0/57/0 (baseline was 357/300/0/57/0; +7 = the 7 new cells, existing baseline preserved). check-textual-replace / check-include-str / check-mega-files all OK. full `just ci` running.
 
 GOTCHA / LIMITS: (1) The discriminator is conservative — it keeps FATAL on ANY partitioned-iv affine index into the target, including a NON-affine-but-partition-iv-mentioning index (treated as banding). (2) The repo working tree has PRE-EXISTING tree-wide rustfmt drift (50+ untouched files incl. mpi/embedded/dispatch, AND this file at HEAD); `just ci` does NOT gate on fmt; new test code matches the file's existing hand-wrapped multi-line call style (identical to the adjacent TASK-0373 tests) — did NOT run tree-wide cargo fmt (would create massive unrelated churn). (3) Soundness boundary unit-tested but the BIN-partition fatal arm is a synthetic fixture; the v2 grammar has no real bin-partition example today.
+
+REVIEW-GATE FOLD-BACK (orchestrator, cycle close). Both reviewers GO. qa-test-runner independently re-ran (full just ci exit 0): test 1199/0/3 dev, 1198/0/3 release (-1 known TASK-0291), e2e 364/307/0/57/0 stable x2, all 7 distributed.scatter cells PASS on 7 backends incl. strict-FIFO mp-tcp-bufsync AND mp-tcp-poll (sha256 identical across all 7 + reference). mped-architect empirically verified discriminator soundness (mutation test: inverting it fails both unit arms), 7-backend byte-identity, combine correctness (host pre-init 0 + wrapping_add). Orchestrator fixed in-thread: (P2) the bin-partition fatal-test docstring + inventory comment claimed h gets BAND-partitioned and drops out-of-band scatters — FALSE: in that fixture h[input[i]] makes dim 0 opaque so h is broadcast WHOLE-ARRAY, the real unsoundness is the cross-band affine self-read h[i] not decomposing under replicate-then-sum; corrected both to state the precise mechanism. (P3a) softened the helper docstring overclaim that opacity is the only whole-array trigger. (P3b ROOT FIX) made algo_target_has_affine_partitioned_index descend lhs.indices (mirroring the RHS DataRef arm) so the at-any-depth contract holds and the LHS path is not an asymmetric blind spot; additive-conservative, unreachable today, bite-test follow-up filed as TASK-0390. Gate re-run GREEN after fixes (e2e 364/307/0/57/0, clippy 0 incl. a doc_lazy_continuation I introduced+fixed). Honest limit (accepted): the bin-partition unsound side is unit-tested only (no real grammar bin-partition example); the canonical input-index shape is fully e2e-verified 7-backend.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
