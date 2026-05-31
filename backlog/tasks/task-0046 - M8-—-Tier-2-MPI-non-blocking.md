@@ -1,10 +1,11 @@
 ---
 id: TASK-0046
 title: M8 — Tier 2 MPI non-blocking
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Mark Ruvald Pedersen
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-31 08:42'
+updated_date: '2026-05-31 09:08'
 labels:
   - M8
   - backend
@@ -56,4 +57,19 @@ THE DEEP TRAP (AC#5 MPI_Request lifetime) — budget the whole cycle around it:
 - VERIFICATION must defeat the timing-luck: run check-mpi-nonblocking with LARGER message sizes (above the eager limit, forcing rendezvous protocol) and/or valgrind/MPI correctness checker if available, not just localhost -n N byte-exact. A pure eager-size byte-exact pass does NOT prove buffer-lifetime correctness (memory: deadlock-free != value-correct generalizes to use-after-free != detected).
 
 STEP PLAN: (1) crate+capabilities(async,buffer)+driver dispatch+help+registered-list. (2) multi_worker emit reusing mpi-blocking, swapping the rendezvous prelude for Isend/Irecv+scoped-Wait holders. (3) check-mpi-nonblocking gate: examples 9,11 + the now-admitted async distributed schedules, at -n N AND a large-message variant. (4) honest limits + MPI_Request-lifetime design notes. (5) unit shape tests + the buffer-lifetime reasoning pinned.
+
+ORCHESTRATOR EMPIRICAL DE-RISK (pre-impl, cycle M8-entry): probed all 4 async targets by dispatching mpi-blocking emit with pthreads-async capabilities (bypassing the async capability gate to exercise the shared barrier/check-frame guards mpi-nonblocking inherits). Findings:
+- 05-stencil/distributed: emits CLEAN (whole-world barriers only). TARGET.
+- 05-stencil/distributed-2d: emits CLEAN. TARGET. This is the deadlock-critical case (real w<->w halo strips, wait-before-push order).
+- 11-game-of-life/pipelined: emits CLEAN (2 ranks, whole-world bars). TARGET.
+- 09-producer-consumer/pipelined: BLOCKED. Non-whole-world barrier SyncTag2 {producer,consumer} excludes host -> hits the Comm_split gap. Forward-carried to TASK-0045.02. AC#3 example-9 cannot land until 0045.02 (Comm_split) lands.
+
+DESIGN (grounded in rsmpi 0.8.1 source ~/.cargo/.../mpi-0.8.1/src/{point_to_point,request,environment}.rs):
+- push = MPI_Ibsend (immediate_buffered_send_with_tag) + explicit Wait inside mpi::request::scope. BUFFERED mode completes LOCALLY (data copied to the MPI_Buffer_attach buffer), so the Wait does not block on the matching recv => deadlock-immune for the wait-before-push / cyclic-exchange shapes (05-distributed host-broadcast-before-barrier; 05-distributed-2d w<->w halo). Buffer-lifetime trap (AC#5) is dissolved: buffered send copies immediately, scope keeps v alive through the Wait, and rsmpi Request::Drop panics if a request is dropped uncompleted (compile+runtime backstop).
+- wait (Vec) = MPI_Mprobe (matched_probe_with_tag, blocking, gets count) + MPI_Imrecv (immediate_matched_receive_into) + Wait in scope. wait (Scalar) = immediate_receive_with_tag::<T>().get() (Irecv+Wait). barrier = comm.barrier() unchanged.
+- MPI_Buffer_attach via universe.set_buffer_size(bytes) in main BEFORE world; size heuristic from sidecar data footprint, env-overridable (NUC_MPI_BSEND_BYTES), fail-loud (MPI_ERR_BUFFER aborts, never silent corruption).
+- ~80% reuse from mpi-blocking/src/multi_worker.rs: SPMD match-rank, elect_host_from_worker_names rank0, tag=rid, render_worker_events walker (rendezvous_prefix mpi), whole-world-barrier + check-frame rejects inherited.
+- capabilities.toml: supports_async=true, supports_buffer=true, max_buffer=64, notify=[barrier,blocking,event] (superset of mpi-blocking).
+
+VERIFY (defeat timing-luck): byte-exact mpiexec -n N all-ranks-live for the 3 targets, AND a forced-rendezvous run (OpenMPI 5.0 MCA eager-limit -> 0, or large-message) so the eager protocol does not mask a buffer-lifetime bug. Toolchain confirmed available: .#mpi = OpenMPI 5.0.10 (mpiexec+mpicc cached in nix store).
 <!-- SECTION:NOTES:END -->

@@ -87,3 +87,11 @@ embedded-pattern = { path = "../backends/embedded-pattern" }
 # `just check-mpi` (compile + best-effort localhost mpiexec), NOT the
 # tier-1 runtime differential (PRD §7.4 tier-2 ship bar = COMPILE).
 mpi-blocking = { path = "../backends/mpi-blocking" }
+# mpi-nonblocking — SECOND tier-2 backend, M8 (TASK-0046). Same SPMD
+# codegen as mpi-blocking but Push => non-blocking BUFFERED MPI_Ibsend
+# (local completion, deadlock-immune) and Wait => MPI_Imrecv/Irecv +
+# explicit MPI_Wait. Admits the async/buffered schedules mpi-blocking
+# rejects. Normal std crate (emits strings); the `mpi` dep is in the
+# GENERATED project, built + run only under `nix develop .#mpi` via
+# `just check-mpi-nonblocking`, NOT the tier-1 runtime differential.
+mpi-nonblocking = { path = "../backends/mpi-nonblocking" }

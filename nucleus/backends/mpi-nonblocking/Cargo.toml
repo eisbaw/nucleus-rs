@@ -1,0 +1,69 @@
+# mpi-nonblocking backend crate. See PRD §7.2, §11 (M8), TASK-0046.
+#
+# The SECOND tier-2 backend and the M8 milestone: workers map to MPI
+# ranks, transport is MPI, but Push lowers to a NON-BLOCKING BUFFERED send
+# (MPI_Ibsend) and Wait to a non-blocking receive (MPI_Imrecv / MPI_Irecv)
+# with an explicit MPI_Wait. SPMD codegen — ONE Rust binary that
+# dispatches on `MPI_Comm_rank` (PRD §7.2), launched via `mpiexec -n N`.
+# Output is hosted Rust + the rsmpi (`mpi` crate) binding.
+#
+# ## Why this is a SEPARATE crate from mpi-blocking
+#
+# mpi-blocking (TASK-0045) declares the CONSERVATIVE sync-only capability
+# surface (supports_async=false, supports_buffer=false) and emits blocking
+# MPI_Send/MPI_Recv. mpi-nonblocking widens the surface to
+# supports_async=true + supports_buffer=true + notify=event, so the
+# async/buffered schedules mpi-blocking HARD-REJECTS at the driver
+# capability gate (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined)
+# become this backend's targets (TASK-0046 AC#1/#3). The ONLY material
+# codegen difference is the rendezvous prelude (buffered Ibsend/Irecv vs
+# blocking Send/Recv); the SPMD dispatch, host election, tag=rid
+# discipline, and the shared `render_worker_events` walk are identical.
+# That shared Plan logic is COPIED from mpi-blocking this cycle (mirror,
+# to bound landing risk) with a follow-up to lift it into backend-common
+# (TASK-0046.01).
+#
+# ## Why this crate is a NORMAL std crate (compiled in the default shell)
+#
+# Like mpi-blocking, the backend (this crate) runs on the HOST as part of
+# the nucleus workspace (`just build` in the default dev shell) and only
+# EMITS strings. The `mpi` crate (rsmpi) dependency lives in the GENERATED
+# project's Cargo.toml, NOT here — so this crate needs no MPI toolchain to
+# compile, and `just ci` builds it normally. The generated project builds
+# + runs ONLY under `nix develop .#mpi` (OpenMPI + libclang/bindgen),
+# gated by `just check-mpi-nonblocking` — NOT the tier-1 bit-identical e2e
+# runtime matrix (PRD §7.4 tier-2 ship bar = COMPILE, runtime
+# best-effort; same precedent as mpi-blocking / embedded-pattern /
+# renode).
+
+[package]
+name = "mpi-nonblocking"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mpi_nonblocking"
+path = "src/lib.rs"
+
+[dependencies]
+# The EventList / NameTables / NameSidecar contract types — the SAME
+# contract every tier-1 backend consumes (PRD §8.3). No `&ACFG` /
+# `&LinkedIR` access.
+nucleus-compiler = { path = "../../nucleus-compiler" }
+# Shared codegen primitives: the canonical `EmitError`, the project
+# skeleton (Cargo.toml/run.sh renderers), the multi_worker_walker, and
+# host_election. Same precedent as every tier-1 backend (TASK-0244).
+backend-common = { path = "../../backend-common" }
+# pthreads-sync provides `render_single_worker_main_with_signature` which
+# the single-worker arm DELEGATES to for byte-identical compute
+# arithmetic — the same shared renderer mpi-blocking / mp-tcp-bufsync use.
+# There is ONE compute renderer; this crate only adds the SPMD MPI wrapper.
+pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared parse -> lower -> link -> ACFG -> inject -> sidecar pipeline
+# boilerplate (TASK-0237). Tests lower a real example and assert the
+# emitted SPMD project shape.
+test-common = { path = "../../test-common" }

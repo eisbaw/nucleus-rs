@@ -257,6 +257,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpi-nonblocking"
+version = "0.0.0"
+dependencies = [
+ "backend-common",
+ "nucleus-compiler",
+ "pthreads-sync",
+ "test-common",
+]
+
+[[package]]
 name = "nucleus"
 version = "0.0.0"
 dependencies = [
@@ -267,6 +277,7 @@ dependencies = [
  "mp-tcp-poll",
  "mp-uds-event",
  "mpi-blocking",
+ "mpi-nonblocking",
  "nucleus-compiler",
  "openmp-rs",
  "pthreads-async",

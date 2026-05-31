@@ -1019,6 +1019,87 @@ check-mpi:
         done; \
         echo "OK: mpi-blocking value-correct — examples 1-6 naive (-n 1) + 4 sync multi-worker schedules (-n N, all ranks live)."'
 
+# Tier-2 (M8) mpi-nonblocking acceptance (TASK-0046). The mpi-nonblocking
+# backend widens the capability surface to async + buffer + notify=event
+# and lowers Push to a non-blocking BUFFERED send (MPI_Ibsend, local
+# completion) + Wait to a non-blocking receive (MPI_Imrecv/Irecv) +
+# explicit MPI_Wait. That admits the async/buffered schedules mpi-blocking
+# HARD-REJECTS at the capability gate. For each ASYNC target it generates
+# the SPMD MPI project, cross-builds under `.#mpi`, runs it under a
+# localhost `mpiexec -n N` (all ranks live — the WORST case; -n 1 hides
+# ordering bugs, memory `16-jacobi`: deadlock-free != value-correct), and
+# `cmp`s the output BYTE-EXACT against the example's committed
+# reference.bin (a single-pass box blur / game-of-life step is invariant
+# under the partition shape, so the same oracle applies). Self-contained;
+# runs from the default shell:  just check-mpi-nonblocking
+#
+# TWO arms per target, to defeat the buffer-lifetime TIMING-LUCK trap
+# (TASK-0046 AC#5; a use-after-free can pass by luck when the MPI eager
+# protocol copies the send buffer immediately and masks a premature drop):
+#  (1) DEFAULT eager protocol, `mpiexec -n N`.
+#  (2) FORCED RENDEZVOUS: the same run with every BTL eager limit driven
+#      to 128 bytes (`btl_{sm,self,vader,tcp}_eager_limit=128`; 0 is below
+#      OpenMPI's self-BTL minimum of 80, 128 is below every array transfer
+#      here which is >= 256 bytes), so the array messages take the
+#      rendezvous path that reads the send buffer LATER. Buffered Ibsend
+#      copies into the attached buffer regardless, so a correct backend
+#      passes BOTH arms identically. NOTE: buffered Ibsend is structurally
+#      immune to the eager-masks-use-after-free trap (the payload is
+#      copied into the Universe-owned attach buffer before Wait returns),
+#      so this arm's residual value is (a) no deadlock under rendezvous and
+#      (b) the attach buffer holds every in-flight message through the
+#      longer rendezvous handshake — NOT UAF coverage (which would matter
+#      for standard MPI_Isend; see TASK-0046 notes).
+# Each run is wrapped in `timeout` so a deadlock fails LOUD, not hangs.
+#
+# TARGETS (the async schedules; N = used-worker count, all ranks live):
+#   05-stencil/distributed     (n=5, host + w0..w3; async img_in broadcast)
+#   05-stencil/distributed-2d  (n=5; 2x2 grid + real worker<->worker halo)
+#   11-game-of-life/pipelined  (n=2, host + compute; async grid)
+# NOT here: 09-producer-consumer/pipelined — it carries a non-whole-world
+# barrier {producer,consumer} excluding host, which needs Comm_split
+# (TASK-0045.02, unproven); the emit rejects it LOUD (TASK-0046 AC#3
+# forward-carries example 9 to TASK-0045.02).
+#
+# DELIBERATELY NOT wired into `just ci` and EXCLUDED from e2e-matrix.toml:
+# the generated project needs the `.#mpi` shell (same tier-2-outside-
+# default-ci rule as check-mpi / check-embedded / renode-*). The BACKEND
+# crate itself IS built by `just ci` (a normal std member emitting strings).
+check-mpi-nonblocking:
+    @echo "tier-2 M8 mpi-nonblocking acceptance (.#mpi, async schedules, default + forced-rendezvous, TASK-0046)"
+    @set -eu; \
+    nix develop .#mpi --command bash -c '\
+        set -eu; \
+        cd nucleus && cargo build --release --bin nucleus --quiet && cd ..; \
+        rndv="--mca btl_sm_eager_limit 128 --mca btl_self_eager_limit 128 --mca btl_vader_eager_limit 128 --mca btl_tcp_eager_limit 128"; \
+        for spec in "05-stencil/distributed/5" "05-stencil/distributed-2d/5" "11-game-of-life/pipelined/2"; do \
+            ex="${spec%%/*}"; rest="${spec#*/}"; sc="${rest%/*}"; n="${rest##*/}"; \
+            out="nucleus/target/mpi-m8/$ex--$sc"; \
+            rm -rf "$out"; \
+            echo "=== generating mpi-nonblocking SPMD project for $ex/$sc (n=$n) ==="; \
+            ./nucleus/target/release/nucleus build \
+                --algo "nuc-nucleus/examples/$ex/prog.algo.nuc" \
+                --sched "nuc-nucleus/examples/$ex/schedules/$sc.sched.nuc" \
+                --backend mpi-nonblocking --out "$out" >/dev/null; \
+            echo "=== cargo build --release ($ex/$sc) ==="; \
+            ( cd "$out" && cargo build --release --quiet ); \
+            for arm in "default:" "rendezvous:$rndv"; do \
+                label="${arm%%:*}"; mca="${arm#*:}"; \
+                echo "=== mpiexec -n $n ($label protocol) + byte-exact cmp ($ex/$sc) ==="; \
+                o="$(mktemp)"; \
+                NUC_INPUT_PATH="nuc-nucleus/examples/$ex/input.bin" NUC_OUTPUT_PATH="$o" \
+                    timeout 120 mpiexec --oversubscribe $mca -n "$n" "$out/target/release/nuc-generated" \
+                    || { echo "FAIL: $ex/$sc $label run failed/timed out under -n $n (deadlock?)"; rm -f "$o"; exit 1; }; \
+                if cmp -s "$o" "nuc-nucleus/examples/$ex/reference.bin"; then \
+                    echo "OK: $ex/$sc $label output byte-exact vs reference.bin (mpiexec -n $n)"; \
+                else \
+                    echo "FAIL: $ex/$sc $label output differs from reference.bin"; rm -f "$o"; exit 1; \
+                fi; \
+                rm -f "$o"; \
+            done; \
+        done; \
+        echo "OK: mpi-nonblocking value-correct + deadlock-immune — 3 async schedules (-n N, all ranks live) x {default, forced-rendezvous}."'
+
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
 # uart-smoke/, runs it headless in Renode on the bundled stm32h743

@@ -1,0 +1,52 @@
+# capabilities.toml for the mpi-nonblocking backend (tier 2, M8).
+# Schema: docs/capabilities-toml.md (TASK-0019). PRD §7.2 / §7.4 / §11.
+#
+# The SECOND tier-2 backend and the M8 milestone (TASK-0046). Workers map
+# to MPI ranks; transport is MPI; Push lowers to a non-blocking BUFFERED
+# send (MPI_Ibsend) and Wait to a non-blocking receive (MPI_Imrecv /
+# MPI_Irecv) + explicit MPI_Wait.
+#
+# The SCHEDULE-visible capability surface is the SUPERSET of the async
+# tier-1 backend pthreads-async: async transfers, buffered transfers up to
+# max_buffer, and `notify = event` — PLUS `barrier` / `blocking` so this
+# backend is also a strict capability superset of mpi-blocking (it admits
+# every sync schedule mpi-blocking does, and additionally the async /
+# buffered schedules mpi-blocking REJECTS). That superset is the point of
+# M8: 05-stencil/distributed{,-2d} (async, buffer=2, notify=event) and
+# 11-game-of-life/pipelined (async, buffer=2, notify=event) compile here
+# but are capability-rejected by mpi-blocking (PRD §7.4
+# backend-orthogonality).
+#
+# Why buffered send realises `supports_buffer = true` HONESTLY (not just a
+# declared flag): MPI_Ibsend copies the payload into the process-attached
+# send buffer (MPI_Buffer_attach) and completes LOCALLY, so a sender can
+# post all its sends before the matching receives are posted without
+# blocking above the MPI eager limit. That is exactly the buffered /
+# deadlock-immune semantics the async pthreads `Slot` model assumes — see
+# the backend crate docstring and TASK-0046 notes.
+#
+# `transport = "mpi"` is documentary + selects the SPMD emit path (same as
+# mpi-blocking; the capability-compat check does not bind transport to a
+# schedule directive — docs/capabilities-toml.md).
+#
+# max_buffer = 64 matches pthreads-async: the largest buffer any shipped
+# schedule requests is 4 (09-producer-consumer/pipelined). NOTE example 9
+# itself is NOT yet a runnable target here — it carries a non-whole-world
+# barrier {producer,consumer} excluding the host, which needs Comm_split
+# (TASK-0045.02, unproven); the emit rejects it LOUD. See TASK-0046 notes.
+#
+# Collective recognition (MPI_Allreduce / MPI_Scatter) and derived-type
+# packing (MPI_Type_contiguous) are DELIBERATELY DEFERRED (PRD §7.2;
+# TASK-0046 AC#6): v2 emits point-to-point Ibsend/Imrecv + MPI_Barrier
+# only. That is a codegen choice, not a capability one.
+
+schema_version  = 1
+name            = "mpi-nonblocking"
+tier            = 2
+transport       = "mpi"
+notify          = ["barrier", "blocking", "event"]
+supports_async  = true
+supports_buffer = true
+max_buffer      = 64
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

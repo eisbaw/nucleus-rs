@@ -140,7 +140,9 @@ fn print_help() {
                                LIB path: single-worker (M9) OR multi-worker (M11 slice A, TASK-0049.04 — one lib per worker, Push/Wait/Sync -> stub-shim hooks).\n    \
                                With `--shim stm32h7`: Renode-runnable no_std bin (M10, single-worker only; `just renode-embedded <example>`; examples 1/5/9)\n    \
              mpi-blocking    SPMD MPI (tier 2, M7); one rank-dispatched binary + rsmpi. Builds/runs under `nix develop .#mpi` via `just check-mpi`.\n    \
-                               Single-worker SPMD arm landed; multi-worker (rank Send/Recv + MPI_Barrier) is TASK-0045.01.\n"
+                               Single-worker SPMD arm landed; multi-worker (rank Send/Recv + MPI_Barrier) is TASK-0045.01.\n    \
+             mpi-nonblocking SPMD MPI (tier 2, M8); non-blocking BUFFERED MPI_Ibsend + MPI_Imrecv/Irecv + MPI_Wait. Builds/runs under `nix develop .#mpi` via `just check-mpi-nonblocking`.\n    \
+                               Admits the async/buffered schedules mpi-blocking rejects (05-stencil distributed + distributed-2d, 11-game-of-life pipelined); deadlock-immune (TASK-0046).\n"
     );
 }
 
@@ -1126,11 +1128,35 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())
         }
+        // mpi-nonblocking (TASK-0046, M8). SPMD MPI like mpi-blocking but
+        // Push => non-blocking BUFFERED MPI_Ibsend (local completion,
+        // deadlock-immune) and Wait => MPI_Imrecv/Irecv + explicit
+        // MPI_Wait. Admits the async/buffered schedules mpi-blocking
+        // rejects (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined).
+        // Builds + runs only under `nix develop .#mpi` (`just
+        // check-mpi-nonblocking`), NOT the tier-1 runtime differential.
+        "mpi-nonblocking" => {
+            let result =
+                mpi_nonblocking::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("mpi-nonblocking codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            println!("main_rs     = {}", result.main_rs.display());
+            if let Some(compute_rs) = &result.compute_rs {
+                // Single-worker arm only; the multi-worker arm emits the
+                // whole rank-dispatched program in main.rs.
+                println!("compute_rs  = {}", compute_rs.display());
+            }
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
              `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`, \
              `openmp-rs`, `mp-tcp-poll`, `mp-uds-event`, `embedded-pattern`, \
-             `mpi-blocking`"
+             `mpi-blocking`, `mpi-nonblocking`"
         )),
     }
 }
