@@ -2373,6 +2373,13 @@ mod tests {
     //   target" rule. This is the
     //   `scatter_target_replicates_whole_array == false` arm.
     //
+    // - `task0390_lhs_index_banding_keeps_scatter_fatal` — bite-test for
+    //   the LHS-INDEX arm: a scatter target buried affinely inside ANOTHER
+    //   array's LHS index (`foo[histogram[j]] <-- ...`, `j` partitioned)
+    //   keeps `scatter_target_replicates_whole_array == false`. Proves the
+    //   `lhs.indices` descent bites via an A-only-replicates vs
+    //   A+B-does-not differential (unreachable in today's grammar).
+    //
     // - `task0373_unpartitioned_scatter_rmw_read_stays_advisory` — the
     //   same scatter with NO partition directive stays advisory
     //   (single-worker needs no transfer): the fatal classification is
@@ -2691,6 +2698,116 @@ mod tests {
             ),
             "expected a SCATTER-RMW DataDependentStride (is_scatter_rmw == \
              true) classified FATAL, got: {err:?}"
+        );
+    }
+
+    /// TASK-0390 — bite-test for the LHS-INDEX banding arm of
+    /// `algo_target_has_affine_partitioned_index` (halo_inference.rs, the
+    /// `lhs.indices.iter().any(expr_bands_target)` clause). That arm makes
+    /// the discriminator descend a write LHS's index sub-expressions so a
+    /// scatter target that appears AFFINELY inside ANOTHER array's LHS
+    /// index — `foo[ histogram[j] ] <-- ...`, `j` partitioned — keeps the
+    /// scatter `scatter_target_replicates_whole_array == false` (FATAL).
+    /// The arm is additive-conservative (can only keep MORE scatters
+    /// FATAL) and is unreachable in today's grammar, so it had no
+    /// dedicated coverage — this is the "prove-the-guard-bites" pin
+    /// (recurring class: TASK-0374/0379/0381).
+    ///
+    /// It bites via a self-contained DIFFERENTIAL, so the proof does not
+    /// rely on a one-off "delete the line and re-run" experiment. Case A:
+    /// statement A ALONE (canonical `histogram[input[i]]` scatter, `i`
+    /// partitioned) replicates histogram whole-array (the data-dependent
+    /// dim is opaque) so `scatter_target_replicates_whole_array == true`.
+    /// Case A+B: adding B = `foo[ histogram[j] ] <-- inc(foo[j])` with `j`
+    /// partitioned introduces exactly ONE new banding source — `histogram`
+    /// appearing affinely inside `foo`'s LHS index. B's own LHS ref (`foo`,
+    /// not the target) and its RHS (`inc(foo[j])`, no `histogram` access)
+    /// are both non-banding, so the flip to `== false` is attributable
+    /// SOLELY to the LHS-index arm.
+    ///
+    /// Empirically confirmed: disabling the `lhs.indices` clause (a
+    /// `false &&` short-circuit on it) makes the A+B assertion fail while
+    /// the case-A baseline still passes — the differential and the manual
+    /// disable agree.
+    #[test]
+    fn task0390_lhs_index_banding_keeps_scatter_fatal() {
+        // Statement A — canonical scatter `histogram[input[i]] <-- inc(...)`.
+        // Data-dependent LHS index ⇒ histogram dim 0 opaque ⇒ replicate.
+        let stmt_a = || IrStmt::For {
+            var: "i".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::Dataflow {
+                lhs: lhs("histogram", vec![data_ref("input", vec![ir_id("i")])]),
+                rhs: ir_call(
+                    "inc",
+                    vec![data_ref("histogram", vec![data_ref("input", vec![ir_id("i")])])],
+                ),
+            }],
+        };
+        // Statement B — `foo[ histogram[j] ] <-- inc(foo[j])`, `j`
+        // partitioned. `histogram` (the scatter target) appears AFFINELY
+        // (`[j]`) buried inside `foo`'s LHS index: the LHS-index arm's
+        // exclusive trigger.
+        let stmt_b = || IrStmt::For {
+            var: "j".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::Dataflow {
+                lhs: lhs("foo", vec![data_ref("histogram", vec![ir_id("j")])]),
+                rhs: ir_call("inc", vec![data_ref("foo", vec![ir_id("j")])]),
+            }],
+        };
+
+        // Case A — statement A only, `i` partitioned: replicate (sound
+        // input-index scatter). Establishes the differential baseline.
+        let mut linked_a = build_linked_gather_arity(
+            vec![stmt_a()],
+            "inc",
+            1,
+            "histogram",
+            vec![16],
+            &[("input", vec![8]), ("foo", vec![16])],
+        );
+        linked_a
+            .sched
+            .loops
+            .insert("i".to_string(), loop_partition_workers("i"));
+        assert!(
+            scatter_target_replicates_whole_array(&linked_a, "histogram"),
+            "TASK-0390 baseline: the canonical input-index scatter alone \
+             must replicate histogram whole-array (no affine partitioned-iv \
+             index into the target)"
+        );
+
+        // Case A+B — statements A + B, `i` AND `j` partitioned: the buried
+        // `histogram[j]` inside foo's LHS index bands the target, so it
+        // must NOT replicate. Statement A is byte-identical to case A, so
+        // the only change is statement B's LHS-index banding.
+        let mut linked_ab = build_linked_gather_arity(
+            vec![stmt_a(), stmt_b()],
+            "inc",
+            1,
+            "histogram",
+            vec![16],
+            &[("input", vec![8]), ("foo", vec![16])],
+        );
+        linked_ab
+            .sched
+            .loops
+            .insert("i".to_string(), loop_partition_workers("i"));
+        linked_ab
+            .sched
+            .loops
+            .insert("j".to_string(), loop_partition_workers("j"));
+        assert!(
+            !scatter_target_replicates_whole_array(&linked_ab, "histogram"),
+            "TASK-0390: a scatter target appearing affinely (`histogram[j]`, \
+             `j` partitioned) inside ANOTHER array's LHS index must keep the \
+             scatter FATAL (replicates == false) — the LHS-index arm of \
+             algo_target_has_affine_partitioned_index. If this fails, the \
+             `lhs.indices` descent has regressed and a band-partitioned \
+             target could be unsoundly admitted as whole-array replicate."
         );
     }
 
