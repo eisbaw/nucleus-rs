@@ -189,6 +189,7 @@ ci:
     just check-include-str-coverage
     just check-narrative-doc-lie
     just check-doc-citation-staleness
+    just check-doc-citation-staleness-bare
     just check-mega-files
     just check-doc-links
     just e2e
@@ -540,6 +541,127 @@ check-doc-citation-staleness:
         exit 1; \
     fi; \
     echo "OK: every fully-qualified nucleus/*.rs:N citation resolves to an in-range line."
+
+# Bare-basename doc-citation staleness fence (TASK-0382, cycle 221).
+#
+# The SIBLING of check-doc-citation-staleness (above) for the OTHER
+# citation class: a BARE basename `<file>.rs:N` (e.g. `wait.rs:307`,
+# `multi_worker.rs:174-186`) with no `nucleus/<crate>/...` path prefix.
+# This is the BULK of in-source citations and the class TASK-0370
+# DEFERRED as "intractable for zero-FP". It is tractable with a
+# CRATE-SCOPED, PROSE-AWARE resolver whose every rule is biased toward
+# SKIPPING (zero-FP-favouring): a citation is only validated when its
+# resolution is UNAMBIGUOUS and the surrounding prose gives no reason
+# to doubt the crate. Scanned in `*.rs` files only (where the citing
+# file's crate is well-defined by its nearest-ancestor Cargo.toml).
+#
+# ALGORITHM (per `<base>.rs:N` hit at FILE:LINENO):
+#   1. crate root = nearest ancestor dir of FILE with a Cargo.toml.
+#   2. resolve `<base>.rs` by `find <crate-root> -name <base>.rs`.
+#        - 0 matches  -> SKIP (basename-not-in-crate; usually a
+#          partial-path form like `multi_worker/mod.rs:N` whose prefix
+#          this basename-only resolver discards — see DEFERRED below).
+#        - >1 matches -> SKIP (ambiguous; e.g. nucleus-compiler has
+#          both `algo/ir.rs` and `sched/ir.rs`).
+#   3. CROSS-CRATE-PROSE GUARD: scan the citation line and the WIN lines
+#      above it for the name of ANY OTHER crate, in BOTH dash-form
+#      (`pthreads-sync`) AND Rust module-path underscore-form
+#      (`pthreads_sync`). If found -> SKIP. This is the load-bearing
+#      zero-FP rule: check_frame.rs (in backend-common) cites
+#      `lib.rs:1010-1018` whose prose three lines up says
+#      "pthreads-sync's pre-extraction comment" — a naive resolver
+#      MISATTRIBUTES it to backend-common/src/lib.rs (92 lines) and
+#      false-positives. The underscore variant is equally load-bearing:
+#      `pthreads_sync::multi_worker::Plan::emit (multi_worker.rs:237)`
+#      in pthreads-async names pthreads_sync ONLY in `::`-path form.
+#   4. otherwise range-check N against the resolved file's line count.
+#
+# WHY A WINDOW (and why WIN is deliberately SMALL): the crate name and
+# the citation often straddle a wrapped `///` line, so same-line-only
+# misses it (empirically reproduced: WIN=1 false-positives the
+# check_frame.rs lib.rs cite). But widening too far OVER-skips, because
+# `e2e`, `nucleus`, `driver` double as common domain words — at WIN=6 a
+# legitimate same-crate `expr.rs` cite is skipped because a sentence
+# four lines up says "the 7 shipped e2e gather cells". WIN=3 is the
+# measured sweet spot: zero false-positives AND minimal over-skip.
+# Over-skipping is SAFE (a missed validation, never a false alarm);
+# under-skipping risks an FP, so the tie always breaks toward SKIP.
+#
+# DEFERRED (filed as TASK-0382.01, honest coverage limits — all SAFE
+# skips, none can produce a false POSITIVE):
+#   - PARTIAL-PATH citations (`multi_worker/mod.rs:N`, `sched/ir.rs:N`):
+#     this resolver discards the path prefix and resolves the basename
+#     only, so they fall to SKIP (ambiguous / not-in-crate). A
+#     prefix-honouring resolver would recover coverage.
+#   - The Implementation-Notes BARE-BASENAME-AS-LOCATION variant (a
+#     prose `tests.rs` with NO `:N`, claiming a named test resides
+#     there) needs symbol/test-name residence checking, not line-count.
+#   - STALE-CONTENT (line still exists, code moved) — see AC#2 decision
+#     recorded on TASK-0382: out of mechanized scope; the cycle-138
+#     prefer-a-symbol-anchor convention is the mitigation.
+#
+# POSIX-shell portability (cf. check-mega-files / the FQ sibling): `just`
+# runs `/bin/sh -cu`. The crate-name list is a `set --` positional
+# list (no bash arrays); the window slice is one `awk`; basename
+# resolution is `find ... -name`.
+check-doc-citation-staleness-bare:
+    @echo "checking bare-basename <file>.rs:N citations (crate-scoped, prose-aware)..."
+    @set -eu; \
+    win=3; \
+    set -- backend-common nucleus-compiler driver e2e nucleus mp-tcp-common \
+        test-common embedded-pattern mp-tcp-bufsync mp-tcp-event mp-tcp-poll \
+        mp-uds-event openmp-rs pthreads-async pthreads-sync; \
+    crates="$@"; \
+    recs_f=$(mktemp); \
+    trap "rm -f $recs_f" EXIT; \
+    rg --no-heading -n \
+        -oe '[A-Za-z0-9_]+\.rs:[0-9]+([.-]+[0-9]+)?' \
+        . -g '*.rs' -g '!target/**' 2>/dev/null > $recs_f || true; \
+    fail=0; \
+    while IFS= read -r rec; do \
+        [ -n "$rec" ] || continue; \
+        cite=$(printf '%s' "$rec" | grep -oE '[A-Za-z0-9_]+\.rs:[0-9]+([.-]+[0-9]+)?$' || true); \
+        [ -n "$cite" ] || continue; \
+        rest=${rec%:"$cite"}; \
+        lineno=${rest##*:}; \
+        file=${rest%:*}; \
+        base=${cite%%:*}; \
+        lines=${cite#*:}; \
+        maxl=$(printf '%s' "$lines" | grep -oE '[0-9]+$' || true); \
+        case "$maxl" in ''|*[!0-9]*) continue;; esac; \
+        croot=$(d=$(dirname "$file"); while [ "$d" != "." ] && [ "$d" != "/" ]; do if [ -f "$d/Cargo.toml" ]; then printf '%s' "$d"; break; fi; d=$(dirname "$d"); done); \
+        [ -n "$croot" ] || continue; \
+        cratename=$(basename "$croot"); \
+        lo=$((lineno - win)); [ "$lo" -lt 1 ] && lo=1; \
+        windowtext=$(awk -v a="$lo" -v b="$lineno" 'NR>=a && NR<=b' "$file" 2>/dev/null); \
+        skip=0; \
+        for c in $crates; do \
+            [ "$c" = "$cratename" ] && continue; \
+            cu=$(printf '%s' "$c" | tr '-' '_'); \
+            case "$windowtext" in *"$c"*) skip=1; break;; esac; \
+            case "$windowtext" in *"$cu"*) skip=1; break;; esac; \
+        done; \
+        [ "$skip" -eq 1 ] && continue; \
+        matches=$(find "$croot" -name "$base" 2>/dev/null); \
+        nmatch=$(printf '%s\n' "$matches" | grep -c . || true); \
+        [ "$nmatch" -eq 1 ] || continue; \
+        total=$(awk 'END{print NR}' "$matches"); \
+        if [ "$maxl" -gt "$total" ]; then \
+            echo "  STALE (line past EOF): $cite cited in $file:$lineno"; \
+            echo "    -> resolves crate-scoped to $matches ($total lines); cited line $maxl is past EOF."; \
+            fail=1; \
+        fi; \
+    done < $recs_f; \
+    if [ "$fail" -ne 0 ]; then \
+        echo ""; \
+        echo "FAIL: stale bare-basename source citation(s) (memory: feedback-comment-doc-lie-recurring cycle-138 stale-line)."; \
+        echo "Fix (cycle-138 rule, in order of preference):"; \
+        echo "  1. Re-anchor the citation to a STABLE symbol/comment name instead of a line number — line numbers rot on every edit."; \
+        echo "  2. If a line number is genuinely needed, update it to the current line and re-grep to confirm post-edit."; \
+        echo "  3. If the cite means ANOTHER crate's file, name that crate in the same/adjacent line so the cross-crate-prose guard skips it."; \
+        exit 1; \
+    fi; \
+    echo "OK: every crate-resolvable, prose-unambiguous bare-basename citation is in range."
 
 # Mega-file regression-fence (TASK-0340 AC#5; slice 1 cycle 176, slice 2
 # cycle 177).
