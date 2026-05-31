@@ -89,17 +89,29 @@ ArgList        ::= RValue (',' RValue)* ;
 (* ---------- expressions ---------- *)
 
 (* Indexing expressions: integer arithmetic over loop vars, consts, literals.
-   Same surface as ConstExpr; the only difference is which identifiers are
-   in scope (loop vars are in scope only inside their for-body). *)
+   Same surface as ConstExpr; in fact the hand-written parser MERGES the two
+   (algo/parser.rs `expr_parser`, "covers IndexExpr and ConstExpr"). The only
+   difference is which identifiers are in scope (loop vars are in scope only
+   inside their for-body) — and which atoms a LATER pass accepts (see below). *)
 IndexExpr      ::= AddExpr ;
 ConstExpr      ::= AddExpr ;
 
 AddExpr        ::= MulExpr (('+' | '-') MulExpr)* ;
 MulExpr        ::= UnaryExpr (('*' | '/' | '%') UnaryExpr)* ;
 UnaryExpr      ::= ('-')? Atom ;
+(* An Atom is an int literal, a parenthesised expr, OR an `Ident`-prefixed
+   tail: a CallExpr `Ident(args)` or an indexed LValue `Ident IndexSuffix*`
+   (a nested DATA read). The parser's `ident_or_call` builds both, and
+   `IndexSuffix` recurses on the full expression, so a nested data read can
+   appear in ANY expression position SYNTACTICALLY — including inside an
+   index. The restriction that a data-dependent (gather) read is accepted
+   in INDEX position but REJECTED in const/shape position is NOT grammatical:
+   it is a semantic / lowering rule (`lower_index_expr`'s `allow_gather`,
+   TASK-0341.03.01; `eval_const` returns None for a DataRef). See §6 item 8. *)
 Atom           ::= IntLit
-                 | Ident
-                 | '(' AddExpr ')' ;
+                 | '(' AddExpr ')'
+                 | CallExpr
+                 | LValue ;                (* LValue = Ident IndexSuffix*, a nested data read *)
 
 (* ---------- lexical ---------- *)
 
@@ -351,6 +363,19 @@ with no special case.
 7. **Comments inside multi-line tokens are not specified.** `// ...`
    ends at the next `\n`. No block comments. No nested comments. If
    a future kernel-doc convention emerges, revisit.
+8. **The grammar does NOT distinguish index position from const/shape
+   position.** `expr_parser` (algo/parser.rs) parses one expression
+   surface for both `IndexExpr` and `ConstExpr`, and an `Atom` may be a
+   nested data read (`Ident IndexSuffix*`) or a call. So a
+   data-dependent (gather) index such as `x[col[k]]` is *grammatical*
+   in every expression position. Whether such a read is ACCEPTED is a
+   semantic decision made by later passes, not the grammar: lowering
+   admits a gather only in index position (`lower_index_expr`'s
+   `allow_gather`, TASK-0341.03.01), and `eval_const` returns `None` for
+   a `DataRef`/`Call`, so a data read in a const/shape position is
+   rejected there. Earlier revisions of this section claimed the
+   *grammar* admitted a data read only in index position — that was
+   imprecise; the distinction lives in lowering / const-eval.
 
 ## 7. Pointers
 

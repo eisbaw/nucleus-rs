@@ -408,11 +408,29 @@ fn resolve_worker_set(
 /// single-source-of-truth contract: `data_in` is *derived* from
 /// `data_in_access`, never built independently.
 ///
-/// Index expressions inside a `DataRef` are NOT recursed into for
-/// further DataRefs — the algorithm grammar disallows data
-/// references in indices (indices are integer expressions over
-/// consts and iter vars). Walking would be a no-op; we keep the
-/// index list verbatim instead.
+/// Index expressions inside a `DataRef` are intentionally NOT recursed
+/// into for further DataRefs — we keep the index list verbatim.
+///
+/// NOTE (TASK-0341.03.01 / TASK-0375): both halves of the old rationale
+/// here are now stale. (a) The algorithm grammar does NOT disallow data
+/// references in indices: a data-dependent (gather) index such as
+/// `x[col[k]]` parses (the expression surface admits a nested indexed
+/// LValue) and lowers (`lower_index_expr`'s `allow_gather`). (b) "Walking
+/// would be a no-op" is therefore also false now: with the gather landed,
+/// `collect_dataref_access_expr` matching an `IrExpr::DataRef` pushes ONLY
+/// the OUTER array and does not descend into `indices`, so for `x[col[k]]`
+/// the inner index array `col` is NOT added to this firing's
+/// `data_in_access`. Recursing WOULD now find `col`.
+///
+/// This non-collection is INERT for single-worker codegen, which emits
+/// straight-line from AlgoIR and ignores the ACFG dataflow edges (see
+/// memory `project-backend-emits-from-algoir-not-acfg`). It is precisely
+/// part of why a DISTRIBUTED gather needs dedicated work: the conservative
+/// path must broadcast the whole gathered array, and `col` must reach
+/// `data_in`. That broadening (including whether to recurse here) is
+/// tracked as TASK-0373; deliberately NOT changed in this docstring-only
+/// fix, since altering the walk would perturb `data_in` for shipped
+/// programs.
 fn collect_dataref_access(
     args: &[IrExpr],
     name_data: &BTreeMap<String, DataId>,
