@@ -712,14 +712,18 @@ type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
 /// error-push site:
 ///
 /// - The enclosing-loop scope (outermost-first iter-var names) — the
-///   pre-TASK-0341.02.02.01 fatality input. Now consulted ONLY by the
-///   `UnknownKernelInCall` fail-closed arm (a diagnostic for
-///   inconsistently-constructed IR). TASK-0373 retired its use for
-///   `DataDependentStride`, which is now unconditionally advisory
-///   (the gathered array is whole-array broadcast, so the partition
-///   state is irrelevant). The field is retained because
-///   `UnknownKernelInCall` still needs it and because it is part of
-///   the captured-at-push-site diagnostic record.
+///   pre-TASK-0341.02.02.01 fatality input. Still consulted by TWO
+///   arms (see [`error_is_fatal_under_partition`]): the
+///   `UnknownKernelInCall` fail-closed diagnostic, AND the
+///   `DataDependentStride` *scatter-RMW* sub-case. TASK-0373 narrowed
+///   — did NOT retire — scope's use for `DataDependentStride`: a PURE
+///   gather (`is_scatter_rmw == false`) is now advisory regardless of
+///   partition state (the gathered array is whole-array broadcast), but
+///   a scatter read-modify-write (`is_scatter_rmw == true`) stays FATAL
+///   under partition and consults `scope` to decide (the data-dependent
+///   WRITE is unhandled — TASK-0384). So `DataDependentStride` is
+///   advisory only for the pure-gather case, NOT unconditionally. The
+///   field is also part of the captured-at-push-site diagnostic record.
 /// - The ivs the FAILING INDEX EXPRESSION actually references —
 ///   collected via [`collect_iter_var_refs`]. Empty when the index
 ///   is a `DataDependentStride` (the walker short-circuits on

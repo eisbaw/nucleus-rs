@@ -483,10 +483,26 @@ fn collect_dataref_access_expr(
             // mp-tcp-poll) use `read_msg_expect`, which requires the
             // worker's Wait order to MATCH the host's Push order on each
             // channel. Recursing index-FIRST puts `col_idx` before `x`
-            // in `data_in`, matching the host's declaration-order send
-            // (col_idx, x) — without this the worker waits x-then-col_idx
-            // while the host sends col_idx-then-x, tripping a tag
-            // mismatch (TASK-0373, the bufsync/poll FAIL/run symptom).
+            // in `data_in`; for `prog.gather.algo.nuc` that matches the
+            // host's send order — without this the worker waits
+            // x-then-col_idx while the host sends col_idx-then-x,
+            // tripping a tag mismatch (TASK-0373, the bufsync/poll
+            // FAIL/run symptom).
+            //
+            // LIMITATION (NOT a general guarantee — TASK-0389): the two
+            // orderings are INDEPENDENT. Host Push order follows
+            // producer/DECLARATION position; worker Wait order follows
+            // this data_in TRAVERSAL order. Index-first makes them
+            // coincide ONLY because the index array `col_idx` is declared
+            // BEFORE its outer array `x` in this example. A program that
+            // declares the gathered array before its index array, or
+            // interleaves multiple gathers with ordinary args, would
+            // re-introduce the FIFO mismatch — fail-LOUD on
+            // bufsync/poll (a `read_msg_expect` tag-mismatch panic), NOT
+            // a silent miscompile, and masked on the per-seq-demux event
+            // backends. A general fix sorts the worker Wait sequence to
+            // the host Push sequence rather than relying on traversal
+            // order; tracked as TASK-0389.
             //
             // Collecting the index array also gets `col_idx` into
             // `data_in` so the distributed transfer pass i-bands it to

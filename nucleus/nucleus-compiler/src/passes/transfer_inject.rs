@@ -5349,6 +5349,49 @@ mod tests {
         );
     }
 
+    /// AC#1 stickiness, REVERSED order (review P3.2): the affine access
+    /// is observed FIRST (x[i] ⇒ dim 0 = {i}), then the gather
+    /// x[col_idx[i][k]] is observed. The gather must CLEAR the
+    /// already-collected {i} and mark the dim opaque — this is the
+    /// `entry[dim].clear()` arm in `record_access_per_dim`, which the
+    /// gather-first test does not exercise (there the set is already
+    /// empty). Removing the `.clear()` would leave dim 0 = {i} and
+    /// wrongly i-band x, so this test BITES that guard.
+    #[test]
+    fn task0373_opaque_dim_is_sticky_when_affine_observed_first() {
+        let i_iv = IterVar(1);
+        let k_iv = IterVar(2);
+        let x = DataId(10);
+        let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+        name_iter_vars.insert("i".to_string(), i_iv);
+        name_iter_vars.insert("k".to_string(), k_iv);
+
+        // First access: affine x[i] ⇒ dim 0 transiently = {i}.
+        let affine_access = DataAccess {
+            data: x,
+            indices: vec![IrExpr::Ident("i".to_string())],
+        };
+        // Second access: gather x[col_idx[i][k]] ⇒ must CLEAR {i} and
+        // mark dim 0 opaque.
+        let gather_access = DataAccess {
+            data: x,
+            indices: vec![IrExpr::DataRef(crate::algo::ir::IndexedRef {
+                name: "col_idx".to_string(),
+                indices: vec![IrExpr::Ident("i".to_string()), IrExpr::Ident("k".to_string())],
+            })],
+        };
+        let node = op_node_with_accesses(vec![affine_access, gather_access]);
+
+        let map = collect_data_dim_iv_map(&node, &name_iter_vars);
+        assert_eq!(
+            map.get(&x),
+            Some(&vec![BTreeSet::new()]),
+            "TASK-0373 stickiness (affine-first): a later gather access \
+             must CLEAR the transiently-collected {{i}} and mark dim 0 \
+             opaque — otherwise x is wrongly i-banded.",
+        );
+    }
+
     // ----------------------------------------------------------------
     // TASK-0341.02.02.01.{02,03} cycle 213: cumulative-array band tile +
     // w2w hoist (16-jacobi/distributed).
