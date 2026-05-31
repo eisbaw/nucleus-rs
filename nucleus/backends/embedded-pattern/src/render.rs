@@ -318,7 +318,7 @@ fn render_event(
         // STRAIGHT from the events: `SeqTag` is the transport channel id (a
         // Push/Wait pair shares its `seq`); `SyncTag` is the barrier tag.
         // The per-`seq` -> USART/hub physical mapping is the multi-MCU
-        // shim's job (`skeleton::render_multimcu_shim_src`), NOT a channel
+        // shim's job (`skeleton::render_multimcu_bin_main`), NOT a channel
         // allocator here. Against the compile-only `StubShim` both link
         // hooks no-op (a real cross-compile, not a Renode run — module docs).
         Event::Push { data, seq, .. } => {

@@ -129,8 +129,14 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
             usart.base, usart.renode_name
         ));
     }
+    // The `_` arm is UNREACHABLE by construction: every `seq` reaching
+    // link_push/link_recv was registered in this table at codegen (the
+    // host-side TransportPlan::map_seqs walks the SAME events that emit the
+    // Push/Wait). A hit here is a nucleus codegen bug, never valid input —
+    // so a panic (a brick on bare metal) is the correct invariant guard.
     s.push_str(
-        "        _ => panic!(\"no USART mapped for transport seq\"),\n    }\n}\n\n",
+        "        // Unreachable: every link `seq` is registered above at codegen.\n\
+         \x20       _ => panic!(\"nucleus codegen bug: no USART mapped for transport seq\"),\n    }\n}\n\n",
     );
 
     // The shim struct + impl.

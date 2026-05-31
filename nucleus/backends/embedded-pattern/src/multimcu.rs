@@ -4,7 +4,7 @@
 //! has no inter-MCU transport. A MULTI-worker schedule emits one firmware
 //! bin per worker, co-simulated as N separate Renode STM32H7 machines
 //! wired by `UARTHub`s. This module computes the PHYSICAL transport plan
-//! that BOTH the per-worker shim (`skeleton::render_multimcu_shim_src`)
+//! that BOTH the per-worker shim (`skeleton::render_multimcu_bin_main`)
 //! AND the generated multi-machine `.resc`
 //! ([`render_multimachine_resc`]) must agree on:
 //!

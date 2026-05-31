@@ -243,7 +243,7 @@ impl NucleusShim for Usart1Shim {
     // SINGLE-worker M10 bin path (examples 1/5/9 emit no Push/Wait), so
     // the single-worker Usart1Shim no-ops link_push/link_recv. The
     // multi-MCU bin emits a SEPARATE concrete shim (see
-    // `render_multimcu_shim_src`) whose link_* methods drive real USART
+    // `render_multimcu_bin_main`) whose link_* methods drive real USART
     // TX/RX (TASK-0049.05).
     fn link_push(&mut self, _seq: usize, _src: *const u8, _len: usize) {}
     fn link_recv(&mut self, _seq: usize, _dst: *mut u8, _len: usize) {}
