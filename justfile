@@ -542,11 +542,13 @@ check-doc-citation-staleness:
     fi; \
     echo "OK: every fully-qualified nucleus/*.rs:N citation resolves to an in-range line."
 
-# Bare-basename doc-citation staleness fence (TASK-0382, cycle 221).
+# Bare-basename / partial-path doc-citation staleness fence (TASK-0382
+# cycle 221; partial-path arm TASK-0382.01).
 #
 # The SIBLING of check-doc-citation-staleness (above) for the OTHER
 # citation class: a BARE basename `<file>.rs:N` (e.g. `wait.rs:307`,
-# `multi_worker.rs:174-186`) with no `nucleus/<crate>/...` path prefix.
+# `multi_worker.rs:174-186`) — or a partial path `<seg>/.../<file>.rs:N`
+# (e.g. `sched/ir.rs:382`) — with no `nucleus/<crate>/...` path prefix.
 # This is the BULK of in-source citations and the class TASK-0370
 # DEFERRED as "intractable for zero-FP". It is tractable with a
 # CRATE-SCOPED, PROSE-AWARE resolver whose every rule is biased toward
@@ -555,13 +557,28 @@ check-doc-citation-staleness:
 # to doubt the crate. Scanned in `*.rs` files only (where the citing
 # file's crate is well-defined by its nearest-ancestor Cargo.toml).
 #
-# ALGORITHM (per `<base>.rs:N` hit at FILE:LINENO):
+# The capture also admits an optional INTERIOR-SLASH path prefix
+# (`<seg>/.../<base>.rs:N`, segments `[A-Za-z0-9_]+`) — see PARTIAL-PATH
+# below. The prefix is MORE disambiguating, not less, so honouring it
+# only ever recovers coverage (it can turn a SKIP:ambiguous basename
+# into an UNAMBIGUOUS suffix resolve); it never introduces an FP.
+#
+# ALGORITHM (per `<path>.rs:N` hit at FILE:LINENO, where `<path>` is a
+# basename `<base>.rs` or a partial path `<seg>/.../<base>.rs`):
 #   1. crate root = nearest ancestor dir of FILE with a Cargo.toml.
-#   2. resolve `<base>.rs` by `find <crate-root> -name <base>.rs`.
-#        - 0 matches  -> SKIP (basename-not-in-crate; usually a
-#          partial-path form like `multi_worker/mod.rs:N` whose prefix
-#          this basename-only resolver discards — see DEFERRED below).
-#        - >1 matches -> SKIP (ambiguous; e.g. nucleus-compiler has
+#   2. resolve `<path>.rs` under <crate-root>:
+#        - PARTIAL PATH (has `/`): `find <crate-root> -path '*/<path>.rs'`
+#          (SUFFIX match — the interior slash disambiguates, e.g.
+#          `sched/ir.rs` resolves to the one `.../sched/ir.rs`, never
+#          colliding with `algo/ir.rs`).
+#        - BARE BASENAME (no `/`): `find <crate-root> -name <base>.rs`
+#          (unchanged).
+#        - 0 matches  -> SKIP (not-in-crate; e.g. a partial path whose
+#          file was moved/renamed — `multi_worker/mod.rs:N` after the
+#          TASK-0340.04 split — or a cross-crate cite whose suffix is
+#          absent here. SAFE: moved-file staleness is out of scope, see
+#          DEFERRED).
+#        - >1 matches -> SKIP (ambiguous; e.g. bare `ir.rs` matches
 #          both `algo/ir.rs` and `sched/ir.rs`).
 #   3. CROSS-CRATE-PROSE GUARD: scan the citation line and the WIN lines
 #      above it for the name of ANY OTHER crate, in BOTH dash-form
@@ -605,23 +622,35 @@ check-doc-citation-staleness:
 # pre-extraction-historical and would then FAIL the FQ sibling's
 # range check.)
 #
-# DEFERRED (filed as TASK-0382.01, honest coverage limits — all SAFE
-# skips, none can produce a false POSITIVE):
-#   - PARTIAL-PATH citations (`multi_worker/mod.rs:N`, `sched/ir.rs:N`):
-#     this resolver discards the path prefix and resolves the basename
-#     only, so they fall to SKIP (ambiguous / not-in-crate). A
-#     prefix-honouring resolver would recover coverage.
+# PARTIAL-PATH citations (`sched/ir.rs:N`, `multi_worker/mod.rs:N`):
+# LANDED (TASK-0382.01, cycle-221 follow-up). The optional interior-slash
+# prefix is now captured and resolved by SUFFIX (`find -path '*/<path>'`)
+# under the crate root — see ALGORITHM step 2. Zero-FP is preserved: the
+# suffix is strictly more disambiguating than the basename, and every
+# 0-match (file moved/renamed, e.g. `multi_worker/mod.rs` after the
+# TASK-0340.04 split) or >1-match goes to SKIP. CAVEAT: the segment class
+# is `[A-Za-z0-9_]+` (no hyphen), so a cite whose FIRST segment is a
+# HYPHENATED crate name (`nucleus-compiler/src/...`) is captured as its
+# trailing run (`compiler/src/...`) and SKIPs on a segment-boundary
+# mismatch — SAFE (unvalidated, never a false alarm). Moved-file
+# staleness (the file moved/renamed → 0-match → SKIP) stays OUT of scope:
+# the fence catches "line past EOF" (file shrank), not "file moved".
+#
+# DEFERRED (honest coverage limits — all SAFE skips, none can produce a
+# false POSITIVE):
 #   - The Implementation-Notes BARE-BASENAME-AS-LOCATION variant (a
 #     prose `tests.rs` with NO `:N`, claiming a named test resides
 #     there) needs symbol/test-name residence checking, not line-count.
+#     Filed as TASK-0382.02 (harder zero-FP profile — prose ambiguity
+#     about what token is a symbol name).
 #   - STALE-CONTENT (line still exists, code moved) — see AC#2 decision
 #     recorded on TASK-0382: out of mechanized scope; the cycle-138
 #     prefer-a-symbol-anchor convention is the mitigation.
 #
 # POSIX-shell portability (cf. check-mega-files / the FQ sibling): `just`
 # runs `/bin/sh -cu`. The crate-name list is a `set --` positional
-# list (no bash arrays); the window slice is one `awk`; basename
-# resolution is `find ... -name`.
+# list (no bash arrays); the window slice is one `awk`; path/basename
+# resolution is `find ... -path`/`-name`.
 check-doc-citation-staleness-bare:
     @echo "checking bare-basename <file>.rs:N citations (crate-scoped, prose-aware)..."
     @set -eu; \
@@ -633,12 +662,12 @@ check-doc-citation-staleness-bare:
     recs_f=$(mktemp); \
     trap "rm -f $recs_f" EXIT; \
     rg --no-heading -n \
-        -oe '[A-Za-z0-9_]+\.rs:[0-9]+([.-]+[0-9]+)?' \
+        -oe '[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\.rs:[0-9]+([.-]+[0-9]+)?' \
         . -g '*.rs' -g '!target/**' 2>/dev/null > $recs_f || true; \
     fail=0; \
     while IFS= read -r rec; do \
         [ -n "$rec" ] || continue; \
-        cite=$(printf '%s' "$rec" | grep -oE '[A-Za-z0-9_]+\.rs:[0-9]+([.-]+[0-9]+)?$' || true); \
+        cite=$(printf '%s' "$rec" | grep -oE '[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\.rs:[0-9]+([.-]+[0-9]+)?$' || true); \
         [ -n "$cite" ] || continue; \
         rest=${rec%:"$cite"}; \
         lineno=${rest##*:}; \
@@ -660,7 +689,10 @@ check-doc-citation-staleness-bare:
             case "$windowtext" in *"$cu"*) skip=1; break;; esac; \
         done; \
         [ "$skip" -eq 1 ] && continue; \
-        matches=$(find "$croot" -name "$base" 2>/dev/null); \
+        case "$base" in \
+            */*) matches=$(find "$croot" -path "*/$base" 2>/dev/null);; \
+            *)   matches=$(find "$croot" -name "$base" 2>/dev/null);; \
+        esac; \
         nmatch=$(printf '%s\n' "$matches" | grep -c . || true); \
         [ "$nmatch" -eq 1 ] || continue; \
         total=$(awk 'END{print NR}' "$matches"); \
