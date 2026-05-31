@@ -46,16 +46,28 @@ fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
 
     let res =
         emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded bin emit");
-    // Every bare-metal scaffolding file must land on disk.
-    assert!(res.main_rs.exists(), "emitted src/main.rs must exist");
-    assert!(res.cargo_toml.exists(), "emitted Cargo.toml must exist");
-    assert!(res.memory_x.exists(), "emitted memory.x must exist");
-    assert!(res.build_rs.exists(), "emitted build.rs must exist");
+    // A single-worker example emits exactly ONE bin at the root (no worker
+    // sub-dir) and NO multi-machine .resc (unchanged M10 shape).
+    assert_eq!(res.workers.len(), 1, "single-worker example must emit one bin");
     assert!(
-        res.cargo_config.exists(),
+        res.resc.is_none(),
+        "single-worker example must NOT emit a multi-machine .resc"
+    );
+    let one = &res.workers[0];
+    assert!(
+        one.worker_name.is_none(),
+        "single-worker bin must be emitted at root (worker_name None)"
+    );
+    // Every bare-metal scaffolding file must land on disk.
+    assert!(one.main_rs.exists(), "emitted src/main.rs must exist");
+    assert!(one.cargo_toml.exists(), "emitted Cargo.toml must exist");
+    assert!(one.memory_x.exists(), "emitted memory.x must exist");
+    assert!(one.build_rs.exists(), "emitted build.rs must exist");
+    assert!(
+        one.cargo_config.exists(),
         "emitted .cargo/config.toml must exist"
     );
-    std::fs::read_to_string(&res.main_rs).expect("read emitted main.rs")
+    std::fs::read_to_string(&one.main_rs).expect("read emitted main.rs")
 }
 
 #[test]
@@ -304,34 +316,143 @@ fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
     );
 }
 
-#[test]
-fn bin_rejects_multi_worker_with_m11_forward_link() {
-    // The M10 bin path (emit_bin) must reject multi-worker IDENTICALLY
-    // to the lib path — the single-worker guard is duplicated in
-    // emit_bin (it cannot share emit's, having a different return type),
-    // so pin both so a future edit to one cannot silently diverge
-    // (feedback-silent-sibling-defect).
+/// Lower the 02-split-add `split` (2-worker) schedule and emit the
+/// multi-MCU BINs into a scratch dir; return the [`crate::MultiBinEmitResult`].
+/// Mirrors `super::emit_example_multi` (same lowering opts) but drives the
+/// BIN path (`emit_bin`) — the M11 multi-MCU slice (TASK-0049.05).
+fn emit_bin_example_multi(
+    example: &str,
+    schedule_file: &str,
+    scratch_leaf: &str,
+) -> crate::MultiBinEmitResult {
     use crate::emit_bin;
-    use nucleus_compiler::event::{Event, FireBinding, IterTile, KernelId, WorkerId};
-    use std::collections::BTreeMap;
-    let bare_fire = || Event::Fire {
-        kernel: KernelId(0),
-        tile: IterTile::default(),
-        bindings: FireBinding::default(),
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(example);
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules").join(schedule_file)).expect("sched source");
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
+    );
+    let kernels = ex.join("kernels.rs");
+    let out = root
+        .join("nucleus/target/embedded-pattern-test-scratch")
+        .join(scratch_leaf);
+    let _ = std::fs::remove_dir_all(&out);
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-MCU bin emit")
+}
+
+#[test]
+fn multi_worker_bin_emits_one_firmware_per_mcu_with_real_uart_transport() {
+    // TASK-0049.05 (M11 BIN slice B): the formerly-rejecting multi-worker
+    // bin case now SUCCEEDS — one Renode-runnable firmware per worker with
+    // a CONCRETE inter-MCU UART-hub shim, plus a generated multi-machine
+    // .resc. This REPLACES the former rejection pin.
+    let res = emit_bin_example_multi("02-split-add", "split.sched.nuc", "split_multi_bin");
+
+    // Two bins, one per worker (host + w0), each nested under out_dir/<name>/.
+    assert_eq!(res.workers.len(), 2, "the 2-worker split schedule must emit two bins");
+    let mut names: Vec<&str> = res
+        .workers
+        .iter()
+        .map(|w| w.worker_name.as_deref().expect("multi-worker bin carries its name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["host", "w0"], "two bins named for the two workers");
+    for w in &res.workers {
+        let name = w.worker_name.as_deref().unwrap();
+        assert!(
+            w.project_dir.ends_with(name),
+            "worker `{name}` bin must be nested under out_dir/{name}/"
+        );
+        assert!(w.main_rs.exists() && w.cargo_toml.exists(), "scaffolding must exist");
+    }
+    let read = |name: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|w| w.worker_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("worker `{name}` bin missing"));
+        std::fs::read_to_string(&w.main_rs).expect("read worker main.rs")
     };
-    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    per_worker.insert(WorkerId(0), vec![bare_fire()]);
-    per_worker.insert(WorkerId(1), vec![bare_fire()]);
-    let names = crate::NameTables::default();
-    let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
-    let kernels = repo_root().join("nuc-nucleus/examples/01-elementwise-add/kernels.rs");
-    let out = repo_root().join("nucleus/target/embedded-pattern-test-scratch/reject_multi_bin");
-    let err = emit_bin(&per_worker, &names, &sidecar, &kernels, &out)
-        .expect_err("multi-worker bin must be rejected");
-    let msg = format!("{err}");
+    let host = read("host");
+    let w0 = read("w0");
+
+    // Both are Renode-runnable no_std firmwares with the MultiMcuShim.
+    for (name, src) in [("host", &host), ("w0", &w0)] {
+        assert!(src.contains("#![no_std]") && src.contains("#![no_main]"), "{name} no_std/no_main");
+        assert!(src.contains("#[entry]") && src.contains("#[panic_handler]"), "{name} entry/panic");
+        assert!(src.contains("struct MultiMcuShim"), "{name} must use MultiMcuShim:\n{src}");
+        assert!(src.contains("fn mmcu_link_base(seq: usize)"), "{name} must map seq->USART:\n{src}");
+        assert!(!src.contains("std::fs"), "{name} must not leak std");
+    }
+
+    // host: link_push a (seq0) + b (seq1) over the REAL transport hook
+    // (NOT dma_push — trap #1), link_recv c, dma_push(0) for the effectful
+    // save over USART1, alloc_in_region for the effectful load.
     assert!(
-        msg.contains("single-worker") && msg.contains("TASK-0049"),
-        "multi-worker bin rejection must forward-link M11 (TASK-0049): got {msg}"
+        host.contains("shim.link_push(0, a.as_ptr() as *const u8, core::mem::size_of_val(&a));"),
+        "host must link_push `a`:\n{host}"
+    );
+    assert!(
+        host.contains("shim.link_push(1, b.as_ptr() as *const u8, core::mem::size_of_val(&b));"),
+        "host must link_push `b`:\n{host}"
+    );
+    assert!(
+        host.contains("shim.link_recv(2, c.as_mut_ptr() as *mut u8, core::mem::size_of_val(&c));"),
+        "host must link_recv `c`:\n{host}"
+    );
+    assert!(
+        host.contains("shim.dma_push(0, c.as_ptr() as *const u8"),
+        "host effectful save must stay on the dma_push(0) USART1 stream:\n{host}"
+    );
+    assert!(
+        host.contains("shim.alloc_in_region("),
+        "host effectful load must use alloc_in_region:\n{host}"
+    );
+
+    // w0: link_recv a + b, computes, link_push c.
+    assert!(
+        w0.contains("shim.link_recv(0, a.as_mut_ptr() as *mut u8, core::mem::size_of_val(&a));")
+            && w0.contains("shim.link_recv(1, b.as_mut_ptr() as *mut u8, core::mem::size_of_val(&b));"),
+        "w0 must link_recv `a` + `b`:\n{w0}"
+    );
+    assert!(
+        w0.contains("shim.link_push(2, c.as_ptr() as *const u8, core::mem::size_of_val(&c));"),
+        "w0 must link_push `c`:\n{w0}"
+    );
+    assert!(
+        w0.contains("c[(i) as usize] = kernels::add(a[(i) as usize], b[(i) as usize]);"),
+        "w0 must lower the pure `add` compute:\n{w0}"
+    );
+
+    // The generated multi-machine .resc: one UARTHub, both workers
+    // connected on the SAME peer USART (single peer => one hub), the
+    // receivers-first boot order (w0 released before host), and the host's
+    // USART1 captured (it saves output) + axiSram injection (it loads).
+    let resc_path = res.resc.expect("multi-worker emit must generate a .resc");
+    let resc = std::fs::read_to_string(&resc_path).expect("read .resc");
+    assert!(resc.contains("CreateUARTHub \"link_host_w0\""), "must create the host<->w0 hub:\n{resc}");
+    assert!(
+        resc.matches("connector Connect usart2").count() == 2,
+        "both workers must Connect their usart2 to the hub:\n{resc}"
+    );
+    assert!(resc.contains("usart1 CreateFileBackend $uartFile true"), "host USART1 must be captured:\n{resc}");
+    assert!(resc.contains("sysbus LoadBinary $input 0x24000000"), "host input must inject to axiSram:\n{resc}");
+    assert!(resc.contains("sysbus LoadELF $hostBin") && resc.contains("sysbus LoadELF $w0Bin"), "both ELFs loaded:\n{resc}");
+    // Receivers-first: w0 (receives a/b before sending c) is released
+    // BEFORE host (the early sender) — the start-gating discipline.
+    let w0_release = resc.find("mach set \"w0\"\ncpu IsHalted false").expect("w0 release present");
+    let host_release = resc.find("mach set \"host\"\ncpu IsHalted false").expect("host release present");
+    assert!(
+        w0_release < host_release,
+        "receivers-first boot: w0 must be released before host:\n{resc}"
     );
 }
 
@@ -370,8 +491,10 @@ fn try_emit_bin_ex1_with_check(
         .join(scratch_leaf);
     let _ = std::fs::remove_dir_all(&out);
 
-    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out)
-        .map(|res| std::fs::read_to_string(&res.main_rs).expect("read emitted main.rs"))
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).map(|res| {
+        // ex1 is single-worker: exactly one bin at the root.
+        std::fs::read_to_string(&res.workers[0].main_rs).expect("read emitted main.rs")
+    })
 }
 
 #[test]

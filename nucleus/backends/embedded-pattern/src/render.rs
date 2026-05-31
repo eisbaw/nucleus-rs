@@ -307,18 +307,24 @@ fn render_event(
             writeln!(out, "{pad}}}").ok();
             Ok(())
         }
-        // Cross-worker transport (TASK-0049.04, M11 backend slice A).
-        // Lowered to the stub NucleusShim hooks; compile-only no-ops
-        // against StubShim (this slice is a real cross-compile, NOT a
-        // Renode run — see module docs). Channel/tag come STRAIGHT from
-        // the events: SeqTag is the dma channel id (a Push/Wait pair
-        // shares its `seq`), SyncTag is the irq_barrier tag — there is no
-        // channel allocator.
+        // Cross-worker transport (TASK-0049.04 LIB slice A; TASK-0049.05
+        // BIN slice B). Lowered to the DEDICATED transport hooks
+        // `link_push` / `link_recv` — DISTINCT from the effectful
+        // `dma_push` / `dma_wait` (which drain to a local peripheral) so a
+        // real multi-MCU shim can route inter-MCU transport and peripheral
+        // IO to different USARTs (TASK-0049.05 trap #1: on the host,
+        // `save_output` -> `dma_push(0)` and `Push a` -> `link_push(0)`
+        // would otherwise collide on one channel id). Channel/tag come
+        // STRAIGHT from the events: `SeqTag` is the transport channel id (a
+        // Push/Wait pair shares its `seq`); `SyncTag` is the barrier tag.
+        // The per-`seq` -> USART/hub physical mapping is the multi-MCU
+        // shim's job (`skeleton::render_multimcu_shim_src`), NOT a channel
+        // allocator here. Against the compile-only `StubShim` both link
+        // hooks no-op (a real cross-compile, not a Renode run — module docs).
         Event::Push { data, seq, .. } => {
-            // Drain the local data buffer to the peer over the DMA
-            // channel. Mirrors the effectful-save `dma_push` template
-            // (the data symbol is a fixed `[T; N]` local, sized by the
-            // run-body data decls; `collect_referenced_data` includes
+            // Send the local data buffer to the peer over transport channel
+            // `seq`. The data symbol is a fixed `[T; N]` local, sized by the
+            // run-body data decls (`collect_referenced_data` includes
             // Push/Wait data so the symbol is in scope).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
@@ -329,20 +335,22 @@ fn render_event(
             .ok();
             writeln!(
                 out,
-                "{pad}shim.dma_push({chan}, {name}.as_ptr() as *const u8, \
+                "{pad}shim.link_push({chan}, {name}.as_ptr() as *const u8, \
                  core::mem::size_of_val(&{name}));"
             )
             .ok();
             Ok(())
         }
         Event::Wait { data, seq, .. } => {
-            // Block until the peer's matching Push (same `seq`) lands in
-            // the receive buffer `name`. The receive local is declared
-            // zero-initialised by the run-body data decls (the StubShim
-            // no-ops dma_wait, so zero-init is correct for a compile-only
-            // slice — see module docs). We do NOT re-declare it here;
-            // declaring it at the top of `run` keeps a single home for
-            // every data symbol (loads, computes, and now Waits).
+            // Block until the peer's matching Push (same `seq`) lands, and
+            // RECEIVE the bytes INTO the local `name`. The receive local is
+            // declared zero-initialised by the run-body data decls; we pass
+            // it as a `*mut u8` + byte length so the concrete multi-MCU shim
+            // fills it (the `StubShim` no-ops the receive, so the local
+            // stays zero-filled — correct for the compile-only LIB slice;
+            // see module docs). We do NOT re-declare it here; declaring it
+            // at the top of `run` keeps a single home for every data symbol
+            // (loads, computes, and Waits).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
             writeln!(
@@ -350,21 +358,27 @@ fn render_event(
                 "{pad}// Wait for `{name}` (seq {chan}) from peer worker; receive into the local."
             )
             .ok();
-            writeln!(out, "{pad}shim.dma_wait({chan});").ok();
+            writeln!(
+                out,
+                "{pad}shim.link_recv({chan}, {name}.as_mut_ptr() as *mut u8, \
+                 core::mem::size_of_val(&{name}));"
+            )
+            .ok();
             Ok(())
         }
         Event::Sync { sync, .. } => {
             // Cross-worker control barrier -> the IRQ-completion barrier
-            // hook. The SyncTag is the stable cross-worker barrier
-            // identity (every participant carries the same tag), used
-            // verbatim as the irq_barrier tag.
+            // hook. The SyncTag is the stable cross-worker barrier identity
+            // (every participant carries the same tag), passed verbatim as a
+            // `u64` — NOT cast to `u32`, which would silently truncate a
+            // large tag (TASK-0049.05 trap #2).
             let tag = sync.0;
             writeln!(
                 out,
                 "{pad}// Cross-worker barrier (sync tag {tag}) -> irq_barrier."
             )
             .ok();
-            writeln!(out, "{pad}shim.irq_barrier({tag} as u32);").ok();
+            writeln!(out, "{pad}shim.irq_barrier({tag}_u64);").ok();
             Ok(())
         }
         Event::Alloc { .. } | Event::Free { .. } => Err(EmitError::UnsupportedFeature(

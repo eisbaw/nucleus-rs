@@ -1078,6 +1078,13 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
                     Ok(())
                 }
                 Some("stm32h7") => {
+                    // TASK-0049.05: emit_bin now returns ONE bin per used
+                    // worker (single-worker -> one at out_dir root, M10
+                    // shape; multi-worker -> one under out_dir/<worker>/
+                    // each, M11 multi-MCU) plus a generated multi-machine
+                    // .resc for the multi-worker case. Print every bin so a
+                    // caller (e.g. `just renode-multimcu`) can locate and
+                    // cross-compile + co-simulate each one.
                     let result = embedded_pattern::emit_bin(
                         &per_worker,
                         &names,
@@ -1087,12 +1094,22 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
                     )
                     .map_err(|e| format!("embedded-pattern (stm32h7 bin) codegen error: {e}"))?;
                     println!("nucleus: ok");
-                    println!("project_dir  = {}", result.project_dir.display());
-                    println!("cargo_toml   = {}", result.cargo_toml.display());
-                    println!("main_rs      = {}", result.main_rs.display());
-                    println!("memory_x     = {}", result.memory_x.display());
-                    println!("build_rs     = {}", result.build_rs.display());
-                    println!("cargo_config = {}", result.cargo_config.display());
+                    println!("worker_bins = {}", result.workers.len());
+                    for w in &result.workers {
+                        match &w.worker_name {
+                            Some(name) => println!("worker       = {name}"),
+                            None => println!("worker       = (single)"),
+                        }
+                        println!("project_dir  = {}", w.project_dir.display());
+                        println!("cargo_toml   = {}", w.cargo_toml.display());
+                        println!("main_rs      = {}", w.main_rs.display());
+                        println!("memory_x     = {}", w.memory_x.display());
+                        println!("build_rs     = {}", w.build_rs.display());
+                        println!("cargo_config = {}", w.cargo_config.display());
+                    }
+                    if let Some(resc) = &result.resc {
+                        println!("resc         = {}", resc.display());
+                    }
                     Ok(())
                 }
                 Some(other) => Err(format!(

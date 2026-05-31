@@ -239,7 +239,15 @@ impl NucleusShim for Usart1Shim {
         }
     }
     fn dma_wait(&mut self, _chan: usize) {}
-    fn irq_barrier(&mut self, _tag: u32) {}
+    // Cross-worker transport (M11 multi-MCU) is unreachable on the
+    // SINGLE-worker M10 bin path (examples 1/5/9 emit no Push/Wait), so
+    // the single-worker Usart1Shim no-ops link_push/link_recv. The
+    // multi-MCU bin emits a SEPARATE concrete shim (see
+    // `render_multimcu_shim_src`) whose link_* methods drive real USART
+    // TX/RX (TASK-0049.05).
+    fn link_push(&mut self, _seq: usize, _src: *const u8, _len: usize) {}
+    fn link_recv(&mut self, _seq: usize, _dst: *mut u8, _len: usize) {}
+    fn irq_barrier(&mut self, _tag: u64) {}
     fn monotonic_ns(&mut self) -> u64 {
         // Read SysTick's CVR (down-counter) + COUNTFLAG, accumulate the
         // ticks elapsed since the previous call, and convert to ns.

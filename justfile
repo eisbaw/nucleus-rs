@@ -1197,6 +1197,71 @@ renode-multimcu-uart-smoke:
         exit 1; \
     fi
 
+# Tier-3 M11 GENERATED multi-MCU firmware -> Renode co-sim -> reference.bin
+# diff (TASK-0049.05). Unlike renode-multimcu-uart-smoke (a hand-written
+# 2-MCU sentinel relay), this GENERATES one no_std firmware per worker of a
+# MULTI-worker schedule via the embedded-pattern bin-emit mode (`--shim
+# stm32h7`), cross-compiles each under .#embedded, and co-simulates them as
+# N STM32H7 machines wired by the GENERATED multimcu.resc under .#renode —
+# REAL inter-MCU UART-hub transport (link_push = USART TX, link_recv =
+# blocking USART RX), receivers-first start-gating. It captures the
+# output-worker's USART1 and `cmp`s it BYTE-EXACT against the example's
+# reference.bin (PRD §10.3 point 3 value-correctness, end-to-end across
+# real co-simulated MCUs).
+#
+# PARAMETERISED (PRD §12.3): positional EX (example dir) + SCHED (schedule
+# stem under schedules/), defaulting to the proven 02-split-add/split
+# (host+w0). The worker bin var names ($<worker>Bin) are derived from the
+# generated per-worker project dirs, so the recipe is worker-name-agnostic.
+#   just renode-multimcu                      # 02-split-add/split (default)
+#   just renode-multimcu 02-split-add split   # explicit
+#
+# Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
+# `just ci` — same tier-3-outside-default-ci rule as renode-embedded /
+# renode-multimcu-uart-smoke (needs the .#embedded + .#renode shells).
+renode-multimcu EX="02-split-add" SCHED="split":
+    @echo "tier-3 M11 GENERATED multi-MCU {{EX}}/{{SCHED}} -> Renode co-sim -> reference.bin diff (TASK-0049.05)"
+    @set -eu; \
+    exdir="$(pwd)/nuc-nucleus/examples/{{EX}}"; \
+    input="$exdir/input.bin"; reference="$exdir/reference.bin"; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    echo "=== generating multi-MCU bins (embedded-pattern --shim stm32h7) ==="; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    ./target/release/nucleus build \
+        --algo "$exdir/prog.algo.nuc" \
+        --sched "$exdir/schedules/{{SCHED}}.sched.nuc" \
+        --backend embedded-pattern --shim stm32h7 \
+        --out "$gen"; \
+    cd ..; \
+    binargs=""; \
+    for wdir in "$gen"/*/; do \
+        w="$(basename "$wdir")"; \
+        echo "=== cross-compiling worker $w (.#embedded) ==="; \
+        nix develop .#embedded --command bash -c "cd '$wdir' && cargo build --release --quiet"; \
+        elf="$wdir/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
+        if [ ! -f "$elf" ]; then echo "FAIL: worker $w ELF not produced: $elf"; exit 1; fi; \
+        binargs="$binargs -e \$${w}Bin=@$elf"; \
+    done; \
+    echo "=== running multi-MCU co-sim in Renode (.#renode), capturing output USART1 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        $binargs -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$gen/multimcu.resc" >"$log" 2>&1; \
+    captured="$(wc -c < "$out")"; expected="$(wc -c < "$reference")"; \
+    echo "=== captured $captured bytes over USART1 (reference.bin is $expected bytes) ==="; \
+    if [ "$captured" -ne "$expected" ]; then \
+        echo "FAIL: captured $captured bytes, expected exactly $expected (reference.bin). The co-sim did not stream the full output region."; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi; \
+    if cmp -s "$out" "$reference"; then \
+        echo "OK: multi-MCU co-sim USART1 output is BYTE-EXACT identical to reference.bin ($expected bytes) — M11 {{EX}}/{{SCHED}} value-correctness verified (PRD §10.3 point 3)."; \
+    else \
+        echo "FAIL: captured USART1 output differs from reference.bin (first differing byte):"; \
+        cmp "$out" "$reference" || true; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
 # generalisation to examples 1/5/9). Unlike `renode-uart-smoke` (a hand-

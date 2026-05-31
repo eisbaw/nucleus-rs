@@ -177,6 +177,8 @@ fn ex01_emits_no_std_lib_with_shim_and_pure_add() {
         "fn alloc_in_region",
         "fn dma_push",
         "fn dma_wait",
+        "fn link_push",
+        "fn link_recv",
         "fn irq_barrier",
         "fn monotonic_ns",
         "fn report_violation",
@@ -340,30 +342,38 @@ fn multi_worker_lib_emits_one_project_per_worker_with_transport_hooks() {
     let host = read("host");
     let w0 = read("w0");
 
-    // --- AC#2: Push/Wait/Sync lower to the stub-shim hooks. ---
-    // host loads a + b then PUSHES them to w0; the Push lowers to
-    // dma_push with the data-ptr template (mirrors the save->dma_push).
+    // --- AC#2: Push/Wait/Sync lower to the cross-worker transport hooks. ---
+    // host loads a + b then PUSHES them to w0; the Push lowers to the
+    // DEDICATED `link_push` transport hook (TASK-0049.05 trap #1: distinct
+    // from the effectful `dma_push(0)` save so a real shim routes them to
+    // different USARTs).
     assert!(
-        host.contains("shim.dma_push(0, a.as_ptr() as *const u8, core::mem::size_of_val(&a));"),
-        "host must Push `a` via dma_push (data-ptr template):\n{host}"
+        host.contains("shim.link_push(0, a.as_ptr() as *const u8, core::mem::size_of_val(&a));"),
+        "host must Push `a` via link_push (transport hook):\n{host}"
     );
     assert!(
-        host.contains("shim.dma_push(1, b.as_ptr() as *const u8, core::mem::size_of_val(&b));"),
-        "host must Push `b` via dma_push:\n{host}"
+        host.contains("shim.link_push(1, b.as_ptr() as *const u8, core::mem::size_of_val(&b));"),
+        "host must Push `b` via link_push:\n{host}"
     );
-    // host WAITs for the computed `c` back from w0.
+    // host WAITs for the computed `c` back from w0 — `link_recv` FILLS the
+    // receive local (mut-ptr + byte length).
     assert!(
-        host.contains("shim.dma_wait(2);"),
-        "host must Wait (dma_wait) for `c` on its Push/Wait seq:\n{host}"
+        host.contains(
+            "shim.link_recv(2, c.as_mut_ptr() as *mut u8, core::mem::size_of_val(&c));"
+        ),
+        "host must Wait (link_recv, filling `c`) on its transport seq:\n{host}"
     );
     // w0 WAITs for a + b, computes, then PUSHES c back.
     assert!(
-        w0.contains("shim.dma_wait(0);") && w0.contains("shim.dma_wait(1);"),
-        "w0 must Wait (dma_wait) for both `a` and `b`:\n{w0}"
+        w0.contains("shim.link_recv(0, a.as_mut_ptr() as *mut u8, core::mem::size_of_val(&a));")
+            && w0.contains(
+                "shim.link_recv(1, b.as_mut_ptr() as *mut u8, core::mem::size_of_val(&b));"
+            ),
+        "w0 must Wait (link_recv, filling `a` + `b`) for both inputs:\n{w0}"
     );
     assert!(
-        w0.contains("shim.dma_push(2, c.as_ptr() as *const u8, core::mem::size_of_val(&c));"),
-        "w0 must Push the computed `c` back via dma_push:\n{w0}"
+        w0.contains("shim.link_push(2, c.as_ptr() as *const u8, core::mem::size_of_val(&c));"),
+        "w0 must Push the computed `c` back via link_push:\n{w0}"
     );
     // The compute Fire still lowers on the worker that owns it (w0).
     assert!(
@@ -490,10 +500,11 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
     );
 
     // --- cross-worker transport: dsp Waits its inputs and Pushes its
-    //     outputs over the stub-shim hooks (the inter-MCU transport). ---
+    //     outputs over the DEDICATED transport hooks (link_recv/link_push,
+    //     distinct from the effectful dma_* — TASK-0049.05 trap #1). ---
     assert!(
-        dsp.contains("shim.dma_wait(") && dsp.contains("shim.dma_push("),
-        "dsp must lower its cross-worker Wait/Push to the stub-shim hooks:\n{dsp}"
+        dsp.contains("shim.link_recv(") && dsp.contains("shim.link_push("),
+        "dsp must lower its cross-worker Wait/Push to the link_recv/link_push hooks:\n{dsp}"
     );
 
     // --- producer-side transport: fe (mic_in) and rf (bt_in) must Push
@@ -502,9 +513,9 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
     for name in ["fe", "rf"] {
         let src = read(name);
         assert!(
-            src.contains("shim.dma_push("),
+            src.contains("shim.link_push("),
             "producer worker `{name}` must Push its captured data over the \
-             stub-shim hook:\n{src}"
+             link_push transport hook:\n{src}"
         );
     }
 

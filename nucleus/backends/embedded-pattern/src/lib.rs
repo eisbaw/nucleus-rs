@@ -69,27 +69,36 @@
 //! args materialise alloc-free via `try_into` instead of `to_vec` —
 //! TASK-0049.06).
 //!
-//! # Scope: LIB path is multi-worker (M11 slice A); BIN path is still single-worker
+//! # Scope: both LIB and BIN paths are multi-worker (M11)
 //!
 //! The lowering handles single-`host` naive schedules generally, and —
 //! since TASK-0049.04 (M11 backend slice A) — the LIB path
 //! ([`emit`]) ALSO handles multi-worker schedules: one `no_std` lib
 //! project is emitted PER used worker (`out_dir/<worker_name>/`), and
-//! the cross-worker `Push` / `Wait` / `Sync` events lower to the stub
-//! `skeleton::NucleusShim` hooks (`dma_push` / `dma_wait` /
+//! the cross-worker `Push` / `Wait` / `Sync` events lower to the
+//! `skeleton::NucleusShim` transport hooks (`link_push` / `link_recv` /
 //! `irq_barrier`). A single-worker schedule still emits ONE project at
 //! `out_dir` root (unchanged observable output — `check-embedded`
 //! examples 1 + 5 are byte-stable). The M9 compile-only acceptance set
 //! (`check-embedded`) is examples 1 and 5; the M10 bin runtime set
 //! (`renode-embedded`) is examples 1, 5, and 9 (TASK-0048.03).
 //!
-//! The BIN path ([`emit_bin`]) is STILL single-worker: the multi-MCU
-//! BIN + Renode multi-machine `.resc` + real UART-hub transport shim is
-//! the NEXT slice (TASK-0049.05), so `emit_bin` RETAINS its
-//! multi-worker rejection (lifting it without that machinery would emit
-//! broken firmware). `Alloc` / `Free` (explicit region management) do
-//! not occur in the schedules this backend admits and are still
-//! rejected with a forward link.
+//! The BIN path ([`emit_bin`]) is ALSO multi-worker since TASK-0049.05
+//! (M11 backend slice B): a single-worker schedule emits ONE bin at
+//! `out_dir` root with the `Usart1Shim` (UNCHANGED M10 shape), while a
+//! multi-worker schedule emits one bin per worker under
+//! `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (real inter-MCU
+//! UART-hub transport: `link_push` -> USART TX, `link_recv` -> blocking
+//! USART RX), PLUS a generated multi-machine `out_dir/multimcu.resc`
+//! wiring the bins on a `UARTHub` per worker-pair (see [`multimcu`]). The
+//! per-worker effectful IO (`save_output` raw USART1 stream,
+//! `load_input` from the injected axiSram region) stays on its OWN
+//! channel namespace (`dma_push(0)` / `alloc_in_region`), DISJOINT from
+//! the cross-worker `link_*` transport, so a real shim routes peripheral
+//! IO and inter-MCU transport to different USARTs (TASK-0049.05 trap #1).
+//! `Alloc` / `Free` (explicit region management) do not occur in the
+//! schedules this backend admits and are still rejected with a forward
+//! link.
 //!
 //! ## What the LIB-path multi-worker lowering is, and is NOT
 //!
@@ -137,6 +146,7 @@ use nucleus_compiler::event::{Event, FireBinding, KernelId, ViolationKind, Worke
 use nucleus_compiler::sidecar::NameSidecar;
 
 mod kernel_extract;
+mod multimcu;
 mod render;
 mod skeleton;
 
@@ -192,7 +202,13 @@ pub struct MultiEmitResult {
 /// `.cargo/config.toml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinEmitResult {
-    /// The generated Cargo project root (== input `out_dir`).
+    /// The worker this bin was emitted for. `None` for a single-worker
+    /// schedule (emitted at `out_dir` root, unchanged M10 shape);
+    /// `Some(name)` for a multi-worker schedule (one bin per worker under
+    /// `out_dir/<name>/`, M11 TASK-0049.05).
+    pub worker_name: Option<String>,
+    /// The generated Cargo project root (`out_dir` for the single worker,
+    /// `out_dir/<worker_name>` for a multi-worker schedule).
     pub project_dir: PathBuf,
     /// Path to the emitted `Cargo.toml` (with `[[bin]]` + cortex-m-rt).
     pub cargo_toml: PathBuf,
@@ -204,6 +220,21 @@ pub struct BinEmitResult {
     pub build_rs: PathBuf,
     /// Path to the emitted `.cargo/config.toml`.
     pub cargo_config: PathBuf,
+}
+
+/// The full result of [`emit_bin`]: one [`BinEmitResult`] per USED worker,
+/// plus the generated multi-machine Renode `.resc` for a multi-worker
+/// schedule (TASK-0049.05, M11 BIN slice B). A single-worker schedule
+/// yields exactly one bin (at `out_dir` root) and `resc: None` (the
+/// single-machine `tests/renode/embedded/run.resc` already covers it); a
+/// multi-worker schedule yields one bin per worker under
+/// `out_dir/<worker>/` plus `out_dir/multimcu.resc` wiring them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiBinEmitResult {
+    /// One bin per used worker, in deterministic worker-id order.
+    pub workers: Vec<BinEmitResult>,
+    /// Path to the generated multi-machine `.resc` (multi-worker only).
+    pub resc: Option<PathBuf>,
 }
 
 /// Emit one `no_std` lib project per USED worker from the per-worker
@@ -343,8 +374,9 @@ fn emit_one_worker_lib(
     })
 }
 
-/// Emit a Renode-runnable `no_std` BIN project from the per-worker
-/// EventList (M10, TASK-0048.01 — the lib->bin transition).
+/// Emit one Renode-runnable `no_std` BIN project per used worker from the
+/// per-worker EventList (M10 single-worker, TASK-0048.01; M11 multi-MCU,
+/// TASK-0049.05).
 ///
 /// ADDITIVE: this is a SEPARATE entry point from [`emit`]. The driver
 /// dispatches here when `--shim stm32h7` is passed; the bare `--backend
@@ -352,63 +384,51 @@ fn emit_one_worker_lib(
 /// unchanged M9 compile-only lib path). The two share the SAME lowering
 /// (`render_run_body` + verbatim kernel extraction); the bin adds the
 /// bare-metal scaffolding (cortex-m-rt entry, panic handler, linker
-/// script, USART1 streaming shim).
+/// script, USART shim).
 ///
 /// Wire contract is IDENTICAL to [`emit`] (no `&ACFG` / `&LinkedIR`).
-/// The single-worker / no-block / no-check-frame rejections are reused
-/// via `render_run_body`, so an unsupported schedule fails loud with
-/// the same typed [`EmitError`] here as on the lib path.
+/// The no-block / no-check-frame rejections are reused via
+/// `render_run_body`, so an unsupported schedule fails loud with the same
+/// typed [`EmitError`] here as on the lib path.
 ///
-/// SCOPE (TASK-0048.01/.02/.03): the PRD §11 M10 single-worker naive
-/// set — example 1 (01-elementwise-add), example 5 (05-stencil, 2D
-/// blur3), example 9 (09-producer-consumer, two-stage produce/transform
-/// pipe). The firmware loads REAL input from the Renode-injected region
-/// (axiSram @ 0x2400_0000), computes the example's kernels, and streams
-/// the RAW output bytes over USART1; the `renode-embedded` recipe
-/// (parameterised over the example dir as a positional arg) `cmp`s the
-/// captured bytes BYTE-EXACT against the example's `reference.bin` (PRD §10.3 point 3
-/// value-correctness). Nothing here is example-specific — the lowering
-/// reads the EventList — so generalising across the set was recipe
-/// parameterisation only. See `skeleton::USART1_SHIM_SRC` for the
-/// input-region / streaming mechanism.
+/// SINGLE-WORKER SCOPE (TASK-0048.01/.02/.03): the PRD §11 M10 naive set —
+/// example 1 (01-elementwise-add), example 5 (05-stencil, 2D blur3),
+/// example 9 (09-producer-consumer). One bin at `out_dir` root with the
+/// `Usart1Shim`: loads REAL input from the Renode-injected region (axiSram
+/// @ 0x2400_0000), computes, streams the RAW output bytes over USART1; the
+/// `renode-embedded` recipe `cmp`s the captured bytes BYTE-EXACT against
+/// `reference.bin` (PRD §10.3 point 3). See `skeleton::USART1_SHIM_SRC`.
+///
+/// MULTI-WORKER SCOPE (TASK-0049.05): one bin per worker under
+/// `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (`link_push` ->
+/// USART TX, `link_recv` -> blocking USART RX), wired by the
+/// [`multimcu::TransportPlan`] (one `UARTHub` per worker-pair, receivers-
+/// first boot order), PLUS a generated `out_dir/multimcu.resc`. The
+/// `renode-multimcu` recipe co-simulates the bins and `cmp`s the
+/// output-capture worker's USART1 against `reference.bin`. Value-
+/// correctness is proven for the 02-split-add 2-MCU schedule; ex14 stays
+/// gated on TASK-0049.02 (stateful per-frame kernels).
 pub fn emit_bin(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_rs_path: &Path,
     out_dir: &Path,
-) -> Result<BinEmitResult, EmitError> {
-    // The BIN path is STILL single-worker. The LIB path ([`emit`])
-    // lifted this guard in TASK-0049.04 (M11 slice A: N compile-only
-    // libs + stub-shim Push/Wait/Sync), but the multi-MCU BIN + Renode
-    // multi-machine `.resc` + real UART-hub transport shim is the NEXT
-    // slice (TASK-0049.05). Lifting THIS guard without that machinery
-    // would emit broken firmware (N bins with no inter-MCU wiring), so
-    // it is RETAINED — deliberately diverging from `emit`'s lifted guard
-    // (the divergence is pinned by `bin_rejects_multi_worker_*` in
-    // tests/bin_shape.rs so a future edit cannot silently re-unify them).
+) -> Result<MultiBinEmitResult, EmitError> {
+    // The BIN path is now MULTI-worker (TASK-0049.05 lifted the M10
+    // single-worker guard). A single-worker schedule emits ONE bin at
+    // `out_dir` root with the `Usart1Shim` (UNCHANGED M10 shape — examples
+    // 1/5/9 byte-stable); a multi-worker schedule emits one bin per worker
+    // under `out_dir/<worker>/` with the concrete `MultiMcuShim` (real
+    // inter-MCU UART-hub transport) PLUS a generated multi-machine
+    // `out_dir/multimcu.resc` wiring them. The N-projects layout MIRRORS
+    // [`emit`] (the LIB path); the per-worker / `.resc` wiring is the
+    // [`multimcu::TransportPlan`].
     let used_workers: Vec<WorkerId> = per_worker
         .iter()
         .filter(|(_, evs)| !evs.is_empty())
         .map(|(w, _)| *w)
         .collect();
-    if used_workers.len() > 1 {
-        return Err(EmitError::UnsupportedFeature(format!(
-            "embedded-pattern (M10 bin) is single-worker; this schedule \
-             uses {} workers. The multi-MCU BIN + Renode multi-machine \
-             .resc + UART-hub transport shim is M11 backend slice B — \
-             TASK-0049.05. (The compile-only multi-worker LIB path landed \
-             in TASK-0049.04; use the bare `--backend embedded-pattern` \
-             lib emit for that.)",
-            used_workers.len()
-        )));
-    }
-
-    let events: &[Event] = used_workers
-        .first()
-        .and_then(|w| per_worker.get(w))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
 
     let kernels_src =
         fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
@@ -416,30 +436,117 @@ pub fn emit_bin(
             source: e,
         })?;
 
-    // The `on_violation=count` check loops drive (a) module-scope
-    // AtomicU32 statics and (b) the per-loop summary emitted over USART1
-    // after `run(&mut shim)` returns and before the `loop {}` spin — the
-    // bare-metal program-exit equivalent of the tier-1 Drop-guard summary
-    // (TASK-0048.08).
+    let multi_worker = used_workers.len() > 1;
+    // Build the transport plan up front for the multi-worker case; it is
+    // the SINGLE source of truth shared by both the per-worker shim codegen
+    // and the generated `.resc` (so the wiring cannot drift).
+    let plan = if multi_worker {
+        Some(multimcu::TransportPlan::build(per_worker, names)?)
+    } else {
+        None
+    };
+
+    let mut results = Vec::with_capacity(used_workers.len().max(1));
+
+    if used_workers.is_empty() {
+        // Degenerate (no firing): emit one empty-body single-worker bin at
+        // the root, preserving the historical single-worker behaviour.
+        results.push(emit_one_worker_bin(
+            &[], names, sidecar, &kernels_src, out_dir, None, None,
+        )?);
+        return Ok(MultiBinEmitResult {
+            workers: results,
+            resc: None,
+        });
+    }
+
+    for w in &used_workers {
+        let events: &[Event] = per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]);
+        let (project_dir, worker_name) = if multi_worker {
+            let name = names.worker.get(w).cloned().ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "worker id {w:?} has an event list but no name in NameTables; \
+                     the embedded multi-MCU bin names per-worker project \
+                     directories from NameTables (TASK-0049.05)"
+                ))
+            })?;
+            (out_dir.join(&name), Some(name))
+        } else {
+            (out_dir.to_path_buf(), None)
+        };
+        let wplan = plan.as_ref().map(|p| {
+            p.workers
+                .get(w)
+                .expect("TransportPlan covers every used worker")
+        });
+        results.push(emit_one_worker_bin(
+            events,
+            names,
+            sidecar,
+            &kernels_src,
+            &project_dir,
+            worker_name,
+            wplan,
+        )?);
+    }
+
+    // Multi-worker: emit the multi-machine Renode `.resc` wiring the bins.
+    let resc = if let Some(p) = &plan {
+        let resc_src = multimcu::render_multimachine_resc(p);
+        let resc_path = out_dir.join("multimcu.resc");
+        write_file(&resc_path, &resc_src)?;
+        Some(resc_path)
+    } else {
+        None
+    };
+
+    Ok(MultiBinEmitResult {
+        workers: results,
+        resc,
+    })
+}
+
+/// Emit ONE worker's Renode-runnable `no_std` BIN project into
+/// `project_dir`. Shared by the single- and multi-worker arms of
+/// [`emit_bin`]. `wplan` is `None` for a single-worker schedule (uses the
+/// M10 `Usart1Shim` via [`render_main_rs`]) and `Some` for a multi-worker
+/// schedule (uses the concrete `MultiMcuShim` with this worker's transport
+/// plan, via [`render_multimcu_main_rs`]). The bare-metal scaffolding
+/// (`Cargo.toml` / `memory.x` / `build.rs` / `.cargo/config.toml`) is
+/// IDENTICAL for both — only the `main.rs` shim differs.
+#[allow(clippy::too_many_arguments)]
+fn emit_one_worker_bin(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_src: &str,
+    project_dir: &Path,
+    worker_name: Option<String>,
+    wplan: Option<&multimcu::WorkerPlan>,
+) -> Result<BinEmitResult, EmitError> {
     let count_loops = collect_count_check_loops(events);
+    let main_src = match wplan {
+        Some(plan) => {
+            render_multimcu_main_rs(events, names, sidecar, kernels_src, &count_loops, plan)?
+        }
+        None => render_main_rs(events, names, sidecar, kernels_src, &count_loops)?,
+    };
 
-    let main_src = render_main_rs(events, names, sidecar, &kernels_src, &count_loops)?;
-
-    let src_dir = out_dir.join("src");
+    let src_dir = project_dir.join("src");
     fs::create_dir_all(&src_dir).map_err(|e| EmitError::OutputCreateFailed {
         path: src_dir.clone(),
         source: e,
     })?;
-    let cargo_dir = out_dir.join(".cargo");
+    let cargo_dir = project_dir.join(".cargo");
     fs::create_dir_all(&cargo_dir).map_err(|e| EmitError::OutputCreateFailed {
         path: cargo_dir.clone(),
         source: e,
     })?;
 
-    let cargo_toml = out_dir.join("Cargo.toml");
+    let cargo_toml = project_dir.join("Cargo.toml");
     let main_rs = src_dir.join("main.rs");
-    let memory_x = out_dir.join("memory.x");
-    let build_rs = out_dir.join("build.rs");
+    let memory_x = project_dir.join("memory.x");
+    let build_rs = project_dir.join("build.rs");
     let cargo_config = cargo_dir.join("config.toml");
 
     write_file(&cargo_toml, &skeleton::render_bin_cargo_toml())?;
@@ -449,7 +556,8 @@ pub fn emit_bin(
     write_file(&cargo_config, &skeleton::render_cargo_config())?;
 
     Ok(BinEmitResult {
-        project_dir: out_dir.to_path_buf(),
+        worker_name,
+        project_dir: project_dir.to_path_buf(),
         cargo_toml,
         main_rs,
         memory_x,
@@ -499,6 +607,36 @@ fn render_main_rs(
         })
         .collect();
     Ok(skeleton::render_bin_main(
+        &kernel_defs,
+        &run_body,
+        &summaries,
+    ))
+}
+
+/// Render ONE worker's multi-MCU Renode-runnable `no_std` BIN source
+/// (TASK-0049.05). Same shared kernel extraction + `run<S>` body lowering
+/// as [`render_main_rs`] (via [`lower_kernels_and_run`]), but assembled
+/// around the concrete `MultiMcuShim` (real inter-MCU UART transport,
+/// wired per `wplan`) instead of the single-worker `Usart1Shim`.
+fn render_multimcu_main_rs(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_src: &str,
+    count_loops: &[CountCheckLoop],
+    wplan: &multimcu::WorkerPlan,
+) -> Result<String, EmitError> {
+    let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
+    let summaries: Vec<skeleton::CountSummary> = count_loops
+        .iter()
+        .map(|c| skeleton::CountSummary {
+            ident: c.ident.clone(),
+            loop_var: c.loop_var.clone(),
+            latency_max_ns: c.latency_max_ns,
+        })
+        .collect();
+    Ok(skeleton::render_multimcu_bin_main(
+        wplan,
         &kernel_defs,
         &run_body,
         &summaries,

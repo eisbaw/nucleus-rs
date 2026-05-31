@@ -25,6 +25,9 @@
 mod bin;
 pub use bin::*;
 
+mod multimcu;
+pub use multimcu::*;
+
 /// The `NucleusShim` trait + `StubShim` impl emitted verbatim into
 /// every generated lib (AC#2 / AC#3). Held as a constant so the test
 /// suite can pin its exact shape and the M10 shim author has one
@@ -64,10 +67,31 @@ pub trait NucleusShim {
     fn dma_push(&mut self, chan: usize, src: *const u8, len: usize);
     /// Block until DMA channel `chan` has completed.
     fn dma_wait(&mut self, chan: usize);
+    /// Send `len` bytes from `src` to the PEER worker on cross-worker
+    /// transport channel `seq` (M11 multi-MCU, TASK-0049.05). DISTINCT
+    /// from [`Self::dma_push`]: `dma_push` drains a buffer to a local
+    /// PERIPHERAL (the effectful `save_output` USART stream, channel 0),
+    /// whereas `link_push` crosses the inter-MCU link to another worker
+    /// keyed by the schedule's `SeqTag`. Keeping the two namespaces
+    /// separate is load-bearing: on the host, `save_output` (`dma_push(0)`)
+    /// and `Push a` (`link_push(0)`) would otherwise collide on a single
+    /// channel id and a real shim could not route them to different USARTs.
+    fn link_push(&mut self, seq: usize, src: *const u8, len: usize);
+    /// Receive `len` bytes from the peer worker on cross-worker transport
+    /// channel `seq` into `dst` (M11 multi-MCU, TASK-0049.05). Blocks
+    /// until the peer's matching [`Self::link_push`] (same `seq`) has
+    /// delivered the bytes. The `StubShim` no-ops it (the receive buffer
+    /// stays zero-filled — honest for the compile-only LIB path); the
+    /// concrete multi-MCU shim polls the channel's USART RX and fills
+    /// `dst`.
+    fn link_recv(&mut self, seq: usize, dst: *mut u8, len: usize);
     /// An IRQ-completion control barrier identified by `tag`. Unused by
     /// the single-worker examples 1 + 5 (no `Event::Sync` in a naive
-    /// schedule); declared for the M10/M11 multi-MCU barrier surface.
-    fn irq_barrier(&mut self, tag: u32);
+    /// schedule); declared for the M10/M11 multi-MCU barrier surface. The
+    /// tag is `u64` (the full `SyncTag` width) — NOT `u32` — so a large
+    /// barrier tag cannot silently truncate at the lowering boundary
+    /// (TASK-0049.05 trap #2).
+    fn irq_barrier(&mut self, tag: u64);
     /// The tier-3 backend-specified monotonic clock (PRD \u{00A7}6.3.5).
     /// Returns a nanosecond reading that increases monotonically across
     /// calls. `check loop V : latency_max=T` lowers to
@@ -106,7 +130,9 @@ impl NucleusShim for StubShim {
     }
     fn dma_push(&mut self, _chan: usize, _src: *const u8, _len: usize) {}
     fn dma_wait(&mut self, _chan: usize) {}
-    fn irq_barrier(&mut self, _tag: u32) {}
+    fn link_push(&mut self, _seq: usize, _src: *const u8, _len: usize) {}
+    fn link_recv(&mut self, _seq: usize, _dst: *mut u8, _len: usize) {}
+    fn irq_barrier(&mut self, _tag: u64) {}
     fn monotonic_ns(&mut self) -> u64 {
         0
     }
@@ -261,14 +287,19 @@ mod tests {
     }
 
     #[test]
-    fn shim_trait_declares_all_six_methods() {
-        // The six shim methods are present in the canonical trait source:
-        // the four M9 methods + the two M10 TASK-0048.04 tier-3 methods
-        // (monotonic_ns clock + report_violation log sink).
+    fn shim_trait_declares_all_methods() {
+        // The canonical trait source declares: the four M9 methods, the two
+        // M10 TASK-0048.04 tier-3 methods (monotonic_ns clock +
+        // report_violation log sink), and the two M11 TASK-0049.05
+        // cross-worker transport methods (link_push / link_recv — distinct
+        // from the effectful dma_push/dma_wait so a real multi-MCU shim can
+        // route peripheral IO and inter-MCU transport to different USARTs).
         for m in [
             "fn alloc_in_region",
             "fn dma_push",
             "fn dma_wait",
+            "fn link_push",
+            "fn link_recv",
             "fn irq_barrier",
             "fn monotonic_ns",
             "fn report_violation",
