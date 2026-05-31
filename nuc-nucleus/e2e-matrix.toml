@@ -3482,3 +3482,106 @@ example  = "01-elementwise-add"
 schedule = "check_count"
 backend  = "mp-uds-event"
 stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+# --- TASK-0387: tier-1 fault-path differential (check_log) -------------
+#
+# Sibling of check_count above. `on_violation = log` exercises a DISTINCT
+# emit path (the inline per-iteration log branch
+# backend-common/src/check_frame.rs::emit_log_branch) from the count path
+# (count branch + Drop-guard reporter), so it is genuinely additional
+# coverage, not a duplicate. check_log.sched.nuc = naive +
+# `check loop i : latency_max = 1ns, on_violation = log`. The log branch
+# prints ONE stderr line PER violating iteration:
+#   warning: check loop `i` violated latency_max=1 ns: iteration took <N> ns
+# (verified: all 7 backends emit 256 such lines, output.bin BIT-IDENTICAL,
+# cycle-222). The per-line elapsed `<N> ns` is timing-derived and even
+# LESS pinnable than count's single Drop summary; the `[[fault_assert]]`
+# pins ONLY the timing-INDEPENDENT line PREFIX up to (excluding) the ns —
+# `... iteration took ` — never the elapsed value (TASK-0387 honest scope).
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# Fault-report stderr assertions for the check_log cells. The substring is
+# the timing-INDEPENDENT line PREFIX (loop-var `i` + threshold `1 ns` + the
+# literal "iteration took "); the per-line elapsed ns is NOT pinned.
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "pthreads-sync"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-bufsync"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "pthreads-async"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-event"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "openmp-rs"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-tcp-poll"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_log"
+backend  = "mp-uds-event"
+stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]

@@ -1,0 +1,45 @@
+// Tier-1 check-loop LOG differential fixture (TASK-0387) — sibling of
+// check_count.sched.nuc (TASK-0369).
+//
+// `on_violation = log` exercises a DISTINCT codegen path from
+// `on_violation = count`: the inline per-iteration log branch
+// (nucleus/backend-common/src/check_frame.rs::emit_log_branch) rather
+// than the count branch + Drop-guard reporter. check_count covered the
+// count path; this covers the log path, which otherwise has ZERO tier-1
+// cross-backend coverage (it appeared only in the tier-3 embedded_check
+// fixture).
+//
+// WHAT FIRES: latency_max = 1ns guarantees each `i` iteration that does
+// any measurable work violates, so the inline branch prints ONE line to
+// STDERR per violating iteration:
+//
+//     warning: check loop `i` violated latency_max=1 ns: iteration took <N> ns
+//
+// stderr is deliberate (PRD §6.3.5): output.bin stays bit-identical to
+// reference.bin regardless of the check loop.
+//
+// WHAT IS PINNED (and why only this): the per-line elapsed `<N> ns` is
+// `_check_elapsed = monotonic_ns().wrapping_sub(start)` — fully timing-
+// derived and NON-deterministic across backends/runs. The log path is
+// in fact LESS pinnable than count (count's Drop summary is one line; log
+// emits one DIFFERING-ns line per violation). The genuinely timing-
+// INDEPENDENT invariant is the line PREFIX up to (but excluding) the ns:
+//   warning: check loop `i` violated latency_max=1 ns: iteration took
+// The e2e harness `[[fault_assert]]` table pins exactly that prefix
+// across the tier-1 backends, and explicitly NOT the elapsed ns value
+// (TASK-0387, same AC#3 honest-scoping as TASK-0369).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    // Real-time assertion: one iteration of the `i` loop must take
+    // ≤ latency_max; on violation, log a stderr line (do NOT panic).
+    // latency_max = 1ns guarantees the violation FIRES so the log
+    // fault path is exercised end-to-end on tier-1.
+    check loop i : latency_max = 1ns, on_violation = log;
+}
