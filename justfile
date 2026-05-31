@@ -516,14 +516,15 @@ check-doc-citation-staleness:
         [ -n "$cite" ] || continue; \
         path=${cite%%:*}; \
         lines=${cite#*:}; \
-        maxl=$(printf '%s' "$lines" | sed 's/\.\./ /; s/-/ /' | awk '{print $NF}'); \
+        maxl=$(printf '%s' "$lines" | grep -oE '[0-9]+$' || true); \
+        case "$maxl" in ''|*[!0-9]*) echo "  WARN (unparseable line range, not checked): $cite"; continue;; esac; \
         if [ ! -f "$path" ]; then \
             echo "  STALE (no such file): $cite"; \
             echo "    -> the cited file does not exist (likely split into a directory; cycle-181b deixis)."; \
             fail=1; \
             continue; \
         fi; \
-        total=$(wc -l < "$path"); \
+        total=$(awk 'END{print NR}' "$path"); \
         if [ "$maxl" -gt "$total" ]; then \
             echo "  STALE (line past EOF): $cite  (file has $total lines)"; \
             fail=1; \

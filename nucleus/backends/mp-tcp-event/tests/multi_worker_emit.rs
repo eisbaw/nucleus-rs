@@ -643,9 +643,9 @@ fn wait_without_matching_push_is_typed_contract_gap() {
 /// ContractGap forward-linking TASK-0233.
 ///
 /// Mirrors `pthreads-async`'s `build_fails_on_missing_sidecar_buffer_entry`
-/// (multi_worker.rs:854) — same shape, same TASK-0233 forward-link,
-/// but exercises the mp-tcp-event Plan::build instead of the pthreads-
-/// async one (the two share the contract but each owns its own check).
+/// (in `pthreads-async/src/multi_worker.rs`) — same shape, same TASK-0233
+/// forward-link, but exercises the mp-tcp-event Plan::build instead of the
+/// pthreads-async one (the two share the contract but each owns its own check).
 #[test]
 fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
     use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, SyncKind, SyncTag, WorkerId};
