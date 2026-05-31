@@ -1,10 +1,10 @@
 ---
 id: TASK-0063
 title: Add MPI implementation to flake for tier-2
-status: Done
+status: In Progress
 assignee: []
 created_date: '2026-05-17 23:24'
-updated_date: '2026-05-23 21:23'
+updated_date: '2026-05-31 06:33'
 labels:
   - M7
   - infra
@@ -26,6 +26,19 @@ Tier-2 (M7+) per PRD §7.2 needs OpenMPI or MPICH plus rsmpi's build dependencie
 - [ ] #3 rsmpi crate compiles against the provided MPI implementation (smoke test crate)
 - [ ] #4 Decision documented in flake.nix: which MPI impl and why
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+M7 has started (focus: TASK-0045 mpi-blocking backend), so this prerequisite is REOPENED from its DEFERRED parking per its own Final Summary ("Reopen at M7 entry"). Orchestrator-direct, in-thread (repo signals implementer subagents refuse code edits; this is flake/justfile/fixture infra).
+
+Plan:
+1. Add devShells.mpi to flake.nix = basePackages ++ [openmpi, libclang, clang] with LIBCLANG_PATH + BINDGEN_EXTRA_CLANG_ARGS so rsmpi's mpi-sys bindgen resolves mpi.h + system headers. Mirror the .#renode/.#embedded opt-in pattern. (AC#1)
+2. Verify mpirun --version inside .#mpi. (AC#2)
+3. Commit a permanent smoke crate tests/mpi/rsmpi-smoke/ (standalone workspace, like tests/renode/*) that exercises Init/Finalize + Comm_rank/size + blocking Send/Recv, and a `just check-mpi-smoke` recipe that builds it under .#mpi and runs mpiexec -n 2 with a fail-loud sentinel assertion. (AC#3)
+4. Document the OpenMPI-over-MPICH decision in the flake comment. (AC#4)
+5. Verify default shell does NOT pull MPI (closes TASK-0068 AC#2).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

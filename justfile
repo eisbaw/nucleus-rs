@@ -899,6 +899,41 @@ check-embedded:
     echo "    hearing-aid (fe/dsp/rf, array-typed mix2/denoise pure kernels,"; \
     echo "    no_std-clean fixed-array args) — TASK-0049.06, thumbv7em-none-eabihf."
 
+# Tier-2 (M7) rsmpi build+run smoke (TASK-0063 AC#3). Builds the
+# hand-written tests/mpi/rsmpi-smoke crate under the `.#mpi` shell
+# (which provides OpenMPI + the libclang/bindgen build deps the `mpi`
+# crate needs) and runs it under a localhost `mpiexec -n 2`. It proves
+# the whole tier-2 foundation links end-to-end BEFORE the mpi-blocking
+# backend (TASK-0045) emits a line: rsmpi compiles against the provided
+# OpenMPI, MPI_Init/Finalize + Comm_rank/size + a blocking Send/Recv
+# link and run, and the localhost SPMD launcher works (PRD §10.2).
+# Self-contained: it enters `.#mpi` itself, so it runs from the default
+# shell:  just check-mpi-smoke
+#
+# DELIBERATELY NOT wired into `just ci`: the DEFAULT dev shell has NO
+# MPI (only `.#mpi` does), so this would hard-fail there — same
+# tier-2/3-outside-default-ci rule as check-embedded / renode-*
+# (TASK-0223). `--oversubscribe` lets the 2 ranks share however few
+# cores the sandbox exposes. Fails LOUD if the rank-1 Send/Recv
+# verification line is absent.
+check-mpi-smoke:
+    @echo "tier-2 M7 rsmpi build+run smoke (.#mpi, TASK-0063 AC#3)"
+    @set -eu; \
+    sm="$(pwd)/tests/mpi/rsmpi-smoke"; \
+    out="$(mktemp)"; \
+    trap 'rm -f "$out"' EXIT; \
+    echo "=== building rsmpi-smoke (.#mpi) ==="; \
+    nix develop .#mpi --command bash -c "cd '$sm' && cargo build --release --quiet"; \
+    echo "=== running under localhost mpiexec -n 2 ==="; \
+    nix develop .#mpi --command bash -c "mpiexec --oversubscribe -n 2 '$sm/target/release/rsmpi-smoke'" >"$out" 2>&1; \
+    sort "$out"; \
+    if grep -q 'rank 1 received sentinel OK' "$out"; then \
+        echo "OK: rsmpi compiles against OpenMPI and a localhost -n 2 Send/Recv runs (M7 foundation verified)."; \
+    else \
+        echo "FAIL: expected 'rank 1 received sentinel OK' from the -n 2 launch (rsmpi/OpenMPI Send/Recv broken)"; \
+        exit 1; \
+    fi
+
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
 # uart-smoke/, runs it headless in Renode on the bundled stm32h743

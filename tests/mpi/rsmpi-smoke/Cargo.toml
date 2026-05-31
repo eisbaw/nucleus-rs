@@ -1,0 +1,33 @@
+# rsmpi smoke crate — the tier-2 (M7) build+run de-risk for the
+# `mpi-blocking` backend (TASK-0063 AC#3 / TASK-0045 foundation).
+#
+# Hand-written proof that the `mpi` crate (rsmpi) compiles against the
+# nixpkgs OpenMPI provided by `nix develop .#mpi` AND that a localhost
+# `mpiexec -n N` SPMD launch works (PRD §10.2 localhost-MPI bar). It
+# deliberately exercises the exact MPI surface the generated
+# `mpi-blocking` codegen will emit — MPI_Init/Finalize (rsmpi
+# `initialize()`), Comm_rank/size, and a blocking point-to-point
+# Send/Recv (the lowering of an EventList `Push`/`Wait` pair) — so a
+# green smoke is real evidence the backend's runtime primitives link
+# and run, not just that the crate builds.
+#
+# SCOPE: this de-risks the POINT-TO-POINT surface only (Init/Finalize,
+# Comm_rank/size, blocking Send/Recv ← EventList Push/Wait). The
+# COLLECTIVE/barrier surface (MPI_Barrier ← Event::Sync) is deliberately
+# NOT exercised here — it is de-risked when the mpi-blocking backend
+# lowers it (TASK-0045), with its own smoke arm.
+#
+# Standalone (own [workspace]) so it is NOT part of the nucleus/ cargo
+# workspace — it builds only under `nix develop .#mpi`, never in the
+# default `just ci` (same tier-isolation rule as tests/renode/*). Run
+# it via `just check-mpi-smoke`.
+[package]
+name = "rsmpi-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mpi = "0.8"
+
+[workspace]

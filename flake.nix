@@ -71,10 +71,11 @@
         # Tier-1 dev shell (PRD §12.1). DELIBERATELY MINIMAL — only the
         # toolchain + just + git. Tier-specific heavy closures live in
         # opt-in sibling shells: `.#renode` (tier-3 runtime, M10),
-        # `.#embedded` (tier-3 cross-compile, M9), and a future `.#mpi`
-        # (tier-2, M7, TASK-0063). Do NOT pile MPI / Renode / embedded
-        # toolchains into this shell — every contributor would then
-        # download hundreds of MB they don't need (TASK-0068).
+        # `.#embedded` (tier-3 cross-compile, M9), and `.#mpi` (tier-2,
+        # M7, TASK-0063 — landed when M7 started). Do NOT pile MPI /
+        # Renode / embedded toolchains into this shell — every
+        # contributor would then download hundreds of MB they don't
+        # need (TASK-0068).
         devShells.default = pkgs.mkShell {
           packages = basePackages;
 
@@ -109,6 +110,51 @@
             pkgs.just
             pkgs.probe-rs-tools
           ];
+          # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
+          shellHook = "";
+        };
+
+        # Tier-2 (M7+) HPC-cluster shell. Opt-in via `nix develop .#mpi`.
+        # Adds an MPI implementation + the rsmpi (`mpi` crate) build
+        # dependencies on top of the same MSRV-pinned host toolchain.
+        # Kept out of the default shell because OpenMPI pulls a non-
+        # trivial closure (ucx / libfabric / pmix / hwloc) that tier-1
+        # dev does not need (TASK-0068 tiered-shell rule; same precedent
+        # as `.#renode` / `.#embedded`). Closure size is reproducible via
+        # `nix path-info -Sh nixpkgs#openmpi` rather than pinned here.
+        #
+        # MPI impl decision (TASK-0063 AC#4): OpenMPI, not MPICH.
+        # Rationale — (1) nixpkgs `openmpi` is the better-maintained,
+        # cache-populated pick (the whole closure is in the binary cache,
+        # zero source builds); (2) it ships a working `mpicc` wrapper +
+        # `ompi-c.pc` pkg-config file, which is exactly what rsmpi's
+        # `mpi-sys` build probe (`build-probe-mpi`) consumes to discover
+        # compile/link flags; (3) `mpirun` localhost launcher works out
+        # of the box for the PRD §10.2 localhost-MPI CI bar. MPICH would
+        # work too but offers no advantage here and is less exercised in
+        # nixpkgs CI.
+        #
+        # rsmpi build deps: `mpi-sys` runs `bindgen` over `mpi.h`, which
+        # needs libclang at build time. `LIBCLANG_PATH` points bindgen at
+        # the nix libclang; `BINDGEN_EXTRA_CLANG_ARGS` adds the clang
+        # resource-dir + libc headers so bindgen can resolve the system
+        # includes `mpi.h` pulls in (the recurring NixOS bindgen gotcha:
+        # without these, `stddef.h` / `stdint.h` are not found).
+        devShells.mpi = pkgs.mkShell {
+          packages = basePackages ++ [
+            pkgs.openmpi
+            pkgs.llvmPackages.libclang
+            pkgs.clang
+          ];
+
+          # bindgen (mpi-sys build.rs) needs libclang on a stable path.
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          # Give bindgen the clang builtin headers + glibc dev headers so
+          # `#include <stddef.h>` etc. inside mpi.h resolve under Nix.
+          BINDGEN_EXTRA_CLANG_ARGS =
+            "-isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.lib.getVersion pkgs.llvmPackages.libclang}/include "
+            + "-isystem ${pkgs.glibc.dev}/include";
+
           # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
           shellHook = "";
         };
