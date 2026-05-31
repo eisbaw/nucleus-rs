@@ -158,8 +158,16 @@ where
 /// carry the SAME `src` (`fe`). That is one produced value consumed
 /// twice, NOT a sum fan-in; summing it would double-count a value with
 /// itself. The distinct-producer requirement below excludes it (1
-/// distinct `src`), so it falls through to the idempotent whole-array
-/// assign arm.
+/// distinct `src`), so for the tier-1 backends that consume this helper
+/// it falls through to the idempotent whole-array assign arm
+/// (`render_wait_assign` → `{name} = {rhs};`). NOTE: ex14 itself is
+/// compiled by the embedded-pattern backend, which does NOT call this
+/// helper or `render_wait_assign` (it emits a blocking shim
+/// `link_recv`); for ex14 the practical effect of the exclusion is that
+/// the driver-level cross-check `check_accumulator_consistency` no
+/// longer fires. The whole-array-assign-arm description is the shared
+/// helper's tier-1 semantics, stated here because the helper is
+/// backend-shared.
 ///
 /// # The predicate
 ///
