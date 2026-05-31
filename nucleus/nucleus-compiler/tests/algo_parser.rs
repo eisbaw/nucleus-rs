@@ -1203,7 +1203,10 @@ for i : 0 .. N {
             assert_eq!(indices.len(), 1, "`src` has one index");
             match &indices[0].node {
                 Expr::LValue(inner) => {
-                    assert_eq!(inner.name.node, "idx", "the index must be the data ref `idx`");
+                    assert_eq!(
+                        inner.name.node, "idx",
+                        "the index must be the data ref `idx`"
+                    );
                     assert_eq!(inner.indices.len(), 1, "`idx[i]` has one (affine) index");
                 }
                 other => panic!(

@@ -497,7 +497,10 @@ impl std::fmt::Display for TransferInjectError {
                 write!(f, "transfer_inject silent-elision risk: {message}")
             }
             TransferInjectError::CumulativeWholeArrayFallback { message, .. } => {
-                write!(f, "transfer_inject cumulative whole-array fallback: {message}")
+                write!(
+                    f,
+                    "transfer_inject cumulative whole-array fallback: {message}"
+                )
             }
         }
     }
@@ -2961,11 +2964,8 @@ fn hoist_cumulative_w2w_to_repeat_body(
             for child in children {
                 // Recurse first so nested Sequences (e.g. the for-t body)
                 // are processed.
-                let child = hoist_cumulative_w2w_to_repeat_body(
-                    child,
-                    cumulative_data,
-                    partition_ranges,
-                );
+                let child =
+                    hoist_cumulative_w2w_to_repeat_body(child, cumulative_data, partition_ranges);
                 match child {
                     ACFGNode::Repeat {
                         iter_var,
@@ -5180,11 +5180,12 @@ mod tests {
         let w1 = WorkerId(1);
         // field indexed dim0=t, dim1=y, dim2=x.
         let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
-        map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
-        let partition_ranges = make_partition_ranges(&[(
-            y_iv,
-            &[(WorkerId(1), 1..3), (WorkerId(2), 3..5)],
-        )]);
+        map.insert(
+            field,
+            vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])],
+        );
+        let partition_ranges =
+            make_partition_ranges(&[(y_iv, &[(WorkerId(1), 1..3), (WorkerId(2), 3..5)])]);
         let dims = vec![5i64, 8, 8];
 
         let got = cumulative_band_bounds(field, w1, &dims, &map, &partition_ranges)
@@ -5230,7 +5231,10 @@ mod tests {
         // dim-count early-None does NOT fire. But the partition_ranges
         // below cover NONE of {t,y,x}, so no dim resolves to a band.
         let mut data_dim_iv_map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
-        data_dim_iv_map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
+        data_dim_iv_map.insert(
+            field,
+            vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])],
+        );
         let mut data_dims: BTreeMap<DataId, Vec<i64>> = BTreeMap::new();
         data_dims.insert(field, vec![5i64, 8, 8]);
 
@@ -5391,7 +5395,10 @@ mod tests {
         let cumulative: BTreeSet<DataId> = [field].into_iter().collect();
 
         let mut data_dim_iv_map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
-        data_dim_iv_map.insert(field, vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])]);
+        data_dim_iv_map.insert(
+            field,
+            vec![iv_set(&[t_iv]), iv_set(&[y_iv]), iv_set(&[x_iv])],
+        );
         let mut data_dims: BTreeMap<DataId, Vec<i64>> = BTreeMap::new();
         data_dims.insert(field, vec![5i64, 8, 8]);
 
@@ -5516,7 +5523,11 @@ mod tests {
             panic!("expected for_t body Sequence")
         };
         // t_body = [ Repeat(y), Push, Wait ] — send (Push) BEFORE recv (Wait).
-        assert_eq!(t_body.len(), 3, "for_t body should be [Repeat(y), Push, Wait]; got {t_body:?}");
+        assert_eq!(
+            t_body.len(),
+            3,
+            "for_t body should be [Repeat(y), Push, Wait]; got {t_body:?}"
+        );
         assert!(
             matches!(&t_body[0], ACFGNode::Repeat { iter_var, .. } if *iter_var == y_iv),
             "first child must be the partition Repeat (compute stays); got {:?}",
@@ -5576,6 +5587,9 @@ mod tests {
         let root = ACFGNode::Sequence(vec![inner]);
         let empty: BTreeSet<DataId> = BTreeSet::new();
         let got = hoist_cumulative_w2w_to_repeat_body(root.clone(), &empty, &partition_ranges);
-        assert_eq!(got, root, "empty cumulative set MUST leave the tree unchanged");
+        assert_eq!(
+            got, root,
+            "empty cumulative set MUST leave the tree unchanged"
+        );
     }
 }

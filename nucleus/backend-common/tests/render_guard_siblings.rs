@@ -96,9 +96,8 @@ fn int_expr_kernel_call_in_index_is_unsupported_feature() {
         args: vec![ident("k")],
     };
 
-    let err = render_int_expr(&expr, &ctx).expect_err(
-        "a kernel call in integer-index position must fail loud (expr.rs:72-74)",
-    );
+    let err = render_int_expr(&expr, &ctx)
+        .expect_err("a kernel call in integer-index position must fail loud (expr.rs:72-74)");
     match err {
         EmitError::UnsupportedFeature(msg) => {
             assert!(
@@ -130,9 +129,8 @@ fn const_expr_data_ref_in_loop_bound_is_unsupported_feature() {
         indices: vec![ident("k")],
     });
 
-    let err = render_const_expr(&expr, &ctx).expect_err(
-        "a data-ref in loop-bound position must fail loud (expr.rs:201-203)",
-    );
+    let err = render_const_expr(&expr, &ctx)
+        .expect_err("a data-ref in loop-bound position must fail loud (expr.rs:201-203)");
     match err {
         EmitError::UnsupportedFeature(msg) => {
             assert!(
@@ -159,9 +157,8 @@ fn const_expr_kernel_call_in_loop_bound_is_unsupported_feature() {
         args: vec![ident("k")],
     };
 
-    let err = render_const_expr(&expr, &ctx).expect_err(
-        "a kernel call in loop-bound position must fail loud (expr.rs:201-203)",
-    );
+    let err = render_const_expr(&expr, &ctx)
+        .expect_err("a kernel call in loop-bound position must fail loud (expr.rs:201-203)");
     match err {
         EmitError::UnsupportedFeature(msg) => {
             assert!(

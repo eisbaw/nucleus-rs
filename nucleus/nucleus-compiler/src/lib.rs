@@ -63,11 +63,11 @@ pub use passes::deadlock::{check_deadlock_free, DeadlockError};
 // TASK-0368: the combined soundness gate the driver runs on every
 // build. `check_net_sound` = derive_firing_order + check_bounded +
 // check_deadlock_free, with a typed `PetriAnalysisError`.
-pub use passes::net_soundness::{check_net_sound, PetriAnalysisError};
 pub use passes::halo_inference::{
     apply_halo_inference, apply_halo_inference_advisory, apply_halo_inference_partition_aware,
     HaloInferenceError,
 };
+pub use passes::net_soundness::{check_net_sound, PetriAnalysisError};
 // TASK-0329.01.02 slice 2: host-mediated data-relay injection for mp-tcp-event.
 pub use passes::host_data_relay_inject::apply_host_data_relay_inject;
 pub use passes::host_mediation_inject::apply_host_mediation_inject;

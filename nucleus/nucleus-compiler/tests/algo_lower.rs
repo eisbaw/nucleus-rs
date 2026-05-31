@@ -915,7 +915,9 @@ for i : 0 .. N {
         }
         fn scan_expr(e: &IrExpr) -> bool {
             match e {
-                IrExpr::Call { args, .. } => args.iter().any(scan_expr) || args.iter().any(expr_is_gather),
+                IrExpr::Call { args, .. } => {
+                    args.iter().any(scan_expr) || args.iter().any(expr_is_gather)
+                }
                 IrExpr::DataRef(r) => r.indices.iter().any(scan_expr) || expr_is_gather(e),
                 _ => false,
             }
@@ -964,7 +966,9 @@ for i : 0 .. b[0] {
                  kernel-call one"
             );
         }
-        other => panic!("expected NonIntegerShapeExpr for a data-dependent loop bound, got {other:?}"),
+        other => {
+            panic!("expected NonIntegerShapeExpr for a data-dependent loop bound, got {other:?}")
+        }
     }
     assert!(
         err.span.is_some(),

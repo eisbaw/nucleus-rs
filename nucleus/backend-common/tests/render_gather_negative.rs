@@ -40,11 +40,7 @@ fn empty_fixtures() -> (NameTables, NameSidecar) {
 /// Build a `(NameTables, NameSidecar)` where data `did` is named
 /// `name` and has resolved shape `dims` (scalar `i32`). Used by the
 /// arms that need the name and/or the type present.
-fn fixtures_with_data(
-    did: DataId,
-    name: &str,
-    dims: Vec<usize>,
-) -> (NameTables, NameSidecar) {
+fn fixtures_with_data(did: DataId, name: &str, dims: Vec<usize>) -> (NameTables, NameSidecar) {
     let mut names = NameTables::default();
     names.data.insert(did, name.to_string());
 

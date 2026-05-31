@@ -196,7 +196,11 @@ fn jacobi_field_is_cumulative() {
         "jacobi's cross-iteration `field` (self-read at a SHIFTED dim-0 index) \
          must be classified cumulative ⇒ COPY combine; got {out:?}"
     );
-    assert_eq!(out.len(), 1, "only `field` should be cumulative; got {out:?}");
+    assert_eq!(
+        out.len(),
+        1,
+        "only `field` should be cumulative; got {out:?}"
+    );
 }
 
 #[test]
@@ -224,7 +228,11 @@ fn game_of_life_grid_is_cumulative() {
          index) must be classified cumulative, exactly like jacobi's `field`; \
          got {out:?}"
     );
-    assert_eq!(out.len(), 1, "only `grid` should be cumulative; got {out:?}");
+    assert_eq!(
+        out.len(),
+        1,
+        "only `grid` should be cumulative; got {out:?}"
+    );
 }
 
 #[test]
