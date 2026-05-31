@@ -188,6 +188,7 @@ ci:
     just check-textual-replace-on-codegen
     just check-include-str-coverage
     just check-narrative-doc-lie
+    just check-doc-citation-staleness
     just check-mega-files
     just check-doc-links
     just e2e
@@ -442,6 +443,102 @@ check-narrative-doc-lie:
         exit 1; \
     fi; \
     echo "OK: no predictive-conclusion doc-lies in narrative TOML."
+
+# Doc-citation staleness fence (TASK-0370, cycle 220).
+#
+# A SECOND, ORTHOGONAL arm of the comment-doc-lie defence (memory:
+# feedback-comment-doc-lie-recurring — the project's #1 recurring
+# defect). Where `check-narrative-doc-lie` (above) scans PRESENT-TENSE
+# PROSE in the one high-discipline narrative TOML, THIS recipe is an
+# OBJECTIVE STRUCTURAL check: it verifies that every FULLY-QUALIFIED
+# source citation of the form `nucleus/<...>.rs:N` (or `.rs:N-M` /
+# `.rs:N..M`) resolves to a file that exists AND whose line count is
+# >= the largest cited line. It catches two historically-recurring
+# lie shapes objectively, with NO escape-hatch annotation required:
+#   - cycle-138 STALE-LINE citations (file shrank below the cited line).
+#   - cycle-181b SPLIT-FILE deixis (the cited `foo.rs` became the
+#     directory `foo/` — file no longer exists at that path).
+#
+# WHY FULLY-QUALIFIED ONLY (the load-bearing zero-FP boundary — see
+# TASK-0370 notes for the full empirical scoping):
+#   - A BARE-BASENAME citation (`lib.rs:1010`, `multi_worker.rs:854`)
+#     is AMBIGUOUS — every crate has a `lib.rs` (12+ in this tree), so
+#     there is no single file to resolve against. Worse, cross-crate
+#     prose ("pre-extraction pthreads-sync at lib.rs:991") names a
+#     DIFFERENT crate's file than the citing crate's own — a mechanical
+#     resolver MISATTRIBUTES the verdict. So bare basenames are
+#     deliberately NOT validated. A path that starts with `nucleus/`
+#     or `nuc-nucleus/` has EXACTLY ONE resolution; that is the only
+#     class this fence trusts.
+#   - The numeric line is ADVISORY by the cycle-138 rule (prefer
+#     symbol anchors); this fence only bites the unambiguous failure
+#     "cited line is past EOF" / "cited file no longer exists". It
+#     does NOT (cannot) catch stale-CONTENT where the line still
+#     exists but the code at it moved — that is the deferred breadth.
+#
+# WHY backlog/tasks IS EXCLUDED:
+#   - Task markdown is an IMMUTABLE HISTORICAL RECORD (CLAUDE.md forbids
+#     hand-editing it) and its citations are FILING-TIME-ACCURATE
+#     provenance — e.g. `task-0340.01`'s own title encodes the then
+#     1997-LoC `lib.rs` that is now 329 LoC. Those are not lies; they
+#     are history. ~42 fully-qualified citations there are stale-by-
+#     design. Validating them would force either FP-flood or a
+#     forbidden history rewrite.
+#
+# COVERAGE / DEFERRED BREADTH (honest scope — TASK-0370 AC#1 reads
+# "or a justified subset"):
+#   - COVERED: fully-qualified `.rs:N` citations in source (`*.rs`),
+#     `docs/`, `README*.md`, `PRD.md`, `nuc-nucleus/`.
+#   - DEFERRED (filed as TASK-0382, depends on TASK-0370):
+#       (i) bare-basename citation validation (needs a crate-scoped,
+#           prose-aware resolver to stay zero-FP);
+#      (ii) stale-CONTENT detection (line exists, code moved);
+#     (iii) present-tense narrative-prose scanning of md / `.sched.nuc`
+#           headers (FP-floods: 171 legitimate hits on backlog/tasks
+#           alone with the existing pattern set).
+#
+# POSIX-shell portability (cf. check-mega-files): `just` runs
+# `/bin/sh -cu`; this recipe avoids bash arrays / process substitution.
+# It feeds a `mktemp` temp file into a `while read` loop and parses
+# each citation with POSIX parameter expansion + a single `awk` for
+# the range tail.
+check-doc-citation-staleness:
+    @echo "checking fully-qualified nucleus/*.rs:N citations resolve (exists + line in range)..."
+    @set -eu; \
+    cites_f=$(mktemp); \
+    trap "rm -f $cites_f" EXIT; \
+    rg --no-filename -N \
+        -oe '(nucleus|nuc-nucleus)/[A-Za-z0-9_./-]+\.rs:[0-9]+([.-]+[0-9]+)?' \
+        . -g '!backlog/tasks/**' -g '!target/**' 2>/dev/null \
+        | sort -u > $cites_f || true; \
+    fail=0; \
+    while IFS= read -r cite; do \
+        [ -n "$cite" ] || continue; \
+        path=${cite%%:*}; \
+        lines=${cite#*:}; \
+        maxl=$(printf '%s' "$lines" | sed 's/\.\./ /; s/-/ /' | awk '{print $NF}'); \
+        if [ ! -f "$path" ]; then \
+            echo "  STALE (no such file): $cite"; \
+            echo "    -> the cited file does not exist (likely split into a directory; cycle-181b deixis)."; \
+            fail=1; \
+            continue; \
+        fi; \
+        total=$(wc -l < "$path"); \
+        if [ "$maxl" -gt "$total" ]; then \
+            echo "  STALE (line past EOF): $cite  (file has $total lines)"; \
+            fail=1; \
+        fi; \
+    done < $cites_f; \
+    if [ "$fail" -ne 0 ]; then \
+        echo ""; \
+        echo "FAIL: stale fully-qualified source citation(s) (memory: feedback-comment-doc-lie-recurring cycle-138 stale-line / cycle-181b split-file deixis)."; \
+        echo "Fix (cycle-138 rule, in order of preference):"; \
+        echo "  1. Re-anchor the citation to a STABLE symbol/comment name (e.g. 'the \`emit_log_branch\` call in event_walker.rs') instead of a line number — line numbers rot on every edit."; \
+        echo "  2. If a line number is genuinely needed, update it to the current line and re-grep to confirm post-edit."; \
+        echo "  3. If the file was split, point at the new sub-module path."; \
+        exit 1; \
+    fi; \
+    echo "OK: every fully-qualified nucleus/*.rs:N citation resolves to an in-range line."
 
 # Mega-file regression-fence (TASK-0340 AC#5; slice 1 cycle 176, slice 2
 # cycle 177).

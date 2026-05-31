@@ -39,12 +39,14 @@ Authoritative sites (single source of truth for the rendered template):
   tier-1 backends (`pthreads-sync`, `pthreads-async`, `mp-tcp-bufsync`)
   consume the same helpers; drift becomes structurally impossible per
   TASK-0222.
-- `nucleus/backends/pthreads-sync/src/lib.rs:694..758` — single-worker
-  emit (the panic branch is inline; log/count delegate to the shared
-  helpers).
-- `nucleus/backend-common/src/multi_worker_walker.rs:300..355` —
-  multi-worker emit; shared across pthreads-sync + pthreads-async +
-  mp-tcp-bufsync.
+- `nucleus/backends/pthreads-sync/src/lib.rs` — single-worker emit; the
+  `// Real-time \`check loop V : latency_max=T\`` block (the panic branch
+  is inline; log/count delegate to the shared `emit_log_branch` /
+  `emit_count_branch` helpers).
+- `nucleus/backend-common/src/multi_worker_walker/event_walker.rs` —
+  multi-worker emit (the `_check_elapsed` block dispatching to
+  `emit_log_branch` / `emit_count_branch`); shared across pthreads-sync +
+  pthreads-async + mp-tcp-bufsync.
 
 The measurement is **per-iteration wall-clock on the worker that runs
 the loop body**. That is the only thing v2 guarantees.
