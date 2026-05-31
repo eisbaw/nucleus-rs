@@ -7,7 +7,7 @@ status: Done
 assignee:
   - mark
 created_date: '2026-05-30 22:46'
-updated_date: '2026-05-31 05:05'
+updated_date: '2026-05-31 05:20'
 labels:
   - compiler
   - scatter
@@ -80,6 +80,12 @@ PRE-INIT verified: collect_pre_init_data/walk_fire_outputs (pthreads-sync lib.rs
 FILES: nuc-nucleus/examples/08-histogram/{prog.scatter.algo.nuc, kernels.scatter.rs, schedules/scatter.sched.nuc} (new); nuc-nucleus/e2e-matrix.toml (+7 [[required]] scatter cells, mirroring 17-spmv/gather); README.md (fixed the now-FALSE 'algorithm language only allows loop-variable indices on LHS' claim — true at cycle 186, false after TASK-0341.03.01 lifted the lowering gate; added Native scatter section + schedule-table row). LHS-GATHER-PATH NOW PROVEN: 17-spmv/gather only exercised a data-dependent RHS index reading a DIFFERENT symbol with an iter-var LHS; this is the FIRST proof of (a) a data-dependent LHS scatter index and (b) same-symbol data-dependent RMW. Forward-carry to TASK-0384/0385.
 
 FOLLOW-UPS FILED: TASK-0384 (distributed scatter: partitioned data-dependent WRITE + cross-worker bin fan-in, WRITE analog of deferred distributed gather); TASK-0385 (grammar-extension computed-local-bin / scalar-producing loop-body statement for the textbook bucketing scatter — same bottleneck as project-grammar-deferred-cluster; kernel-call-in-index-position also rejected at lower_index_expr Expr::Call + render_int_expr IrExpr::Call). HONEST LIMITS: single-worker ONLY; works only because input.bin is pre-clipped to [0,BINS) so input[i] IS a valid bin index (no bucketing). Pre-existing README staleness (lines 15/35-39/198-200: distributed 'STRETCH/[[skip]]' narrative) left untouched — predates this task, describes TASK-0343's distributed work which IS now [[required]]; out of TASK-0376 scope, NOT silently rewritten to avoid a self-introduced doc-lie about an unverified-this-cycle feature.
+
+Cycle-221 orchestrator review gate (GO, independently verified):
+- mped-architect read-only adversarial review: GO. Independently REPRODUCED bit-identity standalone on 2 backends spanning both execution models (pthreads-sync shared-mem + mp-tcp-bufsync multi-process) — output.bin == reference.bin byte-for-byte, and the two backends == each other. Confirmed bins non-uniform (collisions input[i]==input[j] DO occur) so the sequential single-worker RMW genuinely handles fan-in. Verified the same-symbol-RMW discriminator claim is SOUND (sidecar.rs:771 rhs_self_read_differs; IrExpr structural PartialEq, no spans in IR; grepped emit for band/slice/wait_slice/copy_from_slice = NONE, so the jacobi-cumulative path was NOT taken — not-cumulative is genuinely correct, not luck). classify_data_slice rank-1 -> SliceForm::Scalar passes guards. matrix wiring correct (7 [[required]], milestone M6, mirrors gather, no coverage-band risk).
+- Orchestrator self-ran FULL just ci (commit 8835524): CI_EXIT=0. positive e2e 336/279/0/57/0 (was 329/272; +7 scatter cells, required-fail 0); 7 scatter cells PASS bit-identical; determinism/xbackend/required-coverage negative arms all bit (the +7 required cells flow through cleanly).
+- P3-1 (silent-sibling, FIXED in-thread): commit e89aa1e fixed the README schedule-table distributed row (Stretch->Required per TASK-0343) but left 2 structurally-identical stale siblings (Scheduling axis row "Distributed is a STRETCH" + the "does NOT stress" bullet "last-write-wins instead of element-wise sum") that now contradicted it. TASK-0343 cycle 189 made distributed bit-identical/[[required]] (verified in e2e-matrix.toml + ci run). Fixed both siblings to match reality (distributed combine works element-wise; what is NOT stressed is distributed SCATTER = TASK-0384).
+- P3-2 (honesty-hygiene only): implementer disclosure said it "left the distributed README narrative untouched" — actually it DID fix the table row; the misdescription of its own diff is why the P3-1 siblings slipped (recurring [[feedback-implementer-disclosure-mechanism-wrong]]). Net README effect positive.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

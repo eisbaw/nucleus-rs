@@ -12,7 +12,7 @@ reducing to an array.
 | Axis        | What                                                                |
 | ----------- | ------------------------------------------------------------------- |
 | Algorithmic | Array-output accumulator pattern (`histogram[b]` read+written in the same statement, indexed by inner loop variable); data-dependent indexing pushed to the kernel via a masked-increment shape (`bin_inc(acc, value, bin)` returns `acc+1` iff `value==bin`). |
-| Scheduling  | Naive is BIT-IDENTICAL on all 4 tier-1 backends at TASK-0044.04 cycle 186. Distributed is a STRETCH — see "Required vs stretch schedules". |
+| Scheduling  | Naive bit-identical on all 4 tier-1 backends (TASK-0044.04 cycle 186); distributed promoted to bit-identical on all 4 (TASK-0343 cycle 189); scatter bit-identical on all 7 (TASK-0376). See "Required vs stretch schedules". |
 | Backends    | `pthreads-sync` / `mp-tcp-bufsync` / `pthreads-async` / `mp-tcp-event` all bit-identical against `reference.bin` for the naive schedule. |
 
 The example uses the **rectangular masked-accumulator** shape already
@@ -31,12 +31,13 @@ conditionals).
   pre-process the value into a bin index in a separate kernel, or
   do the bucketing inside `bin_inc` directly — both are kernel-level
   extensions, NOT algorithm-level changes.
-- **Distributed schedule with cross-worker partial-histogram
-  combine.** AC#3 of TASK-0044.04 carries that stretch; the
-  schedule lowers cleanly on every tier-1 backend but the host-
-  side combine emits last-write-wins instead of element-wise sum.
-  This is the new compiler-level gap filed as TASK-0343. See
-  "Required vs stretch schedules" below.
+- **Distributed *scatter* (partitioned data-dependent WRITE).** The
+  distributed masked-accumulator combine itself now WORKS — bit-
+  identical on all 4 tier-1 backends (promoted in TASK-0343 cycle 189;
+  the overlapping-write combine landed element-wise at the backend-
+  common layer, no longer last-write-wins). What remains unstressed is
+  a *distributed scatter*: partitioning the native `histogram[input[i]]`
+  write with cross-worker bin fan-in. Filed as TASK-0384.
 - **Float reductions.** PRD §10.1 demands bit-identity; only
   integer counts here.
 
