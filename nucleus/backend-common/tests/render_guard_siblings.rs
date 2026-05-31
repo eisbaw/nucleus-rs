@@ -37,7 +37,10 @@
 //! `fire.rs`, reached through the public arg/output renderers:
 //!   - `render_fire_arg`'s `ArgBinding::Nested` arm (fire.rs:376) — a
 //!     nested kernel call in argument position; reached via the public
-//!     `render_fire_args`;
+//!     `render_fire_args`. Unlike the gather siblings above, this guard
+//!     IS source-reachable (lowering builds `ArgBinding::Nested`
+//!     faithfully; fire.rs:376 is the sole rejection site) — see the
+//!     test comment;
 //!   - `classify_data_slice`'s missing-`ResolvedType` ContractGap
 //!     (fire.rs:427) and over-indexed UnsupportedFeature (fire.rs:438),
 //!     reached via the public `render_fire_output_assign`.
@@ -369,9 +372,14 @@ fn fire_arg_nested_kernel_call_is_unsupported_feature() {
     // (`f(g(k))`) is rejected fail-loud — the backend renders flat
     // argument lists, not nested call expressions. Direct sibling of
     // the Call-in-index guard (expr.rs:72), the most glaring omission.
-    // NOT source-reachable: the lowering layer flattens / rejects
-    // nested calls in arg position before codegen. The arm matches on
-    // the binding shape alone and ignores the (absent) kernel
+    // UNLIKE the other guards in this file, this one IS source-
+    // reachable: the lowering layer FAITHFULLY lowers a nested call to
+    // `ArgBinding::Nested` (acfg/build.rs:276) — it does NOT flatten or
+    // reject — so fire.rs:376 is the SOLE rejection site and produces a
+    // user-facing error for grammar-admitted source. Example 14 hand-
+    // splits `denoise(mix2(a, b))` into two statements specifically to
+    // avoid tripping it (examples/14-hearing-aid/prog.algo.nuc). The arm
+    // matches on the binding shape alone and ignores the (absent) kernel
     // signature, so empty fixtures suffice.
     let (names, sidecar) = empty_fixtures();
     let ctx = RenderCtx::new(&names, &sidecar);
