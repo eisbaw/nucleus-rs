@@ -1,0 +1,53 @@
+// Tier-1 check-loop COUNT differential fixture (TASK-0369).
+//
+// The runtime-assertion / fault-reporting surface (`check loop V :
+// on_violation = count`) existed ONLY in the embedded (tier-3) schedules
+// until now (01-elementwise-add/embedded_check*, 14-hearing-aid/
+// embedded_multimcu*), so the cross-backend bit-identity invariant had
+// ZERO coverage for the fault path on tier-1. This schedule is the
+// FIRST tier-1 (non-embedded) check-loop cell: identical placement to
+// naive.sched.nuc plus a `check loop i : on_violation = count`.
+//
+// WHAT FIRES: latency_max = 1ns is deliberately tiny. On a real host
+// each `i` iteration does real work (one i32 add + the per-iteration
+// monotonic-clock read pair), so `_check_elapsed` exceeds 1ns on
+// (near-)every iteration and the file-scope AtomicU64 counter is
+// incremented. At program exit the `NucCheckCountReporter` Drop guard
+// prints ONE summary line to STDERR (only when count > 0):
+//
+//     check loop `i` violated latency_max=1 ns: <N> occurrence(s)
+//
+// (See nucleus/backend-common/src/check_frame.rs::emit_count_reporter_struct.)
+// stderr is deliberate: the cross-backend differential on output.bin
+// stays INDIFFERENT to check-loop presence (PRD §6.3.5; the fault
+// report never perturbs the numeric result, which must STILL be
+// bit-identical to reference.bin).
+//
+// WHAT IS PINNED (and why only this): the occurrence COUNT <N> and any
+// elapsed-ns figure are TIMING-DERIVED (`_check_elapsed =
+// monotonic_ns().wrapping_sub(start)`) and therefore NOT robustly
+// bit-identical across backends/runs — an iteration whose two clock
+// reads fall within one un-stepped clock quantum measures 0ns and is
+// not counted (the same 255-vs-256 band the Renode embedded_check_count
+// fixture documents). The genuinely TIMING-INDEPENDENT invariant is the
+// fault-line SHAPE: presence + loop-var name + threshold-ns echo. The
+// e2e harness `[[fault_assert]]` table pins the substring
+//   check loop `i` violated latency_max=1 ns:
+// across the tier-1 backends whose run stderr the harness can observe,
+// and explicitly does NOT pin the count or the ns elapsed (TASK-0369
+// AC#3).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input    on host;
+    place load_input_b  on host;
+    place save_output   on host;
+    place add           on host;
+
+    // Real-time assertion: one iteration of the `i` loop must take
+    // ≤ latency_max; on violation, increment a counter (do NOT panic).
+    // latency_max = 1ns guarantees the violation FIRES so the fault
+    // report is exercised end-to-end on tier-1 (TASK-0369 AC#1).
+    check loop i : latency_max = 1ns, on_violation = count;
+}

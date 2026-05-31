@@ -133,6 +133,7 @@ fn determinism_skip_entry_short_circuits() {
         required: false,
         pre_skip: Some("manifest says skip".to_string()),
         perf_threshold_pct: None,
+        fault_assert: vec![],
     };
     let r = check_cell_determinism(&paths, &pc);
     match r.status {
@@ -156,6 +157,7 @@ fn determinism_missing_capabilities_is_skipped() {
         required: false,
         pre_skip: None,
         perf_threshold_pct: None,
+        fault_assert: vec![],
     };
     let r = check_cell_determinism(&paths, &pc);
     match r.status {
@@ -473,6 +475,7 @@ fn plan_picks_required_cell_when_filtered() {
             perf_threshold_pct: None,
         }],
         skip: vec![],
+        fault_assert: vec![],
     };
     let args = Args {
         example: Some("01-elementwise-add".into()),
@@ -512,6 +515,7 @@ fn planned(ex: &str, sc: &str, be: &str) -> PlannedCell {
         required: true,
         pre_skip: None,
         perf_threshold_pct: None,
+        fault_assert: vec![],
     }
 }
 
@@ -552,6 +556,7 @@ fn typo_in_required_schedule_is_a_coverage_gap() {
         // `naiv` is a one-char typo of the real `naive` schedule.
         required: vec![req("01-elementwise-add", "naiv", "pthreads-sync", "M1")],
         skip: vec![],
+        fault_assert: vec![],
     };
     // Planner only ever discovers the real `naive` file.
     let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
@@ -577,6 +582,7 @@ fn required_also_in_skip_is_not_a_gap() {
             "not yet implemented",
             "M1",
         )],
+        fault_assert: vec![],
     };
     // Skipped cell is never planned (run_cell would short-circuit
     // even if it were) — the point is the coverage guard must not
@@ -599,6 +605,7 @@ fn planned_required_is_not_a_gap() {
         backends: vec!["pthreads-sync".to_string()],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
         skip: vec![],
+        fault_assert: vec![],
     };
     let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
     let gaps = required_coverage_gaps(&manifest, &plan, &Args::default()).expect("ok");
@@ -622,6 +629,7 @@ fn cli_filter_scopes_coverage_check() {
             req("07-matmul", "naive", "pthreads-sync", "M1"),
         ],
         skip: vec![],
+        fault_assert: vec![],
     };
     // Narrowed run: only the 01 cell is planned.
     let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
@@ -668,6 +676,35 @@ fn real_manifest_has_no_coverage_gaps() {
     assert!(
         gaps.is_empty(),
         "shipped e2e-matrix.toml has unmatched required cells: {gaps:?}"
+    );
+}
+
+/// TASK-0369 canary: the shipped `e2e-matrix.toml`'s `[[fault_assert]]`
+/// entries must (a) pass structural validation (non-empty list +
+/// substrings, no duplicate triple) and (b) have ZERO orphans — every
+/// fault_assert must name a real planned cell. A typo'd fault_assert
+/// triple would otherwise silently assert nothing (the TASK-0163
+/// silent-vanish class on the fault path); this test + `just e2e` go red
+/// if a future edit introduces one.
+#[test]
+fn real_manifest_fault_asserts_are_valid_and_have_no_orphans() {
+    let paths = Paths::discover().expect("discover repo root");
+    let src = fs::read_to_string(paths.manifest_path()).expect("read manifest");
+    let manifest: Manifest = toml::from_str(&src).expect("parse manifest");
+    // Structural validation (also the load-time gate in plan_cells).
+    let table = manifest
+        .fault_assert_table()
+        .expect("shipped fault_assert entries must be structurally valid");
+    assert!(
+        !table.is_empty(),
+        "TASK-0369 added tier-1 fault_assert cells; the shipped table must be non-empty"
+    );
+    let args = Args::default();
+    let plan = plan_cells(&paths, &manifest, &args).expect("plan");
+    let orphans = fault_assert_orphans(&manifest, &plan, &args).expect("ok");
+    assert!(
+        orphans.is_empty(),
+        "shipped e2e-matrix.toml has orphaned fault_assert cells: {orphans:?}"
     );
 }
 
@@ -741,6 +778,7 @@ fn milestone_gate_is_cumulative_over_required_flagging() {
         backends: vec!["pthreads-sync".to_string()],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M3")],
         skip: vec![],
+        fault_assert: vec![],
     };
     // No gate: the single discovered cell is flagged required.
     let p_full = plan_cells(&paths, &manifest, &Args::default()).expect("plan");
@@ -789,6 +827,7 @@ fn typo_in_milestone_tagged_required_is_a_gap_under_that_milestone() {
         // `naiv` is a one-char typo; this cell is tagged M3.
         required: vec![req("06-separable-filter", "naiv", "mp-tcp-bufsync", "M3")],
         skip: vec![],
+        fault_assert: vec![],
     };
     // Planner only ever discovers the real `naive` file.
     let plan = vec![planned("06-separable-filter", "naive", "mp-tcp-bufsync")];
@@ -837,6 +876,7 @@ fn out_of_band_skip_does_not_exempt_in_band_required() {
             "blocked elsewhere",
             "M3",
         )],
+        fault_assert: vec![],
     };
     let m1 = Args {
         milestone: Some(Milestone(1)),
@@ -975,6 +1015,7 @@ fn skip_entry_short_circuits_run() {
         required: false,
         pre_skip: Some("test fixture".to_string()),
         perf_threshold_pct: None,
+        fault_assert: vec![],
     };
     let r = run_cell(&paths, &pc);
     match r.status {
@@ -2312,6 +2353,7 @@ fn planned_with_threshold(
         required,
         pre_skip: None,
         perf_threshold_pct: threshold,
+        fault_assert: vec![],
     }
 }
 
@@ -2526,6 +2568,7 @@ fn sample_manifest_with_one_required() -> Manifest {
         backends: vec!["pthreads-sync".to_string()],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
         skip: vec![],
+        fault_assert: vec![],
     }
 }
 
@@ -2643,6 +2686,7 @@ fn req_cov_inject_errs_loud_on_degenerate_manifest() {
         backends: vec!["pthreads-sync".to_string()],
         required: vec![],
         skip: vec![],
+        fault_assert: vec![],
     };
     std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
     let r = maybe_inject_required_coverage_negative(&mut m);
@@ -2830,5 +2874,277 @@ fn kernels_filename_for_algo_falls_back_to_default() {
     assert_eq!(
         kernels_filename_for_algo(std::path::Path::new("program.algo.nuc")),
         "kernels.rs"
+    );
+}
+
+// --------------------------------------------------------------------
+// TASK-0369: `[[fault_assert]]` — fault-report stderr differential.
+// --------------------------------------------------------------------
+
+/// Construct a `FaultAssert` for tests.
+fn fa(ex: &str, sc: &str, be: &str, subs: &[&str]) -> FaultAssert {
+    FaultAssert {
+        example: ex.to_string(),
+        schedule: sc.to_string(),
+        backend: be.to_string(),
+        stderr_contains: subs.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// A `Manifest` with the given required + fault_assert entries; the
+/// runnable/backends/skip fields are fixed defaults sufficient for the
+/// table/orphan unit tests (which never read them).
+fn manifest_fa(required: Vec<RequiredEntry>, fault_assert: Vec<FaultAssert>) -> Manifest {
+    Manifest {
+        runnable_examples: vec!["01-elementwise-add".to_string()],
+        backends: vec!["pthreads-sync".to_string()],
+        required,
+        skip: vec![],
+        fault_assert,
+    }
+}
+
+#[test]
+fn missing_fault_substring_all_present_is_none() {
+    let needles = vec![
+        "check loop `i` violated latency_max=1 ns:".to_string(),
+        "occurrence".to_string(),
+    ];
+    let stderr = "check loop `i` violated latency_max=1 ns: 256 occurrence(s)\n";
+    assert_eq!(missing_fault_substring(stderr, &needles), None);
+}
+
+#[test]
+fn missing_fault_substring_returns_first_absent_in_order() {
+    // The substring is the timing-INDEPENDENT shape; the count tail is
+    // not asserted, so a different count must still match.
+    let needles = vec![
+        "check loop `i` violated latency_max=1 ns:".to_string(),
+        "this-will-not-be-found".to_string(),
+        "also-absent".to_string(),
+    ];
+    // Count differs (3 vs the 256 we saw empirically) — must NOT matter.
+    let stderr = "check loop `i` violated latency_max=1 ns: 3 occurrence(s)\n";
+    assert_eq!(
+        missing_fault_substring(stderr, &needles),
+        Some("this-will-not-be-found")
+    );
+}
+
+#[test]
+fn missing_fault_substring_bites_when_fault_path_silent() {
+    // THE NEGATIVE ARM: if the fault report never reached stderr (e.g. a
+    // backend silently dropped the check loop), the expected substring is
+    // absent and the assertion MUST bite. A trivially-passing output.bin
+    // diff would have hidden exactly this.
+    let needles = vec!["check loop `i` violated latency_max=1 ns:".to_string()];
+    let stderr = ""; // clean run, fault report absent
+    assert_eq!(
+        missing_fault_substring(stderr, &needles),
+        Some("check loop `i` violated latency_max=1 ns:")
+    );
+}
+
+#[test]
+fn missing_fault_substring_empty_needles_is_none() {
+    // Defensive: an empty needle list (which `fault_assert_table`
+    // rejects at load, but the pure matcher must still be total) asserts
+    // nothing and so reports no miss.
+    let needles: Vec<String> = vec![];
+    assert_eq!(missing_fault_substring("anything", &needles), None);
+}
+
+#[test]
+fn fault_assert_table_accepts_valid() {
+    let m = manifest_fa(
+        vec![],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &["check loop `i` violated latency_max=1 ns:"],
+        )],
+    );
+    let table = m.fault_assert_table().expect("valid table");
+    assert_eq!(table.len(), 1);
+    assert_eq!(
+        table
+            .get(&cell("01-elementwise-add", "check_count", "pthreads-sync"))
+            .map(Vec::as_slice),
+        Some(["check loop `i` violated latency_max=1 ns:".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn fault_assert_table_rejects_empty_list() {
+    let m = manifest_fa(
+        vec![],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &[],
+        )],
+    );
+    let err = m
+        .fault_assert_table()
+        .expect_err("empty list must be rejected");
+    assert!(err.contains("asserts nothing"), "err was: {err}");
+}
+
+#[test]
+fn fault_assert_table_rejects_empty_substring() {
+    let m = manifest_fa(
+        vec![],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &["ok", ""],
+        )],
+    );
+    let err = m
+        .fault_assert_table()
+        .expect_err("empty substring must be rejected");
+    assert!(err.contains("empty substring"), "err was: {err}");
+}
+
+#[test]
+fn fault_assert_table_rejects_duplicate_triple() {
+    let m = manifest_fa(
+        vec![],
+        vec![
+            fa("01-elementwise-add", "check_count", "pthreads-sync", &["a"]),
+            fa("01-elementwise-add", "check_count", "pthreads-sync", &["b"]),
+        ],
+    );
+    let err = m
+        .fault_assert_table()
+        .expect_err("duplicate triple must be rejected");
+    assert!(err.contains("duplicate"), "err was: {err}");
+}
+
+#[test]
+fn fault_assert_orphan_typo_is_detected() {
+    // A fault_assert whose triple matches no planned cell (a typo, here a
+    // schedule name with no on-disk file / no planned cell) is the
+    // silent-vanish class — it must be flagged.
+    let m = manifest_fa(
+        vec![],
+        vec![fa("01-elementwise-add", "ghost", "pthreads-sync", &["x"])],
+    );
+    let plan = vec![planned(
+        "01-elementwise-add",
+        "check_count",
+        "pthreads-sync",
+    )];
+    let orphans = fault_assert_orphans(&m, &plan, &Args::default()).expect("ok");
+    assert_eq!(
+        orphans,
+        vec![cell("01-elementwise-add", "ghost", "pthreads-sync")]
+    );
+}
+
+#[test]
+fn fault_assert_matching_planned_cell_is_not_orphan() {
+    let m = manifest_fa(
+        vec![],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &["x"],
+        )],
+    );
+    let plan = vec![planned(
+        "01-elementwise-add",
+        "check_count",
+        "pthreads-sync",
+    )];
+    let orphans = fault_assert_orphans(&m, &plan, &Args::default()).expect("ok");
+    assert!(orphans.is_empty(), "expected no orphans, got {orphans:?}");
+}
+
+#[test]
+fn fault_assert_out_of_cli_scope_is_exempt() {
+    // `--example 01-...` must not flag a fault_assert for a different
+    // example as an orphan (it's simply out of this run's scope).
+    let m = manifest_fa(
+        vec![],
+        vec![fa("07-matmul", "naive", "pthreads-sync", &["x"])],
+    );
+    let plan: Vec<PlannedCell> = vec![];
+    let args = Args {
+        example: Some("01-elementwise-add".into()),
+        ..Args::default()
+    };
+    let orphans = fault_assert_orphans(&m, &plan, &args).expect("ok");
+    assert!(
+        orphans.is_empty(),
+        "out-of-scope must be exempt, got {orphans:?}"
+    );
+}
+
+#[test]
+fn fault_assert_out_of_milestone_band_is_exempt() {
+    // A fault_assert riding on an M6 required cell must not be flagged
+    // under `--milestone M1`: the cell is legitimately not planned this
+    // tier (inherits the required cell's band, mirroring plan_cells).
+    let m = manifest_fa(
+        vec![req(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            "M6",
+        )],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &["x"],
+        )],
+    );
+    let plan: Vec<PlannedCell> = vec![]; // out of band -> not planned
+    let args = Args {
+        milestone: Some(Milestone(1)),
+        ..Args::default()
+    };
+    let orphans = fault_assert_orphans(&m, &plan, &args).expect("ok");
+    assert!(
+        orphans.is_empty(),
+        "out-of-band required-backed fault_assert must be exempt, got {orphans:?}"
+    );
+}
+
+#[test]
+fn fault_assert_on_skipped_cell_is_flagged() {
+    // mped-architect P2 (cycle-222): a fault_assert that lands on a
+    // `[[skip]]`'d cell can NEVER fire — the skip short-circuits in
+    // run_cell before the artefact runs, so Phase-5 never executes. The
+    // cell IS planned (with a pre_skip), so a naive "in planned_set ⇒
+    // fine" check would wave it through — exactly the silent-vanish hole
+    // relocated from "typo" to "lands on a skip". It must be flagged.
+    let m = manifest_fa(
+        vec![],
+        vec![fa(
+            "01-elementwise-add",
+            "check_count",
+            "pthreads-sync",
+            &["x"],
+        )],
+    );
+    // The matching planned cell exists but is pre_skip'd.
+    let plan = vec![PlannedCell {
+        cell: cell("01-elementwise-add", "check_count", "pthreads-sync"),
+        required: false,
+        pre_skip: Some("declared skip".to_string()),
+        perf_threshold_pct: None,
+        fault_assert: vec!["x".to_string()],
+    }];
+    let orphans = fault_assert_orphans(&m, &plan, &Args::default()).expect("ok");
+    assert_eq!(
+        orphans,
+        vec![cell("01-elementwise-add", "check_count", "pthreads-sync")],
+        "a fault_assert on a skipped cell can never fire and must be flagged"
     );
 }

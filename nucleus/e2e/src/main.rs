@@ -82,6 +82,11 @@ struct Manifest {
     required: Vec<RequiredEntry>,
     #[serde(default)]
     skip: Vec<SkipEntry>,
+    /// Per-cell fault-report stderr assertions (TASK-0369). `#[serde(default)]`
+    /// so a manifest with no fault asserts is byte-identical to the
+    /// pre-feature shape and bare `just e2e` is unaffected.
+    #[serde(default)]
+    fault_assert: Vec<FaultAssert>,
 }
 
 /// The (example, schedule, backend) identity triple. This is the
@@ -165,6 +170,52 @@ struct SkipEntry {
 }
 
 impl SkipEntry {
+    fn cell(&self) -> Cell {
+        Cell {
+            example: self.example.clone(),
+            schedule: self.schedule.clone(),
+            backend: self.backend.clone(),
+        }
+    }
+}
+
+/// A `[[fault_assert]]` declaration (TASK-0369). On top of the normal
+/// output.bin differential, REQUIRE that the cell's run stderr contains
+/// every substring in `stderr_contains`.
+///
+/// Why this exists: the runtime-assertion / fault-reporting surface
+/// (`check loop V : on_violation = count|log`) writes its fault report
+/// to STDERR, deliberately — so the cross-backend differential on
+/// output.bin stays INDIFFERENT to check-loop presence (PRD §6.3.5).
+/// The consequence is that an output.bin-only cell exercising a check
+/// loop passes TRIVIALLY: the fault path never enters the comparison at
+/// all. This table closes that gap by giving the fault report its own
+/// cross-backend assertion.
+///
+/// Why a SUBSTRING (not a full-line / whole-stderr match): the fault
+/// report's occurrence count and any elapsed-ns figure are TIMING-
+/// derived (`_check_elapsed = monotonic_ns()-start`) and so NOT robustly
+/// bit-identical across backends/runs (the 255-vs-256 band the embedded
+/// fixture documents). Only the timing-INDEPENDENT shape is pinnable —
+/// presence + loop-var name + threshold-ns echo (TASK-0369 AC#3).
+/// Matching a substring also makes the assertion robust to incidental
+/// stderr noise (e.g. a `cargo build` warning a multi-process backend's
+/// `run.sh` rebuild emits before the program runs).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaultAssert {
+    example: String,
+    schedule: String,
+    backend: String,
+    /// Every listed substring MUST be present in the run's stderr. An
+    /// empty list (or an empty substring) is rejected at load
+    /// (`fault_assert_table`) — a fault assertion that asserts nothing
+    /// is a silent no-op, exactly the false-confidence class TASK-0163
+    /// guards against.
+    stderr_contains: Vec<String>,
+}
+
+impl FaultAssert {
     fn cell(&self) -> Cell {
         Cell {
             example: self.example.clone(),
@@ -273,6 +324,55 @@ impl Manifest {
                 )
             })?;
             map.insert(s.cell(), (s.reason.clone(), m));
+        }
+        Ok(map)
+    }
+
+    /// Parse + validate every `[[fault_assert]]` entry, returning a
+    /// `Cell -> Vec<substring>` map (TASK-0369). Fail-loud on:
+    ///   - an empty `stderr_contains` list (asserts nothing → silent
+    ///     no-op, the TASK-0163 false-confidence class);
+    ///   - an empty substring (matches every stderr → also a no-op);
+    ///   - a duplicate identity triple (two fault asserts on one cell —
+    ///     ambiguous; the author must merge them into one list).
+    ///
+    /// This is structural validation only. The cross-check that every
+    /// fault-assert triple actually corresponds to a planned/required
+    /// cell (the orphan/typo guard) is `fault_assert_orphans`, run after
+    /// `plan_cells` — mirroring how `required_coverage_gaps` backstops
+    /// `[[required]]`.
+    fn fault_assert_table(&self) -> Result<std::collections::BTreeMap<Cell, Vec<String>>, String> {
+        let mut map: std::collections::BTreeMap<Cell, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for fa in &self.fault_assert {
+            let where_ = || {
+                format!(
+                    "[[fault_assert]] (example={}, schedule={}, backend={})",
+                    fa.example, fa.schedule, fa.backend
+                )
+            };
+            if fa.stderr_contains.is_empty() {
+                return Err(format!(
+                    "{}: stderr_contains is empty — a fault assertion that \
+                     asserts nothing is a silent no-op; list at least the \
+                     timing-independent fault-line substring",
+                    where_()
+                ));
+            }
+            if fa.stderr_contains.iter().any(|s| s.is_empty()) {
+                return Err(format!(
+                    "{}: stderr_contains has an empty substring — an empty \
+                     substring matches every stderr and asserts nothing",
+                    where_()
+                ));
+            }
+            if map.insert(fa.cell(), fa.stderr_contains.clone()).is_some() {
+                return Err(format!(
+                    "{}: duplicate fault_assert for this identity triple — \
+                     merge the substrings into one [[fault_assert]] entry",
+                    where_()
+                ));
+            }
         }
         Ok(map)
     }
@@ -882,6 +982,13 @@ enum Phase {
     Build,
     Run,
     Diff,
+    /// Fault-report stderr assertion (TASK-0369). Runs AFTER `Diff`
+    /// passes: a `[[fault_assert]]` cell additionally requires that the
+    /// run's stderr contains every declared substring (the timing-
+    /// independent fault-line shape). A missing substring is a `Fault`
+    /// failure, distinct from a numeric `Diff` mismatch so the summary
+    /// names the right surface.
+    Fault,
 }
 
 impl fmt::Display for Phase {
@@ -891,6 +998,7 @@ impl fmt::Display for Phase {
             Phase::Build => "build",
             Phase::Run => "run",
             Phase::Diff => "diff",
+            Phase::Fault => "fault",
         })
     }
 }
@@ -951,6 +1059,10 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
     // coverage obligation either — see `required_coverage_gaps`).
     let required_map = manifest.required_milestones()?;
     let skip_map = manifest.skip_table()?;
+    // Per-cell fault-report stderr assertions (TASK-0369). Structural
+    // validation (non-empty list/substrings, no duplicate triple)
+    // happens here; the orphan/typo cross-check is `fault_assert_orphans`.
+    let fault_assert_map = manifest.fault_assert_table()?;
     // Per-cell perf threshold lookup (TASK-0023.03.02 Stage 3). Built
     // by walking BOTH `[[required]]` and `[[skip]]`. Precedence: a
     // `[[required]]` entry's threshold wins over a `[[skip]]` entry's
@@ -1052,11 +1164,13 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                     milestone_in_gate(*m, args.milestone).then(|| reason.clone())
                 });
                 let perf_threshold_pct = perf_threshold_map.get(&cell).copied();
+                let fault_assert = fault_assert_map.get(&cell).cloned().unwrap_or_default();
                 planned.push(PlannedCell {
                     cell,
                     required,
                     pre_skip,
                     perf_threshold_pct,
+                    fault_assert,
                 });
             }
         }
@@ -1080,6 +1194,15 @@ struct PlannedCell {
     /// when the cell is `required = true`; a breach on a skip-band cell
     /// is informational (see `SkipEntry::perf_threshold_pct`).
     perf_threshold_pct: Option<f64>,
+    /// Fault-report stderr substrings this cell must surface (TASK-0369).
+    /// Empty (the default for every cell with no `[[fault_assert]]`
+    /// declaration) ⇒ no fault check; `run_cell` skips the assertion
+    /// entirely, so cells without a declaration are byte-for-byte
+    /// unaffected. Non-empty ⇒ after the output.bin diff passes, every
+    /// listed substring must appear in the run's stderr or the cell is a
+    /// `Phase::Fault` failure. Unused in determinism mode (which never
+    /// runs the artefact).
+    fault_assert: Vec<String>,
 }
 
 /// Return `true` iff `cell` passes the active CLI narrowing flags
@@ -1199,6 +1322,67 @@ fn required_coverage_gaps(
         gaps.insert(cell);
     }
     Ok(gaps.into_iter().collect())
+}
+
+/// Dead-fault-assert guard for `[[fault_assert]]` (TASK-0369), the
+/// sibling of `required_coverage_gaps`. A fault assertion that can never
+/// fire silently checks NOTHING — a fault-path gate that is green for the
+/// wrong reason, the same silent-vanish class TASK-0163 closed for
+/// `[[required]]`. Return the in-scope fault-assert triples that will
+/// never run so the caller can hard-fail BEFORE building cells.
+///
+/// A fault assert can never fire in three ways; scoping mirrors
+/// `required_coverage_gaps` so the two stay in lockstep:
+///   - out of `--example`/`--schedule`/`--backend` scope ⇒ exempt (this
+///     run is simply not responsible for the cell);
+///   - matches a planned cell that genuinely RUNS (no `pre_skip`) ⇒ fine,
+///     the Phase-5 fault check fires for it;
+///   - matches a planned cell that is `pre_skip`'d ⇒ FLAG: a skipped cell
+///     short-circuits in `run_cell` before the artefact runs, so the
+///     fault check never executes — asserting on it is a dead no-op
+///     (the silent hole moves from "typo" to "lands on a `[[skip]]`",
+///     same class; mped-architect P2, cycle-222);
+///   - matches no planned cell AND its matching `[[required]]` entry is
+///     out of the cumulative milestone band ⇒ legitimately not run this
+///     tier, exempt (the fault assert has no milestone of its own; it
+///     inherits the required cell's band);
+///   - matches no planned cell otherwise ⇒ FLAG: a typo or a fault_assert
+///     on a cell that no longer exists.
+fn fault_assert_orphans(
+    manifest: &Manifest,
+    planned: &[PlannedCell],
+    args: &Args,
+) -> Result<Vec<Cell>, String> {
+    let required_map = manifest.required_milestones()?;
+
+    let mut orphans: BTreeSet<Cell> = BTreeSet::new();
+    for fa in &manifest.fault_assert {
+        let cell = fa.cell();
+        if !cell_matches_filters(&cell, args) {
+            continue;
+        }
+        match planned.iter().find(|p| p.cell == cell) {
+            // Planned AND runs: the Phase-5 fault check will fire. Fine.
+            Some(pc) if pc.pre_skip.is_none() => continue,
+            // Planned but pre_skip'd: never runs the artefact, so the
+            // fault assertion is dead. Flag it (loud > silent no-op).
+            Some(_) => {
+                orphans.insert(cell);
+            }
+            // Not planned. Legitimate iff a matching required entry is out
+            // of the active milestone band (same reason plan_cells dropped
+            // it); otherwise it is a typo / stale triple.
+            None => {
+                if let Some(m) = required_map.get(&cell) {
+                    if !milestone_in_gate(*m, args.milestone) {
+                        continue;
+                    }
+                }
+                orphans.insert(cell);
+            }
+        }
+    }
+    Ok(orphans.into_iter().collect())
 }
 
 // --------------------------------------------------------------------
@@ -1360,6 +1544,19 @@ fn kernels_filename_for_algo(algo_path: &std::path::Path) -> String {
         return DEFAULT.to_string();
     }
     format!("kernels{variant}.rs")
+}
+
+/// Return the first declared fault-report substring NOT present in
+/// `stderr`, or `None` if every substring is present (TASK-0369).
+/// Pure, so the substring contract is unit-testable without building an
+/// artefact (`run_cell` calls it on the real run stderr after the
+/// output.bin diff passes). Order of `needles` is preserved so the
+/// reported missing substring is deterministic.
+fn missing_fault_substring<'a>(stderr: &str, needles: &'a [String]) -> Option<&'a str> {
+    needles
+        .iter()
+        .map(String::as_str)
+        .find(|needle| !stderr.contains(needle))
 }
 
 fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
@@ -1789,6 +1986,40 @@ fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
             timings,
             corrupted,
         };
+    }
+
+    // ---- Phase 5: fault-report stderr assertion (TASK-0369) ------------
+    //
+    // Runs ONLY when this cell carries a `[[fault_assert]]` declaration
+    // (an empty list — every cell without one — skips this block, so the
+    // pre-feature pass/fail behaviour is byte-for-byte preserved). The
+    // fault report (`check loop ... on_violation = count|log`) is written
+    // to STDERR by design (PRD §6.3.5), so the output.bin diff above is
+    // INDIFFERENT to it; this phase is what actually exercises the fault
+    // path cross-backend. We assert SUBSTRING presence (not a full match)
+    // so the timing-derived count/ns tail — and any incidental build
+    // noise a multi-process `run.sh` rebuild prints — never make the
+    // assertion flaky (TASK-0369 AC#3 pins only the timing-INDEPENDENT
+    // shape: presence + loop-var + threshold echo).
+    if !planned.fault_assert.is_empty() {
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        if let Some(missing) = missing_fault_substring(&stderr, &planned.fault_assert) {
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Fault,
+                    detail: format!(
+                        "expected fault-report substring not found in run stderr: {missing:?} \
+                         (output.bin matched reference; the fault path did not surface its \
+                         report). stderr tail: {}",
+                        short_tail(&run.stderr, &run.stdout, 4)
+                    ),
+                },
+                timings,
+                corrupted,
+            };
+        }
     }
 
     CellResult {
@@ -4535,6 +4766,38 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
              (check for a typo or a stale entry after a rename), or be \
              moved to `[[skip]]` with a reason.",
             gaps.len(),
+            paths.manifest_path().display(),
+            listed
+        ));
+    }
+
+    // TASK-0369: a `[[fault_assert]]` triple that matches no planned cell
+    // silently asserts nothing — the same silent-vanish class as a
+    // typo'd `[[required]]`, applied to the fault path. Hard-fail here,
+    // naming every orphaned triple, before spending minutes building
+    // cells. Runs in BOTH run-mode and determinism-mode (both trust the
+    // manifest), exactly like the required-coverage gate above.
+    let fault_orphans = fault_assert_orphans(&manifest, &planned, &args)?;
+    if !fault_orphans.is_empty() {
+        let listed = fault_orphans
+            .iter()
+            .map(|c| {
+                format!(
+                    "(example={}, schedule={}, backend={})",
+                    c.example, c.schedule, c.backend
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "{} `[[fault_assert]]` cell(s) in {} can never fire: {}. A \
+             fault_assert must name an existing (example, schedule, \
+             backend) triple that actually RUNS this tier (check for a \
+             typo, a stale entry after a rename, a missing matching \
+             `[[required]]` declaration, or a fault_assert that lands on a \
+             `[[skip]]`'d cell — a skipped cell short-circuits before the \
+             artefact runs, so the fault check never executes).",
+            fault_orphans.len(),
             paths.manifest_path().display(),
             listed
         ));

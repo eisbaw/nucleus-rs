@@ -3364,3 +3364,121 @@ schedule = "embedded_check_count"
 backend  = "mp-uds-event"
 reason   = "TASK-0048.08: tier-3 embedded-only check-loop fixture (on_violation=count lowers to an AtomicU32 counter summarised over USART1 at program exit). Verified by 'just renode-embedded-check-count' (asserts 255-or-256 violations: trip-count 256 minus at most one iteration whose two clock reads fall in one un-stepped Renode SysTick quantum, measuring elapsed 0 ns; seeding is cancelled by the wrapping_sub) + the embedded-pattern unit tests, not the tier-1 RUNTIME differential."
 milestone = "M10"
+
+# --- TASK-0369: tier-1 fault-path differential (check_count) ----------
+#
+# The FIRST tier-1 (non-embedded) `check loop ... on_violation = count`
+# cell. Until now the runtime-assertion / fault-reporting surface was
+# differential-tested only on the tier-3 embedded fixtures (the
+# `embedded_check_count` skips just above), so the cross-backend
+# bit-identity invariant had ZERO coverage for the fault path on tier-1.
+#
+# 01-elementwise-add/schedules/check_count.sched.nuc = naive placement +
+# `check loop i : latency_max = 1ns, on_violation = count`. latency_max=1ns
+# guarantees the violation FIRES; the file-scope counter's Drop guard
+# prints ONE summary line to STDERR at program exit (the fault report is
+# stderr-by-design so output.bin stays bit-identical to reference.bin —
+# verified, all 7 backends BIT-IDENTICAL + fault-line PRESENT, cycle-222).
+#
+# Required across all 7 tier-1 backends (single-worker schedule: every
+# backend routes through the shared single-worker renderer, so the count
+# reporter is emitted + surfaced identically; the 3 single-binary
+# backends are exec'd directly and the 4 multi-process backends fall back
+# to single-process run.sh, whose stderr the harness captures). Tagged M6
+# (the complete-backend-matrix milestone) — the FULL cross-backend fault
+# differential is a 7-backend property, not an M1/M3-era one; the schedule
+# is a post-M6 robustness addition, so backdating it to M1 would be a lie.
+#
+# The paired `[[fault_assert]]` entries pin ONLY the timing-INDEPENDENT
+# fault-line shape (presence + loop-var + threshold echo). The occurrence
+# COUNT and elapsed-ns are timing-derived (`_check_elapsed = monotonic_ns()
+# - start`) and so NOT robustly bit-identical (the 255-vs-256 band the
+# embedded fixture documents) — they are deliberately NOT asserted
+# (TASK-0369 AC#3).
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# Fault-report stderr assertions for the check_count cells above. The
+# substring is the timing-INDEPENDENT shape only (loop-var `i` +
+# threshold `1 ns`); the count tail (`: <N> occurrence(s)`) is NOT pinned.
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "pthreads-sync"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-bufsync"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "pthreads-async"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-event"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "openmp-rs"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-tcp-poll"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
+
+[[fault_assert]]
+example  = "01-elementwise-add"
+schedule = "check_count"
+backend  = "mp-uds-event"
+stderr_contains = ["check loop `i` violated latency_max=1 ns:"]
