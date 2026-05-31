@@ -763,30 +763,44 @@ fn iv_is_partitioned(linked: &LinkedIR, iv: &str) -> bool {
 /// iff every worker really does hold the FULL array — i.e. `target` is
 /// broadcast whole, never band-partitioned.
 ///
-/// The transfer layer broadcasts `target` whole-array precisely when a
-/// dim of `target` is OPAQUE (data-dependent index), which is sticky in
-/// `transfer_inject::record_access_per_dim`. The UNSOUND case is the
-/// mirror image: a partitioned iv indexes `target` AFFINELY (a
-/// bin-partition, e.g. `histogram[b]` with `b` partitioned), so the
-/// transfer layer would band-partition `target` and a worker owning
-/// only its band would silently drop every scatter that lands outside
-/// it.
+/// An OPAQUE (data-dependent) index dim is ONE of several conditions
+/// under which the transfer layer broadcasts `target` whole-array
+/// (`compute_partition_bounds_with_dim_prefix` also drops to whole-array
+/// on all-`None` cover, sparse coverage, and multi-iv ambiguity);
+/// opacity is sticky in `transfer_inject::record_access_per_dim`. Rather
+/// than mirror that decision exactly, this discriminator is a
+/// CONSERVATIVE approximation of the truly-unsound set: it returns
+/// `false` (NOT whole-array ⇒ keep the scatter FATAL) iff ANY index
+/// expression into `target` — on EITHER a write LHS or a read DataRef,
+/// at any depth — affinely references a partitioned iv. That is a
+/// SUPERSET of the genuinely-unsound shapes (it may keep FATAL a few
+/// shapes the transfer layer would actually broadcast whole-array —
+/// safe, never the reverse). Two unsound shapes it must reject:
+///   - a partitioned iv indexes `target` affinely (`histogram[b]`, `b`
+///     partitioned ⇒ band-partition ⇒ a worker owning only its band
+///     drops out-of-band scatters); and
+///   - a cross-band affine self-read alongside the scatter
+///     (`h[input[i]] <-- inc(h[input[i]], h[i])`, `i` partitioned). Even
+///     though `h[input[i]]` makes dim 0 opaque (so the transfer layer
+///     WOULD broadcast `h` whole, NOT band it), the affine `h[i]` read
+///     does not decompose under replicate-then-element-wise-sum — each
+///     worker reads its OWN partial's `h[i]`, not the global — so the
+///     combine is unsound. The affine `h[i]` index trips this predicate
+///     and keeps it FATAL, which is correct. (This is the shape the unit
+///     test pins; the rejection is NOT because `h` is banded — it is
+///     not — but because an affine partitioned-iv index into the target
+///     exists at all.)
 ///
-/// So this returns `false` (NOT whole-array ⇒ keep the scatter FATAL)
-/// iff ANY index expression into `target` — on EITHER a write LHS or a
-/// read DataRef, anywhere in the algorithm — affinely references a
-/// partitioned iv. Otherwise `target` is only ever data-dependently
-/// indexed (or const/whole-aggregate), the transfer layer replicates it
-/// whole, and the replicate-then-sum shape is sound: returns `true`.
+/// Otherwise `target` is only ever data-dependently indexed (or
+/// const/whole-aggregate), the transfer layer replicates it whole, and
+/// the replicate-then-sum shape is sound: returns `true`.
 ///
 /// Walks `linked.algo.stmts` (source-order vector; deterministic). Uses
 /// `expr_contains_dataref_or_call` to skip data-dependent index dims
-/// (those are the OPAQUE/whole-array dims — the SOUND case, not the
-/// unsound one) and `collect_iter_var_refs` + `iv_is_partitioned` to
-/// detect an affine partitioned-iv index. The walk is intentionally
+/// (opaque/whole-array — the SOUND dim) and `collect_iter_var_refs` +
+/// `iv_is_partitioned` to detect an affine partitioned-iv index. Further
 /// conservative: a non-affine but partition-iv-mentioning index (e.g.
-/// `target[iv*iv]`) is treated as a partition-banding access and keeps
-/// the scatter FATAL.
+/// `target[iv*iv]`) is treated as a banding access and keeps it FATAL.
 fn scatter_target_replicates_whole_array(linked: &LinkedIR, target: &str) -> bool {
     // The full lexical scope of iter-var names this algorithm could
     // bind, so `collect_iter_var_refs` recognises every loop var (the
@@ -837,6 +851,24 @@ fn algo_target_has_affine_partitioned_index(
         match s {
             IrStmt::Dataflow { lhs, rhs } => {
                 if indexed_ref_bands_target(lhs, target, loop_vars, linked) {
+                    return true;
+                }
+                // TASK-0384 review P3: the LHS index sub-expressions may
+                // THEMSELVES nest a banding DataRef on `target`
+                // (`other[ target[j] ] <-- ...`, `j` partitioned). The
+                // RHS DataRef arm of `expr_bands_target` already descends
+                // index sub-expressions; mirror it on the LHS so the
+                // "at any depth, write LHS or read DataRef" contract in
+                // the docstring actually holds and the LHS path is not an
+                // asymmetric blind spot (additive-conservative — can only
+                // keep MORE scatters FATAL, never admit a banding one).
+                // This arm is unreachable in today's grammar so it has no
+                // dedicated bite-test yet — TASK-0390.
+                if lhs
+                    .indices
+                    .iter()
+                    .any(|ix| expr_bands_target(ix, target, loop_vars, linked))
+                {
                     return true;
                 }
                 if expr_bands_target(rhs, target, loop_vars, linked) {
@@ -2332,9 +2364,13 @@ mod tests {
     //
     // - `task0384_bin_partitioned_scatter_rmw_stays_fatal` — a scatter RMW
     //   whose target `h` is ALSO affinely indexed by the partitioned iv
-    //   (a BIN partition, `h[i]` with `i` partitioned) STAYS FATAL:
-    //   replicate-per-worker would band-partition `h` and drop
-    //   out-of-band scatters, so the combine is unsound. This is the
+    //   (`h[i]` with `i` partitioned) STAYS FATAL. NOTE (review P2): in
+    //   that fixture `h` is broadcast WHOLE-ARRAY (the `h[input[i]]`
+    //   access makes dim 0 opaque), NOT banded — the unsoundness is the
+    //   cross-band affine self-read `h[i]` that does not decompose under
+    //   replicate-then-element-wise-sum. The discriminator rejects it via
+    //   the conservative "any affine partitioned-iv index into the
+    //   target" rule. This is the
     //   `scatter_target_replicates_whole_array == false` arm.
     //
     // - `task0373_unpartitioned_scatter_rmw_read_stays_advisory` — the
@@ -2570,24 +2606,35 @@ mod tests {
         );
     }
 
-    /// TASK-0384 (fatal arm — the soundness boundary): a BIN partition.
-    /// A scatter RMW whose SCATTER TARGET `h` is ALSO affinely indexed by
-    /// the partitioned iv — so `h` would be BAND-partitioned, not
-    /// replicated whole-array. Replicate-per-worker + element-wise-sum is
-    /// UNSOUND here (a worker owning only its bin band would drop every
-    /// scatter outside it), so the scatter STAYS FATAL.
-    /// `scatter_target_replicates_whole_array` returns false because an
-    /// affine `h[i]` access (with `i` partitioned) bands the target.
+    /// TASK-0384 (fatal arm — the soundness boundary). A scatter RMW
+    /// whose target `h` is ALSO affinely indexed by the partitioned iv
+    /// STAYS FATAL. `scatter_target_replicates_whole_array` returns false
+    /// because the affine `h[i]` access (with `i` partitioned) trips the
+    /// "affine partitioned-iv index into the target" predicate.
     ///
-    /// Fixture: the canonical scatter `h[input[i]] <-- inc(h[input[i]], …)`
-    /// — the RHS `h[input[i]]` is the data-dependent read that fires the
-    /// `DataDependentStride` error AND stamps `is_scatter_rmw == true` —
-    /// but `inc` ALSO reads `h[i]` affinely. With `i` partitioned, that
-    /// affine access band-partitions `h`, so the replicate shape is
-    /// unsound and the canonical-shape admit (the test above) flips back
-    /// to FATAL. The two-arg `inc` makes the affine self-read explicit
-    /// (the canonical example has no such access — it is the boundary
-    /// this fixture probes).
+    /// MECHANISM (review P2 — be precise, do NOT claim `h` is banded): in
+    /// THIS fixture the data-dependent `h[input[i]]` access marks `h`
+    /// dim 0 OPAQUE (sticky in `transfer_inject::record_access_per_dim`),
+    /// so the transfer layer would actually broadcast `h` WHOLE-ARRAY —
+    /// it does NOT band-partition it. The unsoundness is therefore NOT
+    /// "a worker drops out-of-band scatters"; it is the cross-band affine
+    /// self-read `h[i]`: under replicate-then-element-wise-sum each worker
+    /// reads its OWN partial's `h[i]` (zero outside its scatter slice),
+    /// not the global accumulated value, so the combine is wrong. FATAL
+    /// is the correct outcome, and the discriminator reaches it via the
+    /// conservative "any affine partitioned-iv index into the target"
+    /// rule — a SUPERSET of the truly-unsound set (see the helper
+    /// docstring). The genuine band-partition shape (`h[b]`, `b`
+    /// partitioned, no data-dependent dim) is also rejected by the same
+    /// rule but is not expressible in a canonical scatter today.
+    ///
+    /// Fixture: `h[input[i]] <-- inc(h[input[i]], h[i])` — the RHS
+    /// `h[input[i]]` fires `DataDependentStride` + stamps
+    /// `is_scatter_rmw == true`; the extra affine `h[i]` arg is what flips
+    /// the canonical-shape admit (the test above) back to FATAL. The
+    /// two-arg `inc` makes the affine self-read explicit (the canonical
+    /// 08-histogram example has no such access — this is the boundary the
+    /// fixture probes).
     #[test]
     fn task0384_bin_partitioned_scatter_rmw_stays_fatal() {
         // for i : 0..8 { h[input[i]] <-- inc(h[input[i]], h[i]) }
