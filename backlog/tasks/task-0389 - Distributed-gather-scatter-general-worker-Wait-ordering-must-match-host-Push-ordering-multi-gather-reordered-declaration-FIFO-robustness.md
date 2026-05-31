@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-05-31 14:34'
-updated_date: '2026-05-31 17:58'
+updated_date: '2026-05-31 20:14'
 labels:
   - compiler
   - gather
@@ -76,4 +76,6 @@ GATE: just build OK; just clippy OK (0 warn); just test 0 failed; just test-rele
 DOC RECONCILIATION (AC#6): build.rs collect_dataref_access doc + collect_dataref_access_expr body LIMITATION/TASK-0389 block rewritten to resolved state (index-first is now purely the data_in dependency contract; FIFO ordering decoupled via the build_waits_for_op sort). No doc-lie.
 
 FIXTURE NOTE: prog.gather_revdecl.algo.nuc reuses the SAME input.bin/reference.bin oracle because loaders are OFFSET-keyed (order-independent). kernels.gather_revdecl.rs is a verbatim functional copy of kernels.gather.rs (variant rule derives the filename from the program stem); header documents the keep-in-sync requirement.
+
+Forward-carried from TASK-0389.01 (DONE): the RESIDUAL filed at TASK-0389 close was REAL, not vacuous. The TASK-0389 producer-rank Wait sort matched the host only for the COMMON case (Push lands right after producer). For >=2 loop-OUTPUT data on ONE channel co-hoisting past the SAME Repeat, splice_after_repeat REVERSED the co-hoisted Pushes (inserted each immediately after the Repeat => most-recent landed closest), so the host sent reverse-rank while the worker waited rank-order — captured as a real mp-tcp-bufsync read_msg_expect panic ("receiver expected 2, wire delivered 3") on the NEW example 18-multigather/distributed. FIX (TASK-0389.01): splice_pushes_global feeds Pushes in producer-rank order + splice helpers APPEND each new Push after already-spliced Pushes => host textual Push order == producer_rank order == worker Wait order. e2e 371/314/0/57/0 -> 385/328/0/57/0 (+14). The TASK-0389 SCOPE-of-the-producer-rank-key comment is now rewritten to the RESOLVED state.
 <!-- SECTION:NOTES:END -->
