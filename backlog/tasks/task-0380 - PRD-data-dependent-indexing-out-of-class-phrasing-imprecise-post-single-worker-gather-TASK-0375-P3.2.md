@@ -7,7 +7,7 @@ status: Done
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-31 01:30'
-updated_date: '2026-05-31 01:45'
+updated_date: '2026-05-31 02:00'
 labels:
   - docs
   - doc-lie
@@ -27,6 +27,8 @@ DOC-HONESTY follow-up to TASK-0375 (architect P3.2, gather review gate). PRD.md:
 
 <!-- SECTION:NOTES:BEGIN -->
 Implementation plan (cycle-219 doc-honesty): surgical PRD.md edits at two sites. (a) Section 3 Non-goals lines 117-121; (b) risks section lines 1299-1304. Add PRECISION without introducing a new lie. Verified sub-claims (traced before writing): 17-spmv/gather example EXISTS (prog.gather.algo.nuc); single-worker gather READ x[col[k]] compiles 7-backend bit-identical (TASK-0341.03.01); DISTRIBUTED gather UNSUPPORTED (halo_inference DataDependentStride fatal-under-partition, TASK-0373 To Do); scatter / data-dependent WRITE UNSUPPORTED (TASK-0376 To Do); convergence-check / data-dependent loop termination is a grammar epic UNSUPPORTED (TASK-0341.02.01 To Do); recursion still out. So the sparse-matrix-solver caveat (PRD:1303) stays TRUE — do NOT weaken it. Plan: qualify the blanket "data-dependent indexing ... out" to acknowledge a single-worker gather READ is expressible (cite 17-spmv/gather / TASK-0341.03.01) while keeping out: distribution of a gather, scatter/data-dependent writes, data-dependent control flow (loop termination), recursion, and therefore full sparse solvers. Keep affine-static-class spirit. Docs-only; e2e 329/272/0/57/0 invariant.
+
+ORCHESTRATOR REVIEW GATE (2026-05-31, independent, read-only): GO with one P2 doc-imprecision fixed in-thread. mped-architect P2: PRD.md:122 said gather is bit-identical across ALL backends, but the verified fact is 7 TIER-1 backends (17-spmv/gather is [[required]] on 7 in e2e-matrix.toml; the 8th crate embedded-pattern tier-3 has no gather schedule so it is never verified). This was recurring-defect-pattern #1 re-entering through the very doc-honesty fix meant to retire it (implementer own notes said 7-backend x3 then wrote all backends). FIXED: PRD.md:122 all backends -> all 7 tier-1 backends, matching the risks-section twin (backend-portable), the 17-spmv README (all 7 tier-1), and PRD:1281 (Tier 1 is seven backends). PRD.md is gate-inert (referenced only as a repo-root .exists() marker + docstrings, never include_str/content-asserted), so the phrase fix cannot affect build/test/e2e. All other PRD sub-claims traced to code/tracker and confirmed accurate (distributed gather rejected TASK-0373; scatter out TASK-0376; convergence-termination out TASK-0341.02.01; sparse-solver caveat survived + correctly strengthened). e2e 329/272/0/57/0 held.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

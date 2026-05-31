@@ -119,8 +119,8 @@ Listed explicitly so they stop creeping in.
   algorithms whose decomposition fits the model," not "portable for
   all algorithms." A single-worker *gather READ* (`x[col[k]]`, a
   data-dependent index in read position) is now expressible and is
-  bit-identical across all backends in single-worker form (see the
-  17-spmv/gather example, TASK-0341.03.01) — but it does NOT
+  bit-identical across all 7 tier-1 backends in single-worker form
+  (see the 17-spmv/gather example, TASK-0341.03.01) — but it does NOT
   distribute (a partitioned gather is fail-loud rejected, TASK-0373).
   What stays out: distribution of a gather, data-dependent *writes*
   (scatter, e.g. `hist[bin]`), data-dependent control flow

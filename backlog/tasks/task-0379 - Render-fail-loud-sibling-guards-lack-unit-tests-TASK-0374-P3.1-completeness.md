@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-31 01:30'
-updated_date: '2026-05-31 01:45'
+updated_date: '2026-05-31 02:00'
 labels:
   - backend
   - gather
@@ -33,6 +33,8 @@ Implementation plan (cycle-219 hardening): add nucleus/backend-common/tests/rend
 (4) render_flat_index rank>=2 missing-ResolvedType -> ContractGap "has no ResolvedType" (fire.rs:529-536). REACHABILITY NUANCE: must use >=2 indices (len==1 returns Ok early at :524), AND data NAME must be present in NameTables.data (data_name at :528 fires ContractGap "has no name" first if absent) while ResolvedType absent from sidecar.
 (5) render_flat_index rank/shape mismatch -> UnsupportedFeature "rank/shape mismatch with index list" (fire.rs:538-544); e.g. 2 indices over rank-3 dims.
 Bonus: positive control rank-2 row-major stride render. Honest docstring: these are SIBLINGS of the 4 TASK-0374 arms, mostly NOT source-reachable (lowering rejects Call-in-index + DataRef/Call in loop-bound; flat-index guards sit behind shape-valid callers) — UNLIKE the partial-rank arm which IS source-reachable. Tests pin guard BEHAVIOR against silent refactor-removal. Pure hardening; e2e 329/272/0/57/0 invariant.
+
+ORCHESTRATOR REVIEW GATE (2026-05-31, independent, read-only): GO x2. qa-test-runner re-ran the gate: build clean; clippy exit 0 (forced non-cached re-lint, doc_lazy_continuation fix confirmed); test dev 1165/0/3 (render_guard_siblings = 8 passed); test-release 1164/0/3 (-1 = known TASK-0291 divergence); e2e 329/272/0/57/0 on two byte-identical runs. mped-architect empirically confirmed all 5 guard reachabilities (distinct error messages prove each test hits its INTENDED guard not a sibling; flat-index len==1 early-return + data_name-before-ResolvedType ordering verified) and confirmed the unreachability claims hold against lowering. P3 sibling-sweep gap (4 more fire.rs guards: :376 ArgBinding::Nested + :426/:438/:446 classify_data_slice) filed as TASK-0381.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
