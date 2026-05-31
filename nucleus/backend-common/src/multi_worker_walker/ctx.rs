@@ -25,44 +25,32 @@ pub type RendezvousId = usize;
 ///
 /// Mirrors the per-backend `Plan` field set, but only the references
 /// the walker actually reads — no ownership transfer, no copying. The
-/// `rendezvous_prefix` field is the per-backend knob that distinguishes
-/// the three prefix-using backends (`"slot"` for pthreads-sync, `"ring"`
-/// for pthreads-async, `"chan"` for mp-tcp-event); mp-tcp-bufsync
-/// bypasses `render_worker_events` entirely and calls `render_wait_assign`
-/// directly with no prefix involvement. Every other field is shared
-/// verbatim across all `render_worker_events`-using backends.
+/// `rendezvous_prefix` field is the per-backend knob that names the
+/// generated rendezvous variable (`"slot"`, `"ring"`, `"mpi"`, …);
+/// mp-tcp-bufsync bypasses `render_worker_events` entirely and calls
+/// `render_wait_assign` directly with no prefix involvement. Every
+/// other field is shared verbatim across all `render_worker_events`-
+/// using backends.
 ///
-/// Grep witness (cycle 141 TASK-0322 fold-back, line stamps re-
-/// verified cycle 181b after cycle-180 mp-tcp-event multi_worker.rs
-/// directory-split shifted both file path and line): `grep -n
-/// 'rendezvous_prefix:'
-/// nucleus/backends/pthreads-{sync,async}/src/multi_worker.rs
-/// nucleus/backends/mp-tcp-event/src/multi_worker/*.rs` yields
-/// exactly three field-init sites (pthreads-sync
-/// `multi_worker.rs:532` `"slot"`, pthreads-async
-/// `multi_worker.rs:518` `"ring"`, mp-tcp-event
-/// `multi_worker/worker_program.rs:130` `"chan"`).
+/// The authoritative (non-stale) list of prefix values is whatever the
+/// field-init sites set — `grep -rn 'rendezvous_prefix:' nucleus/backends`
+/// (line numbers deliberately omitted here: precomputed citations went
+/// stale repeatedly, see memory `feedback-comment-doc-lie-recurring`).
 pub struct WalkerCtx<'a> {
     pub names: &'a NameTables,
     pub sidecar: &'a NameSidecar,
-    /// `"slot"` for pthreads-sync, `"ring"` for pthreads-async,
-    /// `"chan"` for mp-tcp-event. Used in the two emit-string
-    /// substitutions in the sibling
-    /// `event_walker` module (`super::event_walker`):
-    /// `{prefix}{rendezvous_prefix}_{id}.push(...)`
-    /// (the `Event::Push` branch) and `{prefix}{rendezvous_prefix}_{id}.wait()`
-    /// (the `Event::Wait` branch, fed into `render_wait_assign`).
-    ///
-    /// Grep witness (cycle 141 TASK-0322 fold-back, file path + line
-    /// stamps re-verified cycle 181b after cycle-181
-    /// multi_worker_walker.rs directory-split shifted the emit-
-    /// template sites into sub-modules): `grep -n
-    /// '{rendezvous_prefix}_' nucleus/backend-common/src/` yields
-    /// exactly two emit-template sites (Push at
-    /// `multi_worker_walker/event_walker.rs:454`, Wait at
-    /// `multi_worker_walker/event_walker.rs:474` — both pinned
-    /// parametrically by `task0321_*` / `task0322_*` in
-    /// `nucleus/backend-common/tests/wait_assign_slice.rs`).
+    /// The per-backend rendezvous variable-name prefix (e.g. `"slot"`
+    /// for pthreads-sync / openmp-rs, `"ring"` for pthreads-async,
+    /// `"chan"` for the mp-tcp/uds event backends, `"mpi"` for
+    /// mpi-blocking). Used in the two emit-string substitutions in the
+    /// sibling `event_walker` module (`super::event_walker`):
+    /// `{prefix}{rendezvous_prefix}_{id}.push(...)` (the `Event::Push`
+    /// branch) and `{prefix}{rendezvous_prefix}_{id}.wait()` (the
+    /// `Event::Wait` branch, fed into `render_wait_assign`). The two
+    /// emit-template sites are pinned parametrically by `task0321_*` /
+    /// `task0322_*` in `nucleus/backend-common/tests/wait_assign_slice.rs`
+    /// (`grep -rn '{rendezvous_prefix}_' nucleus/backend-common/src` for
+    /// the current locations — line numbers omitted, they drift).
     pub rendezvous_prefix: &'a str,
     /// Cross-worker Push/Wait pair -> rendezvous index. Both backends
     /// key by `(DataId, SeqTag)` and assign indices ascending.

@@ -279,3 +279,51 @@ fn non_whole_world_barrier_is_rejected_loud() {
         other => panic!("expected UnsupportedFeature(Comm_split), got {other:?}"),
     }
 }
+
+#[test]
+fn one_worker_push_and_wait_of_same_pair_is_rejected_loud() {
+    // The emit binds ONE MPI channel per rendezvous id and assumes a
+    // worker uses each rid for EITHER push OR wait (single-
+    // producer/single-consumer per pair). Make a worker BOTH push and
+    // wait the SAME (data, seq): append a Wait of a datum the worker
+    // already Pushes (same data/tile/seq, src = the push's dst). The
+    // emit must fail loud (ContractGap), not silently emit one binding
+    // whose send/recv direction is ambiguous (review-gate P3 hardening).
+    let mut r = lower_02_split();
+    // Find a worker with a Push; clone the push's (data, tile, seq) and
+    // append a Wait of the same pair sourced from the push's dst.
+    let mut injected = false;
+    'outer: for evs in r.per_worker.values_mut() {
+        for i in 0..evs.len() {
+            if let Event::Push {
+                dst, data, tile, seq, ..
+            } = &evs[i]
+            {
+                let wait = Event::Wait {
+                    src: *dst,
+                    data: *data,
+                    tile: tile.clone(),
+                    seq: *seq,
+                };
+                evs.push(wait);
+                injected = true;
+                break 'outer;
+            }
+        }
+    }
+    assert!(injected, "expected at least one Push to clone into a Wait");
+
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/push_and_wait_same");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let err = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
+        .expect_err("one worker pushing AND waiting the same pair must be rejected");
+    match err {
+        EmitError::ContractGap(msg) => assert!(
+            msg.contains("BOTH a Push and a Wait"),
+            "rejection must name the push-XOR-wait invariant violation:\n{msg}"
+        ),
+        other => panic!("expected ContractGap(push-and-wait), got {other:?}"),
+    }
+}

@@ -69,6 +69,14 @@ use backend_common::render::{rust_scalar_type, EmitError};
 /// Push/Wait pair). Shared alias from the walker; doubles as the MPI
 /// message TAG (see module docstring on why per-rid tags are load-
 /// bearing for value-correctness).
+///
+/// Tag-space note: this `usize` rid is emitted as a bare `Tag`
+/// (`c_int`) literal. MPI guarantees `MPI_TAG_UB >= 32767`, so a
+/// schedule with more than ~32k distinct cross-worker transfers could
+/// emit a tag outside the portable range. No shipped schedule emits
+/// more than a handful of rids; if that ever changes the fix is a
+/// modular tag scheme keyed on (peer, generation) rather than a global
+/// rid counter (review-gate P3, cycle M7-multiworker).
 type ChanId = RendezvousId;
 /// Stable id of one barrier — the contract-carried [`SyncTag`]
 /// (TASK-0172). Same value for every participant of the barrier.
@@ -186,6 +194,15 @@ impl<'a> Plan<'a> {
         // to participate; `mpiexec -n N` launches exactly the used-worker
         // count, so a subset participant set would make the participating
         // ranks' `world.barrier()` block on a rank that never calls it.
+        //
+        // This guard checks the participant SET, not the per-rank barrier
+        // CALL COUNT. Equal counts are guaranteed UPSTREAM: `inject_syncs`
+        // refuses to emit a barrier inside a `partition=workers` scope (the
+        // one place per-rank loop trip-counts could diverge), so every
+        // whole-world barrier sits at a uniform-iteration point and all
+        // ranks reach it the same number of times. If that upstream
+        // invariant ever regressed, `check-mpi`'s `timeout` wrapper would
+        // catch the resulting deadlock loud (review-gate P3.1).
         let all_used: BTreeSet<WorkerId> = used_workers.iter().copied().collect();
         for (tag, parts) in &barrier_participants {
             if *parts != all_used {
@@ -444,11 +461,13 @@ impl<'a, C: Communicator> WorldBar<'a, C> {
 
     /// Channel descriptors a worker touches, in ChanId order.
     fn chans_used_by(&self, worker: WorkerId) -> Result<Vec<ChanDecl>, EmitError> {
-        // rid -> peer rank, collected by scanning Push.dst / Wait.src.
-        let mut peer_of: BTreeMap<ChanId, i32> = BTreeMap::new();
+        // rid -> (peer rank, direction), collected by scanning Push.dst /
+        // Wait.src. The direction enforces the push-XOR-wait-per-rid
+        // invariant (see `record_peer`).
+        let mut peer_of: BTreeMap<ChanId, (i32, Dir)> = BTreeMap::new();
         self.collect_chan_peers(&self.per_worker[&worker], &mut peer_of)?;
         let mut out: Vec<ChanDecl> = Vec::new();
-        for (id, peer_rank) in peer_of {
+        for (id, (peer_rank, _dir)) in peer_of {
             // Recover the (data, seq) for this rid to name it + type it.
             let (data, _seq) = self
                 .chan_ids
@@ -469,26 +488,30 @@ impl<'a, C: Communicator> WorldBar<'a, C> {
     }
 
     /// Walk a worker's events (recursively into loops) recording, per
-    /// rid, the peer rank of the matching Push/Wait. Fails loud if the
-    /// same rid is used for BOTH a push and a wait in one worker (would
-    /// mean a single worker is both producer and consumer of the pair —
-    /// a projection-layer contract violation) or with inconsistent peers.
+    /// rid, the peer rank AND direction of the matching Push/Wait. Fails
+    /// loud if the same rid is used for BOTH a push and a wait in one
+    /// worker (a single worker as both producer and consumer of one pair
+    /// — a projection-layer contract violation) or resolves to two peer
+    /// ranks. The direction check makes the "each rid is used for EITHER
+    /// push OR wait" invariant (relied on when emitting ONE chan binding
+    /// per rid) a fail-loud guard rather than an unchecked comment
+    /// (review-gate P3, cycle M7-multiworker).
     fn collect_chan_peers(
         &self,
         events: &[Event],
-        out: &mut BTreeMap<ChanId, i32>,
+        out: &mut BTreeMap<ChanId, (i32, Dir)>,
     ) -> Result<(), EmitError> {
         for e in events {
             match e {
                 Event::Push { data, dst, seq, .. } => {
                     let id = self.chan_id(*data, *seq)?;
                     let peer = self.rank_for(*dst)?;
-                    self.record_peer(out, id, peer)?;
+                    self.record_peer(out, id, peer, Dir::Push)?;
                 }
                 Event::Wait { data, src, seq, .. } => {
                     let id = self.chan_id(*data, *seq)?;
                     let peer = self.rank_for(*src)?;
-                    self.record_peer(out, id, peer)?;
+                    self.record_peer(out, id, peer, Dir::Wait)?;
                 }
                 Event::Loop { body, .. } => self.collect_chan_peers(body, out)?,
                 Event::Fire { .. }
@@ -502,15 +525,22 @@ impl<'a, C: Communicator> WorldBar<'a, C> {
 
     fn record_peer(
         &self,
-        out: &mut BTreeMap<ChanId, i32>,
+        out: &mut BTreeMap<ChanId, (i32, Dir)>,
         id: ChanId,
         peer: i32,
+        dir: Dir,
     ) -> Result<(), EmitError> {
-        match out.insert(id, peer) {
-            Some(prev) if prev != peer => Err(EmitError::ContractGap(format!(
-                "rendezvous id {id} resolves to two peer ranks ({prev} and {peer}) within one \
-                 worker — the single-producer/single-consumer-per-pair invariant is violated \
+        match out.insert(id, (peer, dir)) {
+            Some((prev_peer, _)) if prev_peer != peer => Err(EmitError::ContractGap(format!(
+                "rendezvous id {id} resolves to two peer ranks ({prev_peer} and {peer}) within \
+                 one worker — the single-producer/single-consumer-per-pair invariant is violated \
                  (projection-layer bug)"
+            ))),
+            Some((_, prev_dir)) if prev_dir != dir => Err(EmitError::ContractGap(format!(
+                "rendezvous id {id} is used for BOTH a Push and a Wait within one worker — a \
+                 worker cannot be both producer and consumer of the same (data, seq) pair \
+                 (projection-layer contract violation; would make the single chan binding's \
+                 send/recv direction ambiguous)"
             ))),
             _ => Ok(()),
         }
@@ -614,6 +644,14 @@ struct ChanDecl {
     peer_rank: i32,
     data: DataId,
     name: String,
+}
+
+/// Direction a worker uses a rendezvous id (used to fail loud if one
+/// worker uses the same rid for both — see `record_peer`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Dir {
+    Push,
+    Wait,
 }
 
 /// True if any event (recursively) carries a `check_frame`.
