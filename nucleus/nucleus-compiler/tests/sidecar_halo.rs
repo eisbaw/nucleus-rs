@@ -1098,7 +1098,7 @@ fn task0304_05_stencil_distributed_transfer_inject_halo_one_extension_on_img_in_
             expected,
             "Push of img_in to {:?}: y bound MUST EQUAL band±1 \
              (halo_widths[blur3][y] = 1; extension expected by \
-             transfer_inject::extend_xfer_tiles_inner). Defends the \
+             transfer_inject::tiles::extend_xfer_tiles_inner). Defends the \
              cycle-83 TASK-0263 narrative at \
              05-stencil/schedules/distributed.sched.nuc:30-34. \
              Got bound={}..{}, expected={}..{} (band was {}..{}). \
@@ -1291,7 +1291,7 @@ fn task0310_05_stencil_distributed_2d_transfer_inject_halo_one_extension_on_img_
             expected_y,
             "Push of img_in to {:?}: y bound MUST EQUAL band_y±1 \
              (halo_widths[blur3][y] = 1; extension expected by \
-             transfer_inject::extend_xfer_tiles_inner on the 2D-grid \
+             transfer_inject::tiles::extend_xfer_tiles_inner on the 2D-grid \
              distributed-2d schedule). Defends the cycle-83 TASK-0263 \
              narrative extended to the partition=blocks2d shape at \
              05-stencil/schedules/distributed-2d.sched.nuc. \

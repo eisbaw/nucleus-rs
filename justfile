@@ -787,7 +787,6 @@ check-mega-files:
         | awk '$1 > 1000 {print $2}' \
         | sort > $oversized_f; \
     printf '%s\n' \
-        'nucleus/nucleus-compiler/src/passes/transfer_inject.rs' \
         'nucleus/nucleus-compiler/src/passes/reuse_inference.rs' \
         'nucleus/nucleus-compiler/src/sched/lower.rs' \
         'nucleus/nucleus-compiler/src/passes/halo_inference.rs' \
