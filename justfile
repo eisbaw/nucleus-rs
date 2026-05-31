@@ -713,19 +713,22 @@ check-doc-citation-staleness-bare:
 # fence.
 #
 # Scope: walks `nucleus/backend-common/src`,
-# `nucleus/nucleus-compiler/src`, `nucleus/backends/*/src`, and
-# `nucleus/e2e/src` (the last one added cycle 190 / TASK-0342 — qa
-# cycle-185b P3.1 surfaced the pre-cycle-190 exclusion as a
-# documentation/expectation lag after TASK-0340 slice-10 carved
+# `nucleus/nucleus-compiler/src`, `nucleus/backends/*/src`,
+# `nucleus/driver/src`, and `nucleus/e2e/src` (e2e added cycle 190 /
+# TASK-0342 — qa cycle-185b P3.1 surfaced the pre-cycle-190 exclusion as
+# a documentation/expectation lag after TASK-0340 slice-10 carved
 # e2e/src/main.rs from 7316→4716 LoC and added tests.rs at 2635 LoC,
-# both still >1000 and neither in the fence). The following sub-trees
-# remain DELIBERATELY excluded:
-#   - `nucleus/driver`, `nucleus/mp-tcp-common`, `nucleus/test-common`,
-#     `nucleus/nucleus` — currently NO file >1000 LoC by coincidence
-#     of size, not by rule. Widen the scope when any grows past 1000.
+# both still >1000 and neither in the fence; driver/src added TASK-0388
+# after main.rs grew to 1242 LoC — the "widen when any grows past 1000"
+# trigger below fired, and main.rs was split into args.rs + dispatch.rs
+# to land it under the fence). The following sub-trees remain
+# DELIBERATELY excluded:
+#   - `nucleus/mp-tcp-common`, `nucleus/test-common`, `nucleus/nucleus`
+#     — currently NO file >1000 LoC by coincidence of size, not by rule.
+#     Widen the scope when any grows past 1000.
 #
 # Allow-list canonical reproducer: `find
-# nucleus/{backend-common,nucleus-compiler,backends,e2e}/src -name '*.rs'
+# nucleus/{backend-common,nucleus-compiler,backends,driver,e2e}/src -name '*.rs'
 # -exec wc -l {} \; | sort -rn | awk '$1 > 1000 {print $2}'`.
 #
 # Each entry is a TASK-0340 AC#2 split target — the allow-list shrinks
@@ -748,7 +751,7 @@ check-mega-files:
     oversized_f=$(mktemp); \
     allow_f=$(mktemp); \
     trap "rm -f $oversized_f $allow_f" EXIT; \
-    find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src nucleus/e2e/src -name '*.rs' -exec wc -l {} \; \
+    find nucleus/backend-common/src nucleus/nucleus-compiler/src nucleus/backends/*/src nucleus/driver/src nucleus/e2e/src -name '*.rs' -exec wc -l {} \; \
         | awk '$1 > 1000 {print $2}' \
         | sort > $oversized_f; \
     printf '%s\n' \
