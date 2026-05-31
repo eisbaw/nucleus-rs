@@ -1056,6 +1056,75 @@ schedule = "distributed_gather"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 17-spmv/distributed_gather_revdecl: TASK-0389 — FIFO host-Push /
+# worker-Wait ORDERING ROBUSTNESS. Drives prog.gather_revdecl.algo.nuc,
+# a byte-for-byte functional copy of prog.gather.algo.nuc whose ONLY
+# difference is declaration/load ORDER: the gathered (outer) array `x`
+# is produced BEFORE its gather-index array `col_idx`.
+#
+# Two independent per-channel orderings govern a distributed gather on a
+# strict-FIFO host->worker channel (mp-tcp-bufsync / mp-tcp-poll, via
+# wire::read_msg_expect): the HOST Push order follows producer-statement
+# position (splice_pushes_global), the WORKER Wait order followed
+# data_in TRAVERSAL order (build_waits_for_op; the gather index array is
+# index-FIRST per collect_dataref_access_expr). They coincided in
+# prog.gather.algo.nuc ONLY because col_idx is declared before x. This
+# reversed-declaration fixture makes them DIVERGE — host sends
+# {val, x, col_idx}, the gather index-first traversal makes the worker
+# wait {val, col_idx, x}. WITHOUT the TASK-0389 root fix this cell
+# fails LOUD on the strict-FIFO backends (read_msg_expect seq/tag
+# mismatch: "receiver expected 4, wire delivered 8"); masked on the
+# per-seq-demux event backends. The root fix sorts the worker's
+# per-channel Wait sequence into the host's per-channel Push order
+# (producer-statement rank), so ANY declaration order is FIFO-correct.
+#
+# Same input.bin / reference.bin oracle as 17-spmv/gather +
+# distributed_gather (the loaders are offset-keyed, hence
+# order-independent). Bit-identical across all 7 tier-1 backends. The
+# reorder is a NO-OP for every pre-existing cell (data_in traversal
+# already equals producer order there), so this cell is purely additive.
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather_revdecl"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"

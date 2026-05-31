@@ -1,0 +1,46 @@
+// Distributed NATIVE-GATHER schedule, REVERSED-DECLARATION variant
+// (TASK-0389). IDENTICAL in shape to `distributed_gather.sched.nuc` — 4
+// compute workers row-band partition the outer `i` axis of the SpMV
+// gather loop, host runs load/save — but it drives
+// `prog.gather_revdecl.algo.nuc`, in which the gathered array `x` is
+// produced BEFORE its gather-index array `col_idx`.
+//
+// Why this schedule exists
+// ------------------------
+// On a strict-FIFO host->worker channel (mp-tcp-bufsync / mp-tcp-poll,
+// `wire::read_msg_expect`), the host Push order follows producer-
+// statement position and the worker Wait order follows `data_in`
+// traversal order. For the reversed-declaration program those diverge
+// (host sends {val, x, col_idx}; the gather index-first traversal makes
+// the worker wait {val, col_idx, x}) UNLESS the compiler reorders the
+// worker's per-channel Waits to the host's per-channel Push order. That
+// reorder is the TASK-0389 root fix; this schedule is the e2e fixture
+// that exercises it. WITHOUT the fix this cell fails LOUD on
+// mp-tcp-bufsync (a `read_msg_expect` seq/tag-mismatch panic); WITH it,
+// the cell is byte-identical across all 7 tier-1 backends.
+//
+// Everything else matches distributed_gather.sched.nuc: partition shape
+// (M=8 → 2-row bands), per-data transfer mapping (val/col_idx i-banded,
+// x whole-array broadcast because its index dim is data-dependent /
+// OPAQUE, y i-banded on gather), all-sync transfers, same reference.bin
+// oracle. See distributed_gather.sched.nuc for the full rationale.
+
+schedule for "../prog.gather_revdecl.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_val     on host;
+    place load_col_idx on host;
+    place load_x       on host;
+    place save_y       on host;
+    place gather_madd  on { w0, w1, w2, w3 };
+
+    // Row-band partition the outer i axis. M=8, 4 workers ⇒ 2 rows
+    // each, exact-divisible.
+    loop i : partition=workers;
+
+    // All sync transfers — same mapping as distributed_gather.sched.nuc.
+    transfer val     : sync;
+    transfer col_idx : sync;
+    transfer x       : sync;
+    transfer y       : sync;
+}

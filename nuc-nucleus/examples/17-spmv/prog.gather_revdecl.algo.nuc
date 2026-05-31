@@ -1,0 +1,81 @@
+// SpMV native gather — REVERSED-DECLARATION FIFO-robustness fixture
+// (TASK-0389). Byte-for-byte the SAME computation as
+// `prog.gather.algo.nuc`; the ONLY difference is that the gathered
+// (outer) array `x` is DECLARED and PRODUCED (loaded) BEFORE its
+// gather-index array `col_idx`.
+//
+// Why this fixture exists
+// -----------------------
+// Two independent per-channel orderings govern a distributed gather on a
+// strict-FIFO host->worker channel (mp-tcp-bufsync / mp-tcp-poll, via
+// `wire::read_msg_expect(cv, seq)`):
+//   - HOST Push order = producer-statement position
+//     (`splice_pushes_global` pins each Push at its producer site).
+//   - WORKER Wait order = `data_in` TRAVERSAL order
+//     (`build_waits_for_op` iterates `edge.data_in`; the gather index
+//     array is index-FIRST per `collect_dataref_access_expr`).
+// In `prog.gather.algo.nuc` these coincide ONLY because `col_idx` is
+// declared before `x`. Here `x` is produced first, so without the
+// TASK-0389 worker-Wait reorder the host sends {val, x, col_idx} while
+// the worker waits {val, col_idx, x} on the same channel — a
+// `read_msg_expect` seq/tag mismatch on the strict-FIFO backends
+// (fail-LOUD; masked on the per-seq-demux event backends). TASK-0389's
+// root fix sorts the worker's per-channel Wait sequence to the host's
+// per-channel Push order, so ANY declaration order is FIFO-correct.
+//
+// Oracle: the loaders in `kernels.gather_revdecl.rs` read each array
+// from its FIXED byte offset in `input.bin` (offset-keyed, NOT
+// execution-order-keyed), so reversing the load order does not change
+// which bytes each loader reads. Same `input.bin`, same `reference.bin`,
+// same M/N/NNZ, same numerics as `prog.gather.algo.nuc` — output is
+// bit-identical to `reference.bin`.
+
+const M    : usize = 8;     // matrix rows
+const N    : usize = 8;     // dense input vector length / matrix cols
+const NNZ  : usize = 3;     // fixed nonzeros per row (dense-stored)
+
+
+// Same data symbols + same input.bin layout as prog.gather.algo.nuc,
+// but `x` (the GATHERED outer array) is declared BEFORE `col_idx` (its
+// gather-index array). This declaration order is the whole point.
+data val     : i32[M][NNZ];
+data x       : i32[N];
+data col_idx : i32[M][NNZ];
+data y       : i32[M];
+
+
+// Pure MAC kernel: acc + v*x_val. No mask, no j (the gather at the
+// algorithm surface already selects the right x element).
+kernel gather_madd  : (i32, i32, i32) -> i32 pure;
+
+// I/O kernels — identical to prog.gather.algo.nuc (shared loaders, each
+// keyed by a fixed input.bin offset, hence order-independent).
+kernel load_val     : () -> i32[M][NNZ] effectful;
+kernel load_col_idx : () -> i32[M][NNZ] effectful;
+kernel load_x       : () -> i32[N]      effectful;
+kernel save_y       : (i32[M]) -> ()    effectful;
+
+
+// Dataflow.
+
+// 1. Load the three input arrays. `x` is produced BEFORE `col_idx`
+//    (the reversal vs prog.gather.algo.nuc). `val` stays first.
+val     <-- load_val();
+x       <-- load_x();
+col_idx <-- load_col_idx();
+
+// 2. Native gather MAC — IDENTICAL statement to prog.gather.algo.nuc.
+//    `y[i]` is pre-initialised to 0. For each (i, k) accumulate
+//    val[i][k] * x[col_idx[i][k]]. The gather index `col_idx[i][k]` is
+//    read INSIDE the subscript of `x`, so the worker's data_in
+//    traversal is index-first (col_idx before x) REGARDLESS of the
+//    declaration order above — which is exactly why the two per-channel
+//    orderings diverge here.
+for i : 0 .. M {
+    for k : 0 .. NNZ {
+        y[i] <-- gather_madd(y[i], val[i][k], x[col_idx[i][k]]);
+    }
+}
+
+// 3. Save the result.
+save_y(y);
