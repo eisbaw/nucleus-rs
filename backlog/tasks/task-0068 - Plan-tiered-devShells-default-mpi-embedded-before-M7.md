@@ -1,11 +1,11 @@
 ---
 id: TASK-0068
 title: Plan tiered devShells (default / mpi / embedded) before M7
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-17 23:28'
-updated_date: '2026-05-23 14:31'
+updated_date: '2026-05-31 06:42'
 labels:
   - infra
   - tooling
@@ -21,12 +21,12 @@ Architect review of TASK-0001 flagged that PRD §12.1's 'tier-specific tools add
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 flake.nix has a one-line comment near devShells.default noting the planned tier split, so the next contributor doesn't pile MPI+Renode in thoughtlessly.
-- [ ] #2 When M7 (MPI) lands, devShells.mpi exists and devShells.default does NOT pull MPI.
-- [ ] #3 When M10 (Renode) lands, devShells.embedded exists and devShells.default does NOT pull Renode.
-- [ ] #4 Test: 'nix flake show' lists default/mpi/embedded at M10; closure size of default does not include heavy tier-2/3 deps.
-- [ ] #5 Implementation notes record design questions (e.g. composition via inputsFrom vs separate mkShell calls; how to share the toolchain).
-- [ ] #6 Implementation notes record honest limitations (contributors must remember to enter the right shell; no auto-detection).
+- [x] #1 flake.nix has a one-line comment near devShells.default noting the planned tier split, so the next contributor doesn't pile MPI+Renode in thoughtlessly.
+- [x] #2 When M7 (MPI) lands, devShells.mpi exists and devShells.default does NOT pull MPI.
+- [x] #3 When M10 (Renode) lands, devShells.embedded exists and devShells.default does NOT pull Renode.
+- [x] #4 Test: 'nix flake show' lists default/mpi/embedded at M10; closure size of default does not include heavy tier-2/3 deps.
+- [x] #5 Implementation notes record design questions (e.g. composition via inputsFrom vs separate mkShell calls; how to share the toolchain).
+- [x] #6 Implementation notes record honest limitations (contributors must remember to enter the right shell; no auto-detection).
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -56,4 +56,6 @@ AC#4 (nix flake show lists shells; default closure does not include heavy deps):
 AC#5/#6 (design questions / honest limits in notes): inputsFrom vs separate mkShell calls — chose separate mkShell calls so each shell can have a distinct toolchain (embedded's toolchain REPLACES rustToolchain, not augments it). Honest limit: contributors must remember to enter the right shell; no auto-detection.
 
 Cycle 68 is in-thread (no implementer subagent) — pure flake.nix doc edit + audit. Stays In Progress because AC#2 (MPI) is unimplementable until TASK-0063 lands.
+
+Cycle M7-entry (2026-05-31, commit af832ec): AC#2 CLOSED — `devShells.mpi` landed in flake.nix (TASK-0063), and the default devShell closure was empirically verified to contain ZERO openmpi/ucx/pmix/libfabric paths (`nix path-info -r .#devShells.x86_64-linux.default | grep -iE 'openmpi|ucx|pmix|libfabric'` => empty). With this, the full tiered-shell plan (default / mpi / embedded / renode) is realized: `nix flake check` evaluates all four, and the default shell pulls none of the tier-2 (MPI) or tier-3 (renode/embedded-std) heavy closures. AC#4 also fully met now (4 shells listed; default closure excludes heavy tier deps). AC#1/#3/#5/#6 were already met cycle 68. Moving to Done.
 <!-- SECTION:NOTES:END -->
