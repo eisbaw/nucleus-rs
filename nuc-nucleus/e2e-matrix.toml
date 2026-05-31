@@ -908,6 +908,77 @@ schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 17-spmv/distributed_gather: TASK-0373 — the DISTRIBUTED native
+# data-dependent read (broaden of 17-spmv/gather single-worker
+# TASK-0341.03.01 + 17-spmv/distributed masked TASK-0341.03.02).
+# Drives prog.gather.algo.nuc (the native `x[col_idx[i][k]]` gather)
+# under partition=workers on the outer i loop, 4 compute workers
+# row-band M=8 into 2-row bands. The difference from the masked
+# distributed cell: the data-dependent index lives at the IndexExpr
+# surface (`x[col_idx[i][k]]`), not in the kernel body. That used to
+# be fail-loud rejected under partition (halo_inference's
+# DataDependentStride was fatal under any partitioned scope).
+# TASK-0373 relaxes it to the conservative WHOLE-ARRAY BROADCAST of x:
+#   - val[i][k]     — i-tiled (axis-mapping filter retains i)
+#   - col_idx[i][k] — i-tiled; the gather INDEX array is iv-affine, so
+#                     it i-bands like val. TASK-0373 makes
+#                     collect_dataref_access_expr recurse into index
+#                     DataRefs so col_idx reaches data_in (without it
+#                     the worker references an unbound col_idx symbol).
+#   - x[col_idx]    — the OUTER array is indexed by a runtime data
+#                     value, NOT by i; transfer_inject marks that dim
+#                     OPAQUE → empty per-worker tile bounds → x is
+#                     broadcast WHOLE to every worker, so any loaded
+#                     column index is in range.
+#   - y[i]          — i-tiled on gather.
+# Bit-identical to 17-spmv/naive + 17-spmv/gather + reference.bin (same
+# SpMV math). Whole-array x guarantees correctness; the cross-backend
+# bit-identity rides the SAME shared transfer/codegen layer as
+# 17-spmv/distributed (masked) and 07-matmul/distributed. The
+# data-dependent WRITE analogue (scatter) STAYS fail-loud rejected —
+# that is the separate TASK-0384.
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "17-spmv"
+schedule = "distributed_gather"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 [[required]]
 example  = "05-stencil"
 schedule = "blocked"

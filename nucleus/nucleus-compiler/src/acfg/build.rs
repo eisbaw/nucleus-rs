@@ -455,30 +455,47 @@ fn collect_dataref_access_expr(
 ) {
     match e {
         IrExpr::DataRef(IndexedRef { name, indices }) => {
+            // TASK-0373: recurse into the INDEX expressions FIRST so a
+            // data-dependent (gather) index array is collected BEFORE
+            // the outer array. For `x[col_idx[i][k]]` this records
+            // `col_idx` (indices = `[i][k]`) and THEN `x` (indices =
+            // `[col_idx[i][k]]`).
+            //
+            // ORDER IS LOAD-BEARING (FIFO-backend wire consistency):
+            // `data_in` / the worker's Wait order is derived from this
+            // traversal order (build_acfg maps data_in_access → data_in,
+            // and `build_waits_for_op` iterates `edge.data_in`). The
+            // HOST's Push order follows producer/declaration order
+            // (`val <-- ; col_idx <-- ; x <-- `, i.e. col_idx BEFORE x).
+            // The per-seq-demux event backends tolerate a send/recv order
+            // mismatch, but the strict-FIFO backends (mp-tcp-bufsync,
+            // mp-tcp-poll) use `read_msg_expect`, which requires the
+            // worker's Wait order to MATCH the host's Push order on each
+            // channel. Recursing index-FIRST puts `col_idx` before `x`
+            // in `data_in`, matching the host's declaration-order send
+            // (col_idx, x) — without this the worker waits x-then-col_idx
+            // while the host sends col_idx-then-x, tripping a tag
+            // mismatch (TASK-0373, the bufsync/poll FAIL/run symptom).
+            //
+            // Collecting the index array also gets `col_idx` into
+            // `data_in` so the distributed transfer pass i-bands it to
+            // each worker like `val` (its indices are iv-affine
+            // `[i][k]`); without it the worker references an unbound
+            // symbol. This is a NO-OP for every non-gather shipped
+            // program (no index expression contains a nested
+            // DataRef/Call there), so `data_in` is unperturbed for them
+            // (verified by e2e byte-identity on all existing cells). The
+            // outer array `x` stays whole-array broadcast because its
+            // sole index dim is data-dependent → marked OPAQUE in
+            // `transfer_inject::record_access_per_dim`.
+            for ix in indices {
+                collect_dataref_access_expr(ix, name_data, out);
+            }
             if let Some(id) = name_data.get(name) {
                 out.push(DataAccess {
                     data: *id,
                     indices: indices.clone(),
                 });
-            }
-            // TASK-0373: recurse into the INDEX expressions so a
-            // data-dependent (gather) index array is itself collected.
-            // For `x[col_idx[i][k]]` the outer push above records `x`
-            // (indices = `[col_idx[i][k]]`); this loop then records
-            // `col_idx` as its OWN access (indices = `[i][k]`), so the
-            // distributed transfer pass i-bands `col_idx` to each worker
-            // exactly like `val` (its indices are iv-affine `[i][k]`).
-            // Without this, `col_idx` is absent from `data_in` and the
-            // worker references an unbound symbol — the gather does not
-            // reach the worker. This is a NO-OP for every non-gather
-            // shipped program (no index expression contains a nested
-            // DataRef/Call there), so `data_in` is unperturbed for them
-            // (verified by e2e byte-identity on all existing cells).
-            // The outer array `x` stays whole-array broadcast because
-            // its sole index dim is data-dependent → marked OPAQUE in
-            // `transfer_inject::record_access_per_dim`.
-            for ix in indices {
-                collect_dataref_access_expr(ix, name_data, out);
             }
         }
         IrExpr::Call { args, .. } => {

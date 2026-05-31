@@ -1,0 +1,81 @@
+// Distributed NATIVE-GATHER schedule — 4 compute workers row-band
+// partition the outer `i` axis of the SpMV gather loop. Host runs
+// load/save. TASK-0373 (broaden of TASK-0341.03.01 single-worker
+// native gather + TASK-0341.03.02 masked distributed).
+//
+// Drives `prog.gather.algo.nuc` (the native data-dependent-read SpMV)
+// rather than the masked `prog.algo.nuc` that `distributed.sched.nuc`
+// drives. The DIFFERENCE from the masked distributed schedule is where
+// the data-dependent index lives:
+//   - masked variant: `x` is read by `x[j]` (iv-affine), the gather is
+//     emulated by a `for j` mask in the kernel body — so the halo /
+//     transfer passes see only iv-affine indices.
+//   - gather variant (this file): `x` is read by `x[col_idx[i][k]]` —
+//     the index is a runtime data read at the IndexExpr surface. Under
+//     a partitioned schedule this used to be fail-loud rejected
+//     (halo_inference's DataDependentStride was fatal under any
+//     partitioned scope). TASK-0373 relaxes that to the conservative
+//     WHOLE-ARRAY BROADCAST of `x`: every worker receives all of `x`,
+//     so any column index it loads is in range.
+//
+// Partition shape
+// ---------------
+// `loop i : partition=workers;` on the outermost axis. M=8, 4 workers,
+// exact-divisible into 2-row bands (0..2, 2..4, 4..6, 6..8). Each
+// worker computes y[i_band] using val[i_band][full k],
+// col_idx[i_band][full k], the WHOLE of x, and writes y[i_band].
+//
+// Per-data transfer mapping (TASK-0301 axis-mapping filter + TASK-0373
+// opaque-index rule)
+//   - val[i][k]            — i-tiled on tile (filter retains i)
+//   - col_idx[i][k]        — i-tiled on tile (filter retains i); the
+//                            index ARRAY is itself iv-affine, so it
+//                            i-bands like val (TASK-0373 AC#4: col_idx
+//                            reaches every worker for its row band).
+//   - x[col_idx[i][k]]     — the OUTER array x is indexed by a runtime
+//                            data value, NOT by i; TASK-0373 records
+//                            that dim OPAQUE (empty iv set) so
+//                            compute_partition_bounds_with_dim_prefix
+//                            returns whole-array → x is broadcast whole.
+//   - y[i]                 — i-tiled on gather (filter retains i)
+//
+// Why this is bit-identical with naive/gather single-worker
+// ---------------------------------------------------------
+// Each y[i] is the SAME sum over (k) of val[i][k]*x[col_idx[i][k]]
+// regardless of which worker computes it. Workers are independent on i;
+// no cross-row carry, no reduction across i. Whole-array x guarantees
+// every loaded column index is readable on every worker. The existing
+// reference.bin oracle applies — no new reference is needed.
+//
+// Why sync transfers
+// ------------------
+// Sync-only schedule lowers on every tier-1 backend that supports
+// `sync` (pthreads-sync, mp-tcp-bufsync, mp-tcp-poll, openmp-rs).
+// Async-capable backends (pthreads-async, mp-tcp-event, mp-uds-event)
+// host this same sync schedule by capability-match on sync; same shape
+// as 07-matmul/distributed and 17-spmv/distributed (masked).
+
+schedule for "../prog.gather.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_val     on host;
+    place load_col_idx on host;
+    place load_x       on host;
+    place save_y       on host;
+    place gather_madd  on { w0, w1, w2, w3 };
+
+    // Row-band partition the outer i axis. M=8, 4 workers ⇒ 2 rows
+    // each, exact-divisible (no TASK-0262 floor-with-spillover
+    // remainder).
+    loop i : partition=workers;
+
+    // All sync transfers. val + col_idx are i-banded by the
+    // axis-mapping filter (i appears in their leading index); x is
+    // whole-array broadcast (its index is a data-dependent gather, so
+    // TASK-0373 records the dim opaque → empty tile bounds → broadcast);
+    // y is i-banded on gather.
+    transfer val     : sync;
+    transfer col_idx : sync;
+    transfer x       : sync;
+    transfer y       : sync;
+}
