@@ -362,7 +362,8 @@ pub(super) fn splice_pushes_global(
         // 8 Waits → 8 Pushes here → producer-side splice ordering
         // inverted at the same insertion point → wire FIFO seq
         // mismatch panic on mp-tcp-bufsync. The fix lives at the
-        // Sequence-scope Wait dedup site (above), not here: this
+        // Sequence-scope Wait dedup site (`inject_in_sequence`'s per-Op
+        // Wait emission, in the `sequence` submodule), not here: this
         // site's narrow seq-only dedup remains correct, but its
         // input is now upstream-filtered.
         if have_seqs.contains(&w.seq.0) {

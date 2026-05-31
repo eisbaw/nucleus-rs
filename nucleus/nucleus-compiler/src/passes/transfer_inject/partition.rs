@@ -195,20 +195,24 @@ pub(super) fn rewrite_partition_tiles_inner(
                 //   None of the three references `partition_ranges`
                 //   or `data_dim_iv_map` in its own scope, so the
                 //   axis-mapping assumption cannot leak in via them.
+                //   (Since the TASK-0340.13 split the three sites are
+                //   in sibling submodules, NOT this file:
+                //   `inject_in_sequence` and `hoist_invariant_waits` in
+                //   `sequence`, `build_waits_for_op` in `ordering`.)
                 //   Grep witnesses (must remain consistent):
-                //   - `grep -nE "IterTile::new\(enclosing_tile\.to_vec\(\)\)"`
-                //     returns 5 hits in this file: 3 PRODUCTION
-                //     code-sites (one per function above —
-                //     identifiable by `w.tile =` / `tile:` LHS) +
-                //     1 module-doc citation (the `//!`-prefixed
-                //     line) + 1 self-reference inside THIS audit
-                //     listing (the `//   `-prefixed line). Filter
-                //     out commentary lines (`grep -nE "..." | grep
-                //     -vE ":\s*//"`) to count only the three
-                //     production sites directly.
+                //   - `grep -rnE "IterTile::new\(enclosing_tile\.to_vec\(\)\)"`
+                //     over the `transfer_inject/` dir returns 5 hits:
+                //     3 PRODUCTION code-sites (identifiable by
+                //     `w.tile =` / `tile:` LHS — two in `sequence.rs`,
+                //     one in `ordering.rs`) + 1 module-doc citation in
+                //     `mod.rs` (the `//!`-prefixed line) + 1
+                //     self-reference inside THIS audit listing (the
+                //     `//   `-prefixed line). Filter out commentary
+                //     lines (`... | grep -vE ":\s*//"`) to count only
+                //     the three production sites directly.
                 //   - `grep -nE "data_dim_iv_map|partition_ranges"`
-                //     restricted to the body of each function above
-                //     returns zero hits.
+                //     restricted to the body of each of those three
+                //     functions returns zero hits.
                 // - **Extends an already-filtered bounds set** —
                 //   `extend_xfer_tiles_for_halo`, with the per-Xfer
                 //   mutation inside the worker `extend_xfer_tiles_inner`.

@@ -420,8 +420,9 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
 /// Why we use the Xfer's `tile` (not the live walk's enclosing-tile
 /// stack): after `hoist_invariant_waits` runs, a Wait may live at a
 /// shallower nesting than the Repeat it was born in, but its `tile`
-/// is rewritten to that shallower nesting (see line ~733 in
-/// `inject_in_sequence`). The tile is therefore the authoritative
+/// is rewritten to that shallower nesting (see the
+/// `w.tile = IterTile::new(...)` rewrite in `inject_in_sequence`, now
+/// in the `sequence` submodule). The tile is therefore the authoritative
 /// "in which loop does this transfer fire" record.
 ///
 /// Determinism: the walk is depth-first source-order; `BTreeMap`
