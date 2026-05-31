@@ -4,7 +4,7 @@ title: M8 — Tier 2 MPI non-blocking
 status: To Do
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-31 08:01'
+updated_date: '2026-05-31 08:42'
 labels:
   - M8
   - backend
@@ -45,4 +45,15 @@ Forward-carried from TASK-0045.01 (mpi-blocking multi-worker arm, landed):
 - WHOLE-WORLD BARRIER ONLY so far: non-whole-world (host-excluding) barriers need MPI_Comm_split (TASK-0045.02, unproven); mpi-blocking rejects them loud. mpi-nonblocking inherits this gap unless 0045.02 lands first.
 
 Depends on TASK-0045.01 (landed) + TASK-0045 (parent M7).
+
+ORCHESTRATOR SETUP (post TASK-0045.01 landing) — implementation design + the deep trap:
+
+REUSE (≈80% from mpi-blocking multi_worker.rs): SPMD match-rank dispatch, host election (rank 0), tag=rid discipline, the per-rank prelude pattern, check-mpi gate structure, capability gate. New crate nucleus/backends/mpi-nonblocking/ mirrors mpi-blocking shape; capabilities.toml sets supports_async=true + supports_buffer=true + notify includes event (so 05-stencil/distributed{,-2d} STOP being capability-rejected and become this backend targets, plus examples 9/11 per AC#3).
+
+THE DEEP TRAP (AC#5 MPI_Request lifetime) — budget the whole cycle around it:
+- Isend(&buf) returns a Request immediately but the SEND BUFFER must stay alive + unmutated until a matching Wait/Test on the request completes. In generated Rust a naive `mpi_<rid>.push(data.clone())` drops the temporary clone at end-of-statement => use-after-free BEFORE the network reads it => silent corruption that is TIMING-DEPENDENT (a byte-exact -n N run may PASS by luck on localhost eager). This is why this task needs fresh, careful context, not a tail-end cycle.
+- Design: the non-blocking rendezvous must OWN the buffer + request until Wait. push = Isend storing (Request, owned buffer) in a scope-lived holder; the producer Waits on its own send-requests before the buffer is dropped/reused (end of scope, or before re-push to same slot). Receiver: Irecv into an owned buffer + Wait before first use. rsmpi 0.8: immediate_send / immediate_receive_into return a Request scoped to a StaticScope or a `mpi::request::scope`; study mpi-0.8.1 request.rs (Scope/WaitGuard/RequestCollection) — the borrow checker enforces buffer-outlives-request via the scope lifetime, which is the SAFE path but constrains codegen structure.
+- VERIFICATION must defeat the timing-luck: run check-mpi-nonblocking with LARGER message sizes (above the eager limit, forcing rendezvous protocol) and/or valgrind/MPI correctness checker if available, not just localhost -n N byte-exact. A pure eager-size byte-exact pass does NOT prove buffer-lifetime correctness (memory: deadlock-free != value-correct generalizes to use-after-free != detected).
+
+STEP PLAN: (1) crate+capabilities(async,buffer)+driver dispatch+help+registered-list. (2) multi_worker emit reusing mpi-blocking, swapping the rendezvous prelude for Isend/Irecv+scoped-Wait holders. (3) check-mpi-nonblocking gate: examples 9,11 + the now-admitted async distributed schedules, at -n N AND a large-message variant. (4) honest limits + MPI_Request-lifetime design notes. (5) unit shape tests + the buffer-lifetime reasoning pinned.
 <!-- SECTION:NOTES:END -->
