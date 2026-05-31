@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-05-30 22:46'
-updated_date: '2026-05-31 01:11'
+updated_date: '2026-05-31 01:31'
 labels:
   - docs
   - doc-lie
@@ -26,6 +26,12 @@ GOLD-PLATING follow-up to TASK-0341.03.01. Residual stale doc claims the gather 
 <!-- SECTION:PLAN:BEGIN -->
 Doc-only honesty sweep (NO walker/parser code change). (1) docs/grammar-algo.md: add honest note adjacent to the §1 Atom EBNF (lines 100-102) that the parser atom also admits an indexed LValue (nested data read) and a Call via ident_or_call/index_tail, AND add a §6 Limitations item that the gather restriction (data-dependent read accepted in INDEX position, rejected in CONST/SHAPE) is a LOWERING/semantic rule (allow_gather + eval_const returns None for DataRef), NOT grammatical — grammar §1 merges IndexExpr and ConstExpr (parser.rs:514). Cite TASK-0341.03.01. (2) acfg/build.rs:411-415 docstring: fix BOTH stale claims — (a) grammar no longer disallows data refs in indices; (b) "Walking would be a no-op" is now FALSE since collect_dataref_access_expr does NOT recurse into indices, so x[col[k]] does not collect inner col; inert for single-worker (emits from AlgoIR); ref TASK-0373 for distributed. (3) backlog task edit TASK-0341.03.01 --append-notes (single-quoted) clarifying the grammar-gap framing was imprecise; real gap was LOWERING. Gate same as 0374; e2e MUST stay 329/272/0/57/0.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR REVIEW GATE (2026-05-31, independent, read-only): GO x2, no P1/P2. mped-architect independently traced EVERY doc claim to code and confirmed accurate (the #1 recurring doc-lie risk is clean - no new lie): expr_parser merges IndexExpr/ConstExpr (parser.rs:514); index_tail recurses full expr + ident_or_call builds Call and LValue (parser.rs:552-585); allow_gather index-vs-const restriction is LOWERING+const-eval not grammar (lower.rs allow_gather sites + eval_const DataRef->None at build.rs:514); collect_dataref_access_expr does NOT recurse into indices (verified, so x[col[k]] does not collect col - inert single-worker). Independent grep confirmed the grammar-disallows-data-references phrase appears nowhere else. P3.2 (PRD:118/:1300 unqualified data-dependent-indexing phrasing) filed as TASK-0380; P3.3 (EBNF redundancy) judged acceptable, no action.
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
