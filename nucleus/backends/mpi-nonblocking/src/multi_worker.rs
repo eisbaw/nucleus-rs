@@ -27,8 +27,8 @@
 //! COPIED from mpi-blocking this cycle (mirror, to bound landing risk);
 //! the ONLY material difference is the rendezvous prelude (buffered
 //! Ibsend/Imrecv vs blocking Send/Recv) + the buffered-send buffer attach
-//! in `main`. Lifting the shared Plan into backend-common is the follow-up
-//! TASK-0046.01.
+//! in `main`. Lifting the shared Plan into backend-common is the filed
+//! follow-up TASK-0046.02.
 //!
 //! # Lowering map
 //!
@@ -344,9 +344,20 @@ impl<'a> Plan<'a> {
         .ok();
         writeln!(
             out,
-            "        .ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or({bsend});"
+            "        .ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or({bsend})"
         )
         .ok();
+        writeln!(
+            out,
+            "        // MPI_Buffer_attach size is a C int; cap so an oversized override fails"
+        )
+        .ok();
+        writeln!(
+            out,
+            "        // loud (MPI_ERR_BUFFER) rather than panicking in the C-int conversion."
+        )
+        .ok();
+        writeln!(out, "        .min(i32::MAX as usize);").ok();
         writeln!(out, "    universe.set_buffer_size(bsend_bytes);").ok();
         writeln!(out, "    let world = universe.world();").ok();
         writeln!(out, "    let size = world.size();").ok();
@@ -745,21 +756,30 @@ impl<'a, C: Communicator> WorldBar<'a, C> {
     /// (un-received) message. We size it as the SUM over every cross-worker
     /// `(data, seq)` channel of that datum's byte footprint, times an
     /// in-flight headroom factor, plus a per-message overhead, floored at a
-    /// comfortable minimum. The generated `main` also honours an
+    /// comfortable minimum and capped at `i32::MAX` (the `MPI_Buffer_attach`
+    /// size is a C `int`). The generated `main` also honours an
     /// `NUC_MPI_BSEND_BYTES` override for an unusually large in-flight set
     /// (e.g. a scaled-up large-message run). This is a HEURISTIC, not a
-    /// proven bound — a pathological in-flight count exhausts it and fails
-    /// LOUD (`MPI_ERR_BUFFER`), never silently corrupts (AC#6 honest
-    /// limitation).
+    /// proven bound — the in-flight peak is iteration-count dependent for a
+    /// pipelined schedule, which this constant headroom does NOT compute,
+    /// so a pathological in-flight count exhausts the buffer and fails LOUD
+    /// (`MPI_ERR_BUFFER`), never silently corrupts (AC#6 honest limitation).
     fn bsend_bytes(&self) -> usize {
         /// Per-channel in-flight copies to budget for (covers buffer/pipeline
-        /// depth + a margin; the shipped async schedules keep 2–4 in flight).
+        /// depth + a margin). NOT a proven bound — the true peak depends on
+        /// the consumer drain rate / loop trip count, which is not computed
+        /// here; an under-estimate fails loud, never corrupts (see docstring).
         const IN_FLIGHT_HEADROOM: usize = 8;
         /// Generous per-message bookkeeping allowance (>= MPI_BSEND_OVERHEAD
         /// on every known MPI; rsmpi does not re-export that constant).
         const PER_MSG_OVERHEAD: usize = 4096;
         /// Floor so the small example messages get a comfortable buffer.
         const MIN_BYTES: usize = 16 * 1024 * 1024;
+        /// `MPI_Buffer_attach` takes a C `int` count; rsmpi panics on a
+        /// value past that range. Cap the COMPUTED size so the normal path
+        /// can never trip that panic (the env override is clamped in the
+        /// generated `main`).
+        const MAX_BYTES: usize = i32::MAX as usize;
 
         let mut sum: usize = 0;
         for (data, _seq) in self.chan_ids.keys() {
@@ -775,7 +795,8 @@ impl<'a, C: Communicator> WorldBar<'a, C> {
         let est = sum
             .saturating_mul(IN_FLIGHT_HEADROOM)
             .saturating_add(self.chan_ids.len().saturating_mul(PER_MSG_OVERHEAD));
-        est.max(MIN_BYTES)
+        // MIN_BYTES (16 MiB) <= MAX_BYTES (i32::MAX) so the clamp order is valid.
+        est.clamp(MIN_BYTES, MAX_BYTES)
     }
 }
 
