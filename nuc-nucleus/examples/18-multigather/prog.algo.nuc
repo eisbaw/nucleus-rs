@@ -1,0 +1,76 @@
+// Multi-output gather — TWO loop-output arrays on ONE worker->host
+// channel. The dedicated fixture for the TASK-0389.01 FIFO ordering
+// residual.
+//
+// What this example demonstrates
+// ------------------------------
+//   - A single compute worker `w0` produces TWO distinct arrays `p`
+//     and `q` INSIDE the same `for i` loop, both consumed by `host`
+//     AFTER the loop (the `save_pq` effectful kernel). Under a
+//     distributed schedule that places the loop on `w0` and the I/O on
+//     `host`, BOTH `p` and `q` cross the SAME (w0 -> host) channel as
+//     LOOP OUTPUTS: their host-side Push is hoisted out PAST the `for i`
+//     Repeat (the `splice_pushes_global` "cut" branch).
+//   - This is the precise shape the TASK-0389 root fix left
+//     FIFO-incorrect (TASK-0389.01 fixed it): >=2 data on ONE channel,
+//     both cut-hoisted past the SAME Repeat. `p` is produced (and
+//     pushed) before `q`, so
+//     producer-rank order is [p, q]. Before TASK-0389.01 the naive
+//     "insert the Push immediately after the Repeat" splice REVERSED
+//     co-hoisted Pushes — the host sent {q, p} while the worker waited
+//     {p, q} (the rank-sorted order from `build_waits_for_op`). On a
+//     strict-FIFO backend (mp-tcp-bufsync / mp-tcp-poll via
+//     `wire::read_msg_expect`) that is a fail-LOUD seq/tag mismatch
+//     panic; on the per-seq-demux event backends it would be masked.
+//   - The TASK-0389.01 fix makes `splice_after_repeat` APPEND each new
+//     Push after any already-spliced Pushes at the same insertion point
+//     and feeds the Pushes in producer-rank order, so the host's
+//     textual (= wire-send) Push order EQUALS producer-rank order ==
+//     the worker's Wait order. FIFO-correct by construction for ANY
+//     loop-output nesting.
+//
+// What this example does NOT demonstrate
+// --------------------------------------
+//   - Iteration-space partitioning (no `partition=`). A single `w0`
+//     runs the whole loop; the point is two outputs on ONE channel, not
+//     many workers. Multi-worker gather is example 03 / 17.
+//   - Data-dependent reads (that is example 17-spmv).
+//
+// Numeric choice: i32 with wrapping arithmetic (PRD §10.1 — integer
+// determinism). `p[i] = a[i] + a[i]`, `q[i] = a[i] + a[i] + a[i]`
+// (doubling and tripling expressed via the same scalar `add` kernel so
+// the example stays single-kernel-simple and obviously correct).
+
+const N : usize = 64;      // array length; 64 * 4 bytes per array.
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1:
+// each of `p[i]`, `q[i]` is assigned exactly once.
+data a : i32[N];           // input
+data p : i32[N];           // loop output 1 (produced FIRST -> lower rank)
+data q : i32[N];           // loop output 2 (produced SECOND -> higher rank)
+
+
+// Scalar add — pure, reorderable. Reused for both the doubling (p) and
+// the partial that feeds the tripling (q).
+kernel add : (i32, i32) -> i32 pure;
+
+// I/O kernels — effectful (ordering preserved, never duplicated).
+// `save_pq` takes BOTH output arrays so the single host consumer reads
+// both off the one (w0 -> host) channel; it writes `p` to the first N
+// words of output.bin and `q` to the next N words.
+kernel load_a  : ()                   -> i32[N] effectful;
+kernel save_pq : (i32[N], i32[N])     -> ()     effectful;
+
+
+// Dataflow.
+a <-- load_a();
+
+// Two loop outputs, p BEFORE q (declaration/statement order fixes the
+// producer rank: rank(p) < rank(q)).
+for i : 0 .. N {
+    p[i] <-- add(a[i], a[i]);       // p = 2a
+    q[i] <-- add(p[i], a[i]);       // q = p + a = 3a
+}
+
+// Single host consumer of BOTH arrays — one (w0 -> host) channel.
+save_pq(p, q);

@@ -1,0 +1,19 @@
+// Naive schedule for example 18-multigather.
+//
+// Single worker, no decomposition — the smoke test for the
+// algorithm/schedule split end-to-end against this algorithm file. If
+// `18-multigather/prog.algo.nuc` parses, lowers, and links under a
+// one-worker schedule, the algorithm IR is healthy independent of the
+// two-output-on-one-channel cross-worker shape exercised by
+// distributed.sched.nuc.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_a  on host;
+    place save_pq on host;
+    place add     on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

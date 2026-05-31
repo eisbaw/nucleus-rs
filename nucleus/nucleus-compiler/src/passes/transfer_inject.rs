@@ -1867,17 +1867,31 @@ fn subtree_produces(node: &ACFGNode, data: DataId) -> bool {
 }
 
 /// Insert `push` immediately after the (unique) producer Operation of
-/// `push.data` wherever it directly resides.
+/// `push.data` wherever it directly resides — landing it AFTER any Push
+/// Xfers already spliced at that same insertion point.
+///
+/// TASK-0389.01: the "after existing Pushes" detail mirrors
+/// `splice_after_repeat`. Single-assignment (PRD §6.2.1) means at most
+/// one data is produced per Operation, so today two distinct-data
+/// Pushes never share a producer-Op insertion point and the append is a
+/// no-op here. It is kept so the non-cut path obeys the SAME
+/// rank-ordered-feed → rank-ordered-textual-Push invariant as the cut
+/// path, defending a future multi-output Operation shape from silently
+/// reintroducing the FIFO reversal.
 fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> ACFGNode {
     match node {
         ACFGNode::Sequence(children) => {
             let mut out = Vec::with_capacity(children.len() + 1);
-            for c in children {
+            let mut it = children.into_iter().peekable();
+            while let Some(c) = it.next() {
                 let is_producer = matches!(&c, ACFGNode::Operation(op)
                     if output_data(op) == Some(push.data));
                 let c = splice_after_producer(c, push);
                 out.push(c);
                 if is_producer {
+                    while matches!(it.peek(), Some(ACFGNode::Xfer(x)) if x.role == XferRole::Push) {
+                        out.push(it.next().expect("peek confirmed Some"));
+                    }
                     out.push(ACFGNode::Xfer(push.clone()));
                 }
             }
@@ -1899,16 +1913,38 @@ fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> ACFGNode {
 }
 
 /// Insert `push` immediately after the Repeat whose iter-var is
-/// `cut_iv` and which (transitively) produces `push.data`.
+/// `cut_iv` and which (transitively) produces `push.data` — landing it
+/// AFTER any Push Xfers already spliced at that same insertion point.
+///
+/// TASK-0389.01: the "after existing Pushes" detail is load-bearing for
+/// FIFO correctness when ≥2 loop-OUTPUT data on the SAME (src→dst)
+/// channel co-hoist past the SAME enclosing Repeat. `splice_pushes_global`
+/// now feeds these Pushes in producer-rank order; appending each new
+/// Push at the END of the contiguous run of already-present Pushes that
+/// immediately follow the cut Repeat makes the host's textual (= wire
+/// send) Push order EQUAL producer-rank order. The naive "immediately
+/// after the Repeat" insert reversed co-hoisted Pushes (the most-recent
+/// splice landed closest to the Repeat), so the host sent in reverse-rank
+/// order while the worker `build_waits_for_op` waits in rank order — a
+/// strict-FIFO `read_msg_expect` seq-mismatch panic. Verified by the
+/// `task038901_*` unit + the e2e gather_2out_loop cell.
 fn splice_after_repeat(node: ACFGNode, cut_iv: IterVar, push: &XferPlaceholder) -> ACFGNode {
     match node {
         ACFGNode::Sequence(children) => {
-            let mut out = Vec::with_capacity(children.len() + 1);
-            for c in children {
+            let mut out: Vec<ACFGNode> = Vec::with_capacity(children.len() + 1);
+            let mut it = children.into_iter().peekable();
+            while let Some(c) = it.next() {
                 let is_cut = matches!(&c, ACFGNode::Repeat { iter_var, .. }
                     if *iter_var == cut_iv && subtree_produces(&c, push.data));
                 if is_cut {
+                    // Emit the cut Repeat, then any Pushes already
+                    // spliced right after it (in their existing order),
+                    // then the new Push LAST — so a rank-ordered feed
+                    // yields rank-ordered textual Push order.
                     out.push(c);
+                    while matches!(it.peek(), Some(ACFGNode::Xfer(x)) if x.role == XferRole::Push) {
+                        out.push(it.next().expect("peek confirmed Some"));
+                    }
                     out.push(ACFGNode::Xfer(push.clone()));
                 } else {
                     out.push(splice_after_repeat(c, cut_iv, push));
@@ -1973,6 +2009,39 @@ fn splice_pushes_global(mut root: ACFGNode, name_data: &BTreeMap<String, DataId>
 
     let mut waits: Vec<XferPlaceholder> = Vec::new();
     collect_waits(&root, &mut waits);
+
+    // TASK-0389.01: splice each (src→dst) channel's Pushes in
+    // producer-rank order. `collect_waits` returns Waits in DFS order,
+    // which is NOT producer-rank order in general — and the splice
+    // helpers (`splice_after_repeat` / `splice_after_producer`) now
+    // APPEND each new Push after any already-spliced Pushes at the same
+    // insertion point. So feeding the Pushes in producer-rank order
+    // makes the host's textual (= wire-send) Push order on each channel
+    // EQUAL producer-rank order, which is exactly the order
+    // `build_waits_for_op` sorts each worker's per-channel Wait
+    // sequence into. The two endpoints therefore traverse every
+    // strict-FIFO channel in the SAME order → `read_msg_expect` pairs
+    // by construction for ANY loop-output nesting (the residual the
+    // raw producer-rank Wait sort could not see: ≥2 loop-OUTPUT data on
+    // one channel co-hoisting past the same Repeat, where the naive
+    // "insert immediately after the Repeat" REVERSED them).
+    //
+    // The key mirrors `build_waits_for_op`'s `(dst, src, rank, data,
+    // seq)` but leads with `rank`: cross-channel relative order is
+    // FIFO-irrelevant (independent sockets), and a rank-leading total
+    // order keeps same-channel Pushes monotone in rank regardless of
+    // how DFS interleaved different channels. `data`/`seq` tiebreak
+    // keeps it total and deterministic.
+    let push_rank = producer_rank_by_data(&root);
+    let rank_of = |d: DataId| push_rank.get(&d).copied().unwrap_or(usize::MAX);
+    waits.sort_by(|a, b| {
+        rank_of(a.data)
+            .cmp(&rank_of(b.data))
+            .then(a.dst.cmp(&b.dst))
+            .then(a.src.cmp(&b.src))
+            .then(a.data.cmp(&b.data))
+            .then(a.seq.0.cmp(&b.seq.0))
+    });
 
     for w in waits {
         // Idempotence keyed on `seq` ALONE — deliberately not on
@@ -4187,22 +4256,25 @@ fn build_waits_for_op(
     // statements — and the byte output — are unchanged (verified by e2e
     // byte-identity on all pre-existing cells, TASK-0389 AC#5).
     //
-    // SCOPE of the producer-rank key (honest boundary). `producer_rank`
-    // is the raw producer-Operation walk position. `splice_pushes_global`
-    // places a Push right after its producer in the common case (host
-    // load producers and same-scope producers — ALL host->worker load
-    // channels, hence the entire gather/scatter family this task targets),
-    // so producer-rank order == the host's actual per-channel Push order
-    // there, EXACTLY. The one shape where they could differ is a
-    // loop-OUTPUT producer whose Push hoists out past its enclosing
-    // Repeat (the `cut` branch in `splice_pushes_global`) while SHARING a
-    // channel with a differently-nested producer's Push. No in-tree
-    // schedule exercises that (verified: 06-separable-filter/distributed2
-    // and 03-reduction/distributed — the only multi-data-per-channel
-    // loop-output cells — are byte-identical pre/post this sort across
-    // all FIFO backends). If a future schedule does, the precise key is
-    // the post-splice Push position, not producer rank; that refinement
-    // is tracked as TASK-0389.01 (filed, not silently deferred).
+    // SCOPE of the producer-rank key (RESOLVED — TASK-0389.01).
+    // `producer_rank` is the raw producer-Operation walk position. This
+    // sort orders each worker's per-channel Wait sequence by it. The
+    // host side is now made to MATCH this exact order:
+    // `splice_pushes_global` feeds its Pushes in producer-rank order AND
+    // `splice_after_repeat` / `splice_after_producer` APPEND each new
+    // Push after any already-spliced Pushes at the same insertion point.
+    // So the host's textual (= wire-send) Push order on each (src→dst)
+    // channel EQUALS producer-rank order == this Wait order, for ANY
+    // loop-output nesting — including the residual TASK-0389 could not
+    // yet guarantee: ≥2 loop-OUTPUT data on ONE channel co-hoisting past
+    // the SAME Repeat (the `cut` branch). Pre-fix that case REVERSED the
+    // co-hoisted Pushes — the host sent reverse-rank while the worker
+    // waited rank-order — a strict-FIFO `read_msg_expect` seq mismatch
+    // (captured: 18-multigather/distributed on mp-tcp-bufsync, "receiver
+    // expected 2, wire delivered 3"). The two endpoints now traverse
+    // every channel in the SAME producer-rank order, so the seq tags
+    // pair by construction. See `splice_after_repeat`'s docstring and
+    // the `task038901_*` unit tests + the 18-multigather e2e cell.
     let rank = |d: DataId| ctx.producer_rank.get(&d).copied().unwrap_or(usize::MAX);
     out.sort_by(|a, b| {
         a.dst
@@ -5692,6 +5764,188 @@ mod tests {
              col_idx — NOT the data_in index-first traversal order val, \
              col_idx, x that would trip a read_msg_expect seq/tag mismatch on \
              the strict-FIFO backends.",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0389.01: co-hoisted multi-data-per-channel FIFO ordering.
+    //
+    // The residual the raw producer-rank Wait sort could not see: ≥2
+    // loop-OUTPUT data on ONE (src→dst) channel co-hoisting past the
+    // SAME enclosing Repeat. The naive `splice_after_repeat` ("insert
+    // immediately after the Repeat") REVERSED them — the host sent in
+    // reverse-rank order while the worker waited in rank order → a
+    // strict-FIFO read_msg_expect seq mismatch. CRUX EMPIRICALLY
+    // CONFIRMED REAL (this fixture printed Push textual order [b, a] vs
+    // rank order [a, b] BEFORE the fix). FIX: feed the Pushes in
+    // producer-rank order + append each after any already-spliced
+    // Pushes at the same insertion point → textual Push order == rank
+    // order == worker Wait order. Below pins the FIXED behaviour.
+    // ----------------------------------------------------------------
+
+    /// Build a Wait placeholder for `data` on the `src->dst` channel.
+    fn wait_ph(src: WorkerId, dst: WorkerId, data: DataId, seq: u64) -> XferPlaceholder {
+        XferPlaceholder {
+            role: XferRole::Wait,
+            src,
+            dst,
+            data,
+            tile: IterTile::new(Vec::new()),
+            seq: SeqTag(seq),
+            policy: TransferPolicy::default(),
+        }
+    }
+
+    /// Collect the textual (top-to-bottom) order of Push `data` on the
+    /// `src->dst` channel — this is the order the backend renders the
+    /// host's sends, hence the wire FIFO order read_msg_expect enforces.
+    fn push_textual_order(node: &ACFGNode, src: WorkerId, dst: WorkerId) -> Vec<DataId> {
+        fn walk(node: &ACFGNode, src: WorkerId, dst: WorkerId, out: &mut Vec<DataId>) {
+            match node {
+                ACFGNode::Xfer(x)
+                    if x.role == XferRole::Push && x.src == src && x.dst == dst =>
+                {
+                    out.push(x.data)
+                }
+                ACFGNode::Xfer(_) | ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+                ACFGNode::Repeat { body, .. } => walk(body, src, dst, out),
+                ACFGNode::Sequence(children) => {
+                    for c in children {
+                        walk(c, src, dst, out)
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(node, src, dst, &mut out);
+        out
+    }
+
+    #[test]
+    fn task038901_crux_cohoisted_pushes_textual_order_vs_rank() {
+        let w0 = WorkerId(1); // producer worker (loop output lives here)
+        let host = WorkerId(0); // consumer (reads both after the loop)
+        let a = DataId(0);
+        let b = DataId(1);
+
+        // Two loop-output data produced INSIDE one Repeat (iter t), in
+        // declaration/rank order a then b. Two top-level Waits (post-
+        // hoist) on the SAME w0->host channel consume them after the
+        // loop, so BOTH Pushes take the cut-hoist (splice_after_repeat).
+        // collect_waits DFS order = [a, b] (top-level sequence order).
+        let root = ACFGNode::Sequence(vec![
+            ACFGNode::Repeat {
+                iter_var: IterVar(9),
+                range: 0..4,
+                body: Box::new(ACFGNode::Sequence(vec![
+                    producer_op(KernelId(10), a),
+                    producer_op(KernelId(11), b),
+                ])),
+                block_tag: None,
+            },
+            // Top-level Waits, in rank order a then b.
+            ACFGNode::Xfer(wait_ph(w0, host, a, 100)),
+            ACFGNode::Xfer(wait_ph(w0, host, b, 101)),
+        ]);
+
+        let rank = producer_rank_by_data(&root);
+        assert_eq!(rank.get(&a), Some(&0), "a produced first inside the loop");
+        assert_eq!(rank.get(&b), Some(&1), "b produced second inside the loop");
+
+        let name_data: BTreeMap<String, DataId> =
+            [("a".to_string(), a), ("b".to_string(), b)].into_iter().collect();
+        let spliced = splice_pushes_global(root, &name_data);
+
+        let push_order = push_textual_order(&spliced, w0, host);
+        // POST-FIX: the two co-hoisted Pushes land in producer-rank
+        // order [a, b] textually — matching the order
+        // `build_waits_for_op` sorts the worker's Waits into. Pre-fix
+        // this was [b, a] (reversed), the FIFO seq-mismatch shape.
+        assert_eq!(
+            push_order,
+            vec![a, b],
+            "TASK-0389.01: co-hoisted Push textual order MUST equal \
+             producer-rank order [a, b] (was reversed [b, a] pre-fix). \
+             Reverse-rank host send vs rank-order worker Wait is the \
+             strict-FIFO read_msg_expect seq-mismatch shape.",
+        );
+    }
+
+    /// Three co-hoisted data on one channel — pins that the append-
+    /// after-existing-Pushes logic generalises beyond a pair (a single
+    /// 2-element swap could masquerade as correct). Rank order is
+    /// [a, b, c]; textual Push order must be [a, b, c].
+    #[test]
+    fn task038901_three_cohoisted_pushes_preserve_rank_order() {
+        let w0 = WorkerId(1);
+        let host = WorkerId(0);
+        let a = DataId(0);
+        let b = DataId(1);
+        let c = DataId(2);
+        let root = ACFGNode::Sequence(vec![
+            ACFGNode::Repeat {
+                iter_var: IterVar(9),
+                range: 0..4,
+                body: Box::new(ACFGNode::Sequence(vec![
+                    producer_op(KernelId(10), a),
+                    producer_op(KernelId(11), b),
+                    producer_op(KernelId(12), c),
+                ])),
+                block_tag: None,
+            },
+            ACFGNode::Xfer(wait_ph(w0, host, a, 100)),
+            ACFGNode::Xfer(wait_ph(w0, host, b, 101)),
+            ACFGNode::Xfer(wait_ph(w0, host, c, 102)),
+        ]);
+        let name_data: BTreeMap<String, DataId> = [
+            ("a".to_string(), a),
+            ("b".to_string(), b),
+            ("c".to_string(), c),
+        ]
+        .into_iter()
+        .collect();
+        let spliced = splice_pushes_global(root, &name_data);
+        assert_eq!(
+            push_textual_order(&spliced, w0, host),
+            vec![a, b, c],
+            "TASK-0389.01: 3 co-hoisted Pushes must land in rank order",
+        );
+    }
+
+    /// The DFS-collect order is NOT producer-rank order in general: if
+    /// the Waits appear at top-level in REVERSE rank order, the
+    /// producer-rank sort in `splice_pushes_global` must still produce
+    /// rank-order textual Pushes. This is the property that makes the
+    /// fix robust to Wait declaration/placement order (the analogue of
+    /// the gather_revdecl shape, but for the co-hoist case).
+    #[test]
+    fn task038901_cohoist_robust_to_wait_placement_order() {
+        let w0 = WorkerId(1);
+        let host = WorkerId(0);
+        let a = DataId(0);
+        let b = DataId(1);
+        // Producers a-then-b (rank [a,b]); Waits placed b-then-a.
+        let root = ACFGNode::Sequence(vec![
+            ACFGNode::Repeat {
+                iter_var: IterVar(9),
+                range: 0..4,
+                body: Box::new(ACFGNode::Sequence(vec![
+                    producer_op(KernelId(10), a),
+                    producer_op(KernelId(11), b),
+                ])),
+                block_tag: None,
+            },
+            ACFGNode::Xfer(wait_ph(w0, host, b, 101)),
+            ACFGNode::Xfer(wait_ph(w0, host, a, 100)),
+        ]);
+        let name_data: BTreeMap<String, DataId> =
+            [("a".to_string(), a), ("b".to_string(), b)].into_iter().collect();
+        let spliced = splice_pushes_global(root, &name_data);
+        assert_eq!(
+            push_textual_order(&spliced, w0, host),
+            vec![a, b],
+            "TASK-0389.01: textual Push order keys on producer rank, \
+             NOT on Wait DFS/placement order",
         );
     }
 

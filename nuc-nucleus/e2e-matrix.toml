@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1122,6 +1122,119 @@ milestone = "M6"
 [[required]]
 example  = "17-spmv"
 schedule = "distributed_gather_revdecl"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 18-multigather/distributed: TASK-0389.01 — co-hoisted MULTI-DATA-PER-
+# CHANNEL FIFO ordering. The dedicated fixture for the residual that the
+# TASK-0389 producer-rank Wait sort left FIFO-incorrect; TASK-0389.01
+# RESOLVED it (the fix is described below) and this cell is the pin.
+#
+# A single compute worker `w0` produces TWO distinct arrays `p` and `q`
+# INSIDE one `for i` loop; the host consumes BOTH after the loop
+# (`save_pq`). Both are LOOP OUTPUTS on the SAME (w0 -> host) channel —
+# their host-side Push is hoisted out PAST the `for i` Repeat (the
+# `splice_pushes_global` cut branch). `p` is produced before `q`, so
+# producer-rank order is [p, q]; the worker waits {p, q} (rank-sorted by
+# `build_waits_for_op`).
+#
+# Before TASK-0389.01 the naive `splice_after_repeat` ("insert the Push
+# immediately after the Repeat") REVERSED co-hoisted Pushes: the host
+# sent {q, p} while the worker waited {p, q}. On the strict-FIFO
+# backends (mp-tcp-bufsync / mp-tcp-poll via wire::read_msg_expect) that
+# is a fail-LOUD seq/tag mismatch ("receiver expected 2, wire delivered
+# 3" — captured pre-fix on mp-tcp-bufsync); masked on the per-seq-demux
+# event backends. The fix makes the co-hoisted Push textual (= wire-send)
+# order equal producer-rank order (append each new Push after any
+# already-spliced Pushes at the same insertion point + feed in
+# producer-rank order), so the worker Wait order and host Push order
+# coincide by construction for ANY loop-output nesting.
+#
+# Independent reference (reference/src/main.rs, std-only): p = 2*a,
+# q = 3*a, concatenated into reference.bin. Bit-identical across all 7
+# tier-1 backends. The 18-multigather/naive single-worker schedule (also
+# registered) is the smoke test for the same algorithm.
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "18-multigather"
+schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"
 

@@ -1,0 +1,44 @@
+// Distributed schedule for example 18-multigather — the load-bearing
+// schedule for the TASK-0389.01 FIFO-ordering residual.
+//
+// Two workers:
+//   host  -- effectful I/O (load_a, save_pq). Owns the file system.
+//   w0    -- the pure compute loop body (`add`). Produces BOTH `p` and
+//            `q` inside `for i`.
+//
+// Cross-worker dataflow edges (one `transfer` per crossing symbol):
+//   a (host -> w0)   produced by load_a  on host, consumed by add on w0.
+//   p (w0 -> host)   produced inside for i on w0, consumed by save_pq.
+//   q (w0 -> host)   produced inside for i on w0, consumed by save_pq.
+//
+// `p` and `q` are BOTH loop outputs on the SAME (w0 -> host) channel:
+// their host-side Push is hoisted out past the `for i` Repeat (the
+// `splice_pushes_global` cut branch). `p` is produced before `q`
+// (statement order), so producer-rank order is [p, q]. The worker waits
+// {p, q} (rank-sorted by `build_waits_for_op`); the host must therefore
+// SEND {p, q} on the channel. TASK-0389.01 makes the co-hoisted Push
+// textual (= wire-send) order equal producer-rank order, so the
+// strict-FIFO `wire::read_msg_expect` pairs by construction. Before the
+// fix the naive splice reversed the co-hoisted Pushes (host sent {q, p})
+// and this cell failed LOUD on mp-tcp-bufsync / mp-tcp-poll.
+//
+// All `sync` — the minimum semantic every tier-1 backend offers. No
+// loop transforms, no partition (a single `w0` runs the whole loop; the
+// point is two outputs on ONE channel, not many workers).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0 };
+
+    // I/O on host.
+    place load_a  on host;
+    place save_pq on host;
+
+    // Compute loop body on the single compute worker.
+    place add on w0;
+
+    // Cross-worker transfers (PRD §6.3.4: a crossing edge with no
+    // transfer directive is a hard error, not a silent default).
+    transfer a : sync;
+    transfer p : sync;
+    transfer q : sync;
+}
