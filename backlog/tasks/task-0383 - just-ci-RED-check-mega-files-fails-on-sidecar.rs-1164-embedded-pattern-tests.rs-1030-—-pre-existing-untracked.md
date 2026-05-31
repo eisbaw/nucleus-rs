@@ -3,11 +3,11 @@ id: TASK-0383
 title: >-
   just ci RED: check-mega-files fails on sidecar.rs (1164) +
   embedded-pattern/tests.rs (1030) — pre-existing, untracked
-status: In Progress
+status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-31 02:39'
-updated_date: '2026-05-31 02:58'
+updated_date: '2026-05-31 03:11'
 labels:
   - ci
   - hygiene
@@ -33,3 +33,22 @@ Part B: extract embedded-pattern/tests.rs BIN-shape tests (`*_bin_*`, check-fram
 Pure code-move, ZERO behavior change. Same test count before/after.
 DoD: both files <1000 LoC via split, just check-mega-files GREEN, all tests pass at same count. Then run check-doc-citation-staleness + check-doc-links + clippy.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cycle-220 RESOLVED via SPLIT (not allow-list), per TASK-0340 AC#2 + the recipe's preferred fix-option. No formal ACs; DoD met and verified.
+
+Part A — nucleus-compiler/src/sidecar.rs 1164 -> 905 LoC: extracted the inline `#[cfg(test)] mod cumulative_tests` into the child file sidecar/cumulative_tests.rs (263 LoC) via `mod cumulative_tests;` (2018-edition file-module dir resolution; precedent sched/, acfg/). Child stays a child of `sidecar` so `use super::collect_cumulative_data_names` reaches the private parent fn. Test paths unchanged: sidecar::cumulative_tests::* (5 tests).
+
+Part B — embedded-pattern/src/tests.rs 1030 -> 534 LoC: carved the M10 BIN-shape tests + bin-only helpers (emit_bin_example_naive, try_emit_bin_ex1_with_check, the 3 ex*_bin_* tests, bin_rejects_multi_worker, 3 check_loop_* tests = 7 #[test]) into child tests/bin_shape.rs (515 LoC) via `mod bin_shape;` (already inside #[cfg(test)] mod tests, no extra cfg). LIB-shape tests (4) + shared repo_root helper stay in tests.rs; child calls super::repo_root. Test paths now tests::bin_shape::*.
+
+GOTCHAS hit:
+1. `use std::path::PathBuf;` copied into bin_shape.rs was UNUSED (bin tests only call repo_root(), never name PathBuf) -> dead-import warning that would FAIL `just clippy -D warnings`. Removed it. Lesson: when carving a child test mod, re-derive its imports from what the MOVED code actually names, don't copy the parent's import block.
+2. INTRODUCED doc-lie caught by silent-sibling grep: embedded-pattern/src/lib.rs had a comment 'pinned by bin_rejects_multi_worker_* in tests.rs' — the test moved to tests/bin_shape.rs. Re-anchored the comment. (No fully-qualified file.rs:N citations pointed into either moved range, so check-doc-citation-staleness stayed GREEN; the lie was a bare-filename location claim the fence does not catch.)
+3. The fmt pass (TASK-0378, separate commit) reformatted the new sidecar/cumulative_tests.rs (assert_eq! one-liners wrapped) — expected, harmless.
+
+GATE (cheap subset, nix dev shell): build OK; clippy OK (-D warnings); test 1165/0/3 == baseline (ZERO test loss, pure code-move); test-release 1164/0/3 (the 1165->1164 delta is the pre-existing TASK-0291 debug_assert/should_panic profile skew — confirmed NO should_panic in any moved file, so unrelated to this split); check-mega-files OK (was the RED arm); check-doc-citation-staleness OK; check-doc-links OK.
+
+Final sizes (all <1000): sidecar.rs 905, cumulative_tests.rs 263, tests.rs 534, bin_shape.rs 515. Commit 69763ef (split). Did NOT run full `just ci` (heavy e2e/determinism arms) — deferred to the read-only review gate.
+<!-- SECTION:FINAL_SUMMARY:END -->

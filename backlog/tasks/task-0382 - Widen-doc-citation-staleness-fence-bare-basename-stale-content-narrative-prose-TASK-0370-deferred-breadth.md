@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-05-31 02:20'
+updated_date: '2026-05-31 03:12'
 labels:
   - tooling
   - ci
@@ -36,3 +37,9 @@ Also consider: should backlog/tasks citations be validated at all? Currently exc
 - [ ] #2 Stale-content (line-exists-but-code-moved) detection OR a project convention (symbol-anchor mandate) that makes it moot
 - [ ] #3 Decision recorded on present-tense narrative-prose scanning of md/.sched.nuc (curated target or explicit out-of-scope)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle-220 TASK-0383 split produced a fresh in-tree instance of the BARE-BASENAME-LOCATION lie this task's AC#1 targets, and it was caught ONLY by manual silent-sibling grep — the check-doc-citation-staleness fence is structurally blind to it. Concrete: splitting the BIN tests out of embedded-pattern/src/tests.rs into tests/bin_shape.rs left a comment in embedded-pattern/src/lib.rs reading 'pinned by bin_rejects_multi_worker_* in tests.rs' — now a LIE (the test lives in tests/bin_shape.rs). It carried no `:N` line number (just the bare basename `tests.rs` as a location claim in prose), so the fully-qualified fence never saw it. This is a NEW lie-shape variant for AC#1's scope: not 'bare basename + line number' but 'bare basename as a prose location claim with NO line number'. A crate-scoped resolver keyed on `<basename>.rs` tokens in `//` comments (validating that a named test/symbol still resides in the cited file) would have caught it. Generalises: ANY split-and-cite cycle (the TASK-0340 epic + this sibling) is a high-yield source of exactly this defect — worth a dedicated grep arm even before the full prose-aware resolver lands.
+<!-- SECTION:NOTES:END -->

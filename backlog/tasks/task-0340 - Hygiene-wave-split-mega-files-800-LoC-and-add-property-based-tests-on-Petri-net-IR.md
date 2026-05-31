@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-26 23:58'
+updated_date: '2026-05-31 03:12'
 labels:
   - tech-debt
   - hygiene
@@ -527,6 +527,8 @@ Cycle-185b qa-test-runner P3.1 surfaced that check-mega-files scope EXCLUDED nuc
 TASK-0342 cycle 190 (Option A): extended check-mega-files scope to include nucleus/e2e/src; allow-listed both files with rationale via recipe docstring. Recipe passes. The fence's coverage is now symmetric with the rest of nucleus/**/src.
 
 This addendum closes the documentation/expectation lag noted in cycle-185b architect P3.6 (AC#5 'no file exceeds 1000 LoC' wording previously bound a sub-tree but excluded e2e; cycle-190 lift makes the wording bind nucleus/e2e/src/ too via allow-list).
+
+Cycle-220 SIBLING follow-up TASK-0383 (Done): two files crossed the 1000-LoC fence AFTER this epic closed — nucleus-compiler/src/sidecar.rs (1164) + embedded-pattern/src/tests.rs (1030), neither in any 0340 slice nor the allow-list, so `just check-mega-files` (and thus `just ci`) was RED. Resolved by the AC#2 SPLIT pattern (NOT allow-list): sidecar.rs -> sidecar/cumulative_tests.rs (child #[cfg(test)] mod via 2018-edition dir resolution, like sched/ acfg/); embedded-pattern/tests.rs -> tests/bin_shape.rs (BIN-shape tests carved off, LIB tests + shared helpers retained). Result 905/263/534/515 LoC, all <1000. RECURRING-LESSON for any future split slice (carry forward): (a) re-derive the child module's `use` block from what the MOVED code actually names — a copied parent import (std::path::PathBuf here) becomes a dead import that FAILS `just clippy -D warnings`; (b) a split SHIFTS every comment that cites the moved code by bare filename ('pinned in tests.rs') into a doc-lie — grep the WHOLE crate for `<oldfile>.rs` location-claims after the move; the check-doc-citation-staleness fence does NOT catch bare-basename prose claims (filed as a data point on TASK-0382 AC#1). The mega-file fence has no scope-membership guard, so a file can silently cross 1000 between epic closures — the only backstop is `just check-mega-files` in the full `just ci`, which is why a per-commit-subset-only gate misses it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
