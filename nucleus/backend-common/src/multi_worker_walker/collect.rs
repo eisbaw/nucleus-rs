@@ -151,12 +151,25 @@ where
 /// helper does NOT classify those Waits as accumulate (the predicate
 /// requires whole-array tiles).
 ///
+/// Contrast also the single-producer / multi-CONSUMER fan-OUT read
+/// (14-hearing-aid embedded, TASK-0049.09): `mic_in` is produced once by
+/// `fe_capture` on `fe` and read by TWO kernels (`denoise` and `mix2`)
+/// on `dsp`, so `dsp` has 2 whole-array Waits on `mic_in` — but both
+/// carry the SAME `src` (`fe`). That is one produced value consumed
+/// twice, NOT a sum fan-in; summing it would double-count a value with
+/// itself. The distinct-producer requirement below excludes it (1
+/// distinct `src`), so it falls through to the idempotent whole-array
+/// assign arm.
+///
 /// # The predicate
 ///
-/// For each `DataId` that has N>=2 Waits in `events` where every Wait's
-/// tile (from `pair_tiles`) is whole-array — i.e. either has no bounds
-/// at all, OR the data is scalar (zero dims), OR every bound's range
-/// covers the corresponding data dim's full source range — all of the
+/// For each `DataId` that has N>=2 Waits in `events` FROM >=2 DISTINCT
+/// producer workers (distinct `Event::Wait.src` — the genuine
+/// multi-producer fan-in; see the `mic_in` contrast above for why the
+/// Wait COUNT alone is insufficient) where every Wait's tile (from
+/// `pair_tiles`) is whole-array — i.e. either has no bounds at all, OR
+/// the data is scalar (zero dims), OR every bound's range covers the
+/// corresponding data dim's full source range — all of the
 /// `(DataId, SeqTag)` pairs for those Waits enter the output set.
 ///
 /// "Whole-array" here matches the same condition `wait_slice` (sibling
@@ -184,12 +197,21 @@ where
 ///   accumulators (08-histogram's same-index read-modify) are NOT
 ///   cumulative and stay accumulate.
 /// - **No structural-only algorithm cross-check beyond cumulative**:
-///   detection is otherwise structural (N>=2 whole-array Waits). An
-///   exotic schedule that emits multiple whole-array Pushes for
-///   non-accumulator semantics would mis-combine. For every shipped
-///   schedule today (08-histogram/distributed is the load-bearing
-///   accumulate case), the structural pattern is equivalent to the
-///   algorithm-level accumulator pattern (LHS appears in RHS).
+///   detection is otherwise structural (N>=2 whole-array Waits from >=2
+///   distinct producers). A multi-PRODUCER fan-in whose algorithm shape
+///   is genuinely non-accumulator (multiple workers Push whole arrays
+///   that the receiver should NOT sum) would still be mis-classified
+///   here — but the driver cross-check `check_accumulator_consistency`
+///   catches exactly that case and FAILS LOUD (it is not LHS-in-RHS), so
+///   the failure mode is a hard error, never a silent sum. The
+///   distinct-producer requirement (TASK-0049.09) already excludes the
+///   single-producer/multi-consumer fan-OUT read (14-hearing-aid
+///   `mic_in`), which is the only non-accumulator shape that reaches
+///   here with the SAME producer. For every tier-1 shipped schedule
+///   (08-histogram/distributed is the load-bearing accumulate case), the
+///   structural pattern is equivalent to the algorithm-level accumulator
+///   pattern (LHS appears in RHS), so this gate is a no-op on the e2e
+///   matrix.
 /// - **No iterative (Repeat-body) accumulator**: Waits inside a
 ///   `Event::Loop` body carry per-iter tiles (the iter-var range is one
 ///   of the consulted dims), so they do NOT match the whole-array
@@ -204,13 +226,38 @@ pub fn collect_accumulate_waits(
     sidecar: &NameSidecar,
     pair_tiles: &BTreeMap<(DataId, SeqTag), IterTile>,
 ) -> BTreeSet<(DataId, SeqTag)> {
-    // Group Waits by data: data -> Vec<seq>.
-    let mut waits_per_data: BTreeMap<DataId, Vec<SeqTag>> = BTreeMap::new();
+    // Group Waits by data: data -> Vec<(seq, src)>. The `src` (producing
+    // worker) is needed for the distinct-producer predicate below.
+    let mut waits_per_data: BTreeMap<DataId, Vec<(SeqTag, WorkerId)>> = BTreeMap::new();
     walk_waits(events, &mut waits_per_data);
 
     let mut out: BTreeSet<(DataId, SeqTag)> = BTreeSet::new();
     for (data, seqs) in waits_per_data {
         if seqs.len() < 2 {
+            continue;
+        }
+        // TASK-0049.09 (M11 ex14): require >=2 DISTINCT PRODUCER workers,
+        // not merely >=2 Waits. The structural shape that needs an
+        // element-wise sum combine is a multi-PRODUCER fan-IN: N workers
+        // each Push their own whole partial array to ONE receiver, which
+        // must sum them (08-histogram/distributed: 4 compute workers ->
+        // host). A single producer whose whole-array output is consumed
+        // by >=2 kernels on ONE receiver (14-hearing-aid embedded:
+        // `mic_in` produced by fe_capture on `fe`, read by BOTH
+        // `denoise(mic_in)` and `mix2(mic_in, ...)` on `dsp`) yields >=2
+        // whole-array Waits all carrying the SAME `src` — that is a
+        // fan-OUT read of one produced value, NOT an accumulator.
+        // Summing it would double-count a value with itself (a silent
+        // miscompile); the correct combine is whole-array assign (each
+        // Wait receives the same value — idempotent). Counting distinct
+        // `Event::Wait.src` is the exact structural discriminator: the
+        // genuine fan-in has N distinct producers, the multi-consumer
+        // read has 1. (For a genuine N-producer fan-in whose algorithm
+        // shape is NOT LHS-in-RHS, this still classifies accumulate and
+        // the driver cross-check `check_accumulator_consistency` then
+        // fails LOUD — the conservative direction is preserved.)
+        let distinct_producers: BTreeSet<WorkerId> = seqs.iter().map(|(_, src)| *src).collect();
+        if distinct_producers.len() < 2 {
             continue;
         }
         // TASK-0341.02.02.01.03 cycle 213: a CUMULATIVE cross-iteration
@@ -230,7 +277,7 @@ pub fn collect_accumulate_waits(
         if sidecar.cumulative_data.contains(&data) {
             continue;
         }
-        let all_whole = seqs.iter().all(|seq| {
+        let all_whole = seqs.iter().all(|(seq, _src)| {
             pair_tiles
                 .get(&(data, *seq))
                 // Unified classifier (TASK-0355 cycle 225): route through
@@ -262,7 +309,7 @@ pub fn collect_accumulate_waits(
                 .unwrap_or(false)
         });
         if all_whole {
-            for seq in seqs {
+            for (seq, _src) in seqs {
                 out.insert((data, seq));
             }
         }
@@ -270,14 +317,18 @@ pub fn collect_accumulate_waits(
     out
 }
 
-/// Per-data Wait-seq accumulator. Descends into Loop bodies (in-loop
+/// Per-data Wait collector. For each data symbol records the
+/// `(SeqTag, src)` of every `Event::Wait` on it — the `src` (the
+/// producing worker) is load-bearing: the accumulator-fan-in predicate
+/// requires `>=2` DISTINCT producers, not merely `>=2` Waits (see
+/// [`collect_accumulate_waits`]). Descends into Loop bodies (in-loop
 /// Waits are still gathered; the whole-array predicate naturally
 /// filters them out at classification time).
-fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<SeqTag>>) {
+fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<(SeqTag, WorkerId)>>) {
     for e in events {
         match e {
-            Event::Wait { data, seq, .. } => {
-                out.entry(*data).or_default().push(*seq);
+            Event::Wait { src, data, seq, .. } => {
+                out.entry(*data).or_default().push((*seq, *src));
             }
             Event::Loop { body, .. } => walk_waits(body, out),
             _ => {}
@@ -299,13 +350,20 @@ fn walk_waits(events: &[Event], out: &mut BTreeMap<DataId, Vec<SeqTag>>) {
 /// `histogram[b] <-- bin_inc(histogram[b], input[i], b)`.
 ///
 /// But the structural detector has no algorithm-level evidence: an
-/// exotic schedule that emits multiple whole-array Pushes for a
-/// NON-accumulator data symbol would be silently mis-combined as an
-/// element-wise sum — a silent miscompile. This cross-check closes that
-/// gap. It consults the algorithm-IR and FAILS LOUD
-/// ([`EmitError::AccumulatorShapeMismatch`]) when the structural
+/// exotic schedule that emits multiple whole-array Pushes FROM DISTINCT
+/// PRODUCERS for a NON-accumulator data symbol would be silently
+/// mis-combined as an element-wise sum — a silent miscompile. This
+/// cross-check closes that gap. It consults the algorithm-IR and FAILS
+/// LOUD ([`EmitError::AccumulatorShapeMismatch`]) when the structural
 /// accumulate pattern fires on a data symbol whose algorithm-level shape
 /// is NOT an accumulator.
+///
+/// NOTE (TASK-0049.09): the structural detector now requires >=2
+/// DISTINCT producer workers, so a single-producer / multi-CONSUMER
+/// fan-OUT read (one produced value Waited by >=2 kernels on one
+/// receiver — 14-hearing-aid embedded `mic_in`) is no longer detected
+/// and never reaches this cross-check. What remains for this gate to
+/// catch is the genuine multi-PRODUCER fan-in that is not LHS-in-RHS.
 ///
 /// # What "algorithm-level accumulator" means here
 ///

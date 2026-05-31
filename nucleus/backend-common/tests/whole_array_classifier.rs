@@ -106,6 +106,27 @@ fn two_waits_with_tile(data: DataId, tile: IterTile) -> (Vec<Event>, PairTiles) 
     (events, tiles)
 }
 
+/// Like [`two_waits_with_tile`] but BOTH Waits carry the SAME `src`
+/// (one producer, two consumer-side receives). This is the
+/// single-producer / multi-CONSUMER fan-OUT read (14-hearing-aid
+/// embedded `mic_in`), which must NOT be classified accumulate
+/// (TASK-0049.09).
+fn two_waits_same_src_with_tile(data: DataId, tile: IterTile) -> (Vec<Event>, PairTiles) {
+    let mut events: Vec<Event> = Vec::new();
+    let mut tiles: PairTiles = BTreeMap::new();
+    for i in 0u64..2 {
+        let seq = SeqTag(i);
+        events.push(Event::Wait {
+            src: WorkerId(1), // SAME producer for both Waits
+            data,
+            tile: tile.clone(),
+            seq,
+        });
+        tiles.insert((data, seq), tile.clone());
+    }
+    (events, tiles)
+}
+
 #[test]
 fn whole_via_empty_bounds() {
     // IterTile::empty() — no enclosing iteration nest. wait_slice:256
@@ -121,6 +142,34 @@ fn whole_via_empty_bounds() {
         2,
         "IterTile::empty() MUST classify as whole-array (wait_slice:256 \
          early-return); both Waits should be accumulate. Got: {acc:?}"
+    );
+}
+
+#[test]
+fn same_src_two_whole_array_waits_is_not_accumulate() {
+    // TASK-0049.09 regression pin: TWO whole-array Waits on one data
+    // symbol that share the SAME `src` are a single-producer /
+    // multi-CONSUMER fan-OUT read (14-hearing-aid embedded `mic_in`:
+    // produced once by fe_capture on `fe`, read by BOTH denoise and mix2
+    // on `dsp`), NOT a multi-producer fan-in that needs summing. Summing
+    // would double-count one value with itself. The distinct-producer
+    // requirement (>=2 distinct `Event::Wait.src`) excludes it; it falls
+    // through to the idempotent whole-array assign arm.
+    //
+    // Contrast `whole_via_empty_bounds` above: the SAME tile shape with
+    // TWO DISTINCT producers (`two_waits_with_tile`) IS classified
+    // accumulate. The ONLY difference is the producer count — that is the
+    // exact discriminator this test pins.
+    let data = DataId(0);
+    let sidecar = sidecar_with(data, ScalarType::I32, vec![16]);
+    let (events, tiles) = two_waits_same_src_with_tile(data, IterTile::empty());
+
+    let acc = collect_accumulate_waits(&events, &sidecar, &tiles);
+    assert!(
+        acc.is_empty(),
+        "TASK-0049.09: two whole-array Waits with the SAME src (single \
+         producer, two consumers) MUST NOT be classified accumulate \
+         (only >=2 DISTINCT producers => fan-in sum). Got: {acc:?}"
     );
 }
 
