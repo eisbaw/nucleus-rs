@@ -120,7 +120,7 @@
 //!   depending on the error variant:
 //!
 //!   * For `DataDependentStride` (a data-dependent READ index) —
-//!     TASK-0373 splits on the `is_scatter_rmw` flag:
+//!     TASK-0373 / TASK-0384 split on the `is_scatter_rmw` flag:
 //!       - PURE GATHER (affine LHS, e.g.
 //!         `y[i] <-- ...x[col_idx[i][k]]`): advisory. The transfer
 //!         layer broadcasts the WHOLE gathered array to every worker
@@ -129,10 +129,15 @@
 //!         index loaded is in range.
 //!       - SCATTER RMW (data-dependent LHS, e.g.
 //!         `histogram[input[i]] <-- inc(histogram[input[i]])`): the
-//!         RHS read reaches this pass, but whole-array broadcast does
-//!         NOT serve the cross-worker data-dependent WRITE. Stays
-//!         FATAL under partition (the WRITE coordination is the
-//!         separate TASK-0384).
+//!         RHS read reaches this pass. ADVISORY iff the scatter target
+//!         replicates whole-array (no partitioned iv affinely indexes
+//!         it — the INPUT-INDEX partition), in which case each worker
+//!         scatters its slice into a private full-width partial and the
+//!         host element-wise-sums the partials (TASK-0343 combine,
+//!         TASK-0384 admit). FATAL under partition iff a partitioned iv
+//!         affinely indexes the scatter target (a BIN partition —
+//!         band-partitioned target, replicate-per-worker unsound). See
+//!         `scatter_target_replicates_whole_array`.
 //!   * For `UnknownKernelInCall` — where the iv set the failing
 //!     index actually depends on is not bounded by the lexical iv
 //!     walk — the rule consults the enclosing-loop scope: if ANY iv
@@ -307,10 +312,14 @@ pub enum HaloInferenceError {
         /// Drives the fatality split in
         /// [`error_is_fatal_under_partition`]: a pure gather READ is
         /// served by whole-array broadcast (advisory); a scatter RMW
-        /// READ stays FATAL under partition because the cross-worker
-        /// WRITE coordination is unhandled (TASK-0384). This field does
-        /// NOT affect [`Display`] (the message is the same READ
-        /// diagnostic) and is `false` on the single-worker /
+        /// READ under partition is ADVISORY when the scatter target
+        /// replicates whole-array (the INPUT-INDEX partition —
+        /// replicate-per-worker + element-wise-sum combine, TASK-0384),
+        /// and FATAL only when a partitioned iv affinely indexes the
+        /// scatter target (a BIN partition —
+        /// `scatter_target_replicates_whole_array` returns false). This
+        /// field does NOT affect [`Display`] (the message is the same
+        /// READ diagnostic) and is `false` on the single-worker /
         /// unpartitioned paths where it is never consulted.
         ///
         /// [`Display`]: std::fmt::Display
@@ -552,11 +561,15 @@ pub fn apply_halo_inference_advisory(
 ///       `transfer_inject::record_access_per_dim`); any runtime index
 ///       loaded is in range.
 ///     - SCATTER RMW (data-dependent LHS, e.g.
-///       `histogram[input[i]] <-- inc(histogram[input[i]])`): fatal
-///       under partition. The RHS read reaches this pass, but whole-
-///       array broadcast does not serve the cross-worker data-dependent
-///       WRITE — that is the separate TASK-0384. See
-///       `error_is_fatal_under_partition` for the soundness coupling.
+///       `histogram[input[i]] <-- inc(histogram[input[i]])`): ADVISORY
+///       under partition iff the scatter target replicates whole-array
+///       (the INPUT-INDEX partition — TASK-0384 admits it via the
+///       TASK-0343 replicate-per-worker + element-wise-sum combine);
+///       FATAL iff a partitioned iv affinely indexes the scatter target
+///       (a BIN partition, band-partitioned target). See
+///       `error_is_fatal_under_partition` /
+///       `scatter_target_replicates_whole_array` for the soundness
+///       coupling.
 /// - All other variants ([`NonAffineIndex`],
 ///   [`StridedAccessNotSupported`], [`MultipleIterVarsInIndex`],
 ///   [`UnknownLoopVar`]) — the iv set is populated by
@@ -606,15 +619,32 @@ pub fn apply_halo_inference_partition_aware(
 /// - `UnknownKernelInCall` falls back to the conservative
 ///   enclosing-`scope` rule (a fail-closed diagnostic for
 ///   inconsistently-constructed IR).
-/// - TASK-0373: `DataDependentStride` (a data-dependent READ) splits on
-///   its `is_scatter_rmw` flag:
+/// - TASK-0373 / TASK-0384: `DataDependentStride` (a data-dependent
+///   READ) splits on its `is_scatter_rmw` flag:
 ///     - PURE GATHER (`false`): advisory — the transfer layer
 ///       broadcasts the whole gathered array, so the partition state is
 ///       irrelevant.
-///     - SCATTER RMW (`true`): fatal iff an enclosing-`scope` iv is
-///       partitioned (whole-array broadcast does not serve the
-///       cross-worker WRITE coordination — TASK-0384). `scope` is
-///       consulted for this sub-case.
+///     - SCATTER RMW (`true`): the cross-worker WRITE coordination is
+///       served by the *replicate-full-array-per-worker +
+///       element-wise-sum combine* shape (TASK-0343
+///       `collect_accumulate_waits` + `render_wait_assign(accumulate)`)
+///       — but ONLY when that shape is SOUND. It is sound iff the
+///       scatter target (`ref_name`) replicates WHOLE-ARRAY to every
+///       worker, which holds iff NO partitioned iv affinely indexes the
+///       scatter target anywhere in the algorithm
+///       ([`scatter_target_replicates_whole_array`]). That is the
+///       INPUT-INDEX partition: each worker owns a disjoint slice of the
+///       SOURCE (`input[i]`, `i` partitioned), scatters into its own
+///       full-width private partial, and the partials sum. So:
+///         - no enclosing-`scope` iv partitioned (single-worker): advisory
+///           (the read needs no transfer at all);
+///         - partitioned + scatter target replicates whole-array
+///           (input-index partition): ADVISORY (TASK-0384 admits it);
+///         - partitioned + scatter target is BAND-partitioned by a
+///           partitioned iv (a bin-partition, e.g. `histogram[b]` with
+///           `b` partitioned): FATAL — replicate-per-worker would lose
+///           every scatter that lands outside the worker's bin band, so
+///           the element-wise-sum combine is UNSOUND.
 fn error_is_fatal_under_partition(
     err: &HaloInferenceError,
     scope: &[String],
@@ -649,22 +679,37 @@ fn error_is_fatal_under_partition(
         // whole, workers would read garbage and the diff would fail
         // loud.
         //
-        // SCATTER GUARD (load-bearing — keeps TASK-0384 rejected): halo
+        // SCATTER GUARD (load-bearing — TASK-0373 + TASK-0384): halo
         // inference walks kernel-call ARGS (reads), so the index here is
         // always a READ. BUT a scatter read-modify-write
         // (`histogram[input[i]] <-- inc(histogram[input[i]])`) reads the
         // SAME symbol it writes by a data-dependent address — the RHS
-        // read reaches this arm with `is_scatter_rmw == true`. Whole-
-        // array broadcast serves a pure gather READ but NOT the cross-
-        // worker WRITE coordination a scatter needs, so:
-        //   - pure gather (`is_scatter_rmw == false`): ADVISORY (relaxed).
-        //   - scatter RMW (`is_scatter_rmw == true`): FATAL under
-        //     partition (the data-dependent WRITE is unhandled —
-        //     TASK-0384). When no iv is partitioned (single-worker), it
-        //     stays advisory like any other halo error: the read needs
-        //     no transfer at all.
-        HaloInferenceError::DataDependentStride { is_scatter_rmw, .. } => {
-            *is_scatter_rmw && scope.iter().any(|iv| iv_is_partitioned(linked, iv))
+        // read reaches this arm with `is_scatter_rmw == true`.
+        //
+        //   - pure gather (`is_scatter_rmw == false`): ADVISORY (relaxed;
+        //     whole-array broadcast serves any READ index — TASK-0373).
+        //   - scatter RMW (`is_scatter_rmw == true`) + no partitioned iv
+        //     (single-worker): ADVISORY — the read needs no transfer.
+        //   - scatter RMW + partitioned, scatter target replicates
+        //     whole-array (INPUT-INDEX partition): ADVISORY. Each worker
+        //     scatters its input slice into a private full-width partial;
+        //     the TASK-0343 element-wise-sum combine reduces the partials
+        //     correctly. This is the TASK-0384 admit shape.
+        //   - scatter RMW + partitioned, scatter target BAND-partitioned
+        //     by a partitioned iv (a BIN partition): FATAL. A worker
+        //     owning only a bin band would silently drop every scatter
+        //     that lands outside its band, so replicate-per-worker +
+        //     element-wise-sum is UNSOUND. `scatter_target_replicates_
+        //     whole_array` is the discriminator; `ref_name` names the
+        //     scattered-into symbol carried on the error.
+        HaloInferenceError::DataDependentStride {
+            is_scatter_rmw,
+            ref_name,
+            ..
+        } => {
+            *is_scatter_rmw
+                && scope.iter().any(|iv| iv_is_partitioned(linked, iv))
+                && !scatter_target_replicates_whole_array(linked, ref_name)
         }
         // Link-invariant break: the kernel id was missing from
         // `name_kernels`. Never reachable from a link-valid IR.
@@ -706,6 +751,176 @@ fn iv_is_partitioned(linked: &LinkedIR, iv: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// TASK-0384 soundness discriminator for a SCATTER read-modify-write
+/// under partition: does the scatter target symbol `target` replicate
+/// WHOLE-ARRAY to every worker?
+///
+/// A scatter (`histogram[input[i]] <-- inc(histogram[input[i]])`) is
+/// served under partition by the *replicate-full-array-per-worker +
+/// element-wise-sum combine* shape (TASK-0343): each worker holds a
+/// PRIVATE full-width copy of `target`, scatters its partition slice
+/// into it, and the host sums the partials element-wise. That is sound
+/// iff every worker really does hold the FULL array — i.e. `target` is
+/// broadcast whole, never band-partitioned.
+///
+/// The transfer layer broadcasts `target` whole-array precisely when a
+/// dim of `target` is OPAQUE (data-dependent index), which is sticky in
+/// `transfer_inject::record_access_per_dim`. The UNSOUND case is the
+/// mirror image: a partitioned iv indexes `target` AFFINELY (a
+/// bin-partition, e.g. `histogram[b]` with `b` partitioned), so the
+/// transfer layer would band-partition `target` and a worker owning
+/// only its band would silently drop every scatter that lands outside
+/// it.
+///
+/// So this returns `false` (NOT whole-array ⇒ keep the scatter FATAL)
+/// iff ANY index expression into `target` — on EITHER a write LHS or a
+/// read DataRef, anywhere in the algorithm — affinely references a
+/// partitioned iv. Otherwise `target` is only ever data-dependently
+/// indexed (or const/whole-aggregate), the transfer layer replicates it
+/// whole, and the replicate-then-sum shape is sound: returns `true`.
+///
+/// Walks `linked.algo.stmts` (source-order vector; deterministic). Uses
+/// `expr_contains_dataref_or_call` to skip data-dependent index dims
+/// (those are the OPAQUE/whole-array dims — the SOUND case, not the
+/// unsound one) and `collect_iter_var_refs` + `iv_is_partitioned` to
+/// detect an affine partitioned-iv index. The walk is intentionally
+/// conservative: a non-affine but partition-iv-mentioning index (e.g.
+/// `target[iv*iv]`) is treated as a partition-banding access and keeps
+/// the scatter FATAL.
+fn scatter_target_replicates_whole_array(linked: &LinkedIR, target: &str) -> bool {
+    // The full lexical scope of iter-var names this algorithm could
+    // bind, so `collect_iter_var_refs` recognises every loop var (the
+    // recursion below does NOT carry a running scope — collecting the
+    // union of all `For` vars up front is equivalent for the
+    // "mentions a partitioned iv" question, since a partition directive
+    // only exists for a declared loop var).
+    let mut all_loop_vars: Vec<String> = Vec::new();
+    collect_loop_vars(&linked.algo.stmts, &mut all_loop_vars);
+
+    !algo_target_has_affine_partitioned_index(
+        &linked.algo.stmts,
+        target,
+        &all_loop_vars,
+        linked,
+    )
+}
+
+/// Collect every `For` loop-variable name in the statement tree
+/// (source order, including nested bodies). Used by
+/// [`scatter_target_replicates_whole_array`] to populate the iter-var
+/// scope for affine-index detection.
+fn collect_loop_vars(stmts: &[IrStmt], out: &mut Vec<String>) {
+    for s in stmts {
+        if let IrStmt::For { var, body, .. } = s {
+            out.push(var.clone());
+            collect_loop_vars(body, out);
+        }
+    }
+}
+
+/// Returns `true` iff some indexed access to `target` (write LHS or read
+/// DataRef, at any depth) carries an index expression that AFFINELY
+/// mentions a partitioned iv — i.e. `target` would be band-partitioned
+/// rather than replicated whole-array.
+///
+/// A data-dependent index dim (`expr_contains_dataref_or_call`) is
+/// SKIPPED: that dim is opaque ⇒ whole-array broadcast (the sound
+/// scatter case). Only a plain affine partitioned-iv index bands the
+/// array.
+fn algo_target_has_affine_partitioned_index(
+    stmts: &[IrStmt],
+    target: &str,
+    loop_vars: &[String],
+    linked: &LinkedIR,
+) -> bool {
+    for s in stmts {
+        match s {
+            IrStmt::Dataflow { lhs, rhs } => {
+                if indexed_ref_bands_target(lhs, target, loop_vars, linked) {
+                    return true;
+                }
+                if expr_bands_target(rhs, target, loop_vars, linked) {
+                    return true;
+                }
+            }
+            IrStmt::Effect { args, .. } => {
+                for a in args {
+                    if expr_bands_target(a, target, loop_vars, linked) {
+                        return true;
+                    }
+                }
+            }
+            IrStmt::For { body, .. } => {
+                if algo_target_has_affine_partitioned_index(body, target, loop_vars, linked) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Does this expression contain an indexed access to `target` whose
+/// index affinely mentions a partitioned iv? Recurses into `Call` args,
+/// `Neg`, `BinOp`, and `DataRef` index sub-expressions.
+fn expr_bands_target(
+    e: &IrExpr,
+    target: &str,
+    loop_vars: &[String],
+    linked: &LinkedIR,
+) -> bool {
+    match e {
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
+        IrExpr::Neg(inner) => expr_bands_target(inner, target, loop_vars, linked),
+        IrExpr::BinOp(_, a, b) => {
+            expr_bands_target(a, target, loop_vars, linked)
+                || expr_bands_target(b, target, loop_vars, linked)
+        }
+        IrExpr::DataRef(r) => {
+            if indexed_ref_bands_target(r, target, loop_vars, linked) {
+                return true;
+            }
+            // The index sub-expressions of a DataRef on a DIFFERENT
+            // symbol may THEMSELVES nest a DataRef on `target`
+            // (`other[ target[k] ]`); descend so a buried banding access
+            // is not missed.
+            r.indices
+                .iter()
+                .any(|ix| expr_bands_target(ix, target, loop_vars, linked))
+        }
+        IrExpr::Call { args, .. } => args
+            .iter()
+            .any(|a| expr_bands_target(a, target, loop_vars, linked)),
+    }
+}
+
+/// Core predicate: is `r` an indexed access to `target` with an index
+/// dim that affinely mentions a partitioned iv? A data-dependent index
+/// dim is skipped (opaque ⇒ whole-array, the sound case).
+fn indexed_ref_bands_target(
+    r: &IndexedRef,
+    target: &str,
+    loop_vars: &[String],
+    linked: &LinkedIR,
+) -> bool {
+    if r.name != target {
+        return false;
+    }
+    for ix in &r.indices {
+        // Data-dependent index ⇒ this dim is opaque ⇒ whole-array
+        // broadcast (the SOUND scatter case). Not a banding access.
+        if expr_contains_dataref_or_call(ix) {
+            continue;
+        }
+        let mut ivs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        collect_iter_var_refs(ix, loop_vars, &mut ivs);
+        if ivs.iter().any(|iv| iv_is_partitioned(linked, iv)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Halo-widths map: kernel → iter-var → halo width.
 type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
 /// Typed error paired with TWO iv-name vectors captured at the
@@ -717,13 +932,16 @@ type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
 ///   `UnknownKernelInCall` fail-closed diagnostic, AND the
 ///   `DataDependentStride` *scatter-RMW* sub-case. TASK-0373 narrowed
 ///   — did NOT retire — scope's use for `DataDependentStride`: a PURE
-///   gather (`is_scatter_rmw == false`) is now advisory regardless of
-///   partition state (the gathered array is whole-array broadcast), but
-///   a scatter read-modify-write (`is_scatter_rmw == true`) stays FATAL
-///   under partition and consults `scope` to decide (the data-dependent
-///   WRITE is unhandled — TASK-0384). So `DataDependentStride` is
-///   advisory only for the pure-gather case, NOT unconditionally. The
-///   field is also part of the captured-at-push-site diagnostic record.
+///   gather (`is_scatter_rmw == false`) is advisory regardless of
+///   partition state (the gathered array is whole-array broadcast). A
+///   scatter read-modify-write (`is_scatter_rmw == true`) consults
+///   `scope` for the "is any enclosing iv partitioned?" half of the
+///   test; TASK-0384 then adds the soundness half
+///   (`scatter_target_replicates_whole_array`): the scatter is FATAL
+///   only when partitioned AND the target is band-partitioned (a BIN
+///   partition), and ADVISORY for the INPUT-INDEX partition (the target
+///   replicates whole-array). The field is also part of the
+///   captured-at-push-site diagnostic record.
 /// - The ivs the FAILING INDEX EXPRESSION actually references —
 ///   collected via [`collect_iter_var_refs`]. Empty when the index
 ///   is a `DataDependentStride` (the walker short-circuits on
@@ -848,14 +1066,16 @@ fn collect_from_stmts(
                 // or a bare DataRef (identity copy). Halo only applies
                 // to kernel calls — walk RHS looking for them.
                 //
-                // TASK-0373: a data-dependent WRITE LHS (a scatter, e.g.
-                // `histogram[input[i]] <-- inc(...)`) makes this firing
-                // a SCATTER, which whole-array broadcast does NOT
-                // soundly serve under partition (the cross-worker WRITE
-                // coordination is the separate TASK-0384). Carry that
-                // bit so a `DataDependentStride` READ raised inside a
-                // scatter firing stays FATAL, while a pure gather (an
-                // AFFINE LHS such as `y[i]`) relaxes to advisory.
+                // TASK-0373 / TASK-0384: a data-dependent WRITE LHS (a
+                // scatter, e.g. `histogram[input[i]] <-- inc(...)`) makes
+                // this firing a SCATTER. Carry that bit so a
+                // `DataDependentStride` READ raised inside a scatter
+                // firing is classified by the scatter-soundness rule in
+                // `error_is_fatal_under_partition` (advisory for the
+                // input-index partition where the target replicates
+                // whole-array; fatal for a band-partitioned target),
+                // while a pure gather (an AFFINE LHS such as `y[i]`)
+                // relaxes to advisory unconditionally.
                 let lhs_data_dependent =
                     lhs.indices.iter().any(expr_contains_dataref_or_call);
                 visit_expr_for_calls(rhs, lhs_data_dependent, scope, ctx, out, errors);
@@ -1085,9 +1305,11 @@ fn classify_index(
     //   - SCATTER RMW (`is_scatter_rmw == true`): the SAME data symbol
     //     is read AND written by a data-dependent address (e.g.
     //     `histogram[input[i]] <-- inc(histogram[input[i]])`). The RHS
-    //     read reaches here, but whole-array broadcast does NOT serve
-    //     the cross-worker WRITE coordination — that is the separate
-    //     TASK-0384. Stays FATAL under partition.
+    //     read reaches here; under partition the scatter is ADVISORY
+    //     when the target replicates whole-array (the input-index
+    //     partition — TASK-0384 + TASK-0343 element-wise-sum combine)
+    //     and FATAL when a partitioned iv affinely indexes the target (a
+    //     bin partition). See `scatter_target_replicates_whole_array`.
     if expr_contains_dataref_or_call(e) {
         errors.push((
             HaloInferenceError::DataDependentStride {
@@ -2088,8 +2310,9 @@ mod tests {
         ));
     }
 
-    // ---- TASK-0373 (B') data-dependent READ split. Pin BOTH arms of
-    // ---- the gather/scatter distinction the cycle relies on:
+    // ---- TASK-0373 (B') data-dependent READ split + TASK-0384 scatter
+    // ---- soundness boundary. Pin every arm of the gather/scatter
+    // ---- distinction:
     //
     // - `task0373_partitioned_pure_gather_read_stays_advisory` — a pure
     //   gather (`y[i] <-- K(x[col_idx[i][k]])`, AFFINE LHS) under
@@ -2098,11 +2321,21 @@ mod tests {
     //   compiles instead of being fail-loud rejected (the 17-spmv/
     //   distributed_gather unblock).
     //
-    // - `task0373_partitioned_scatter_rmw_read_stays_fatal` — a scatter
+    // - `task0384_input_index_partitioned_scatter_rmw_admits` — a scatter
     //   RMW (`h[input[i]] <-- inc(h[input[i]])`, DATA-DEPENDENT LHS)
-    //   under `partition=workers(i)` STAYS FATAL. The RHS read reaches
-    //   the pass with `is_scatter_rmw == true`; whole-array broadcast
-    //   does not serve the cross-worker WRITE coordination (TASK-0384).
+    //   under `partition=workers(i)` ADMITS (advisory). The scatter
+    //   target `h` is never affinely indexed by the partitioned iv, so it
+    //   replicates whole-array and the TASK-0343 element-wise-sum combine
+    //   is sound (the 08-histogram/distributed.scatter shape). TASK-0373
+    //   shipped this fixture as fatal — TASK-0384 lands the combine and
+    //   relaxes it.
+    //
+    // - `task0384_bin_partitioned_scatter_rmw_stays_fatal` — a scatter RMW
+    //   whose target `h` is ALSO affinely indexed by the partitioned iv
+    //   (a BIN partition, `h[i]` with `i` partitioned) STAYS FATAL:
+    //   replicate-per-worker would band-partition `h` and drop
+    //   out-of-band scatters, so the combine is unsound. This is the
+    //   `scatter_target_replicates_whole_array == false` arm.
     //
     // - `task0373_unpartitioned_scatter_rmw_read_stays_advisory` — the
     //   same scatter with NO partition directive stays advisory
@@ -2118,6 +2351,21 @@ mod tests {
     fn build_linked_gather(
         stmts: Vec<IrStmt>,
         kernel: &str,
+        out_name: &str,
+        out_dims: Vec<usize>,
+        extra_data: &[(&str, Vec<usize>)],
+    ) -> LinkedIR {
+        build_linked_gather_arity(stmts, kernel, 1, out_name, out_dims, extra_data)
+    }
+
+    /// Arity-parameterised sibling of [`build_linked_gather`] (TASK-0384):
+    /// declares `kernel` with `arity` i32 params so a fixture whose call
+    /// passes more than one arg (e.g. the bin-partition probe
+    /// `inc(h[input[i]], h[i])`) links cleanly.
+    fn build_linked_gather_arity(
+        stmts: Vec<IrStmt>,
+        kernel: &str,
+        arity: usize,
         out_name: &str,
         out_dims: Vec<usize>,
         extra_data: &[(&str, Vec<usize>)],
@@ -2144,7 +2392,7 @@ mod tests {
             kernel.to_string(),
             ResolvedKernel {
                 name: kernel.to_string(),
-                params: vec![t_scalar(ScalarType::I32)],
+                params: vec![t_scalar(ScalarType::I32); arity],
                 ret: Some(t_scalar(ScalarType::I32)),
                 purity: Purity::Pure,
                 name_span: None,
@@ -2251,19 +2499,31 @@ mod tests {
         );
     }
 
-    /// AC#3 (fatal arm): scatter RMW `h[input[i]] <-- inc(h[input[i]])`
-    /// under `partition=workers(i)`. The RHS read reaches the pass with
-    /// `is_scatter_rmw == true`; whole-array broadcast does NOT serve the
-    /// cross-worker data-dependent WRITE, so it STAYS FATAL (TASK-0384).
+    /// TASK-0384 (admit arm — was the TASK-0373 fatal arm, RELAXED):
+    /// scatter RMW `h[input[i]] <-- inc(h[input[i]])` under
+    /// `partition=workers(i)` — the INPUT-INDEX partition. `h` (the
+    /// scatter target) is never affinely indexed by the partitioned iv
+    /// `i` (its write index `input[i]` is data-dependent ⇒ whole-array
+    /// replicate), so the replicate-per-worker + element-wise-sum combine
+    /// is SOUND and the scatter is now ADVISORY, not fatal. This is the
+    /// exact 08-histogram/distributed.scatter shape (TASK-0384).
+    ///
+    /// HISTORY: TASK-0373 (distributed gather) shipped this same fixture
+    /// as `..._stays_fatal` — at that point the cross-worker data-
+    /// dependent WRITE was unhandled. TASK-0384 lands the combine (it is
+    /// the TASK-0343 accumulator), so the canonical input-index shape is
+    /// admitted; only a BIN partition stays fatal (see
+    /// `task0384_bin_partitioned_scatter_rmw_stays_fatal`).
     #[test]
-    fn task0373_partitioned_scatter_rmw_read_stays_fatal() {
+    fn task0384_input_index_partitioned_scatter_rmw_admits() {
         // for i : 0..8 { h[input[i]] <-- inc(h[input[i]]) }
         let stmts = vec![IrStmt::For {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(8),
             body: vec![IrStmt::Dataflow {
-                // DATA-DEPENDENT LHS h[input[i]] ⇒ scatter RMW.
+                // DATA-DEPENDENT LHS h[input[i]] ⇒ scatter RMW; `h` is
+                // NOT affinely indexed by `i`.
                 lhs: lhs("h", vec![data_ref("input", vec![ir_id("i")])]),
                 rhs: ir_call(
                     "inc",
@@ -2278,15 +2538,101 @@ mod tests {
             vec![16],
             &[("input", vec![8])],
         );
+        // Partition the INPUT INDEX `i` (the i-band, the sound shape).
+        linked
+            .sched
+            .loops
+            .insert("i".to_string(), loop_partition_workers("i"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let (_acfg, advisory) = apply_halo_inference_partition_aware(&linked, acfg).expect(
+            "TASK-0384: an INPUT-INDEX-partitioned scatter RMW must ADMIT \
+             (advisory) — `h` replicates whole-array (its write index is \
+             data-dependent), so replicate-per-worker + element-wise-sum \
+             is sound",
+        );
+        assert_eq!(
+            advisory.len(),
+            1,
+            "expected one advisory DataDependentStride, got: {advisory:?}"
+        );
+        assert!(
+            matches!(
+                &advisory[0],
+                HaloInferenceError::DataDependentStride {
+                    is_scatter_rmw: true,
+                    ..
+                }
+            ),
+            "advisory[0] must be a SCATTER-RMW DataDependentStride \
+             (is_scatter_rmw == true) but ADVISORY because the scatter \
+             target replicates whole-array, got: {:?}",
+            advisory[0]
+        );
+    }
+
+    /// TASK-0384 (fatal arm — the soundness boundary): a BIN partition.
+    /// A scatter RMW whose SCATTER TARGET `h` is ALSO affinely indexed by
+    /// the partitioned iv — so `h` would be BAND-partitioned, not
+    /// replicated whole-array. Replicate-per-worker + element-wise-sum is
+    /// UNSOUND here (a worker owning only its bin band would drop every
+    /// scatter outside it), so the scatter STAYS FATAL.
+    /// `scatter_target_replicates_whole_array` returns false because an
+    /// affine `h[i]` access (with `i` partitioned) bands the target.
+    ///
+    /// Fixture: the canonical scatter `h[input[i]] <-- inc(h[input[i]], …)`
+    /// — the RHS `h[input[i]]` is the data-dependent read that fires the
+    /// `DataDependentStride` error AND stamps `is_scatter_rmw == true` —
+    /// but `inc` ALSO reads `h[i]` affinely. With `i` partitioned, that
+    /// affine access band-partitions `h`, so the replicate shape is
+    /// unsound and the canonical-shape admit (the test above) flips back
+    /// to FATAL. The two-arg `inc` makes the affine self-read explicit
+    /// (the canonical example has no such access — it is the boundary
+    /// this fixture probes).
+    #[test]
+    fn task0384_bin_partitioned_scatter_rmw_stays_fatal() {
+        // for i : 0..8 { h[input[i]] <-- inc(h[input[i]], h[i]) }
+        let stmts = vec![IrStmt::For {
+            var: "i".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::Dataflow {
+                // Data-dependent WRITE (scatter) ...
+                lhs: lhs("h", vec![data_ref("input", vec![ir_id("i")])]),
+                rhs: ir_call(
+                    "inc",
+                    vec![
+                        // ... RHS data-dependent self-read (fires the
+                        // DataDependentStride error + is_scatter_rmw) ...
+                        data_ref("h", vec![data_ref("input", vec![ir_id("i")])]),
+                        // ... AND an AFFINE read h[i] with `i`
+                        // partitioned — band-partitions the target.
+                        data_ref("h", vec![ir_id("i")]),
+                    ],
+                ),
+            }],
+        }];
+        // `inc` declared 2-param so the affine h[i] arg links cleanly.
+        let mut linked = build_linked_gather_arity(
+            stmts,
+            "inc",
+            2,
+            "h",
+            vec![16],
+            &[("input", vec![8])],
+        );
+        // Partition the index `i` — but here `i` ALSO affinely indexes
+        // the scatter target, so it is a bin-band, NOT the sound
+        // input-index shape.
         linked
             .sched
             .loops
             .insert("i".to_string(), loop_partition_workers("i"));
         let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
         let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
-            "TASK-0373: a partitioned SCATTER RMW read must STAY FATAL — \
-             whole-array broadcast does not serve the cross-worker WRITE \
-             (TASK-0384)",
+            "TASK-0384: a scatter RMW whose target is ALSO affinely \
+             indexed by the partitioned iv (band-partition) must STAY \
+             FATAL — replicate-per-worker + element-wise-sum is unsound \
+             when the target is band-partitioned",
         );
         assert!(
             matches!(
@@ -2297,7 +2643,7 @@ mod tests {
                 }
             ),
             "expected a SCATTER-RMW DataDependentStride (is_scatter_rmw == \
-             true), got: {err:?}"
+             true) classified FATAL, got: {err:?}"
         );
     }
 
