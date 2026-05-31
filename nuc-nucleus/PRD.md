@@ -115,10 +115,17 @@ Listed explicitly so they stop creeping in.
 - **No default schedule.** A program without an explicit schedule does
   not compile. Implicit defaults hide too much.
 - **No promise of "platform-agnostic" for algorithms that don't
-  decompose statically.** Data-dependent indexing, sparse access,
-  recursive structure: out. The portability claim is "portable for
+  decompose statically.** The portability claim is "portable for
   algorithms whose decomposition fits the model," not "portable for
-  all algorithms."
+  all algorithms." A single-worker *gather READ* (`x[col[k]]`, a
+  data-dependent index in read position) is now expressible and is
+  bit-identical across all backends in single-worker form (see the
+  17-spmv/gather example, TASK-0341.03.01) — but it does NOT
+  distribute (a partitioned gather is fail-loud rejected, TASK-0373).
+  What stays out: distribution of a gather, data-dependent *writes*
+  (scatter, e.g. `hist[bin]`), data-dependent control flow
+  (convergence-driven loop termination), recursive structure, and
+  therefore full sparse solvers.
 
 ## 4. Users
 
@@ -1297,11 +1304,17 @@ What the justfile is **not**:
   form; every tier-3 example uses the typed form; both forms are
   exercised by CI continuously.
 - **The model claims "platform-agnostic" but only for an algorithm
-  class.** Affine static, single-assignment, no data-dependent
-  indexing, no recursion. v2 must clearly communicate this *up front*
-  in user-facing docs, not just bury it in §3. A user who reaches for
-  Nucleus expecting it to handle a sparse-matrix solver will be
-  disappointed and won't come back.
+  class.** Affine static, single-assignment, largely no data-dependent
+  indexing, no recursion. The one carve-out: a single-worker *gather
+  READ* (`x[col[k]]`) is supported and backend-portable in
+  single-worker form (TASK-0341.03.01), but does not distribute
+  (TASK-0373); data-dependent *writes* (scatter), data-dependent loop
+  termination, and recursion remain out. v2 must clearly communicate
+  this *up front* in user-facing docs, not just bury it in §3. A user
+  who reaches for Nucleus expecting it to handle a sparse-matrix solver
+  will be disappointed and won't come back — the gather read is one
+  ingredient, but the solver also needs scatter and convergence-driven
+  termination, both of which are out.
 - **`check` assertions are checkable, not prescriptive.** v2 has no
   cost model and does not adjust schedules to meet a `latency_max`.
   The assertion only tells the user whether their hand-written
