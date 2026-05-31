@@ -401,12 +401,23 @@ fn resolve_worker_set(
 /// `img[y-1][x]` and `img[y+1][x]` of the same array; both appear,
 /// in order, with their distinct index lists (TASK-0150).
 ///
-/// The traversal order is identical to the pre-TASK-0150
+/// For every program WITHOUT a data-dependent (gather) index, the
+/// traversal order is identical to the pre-TASK-0150
 /// `collect_dataref_names` (depth-first, argument order, recursing
 /// into nested calls/neg/binop), so a caller that maps this to just
 /// the `DataId`s gets exactly the old `data_in` vector. That is the
 /// single-source-of-truth contract: `data_in` is *derived* from
 /// `data_in_access`, never built independently.
+///
+/// TASK-0373 caveat: when an index expression IS a nested DataRef (a
+/// gather `x[col[k]]`), this function recurses into the index array
+/// `col` BEFORE pushing the outer array `x` — INDEX-FIRST. That is a
+/// deliberate divergence from `walk_dataref_names` (which is
+/// outer-first), required so the worker's Wait order matches the
+/// host's Push order on strict-FIFO backends. See
+/// `collect_dataref_access_expr`'s body comment for the full
+/// FIFO-ordering rationale. Non-gather programs never hit this branch,
+/// so their `data_in` is byte-for-byte unchanged.
 ///
 /// Index expressions inside a `DataRef` ARE recursed into for further
 /// DataRefs (TASK-0373) — the outer array's index list is kept
