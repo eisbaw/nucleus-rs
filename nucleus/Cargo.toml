@@ -80,6 +80,18 @@ members = [
     # list deliberately EXCLUDES it (compile-only, not run-and-diff). Per-
     # MCU shims + Renode runtime are M10 (TASK-0048) / M11 (TASK-0049).
     "backends/embedded-pattern",
+    # mpi-blocking (TASK-0045, M7): the FIRST tier-2 backend. SPMD
+    # codegen — ONE Rust binary that dispatches on MPI_Comm_rank (PRD
+    # §7.2), launched via `mpiexec -n N`, output is hosted Rust + rsmpi.
+    # Like embedded-pattern, this crate is a NORMAL std crate (it only
+    # emits strings); the `mpi` crate dependency lives in the GENERATED
+    # project, which builds + runs ONLY under `nix develop .#mpi` and is
+    # gated by `just check-mpi` (compile + best-effort localhost mpiexec)
+    # — NOT the tier-1 bit-identical e2e RUNTIME matrix (PRD §7.4 tier-2
+    # ship bar = COMPILE). Single-worker SPMD arm landed cycle M7-entry;
+    # the multi-worker arm (rank-dispatched Send/Recv + MPI_Barrier)
+    # returns ContractGap forward-linking TASK-0045.01.
+    "backends/mpi-blocking",
     # Shared test-helper crate (TASK-0237 cycle 24): the parse →
     # lower → link → ACFG → inject → sidecar pipeline boilerplate
     # used by every backend's test suite. dev-dependency only.

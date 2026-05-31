@@ -1,0 +1,40 @@
+# capabilities.toml for the mpi-blocking backend (tier 2, M7).
+# Schema: docs/capabilities-toml.md (TASK-0019). PRD §7.2 / §7.4 / §11.
+#
+# The FIRST tier-2 backend. Workers map to MPI ranks; transport is MPI;
+# sync = blocking recv (PRD §7.2 row `mpi-blocking`: notify "implicit
+# (recv)", sync). The SCHEDULE-visible capability surface is deliberately
+# the SAME as the sync tier-1 backends (pthreads-sync / mp-tcp-bufsync):
+# sync only, no buffer>1, barrier + blocking notify. That identity lets
+# the IDENTICAL schedule (e.g. 02-split-add/split.sched.nuc) target both
+# a tier-1 sync backend AND this one — the point of backend-orthogonality
+# (PRD §7.4).
+#
+# `transport = "mpi"` is the only material difference; the
+# capability-compat check does not bind transport to a schedule directive
+# (docs/capabilities-toml.md), it is documentary + selects the SPMD emit
+# path.
+#
+# Buffering: PRD §7.2 lists buffered "by MPI impl" for mpi-blocking. We
+# declare the CONSERVATIVE surface (supports_buffer=false, max_buffer=1):
+# the blocking Send/Recv lowering assumes one message in flight per
+# matched pair, exactly like the sync tier-1 backends. A schedule asking
+# for buffer>1 is correctly REJECTED here rather than compiled against a
+# blocking transport that cannot honour it — widening this is the job of
+# the future mpi-nonblocking backend (PRD §7.2, M8 / TASK-0046).
+#
+# Collective recognition (MPI_Allreduce / MPI_Scatter) is DELIBERATELY
+# DEFERRED (PRD §7.2): v2 emits point-to-point + MPI_Barrier only. That
+# is a codegen choice, not a capability one — it does not change this
+# file.
+
+schema_version  = 1
+name            = "mpi-blocking"
+tier            = 2
+transport       = "mpi"
+notify          = ["barrier", "blocking"]
+supports_async  = false
+supports_buffer = false
+max_buffer      = 1
+worker_classes  = ["default"]
+memory_regions  = ["heap"]

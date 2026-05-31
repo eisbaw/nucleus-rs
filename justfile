@@ -934,6 +934,57 @@ check-mpi-smoke:
         exit 1; \
     fi
 
+# Tier-2 (M7) mpi-blocking acceptance (TASK-0045). For each of the §9
+# examples 1-6, generates the SPMD MPI project from the example's NAIVE
+# schedule (all single-worker — the landed arm), cross-builds it under
+# the `.#mpi` shell (rsmpi + OpenMPI), runs it under a localhost
+# `mpiexec -n 1`, and `cmp`s the output BYTE-EXACT against the example's
+# committed reference.bin. This is STRONGER than the PRD §7.4 tier-2
+# ship bar (COMPILE): a simulator IS available (localhost MPI per §10.2),
+# so we assert value-correctness too (§7.4 "where simulators ... exist,
+# produce reference-matching output"). Self-contained: it enters `.#mpi`
+# itself, so it runs from the default shell:  just check-mpi
+#
+# DELIBERATELY NOT wired into `just ci` and EXCLUDED from
+# e2e-matrix.toml's `backends`: the generated project needs the `.#mpi`
+# shell (the DEFAULT shell + the tier-1 bit-identical e2e RUNTIME matrix
+# have no MPI). Same tier-2/3-outside-default-ci rule as check-embedded /
+# renode-* (TASK-0223). The mpi-blocking BACKEND crate itself IS built by
+# `just ci` (it is a normal std workspace member that only emits strings).
+#
+# SCOPE: examples 1-6 NAIVE only (single-worker). Multi-worker schedules
+# (e.g. 02-split-add/split) are the multi-worker SPMD arm (TASK-0045.01)
+# and are rejected with a loud forward-link, not run here. The driver
+# release binary is built once up front so the loop is generation-only.
+check-mpi:
+    @echo "tier-2 M7 mpi-blocking acceptance (.#mpi, examples 1-6 naive, TASK-0045)"
+    @set -eu; \
+    nix develop .#mpi --command bash -c '\
+        set -eu; \
+        cd nucleus && cargo build --release --bin nucleus --quiet && cd ..; \
+        for ex in 01-elementwise-add 02-split-add 03-reduction 04-prefix-sum 05-stencil 06-separable-filter; do \
+            out="nucleus/target/mpi-m7/$ex"; \
+            rm -rf "$out"; \
+            echo "=== generating mpi-blocking SPMD project for $ex/naive ==="; \
+            ./nucleus/target/release/nucleus build \
+                --algo "nuc-nucleus/examples/$ex/prog.algo.nuc" \
+                --sched "nuc-nucleus/examples/$ex/schedules/naive.sched.nuc" \
+                --backend mpi-blocking --out "$out" >/dev/null; \
+            echo "=== cargo build --release ($ex) ==="; \
+            ( cd "$out" && cargo build --release --quiet ); \
+            echo "=== mpiexec -n 1 + byte-exact cmp vs reference.bin ($ex) ==="; \
+            o="$(mktemp)"; \
+            NUC_INPUT_PATH="nuc-nucleus/examples/$ex/input.bin" NUC_OUTPUT_PATH="$o" \
+                mpiexec --oversubscribe -n 1 "$out/target/release/nuc-generated"; \
+            if cmp -s "$o" "nuc-nucleus/examples/$ex/reference.bin"; then \
+                echo "OK: $ex SPMD output is byte-exact vs reference.bin"; \
+            else \
+                echo "FAIL: $ex SPMD output differs from reference.bin"; rm -f "$o"; exit 1; \
+            fi; \
+            rm -f "$o"; \
+        done; \
+        echo "OK: mpi-blocking compiles + runs value-correct for examples 1-6 naive (localhost mpiexec -n 1)."'
+
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
 # uart-smoke/, runs it headless in Renode on the bundled stm32h743

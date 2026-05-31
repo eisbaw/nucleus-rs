@@ -1,0 +1,65 @@
+# mpi-blocking backend crate. See PRD §7.2, §11 (M7), TASK-0045.
+#
+# The FIRST tier-2 backend: workers map to MPI ranks, transport is MPI,
+# sync = blocking recv (implicit notify). SPMD codegen — ONE Rust binary
+# that dispatches on `MPI_Comm_rank` (PRD §7.2), launched via
+# `mpiexec -n N`. Output is hosted Rust + the rsmpi (`mpi` crate)
+# binding.
+#
+# ## Why this crate is a NORMAL std crate (compiled in the default shell)
+#
+# Like embedded-pattern, the backend (this crate) runs on the HOST as
+# part of the nucleus workspace (`just build` in the default dev shell)
+# and only EMITS strings. The `mpi` crate (rsmpi) dependency lives in the
+# GENERATED project's Cargo.toml, NOT here — so this crate needs no MPI
+# toolchain to compile, and `just ci` builds it normally. The generated
+# project builds + runs ONLY under `nix develop .#mpi` (OpenMPI +
+# libclang/bindgen), gated by `just check-mpi` — NOT the tier-1
+# bit-identical e2e runtime matrix (PRD §7.4 tier-2 ship bar = COMPILE,
+# runtime best-effort; same precedent as embedded-pattern / renode).
+#
+# ## Status (cycle M7-entry): single-worker SPMD arm
+#
+# `emit` handles the 0/1-used-worker case: it reuses pthreads-sync's
+# `render_single_worker_main_with_signature` for the compute body
+# (byte-identical arithmetic to the tier-1 single-worker backends) and
+# wraps it in MPI_Init/Finalize + a `rank == 0` guard. The multi-worker
+# SPMD arm (rank-dispatched Send/Recv for Push/Wait, MPI_Barrier for
+# Sync) returns a forward-linked `EmitError::ContractGap` until
+# TASK-0045.01 lands it — same skeleton-first pattern openmp-rs /
+# mp-tcp-poll / mp-uds-event followed.
+
+[package]
+name = "mpi-blocking"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mpi_blocking"
+path = "src/lib.rs"
+
+[dependencies]
+# The EventList / NameTables / NameSidecar contract types — the SAME
+# contract every tier-1 backend consumes (PRD §8.3). No `&ACFG` /
+# `&LinkedIR` access.
+nucleus-compiler = { path = "../../nucleus-compiler" }
+# Shared codegen primitives: the canonical `EmitError` + the project
+# skeleton (Cargo.toml/run.sh renderers). Same precedent as every
+# tier-1 backend (TASK-0244 cycle 37 lift).
+backend-common = { path = "../../backend-common" }
+# pthreads-sync provides `render_single_worker_main_with_signature`
+# (the straight-line single-worker compute emitter, with a caller-chosen
+# fn signature so the body is a callable `pub fn`) which the
+# single-worker arm DELEGATES to for byte-identical compute arithmetic —
+# the same shared renderer mp-tcp-bufsync / mp-tcp-poll use (they call
+# the `_with_kernels_attr` sibling). There is ONE compute renderer; this
+# crate only adds the SPMD MPI wrapper.
+pthreads-sync = { path = "../pthreads-sync" }
+
+[dev-dependencies]
+# Shared parse -> lower -> link -> ACFG -> inject -> sidecar pipeline
+# boilerplate (TASK-0237). Tests lower a real example and assert the
+# emitted SPMD project shape.
+test-common = { path = "../../test-common" }

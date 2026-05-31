@@ -216,7 +216,7 @@ pub fn emit(
             .and_then(|w| per_worker.get(w))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        render_main_rs(events, names, sidecar, "")?
+        render_main_rs(events, names, sidecar, "", "fn main()")?
     } else {
         multi_worker::render_main_rs_multi(per_worker, names, sidecar)?
     };
@@ -298,6 +298,13 @@ fn render_main_rs(
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_mod_attr: &str,
+    // The function-declaration line for the emitted compute entry. The
+    // default-shaped callers pass `"fn main()"` (byte-identical to the
+    // historical output). The mpi-blocking SPMD backend passes a `pub
+    // fn` so it can call the compute body from a real `fn main` that
+    // wraps it in MPI_Init/Finalize (TASK-0045) — the rendered `fn main`
+    // would otherwise be module-private and unreachable.
+    fn_main_signature: &str,
 ) -> Result<String, EmitError> {
     let mut out = String::new();
     // Backend-agnostic header (TASK-0231): this renderer is the SHARED
@@ -347,7 +354,7 @@ fn render_main_rs(
     }
 
     writeln!(out, "#[allow(unused_mut, dead_code, unused_variables)]").ok();
-    writeln!(out, "fn main() {{").ok();
+    writeln!(out, "{fn_main_signature} {{").ok();
 
     // Per-Count-loop Drop guard local. Variable name is unique per
     // sanitized loop_var and is `_nuc_check_reporter_<ident>`; the
@@ -949,7 +956,28 @@ pub fn render_single_worker_main_with_kernels_attr(
     sidecar: &NameSidecar,
     kernels_mod_attr: &str,
 ) -> Result<String, EmitError> {
-    render_main_rs(events, names, sidecar, kernels_mod_attr)
+    render_main_rs(events, names, sidecar, kernels_mod_attr, "fn main()")
+}
+
+/// Variant of [`render_single_worker_main_with_kernels_attr`] that also
+/// lets the caller choose the emitted compute entry's
+/// function-declaration line (e.g. `"pub fn nuc_compute()"`) instead of
+/// the default `"fn main()"`. Used by the mpi-blocking SPMD backend
+/// (TASK-0045): the rendered `fn main` is module-private, so to call the
+/// compute body from a real `fn main` that wraps it in MPI_Init/Finalize
+/// the backend emits it as a `pub fn` in a `compute` module. Passing
+/// `"fn main()"` is byte-identical to
+/// [`render_single_worker_main_with_kernels_attr`]. `fn_main_signature`
+/// MUST be a zero-arg, unit-returning signature (the body uses no params
+/// and returns `()`); the caller owns its exact text.
+pub fn render_single_worker_main_with_signature(
+    events: &[Event],
+    names: &NameTables,
+    sidecar: &NameSidecar,
+    kernels_mod_attr: &str,
+    fn_main_signature: &str,
+) -> Result<String, EmitError> {
+    render_main_rs(events, names, sidecar, kernels_mod_attr, fn_main_signature)
 }
 
 // `render_array_init_for`, `rust_type_of`, `rust_scalar_type_pub`

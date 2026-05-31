@@ -80,3 +80,10 @@ mp-uds-event = { path = "../backends/mp-uds-event" }
 # `nix develop .#embedded` via `just check-embedded`), NOT the tier-1
 # runtime differential. Per-MCU shims + Renode runtime are M10/M11.
 embedded-pattern = { path = "../backends/embedded-pattern" }
+# mpi-blocking — FIRST tier-2 backend, M7 (TASK-0045). SPMD codegen:
+# one rank-dispatched binary (MPI_Comm_rank), output is hosted Rust +
+# rsmpi. Normal std crate (emits strings); the `mpi` dep is in the
+# GENERATED project, built + run only under `nix develop .#mpi` via
+# `just check-mpi` (compile + best-effort localhost mpiexec), NOT the
+# tier-1 runtime differential (PRD §7.4 tier-2 ship bar = COMPILE).
+mpi-blocking = { path = "../backends/mpi-blocking" }

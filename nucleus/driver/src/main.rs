@@ -138,7 +138,9 @@ fn print_help() {
              mp-uds-event    OS processes + Unix domain sockets + mio (tier 1, single-worker + multi-worker landed cycles 194/197)\n    \
              embedded-pattern  no_std lib + NucleusShim trait (tier 3, compile-only; check via `just check-embedded`).\n    \
                                LIB path: single-worker (M9) OR multi-worker (M11 slice A, TASK-0049.04 — one lib per worker, Push/Wait/Sync -> stub-shim hooks).\n    \
-                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, single-worker only; `just renode-embedded <example>`; examples 1/5/9)\n"
+                               With `--shim stm32h7`: Renode-runnable no_std bin (M10, single-worker only; `just renode-embedded <example>`; examples 1/5/9)\n    \
+             mpi-blocking    SPMD MPI (tier 2, M7); one rank-dispatched binary + rsmpi. Builds/runs under `nix develop .#mpi` via `just check-mpi`.\n    \
+                               Single-worker SPMD arm landed; multi-worker (rank Send/Recv + MPI_Barrier) is TASK-0045.01.\n"
     );
 }
 
@@ -1098,10 +1100,33 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
                 )),
             }
         }
+        // FIRST tier-2 backend (TASK-0045, M7): SPMD MPI. ONE
+        // rank-dispatched binary (MPI_Comm_rank), output is hosted Rust +
+        // rsmpi. Single-worker SPMD arm landed cycle M7-entry (reuses the
+        // shared single-worker renderer for byte-identical compute,
+        // wrapped in MPI_Init/Finalize + a rank==0 guard); the
+        // multi-worker arm (rank-dispatched Send/Recv + MPI_Barrier)
+        // returns ContractGap forward-linking TASK-0045.01. The generated
+        // project builds + runs only under `nix develop .#mpi`
+        // (`just check-mpi`), NOT the tier-1 runtime differential.
+        "mpi-blocking" => {
+            let result =
+                mpi_blocking::emit(&per_worker, &names, &sidecar, &kernels_path, &out_dir)
+                    .map_err(|e| format!("mpi-blocking codegen error: {e}"))?;
+            println!("nucleus: ok");
+            println!("project_dir = {}", result.project_dir.display());
+            println!("cargo_toml  = {}", result.cargo_toml.display());
+            println!("main_rs     = {}", result.main_rs.display());
+            println!("compute_rs  = {}", result.compute_rs.display());
+            println!("kernels_rs  = {}", result.kernels_rs.display());
+            println!("run_sh      = {}", result.run_sh.display());
+            Ok(())
+        }
         other => Err(format!(
             "unknown backend `{other}`; registered: `pthreads-sync`, \
              `mp-tcp-bufsync`, `pthreads-async`, `mp-tcp-event`, \
-             `openmp-rs`, `mp-tcp-poll`, `mp-uds-event`, `embedded-pattern`"
+             `openmp-rs`, `mp-tcp-poll`, `mp-uds-event`, `embedded-pattern`, \
+             `mpi-blocking`"
         )),
     }
 }
