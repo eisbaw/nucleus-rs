@@ -3,11 +3,11 @@ id: TASK-0376
 title: >-
   08-histogram native data-dependent WRITE (scatter) histogram[bin]
   (TASK-0044.04 companion to gather)
-status: In Progress
+status: Done
 assignee:
   - mark
 created_date: '2026-05-30 22:46'
-updated_date: '2026-05-31 05:04'
+updated_date: '2026-05-31 05:05'
 labels:
   - compiler
   - scatter
@@ -81,3 +81,23 @@ FILES: nuc-nucleus/examples/08-histogram/{prog.scatter.algo.nuc, kernels.scatter
 
 FOLLOW-UPS FILED: TASK-0384 (distributed scatter: partitioned data-dependent WRITE + cross-worker bin fan-in, WRITE analog of deferred distributed gather); TASK-0385 (grammar-extension computed-local-bin / scalar-producing loop-body statement for the textbook bucketing scatter — same bottleneck as project-grammar-deferred-cluster; kernel-call-in-index-position also rejected at lower_index_expr Expr::Call + render_int_expr IrExpr::Call). HONEST LIMITS: single-worker ONLY; works only because input.bin is pre-clipped to [0,BINS) so input[i] IS a valid bin index (no bucketing). Pre-existing README staleness (lines 15/35-39/198-200: distributed 'STRETCH/[[skip]]' narrative) left untouched — predates this task, describes TASK-0343's distributed work which IS now [[required]]; out of TASK-0376 scope, NOT silently rewritten to avoid a self-introduced doc-lie about an unverified-this-cycle feature.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE (bounded single-worker slice) — cycle 222, commit e89aa1e.
+
+Native data-dependent WRITE (scatter) `histogram[input[i]] <-- inc(histogram[input[i]])` for 08-histogram now lowers + codegens + runs BIT-IDENTICAL vs the existing reference.bin across all 7 tier-1 backends (pthreads-sync, mp-tcp-bufsync, pthreads-async, mp-tcp-event, openmp-rs, mp-tcp-poll, mp-uds-event), single-worker. This is the WRITE/LHS analog of 17-spmv/gather (TASK-0341.03.01, the data-dependent READ) and the FIRST proof of (a) a data-dependent LHS scatter index and (b) a same-symbol data-dependent read-modify-write (gather only exercised a RHS index on a DIFFERENT symbol with an iter-var LHS).
+
+GATE: just build/clippy/test all green; e2e 329/272/0/57/0 -> 336/279/0/57/0 (+7 = the 7 08-histogram/scatter cells, all PASS bit-identical, no pre-existing-cell regression). doc-citation-staleness / narrative-doc-lie / include-str-coverage / textual-replace structural checks green. (Full `just ci` determinism/xbackend negative arms left for the read-only review gate per the brief.)
+
+EMITTED (pthreads-sync): `histogram[(input[(i) as usize]) as usize] = kernels::inc(histogram[(input[(i) as usize]) as usize]);` with `let mut histogram = vec![0; 16];` pre-init. No `for b`, no mask — O(N) vs the masked variant's O(N*BINS).
+
+KEY-RISK RESOLVED (same-symbol-RMW discriminator): rhs_self_read_differs compares r.indices != lhs.indices structurally (IrExpr derives PartialEq); the scatter's two identical DataRef(input[i]) indices are equal, so histogram is NOT classified cumulative -> stays the wrapping_add accumulate fan-in -> value-correct (== reference.bin byte-for-byte). NO discriminator/pre-init change was needed.
+
+FILES: prog.scatter.algo.nuc + self-contained kernels.scatter.rs (inc=wrapping_add(1)) + schedules/scatter.sched.nuc (new); e2e-matrix.toml (+7 [[required]] cells); README.md (fixed the now-false "loop-variable indices only on LHS" claim + added a Native scatter section/row).
+
+FOLLOW-UPS: TASK-0384 (DISTRIBUTED scatter — partitioned data-dependent WRITE + cross-worker bin fan-in) and TASK-0385 (grammar-extension computed-local-bin / scalar-producing loop-body statement for the textbook bucketing scatter, same bottleneck as project-grammar-deferred-cluster).
+
+HONEST LIMITS: single-worker ONLY; works because input.bin is pre-clipped to [0,BINS) so input[i] IS a valid bin index (no value->bin bucketing — that needs TASK-0385's grammar work or a kernel). Pre-existing README distributed-"STRETCH/[[skip]]" narrative (lines ~15/35-39/198-200) left untouched — it predates this task and belongs to TASK-0343's distributed work (now [[required]]); not rewritten to avoid a self-introduced doc-lie about a feature not re-verified this cycle.
+<!-- SECTION:FINAL_SUMMARY:END -->
