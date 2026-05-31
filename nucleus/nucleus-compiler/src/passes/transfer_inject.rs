@@ -1466,7 +1466,14 @@ fn splice_pushes_for_waits(out: &mut Vec<ACFGNode>, local_producer_idx: &BTreeMa
     }
 
     // Apply in reverse index order so earlier insertions don't
-    // invalidate the later ones.
+    // invalidate the later ones. The reverse-apply order is order-safe
+    // for co-located Pushes ONLY because v2 is single-assignment: each
+    // datum has exactly one producer Operation, so distinct data get
+    // distinct `insert_at` indices and never co-locate at one slot (the
+    // same invariant that makes `splice_after_producer`'s append a
+    // no-op). If a future multi-output Operation is introduced, this
+    // site and `splice_after_repeat`/`splice_after_producer` must be
+    // revisited TOGETHER for per-channel Push ordering (TASK-0389.01).
     inserts.sort_by_key(|(i, _)| *i);
     for (insert_at, push) in inserts.into_iter().rev() {
         // Idempotence: if the slot immediately after the producer is
@@ -1927,7 +1934,7 @@ fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> ACFGNode {
 /// splice landed closest to the Repeat), so the host sent in reverse-rank
 /// order while the worker `build_waits_for_op` waits in rank order — a
 /// strict-FIFO `read_msg_expect` seq-mismatch panic. Verified by the
-/// `task038901_*` unit + the e2e gather_2out_loop cell.
+/// `task038901_*` unit tests + the e2e `18-multigather/distributed` cell.
 fn splice_after_repeat(node: ACFGNode, cut_iv: IterVar, push: &XferPlaceholder) -> ACFGNode {
     match node {
         ACFGNode::Sequence(children) => {
