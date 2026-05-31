@@ -11,10 +11,11 @@
 // Single worker (`host`): the data-dependent WRITE `histogram[input[i]]`
 // needs the whole of `histogram` mutable on one worker, which the
 // single-worker placement trivially satisfies (no transfers, no
-// cross-worker bin fan-in). A DISTRIBUTED scatter (partition the input,
-// per-worker partial histograms, cross-worker combine) is the "broaden"
-// follow-up to TASK-0376 — not exercised here. Output is bit-identical
-// to 08-histogram/naive and reference.bin.
+// cross-worker bin fan-in). The DISTRIBUTED scatter (partition the
+// input, per-worker partial histograms, cross-worker element-wise-sum
+// combine) is the sibling `distributed.scatter.sched.nuc` (TASK-0384);
+// it is NOT exercised by THIS single-worker schedule. Output is
+// bit-identical to 08-histogram/naive and reference.bin.
 
 schedule for "../prog.scatter.algo.nuc" {
     workers = { host };

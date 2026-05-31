@@ -1,0 +1,75 @@
+// DISTRIBUTED native-scatter schedule (TASK-0384) — the multi-worker
+// "broaden" of the single-worker `scatter.sched.nuc` (TASK-0376) and the
+// WRITE analog of the distributed gather (TASK-0373).
+//
+// Drives `prog.scatter.algo.nuc` (the native data-dependent WRITE
+// `histogram[input[i]] <-- inc(histogram[input[i]])`). The e2e harness
+// selects the algorithm from this `schedule for` path (TASK-0049.03) and
+// pairs `kernels.scatter.rs` by the variant rule (TASK-0049.08), so an
+// `08-histogram/distributed.scatter` cell compiles the scatter variant.
+//
+// The shape:
+//   host    — owns I/O (load_input / save_output) and the cross-worker
+//             partial-histogram combine.
+//   w0..w3  — each compute worker owns a DISJOINT i-band of `input`
+//             (the outer `i` loop is the partition axis) and scatters
+//             that slice into its OWN PRIVATE full-width partial
+//             histogram (`let mut histogram: Vec<i32> = vec![0; 16]`).
+//
+// Why this is sound (the TASK-0384 soundness boundary). The partition is
+// over the INPUT INDEX `i`, NOT over histogram bins. Each worker holds
+// the FULL `histogram` (whole-array replicate, because its write index
+// `input[i]` is data-dependent → opaque dim in
+// `transfer_inject::record_access_per_dim` → whole-array broadcast), so
+// a scatter to ANY bin lands in that worker's private partial. The host
+// then sums the four partials ELEMENT-WISE (TASK-0343
+// `collect_accumulate_waits` + `render_wait_assign(accumulate)`:
+// `histogram[k] = histogram[k].wrapping_add(partial_w[k])`). That sum
+// equals the single-worker histogram exactly: every input element is
+// counted once, in exactly one worker's band, into the correct bin.
+//
+// A BIN partition (a worker owning only a band of `histogram`) would be
+// UNSOUND for this replicate-then-sum shape — a worker would silently
+// drop every scatter that lands outside its band. The compiler keeps
+// that shape FATAL: the halo `is_scatter_rmw` gate
+// (`error_is_fatal_under_partition` →
+// `scatter_target_replicates_whole_array`) admits a scatter RMW under
+// partition ONLY when no partitioned iv affinely indexes the scatter
+// target. `prog.scatter.algo.nuc` has only the iv `i` (indexing the
+// SOURCE `input[i]`), so `histogram` is never affinely banded — the
+// admit shape.
+//
+// Cross-worker edges:
+//   input      host -> { w0..w3 }   (host loads, each worker consumes
+//                                    its i-band)
+//   histogram  { w0..w3 } -> host   (workers produce full-width
+//                                    partials, host element-wise-sums)
+//
+// All `sync` transfers. Verified byte-identical to `reference.bin` and
+// bit-identical cross-backend on all 7 tier-1 backends (TASK-0384),
+// including BOTH strict-FIFO backends (mp-tcp-bufsync AND mp-tcp-poll):
+// `input` is the only host->worker broadcast and there is no
+// gather-index array, so the Push/Wait FIFO order trap
+// (project-mp-tcp-event-vs-bufsync-safety-profile / TASK-0389) does NOT
+// bite here.
+
+schedule for "../prog.scatter.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O + cross-worker combine on host.
+    place load_input  on host;
+    place save_output on host;
+
+    // The pure per-hit increment distributed across the compute workers.
+    place inc on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one i-band per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    // `input` i-bands to each worker; `histogram` replicates whole-array
+    // (data-dependent write index ⇒ opaque dim ⇒ whole-array broadcast)
+    // and the partials are element-wise-summed at the host.
+    transfer input     : sync;
+    transfer histogram : sync;
+}

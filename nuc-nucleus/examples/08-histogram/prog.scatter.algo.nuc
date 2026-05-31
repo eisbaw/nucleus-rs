@@ -55,12 +55,18 @@
 // is precisely what `histogram[input[i]] <-- inc(histogram[input[i]])`
 // does. Same input.bin, same reference.bin, same N/BINS.
 //
-// Single-worker only (the `scatter.sched.nuc` schedule). A DISTRIBUTED
-// scatter (partition the input across workers, then combine per-worker
-// partial histograms with a cross-worker bin fan-in) is a separate,
-// harder step — filed as a follow-up to TASK-0376, NOT attempted here.
-// (The distributed READ gather has the same "broaden" follow-up shape;
-// see 17-spmv.)
+// Two schedules drive this algorithm: `scatter.sched.nuc`
+// (single-worker, TASK-0376) and `distributed.scatter.sched.nuc`
+// (TASK-0384), which partitions the input `i` loop across four compute
+// workers — each scatters its disjoint input slice into its OWN PRIVATE
+// full-width partial histogram (whole-array replicate, because the
+// data-dependent write index makes `histogram`'s dim opaque), and the
+// host element-wise-sums the partials (the TASK-0343 overlapping-write
+// accumulator combine). The distributed scatter is SOUND because the
+// partition is over the INPUT INDEX `i`, never over the histogram bins;
+// a bin partition would be unsound and the compiler keeps it fail-loud
+// (halo `is_scatter_rmw` gate). The distributed READ gather has the
+// analogous "broaden" landing; see 17-spmv / TASK-0373.
 
 const N    : usize = 256;     // total input length
 const BINS : usize = 16;      // histogram bin count

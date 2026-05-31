@@ -412,6 +412,83 @@ schedule = "scatter"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 08-histogram/distributed.scatter: TASK-0384 — the DISTRIBUTED native
+# scatter, the multi-worker "broaden" of 08-histogram/scatter
+# (single-worker, TASK-0376) and the WRITE analog of the distributed
+# gather (TASK-0373). Drives prog.scatter.algo.nuc via the schedule's
+# `schedule for` (TASK-0049.03; kernels.scatter.rs paired by the variant
+# rule, TASK-0049.08). 4 compute workers i-band-partition the input `i`
+# loop; each scatters its slice into its OWN PRIVATE full-width partial
+# histogram (whole-array replicate, because the data-dependent write
+# index `input[i]` marks histogram's dim 0 OPAQUE in
+# `transfer_inject::record_access_per_dim` → whole-array broadcast).
+# The host then sums the four partials ELEMENT-WISE — the same
+# OVERLAPPING-WRITE accumulator combine TASK-0343 landed for the masked
+# 08-histogram/distributed (shared backend-common
+# `collect_accumulate_waits` + `render_wait_assign(accumulate)`:
+# `histogram[k] = histogram[k].wrapping_add(partial_w[k])`). NO new
+# combine shape: the scatter variant reuses the TASK-0343 helper
+# verbatim.
+#
+# SOUNDNESS (TASK-0384 AC#1): replicate-per-worker + element-wise-sum is
+# sound ONLY for this INPUT-INDEX partition (the partitioned iv `i`
+# indexes the SOURCE `input[i]`, never the scatter target `histogram`
+# affinely). A BIN partition (a worker owning only a histogram band)
+# would be UNSOUND and stays FATAL: the halo `is_scatter_rmw` gate
+# (`halo_inference::error_is_fatal_under_partition` →
+# `scatter_target_replicates_whole_array`) admits a scatter RMW under
+# partition ONLY when no partitioned iv affinely indexes the scatter
+# target.
+#
+# All 7 tier-1 backends admit + run BIT-IDENTICAL vs reference.bin
+# (TASK-0384), including BOTH strict-FIFO backends (mp-tcp-bufsync AND
+# mp-tcp-poll): `input` is the only host->worker broadcast and there is
+# no gather-index array, so the Push/Wait FIFO order trap
+# (project-mp-tcp-event-vs-bufsync-safety-profile / TASK-0389) does NOT
+# bite. Output is the identical histogram as 08-histogram/naive,
+# /distributed (masked), and /scatter (single-worker), and reference.bin.
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.scatter"
+backend  = "openmp-rs"
+milestone = "M6"
+
 # 15-transpose/naive: TASK-0341.01 AC#1 (pthreads-sync) landed cycle
 # 204 + TASK-0341.01.02 AC#3 (cross-backend promotion to the other 6
 # tier-1 backends) landed cycle 205. Single-`host` schedule with an
