@@ -1117,7 +1117,11 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             println!("project_dir = {}", result.project_dir.display());
             println!("cargo_toml  = {}", result.cargo_toml.display());
             println!("main_rs     = {}", result.main_rs.display());
-            println!("compute_rs  = {}", result.compute_rs.display());
+            if let Some(compute_rs) = &result.compute_rs {
+                // Single-worker arm only; the multi-worker arm (TASK-0045.01)
+                // emits the whole rank-dispatched program in main.rs.
+                println!("compute_rs  = {}", compute_rs.display());
+            }
             println!("kernels_rs  = {}", result.kernels_rs.display());
             println!("run_sh      = {}", result.run_sh.display());
             Ok(())

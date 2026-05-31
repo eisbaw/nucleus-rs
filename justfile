@@ -952,12 +952,22 @@ check-mpi-smoke:
 # renode-* (TASK-0223). The mpi-blocking BACKEND crate itself IS built by
 # `just ci` (it is a normal std workspace member that only emits strings).
 #
-# SCOPE: examples 1-6 NAIVE only (single-worker). Multi-worker schedules
-# (e.g. 02-split-add/split) are the multi-worker SPMD arm (TASK-0045.01)
-# and are rejected with a loud forward-link, not run here. The driver
-# release binary is built once up front so the loop is generation-only.
+# SCOPE: two arms.
+#  (1) Examples 1-6 NAIVE (single-worker, TASK-0045): `mpiexec -n 1`.
+#  (2) The SYNC MULTI-WORKER schedules (TASK-0045.01): each run under
+#      `mpiexec -n N` where N = the schedule's USED-WORKER count — the
+#      WORST case, ALL ranks live (NOT -n 1, which hides Send/Recv
+#      ordering bugs; memory `16-jacobi`: deadlock-free != value-correct).
+#      02-split-add/split (n=2), 03-reduction/distributed (n=5),
+#      06-separable-filter/distributed + distributed2 (n=5). The
+#      ASYNC-only distributed schedules (05-stencil/distributed{,-2d})
+#      are NOT here: mpi-blocking is sync-only, so the driver's
+#      capability gate hard-rejects them (they belong to the async
+#      backends). Each multi-worker run is wrapped in `timeout` so a
+#      standard-mode-send deadlock fails LOUD instead of hanging.
+# The driver release binary is built once up front so generation is cheap.
 check-mpi:
-    @echo "tier-2 M7 mpi-blocking acceptance (.#mpi, examples 1-6 naive, TASK-0045)"
+    @echo "tier-2 M7 mpi-blocking acceptance (.#mpi, single + multi-worker, TASK-0045/.01)"
     @set -eu; \
     nix develop .#mpi --command bash -c '\
         set -eu; \
@@ -983,7 +993,31 @@ check-mpi:
             fi; \
             rm -f "$o"; \
         done; \
-        echo "OK: mpi-blocking compiles + runs value-correct for examples 1-6 naive (localhost mpiexec -n 1)."'
+        echo "--- multi-worker arm (TASK-0045.01): mpiexec -n N, all ranks live ---"; \
+        for spec in "02-split-add/split/2" "03-reduction/distributed/5" "06-separable-filter/distributed/5" "06-separable-filter/distributed2/5"; do \
+            ex="${spec%%/*}"; rest="${spec#*/}"; sc="${rest%/*}"; n="${rest##*/}"; \
+            out="nucleus/target/mpi-m7/$ex--$sc"; \
+            rm -rf "$out"; \
+            echo "=== generating multi-worker SPMD project for $ex/$sc (n=$n) ==="; \
+            ./nucleus/target/release/nucleus build \
+                --algo "nuc-nucleus/examples/$ex/prog.algo.nuc" \
+                --sched "nuc-nucleus/examples/$ex/schedules/$sc.sched.nuc" \
+                --backend mpi-blocking --out "$out" >/dev/null; \
+            echo "=== cargo build --release ($ex/$sc) ==="; \
+            ( cd "$out" && cargo build --release --quiet ); \
+            echo "=== mpiexec -n $n (all ranks live) + byte-exact cmp ($ex/$sc) ==="; \
+            o="$(mktemp)"; \
+            NUC_INPUT_PATH="nuc-nucleus/examples/$ex/input.bin" NUC_OUTPUT_PATH="$o" \
+                timeout 120 mpiexec --oversubscribe -n "$n" "$out/target/release/nuc-generated" \
+                || { echo "FAIL: $ex/$sc run failed/timed out under -n $n (deadlock?)"; rm -f "$o"; exit 1; }; \
+            if cmp -s "$o" "nuc-nucleus/examples/$ex/reference.bin"; then \
+                echo "OK: $ex/$sc multi-worker output is byte-exact vs reference.bin (mpiexec -n $n)"; \
+            else \
+                echo "FAIL: $ex/$sc multi-worker output differs from reference.bin"; rm -f "$o"; exit 1; \
+            fi; \
+            rm -f "$o"; \
+        done; \
+        echo "OK: mpi-blocking value-correct — examples 1-6 naive (-n 1) + 4 sync multi-worker schedules (-n N, all ranks live)."'
 
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/

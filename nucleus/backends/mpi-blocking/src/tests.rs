@@ -3,7 +3,6 @@
 //! it can pin the private compute-body delegation against the shared
 //! renderer directly.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use nucleus_compiler::event::{Event, WorkerId};
@@ -70,7 +69,11 @@ fn single_worker_emit_shape_and_compute_delegation() {
         crate::COMPUTE_FN_SIGNATURE,
     )
     .expect("shared renderer");
-    let compute = std::fs::read_to_string(&res.compute_rs).expect("compute.rs");
+    let compute_rs_path = res
+        .compute_rs
+        .as_ref()
+        .expect("single-worker arm emits a separate compute.rs");
+    let compute = std::fs::read_to_string(compute_rs_path).expect("compute.rs");
     assert_eq!(
         compute, expected_compute,
         "compute.rs MUST be byte-identical to the shared single-worker \
@@ -118,38 +121,161 @@ fn single_worker_emit_shape_and_compute_delegation() {
     );
 }
 
+/// Lower 02-split-add/split — the canonical 2-worker (host + w0)
+/// multi-worker witness: host runs the I/O kernels, w0 runs the `add`
+/// loop; three `sync` transfers cross (a, b host->w0; c w0->host); three
+/// whole-world `{host,w0}` barriers.
+fn lower_02_split() -> test_common::LowerForTestResult {
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples/02-split-add");
+    let algo_src = std::fs::read_to_string(ex.join("prog.algo.nuc")).expect("02 algo");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules/split.sched.nuc")).expect("02 split sched");
+    test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: true,
+            inject_check_frames: false,
+        },
+    )
+}
+
 #[test]
-fn multi_worker_is_a_loud_forward_link_not_a_silent_emit() {
-    // Build a synthetic 2-used-worker map by replaying the real
-    // single-worker event list under two distinct WorkerIds. This
-    // exercises the `used_workers.len() > 1` guard without depending on
-    // partition-lowering details.
-    let r = lower_01();
+fn multi_worker_02_split_spmd_shape_and_tag_discipline() {
+    let r = lower_02_split();
     let used: Vec<WorkerId> = r
         .per_worker
         .iter()
         .filter(|(_, e)| !e.is_empty())
         .map(|(w, _)| *w)
         .collect();
-    let evs = r.per_worker.get(&used[0]).cloned().expect("01 events");
+    assert_eq!(used.len(), 2, "02-split/split must lower to two used workers");
 
-    let mut two: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
-    two.insert(WorkerId(0), evs.clone());
-    two.insert(WorkerId(1), evs);
-
-    let kernels = repo_root().join("nuc-nucleus/examples/01-elementwise-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/multi_worker_reject");
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/multi_worker_02");
     let _ = std::fs::remove_dir_all(&scratch);
 
-    let err = emit(&two, &r.names, &r.sidecar, &kernels, &scratch)
-        .expect_err("multi-worker mpi-blocking must be rejected this cycle");
-    match err {
-        EmitError::ContractGap(msg) => {
-            assert!(
-                msg.contains("TASK-0045.01") && msg.contains("multi-worker"),
-                "the rejection must forward-link the multi-worker arm (TASK-0045.01):\n{msg}"
+    let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
+        .expect("mpi-blocking multi-worker emit (02-split/split)");
+
+    // No separate compute.rs in the multi-worker arm — the whole
+    // rank-dispatched program lives in main.rs.
+    assert!(
+        res.compute_rs.is_none(),
+        "multi-worker arm must not emit a separate compute.rs"
+    );
+
+    let main_rs = std::fs::read_to_string(&res.main_rs).expect("main.rs");
+
+    // SPMD dispatch + MPI lifecycle + rendezvous prelude + barrier.
+    for needle in [
+        "mpi::initialize()",
+        "let world = universe.world();",
+        "match world.rank() {",
+        "if size != 2 {",
+        "struct VecChan",
+        "send_with_tag",
+        "receive_vec_with_tag",
+        "struct WorldBar",
+        ".barrier();",
+        "mod kernels;",
+    ] {
+        assert!(
+            main_rs.contains(needle),
+            "multi-worker main.rs must contain `{needle}`:\n{main_rs}"
+        );
+    }
+
+    // Two rank arms (host = rank 0, w0 = rank 1).
+    assert!(
+        main_rs.contains("0 => {") && main_rs.contains("1 => {"),
+        "main.rs must dispatch rank 0 (host) and rank 1 (w0):\n{main_rs}"
+    );
+
+    // The arithmetic still calls the user kernel (non-vacuous witness).
+    assert!(
+        main_rs.contains("kernels::add"),
+        "the w0 arm must call kernels::add:\n{main_rs}"
+    );
+
+    // Tag discipline (LOAD-BEARING): each channel binding pins the MPI
+    // tag to the rendezvous id — the `::new(&world, <peer>, <rid>)` third
+    // argument equals the `mpi_<rid>` index. Without per-rid tags,
+    // same-rank-pair messages cross-match by send order. Verify every
+    // emitted binding self-consistently uses its own rid as the tag.
+    let mut checked = 0;
+    for line in main_rs.lines() {
+        if let Some(pos) = line.find("let mpi_") {
+            let after = &line[pos + "let mpi_".len()..];
+            let rid: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            assert!(!rid.is_empty(), "malformed chan binding: {line}");
+            // The `new(&world, <peer>, <tag>)` call's last arg must be rid.
+            let args_open = line.find("::new(&world,").expect("chan binding shape");
+            let args = &line[args_open..];
+            let last_arg = args
+                .trim_end_matches(';')
+                .rsplit(',')
+                .next()
+                .expect("tag arg")
+                .trim()
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>();
+            assert_eq!(
+                last_arg, rid,
+                "chan mpi_{rid} must use tag == rid {rid} (got tag `{last_arg}`):\n{line}"
             );
+            checked += 1;
         }
-        other => panic!("expected ContractGap forward-link, got {other:?}"),
+    }
+    assert!(
+        checked >= 3,
+        "02-split has 3 cross-worker transfers => >=3 chan bindings (saw {checked}):\n{main_rs}"
+    );
+}
+
+#[test]
+fn non_whole_world_barrier_is_rejected_loud() {
+    // Mutate a real lowering: drop the host from one barrier's
+    // participant set so it becomes host-excluding. The emit must reject
+    // with a typed UnsupportedFeature forward-linked to the Comm_split
+    // follow-up — NOT emit an untested sub-communicator collective.
+    let mut r = lower_02_split();
+    let host = {
+        // host election mirrors the backend: the worker named "host".
+        r.names
+            .worker
+            .iter()
+            .find(|(_, n)| n.as_str() == "host")
+            .map(|(w, _)| *w)
+            .expect("02-split has a `host` worker")
+    };
+    let mut mutated = false;
+    for evs in r.per_worker.values_mut() {
+        for e in evs.iter_mut() {
+            if let Event::Sync { participants, .. } = e {
+                if participants.remove(&host) {
+                    mutated = true;
+                }
+            }
+        }
+    }
+    assert!(mutated, "expected at least one Sync to drop the host");
+
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/non_whole_world_bar");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let err = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
+        .expect_err("a host-excluding barrier must be rejected (Comm_split unproven)");
+    match err {
+        EmitError::UnsupportedFeature(msg) => assert!(
+            msg.contains("Comm_split") && msg.contains("TASK-0045.02"),
+            "rejection must forward-link the Comm_split follow-up:\n{msg}"
+        ),
+        other => panic!("expected UnsupportedFeature(Comm_split), got {other:?}"),
     }
 }

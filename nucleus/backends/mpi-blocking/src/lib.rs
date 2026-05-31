@@ -28,13 +28,15 @@
 //! compile-only-with-best-effort-runtime precedent as `embedded-pattern`
 //! / `renode`.
 //!
-//! # Status (cycle M7-entry): single-worker SPMD arm
+//! # Status: single-worker + multi-worker SPMD arms
 //!
-//! [`emit`] handles the 0/1-used-worker case. The multi-worker SPMD arm
-//! (rank-dispatched blocking Send/Recv for `Push`/`Wait`, `MPI_Barrier`
-//! for `Sync`) returns a forward-linked [`EmitError::ContractGap`] until
-//! TASK-0045.01 lands it — the same skeleton-first pattern openmp-rs /
-//! mp-tcp-poll / mp-uds-event followed.
+//! [`emit`] handles the 0/1-used-worker case (single-worker arm,
+//! TASK-0045) AND the ≥2-used-worker case (multi-worker SPMD arm,
+//! TASK-0045.01). The multi-worker arm emits one rank-dispatched binary
+//! (`match world.rank()`) whose `Push`/`Wait` lower to blocking MPI
+//! `Send`/`Recv` (tag = rendezvous id) and whose `Sync` lowers to a
+//! whole-world `MPI_Barrier`. See [`multi_worker`] for the lowering and
+//! its scope limits.
 //!
 //! # Honest limitations (AC#6)
 //!
@@ -43,8 +45,19 @@
 //! - **Point-to-point + barrier only** — collective recognition
 //!   (`MPI_Allreduce`/`MPI_Scatter`) is deliberately deferred (PRD §7.2;
 //!   AC#5). Correct, just suboptimal.
-//! - **Single-worker arm only this cycle.** A multi-worker schedule is
-//!   rejected loud with a forward link, not silently mis-emitted.
+//! - **Standard-mode blocking send.** `Push` lowers to `MPI_Send`
+//!   (standard mode): small messages are buffered eagerly (non-blocking
+//!   in practice) but a message above the MPI eager limit may block until
+//!   its matching `Recv` is posted. The schedule ordering targets the
+//!   fully-async pthreads `Slot` model, so an adversarial large-message
+//!   ordering could deadlock. Buffered / non-blocking send is the M8
+//!   non-blocking arm (TASK-0046). `just check-mpi` wraps each run in a
+//!   `timeout` so a deadlock fails LOUD rather than hanging.
+//! - **Whole-world barriers only.** A barrier whose participant set is a
+//!   strict subset of the used workers (host-excluding / non-uniform)
+//!   needs `Comm_split`, a collective the M7 foundation did not prove;
+//!   [`multi_worker`] rejects it with a typed [`EmitError`] forward-linked
+//!   to a follow-up rather than emit untested collective code.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -57,6 +70,8 @@ use backend_common::project_skeleton::single_binary;
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 use pthreads_sync::render_single_worker_main_with_signature;
+
+mod multi_worker;
 
 /// The rsmpi dependency line interpolated into the generated project's
 /// `[dependencies]`. Pinned to the same `0.8` series the M7 foundation
@@ -87,11 +102,15 @@ pub struct EmitResult {
     pub project_dir: PathBuf,
     /// Path to the emitted `Cargo.toml`.
     pub cargo_toml: PathBuf,
-    /// Path to the emitted `src/main.rs` (the SPMD MPI wrapper).
+    /// Path to the emitted `src/main.rs` (the SPMD MPI wrapper for the
+    /// single-worker arm, or the full SPMD rank-dispatched program for
+    /// the multi-worker arm).
     pub main_rs: PathBuf,
     /// Path to the emitted `src/compute.rs` (the shared single-worker
-    /// compute body the wrapper calls).
-    pub compute_rs: PathBuf,
+    /// compute body the wrapper calls). `None` for the multi-worker arm
+    /// (TASK-0045.01): the rank-dispatched program lives entirely in
+    /// `main.rs` — there is no separate single-worker compute body.
+    pub compute_rs: Option<PathBuf>,
     /// Path to the emitted `src/kernels.rs` (verbatim copy).
     pub kernels_rs: PathBuf,
     /// Path to the emitted `run.sh` (an `mpiexec` launcher).
@@ -119,17 +138,6 @@ pub fn emit(
         .map(|(w, _)| *w)
         .collect();
 
-    if used_workers.len() > 1 {
-        return Err(EmitError::ContractGap(format!(
-            "mpi-blocking: multi-worker SPMD codegen (rank-dispatched \
-             blocking Send/Recv for Push/Wait + MPI_Barrier for Sync) is \
-             not yet implemented (used workers: {}). The single-worker \
-             SPMD arm is landed; the multi-worker arm is TASK-0045.01. \
-             This is a loud forward-link, not a silent mis-emit.",
-            used_workers.len()
-        )));
-    }
-
     let kernels_src =
         fs::read_to_string(kernels_rs_path).map_err(|e| EmitError::KernelsReadFailed {
             path: kernels_rs_path.to_path_buf(),
@@ -148,6 +156,30 @@ pub fn emit(
     let kernels_rs = src_dir.join("kernels.rs");
     let run_sh = out_dir.join("run.sh");
 
+    // ---- Multi-worker SPMD arm (TASK-0045.01). ----
+    // ≥2 used workers => one rank-dispatched binary (`match world.rank()`)
+    // whose Push/Wait lower to blocking MPI Send/Recv (tag = rendezvous
+    // id) and whose Sync lowers to a whole-world `MPI_Barrier`. The whole
+    // program lives in `main.rs`; there is no separate `compute.rs`.
+    if used_workers.len() > 1 {
+        let main_body = multi_worker::render_main_rs_multi(per_worker, names, sidecar)?;
+        let ranks = used_workers.len();
+        write_file(&kernels_rs, &kernels_src)?;
+        write_file(&main_rs, &main_body)?;
+        write_file(&cargo_toml, &single_binary::render_cargo_toml(Some(MPI_DEP)))?;
+        write_file(&run_sh, &render_run_sh(ranks))?;
+        mark_executable(&run_sh);
+        return Ok(EmitResult {
+            project_dir: out_dir.to_path_buf(),
+            cargo_toml,
+            main_rs,
+            compute_rs: None,
+            kernels_rs,
+            run_sh,
+        });
+    }
+
+    // ---- Single-worker SPMD arm. ----
     // The compute body: the SHARED single-worker renderer, byte-identical
     // arithmetic to pthreads-sync. It emits a complete module (header +
     // `#[path=kernels.rs] mod kernels;` + `fn main() { <straight-line> }`);
@@ -169,14 +201,14 @@ pub fn emit(
     write_file(&compute_rs, &compute_body)?;
     write_file(&main_rs, MPI_SPMD_MAIN)?;
     write_file(&cargo_toml, &single_binary::render_cargo_toml(Some(MPI_DEP)))?;
-    write_file(&run_sh, MPI_RUN_SH)?;
+    write_file(&run_sh, &render_run_sh(1))?;
     mark_executable(&run_sh);
 
     Ok(EmitResult {
         project_dir: out_dir.to_path_buf(),
         cargo_toml,
         main_rs,
-        compute_rs,
+        compute_rs: Some(compute_rs),
         kernels_rs,
         run_sh,
     })
@@ -216,28 +248,34 @@ fn main() {
 }
 ";
 
-/// The `run.sh` launcher. Builds the release binary then runs it under
-/// localhost `mpiexec` (PRD §10.2). Rank count defaults to 1 (the
-/// single-worker arm); override via `NUC_MPI_RANKS`. `--oversubscribe`
+/// Render the `run.sh` launcher. Builds the release binary then runs it
+/// under localhost `mpiexec` (PRD §10.2). Rank count defaults to
+/// `default_ranks` (1 for the single-worker arm, the used-worker count
+/// for the multi-worker arm — the WORST case with all ranks live, per
+/// TASK-0045.01 AC#4); override via `NUC_MPI_RANKS`. `--oversubscribe`
 /// lets the ranks share however few cores are available.
-const MPI_RUN_SH: &str = "\
+fn render_run_sh(default_ranks: usize) -> String {
+    format!(
+        "\
 #!/usr/bin/env bash
 # Generated by the nucleus pre-compiler (mpi-blocking). Rerun `nucleus build` to regenerate.
-# Usage: bash run.sh [INPUT_BIN] [OUTPUT_BIN]   (rank count via NUC_MPI_RANKS, default 1)
+# Usage: bash run.sh [INPUT_BIN] [OUTPUT_BIN]   (rank count via NUC_MPI_RANKS, default {default_ranks})
 # Build + run REQUIRE `nix develop .#mpi` (OpenMPI + rsmpi build deps).
 set -euo pipefail
 
-here=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"
-input_bin=\"${1:-input.bin}\"
-output_bin=\"${2:-output.bin}\"
-ranks=\"${NUC_MPI_RANKS:-1}\"
+here=\"$(cd -- \"$(dirname -- \"${{BASH_SOURCE[0]}}\")\" && pwd)\"
+input_bin=\"${{1:-input.bin}}\"
+output_bin=\"${{2:-output.bin}}\"
+ranks=\"${{NUC_MPI_RANKS:-{default_ranks}}}\"
 
 (cd \"$here\" && cargo build --release --quiet)
 
 NUC_INPUT_PATH=\"$input_bin\" \\
 NUC_OUTPUT_PATH=\"$output_bin\" \\
 mpiexec --oversubscribe -n \"$ranks\" \"$here/target/release/nuc-generated\"
-";
+"
+    )
+}
 
 fn write_file(path: &Path, contents: &str) -> Result<(), EmitError> {
     fs::write(path, contents).map_err(|e| EmitError::WriteFailed {
