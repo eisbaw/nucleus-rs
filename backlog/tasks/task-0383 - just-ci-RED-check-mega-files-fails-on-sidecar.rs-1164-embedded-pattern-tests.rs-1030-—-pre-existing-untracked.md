@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-31 02:39'
-updated_date: '2026-05-31 03:11'
+updated_date: '2026-05-31 03:33'
 labels:
   - ci
   - hygiene
@@ -33,6 +33,14 @@ Part B: extract embedded-pattern/tests.rs BIN-shape tests (`*_bin_*`, check-fram
 Pure code-move, ZERO behavior change. Same test count before/after.
 DoD: both files <1000 LoC via split, just check-mega-files GREEN, all tests pass at same count. Then run check-doc-citation-staleness + check-doc-links + clippy.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cycle-221 orchestrator review gate (GO x2, independently re-verified):
+- mped-architect (read-only): GO, no P1/P2. Verified zero test loss (sidecar cumulative_tests 5->5; embedded tests 11->11 across tests.rs+bin_shape.rs), bodies byte-identical modulo mod-wrapper/de-indent, NO new pub (no visibility widening), allow-list byte-untouched (resolution was SPLIT not allow-list), the one stale bare-filename prose ref in embedded-pattern/src/lib.rs:389 (in tests.rs -> tests/bin_shape.rs) was the only one. P3 note: file momentarily fmt-dirty between commit 69763ef and 3b007c4 (harmless, by-design two-commit discipline).
+- Orchestrator self-ran FULL just ci (qa-test-runner returned early without numbers): CI_EXIT=0. check-mega-files OK (was the RED arm). just test 1165/0/3 dev, test-release 1164/0/3 (1-test delta = known TASK-0291 profile skew). e2e 329/272/0/57/0 (baseline preserved exactly). determinism/xbackend/required-coverage negative arms all correctly bit. Final file sizes: sidecar.rs 905, sidecar/cumulative_tests.rs 271, embedded tests.rs 534, tests/bin_shape.rs 515 (all <1000).
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
