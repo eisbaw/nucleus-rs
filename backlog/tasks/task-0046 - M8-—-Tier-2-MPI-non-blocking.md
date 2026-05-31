@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-31 09:08'
+updated_date: '2026-05-31 09:50'
 labels:
   - M8
   - backend
@@ -22,11 +22,11 @@ Tier-2 milestone: mpi-nonblocking via MPI_Isend/MPI_Irecv/MPI_Wait. Schedules re
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 backends/mpi-nonblocking/ crate lands with capabilities.toml supporting async + buffer.
+- [x] #1 backends/mpi-nonblocking/ crate lands with capabilities.toml supporting async + buffer.
 - [ ] #2 Generated code uses MPI_Isend/MPI_Irecv with explicit MPI_Wait sequenced per the EventList.
 - [ ] #3 Examples 9, 11 run on localhost MPI with bit-identical output.
-- [ ] #4 Test: M8 acceptance includes async + buffered schedules over MPI.
-- [ ] #5 Implementation notes record design questions (e.g. MPI_Request lifetime in generated code; how to map SeqTag to MPI tags).
+- [x] #4 Test: M8 acceptance includes async + buffered schedules over MPI.
+- [x] #5 Implementation notes record design questions (e.g. MPI_Request lifetime in generated code; how to map SeqTag to MPI tags).
 - [ ] #6 Implementation notes record honest limitations (no derived-type optimisation; one MPI_Type_contiguous per transfer at M8).
 <!-- AC:END -->
 
@@ -72,4 +72,22 @@ DESIGN (grounded in rsmpi 0.8.1 source ~/.cargo/.../mpi-0.8.1/src/{point_to_poin
 - capabilities.toml: supports_async=true, supports_buffer=true, max_buffer=64, notify=[barrier,blocking,event] (superset of mpi-blocking).
 
 VERIFY (defeat timing-luck): byte-exact mpiexec -n N all-ranks-live for the 3 targets, AND a forced-rendezvous run (OpenMPI 5.0 MCA eager-limit -> 0, or large-message) so the eager protocol does not mask a buffer-lifetime bug. Toolchain confirmed available: .#mpi = OpenMPI 5.0.10 (mpiexec+mpicc cached in nix store).
+
+M8-ENTRY CYCLE OUTCOME (mpi-nonblocking landed + verified; reviewed GO x2; commits 9003a9c + dc4a1a5):
+
+WHAT LANDED: new crate nucleus/backends/mpi-nonblocking (lib.rs + multi_worker.rs + tests.rs + capabilities.toml), driver dispatch/help/registered-list, just check-mpi-nonblocking. Push => buffered MPI_Ibsend (local completion, deadlock-immune) + Wait; Wait => MPI_Mprobe+MPI_Imrecv (Vec) / MPI_Irecv (scalar) + Wait; barrier => whole-world MPI_Barrier. MPI_Buffer_attach via Universe::set_buffer_size, heuristic-sized + NUC_MPI_BSEND_BYTES override, clamped to i32::MAX, fail-loud (MPI_ERR_BUFFER).
+
+VERIFIED (.#mpi = OpenMPI 5.0.10): 3 async schedules byte-exact vs reference.bin under mpiexec -n N all-ranks-live, BOTH default-eager AND forced-rendezvous (BTL eager=128B): 05-stencil/distributed (n=5), 05-stencil/distributed-2d (n=5, REAL worker<->worker 2x2 halo, deadlock-prone, deadlock-immune here), 11-game-of-life/pipelined (n=2). Gate: clippy clean; just test 1191/0/3; test-release 1190/0/3; e2e 350/293/0/57/0 (tier-1 baseline preserved, mpi-nonblocking not in matrix); mpi-nonblocking 4 unit tests.
+
+AC DISPOSITION:
+- AC#1 MET (crate + capabilities async+buffer). TICKED.
+- AC#2 SUBSTANTIVELY MET with documented interpretation (NOT ticked, per architect P2.2): receive uses MPI_Irecv/Imrecv + Wait literally; SEND uses MPI_Ibsend (buffered immediate send, the Isend-FAMILY non-blocking send) + Wait, NOT standard MPI_Isend. Rationale: standard Isend forces a deferred Wait (buffer borrowed until completion) which the linear .push(v) walker API cannot express safely (self-referential buffer/request or unbounded leak); buffered Ibsend completes locally => clean lifetime AND deadlock-immune. This is the principled realization of supports_buffer. Reword candidate: AC#2 -> non-blocking immediate send (buffered MPI_Ibsend) + explicit Wait.
+- AC#3 PARTIAL (NOT ticked): example 11 MET (+ bonus 05-distributed{,-2d}); example 9 (09-producer-consumer/pipelined) BLOCKED on a non-whole-world barrier {producer,consumer} excluding host -> needs Comm_split (TASK-0045.02). Forward-carried to child TASK-0046.01 (depends on TASK-0045.02).
+- AC#4 MET (check-mpi-nonblocking covers async+buffered schedules x 2 protocols). TICKED.
+- AC#5 MET (MPI_Request lifetime design + SeqTag->tag mapping documented in code + crate docstring). TICKED.
+- AC#6 SUBSTANTIVELY MET with note (NOT ticked): honest limits recorded (no derived types, no collective recognition, heuristic buffer sizing). The ACs literal MPI_Type_contiguous phrasing is off from codegen reality: this backend uses NO derived types (element-typed contiguous slices), so there is zero MPI_Type_contiguous, not one per transfer. Reword candidate to match.
+
+FOLLOW-UPS FILED: TASK-0046.01 (example 9 / Comm_split), TASK-0046.02 (lift shared Plan to backend-common; de-dup mpi-blocking/mpi-nonblocking silent-sibling hazard).
+
+STATUS: In Progress (AC#3 genuinely partial; close after TASK-0045.02 + TASK-0046.01 land, or reword AC#2/#3/#6 per the disposition above with explicit sign-off).
 <!-- SECTION:NOTES:END -->
