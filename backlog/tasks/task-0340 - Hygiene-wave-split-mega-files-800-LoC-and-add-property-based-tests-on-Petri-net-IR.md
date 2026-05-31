@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@orchestrator'
 created_date: '2026-05-26 09:46'
-updated_date: '2026-05-31 03:12'
+updated_date: '2026-05-31 04:07'
 labels:
   - tech-debt
   - hygiene
@@ -529,6 +529,8 @@ TASK-0342 cycle 190 (Option A): extended check-mega-files scope to include nucle
 This addendum closes the documentation/expectation lag noted in cycle-185b architect P3.6 (AC#5 'no file exceeds 1000 LoC' wording previously bound a sub-tree but excluded e2e; cycle-190 lift makes the wording bind nucleus/e2e/src/ too via allow-list).
 
 Cycle-220 SIBLING follow-up TASK-0383 (Done): two files crossed the 1000-LoC fence AFTER this epic closed — nucleus-compiler/src/sidecar.rs (1164) + embedded-pattern/src/tests.rs (1030), neither in any 0340 slice nor the allow-list, so `just check-mega-files` (and thus `just ci`) was RED. Resolved by the AC#2 SPLIT pattern (NOT allow-list): sidecar.rs -> sidecar/cumulative_tests.rs (child #[cfg(test)] mod via 2018-edition dir resolution, like sched/ acfg/); embedded-pattern/tests.rs -> tests/bin_shape.rs (BIN-shape tests carved off, LIB tests + shared helpers retained). Result 905/263/534/515 LoC, all <1000. RECURRING-LESSON for any future split slice (carry forward): (a) re-derive the child module's `use` block from what the MOVED code actually names — a copied parent import (std::path::PathBuf here) becomes a dead import that FAILS `just clippy -D warnings`; (b) a split SHIFTS every comment that cites the moved code by bare filename ('pinned in tests.rs') into a doc-lie — grep the WHOLE crate for `<oldfile>.rs` location-claims after the move; the check-doc-citation-staleness fence does NOT catch bare-basename prose claims (filed as a data point on TASK-0382 AC#1). The mega-file fence has no scope-membership guard, so a file can silently cross 1000 between epic closures — the only backstop is `just check-mega-files` in the full `just ci`, which is why a per-commit-subset-only gate misses it.
+
+FORWARD-CARRIED (cycle-221, TASK-0382): the split-and-cite cycles in this epic are the #1 recurring SOURCE of bare-basename doc-citation lies (a comment cites <file>.rs:N or names a test "in tests.rs", then a later slice carves the file/test elsewhere and the citation rots). TASK-0383 split freshly produced one (embedded-pattern lib.rs comment "pinned by ... in tests.rs" after the test moved to tests/bin_shape.rs). TASK-0382 cycle-221 added a gate-time defence: just check-doc-citation-staleness-bare (wired into just ci) validates bare <file>.rs:N citations crate-scoped + prose-aware, zero-FP. NOTE the residual blind spot relevant to THIS epic: the no-:N "named-test-lives-in-FILE.rs" prose variant (exactly the TASK-0383 shape) is NOT yet caught — it needs symbol-residence checking, deferred to TASK-0382.01. So when carving a future slice in this epic, still MANUALLY grep the source crate for stale bare-basename / test-name location claims; the new fence catches the :N form but not the bare prose-location form yet.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
