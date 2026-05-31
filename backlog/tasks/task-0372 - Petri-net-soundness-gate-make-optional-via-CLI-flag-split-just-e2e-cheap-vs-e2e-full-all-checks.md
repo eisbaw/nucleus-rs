@@ -3,10 +3,10 @@ id: TASK-0372
 title: >-
   Petri net soundness gate: make optional via CLI flag; split just e2e (cheap)
   vs e2e-full (all checks)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-30 20:53'
-updated_date: '2026-05-30 23:06'
+updated_date: '2026-05-31 00:11'
 labels: []
 dependencies: []
 references:
@@ -47,4 +47,6 @@ Acceptance:
 
 <!-- SECTION:NOTES:BEGIN -->
 Cycle-218 orchestrator investigation: the premise (gate slows builds) is CONFIRMED, but the proposed solution (CLI flag + e2e cheap/full split) is a WORKAROUND for an O(T*A) performance bug, not a root-cause fix. Measured: 07-matmul/distributed8 gate-on 473ms vs gate-off 34ms (~439ms = 93% of build); root cause is Net::fire scanning ALL arcs per call (no per-transition adjacency index). Filed TASK-0377 as the root-cause near-linear fix (keeps the gate always-on per TASK-0368 defense-in-depth AND makes e2e fast). RECOMMENDATION: hold this task; if TASK-0377 brings the always-on gate cost under target, this flag/e2e-split is UNNECESSARY and 0372 should close as superseded. Only revive the flag if a residual cost remains after 0377.
+
+CLOSED AS SUPERSEDED by TASK-0377 (cycle 218). This task proposed a CLI flag to disable the Petri gate + an e2e cheap/full split, to cure the cycle-217 gate slowdown. Investigation showed that was a WORKAROUND: the slowdown was an O(T*A) perf bug in Net::fire (all-arcs scan, no adjacency index). TASK-0377 fixed the root cause (per-transition ArcIndex -> near-linear gate, ~439ms -> ~21ms on the worst-case 8-worker net), so the gate now stays ALWAYS-ON (preserving TASK-0368 defense-in-depth) AND is cheap. The flag + e2e split are therefore UNNECESSARY. AC#1-#4 (the flag/recipe ACs) are deliberately NOT met and NOT ticked — the work was made moot, not done. Re-open only if a future residual gate cost re-appears that a root-cause fix cannot reach (none today: e2e 329/272/0/57/0 with the always-on gate).
 <!-- SECTION:NOTES:END -->

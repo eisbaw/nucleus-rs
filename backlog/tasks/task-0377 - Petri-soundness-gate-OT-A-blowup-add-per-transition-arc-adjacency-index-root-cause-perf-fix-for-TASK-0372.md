@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-30 23:06'
-updated_date: '2026-05-30 23:37'
+updated_date: '2026-05-31 00:11'
 labels:
   - perf
   - petri
@@ -86,6 +86,8 @@ AC#5 perf pin: tests/boundedness.rs::gate_stays_near_linear_under_large_net buil
 GATE GREEN: just build OK; just clippy OK (0 warnings, re-run independently); just test 1152 pass/0 fail (incl new pin); just test-release 1151 pass/0 fail (incl pin); just e2e total:329 pass:272 fail:0 skipped:57 required-fail:0 == cycle-217 baseline UNCHANGED, 7-backend bit-identity preserved (0 differential failures).
 
 OUT-OF-SCOPE FINDING (pre-existing, NOT mine): cargo fmt --check reports drift in lib.rs/transfer_inject.rs/sidecar.rs/algo_lower.rs/algo_parser.rs (all unmodified by this task, drift is vs HEAD). My 4 changed files are fmt-clean. Filing a follow-up.
+
+Cycle-218 orchestrator review gate (independent, read-only): qa-test-runner GO — reproduced test 1152/0, test-release 1151/0, e2e 329/272/0/57/0 TWICE (deterministic, bit-identity preserved). mped-architect GO — rigorous behaviour-preservation proof (line-for-line fire-body identity old vs new; derive_firing_order cursor proven order-identical since the cursor only advances past the contiguous already-fired prefix and a fired transition is never un-fired; lazy marking_before sound because fire_in_place commits only after all checks; ArcIndex valid across net.clone since TransitionId==vec index). Orchestrator ALSO independently re-measured dist8: 473ms -> ~55ms full build (gate ~439ms -> ~21ms). Architect P2/P3 hardening applied by orchestrator in commit 423d9bd: perf-pin re-sized T=4000->16000 + ceiling 1s->2s so it actually BITES (old O(T*A) is ~13-22s at T=16000 vs ~0.83-1.38s at T=4000 which straddled the old 1s ceiling); 2 doc-lies fixed (pin docstring overclaim; enabled_transitions falsely named a non-existent linearisation-pass caller, it is test-only). Full gate green post-hardening. AC#1-5 all MET + hardened. Cycle CLOSED.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
