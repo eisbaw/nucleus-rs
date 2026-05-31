@@ -32,6 +32,28 @@
 //! guard and re-introduce a wrong-offset / latent-panic emission".
 //! Each test names the exact `file:line` guard it pins.
 //!
+//! TASK-0381 (completeness follow-up, architect P3 sibling sweep)
+//! extends the inventory to the FOUR remaining fail-loud guards in
+//! `fire.rs`, reached through the public arg/output renderers:
+//!   - `render_fire_arg`'s `ArgBinding::Nested` arm (fire.rs:376) — a
+//!     nested kernel call in argument position; reached via the public
+//!     `render_fire_args`;
+//!   - `classify_data_slice`'s missing-`ResolvedType` ContractGap
+//!     (fire.rs:427) and over-indexed UnsupportedFeature (fire.rs:438),
+//!     reached via the public `render_fire_output_assign`.
+//!
+//! The fourth guard, `classify_data_slice`'s scalar-data-indexed arm
+//! (fire.rs:446), is STRUCTURALLY MASKED: the over-indexed check at
+//! fire.rs:435 (`indices.len() > dims.len()`) fires FIRST for any
+//! `dims == []` with `>= 1` index, and `indices.len() == 0` is
+//! forbidden by the `debug_assert!` at fire.rs:421 + the caller
+//! contract. It therefore has no direct unit test; instead a MASKING
+//! test pins the observable routing (scalar data + 1 index ->
+//! over-indexed, NOT scalar-data), so a future re-ordering of the two
+//! checks would be caught here. (fire.rs:346 no_std fixed-array
+//! mismatch is already covered by `fire_args_nostd.rs:200` — not a
+//! gap.)
+//!
 //! Fixture style mirrors `render_gather_negative.rs` /
 //! `fire_args_nostd.rs`: build a minimal `(NameTables, NameSidecar)`
 //! and opt IN to exactly the table entries each arm's reachability
@@ -40,12 +62,13 @@
 //! load-bearing).
 
 use nucleus_compiler::algo::{IndexedRef, IrExpr, ResolvedType, ScalarType};
-use nucleus_compiler::event::{DataId, DataSlice};
+use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use nucleus_compiler::name_tables::NameTables;
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::render::{
-    render_const_expr, render_flat_index, render_int_expr, EmitError, RenderCtx,
+    render_const_expr, render_fire_args, render_fire_output_assign, render_flat_index,
+    render_int_expr, EmitError, RenderCtx,
 };
 
 /// A `(NameTables, NameSidecar)` carrying ZERO data symbols. Each test
@@ -327,5 +350,169 @@ fn flat_index_missing_name_is_contract_gap() {
             );
         }
         other => panic!("expected ContractGap for a missing-name slice, got {other:?}"),
+    }
+}
+
+// ====================================================================
+// TASK-0381 — the FOUR remaining fire.rs fail-loud guards, reached
+// through the public arg/output renderers.
+// ====================================================================
+
+// --------------------------------------------------------------------
+// render_fire_arg — the `ArgBinding::Nested` arm (fire.rs:376), via the
+// public `render_fire_args`.
+// --------------------------------------------------------------------
+
+#[test]
+fn fire_arg_nested_kernel_call_is_unsupported_feature() {
+    // fire.rs:376. A nested kernel call in ARGUMENT position
+    // (`f(g(k))`) is rejected fail-loud — the backend renders flat
+    // argument lists, not nested call expressions. Direct sibling of
+    // the Call-in-index guard (expr.rs:72), the most glaring omission.
+    // NOT source-reachable: the lowering layer flattens / rejects
+    // nested calls in arg position before codegen. The arm matches on
+    // the binding shape alone and ignores the (absent) kernel
+    // signature, so empty fixtures suffice.
+    let (names, sidecar) = empty_fixtures();
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let nested = ArgBinding::Nested {
+        callee: "g".to_string(),
+        args: vec![ArgBinding::Scalar(ident("k"))],
+    };
+
+    let err = render_fire_args(KernelId(0), std::slice::from_ref(&nested), &ctx)
+        .expect_err("a nested kernel call in argument position must fail loud (fire.rs:376)");
+    match err {
+        EmitError::UnsupportedFeature(msg) => {
+            assert!(
+                msg.contains("nested kernel call") && msg.contains("argument"),
+                "fire.rs:376 message must name a nested kernel call in an argument: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedFeature for a Nested arg binding, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------
+// classify_data_slice — its missing-ResolvedType + over-indexed guards
+// (fire.rs:427 / :438), via the public `render_fire_output_assign`.
+// --------------------------------------------------------------------
+
+#[test]
+fn fire_output_missing_resolved_type_is_contract_gap() {
+    // fire.rs:427. `render_fire_output_assign` resolves the data name
+    // (fire.rs:71) then classifies the slice; `classify_data_slice`
+    // fails loud when the named datum has no `ResolvedType` in the
+    // sidecar. REACHABILITY ORDERING: the NAME must be PRESENT (else
+    // both fire.rs:71 and classify's own `data_name` at fire.rs:425
+    // ContractGap "has no name" FIRST); the ResolvedType must be ABSENT
+    // to hit THIS guard. Sibling of the flat-index missing-ResolvedType
+    // guard (fire.rs:529).
+    let did = DataId(0);
+    let mut names = NameTables::default();
+    names.data.insert(did, "out".to_string());
+    let sidecar = NameSidecar::default(); // deliberately NO data_types entry
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let slice = DataSlice {
+        data: did,
+        indices: vec![ident("i")],
+    };
+
+    let err = render_fire_output_assign(&slice, "kernels::f(i)", &ctx).expect_err(
+        "an output slice over data with no ResolvedType must fail loud (fire.rs:427)",
+    );
+    match err {
+        EmitError::ContractGap(msg) => {
+            assert!(
+                msg.contains("no ResolvedType") && msg.contains("out"),
+                "fire.rs:427 message must name the missing ResolvedType for `out`: {msg}"
+            );
+        }
+        other => panic!("expected ContractGap for a missing-ResolvedType output, got {other:?}"),
+    }
+}
+
+#[test]
+fn fire_output_over_indexed_is_unsupported_feature() {
+    // fire.rs:438. The name AND ResolvedType are present, but the index
+    // COUNT exceeds the declared rank: 2 indices over a rank-1 datum
+    // (`i32[4]`). That is a contract bug the contract pass should have
+    // rejected; the backend fails loud with context rather than
+    // emitting a wrong offset. Sibling of the flat-index rank-mismatch
+    // guard (fire.rs:539).
+    let did = DataId(0);
+    let (names, sidecar) = fixtures_with_data(did, "out", vec![4]); // rank 1
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let slice = DataSlice {
+        data: did,
+        indices: vec![ident("y"), ident("x")], // 2 indices over rank-1 data
+    };
+
+    let err = render_fire_output_assign(&slice, "kernels::f(y, x)", &ctx).expect_err(
+        "an over-indexed output slice (2 indices over rank-1 data) must fail loud (fire.rs:438)",
+    );
+    match err {
+        EmitError::UnsupportedFeature(msg) => {
+            assert!(
+                msg.contains("over-indexed") && msg.contains("out"),
+                "fire.rs:438 message must name the over-indexing of `out`: {msg}"
+            );
+            assert!(
+                msg.contains("dims=[4]") && msg.contains("indices=2"),
+                "fire.rs:438 message must name the dims and index count: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedFeature for an over-indexed output, got {other:?}"),
+    }
+}
+
+#[test]
+fn fire_output_scalar_data_indexed_is_masked_by_over_indexed_guard() {
+    // fire.rs:446 is STRUCTURALLY MASKED — this test pins WHY, so a
+    // future re-ordering of the two checks is caught here rather than
+    // silently changing which diagnostic fires.
+    //
+    // The dedicated scalar-data-indexed guard (`dims.is_empty()`,
+    // fire.rs:444-449) can only fire when control reaches it, i.e.
+    // AFTER the over-indexed check at fire.rs:435 passes
+    // (`indices.len() <= dims.len()`). With `dims == []` that requires
+    // `indices.len() == 0` — but `classify_data_slice` `debug_assert!`s
+    // a non-empty index list (fire.rs:421) and its callers never pass
+    // an empty one. So for ANY reachable input (>= 1 index over scalar
+    // data), the over-indexed check at fire.rs:435 fires FIRST
+    // (`1 > 0`), and the scalar-data arm is dead. We therefore assert
+    // the OBSERVABLE behaviour: scalar data (`dims == []`) indexed once
+    // routes to the OVER-INDEXED diagnostic, NOT the scalar-data one.
+    let did = DataId(0);
+    let (names, sidecar) = fixtures_with_data(did, "s", vec![]); // rank 0 (scalar)
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let slice = DataSlice {
+        data: did,
+        indices: vec![ident("i")], // 1 index over scalar data
+    };
+
+    let err = render_fire_output_assign(&slice, "kernels::f(i)", &ctx).expect_err(
+        "indexing scalar data must fail loud — via the over-indexed guard (fire.rs:435), \
+         which masks the dedicated scalar-data guard (fire.rs:446)",
+    );
+    match err {
+        EmitError::UnsupportedFeature(msg) => {
+            // The over-indexed guard wins; its message (not the
+            // scalar-data "indexed with N expressions" message) proves
+            // the masking ordering.
+            assert!(
+                msg.contains("over-indexed") && msg.contains("dims=[]"),
+                "fire.rs:435 (masking fire.rs:446) must report over-indexing of scalar data: {msg}"
+            );
+            assert!(
+                !msg.contains("scalar data `s` indexed"),
+                "the dedicated scalar-data message (fire.rs:447) must NOT fire — it is masked: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedFeature (over-indexed) for indexed scalar data, got {other:?}"),
     }
 }
