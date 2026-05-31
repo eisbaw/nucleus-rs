@@ -3,11 +3,11 @@ id: TASK-0370
 title: >-
   Widen just check-narrative-doc-lie beyond e2e-matrix.toml to backlog/tasks,
   schedule .nuc, READMEs, source docstrings
-status: In Progress
+status: Done
 assignee:
   - '@mped'
 created_date: '2026-05-30 11:08'
-updated_date: '2026-05-31 02:12'
+updated_date: '2026-05-31 02:21'
 labels:
   - tooling
   - ci
@@ -28,7 +28,7 @@ Cycle-213 strategic-analysis finding (R5, robustness). VERIFIED: the check-narra
 <!-- AC:BEGIN -->
 - [ ] #1 check-narrative-doc-lie scans backlog/tasks/*.md, nuc-nucleus/examples/*/schedules/*.sched.nuc headers, README.md files, and crate source docstrings (or a justified subset) in addition to e2e-matrix.toml
 - [ ] #2 The widened patterns capture at least the historically-recurring lie shapes (stale absolute-line citations, phantom function names, "every X" claims without a grep-witness, "only N backends remain" staleness) and run clean (exit 0, zero false positives) on the current tree
-- [ ] #3 Wired into just ci so a future doc-lie in the covered locations fails the gate
+- [x] #3 Wired into just ci so a future doc-lie in the covered locations fails the gate
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -47,3 +47,24 @@ CHOSEN SUBSET: a NEW objective recipe check-doc-citation-staleness that scans NO
 
 LIMITATIONS (deferred, follow-ups to file): bare-basename citations (the bulk of source citations); stale-CONTENT where the line still exists but the code moved (line-count check cannot see this); present-tense narrative prose in md/nuc (FP-floods). The existing check-narrative-doc-lie TOML check is unchanged.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DELIVERED (cycle-220, commit f4edda4): new objective recipe check-doc-citation-staleness, wired into just ci after check-narrative-doc-lie. Verifies every FULLY-QUALIFIED nucleus/...rs:N (and .rs:N-M / .rs:N..M) citation resolves to an existing file with the cited line in range. Catches cycle-138 stale-line-past-EOF + cycle-181b split-file deixis. No escape-hatch needed (objective).
+
+PROOF zero-FP: nix develop --command bash -c "just check-doc-citation-staleness" exits 0 on the current tree (output: "OK: every fully-qualified nucleus/*.rs:N citation resolves to an in-range line."). BITE-tested: injecting a fake :99999 line citation + a citation to the split-away multi_worker_walker.rs both FAIL the recipe; a valid :1 citation passes. NOT defanged.
+
+FIXED 1 in-tree finding (the only one outside backlog/tasks): docs/check-loop-latency-max.md cited multi_worker_walker.rs:300..355 (file is now the directory multi_worker_walker/ -> NOFILE) and pthreads-sync/src/lib.rs:694..758 (stale-CONTENT: line 694 now holds render_reuse_marker_comment, not the single-worker check emit). Re-anchored BOTH to stable symbol/comment names (no line numbers) per the cycle-138 prefer-symbol-anchor rule -> immune to the very staleness this fence guards.
+
+AC STATUS (honest):
+- AC#3 (wired into just ci): FULLY MET.
+- AC#1 (scans the new targets, "or a justified subset"): PARTIALLY MET via a justified subset — fully-qualified citations across source .rs + docs/ + README*.md + PRD.md + nuc-nucleus/; backlog/tasks DELIBERATELY excluded (immutable historical provenance, CLAUDE.md forbids hand-editing). NOT ticked because it is a subset, not the full target list.
+- AC#2 (capture the 4 named lie shapes, zero-FP): PARTIALLY MET — captures stale absolute-line citations (1 of the 4 named shapes) + split-file deixis, zero-FP PROVEN. Does NOT capture phantom function names, "every X" claims, or "N backends" prose (those FP-flood or need code cross-reference; see limitations). NOT ticked.
+
+DEFERRED BREADTH -> TASK-0382 (dep TASK-0370), referenced by name in the recipe comment: (i) bare-basename citations (the BULK of source citations — ambiguous resolution + cross-crate-prose misattribution; a genuine uncaught stale one exists: mp-tcp-event/tests/multi_worker_emit.rs:646 cites multi_worker.rs:854 @296 LoC); (ii) stale-CONTENT (line exists, code moved); (iii) present-tense narrative-prose scanning of md/.sched.nuc (171 legitimate FP on backlog/tasks with the existing pattern set).
+
+GOTCHAS for the next person: bare-basename resolution is a FP TRAP — a crate-relative resolver flags check_frame.rs cites of "pthreads-sync at lib.rs:991" as stale against backend-common/src/lib.rs (wrong file). Fully-qualified-only is the only zero-FP class. Line-count-only checks miss stale-content. The present-tense pattern set CANNOT be pointed at md prose without flooding.
+
+GATE: build clean, clippy clean, test 1165/0, test-release 1164/0 (1-test delta = expected should_panic/debug_assert divergence), e2e 329/272/0/57/0 (baseline UNCHANGED). Marking Done with explicit subset scope; AC#1/#2 left UNTICKED (honest partial) with the breadth tracked in TASK-0382.
+<!-- SECTION:FINAL_SUMMARY:END -->
