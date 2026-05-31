@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-05-30 22:46'
-updated_date: '2026-05-31 14:03'
+updated_date: '2026-05-31 14:37'
 labels:
   - compiler
   - gather
@@ -60,6 +60,8 @@ GOTCHA 3 (single-worker unaffected): single-worker gather (17-spmv/gather, all 7
 REJECTED approach: NOT a sticky-IterVar-sentinel for opacity (BTreeSet<IterVar> cannot hold a sentinel cleanly); instead opacity = empty iv set + a separate sticky opaque_dims BTreeMap<DataId,BTreeSet<usize>> threaded through the walk, so a sibling affine access cannot un-opaque a gather dim.
 
 GATE: build/clippy/test(dev all ok)/test-release(rc=0)/e2e 357/300/0/57/0 (baseline 350/293 preserved byte-identical, +7 gather-distributed all PASS). check-textual-replace OK, check-include-str-coverage OK, check-mega-files OK (transfer_inject/halo_inference pre-existing allow-list).
+
+REVIEW-GATE FOLD-BACK (orchestrator, cycle close). Both reviewers GO. qa-test-runner independently re-ran: test 1197/0/3 dev, 1196/0/3 release (the -1 is the known TASK-0291 should_panic divergence), e2e 357/300/0/57/0 stable across 2 clean runs (+7 distributed_gather cells all PASS on 7 backends, baseline 350/293 byte-identical). mped-architect empirically reconfirmed the load-bearing claims: scatter genuinely stays rejected at the driver level (authored a distributed-scatter sched, fail-loud DataDependentStride); whole-array broadcast serves the gather for partition=workers(k) too (cross-worker accumulator fan-in), not only the i-band tested; index-first FIFO fix is load-bearing (reverting to outer-first panics mp-tcp-bufsync: receiver expected 4, wire delivered 8). Orchestrator fixed in-thread: (P2.1) stale scope-field docstring in halo_inference.rs that claimed DataDependentStride is unconditionally advisory and scope retired for it — FALSE, the scatter-RMW sub-case consults scope and is partition-gated; (P2.2) acfg index-first FIFO comment overclaimed generality — documented the declaration-order contingency + filed TASK-0389 for the general worker-Wait/host-Push ordering fix; (P3.2) added reversed-order stickiness test task0373_opaque_dim_is_sticky_when_affine_observed_first that bites the entry[dim].clear() arm. P3.1 CORRECTION to this tasks own earlier note: the col_idx recursion does NOT bring collect_dataref_access_expr into alignment with walk_dataref_names and does NOT close a silent-sibling divergence — they recurse in OPPOSITE order (walk_dataref_names is OUTER-first; the new code is INDEX-first, deliberately, for FIFO send/recv order). The shipped build.rs docstring is honest about this divergence; only the earlier tracker note overclaimed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
