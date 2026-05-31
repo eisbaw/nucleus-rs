@@ -125,7 +125,20 @@ pub fn emit_count_reporter_struct(out: &mut String) {
 }
 
 /// Emit the file-scope `static NUC_CHECK_COUNT_<ident>: AtomicU64`
-/// declaration for a Count check_loop. One line + trailing newline.
+/// declaration for a Count check_loop. Two lines (a per-static
+/// `#[allow(non_upper_case_globals)]` attribute + the static itself) +
+/// trailing newline.
+///
+/// The static name embeds the source loop-var spelling (e.g. a
+/// lowercase `i`/`n`, via [`sanitize_loop_var`]) so it stays greppable
+/// back to the `check loop` directive. That deliberately-cased generated
+/// identifier trips rustc's `non_upper_case_globals` style lint in the
+/// generated crate. The embedded skeletons allow it crate-wide
+/// (`#![allow(... non_upper_case_globals)]`, TASK-0048.08); the tier-1 /
+/// multi-process generated `main.rs` has no such preamble, so the lint
+/// is silenced here per-static (TASK-0386 — targeted, not a crate-wide
+/// blanket, so other globals stay linted). Source-only: the attribute
+/// does not affect the runtime output the e2e differential diffs.
 ///
 /// Caller wraps this in a `for cf in count_frames` loop after
 /// [`emit_count_reporter_struct`], and emits a blank `writeln!(out)`
@@ -134,7 +147,8 @@ pub fn emit_count_reporter_struct(out: &mut String) {
 pub fn emit_count_static(out: &mut String, ident: &str) {
     writeln!(
         out,
-        "static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
+        "#[allow(non_upper_case_globals)]\n\
+         static NUC_CHECK_COUNT_{ident}: std::sync::atomic::AtomicU64 = \
          std::sync::atomic::AtomicU64::new(0);",
     )
     .ok();
