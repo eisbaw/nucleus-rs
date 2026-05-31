@@ -349,6 +349,69 @@ schedule = "distributed"
 backend  = "mp-tcp-event"
 milestone = "M6"
 
+# 08-histogram/scatter: TASK-0376 — the NATIVE data-dependent WRITE
+# (scatter), the LHS analog of 17-spmv/gather (the data-dependent READ,
+# TASK-0341.03.01). Drives prog.scatter.algo.nuc (selected via the
+# schedule's `schedule for`, TASK-0049.03; kernels.scatter.rs paired by
+# the variant rule, TASK-0049.08). The data-dependent address
+# `histogram[input[i]]` appears in WRITE (LHS) position AND as a
+# same-symbol READ inside `inc(...)`; lower_index_expr admits the data
+# ref in subscript position (allow_gather for the LHS via lower_indices,
+# for the RHS via lower_data_ref), and the backend renders the LHS as a
+# scatter store `histogram[(input[<flat>]) as usize] = ...;`. This
+# REPLACES the O(N*BINS) rectangular masked-accumulator `prog.algo.nuc`
+# with the O(N) direct form. The same-symbol read-modify-write is
+# classified an ACCUMULATE fan-in (NOT cumulative — the self-read index
+# is structurally identical to the LHS index, so the
+# cumulative-array discriminator's shifted-self-read rule does not
+# fire), and `histogram` is pre-initialised to zero. Single-worker (no
+# transfers, no cross-worker bin fan-in). Output is bit-identical to
+# 08-histogram/naive and reference.bin (same histogram math), so it pins
+# the scatter codegen across all 7 tier-1 backends via the shared
+# single-worker render path. A DISTRIBUTED scatter (partition + per-worker
+# partial histograms + cross-worker combine) is the broaden follow-up.
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "scatter"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 # 15-transpose/naive: TASK-0341.01 AC#1 (pthreads-sync) landed cycle
 # 204 + TASK-0341.01.02 AC#3 (cross-backend promotion to the other 6
 # tier-1 backends) landed cycle 205. Single-`host` schedule with an

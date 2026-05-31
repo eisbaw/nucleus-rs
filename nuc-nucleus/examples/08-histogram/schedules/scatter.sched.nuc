@@ -1,0 +1,27 @@
+// Native-scatter schedule — single worker, no decomposition.
+//
+// Drives `prog.scatter.algo.nuc` (the native data-dependent WRITE
+// histogram, TASK-0376) rather than the masked `prog.algo.nuc`. The e2e
+// harness selects the algorithm from this `schedule for` path
+// (TASK-0049.03 per-cell algo selection) and pairs `kernels.scatter.rs`
+// by the variant rule (TASK-0049.08), so an `08-histogram/scatter` cell
+// compiles the scatter variant while `08-histogram/naive` keeps the
+// masked form.
+//
+// Single worker (`host`): the data-dependent WRITE `histogram[input[i]]`
+// needs the whole of `histogram` mutable on one worker, which the
+// single-worker placement trivially satisfies (no transfers, no
+// cross-worker bin fan-in). A DISTRIBUTED scatter (partition the input,
+// per-worker partial histograms, cross-worker combine) is the "broaden"
+// follow-up to TASK-0376 — not exercised here. Output is bit-identical
+// to 08-histogram/naive and reference.bin.
+
+schedule for "../prog.scatter.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place inc         on host;
+
+    // No loop transforms, no transfer directives (single worker).
+}

@@ -1,0 +1,96 @@
+// Histogram — NATIVE DATA-DEPENDENT WRITE (scatter).
+//
+// This is the WRITE / scatter companion to 17-spmv's READ / gather
+// (TASK-0341.03.01). It is the direct LHS analog of the gather: a
+// data-dependent index, but in WRITE (left-hand-side) position rather
+// than READ (right-hand-side) position.
+//
+// The sibling `prog.algo.nuc` fakes the per-input bin update with a
+// rectangular masked accumulator: a `for i, for b` nest where
+// `bin_inc(histogram[b], input[i], b)` returns `histogram[b]+1` iff
+// `input[i] == b` else `histogram[b]`. That emulates the data-dependent
+// address `histogram[input[i]]` with an O(N*BINS) dense scan + an
+// equality mask in the kernel body. This variant expresses the address
+// DIRECTLY and runs in O(N).
+//
+// What changed (vs prog.algo.nuc)
+// -------------------------------
+//   - The index of `histogram` on BOTH sides of the `<--` is itself a
+//     runtime data read: `input[i]` is loaded from a `data` array and
+//     used to index `histogram`. The v2 grammar already PARSES an index
+//     as a full expression; the lowering pass (`lower_index_expr` with
+//     `allow_gather = true`, set by `lower_indices` for the LHS and
+//     `lower_data_ref` for the RHS) admits a data-dependent index in
+//     array-subscript position (NOT in loop-bound position — a
+//     data-dependent trip count is a separate, unimplemented feature).
+//     The backend renders the LHS as a scatter store
+//     `histogram[(input[<flat>]) as usize] = <rhs>;` (TASK-0376).
+//   - There is NO `for b` and NO mask: a single `for i` walks the input
+//     and updates exactly the one bin `input[i]` names. The compute
+//     kernel is `inc(acc) = acc + 1` — a plain increment, no value/bin
+//     arguments, because the address itself selects the bin.
+//
+// Pre-condition reused from prog.algo.nuc: every `input[i]` is already
+// constrained to the bin range `[0, BINS)` (see the README + the
+// committed `input.bin` is pre-clipped). So `input[i]` IS a valid bin
+// index directly; no bucketing / clamping kernel is needed. A
+// real-world histogram over UNCONSTRAINED input would still need a
+// value->bin bucketing step, which today lives in a kernel (PRD §6.2.2)
+// — that part is unchanged by this variant.
+//
+// Same-symbol read-modify-write. `histogram[input[i]]` is read (inside
+// `inc(...)`) and written, to the SAME symbol, at the SAME
+// data-dependent index. Single-assignment (PRD §6.2.1) is on the SYMBOL
+// `histogram`, not on individual indices, so a repeated indexed write in
+// a loop does not violate it. The codegen classifies this as an
+// ACCUMULATE fan-in (NOT a cumulative cross-iteration array): the
+// self-read index is structurally IDENTICAL to the LHS index, so the
+// cumulative-array discriminator (which keys on a SHIFTED self-read
+// index, as in jacobi/game-of-life) does not fire. `histogram` is
+// pre-initialised to zero (the additive identity) by the codegen.
+//
+// Bit-identical to prog.algo.nuc's masked form and to reference.bin:
+// the masked nest incremented `histogram[b]` once per `i` with
+// `input[i] == b`, i.e. exactly once per `i` at `b == input[i]`, which
+// is precisely what `histogram[input[i]] <-- inc(histogram[input[i]])`
+// does. Same input.bin, same reference.bin, same N/BINS.
+//
+// Single-worker only (the `scatter.sched.nuc` schedule). A DISTRIBUTED
+// scatter (partition the input across workers, then combine per-worker
+// partial histograms with a cross-worker bin fan-in) is a separate,
+// harder step — filed as a follow-up to TASK-0376, NOT attempted here.
+// (The distributed READ gather has the same "broaden" follow-up shape;
+// see 17-spmv.)
+
+const N    : usize = 256;     // total input length
+const BINS : usize = 16;      // histogram bin count
+
+// Input array and the BINS-wide accumulator output. Each `data` symbol
+// is assigned by exactly one dataflow statement (PRD §6.2.1).
+data input     : i32[N];
+data histogram : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated. Same
+// signatures as prog.algo.nuc (so the load/save layout is unchanged).
+kernel load_input  : ()          -> i32[N]    effectful;
+kernel save_output : (i32[BINS]) -> ()        effectful;
+
+// Per-hit increment kernel — pure, reorderable. `inc(acc) = acc + 1`.
+// No value/bin arguments: the data-dependent LHS address selects the
+// bin directly, so there is nothing to mask. `wrapping_add` documents
+// the overflow contract (PRD §10.1); the committed fixture's max bin
+// count is far below i32::MAX.
+kernel inc         : (i32)        -> i32       pure;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+input <-- load_input();
+
+// Native scatter. `histogram` is pre-initialised to zero (additive
+// identity). For each input element, increment the bin it names. The
+// address `histogram[input[i]]` is a data-dependent WRITE; the read of
+// the same slot inside `inc(...)` is the accumulate fan-in.
+for i : 0 .. N {
+    histogram[input[i]] <-- inc(histogram[input[i]]);
+}
+
+save_output(histogram);

@@ -45,7 +45,8 @@ conditionals).
 | Schedule                | Status at TASK-0044.04 cycle 186 | Why |
 | ----------------------- | -------------------------------- | --- |
 | `naive.sched.nuc`       | **Required**, e2e bit-identical against `reference.bin` on all 4 tier-1 backends. | Single worker; same compiler path as 03-reduction/naive + 04-prefix-sum/naive. |
-| `distributed.sched.nuc` | **Stretch**, e2e cell `[[skip]]`'d. | Lowers + emits, but host combine is last-write-wins not element-wise sum (TASK-0343). Symptom: output reproduces one worker's standalone partial. |
+| `distributed.sched.nuc` | **Required** (promoted in TASK-0343 cycle 189; was a `[[skip]]`'d stretch). | The overlapping-write accumulator combine landed at the backend-common layer; bit-identical on all 4 tier-1 backends. |
+| `scatter.sched.nuc`     | **Required** (TASK-0376), e2e bit-identical against `reference.bin` on all 7 tier-1 backends. | Native data-dependent WRITE `histogram[input[i]]` (the scatter; see "Native scatter variant" below). Single worker; drives `prog.scatter.algo.nuc` + `kernels.scatter.rs`. |
 
 ## I/O format
 
@@ -118,11 +119,53 @@ accumulator shape as examples 03-reduction and 04-prefix-sum; the
 single-assignment rule (PRD §6.2.1) is on the SYMBOL `histogram`,
 not on individual indices.
 
-Why not `histogram[input[i]] <-- histogram[input[i]] + 1` (data-
-dependent LHS index)? The algorithm language only allows
-loop-variable indices on LHS (PRD §6.2.4 + 04-prefix-sum cycle
-TASK-0039 documentation). Data-dependent indexing lives in kernel
-bodies.
+### Native scatter variant (`prog.scatter.algo.nuc`)
+
+The masked-accumulator form above is one way to compute the histogram;
+the `scatter` schedule drives the **native data-dependent WRITE** form
+directly:
+
+```
+for i : 0..N {
+    histogram[input[i]] <-- inc(histogram[input[i]]);
+}
+```
+
+This is the LHS / WRITE analog of 17-spmv's RHS / READ gather
+`x[col_idx[i][k]]`. TASK-0341.03.01 lifted the lowering gate that once
+forced data-dependent indexing into the kernel body: `lower_index_expr`
+admits a data-dependent index in array-subscript position (on BOTH
+sides here — `allow_gather` is set for the LHS via `lower_indices` and
+for the RHS via `lower_data_ref`), so the address `histogram[input[i]]`
+is expressible at the algorithm surface. The backend renders the LHS as
+a scatter store
+`histogram[(input[(i) as usize]) as usize] = kernels::inc(...);`
+(TASK-0376). It drops the `for b` scan and the equality mask: a single
+`for i` updates exactly the bin each input names, O(N) instead of
+O(N*BINS).
+
+The earlier README revision claimed "the algorithm language only allows
+loop-variable indices on LHS" — that was true at cycle 186 but became
+false once TASK-0341.03.01 landed; the gate was the lowering pass, not
+the grammar (the index always parsed as a full expression). The one
+genuine remaining limit is a **computed local bin** (`bin =
+bucket(input[i]); histogram[bin]++`): the DSL has no local variables /
+scalar-producing statements inside a loop (PRD §6.2.4), so value->bin
+bucketing on UNCONSTRAINED input still lives in a kernel. The scatter
+variant works here because the committed `input.bin` is already
+pre-clipped to `[0, BINS)`, so `input[i]` IS a valid bin index.
+
+`histogram` appears on both sides of the `<--` at the same
+data-dependent index (same-symbol read-modify-write). Single-assignment
+(PRD §6.2.1) is on the SYMBOL, not the index, so the repeated indexed
+write is legal. The codegen classifies it as an ACCUMULATE fan-in (NOT a
+cumulative cross-iteration array): the self-read index is structurally
+IDENTICAL to the LHS index, so the cumulative-array discriminator (which
+keys on a SHIFTED self-read index, as in jacobi/game-of-life) does not
+fire. `histogram` is pre-initialised to zero (additive identity). The
+scatter output is bit-identical to the masked form and to
+`reference.bin`. Single-worker only; a distributed scatter is a broaden
+follow-up to TASK-0376.
 
 ## Contract-check limitation
 
