@@ -1,10 +1,10 @@
 ---
 id: TASK-0045
 title: M7 — Tier 2 MPI blocking
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-31 07:29'
+updated_date: '2026-05-31 08:39'
 labels:
   - M7
   - backend
@@ -22,7 +22,7 @@ First tier-2 backend: mpi-blocking via rsmpi. SPMD codegen (one binary dispatchi
 <!-- AC:BEGIN -->
 - [x] #1 backends/mpi-blocking/ crate lands with capabilities.toml.
 - [x] #2 SPMD codegen: one binary, rank-dispatched main; MPI_Init/MPI_Finalize wrap execution.
-- [ ] #3 Localhost MPI (OpenMPI in CI container) runs examples 1-6 with bit-identical output.
+- [x] #3 Localhost MPI (OpenMPI in CI container) runs examples 1-6 with bit-identical output.
 - [x] #4 Test: M7 acceptance includes a localhost mpiexec -n N run on each example.
 - [x] #5 Implementation notes record design questions (e.g. collective recognition deferred; point-to-point emitted everywhere).
 - [x] #6 Implementation notes record honest limitations (no real-cluster CI; CI is localhost-only at M7).
@@ -80,4 +80,8 @@ REMAINING for parent closure: the multi-worker SPMD arm = TASK-0045.01 (filed, d
 - Send/Recv typing (sidecar element type -> rsmpi Buffer/Equivalence bounds) + barrier participant sets (whole-world vs Comm_split for host-excluding) are the two sharp edges for .01; mirror the backend election rule exactly (feedback-driver-must-mirror-backend-election-exactly); test under mpiexec -n N (all ranks live), NOT -n 1 (16-jacobi: deadlock-free != value-correct).
 
 - The shared check-loop reporter (NucCheckCountReporter) now emits into nuc_compute()'s body; unexercised under MPI (examples 1-6 naive have no check loop). .01 AC#5 spot-verifies it.
+
+M7 milestone CLOSED (multi-worker arm landed). AC#3 (examples 1-6 bit-identical under localhost MPI) now MET: single-worker arm covers examples 1-6 naive (mpiexec -n 1 byte-exact); multi-worker arm (TASK-0045.01) covers the SYNC multi-worker schedules 02-split/split, 03-reduction/distributed, 06-separable/distributed + distributed2 (mpiexec -n N, all ranks live, byte-exact). 05-stencil/distributed{,-2d} are async => correctly capability-rejected (mpi-nonblocking M8/TASK-0046 targets, not blocking-backend schedules). All proven by `just check-mpi`.
+
+Deferred robustness follow-ups (no shipped consumer, loud-rejected, filed): TASK-0045.02 (Comm_split for host-excluding/non-uniform barriers), TASK-0045.03 (multi-worker check-loop per-rank-vs-aggregate reporter). Neither blocks any example. M8 = TASK-0046 (forward-carried lessons + dep edge added).
 <!-- SECTION:NOTES:END -->
