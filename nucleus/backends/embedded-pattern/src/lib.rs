@@ -386,7 +386,7 @@ pub fn emit_bin(
     // would emit broken firmware (N bins with no inter-MCU wiring), so
     // it is RETAINED — deliberately diverging from `emit`'s lifted guard
     // (the divergence is pinned by `bin_rejects_multi_worker_*` in
-    // tests.rs so a future edit cannot silently re-unify them).
+    // tests/bin_shape.rs so a future edit cannot silently re-unify them).
     let used_workers: Vec<WorkerId> = per_worker
         .iter()
         .filter(|(_, evs)| !evs.is_empty())
