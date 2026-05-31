@@ -413,11 +413,14 @@ fn resolve_worker_set(
 /// gather `x[col[k]]`), this function recurses into the index array
 /// `col` BEFORE pushing the outer array `x` — INDEX-FIRST. That is a
 /// deliberate divergence from `walk_dataref_names` (which is
-/// outer-first), required so the worker's Wait order matches the
-/// host's Push order on strict-FIFO backends. See
-/// `collect_dataref_access_expr`'s body comment for the full
-/// FIFO-ordering rationale. Non-gather programs never hit this branch,
-/// so their `data_in` is byte-for-byte unchanged.
+/// outer-first); it ensures the index array reaches `data_in` so the
+/// distributed transfer pass bands it to each worker. The index-first
+/// order is NOT what makes the strict-FIFO endpoints agree on wire
+/// order — that is handled separately by the producer-order Wait sort
+/// in `transfer_inject::build_waits_for_op` (TASK-0389), so any
+/// declaration order is FIFO-correct. See `collect_dataref_access_expr`'s
+/// body comment. Non-gather programs never hit this branch, so their
+/// `data_in` is byte-for-byte unchanged.
 ///
 /// Index expressions inside a `DataRef` ARE recursed into for further
 /// DataRefs (TASK-0373) — the outer array's index list is kept
@@ -472,37 +475,34 @@ fn collect_dataref_access_expr(
             // `col_idx` (indices = `[i][k]`) and THEN `x` (indices =
             // `[col_idx[i][k]]`).
             //
-            // ORDER IS LOAD-BEARING (FIFO-backend wire consistency):
-            // `data_in` / the worker's Wait order is derived from this
-            // traversal order (build_acfg maps data_in_access → data_in,
-            // and `build_waits_for_op` iterates `edge.data_in`). The
-            // HOST's Push order follows producer/declaration order
-            // (`val <-- ; col_idx <-- ; x <-- `, i.e. col_idx BEFORE x).
-            // The per-seq-demux event backends tolerate a send/recv order
-            // mismatch, but the strict-FIFO backends (mp-tcp-bufsync,
-            // mp-tcp-poll) use `read_msg_expect`, which requires the
-            // worker's Wait order to MATCH the host's Push order on each
-            // channel. Recursing index-FIRST puts `col_idx` before `x`
-            // in `data_in`; for `prog.gather.algo.nuc` that matches the
-            // host's send order — without this the worker waits
-            // x-then-col_idx while the host sends col_idx-then-x,
-            // tripping a tag mismatch (TASK-0373, the bufsync/poll
-            // FAIL/run symptom).
+            // TRAVERSAL ORDER (index-FIRST) is the data_in / data_out
+            // contract: `data_in` is derived from this traversal order
+            // (build_acfg maps data_in_access → data_in), so for a gather
+            // `x[col_idx[i][k]]` the index array `col_idx` precedes the
+            // outer array `x` in `data_in`. This index-first rule is kept
+            // for the data-dependency reason below (the index array must
+            // be present in `data_in` so the distributed transfer pass
+            // bands it to each worker) — it is NOT relied on for FIFO
+            // wire ordering.
             //
-            // LIMITATION (NOT a general guarantee — TASK-0389): the two
-            // orderings are INDEPENDENT. Host Push order follows
-            // producer/DECLARATION position; worker Wait order follows
-            // this data_in TRAVERSAL order. Index-first makes them
-            // coincide ONLY because the index array `col_idx` is declared
-            // BEFORE its outer array `x` in this example. A program that
-            // declares the gathered array before its index array, or
-            // interleaves multiple gathers with ordinary args, would
-            // re-introduce the FIFO mismatch — fail-LOUD on
-            // bufsync/poll (a `read_msg_expect` tag-mismatch panic), NOT
-            // a silent miscompile, and masked on the per-seq-demux event
-            // backends. A general fix sorts the worker Wait sequence to
-            // the host Push sequence rather than relying on traversal
-            // order; tracked as TASK-0389.
+            // FIFO ORDERING IS NO LONGER COUPLED TO THIS TRAVERSAL ORDER
+            // (TASK-0389, resolving the former TASK-0373 limitation): the
+            // worker's per-channel Wait order is now SORTED to the host's
+            // per-channel Push order (producer-statement rank) inside
+            // `transfer_inject::build_waits_for_op` (see the TASK-0389
+            // block there and `producer_rank_by_data`). So the two
+            // endpoints traverse each strict-FIFO channel
+            // (mp-tcp-bufsync, mp-tcp-poll, via `read_msg_expect`) in the
+            // SAME order for ANY declaration order — index-first or not.
+            // Before TASK-0389 this index-first traversal HAPPENED to
+            // make the orderings coincide for `prog.gather.algo.nuc`
+            // (where `col_idx` is declared before `x`), but a program
+            // that declared the gathered array before its index array
+            // (e.g. `prog.gather_revdecl.algo.nuc`) re-introduced the
+            // mismatch — fail-LOUD on bufsync/poll. The
+            // `build_waits_for_op` producer-order sort removed that
+            // coupling; this traversal order is now purely the data_in
+            // dependency contract.
             //
             // Collecting the index array also gets `col_idx` into
             // `data_in` so the distributed transfer pass i-bands it to

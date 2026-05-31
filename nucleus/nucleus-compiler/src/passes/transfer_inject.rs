@@ -638,6 +638,11 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
     let partition_iter_vars: BTreeSet<IterVar> = partition_worker_ranges.keys().copied().collect();
     let mut producer_writes: BTreeMap<DataId, DataAccess> = BTreeMap::new();
     collect_producer_writes(&root, &mut producer_writes);
+    // TASK-0389: precompute the producer-statement rank of every data
+    // symbol once over the full ACFG (this is invariant under the walk),
+    // so `build_waits_for_op` can sort each worker's per-channel Wait
+    // sequence into the host's per-channel Push order.
+    let producer_rank = producer_rank_by_data(&root);
     check_no_silent_elision_risk(
         &root,
         &producers_by_data,
@@ -654,6 +659,7 @@ pub fn inject_transfers(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, TransferI
         partition_iter_vars: &partition_iter_vars,
         name_iter_vars: &name_iter_vars,
         producer_writes: &producer_writes,
+        producer_rank: &producer_rank,
     };
 
     // Counter state for SeqTag generation. A single monotonic counter
@@ -995,6 +1001,13 @@ struct InjectCtx<'a> {
     /// invariant, PRD §6.2.1; first lexical occurrence wins for
     /// accumulator self-writes). Threaded for the AC#3 predicate.
     producer_writes: &'a BTreeMap<DataId, DataAccess>,
+    /// Producer-statement RANK per data symbol (TASK-0389): the
+    /// depth-first walk position of each symbol's producing Operation,
+    /// i.e. the order `splice_pushes_global` sends the host's Pushes.
+    /// `build_waits_for_op` sorts each worker's per-channel Wait
+    /// sequence by this rank so the receiver reads in the host's send
+    /// order on a strict-FIFO channel, for ANY declaration order.
+    producer_rank: &'a BTreeMap<DataId, usize>,
 }
 
 /// Mutable state threaded through the walk.
@@ -1735,6 +1748,55 @@ fn hoist_invariant_waits(
 //   * Otherwise the Push goes immediately after P itself (same scope,
 //     or P and W co-resident in the same loop = per-iteration
 //     rendezvous).
+
+/// Producer-statement RANK of every data symbol: the depth-first walk
+/// position of the FIRST Operation that writes it (TASK-0389).
+///
+/// This is the SAME ordering `splice_pushes_global` realises for the
+/// host's Push events: it pins each Push at its producer Operation's
+/// site, so the host's per-channel send order over the projected
+/// EventList is exactly this producer-statement order. A lower rank ⇒
+/// the data is produced (and therefore pushed) earlier.
+///
+/// `build_waits_for_op` consumes this to sort the worker's per-channel
+/// Wait sequence into the same order — so on a strict-FIFO host->worker
+/// channel (`wire::read_msg_expect`) the worker reads in the order the
+/// host sent, for ANY declaration order. Before TASK-0389 the worker
+/// Wait order followed `data_in` TRAVERSAL order, which only coincided
+/// with producer order when the gather index array was declared before
+/// its outer array (see `acfg::build::collect_dataref_access_expr`).
+///
+/// The walk order MUST match `producer_repeat_path`'s (depth-first,
+/// Sequence children in order, recursing into Repeat bodies) so the rank
+/// agrees with where the Push is actually spliced. Single-assignment
+/// (PRD §6.2.1) makes "first writer" == "only writer"; a `BTreeMap`
+/// `entry().or_insert` keeps the first occurrence.
+fn producer_rank_by_data(root: &ACFGNode) -> BTreeMap<DataId, usize> {
+    fn walk(node: &ACFGNode, next: &mut usize, out: &mut BTreeMap<DataId, usize>) {
+        match node {
+            ACFGNode::Operation(op) => {
+                if let Some(d) = output_data(op) {
+                    out.entry(d).or_insert_with(|| {
+                        let r = *next;
+                        *next += 1;
+                        r
+                    });
+                }
+            }
+            ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
+            ACFGNode::Repeat { body, .. } => walk(body, next, out),
+            ACFGNode::Sequence(children) => {
+                for c in children {
+                    walk(c, next, out);
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    let mut next = 0usize;
+    walk(root, &mut next, &mut out);
+    out
+}
 
 /// Outer→inner list of Repeat iter-vars enclosing the (unique,
 /// single-assignment) producer Operation of `data`.
@@ -4085,6 +4147,72 @@ fn build_waits_for_op(
         }
     }
 
+    // TASK-0389: FIFO host-Push / worker-Wait ordering robustness.
+    //
+    // On a strict-FIFO channel (mp-tcp-bufsync / mp-tcp-poll via
+    // `wire::read_msg_expect(cv, seq)`) the receiver reads the NEXT
+    // message on the channel and asserts its seq tag equals the expected
+    // one — an EXACT MATCH in FIFO ORDER (NOT a monotonicity check; the
+    // tag is purely a pairing sanity key, verified TASK-0389: the wire
+    // runtime never compares two seqs for `<`). So the worker's Wait
+    // order on each (src -> dst) channel MUST match the order the sender
+    // wrote, which is the producer-statement order `splice_pushes_global`
+    // realises for the host's Pushes.
+    //
+    // The Waits above were emitted in `data_in` TRAVERSAL order (the
+    // outer `for edge { for data_in }` walk). For a data-dependent gather
+    // `x[col_idx[i][k]]`, `collect_dataref_access_expr` recurses
+    // index-FIRST, so `col_idx` precedes `x` in `data_in` regardless of
+    // declaration order — but the host sends them in producer order. When
+    // the gathered array `x` is produced BEFORE its index array
+    // `col_idx`, those two orders DIVERGE and `read_msg_expect` panics
+    // ("receiver expected 4, wire delivered 8"). See
+    // `prog.gather_revdecl.algo.nuc` for the e2e repro.
+    //
+    // Fix: STABLE-sort the Waits so that, within each (dst, src) channel,
+    // they appear in producer-statement rank order. The seqs already
+    // travel with their (src, dst, data) pair (the host's Push for each
+    // Wait is matched by `seq` at `splice_pushes_global`), so once both
+    // endpoints traverse the channel in producer order the tags line up
+    // BY CONSTRUCTION — no seq reallocation. The `(dst, src)` lead key
+    // groups each FIFO; `producer_rank` orders within it; the
+    // `data`/`seq` tiebreak keeps the order total and deterministic.
+    // Cross-channel relative order does not affect FIFO correctness
+    // (independent sockets) but stays deterministic via the lead key.
+    //
+    // NO-OP for current declaration orders: when `data_in` traversal
+    // already equals producer order (every non-gather program, and
+    // `prog.gather.algo.nuc` where `col_idx` is declared before `x`),
+    // this stable sort preserves the existing order, so the emitted Wait
+    // statements — and the byte output — are unchanged (verified by e2e
+    // byte-identity on all pre-existing cells, TASK-0389 AC#5).
+    //
+    // SCOPE of the producer-rank key (honest boundary). `producer_rank`
+    // is the raw producer-Operation walk position. `splice_pushes_global`
+    // places a Push right after its producer in the common case (host
+    // load producers and same-scope producers — ALL host->worker load
+    // channels, hence the entire gather/scatter family this task targets),
+    // so producer-rank order == the host's actual per-channel Push order
+    // there, EXACTLY. The one shape where they could differ is a
+    // loop-OUTPUT producer whose Push hoists out past its enclosing
+    // Repeat (the `cut` branch in `splice_pushes_global`) while SHARING a
+    // channel with a differently-nested producer's Push. No in-tree
+    // schedule exercises that (verified: 06-separable-filter/distributed2
+    // and 03-reduction/distributed — the only multi-data-per-channel
+    // loop-output cells — are byte-identical pre/post this sort across
+    // all FIFO backends). If a future schedule does, the precise key is
+    // the post-splice Push position, not producer rank; that refinement
+    // is tracked as TASK-0389.01 (filed, not silently deferred).
+    let rank = |d: DataId| ctx.producer_rank.get(&d).copied().unwrap_or(usize::MAX);
+    out.sort_by(|a, b| {
+        a.dst
+            .cmp(&b.dst)
+            .then(a.src.cmp(&b.src))
+            .then_with(|| rank(a.data).cmp(&rank(b.data)))
+            .then(a.data.cmp(&b.data))
+            .then(a.seq.0.cmp(&b.seq.0))
+    });
+
     out
 }
 
@@ -5389,6 +5517,181 @@ mod tests {
             "TASK-0373 stickiness (affine-first): a later gather access \
              must CLEAR the transiently-collected {{i}} and mark dim 0 \
              opaque — otherwise x is wrongly i-banded.",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0389: FIFO host-Push / worker-Wait ordering robustness. The
+    // worker's per-channel Wait sequence is sorted to the host's
+    // per-channel Push order (producer-statement rank) so any
+    // declaration order is FIFO-correct on the strict-FIFO backends.
+    // ----------------------------------------------------------------
+
+    /// A producing Operation that writes `data_out` (no inputs needed
+    /// for the rank walk). Mirrors the `Operation` shape `build_acfg`
+    /// emits for a `<--` statement; `producer_rank_by_data` keys on
+    /// `output_data(op)`.
+    fn producer_op(kernel: KernelId, data_out: DataId) -> ACFGNode {
+        ACFGNode::Operation(Operation {
+            kernel,
+            workers: [WorkerId(0)].into_iter().collect(),
+            dataflow: crate::acfg::DataflowDag {
+                edges: vec![crate::acfg::DataflowEdge {
+                    data_in: Vec::new(),
+                    kernel,
+                    data_out: Some(data_out),
+                    data_in_access: Vec::new(),
+                    data_out_access: None,
+                    args: Vec::new(),
+                }],
+            },
+        })
+    }
+
+    /// `producer_rank_by_data` ranks each data symbol by its producing
+    /// Operation's depth-first walk position — the SAME order
+    /// `splice_pushes_global` sends the host's Pushes. For the
+    /// reversed-declaration gather (`val` then `x` then `col_idx`), the
+    /// gathered array `x` outranks its index array `col_idx`.
+    #[test]
+    fn task0389_producer_rank_follows_producer_statement_order() {
+        let val = DataId(0);
+        let x = DataId(1);
+        let col_idx = DataId(2);
+        // Top-level Sequence: load val, load x, load col_idx — the
+        // reversed-decl producer order (x BEFORE col_idx).
+        let root = ACFGNode::Sequence(vec![
+            producer_op(KernelId(10), val),
+            producer_op(KernelId(11), x),
+            producer_op(KernelId(12), col_idx),
+        ]);
+
+        let rank = producer_rank_by_data(&root);
+
+        assert_eq!(rank.get(&val), Some(&0), "val is produced first");
+        assert_eq!(rank.get(&x), Some(&1), "x (gathered array) is produced second");
+        assert_eq!(
+            rank.get(&col_idx),
+            Some(&2),
+            "col_idx (gather index array) is produced LAST in the reversed-decl \
+             program — so the host pushes it last, and the worker must wait it last",
+        );
+        // Strict order: x outranks col_idx (the whole point of the fix).
+        assert!(
+            rank[&x] < rank[&col_idx],
+            "TASK-0389: in the reversed-decl gather the outer array x is \
+             produced (and pushed) before its index array col_idx",
+        );
+    }
+
+    /// First-writer wins under the single-assignment invariant: a Repeat
+    /// body's per-iteration producer ranks at its body position, and the
+    /// rank is assigned at the FIRST occurrence (BTreeMap or_insert).
+    #[test]
+    fn task0389_producer_rank_recurses_into_repeat_body_first_occurrence() {
+        let a = DataId(0);
+        let y = DataId(1);
+        let root = ACFGNode::Sequence(vec![
+            producer_op(KernelId(10), a),
+            ACFGNode::Repeat {
+                iter_var: IterVar(1),
+                range: 0..4,
+                body: Box::new(ACFGNode::Sequence(vec![producer_op(KernelId(11), y)])),
+                block_tag: None,
+            },
+        ]);
+
+        let rank = producer_rank_by_data(&root);
+        assert_eq!(rank.get(&a), Some(&0));
+        assert_eq!(
+            rank.get(&y),
+            Some(&1),
+            "a producer inside a Repeat body still gets a rank (the dual of \
+             producer_repeat_path walking into Repeat bodies)",
+        );
+    }
+
+    /// End-to-end of the fix at the `build_waits_for_op` seam: given
+    /// Waits emitted in `data_in` index-FIRST traversal order
+    /// (col_idx-before-x, as `collect_dataref_access_expr` produces),
+    /// the producer-rank sort REORDERS them so the single host->worker
+    /// channel reads in producer-statement order (val, x, col_idx) —
+    /// matching the host's send order. WITHOUT the sort the worker would
+    /// wait {val, col_idx, x} and `read_msg_expect` would panic.
+    #[test]
+    fn task0389_build_waits_sorts_per_channel_to_producer_order() {
+        let host = WorkerId(0);
+        let w0 = WorkerId(1);
+        let val = DataId(0);
+        let x = DataId(1);
+        let col_idx = DataId(2);
+
+        // Reversed-decl producer order: val, x, col_idx.
+        let producer_rank: BTreeMap<DataId, usize> =
+            [(val, 0usize), (x, 1usize), (col_idx, 2usize)].into_iter().collect();
+
+        // The op reads val, col_idx, x — `data_in` index-FIRST traversal
+        // for `gather_madd(y[i], val[i][k], x[col_idx[i][k]])` records
+        // val, then (index-first) col_idx, then x.
+        let edge = crate::acfg::DataflowEdge {
+            data_in: vec![val, col_idx, x],
+            kernel: KernelId(7),
+            data_out: Some(DataId(3)),
+            data_in_access: Vec::new(),
+            data_out_access: None,
+            args: Vec::new(),
+        };
+        let op = Operation {
+            kernel: KernelId(7),
+            workers: [w0].into_iter().collect(),
+            dataflow: crate::acfg::DataflowDag { edges: vec![edge] },
+        };
+
+        // All three inputs are produced on the host (host->w0 channel).
+        let producers_by_data: BTreeMap<DataId, BTreeSet<WorkerId>> = [
+            (val, [host].into_iter().collect::<BTreeSet<_>>()),
+            (x, [host].into_iter().collect()),
+            (col_idx, [host].into_iter().collect()),
+        ]
+        .into_iter()
+        .collect();
+        let policies_by_data = BTreeMap::new();
+        let inner_block_iter_vars = BTreeSet::new();
+        let partition_iter_vars = BTreeSet::new();
+        let name_iter_vars = BTreeMap::new();
+        let producer_writes = BTreeMap::new();
+        let ctx = InjectCtx {
+            producers_by_data: &producers_by_data,
+            policies_by_data: &policies_by_data,
+            inner_block_iter_vars: &inner_block_iter_vars,
+            partition_iter_vars: &partition_iter_vars,
+            name_iter_vars: &name_iter_vars,
+            producer_writes: &producer_writes,
+            producer_rank: &producer_rank,
+        };
+        let mut state = State {
+            next_seq: 0,
+            last_writer: BTreeMap::new(),
+        };
+
+        let waits = build_waits_for_op(&op, &ctx, &mut state, &[]);
+
+        // One Wait per input, all on the host->w0 channel, sorted into
+        // PRODUCER order val, x, col_idx — NOT the data_in traversal
+        // order val, col_idx, x.
+        let got: Vec<DataId> = waits
+            .iter()
+            .filter(|w| w.role == XferRole::Wait && w.src == host && w.dst == w0)
+            .map(|w| w.data)
+            .collect();
+        assert_eq!(
+            got,
+            vec![val, x, col_idx],
+            "TASK-0389: the worker's per-channel Wait order must be sorted to \
+             the host's per-channel Push (producer-statement) order val, x, \
+             col_idx — NOT the data_in index-first traversal order val, \
+             col_idx, x that would trip a read_msg_expect seq/tag mismatch on \
+             the strict-FIFO backends.",
         );
     }
 
