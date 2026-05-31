@@ -116,15 +116,30 @@
 //!   partition-policy-aware** variant. Originally landed as the
 //!   (B) rule under TASK-0275 (cycle 95), refined to (B') under
 //!   TASK-0341.02.02.01 (cycle 209). For each typed error the
-//!   walker raises, the fatality predicate is one of two rules
+//!   walker raises, the fatality predicate is one of three rules
 //!   depending on the error variant:
 //!
-//!   * For `DataDependentStride` and `UnknownKernelInCall` —
-//!     where the iv set the failing index actually depends on is
-//!     not bounded by the lexical iv walk — the rule consults the
-//!     enclosing-loop scope: if ANY iv in that scope carries a
+//!   * For `DataDependentStride` (a data-dependent READ index) —
+//!     TASK-0373 splits on the `is_scatter_rmw` flag:
+//!       - PURE GATHER (affine LHS, e.g.
+//!         `y[i] <-- ...x[col_idx[i][k]]`): advisory. The transfer
+//!         layer broadcasts the WHOLE gathered array to every worker
+//!         (the array's data-dependent dim is marked OPAQUE in
+//!         `transfer_inject::record_access_per_dim`), so any runtime
+//!         index loaded is in range.
+//!       - SCATTER RMW (data-dependent LHS, e.g.
+//!         `histogram[input[i]] <-- inc(histogram[input[i]])`): the
+//!         RHS read reaches this pass, but whole-array broadcast does
+//!         NOT serve the cross-worker data-dependent WRITE. Stays
+//!         FATAL under partition (the WRITE coordination is the
+//!         separate TASK-0384).
+//!   * For `UnknownKernelInCall` — where the iv set the failing
+//!     index actually depends on is not bounded by the lexical iv
+//!     walk — the rule consults the enclosing-loop scope: if ANY iv
+//!     in that scope carries a
 //!     [`crate::sched::ResolvedLoopOption::Partition`] directive,
-//!     the error is FATAL (the original cycle-95 (B) rule).
+//!     the error is FATAL (the original cycle-95 (B) rule). This is a
+//!     fail-closed diagnostic for inconsistently-constructed IR.
 //!   * For all other variants (`NonAffineIndex`,
 //!     `StridedAccessNotSupported`, `MultipleIterVarsInIndex`,
 //!     `UnknownLoopVar`) — where the failing index expression's iv
@@ -249,10 +264,13 @@ use crate::sched::ResolvedLoopOption;
 // Shared affine-stride helpers — see [`crate::passes::common`] module
 // docs. The lift in cycle 82 is single-use today but the second
 // consumer (TASK-0261 reuse_inference) is landing in the same series
-// (cycle-81 review forward-carry, F-P1). Halo inference uses only
-// `affine_decompose`; `eval_const_int` / `expr_mentions` are reachable
-// through that call and not re-imported here.
-use crate::passes::common::affine_decompose;
+// (cycle-81 review forward-carry, F-P1). Halo inference uses
+// `affine_decompose` for the affine path and
+// `expr_contains_dataref_or_call` (TASK-0373: lifted to `common` so
+// halo + transfer_inject share ONE data-dependence predicate);
+// `eval_const_int` / `expr_mentions` are reachable through
+// `affine_decompose` and not re-imported here.
+use crate::passes::common::{affine_decompose, expr_contains_dataref_or_call};
 
 // --------------------------------------------------------------------
 // Errors
@@ -280,6 +298,23 @@ pub enum HaloInferenceError {
         /// 0-based axis index inside the [`IndexedRef`] (the position of
         /// the offending index expression in `indices`).
         ax_idx: usize,
+        /// TASK-0373: `true` iff this data-dependent READ sits in a
+        /// firing whose `<--` LHS is itself a data-dependent WRITE
+        /// (a scatter read-modify-write, e.g.
+        /// `histogram[input[i]] <-- inc(histogram[input[i]])`). A pure
+        /// gather (affine LHS such as `y[i]`) sets this `false`.
+        ///
+        /// Drives the fatality split in
+        /// [`error_is_fatal_under_partition`]: a pure gather READ is
+        /// served by whole-array broadcast (advisory); a scatter RMW
+        /// READ stays FATAL under partition because the cross-worker
+        /// WRITE coordination is unhandled (TASK-0384). This field does
+        /// NOT affect [`Display`] (the message is the same READ
+        /// diagnostic) and is `false` on the single-worker /
+        /// unpartitioned paths where it is never consulted.
+        ///
+        /// [`Display`]: std::fmt::Display
+        is_scatter_rmw: bool,
     },
     /// A kernel call's argument indexes data by a stride > 1 in
     /// magnitude (e.g. `grid[2*iv + 1]`, `grid[iv * 3]`, or `-iv` which
@@ -357,6 +392,10 @@ impl std::fmt::Display for HaloInferenceError {
                 kernel,
                 ref_name,
                 ax_idx,
+                // The scatter-RMW bit does not change the diagnostic
+                // text — the message describes the READ index shape,
+                // which is identical for gather and scatter reads.
+                is_scatter_rmw: _,
             } => write!(
                 f,
                 "kernel call `{kernel}` reads `{ref_name}` with a data-dependent index at axis \
@@ -504,11 +543,20 @@ pub fn apply_halo_inference_advisory(
 ///
 /// - [`HaloInferenceError::DataDependentStride`] — index is itself
 ///   a `DataRef`/`Call`; the iv set is empty (the lexical walker
-///   does not descend into data-dependent addresses). Falls back
-///   to the conservative SCOPE predicate: if any iv in scope is
-///   partitioned, fatal. Rationale: the runtime value of the
-///   data-dependent address determines which cell is read, and
-///   that is unbounded by the lexical iv set.
+///   does not descend into data-dependent addresses). TASK-0373
+///   splits on the `is_scatter_rmw` flag stamped at the push site:
+///     - PURE GATHER (affine LHS, e.g. `y[i] <-- ...x[col_idx[i][k]]`):
+///       advisory. The transfer layer serves the read by broadcasting
+///       the WHOLE gathered array to every worker (the array's
+///       data-dependent dim is marked OPAQUE in
+///       `transfer_inject::record_access_per_dim`); any runtime index
+///       loaded is in range.
+///     - SCATTER RMW (data-dependent LHS, e.g.
+///       `histogram[input[i]] <-- inc(histogram[input[i]])`): fatal
+///       under partition. The RHS read reaches this pass, but whole-
+///       array broadcast does not serve the cross-worker data-dependent
+///       WRITE — that is the separate TASK-0384. See
+///       `error_is_fatal_under_partition` for the soundness coupling.
 /// - All other variants ([`NonAffineIndex`],
 ///   [`StridedAccessNotSupported`], [`MultipleIterVarsInIndex`],
 ///   [`UnknownLoopVar`]) — the iv set is populated by
@@ -552,10 +600,21 @@ pub fn apply_halo_inference_partition_aware(
 /// without recreating an `infer_halo_widths` walk.
 ///
 /// See [`apply_halo_inference_partition_aware`] for the doc on the
-/// per-variant split. The two-rule shape is intentional: `ivs_in_index`
-/// is precise but lexical, so the data-dependent variant — whose
-/// address is determined at runtime, not by lexically-visible ivs —
-/// falls back to the conservative pre-cycle-209 enclosing-scope rule.
+/// per-variant split. Three rule shapes coexist:
+/// - The precise variants (`NonAffineIndex` etc.) use `ivs_in_index`:
+///   fatal iff a referenced iv is partitioned.
+/// - `UnknownKernelInCall` falls back to the conservative
+///   enclosing-`scope` rule (a fail-closed diagnostic for
+///   inconsistently-constructed IR).
+/// - TASK-0373: `DataDependentStride` (a data-dependent READ) splits on
+///   its `is_scatter_rmw` flag:
+///     - PURE GATHER (`false`): advisory — the transfer layer
+///       broadcasts the whole gathered array, so the partition state is
+///       irrelevant.
+///     - SCATTER RMW (`true`): fatal iff an enclosing-`scope` iv is
+///       partitioned (whole-array broadcast does not serve the
+///       cross-worker WRITE coordination — TASK-0384). `scope` is
+///       consulted for this sub-case.
 fn error_is_fatal_under_partition(
     err: &HaloInferenceError,
     scope: &[String],
@@ -563,13 +622,49 @@ fn error_is_fatal_under_partition(
     linked: &LinkedIR,
 ) -> bool {
     match err {
-        // Data-dependent address: the runtime cell the worker reads
-        // is determined by `lookup[..]` or `f(..)`, not by the
-        // lexically-visible iv set. The (B') refinement cannot
-        // safely narrow this case — keep the (B) conservative
-        // enclosing-scope rule.
-        HaloInferenceError::DataDependentStride { .. } => {
-            scope.iter().any(|iv| iv_is_partitioned(linked, iv))
+        // Data-dependent READ address (a gather: `x[col_idx[i][k]]`).
+        // The runtime cell the worker reads is determined by the loaded
+        // index value, not the lexically-visible iv set — so a
+        // partition-band slice of the gathered array cannot be computed
+        // at compile time.
+        //
+        // TASK-0373: this is NO LONGER fatal under partition. The
+        // transfer-injection pass marks the gathered array's
+        // data-dependent dim OPAQUE
+        // (`transfer_inject::record_access_per_dim`), which drives a
+        // conservative WHOLE-ARRAY BROADCAST of that array to every
+        // worker (`compute_partition_bounds_with_dim_prefix` returns
+        // empty bounds for an opaque dim). With the whole array present
+        // on each worker, ANY runtime index it loads is in range, so the
+        // read is served correctly without a halo.
+        //
+        // SOUNDNESS COUPLING (load-bearing): this advisory relaxation is
+        // valid ONLY because the transfer layer actually broadcasts the
+        // whole array on the SAME data-dependence predicate
+        // (`common::expr_contains_dataref_or_call`, shared by both
+        // passes). The opacity is sticky in transfer_inject, so a dim
+        // observed data-dependent on any access stays whole-array even
+        // if a sibling affine access exists. The e2e byte-exact diff vs
+        // `reference.bin` is the safety net: if x were NOT broadcast
+        // whole, workers would read garbage and the diff would fail
+        // loud.
+        //
+        // SCATTER GUARD (load-bearing — keeps TASK-0384 rejected): halo
+        // inference walks kernel-call ARGS (reads), so the index here is
+        // always a READ. BUT a scatter read-modify-write
+        // (`histogram[input[i]] <-- inc(histogram[input[i]])`) reads the
+        // SAME symbol it writes by a data-dependent address — the RHS
+        // read reaches this arm with `is_scatter_rmw == true`. Whole-
+        // array broadcast serves a pure gather READ but NOT the cross-
+        // worker WRITE coordination a scatter needs, so:
+        //   - pure gather (`is_scatter_rmw == false`): ADVISORY (relaxed).
+        //   - scatter RMW (`is_scatter_rmw == true`): FATAL under
+        //     partition (the data-dependent WRITE is unhandled —
+        //     TASK-0384). When no iv is partitioned (single-worker), it
+        //     stays advisory like any other halo error: the read needs
+        //     no transfer at all.
+        HaloInferenceError::DataDependentStride { is_scatter_rmw, .. } => {
+            *is_scatter_rmw && scope.iter().any(|iv| iv_is_partitioned(linked, iv))
         }
         // Link-invariant break: the kernel id was missing from
         // `name_kernels`. Never reachable from a link-valid IR.
@@ -617,11 +712,14 @@ type HaloMap = BTreeMap<KernelId, BTreeMap<IterVar, u64>>;
 /// error-push site:
 ///
 /// - The enclosing-loop scope (outermost-first iter-var names) — the
-///   pre-TASK-0341.02.02.01 fatality input. Kept for the conservative
-///   fallback on [`HaloInferenceError::DataDependentStride`] (where
-///   the index expression is itself a `DataRef`/`Call` and an
-///   iv-name walk through the data-dependent address would not
-///   surface every iv the partition impact depends on).
+///   pre-TASK-0341.02.02.01 fatality input. Now consulted ONLY by the
+///   `UnknownKernelInCall` fail-closed arm (a diagnostic for
+///   inconsistently-constructed IR). TASK-0373 retired its use for
+///   `DataDependentStride`, which is now unconditionally advisory
+///   (the gathered array is whole-array broadcast, so the partition
+///   state is irrelevant). The field is retained because
+///   `UnknownKernelInCall` still needs it and because it is part of
+///   the captured-at-push-site diagnostic record.
 /// - The ivs the FAILING INDEX EXPRESSION actually references —
 ///   collected via [`collect_iter_var_refs`]. Empty when the index
 ///   is a `DataDependentStride` (the walker short-circuits on
@@ -740,15 +838,28 @@ fn collect_from_stmts(
 ) {
     for s in stmts {
         match s {
-            IrStmt::Dataflow { lhs: _, rhs } => {
+            IrStmt::Dataflow { lhs, rhs } => {
                 // RHS may be a Call (one or more kernel invocations
                 // possibly nested), an IntLit/Ident/Neg/BinOp expression,
                 // or a bare DataRef (identity copy). Halo only applies
                 // to kernel calls — walk RHS looking for them.
-                visit_expr_for_calls(rhs, scope, ctx, out, errors);
+                //
+                // TASK-0373: a data-dependent WRITE LHS (a scatter, e.g.
+                // `histogram[input[i]] <-- inc(...)`) makes this firing
+                // a SCATTER, which whole-array broadcast does NOT
+                // soundly serve under partition (the cross-worker WRITE
+                // coordination is the separate TASK-0384). Carry that
+                // bit so a `DataDependentStride` READ raised inside a
+                // scatter firing stays FATAL, while a pure gather (an
+                // AFFINE LHS such as `y[i]`) relaxes to advisory.
+                let lhs_data_dependent =
+                    lhs.indices.iter().any(expr_contains_dataref_or_call);
+                visit_expr_for_calls(rhs, lhs_data_dependent, scope, ctx, out, errors);
             }
             IrStmt::Effect { callee, args } => {
-                process_call(callee, args, scope, ctx, out, errors);
+                // Effect statements (load/save) have no LHS write index,
+                // so they can never be a data-dependent WRITE.
+                process_call(callee, false, args, scope, ctx, out, errors);
             }
             IrStmt::For {
                 var,
@@ -777,26 +888,49 @@ fn collect_from_stmts(
 /// about top-level reads), but a nested call's args are.
 fn visit_expr_for_calls(
     e: &IrExpr,
+    lhs_data_dependent: bool,
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
     errors: &mut Vec<HaloErrorWithScope>,
 ) {
     match e {
-        IrExpr::Call { callee, args } => process_call(callee, args, scope, ctx, out, errors),
-        IrExpr::Neg(inner) => visit_expr_for_calls(inner, scope, ctx, out, errors),
+        IrExpr::Call { callee, args } => {
+            process_call(callee, lhs_data_dependent, args, scope, ctx, out, errors)
+        }
+        IrExpr::Neg(inner) => {
+            visit_expr_for_calls(inner, lhs_data_dependent, scope, ctx, out, errors)
+        }
         IrExpr::BinOp(_, lhs, rhs) => {
-            visit_expr_for_calls(lhs, scope, ctx, out, errors);
-            visit_expr_for_calls(rhs, scope, ctx, out, errors);
+            visit_expr_for_calls(lhs, lhs_data_dependent, scope, ctx, out, errors);
+            visit_expr_for_calls(rhs, lhs_data_dependent, scope, ctx, out, errors);
         }
         IrExpr::IntLit(_) | IrExpr::Ident(_) | IrExpr::DataRef(_) => {}
     }
 }
 
+/// Per-firing call context threaded into [`visit_arg`]: the kernel id +
+/// name being walked, plus TASK-0373's `lhs_data_dependent` bit (true
+/// iff the enclosing `<--` statement writes a data-dependent LHS index
+/// — a scatter). Bundled into one struct to keep `visit_arg` under the
+/// clippy `too_many_arguments` cap (7) after the TASK-0373 addition.
+#[derive(Clone, Copy)]
+struct CallSite<'a> {
+    kid: KernelId,
+    callee: &'a str,
+    lhs_data_dependent: bool,
+}
+
 /// Inspect a kernel call's arguments for halo-relevant `DataRef`
 /// patterns and update `out`. Recursively visits nested calls.
+///
+/// `lhs_data_dependent` (TASK-0373) flags that the enclosing `<--`
+/// writes a data-dependent LHS index (a scatter); it propagates into
+/// every `DataDependentStride` raised on this firing's reads so the
+/// fatality predicate can keep a scatter's RMW read FATAL.
 fn process_call(
     callee: &str,
+    lhs_data_dependent: bool,
     args: &[IrExpr],
     scope: &[String],
     ctx: &WalkCtx<'_>,
@@ -828,12 +962,17 @@ fn process_call(
         }
     };
 
+    let call_site = CallSite {
+        kid,
+        callee,
+        lhs_data_dependent,
+    };
     for arg in args {
         // Walk the arg tree. If we hit a DataRef, classify each of its
         // indices; if we hit a nested Call, recurse into IT to handle its
         // args (the nested call has its own kernel id + its own halo
         // contribution).
-        visit_arg(arg, kid, callee, scope, ctx, out, errors);
+        visit_arg(arg, call_site, scope, ctx, out, errors);
     }
 }
 
@@ -843,8 +982,7 @@ fn process_call(
 /// a DataRef e.g. `k(grid[y] + 1)` — we handle that by descending).
 fn visit_arg(
     e: &IrExpr,
-    kid: KernelId,
-    callee: &str,
+    call_site: CallSite<'_>,
     scope: &[String],
     ctx: &WalkCtx<'_>,
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
@@ -854,19 +992,33 @@ fn visit_arg(
         IrExpr::DataRef(IndexedRef { name, indices }) => {
             for (ax_idx, idx_expr) in indices.iter().enumerate() {
                 let site = IndexSite {
-                    kid,
-                    callee,
+                    kid: call_site.kid,
+                    callee: call_site.callee,
                     ref_name: name,
                     ax_idx,
+                    lhs_data_dependent: call_site.lhs_data_dependent,
                 };
                 classify_index(idx_expr, &site, scope, ctx, out, errors);
             }
         }
-        IrExpr::Call { callee: c2, args } => process_call(c2, args, scope, ctx, out, errors),
-        IrExpr::Neg(inner) => visit_arg(inner, kid, callee, scope, ctx, out, errors),
+        IrExpr::Call { callee: c2, args } => {
+            // A nested call inherits the enclosing firing's
+            // `lhs_data_dependent` bit (the write target is the same
+            // `<--` statement regardless of call nesting).
+            process_call(
+                c2,
+                call_site.lhs_data_dependent,
+                args,
+                scope,
+                ctx,
+                out,
+                errors,
+            )
+        }
+        IrExpr::Neg(inner) => visit_arg(inner, call_site, scope, ctx, out, errors),
         IrExpr::BinOp(_, lhs, rhs) => {
-            visit_arg(lhs, kid, callee, scope, ctx, out, errors);
-            visit_arg(rhs, kid, callee, scope, ctx, out, errors);
+            visit_arg(lhs, call_site, scope, ctx, out, errors);
+            visit_arg(rhs, call_site, scope, ctx, out, errors);
         }
         IrExpr::IntLit(_) | IrExpr::Ident(_) => {}
     }
@@ -886,6 +1038,11 @@ struct IndexSite<'a> {
     callee: &'a str,
     ref_name: &'a str,
     ax_idx: usize,
+    /// TASK-0373: propagated from [`CallSite`] — `true` iff the
+    /// enclosing `<--` writes a data-dependent LHS (a scatter). Stamped
+    /// onto any `DataDependentStride` raised here so the fatality
+    /// predicate keeps a scatter's RMW read FATAL.
+    lhs_data_dependent: bool,
 }
 
 /// Classify one index expression against the [`IndexSite`] it sits in.
@@ -903,23 +1060,37 @@ fn classify_index(
     out: &mut BTreeMap<KernelId, BTreeMap<IterVar, u64>>,
     errors: &mut Vec<HaloErrorWithScope>,
 ) {
-    // Reject early: DataRef or Call inside the index = data-dependent.
+    // Detect early: DataRef or Call inside the index = data-dependent
+    // READ (a gather, e.g. `x[col_idx[i][k]]`). The runtime value of
+    // the loaded index determines which cell of the outer array the
+    // worker reads, so no affine halo width exists.
     //
-    // The (B') predicate (TASK-0341.02.02.01 cycle 209) uses the iv
-    // set the FAILING INDEX EXPRESSION references — but a data-
-    // dependent address (e.g. `grid[lookup[y]]`) makes the
-    // partition impact unknowable from the lexical iv set alone:
-    // the address depends on `lookup[y]`, and the runtime value of
-    // `lookup[y]` determines which cell of `grid` the worker reads.
-    // We push an empty iv set so the per-error fatality predicate
-    // falls back to the conservative enclosing-scope rule for this
-    // variant only (see `apply_halo_inference_partition_aware`).
+    // TASK-0373: this is no longer a hard reject under partition. We
+    // push the `DataDependentStride` error (still empty iv set, scope
+    // kept for the diagnostic record), stamping `is_scatter_rmw` from
+    // the enclosing firing's LHS-write-is-data-dependent bit. The
+    // fatality predicate ([`error_is_fatal_under_partition`]) then
+    // splits:
+    //   - PURE GATHER (`is_scatter_rmw == false`, affine LHS such as
+    //     `y[i]`): ADVISORY. The transfer layer broadcasts the WHOLE
+    //     gathered array to every worker (the array's data-dependent
+    //     dim is marked OPAQUE in
+    //     `transfer_inject::record_access_per_dim`), so any runtime
+    //     index is in range. See the soundness-coupling doc on
+    //     `common::expr_contains_dataref_or_call`.
+    //   - SCATTER RMW (`is_scatter_rmw == true`): the SAME data symbol
+    //     is read AND written by a data-dependent address (e.g.
+    //     `histogram[input[i]] <-- inc(histogram[input[i]])`). The RHS
+    //     read reaches here, but whole-array broadcast does NOT serve
+    //     the cross-worker WRITE coordination — that is the separate
+    //     TASK-0384. Stays FATAL under partition.
     if expr_contains_dataref_or_call(e) {
         errors.push((
             HaloInferenceError::DataDependentStride {
                 kernel: site.callee.to_string(),
                 ref_name: site.ref_name.to_string(),
                 ax_idx: site.ax_idx,
+                is_scatter_rmw: site.lhs_data_dependent,
             },
             scope.to_vec(),
             Vec::new(),
@@ -1050,19 +1221,12 @@ fn collect_iter_var_refs(
     }
 }
 
-/// Does this expression contain ANY `DataRef` or `Call` node anywhere
-/// in its subtree? Used by [`classify_index`] to short-circuit on
-/// data-dependent indices before the affine decomposer runs.
-fn expr_contains_dataref_or_call(e: &IrExpr) -> bool {
-    match e {
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => true,
-        IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
-        IrExpr::Neg(inner) => expr_contains_dataref_or_call(inner),
-        IrExpr::BinOp(_, lhs, rhs) => {
-            expr_contains_dataref_or_call(lhs) || expr_contains_dataref_or_call(rhs)
-        }
-    }
-}
+// NOTE: `expr_contains_dataref_or_call` was lifted to
+// [`crate::passes::common`] under TASK-0373 so halo + transfer_inject
+// share ONE data-dependence predicate (the halo relaxation and the
+// transfer whole-array broadcast MUST agree on what "data-dependent"
+// means, or workers read garbage). It is imported at the top of this
+// module; the body is unchanged from the pre-lift private copy.
 
 // NOTE: `affine_decompose`, `expr_mentions`, and `eval_const_int` were
 // moved to [`crate::passes::common`] in cycle 82 (TASK-0261 prerequisite)
@@ -1465,10 +1629,17 @@ mod tests {
                 kernel,
                 ref_name,
                 ax_idx,
+                is_scatter_rmw,
             } => {
                 assert_eq!(kernel, "K");
                 assert_eq!(ref_name, "grid");
                 assert_eq!(ax_idx, 0);
+                // TASK-0373: the LHS here is the affine `out[y]`, so this
+                // is a pure GATHER read, not a scatter RMW.
+                assert!(
+                    !is_scatter_rmw,
+                    "affine LHS `out[y]` ⇒ pure gather, is_scatter_rmw must be false"
+                );
             }
             other => panic!("expected DataDependentStride, got {other:?}"),
         }
@@ -1911,5 +2082,268 @@ mod tests {
             advisory[0],
             HaloInferenceError::NonAffineIndex { ax_idx: 0, .. }
         ));
+    }
+
+    // ---- TASK-0373 (B') data-dependent READ split. Pin BOTH arms of
+    // ---- the gather/scatter distinction the cycle relies on:
+    //
+    // - `task0373_partitioned_pure_gather_read_stays_advisory` — a pure
+    //   gather (`y[i] <-- K(x[col_idx[i][k]])`, AFFINE LHS) under
+    //   `partition=workers(i)` classifies ADVISORY. Whole-array
+    //   broadcast of `x` serves the data-dependent read; the cell now
+    //   compiles instead of being fail-loud rejected (the 17-spmv/
+    //   distributed_gather unblock).
+    //
+    // - `task0373_partitioned_scatter_rmw_read_stays_fatal` — a scatter
+    //   RMW (`h[input[i]] <-- inc(h[input[i]])`, DATA-DEPENDENT LHS)
+    //   under `partition=workers(i)` STAYS FATAL. The RHS read reaches
+    //   the pass with `is_scatter_rmw == true`; whole-array broadcast
+    //   does not serve the cross-worker WRITE coordination (TASK-0384).
+    //
+    // - `task0373_unpartitioned_scatter_rmw_read_stays_advisory` — the
+    //   same scatter with NO partition directive stays advisory
+    //   (single-worker needs no transfer): the fatal classification is
+    //   specifically partition-gated, not a blanket scatter reject.
+
+    /// Build a LinkedIR for a 1-D gather/scatter fixture over the data
+    /// symbols `out`/`x`/`col_idx` (gather) or `h`/`input` (scatter),
+    /// declared `i32[n]` / `i32[n][m]` as needed. Mirrors `build_linked`
+    /// but declares the data-dependent-index symbols the canonical
+    /// helper does not. The kernel is declared `pure` (a gather/scatter
+    /// compute step). `extra_data` names additional `i32[dim]` symbols.
+    fn build_linked_gather(
+        stmts: Vec<IrStmt>,
+        kernel: &str,
+        out_name: &str,
+        out_dims: Vec<usize>,
+        extra_data: &[(&str, Vec<usize>)],
+    ) -> LinkedIR {
+        let mut data = BTreeMap::new();
+        data.insert(
+            out_name.to_string(),
+            ResolvedData {
+                name: out_name.to_string(),
+                ty: t_arr(ScalarType::I32, out_dims),
+            },
+        );
+        for (name, dims) in extra_data {
+            data.insert(
+                (*name).to_string(),
+                ResolvedData {
+                    name: (*name).to_string(),
+                    ty: t_arr(ScalarType::I32, dims.clone()),
+                },
+            );
+        }
+        let mut kernels = BTreeMap::new();
+        kernels.insert(
+            kernel.to_string(),
+            ResolvedKernel {
+                name: kernel.to_string(),
+                params: vec![t_scalar(ScalarType::I32)],
+                ret: Some(t_scalar(ScalarType::I32)),
+                purity: Purity::Pure,
+                name_span: None,
+            },
+        );
+        let algo = AlgoIR {
+            consts: BTreeMap::new(),
+            data,
+            kernels,
+            stmts,
+        };
+        let mut places: BTreeMap<String, ResolvedPlacement> = BTreeMap::new();
+        places.insert(
+            kernel.to_string(),
+            ResolvedPlacement {
+                kernel: kernel.to_string(),
+                target: ResolvedPlaceTarget::One("w0".to_string()),
+                kernel_span: None,
+            },
+        );
+        let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();
+        workers.insert(
+            "w0".to_string(),
+            ResolvedWorker {
+                name: "w0".to_string(),
+                class: crate::sched::DEFAULT_WORKER_CLASS.to_string(),
+            },
+        );
+        let sched = SchedIR {
+            algo_path: String::new(),
+            worker_classes: BTreeMap::new(),
+            memory_regions: BTreeMap::new(),
+            workers,
+            places,
+            place_data: BTreeMap::new(),
+            loops: BTreeMap::new(),
+            transfers: BTreeMap::new(),
+            checks: BTreeMap::new(),
+        };
+        link(algo, sched).expect("link must succeed for TASK-0373 gather/scatter fixtures")
+    }
+
+    /// AC#3 (advisory arm): pure gather `out[i] <-- K(x[col_idx[i][k]])`
+    /// under `partition=workers(i)`. The data-dependent READ of `x` is
+    /// served by whole-array broadcast ⇒ advisory, not fatal.
+    #[test]
+    fn task0373_partitioned_pure_gather_read_stays_advisory() {
+        // for i : 0..8 { for k : 0..3 {
+        //     out[i] <-- K(x[col_idx[i][k]]) } }
+        let stmts = vec![IrStmt::For {
+            var: "i".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::For {
+                var: "k".to_string(),
+                lo: ir_int(0),
+                hi: ir_int(3),
+                body: vec![IrStmt::Dataflow {
+                    // AFFINE LHS out[i] ⇒ pure gather, not scatter.
+                    lhs: lhs("out", vec![ir_id("i")]),
+                    rhs: ir_call(
+                        "K",
+                        vec![data_ref(
+                            "x",
+                            vec![data_ref("col_idx", vec![ir_id("i"), ir_id("k")])],
+                        )],
+                    ),
+                }],
+            }],
+        }];
+        let mut linked = build_linked_gather(
+            stmts,
+            "K",
+            "out",
+            vec![8],
+            &[("x", vec![8]), ("col_idx", vec![8, 3])],
+        );
+        // Partition the OUTER i axis (the gather row band).
+        linked
+            .sched
+            .loops
+            .insert("i".to_string(), loop_partition_workers("i"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let (_acfg, advisory) = apply_halo_inference_partition_aware(&linked, acfg).expect(
+            "TASK-0373: a partitioned PURE GATHER read must be advisory \
+             (whole-array broadcast serves it), not fail-loud rejected",
+        );
+        assert_eq!(
+            advisory.len(),
+            1,
+            "expected one advisory DataDependentStride, got: {advisory:?}"
+        );
+        assert!(
+            matches!(
+                &advisory[0],
+                HaloInferenceError::DataDependentStride {
+                    is_scatter_rmw: false,
+                    ..
+                }
+            ),
+            "advisory[0] must be a PURE-GATHER DataDependentStride \
+             (is_scatter_rmw == false), got: {:?}",
+            advisory[0]
+        );
+    }
+
+    /// AC#3 (fatal arm): scatter RMW `h[input[i]] <-- inc(h[input[i]])`
+    /// under `partition=workers(i)`. The RHS read reaches the pass with
+    /// `is_scatter_rmw == true`; whole-array broadcast does NOT serve the
+    /// cross-worker data-dependent WRITE, so it STAYS FATAL (TASK-0384).
+    #[test]
+    fn task0373_partitioned_scatter_rmw_read_stays_fatal() {
+        // for i : 0..8 { h[input[i]] <-- inc(h[input[i]]) }
+        let stmts = vec![IrStmt::For {
+            var: "i".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::Dataflow {
+                // DATA-DEPENDENT LHS h[input[i]] ⇒ scatter RMW.
+                lhs: lhs("h", vec![data_ref("input", vec![ir_id("i")])]),
+                rhs: ir_call(
+                    "inc",
+                    vec![data_ref("h", vec![data_ref("input", vec![ir_id("i")])])],
+                ),
+            }],
+        }];
+        let mut linked = build_linked_gather(
+            stmts,
+            "inc",
+            "h",
+            vec![16],
+            &[("input", vec![8])],
+        );
+        linked
+            .sched
+            .loops
+            .insert("i".to_string(), loop_partition_workers("i"));
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let err = apply_halo_inference_partition_aware(&linked, acfg).expect_err(
+            "TASK-0373: a partitioned SCATTER RMW read must STAY FATAL — \
+             whole-array broadcast does not serve the cross-worker WRITE \
+             (TASK-0384)",
+        );
+        assert!(
+            matches!(
+                err,
+                HaloInferenceError::DataDependentStride {
+                    is_scatter_rmw: true,
+                    ..
+                }
+            ),
+            "expected a SCATTER-RMW DataDependentStride (is_scatter_rmw == \
+             true), got: {err:?}"
+        );
+    }
+
+    /// AC#3 (boundary): the same scatter RMW with NO partition directive
+    /// stays advisory — the fatal classification is partition-gated, not
+    /// a blanket scatter reject (single-worker needs no transfer).
+    #[test]
+    fn task0373_unpartitioned_scatter_rmw_read_stays_advisory() {
+        let stmts = vec![IrStmt::For {
+            var: "i".to_string(),
+            lo: ir_int(0),
+            hi: ir_int(8),
+            body: vec![IrStmt::Dataflow {
+                lhs: lhs("h", vec![data_ref("input", vec![ir_id("i")])]),
+                rhs: ir_call(
+                    "inc",
+                    vec![data_ref("h", vec![data_ref("input", vec![ir_id("i")])])],
+                ),
+            }],
+        }];
+        // No partition directive anywhere.
+        let linked = build_linked_gather(
+            stmts,
+            "inc",
+            "h",
+            vec![16],
+            &[("input", vec![8])],
+        );
+        let acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+        let (_acfg, advisory) = apply_halo_inference_partition_aware(&linked, acfg).expect(
+            "TASK-0373: an UNPARTITIONED scatter RMW read stays advisory \
+             (no transfer needed single-worker)",
+        );
+        assert_eq!(
+            advisory.len(),
+            1,
+            "expected one advisory DataDependentStride, got: {advisory:?}"
+        );
+        assert!(
+            matches!(
+                &advisory[0],
+                HaloInferenceError::DataDependentStride {
+                    is_scatter_rmw: true,
+                    ..
+                }
+            ),
+            "advisory[0] must be a SCATTER-RMW DataDependentStride \
+             (is_scatter_rmw == true) but advisory because unpartitioned, \
+             got: {:?}",
+            advisory[0]
+        );
     }
 }

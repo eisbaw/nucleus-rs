@@ -310,6 +310,38 @@ pub(crate) fn expr_mentions(e: &IrExpr, iv: &str) -> bool {
     }
 }
 
+/// Does this index expression contain ANY `DataRef` or `Call` node
+/// anywhere in its subtree? A `true` answer means the index is
+/// *data-dependent* (a gather: `x[col[k]]`) — its runtime value, not
+/// the lexically-visible iter-vars, determines which cell is touched.
+///
+/// SINGLE SOURCE OF TRUTH (lifted to `common` under TASK-0373). Two
+/// passes need the SAME predicate and must agree, or their decisions
+/// drift apart silently:
+///
+/// - [`crate::passes::halo_inference`] short-circuits on a
+///   data-dependent index before its affine decomposer runs (the
+///   index cannot have an affine halo width).
+/// - [`crate::passes::transfer_inject`] marks the indexed dim OPAQUE
+///   (no iter-var attribution) so the conservative whole-array
+///   broadcast serves it — see
+///   `transfer_inject::record_access_per_dim`.
+///
+/// The two MUST be consistent: halo relaxes the data-dependent READ to
+/// advisory (whole-array broadcast) ONLY because transfer_inject
+/// actually broadcasts the whole array on the same predicate. Sharing
+/// one helper makes that coupling structural rather than coincidental.
+pub(crate) fn expr_contains_dataref_or_call(e: &IrExpr) -> bool {
+    match e {
+        IrExpr::DataRef(_) | IrExpr::Call { .. } => true,
+        IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
+        IrExpr::Neg(inner) => expr_contains_dataref_or_call(inner),
+        IrExpr::BinOp(_, lhs, rhs) => {
+            expr_contains_dataref_or_call(lhs) || expr_contains_dataref_or_call(rhs)
+        }
+    }
+}
+
 /// Try to evaluate `e` as an integer constant. Returns `None` if `e`
 /// references any non-const identifier (an iter-var or unknown name) or
 /// contains a DataRef / Call / overflow / div-by-zero. Mirrors the

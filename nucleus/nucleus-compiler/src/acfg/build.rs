@@ -408,29 +408,35 @@ fn resolve_worker_set(
 /// single-source-of-truth contract: `data_in` is *derived* from
 /// `data_in_access`, never built independently.
 ///
-/// Index expressions inside a `DataRef` are intentionally NOT recursed
-/// into for further DataRefs — we keep the index list verbatim.
+/// Index expressions inside a `DataRef` ARE recursed into for further
+/// DataRefs (TASK-0373) — the outer array's index list is kept
+/// verbatim on its own `DataAccess`, AND any nested index array is
+/// collected as its OWN `DataAccess`. For a data-dependent gather
+/// `x[col[k]]` this records BOTH `x` (indices `[col[k]]`) and `col`
+/// (indices `[k]`).
 ///
-/// NOTE (TASK-0341.03.01 / TASK-0375): both halves of the old rationale
-/// here are now stale. (a) The algorithm grammar does NOT disallow data
-/// references in indices: a data-dependent (gather) index such as
-/// `x[col[k]]` parses (the expression surface admits a nested indexed
-/// LValue) and lowers (`lower_index_expr`'s `allow_gather`). (b) "Walking
-/// would be a no-op" is therefore also false now: with the gather landed,
-/// `collect_dataref_access_expr` matching an `IrExpr::DataRef` pushes ONLY
-/// the OUTER array and does not descend into `indices`, so for `x[col[k]]`
-/// the inner index array `col` is NOT added to this firing's
-/// `data_in_access`. Recursing WOULD now find `col`.
+/// HISTORY (TASK-0341.03.01 / TASK-0375 / TASK-0373): the gather landed
+/// at the algorithm surface (`lower_index_expr`'s `allow_gather`), so an
+/// index CAN now be a nested DataRef. Until TASK-0373 this function
+/// pushed ONLY the outer array and did not descend into `indices`, so
+/// for `x[col[k]]` the inner index array `col` was NOT added to the
+/// firing's `data_in_access`. That non-collection is INERT for
+/// single-worker codegen (which emits straight-line from AlgoIR and
+/// ignores the ACFG dataflow edges — see memory
+/// `project-backend-emits-from-algoir-not-acfg`), but BROKE a
+/// DISTRIBUTED gather: the conservative transfer path needs `col` in
+/// `data_in` to i-band it to each worker (otherwise the worker
+/// references an unbound `col` symbol). TASK-0373 recurses here so
+/// `col` reaches every worker via the existing axis-mapping filter
+/// (its indices are iv-affine, so it i-bands like `val`). The outer
+/// array `x` stays whole-array broadcast (its data-dependent dim is
+/// marked OPAQUE in `transfer_inject::record_access_per_dim`).
 ///
-/// This non-collection is INERT for single-worker codegen, which emits
-/// straight-line from AlgoIR and ignores the ACFG dataflow edges (see
-/// memory `project-backend-emits-from-algoir-not-acfg`). It is precisely
-/// part of why a DISTRIBUTED gather needs dedicated work: the conservative
-/// path must broadcast the whole gathered array, and `col` must reach
-/// `data_in`. That broadening (including whether to recurse here) is
-/// tracked as TASK-0373; deliberately NOT changed in this docstring-only
-/// fix, since altering the walk would perturb `data_in` for shipped
-/// programs.
+/// SHIPPED-PROGRAM INVARIANCE: the recursion is a NO-OP for every
+/// non-gather program — no index expression there contains a nested
+/// DataRef/Call, so the index-recursion loop pushes nothing and
+/// `data_in` is byte-for-byte unchanged (verified by e2e byte-identity
+/// on all existing cells under TASK-0373).
 fn collect_dataref_access(
     args: &[IrExpr],
     name_data: &BTreeMap<String, DataId>,
@@ -454,6 +460,25 @@ fn collect_dataref_access_expr(
                     data: *id,
                     indices: indices.clone(),
                 });
+            }
+            // TASK-0373: recurse into the INDEX expressions so a
+            // data-dependent (gather) index array is itself collected.
+            // For `x[col_idx[i][k]]` the outer push above records `x`
+            // (indices = `[col_idx[i][k]]`); this loop then records
+            // `col_idx` as its OWN access (indices = `[i][k]`), so the
+            // distributed transfer pass i-bands `col_idx` to each worker
+            // exactly like `val` (its indices are iv-affine `[i][k]`).
+            // Without this, `col_idx` is absent from `data_in` and the
+            // worker references an unbound symbol — the gather does not
+            // reach the worker. This is a NO-OP for every non-gather
+            // shipped program (no index expression contains a nested
+            // DataRef/Call there), so `data_in` is unperturbed for them
+            // (verified by e2e byte-identity on all existing cells).
+            // The outer array `x` stays whole-array broadcast because
+            // its sole index dim is data-dependent → marked OPAQUE in
+            // `transfer_inject::record_access_per_dim`.
+            for ix in indices {
+                collect_dataref_access_expr(ix, name_data, out);
             }
         }
         IrExpr::Call { args, .. } => {

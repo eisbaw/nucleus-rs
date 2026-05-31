@@ -391,6 +391,10 @@ use crate::acfg::{
 use crate::algo::ir::IrExpr;
 use crate::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::{LinkedIR, WorkerEntity};
+// TASK-0373: shared data-dependence predicate (single source of truth
+// with halo_inference) — a dim whose index is a gather (`x[col[k]]`) is
+// recorded OPAQUE so the conservative whole-array broadcast serves it.
+use crate::passes::common::expr_contains_dataref_or_call;
 use crate::sched::{ResolvedLoopOption, ResolvedTransferDirective, ResolvedTransferOption};
 
 // --------------------------------------------------------------------
@@ -2417,7 +2421,8 @@ fn rewrite_partition_tiles_inner(
 /// recoverable as `iter().flatten().copied().collect()` over a data's
 /// Vec entry — kept implicit; no caller needs it any more.
 ///
-/// Index-extraction semantics (unchanged from TASK-0301):
+/// Index-extraction semantics (TASK-0301, OPAQUE-dim refinement
+/// TASK-0373):
 /// - `IrExpr::Ident(name)` leaves whose `name` resolves through
 ///   `name_iter_vars` to an `IterVar` contribute that iv to the
 ///   per-dim set.
@@ -2425,10 +2430,21 @@ fn rewrite_partition_tiles_inner(
 ///   no iv — those axes are partition-invariant.
 /// - Arithmetic over an iv (`y - 1`, `k + halo`) still records the iv
 ///   via recursion on the `BinOp`/`Neg` arms.
-/// - `DataRef` / `Call` in index position is defensive descent (the
-///   canonical grammar does not nest these inside index expressions, but
-///   recursing keeps a future grammar widening from silently dropping
-///   ivs).
+/// - A dim whose index expression contains a `DataRef`/`Call` anywhere
+///   (a data-dependent GATHER index, e.g. `x[col_idx[i][k]]`) is
+///   recorded **OPAQUE**: its per-dim iv set is left EMPTY and the
+///   inner ivs (`i`, `k` from `col_idx[i][k]`) are NOT attributed to
+///   the outer array's dim. An empty iv set makes
+///   [`compute_partition_bounds_with_dim_prefix`] treat the dim as a
+///   "hole" → the data falls to whole-array broadcast, which is the
+///   only conservatively-sound transfer for a data-dependent read (the
+///   worker may load ANY column index at runtime). Opacity is STICKY:
+///   once a dim is observed data-dependent on any access, a sibling
+///   affine access (`x[i]` elsewhere) does NOT re-populate it — the
+///   whole-array broadcast must still serve the gather access. Before
+///   TASK-0373 this arm descended into the inner `DataRef` indices and
+///   mis-attributed `{i, k}` to the outer array's dim 0, which would
+///   have emitted a WRONG i-band slice for `x`.
 ///
 /// Symbols seen only as bare-aggregate accesses (`save_c(c)` style:
 /// `indices.is_empty()`) get an entry with an *empty* `Vec` — the same
@@ -2445,7 +2461,11 @@ fn collect_data_dim_iv_map(
     name_iter_vars: &BTreeMap<String, IterVar>,
 ) -> BTreeMap<DataId, Vec<BTreeSet<IterVar>>> {
     let mut out: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
-    walk_data_dim_iv_map(root, name_iter_vars, &mut out);
+    // TASK-0373: per-(data, dim) set of dims observed data-dependent
+    // (gather). Sticky: an opaque dim stays empty even if a sibling
+    // affine access on the same symbol/dim is later observed.
+    let mut opaque_dims: BTreeMap<DataId, BTreeSet<usize>> = BTreeMap::new();
+    walk_data_dim_iv_map(root, name_iter_vars, &mut out, &mut opaque_dims);
     out
 }
 
@@ -2453,25 +2473,26 @@ fn walk_data_dim_iv_map(
     node: &ACFGNode,
     name_iter_vars: &BTreeMap<String, IterVar>,
     out: &mut BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+    opaque_dims: &mut BTreeMap<DataId, BTreeSet<usize>>,
 ) {
     match node {
         ACFGNode::Operation(op) => {
             for edge in &op.dataflow.edges {
                 for access in &edge.data_in_access {
-                    record_access_per_dim(access, name_iter_vars, out);
+                    record_access_per_dim(access, name_iter_vars, out, opaque_dims);
                 }
                 if let Some(access) = &edge.data_out_access {
-                    record_access_per_dim(access, name_iter_vars, out);
+                    record_access_per_dim(access, name_iter_vars, out, opaque_dims);
                 }
             }
         }
         ACFGNode::Sequence(children) => {
             for c in children {
-                walk_data_dim_iv_map(c, name_iter_vars, out);
+                walk_data_dim_iv_map(c, name_iter_vars, out, opaque_dims);
             }
         }
         ACFGNode::Repeat { body, .. } => {
-            walk_data_dim_iv_map(body, name_iter_vars, out);
+            walk_data_dim_iv_map(body, name_iter_vars, out, opaque_dims);
         }
         ACFGNode::Sync(_) | ACFGNode::Xfer(_) => {}
     }
@@ -2481,12 +2502,30 @@ fn record_access_per_dim(
     access: &DataAccess,
     name_iter_vars: &BTreeMap<String, IterVar>,
     out: &mut BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
+    opaque_dims: &mut BTreeMap<DataId, BTreeSet<usize>>,
 ) {
     let entry = out.entry(access.data).or_default();
     if entry.len() < access.indices.len() {
         entry.resize(access.indices.len(), BTreeSet::new());
     }
+    let opaque_for_data = opaque_dims.entry(access.data).or_default();
     for (dim, ix_expr) in access.indices.iter().enumerate() {
+        // TASK-0373: a data-dependent (gather) index makes this dim
+        // OPAQUE — do not attribute any iv to it (the inner ivs of
+        // `col_idx[i][k]` belong to col_idx, NOT to the outer array x).
+        // An empty iv set drives the whole-array broadcast in
+        // `compute_partition_bounds_with_dim_prefix`. Opacity is sticky:
+        // a previously-opaque dim is cleared and skipped even if THIS
+        // access indexes it affinely (whole-array must still serve the
+        // gather sibling).
+        if opaque_for_data.contains(&dim) {
+            continue;
+        }
+        if expr_contains_dataref_or_call(ix_expr) {
+            opaque_for_data.insert(dim);
+            entry[dim].clear();
+            continue;
+        }
         collect_ivs_from_expr(ix_expr, name_iter_vars, &mut entry[dim]);
     }
 }
@@ -2685,6 +2724,16 @@ fn order_halo_strip_bounds_by_data_dim(
 /// to an `IterVar` via `name_iter_vars`, accumulating into `out`. Const
 /// idents (lookup misses) are silently ignored — they are partition-
 /// invariant and don't contribute to axis-mapping.
+///
+/// TASK-0373: the caller [`record_access_per_dim`] short-circuits a
+/// data-dependent dim (one whose index contains a `DataRef`/`Call`)
+/// to OPAQUE *before* calling this function, so the `DataRef`/`Call`
+/// arms below are now UNREACHABLE on the production path. They are
+/// retained as a fail-safe: were a future caller to invoke this on a
+/// gather subexpression directly, descending would mis-attribute the
+/// inner ivs — so the arms record NOTHING (conservative whole-array),
+/// matching the opacity contract rather than the pre-TASK-0373
+/// "defensive descent" that caused the mis-attribution bug.
 fn collect_ivs_from_expr(
     expr: &IrExpr,
     name_iter_vars: &BTreeMap<String, IterVar>,
@@ -2702,22 +2751,21 @@ fn collect_ivs_from_expr(
             collect_ivs_from_expr(lhs, name_iter_vars, out);
             collect_ivs_from_expr(rhs, name_iter_vars, out);
         }
-        IrExpr::DataRef(ix_ref) => {
-            // A nested DataRef in an index position is structurally
-            // exotic (the AlgoIR grammar treats DataRef as a kernel
-            // argument or RHS, not normally an index inside another
-            // index). Descend defensively into its own indices so a
-            // future grammar widening doesn't silently miss ivs.
-            for ix in &ix_ref.indices {
-                collect_ivs_from_expr(ix, name_iter_vars, out);
-            }
+        IrExpr::DataRef(_) => {
+            // TASK-0373: UNREACHABLE on the production path —
+            // `record_access_per_dim` marks any dim containing a
+            // `DataRef` OPAQUE and never calls this function on it.
+            // Record NOTHING: a data-dependent (gather) index must NOT
+            // attribute its inner ivs to the outer array (doing so was
+            // the pre-TASK-0373 mis-attribution bug). An empty
+            // contribution drives the conservative whole-array
+            // broadcast — the only sound transfer for a gather read.
         }
-        IrExpr::Call { args, .. } => {
-            // A Call in index position is also non-canonical; descend
-            // for the same defensiveness as DataRef.
-            for a in args {
-                collect_ivs_from_expr(a, name_iter_vars, out);
-            }
+        IrExpr::Call { .. } => {
+            // TASK-0373: UNREACHABLE on the production path (same
+            // reasoning as the `DataRef` arm — a Call inside an index
+            // is also data-dependent and short-circuited to OPAQUE by
+            // `record_access_per_dim`). Record nothing.
         }
     }
 }
@@ -5159,6 +5207,145 @@ mod tests {
              (k is unpartitioned), dim 1 does. Sparse coverage triggers \
              the safe whole-array drop per compute_partition_bounds_with_\
              dim_prefix's hole-after-cover policy.",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // TASK-0373: OPAQUE-dim attribution for a data-dependent (gather)
+    // index. These pin the mis-attribution fix at the
+    // `collect_data_dim_iv_map` layer — the inner ivs of a gather index
+    // (`i`, `k` from `col_idx[i][k]`) must NOT land on the outer
+    // gathered array's dim, so that array falls to whole-array
+    // broadcast.
+    // ----------------------------------------------------------------
+
+    /// Build a single-Operation ACFG node carrying the given
+    /// `data_in_access` accesses (helper for the TASK-0373 opaque-dim
+    /// tests). Mirrors the canonical `Operation { kernel, workers,
+    /// dataflow }` shape `build_acfg` produces, minus the bits
+    /// `collect_data_dim_iv_map` ignores.
+    fn op_node_with_accesses(accesses: Vec<DataAccess>) -> ACFGNode {
+        let data_in: Vec<DataId> = accesses.iter().map(|a| a.data).collect();
+        ACFGNode::Operation(Operation {
+            kernel: KernelId(0),
+            workers: [WorkerId(0)].into_iter().collect(),
+            dataflow: crate::acfg::DataflowDag {
+                edges: vec![crate::acfg::DataflowEdge {
+                    data_in,
+                    kernel: KernelId(0),
+                    data_out: None,
+                    data_in_access: accesses,
+                    data_out_access: None,
+                    args: Vec::new(),
+                }],
+            },
+        })
+    }
+
+    /// AC#2: for the gather `x[col_idx[i][k]]`, the OUTER array `x`'s
+    /// dim 0 is recorded OPAQUE (empty iv set) — the inner ivs `{i, k}`
+    /// are NOT attributed to it — so `compute_partition_bounds_with_dim_
+    /// prefix` returns whole-array broadcast for `x` under
+    /// `partition=workers(i)`. The pre-TASK-0373 "defensive descent"
+    /// would have recorded `{i, k}` on `x` dim 0 and emitted a WRONG
+    /// i-band slice. The index array `col_idx[i][k]` itself stays
+    /// iv-affine (`{i}`, `{k}`) so it i-bands like `val`.
+    #[test]
+    fn task0373_gather_outer_array_dim_is_opaque_not_iv_attributed() {
+        let i_iv = IterVar(1);
+        let k_iv = IterVar(2);
+        let x = DataId(10);
+        let col_idx = DataId(11);
+        let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+        name_iter_vars.insert("i".to_string(), i_iv);
+        name_iter_vars.insert("k".to_string(), k_iv);
+
+        // x[col_idx[i][k]] — a single dim whose index is the gather
+        // DataRef col_idx[i][k].
+        let x_access = DataAccess {
+            data: x,
+            indices: vec![IrExpr::DataRef(crate::algo::ir::IndexedRef {
+                name: "col_idx".to_string(),
+                indices: vec![IrExpr::Ident("i".to_string()), IrExpr::Ident("k".to_string())],
+            })],
+        };
+        // col_idx[i][k] — the index array, iv-affine on i,k (this is the
+        // access build_acfg's TASK-0373 recursion now also records).
+        let col_idx_access = DataAccess {
+            data: col_idx,
+            indices: vec![IrExpr::Ident("i".to_string()), IrExpr::Ident("k".to_string())],
+        };
+        let node = op_node_with_accesses(vec![x_access, col_idx_access]);
+
+        let map = collect_data_dim_iv_map(&node, &name_iter_vars);
+
+        // x dim 0 is OPAQUE: empty iv set (NOT {i, k}).
+        assert_eq!(
+            map.get(&x),
+            Some(&vec![BTreeSet::new()]),
+            "TASK-0373 AC#2: gather outer array `x` dim 0 must be OPAQUE \
+             (empty iv set), NOT attributed the inner ivs {{i, k}} — \
+             otherwise x would be wrongly i-banded instead of whole-array.",
+        );
+        // col_idx stays iv-affine: dim 0 = {i}, dim 1 = {k}.
+        assert_eq!(
+            map.get(&col_idx),
+            Some(&vec![iv_set(&[i_iv]), iv_set(&[k_iv])]),
+            "TASK-0373: the index array `col_idx[i][k]` is iv-affine; its \
+             dims keep {{i}}, {{k}} so it i-bands like `val`.",
+        );
+
+        // End-to-end: x with an opaque dim 0 ⇒ whole-array broadcast.
+        let worker = WorkerId(0);
+        let partition_ranges = make_partition_ranges(&[(i_iv, &[(worker, 0..2)])]);
+        let x_bounds =
+            compute_partition_bounds_with_dim_prefix(x, &map, &partition_ranges, worker);
+        assert_eq!(
+            x_bounds,
+            Some(Vec::new()),
+            "TASK-0373 AC#2: x's opaque dim 0 is a hole at dim 0 ⇒ empty \
+             prefix ⇒ Some(empty) ⇒ whole-array broadcast.",
+        );
+    }
+
+    /// AC#1 stickiness: a dim observed data-dependent on one access
+    /// stays OPAQUE even when a SIBLING affine access on the same
+    /// symbol/dim is later observed — the whole-array broadcast must
+    /// still serve the gather access. (Defensive: no shipped program
+    /// mixes affine + gather on the same symbol's same dim, but the
+    /// soundness contract requires stickiness.)
+    #[test]
+    fn task0373_opaque_dim_is_sticky_across_affine_sibling_access() {
+        let i_iv = IterVar(1);
+        let k_iv = IterVar(2);
+        let x = DataId(10);
+        let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+        name_iter_vars.insert("i".to_string(), i_iv);
+        name_iter_vars.insert("k".to_string(), k_iv);
+
+        // First access: gather x[col_idx[i][k]] ⇒ x dim 0 OPAQUE.
+        let gather_access = DataAccess {
+            data: x,
+            indices: vec![IrExpr::DataRef(crate::algo::ir::IndexedRef {
+                name: "col_idx".to_string(),
+                indices: vec![IrExpr::Ident("i".to_string()), IrExpr::Ident("k".to_string())],
+            })],
+        };
+        // Second access on the SAME symbol/dim: affine x[i]. Must NOT
+        // un-opaque dim 0.
+        let affine_access = DataAccess {
+            data: x,
+            indices: vec![IrExpr::Ident("i".to_string())],
+        };
+        let node = op_node_with_accesses(vec![gather_access, affine_access]);
+
+        let map = collect_data_dim_iv_map(&node, &name_iter_vars);
+        assert_eq!(
+            map.get(&x),
+            Some(&vec![BTreeSet::new()]),
+            "TASK-0373 stickiness: once x dim 0 is OPAQUE (gather), a \
+             sibling affine x[i] access must NOT re-attribute {{i}} — \
+             whole-array broadcast must still serve the gather.",
         );
     }
 
