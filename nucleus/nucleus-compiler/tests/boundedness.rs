@@ -521,12 +521,24 @@ fn derive_firing_order_appends_stuck_leftovers_so_check_bounded_diagnoses() {
 /// O(deg(t)); the gate dropped to ~16 ms (27×).
 ///
 /// This test builds a large net (T transitions, A = 2·T arcs) on which
-/// the OLD O(T·A) gate did ~T·A·3 ≈ 192M arc comparisons and took on
-/// the order of seconds, while the near-linear gate finishes in a few
-/// milliseconds. The wall-clock budget below is deliberately loose
-/// (1 s) so it does not flake on a slow/loaded CI box, yet an
-/// accidental return to O(T·A) — which scales as T² here — blows past
-/// it by a wide margin.
+/// the OLD O(T·A) gate did ~T·A·3 ≈ 1.5G arc comparisons across the
+/// three passes. T is sized so the separation is unambiguous and
+/// machine-/profile-independent in BOTH directions. The original
+/// T=4000 sizing was too small — the old O(T·A) code ran only
+/// ~0.83–1.38 s there (measured), straddling a 1 s ceiling, so it
+/// could PASS on a fast box with the regression present (TASK-0377
+/// architect P2 finding). Two measured anchors fix the sizing:
+///
+/// - NEW (near-linear) gate, dev profile, this box: ~45 ms at T=4000,
+///   scaling linearly to ~210 ms at T=16000 (45→98→120→144→210 ms for
+///   T=4000/8000/10000/12000/16000). Release is faster still.
+/// - OLD (O(T·A), scales as T² since A=2·T) gate, measured at T=4000:
+///   ~0.83–1.38 s. ×(16000/4000)² = ×16 ⇒ ~13–22 s at T=16000.
+///
+/// So the 2 s ceiling below clears the near-linear gate by ~10× (even
+/// a 5× slower/loaded box stays ~1 s < 2 s) while an accidental return
+/// to O(T·A) overshoots by ~7–11× (even a hypothetical 5× faster box
+/// keeps the old code at ~2.6 s+). Both margins are wide and two-sided.
 ///
 /// ## Manual macro-benchmark (the headline TASK-0377 number)
 ///
@@ -553,7 +565,7 @@ fn gate_stays_near_linear_under_large_net() {
     // its own pre-marked source place and deposits 1 token into its own
     // sink place: deg(t) = 2, source-order is a legal firing order, and
     // the whole net is bounded + deadlock-free. A = 2·T arcs.
-    const T: usize = 4000;
+    const T: usize = 16000;
     let mut net = Net::new();
     let mut ts = Vec::with_capacity(T);
     for i in 0..T {
@@ -570,13 +582,14 @@ fn gate_stays_near_linear_under_large_net() {
     check_net_sound(&net).expect("large fan net is sound");
     let elapsed = start.elapsed();
 
-    // O(T·A) on this net is ~T² · const ≈ seconds; the near-linear gate
-    // is a few ms. 1 s is a generous, non-flaky ceiling that still
-    // catches an O(T·A) regression by a wide margin.
+    // OLD O(T·A) here is ~T²·const ≈ 13–22 s (see docstring); the
+    // near-linear gate is ~0.2 s in dev / faster in release. 2 s is a
+    // two-sided non-flaky ceiling: ~10× above the near-linear gate,
+    // ~7–11× below an O(T·A) regression.
     assert!(
-        elapsed < std::time::Duration::from_secs(1),
+        elapsed < std::time::Duration::from_secs(2),
         "TASK-0377 perf-regression: check_net_sound on a {T}-transition / {} -arc net \
-         took {elapsed:?} (> 1 s) — the per-transition arc index in `Net::fire_in_place` \
+         took {elapsed:?} (> 2 s) — the per-transition arc index in `Net::fire_in_place` \
          was likely lost, reintroducing the O(T·A) all-arcs scan",
         2 * T
     );

@@ -524,16 +524,18 @@ impl Net {
     }
 
     /// Return every transition that would succeed if fired against
-    /// `marking`. Useful for tests and for the linearisation pass's
-    /// validation step ("is the order I picked a legal interleaving?").
-    /// Does *not* mutate the net.
+    /// `marking` ("which transitions are enabled here?"). Does *not*
+    /// mutate the net. Test-only today (see the TASK-0377 note below).
     ///
     // TASK-0377: not indexed (off gate hot path). This still does the
-    // O(T·A) all-arcs scan, but it is never called by the per-build
-    // soundness gate (`check_net_sound`) — only by unit tests and the
-    // linearisation validation path that runs on tiny nets. Indexing it
-    // would be a behaviour-neutral mechanical change; deliberately left
-    // un-indexed to keep the diff scoped to the measured hot path.
+    // O(T·A) all-arcs scan, but it has NO production caller — repo-wide
+    // it is invoked only by unit/property tests (`tests/petri.rs`,
+    // `tests/proptest_petri.rs`); the per-build soundness gate
+    // (`check_net_sound`) and `derive_firing_order` deliberately do not
+    // use it (the latter fires directly as its own firability oracle).
+    // Indexing it would be a behaviour-neutral mechanical change;
+    // deliberately left un-indexed to keep the diff scoped to the
+    // measured hot path.
     pub fn enabled_transitions(&self, marking: &Marking) -> Vec<TransitionId> {
         let mut out = Vec::new();
         for t in &self.transitions {
