@@ -3,11 +3,11 @@ id: TASK-0390
 title: >-
   Bite-test for the LHS-index banding arm of
   scatter_target_replicates_whole_array (TASK-0384 review P3)
-status: In Progress
+status: Done
 assignee:
   - '@me'
 created_date: '2026-05-31 16:41'
-updated_date: '2026-05-31 18:49'
+updated_date: '2026-05-31 18:54'
 labels:
   - backend
   - scatter
@@ -36,3 +36,9 @@ Forward-carried from TASK-0389: the worker per-channel Wait order is now SORTED 
 
 Implemented in-thread (trivial test-only change, no production code). Added task0390_lhs_index_banding_keeps_scatter_fatal to halo_inference.rs tests + inventory-comment bullet. Fixture: 2-stmt, stmt A canonical scatter histogram[input[i]] (i partitioned), stmt B foo[histogram[j]] <-- inc(foo[j]) (j partitioned). Asserts scatter_target_replicates_whole_array(linked,"histogram")==true for A-alone (baseline replicate) and ==false for A+B (LHS-index arm bites). BITE PROVEN two ways: (1) self-contained differential A-vs-A+B where stmt B LHS-ref foo!=target and RHS inc(foo[j]) are both non-banding so the flip is attributable solely to lhs.indices arm; (2) manual remove-arm experiment — disabling the lhs.indices clause (false &&) made the A+B assert FAIL while the A baseline still passed (then restored). Gate: nucleus-compiler lib 170->171 passed; just build+clippy+test+test-release exit 0; just e2e 371/314/0/57/0 unchanged (test-only, e2e-inert). GOTCHA hit + fixed: first docstring draft tripped the recurring clippy doc_lazy_continuation trap (markdown - sub-list with un-indented continuation paragraph) — rewrote as prose Case-A/Case-A+B with a blank-line-separated Empirically-confirmed paragraph. Holding Done until independent architect review GO.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE. Added task0390_lhs_index_banding_keeps_scatter_fatal pinning the LHS-index banding arm of algo_target_has_affine_partitioned_index (halo_inference.rs:867-873). Bite PROVEN two independent ways: (1) self-contained differential — A-alone (histogram[input[i]], i partitioned) replicates whole-array (==true), A+B (adds foo[histogram[j]], j partitioned) does NOT (==false); architect traced that B LHS-ref foo!=target (no trip at :853) and RHS inc(foo[j]) (no trip at :874) are both non-banding, so the flip is attributable SOLELY to the :867-873 lhs.indices clause; (2) remove-arm experiment (false && short-circuit) flips A+B to fail while A baseline holds — re-run independently by the architect. Gate: nucleus-compiler lib 170->171; build+clippy+test+test-release exit 0; e2e 371/314/0/57/0 unchanged (test-only). Independent architect review GO (no P1/P2; folded 2 P3 doc-word nits in c27b8be: commenting-out->disabling/false-&&, Case1/2->CaseA/A+B). Gotcha: first docstring draft tripped clippy doc_lazy_continuation (recurring trap) — rewrote markdown sub-list to prose. Arm remains unreachable in todays grammar (additive-conservative); test guards against a future regression of the lhs.indices descent.
+<!-- SECTION:FINAL_SUMMARY:END -->
