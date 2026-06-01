@@ -379,8 +379,9 @@ fn find_loop(
 /// `InvalidRange` when `hi < lo` (passes::common), which we surface here.
 ///
 /// We map the two non-`InsufficientWork` variants to a defensive
-/// `InsufficientWork` with the same (len, workers) payload to keep the
-/// error surface narrow; the diagnostic is still actionable (it
+/// `InsufficientWork` carrying this pass's `{var, lo, hi, workers}`
+/// payload to keep the error surface narrow; the diagnostic is still
+/// actionable (it
 /// forward-links to widening the range or shrinking the worker count).
 /// So if an inverted range ever reaches this pass, the band helper
 /// fails closed rather than emitting a degenerate partition.

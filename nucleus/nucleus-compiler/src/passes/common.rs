@@ -648,8 +648,11 @@ mod tests {
 
     #[test]
     fn bands_inverted_range_rejects() {
-        // Defensive — link step's eval_const produces hi >= lo for
-        // valid user input; this guards a malformed synthetic.
+        // Defensive — no upstream pass gates an inverted range
+        // (eval_const only evaluates bounds to i64; the link step has
+        // no `hi >= lo` check), so this helper IS the fail-closed
+        // backstop. Pins it on a malformed synthetic.
+        // (See partition_workers::map_band_error for the full rationale.)
         let err = compute_partition_bands(10, 5, 2).expect_err("inverted range must reject");
         assert_eq!(err, PartitionBandError::InvalidRange { lo: 10, hi: 5 });
     }
