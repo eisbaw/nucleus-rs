@@ -3,10 +3,11 @@ id: TASK-0360
 title: >-
   ACFG + codegen: kernel-less identity-copy Operation (follow-out of TASK-0347
   link half)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mark'
 created_date: '2026-05-28 05:07'
-updated_date: '2026-05-28 05:42'
+updated_date: '2026-06-01 22:42'
 labels:
   - compiler
   - ir
@@ -80,4 +81,29 @@ CopyEdge path) as TEST-ONLY code — no in-tree example exercises a
 bare-LValue RHS, so the only callers are the synthetic identity_copy_*
 tests in nucleus-compiler/tests/link.rs. Options (a)/(b) give the link
 half a production exerciser; (c) does not. Weigh that when choosing.
+
+=== Cycle-238 DESIGN SLICE outcome — option (c), CLOSED (orchestrator in-thread per feedback-spawned-agents-refuse-code-edits) ===
+
+User chose the bounded design slice. Empirically RE-VERIFIED the two cycle-230 blockers (not just trusted): Operation.kernel / DataflowEdge.kernel (acfg/types.rs:51,157) + Event::Fire.kernel (event.rs:688) all non-optional KernelId; resolve_worker_set keys on a KERNEL name (build.rs); place_data D in REGION -> ResolvedPlaceData(memory region), not a worker set. Both confirmed.
+
+DECISION = option (c): decline the kernel-optional refactor. Rationale (architect-confirmed GO): (i) ZERO in-tree demand (no example uses bare-LValue dataflow; 15-transpose uses explicit xpose, bit-identical); (ii) the refactor ripples ~17 files + 7 backends + Event contract = HIGH regression risk for a LOW node; (iii) option (b) [derive worker set from link consumer maps] is UNSOUND for codegen — those maps are advisory/over-reporting (multi-source RHS = last-insert-wins), so (b) inherits the same worker-set ambiguity (a) would solve with a real directive. The deferred clean path is filed as TASK-0416 (live trigger).
+
+EMPIRICAL FINDING that reframed the slice: the bare-LValue path was a SILENT DROP, not a benign no-op. build_dataflow returned None -> build_stmt Ok(None) -> build_seq filtered it out. A SAME-WORKER copy (c <-- a, all on host) passes link (MissingCrossWorkerTransfer is cross-worker-only) and compiled to NOTHING — c stayed at its alloc default = silent wrong answer. Proven by a probe (build_acfg Ok, operation_count=2, copy missing). So option (c) honest form REQUIRES fail-loud.
+
+DELIVERED (the concrete root-cause fix, commits 7a5bea2 + 08e4b6c):
+- acfg/errors.rs: BuildAcfgError::KernelLessDataflowRhs { lhs, rhs } + Display (points at the explicit-kernel workaround).
+- acfg/build.rs: build_dataflow returns Result; bare-LValue arm now Err; build_stmt collapsed Option -> non-Option (kills the silent-drop affordance at type level; architect P2-1); reject-site documents layer choice + declared-transfer caveat (P2-2/P2-3).
+- acfg/mod.rs: module docstring corrected ("treats as no-ops" was a lie).
+- 5 stale "still skips / emits nothing" doc-lies swept (architect P1-1): build.rs:170, link/dataflow.rs, 15-transpose prog.algo.nuc + kernels.rs + README.md (anchor acfg-skip->acfg-reject). This was TASK-0360 scope #4.
+- tests/acfg.rs: 2 negative (same-worker copy + arithmetic) proving the guard bites + 1 positive control.
+
+GATE (re-run after fold-back, qa-test-runner GO + mped-architect GO): build/clippy clean; test 1243/0/3; test-release 1242/0/3; e2e 385/328/0/57/0 (baseline held, qa re-ran x2 non-flake); 9 just-ci structural/doc fences OK.
+
+COST CARRIED (architect): now that acfg REJECTS the bare-LValue form, the TASK-0347 link-half copy-edge analysis (propagate_copy_edges) has NO surviving production exerciser — reached only by its own unit tests. If TASK-0416 ever lands, it becomes live again. Left in place (it still gives a better/earlier diagnostic for the cross-worker-no-transfer sub-case; removing it is scope creep).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CLOSED via design slice as option (c) (wont-implement-the-refactor + fail-loud guard). Original ACs #2/#3/#4 (kernel-optional Operation, cross-worker Xfer lowering, drop xpose with bit-identical output) are NOT built — explicitly DECLINED, not gamed: a kernel-less data-move IR node is disproportionate to a LOW node with zero in-tree demand, and worker-set derivation has no sound schedule-language home (option b unsound for codegen). What landed instead is the honest root-cause fix the decision implies: the previously SILENT bare-LValue drop (a same-worker copy compiled to nothing) is now a typed BuildAcfgError::KernelLessDataflowRhs, the dead Option silent-drop affordance is removed, and the 5 stale doc-claims (scope #4) are swept. Deferred clean path filed as TASK-0416. Gate: test 1243/0/3, test-release 1242/0/3, e2e 385/328/0/57/0; qa GO + architect GO.
+<!-- SECTION:FINAL_SUMMARY:END -->
