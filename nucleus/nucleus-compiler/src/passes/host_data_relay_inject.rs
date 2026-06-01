@@ -113,8 +113,8 @@
 //!
 //! **What this mirroring actually controls (cycle-163b QA P3.1
 //! correction):** the load-bearing consumer of `pipeline_depth_for_seq`
-//! is `passes::acfg_to_petri::buffer_place_for` (see
-//! `nucleus-compiler/src/passes/acfg_to_petri.rs:486-497`), which
+//! is `passes::acfg_to_petri::buffer_place_for` (its initial-marking
+//! block reads `self.acfg.pipeline_depth_for_seq.get(&x.seq)`), which
 //! pre-seeds each buffer place with `D` initial tokens to model
 //! producer-runs-ahead semantics (TASK-0134, PRD §8.2). Without
 //! mirroring, the fresh hops' buffer places start with 0 tokens
@@ -321,7 +321,8 @@ pub fn apply_host_data_relay_inject(mut acfg: ACFG, host: WorkerId) -> ACFG {
     // Phase 3: mirror pipeline_depth_for_seq onto fresh seqs.
     //
     // The load-bearing consumer is `passes::acfg_to_petri::
-    // buffer_place_for` (see acfg_to_petri.rs:486-497), which uses the
+    // buffer_place_for` (its initial-marking block reads
+    // `self.acfg.pipeline_depth_for_seq.get(&x.seq)`), which uses the
     // depth as the petri-net buffer place's `initial_marking` to model
     // producer-runs-ahead semantics (TASK-0134). Without this mirror,
     // the fresh hops' buffer places start with 0 tokens instead of D,
