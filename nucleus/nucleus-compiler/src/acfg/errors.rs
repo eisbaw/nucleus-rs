@@ -86,6 +86,14 @@ pub enum BuildAcfgError {
     /// failed, the offending expression verbatim, and a human `detail`
     /// naming the failure ("arithmetic overflow (mul)" / "division by
     /// zero").
+    ///
+    /// Overflow and division-by-zero share this ONE variant by design;
+    /// the `detail` string is the human discriminator. There is
+    /// deliberately no separate div-by-zero variant — a programmatic
+    /// consumer must NOT branch on the `detail` text (it is for display).
+    /// (The `algo::lower` layer does split `ConstOverflow` /
+    /// `ConstDivByZero`; the loop-bound diagnostic does not need that
+    /// granularity.)
     OverflowingLoopBound {
         /// The loop variable whose bound overflowed (e.g. `j`).
         var: String,
