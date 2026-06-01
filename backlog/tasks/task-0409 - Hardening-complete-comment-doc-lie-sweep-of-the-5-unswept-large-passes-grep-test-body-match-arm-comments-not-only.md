@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-01 08:57'
-updated_date: '2026-06-01 09:27'
+updated_date: '2026-06-01 10:26'
 labels:
   - hardening
   - doc-lie
@@ -31,4 +31,6 @@ Two items bearing on the continued comment-doc-lie sweep:
 1. CONFIRMED doc-lie found + fixed in commit e38267f: backend-common/src/lib.rs:75-78 convenience-root-re-export comment claimed backends reach "the most-frequently used surface" via the crate root. Reality (grepped all consumer crates): of 35 root re-exports only 4 are consumed via the crate ROOT (EmitError, elect_host_from_name_workers, elect_host_from_worker_names, render_fire_args_nostd); the other 31 are reached via the SUBMODULE path. The comment asserted the opposite usage pattern. This is the SAME class as the TASK-0408 eval_const-attribution lie: a comment describing a usage/causation FACT that is empirically false. LESSON for 0409: comments asserting "X is the common/frequent/typical path" are CLAIMS -- grep the actual call sites and count before trusting; usage-frequency claims are as falsifiable as causation claims.
 
 2. Gotcha that affects any allow(dead_code)/grep-based doc sweep: all 8 #[allow(dead_code)] in backends/mpi-blocking/src/multi_worker.rs (lines 351-381) and backends/mpi-nonblocking/src/multi_worker.rs (lines 433-494) live INSIDE emitted string-literal preludes (let prelude = "\ ... "; out.push_str(prelude)), as do every backend KERNELS_MOD_ATTR const. A docstring/comment audit must not treat the // comments inside those string literals as compiler-level docs -- they are emitted-code comments. Confirm by locating the enclosing string-literal boundary before classifying.
+
+Forward-carried from TASK-0410/0411 (cycle-237): two concrete lessons for the comment/doc sweep. (1) DISTINGUISH intra-doc-link [`X`] from plain markdown code-span `X` — only the bracketed form is resolved by rustdoc and can break the cargo doc gate; a stale code-span mention of a removed symbol is harmless prose but a stale [`crate::path::Removed`] is a HARD doc-link break the just-ci gate does NOT catch (it builds no docs). When a sweep finds a comment naming a symbol, classify which form it is. (2) cargo doc --workspace --no-deps stable metric: sum the per-crate generated-N-warning summary lines (currently 10 = embedded-pattern 2 + mpi-blocking 2 + mpi-nonblocking 4 + nucleus-compiler 2); raw grep -ciE warning|error gives 16 because of 4 summary lines + 2 source-context lines that contain the matched word — use the generated-N sum, not the raw grep, as the before/after invariant.
 <!-- SECTION:NOTES:END -->

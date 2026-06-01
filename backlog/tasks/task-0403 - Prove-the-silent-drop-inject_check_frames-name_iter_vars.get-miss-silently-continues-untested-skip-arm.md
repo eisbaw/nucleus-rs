@@ -7,6 +7,7 @@ status: To Do
 assignee:
   - '@mark'
 created_date: '2026-06-01 05:53'
+updated_date: '2026-06-01 10:26'
 labels:
   - hardening
   - testing
@@ -25,3 +26,9 @@ SCOPE: add a prove-the-silent-drop test -- construct a checks map with a directi
 
 This is a SILENT-DROP guard (returns/continues), NOT a typed-error variant, so it is correctly outside the prove-the-check-bites error-enum audit. Lower value than a typed guard (a wrong silent drop loses a check assertion quietly) -- but exactly the silent-sibling class the project tracks. LOW; purely additive coverage.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Forward-carried from TASK-0410/0411 (cycle-237): the just-ci gate does NOT build docs, so any change touching a doc-linked symbol (removing/narrowing a pub item, removing an error variant referenced by [`...`]) must run cargo doc --workspace --no-deps before/after and diff the generated-N-warning sum (baseline 10). For bite/sibling-sweep tasks that ADD tests this is usually moot, but if the work removes or renames a symbol carrying an intra-doc-link, add the cargo-doc diff to the gate.
+<!-- SECTION:NOTES:END -->
