@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-17 23:08'
-updated_date: '2026-06-01 16:42'
+updated_date: '2026-06-01 19:30'
 labels:
   - M8
   - backend
@@ -24,7 +24,7 @@ Tier-2 milestone: mpi-nonblocking via MPI_Isend/MPI_Irecv/MPI_Wait. Schedules re
 <!-- AC:BEGIN -->
 - [x] #1 backends/mpi-nonblocking/ crate lands with capabilities.toml supporting async + buffer.
 - [ ] #2 Generated code uses MPI_Isend/MPI_Irecv with explicit MPI_Wait sequenced per the EventList.
-- [ ] #3 Examples 9, 11 run on localhost MPI with bit-identical output.
+- [x] #3 Examples 9, 11 run on localhost MPI with bit-identical output.
 - [x] #4 Test: M8 acceptance includes async + buffered schedules over MPI.
 - [x] #5 Implementation notes record design questions (e.g. MPI_Request lifetime in generated code; how to map SeqTag to MPI tags).
 - [ ] #6 Implementation notes record honest limitations (no derived-type optimisation; one MPI_Type_contiguous per transfer at M8).
@@ -92,4 +92,8 @@ FOLLOW-UPS FILED: TASK-0046.01 (example 9 / Comm_split), TASK-0046.02 (lift shar
 STATUS: In Progress (AC#3 genuinely partial; close after TASK-0045.02 + TASK-0046.01 land, or reword AC#2/#3/#6 per the disposition above with explicit sign-off).
 
 forward-carried from TASK-0046.02 (DONE, lift LANDED): the multi-worker SPMD MPI Plan mpi-nonblocking copied verbatim from mpi-blocking is now lifted into backend_common::mpi_plan, parameterised over the MpiRendezvous trait (sole variation = BACKEND_NAME + header banner + rendezvous prelude + universe-init/buffer-attach). The silent-sibling hazard the M8-entry cycle flagged is CLOSED — a future fix to host-election / rank-assignment / barrier-analysis / loud-reject Plan logic now lands in ONE place. The blocking-vs-buffered delta is the COMPLETE enumerable surface (BlockingRendezvous / BufferedRendezvous impls). Byte-identity preserved (check-mpi + check-mpi-nonblocking byte-exact). Commits 362a2a9/c9e5d6a/cefc976. This does NOT change the M8 AC#3 example-9 blocker (still gated on Comm_split / TASK-0045.02 via child TASK-0046.01); the lift is orthogonal de-dup.
+
+AC#3 NOW MET + TICKED (2026-06-01, via child TASK-0046.01 DONE). 09-producer-consumer/pipelined (the example-9 blocker) now runs byte-exact under mpiexec -n 3 (default + forced-rendezvous) in just check-mpi-nonblocking, alongside example 11 — both examples named in AC#3 are bit-identical. Path: TASK-0045.02 landed shared MPI_Comm_split + sub-communicator barrier in backend_common::mpi_plan (host-excluding {producer,consumer} barrier); TASK-0046.01 wired ex9 into the standing gate. Orchestrator-re-run, qa GO + architect GO.
+
+REMAINING for the TASK-0046 MILESTONE close (NOT closed here — needs explicit sign-off per the disposition note above): AC#2 (met-as-buffered-Ibsend, not literal Isend) + AC#6 (zero MPI_Type_contiguous, not "one per transfer") are the wording dispositions left. AC#3 (the last SUBSTANTIVE blocker) is now discharged.
 <!-- SECTION:NOTES:END -->
