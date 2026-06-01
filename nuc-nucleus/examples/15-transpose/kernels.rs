@@ -16,13 +16,13 @@
 // -----------------------------------------------------------
 // The algorithm grammar (docs/grammar-algo.md §1) allows a bare
 // `LValue` on the RHS as an identity copy: `RValue ::= CallExpr |
-// LValue`. But `acfg::build::build_dataflow` still skips a non-Call
-// RHS: a kernel-less identity-copy Operation is not representable
-// today (Operation.kernel / Event::Fire.kernel are non-optional
-// KernelId, and no schedule directive maps a data symbol to a worker
-// set). With the bare-LValue form the ACFG carries no Operation node
-// for the transpose body, and the codegen emits nothing into the
-// loop. A pure kernel returning its argument is the canonical way to
+// LValue`. But `acfg::build::build_dataflow` REJECTS a non-Call
+// RHS with a typed error (BuildAcfgError::KernelLessDataflowRhs): a
+// kernel-less identity-copy Operation is not representable today
+// (Operation.kernel / Event::Fire.kernel are non-optional KernelId,
+// and no schedule directive maps a data symbol to a worker set). So
+// the bare-LValue form does not compile — an explicit kernel is
+// required. A pure kernel returning its argument is the canonical way to
 // express "permute the indices and write the same value"; the kernel
 // form gives the compiler the per-element dataflow node every shipped
 // schedule shape reads from at cycle 204. (The link layer DOES now

@@ -137,13 +137,14 @@ form:
 RValue ::= CallExpr | LValue ;
 ```
 
-But the ACFG builder [`acfg::build::build_dataflow`][acfg-skip] still
-skips a non-`Call` RHS: a kernel-less identity-copy `Operation` is not
-representable today (`Operation.kernel` / `Event::Fire.kernel` are
-non-optional `KernelId`s, and no schedule directive maps a data symbol
-to a worker set). With a bare `LValue` form the ACFG therefore carries
-no Operation node for the transpose body, and the codegen emits nothing
-into the loop. A pure scalar kernel returning its argument is the
+But the ACFG builder [`acfg::build::build_dataflow`][acfg-reject]
+REJECTS a non-`Call` RHS with a typed error
+(`BuildAcfgError::KernelLessDataflowRhs`): a kernel-less identity-copy
+`Operation` is not representable today (`Operation.kernel` /
+`Event::Fire.kernel` are non-optional `KernelId`s, and no schedule
+directive maps a data symbol to a worker set). So a bare `LValue` form
+does not compile — an explicit kernel is required. A pure scalar kernel
+returning its argument is the
 canonical way to express "permute the indices and write the same
 value"; the kernel form gives the compiler the per-element dataflow
 node every shipped schedule shape reads from at cycle 204.
@@ -161,7 +162,7 @@ codegen half** — making `Operation` kernel-optional and resolving the
 worker-set derivation blocker, after which this example could drop
 `xpose` for the bare-`LValue` form — is filed as TASK-0360.
 
-[acfg-skip]: ../../../nucleus/nucleus-compiler/src/acfg/build.rs
+[acfg-reject]: ../../../nucleus/nucleus-compiler/src/acfg/build.rs
 
 ## Contract-check limitation
 

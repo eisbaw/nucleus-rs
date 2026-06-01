@@ -13,10 +13,11 @@
 //     test no earlier example covers.
 //   - Identity kernel `xpose`. The grammar allows a bare `LValue` on the
 //     RHS for identity copies (grammar-algo.md §1, `RValue ::= CallExpr
-//     | LValue`), but acfg::build::build_dataflow still skips a non-Call
-//     RHS (a kernel-less Operation is not representable yet; ACFG/codegen
-//     follow-up TASK-0360). So the canonical way to express a pure
-//     permutation is a kernel that returns its single argument.
+//     | LValue`), but acfg::build::build_dataflow REJECTS a non-Call RHS
+//     with a typed error (a kernel-less Operation is not representable
+//     yet; the clean codegen path is deferred — TASK-0360). So the
+//     canonical way to express a pure permutation is a kernel that
+//     returns its single argument.
 //
 // What this example also demonstrates (added post-AC#1):
 //   - Multi-worker distributed-rows partition: landed cycle 215

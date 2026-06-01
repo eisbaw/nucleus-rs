@@ -165,18 +165,17 @@ fn collect_iter_var_names(stmts: &[IrStmt], out: &mut std::collections::BTreeSet
 
 /// Build a sequence of ACFGNodes from a flat list of IR statements.
 ///
-/// Each statement becomes at most one node:
+/// Each statement becomes **exactly one** node ([`build_stmt`] is
+/// total — it never silently drops a statement):
 /// - `Dataflow { rhs: Call }` -> `Operation`
-/// - `Dataflow { rhs: <bare DataRef> }` -> skipped (identity copy;
-///    see module docs)
+/// - `Dataflow { rhs: <non-Call> }` -> `Err(KernelLessDataflowRhs)`
+///   (a kernel-less data-move is unsupported; see [`build_dataflow`])
 /// - `Effect` -> `Operation`
 /// - `For` -> `Repeat`
 fn build_seq(stmts: &[IrStmt], ctx: &BuildCtx<'_>) -> Result<Vec<ACFGNode>, BuildAcfgError> {
     let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {
-        if let Some(node) = build_stmt(s, ctx)? {
-            out.push(node);
-        }
+        out.push(build_stmt(s, ctx)?);
     }
     Ok(out)
 }
@@ -213,10 +212,17 @@ fn loop_bound_error(
     }
 }
 
-fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, BuildAcfgError> {
+/// Lower one IR statement to its single ACFG node. Total: every
+/// statement maps to exactly one node, or to a typed `BuildAcfgError`
+/// (e.g. a kernel-less dataflow RHS). It deliberately does NOT return
+/// `Option` — there is no "silently produce nothing" outcome, which is
+/// the silent-drop affordance TASK-0360 removed (a same-worker bare copy
+/// used to vanish here). Keep this signature non-optional so a future
+/// statement kind cannot reintroduce a silent drop by returning `None`.
+fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<ACFGNode, BuildAcfgError> {
     match stmt {
-        IrStmt::Dataflow { lhs, rhs } => build_dataflow(lhs, rhs, ctx).map(Some),
-        IrStmt::Effect { callee, args } => Ok(Some(build_effect(callee, args, ctx))),
+        IrStmt::Dataflow { lhs, rhs } => build_dataflow(lhs, rhs, ctx),
+        IrStmt::Effect { callee, args } => Ok(build_effect(callee, args, ctx)),
         IrStmt::For { var, lo, hi, body } => {
             let iter_var = ctx
                 .name_iter_vars
@@ -238,7 +244,7 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, Bui
             // one statement we still wrap in Sequence for uniform
             // top-level shape downstream; cheap and consistent.
             let body_node = ACFGNode::Sequence(body_nodes);
-            Ok(Some(ACFGNode::Repeat {
+            Ok(ACFGNode::Repeat {
                 iter_var,
                 range: lo_v..hi_v,
                 body: Box::new(body_node),
@@ -246,7 +252,7 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, Bui
                 // it iterates its real range. `block_transform` may
                 // later replace it with a tagged inner nest.
                 block_tag: None,
-            }))
+            })
         }
     }
 }
@@ -373,6 +379,17 @@ fn build_dataflow(
         // the explicit-identity-kernel workaround (15-transpose's
         // `xpose`). The clean kernel-less data-move IR node remains
         // deferred behind TASK-0360's re-open trigger.
+        //
+        // Layer choice (acfg-build, not lower): mirrors the sibling
+        // `NonConstLoopBound` precedent — both are grammar-legal forms
+        // the *build* layer cannot represent. The RHS shape is in fact
+        // known at `lower` time, so a future move of this check to
+        // `lower` (which carries byte-spans for a better diagnostic) is
+        // reasonable; it stays here for now to keep the build-layer
+        // diagnostics colocated. Caveat: a *cross-worker* bare copy with
+        // a declared `transfer` passes link's MissingCrossWorkerTransfer
+        // check and is still rejected HERE — declaring the transfer does
+        // NOT rescue the form, because the move has no kernel to fire.
         _ => Err(BuildAcfgError::KernelLessDataflowRhs {
             lhs: lhs.name.clone(),
             rhs: rhs.clone(),

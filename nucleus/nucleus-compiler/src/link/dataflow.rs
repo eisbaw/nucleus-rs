@@ -70,10 +70,16 @@ fn collect_loop_vars_in_stmts(stmts: &[IrStmt], out: &mut BTreeSet<String>) {
 ///
 /// SCOPE LIMIT (carried to the ACFG/codegen side): this fixes only the
 /// *link-layer producer/consumer inference*. `acfg::build::build_dataflow`
-/// still skips a bare-`LValue` RHS (no kernel-less `Operation` node is
-/// representable today — `Operation.kernel` / `Event::Fire.kernel` are
-/// non-optional `KernelId`), so a bare-`LValue` identity copy still
-/// emits no codegen. That structural follow-up is TASK-0360.
+/// does NOT codegen a bare-`LValue` RHS (no kernel-less `Operation` node
+/// is representable today — `Operation.kernel` / `Event::Fire.kernel` are
+/// non-optional `KernelId`); since TASK-0360's design slice it REJECTS it
+/// with a typed `BuildAcfgError::KernelLessDataflowRhs` (previously a
+/// silent drop). The clean kernel-less data-move IR node stays deferred
+/// behind TASK-0360's re-open trigger. NOTE: because acfg now rejects the
+/// form outright, the cross-worker copy edges this pass records are no
+/// longer reached by any program that survives to codegen — this analysis
+/// is exercised by its own unit tests (the existence check it feeds is now
+/// subsumed by the acfg-layer reject one layer later).
 pub(super) fn analyse_dataflow(
     algo: &AlgoIR,
     kernel_workers: &BTreeMap<String, WorkerEntity>,
