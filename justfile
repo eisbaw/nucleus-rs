@@ -191,6 +191,7 @@ ci:
     just check-doc-citation-staleness
     just check-doc-citation-staleness-bare
     just check-doc-test-name-staleness
+    just check-doc-cell-path-staleness
     just check-mega-files
     just check-doc-links
     just e2e
@@ -807,6 +808,104 @@ check-doc-test-name-staleness:
         exit 1; \
     fi; \
     echo "OK: every back-ticked task<NNNN> test-name citation resolves to a defined fn."
+
+# Doc e2e-cell-PATH citation fence (TASK-0392, cycle-233).
+#
+# A FOURTH arm of the comment-doc-lie defence family (alongside
+# check-narrative-doc-lie / check-doc-citation-staleness / -bare /
+# check-doc-test-name-staleness), catching a class NONE of those see: a
+# back-tick-quoted reference to an e2e differential CELL by its
+# example-PATH name -- the project's `NN-name/variant` convention (e.g.
+# `18-multigather/distributed`) -- in a `.rs` docstring/comment, where
+# the named example or schedule no longer exists (example dir renamed,
+# schedule file renamed/deleted). This is the SAME defect class as the
+# ec50108 lie that motivated TASK-0382.02's family: the cell formerly
+# aliased `gather_2out_loop` was renamed to `18-multigather/distributed`,
+# and a prose ref kept the dead name. The sibling test-name fence
+# validates `fn task<NNNN>` cites; this one validates `NN-name/variant`
+# cell-path cites against the examples tree -- a DIFFERENT resolution
+# target (schedule files, not `fn` defs).
+#
+# WHY THIS SHAPE IS ZERO-FP (the load-bearing boundary):
+#   - Token class: BACK-TICK QUOTED `\d{2}-[a-z]...` (a letter right
+#     after the `NN-` hyphen) + `/` + a LETTER-led tail. This is the
+#     example-directory convention (`nuc-nucleus/examples/NN-word/`,
+#     never `NN-NN`); the leading-digits + slash + letter-led shape is
+#     never an ordinary English word, a Rust `::`-path, nor a codegen
+#     `"basename.rs"` literal. A date-like `NN-DD/NNNN` false match is
+#     blocked TWICE: by the letter-after-`NN-` gate AND the letter-after-
+#     `/` gate (variants are always letter-led: `naive`, `distributed`,
+#     `distributed-2d`, `reuse`).
+#   - LOAD-BEARING trailing anchor: the regex is back-tick-DELIMITED at
+#     BOTH ends, so the tail `[a-z][a-z0-9_-]*` cannot contain `.` or a
+#     second `/`. THAT closing `` ` `` is what excludes the in-tree
+#     suffixed/deeper siblings that would otherwise false-resolve or
+#     mismatch -- e.g. `05-stencil/distributed.sched.nuc` (a `.`) and
+#     `14-hearing-aid/schedules/embedded_multimcu.sched.nuc` (a second
+#     `/`). A future maintainer relaxing the regex to also match a
+#     `.sched.nuc` suffix or a deeper path MUST keep this exclusion in
+#     mind or reintroduce FPs. In the gitignore-respected scan space
+#     there are 7 unique cell-paths (12 citation sites) today and ALL
+#     resolve -- it is a tight, additive class.
+#   - Resolution: examples/NN-name/schedules/variant.sched.nuc is the
+#     DOCUMENTED source-of-truth for which schedule files exist (see the
+#     e2e-matrix.toml header). The rule -- the cited
+#     `examples/<ex>/schedules/<var>.sched.nuc` MUST exist -- catches
+#     BOTH directions: an example-dir rename (`<ex>` gone) AND a
+#     schedule/cell rename (`<var>.sched.nuc` gone). Either is the lie.
+#   - SAFE asymmetry (cf. the bare / test-name fences): the only way to
+#     FAIL is a cite whose example-path does NOT resolve -- which is
+#     exactly the stale-cell lie. A token that is genuinely not a cell
+#     ref but happens to match the shape would only fail if it ALSO
+#     fails to resolve as a real example path; the shape is specific
+#     enough (verified zero such tokens in-tree) that this is not a
+#     practical FP source. Under-matching (a cell ref the regex misses)
+#     is a missed lie, never a false alarm.
+#
+# OUT OF SCOPE (honest limits -- deferred, cannot false-POSITIVE):
+#   - The bare snake_case CELL-ALIAS shape (`gather_2out_loop`) -- the
+#     literal ec50108 token -- is NOT covered: a bare snake_case alias is
+#     not disambiguable from an ordinary symbol mention without a
+#     curated alias map, so it stays deferred on TASK-0392 (its open
+#     deliverable). The `NN-name/variant` arm here is the feasible
+#     zero-FP subset.
+#   - `.md` (backlog history, excluded by design) and `.toml` (the matrix
+#     itself, covered by check-narrative-doc-lie) are out of scope; this
+#     fence is `.rs` source docstrings/comments only.
+check-doc-cell-path-staleness:
+    @echo "checking back-ticked e2e cell-path citations (NN-name/variant) resolve to a schedule file..."
+    @set -eu; \
+    refs=$(mktemp); \
+    trap "rm -f $refs" EXIT; \
+    rg -o -n --no-heading -g '*.rs' -g '!target/**' \
+        '`[0-9]{2}-[a-z][a-z0-9-]*/[a-z][a-z0-9_-]*`' . 2>/dev/null > $refs || true; \
+    fail=0; \
+    while IFS= read -r rec; do \
+        [ -n "$rec" ] || continue; \
+        tok=${rec##*:}; \
+        loc=${rec%:*}; \
+        cell=$(printf '%s' "$tok" | tr -d '`'); \
+        ex=${cell%%/*}; \
+        var=${cell##*/}; \
+        if [ ! -f "nuc-nucleus/examples/$ex/schedules/$var.sched.nuc" ]; then \
+            echo "  STALE e2e cell-path citation: $tok at $loc"; \
+            if [ ! -d "nuc-nucleus/examples/$ex" ]; then \
+                echo "    -> no example dir 'nuc-nucleus/examples/$ex' (example renamed or removed)."; \
+            else \
+                echo "    -> no schedule 'nuc-nucleus/examples/$ex/schedules/$var.sched.nuc' (schedule/cell renamed or removed)."; \
+            fi; \
+            fail=1; \
+        fi; \
+    done < $refs; \
+    if [ "$fail" -ne 0 ]; then \
+        echo ""; \
+        echo "FAIL: stale back-ticked e2e cell-path citation(s) (memory: feedback-comment-doc-lie-recurring; ec50108 cell-rename class)."; \
+        echo "Fix (in order of preference):"; \
+        echo "  1. Update the cite to the current 'NN-name/variant' (ls nuc-nucleus/examples/<ex>/schedules to confirm)."; \
+        echo "  2. If the example/schedule was removed, drop the citation or point it at the replacement cell."; \
+        exit 1; \
+    fi; \
+    echo "OK: every back-ticked e2e cell-path citation resolves to a schedule file."
 
 # Mega-file regression-fence (TASK-0340 AC#5; slice 1 cycle 176, slice 2
 # cycle 177).
