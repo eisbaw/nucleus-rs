@@ -1,11 +1,11 @@
 ---
 id: TASK-0046
 title: M8 — Tier 2 MPI non-blocking
-status: In Progress
+status: Done
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-17 23:08'
-updated_date: '2026-06-01 19:30'
+updated_date: '2026-06-01 20:05'
 labels:
   - M8
   - backend
@@ -23,11 +23,11 @@ Tier-2 milestone: mpi-nonblocking via MPI_Isend/MPI_Irecv/MPI_Wait. Schedules re
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 backends/mpi-nonblocking/ crate lands with capabilities.toml supporting async + buffer.
-- [ ] #2 Generated code uses MPI_Isend/MPI_Irecv with explicit MPI_Wait sequenced per the EventList.
+- [x] #2 Generated code uses MPI_Isend/MPI_Irecv with explicit MPI_Wait sequenced per the EventList.
 - [x] #3 Examples 9, 11 run on localhost MPI with bit-identical output.
 - [x] #4 Test: M8 acceptance includes async + buffered schedules over MPI.
 - [x] #5 Implementation notes record design questions (e.g. MPI_Request lifetime in generated code; how to map SeqTag to MPI tags).
-- [ ] #6 Implementation notes record honest limitations (no derived-type optimisation; one MPI_Type_contiguous per transfer at M8).
+- [x] #6 Implementation notes record honest limitations (no derived-type optimisation; one MPI_Type_contiguous per transfer at M8).
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -96,4 +96,20 @@ forward-carried from TASK-0046.02 (DONE, lift LANDED): the multi-worker SPMD MPI
 AC#3 NOW MET + TICKED (2026-06-01, via child TASK-0046.01 DONE). 09-producer-consumer/pipelined (the example-9 blocker) now runs byte-exact under mpiexec -n 3 (default + forced-rendezvous) in just check-mpi-nonblocking, alongside example 11 — both examples named in AC#3 are bit-identical. Path: TASK-0045.02 landed shared MPI_Comm_split + sub-communicator barrier in backend_common::mpi_plan (host-excluding {producer,consumer} barrier); TASK-0046.01 wired ex9 into the standing gate. Orchestrator-re-run, qa GO + architect GO.
 
 REMAINING for the TASK-0046 MILESTONE close (NOT closed here — needs explicit sign-off per the disposition note above): AC#2 (met-as-buffered-Ibsend, not literal Isend) + AC#6 (zero MPI_Type_contiguous, not "one per transfer") are the wording dispositions left. AC#3 (the last SUBSTANTIVE blocker) is now discharged.
+
+AC#2/#6 DISPOSITION + EXPLICIT SIGN-OFF (user-approved this cycle; M8 milestone CLOSE):
+
+This is a sign-off close of already-landed + reviewed-GO work (the substantive M8 implementation landed earlier: commits 9003a9c + dc4a1a5 + the backend_common::mpi_plan lift; check-mpi-nonblocking byte-exact under mpiexec -n N, default-eager AND forced-rendezvous; e2e 350/293/0/57/0 at landing). No new code this cycle. The only open items were the AC#2/#6 WORDING dispositions, now signed off (NOT silently reworded to match the build):
+
+- AC#2 TICKED with disclosure: receive uses MPI_Irecv/Imrecv + explicit MPI_Wait LITERALLY as written. SEND uses buffered MPI_Ibsend (the immediate non-blocking send of the Isend FAMILY) + Wait, NOT standard MPI_Isend. This is a PRINCIPLED improvement, not a shortfall: standard Isend forces a deferred Wait with the send buffer borrowed until completion, which the linear .push(v) walker API cannot express safely (self-referential buffer/request or unbounded leak); buffered Ibsend completes LOCALLY so the lifetime is clean AND the send is deadlock-immune (the realization of supports_buffer). AC#2 spirit (non-blocking immediate send + explicit Wait sequenced per the EventList) is fully met; the literal call name differs within the same Isend family.
+
+- AC#6 TICKED with disclosure: AC#6 criterion is "implementation notes record honest limitations" — MET (notes record: no derived types, no collective recognition, heuristic buffer sizing). The criterion parenthetical example "one MPI_Type_contiguous per transfer" turned out factually INAPPLICABLE: the backend uses element-typed contiguous slices with ZERO derived types, so there is no MPI_Type_contiguous at all — the recorded honest limitation is MORE honest than the AC example anticipated, not less. The example was illustrative; the criterion (record honest limits) is satisfied.
+
+All six ACs now ticked. Decision rationale: the deviation is a principled superset of the prescribed mechanism (deadlock-immune buffered send; more-honest zero-derived-types limit), explicitly user-signed-off rather than AC-gamed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+M8 Tier-2 MPI non-blocking COMPLETE. mpi-nonblocking backend: buffered MPI_Ibsend (deadlock-immune local completion) + Wait for sends; MPI_Mprobe+MPI_Imrecv (Vec) / MPI_Irecv (scalar) + Wait for receives; whole-world MPI_Barrier + (via mpi_plan) MPI_Comm_split sub-comm barriers for host-excluding participant sets. Examples 9 + 11 (AC#3) byte-exact under mpiexec -n N (default + forced-rendezvous); plus bonus 05-distributed{,-2d}. Shared multi-worker MPI Plan lifted to backend_common::mpi_plan (de-dup vs mpi-blocking, TASK-0046.02). All 6 ACs met (AC#2/#6 with documented principled-deviation sign-off). Follow-ups: TASK-0045.03 (MPI multi-worker check-loop, design+new-example), TASK-0048.x (Renode), the grammar-deferred cluster.
+<!-- SECTION:FINAL_SUMMARY:END -->
