@@ -505,14 +505,33 @@ check-narrative-doc-lie:
 # It feeds a `mktemp` temp file into a `while read` loop and parses
 # each citation with POSIX parameter expansion + a single `awk` for
 # the range tail.
+#
+# SCAN SCOPE (TASK-0395, shared by all four doc-citation fences below):
+# the source of citations is `git ls-files` (intentional, tracked
+# content) piped through `xargs -0 rg`, NOT a bare `rg .` repo-root
+# scan. `rg .` respects .gitignore but STILL scans any untracked,
+# non-ignored scratch dir (an ad-hoc emit/`scratch/`/`foo-out/` dir) —
+# so a stale citation string sitting in throwaway scratch would red
+# `just ci` (TASK-0394 only ignored the conventional `tmp/`). Scanning
+# git-tracked files makes the fences deterministic regardless of what
+# untracked junk is in the worktree. TRADE-OFF (accepted): a citation
+# in a BRAND-NEW untracked file is unchecked until `git add` — fine for
+# a pre-commit fence (the file is not yet part of the repo, and the
+# common case, an EDIT to an already-tracked file, is still scanned via
+# its working-tree content). `--with-filename`/`--no-filename` are set
+# explicitly because `xargs` may batch into a single-file final `rg`
+# invocation, which would otherwise drop the `file:` prefix the parsers
+# below require. Do NOT revert to `rg .` — it reintroduces the scratch
+# footgun.
 check-doc-citation-staleness:
     @echo "checking fully-qualified nucleus/*.rs:N citations resolve (exists + line in range)..."
     @set -eu; \
     cites_f=$(mktemp); \
     trap "rm -f $cites_f" EXIT; \
-    rg --no-filename -N \
-        -oe '(nucleus|nuc-nucleus)/[A-Za-z0-9_./-]+\.rs:[0-9]+([.-]+[0-9]+)?' \
-        . -g '!backlog/tasks/**' -g '!target/**' 2>/dev/null \
+    git ls-files -z -- ':!backlog/tasks' \
+        | xargs -0 -r rg --no-filename -N \
+            -oe '(nucleus|nuc-nucleus)/[A-Za-z0-9_./-]+\.rs:[0-9]+([.-]+[0-9]+)?' \
+            2>/dev/null \
         | sort -u > $cites_f || true; \
     fail=0; \
     while IFS= read -r cite; do \
@@ -667,9 +686,10 @@ check-doc-citation-staleness-bare:
     crates="$@"; \
     recs_f=$(mktemp); \
     trap "rm -f $recs_f" EXIT; \
-    rg --no-heading -n \
-        -oe '[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\.rs:[0-9]+([.-]+[0-9]+)?' \
-        . -g '*.rs' -g '!target/**' 2>/dev/null > $recs_f || true; \
+    git ls-files -z -- '*.rs' \
+        | xargs -0 -r rg --with-filename --no-heading -n \
+            -oe '[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\.rs:[0-9]+([.-]+[0-9]+)?' \
+            2>/dev/null > $recs_f || true; \
     fail=0; \
     while IFS= read -r rec; do \
         [ -n "$rec" ] || continue; \
@@ -781,10 +801,12 @@ check-doc-test-name-staleness:
     @set -eu; \
     defs=$(mktemp); refs=$(mktemp); \
     trap "rm -f $defs $refs" EXIT; \
-    rg -o -g '*.rs' -g '!target/**' 'fn task[0-9]{3,}[_a-z0-9]*' . 2>/dev/null \
+    git ls-files -z -- '*.rs' \
+        | xargs -0 -r rg --no-filename -o 'fn task[0-9]{3,}[_a-z0-9]*' 2>/dev/null \
         | sed 's/.*fn //' | sort -u > $defs || true; \
-    rg -o -n --no-heading -g '*.rs' -g '!target/**' \
-        '`task[0-9]{3,}[_a-z0-9]*\*?`' . 2>/dev/null > $refs || true; \
+    git ls-files -z -- '*.rs' \
+        | xargs -0 -r rg --with-filename -o -n --no-heading \
+            '`task[0-9]{3,}[_a-z0-9]*\*?`' 2>/dev/null > $refs || true; \
     fail=0; \
     while IFS= read -r rec; do \
         [ -n "$rec" ] || continue; \
@@ -877,8 +899,9 @@ check-doc-cell-path-staleness:
     @set -eu; \
     refs=$(mktemp); \
     trap "rm -f $refs" EXIT; \
-    rg -o -n --no-heading -g '*.rs' -g '!target/**' \
-        '`[0-9]{2}-[a-z][a-z0-9-]*/[a-z][a-z0-9_-]*`' . 2>/dev/null > $refs || true; \
+    git ls-files -z -- '*.rs' \
+        | xargs -0 -r rg --with-filename -o -n --no-heading \
+            '`[0-9]{2}-[a-z][a-z0-9-]*/[a-z][a-z0-9_-]*`' 2>/dev/null > $refs || true; \
     fail=0; \
     while IFS= read -r rec; do \
         [ -n "$rec" ] || continue; \
