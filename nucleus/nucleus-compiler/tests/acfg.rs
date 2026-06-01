@@ -752,3 +752,129 @@ fn build_acfg_divide_by_zero_const_loop_bound_is_overflow_error() {
         other => panic!("expected OverflowingLoopBound, got {other:?}"),
     }
 }
+
+// --------------------------------------------------------------------
+// TASK-0360: kernel-less dataflow RHS is a LOUD typed error, not a
+// silent ACFG drop. (Design-slice decision: option (c) — keep the
+// explicit-kernel surface, decline the kernel-optional refactor, but
+// make the unsupported bare-LValue form fail loud.)
+// --------------------------------------------------------------------
+
+/// A SAME-WORKER bare-LValue identity copy `c <-- a` (no kernel). Every
+/// kernel is on `host`, so link's `MissingCrossWorkerTransfer`
+/// (cross-worker only) does NOT fire — pre-TASK-0360 this compiled to a
+/// silent drop (`build_acfg` returned Ok with the copy missing, so `c`
+/// stayed at its allocation default — a silent wrong answer). The guard
+/// must now reject it with `KernelLessDataflowRhs`.
+#[test]
+fn build_acfg_same_worker_bare_lvalue_copy_is_loud_error() {
+    use nucleus_compiler::acfg::{build_acfg, BuildAcfgError};
+
+    let algo = r#"
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()       -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+a <-- load_input();
+c <-- a;
+save_output(c);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place save_output on host;
+}
+"#;
+    let linked = linked_from_inline_src(algo, sched);
+    let err = build_acfg(&linked).expect_err("bare-LValue copy must be a loud typed error");
+
+    match &err {
+        BuildAcfgError::KernelLessDataflowRhs { lhs, .. } => {
+            assert_eq!(lhs, "c", "the offending LHS data symbol");
+        }
+        other => panic!("expected KernelLessDataflowRhs, got {other:?}"),
+    }
+
+    // The diagnostic must point at the explicit-kernel workaround so the
+    // user can act on it without reading the source.
+    let msg = err.to_string();
+    assert!(msg.contains("`c <--"), "msg names the offending stmt: {msg}");
+    assert!(
+        msg.contains("must go through a kernel"),
+        "msg explains the v2 kernel requirement: {msg}"
+    );
+    assert!(
+        msg.contains("identity passthrough") && msg.contains("xpose"),
+        "msg points at the explicit-kernel workaround: {msg}"
+    );
+}
+
+/// An arithmetic (kernel-less) RHS `c[i] <-- a[i] + a[i]` hits the same
+/// guard: the rule is "dataflow RHS must be a kernel call", not
+/// specifically "identity copy".
+#[test]
+fn build_acfg_arithmetic_kernel_less_rhs_is_loud_error() {
+    use nucleus_compiler::acfg::{build_acfg, BuildAcfgError};
+
+    let algo = r#"
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()       -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+a <-- load_input();
+for i : 0 .. N {
+    c[i] <-- a[i] + a[i];
+}
+save_output(c);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place save_output on host;
+}
+"#;
+    let linked = linked_from_inline_src(algo, sched);
+    let err = build_acfg(&linked).expect_err("arithmetic kernel-less RHS must be a loud error");
+    assert!(
+        matches!(&err, BuildAcfgError::KernelLessDataflowRhs { lhs, .. } if lhs == "c"),
+        "expected KernelLessDataflowRhs for `c`, got {err:?}"
+    );
+}
+
+/// Positive control: the canonical kernel-call form still builds an
+/// Operation (the guard does not over-reach). `c[i] <-- id(a[i])` is a
+/// Call RHS — exactly the 15-transpose `xpose` workaround shape.
+#[test]
+fn build_acfg_kernel_call_dataflow_still_builds_operation() {
+    use nucleus_compiler::acfg::build_acfg;
+
+    let algo = r#"
+const N : usize = 4;
+data a : i32[N];
+data c : i32[N];
+kernel load_input  : ()       -> i32[N] effectful;
+kernel id          : (i32)    -> i32    pure;
+kernel save_output : (i32[N]) -> ()     effectful;
+a <-- load_input();
+for i : 0 .. N {
+    c[i] <-- id(a[i]);
+}
+save_output(c);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+    let linked = linked_from_inline_src(algo, sched);
+    let acfg = build_acfg(&linked).expect("kernel-call dataflow must build");
+    // load_input + id(in loop) + save_output = 3 operations.
+    assert_eq!(acfg.operation_count(), 3, "load + id + save");
+}

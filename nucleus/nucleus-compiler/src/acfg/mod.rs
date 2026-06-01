@@ -121,16 +121,23 @@
 //! - **Conditionals.** The algorithm sublanguage has none (PRD §6.2,
 //!   §6.2.4). Adding `If` to [`ACFGNode`] later is a sum-type
 //!   extension; the rest of the IR doesn't have to change.
-//! - **Identity copies** (`d <-- e` with a bare DataRef RHS). The
-//!   ACFG pass treats such statements as no-ops (no kernel, no
-//!   `Operation`) because a kernel-less Operation is not representable
-//!   today — `Operation.kernel` / `DataflowEdge.kernel` /
-//!   `Event::Fire.kernel` are non-optional `KernelId`s, and no schedule
-//!   directive maps a data symbol to a worker set. (The *link* pass, by
-//!   contrast, DOES now record an identity copy's producer/consumer
-//!   transitively — `link::dataflow::propagate_copy_edges`, TASK-0347 —
-//!   so a cross-worker copy is caught by the MissingCrossWorkerTransfer
-//!   check.) The ACFG/codegen half is filed as TASK-0360.
+//! - **Identity copies** (`d <-- e` with a bare DataRef RHS) and any
+//!   other kernel-less dataflow RHS (arithmetic, literal). The ACFG
+//!   pass REJECTS such statements with a typed
+//!   [`BuildAcfgError::KernelLessDataflowRhs`] because a kernel-less
+//!   `Operation` is not representable today — `Operation.kernel` /
+//!   `DataflowEdge.kernel` / `Event::Fire.kernel` are non-optional
+//!   `KernelId`s, and no schedule directive maps a data symbol to a
+//!   worker set. (This used to be a SILENT no-op drop; TASK-0360's
+//!   design slice made it fail-loud — a same-worker bare copy otherwise
+//!   compiled to nothing.) The *link* pass, by contrast, DOES record an
+//!   identity copy's producer/consumer transitively
+//!   (`link::dataflow::propagate_copy_edges`, TASK-0347) so a
+//!   *cross-worker* copy is caught one layer earlier by the
+//!   MissingCrossWorkerTransfer check. The canonical v2 surface for a
+//!   data move is an explicit identity kernel (15-transpose's `xpose`);
+//!   a first-class kernel-less data-move IR node is deferred behind
+//!   TASK-0360's re-open trigger.
 //! - **Constant folding beyond what loop bounds require.** Loop
 //!   bounds are evaluated to `i64` here because `Repeat::range` is
 //!   `Range<i64>` (matching [`crate::event::IterTile`]'s element

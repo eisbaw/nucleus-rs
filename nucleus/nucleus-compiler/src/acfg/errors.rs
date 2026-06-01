@@ -105,6 +105,44 @@ pub enum BuildAcfgError {
         /// `"arithmetic overflow (mul)"` or `"division by zero"`.
         detail: String,
     },
+    /// A dataflow statement `LHS <-- RHS` whose RHS is **not a kernel
+    /// call** — a bare identity copy (`c <-- a`), a scalar/arithmetic
+    /// expression (`c <-- a + b`), or a literal (`c <-- 5`).
+    ///
+    /// In Nucleus v2 every dataflow production / data movement is
+    /// expressed through a kernel: an [`super::Operation`] /
+    /// [`super::DataflowEdge`] / `Event::Fire` all carry a *non-optional*
+    /// `KernelId`, and there is no schedule directive mapping a data
+    /// symbol to a worker set (only `place_data D in REGION`, a memory
+    /// region — see [`crate::sched`]). A kernel-less RHS therefore has no
+    /// representable [`super::Operation`].
+    ///
+    /// This is **diagnosable user input**, structurally analogous to
+    /// [`BuildAcfgError::NonConstLoopBound`]: a grammar-legal form the
+    /// codegen does not (yet) support. Before TASK-0360's design slice
+    /// it was a SILENT DROP — `build_dataflow` returned `None`, the
+    /// statement produced no `Operation`, and a *same-worker* copy
+    /// compiled to nothing (the LHS array stayed at its allocation
+    /// default — a silent wrong answer; the `link`-layer
+    /// `MissingCrossWorkerTransfer` check only catches the *cross-worker*
+    /// case). The fix-loud guard converts that silent drop into this
+    /// typed error.
+    ///
+    /// The actionable workaround (and the canonical v2 surface for a
+    /// data move today) is an explicit identity kernel, exactly as
+    /// `15-transpose` uses `kernel xpose : (i32) -> i32 pure`. A
+    /// first-class kernel-less data-move IR node is deferred — see
+    /// TASK-0360's closure / its re-open trigger.
+    ///
+    /// Carries the LHS data symbol and the offending RHS expression
+    /// verbatim so the diagnostic is actionable without re-reading the
+    /// source.
+    KernelLessDataflowRhs {
+        /// The data symbol being assigned (e.g. `c`).
+        lhs: String,
+        /// The offending non-kernel-call RHS expression, verbatim.
+        rhs: IrExpr,
+    },
 }
 
 impl std::fmt::Display for BuildAcfgError {
@@ -134,6 +172,18 @@ impl std::fmt::Display for BuildAcfgError {
                  range and must not divide by zero. Adjust the constant so \
                  it fits (this is NOT the `for j : 0 .. i` non-const case — \
                  the bound here IS constant, it just overflows)."
+            ),
+            BuildAcfgError::KernelLessDataflowRhs { lhs, rhs } => write!(
+                f,
+                "dataflow `{lhs} <-- {rhs:?}` has a non-kernel-call RHS; \
+                 every dataflow production / data move in Nucleus v2 must \
+                 go through a kernel (an Operation carries a non-optional \
+                 KernelId, and no schedule directive maps a data symbol to \
+                 a worker set). Wrap the move in an explicit kernel — e.g. \
+                 an identity passthrough `kernel id : (T) -> T pure` then \
+                 `{lhs} <-- id(...)`, exactly as 15-transpose uses `xpose`. \
+                 (A first-class kernel-less data-move is deferred — see \
+                 TASK-0360.)"
             ),
         }
     }

@@ -37,6 +37,11 @@ use super::{
 /// as `for j : 0 .. i` — so it is a typed diagnostic the driver
 /// surfaces cleanly, not a panic (TASK-0179; same precedent as
 /// `BlockTransformError` / `SidecarError`).
+///
+/// Returns [`BuildAcfgError::KernelLessDataflowRhs`] if a dataflow
+/// statement's RHS is not a kernel call (`c <-- a`, `c <-- a + b`,
+/// `c <-- 5`). Also reachable from valid source; before TASK-0360 it
+/// was a silent drop (a same-worker bare copy compiled to nothing).
 pub fn build_acfg(linked: &LinkedIR) -> Result<ACFG, BuildAcfgError> {
     // -------- Build the deterministic name-to-ID mapping. --------
     //
@@ -210,7 +215,7 @@ fn loop_bound_error(
 
 fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, BuildAcfgError> {
     match stmt {
-        IrStmt::Dataflow { lhs, rhs } => Ok(build_dataflow(lhs, rhs, ctx)),
+        IrStmt::Dataflow { lhs, rhs } => build_dataflow(lhs, rhs, ctx).map(Some),
         IrStmt::Effect { callee, args } => Ok(Some(build_effect(callee, args, ctx))),
         IrStmt::For { var, lo, hi, body } => {
             let iter_var = ctx
@@ -307,7 +312,11 @@ fn bind_arg(a: &IrExpr, name_data: &BTreeMap<String, DataId>) -> ArgBinding {
     }
 }
 
-fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<ACFGNode> {
+fn build_dataflow(
+    lhs: &IndexedRef,
+    rhs: &IrExpr,
+    ctx: &BuildCtx<'_>,
+) -> Result<ACFGNode, BuildAcfgError> {
     match rhs {
         IrExpr::Call { callee, args } => {
             let kernel_id = ctx
@@ -340,25 +349,34 @@ fn build_dataflow(lhs: &IndexedRef, rhs: &IrExpr, ctx: &BuildCtx<'_>) -> Option<
                 args: arg_bindings,
             };
             edge.debug_check();
-            Some(ACFGNode::Operation(Operation {
+            Ok(ACFGNode::Operation(Operation {
                 kernel: kernel_id,
                 workers,
                 dataflow: DataflowDag { edges: vec![edge] },
             }))
         }
-        // Identity copy or pure-expression RHS: still skipped here.
-        // A kernel-less data-move is not representable as an
-        // `Operation` today — `Operation.kernel` / `DataflowEdge.kernel`
-        // / `Event::Fire.kernel` are non-optional `KernelId`s and there
-        // is no schedule directive mapping a data symbol to a worker set
-        // (only `place_data D in REGION`, a memory region not a worker).
-        // The LINK layer DOES now record this edge's producer/consumer
-        // transitively (link::dataflow::propagate_copy_edges, TASK-0347),
-        // so a cross-worker identity copy is caught by the
-        // MissingCrossWorkerTransfer existence check; the ACFG/codegen
-        // half is filed as TASK-0360 (kernel-optional Operation + the
-        // worker-set derivation blocker).
-        _ => None,
+        // Identity copy or pure-expression RHS (bare `DataRef`,
+        // arithmetic, literal): a kernel-less data-move is NOT
+        // representable as an `Operation` today — `Operation.kernel` /
+        // `DataflowEdge.kernel` / `Event::Fire.kernel` are non-optional
+        // `KernelId`s and there is no schedule directive mapping a data
+        // symbol to a worker set (only `place_data D in REGION`, a
+        // memory region not a worker). TASK-0360's design slice decided
+        // AGAINST the kernel-optional refactor (option c: keep the
+        // explicit-kernel surface) and instead makes this path FAIL
+        // LOUD: previously this arm returned `None`, silently dropping
+        // the statement — a *same-worker* copy compiled to nothing (the
+        // LHS array stayed at its allocation default; the LINK-layer
+        // `MissingCrossWorkerTransfer` existence check, fed by
+        // link::dataflow::propagate_copy_edges (TASK-0347), only catches
+        // the *cross-worker* case). The typed error directs the user to
+        // the explicit-identity-kernel workaround (15-transpose's
+        // `xpose`). The clean kernel-less data-move IR node remains
+        // deferred behind TASK-0360's re-open trigger.
+        _ => Err(BuildAcfgError::KernelLessDataflowRhs {
+            lhs: lhs.name.clone(),
+            rhs: rhs.clone(),
+        }),
     }
 }
 
