@@ -53,11 +53,14 @@
 //!   ordering could deadlock. Buffered / non-blocking send is the M8
 //!   non-blocking arm (TASK-0046). `just check-mpi` wraps each run in a
 //!   `timeout` so a deadlock fails LOUD rather than hanging.
-//! - **Whole-world barriers only.** A barrier whose participant set is a
-//!   strict subset of the used workers (host-excluding / non-uniform)
-//!   needs `Comm_split`, a collective the M7 foundation did not prove;
-//!   [`multi_worker`] rejects it with a typed [`EmitError`] forward-linked
-//!   to a follow-up rather than emit untested collective code.
+//! - **Non-whole-world barriers: Comm_split.** A barrier whose participant
+//!   set is a strict subset of the used workers (host-excluding /
+//!   non-uniform) lowers to `MPI_Comm_split` + a sub-communicator barrier
+//!   (TASK-0045.02), emitted once per distinct subset OUTSIDE the rank
+//!   dispatch (collective over `COMM_WORLD`, so every rank reaches every
+//!   split in identical order). The lowering lives in the shared
+//!   `mpi_plan` substrate, so both MPI backends inherit it; see
+//!   [`multi_worker`].
 
 use std::collections::BTreeMap;
 use std::fs;

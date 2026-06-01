@@ -80,15 +80,18 @@
 //!   an `NUC_MPI_BSEND_BYTES` env override; a pathological in-flight count
 //!   could exhaust it and fail LOUD (`MPI_ERR_BUFFER`) — never silent
 //!   corruption. See [`multi_worker`].
-//! - **Non-whole-world barriers + multi-worker check-loops rejected.**
-//!   Inherited from the shared multi-worker Plan: a barrier whose
-//!   participants are a strict subset of the used workers needs
-//!   `Comm_split` (TASK-0045.02, unproven) and a multi-worker `check loop`
-//!   needs per-rank-vs-aggregate reporter semantics (TASK-0045.03); both
-//!   are rejected with a typed [`EmitError`] rather than mis-emitted. This
-//!   is why 09-producer-consumer/pipelined (host-excluding barrier
-//!   `{producer,consumer}`) is NOT yet a runnable target (TASK-0046 AC#3
-//!   forward-carries example 9 to TASK-0045.02).
+//! - **Non-whole-world barriers: Comm_split (TASK-0045.02). Multi-worker
+//!   check-loops: rejected.** Inherited from the shared multi-worker
+//!   Plan: a barrier whose participants are a strict subset of the used
+//!   workers now lowers to `MPI_Comm_split` + a sub-communicator barrier
+//!   (TASK-0045.02), emitted once per distinct subset OUTSIDE the rank
+//!   dispatch. A multi-worker `check loop` still needs
+//!   per-rank-vs-aggregate reporter semantics (TASK-0045.03) and is
+//!   rejected with a typed [`EmitError`] rather than mis-emitted. With
+//!   Comm_split landed, 09-producer-consumer/pipelined (host-excluding
+//!   barrier `{producer,consumer}`) EMITS correctly; wiring it into the
+//!   standing `check-mpi-nonblocking` gate as a value-correct cell is
+//!   TASK-0046.01.
 
 use std::collections::BTreeMap;
 use std::fs;

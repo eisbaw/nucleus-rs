@@ -173,8 +173,10 @@ pub struct Plan<'a, W: MpiRendezvous> {
     /// the per-rank `match` arms, so every rank reaches every split in
     /// identical order (the collective-ordering correctness crux,
     /// TASK-0045.02 AC#2). Empty for whole-world-only schedules (then no
-    /// split is emitted at all — byte-identical to the pre-Comm_split
-    /// emit).
+    /// split is emitted at all — the `match`-dispatch body and the
+    /// byte-exact program OUTPUT are unchanged from the pre-Comm_split
+    /// emit; the always-emitted prelude carries an unused `SubcommBar`
+    /// wrapper that such a schedule never instantiates).
     split_groups: Vec<(i32, BTreeSet<WorkerId>)>,
     /// Zero-sized witness of the per-backend rendezvous variation. `Plan`
     /// has no `W` value; the variation is dispatched through `W`'s
@@ -419,7 +421,7 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         // resulting `Some(subcomm)` and barrier on it; non-participants
         // hold `None` and the `SubcommBar` no-ops. Whole-world barriers
         // do not appear here — they keep `world.barrier()`.
-        self.emit_subcomm_splits(&mut out);
+        self.emit_subcomm_splits(&mut out)?;
 
         writeln!(out, "    match world.rank() {{").ok();
 
@@ -452,12 +454,13 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
     /// evaluates the same split with a rank-dependent color and lands in
     /// the right group (`COMM_WORLD` collective semantics). A
     /// whole-world-only schedule has no split groups, so this emits
-    /// NOTHING (the resulting `main` is byte-identical to the
-    /// pre-Comm_split emit — the existing whole-world examples do not
-    /// regress).
-    fn emit_subcomm_splits(&self, out: &mut String) {
+    /// NOTHING: the `match`-dispatch body and the byte-exact program
+    /// OUTPUT are unchanged from the pre-Comm_split emit (the always-
+    /// emitted prelude does carry an unused `SubcommBar` wrapper), so the
+    /// existing whole-world examples do not regress.
+    fn emit_subcomm_splits(&self, out: &mut String) -> Result<(), EmitError> {
         if self.split_groups.is_empty() {
-            return;
+            return Ok(());
         }
         writeln!(
             out,
@@ -474,7 +477,15 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
             // ranks (not WorkerIds) are what `world.rank()` is tested
             // against; the set is identical on every rank so the split is
             // well-ordered.
-            let mut ranks: Vec<i32> = participants.iter().map(|w| self.rank_of[w]).collect();
+            // Route through `rank_for` (typed `EmitError`) rather than a
+            // raw `rank_of[w]` index: a barrier participant set is keyed off
+            // the contract `SyncTag`, so a participant that is not a used
+            // worker with a rank must fail LOUD, not panic in the emitter
+            // (panic-not-diagnostic, TASK-0045.02 review P3-1).
+            let mut ranks: Vec<i32> = participants
+                .iter()
+                .map(|w| self.rank_for(*w))
+                .collect::<Result<Vec<i32>, EmitError>>()?;
             ranks.sort_unstable();
             let rank_list = ranks
                 .iter()
@@ -490,6 +501,7 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
             )
             .ok();
         }
+        Ok(())
     }
 
     /// Render one rank's match arm: pre-init, channel bindings, barrier

@@ -30,10 +30,11 @@
 # schedule directive — docs/capabilities-toml.md).
 #
 # max_buffer = 64 matches pthreads-async: the largest buffer any shipped
-# schedule requests is 4 (09-producer-consumer/pipelined). NOTE example 9
-# itself is NOT yet a runnable target here — it carries a non-whole-world
-# barrier {producer,consumer} excluding the host, which needs Comm_split
-# (TASK-0045.02, unproven); the emit rejects it LOUD. See TASK-0046 notes.
+# schedule requests is 4 (09-producer-consumer/pipelined). Example 9
+# carries a non-whole-world barrier {producer,consumer} excluding the
+# host; with Comm_split landed (TASK-0045.02) it now EMITS correctly via
+# the shared mpi_plan substrate. Wiring it into the standing
+# check-mpi-nonblocking gate as a value-correct cell is TASK-0046.01.
 #
 # Collective recognition (MPI_Allreduce / MPI_Scatter) and derived-type
 # packing (MPI_Type_contiguous) are DELIBERATELY DEFERRED (PRD §7.2;
