@@ -3,9 +3,11 @@ id: TASK-0413
 title: >-
   Drop dead tcp_plan::XferId pub re-export + tighten over-wide tcp_plan::Plan
   field visibility (TASK-0412 cycle architect P2 silent-sibling)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-06-01 19:51'
+updated_date: '2026-06-01 20:08'
 labels:
   - tooling
   - dead-code

@@ -50,5 +50,5 @@ mod worker_program;
 // `walkers::`/`encode::` module paths directly) and the `walkers` module is
 // `pub(crate)`. The earlier top-level walker/encode re-exports here were a dead
 // external surface (no in-crate consumer) — removed rather than kept unused.
-pub use plan::{Plan, XferId};
+pub use plan::Plan;
 pub use wire_primitives::WirePrimitives;

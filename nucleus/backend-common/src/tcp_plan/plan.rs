@@ -31,18 +31,32 @@ use crate::EmitError;
 
 /// Stable identifier for one cross-worker data symbol, by sorted
 /// `DataId` (deterministic; same order pthreads-sync's slot ids use).
-pub type XferId = usize;
+///
+/// `pub(crate)`: an intra-crate type only — no backend references
+/// `tcp_plan::XferId`. The earlier `pub use plan::{Plan, XferId}`
+/// re-export was a dead external surface (TASK-0413; sibling of the
+/// TASK-0412 `ChanId` sweep on `event_plan`/`mpi_plan`).
+pub(crate) type XferId = usize;
 
 /// Multi-process emit plan parameterised over the per-backend wire
 /// primitives `W`. See the module docstring.
+///
+/// Field visibility (TASK-0413): only `used_workers` is read across the
+/// crate boundary (by the `mp-tcp-{poll,bufsync}` shims, which otherwise
+/// drive the Plan through the `pub fn` methods `build` /
+/// `render_worker_program` / `render_run_sh` / `worker_name`). Every
+/// other field is `pub(crate)` — consumed only inside this crate's
+/// `tcp_plan` submodules. This matches the deliberate field hygiene of
+/// the `event_plan`/`mpi_plan` sibling Plans; do NOT widen a field back
+/// to `pub` without an external reader.
 pub struct Plan<'a, W: WirePrimitives> {
-    pub per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
-    pub names: &'a NameTables,
-    pub sidecar: &'a NameSidecar,
+    pub(crate) per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
+    pub(crate) names: &'a NameTables,
+    pub(crate) sidecar: &'a NameSidecar,
     pub used_workers: Vec<WorkerId>,
-    pub host_worker: WorkerId,
+    pub(crate) host_worker: WorkerId,
     /// Cross-worker data symbols sorted by DataId.
-    pub xfer_ids: BTreeMap<DataId, XferId>,
+    pub(crate) xfer_ids: BTreeMap<DataId, XferId>,
     /// Per-(DataId,SeqTag) iteration tile from the originating
     /// XferPlaceholder. Drives the receiver-side leading-axis / 2D
     /// row-loop slice-paste in
@@ -50,7 +64,7 @@ pub struct Plan<'a, W: WirePrimitives> {
     /// sync-TCP backends bypass the shared event walker and call
     /// `render_wait_assign` directly from `events.rs`, so they consume
     /// the same pair-tile map populated here (TASK-0296 cycle 116).
-    pub pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
+    pub(crate) pair_tiles: BTreeMap<(DataId, SeqTag), IterTile>,
     /// Per-(worker, data, seq) overlapping-write accumulator
     /// classification (TASK-0343 cycle 189). Computed at build time the
     /// same way the other tier-1 backends do
@@ -58,7 +72,7 @@ pub struct Plan<'a, W: WirePrimitives> {
     /// and consulted at the Event::Wait emit site to pass the
     /// `accumulate: bool` flag to the shared `render_wait_assign`
     /// helper. Empty for every cell without an overlapping-write fan-in.
-    pub accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
+    pub(crate) accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// Zero-sized witness of the per-backend wire primitives. `Plan`
     /// has no `W` value; the variation is dispatched through `W`'s
     /// associated functions/consts at the emit sites.
