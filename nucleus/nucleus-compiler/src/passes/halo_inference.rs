@@ -2862,9 +2862,10 @@ mod tests {
     }
 
     /// TASK-0397 white-box: `UnknownKernelInCall` is defensively
-    /// unreachable from a link-valid IR — `apply_halo_inference` builds
-    /// `name_kernels` from the same kernel set the calls reference, so by
-    /// the time the walk runs every callee resolves (an unknown call was
+    /// unreachable from a link-valid IR — `name_kernels` is built (by
+    /// `build_acfg`) from the same kernel set the calls reference and
+    /// `apply_halo_inference` is then GIVEN that `acfg`, so by the time
+    /// the walk runs every callee resolves (an unknown call was
     /// already rejected at lowering). It is a KEPT link-invariant
     /// tripwire (panic-not-diagnostic policy: a typed error, not a
     /// `panic!`/`unreachable!`). Unlike the ConstOverflow/ShapeOverflow
