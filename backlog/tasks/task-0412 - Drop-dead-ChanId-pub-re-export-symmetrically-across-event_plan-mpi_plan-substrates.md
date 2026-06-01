@@ -3,9 +3,11 @@ id: TASK-0412
 title: >-
   Drop dead ChanId pub re-export symmetrically across event_plan + mpi_plan
   substrates
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-06-01 17:39'
+updated_date: '2026-06-01 19:46'
 labels:
   - tooling
   - dead-code

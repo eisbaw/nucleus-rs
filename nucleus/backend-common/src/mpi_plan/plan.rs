@@ -109,7 +109,12 @@ use nucleus_compiler::NameTables;
 /// more than a handful of rids; if that ever changes the fix is a
 /// modular tag scheme keyed on (peer, generation) rather than a global
 /// rid counter (review-gate P3, cycle M7-multiworker).
-pub type ChanId = RendezvousId;
+///
+/// `pub(crate)`: an intra-crate type only — no backend references
+/// `mpi_plan::ChanId`. The earlier `pub use plan::{ChanId, ..}`
+/// re-export was a dead external surface (TASK-0412); kept symmetric
+/// with the `event_plan` sibling.
+pub(crate) type ChanId = RendezvousId;
 /// Stable id of one barrier — the contract-carried [`SyncTag`]
 /// (TASK-0172). Same value for every participant of the barrier.
 type BarrierId = SyncTag;

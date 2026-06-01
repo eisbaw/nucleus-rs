@@ -60,5 +60,5 @@
 mod plan;
 mod rendezvous;
 
-pub use plan::{ChanId, Plan};
+pub use plan::Plan;
 pub use rendezvous::MpiRendezvous;

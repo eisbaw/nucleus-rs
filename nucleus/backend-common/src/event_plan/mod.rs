@@ -67,5 +67,5 @@ mod worker_program;
 // internals leak across the backend-common crate boundary. The earlier
 // top-level walker/encode re-exports here were a dead external surface (no
 // in-crate consumer) — removed rather than kept as unused `pub(crate)`.
-pub use plan::{ChanId, Plan};
+pub use plan::Plan;
 pub use transport::EventTransport;

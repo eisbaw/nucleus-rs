@@ -33,7 +33,12 @@ use crate::EmitError;
 /// Stable identifier for one event-reactor channel — the runtime
 /// `chan_<id>` variable that wraps `(DataId, SeqTag)`'s reactor route.
 /// `usize` alias for [`RendezvousId`] (the shared walker key type).
-pub type ChanId = RendezvousId;
+///
+/// `pub(crate)`: an intra-crate type only — no backend references
+/// `event_plan::ChanId`. The earlier `pub use plan::{ChanId, ..}`
+/// re-export was a dead external surface (TASK-0412); kept symmetric
+/// with the `mpi_plan` sibling.
+pub(crate) type ChanId = RendezvousId;
 
 /// Per-worker codegen Plan: every fact needed to emit one
 /// `src/bin/<wname>.rs`. Field set mirrors `pthreads-async`'s Plan
