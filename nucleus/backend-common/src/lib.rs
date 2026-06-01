@@ -72,10 +72,21 @@ pub mod project_skeleton;
 pub mod render;
 pub mod tcp_plan;
 
-// Convenience top-level re-exports. Backends typically import the
-// specific items they need from `backend_common::{check_frame, render,
-// multi_worker_walker}`, but the most-frequently used surface is also
-// reachable from the crate root for shorter call sites.
+// Convenience top-level re-exports of the most-used codegen surface,
+// so backends can write `backend_common::EmitError` instead of
+// `backend_common::render::EmitError`.
+//
+// In practice (verified TASK-0407) consumers reach almost all of these
+// items via the *submodule* path — `backend_common::check_frame::X`,
+// `backend_common::render::X` — and only four are consumed through the
+// crate root today: `EmitError` (which every backend further re-exports
+// from its own public surface), `elect_host_from_name_workers`,
+// `elect_host_from_worker_names`, and `render_fire_args_nostd`. The
+// remaining root re-exports are an intentionally-offered convenience
+// layer with no current root-path consumer; they are kept (not narrowed)
+// because narrowing a re-exported, doc-linked item silently breaks
+// intra-doc links the `cargo doc` step does not gate (see
+// feedback-visibility-tighten-doclink-trap).
 pub use check_frame::{
     collect_count_check_frames, emit_count_branch, emit_count_guard_local,
     emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,

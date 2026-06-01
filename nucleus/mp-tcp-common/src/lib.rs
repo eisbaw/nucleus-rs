@@ -18,7 +18,6 @@
 /// The framing + codec runtime, compiled into this crate so the
 /// tests exercise it, and `include!`-d from the same source file the
 /// backend emits verbatim.
-#[allow(dead_code)]
 pub mod wire {
     include!("wire_runtime.rs");
 }
