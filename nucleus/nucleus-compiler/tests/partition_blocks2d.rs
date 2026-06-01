@@ -381,6 +381,25 @@ fn negative_single_worker_body_is_rejected() {
     }
 }
 
+/// Bite test (TASK-0400): a `partition=blocks2d` directive naming a loop
+/// var ABSENT from `name_iter_vars` trips `UnknownLoopVar` at the name-
+/// resolution guard. WHITE-BOX invariant pin (the linker resolves
+/// directive vars against declared loops on the surface path, so this
+/// inconsistent `LinkedIR`/`ACFG` pair is hand-built); completes the
+/// 3-pass sibling sweep with `partition_workers` + `partition_rows`.
+#[test]
+fn negative_unknown_loop_var_when_directive_var_absent() {
+    let acfg = build_2d_acfg("y", 7, 0..16, "x", 8, 0..32, &[1, 2, 3, 4]);
+    let linked = linked_with_blocks2d_directive("ghost");
+
+    let err = apply_partition_blocks2d(&linked, acfg)
+        .expect_err("directive var absent from name_iter_vars must reject");
+    match err {
+        PartitionBlocks2dError::UnknownLoopVar { var } => assert_eq!(var, "ghost"),
+        other => panic!("expected UnknownLoopVar, got {other:?}"),
+    }
+}
+
 /// Negative 3: prime worker count → `DegenerateGridShape`. 7 workers
 /// has no non-degenerate 2D factorisation (only (1, 7)).
 #[test]

@@ -127,6 +127,36 @@ fn collect_loop_ranges_per_worker(
     out
 }
 
+/// Build a `LinkedIR` carrying a single `partition=workers` directive
+/// on `var` — the only schedule surface `apply_partition_workers`
+/// reads. Mirrors `partition_rows`'s `linked_with_rows_directive` so the
+/// three partition passes share one negative-test construction shape.
+fn linked_with_workers_directive(var: &str) -> link::LinkedIR {
+    use nucleus_compiler::sched::{
+        PartitionKind, ResolvedLoopDirective, ResolvedLoopOption, SchedIR,
+    };
+    let mut loops = BTreeMap::new();
+    loops.insert(
+        var.to_string(),
+        ResolvedLoopDirective {
+            var: var.to_string(),
+            options: vec![ResolvedLoopOption::Partition(PartitionKind::Workers)],
+            var_span: None,
+        },
+    );
+    link::LinkedIR {
+        algo: Default::default(),
+        sched: SchedIR {
+            loops,
+            ..Default::default()
+        },
+        placements: Default::default(),
+        kernel_workers: Default::default(),
+        data_producers: Default::default(),
+        data_consumers: Default::default(),
+    }
+}
+
 // --------------------------------------------------------------------
 // Tests
 // --------------------------------------------------------------------
@@ -457,6 +487,90 @@ fn insufficient_work_range_is_rejected() {
             assert_eq!(workers, 4);
         }
         other => panic!("expected InsufficientWork, got {other:?}"),
+    }
+}
+
+/// Bite test (TASK-0400): `partition=workers` on a loop whose body is a
+/// SINGLE worker is a meaningless partition → typed `NoMultiWorkerBody`,
+/// never a silent no-op. Closes an inverted silent-sibling gap: the
+/// sibling passes `partition_rows` (tests/partition_rows.rs) and
+/// `partition_blocks2d` (tests/partition_blocks2d.rs) already pin this
+/// guard, but `partition_workers` (the original) did not. This guard is
+/// SURFACE-REACHABLE — the linker passes a valid-but-meaningless
+/// single-worker partition directive straight through to the pass.
+#[test]
+fn single_worker_body_is_rejected_no_multi_worker_body() {
+    let acfg = build_synthetic_acfg("n", 7, 0..16, &[1]); // single-worker body
+    let linked = linked_with_workers_directive("n");
+    let err = apply_partition_workers(&linked, acfg)
+        .expect_err("single-worker body must be rejected");
+    match err {
+        PartitionError::NoMultiWorkerBody { var, workers } => {
+            assert_eq!(var, "n");
+            assert_eq!(workers, 1);
+        }
+        other => panic!("expected NoMultiWorkerBody, got {other:?}"),
+    }
+}
+
+/// Bite test (TASK-0400): name-resolution miss. A `partition=workers`
+/// directive naming a loop var ABSENT from `name_iter_vars` trips
+/// `UnknownLoopVar` at the FIRST return site (partition_workers.rs, the
+/// `name_iter_vars.get(var)` → None arm). WHITE-BOX invariant pin: the
+/// linker resolves directive vars against declared loops on the surface
+/// path, so this inconsistent `LinkedIR`/`ACFG` pair is hand-built
+/// (mirrors the TASK-0397 white-box pattern + the `sidecar_reuse.rs`
+/// `UnknownLoopVar` pin).
+#[test]
+fn unknown_loop_var_when_directive_var_absent_from_name_iter_vars() {
+    let acfg = build_synthetic_acfg("n", 7, 0..16, &[1, 2]); // registers "n", not "ghost"
+    let linked = linked_with_workers_directive("ghost");
+    let err = apply_partition_workers(&linked, acfg)
+        .expect_err("directive var absent from name_iter_vars must reject");
+    match err {
+        PartitionError::UnknownLoopVar { var } => assert_eq!(var, "ghost"),
+        other => panic!("expected UnknownLoopVar, got {other:?}"),
+    }
+}
+
+/// Bite test (TASK-0400): structural miss. The directive var resolves
+/// via `name_iter_vars`, but no `Repeat` in the ACFG carries that
+/// `IterVar` → `UnknownLoopVar` at the SECOND return site
+/// (partition_workers.rs, the `find_loop(..) → None` arm). A guard
+/// DISTINCT from the name-miss above (same variant, different site:
+/// name resolved but the structure does not match). WHITE-BOX — the
+/// `LinkedIR`/`ACFG` are mutually inconsistent by construction.
+#[test]
+fn unknown_loop_var_when_no_repeat_carries_the_resolved_iter_var() {
+    // name_iter_vars maps "n" → IterVar(7), but the only Repeat is over
+    // IterVar(8): find_loop(root, IterVar(7)) is None.
+    let mut name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+    name_iter_vars.insert("n".to_string(), IterVar(7));
+    let acfg = ACFG {
+        root: ACFGNode::Sequence(vec![ACFGNode::Repeat {
+            iter_var: IterVar(8),
+            range: 0..16,
+            body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2])])),
+            block_tag: None,
+        }]),
+        name_kernels: Default::default(),
+        name_data: Default::default(),
+        name_workers: Default::default(),
+        name_iter_vars,
+        inner_block_iter_vars: Default::default(),
+        partition_worker_ranges: BTreeMap::new(),
+        pipeline_depth_for_seq: BTreeMap::new(),
+        halo_widths: BTreeMap::new(),
+        reuse_widths: BTreeMap::new(),
+        partition_pairs: BTreeMap::new(),
+        grid_shape_for_outer_iv: BTreeMap::new(),
+    };
+    let linked = linked_with_workers_directive("n");
+    let err = apply_partition_workers(&linked, acfg)
+        .expect_err("no Repeat with the resolved IterVar must reject");
+    match err {
+        PartitionError::UnknownLoopVar { var } => assert_eq!(var, "n"),
+        other => panic!("expected UnknownLoopVar, got {other:?}"),
     }
 }
 

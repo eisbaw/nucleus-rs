@@ -255,6 +255,25 @@ fn negative_single_worker_body_is_rejected() {
     }
 }
 
+/// Bite test (TASK-0400): a `partition=rows` directive naming a loop var
+/// ABSENT from `name_iter_vars` trips `UnknownLoopVar` at the name-
+/// resolution guard. WHITE-BOX invariant pin (the linker resolves
+/// directive vars against declared loops on the surface path, so this
+/// inconsistent `LinkedIR`/`ACFG` pair is hand-built); completes the
+/// 3-pass sibling sweep with `partition_workers` + `partition_blocks2d`.
+#[test]
+fn negative_unknown_loop_var_when_directive_var_absent() {
+    let acfg = build_2d_acfg("y", 7, 0..16, "x", 8, 0..32, &[1, 2]);
+    let linked = linked_with_rows_directive("ghost");
+
+    let err = apply_partition_rows(&linked, acfg)
+        .expect_err("directive var absent from name_iter_vars must reject");
+    match err {
+        PartitionRowsError::UnknownLoopVar { var } => assert_eq!(var, "ghost"),
+        other => panic!("expected UnknownLoopVar, got {other:?}"),
+    }
+}
+
 /// TASK-0262: a non-divisible (length, N) outer range no longer
 /// rejects. Floor-with-spillover policy: 14 rows across 4 workers →
 /// floor=3, extras=14%4=2 → first 2 workers get 4 rows, last 2 get 3.
