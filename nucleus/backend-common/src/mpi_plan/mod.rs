@@ -41,8 +41,10 @@
 //! (the blocking backend takes `world` directly; the buffered backend
 //! attaches an `MPI_Bsend` buffer first). Everything else — host
 //! election, rank assignment, channel-id collection, barrier
-//! participant analysis, the non-whole-world-barrier + check-frame loud
-//! rejects, the single-producer/single-consumer-per-pair guard, the
+//! participant analysis (whole-world `MPI_Barrier` vs strict-subset
+//! `MPI_Comm_split` sub-comm barrier, TASK-0045.02), the
+//! multi-worker-check-frame loud reject, the
+//! single-producer/single-consumer-per-pair guard, the
 //! `render_worker_events` walk (`rendezvous_prefix = "mpi"`), pre-init,
 //! accumulator classification — is identical and lives here.
 //!

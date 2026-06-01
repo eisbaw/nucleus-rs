@@ -2,15 +2,17 @@
 //! (TASK-0045.01; lifted to the shared substrate TASK-0046.02).
 //!
 //! The behaviour-bearing SPMD multi-worker `Plan` — host election, MPI
-//! rank assignment, channel-id collection, barrier participant
-//! analysis, the non-whole-world-barrier + multi-worker-check-frame loud
-//! rejects, the single-producer/single-consumer-per-pair guard, the
-//! shared `render_worker_events` walk (`rendezvous_prefix = "mpi"`),
-//! pre-init, and accumulator classification — lives ONCE in
+//! rank assignment, channel-id collection, barrier participant analysis
+//! (whole-world `MPI_Barrier` vs strict-subset `MPI_Comm_split` sub-comm
+//! barrier, TASK-0045.02), the multi-worker-check-frame loud reject, the
+//! single-producer/single-consumer-per-pair guard, the shared
+//! `render_worker_events` walk (`rendezvous_prefix = "mpi"`), pre-init,
+//! and accumulator classification — lives ONCE in
 //! [`backend_common::mpi_plan`], parameterised over the
 //! [`backend_common::mpi_plan::MpiRendezvous`] trait (TASK-0046.02
 //! lift). This file supplies only mpi-blocking's `MpiRendezvous` impl —
-//! the BLOCKING `MPI_Send`/`MPI_Recv` rendezvous prelude + the plain
+//! the BLOCKING `MPI_Send`/`MPI_Recv` rendezvous prelude (+ the
+//! shared `WorldBar`/`SubcommBar` barrier wrappers) + the plain
 //! (no buffer attach) `Universe` init — plus a `Plan` type alias and the
 //! `render_main_rs_multi` entry the crate's `lib.rs` calls.
 //!
@@ -28,7 +30,11 @@
 //!   [`backend_common::mpi_plan`]).
 //! - `Wait{data, src, seq}` -> `let <data> = mpi_<rid>.wait();` lowering
 //!   to a count-probing blocking `MPI_Recv`, same tag = `<rid>`.
-//! - `Sync{tag}` -> `bar_<tag>.wait()` == a whole-world `MPI_Barrier`.
+//! - `Sync{tag}` -> `bar_<tag>.wait()`: a whole-world `MPI_Barrier` for a
+//!   barrier whose participants are all used workers, or an
+//!   `MPI_Comm_split` sub-communicator barrier for a strict-subset (e.g.
+//!   host-excluding) participant set (TASK-0045.02; see
+//!   [`backend_common::mpi_plan`]).
 //!
 //! # Standard-mode `MPI_Send` limitation
 //!
@@ -65,7 +71,12 @@ impl MpiRendezvous for BlockingRendezvous {
             "//! `world.rank()`. Push/Wait => blocking MPI Send/Recv (tag = rendezvous id);"
         )
         .ok();
-        writeln!(out, "//! Sync => whole-world MPI_Barrier. Launch: `mpiexec -n {n}`.").ok();
+        writeln!(
+            out,
+            "//! Sync => MPI_Barrier (whole-world, or Comm_split sub-comm for a strict subset)."
+        )
+        .ok();
+        writeln!(out, "//! Launch: `mpiexec -n {n}`.").ok();
     }
 
     fn prelude() -> &'static str {
@@ -74,7 +85,10 @@ impl MpiRendezvous for BlockingRendezvous {
         // (scalar transfers); the unused one is dead in that project.
         "\
 use mpi::traits::*;
-use mpi::topology::Process;
+// `Color` is referenced only by the emitted Comm_split calls (absent in
+// a whole-world-only schedule); allow the unused import there.
+#[allow(unused_imports)]
+use mpi::topology::{Color, Process, SimpleCommunicator};
 use mpi::{Rank, Tag};
 use core::marker::PhantomData;
 
@@ -111,11 +125,32 @@ impl<'a, T: Equivalence> ScalarChan<'a, T> {
 }
 
 /// Whole-world barrier wrapper. `wait` is `MPI_Barrier` over COMM_WORLD;
-/// every rank participates (the emit rejects non-whole-world barriers).
+/// every rank participates.
+#[allow(dead_code)]
 struct WorldBar<'a, C: Communicator> { comm: &'a C }
+#[allow(dead_code)]
 impl<'a, C: Communicator> WorldBar<'a, C> {
     fn new(comm: &'a C) -> Self { WorldBar { comm } }
     fn wait(&self) { self.comm.barrier(); }
+}
+
+/// Sub-communicator barrier wrapper for a strict-subset (e.g.
+/// host-excluding) barrier. Holds the `Option<SimpleCommunicator>` that
+/// `world.split_by_color(..)` returned for THIS rank — `Some(subcomm)`
+/// if the rank is a participant (it passed `Color::with_value`), `None`
+/// if it is not (it passed `Color::undefined()`). `wait` is
+/// `MPI_Barrier` over the SUB-communicator, called ONLY by participants;
+/// a non-participant's `None` makes `wait` a no-op. The split itself is
+/// the collective (every rank calls it, OUTSIDE the rank arms); `wait`
+/// is collective only over the participant sub-group, so a no-op on the
+/// excluded ranks is correct, not a skipped collective. `dead_code`: a
+/// whole-world-only schedule emits no `SubcommBar`.
+#[allow(dead_code)]
+struct SubcommBar<'a> { sub: &'a Option<SimpleCommunicator> }
+#[allow(dead_code)]
+impl<'a> SubcommBar<'a> {
+    fn new(sub: &'a Option<SimpleCommunicator>) -> Self { SubcommBar { sub } }
+    fn wait(&self) { if let Some(c) = self.sub { c.barrier(); } }
 }
 "
     }

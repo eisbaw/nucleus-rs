@@ -245,47 +245,102 @@ fn multi_worker_02_split_spmd_shape_and_tag_discipline() {
     );
 }
 
-#[test]
-fn non_whole_world_barrier_is_rejected_loud() {
-    // Mutate a real lowering: drop the host from one barrier's
-    // participant set so it becomes host-excluding. The emit must reject
-    // with a typed UnsupportedFeature forward-linked to the Comm_split
-    // follow-up — NOT emit an untested sub-communicator collective.
+/// Synthesise a FAITHFUL host-excluding barrier from a real 02-split
+/// lowering (TASK-0045.02). Identical construction to the mpi-blocking
+/// sibling test: drop host from every `Sync`'s `participants` AND remove
+/// the host's own `Sync` events, the consistent shape a real `{w0}`-only
+/// barrier has (the projection adds the `Event::Sync` only to its
+/// participants' lists). The shared substrate (`backend_common::mpi_plan`)
+/// emits the Comm_split identically for both MPI backends, so this proves
+/// the buffered backend inherits it.
+fn host_excluding_02_split() -> test_common::LowerForTestResult {
     let mut r = lower_02_split();
-    let host = {
-        // host election mirrors the backend: the worker named "host".
-        r.names
-            .worker
-            .iter()
-            .find(|(_, n)| n.as_str() == "host")
-            .map(|(w, _)| *w)
-            .expect("02-split has a `host` worker")
-    };
-    let mut mutated = false;
-    for evs in r.per_worker.values_mut() {
+    let host = r
+        .names
+        .worker
+        .iter()
+        .find(|(_, n)| n.as_str() == "host")
+        .map(|(w, _)| *w)
+        .expect("02-split has a `host` worker");
+    let mut dropped = false;
+    for (w, evs) in r.per_worker.iter_mut() {
         for e in evs.iter_mut() {
             if let Event::Sync { participants, .. } = e {
                 if participants.remove(&host) {
-                    mutated = true;
+                    dropped = true;
                 }
             }
         }
+        if *w == host {
+            evs.retain(|e| !matches!(e, Event::Sync { .. }));
+        }
     }
-    assert!(mutated, "expected at least one Sync to drop the host");
+    assert!(dropped, "expected at least one Sync to drop the host");
+    r
+}
 
+#[test]
+fn non_whole_world_barrier_emits_comm_split_subcomm_barrier() {
+    // The M7-foundation loud reject is replaced (TASK-0045.02): a barrier
+    // whose participants are a strict subset of the used workers now
+    // lowers to MPI_Comm_split + a sub-communicator barrier. The buffered
+    // backend consumes the SAME shared substrate, so it inherits the emit.
+    let r = host_excluding_02_split();
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-nonblocking-test-scratch/non_whole_world_bar");
+    let scratch =
+        repo_root().join("nucleus/target/mpi-nonblocking-test-scratch/comm_split_subcomm");
     let _ = std::fs::remove_dir_all(&scratch);
 
-    let err = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
-        .expect_err("a host-excluding barrier must be rejected (Comm_split unproven)");
-    match err {
-        EmitError::UnsupportedFeature(msg) => assert!(
-            msg.contains("Comm_split") && msg.contains("TASK-0045.02"),
-            "rejection must forward-link the Comm_split follow-up:\n{msg}"
-        ),
-        other => panic!("expected UnsupportedFeature(Comm_split), got {other:?}"),
+    let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
+        .expect("a host-excluding barrier must now emit Comm_split, not reject");
+    let main_rs = std::fs::read_to_string(&res.main_rs).expect("main.rs");
+
+    for needle in [
+        "split_by_color(",
+        "Color::with_value(",
+        "Color::undefined()",
+        "struct SubcommBar",
+        "SubcommBar::new(&split_",
+    ] {
+        assert!(
+            main_rs.contains(needle),
+            "host-excluding barrier main.rs must contain `{needle}`:\n{main_rs}"
+        );
     }
+}
+
+#[test]
+fn comm_split_is_emitted_outside_the_rank_match_arms() {
+    // AC#2 correctness crux (shared with the mpi-blocking sibling):
+    // MPI_Comm_split is COLLECTIVE over COMM_WORLD, so the split must be
+    // emitted BEFORE the `match world.rank()` dispatch (a split inside a
+    // rank arm deadlocks non-participants).
+    let r = host_excluding_02_split();
+    let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
+    let scratch =
+        repo_root().join("nucleus/target/mpi-nonblocking-test-scratch/split_before_match");
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch).expect("emit");
+    let main_rs = std::fs::read_to_string(&res.main_rs).expect("main.rs");
+
+    let split_at = main_rs
+        .find("= world.split_by_color(if ")
+        .expect("a host-excluding barrier must emit a `world.split_by_color(if ...)` call");
+    let match_at = main_rs
+        .find("match world.rank() {")
+        .expect("the SPMD program dispatches on world.rank()");
+    assert!(
+        split_at < match_at,
+        "MPI_Comm_split MUST be emitted BEFORE `match world.rank()`. split@{split_at} \
+         match@{match_at}:\n{main_rs}"
+    );
+    assert_eq!(
+        main_rs.matches("= world.split_by_color(if ").count(),
+        1,
+        "02-split host-excluding has ONE distinct strict-subset participant set => one \
+         split:\n{main_rs}"
+    );
 }
 
 #[test]

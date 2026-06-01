@@ -17,9 +17,11 @@
 //!    `Push`/`Wait` lowering (`blocking MPI Send/Recv` vs `buffered
 //!    MPI_Ibsend` + `MPI_Imrecv/Irecv`); genuinely different prose;
 //! 3. the emitted rendezvous + barrier wrapper-type prelude — the
-//!    `VecChan`/`ScalarChan`/`WorldBar` source whose `.push()`/`.wait()`
-//!    the shared walker targets (blocking send/recv bodies vs buffered
-//!    `Ibsend` + `request::scope`d `Wait` bodies);
+//!    `VecChan`/`ScalarChan`/`WorldBar`/`SubcommBar` source whose
+//!    `.push()`/`.wait()` the shared walker targets (blocking send/recv
+//!    bodies vs buffered `Ibsend` + `request::scope`d `Wait` bodies; the
+//!    `WorldBar`/`SubcommBar` barrier wrappers are byte-identical
+//!    between the two backends);
 //! 4. the emitted `Universe` init block: the blocking backend takes
 //!    `world` directly (`let universe = mpi::initialize()...`); the
 //!    buffered backend takes `&mut universe`, attaches an `MPI_Bsend`
@@ -27,8 +29,9 @@
 //!    an `NUC_MPI_BSEND_BYTES` override), THEN takes `world`.
 //!
 //! Everything else (host election, rank assignment, channel-id
-//! collection, barrier participant analysis, the non-whole-world +
-//! check-frame loud rejects, the single-producer/single-consumer
+//! collection, barrier participant analysis incl. the
+//! whole-world-vs-`MPI_Comm_split` sub-comm-barrier classification, the
+//! check-frame loud reject, the single-producer/single-consumer
 //! guard, the entire `render_worker_events` walk, pre-init, accumulator
 //! classification) is identical, so it lives ONCE in [`super::Plan`]
 //! and the per-backend crate supplies only an `MpiRendezvous` impl.

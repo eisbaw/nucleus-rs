@@ -50,14 +50,31 @@
 //! - `Wait{data, src, seq}` -> `let <data> = mpi_<rid>.wait();`
 //!   (whole-array) or the gather slice-paste the shared walker emits,
 //!   with the same tag = `<rid>` so it matches the producer's `Push`.
-//! - `Sync{tag}` -> `bar_<tag>.wait()` == a whole-world `MPI_Barrier`.
+//! - `Sync{tag}` -> `bar_<tag>.wait()`. For a WHOLE-WORLD barrier
+//!   (participants == all used workers) `bar_<tag>` is a [`WorldBar`] and
+//!   `.wait()` is a whole-world `MPI_Barrier`. For a STRICT-SUBSET
+//!   barrier (e.g. a host-excluding / compute-only barrier) it is a
+//!   `SubcommBar` over an `MPI_Comm_split` group; see "Sub-communicator
+//!   barriers" below (TASK-0045.02).
+//!
+//! # Sub-communicator barriers (strict-subset participant sets)
+//!
+//! A barrier whose participants are a strict subset of the used workers
+//! cannot use `world.barrier()`: the excluded ranks never reach that
+//! call, so the participating ranks would block forever. Such a barrier
+//! lowers to `MPI_Comm_split`. Every rank (participant or not) calls one
+//! `world.split_by_color(...)` per distinct subset group, emitted OUTSIDE
+//! the per-rank `match` arms (the collective-ordering crux — see
+//! [`Plan::emit_subcomm_splits`]): participants pass a shared
+//! `Color::with_value(<color>)` and land in one sub-communicator,
+//! non-participants pass `Color::undefined()` and get `None`.
+//! Participants bind `bar_<tag>` to a `SubcommBar` over that group and
+//! barrier on the sub-communicator; non-participants never reference it.
+//! Colors are the 0-based enumeration index of each distinct subset (in
+//! `BTreeSet` order), so the emitted text is deterministic.
 //!
 //! # Scope limits (rejected loud, NOT silently mis-emitted)
 //!
-//! - **Non-whole-world barriers.** A barrier whose participants are a
-//!   strict subset of the used workers needs `Comm_split` (a collective
-//!   the M7 foundation did not prove). Rejected with a typed
-//!   [`EmitError::UnsupportedFeature`] forward-linked to TASK-0045.02.
 //! - **Multi-worker check-loop frames.** `check loop` under MPI has
 //!   per-rank-vs-aggregate reporter semantics (no shared memory across
 //!   processes) that need design; rejected loud, forward-linked to
@@ -97,6 +114,28 @@ pub type ChanId = RendezvousId;
 /// (TASK-0172). Same value for every participant of the barrier.
 type BarrierId = SyncTag;
 
+/// How a barrier's `bar_<tag>` binding is realised.
+///
+/// A barrier whose participants are EVERY used worker is a plain
+/// whole-world `MPI_Barrier` ([`WorldBar`] in the prelude). A barrier
+/// whose participants are a STRICT SUBSET of the used workers (e.g. a
+/// compute-only / host-excluding barrier) cannot use `world.barrier()`:
+/// the excluded ranks never call it, so the participating ranks would
+/// block forever. It is realised by `MPI_Comm_split` — every rank
+/// (participant or not) splits `COMM_WORLD` by a shared color, the
+/// participants land in one sub-communicator and barrier on IT, the
+/// non-participants pass `Color::undefined()` and get `None` (no
+/// sub-communicator, no barrier call). See [`Plan::emit`] for why the
+/// split is emitted OUTSIDE the per-rank `match` arms (TASK-0045.02).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BarrierKind {
+    /// Participants == all used workers: a whole-world `MPI_Barrier`.
+    WholeWorld,
+    /// Participants are a strict subset: an `MPI_Comm_split` sub-comm
+    /// barrier on the split group with this (non-negative) color.
+    Subcomm(i32),
+}
+
 /// The shared SPMD multi-worker emit plan, parameterised over the
 /// per-backend MPI rendezvous variation `W`. See the module docstring.
 pub struct Plan<'a, W: MpiRendezvous> {
@@ -123,6 +162,20 @@ pub struct Plan<'a, W: MpiRendezvous> {
     accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)>,
     /// `SyncTag` -> participants. Keyed by the contract barrier identity.
     barrier_participants: BTreeMap<BarrierId, BTreeSet<WorkerId>>,
+    /// `SyncTag` -> how its `bar_<tag>` binding lowers (whole-world
+    /// `MPI_Barrier` vs `MPI_Comm_split` sub-comm barrier with a color).
+    /// Derived from `barrier_participants` vs the used-worker set in
+    /// [`Plan::build`].
+    barrier_kind: BTreeMap<BarrierId, BarrierKind>,
+    /// Distinct STRICT-SUBSET participant sets, each with its assigned
+    /// non-negative color, in ascending color order. One
+    /// `MPI_Comm_split` is emitted per entry in [`Plan::emit`], OUTSIDE
+    /// the per-rank `match` arms, so every rank reaches every split in
+    /// identical order (the collective-ordering correctness crux,
+    /// TASK-0045.02 AC#2). Empty for whole-world-only schedules (then no
+    /// split is emitted at all — byte-identical to the pre-Comm_split
+    /// emit).
+    split_groups: Vec<(i32, BTreeSet<WorkerId>)>,
     /// Zero-sized witness of the per-backend rendezvous variation. `Plan`
     /// has no `W` value; the variation is dispatched through `W`'s
     /// associated functions/consts at the emit sites.
@@ -202,39 +255,66 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
             });
         }
 
-        // Reject non-whole-world barriers loud (Comm_split is unproven —
-        // TASK-0045.02). A whole-world barrier requires EVERY used worker
-        // to participate; `mpiexec -n N` launches exactly the used-worker
-        // count, so a subset participant set would make the participating
-        // ranks' `world.barrier()` block on a rank that never calls it.
+        // Classify each barrier as whole-world (plain `MPI_Barrier`) or
+        // strict-subset (`MPI_Comm_split` sub-comm barrier), and assign a
+        // deterministic non-negative color to each DISTINCT strict-subset
+        // participant set (TASK-0045.02; replaces the M7-foundation loud
+        // reject — the `Comm_split` collective is now proven by the
+        // barrier smoke).
         //
-        // This guard checks the participant SET, not the per-rank barrier
-        // CALL COUNT. Equal counts are guaranteed UPSTREAM: `inject_syncs`
-        // refuses to emit a barrier inside a `partition=workers` scope (the
-        // one place per-rank loop trip-counts could diverge), so every
-        // whole-world barrier sits at a uniform-iteration point and all
-        // ranks reach it the same number of times. If that upstream
-        // invariant ever regressed, the `check-mpi*` `timeout` wrapper
-        // would catch the resulting deadlock loud.
+        // A whole-world barrier requires EVERY used worker to participate;
+        // `mpiexec -n N` launches exactly the used-worker count, so all
+        // ranks reach `world.barrier()`. A strict subset would make the
+        // participating ranks' `world.barrier()` block on a rank that
+        // never calls it — so the subset case splits `COMM_WORLD` and
+        // barriers on the sub-communicator instead (see `emit`).
+        //
+        // The classification keys on the participant SET, not the per-rank
+        // barrier CALL COUNT. Equal call counts are guaranteed UPSTREAM:
+        // `inject_syncs` refuses to emit a barrier inside a
+        // `partition=workers` scope (the one place per-rank loop
+        // trip-counts could diverge), so every barrier sits at a
+        // uniform-iteration point and all ranks reach it the same number
+        // of times. If that upstream invariant ever regressed, the
+        // `check-mpi*` `timeout` wrapper would catch the resulting
+        // deadlock loud.
         let all_used: BTreeSet<WorkerId> = used_workers.iter().copied().collect();
+        // Distinct strict-subset participant sets, in `BTreeSet` (content)
+        // order. Using subset CONTENT for the order — rather than the
+        // SyncTag order they were first seen in — makes the color of a
+        // given participant set a pure function of that set, so the
+        // emitted text is reproducible regardless of barrier (SyncTag)
+        // numbering.
+        let distinct_subsets: BTreeSet<BTreeSet<WorkerId>> = barrier_participants
+            .values()
+            .filter(|parts| **parts != all_used)
+            .cloned()
+            .collect();
+        // Subset -> color = its 0-based index in that content order.
+        // `usize as i32` is the non-negative color `Color::with_value`
+        // requires (a schedule with >2^31 distinct barrier groups is not
+        // representable, and not reachable on any v2 example).
+        let subset_color: BTreeMap<BTreeSet<WorkerId>, i32> = distinct_subsets
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), i as i32))
+            .collect();
+        let mut barrier_kind: BTreeMap<BarrierId, BarrierKind> = BTreeMap::new();
         for (tag, parts) in &barrier_participants {
-            if *parts != all_used {
-                let names_in: Vec<&str> = parts
-                    .iter()
-                    .map(|w| names.worker.get(w).map(String::as_str).unwrap_or("?"))
-                    .collect();
-                return Err(EmitError::UnsupportedFeature(format!(
-                    "{backend}: barrier (SyncTag {}) has a non-whole-world participant set \
-                     {{{}}} (a strict subset of the {} used workers). A whole-world MPI_Barrier \
-                     would deadlock; the host-excluding / non-uniform case needs Comm_split + a \
-                     sub-communicator barrier, a collective the M7 foundation did not prove. \
-                     Forward-linked to TASK-0045.02. This is a loud reject, not a silent mis-emit.",
-                    tag.0,
-                    names_in.join(","),
-                    all_used.len(),
-                )));
-            }
+            let kind = if *parts == all_used {
+                BarrierKind::WholeWorld
+            } else {
+                BarrierKind::Subcomm(subset_color[parts])
+            };
+            barrier_kind.insert(*tag, kind);
         }
+        // Split groups in ascending color order (one `MPI_Comm_split` per
+        // distinct subset; the order all ranks reach the splits in).
+        let mut split_groups: Vec<(i32, BTreeSet<WorkerId>)> = subset_color
+            .into_iter()
+            .map(|(s, c)| (c, s))
+            .collect();
+        split_groups.sort_by_key(|(c, _)| *c);
 
         // Per-worker overlapping-write accumulator classification.
         let mut accumulate_waits: BTreeSet<(WorkerId, DataId, SeqTag)> = BTreeSet::new();
@@ -254,6 +334,8 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
             pair_tiles,
             accumulate_waits,
             barrier_participants,
+            barrier_kind,
+            split_groups,
             _rendezvous: PhantomData,
         })
     }
@@ -319,6 +401,26 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         writeln!(out, "        }}").ok();
         writeln!(out, "        return;").ok();
         writeln!(out, "    }}").ok();
+
+        // ---- Sub-communicator splits for strict-subset barriers. ----
+        // AC#2 collective-ordering crux: `MPI_Comm_split` is COLLECTIVE
+        // over `COMM_WORLD`, so EVERY rank — participant or not — must
+        // call it, in IDENTICAL ORDER, OUTSIDE the per-rank `match` arms.
+        // A non-participant that skipped the split would leave the
+        // participating ranks blocked inside `MPI_Comm_split` forever. So
+        // the splits are emitted HERE, between the size guard and the
+        // rank dispatch, where all `size == n` ranks run the same code.
+        //
+        // Each split's color is `Color::with_value(<color>)` for the
+        // participant ranks (computed from `world.rank()` against a fixed
+        // rank set, so the test is identical on every rank) and
+        // `Color::undefined()` (= MPI_UNDEFINED) for everyone else, which
+        // returns `None`. Participant ranks bind `bar_<tag>` to the
+        // resulting `Some(subcomm)` and barrier on it; non-participants
+        // hold `None` and the `SubcommBar` no-ops. Whole-world barriers
+        // do not appear here — they keep `world.barrier()`.
+        self.emit_subcomm_splits(&mut out);
+
         writeln!(out, "    match world.rank() {{").ok();
 
         for w in &self.used_workers {
@@ -335,6 +437,59 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         writeln!(out, "    }}").ok();
         writeln!(out, "}}").ok();
         Ok(out)
+    }
+
+    /// Emit the `MPI_Comm_split` for each distinct strict-subset barrier
+    /// participant set, OUTSIDE the per-rank `match` arms (TASK-0045.02
+    /// AC#2). Called by [`Plan::emit`] between the `size` guard and the
+    /// rank dispatch.
+    ///
+    /// For each split group `(color, participants)` emits one
+    /// `let split_<color> = world.split_by_color(if [<ranks>].contains(...)
+    /// { Color::with_value(<color>) } else { Color::undefined() });`. The
+    /// participant-rank set is a fixed array literal, so the
+    /// `if`-condition is IDENTICAL text on every rank — every rank
+    /// evaluates the same split with a rank-dependent color and lands in
+    /// the right group (`COMM_WORLD` collective semantics). A
+    /// whole-world-only schedule has no split groups, so this emits
+    /// NOTHING (the resulting `main` is byte-identical to the
+    /// pre-Comm_split emit — the existing whole-world examples do not
+    /// regress).
+    fn emit_subcomm_splits(&self, out: &mut String) {
+        if self.split_groups.is_empty() {
+            return;
+        }
+        writeln!(
+            out,
+            "    // Sub-communicator splits for strict-subset (e.g. host-excluding) barriers."
+        )
+        .ok();
+        writeln!(
+            out,
+            "    // COLLECTIVE over COMM_WORLD: every rank calls every split, in this order."
+        )
+        .ok();
+        for (color, participants) in &self.split_groups {
+            // Participant ranks, ascending, as a fixed array literal. The
+            // ranks (not WorkerIds) are what `world.rank()` is tested
+            // against; the set is identical on every rank so the split is
+            // well-ordered.
+            let mut ranks: Vec<i32> = participants.iter().map(|w| self.rank_of[w]).collect();
+            ranks.sort_unstable();
+            let rank_list = ranks
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Participant worker names (diagnostic comment only).
+            let names_in: Vec<String> = participants.iter().map(|w| self.worker_name(*w)).collect();
+            writeln!(
+                out,
+                "    let split_{color} = world.split_by_color(if [{rank_list}].contains(&world.rank()) {{ Color::with_value({color}) }} else {{ Color::undefined() }}); // barrier participants {{{}}}",
+                names_in.join(", "),
+            )
+            .ok();
+        }
     }
 
     /// Render one rank's match arm: pre-init, channel bindings, barrier
@@ -390,8 +545,31 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         }
 
         // ---- Barrier bindings (one per SyncTag this worker uses). ----
+        // Whole-world barriers bind a `WorldBar` over `&world`; strict-
+        // subset barriers bind a `SubcommBar` over the pre-computed
+        // `split_<color>` (the `Option<SimpleCommunicator>` emitted
+        // OUTSIDE this arm by `emit_subcomm_splits`). This worker is a
+        // participant of every barrier in `barriers_used_by`, so for a
+        // Subcomm barrier its `split_<color>` is `Some` here; the
+        // `.wait()` (emitted by the shared walker as `bar_<tag>.wait()`)
+        // barriers on the sub-communicator. (TASK-0045.02)
         for tag in self.barriers_used_by(worker) {
-            writeln!(out, "{pad}let bar_{} = WorldBar::new(&world);", tag.0).ok();
+            match self.barrier_kind.get(&tag).copied() {
+                Some(BarrierKind::Subcomm(color)) => {
+                    writeln!(
+                        out,
+                        "{pad}let bar_{} = SubcommBar::new(&split_{color});",
+                        tag.0
+                    )
+                    .ok();
+                }
+                // WholeWorld, or (defensively) a tag with no recorded kind
+                // — fall back to the whole-world barrier, which is correct
+                // whenever the participant set is in fact all used workers.
+                _ => {
+                    writeln!(out, "{pad}let bar_{} = WorldBar::new(&world);", tag.0).ok();
+                }
+            }
         }
 
         if !pre_init.is_empty() || !chans.is_empty() || !self.barriers_used_by(worker).is_empty() {
