@@ -2905,4 +2905,66 @@ mod tests {
              missing `ghost` callee; got {errors:?}"
         );
     }
+
+    /// TASK-0402 white-box: `UnknownLoopVar` is the lone untested sibling
+    /// in the `UnknownLoopVar` guard family. `reuse_inference`
+    /// (`sidecar_reuse.rs`), `partition_workers`, `partition_rows`,
+    /// `partition_blocks2d` (TASK-0400), and `block_transform`
+    /// (`tests/block_transform.rs`) all bite-test theirs; this test
+    /// closes the family (a `feedback-silent-sibling-defect` completion).
+    ///
+    /// Like the reuse sibling, it is a KEPT link-invariant tripwire
+    /// (panic-not-diagnostic policy: a typed error, not `unreachable!`).
+    /// For link-valid IR the iv set collected from the body `for`-loop
+    /// scope is always a subset of `name_iter_vars`: `build_acfg`'s
+    /// `collect_iter_var_names` and this pass's scope walk traverse the
+    /// SAME `IrStmt::For` nodes, so every body `for` var is present in
+    /// `name_iter_vars`. The guard therefore fires only on an
+    /// inconsistently-constructed `(LinkedIR, ACFG)` pair. We reproduce
+    /// exactly that: build a link-valid pair, then DELETE `y` from
+    /// `acfg.name_iter_vars` while the `for y` loop stays in the body —
+    /// the walk still collects `y` from scope but cannot resolve it.
+    ///
+    /// The index is `grid[y + 1]` (affine, coefficient +1) on purpose: a
+    /// non-unit coefficient exits earlier at `StridedAccessNotSupported`
+    /// (the `coeff != 1` arm) before the `name_iter_vars` lookup, so the
+    /// failing index MUST be coeff-1 for this guard to be the one that
+    /// fires.
+    #[test]
+    fn unknown_loop_var_guard_bites_whitebox() {
+        // for y : 1..15 { out[y] <-- K(grid[y + 1]) }
+        let stmts = vec![IrStmt::For {
+            var: "y".to_string(),
+            lo: ir_int(1),
+            hi: ir_int(15),
+            body: vec![IrStmt::Dataflow {
+                lhs: lhs("out", vec![ir_id("y")]),
+                rhs: ir_call(
+                    "K",
+                    vec![data_ref("grid", vec![ir_add(ir_id("y"), ir_int(1))])],
+                ),
+            }],
+        }];
+        let linked = build_linked(stmts, vec![16]);
+        let mut acfg = crate::acfg::build_acfg(&linked).expect("acfg build");
+
+        // Precondition: the link-valid ACFG carries `y`, so the deletion
+        // below is a genuine poison and not a no-op on an absent key.
+        assert!(
+            acfg.name_iter_vars.contains_key("y"),
+            "precondition: link-valid ACFG must carry the `y` iter-var"
+        );
+        // Poison: drop `y` from name_iter_vars while the `for y` loop
+        // stays in the body — the inconsistent `(LinkedIR, ACFG)` pair.
+        acfg.name_iter_vars.remove("y");
+
+        let err = apply_halo_inference(&linked, acfg)
+            .expect_err("a name_iter_vars missing the body iv must fail closed");
+        match err {
+            HaloInferenceError::UnknownLoopVar { var } => {
+                assert_eq!(var, "y", "UnknownLoopVar must name the missing iv");
+            }
+            other => panic!("expected UnknownLoopVar, got {other:?}"),
+        }
+    }
 }
