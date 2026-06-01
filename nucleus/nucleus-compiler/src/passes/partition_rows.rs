@@ -402,10 +402,14 @@ pub(crate) fn find_outer_of_2d(
 /// Map a [`PartitionBandError`] (from the shared band-computation
 /// helper) onto this pass's typed error. Mirrors
 /// `crate::passes::partition_workers::map_band_error` exactly — the
-/// L<N case surfaces as `InsufficientWork`; the defensive variants
-/// (ZeroWorkers / InvalidRange) also map to `InsufficientWork` to keep
-/// the error surface narrow at this layer (they're guarded upstream
-/// anyway).
+/// L<N case surfaces as `InsufficientWork`; the two other variants
+/// also map to `InsufficientWork` to keep the error surface narrow at
+/// this layer. `ZeroWorkers` is pre-empted by the worker-count check
+/// above (so the band helper always sees `>= 2` workers), while
+/// `InvalidRange` (hi < lo) is NOT gated upstream — the band helper
+/// itself is the fail-closed backstop for an inverted range (see the
+/// `partition_workers::map_band_error` docstring for the full rationale
+/// on why `eval_const` / the link step do not catch it).
 fn map_band_error(
     var: &str,
     lo: i64,

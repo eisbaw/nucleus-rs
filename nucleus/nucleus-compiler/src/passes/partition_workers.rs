@@ -368,15 +368,22 @@ fn find_loop(
 /// helper) onto this pass's typed error, carrying the loop variable
 /// name. Today the only band-helper variant that the partition_workers
 /// pre-validate can actually surface is `InsufficientWork` (L < N) —
-/// `ZeroWorkers` is caught upstream by the `NoMultiWorkerBody` check
-/// (workers.len() < 2 ⇒ already rejected); `InvalidRange` (hi < lo) is
-/// caught by the link step's `eval_const` invariant before reaching us.
+/// `ZeroWorkers` is pre-empted by the `NoMultiWorkerBody` check above
+/// (`body_workers.len() < 2 ⇒ already rejected`, so `body_workers.len()`
+/// is `>= 2` by the time the band helper runs). `InvalidRange` (hi < lo)
+/// is NOT gated upstream: `eval_const` (`acfg::build`) only evaluates the
+/// bound expressions to `i64`, it carries no range-direction invariant,
+/// and the link step's documented check order (build.rs steps 1–6) has
+/// no `hi >= lo` gate either. The actual backstop for an inverted range
+/// is the band helper itself — `compute_partition_bands` returns
+/// `InvalidRange` when `hi < lo` (passes::common), which we surface here.
 ///
-/// We map the latter two to a defensive `InsufficientWork` with the
-/// same (len, workers) payload to keep the error surface narrow; the
-/// diagnostic is still actionable (it forward-links to widening the
-/// range or shrinking the worker count). If a future link-step bug
-/// lets an inverted range through, the band helper still fails closed.
+/// We map the two non-`InsufficientWork` variants to a defensive
+/// `InsufficientWork` with the same (len, workers) payload to keep the
+/// error surface narrow; the diagnostic is still actionable (it
+/// forward-links to widening the range or shrinking the worker count).
+/// So if an inverted range ever reaches this pass, the band helper
+/// fails closed rather than emitting a degenerate partition.
 fn map_band_error(
     var: &str,
     lo: i64,
@@ -497,6 +504,32 @@ mod tests {
         assert!(
             msg.contains("reduce the worker count") && msg.contains("widen the loop range"),
             "msg must offer both fixes: {msg}"
+        );
+    }
+
+    #[test]
+    fn inverted_range_maps_to_insufficient_work_not_panic() {
+        // TASK-0408 doc-lie fix (half-(b)): the `map_band_error`
+        // docstring claims the band helper is the fail-closed backstop
+        // for an inverted range (hi < lo) because NO upstream gate
+        // (`eval_const` / link step) rejects it. That backstop is the
+        // `InvalidRange => InsufficientWork` arm of `map_band_error`,
+        // which was previously UNTESTED (only the `InsufficientWork`
+        // arm had a test). Pin it: an inverted range reaching the band
+        // helper surfaces `InvalidRange`, and `map_band_error` must turn
+        // that into a typed `PartitionError::InsufficientWork` (narrow
+        // error surface) — NOT a panic, NOT a silent skip.
+        let band_err = crate::passes::common::compute_partition_bands(10, 5, 2)
+            .expect_err("inverted range (hi < lo) must reject at the helper");
+        assert_eq!(
+            band_err,
+            crate::passes::common::PartitionBandError::InvalidRange { lo: 10, hi: 5 },
+            "band helper must classify hi < lo as InvalidRange"
+        );
+        let pass_err = map_band_error("i", 10, 5, 2, band_err);
+        assert!(
+            matches!(pass_err, PartitionError::InsufficientWork { ref var, lo: 10, hi: 5, workers: 2 } if var == "i"),
+            "InvalidRange must map to InsufficientWork{{var:i, 10..5, 2}}, got {pass_err:?}"
         );
     }
 }

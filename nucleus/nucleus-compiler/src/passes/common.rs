@@ -114,9 +114,13 @@ pub(crate) enum PartitionBandError {
     /// only.
     ZeroWorkers,
     /// `hi < lo`. The source range is degenerate (empty or inverted).
-    /// All in-tree examples produce `hi >= lo` from the link step's
-    /// `eval_const`, so this is a defensive guard against a malformed
-    /// synthetic ACFG; not reachable from valid user input.
+    /// All in-tree examples happen to produce `hi >= lo` (their bounds
+    /// are non-negative literals / consts), but this is NOT enforced
+    /// upstream: `eval_const` only evaluates the bound expressions, and
+    /// the link step has no range-direction gate. This variant is the
+    /// fail-closed backstop for a malformed synthetic ACFG or a future
+    /// inverted-range schedule; the partition passes map it to their
+    /// `InsufficientWork` surface (see `partition_workers::map_band_error`).
     InvalidRange { lo: i64, hi: i64 },
 }
 
