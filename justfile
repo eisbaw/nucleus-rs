@@ -190,6 +190,7 @@ ci:
     just check-narrative-doc-lie
     just check-doc-citation-staleness
     just check-doc-citation-staleness-bare
+    just check-doc-test-name-staleness
     just check-mega-files
     just check-doc-links
     just e2e
@@ -716,6 +717,96 @@ check-doc-citation-staleness-bare:
         exit 1; \
     fi; \
     echo "OK: every crate-resolvable, prose-unambiguous bare-basename citation is in range."
+
+# Doc test-name citation fence (TASK-0382.02, cycle-231).
+#
+# A THIRD orthogonal arm of the comment-doc-lie defence family
+# (alongside check-narrative-doc-lie / check-doc-citation-staleness /
+# -bare), catching a class NONE of those see: a back-tick-quoted
+# reference to a UNIT TEST by name -- the project's `task<NNNN>_<desc>`
+# convention -- in a `.rs` docstring/comment, where the named test no
+# longer exists as a `fn` (renamed or deleted). This is the same FAMILY
+# as the recurring "stale test-pin citation" doc-lie (memory:
+# feedback-verbatim-copy-comment-doc-lie, cycle-197). NB cycle-197's OWN
+# firing was a `module::descriptive_name`-shaped pin, which this fence
+# does NOT cover -- the broader back-ticked `mod::name` test-pin class
+# (~640 in-tree refs) is a candidate follow-up, not closed here. The
+# existing fences validate `.rs:N` LINE citations or narrative TOML
+# prose; none validate a back-ticked test-NAME.
+#
+# WHY THIS SHAPE IS ZERO-FP (the load-bearing boundary):
+#   - Token class: `task` + >=3 digits + snake-tail, BACK-TICK QUOTED.
+#     `task\d{3,}` is the project's test-naming convention; it is never
+#     an ordinary English word nor a codegen string literal. Codegen
+#     file names are `"kernels.rs"`-style DOUBLE-quoted literals (in the
+#     fence's gitignore-respected scan space: ~150 such literals, ~610
+#     `kernels.rs` mentions, ~2.3k bare `<base>.rs` mentions overall;
+#     plus tens of thousands more in gitignored generated output the
+#     fence never scans) -- and ZERO of them start with `task\d`. A
+#     back-tick + `task\d{3,}` is unambiguously a test ref.
+#   - Definitions are `fn task...` (NEVER back-tick-quoted), so the scan
+#     cannot mistake a definition for a reference.
+#   - Resolution is WORKSPACE-GLOBAL (not crate-scoped): test names are
+#     globally unique by the `task<NNNN>` convention, so a ref is
+#     satisfied by the test existing in ANY crate. Rule: the ref
+#     (trailing `*` of a `task<NNNN>_*` glob stripped) must be a literal
+#     PREFIX of some defined `fn task...` name. Prefix (not equality) so
+#     an abbreviated cite (`task0306_ac3` -> fn `task0306_ac3_inner_...`)
+#     and a glob-family cite (`task0299_*`) both resolve; a renamed cite
+#     (no fn begins with it any longer) FAILS.
+#   - SAFE asymmetry (cf. the bare fence): under-matching is SAFE (a
+#     missed lie, never a false alarm). The prefix rule only ever FAILS
+#     a cite that prefixes NO existing test -- which is exactly the lie.
+#
+# OUT OF SCOPE (honest limits -- all deferred, none can false-POSITIVE):
+#   - The general symbol FILE-RESIDENCE variant TASK-0382.02 originally
+#     framed ("`sym` in `base.rs`") is NOT built: the back-ticked-ident
+#     + back-ticked-`base.rs` co-occurrence has ~16 in-tree instances,
+#     but they are a MIX of true residence claims (`relay_one` defined
+#     in `runtime.rs`) and non-residence co-occurrences (a symbol
+#     EMITTED into a generated `main.rs`, or CALLED from `events.rs`) --
+#     so a zero-FP residence checker must disambiguate defined-in vs
+#     called-from vs emitted-into, which is the genuine hard part. Left
+#     deferred on TASK-0382.02 (its open deliverable); the `task<NNNN>`
+#     arm here is the feasible zero-FP subset.
+#   - Stale e2e-CELL-name cites (`gather_2out_loop` renamed -- the actual
+#     ec50108 lie) are a separate shape (validate vs e2e-matrix.toml,
+#     not `fn` defs) -- filed as TASK-0392.
+#   - `.md` (backlog history, excluded by design) and `.toml` (covered
+#     by check-narrative-doc-lie) are out of scope; this fence is `.rs`
+#     source docstrings/comments only.
+check-doc-test-name-staleness:
+    @echo "checking back-ticked task<NNNN> test-name citations resolve to a defined fn..."
+    @set -eu; \
+    defs=$(mktemp); refs=$(mktemp); \
+    trap "rm -f $defs $refs" EXIT; \
+    rg -o -g '*.rs' -g '!target/**' 'fn task[0-9]{3,}[_a-z0-9]*' . 2>/dev/null \
+        | sed 's/.*fn //' | sort -u > $defs || true; \
+    rg -o -n --no-heading -g '*.rs' -g '!target/**' \
+        '`task[0-9]{3,}[_a-z0-9]*\*?`' . 2>/dev/null > $refs || true; \
+    fail=0; \
+    while IFS= read -r rec; do \
+        [ -n "$rec" ] || continue; \
+        tok=${rec##*:}; \
+        loc=${rec%:*}; \
+        name=$(printf '%s' "$tok" | tr -d '`*'); \
+        [ -n "$name" ] || continue; \
+        if ! grep -qE "^${name}" $defs; then \
+            echo "  STALE test-name citation: $tok at $loc"; \
+            echo "    -> no defined 'fn task...' begins with '$name' (renamed or deleted test)."; \
+            fail=1; \
+        fi; \
+    done < $refs; \
+    if [ "$fail" -ne 0 ]; then \
+        echo ""; \
+        echo "FAIL: stale back-ticked test-name citation(s) (memory: feedback-comment-doc-lie-recurring / feedback-verbatim-copy-comment-doc-lie 'test-pin citation')."; \
+        echo "Fix (in order of preference):"; \
+        echo "  1. Update the cite to the current test name (re-grep 'fn <name>' to confirm)."; \
+        echo "  2. If the test was deleted, drop the citation or point it at the replacement."; \
+        echo "  3. If it is a deliberate glob family cite, ensure at least one 'fn <prefix>...' still exists."; \
+        exit 1; \
+    fi; \
+    echo "OK: every back-ticked task<NNNN> test-name citation resolves to a defined fn."
 
 # Mega-file regression-fence (TASK-0340 AC#5; slice 1 cycle 176, slice 2
 # cycle 177).
