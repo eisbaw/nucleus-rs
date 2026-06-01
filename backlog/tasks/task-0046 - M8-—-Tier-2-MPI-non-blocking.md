@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-05-17 23:08'
-updated_date: '2026-05-31 09:50'
+updated_date: '2026-06-01 16:42'
 labels:
   - M8
   - backend
@@ -90,4 +90,6 @@ AC DISPOSITION:
 FOLLOW-UPS FILED: TASK-0046.01 (example 9 / Comm_split), TASK-0046.02 (lift shared Plan to backend-common; de-dup mpi-blocking/mpi-nonblocking silent-sibling hazard).
 
 STATUS: In Progress (AC#3 genuinely partial; close after TASK-0045.02 + TASK-0046.01 land, or reword AC#2/#3/#6 per the disposition above with explicit sign-off).
+
+forward-carried from TASK-0046.02 (DONE, lift LANDED): the multi-worker SPMD MPI Plan mpi-nonblocking copied verbatim from mpi-blocking is now lifted into backend_common::mpi_plan, parameterised over the MpiRendezvous trait (sole variation = BACKEND_NAME + header banner + rendezvous prelude + universe-init/buffer-attach). The silent-sibling hazard the M8-entry cycle flagged is CLOSED — a future fix to host-election / rank-assignment / barrier-analysis / loud-reject Plan logic now lands in ONE place. The blocking-vs-buffered delta is the COMPLETE enumerable surface (BlockingRendezvous / BufferedRendezvous impls). Byte-identity preserved (check-mpi + check-mpi-nonblocking byte-exact). Commits 362a2a9/c9e5d6a/cefc976. This does NOT change the M8 AC#3 example-9 blocker (still gated on Comm_split / TASK-0045.02 via child TASK-0046.01); the lift is orthogonal de-dup.
 <!-- SECTION:NOTES:END -->
