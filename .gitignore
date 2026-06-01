@@ -19,3 +19,20 @@ backlog/email-preferences.json
 # tracker, etc.). Created by the harness; never load-bearing for
 # the project.
 .claude/scheduled_tasks.lock
+
+# Local scratch dir (TASK-0394 cycle-232): build/e2e logs, throwaway
+# emit dirs, generated backend .rs, etc. Never load-bearing for the
+# project. Load-bearing reason to ignore (not just declutter status):
+# the three doc-citation / test-name fences that scan from the repo
+# ROOT via ripgrep -- check-doc-citation-staleness,
+# check-doc-citation-staleness-bare, check-doc-test-name-staleness --
+# honour .gitignore. (check-mega-files / check-textual-replace-on-
+# codegen / check-include-str-coverage scan explicit nucleus/.../src
+# roots and never saw tmp/.) Un-ignored scratch .rs in tmp/ would be
+# scanned by those three and could RED `just ci` for whoever has a
+# stale file there (architect cycle-231 P3; latent today -- current
+# scratch trips neither pattern). No recipe reads ./tmp/
+# (the port-stress recipe uses the absolute /tmp/, not this dir).
+# NB: because the fences no longer scan tmp/, a fence bite-test must
+# inject into a tracked-crate path, not tmp/.
+tmp/
