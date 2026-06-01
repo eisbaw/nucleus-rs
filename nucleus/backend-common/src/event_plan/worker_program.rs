@@ -157,20 +157,18 @@ impl<T: EventTransport> Plan<'_, T> {
             accumulate_waits: &self.accumulate_waits,
             let_at_wait_data: &let_at_wait,
         };
-        // The walker emits chan_<rid>.push(...) / chan_<rid>.wait() /
-        // bar_<bid>.wait() — but barriers in the event backends don't
-        // lower to `bar_<bid>.wait()`. They go through CTRL-channel
-        // wire::barrier_cross instead, and the walker's prefix knob
-        // doesn't reach Event::Sync. So we cannot use the shared
-        // walker directly for the Sync arm — we route around it by
-        // emitting our own walker for Event::Sync.
-        //
-        // Pragmatic solution: extend the shared walker (already
-        // emitting `{prefix}bar_<tag>.wait()`) by ALSO declaring a
-        // `bar_<tag>` local on this worker that's a small CTRL-channel
-        // shim. The shim's `.wait()` calls wire::barrier_cross on the
-        // CTRL socket. That way the walker is reused VERBATIM, and the
-        // event-backend-specific work all lives in the emitted prelude.
+        // The shared walker is reused VERBATIM for ALL event variants,
+        // including Event::Sync — there is NO separate event dispatch
+        // here (the walker's Event::Sync arm emits `{prefix}bar_<tag>.wait()`
+        // exactly as for the thread backends). The only event-backend
+        // difference is what `bar_<tag>` resolves to: barriers in the
+        // event backends go through a CTRL-channel (wire::barrier_cross)
+        // rather than a `std::sync::Barrier`. We bridge that WITHOUT
+        // touching the walker by declaring a `bar_<tag>` local on this
+        // worker — a small CTRL-channel shim whose `.wait()` calls
+        // wire::barrier_cross on the CTRL socket. All event-backend-
+        // specific work therefore lives in the emitted prelude, not in
+        // any per-event match (so no Event variant can be dropped here).
         //
         // See emit_barrier_shims below.
         self.emit_barrier_shims(&mut out, worker, is_host)?;
