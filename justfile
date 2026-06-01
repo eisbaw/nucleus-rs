@@ -526,6 +526,7 @@ check-narrative-doc-lie:
 check-doc-citation-staleness:
     @echo "checking fully-qualified nucleus/*.rs:N citations resolve (exists + line in range)..."
     @set -eu; \
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "FAIL: doc-citation fence must run inside a git work-tree (it scans git ls-files; TASK-0395)"; exit 1; }; \
     cites_f=$(mktemp); \
     trap "rm -f $cites_f" EXIT; \
     git ls-files -z -- ':!backlog/tasks' \
@@ -679,6 +680,7 @@ check-doc-citation-staleness:
 check-doc-citation-staleness-bare:
     @echo "checking bare-basename <file>.rs:N citations (crate-scoped, prose-aware)..."
     @set -eu; \
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "FAIL: doc-citation fence must run inside a git work-tree (it scans git ls-files; TASK-0395)"; exit 1; }; \
     win=3; \
     set -- backend-common nucleus-compiler driver e2e nucleus mp-tcp-common \
         test-common embedded-pattern mp-tcp-bufsync mp-tcp-event mp-tcp-poll \
@@ -799,6 +801,7 @@ check-doc-citation-staleness-bare:
 check-doc-test-name-staleness:
     @echo "checking back-ticked task<NNNN> test-name citations resolve to a defined fn..."
     @set -eu; \
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "FAIL: doc-citation fence must run inside a git work-tree (it scans git ls-files; TASK-0395)"; exit 1; }; \
     defs=$(mktemp); refs=$(mktemp); \
     trap "rm -f $defs $refs" EXIT; \
     git ls-files -z -- '*.rs' \
@@ -897,6 +900,7 @@ check-doc-test-name-staleness:
 check-doc-cell-path-staleness:
     @echo "checking back-ticked e2e cell-path citations (NN-name/variant) resolve to a schedule file..."
     @set -eu; \
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "FAIL: doc-citation fence must run inside a git work-tree (it scans git ls-files; TASK-0395)"; exit 1; }; \
     refs=$(mktemp); \
     trap "rm -f $refs" EXIT; \
     git ls-files -z -- '*.rs' \
