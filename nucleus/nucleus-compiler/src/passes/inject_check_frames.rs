@@ -481,4 +481,65 @@ mod tests {
             other => panic!("expected outer Event::Loop, got {other:?}"),
         }
     }
+
+    #[test]
+    fn eliminated_name_check_dropped_per_entry_valid_sibling_still_injects() {
+        // TASK-0403 prove-the-silent-drop: the `name_iter_vars.get(name)`
+        // MISS arm (`let Some(iv) = ... else { continue }`, ~line 97) is a
+        // PER-ENTRY `continue`, NOT a loop-break. A `check loop` whose name
+        // is absent from `name_iter_vars` (an eliminated / non-resolving
+        // algorithm loop) is dropped WITHOUT swallowing a co-present valid
+        // directive. `unknown_check_name_silently_dropped` already pins the
+        // drop in isolation (no panic, no frame); this pins that the drop
+        // COMPOSES — a live sibling still injects.
+        //
+        // The BTreeMap key ordering is load-bearing: "ghost" < "n", so the
+        // dropped entry is iterated FIRST. If line 97 used `break` instead
+        // of `continue`, the valid "n" frame would be lost and this test
+        // would fail — that is the bite.
+        let pw: BTreeMap<WorkerId, Vec<Event>> = vec![(
+            WorkerId(0),
+            vec![Event::loop_over(IterVar(0), 0..10, vec![fire()])],
+        )]
+        .into_iter()
+        .collect();
+        // Only "n" resolves to an IterVar; "ghost" is absent (eliminated).
+        let names: BTreeMap<String, IterVar> =
+            vec![("n".to_string(), IterVar(0))].into_iter().collect();
+        let checks: BTreeMap<String, ResolvedCheckDirective> = vec![
+            (
+                // sorts before "n"; absent from `names` -> dropped at line 97.
+                "ghost".to_string(),
+                ResolvedCheckDirective {
+                    var: "ghost".to_string(),
+                    asserts: vec![ResolvedCheckAssert::LatencyMax(ms(99))],
+                    var_span: None,
+                },
+            ),
+            (
+                // valid; MUST still inject despite the earlier drop.
+                "n".to_string(),
+                ResolvedCheckDirective {
+                    var: "n".to_string(),
+                    asserts: vec![ResolvedCheckAssert::LatencyMax(ms(10))],
+                    var_span: None,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let out = inject_check_frames(pw, &checks, &names);
+        let w0 = &out[&WorkerId(0)];
+        match &w0[0] {
+            Event::Loop { check_frame, .. } => {
+                let cf = check_frame
+                    .as_ref()
+                    .expect("valid `n` check must still inject after the `ghost` drop");
+                // The valid sibling's 10ms threshold, NOT the dropped ghost's 99ms.
+                assert_eq!(cf.latency_max_ns, 10_000_000, "n frame, not ghost");
+                assert_eq!(cf.loop_var, "n", "no misbind to the eliminated name");
+            }
+            other => panic!("expected Event::Loop, got {other:?}"),
+        }
+    }
 }
