@@ -78,15 +78,18 @@ pub mod tcp_plan;
 //
 // In practice (verified TASK-0407) consumers reach almost all of these
 // items via the *submodule* path — `backend_common::check_frame::X`,
-// `backend_common::render::X` — and only four are consumed through the
+// `backend_common::render::X` — and only three are consumed through the
 // crate root today: `EmitError` (which every backend further re-exports
-// from its own public surface), `elect_host_from_name_workers`,
-// `elect_host_from_worker_names`, and `render_fire_args_nostd`. The
-// remaining root re-exports are an intentionally-offered convenience
-// layer with no current root-path consumer; they are kept (not narrowed)
-// because narrowing a re-exported, doc-linked item silently breaks
-// intra-doc links the `cargo doc` step does not gate (see
-// feedback-visibility-tighten-doclink-trap).
+// from its own public surface), `elect_host_from_name_workers`, and
+// `elect_host_from_worker_names`. All the rest — including
+// `render_fire_args_nostd` (embedded-pattern reaches it as
+// `backend_common::render::render_fire_args_nostd`) — have zero
+// root-path consumers today: an intentionally-offered convenience layer.
+// They are kept (not narrowed) because narrowing a re-exported,
+// doc-linked item silently breaks intra-doc links the `cargo doc` step
+// does not gate (see feedback-visibility-tighten-doclink-trap).
+// Removing the zero-consumer root re-exports outright is the subject of
+// TASK-0411 (doc-link-safe per a cargo-doc diff; EmitError's root link stays).
 pub use check_frame::{
     collect_count_check_frames, emit_count_branch, emit_count_guard_local,
     emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,
