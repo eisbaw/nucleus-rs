@@ -45,7 +45,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// with genuine per-call inputs. Local allow (same rationale as
     /// the shared `multi_worker_walker::render_worker_events_inner`).
     #[allow(clippy::too_many_arguments)]
-    pub fn render_events(
+    pub(crate) fn render_events(
         &self,
         events: &[Event],
         out: &mut String,

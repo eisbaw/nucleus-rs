@@ -42,7 +42,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// `data_<dst>`. Host stays the sole party that owns the (data,
     /// ctrl)-pair-per-(host, worker) topology; no worker-to-worker
     /// socket is added.
-    pub fn data_conn_var(
+    pub(crate) fn data_conn_var(
         &self,
         _worker: WorkerId,
         is_host: bool,
@@ -74,7 +74,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// Empty for any src with no w2w pushes. Empty overall if the
     /// schedule has no w2w transfers (the common host↔worker-only
     /// case), and then `render_relay_phase` is a no-op.
-    pub fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
+    pub(crate) fn relay_schedule(&self) -> Result<BTreeMap<WorkerId, Vec<RelayHop>>, EmitError> {
         let mut out: BTreeMap<WorkerId, Vec<RelayHop>> = BTreeMap::new();
         for (src, events) in self.per_worker.iter() {
             if *src == self.host_worker {
@@ -105,7 +105,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// a name in `NameTables` (a contract violation the existing
     /// Push/Wait emit also fails-loud on — cycle-148 architect P2.2
     /// fold-back replaced an earlier silent comment-fallback).
-    pub fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
+    pub(crate) fn render_relay_phase(&self, indent: usize) -> Result<String, EmitError> {
         let pad = "    ".repeat(indent);
         let schedule = self.relay_schedule()?;
         if schedule.is_empty() {
@@ -138,7 +138,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// data it writes via an indexed Fire output and never
     /// whole-array. Sorted by name. SAME definition as
     /// pthreads-sync's multi-worker `collect_pre_init`.
-    pub fn collect_pre_init(&self, worker: WorkerId) -> Result<Vec<(String, DataId)>, EmitError> {
+    pub(crate) fn collect_pre_init(&self, worker: WorkerId) -> Result<Vec<(String, DataId)>, EmitError> {
         let evs = &self.per_worker[&worker];
         let mut waited: BTreeSet<DataId> = BTreeSet::new();
         let mut whole: BTreeSet<DataId> = BTreeSet::new();
@@ -193,7 +193,7 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// Largest single cross-worker payload in bytes (sum of element
     /// byte widths). Drives SO_*BUF sizing in run.sh. Sized from the
     /// sidecar `ResolvedType` — no AlgoIR.
-    pub fn max_payload_bytes(&self) -> Result<usize, EmitError> {
+    pub(crate) fn max_payload_bytes(&self) -> Result<usize, EmitError> {
         let mut max = 0usize;
         for d in self.xfer_ids.keys() {
             let name = self.data_name(*d)?;

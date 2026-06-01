@@ -209,7 +209,7 @@ impl<'a, W: WirePrimitives> Plan<'a, W> {
             .unwrap_or_else(|| format!("w{}", w.0))
     }
 
-    pub fn data_name(&self, d: DataId) -> Result<String, EmitError> {
+    pub(crate) fn data_name(&self, d: DataId) -> Result<String, EmitError> {
         self.names.data.get(&d).cloned().ok_or_else(|| {
             EmitError::ContractGap(format!("data id {d:?} has no name in NameTables"))
         })
@@ -217,7 +217,7 @@ impl<'a, W: WirePrimitives> Plan<'a, W> {
 
     /// Non-host used workers that exchange anything with the host
     /// (every used worker, in the tier-1 set), in WorkerId order.
-    pub fn non_host_workers(&self) -> Vec<WorkerId> {
+    pub(crate) fn non_host_workers(&self) -> Vec<WorkerId> {
         self.used_workers
             .iter()
             .copied()
@@ -227,7 +227,7 @@ impl<'a, W: WirePrimitives> Plan<'a, W> {
 
     /// Control-channel variable a given worker uses to barrier with
     /// `peer`. Host: `ctrl_<peer>`; non-host worker: `ctrl_host`.
-    pub fn ctrl_var(&self, self_is_host: bool, peer: WorkerId) -> String {
+    pub(crate) fn ctrl_var(&self, self_is_host: bool, peer: WorkerId) -> String {
         if self_is_host {
             format!("ctrl_{}", self.worker_name(peer))
         } else {
