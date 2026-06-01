@@ -3,11 +3,11 @@ id: TASK-0402
 title: >-
   Bite test for HaloInferenceError::UnknownLoopVar (lone untested sibling in the
   UnknownLoopVar guard family)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-06-01 05:13'
-updated_date: '2026-06-01 05:13'
+updated_date: '2026-06-01 05:54'
 labels:
   - hardening
   - testing
@@ -44,3 +44,19 @@ POLICY: keep typed error (panic-not-diagnostic, PRD 10); do NOT convert to unrea
 6. Parallel read-only review: qa-test-runner + mped-architect on the commit range.
 7. Commit: nucleus-compiler: TASK-0402 ...
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DELIVERED (commit d1aeffc): white-box bite test unknown_loop_var_guard_bites_whitebox in halo_inference.rs inline #[cfg(test)] mod. Poisons a link-valid (LinkedIR, ACFG) pair (remove y from acfg.name_iter_vars, keep the for y loop) and asserts apply_halo_inference returns Err(UnknownLoopVar { var: y }). Index grid[y+1] (coeff +1) reaches the name_iter_vars lookup past the StridedAccessNotSupported arm. Kept typed (panic-not-diagnostic, PRD 10), NOT unreachable!. Mutation-proven: remove poison => Ok => test fails at expect_err; positive_3point_stencil_along_y (identical body, asserts Ok) is the standing un-poisoned control.
+
+CLOSES the UnknownLoopVar guard family: reuse_inference, partition_workers/rows/blocks2d (TASK-0400), block_transform (already tested) all bite-test theirs; halo was the lone untested member (feedback-silent-sibling-defect).
+
+AUDIT CONCLUSION (cycle-236, valuable beyond this test): a workspace-wide audit of every compiler-pass error enum vs bite-test coverage found guard-bite coverage is ESSENTIALLY COMPLETE. After this test, no genuinely-reachable typed error variant in the pass enums (PartitionError, PartitionRows/Blocks2d, Boundedness, BlockTransform, Deadlock, ReuseInference, HaloInference, SyncInject, TransferInject, PetriAnalysis) lacks a bite test. The prove-the-check-bites sub-wave for pass error enums is now SATURATED. Remaining adjacent coverage = SILENT-DROP guards (different category): filed TASK-0403 (inject_check_frames name_iter_vars.get silent continue).
+
+DURABLE METHODOLOGY GOTCHA (feed-forward to any future coverage-audit cycle): an Explore/search subagent tasked to map variant-vs-test coverage scanned only tests/ dirs and MISSED the large inline #[cfg(test)] modules co-located in the pass SOURCE files (halo_inference.rs ~1400 LoC of inline tests; reuse_inference.rs ~800). It reported 12 untested variants; the real gap was 1. Always grep the SOURCE files inline test mods, not just tests/, before trusting a coverage-gap claim (cheap-empirical-verification beats the narrative; orchestrator caught this by re-grepping source files directly).
+
+REVIEW FOLD-BACK (architect P3, in-thread pre-close): docstring corrected to attribute name_iter_vars population to build_acfg/collect_iter_var_names (not the link step); family roster amended to add block_transform sibling. P3c (inject_check_frames silent-drop) => TASK-0403.
+
+GATE (qa-test-runner re-ran, NOT implementer-claimed; GO): build clean; clippy 0/0; test 1231/0/3 dev; test-release 1230/0/3 (delta 1 = debug_assert-gated should_panic compiled out); e2e 385/328/0/57/0 x3 stable. architect GO (no P1/P2; trace-confirmed the test bites the intended variant non-vacuously).
+<!-- SECTION:FINAL_SUMMARY:END -->
