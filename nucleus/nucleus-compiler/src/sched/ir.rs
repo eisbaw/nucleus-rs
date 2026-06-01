@@ -630,41 +630,6 @@ pub enum SchedLowerErrorKind {
     /// `var` is the loop variable carrying the option.
     UnitPipelineOption { var: String },
 
-    /// Unimplemented `partition=` policy on a loop. **Structurally
-    /// dead today** — kept as a ready-to-use diagnostic shape, NOT a
-    /// load-bearing exhaustiveness mechanism (architect-review F1 of
-    /// TASK-0259 cycle 80: the exhaustiveness guarantee comes from
-    /// the exhaustive `match k { Workers | Rows | Blocks2d }` in
-    /// `lower_loop_option`, not from this variant).
-    ///
-    /// After TASK-0259 (cycle 80) all three current variants have
-    /// downstream consumers:
-    ///
-    /// - [`PartitionKind::Workers`] —
-    ///   [`crate::passes::partition_workers`] (TASK-0212).
-    /// - [`PartitionKind::Rows`] —
-    ///   [`crate::passes::partition_rows`] (TASK-0258).
-    /// - [`PartitionKind::Blocks2d`] —
-    ///   [`crate::passes::partition_blocks2d`] (TASK-0259).
-    ///
-    /// **No live code path constructs this variant today.** When a
-    /// 4th `PartitionKind` lands without a consumer, the implementer
-    /// adds a new match arm in `lower_loop_option` constructing this
-    /// variant — the Display arm is already wired. Until then this is
-    /// pure decoration; the compiler's exhaustive-match check is what
-    /// enforces "decide on every variant".
-    ///
-    /// PRD §6.3.3 mandates compile-time rejection of bad loop-option
-    /// combinations ("Bad combinations rejected at compile time, not
-    /// at runtime"). The pattern this variant captures: variant added
-    /// to `PartitionKind` → match arm in `lower_loop_option` → either
-    /// route to a real consumer pass OR construct this variant for a
-    /// typed reject.
-    ///
-    /// `var` is the loop variable carrying the option; `kind` is the
-    /// rejected partition policy.
-    UnsupportedPartitionKind { var: String, kind: PartitionKind },
-
     // ----- Multiple workers decls -----
     /// More than one `workers = ...` directive in a single schedule.
     /// Grammar §1 phrases the workers decl as a single declaration;
@@ -807,32 +772,6 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
                  (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
             ),
-            SchedLowerErrorKind::UnsupportedPartitionKind { var, kind } => {
-                // Map the AST variant to its source-level keyword (the
-                // parser at sched/parser.rs:573-575 binds these three
-                // keywords to these variants — keep in sync).
-                //
-                // Structurally dead since TASK-0259 cycle 80; no live
-                // constructor reaches this Display arm. Preserved as a
-                // ready-to-use diagnostic shape for any future
-                // `PartitionKind` variant that lands without a consumer
-                // (architect-review F1 of TASK-0259: doc tightened to
-                // remove the "exhaustiveness placeholder" overclaim —
-                // the exhaustive match in lower_loop_option is what
-                // enforces exhaustiveness, not this variant).
-                let keyword = match kind {
-                    PartitionKind::Rows => "rows",
-                    PartitionKind::Blocks2d => "blocks2d",
-                    PartitionKind::Workers => "workers",
-                };
-                write!(
-                    f,
-                    "loop `{var}` has `partition={keyword}`; this `partition=` policy is \
-                     unimplemented at sched-lower (no downstream consumer) and would silently \
-                     lower to a no-op. Use one of the implemented policies (`partition=workers`, \
-                     `partition=rows`, `partition=blocks2d`), or omit the directive. PRD §6.3.3."
-                )
-            }
             SchedLowerErrorKind::ZeroLatencyMax { var } => write!(
                 f,
                 "`check loop {var} : latency_max = 0...` is rejected; \

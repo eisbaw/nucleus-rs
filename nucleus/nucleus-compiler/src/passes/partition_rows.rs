@@ -96,10 +96,11 @@
 //!   uses the same outer-of-2D structural check as this pass but
 //!   partitions BOTH axes across a 2D grid of workers. After
 //!   TASK-0259, sched-lower no longer rejects any
-//!   [`crate::sched::PartitionKind`] variant; the
-//!   [`crate::sched::SchedLowerErrorKind::UnsupportedPartitionKind`]
-//!   variant is retained for exhaustiveness against future
-//!   `PartitionKind` extensions.
+//!   [`crate::sched::PartitionKind`] variant; the wildcard-free match
+//!   in `lower_loop_option` is the exhaustiveness guard against future
+//!   `PartitionKind` extensions (TASK-0410, cycle 237, removed the
+//!   never-constructed `UnsupportedPartitionKind` error variant that
+//!   used to claim this role).
 //!
 //! ## Pipeline placement
 //!

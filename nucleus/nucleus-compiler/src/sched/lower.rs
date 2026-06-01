@@ -157,7 +157,6 @@ use super::ir::{
 /// | `ConflictingTransferMode`              | Independent | yes               | never |
 /// | `ZeroLoopOption` / `ZeroBufferOption`  | Independent | yes               | never |
 /// | `UnitPipelineOption`                   | Independent | yes               | never |
-/// | `UnsupportedPartitionKind`             | Independent | yes               | never |
 /// | `ZeroLatencyMax` / `DuplicateCheckAssertion` | Independent | yes        | never |
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
@@ -1092,15 +1091,16 @@ fn lower_loop_option(
         //   square grid decomposition of the worker count. Same
         //   pass-entry reject discipline.
         //
-        // sched-lower no longer rejects any `PartitionKind` variant;
-        // the exhaustiveness guard is THIS match below, NOT
-        // [`SchedLowerErrorKind::UnsupportedPartitionKind`] — that
-        // variant is structurally dead and merely RESERVED as a
-        // ready-to-use diagnostic shape for the next `PartitionKind`
-        // addition that lands without a consumer (architect-review F1
-        // of TASK-0259 cycle 80: the in-line "retained for
-        // exhaustiveness" framing overclaimed the variant's role; the
-        // exhaustive match IS the exhaustiveness mechanism).
+        // sched-lower no longer rejects any `PartitionKind` variant.
+        // The exhaustiveness guard is THIS wildcard-free match below:
+        // a 4th `PartitionKind` variant added without a consumer would
+        // fail to compile here, forcing the implementer to decide on it
+        // (PRD §6.3.3: bad loop-option combinations rejected at compile
+        // time, not at runtime). TASK-0410 (cycle 237) removed the
+        // structurally-dead `UnsupportedPartitionKind` error variant
+        // that previously claimed this role — it was never constructed
+        // and the exhaustive match is the real mechanism (architect-
+        // review F1 of TASK-0259 cycle 80).
         LoopOption::Partition(k) => match k {
             super::ast::PartitionKind::Workers => {
                 ResolvedLoopOption::Partition(super::ast::PartitionKind::Workers)
