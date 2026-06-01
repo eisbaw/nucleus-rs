@@ -352,6 +352,13 @@ pub(crate) fn eval_const_int(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst
     match e {
         IrExpr::IntLit(v) => Some(*v),
         IrExpr::Ident(name) => consts.get(name).map(|c| c.value),
+        // TASK-0398: this `checked_neg` overflow→None is INTENTIONALLY
+        // lossy and SAFE here (unlike `build.rs`'s loop-bound use, which
+        // needed an overflow-distinct diagnostic). A `None` here just
+        // means "not a foldable affine constant", so the caller takes the
+        // conservative non-affine path — no user-facing diagnostic is
+        // owed, so collapsing overflow into None is correct. Do not
+        // re-flag in a `checked_neg` sweep.
         IrExpr::Neg(inner) => eval_const_int(inner, consts).and_then(i64::checked_neg),
         IrExpr::BinOp(op, lhs, rhs) => {
             let l = eval_const_int(lhs, consts)?;

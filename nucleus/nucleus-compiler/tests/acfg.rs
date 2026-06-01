@@ -643,6 +643,9 @@ schedule for "../prog.algo.nuc" {
                 "offending expr is the enclosing iter var `i`, carried verbatim"
             );
         }
+        // TASK-0398: a genuinely non-const bound must route to
+        // NonConstLoopBound, NOT the new OverflowingLoopBound.
+        other => panic!("expected NonConstLoopBound, got {other:?}"),
     }
 
     // The Display string carries an actionable, source-free
@@ -651,4 +654,101 @@ schedule for "../prog.algo.nuc" {
     assert!(msg.contains("loop `j`"), "msg: {msg}");
     assert!(msg.contains("non-constant"), "msg: {msg}");
     assert!(msg.contains("compile-time"), "msg: {msg}");
+}
+
+// --------------------------------------------------------------------
+// TASK-0398: an OVERFLOWING constant loop bound is a DISTINCT diagnostic
+// from a non-const one. Before TASK-0398, build.rs's `eval_const`
+// returned `Option<i64>` and collapsed "not a constant" with "constant
+// that overflows i64 / divides by zero", so an overflowing *constant*
+// bound was mis-reported as `NonConstLoopBound` ("use a constant bound"
+// — which the user already did). These pin the split: overflow and
+// div-by-zero now surface as `OverflowingLoopBound`, while the genuine
+// non-const case above still surfaces as `NonConstLoopBound`.
+// --------------------------------------------------------------------
+
+/// Inline algo with a single `for j` loop whose upper bound is the given
+/// constant expression, plus a host-only schedule. Mirrors the
+/// non-const-bound test's shape so the only variable is the bound expr.
+fn linked_with_loop_bound(bound_src: &str) -> nucleus_compiler::LinkedIR {
+    let algo = format!(
+        r#"
+const N : usize = 8;
+data a : i32[N];
+data b : i32[N];
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+a <-- load_input();
+for j : 0 .. {bound_src} {{
+    b[j] <-- id(a[j]);
+}}
+save_output(b);
+"#
+    );
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+    linked_from_inline_src(&algo, sched)
+}
+
+#[test]
+fn build_acfg_overflowing_const_loop_bound_is_overflow_error_not_nonconst() {
+    use nucleus_compiler::acfg::{build_acfg, BuildAcfgError, LoopBoundEnd};
+
+    // `-(0 - i64::MAX - 1)` is a pure constant expression that evaluates
+    // to i64::MIN, whose negation overflows. It IS a constant — so it
+    // must NOT be reported as a non-const bound.
+    let linked = linked_with_loop_bound("-(0 - 9223372036854775807 - 1)");
+    let err = build_acfg(&linked).expect_err("overflowing const bound must be a typed error");
+
+    match &err {
+        BuildAcfgError::OverflowingLoopBound {
+            var, end, detail, ..
+        } => {
+            assert_eq!(var, "j", "offending loop variable");
+            assert_eq!(*end, LoopBoundEnd::Upper);
+            assert!(
+                detail.contains("overflow"),
+                "detail should name the overflow: {detail}"
+            );
+        }
+        other => panic!("expected OverflowingLoopBound, got {other:?}"),
+    }
+
+    // The Display must NOT mis-advise "non-constant" — it must say the
+    // bound is a constant that overflows.
+    let msg = err.to_string();
+    assert!(msg.contains("loop `j`"), "msg: {msg}");
+    assert!(
+        msg.contains("constant expression but cannot be folded"),
+        "msg must frame it as a foldable-failure, not non-const: {msg}"
+    );
+    assert!(!msg.contains("non-constant"), "must not mis-advise: {msg}");
+}
+
+#[test]
+fn build_acfg_divide_by_zero_const_loop_bound_is_overflow_error() {
+    use nucleus_compiler::acfg::{build_acfg, BuildAcfgError};
+
+    // `8 / 0` is a constant expression with a division by zero — also a
+    // fold failure, not a non-const bound.
+    let linked = linked_with_loop_bound("8 / 0");
+    let err = build_acfg(&linked).expect_err("div-by-zero const bound must be a typed error");
+
+    match &err {
+        BuildAcfgError::OverflowingLoopBound { var, detail, .. } => {
+            assert_eq!(var, "j");
+            assert!(
+                detail.contains("division by zero"),
+                "detail should name div-by-zero: {detail}"
+            );
+        }
+        other => panic!("expected OverflowingLoopBound, got {other:?}"),
+    }
 }

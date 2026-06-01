@@ -71,6 +71,32 @@ pub enum BuildAcfgError {
         /// The offending bound expression, verbatim from the IR.
         expr: IrExpr,
     },
+    /// A `for` loop bound IS a compile-time constant expression, but
+    /// folding it to an `i64` FAILED — the arithmetic overflowed `i64`
+    /// or divided by zero.
+    ///
+    /// This is DISTINCT from [`BuildAcfgError::NonConstLoopBound`]
+    /// (TASK-0398): there the bound is not a constant at all (an
+    /// iter-var / data / call); here the user *did* write a constant,
+    /// it just does not fit `i64` (e.g. `-(0 - 9223372036854775807 - 1)`
+    /// = `i64::MIN`, whose negation overflows) or divides by zero. Before
+    /// TASK-0398 both cases collapsed to `NonConstLoopBound`, whose
+    /// "use a constant bound" advice is wrong for this case — the user
+    /// already used a constant. Carries the loop variable, which end
+    /// failed, the offending expression verbatim, and a human `detail`
+    /// naming the failure ("arithmetic overflow (mul)" / "division by
+    /// zero").
+    OverflowingLoopBound {
+        /// The loop variable whose bound overflowed (e.g. `j`).
+        var: String,
+        /// Which end of the range failed (`lower` or `upper`).
+        end: LoopBoundEnd,
+        /// The offending bound expression, verbatim from the IR.
+        expr: IrExpr,
+        /// Human detail naming the fold failure, e.g.
+        /// `"arithmetic overflow (mul)"` or `"division by zero"`.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for BuildAcfgError {
@@ -86,6 +112,20 @@ impl std::fmt::Display for BuildAcfgError {
                  not expressible in v2). Use a constant bound, or move \
                  the data-dependent extent into a kernel. (First-class \
                  support is future language work — see PRD §6.2.5.)"
+            ),
+            BuildAcfgError::OverflowingLoopBound {
+                var,
+                end,
+                expr,
+                detail,
+            } => write!(
+                f,
+                "loop `{var}` has a {end} bound `{expr:?}` that is a \
+                 compile-time constant expression but cannot be folded to \
+                 an `i64`: {detail}. The bound must evaluate within `i64` \
+                 range and must not divide by zero. Adjust the constant so \
+                 it fits (this is NOT the `for j : 0 .. i` non-const case — \
+                 the bound here IS constant, it just overflows)."
             ),
         }
     }

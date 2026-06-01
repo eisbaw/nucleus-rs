@@ -176,6 +176,38 @@ fn build_seq(stmts: &[IrStmt], ctx: &BuildCtx<'_>) -> Result<Vec<ACFGNode>, Buil
     Ok(out)
 }
 
+/// Map a [`ConstFoldError`] from a loop bound to the right typed
+/// [`BuildAcfgError`] (TASK-0398): a genuinely non-const bound stays
+/// `NonConstLoopBound`; a constant bound that overflows `i64` or divides
+/// by zero becomes `OverflowingLoopBound`, so the diagnostic does not
+/// mis-advise "use a constant bound" for a bound that already is one.
+fn loop_bound_error(
+    e: ConstFoldError,
+    var: &str,
+    end: LoopBoundEnd,
+    expr: &IrExpr,
+) -> BuildAcfgError {
+    match e {
+        ConstFoldError::NotConst => BuildAcfgError::NonConstLoopBound {
+            var: var.to_string(),
+            end,
+            expr: expr.clone(),
+        },
+        ConstFoldError::Overflow(op) => BuildAcfgError::OverflowingLoopBound {
+            var: var.to_string(),
+            end,
+            expr: expr.clone(),
+            detail: format!("arithmetic overflow ({op})"),
+        },
+        ConstFoldError::DivByZero => BuildAcfgError::OverflowingLoopBound {
+            var: var.to_string(),
+            end,
+            expr: expr.clone(),
+            detail: "division by zero".to_string(),
+        },
+    }
+}
+
 fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, BuildAcfgError> {
     match stmt {
         IrStmt::Dataflow { lhs, rhs } => Ok(build_dataflow(lhs, rhs, ctx)),
@@ -189,21 +221,13 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<Option<ACFGNode>, Bui
             // A non-const loop bound is *diagnosable user input*: the
             // algorithm grammar admits an enclosing iter var in a bound
             // (`for j : 0 .. i`), which lowers/links fine but cannot be
-            // folded here. Typed error, not a panic (TASK-0179).
-            let lo_v = eval_const(lo, &ctx.algo.consts).ok_or_else(|| {
-                BuildAcfgError::NonConstLoopBound {
-                    var: var.clone(),
-                    end: LoopBoundEnd::Lower,
-                    expr: lo.clone(),
-                }
-            })?;
-            let hi_v = eval_const(hi, &ctx.algo.consts).ok_or_else(|| {
-                BuildAcfgError::NonConstLoopBound {
-                    var: var.clone(),
-                    end: LoopBoundEnd::Upper,
-                    expr: hi.clone(),
-                }
-            })?;
+            // folded here. Typed error, not a panic (TASK-0179). An
+            // overflowing CONSTANT bound is a distinct error from a
+            // non-const one (TASK-0398) — `loop_bound_error` routes each.
+            let lo_v = try_eval_const(lo, &ctx.algo.consts)
+                .map_err(|e| loop_bound_error(e, var, LoopBoundEnd::Lower, lo))?;
+            let hi_v = try_eval_const(hi, &ctx.algo.consts)
+                .map_err(|e| loop_bound_error(e, var, LoopBoundEnd::Upper, hi))?;
             let body_nodes = build_seq(body, ctx)?;
             // A `Repeat` body is a single ACFGNode. If the body has
             // one statement we still wrap in Sequence for uniform
@@ -539,47 +563,90 @@ fn collect_dataref_access_expr(
     }
 }
 
-/// Evaluate an `IrExpr` to an `i64` constant. Returns `None` if the
-/// expression contains any non-const construct (DataRef, Call, an
-/// `Ident` that isn't a declared const).
+/// Why [`try_eval_const`] could not fold an `IrExpr` to an `i64`.
 ///
-/// Iteration variables are NOT looked up here — loop bounds in the
-/// algorithm grammar are const expressions, and nested-loop bounds
-/// that reference an outer iter var would be a parser/lowering bug.
-/// If a real example demands iter-var-dependent bounds, the lowering
-/// pass tightens; we panic here on `None`.
+/// Distinguishing these is load-bearing for loop-bound diagnostics
+/// (TASK-0398): a non-const bound and an *overflowing* constant bound are
+/// different user errors and must surface as different
+/// [`BuildAcfgError`] variants. The old `Option`-only `eval_const`
+/// collapsed them, so an overflowing constant bound was mis-reported as
+/// `NonConstLoopBound` ("use a constant bound" — which the user already
+/// did).
+#[derive(Debug)]
+pub(crate) enum ConstFoldError {
+    /// The expression contains a non-const construct — a `DataRef`, a
+    /// `Call`, or an `Ident` that is not a declared `const` (e.g. an
+    /// enclosing iteration variable). Not a compile-time constant.
+    NotConst,
+    /// The expression IS a constant but its `i64` arithmetic overflowed;
+    /// carries the operation name (`"add"`/`"sub"`/`"mul"`/`"div"`/
+    /// `"mod"`/`"negate"`).
+    Overflow(String),
+    /// The expression IS a constant but contains a division or modulo by
+    /// zero.
+    DivByZero,
+}
+
+/// Evaluate an `IrExpr` to an `i64` constant, distinguishing WHY it
+/// could not be folded (see [`ConstFoldError`]).
 ///
-/// `pub(crate)` so the link step can reuse it for TASK-0217's
-/// iteration-count check without duplicating the evaluator.
-pub(crate) fn eval_const(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Option<i64> {
+/// Iteration variables are NOT looked up here — only declared `const`s
+/// resolve; an enclosing iter var in a bound (`for j : 0 .. i`) yields
+/// [`ConstFoldError::NotConst`]. A failure is NOT a panic: callers
+/// surface it as a typed [`BuildAcfgError`] (`build_stmt`'s loop-bound
+/// handling routes `NotConst` → `NonConstLoopBound` and overflow /
+/// div-by-zero → `OverflowingLoopBound`), or, for the link-step
+/// iteration-count check, skip via the [`eval_const`] `Option` wrapper.
+fn try_eval_const(
+    e: &IrExpr,
+    consts: &BTreeMap<String, ResolvedConst>,
+) -> Result<i64, ConstFoldError> {
     match e {
-        IrExpr::IntLit(v) => Some(*v),
-        IrExpr::Ident(name) => consts.get(name).map(|c| c.value),
-        IrExpr::Neg(inner) => eval_const(inner, consts).and_then(i64::checked_neg),
+        IrExpr::IntLit(v) => Ok(*v),
+        IrExpr::Ident(name) => consts
+            .get(name)
+            .map(|c| c.value)
+            .ok_or(ConstFoldError::NotConst),
+        IrExpr::Neg(inner) => try_eval_const(inner, consts)?
+            .checked_neg()
+            .ok_or_else(|| ConstFoldError::Overflow("negate".into())),
         IrExpr::BinOp(op, l, r) => {
             use crate::algo::IrBinOp::*;
-            let lv = eval_const(l, consts)?;
-            let rv = eval_const(r, consts)?;
-            match op {
-                Add => lv.checked_add(rv),
-                Sub => lv.checked_sub(rv),
-                Mul => lv.checked_mul(rv),
+            let lv = try_eval_const(l, consts)?;
+            let rv = try_eval_const(r, consts)?;
+            let (res, opname) = match op {
+                Add => (lv.checked_add(rv), "add"),
+                Sub => (lv.checked_sub(rv), "sub"),
+                Mul => (lv.checked_mul(rv), "mul"),
                 Div => {
                     if rv == 0 {
-                        None
-                    } else {
-                        lv.checked_div(rv)
+                        return Err(ConstFoldError::DivByZero);
                     }
+                    (lv.checked_div(rv), "div")
                 }
                 Mod => {
                     if rv == 0 {
-                        None
-                    } else {
-                        lv.checked_rem(rv)
+                        return Err(ConstFoldError::DivByZero);
                     }
+                    (lv.checked_rem(rv), "mod")
                 }
-            }
+            };
+            res.ok_or_else(|| ConstFoldError::Overflow(opname.into()))
         }
-        IrExpr::Call { .. } | IrExpr::DataRef(_) => None,
+        IrExpr::Call { .. } | IrExpr::DataRef(_) => Err(ConstFoldError::NotConst),
     }
+}
+
+/// Evaluate an `IrExpr` to an `i64` constant, or `None` if it cannot be
+/// folded for ANY reason (non-const construct, overflow, or
+/// div-by-zero). The reason-erasing wrapper over [`try_eval_const`] for
+/// callers that only need value-or-nothing — notably the link step's
+/// TASK-0217 iteration-count check, which simply skips a non-foldable
+/// bound. Callers that must DISTINGUISH non-const from overflow (the
+/// loop-bound diagnostic in `build_stmt`) use [`try_eval_const`].
+///
+/// `pub(crate)` so the link step can reuse it without duplicating the
+/// evaluator.
+pub(crate) fn eval_const(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst>) -> Option<i64> {
+    try_eval_const(e, consts).ok()
 }
