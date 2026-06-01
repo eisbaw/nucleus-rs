@@ -159,6 +159,19 @@
           shellHook = "";
         };
 
+        # Docs / presentation shell. Opt-in via `nix develop .#docs`.
+        # Adds the Marp CLI (`marp`) for rendering the Marpit decks under
+        # `docs/presentation/` to self-contained HTML (`just slides` /
+        # `marp deck.md -o deck.html`). Kept out of the default shell
+        # because it pulls a Node-based closure tier-1 compiler dev does
+        # not need (same tiered-shell rule as `.#renode` / `.#embedded` /
+        # `.#mpi`, TASK-0068).
+        devShells.docs = pkgs.mkShell {
+          packages = basePackages ++ [ pkgs.marp-cli ];
+          # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
+          shellHook = "";
+        };
+
         # Nothing buildable from the flake yet; placeholder formatter so
         # `nix flake check` has something neutral to chew on.
         formatter = pkgs.nixpkgs-fmt;

@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 660" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>Cross-backend bit-identical oracle</title>
+  <desc>Seven tier-1 backend chips (pthreads-sync, pthreads-async, openmp-rs, mp-tcp-bufsync, mp-tcp-poll, mp-tcp-event, mp-uds-event) each emit an output stream that flows right and converges into a single hash box; on convergence an emerald "= bit-identical" badge with a check pulses. Cyan tokens flow along each stream and loop; the badge confirms repeatedly. A note records that tier-2 MPI (x2) and tier-3 embedded share the same contract.</desc>
+
+  <style>
+    .title  { fill:#e2e8f0; font-size:28px; font-weight:700; }
+    .sub    { fill:#94a3b8; font-size:15px; }
+    .tag    { fill:#94a3b8; font-size:13px; font-weight:600; letter-spacing:1px; }
+    .chipT  { fill:#e2e8f0; font-size:16px; font-weight:600; }
+    .chipS  { fill:#94a3b8; font-size:12px; }
+    .note   { fill:#94a3b8; font-size:13px; }
+    .hashT  { fill:#a78bfa; font-size:17px; font-weight:600; }
+    .hashS  { fill:#94a3b8; font-size:12px; }
+    .badgeT { fill:#34d399; font-size:22px; font-weight:700; }
+
+    /* each chip glows cyan in sequence as its token launches */
+    .chip { animation: chipglow 5s ease-in-out infinite; }
+    @keyframes chipglow {
+      0%, 100% { stroke:#334155; }
+      12%      { stroke:#22d3ee; }
+      30%      { stroke:#334155; }
+    }
+    .c0 { animation-delay: 0s; }
+    .c1 { animation-delay: .35s; }
+    .c2 { animation-delay: .70s; }
+    .c3 { animation-delay: 1.05s; }
+    .c4 { animation-delay: 1.40s; }
+    .c5 { animation-delay: 1.75s; }
+    .c6 { animation-delay: 2.10s; }
+
+    /* hash box receives the convergence: violet -> emerald flash mid-cycle */
+    .hashBox { animation: hashpulse 5s ease-in-out infinite; }
+    @keyframes hashpulse {
+      0%, 55%, 100% { stroke:#475569; }
+      72%           { stroke:#34d399; }
+      88%           { stroke:#475569; }
+    }
+
+    /* emerald confirm badge: ring pulses, check draws after convergence */
+    .badgeRing { animation: badgepulse 5s ease-in-out infinite; transform-origin:center; transform-box: fill-box; }
+    @keyframes badgepulse {
+      0%, 60%   { opacity:.30; r:42px; }
+      75%       { opacity:1;  r:50px; }
+      90%, 100% { opacity:.55; r:44px; }
+    }
+    .check { stroke-dasharray: 70; stroke-dashoffset: 70; animation: draw 5s ease-in-out infinite; }
+    @keyframes draw {
+      0%, 62%   { stroke-dashoffset: 70; }
+      80%, 100% { stroke-dashoffset: 0; }
+    }
+    .badgeLbl { animation: badgelbl 5s ease-in-out infinite; }
+    @keyframes badgelbl {
+      0%, 62%   { opacity:.35; }
+      82%, 100% { opacity:1; }
+    }
+
+    /* shared-contract note breathes softly */
+    .contract { animation: breathe 5s ease-in-out infinite; transform-origin:center; transform-box: fill-box; }
+    @keyframes breathe {
+      0%, 100% { stroke:#334155; opacity:.85; }
+      50%      { stroke:#a78bfa; opacity:1; }
+    }
+  </style>
+
+  <defs>
+    <marker id="ahMuted" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+    <marker id="ahEm" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#34d399"/>
+    </marker>
+
+    <radialGradient id="tok" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#a5f3fc"/>
+      <stop offset="60%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- invisible motion paths: each chip's stream funnels to the hash inlet at (788,330) -->
+    <path id="s0" d="M392,118 C560,118 640,330 786,330"/>
+    <path id="s1" d="M392,186 C560,186 660,330 786,330"/>
+    <path id="s2" d="M392,254 C560,254 680,330 786,330"/>
+    <path id="s3" d="M392,322 C600,322 700,330 786,330"/>
+    <path id="s4" d="M392,390 C560,390 680,330 786,330"/>
+    <path id="s5" d="M392,458 C560,458 660,330 786,330"/>
+    <path id="s6" d="M392,526 C560,526 640,330 786,330"/>
+  </defs>
+
+  <!-- ===================== TITLE ===================== -->
+  <text x="48" y="56" class="title">Cross-backend bit-identical oracle</text>
+  <text x="48" y="82" class="sub">one schedule &#8594; seven backends &#8594; one hash &#8594; byte-for-byte equal</text>
+
+  <!-- ===================== STREAM PATHS (visible, muted) ===================== -->
+  <g fill="none" stroke="#334155" stroke-width="2">
+    <path d="M392,118 C560,118 640,330 786,330"/>
+    <path d="M392,186 C560,186 660,330 786,330"/>
+    <path d="M392,254 C560,254 680,330 786,330"/>
+    <path d="M392,322 C600,322 700,330 786,330"/>
+    <path d="M392,390 C560,390 680,330 786,330"/>
+    <path d="M392,458 C560,458 660,330 786,330"/>
+    <path d="M392,526 C560,526 640,330 786,330"/>
+  </g>
+
+  <!-- ===================== 7 BACKEND CHIPS ===================== -->
+  <text x="48" y="100" class="tag">TIER-1 BACKENDS</text>
+
+  <!-- chip 0 -->
+  <g>
+    <rect class="chip c0" x="48" y="96" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="118" r="5" fill="#22d3ee"/>
+    <text x="86" y="123" class="chipT">pthreads-sync</text>
+    <text x="356" y="123" class="chipS" text-anchor="end">main.rs</text>
+  </g>
+  <!-- chip 1 -->
+  <g>
+    <rect class="chip c1" x="48" y="164" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="186" r="5" fill="#22d3ee"/>
+    <text x="86" y="191" class="chipT">pthreads-async</text>
+    <text x="356" y="191" class="chipS" text-anchor="end">main.rs</text>
+  </g>
+  <!-- chip 2 -->
+  <g>
+    <rect class="chip c2" x="48" y="232" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="254" r="5" fill="#22d3ee"/>
+    <text x="86" y="259" class="chipT">openmp-rs</text>
+    <text x="356" y="259" class="chipS" text-anchor="end">main.rs</text>
+  </g>
+  <!-- chip 3 -->
+  <g>
+    <rect class="chip c3" x="48" y="300" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="322" r="5" fill="#22d3ee"/>
+    <text x="86" y="327" class="chipT">mp-tcp-bufsync</text>
+    <text x="356" y="327" class="chipS" text-anchor="end">bin/</text>
+  </g>
+  <!-- chip 4 -->
+  <g>
+    <rect class="chip c4" x="48" y="368" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="390" r="5" fill="#22d3ee"/>
+    <text x="86" y="395" class="chipT">mp-tcp-poll</text>
+    <text x="356" y="395" class="chipS" text-anchor="end">bin/</text>
+  </g>
+  <!-- chip 5 -->
+  <g>
+    <rect class="chip c5" x="48" y="436" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="458" r="5" fill="#22d3ee"/>
+    <text x="86" y="463" class="chipT">mp-tcp-event</text>
+    <text x="356" y="463" class="chipS" text-anchor="end">bin/ &#183; async</text>
+  </g>
+  <!-- chip 6 -->
+  <g>
+    <rect class="chip c6" x="48" y="504" width="344" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle cx="70" cy="526" r="5" fill="#22d3ee"/>
+    <text x="86" y="531" class="chipT">mp-uds-event</text>
+    <text x="356" y="531" class="chipS" text-anchor="end">bin/ &#183; async</text>
+  </g>
+
+  <!-- ===================== CONVERGENCE -> HASH BOX ===================== -->
+  <text x="700" y="240" class="tag" text-anchor="middle">CONVERGE</text>
+
+  <!-- short funnel arrow into the hash box -->
+  <path d="M786,330 L800,330" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+
+  <g>
+    <rect class="hashBox" x="800" y="288" width="172" height="84" rx="10" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+    <text x="886" y="318" class="hashT" text-anchor="middle">hash &#931;</text>
+    <text x="886" y="340" class="hashS" text-anchor="middle">stdout stream</text>
+    <text x="886" y="358" class="hashS" text-anchor="middle">digest of all 7</text>
+  </g>
+
+  <!-- hash -> badge connector -->
+  <path d="M972,330 C1006,330 1006,330 1024,330" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#ahEm)" opacity="0.8"/>
+
+  <!-- ===================== EMERALD = BIT-IDENTICAL BADGE ===================== -->
+  <g transform="translate(1056,330)">
+    <circle class="badgeRing" cx="0" cy="0" r="44" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle cx="0" cy="0" r="34" fill="#0f1f1a" stroke="#34d399" stroke-width="2"/>
+    <path class="check" d="M-15,2 L-4,14 L16,-13" fill="none" stroke="#34d399" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g class="badgeLbl">
+    <text x="1056" y="406" class="badgeT" text-anchor="middle">= bit-identical</text>
+    <text x="1056" y="430" class="sub" text-anchor="middle">all 7 byte-for-byte equal</text>
+  </g>
+
+  <!-- ===================== SHARED-CONTRACT NOTE ===================== -->
+  <g>
+    <rect class="contract" x="800" y="486" width="312" height="118" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <text x="820" y="514" class="tag" fill="#a78bfa">SAME CONTRACT</text>
+    <circle cx="826" cy="540" r="4" fill="#a78bfa"/>
+    <text x="840" y="545" class="note">tier-2 MPI &#215;2 &#8212; mpi-blocking, mpi-nonblocking</text>
+    <circle cx="826" cy="566" r="4" fill="#a78bfa"/>
+    <text x="840" y="571" class="note">tier-3 embedded &#8212; no_std / Renode firmware</text>
+    <text x="820" y="595" class="hashS">share the per-worker EventList contract</text>
+  </g>
+
+  <!-- ===================== FLOWING TOKENS (one per stream) ===================== -->
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="0s"    repeatCount="indefinite"><mpath href="#s0"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="0.35s" repeatCount="indefinite"><mpath href="#s1"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="0.70s" repeatCount="indefinite"><mpath href="#s2"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="1.05s" repeatCount="indefinite"><mpath href="#s3"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="1.40s" repeatCount="indefinite"><mpath href="#s4"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="1.75s" repeatCount="indefinite"><mpath href="#s5"/></animateMotion>
+  </circle>
+  <circle r="6" fill="url(#tok)">
+    <animateMotion dur="5s" begin="2.10s" repeatCount="indefinite"><mpath href="#s6"/></animateMotion>
+  </circle>
+
+  <!-- subtle emerald wash over the hash box at convergence -->
+  <rect x="800" y="288" width="172" height="84" rx="10" fill="#34d399" opacity="0">
+    <animate attributeName="opacity" values="0;0.14;0" dur="5s" begin="0s" keyTimes="0;0.74;0.92" repeatCount="indefinite"/>
+  </rect>
+</svg>

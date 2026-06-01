@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <!-- Wordmark fill: subtle cyan->violet vertical sheen -->
+    <linearGradient id="wordFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e2e8f0"/>
+      <stop offset="55%" stop-color="#cbd5e1"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+
+    <!-- Soft glow for the wordmark -->
+    <filter id="wordGlow" x="-20%" y="-60%" width="140%" height="220%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blur"/>
+      <feFlood flood-color="#22d3ee" flood-opacity="0.55" result="cyan"/>
+      <feComposite in="cyan" in2="blur" operator="in" result="cyanGlow"/>
+      <feMerge>
+        <feMergeNode in="cyanGlow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Token glow filter (luminous dots) -->
+    <filter id="tokenGlow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Radial fades for token bodies -->
+    <radialGradient id="cyanTok" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a5f3fc"/>
+      <stop offset="45%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violetTok" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ddd6fe"/>
+      <stop offset="45%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Pipeline rail paths (reused by motion + drawn faintly) -->
+    <path id="rail1" d="M 40,120 C 360,120 840,120 1160,120"/>
+    <path id="rail2" d="M 40,200 C 360,160 840,160 1160,200"/>
+    <path id="rail3" d="M 40,280 C 360,320 840,320 1160,280"/>
+    <path id="rail4" d="M 40,360 C 360,360 840,360 1160,360"/>
+
+    <style>
+      @keyframes wmPulse {
+        0%, 100% { opacity: 0.92; }
+        50%      { opacity: 1; }
+      }
+      @keyframes subFade {
+        0%, 100% { opacity: 0.62; }
+        50%      { opacity: 0.95; }
+      }
+      .wordmark { animation: wmPulse 4.5s ease-in-out infinite; }
+      .subtitle { animation: subFade 4.5s ease-in-out infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .wordmark, .subtitle { animation: none; }
+      }
+    </style>
+  </defs>
+
+  <!-- ============ faint pipeline rails ============ -->
+  <g fill="none" stroke="#334155" stroke-width="2" opacity="0.55">
+    <use href="#rail1"/>
+    <use href="#rail2"/>
+    <use href="#rail3"/>
+    <use href="#rail4"/>
+  </g>
+
+  <!-- subtle stage nodes along the rails -->
+  <g fill="#1e293b" stroke="#334155" stroke-width="2" opacity="0.7">
+    <circle cx="40"  cy="120" r="5"/>
+    <circle cx="600" cy="120" r="5"/>
+    <circle cx="1160" cy="120" r="5"/>
+    <circle cx="40"  cy="280" r="5"/>
+    <circle cx="600" cy="280" r="5"/>
+    <circle cx="1160" cy="280" r="5"/>
+    <circle cx="40"  cy="360" r="5"/>
+    <circle cx="600" cy="360" r="5"/>
+    <circle cx="1160" cy="360" r="5"/>
+  </g>
+
+  <!-- ============ drifting luminous tokens ============ -->
+  <!-- rail 1 -->
+  <g filter="url(#tokenGlow)">
+    <circle r="6" fill="url(#cyanTok)">
+      <animateMotion dur="5.2s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+        <mpath href="#rail1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="5.2s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="4.5" fill="url(#violetTok)">
+      <animateMotion dur="5.2s" begin="2.6s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="5.2s" begin="2.6s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- rail 2 -->
+  <g filter="url(#tokenGlow)">
+    <circle r="5.5" fill="url(#violetTok)">
+      <animateMotion dur="6.1s" begin="0.7s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail2"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="6.1s" begin="0.7s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="4" fill="url(#cyanTok)">
+      <animateMotion dur="6.1s" begin="3.7s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail2"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="6.1s" begin="3.7s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- rail 3 -->
+  <g filter="url(#tokenGlow)">
+    <circle r="6" fill="url(#cyanTok)">
+      <animateMotion dur="5.6s" begin="1.4s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail3"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="5.6s" begin="1.4s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="4.5" fill="url(#violetTok)">
+      <animateMotion dur="5.6s" begin="4.0s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail3"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="5.6s" begin="4.0s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- rail 4 -->
+  <g filter="url(#tokenGlow)">
+    <circle r="5.5" fill="url(#violetTok)">
+      <animateMotion dur="6.8s" begin="0.3s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail4"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="6.8s" begin="0.3s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="4" fill="url(#cyanTok)">
+      <animateMotion dur="6.8s" begin="3.4s" repeatCount="indefinite" rotate="auto">
+        <mpath href="#rail4"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="6.8s" begin="3.4s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- ============ wordmark + subtitle ============ -->
+  <g class="wordmark" filter="url(#wordGlow)" text-anchor="middle">
+    <text x="600" y="258" font-size="118" font-weight="800" letter-spacing="6"
+          fill="url(#wordFill)">NUCLEUS</text>
+  </g>
+
+  <!-- Petri-net core mark: a small token-in-place glyph centred under the wordmark -->
+  <g transform="translate(600,300)" opacity="0.9">
+    <circle r="13" fill="none" stroke="#a78bfa" stroke-width="2"/>
+    <circle r="4.5" fill="#22d3ee">
+      <animate attributeName="r" values="4.5;6;4.5" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="fill" values="#22d3ee;#a78bfa;#22d3ee" dur="6s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <text class="subtitle" x="600" y="350" text-anchor="middle" font-size="22" letter-spacing="1.5"
+        fill="#94a3b8">an algorithm / schedule compiler with a Petri&#8209;net core</text>
+</svg>

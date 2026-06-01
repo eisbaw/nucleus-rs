@@ -1712,3 +1712,10 @@ renode-embedded-check-count:
 # Remove build artefacts.
 clean:
     cd nucleus && cargo clean
+
+# Render the Marpit thesis deck (docs/presentation/slides.md) to
+# self-contained HTML with animated SVGs. Needs the `.#docs` shell (marp-cli).
+slides:
+    nix develop .#docs --command marp docs/presentation/slides.md \
+        --theme-set docs/presentation/themes/nucleus.css \
+        -o docs/presentation/index.html --html

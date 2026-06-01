@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 640" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>Nucleus Petri-net IR</title>
+  <desc>Two worker control lanes drawn as place/transition nets: circles are places, vertical bars are transitions. Each transition consumes the previous place token and produces the next, giving a threaded static firing order. A shared BUFFER place (capacity=N, initial marking=D) sits between a producer Push transition on the upper lane and a consumer Wait transition on the lower lane. Cyan tokens flow place to transition to place along each lane; a violet token deposits into the buffer on Push and is consumed on Wait. The whole net loops. Caption: deterministic static firing order; a stall is a compile error.</desc>
+
+  <style>
+    .title  { fill:#e2e8f0; font-size:28px; font-weight:700; }
+    .sub    { fill:#94a3b8; font-size:16px; }
+    .tag    { fill:#94a3b8; font-size:13px; font-weight:600; letter-spacing:1px; }
+    .lbl    { fill:#94a3b8; font-size:15px; }
+    .lblO   { fill:#e2e8f0; font-size:16px; font-weight:600; }
+    .cap    { fill:#e2e8f0; font-size:18px; font-weight:600; }
+    .capS   { fill:#94a3b8; font-size:15px; }
+    .meta   { fill:#a78bfa; font-size:15px; font-weight:600; }
+
+    /* transitions pulse (fire) in the threaded order along each lane */
+    .fire { animation: fire 6s ease-in-out infinite; }
+    @keyframes fire {
+      0%, 100% { fill:#fbbf24; opacity:.55; }
+      48%, 60% { fill:#fde68a; opacity:1; }
+    }
+    .ft0 { animation-delay: .2s; }
+    .ft1 { animation-delay: 1.2s; }
+    .ft2 { animation-delay: 2.2s; }
+    .ft3 { animation-delay: 3.2s; }
+    /* lower lane fires offset so Push precedes Wait */
+    .fb0 { animation-delay: 1.7s; }
+    .fb1 { animation-delay: 2.7s; }
+    .fb2 { animation-delay: 3.7s; }
+
+    /* the buffer ring breathes to signal it is the shared synchronising place */
+    .bufRing { animation: buf 6s ease-in-out infinite; transform-origin:center; transform-box: fill-box; }
+    @keyframes buf {
+      0%, 100% { stroke:#a78bfa; opacity:.55; }
+      50%      { stroke:#c4b5fd; opacity:1; }
+    }
+  </style>
+
+  <defs>
+    <!-- arc arrowheads -->
+    <marker id="ahMuted" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+    <marker id="ahViolet" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#a78bfa"/>
+    </marker>
+
+    <!-- token gradients -->
+    <radialGradient id="tok" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#a5f3fc"/>
+      <stop offset="55%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="tokV" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#ddd6fe"/>
+      <stop offset="55%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- ===== motion paths (invisible) ===== -->
+    <!-- upper lane W0: P0 -> T0 -> P1 -> T1(Push) -> P2 -->
+    <path id="uA" d="M150,200 L250,200"/>            <!-- P0 -> T0 -->
+    <path id="uB" d="M270,200 L400,200"/>            <!-- T0 -> P1 -->
+    <path id="uC" d="M450,200 L560,200"/>            <!-- P1 -> T1(Push) -->
+    <path id="uD" d="M580,200 L710,200"/>            <!-- T1 -> P2 -->
+
+    <!-- lower lane W1: Q0 -> S0(Wait) -> Q1 -> S1 -> Q2 -->
+    <path id="lA" d="M150,440 L250,440"/>            <!-- Q0 -> S0 -->
+    <path id="lB" d="M270,440 L400,440"/>            <!-- (after Wait fires) S0 -> Q1 -->
+    <path id="lC" d="M450,440 L560,440"/>            <!-- Q1 -> S1 -->
+    <path id="lD" d="M580,440 L710,440"/>            <!-- S1 -> Q2 -->
+
+    <!-- Push -> buffer place (down) -->
+    <path id="toBuf"   d="M571,224 C571,278 560,288 540,300"/>
+    <!-- buffer place -> Wait (the consumer reads the deposited token) -->
+    <path id="fromBuf" d="M460,320 C360,338 240,402 220,418"/>
+  </defs>
+
+  <!-- ===================== TITLE ===================== -->
+  <text x="48" y="56" class="title">Petri-net IR &#8212; the soundness model</text>
+  <text x="48" y="84" class="sub">control as places &#183; firings as transitions &#183; a shared buffer place couples the workers</text>
+
+  <!-- legend -->
+  <g transform="translate(820,42)">
+    <circle cx="0" cy="0" r="9" fill="none" stroke="#94a3b8" stroke-width="2"/>
+    <text x="16" y="5" class="lbl">place</text>
+    <rect x="92" y="-12" width="8" height="24" fill="#fbbf24"/>
+    <text x="108" y="5" class="lbl">transition</text>
+    <circle cx="214" cy="0" r="6" fill="url(#tok)"/>
+    <text x="228" y="5" class="lbl">token</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ===================== UPPER LANE  W0  ======================== -->
+  <!-- ============================================================= -->
+  <text x="48" y="160" class="tag">WORKER 0</text>
+  <line x1="130" y1="200" x2="730" y2="200" stroke="#1e293b" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- arcs (place->transition->place), drawn under the nodes -->
+  <path d="M150,200 L248,200" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M272,200 L398,200" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M450,200 L558,200" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M582,200 L708,200" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+
+  <!-- P0 (place, holds the initial control token) -->
+  <circle cx="130" cy="200" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="130" y="246" class="lbl" text-anchor="middle">p0</text>
+
+  <!-- T0 (transition bar) -->
+  <rect class="fire ft0" x="256" y="174" width="10" height="52" rx="2"/>
+  <text x="261" y="160" class="lblO" text-anchor="middle">t0</text>
+
+  <!-- P1 (place) -->
+  <circle cx="424" cy="200" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="424" y="246" class="lbl" text-anchor="middle">p1</text>
+
+  <!-- T1 = Push (producer transition, cyan-flavoured label) -->
+  <rect class="fire ft1" x="566" y="174" width="10" height="52" rx="2"/>
+  <text x="571" y="160" class="lblO" fill="#22d3ee" text-anchor="middle">Push</text>
+
+  <!-- P2 (place) -->
+  <circle cx="730" cy="200" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="730" y="246" class="lbl" text-anchor="middle">p2</text>
+
+  <!-- ============================================================= -->
+  <!-- ===================== LOWER LANE  W1  ======================== -->
+  <!-- ============================================================= -->
+  <text x="48" y="400" class="tag">WORKER 1</text>
+  <line x1="130" y1="440" x2="730" y2="440" stroke="#1e293b" stroke-width="14" stroke-linecap="round"/>
+
+  <path d="M150,440 L248,440" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M272,440 L398,440" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M450,440 L558,440" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+  <path d="M582,440 L708,440" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ahMuted)"/>
+
+  <!-- Q0 (place) -->
+  <circle cx="130" cy="440" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="130" y="486" class="lbl" text-anchor="middle">q0</text>
+
+  <!-- S0 = Wait (consumer transition) -->
+  <rect class="fire fb0" x="256" y="414" width="10" height="52" rx="2"/>
+  <text x="261" y="400" class="lblO" fill="#22d3ee" text-anchor="middle">Wait</text>
+
+  <!-- Q1 (place) -->
+  <circle cx="424" cy="440" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="424" y="486" class="lbl" text-anchor="middle">q1</text>
+
+  <!-- S1 (transition) -->
+  <rect class="fire fb1" x="566" y="414" width="10" height="52" rx="2"/>
+  <text x="571" y="400" class="lblO" text-anchor="middle">s1</text>
+
+  <!-- Q2 (place) -->
+  <circle cx="730" cy="440" r="20" fill="#0f1722" stroke="#94a3b8" stroke-width="2"/>
+  <text x="730" y="486" class="lbl" text-anchor="middle">q2</text>
+
+  <!-- ============================================================= -->
+  <!-- ===================== SHARED BUFFER PLACE ==================== -->
+  <!-- ============================================================= -->
+  <!-- Push -> buffer arc -->
+  <path d="M571,224 C571,278 560,288 542,298" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#ahViolet)"/>
+  <!-- buffer -> Wait arc -->
+  <path d="M462,322 C360,340 244,402 222,420" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#ahViolet)"/>
+
+  <g transform="translate(500,320)">
+    <circle class="bufRing" cx="0" cy="0" r="40" fill="#161427" stroke="#a78bfa" stroke-width="3"/>
+    <circle cx="0" cy="0" r="31" fill="none" stroke="#a78bfa" stroke-width="1.5" opacity="0.5"/>
+    <text x="0" y="-2" class="meta" text-anchor="middle">BUFFER</text>
+    <text x="106" y="-10" class="lblO" fill="#a78bfa" text-anchor="start">shared place</text>
+    <text x="106" y="12" class="lbl" text-anchor="start">capacity = N</text>
+    <text x="106" y="32" class="lbl" text-anchor="start">initial marking = D</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ===================== FLOWING TOKENS ========================= -->
+  <!-- ============================================================= -->
+
+  <!-- == upper lane control token, advancing place->transition->place == -->
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="0s"   repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#uA"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="1.0s" repeatCount="indefinite"><mpath href="#uB"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="2.0s" repeatCount="indefinite"><mpath href="#uC"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="3.3s" repeatCount="indefinite"><mpath href="#uD"/></animateMotion>
+  </circle>
+
+  <!-- == producer: violet token deposits into the buffer on Push == -->
+  <circle r="7" fill="url(#tokV)" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.50;0.53;0.62;0.64;1" dur="6s" begin="0s" repeatCount="indefinite"/>
+    <animateMotion dur="6s" begin="0s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.50;0.63;1" calcMode="linear"><mpath href="#toBuf"/></animateMotion>
+  </circle>
+
+  <!-- the resident buffer token (initial marking D) — sits in the place, brightens on Push, dims as Wait consumes -->
+  <circle cx="500" cy="320" r="7" fill="url(#tokV)">
+    <animate attributeName="opacity" values="0.55;0.55;1;1;0.2;0.2;0.55" keyTimes="0;0.55;0.64;0.74;0.80;0.92;1" dur="6s" begin="0s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- == consumer: violet token is read out of the buffer on Wait == -->
+  <circle r="7" fill="url(#tokV)" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.74;0.77;0.90;0.92;1" dur="6s" begin="0s" repeatCount="indefinite"/>
+    <animateMotion dur="6s" begin="0s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.74;0.91;1" calcMode="linear"><mpath href="#fromBuf"/></animateMotion>
+  </circle>
+
+  <!-- == lower lane control token, advancing after Wait releases == -->
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="0.6s" repeatCount="indefinite"><mpath href="#lA"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="3.3s" repeatCount="indefinite"><mpath href="#lB"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="4.1s" repeatCount="indefinite"><mpath href="#lC"/></animateMotion>
+  </circle>
+  <circle r="8" fill="url(#tok)">
+    <animateMotion dur="6s" begin="5.0s" repeatCount="indefinite"><mpath href="#lD"/></animateMotion>
+  </circle>
+
+  <!-- ===================== CAPTION ===================== -->
+  <g transform="translate(48,576)">
+    <rect x="-8" y="-26" width="6" height="40" rx="3" fill="#34d399"/>
+    <text x="14" y="0" class="cap">deterministic static firing order</text>
+    <text x="14" y="26" class="capS">&#8212; a stall is a compile error, not a runtime hang.</text>
+  </g>
+</svg>

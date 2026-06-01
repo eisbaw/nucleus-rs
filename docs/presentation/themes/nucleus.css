@@ -1,0 +1,239 @@
+/* @theme nucleus */
+
+/*
+ * Nucleus v2 thesis deck theme.
+ * Dark slate palette matching the animated SVG assets:
+ *   bg      #0f172a   text    #e2e8f0
+ *   cyan    #22d3ee   violet  #a78bfa
+ *   emerald #34d399   amber   #fbbf24
+ * Large, projection-readable type.
+ */
+
+@import 'default';
+
+:root {
+  --nuc-bg:       #0f172a;
+  --nuc-bg-2:     #1e293b;
+  --nuc-panel:    #16213a;
+  --nuc-text:     #e2e8f0;
+  --nuc-muted:    #94a3b8;
+  --nuc-cyan:     #22d3ee;
+  --nuc-violet:   #a78bfa;
+  --nuc-emerald:  #34d399;
+  --nuc-amber:    #fbbf24;
+  --nuc-border:   #334155;
+}
+
+section {
+  background: var(--nuc-bg);
+  color: var(--nuc-text);
+  font-family: "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  font-size: 26px;
+  line-height: 1.45;
+  padding: 56px 72px;
+  letter-spacing: 0.1px;
+}
+
+/* ---- Headings ---- */
+h1 {
+  color: var(--nuc-cyan);
+  font-size: 52px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin: 0 0 0.4em 0;
+  border-bottom: 3px solid var(--nuc-border);
+  padding-bottom: 0.2em;
+}
+
+h2 {
+  color: var(--nuc-violet);
+  font-size: 38px;
+  font-weight: 700;
+  margin: 0.1em 0 0.4em 0;
+}
+
+h3 {
+  color: var(--nuc-emerald);
+  font-size: 30px;
+  font-weight: 700;
+  margin: 0.3em 0 0.3em 0;
+}
+
+/* subtitle: first blockquote under a heading reads as a deck subtitle */
+section > blockquote {
+  border-left: 4px solid var(--nuc-amber);
+  color: var(--nuc-muted);
+  font-style: italic;
+  font-size: 24px;
+  margin: 0 0 0.6em 0;
+  padding: 0.1em 0 0.1em 1em;
+}
+
+/* ---- Bullet lists ---- */
+ul, ol {
+  margin: 0.2em 0;
+  padding-left: 1.1em;
+}
+
+li {
+  margin: 0.28em 0;
+  padding-left: 0.2em;
+}
+
+ul > li::marker {
+  color: var(--nuc-cyan);
+  content: "▸ ";
+}
+
+ol > li::marker {
+  color: var(--nuc-amber);
+}
+
+li > ul > li::marker {
+  color: var(--nuc-violet);
+  content: "– ";
+}
+
+/* ---- Emphasis ---- */
+strong { color: var(--nuc-amber); font-weight: 700; }
+em     { color: var(--nuc-emerald); font-style: normal; }
+a      { color: var(--nuc-cyan); text-decoration: none; }
+
+/* ---- Code ---- */
+code {
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, monospace;
+  background: #0b1120;
+  color: var(--nuc-emerald);
+  border: 1px solid var(--nuc-border);
+  border-radius: 5px;
+  padding: 0.05em 0.35em;
+  font-size: 0.86em;
+}
+
+pre {
+  background: #0b1120;
+  border: 1px solid var(--nuc-border);
+  border-left: 4px solid var(--nuc-cyan);
+  border-radius: 10px;
+  padding: 0.9em 1.1em;
+  font-size: 21px;
+  line-height: 1.4;
+  overflow: visible;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #cbd5e1;
+  font-size: 1em;
+}
+
+/* ---- Tables ---- */
+table {
+  border-collapse: collapse;
+  font-size: 22px;
+  margin: 0.3em 0;
+}
+th {
+  background: var(--nuc-bg-2);
+  color: var(--nuc-cyan);
+  border: 1px solid var(--nuc-border);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+td {
+  border: 1px solid var(--nuc-border);
+  padding: 0.35em 0.7em;
+  color: var(--nuc-text);
+}
+
+/* keep tables dark — defeat the imported `default` theme's light row striping */
+table tbody tr,
+table tbody tr td {
+  background: var(--nuc-bg);
+}
+table tbody tr:nth-child(even) td {
+  background: var(--nuc-panel);
+}
+
+/* small muted caption used under a diagram (<span class="caption">) */
+.caption {
+  color: var(--nuc-muted);
+  font-size: 20px;
+}
+
+/* ---- Images: center by default ---- */
+img {
+  display: block;
+  margin: 0.2em auto;
+}
+
+/* ---- Pagination & footer ---- */
+section::after {
+  color: var(--nuc-muted);
+  font-size: 16px;
+}
+
+/* =====================================================
+ * Lead / title slide
+ * ===================================================== */
+section.lead {
+  justify-content: center;
+  text-align: center;
+  background:
+    radial-gradient(1100px 520px at 50% 22%, #142544 0%, var(--nuc-bg) 62%);
+}
+
+section.lead h1 {
+  font-size: 76px;
+  color: var(--nuc-cyan);
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0.15em;
+  text-shadow: 0 0 28px rgba(34, 211, 238, 0.35);
+}
+
+section.lead h2 {
+  color: var(--nuc-violet);
+  font-size: 34px;
+  font-weight: 600;
+}
+
+section.lead blockquote {
+  border: none;
+  text-align: center;
+  color: var(--nuc-muted);
+  font-style: normal;
+}
+
+section.lead p { color: var(--nuc-muted); font-size: 24px; }
+section.lead code { font-size: 0.8em; }
+
+/* =====================================================
+ * Section-divider / chapter slide
+ * ===================================================== */
+section.divider {
+  justify-content: center;
+  background: linear-gradient(135deg, #111d36 0%, var(--nuc-bg) 70%);
+}
+section.divider h1 {
+  font-size: 60px;
+  border-bottom: 3px solid var(--nuc-violet);
+  color: var(--nuc-cyan);
+}
+
+/* =====================================================
+ * Stat / numbers emphasis slide
+ * ===================================================== */
+section.stats {
+  text-align: center;
+  justify-content: center;
+}
+section.stats h1 { border-bottom: none; }
+section.stats strong { color: var(--nuc-cyan); font-size: 1.15em; }
+
+/* center-image helper for slides that are mostly a diagram */
+section.diagram { justify-content: flex-start; }
+section.diagram img { margin-top: 0.1em; }

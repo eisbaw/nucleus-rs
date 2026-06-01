@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 680" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>The AI build loop</title>
+  <desc>Top: a three-phase arrow chain — PRD-grill (cyan) then backlog-snowball (violet) then the Ralph loop (amber) — with cyan tokens flowing between phases. Bottom: a cyclic ring of six role badges around an Orchestrator hub: Implementer (one at a time), qa-test-runner, architect review, Backlog memory, and an Honest-failure gate. A rotating highlight travels the ring in sequence — pick task, brief implementer, implement and commit, parallel review gate, record — and a token packet orbits the ring indefinitely. The separation of roles is the structural check against AI overconfidence.</desc>
+
+  <style>
+    :root { color-scheme: dark; }
+    text { fill: #e2e8f0; }
+
+    /* ---- top chain: phases light up in a 6s wave ---- */
+    .phaseRing { animation: phaseGlow 6s ease-in-out infinite; }
+    @keyframes phaseGlow {
+      0%,100% { opacity: .55; }
+      40%,60% { opacity: 1; }
+    }
+    .p0 { animation-delay: 0s; }
+    .p1 { animation-delay: 2s; }
+    .p2 { animation-delay: 4s; }
+
+    /* token flowing along the chain arrows */
+    .chainTok { animation: chainTok 6s linear infinite; }
+    @keyframes chainTok {
+      0%   { opacity: 0; offset-distance: 0%; }
+      6%   { opacity: 1; }
+      94%  { opacity: 1; }
+      100% { opacity: 0; offset-distance: 100%; }
+    }
+
+    /* ---- ring: rotating highlight visits each of the 6 badges (8s) ---- */
+    .badge { animation: badgePulse 8s ease-in-out infinite; }
+    @keyframes badgePulse {
+      0%,100% { opacity: .62; }
+      50%     { opacity: 1; }
+    }
+    /* highlight order = the loop narrative; 6 slots over 8s */
+    .b0 { animation-delay: 0.00s; } /* Backlog: pick task        */
+    .b1 { animation-delay: 1.33s; } /* Implementer: brief+code   */
+    .b2 { animation-delay: 2.66s; } /* qa-test-runner            */
+    .b3 { animation-delay: 4.00s; } /* architect review          */
+    .b4 { animation-delay: 5.33s; } /* honest-failure gate       */
+    .b5 { animation-delay: 6.66s; } /* back to Backlog: record   */
+
+    /* per-badge ring stroke flares as the highlight passes */
+    .flare { animation: flare 8s ease-in-out infinite; }
+    @keyframes flare {
+      0%,100% { stroke-width: 2; }
+      50%     { stroke-width: 4.5; }
+    }
+    .f0 { animation-delay: 0.00s; }
+    .f1 { animation-delay: 1.33s; }
+    .f2 { animation-delay: 2.66s; }
+    .f3 { animation-delay: 4.00s; }
+    .f4 { animation-delay: 5.33s; }
+    .f5 { animation-delay: 6.66s; }
+
+    /* hub steady breathing */
+    .hub { animation: hubBreath 4s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+    @keyframes hubBreath {
+      0%,100% { opacity: .9; }
+      50%     { opacity: 1; }
+    }
+
+    /* spoke between hub and the currently-active badge: a sweep of brightness */
+    .spoke { stroke: #334155; }
+    .spokeLit { animation: spokeLit 8s ease-in-out infinite; }
+    @keyframes spokeLit {
+      0%,100% { stroke: #2c3a52; }
+      50%     { stroke: #64748b; }
+    }
+    .s0 { animation-delay: 0.00s; }
+    .s1 { animation-delay: 1.33s; }
+    .s2 { animation-delay: 2.66s; }
+    .s3 { animation-delay: 4.00s; }
+    .s4 { animation-delay: 5.33s; }
+    .s5 { animation-delay: 6.66s; }
+  </style>
+
+  <defs>
+    <marker id="aCyan" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#22d3ee"/>
+    </marker>
+    <marker id="aViolet" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#a78bfa"/>
+    </marker>
+    <marker id="aAmber" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#fbbf24"/>
+    </marker>
+    <marker id="aSlate" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+    <!-- closed hexagonal ring path the orbiting packet rides (clockwise from top) -->
+    <path id="ringPath" fill="none"
+          d="M 580 388
+             L 763 494
+             L 763 600
+             L 580 600
+             L 397 600
+             L 397 494
+             Z"/>
+  </defs>
+
+  <!-- ===================== HEADER ===================== -->
+  <text x="580" y="44" text-anchor="middle" font-size="29" font-weight="700">The AI Build Loop</text>
+  <text x="580" y="72" text-anchor="middle" font-size="15" fill="#94a3b8">birth &#8594; plan &#8594; build &#8226; separated roles as a structural check against AI overconfidence</text>
+
+  <!-- ===================== TOP: 3-PHASE ARROW CHAIN ===================== -->
+  <!-- connecting arrows (drawn under the phase boxes) -->
+  <g fill="none" stroke-width="2.5">
+    <path id="chain01" d="M338,150 L408,150" stroke="#22d3ee" marker-end="url(#aCyan)"/>
+    <path id="chain12" d="M662,150 L732,150" stroke="#a78bfa" marker-end="url(#aViolet)"/>
+  </g>
+  <circle class="chainTok" r="5.5" fill="#22d3ee" style="offset-path: path('M338,150 L408,150');"/>
+  <circle class="chainTok" r="5.5" fill="#a78bfa" style="offset-path: path('M662,150 L732,150'); animation-delay:2s;"/>
+
+  <!-- phase 1: PRD-grill (cyan) -->
+  <g class="phaseRing p0">
+    <rect x="78" y="108" width="260" height="84" rx="10" fill="#102630" stroke="#22d3ee" stroke-width="2"/>
+    <text x="208" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#22d3ee">PRD-grill</text>
+    <text x="208" y="161" text-anchor="middle" font-size="13" fill="#94a3b8">interview the human</text>
+    <text x="208" y="179" text-anchor="middle" font-size="13" fill="#94a3b8">not a yes-man &#8594; PRD</text>
+  </g>
+
+  <!-- phase 2: backlog-snowball (violet) -->
+  <g class="phaseRing p1">
+    <rect x="402" y="108" width="260" height="84" rx="10" fill="#1d1838" stroke="#a78bfa" stroke-width="2"/>
+    <text x="532" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#a78bfa">backlog-snowball</text>
+    <text x="532" y="161" text-anchor="middle" font-size="13" fill="#94a3b8">design-for-test first</text>
+    <text x="532" y="179" text-anchor="middle" font-size="13" fill="#94a3b8">reviewed task waves</text>
+  </g>
+
+  <!-- phase 3: Ralph-loop (amber) — feeds the ring below -->
+  <g class="phaseRing p2">
+    <rect x="726" y="108" width="260" height="84" rx="10" fill="#2a210b" stroke="#fbbf24" stroke-width="2"/>
+    <text x="856" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#fbbf24">Ralph loop</text>
+    <text x="856" y="161" text-anchor="middle" font-size="13" fill="#94a3b8">autonomous task</text>
+    <text x="856" y="179" text-anchor="middle" font-size="13" fill="#94a3b8">execution &#8595;</text>
+  </g>
+
+  <!-- arrow from Ralph-loop down into the ring -->
+  <path d="M856,196 C856,250 700,250 620,290" fill="none" stroke="#fbbf24" stroke-width="2.5" stroke-dasharray="6 6" marker-end="url(#aAmber)"/>
+  <text x="784" y="244" font-size="12" fill="#94a3b8" font-style="italic">drives</text>
+
+  <!-- ===================== BOTTOM: ROLE RING ===================== -->
+
+  <!-- spokes from hub (580,494) to each badge centre -->
+  <g stroke-width="2" fill="none">
+    <line class="spokeLit s0" x1="580" y1="494" x2="580" y2="388"/>  <!-- top: Backlog -->
+    <line class="spokeLit s1" x1="580" y1="494" x2="763" y2="494"/>  <!-- right-up: Implementer -->
+    <line class="spokeLit s2" x1="580" y1="494" x2="763" y2="600"/>  <!-- right-dn: qa -->
+    <line class="spokeLit s3" x1="580" y1="494" x2="580" y2="600"/>  <!-- bottom: architect -->
+    <line class="spokeLit s4" x1="580" y1="494" x2="397" y2="600"/>  <!-- left-dn: honest gate -->
+    <line class="spokeLit s5" x1="580" y1="494" x2="397" y2="494"/>  <!-- left-up: (record returns to backlog) -->
+  </g>
+
+  <!-- the ring travel path (faint guide) -->
+  <use href="#ringPath" stroke="#2c3a52" stroke-width="2" stroke-dasharray="3 7"/>
+
+  <!-- directional chevrons hinting clockwise rotation along the ring -->
+  <g fill="none" stroke="#475569" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.8">
+    <path d="M676,433 l10,6 l-10,6"/>
+    <path d="M769,547 l-6,10 l-6,-10" transform="translate(-6,-6)"/>
+    <path d="M586,594 l-12,0" />
+    <path d="M404,558 l-10,-6 l10,-6"/>
+    <path d="M392,447 l6,-10 l6,10" transform="translate(-6,6)"/>
+    <path d="M477,427 l-12,2 l4,-12" transform="translate(8,4)"/>
+  </g>
+
+  <!-- ===== HUB: Orchestrator ===== -->
+  <g class="hub">
+    <circle cx="580" cy="494" r="72" fill="#16261f" stroke="#34d399" stroke-width="2.5"/>
+    <text x="580" y="486" text-anchor="middle" font-size="18" font-weight="700" fill="#34d399">Orchestrator</text>
+    <text x="580" y="508" text-anchor="middle" font-size="12" fill="#94a3b8">dependency-ordered</text>
+    <text x="580" y="525" text-anchor="middle" font-size="12" fill="#94a3b8">task selection</text>
+  </g>
+
+  <!-- ===== BADGE 0 (top): Backlog (memory) — violet ===== -->
+  <g class="badge b0">
+    <rect x="470" y="332" width="220" height="56" rx="10" fill="#1d1838" stroke="#a78bfa" stroke-width="2" class="flare f0"/>
+    <text x="580" y="357" text-anchor="middle" font-size="16" font-weight="700" fill="#a78bfa">Backlog</text>
+    <text x="580" y="377" text-anchor="middle" font-size="12" fill="#94a3b8">durable memory &#8226; pick / record</text>
+  </g>
+
+  <!-- ===== BADGE 1 (right-up): Implementer (1 at a time) — cyan ===== -->
+  <g class="badge b1">
+    <rect x="700" y="424" width="240" height="68" rx="10" fill="#102630" stroke="#22d3ee" stroke-width="2" class="flare f1"/>
+    <text x="820" y="450" text-anchor="middle" font-size="16" font-weight="700" fill="#22d3ee">Implementer</text>
+    <text x="820" y="470" text-anchor="middle" font-size="12" fill="#94a3b8">ONE task at a time</text>
+    <text x="820" y="486" text-anchor="middle" font-size="12" fill="#94a3b8">implement + commit</text>
+  </g>
+
+  <!-- ===== BADGE 2 (right-dn): qa-test-runner — emerald ===== -->
+  <g class="badge b2">
+    <rect x="700" y="566" width="240" height="68" rx="10" fill="#16261f" stroke="#34d399" stroke-width="2" class="flare f2"/>
+    <text x="820" y="592" text-anchor="middle" font-size="16" font-weight="700" fill="#34d399">qa-test-runner</text>
+    <text x="820" y="612" text-anchor="middle" font-size="12" fill="#94a3b8">build &#8226; test &#8226; e2e</text>
+    <text x="820" y="628" text-anchor="middle" font-size="12" fill="#94a3b8">read-only review</text>
+  </g>
+
+  <!-- ===== BADGE 3 (bottom): architect (review) — amber ===== -->
+  <g class="badge b3">
+    <rect x="470" y="566" width="220" height="68" rx="10" fill="#2a210b" stroke="#fbbf24" stroke-width="2" class="flare f3"/>
+    <text x="580" y="592" text-anchor="middle" font-size="16" font-weight="700" fill="#fbbf24">architect</text>
+    <text x="580" y="612" text-anchor="middle" font-size="12" fill="#94a3b8">design review</text>
+    <text x="580" y="628" text-anchor="middle" font-size="12" fill="#94a3b8">in parallel w/ qa</text>
+  </g>
+
+  <!-- ===== BADGE 4 (left-dn): Honest-failure gate — rose ===== -->
+  <g class="badge b4">
+    <rect x="220" y="566" width="240" height="68" rx="10" fill="#2b1418" stroke="#fb7185" stroke-width="2" class="flare f4"/>
+    <text x="340" y="592" text-anchor="middle" font-size="16" font-weight="700" fill="#fb7185">Honest-failure gate</text>
+    <text x="340" y="612" text-anchor="middle" font-size="12" fill="#94a3b8">no workarounds</text>
+    <text x="340" y="628" text-anchor="middle" font-size="12" fill="#94a3b8">no false success</text>
+  </g>
+
+  <!-- ===== BADGE 5 (left-up): Parallel review note — slate accent ===== -->
+  <g class="badge b5">
+    <rect x="220" y="460" width="240" height="60" rx="10" fill="#1e293b" stroke="#64748b" stroke-width="2" class="flare f5"/>
+    <text x="340" y="484" text-anchor="middle" font-size="15" font-weight="700" fill="#cbd5e1">Parallel review gate</text>
+    <text x="340" y="504" text-anchor="middle" font-size="12" fill="#94a3b8">qa + architect, every cycle</text>
+  </g>
+
+  <!-- rotating highlight packet orbiting the ring (SMIL animateMotion + mpath) -->
+  <circle r="8" fill="#fbbf24" opacity="0.95">
+    <animateMotion dur="8s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#ringPath"/>
+    </animateMotion>
+    <animate attributeName="fill" dur="8s" repeatCount="indefinite"
+             values="#a78bfa;#22d3ee;#34d399;#fbbf24;#fb7185;#64748b;#a78bfa"
+             keyTimes="0;0.166;0.333;0.5;0.666;0.833;1"/>
+  </circle>
+  <!-- a trailing second packet for a sense of continuous flow -->
+  <circle r="5" fill="#e2e8f0" opacity="0.55">
+    <animateMotion dur="8s" begin="-1.2s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#ringPath"/>
+    </animateMotion>
+  </circle>
+
+  <!-- loop narrative caption (steps in the same colour cadence) -->
+  <text x="580" y="666" text-anchor="middle" font-size="14" fill="#94a3b8">
+    pick task &#8594; brief implementer &#8594; implement + commit &#8594; parallel review gate &#8594; record &#8594; <tspan fill="#fbbf24" font-weight="700">repeat</tspan>
+  </text>
+</svg>
