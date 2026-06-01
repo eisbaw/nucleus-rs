@@ -39,7 +39,7 @@ use nucleus_compiler::{
     build_acfg, build_sidecar, inject_syncs, inject_transfers, link,
     sched::{lower_sched, parse_sched},
 };
-use pthreads_sync::{emit, NameTables};
+use pthreads_sync::{emit, EmitError, NameTables};
 
 /// Build the EventList + sidecar + reverse name tables from a
 /// post-pass ACFG + LinkedIR — exactly what the driver does. Tests
@@ -391,6 +391,111 @@ pub fn classifier(_x: Vec<i32>) -> Vec<i32> { vec![0; N_CLASSES] }
          E0308 reproducer). Inspect {} for the generated main.rs.",
         out_dir.display()
     );
+}
+
+// ---- TASK-0404: bite tests for the three I/O EmitError variants ----
+//
+// `EmitError::{KernelsReadFailed, OutputCreateFailed, WriteFailed}` were
+// the only EmitError variants with ZERO test coverage (the cycle-236
+// audit: `UnsupportedFeature`/`ContractGap`/`AccumulatorShapeMismatch`
+// are covered, and `LowerErrorKind`/`SchedLowerErrorKind`/`LinkErrorKind`
+// are fully bite-tested). They are thin `fs::*().map_err(EmitError::X)`
+// wrappers reachable on a real filesystem failure — proving they fire a
+// TYPED error rather than a panic is the panic-not-diagnostic discharge
+// (PRD §10) for the emit I/O seam. The same three sites recur verbatim
+// in all ten backends; a grep audit (cycle-236) confirmed every one uses
+// `.map_err(EmitError::…)` (none `unwrap`/`expect`/`?`-on-raw-io), so
+// pthreads-sync — the canonical backend — proves the variants at
+// VARIANT granularity for the family. Each failure mode is induced
+// deterministically and portably (no permission-bit reliance, which is
+// unreliable as root / in CI): a missing read path, a path component
+// that is a regular file, and a write target that is a directory.
+//
+// `EmitError` derives only `Debug` (its `io::Error` payload is not
+// `PartialEq`), so each test matches on the variant pattern rather than
+// `assert_eq!` on the whole error.
+
+/// `KernelsReadFailed`: the very first I/O op in `emit` is
+/// `fs::read_to_string(kernels_rs_path)`; a path that does not exist
+/// fails it before any rendering or output creation.
+#[test]
+fn kernels_read_failed_on_missing_kernels_rs() {
+    let (linked, acfg, _kernels) = link_example_01_naive();
+    let out = scratch_dir("emiterr_kernels_read_failed");
+    let (pw, names, sc) = contract_inputs(&linked, &acfg);
+
+    let missing = out.join("does-not-exist-kernels.rs");
+    assert!(!missing.exists(), "precondition: the kernels path must not exist");
+
+    let err = emit(&pw, &names, &sc, &missing, &out)
+        .expect_err("a missing kernels.rs must fail with a typed error, not panic");
+    match err {
+        EmitError::KernelsReadFailed { path, source } => {
+            assert_eq!(path, missing, "KernelsReadFailed must name the missing path");
+            assert_eq!(
+                source.kind(),
+                std::io::ErrorKind::NotFound,
+                "the wrapped io::Error must be NotFound for a missing file"
+            );
+        }
+        other => panic!("expected KernelsReadFailed, got {other:?}"),
+    }
+}
+
+/// `OutputCreateFailed`: `emit` reads kernels (ok) then
+/// `fs::create_dir_all(out_dir/src)`. Rooting `out_dir` under a regular
+/// FILE makes that fail (a path component is not a directory).
+#[test]
+fn output_create_failed_when_a_path_component_is_a_file() {
+    let (linked, acfg, kernels) = link_example_01_naive();
+    let scratch = scratch_dir("emiterr_output_create_failed");
+    let (pw, names, sc) = contract_inputs(&linked, &acfg);
+
+    // A regular file used as a directory component: `create_dir_all`
+    // of `out_dir/src` = `blocker/nested-out/src` must fail because
+    // `blocker` is a file, not a directory.
+    let blocker = scratch.join("blocker");
+    fs::write(&blocker, b"i am a regular file, not a directory").unwrap();
+    let out = blocker.join("nested-out");
+
+    let err = emit(&pw, &names, &sc, &kernels, &out)
+        .expect_err("out_dir under a regular file must fail with a typed error");
+    match err {
+        EmitError::OutputCreateFailed { path, .. } => {
+            assert!(
+                path.starts_with(&out),
+                "OutputCreateFailed must name a path under out_dir; got {path:?}"
+            );
+        }
+        other => panic!("expected OutputCreateFailed, got {other:?}"),
+    }
+}
+
+/// `WriteFailed`: `emit` reads kernels (ok), creates `out_dir/src` (ok),
+/// then `write_file(out_dir/Cargo.toml)` — the first generated write.
+/// Pre-creating `out_dir/Cargo.toml` as a DIRECTORY makes `fs::write`
+/// fail (the target path is a directory).
+#[test]
+fn write_failed_when_target_path_is_a_directory() {
+    let (linked, acfg, kernels) = link_example_01_naive();
+    let out = scratch_dir("emiterr_write_failed");
+    let (pw, names, sc) = contract_inputs(&linked, &acfg);
+
+    let cargo_toml_as_dir = out.join("Cargo.toml");
+    fs::create_dir_all(&cargo_toml_as_dir)
+        .expect("pre-create the Cargo.toml path as a directory");
+
+    let err = emit(&pw, &names, &sc, &kernels, &out)
+        .expect_err("writing onto a directory must fail with a typed error");
+    match err {
+        EmitError::WriteFailed { path, .. } => {
+            assert_eq!(
+                path, cargo_toml_as_dir,
+                "WriteFailed must name the Cargo.toml path it could not write"
+            );
+        }
+        other => panic!("expected WriteFailed, got {other:?}"),
+    }
 }
 
 // REMOVED (TASK-0124): `distributed_placement_is_rejected`.
