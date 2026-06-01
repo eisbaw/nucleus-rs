@@ -1162,6 +1162,46 @@ check-mpi-smoke:
         exit 1; \
     fi
 
+# Tier-2 (M7/M8) MPI sub-communicator barrier build+run smoke
+# (TASK-0045.02 AC#3). The COLLECTIVE sibling of check-mpi-smoke: builds
+# the hand-written tests/mpi/barrier-smoke crate under the `.#mpi` shell
+# and runs it under a localhost `mpiexec -n 3`. It proves the EXACT
+# Comm_split + sub-communicator-barrier surface the two MPI backends'
+# shared substrate (`backend_common::mpi_plan`) emits for a STRICT-SUBSET
+# (host-excluding) `Event::Sync`: every rank calls `MPI_Comm_split`
+# COLLECTIVELY, the excluded host (rank 0) passes `Color::undefined()`
+# (-> None, no sub-comm barrier), the >=2 compute participants share a
+# color, land in one sub-communicator, and `MPI_Barrier` on IT. The run
+# is wrapped in `timeout` so a broken split (host wrongly joined the
+# sub-group, or a participant skipped the collective) deadlocks and fails
+# LOUD instead of hanging. Self-contained: it enters `.#mpi` itself, so
+# it runs from the default shell:  just check-mpi-barrier-smoke
+#
+# DELIBERATELY NOT wired into `just ci`: the DEFAULT dev shell has NO MPI
+# (only `.#mpi` does) — same tier-2/3-outside-default-ci rule as
+# check-mpi-smoke / check-mpi / check-embedded / renode-* (TASK-0223).
+# `--oversubscribe` lets the 3 ranks share however few cores the sandbox
+# exposes.
+check-mpi-barrier-smoke:
+    @echo "tier-2 M7/M8 MPI Comm_split + sub-comm barrier smoke (.#mpi, TASK-0045.02 AC#3)"
+    @set -eu; \
+    sm="$(pwd)/tests/mpi/barrier-smoke"; \
+    out="$(mktemp)"; \
+    trap 'rm -f "$out"' EXIT; \
+    echo "=== building barrier-smoke (.#mpi) ==="; \
+    nix develop .#mpi --command bash -c "cd '$sm' && cargo build --release --quiet"; \
+    echo "=== running under localhost mpiexec -n 3 (1 excluded host + 2 compute participants) ==="; \
+    nix develop .#mpi --command bash -c "timeout 60 mpiexec --oversubscribe -n 3 '$sm/target/release/barrier-smoke'" >"$out" 2>&1 \
+        || { echo "FAIL: barrier-smoke run failed/timed out under -n 3 (Comm_split + sub-comm barrier deadlock?)"; sort "$out"; exit 1; }; \
+    sort "$out"; \
+    if grep -q 'host world-rank 0 excluded from the compute barrier' "$out" \
+        && [ "$(grep -c 'compute participant world-rank .* barrier OK' "$out")" -eq 2 ]; then \
+        echo "OK: MPI_Comm_split + sub-communicator MPI_Barrier link and run host-excluding under -n 3 (TASK-0045.02 collective verified)."; \
+    else \
+        echo "FAIL: expected the excluded-host line + 2 compute-participant barrier-OK lines from the -n 3 launch (Comm_split/sub-comm barrier broken)"; \
+        exit 1; \
+    fi
+
 # Tier-2 (M7) mpi-blocking acceptance (TASK-0045). For each of the §9
 # examples 1-6, generates the SPMD MPI project from the example's NAIVE
 # schedule (all single-worker — the landed arm), cross-builds it under

@@ -1,0 +1,37 @@
+# MPI sub-communicator barrier smoke crate — the tier-2 (M7/M8)
+# build+run de-risk for the SHARED Comm_split lowering
+# (TASK-0045.02 AC#3).
+#
+# Hand-written proof that the COLLECTIVE surface the two MPI backends'
+# shared substrate (`backend_common::mpi_plan`) emits for a STRICT-SUBSET
+# (e.g. host-excluding) barrier — `MPI_Comm_split` + a sub-communicator
+# `MPI_Barrier` — compiles against the nixpkgs OpenMPI provided by `nix
+# develop .#mpi` AND runs to completion under a localhost `mpiexec -n N`
+# without deadlocking. It deliberately exercises the EXACT shape the
+# generated multi-worker codegen emits for a `SubcommBar`:
+#
+#   * `world.split_by_color(Color::with_value(c))` on participants  ┐
+#   * `world.split_by_color(Color::undefined())`  on non-participants ┘
+#       -> MPI_Comm_split (collective over COMM_WORLD; ALL ranks call it)
+#   * `subcomm.barrier()` on the Some(subcomm) participants only
+#       -> MPI_Barrier over the participant sub-group
+#
+# This is the COLLECTIVE sibling of tests/mpi/rsmpi-smoke (which de-risks
+# only the point-to-point Send/Recv surface and explicitly leaves the
+# barrier/collective surface to "when the backend lowers it, with its own
+# smoke arm" — that arm is THIS crate).
+#
+# Standalone (own [workspace]) so it is NOT part of the nucleus/ cargo
+# workspace — it builds only under `nix develop .#mpi`, never in the
+# default `just ci` (same tier-isolation rule as rsmpi-smoke /
+# tests/renode/*). Run it via `just check-mpi-barrier-smoke`.
+[package]
+name = "barrier-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mpi = "0.8"
+
+[workspace]
