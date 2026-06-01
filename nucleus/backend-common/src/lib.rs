@@ -63,10 +63,22 @@
 //!   backend supplies only an `EventTransport` impl + a `Plan` type
 //!   alias. A SEPARATE substrate from `tcp_plan` (per-seq-demux reactor
 //!   vs FIFO).
+//! - [`mpi_plan`] — the shared SPMD multi-worker emit `Plan` substrate
+//!   for the tier-2 MPI backends (mpi-blocking, mpi-nonblocking),
+//!   parameterised over the `MpiRendezvous` trait (blocking Send/Recv
+//!   vs buffered Ibsend/Imrecv prelude + buffer attach). TASK-0046.02
+//!   lift: the multi-worker `Plan` (host election, rank assignment,
+//!   channel-id collection, barrier analysis, the loud rejects, the
+//!   `render_worker_events` walk) that mpi-nonblocking had duplicated
+//!   verbatim from mpi-blocking now lives here; each backend supplies
+//!   only an `MpiRendezvous` impl + a `Plan` type alias. SPMD (one
+//!   rank-dispatched binary) — distinct from the multi-binary
+//!   `tcp_plan` / `event_plan` substrates.
 
 pub mod check_frame;
 pub mod event_plan;
 pub mod host_election;
+pub mod mpi_plan;
 pub mod multi_worker_walker;
 pub mod project_skeleton;
 pub mod render;
