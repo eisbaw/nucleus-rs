@@ -663,6 +663,119 @@ N <-- f();
 }
 
 // --------------------------------------------------------------------
+// TASK-0396 (cycle-234): prove-the-check-bites for the arithmetic /
+// scope guards in the const & shape evaluator that previously had a
+// construction site but NO negative test. Each crafted source is
+// minimal and verified to make the target variant the *primary* (first)
+// recorded error, so `.first()` lands on it. They sit beside the
+// already-covered siblings above (ConstDivByZero, NonPositiveDim) in the
+// SAME evaluator — closing a coherent coverage hole, not adding new
+// surface.
+// --------------------------------------------------------------------
+
+#[test]
+fn const_expr_i64_overflow_is_error() {
+    // i64::MAX * 2 overflows the checked_binop multiply — the const
+    // evaluator must reject it loudly, not wrap.
+    let src = "\
+const Q : usize = 9223372036854775807 * 2;
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::ConstOverflow { in_const, op },
+            ..
+        }) => {
+            assert_eq!(in_const, "Q");
+            assert_eq!(op, "mul");
+        }
+        other => panic!("expected ConstOverflow; got {other:?}"),
+    }
+}
+
+#[test]
+fn non_integer_const_expr_kernel_call_is_error() {
+    // A kernel call is not an integer constant — a const expression that
+    // contains one is rejected (the `Expr::Call` arm of the evaluator).
+    let src = "\
+const Q : usize = nope();
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::NonIntegerConstExpr { in_const, reason },
+            ..
+        }) => {
+            assert_eq!(in_const, "Q");
+            assert!(
+                reason.contains("kernel call"),
+                "reason should name the kernel-call sub-arm: {reason:?}"
+            );
+        }
+        other => panic!("expected NonIntegerConstExpr; got {other:?}"),
+    }
+}
+
+#[test]
+fn shape_dim_i64_overflow_is_error() {
+    // Same overflow guard as the const evaluator, but tagged for the
+    // owning *data declaration* rather than a const.
+    let src = "\
+data x : f32[9223372036854775807 * 2];
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::ShapeOverflow { decl, op },
+            ..
+        }) => {
+            assert_eq!(decl, "x");
+            assert_eq!(op, "mul");
+        }
+        other => panic!("expected ShapeOverflow; got {other:?}"),
+    }
+}
+
+#[test]
+fn shape_dim_divide_by_zero_is_error() {
+    // The shape sibling of `const_divide_by_zero_is_error` — division by
+    // zero in a dimension expression is rejected before any positivity
+    // check (eval fails first), tagged for the data decl.
+    let src = "\
+data x : f32[4 / 0];
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::ShapeDivByZero { decl },
+            ..
+        }) => assert_eq!(decl, "x"),
+        other => panic!("expected ShapeDivByZero; got {other:?}"),
+    }
+}
+
+#[test]
+fn iter_var_shadowing_a_decl_is_error() {
+    // A `for` iter var whose name collides with a declared const is a
+    // malformed loop head — the shadow check fires and the body is NOT
+    // descended (so no cascade noise about `N`).
+    let src = "\
+const N : usize = 4;
+data x : f32[4];
+kernel f : () -> f32 effectful;
+for N : 0 .. 4 {
+    x <-- f();
+}
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::IterVarShadowsDecl { var, shadows },
+            ..
+        }) => {
+            assert_eq!(var, "N");
+            assert_eq!(shadows, "N");
+        }
+        other => panic!("expected IterVarShadowsDecl; got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------
 // TASK-0090: located lowering diagnostics — the error carries the byte
 // span of the offending node, which resolves to the CORRECT line:col.
 // --------------------------------------------------------------------
