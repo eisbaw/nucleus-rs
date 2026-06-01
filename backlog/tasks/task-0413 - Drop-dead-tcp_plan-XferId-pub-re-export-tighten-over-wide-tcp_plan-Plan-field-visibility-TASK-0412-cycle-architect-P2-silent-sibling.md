@@ -3,11 +3,11 @@ id: TASK-0413
 title: >-
   Drop dead tcp_plan::XferId pub re-export + tighten over-wide tcp_plan::Plan
   field visibility (TASK-0412 cycle architect P2 silent-sibling)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-06-01 19:51'
-updated_date: '2026-06-01 20:08'
+updated_date: '2026-06-01 20:29'
 labels:
   - tooling
   - dead-code
@@ -37,3 +37,17 @@ Separately the architect noted tcp_plan::Plan looks over-widened: the whole stru
 - Higher risk than TASK-0412: this touches a genuinely-pub struct field set, not just a dead alias. The field-visibility audit (step 1) is the real work; do NOT narrow a field a backend actually reads.
 - LOW / OPTIONAL: pure dead-surface + visibility hygiene, zero functional effect. Same class as TASK-0411 (dead-reexport removal) and TASK-0412 (ChanId). Do NOT narrow asymmetrically without the field audit.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+DONE (commit 472e88b). Dropped dead tcp_plan::XferId re-export + narrowed pub type XferId -> pub(crate); tightened 7 over-wide tcp_plan::Plan fields (per_worker, names, sidecar, host_worker, xfer_ids, pair_tiles, accumulate_waits) to pub(crate), keeping used_workers pub (the ONLY field read across the crate boundary). All 3 Plan substrates (event_plan/mpi_plan/tcp_plan) now `pub use plan::Plan;` only.
+
+VERIFIED: cargo build --workspace OK (E0616 would fire on any missed external field read — clean => none); clippy backend-common+mp-tcp-{poll,bufsync} clean; cargo doc --workspace --no-deps warning count UNCHANGED (14); 153 tests / 0 fail across the 3 crates; no [`XferId`] intra-doc-link (doc-link trap N/A). Zero functional effect (visibility cannot affect codegen; byte-identity confirmed by the passing poll-vs-bufsync emit differential test).
+
+REVIEW GATE: mped-architect read-only GO. Independently reproduced (forced rebuild zero-warning + byte-identity test). Confirmed: both shims construct via Plan::build (not struct-literal => construction-safe), read only used_workers + pub methods; all 7 narrowed fields have in-crate readers (no dead_code); used_workers correctly left pub.
+
+DOCSTRING ACCURACY (orchestrator double-checked the architect P3-2): the new struct docstring claims the shims drive the Plan through pub fn build/render_worker_program/render_run_sh/worker_name + read used_workers. VERIFIED ACCURATE by grepping ACTUAL call syntax in poll/bufsync src — those are exactly the 4 methods + 1 field the shims use. NOT a doc-lie.
+
+ARCHITECT P3-1 (method-hygiene) -> filed TASK-0414. The architect named 3 internal-only pub fn (data_name/non_host_workers/ctrl_var) but UNDER-COUNTED: there are ~9 internal-only pub fn on Plan + the encode/walkers free fns. Deliberately NOT folded here (beyond TASK-0413 FIELD scope; needs a careful per-symbol external-caller audit). Gotcha forward-carried: Plan::non_host_workers/max_payload_bytes appear in a bufsync COMMENT backtick-span but are NOT external callers — audit by actual call syntax, not bare mentions.
+<!-- SECTION:NOTES:END -->
