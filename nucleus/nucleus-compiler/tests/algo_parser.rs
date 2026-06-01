@@ -729,6 +729,28 @@ y <-- k(x);
     assert_eq!(errs.errors()[0].kind, ParseErrorKind::Unexpected);
 }
 
+/// TASK-0406: bite test for the `UnexpectedEof` arm of
+/// [`ParseErrorKind`]. The classifier (`error.rs`, the
+/// `SimpleReason::Unexpected if err.found().is_none() => UnexpectedEof`
+/// site) maps an EOF-while-more-was-expected failure to `UnexpectedEof`;
+/// every OTHER `.kind` assertion in this suite pins `Unexpected`, so
+/// this was the lone production-reachable `ParseErrorKind` variant with
+/// no bite test (cycle-236 TASK-0406 audit; the architect refuted the
+/// "single error type / per-variant N/A" premise). A construct
+/// truncated exactly at EOF — `const N : usize =`, where the value
+/// expression is required but the input ends — drives the parser to
+/// fail with `found() == None`.
+#[test]
+fn negative_unexpected_eof_kind_on_truncated_input() {
+    let err = expect_err("const N : usize =");
+    assert_eq!(
+        err.kind,
+        ParseErrorKind::UnexpectedEof,
+        "a construct truncated at EOF must classify as UnexpectedEof, \
+         not Unexpected: {err:?}"
+    );
+}
+
 /// TASK-0081 AC#2: recovery is BOUNDED. A pathological, deeply
 /// malformed input must TERMINATE (no infinite skip-then-retry) and
 /// yield a finite, deterministic error set whose size grows at most

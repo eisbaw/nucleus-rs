@@ -720,6 +720,26 @@ schedule for \"../prog.algo.nuc\" {
     assert_eq!(errs.errors()[0].line, 3, "{:?}", errs.errors());
 }
 
+/// TASK-0406: bite test for the `UnexpectedEof` arm of
+/// [`ParseErrorKind`] (sched sibling of the algo_parser test of the
+/// same name). The classifier maps an EOF-while-more-was-expected
+/// failure to `UnexpectedEof`; every other `.kind` assertion in this
+/// suite pins `Unexpected`, so this was the lone production-reachable
+/// variant with no bite test (cycle-236 TASK-0406 audit). An opened
+/// `schedule { … }` block truncated at EOF — the parser expects a
+/// directive or the closing brace but the input ends — fails with
+/// `found() == None`.
+#[test]
+fn negative_unexpected_eof_kind_on_truncated_input() {
+    let err = expect_err("schedule for \"../prog.algo.nuc\" {");
+    assert_eq!(
+        err.kind,
+        ParseErrorKind::UnexpectedEof,
+        "a schedule truncated at EOF must classify as UnexpectedEof, \
+         not Unexpected: {err:?}"
+    );
+}
+
 /// TASK-0087 AC#1: recovery is BOUNDED. A pathological, deeply
 /// malformed schedule must TERMINATE (no infinite skip-then-retry)
 /// and yield a finite, deterministic error set whose size is at most
