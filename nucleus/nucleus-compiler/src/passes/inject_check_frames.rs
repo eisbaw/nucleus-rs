@@ -95,9 +95,14 @@ pub fn inject_check_frames(
     let mut by_iter_var: BTreeMap<IterVar, CheckFrame> = BTreeMap::new();
     for (name, directive) in checks {
         let Some(iv) = name_iter_vars.get(name) else {
-            // Name resolves to an algorithm loop but produced no
-            // IterVar (e.g. a loop the compiler eliminated). Skip;
-            // the assertion has no loop to bind to.
+            // Defense-in-depth: `name` is not an algorithm loop var, so
+            // it has no IterVar. This is structurally unreachable for a
+            // link-accepted check — `link::build` rejects any `check loop
+            // V` whose `V` is not in the algorithm loop-var set
+            // (`LinkErrorKind::UnknownLoop`), and `name_iter_vars`
+            // (`acfg::build`'s `collect_iter_var_names`) is exactly that
+            // set. Skip rather than panic if a contract violation upstream
+            // ever lets an unknown name reach here.
             continue;
         };
         let frame = resolve_check_directive(name, directive);
@@ -487,8 +492,9 @@ mod tests {
         // TASK-0403 prove-the-silent-drop: the `name_iter_vars.get(name)`
         // MISS arm (`let Some(iv) = ... else { continue }`, ~line 97) is a
         // PER-ENTRY `continue`, NOT a loop-break. A `check loop` whose name
-        // is absent from `name_iter_vars` (an eliminated / non-resolving
-        // algorithm loop) is dropped WITHOUT swallowing a co-present valid
+        // is absent from `name_iter_vars` (defense-in-depth: structurally
+        // unreachable for a link-accepted check — see the production
+        // comment) is dropped WITHOUT swallowing a co-present valid
         // directive. `unknown_check_name_silently_dropped` already pins the
         // drop in isolation (no panic, no frame); this pins that the drop
         // COMPOSES — a live sibling still injects.
