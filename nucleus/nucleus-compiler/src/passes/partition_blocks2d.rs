@@ -331,6 +331,24 @@ pub fn apply_partition_blocks2d(
         }
 
         // Locate the inner Repeat's iter_var + range.
+        //
+        // The `else` (`InnerRepeatNotFound`) arm is UNREACHABLE BY
+        // CONSTRUCTION, not merely unhit (TASK-0401). `find_outer_of_2d`
+        // computed `has_inner_repeat = contains_repeat(body)` over this
+        // same outer body, and the `NotOuterOf2DNest` guard above
+        // already rejected the `!has_inner_repeat` case — so on arrival
+        // here `contains_repeat(body)` is `true`. `contains_repeat` and
+        // `first_repeat_in` (which `find_first_inner_repeat` runs on the
+        // same body once it has matched the outer iter_var) are the SAME
+        // predicate — `Repeat` ⇒ yes, `Sequence` ⇒ any/first child,
+        // `Operation`/`Sync`/`Xfer` ⇒ no — so
+        // `contains_repeat(body) == first_repeat_in(body).is_some()`.
+        // The arm stays as fail-loud defence-in-depth; its
+        // unreachability is pinned by the unit test
+        // `inner_repeat_not_found_unreachable_contains_repeat_iff_first_repeat_in`
+        // (a future edit that diverges the two descents fails that test,
+        // flagging that this arm may have become live and now needs a
+        // real bite test).
         let Some((inner_iter_var, inner_range)) =
             find_first_inner_repeat(&acfg.root, outer_iter_var)
         else {
@@ -728,5 +746,76 @@ mod tests {
             block_tag: None,
         };
         assert!(find_first_inner_repeat(&outer, IterVar(7)).is_none());
+    }
+
+    /// TASK-0401 white-box invariant pin: the `InnerRepeatNotFound` arm
+    /// of `apply_partition_blocks2d` is UNREACHABLE by construction. The
+    /// pass reaches it only when `has_inner_repeat == true` (the
+    /// `NotOuterOf2DNest` gate) yet `first_repeat_in(body) == None` — but
+    /// `has_inner_repeat` IS `contains_repeat(body)`, and
+    /// `contains_repeat` and `first_repeat_in` are the same predicate
+    /// over the same body (`Repeat` ⇒ yes, `Sequence` ⇒ any/first child,
+    /// `Operation`/`Sync`/`Xfer` ⇒ no). This test pins that equivalence
+    /// over a spread of body shapes: if a future edit diverges the two
+    /// descents (e.g. teaches one to descend a node type the other
+    /// ignores), it fails — signalling the defensive arm may have become
+    /// live and now needs a real bite test. We do NOT (cannot) assert
+    /// the arm fires: no input satisfies `contains_repeat && !first_repeat_in`.
+    #[test]
+    fn inner_repeat_not_found_unreachable_contains_repeat_iff_first_repeat_in() {
+        use crate::acfg::{DataflowDag, DataflowEdge, Operation};
+        use crate::event::{DataId, KernelId};
+        use crate::passes::partition_rows::contains_repeat;
+
+        fn mk_op() -> ACFGNode {
+            let mut workers = BTreeSet::new();
+            workers.insert(WorkerId(1));
+            ACFGNode::Operation(Operation {
+                kernel: KernelId(0),
+                workers,
+                dataflow: DataflowDag {
+                    edges: vec![DataflowEdge::new(vec![DataId(0)], KernelId(0), Some(DataId(1)))],
+                },
+            })
+        }
+        fn mk_repeat(iv: u64, inner: ACFGNode) -> ACFGNode {
+            ACFGNode::Repeat {
+                iter_var: IterVar(iv),
+                range: 0..4,
+                body: Box::new(inner),
+                block_tag: None,
+            }
+        }
+
+        let shapes: Vec<ACFGNode> = vec![
+            // No Repeat reachable → both false / None.
+            mk_op(),
+            ACFGNode::Sequence(vec![]),
+            ACFGNode::Sequence(vec![mk_op(), mk_op()]),
+            // Bare Repeat → both true / Some.
+            mk_repeat(8, ACFGNode::Sequence(vec![mk_op()])),
+            // Repeat nested under Sequence(s) → both true / Some.
+            ACFGNode::Sequence(vec![
+                mk_op(),
+                mk_repeat(8, ACFGNode::Sequence(vec![mk_op()])),
+            ]),
+            ACFGNode::Sequence(vec![ACFGNode::Sequence(vec![mk_repeat(
+                9,
+                ACFGNode::Sequence(vec![mk_op()]),
+            )])]),
+        ];
+
+        for (i, n) in shapes.iter().enumerate() {
+            assert_eq!(
+                contains_repeat(n),
+                first_repeat_in(n).is_some(),
+                "shape #{i}: contains_repeat and first_repeat_in must agree \
+                 (the equivalence that keeps InnerRepeatNotFound unreachable)"
+            );
+        }
+        // Both polarities are genuinely exercised above (not a vacuous
+        // all-false agreement).
+        assert!(!contains_repeat(&shapes[0]), "shape 0 has no Repeat");
+        assert!(contains_repeat(&shapes[3]), "shape 3 is a bare Repeat");
     }
 }
