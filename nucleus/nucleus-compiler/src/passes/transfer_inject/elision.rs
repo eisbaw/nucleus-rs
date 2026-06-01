@@ -96,10 +96,10 @@ pub(super) fn check_no_silent_elision_risk(
     // `collect_producer_writes` and shared with `InjectCtx` so the
     // AC#3 same-set classifier inside `build_waits_for_op` uses the
     // SAME index without re-walking the tree. Per PRD §6.2.1 single-
-    // assignment (enforced upstream by `algo::lower` — see
-    // `LowerErrorKind::DoubleAssignment` in
-    // `nucleus-compiler/src/algo/ir.rs:256-260`, grep-witness for the
-    // single-assignment rule), every data symbol has at most ONE
+    // assignment (enforced upstream by `algo::lower` — grep
+    // `LowerErrorKind::DoubleAssignment` (defined in `algo::ir`, raised
+    // in `algo::lower`) as the witness for the single-assignment rule),
+    // every data symbol has at most ONE
     // writer Operation, modulo accumulator self-writes (an op whose
     // `data_in` and `data_out` are the same DataId at the same
     // indices, e.g. `c[i][j] <-- madd(c[i][j], ...)` — exercised by

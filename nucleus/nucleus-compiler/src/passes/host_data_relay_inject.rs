@@ -23,9 +23,10 @@
 //! The two intermediate hops (`Wait(host, src=src)` and
 //! `Push(host, dst=dst)`) project onto host's per-worker event list
 //! at the SAME structural depth as the original pair lived — including
-//! INSIDE `Repeat` bodies (PRD §8.3 + the
-//! `petri_to_events.rs:330-358` rule that empty body events suppress
-//! the host's `Loop` projection). Because host now contributes a
+//! INSIDE `Repeat` bodies (PRD §8.3 + the rule in `petri_to_events`'s
+//! per-worker `Event::Loop` projection loop — `if body_events.is_empty()
+//! { continue; }` — that empty body events suppress the host's `Loop`
+//! projection). Because host now contributes a
 //! non-empty body to such `Repeat`s, host's projection naturally
 //! carries a per-iteration `Event::Loop` whose body contains the
 //! `Wait`/`Push` pair — which the existing
