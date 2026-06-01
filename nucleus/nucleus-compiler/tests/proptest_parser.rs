@@ -58,14 +58,19 @@ use proptest::prelude::*;
 use nucleus_compiler::algo::parse_algo;
 use nucleus_compiler::sched::parse_sched;
 
-/// Real lexical tokens of the two sublanguages plus structural
+/// Lexical fragments of the two sublanguages plus structural
 /// punctuation and whitespace. Concatenated "token soup" drives far
 /// deeper into the grammar than random bytes — and therefore into the
 /// parser states with multiple expected-token alternatives, which is
 /// the exact place the chumsky `HashSet`-order bug used to surface.
-/// Harvested from `just(..)` / `keyword(..)` literals in the two
-/// parsers (kept deliberately broad; an entry that is no longer a real
-/// token only weakens the generator, it cannot make a property wrong).
+/// Most entries are real `keyword(..)` / `just(..)` literals from the
+/// two parsers; a few are multi-char operators the grammar builds from
+/// char sequences rather than single literals (`<--`, `->`, `..`) and a
+/// handful are plausible-but-not-live tokens (e.g. `&`, `|`, `irq`,
+/// `barrier`). The set is deliberately broad and approximate: an entry
+/// that is not (or is no longer) a real token only weakens the
+/// generator — it lands in the "unexpected" bucket and cannot make a
+/// property wrong.
 const TOKENS: &[&str] = &[
     // algorithm keywords
     "kernel", "data", "for", "in", "pure", "effectful", "const",
