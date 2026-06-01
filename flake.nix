@@ -167,7 +167,11 @@
         # not need (same tiered-shell rule as `.#renode` / `.#embedded` /
         # `.#mpi`, TASK-0068).
         devShells.docs = pkgs.mkShell {
-          packages = basePackages ++ [ pkgs.marp-cli ];
+          # marp-cli renders the deck; nodejs runs `bundle.mjs`, which
+          # inlines the SVG assets as base64 data: URIs so `index.html`
+          # is a single self-contained file (node is already in the
+          # marp-cli closure, so this adds ~nothing).
+          packages = basePackages ++ [ pkgs.marp-cli pkgs.nodejs ];
           # Silent on purpose. See PRD §12.1 and ~/.claude/CLAUDE.md.
           shellHook = "";
         };

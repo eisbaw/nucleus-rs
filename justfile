@@ -1713,9 +1713,12 @@ renode-embedded-check-count:
 clean:
     cd nucleus && cargo clean
 
-# Render the Marpit thesis deck (docs/presentation/slides.md) to
-# self-contained HTML with animated SVGs. Needs the `.#docs` shell (marp-cli).
+# Render the Marpit thesis deck (docs/presentation/slides.md) to a SINGLE
+# self-contained HTML SPA: marp inlines the theme + nav JS, then bundle.mjs
+# inlines the 8 animated SVGs as base64 data: URIs. Needs the `.#docs` shell.
 slides:
-    nix develop .#docs --command marp docs/presentation/slides.md \
-        --theme-set docs/presentation/themes/nucleus.css \
-        -o docs/presentation/index.html --html
+    nix develop .#docs --command bash -c "set -euo pipefail; \
+        marp docs/presentation/slides.md \
+            --theme-set docs/presentation/themes/nucleus.css \
+            -o docs/presentation/index.html --html; \
+        node docs/presentation/bundle.mjs docs/presentation/index.html"

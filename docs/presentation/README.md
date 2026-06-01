@@ -17,22 +17,29 @@ animation on its first frame.
 
 ## Build / re-render
 
-`marp` is provided by the `.#docs` Nix dev shell. The one-liner:
+`marp` + `node` are provided by the `.#docs` Nix dev shell:
 
 ```
 just slides
 ```
 
-which expands to:
+This runs two steps in the `.#docs` shell:
 
-```
-nix develop .#docs --command marp docs/presentation/slides.md \
-    --theme-set docs/presentation/themes/nucleus.css \
-    -o docs/presentation/index.html --html
-```
+1. **`marp`** renders `slides.md` → `index.html`, inlining the theme CSS
+   and the navigation JS (`--theme-set ... --html`).
+2. **`node bundle.mjs index.html`** inlines the 8 SVG diagrams as base64
+   `data:` URIs.
 
-Marp can also serve a live-reloading preview (`marp -s docs/presentation`)
-or export PDF/PPTX (`marp slides.md --pdf`, needs Chromium).
+The result, `index.html`, is a **single self-contained SPA** — one file
+with no sibling dependencies (theme, nav JS, and all animated SVGs are
+embedded). You can copy it anywhere and open it offline; the SVGs still
+animate (they stay isolated `<img>` documents, so their internal
+`@keyframes`/SMIL don't collide). Verified by rendering it from a
+directory containing nothing but the HTML.
+
+Marp can also serve a live-reloading preview (`marp -s docs/presentation`,
+referencing the un-bundled `assets/`) or export PDF/PPTX
+(`marp slides.md --pdf`, needs Chromium).
 
 ## Layout
 
@@ -40,8 +47,9 @@ or export PDF/PPTX (`marp slides.md --pdf`, needs Chromium).
 |---|---|
 | `slides.md` | the deck source (Markdown + Marp front-matter) |
 | `themes/nucleus.css` | custom dark-slate Marp theme (`@theme nucleus`) |
-| `assets/*.svg` | 8 self-contained animated SVG diagrams |
-| `index.html` | the rendered, self-contained deck (regenerate with `just slides`) |
+| `assets/*.svg` | 8 self-contained animated SVG diagrams (build inputs) |
+| `bundle.mjs` | post-build step: inlines the SVGs as base64 `data:` URIs |
+| `index.html` | the single self-contained SPA (regenerate with `just slides`) |
 
 ## Narrative arc
 
