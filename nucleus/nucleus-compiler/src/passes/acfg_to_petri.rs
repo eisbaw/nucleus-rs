@@ -72,10 +72,11 @@
 //! `Option<NonZeroU32>` ([`crate::petri::Place::capacity`]). We
 //! convert by clamping to `u32::MAX` and rejecting `buffer == 0` (an
 //! upstream invariant — `TransferPolicy::default().buffer == 1` and
-//! the schedule parser does not accept `buffer=0`). The conversion is
-//! `expect`-guarded so a future grammar relaxation that lets through
-//! a 0 produces a loud failure here rather than a silently-unbounded
-//! place.
+//! the schedule parser does not accept `buffer=0`). The `buffer == 0`
+//! rejection is `assert!`-guarded (with the `NonZeroU32` conversion
+//! step additionally `expect`-guarded) so a future grammar relaxation
+//! that lets through a 0 produces a loud failure here rather than a
+//! silently-unbounded place.
 //!
 //! ### Initial markings (TASK-0134)
 //!
@@ -232,10 +233,11 @@
 //!    kernel is placed on `{w0, w1, w2, w3}`, the Operation transition
 //!    has arcs from/to each worker's control place. We do not (yet)
 //!    replicate the firing per worker at THIS layer; the per-worker
-//!    replication lives in the downstream `partition_workers` /
+//!    replication lives in the upstream `partition_workers` /
 //!    `partition_rows` / `partition_blocks2d` passes (TASK-0117 +
-//!    TASK-0258 + TASK-0259, all Done) — `acfg_to_petri` consumes
-//!    their already-replicated ACFG.
+//!    TASK-0258 + TASK-0259, all Done) — they run BEFORE this pass
+//!    in the driver pipeline, so `acfg_to_petri` consumes their
+//!    already-replicated ACFG.
 //!
 //! - **Sync transition vs barrier place**. The PRD §8.2 mapping
 //!    speaks of "barrier place + N input arcs + N output arcs OR a
