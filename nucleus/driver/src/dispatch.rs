@@ -346,8 +346,9 @@ pub(crate) fn dispatch_backend(
         // Push => non-blocking BUFFERED MPI_Ibsend (local completion,
         // deadlock-immune) and Wait => MPI_Imrecv/Irecv + explicit
         // MPI_Wait. Admits the async/buffered schedules mpi-blocking
-        // rejects (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined).
-        // Builds + runs only under `nix develop .#mpi` (`just
+        // rejects (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined,
+        // 09-producer-consumer/pipelined). Builds + runs only under `nix
+        // develop .#mpi` (`just
         // check-mpi-nonblocking`), NOT the tier-1 runtime differential.
         "mpi-nonblocking" => {
             let result =

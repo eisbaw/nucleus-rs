@@ -38,7 +38,7 @@ pub(crate) fn print_help() {
              mpi-blocking    SPMD MPI (tier 2, M7); one rank-dispatched binary + rsmpi. Builds/runs under `nix develop .#mpi` via `just check-mpi`.\n    \
                                Single-worker SPMD arm landed; multi-worker (rank Send/Recv + MPI_Barrier) is TASK-0045.01.\n    \
              mpi-nonblocking SPMD MPI (tier 2, M8); non-blocking BUFFERED MPI_Ibsend + MPI_Imrecv/Irecv + MPI_Wait. Builds/runs under `nix develop .#mpi` via `just check-mpi-nonblocking`.\n    \
-                               Admits the async/buffered schedules mpi-blocking rejects (05-stencil distributed + distributed-2d, 11-game-of-life pipelined); deadlock-immune (TASK-0046).\n"
+                               Admits the async/buffered schedules mpi-blocking rejects (05-stencil distributed + distributed-2d, 11-game-of-life pipelined, 09-producer-consumer pipelined); deadlock-immune (TASK-0046).\n"
     );
 }
 

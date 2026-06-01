@@ -1324,10 +1324,10 @@ check-mpi:
 #   05-stencil/distributed     (n=5, host + w0..w3; async img_in broadcast)
 #   05-stencil/distributed-2d  (n=5; 2x2 grid + real worker<->worker halo)
 #   11-game-of-life/pipelined  (n=2, host + compute; async grid)
-# NOT here: 09-producer-consumer/pipelined — it carries a non-whole-world
-# barrier {producer,consumer} excluding host, which needs Comm_split
-# (TASK-0045.02, unproven); the emit rejects it LOUD (TASK-0046 AC#3
-# forward-carries example 9 to TASK-0045.02).
+#   09-producer-consumer/pipelined (n=3, host + producer + consumer; carries
+#     a non-whole-world barrier {producer,consumer} EXCLUDING the host ->
+#     MPI_Comm_split + sub-communicator barrier landed in TASK-0045.02,
+#     wired here by TASK-0046.01; closes TASK-0046 AC#3 [examples 9 AND 11]).
 #
 # DELIBERATELY NOT wired into `just ci` and EXCLUDED from e2e-matrix.toml:
 # the generated project needs the `.#mpi` shell (same tier-2-outside-
@@ -1340,7 +1340,7 @@ check-mpi-nonblocking:
         set -eu; \
         cd nucleus && cargo build --release --bin nucleus --quiet && cd ..; \
         rndv="--mca btl_sm_eager_limit 128 --mca btl_self_eager_limit 128 --mca btl_vader_eager_limit 128 --mca btl_tcp_eager_limit 128"; \
-        for spec in "05-stencil/distributed/5" "05-stencil/distributed-2d/5" "11-game-of-life/pipelined/2"; do \
+        for spec in "05-stencil/distributed/5" "05-stencil/distributed-2d/5" "11-game-of-life/pipelined/2" "09-producer-consumer/pipelined/3"; do \
             ex="${spec%%/*}"; rest="${spec#*/}"; sc="${rest%/*}"; n="${rest##*/}"; \
             out="nucleus/target/mpi-m8/$ex--$sc"; \
             rm -rf "$out"; \
@@ -1366,7 +1366,7 @@ check-mpi-nonblocking:
                 rm -f "$o"; \
             done; \
         done; \
-        echo "OK: mpi-nonblocking value-correct + deadlock-immune — 3 async schedules (-n N, all ranks live) x {default, forced-rendezvous}."'
+        echo "OK: mpi-nonblocking value-correct + deadlock-immune — 4 async schedules (-n N, all ranks live) x {default, forced-rendezvous}."'
 
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/

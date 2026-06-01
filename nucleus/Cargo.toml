@@ -97,8 +97,9 @@ members = [
     # BUFFERED send (MPI_Ibsend, local completion) and Wait to a
     # non-blocking receive (MPI_Imrecv/Irecv) + explicit MPI_Wait, so the
     # async/buffered schedules mpi-blocking capability-REJECTS
-    # (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined) compile +
-    # run here, deadlock-immune. Normal std crate (emits strings); the
+    # (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined,
+    # 09-producer-consumer/pipelined) compile + run here, deadlock-immune.
+    # Normal std crate (emits strings); the
     # `mpi` dep is in the GENERATED project, built + run ONLY under
     # `nix develop .#mpi` via `just check-mpi-nonblocking` — NOT the
     # tier-1 e2e RUNTIME matrix (PRD §7.4 tier-2 ship bar = COMPILE).

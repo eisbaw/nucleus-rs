@@ -14,8 +14,9 @@
 # MPI_Send/MPI_Recv. mpi-nonblocking widens the surface to
 # supports_async=true + supports_buffer=true + notify=event, so the
 # async/buffered schedules mpi-blocking HARD-REJECTS at the driver
-# capability gate (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined)
-# become this backend's targets (TASK-0046 AC#1/#3). The ONLY material
+# capability gate (05-stencil/distributed{,-2d}, 11-game-of-life/pipelined,
+# 09-producer-consumer/pipelined) become this backend's targets
+# (TASK-0046 AC#1/#3). The ONLY material
 # codegen difference is the rendezvous prelude (buffered Ibsend/Irecv vs
 # blocking Send/Recv); the SPMD dispatch, host election, tag=rid
 # discipline, and the shared `render_worker_events` walk are identical.
