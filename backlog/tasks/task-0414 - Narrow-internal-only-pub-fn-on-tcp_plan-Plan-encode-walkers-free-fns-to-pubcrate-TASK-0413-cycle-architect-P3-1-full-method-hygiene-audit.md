@@ -3,9 +3,11 @@ id: TASK-0414
 title: >-
   Narrow internal-only pub fn on tcp_plan::Plan (+ encode/walkers free fns) to
   pub(crate) (TASK-0413 cycle architect P3-1, full method-hygiene audit)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mark'
 created_date: '2026-06-01 20:28'
+updated_date: '2026-06-01 20:34'
 labels:
   - tooling
   - dead-code
@@ -38,3 +40,15 @@ So these tcp_plan::Plan pub fn are internal-only (callers only inside backend-co
 ## Honest scope / priority
 LOW / OPTIONAL: pure dead-/over-wide-surface hygiene, zero functional effect. Same class as TASK-0411/0412/0413. Higher symbol-count than 0413 but each is compiler-verified (E0616/private-fn errors are loud). Do NOT narrow a symbol an external shim calls.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+DONE (commit pending in same push). Narrowed 9 internal-only tcp_plan::Plan pub fn to pub(crate): data_name, non_host_workers, ctrl_var, data_conn_var, relay_schedule, render_relay_phase, collect_pre_init, max_payload_bytes, render_events. Kept pub: build, worker_name, render_worker_program, render_run_sh (exact shim-called set) + used_workers field.
+
+VERIFICATION METHOD = COMPILER (not grep): grep is fundamentally ambiguous here because every backend (pthreads-sync/async, openmp-rs) AND every Plan substrate (event_plan, mpi_plan) has its OWN same-named data_name/non_host_workers/collect_pre_init/max_payload_bytes/relay_schedule/render_relay_phase method on its OWN Plan struct — a global method-name grep cannot tell which struct a call targets. Since tcp_plan::Plan is constructed ONLY by mp-tcp-{poll,bufsync} (verified: they call only build/worker_name/render_worker_program/render_run_sh + read used_workers), narrowing to pub(crate) makes E0624 fire on any external call. cargo build --workspace CLEAN => none of the 9 is called externally on a tcp_plan Plan. clippy clean; cargo doc warnings unchanged (14); 153 tests/0 fail.
+
+SCOPE NOTE: the encode/walkers/relay/events/worker_program submodules are private (or pub(crate) for walkers) mods, so their free pub fn (encode::scalar_width etc., walkers::collect_xfer_data etc.) do NOT leak externally regardless of the pub keyword — narrowing them is purely cosmetic and was NOT done (zero surface effect). The architect P3-1 also listed only 3 of the 9 Plan methods; the full set was found by enumerating all pub fn on Plan and compiler-verifying.
+
+REVIEW: this cycle IMPLEMENTS the TASK-0413 architect P3-1 recommendation; the verified property (no external caller) is compiler-DECIDABLE (E0624), not a judgment call, so no separate review spawn — the recommending review + the compiler ARE the independent verification.
+<!-- SECTION:NOTES:END -->
