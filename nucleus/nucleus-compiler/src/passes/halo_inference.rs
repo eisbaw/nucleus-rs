@@ -2860,4 +2860,48 @@ mod tests {
             advisory[0]
         );
     }
+
+    /// TASK-0397 white-box: `UnknownKernelInCall` is defensively
+    /// unreachable from a link-valid IR — `apply_halo_inference` builds
+    /// `name_kernels` from the same kernel set the calls reference, so by
+    /// the time the walk runs every callee resolves (an unknown call was
+    /// already rejected at lowering). It is a KEPT link-invariant
+    /// tripwire (panic-not-diagnostic policy: a typed error, not a
+    /// `panic!`/`unreachable!`). Unlike the ConstOverflow/ShapeOverflow
+    /// negate arm — which a cycle-234 review WRONGLY called unreachable
+    /// (see `algo_lower.rs`, the negate arm IS reachable by a computed
+    /// `i64::MIN`) — this one genuinely cannot be reached by any `.nuc`
+    /// input, so it is proven-to-bite at the unit boundary instead: feed
+    /// the walk a deliberately INCOMPLETE `name_kernels` (empty) and
+    /// assert the guard fires for the missing callee.
+    #[test]
+    fn unknown_kernel_in_call_guard_bites_whitebox() {
+        let name_kernels: BTreeMap<String, KernelId> = BTreeMap::new();
+        let name_iter_vars: BTreeMap<String, IterVar> = BTreeMap::new();
+        let consts: BTreeMap<String, ResolvedConst> = BTreeMap::new();
+        let ctx = WalkCtx {
+            name_kernels: &name_kernels,
+            name_iter_vars: &name_iter_vars,
+            consts: &consts,
+        };
+
+        // One `<--` whose RHS calls a kernel absent from `name_kernels`.
+        let stmts = vec![IrStmt::Dataflow {
+            lhs: lhs("out", vec![ir_id("i")]),
+            rhs: ir_call("ghost", vec![data_ref("grid", vec![ir_id("i")])]),
+        }];
+
+        let mut out: BTreeMap<KernelId, BTreeMap<IterVar, u64>> = BTreeMap::new();
+        let mut errors: Vec<HaloErrorWithScope> = Vec::new();
+        collect_from_stmts(&stmts, &[], &ctx, &mut out, &mut errors);
+
+        assert!(
+            errors.iter().any(|(e, _, _)| matches!(
+                e,
+                HaloInferenceError::UnknownKernelInCall { callee } if callee == "ghost"
+            )),
+            "an incomplete name_kernels must raise UnknownKernelInCall for the \
+             missing `ghost` callee; got {errors:?}"
+        );
+    }
 }

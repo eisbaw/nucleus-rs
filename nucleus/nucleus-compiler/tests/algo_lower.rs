@@ -776,6 +776,57 @@ for N : 0 .. 4 {
 }
 
 // --------------------------------------------------------------------
+// TASK-0397 (cycle-235): the `checked_neg` (negate) construction site of
+// ConstOverflow / ShapeOverflow. The TASK-0396 batch tested only the
+// binop arm; a cycle-234 review claimed the negate arm was
+// "defensively unreachable" because `i64::MIN` cannot be a literal
+// (the parser caps at i64). That reasoning was WRONG and was falsified
+// empirically: a *computed* expression reaches `i64::MIN` with no
+// overflow — `0 - 9223372036854775807 - 1` evaluates step-by-step
+// (each `checked_sub` succeeds) to `i64::MIN`, and negating THAT trips
+// `checked_neg`. So the negate arm is reachable from `.nuc` source and
+// gets a normal input-driven test, like its binop sibling above.
+// --------------------------------------------------------------------
+
+#[test]
+fn const_expr_negate_i64_min_overflows() {
+    // `-(i64::MIN)` has no i64 representation — `checked_neg` rejects it.
+    // The inner `0 - 9223372036854775807 - 1` reaches i64::MIN without
+    // overflow, so the *negate* arm (not the binop arm) is what fires.
+    let src = "\
+const Q : usize = -(0 - 9223372036854775807 - 1);
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::ConstOverflow { in_const, op },
+            ..
+        }) => {
+            assert_eq!(in_const, "Q");
+            assert_eq!(op, "negate");
+        }
+        other => panic!("expected ConstOverflow(negate); got {other:?}"),
+    }
+}
+
+#[test]
+fn shape_dim_negate_i64_min_overflows() {
+    // Shape-evaluator sibling of `const_expr_negate_i64_min_overflows`.
+    let src = "\
+data x : f32[-(0 - 9223372036854775807 - 1)];
+";
+    match lower_str(src).map_err(|e| e.first().clone()) {
+        Err(LowerError {
+            kind: LowerErrorKind::ShapeOverflow { decl, op },
+            ..
+        }) => {
+            assert_eq!(decl, "x");
+            assert_eq!(op, "negate");
+        }
+        other => panic!("expected ShapeOverflow(negate); got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------
 // TASK-0090: located lowering diagnostics — the error carries the byte
 // span of the offending node, which resolves to the CORRECT line:col.
 // --------------------------------------------------------------------
