@@ -72,35 +72,25 @@ pub mod project_skeleton;
 pub mod render;
 pub mod tcp_plan;
 
-// Convenience top-level re-exports of the most-used codegen surface,
-// so backends can write `backend_common::EmitError` instead of
-// `backend_common::render::EmitError`.
+// Convenience top-level re-exports of the codegen surface that consumers
+// actually reach through the crate root, so backends can write
+// `backend_common::EmitError` instead of `backend_common::render::EmitError`.
 //
-// In practice (verified TASK-0407) consumers reach almost all of these
-// items via the *submodule* path — `backend_common::check_frame::X`,
-// `backend_common::render::X` — and only three are consumed through the
-// crate root today: `EmitError` (which every backend further re-exports
-// from its own public surface), `elect_host_from_name_workers`, and
-// `elect_host_from_worker_names`. All the rest — including
-// `render_fire_args_nostd` (embedded-pattern reaches it as
-// `backend_common::render::render_fire_args_nostd`) — have zero
-// root-path consumers today: an intentionally-offered convenience layer.
-// They are kept (not narrowed) because narrowing a re-exported,
-// doc-linked item silently breaks intra-doc links the `cargo doc` step
-// does not gate (see feedback-visibility-tighten-doclink-trap).
-// Removing the zero-consumer root re-exports outright is the subject of
-// TASK-0411 (doc-link-safe per a cargo-doc diff; EmitError's root link stays).
-pub use check_frame::{
-    collect_count_check_frames, emit_count_branch, emit_count_guard_local,
-    emit_count_reporter_struct, emit_count_static, emit_log_branch, sanitize_loop_var,
-    CountCheckLoop,
-};
-pub use host_election::{elect_host_from_name_workers, elect_host_from_worker_names, HOST_NAME};
-pub use project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
-pub use render::{
-    data_name, render_array_init_for, render_const_expr, render_const_expr_pub, render_fire_args,
-    render_fire_args_nostd, render_fire_args_pub, render_fire_output_assign,
-    render_fire_output_assign_pub, render_flat_index, render_flat_index_pub, render_int_expr,
-    render_loop_bounds, rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of,
-    write_file, EmitError, RenderCtx, RenderCtxPub, SubArrayForm,
-};
+// Re-derived TASK-0411 (workspace consumer grep, comment lines filtered):
+// only THREE re-exported names have crate-root-path code consumers today —
+// `EmitError` (every backend further re-exports it from its own public
+// surface; 11 root consumers), `elect_host_from_name_workers` (6), and
+// `elect_host_from_worker_names` (5). The other ~32 names that used to be
+// re-exported here had ZERO root-path consumers — every real consumer
+// reaches them via the *submodule* path (`backend_common::render::X`,
+// `backend_common::check_frame::X`, …) — so the root re-exports were dead
+// weight on this internal (unpublished) crate and were removed. The
+// `pub mod` declarations above ARE the submodule paths consumers use;
+// in-crate intra-doc links (e.g. [`render::RenderCtx`]) resolve via the
+// defining module, not via these root re-exports, so removal is
+// doc-link-safe (verified by a `cargo doc --no-deps` before/after diff —
+// the gate does not build docs; see feedback-visibility-tighten-doclink-trap).
+// `EmitError`'s crate-root intra-doc link at the top of this file stays
+// because `EmitError` stays.
+pub use host_election::{elect_host_from_name_workers, elect_host_from_worker_names};
+pub use render::EmitError;
