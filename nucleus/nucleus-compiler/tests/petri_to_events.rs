@@ -491,6 +491,181 @@ fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     inject_transfers(&linked, acfg).expect("inject_transfers")
 }
 
+// TASK-0428 (cycle-242): PRD §8.3 invariant (2) — Push/Wait events
+// form matched pairs — holds on the projected EventList for the ENTIRE
+// example corpus, contrary to the prior deferral docstrings which
+// claimed `transfer_inject`'s cross-scope splicing limitation left
+// legitimate shipping programs (e.g. 02-split-add) with unmatched Wait
+// events. That premise was written before TASK-0136 (Pass A hoist +
+// Pass B cross-scope Push splice), TASK-0149, TASK-0151 and TASK-0364
+// landed; those passes close the gap. This test is the empirical proof
+// and a regression pin: it mirrors the driver's backend-agnostic
+// pre-`acfg_to_events` pass chain (build_acfg -> block_transforms ->
+// partition_{workers,rows,blocks2d} -> halo -> reuse -> inject_syncs ->
+// inject_transfers) for EVERY example schedule, resolving each
+// schedule's algorithm from its `schedule for "..."` directive
+// (several pair with a sibling prog.<variant>.algo.nuc, not the default
+// prog.algo.nuc), projects to EventLists, and asserts
+// validate_event_lists (the FULL surface, including inv(2)) returns Ok.
+//
+// SCOPE / HONEST LIMIT: this is the pthreads-{sync,async} chain. The
+// mp-tcp-{bufsync,event,poll} / mp-uds-event backends additionally run
+// `host_mediation_inject` + `host_data_relay_inject` AFTER
+// inject_transfers; those passes re-route Push/Wait through host and
+// are NOT exercised here. inv(2) over THAT post-mediation EventList is
+// NOT proven by this test — it is forward-carried to TASK-0422 (the
+// gate-wiring task) as the remaining surface to confirm before
+// validate_event_lists is wired as a hard production gate for the
+// mp-* backends.
+#[test]
+fn task0428_inv2_holds_for_entire_example_corpus() {
+    use nucleus_compiler::{
+        apply_block_transforms, apply_halo_inference_partition_aware, apply_partition_blocks2d,
+        apply_partition_rows, apply_partition_workers, apply_reuse_inference,
+    };
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let repo_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let examples = repo_root.join("nuc-nucleus").join("examples");
+    // Discover (algo, sched) pairs deterministically.
+    let mut exdirs: Vec<_> = std::fs::read_dir(&examples)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    exdirs.sort();
+    let mut violations: Vec<String> = Vec::new();
+    let mut ok = 0usize;
+    let mut errd = 0usize;
+    for d in exdirs {
+        let algo_path = d.join("prog.algo.nuc");
+        if !algo_path.exists() {
+            continue;
+        }
+        let schdir = d.join("schedules");
+        if !schdir.is_dir() {
+            continue;
+        }
+        let mut scheds: Vec<_> = std::fs::read_dir(&schdir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "nuc").unwrap_or(false))
+            .collect();
+        scheds.sort();
+        for sp in scheds {
+            let label = format!(
+                "{}/{}",
+                d.file_name().unwrap().to_string_lossy(),
+                sp.file_name().unwrap().to_string_lossy()
+            );
+            let sched_src = std::fs::read_to_string(&sp).unwrap();
+            // Resolve the algorithm from the `schedule for "..."`
+            // directive (relative to the schedule dir), mirroring the
+            // real harness — several schedules pair with a sibling
+            // prog.<variant>.algo.nuc, NOT the default prog.algo.nuc.
+            let resolved_algo = sched_src
+                .lines()
+                .find_map(|l| {
+                    let l = l.trim();
+                    let i = l.find("schedule for \"")?;
+                    let rest = &l[i + "schedule for \"".len()..];
+                    let j = rest.find('"')?;
+                    Some(schdir.join(&rest[..j]))
+                })
+                .unwrap_or_else(|| algo_path.clone());
+            let algo_src = std::fs::read_to_string(&resolved_algo)
+                .unwrap_or_else(|_| std::fs::read_to_string(&algo_path).unwrap());
+            // Run the chain; ANY error = "not validated for inv(2) here".
+            let res = (|| -> Result<_, String> {
+                let algo = lower_algo(&parse_algo(&algo_src).map_err(|e| format!("{e:?}"))?)
+                    .map_err(|e| format!("{e:?}"))?;
+                let sched = lower_sched(&parse_sched(&sched_src).map_err(|e| format!("{e:?}"))?)
+                    .map_err(|e| format!("{e:?}"))?;
+                let linked = link::link(algo, sched).map_err(|e| format!("{e:?}"))?;
+                let acfg = build_acfg(&linked).map_err(|e| format!("{e:?}"))?;
+                let acfg = apply_block_transforms(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                let acfg = apply_partition_workers(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                let acfg = apply_partition_rows(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                let acfg = apply_partition_blocks2d(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                let (acfg, _adv) = apply_halo_inference_partition_aware(&linked, acfg)
+                    .map_err(|e| format!("{e:?}"))?;
+                let acfg = apply_reuse_inference(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                let acfg = inject_syncs(acfg).map_err(|e| format!("{e:?}"))?;
+                let acfg = inject_transfers(&linked, acfg).map_err(|e| format!("{e:?}"))?;
+                Ok(acfg_to_events(&acfg))
+            })();
+            match res {
+                Ok(events) => match nucleus_compiler::validate_event_lists(&events) {
+                    Ok(()) => ok += 1,
+                    Err(errs) => violations.push(format!("{label}: {errs:?}")),
+                },
+                Err(e) => {
+                    // A pipeline error here is NOT an inv(2) violation —
+                    // it means an EARLIER pass rejected this (algo,
+                    // sched) pair, so no EventList exists to validate.
+                    // The current corpus has ZERO such cases once the
+                    // `schedule for` algo is resolved; we assert that
+                    // below so a future schedule that silently fails to
+                    // lower cannot hide behind this arm.
+                    errd += 1;
+                    eprintln!("[TASK-0428 pipeline ERR] {label}: {e}");
+                }
+            }
+        }
+    }
+    // Hard regression pin: every shipping schedule's projected EventList
+    // satisfies inv(2), and every (algo, sched) pair in the corpus
+    // lowers (no silent pre-projection rejection masking the question).
+    assert!(
+        violations.is_empty(),
+        "TASK-0428: PRD §8.3 inv(2) (matched Push/Wait pairs) violated for {} schedule(s):\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+    assert_eq!(
+        errd, 0,
+        "TASK-0428: {errd} schedule(s) failed to lower through the pre-projection chain; \
+         the inv(2) sweep cannot validate them — resolve the algo/schedule pairing or \
+         file the regression before relying on this pin"
+    );
+    assert!(
+        ok >= 55,
+        "TASK-0428: expected the full corpus (>=55 schedules) to be inv(2)-validated, got {ok}; \
+         did a schedule directory move or a `schedule for` path stop resolving?"
+    );
+}
+
+// TASK-0428 (cycle-242): focused pin on the historical reproducer.
+// 02-split-add (producer `load_input`/`load_input_b` at top level on
+// host; consumer `for i { add(a[i], b[i]) }` inside a `for` on w0) was
+// the program the deferral docstrings cited as leaving an unmatched
+// Wait. TASK-0136's Pass A hoists the loop-invariant input Waits out of
+// the `for` (one crossing, not one per iteration) and Pass B splices
+// the matching host-side Push; the result is fully matched. This test
+// asserts that the real pipeline yields an inv(2)-clean EventList for
+// exactly that shape, so a regression in the hoist/splice machinery
+// re-opens here with a named reproducer rather than only in the broad
+// corpus sweep above.
+#[test]
+fn task0428_inv2_clean_for_02_split_add_reproducer() {
+    let acfg = full_pipeline_acfg(
+        "02-split-add/prog.algo.nuc",
+        "02-split-add/schedules/split.sched.nuc",
+    );
+    let events = acfg_to_events(&acfg);
+    assert_eq!(
+        nucleus_compiler::validate_event_lists(&events),
+        Ok(()),
+        "02-split-add was the deferral docstrings' cited unmatched-Wait \
+         reproducer; it must now satisfy PRD §8.3 inv(2) (TASK-0136 et al.)"
+    );
+}
+
 /// Render a (DataId, indices) slice the way a backend would read it
 /// from the EventList: `name[idx0][idx1]…`, using ONLY the name
 /// table (DataId -> name) and the index IrExprs carried on the

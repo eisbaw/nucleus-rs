@@ -159,20 +159,27 @@
 //!   somehow slipped through, we still emit the `Sync` event on
 //!   that lone worker — the backend can no-op it.
 //!
-//! - **Push/Wait imbalance inherited from `transfer_inject`.** The
-//!   upstream transfer-injection pass currently splices Pushes
-//!   *within* one sequence only (see its `splice_pushes_for_waits`).
-//!   When a producer lives at top level and the consumer lives
-//!   inside a `for` (e.g. example 02-split-add: `load_input` on host,
-//!   then `for i { add(a[i], b[i]) }` on `w0`), the ACFG ends up
-//!   with Wait nodes on the consumer's side but no matching Push
-//!   nodes on the producer's. This pass faithfully projects whatever
-//!   it receives; the gap therefore surfaces in the EventList as
-//!   "unmatched Waits". The pthreads-sync backend currently
-//!   compensates by consuming the ACFG directly with shared-memory
-//!   shortcuts; the fix for backends that consume EventLists is
-//!   cross-scope splicing in `transfer_inject`, not in this pass.
-//!   Recorded as a separate follow-up task.
+//! - **Push/Wait pairing across scope boundaries (HISTORICAL gap, now
+//!   closed).** `transfer_inject`'s `splice_pushes_for_waits` only
+//!   splices Pushes *within* one sequence; on its own that left a
+//!   producer-at-top-level / consumer-inside-`for` shape (e.g. example
+//!   02-split-add: `load_input` on host, then
+//!   `for i { add(a[i], b[i]) }` on `w0`) with Wait nodes and no
+//!   matching Push. That gap was CLOSED by TASK-0136 (Pass A
+//!   `hoist_invariant_waits` lifts the loop-invariant input Waits out
+//!   of the `for`; Pass B `splice_pushes_global` places the matching
+//!   host-side Push across the scope boundary) and the sibling
+//!   TASK-0149 / TASK-0151 / TASK-0364 work. As of TASK-0428
+//!   (cycle-242) PRD §8.3 invariant (2) — matched Push/Wait pairs —
+//!   holds on the projected EventList for the ENTIRE example corpus
+//!   (all 55 schedules; see
+//!   `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
+//!   This pass faithfully projects whatever it receives; it no longer
+//!   surfaces unmatched Waits for shipping programs. The remaining
+//!   unverified surface is the mp-tcp/uds `host_mediation_inject` +
+//!   `host_data_relay_inject` post-passes, which re-route Push/Wait
+//!   through host — confirming inv(2) over THAT post-mediation
+//!   EventList is the open scope of TASK-0422 (gate wiring).
 //!
 //! ## Output determinism
 //!
@@ -223,15 +230,30 @@ pub fn acfg_to_events(acfg: &ACFG) -> BTreeMap<WorkerId, Vec<Event>> {
     //
     // Why ONLY the strictly per-worker invariants and not the full
     // [`validate_event_lists`] (which also checks invariant (2),
-    // Push/Wait pair matching): `transfer_inject` has a known
-    // cross-scope splicing limitation that leaves legitimate
-    // EventLists with unmatched Wait events for currently-shipping
-    // programs (see lines 162-175 of this module's docs). Asserting
-    // (2) here would crash debug builds on real input; that's a
-    // separate task (`transfer_inject` fix), not silencing the
-    // validator. Invariant (2) is exposed via
-    // [`crate::event_validate::validate_event_lists`] for callers
-    // past that gap (backend codegen) to opt in.
+    // Push/Wait pair matching):
+    //
+    // HISTORICALLY this site excluded inv(2) because `transfer_inject`'s
+    // cross-scope splicing limitation left legitimate shipping programs
+    // (02-split-add) with unmatched Wait events, so asserting (2) here
+    // would have crashed debug builds on valid input. That premise is
+    // now STALE — TASK-0136 (Pass A hoist + Pass B cross-scope Push
+    // splice) and siblings closed the gap, and TASK-0428 (cycle-242)
+    // empirically verified inv(2) holds on the projected EventList for
+    // the ENTIRE example corpus (see the module docs above and
+    // `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
+    //
+    // The assert is deliberately LEFT as the per-worker subset here,
+    // for two reasons that are NOT the stale one: (a) this projection
+    // boundary runs BEFORE the mp-tcp/uds `host_mediation_inject` /
+    // `host_data_relay_inject` post-passes that re-route Push/Wait
+    // through host — inv(2) over the post-mediation EventList for those
+    // backends is not yet proven (TASK-0428 sweep covers the
+    // pthreads-{sync,async} chain only); (b) promoting this assert to
+    // the full validator, and/or wiring `validate_event_lists` as a
+    // hard production gate, is TASK-0422's scope and a separate risk
+    // surface. Invariant (2) remains exposed via
+    // [`crate::event_validate::validate_event_lists`] for callers that
+    // want it today (backend codegen past the mediation passes).
     //
     // Release builds: the `debug_assert!` is compiled out entirely.
     // The validator has zero cost in production compilation.

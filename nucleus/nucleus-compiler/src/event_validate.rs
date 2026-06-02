@@ -70,18 +70,30 @@
 //!
 //! Invariant (2) — Push/Wait pair matching — is **exposed via**
 //! [`validate_event_lists`] but **not asserted at the
-//! `acfg_to_events` boundary**. Reason: `passes::petri_to_events`
-//! module docs (lines 162-175) state that `transfer_inject`'s
-//! cross-scope splicing limitation leaves the EventList with
-//! unmatched Wait events for legitimate, currently-shipping programs
-//! (e.g. example 02-split-add, where the producer lives at top level
-//! and the consumer inside a `for`). Hard-asserting invariant (2)
-//! at the `acfg_to_events` output would crash debug builds on real
-//! input; the fix is cross-scope Push splicing in `transfer_inject`,
-//! not silencing the validator. Until that lands, callers that
-//! *know* their EventList is past the transfer-injection gap (e.g.
-//! backend codegen for a backend that consumes EventLists) can call
-//! [`validate_event_lists`] explicitly.
+//! `acfg_to_events` boundary**.
+//!
+//! The HISTORICAL reason (recorded in earlier revisions of this doc
+//! and `passes::petri_to_events`) was that `transfer_inject`'s
+//! cross-scope splicing limitation left the EventList with unmatched
+//! Wait events for legitimate shipping programs (example 02-split-add:
+//! producer at top level, consumer inside a `for`), so a hard assert
+//! of (2) would have crashed debug builds on valid input. **That
+//! premise is now STALE.** TASK-0136 (Pass A `hoist_invariant_waits` +
+//! Pass B cross-scope `splice_pushes_global`) and the sibling
+//! TASK-0149 / TASK-0151 / TASK-0364 work closed the gap; TASK-0428
+//! (cycle-242) empirically verified that inv(2) holds on the projected
+//! EventList for the ENTIRE example corpus (all 55 schedules — see
+//! `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
+//!
+//! Invariant (2) is still not asserted at the `acfg_to_events`
+//! boundary for two *different* reasons: (a) that boundary runs before
+//! the mp-tcp/uds `host_mediation_inject` / `host_data_relay_inject`
+//! post-passes, whose post-mediation EventList is not yet covered by
+//! the TASK-0428 sweep (pthreads-{sync,async} chain only); (b) wiring
+//! [`validate_event_lists`] as a hard production gate is TASK-0422's
+//! scope and a separate risk surface. Callers that *know* their
+//! EventList is past the transfer-injection (and, for mp-* backends,
+//! mediation) gap can call [`validate_event_lists`] explicitly today.
 //!
 //! Release builds skip the `debug_assert` entirely — the validator
 //! has zero cost in production compilation. This is a contract-
@@ -337,11 +349,15 @@ pub fn validate_event_lists(
 /// self-push, (3) non-empty Sync participants, (4) no overlapping
 /// Allocs, (5) no Free without Alloc.
 ///
-/// Excludes invariant (2) — Push/Wait pair matching — because
-/// `passes::transfer_inject` has a known cross-scope splicing
-/// limitation that leaves legitimate EventLists with unmatched Wait
-/// events today (see `petri_to_events.rs:162-175`). This function is
-/// the safe-to-debug-assert subset at the `acfg_to_events` boundary.
+/// Excludes invariant (2) — Push/Wait pair matching. NOTE: the
+/// original reason (a `transfer_inject` cross-scope splicing
+/// limitation leaving unmatched Waits for shipping programs) is STALE
+/// as of TASK-0428 — inv(2) now holds across the entire example corpus
+/// (see this module's docs). This subset is retained as the
+/// `acfg_to_events` debug-assert because that boundary precedes the
+/// mp-tcp/uds mediation post-passes and because promoting it / wiring
+/// the full validator is TASK-0422's scope. Use [`validate_event_lists`]
+/// when you want inv(2) too.
 ///
 /// Pure function; never panics on user-reachable input.
 pub fn validate_event_lists_strict_per_worker(
