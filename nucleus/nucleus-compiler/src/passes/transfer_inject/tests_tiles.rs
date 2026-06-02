@@ -243,6 +243,39 @@ fn task0317_sparse_coverage_drops_to_whole_array() {
     );
 }
 
+/// TASK-0424: ambiguous-multi-iv whole-array drop — a single dim is
+/// indexed by TWO partitioned ivs. Returns `Some(Vec::new())` per the
+/// defensive policy. This is the third empty-bounds (whole-array)
+/// return path; the advisory `NUC_TRACE` diagnostic added in TASK-0424
+/// names it. We pin only the RETURN VALUE here — the trace is
+/// stderr-only and env-gated (no in-source capture sink; TASK-0285
+/// removed it), so behaviour is unchanged with `NUC_TRACE` unset.
+#[test]
+fn task0424_ambiguous_multi_iv_drops_to_whole_array() {
+    let i_iv = IterVar(7);
+    let j_iv = IterVar(8);
+    let data = DataId(99);
+    let worker = WorkerId(2);
+    let mut map: BTreeMap<DataId, Vec<BTreeSet<IterVar>>> = BTreeMap::new();
+    // Single dim 0 indexed by BOTH partitioned ivs (e.g. `a[i + j]`).
+    map.insert(data, vec![iv_set(&[i_iv, j_iv])]);
+    let partition_ranges = make_partition_ranges(&[
+        (i_iv, &[(worker, 0..4)]),
+        (j_iv, &[(worker, 4..8)]),
+    ]);
+
+    let got = compute_partition_bounds_with_dim_prefix(data, &map, &partition_ranges, worker);
+
+    assert_eq!(
+        got,
+        Some(Vec::new()),
+        "TASK-0424: a single dim indexed by two partitioned ivs is \
+         ambiguous (which iv is THE partition of this dim?) — the \
+         defensive whole-array drop returns Some(empty), unchanged by \
+         the advisory NUC_TRACE addition.",
+    );
+}
+
 // ----------------------------------------------------------------
 // TASK-0373: OPAQUE-dim attribution for a data-dependent (gather)
 // index. These pin the mis-attribution fix at the

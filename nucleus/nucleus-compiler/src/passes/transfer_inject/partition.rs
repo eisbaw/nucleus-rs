@@ -523,6 +523,29 @@ pub(super) fn record_access_per_dim(
 /// `partition_axis_order` is consulted only when `dim_iv_map.get(&data)`
 /// is `None` (fall-back path in the caller), so it is intentionally NOT
 /// a parameter to this function.
+///
+/// ### Advisory `NUC_TRACE` diagnostic (TASK-0424)
+///
+/// Returning EMPTY bounds means "no precise per-worker slice; the caller
+/// emits a whole-array broadcast". This is the value-correct conservative
+/// superset — NOT a soundness bug and NOT rejected (cf. PRD §8.6, which
+/// this task reconciled to match the code). It happens for THREE distinct
+/// reasons, and the advisory trace below names which one fired:
+///
+/// 1. **No partition-covered dim** — terminal `Some(bounds)` with
+///    `bounds.is_empty()`: no dim carries a partitioned iv (e.g. a
+///    non-affine / data-dependent / opaque-dim index recorded as an
+///    empty iv set by `record_access_per_dim`, or a dim only indexed by
+///    non-partitioned ivs).
+/// 2. **Ambiguous multi-iv** — a single dim is indexed by more than one
+///    partitioned iv.
+/// 3. **Sparse-after-hole** — a partition-covered dim appears AFTER an
+///    uncovered dim, so the coverage is not a contiguous dim-0 prefix.
+///
+/// The trace is purely advisory: this function still returns `Some(...)`
+/// on every path exactly as before, and with `NUC_TRACE` unset it is
+/// byte-silent (the e2e snapshot is unaffected). Hard-failing here would
+/// be the panic-on-valid-input antipattern — correctness holds.
 pub(super) fn compute_partition_bounds_with_dim_prefix(
     data: DataId,
     dim_iv_map: &BTreeMap<DataId, Vec<BTreeSet<IterVar>>>,
@@ -556,6 +579,13 @@ pub(super) fn compute_partition_bounds_with_dim_prefix(
             _ => {
                 // Ambiguous (multiple partitioned ivs at the same dim).
                 // Defensive whole-array broadcast.
+                crate::nuc_trace!(
+                    "transfer_inject::compute_partition_bounds_with_dim_prefix: degrade to \
+                     whole-array broadcast (data={data:?}, worker={worker:?}); reason: \
+                     ambiguous multi-iv (a single dim is indexed by {n} partitioned ivs) — \
+                     value-correct conservative fallback, no precise per-worker slice emitted",
+                    n = partitioned.len(),
+                );
                 return Some(Vec::new());
             }
         }
@@ -572,9 +602,29 @@ pub(super) fn compute_partition_bounds_with_dim_prefix(
                 // Sparse coverage (e.g. b[k][j] with partition on j but
                 // not on k): wait_slice's dim-i ↔ bounds[i] convention
                 // would silently mis-map. Drop to whole-array.
+                crate::nuc_trace!(
+                    "transfer_inject::compute_partition_bounds_with_dim_prefix: degrade to \
+                     whole-array broadcast (data={data:?}, worker={worker:?}); reason: \
+                     sparse-non-prefix coverage (a partition-covered dim follows an \
+                     uncovered dim, so coverage is not a contiguous dim-0 prefix) — \
+                     value-correct conservative fallback, no precise per-worker slice emitted",
+                );
                 return Some(Vec::new());
             }
         }
+    }
+    if bounds.is_empty() {
+        // No dim carries a partitioned iv on this worker: the index is
+        // non-affine / data-dependent / opaque (recorded as an empty iv
+        // set by `record_access_per_dim`), or every covering iv is
+        // unpartitioned. Falls through to whole-array broadcast.
+        crate::nuc_trace!(
+            "transfer_inject::compute_partition_bounds_with_dim_prefix: degrade to \
+             whole-array broadcast (data={data:?}, worker={worker:?}); reason: \
+             no partition-covered dim (non-affine/opaque index, or all covering ivs \
+             unpartitioned) — value-correct conservative fallback, no precise \
+             per-worker slice emitted",
+        );
     }
     Some(bounds)
 }

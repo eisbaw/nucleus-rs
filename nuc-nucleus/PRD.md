@@ -1259,8 +1259,18 @@ What the justfile is **not**:
   coloured nets, hierarchical refinement, or model checkers, scope
   is wrong — back out, simplify the schedule, don't extend the net.
 - **Where does `reuse` get its information?** Static stride analysis is
-  feasible; data-dependent strides aren't. Restrict `reuse` to
-  affine-indexed loops only and reject the rest.
+  feasible; data-dependent strides aren't. The dividing line is affine:
+  an affine index that forms a contiguous partition-covered dim prefix
+  gets a precise per-worker tiled slice; a non-affine / data-dependent
+  index is NOT rejected — it conservatively DEGRADES to a whole-array
+  broadcast, the value-correct safe superset (every worker receives the
+  whole array, so the kernel still reads every element it might touch).
+  Graceful degradation rather than rejection keeps `reuse`/`pipeline=D`
+  usable on mixed-index loops at the cost of precision, not correctness.
+  The affine⇒precise vs non-affine⇒whole-array decision lives in
+  `compute_partition_bounds_with_dim_prefix` (transfer_inject/partition);
+  see TASK-0424 for the doc-vs-code reconciliation that produced this
+  wording and the advisory `NUC_TRACE` diagnostic on the fallback.
 - **Source single-file rule vs. example count.** 12 examples × N
   schedules is fine. If we ever need shared code across examples or
   across schedules of one example, reconsider — but not before then.
