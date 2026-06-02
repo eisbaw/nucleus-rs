@@ -3,11 +3,11 @@ id: TASK-0425
 title: >-
   proptest_petri: boundedness single-order-replay equivalence only validated
   one-directionally (b.1); deadlock (d4) validates both
-status: In Progress
+status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 08:41'
+updated_date: '2026-06-02 09:06'
 labels:
   - testing
   - proptest
@@ -32,4 +32,15 @@ Implementation plan (cycle-241 GAP-3 / b5):
 - Assert BOTH directions: check_bounded(net,order) is Err(CapacityExceeded) IFF detector says overflow.
 - Honest-limit docstring: refactor-regression guard over SHIPPED order only (shares per-step enabling primitive concept with pass; a Net::fire enabling bug escapes both — same residual as d.1/d.3/oracle_first_stall_position); does NOT validate general PRD 8.6 equivalence; b.1 general-equivalence reverse gap stays open.
 GOTCHA: check_bounded only reports CapacityExceeded when the transition is ENABLED-then-overflows; a NotEnabled step short-circuits to InvalidFiringOrder. derive_firing_order may append stuck leftovers (source order) so a malformed-order suffix is possible -> detector must NOT count NotEnabled as overflow and must STOP at first NotEnabled (check_bounded returns on first error). Capacity check is on NET delta (consume then produce), would_be>cap.get().
+
+DONE (commit 7702a90). Gate run locally: build OK; clippy OK (forced fresh test-target recheck for doc_lazy_continuation); test dev 1252 passed/0 failed/3 ignored (baseline 1251 +1); test-release 1250 passed/0 failed/3 ignored (baseline 1249 +1); e2e 385/328/0/57/0 UNCHANGED (tests-only, no codegen).
+
+b5 PASSED on first authoring (no pass disagreement surfaced; detector matched check_bounded on every case). TEETH-VERIFIED: temporary eprintln instrumentation (reverted before commit) showed the overflow=true branch fires ~443/2000 cases — NOT a vacuous false==false tautology. derive_firing_order DOES ship overflowing orders: it only fires non-overflowing transitions greedily, then appends remaining transitions in source order (boundedness.rs `if order.len() < total`); a stuck-leftover that is token-enabled-but-overflows is where check_bounded reports CapacityExceeded on the shipped order.
+
+GOTCHAS / contract facts (feed-forward):
+1. check_bounded reports CapacityExceeded ONLY when the transition is token-ENABLED first; a NotEnabled step short-circuits to InvalidFiringOrder (deadlock territory), NOT CapacityExceeded. The detector MUST therefore return None (not overflow) at the first non-enabled step and STOP — mirroring check_bounded returning on first error. Counting a non-enabled step as overflow would have falsely failed the biconditional.
+2. Capacity contract = NET delta: would_be = have - consumed + produced, checked would_be > cap.get(). A self-looping buffer (consumed AND produced on same place) is checked at post-firing count, not transient peak. Multiple arcs same place sum weights.
+3. Unbounded places (capacity None) never overflow.
+4. The detector re-implements overflow DETECTION from net.arcs/net.places/Marking; it does NOT call check_bounded/Net::fire/fire_in_place -> genuine cross-check. But it shares the per-step enabling MODEL meaning with the pass -> a Net::fire enabling bug escapes both. SAME acceptable residual as d.1/d.3/d.4/oracle_first_stall_position; documented in the b5 + helper docstrings. Does NOT close PRD 8.6 general equivalence; b.1 general-equivalence reverse gap stays OPEN (honest residual stated).
+REJECTED approach: asserting reverse direction against the BFS oracle (oracle-overflow => pass flags) — that is exactly the direction b.1/b.3 correctly refuse because the chosen order may dodge a BFS-reachable overflow. b5 deliberately sidesteps the BFS and asserts over the FIXED shipped order only.
 <!-- SECTION:NOTES:END -->
