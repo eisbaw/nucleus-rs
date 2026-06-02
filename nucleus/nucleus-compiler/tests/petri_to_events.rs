@@ -521,10 +521,6 @@ fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
 // `driver/src/main.rs` `cmd_build`, before `dispatch::dispatch_backend`).
 #[test]
 fn task0428_inv2_holds_for_entire_example_corpus() {
-    use nucleus_compiler::{
-        apply_block_transforms, apply_halo_inference_partition_aware, apply_partition_blocks2d,
-        apply_partition_rows, apply_partition_workers, apply_reuse_inference,
-    };
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let repo_root = std::path::Path::new(manifest_dir)
         .parent()
@@ -583,24 +579,14 @@ fn task0428_inv2_holds_for_entire_example_corpus() {
             let algo_src = std::fs::read_to_string(&resolved_algo)
                 .unwrap_or_else(|_| std::fs::read_to_string(&algo_path).unwrap());
             // Run the chain; ANY error = "not validated for inv(2) here".
-            let res = (|| -> Result<_, String> {
-                let algo = lower_algo(&parse_algo(&algo_src).map_err(|e| format!("{e:?}"))?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let sched = lower_sched(&parse_sched(&sched_src).map_err(|e| format!("{e:?}"))?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let linked = link::link(algo, sched).map_err(|e| format!("{e:?}"))?;
-                let acfg = build_acfg(&linked).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_block_transforms(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_partition_workers(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_partition_rows(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_partition_blocks2d(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let (acfg, _adv) = apply_halo_inference_partition_aware(&linked, acfg)
-                    .map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_reuse_inference(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = inject_syncs(acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = inject_transfers(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                Ok(acfg_to_events(&acfg))
-            })();
+            // The pre-mediation pass chain is the shared
+            // `build_pre_mediation_acfg` helper (TASK-0422.01.01) — the
+            // SAME chain the driver/tests/task0422_01 sweep and the
+            // production driver run; consolidating it here removes the
+            // silent-divergence risk if a pass is inserted before
+            // inject_transfers.
+            let res = nucleus_compiler::test_support::build_pre_mediation_acfg(&algo_src, &sched_src)
+                .map(|acfg| acfg_to_events(&acfg));
             match res {
                 Ok(events) => match nucleus_compiler::validate_event_lists(&events) {
                     Ok(()) => ok += 1,

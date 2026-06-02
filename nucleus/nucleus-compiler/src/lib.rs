@@ -22,6 +22,11 @@ pub mod passes;
 pub mod petri;
 pub mod sched;
 pub mod sidecar;
+// Cross-crate TEST-ONLY helpers (`#[doc(hidden)]` contents). Shares the
+// backend-agnostic pre-mediation pass chain between `nucleus-compiler/
+// tests/` and `driver/tests/` without a dev-dependency cycle
+// (TASK-0422.01.01). See the module docstring for the home-decision.
+pub mod test_support;
 // Per-node source-span wrapper shared by the algorithm AST (TASK-0082)
 // and the schedule AST (TASK-0086). Promoted from the former
 // algo-local `algo::span` so both sub-language ASTs build on one

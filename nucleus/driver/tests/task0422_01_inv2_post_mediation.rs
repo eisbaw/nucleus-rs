@@ -54,17 +54,14 @@
 use std::collections::BTreeSet;
 
 use backend_common::elect_host_from_name_workers;
-use nucleus_compiler::acfg::build_acfg;
-use nucleus_compiler::algo::{lower_algo, parse_algo};
-use nucleus_compiler::link;
 use nucleus_compiler::passes::petri_to_events::acfg_to_events;
-use nucleus_compiler::passes::sync_inject::inject_syncs;
-use nucleus_compiler::passes::transfer_inject::inject_transfers;
-use nucleus_compiler::sched::{lower_sched, parse_sched};
+// The backend-agnostic pre-mediation pass chain (build_acfg through
+// inject_transfers) is now the SHARED helper (TASK-0422.01.01); the
+// individual passes are no longer named here. The post-mediation passes
+// and the projection/validation surface stay local.
+use nucleus_compiler::test_support::build_pre_mediation_acfg;
 use nucleus_compiler::{
-    apply_block_transforms, apply_halo_inference_partition_aware, apply_host_data_relay_inject,
-    apply_host_mediation_inject, apply_partition_blocks2d, apply_partition_rows,
-    apply_partition_workers, apply_reuse_inference, validate_event_lists, WorkerId, ACFG,
+    apply_host_data_relay_inject, apply_host_mediation_inject, validate_event_lists, WorkerId, ACFG,
 };
 
 /// The four message-passing backends that run host_mediation_inject
@@ -209,24 +206,13 @@ fn task0422_01_inv2_holds_post_mediation_for_mp_backends() {
             // inv(2) violation. The TASK-0428 sweep already asserts the
             // current corpus has zero such cases; we re-assert below so a
             // future silently-failing schedule cannot hide here.
-            let base_acfg = (|| -> Result<ACFG, String> {
-                let algo = lower_algo(&parse_algo(&algo_src).map_err(|e| format!("{e:?}"))?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let sched = lower_sched(&parse_sched(&sched_src).map_err(|e| format!("{e:?}"))?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let linked = link::link(algo, sched).map_err(|e| format!("{e:?}"))?;
-                let acfg = build_acfg(&linked).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_block_transforms(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_partition_workers(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_partition_rows(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg =
-                    apply_partition_blocks2d(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let (acfg, _adv) = apply_halo_inference_partition_aware(&linked, acfg)
-                    .map_err(|e| format!("{e:?}"))?;
-                let acfg = apply_reuse_inference(&linked, acfg).map_err(|e| format!("{e:?}"))?;
-                let acfg = inject_syncs(acfg).map_err(|e| format!("{e:?}"))?;
-                inject_transfers(&linked, acfg).map_err(|e| format!("{e:?}"))
-            })();
+            // The pre-mediation pass chain is the shared
+            // `build_pre_mediation_acfg` helper (TASK-0422.01.01) — the
+            // SAME chain the TASK-0428 sweep and the production driver
+            // run. Consolidating it removes the silent-divergence risk
+            // (a pass inserted before inject_transfers would otherwise
+            // have to be mirrored across three near-verbatim copies).
+            let base_acfg = build_pre_mediation_acfg(&algo_src, &sched_src);
 
             let base_acfg = match base_acfg {
                 Ok(a) => a,
@@ -355,19 +341,10 @@ fn build_base_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let examples = repo_root.join("nuc-nucleus").join("examples");
     let algo_src = std::fs::read_to_string(examples.join(algo_rel)).expect("read algo");
     let sched_src = std::fs::read_to_string(examples.join(sched_rel)).expect("read sched");
-    let algo = lower_algo(&parse_algo(&algo_src).expect("algo parse")).expect("algo lower");
-    let sched = lower_sched(&parse_sched(&sched_src).expect("sched parse")).expect("sched lower");
-    let linked = link::link(algo, sched).expect("link");
-    let acfg = build_acfg(&linked).expect("build_acfg");
-    let acfg = apply_block_transforms(&linked, acfg).expect("block_transforms");
-    let acfg = apply_partition_workers(&linked, acfg).expect("partition_workers");
-    let acfg = apply_partition_rows(&linked, acfg).expect("partition_rows");
-    let acfg = apply_partition_blocks2d(&linked, acfg).expect("partition_blocks2d");
-    let (acfg, _adv) =
-        apply_halo_inference_partition_aware(&linked, acfg).expect("halo");
-    let acfg = apply_reuse_inference(&linked, acfg).expect("reuse");
-    let acfg = inject_syncs(acfg).expect("inject_syncs");
-    inject_transfers(&linked, acfg).expect("inject_transfers")
+    // Shared pre-mediation chain (TASK-0422.01.01). This caller's
+    // panic-on-error contract is preserved by `.expect`ing the Result
+    // (the chain MUST lower for the explicit, known-good pair below).
+    build_pre_mediation_acfg(&algo_src, &sched_src).expect("pre-mediation pipeline")
 }
 
 /// NON-VACUITY pin. The broad sweep above would still pass if the
