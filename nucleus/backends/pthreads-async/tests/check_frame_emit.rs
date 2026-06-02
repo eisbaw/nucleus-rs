@@ -53,17 +53,19 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Per-test scratch dir (TASK-0241 forward-carry): each test must use
-/// a UNIQUE scratch dir to avoid `remove_dir_all` of test A racing the
-/// emit-then-read of test B under cargo's parallel test runner. The
-/// name is the test function name; dir is wiped before recreating.
+/// Per-call-unique scratch dir (TASK-0241 forward-carry, hardened by
+/// TASK-0426.01). Each call gets a `{name}-{pid}-{counter}` leaf via the
+/// shared `test_common::unique_scratch_dir` helper — created once and
+/// never removed — so no two callers (across threads OR the concurrent
+/// dev/release `cargo test` processes) ever share a path. The previous
+/// body relied on `remove_dir_all + create_dir_all` on a fixed
+/// `target/{name}` leaf and its docstring CLAIMED uniqueness it did not
+/// actually provide (the leaf was pid-less, so dev and release shared
+/// it). `name` is still the test function name; it is now only the
+/// human-readable prefix of the unique leaf.
 fn scratch_dir(name: &str) -> PathBuf {
     let target = repo_root().join("nucleus/target/pthreads-async-check-frame-scratch");
-    let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    test_common::unique_scratch_dir(&target, name)
 }
 
 /// Shared algorithm source for the three multi-worker check_frame

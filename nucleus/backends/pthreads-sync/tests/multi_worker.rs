@@ -45,12 +45,10 @@ fn repo_root() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
+    // TASK-0426.01: per-call-unique scratch dir via the shared helper
+    // (created once, never removed) — kills the remove/create race class.
     let target = repo_root().join("nucleus/target/pthreads-sync-multi-worker-scratch");
-    let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    test_common::unique_scratch_dir(&target, name)
 }
 
 /// Tiny synthetic algorithm: host produces, w0 consumes, host

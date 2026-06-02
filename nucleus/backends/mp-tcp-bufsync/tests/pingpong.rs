@@ -40,12 +40,12 @@ fn repo_root() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
+    // TASK-0426.01: per-call-unique scratch dir (created once, never
+    // removed) via the shared helper — eliminates the shared-mutable-path
+    // remove/create race class (cross-thread AND cross-process dev/release
+    // sharing the same pid-less leaf).
     let target = repo_root().join("nucleus/target/mp-tcp-bufsync-pingpong-scratch");
-    let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    test_common::unique_scratch_dir(&target, name)
 }
 
 const ALGO_SRC: &str = r#"
