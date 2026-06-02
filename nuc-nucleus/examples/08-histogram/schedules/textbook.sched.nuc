@@ -1,0 +1,31 @@
+// Textbook-scatter schedule — single worker, no decomposition.
+//
+// Drives `prog.textbook.algo.nuc` (the X1' pure-kernel-call-in-index
+// histogram, TASK-0430). The e2e harness selects the algorithm from this
+// `schedule for` path (TASK-0049.03 per-cell algo selection) and pairs
+// `kernels.textbook.rs` by the variant rule (TASK-0049.08), so an
+// `08-histogram/textbook` cell compiles the textbook variant while the
+// other 08 schedules keep their own algorithm variants.
+//
+// Single worker (`host`): the data-dependent WRITE
+// `histogram[bucket(input[i])]` needs the whole of `histogram` mutable on
+// one worker, which the single-worker placement trivially satisfies (no
+// transfers, no cross-worker bin fan-in). The `bucket` kernel is placed
+// on the same worker — it is a pure index-computing kernel called inline
+// at the scatter site, not a separate decomposed stage. A DISTRIBUTED
+// textbook scatter (partition the input, per-worker partial histograms,
+// cross-worker element-wise-sum combine — the analog of
+// `distributed.scatter.sched.nuc`) is OUT OF SCOPE for TASK-0430 and is a
+// filed broaden follow-up. Output is bit-identical to 08-histogram/naive,
+// 08-histogram/scatter, and reference.bin.
+
+schedule for "../prog.textbook.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place bucket      on host;
+    place inc         on host;
+
+    // No loop transforms, no transfer directives (single worker).
+}

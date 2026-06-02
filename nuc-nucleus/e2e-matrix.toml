@@ -412,6 +412,72 @@ schedule = "scatter"
 backend  = "mp-uds-event"
 milestone = "M6"
 
+# 08-histogram/textbook: TASK-0430 (X1') — the TEXTBOOK scatter where the
+# bin is COMPUTED by a PURE kernel call in INDEX position:
+# `histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])])`.
+# Drives prog.textbook.algo.nuc (selected via the schedule's `schedule
+# for`, TASK-0049.03; kernels.textbook.rs paired by the variant rule,
+# TASK-0049.08). This is the WRITE/index analog of the gather READ
+# (TASK-0341.03.01) and the call-wrapped sibling of the bounded scatter
+# (TASK-0376): lower_index_expr now admits a PURE kernel call in
+# array-subscript position (purity-restricted, subscript-only — a
+# loop-bound call is rejected, an effectful callee is rejected), and the
+# shared backend `render_int_expr` emits `kernels::bucket(<args>)` as the
+# integer index, casting `as usize` in the surrounding subscript exactly
+# as the gather arm does. The same-symbol read-modify-write stays an
+# ACCUMULATE fan-in (NOT cumulative — both LHS and self-read carry the
+# IDENTICAL `bucket(input[i])` IrExpr::Call, so the cumulative-array
+# discriminator's structural-index-difference rule does not fire), and
+# `histogram` is pre-initialised to zero. Single-worker (no transfers, no
+# cross-worker bin fan-in). The committed input.bin is pre-clipped to
+# [0, BINS), so `bucket(v) == v` at runtime FOR THIS FIXTURE and the
+# output is bit-identical to 08-histogram/naive, 08-histogram/scatter, and
+# reference.bin — pinning the pure-call-in-index codegen across all 7
+# tier-1 backends via the single shared render path. A DISTRIBUTED
+# textbook scatter (and a dedicated truly-unconstrained-input fixture) are
+# filed broaden follow-ups.
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "textbook"
+backend  = "mp-uds-event"
+milestone = "M6"
+
 # 08-histogram/distributed.scatter: TASK-0384 — the DISTRIBUTED native
 # scatter, the multi-worker "broaden" of 08-histogram/scatter
 # (single-worker, TASK-0376) and the WRITE analog of the distributed

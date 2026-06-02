@@ -1,0 +1,107 @@
+// Histogram — TEXTBOOK SCATTER (pure-kernel-call in index position).
+//
+// This is the X1' variant (TASK-0430): the textbook histogram where the
+// bin is COMPUTED from the input value by a pure `bucket` kernel, then
+// scattered:
+//
+//     histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])]);
+//
+// It builds directly on TWO earlier landings:
+//   - the data-dependent (gather) READ index `x[col[k]]`
+//     (TASK-0341.03.01); and
+//   - the native data-dependent WRITE (scatter) `histogram[input[i]]`
+//     (TASK-0376, the sibling `prog.scatter.algo.nuc`).
+//
+// What X1' adds: a PURE KERNEL CALL is now legal in array-subscript
+// index position, not just a bare gather data read. A pure kernel is
+// referentially transparent (reorderable, deduplicable, eliminable), so
+// `bucket(input[i])` as an index is sound for the same reason a gather
+// `input[i]` is — it has no side effect and yields an integer address.
+// No new AST/IR node and no new Event shape are introduced: the existing
+// `IrExpr::Call` already represents it; the lowering pass simply stopped
+// rejecting a pure call in subscript position (`lower_index_expr`,
+// `allow_gather = true`), and the shared backend `render_int_expr`
+// emits `kernels::bucket(<rendered index args>)` as the index, casting
+// to `usize` in the surrounding subscript exactly as the gather arm does.
+//
+// SCOPE (honest): admitting a pure call in index position is gated to
+// SUBSCRIPT position only. A kernel call in LOOP-BOUND position stays
+// rejected (a computed trip count is a separate, unimplemented feature),
+// so the const-loop-bound rule is intact. An EFFECTFUL kernel in index
+// position is rejected fail-loud (an effect has no business deciding an
+// address).
+//
+// Vs the sibling variants
+// -----------------------
+//   - `prog.algo.nuc` (masked): an O(N*BINS) rectangular `for i, for b`
+//     nest where `bin_inc(...)` returns `+1` iff `input[i] == b`.
+//   - `prog.scatter.algo.nuc` (bounded scatter, TASK-0376): O(N) direct
+//     scatter `histogram[input[i]]`, requiring `input[i]` to be ALREADY
+//     in `[0, BINS)`.
+//   - THIS variant: O(N) scatter where the bin is COMPUTED by `bucket`,
+//     so the input need not be pre-clipped — the bucketing step that a
+//     real histogram needs is expressed at the algorithm surface (in a
+//     pure kernel call in index position) rather than hidden in a masked
+//     accumulator or assumed away by a pre-clip.
+//
+// FIXTURE NOTE (honest limit): this variant shares the example's single
+// `input.bin` / `reference.bin` with the other 08 cells (the e2e harness
+// uses ONE oracle per example dir). The committed `input.bin` happens to
+// be pre-clipped to `[0, BINS)`, so `bucket(v) = ((v % BINS) + BINS) %
+// BINS` is a runtime no-op FOR THIS FIXTURE and the output is
+// bit-identical to `reference.bin`. The feature under test is the
+// COMPILE + CODEGEN of a pure kernel call in index position and its
+// value-correctness vs the oracle; a dedicated truly-unconstrained-input
+// fixture (which would need its OWN example dir to not perturb the shared
+// reference) is a filed follow-up.
+//
+// Accumulate classification (re-verified for the call-wrapped index):
+// `histogram[bucket(input[i])]` is read (inside `inc(...)`) and written
+// to the SAME symbol at the SAME data-dependent index. The cumulative-
+// array discriminator (`sidecar::collect_cumulative_data_names`) keys on
+// whether the self-read index STRUCTURALLY DIFFERS from the LHS index.
+// Here both sides carry the IDENTICAL `bucket(input[i])` `IrExpr::Call`,
+// so the indices compare EQUAL ⇒ NOT cumulative ⇒ stays a `wrapping_add`
+// ACCUMULATE fan-in (same class as `prog.scatter.algo.nuc`). The
+// `bucket()` wrapper does NOT change the classification. `histogram` is
+// pre-initialised to zero (the additive identity).
+
+const N    : usize = 256;     // total input length
+const BINS : usize = 16;      // histogram bin count
+
+// Input array and the BINS-wide accumulator output. Each `data` symbol
+// is assigned by exactly one dataflow statement (PRD §6.2.1).
+data input     : i32[N];
+data histogram : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated. Same
+// signatures as prog.scatter.algo.nuc (so the load/save layout is
+// unchanged and the output is bit-comparable).
+kernel load_input  : ()          -> i32[N]    effectful;
+kernel save_output : (i32[BINS]) -> ()        effectful;
+
+// Value->bin bucketing kernel — PURE, used in INDEX position. Maps an
+// (in general unconstrained) input value into `[0, BINS)`. This is the
+// X1' surface: a pure kernel call computing a scatter address. For the
+// committed pre-clipped fixture `bucket(v) == v`, so the histogram math
+// is identical to the bounded scatter and to reference.bin.
+kernel bucket      : (i32)        -> i32       pure;
+
+// Per-hit increment kernel — pure, reorderable. `inc(acc) = acc + 1`.
+// `wrapping_add` documents the overflow contract (PRD §10.1); the
+// committed fixture's max bin count is far below i32::MAX.
+kernel inc         : (i32)        -> i32       pure;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+input <-- load_input();
+
+// Textbook scatter. `histogram` is pre-initialised to zero (additive
+// identity). For each input element, COMPUTE its bin via `bucket(...)`
+// and increment that bin. The address `histogram[bucket(input[i])]` is a
+// data-dependent WRITE whose index is itself a pure kernel call; the
+// read of the same slot inside `inc(...)` is the accumulate fan-in.
+for i : 0 .. N {
+    histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])]);
+}
+
+save_output(histogram);
