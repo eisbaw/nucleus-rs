@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 10:04'
-updated_date: '2026-06-02 16:07'
+updated_date: '2026-06-02 16:22'
 labels:
   - compiler
   - event-contract
@@ -46,6 +46,14 @@ DELIVERED: two regression pins in tests/petri_to_events.rs (task0428_inv2_holds_
 HONEST LIMIT (forward-carried to TASK-0422): the sweep covers the backend-agnostic pthreads-{sync,async} chain. The mp-tcp-{bufsync,event,poll} / mp-uds-event backends additionally run host_mediation_inject + host_data_relay_inject AFTER inject_transfers; those re-route Push/Wait through host and were NOT exercised. inv(2) over THAT post-mediation EventList is NOT proven here. The acfg_to_events debug_assert was deliberately LEFT as the per-worker subset for that reason (a) + because gate-wiring is TASK-0422 scope (b) — NOT the stale reason.
 
 GATE: build+clippy clean; test dev 1256/0/3 (+2); test-release 1254/0/3 (+2); e2e 385/328/0/57/0 (unchanged, docs+tests only).
+
+Cycle-242 orchestrator review gate (independent, read-only):
+- qa-test-runner: GO. build OK; clippy clean (forced fresh recompile of edited files); test 1256 dev / 1254 release (0 failed, 3 ignored); e2e 385/328/0/57/0; both new tests deterministic across 3 runs (corpus sweep ~1.44s, non-flaky).
+- mped-architect: GO. Verified the corpus sweep is FAITHFUL — cross-checked task0428_inv2_holds_for_entire_example_corpus pass chain against driver main.rs:294-426 VERBATIM (build_acfg->block_transforms->partition_{workers,rows,blocks2d}->halo->reuse->inject_syncs->inject_transfers->acfg_to_events); the only omitted driver steps are reject-only validation gates (never mutate), so the test is over-inclusive not under-inclusive. Per-schedule algo resolution from `schedule for "..."` correct (7 variant-algo schedules confirmed). Tests genuinely assert Ok + errd==0 anti-masking guard + ok>=55 denominator (non-vacuous, 18 dirs/55 schedules on disk). Docstrings carry NO new overclaim — mp-* post-mediation residual disclosed at every rewritten site; debug_assert kept as per-worker subset for the HONEST two-part reason (boundary precedes mp-* mediation + gate-wiring is TASK-0422 scope), stale transfer_inject reason explicitly disowned. Tracker honest.
+- Two P3 nits, both folded back:
+  * P3 (commit 9e4cb15): tightened the named-reproducer test docstring "real pipeline" -> explicit "full_pipeline_acfg short chain, identical to driver for THIS schedule (no partition/halo/reuse); broad sweep runs the full chain".
+  * P3 (tracker): filed TASK-0422.01 (mp-tcp-*/mp-uds-event POST-mediation inv(2) verification) as an explicit node + wired TASK-0422 dep, rather than leaving the live blocker as a prose sub-step. This is the don-not-narrate-a-blocker discipline: TASK-0422.01 is now the hard prerequisite for wiring validate_event_lists.
+TASK-0428 stays DONE. Branch A (deferral premise STALE) proven empirically + corpus-wide; TASK-0422 unblocked but now hard-blocked on TASK-0422.01 (post-mediation verification) before the gate can be wired.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

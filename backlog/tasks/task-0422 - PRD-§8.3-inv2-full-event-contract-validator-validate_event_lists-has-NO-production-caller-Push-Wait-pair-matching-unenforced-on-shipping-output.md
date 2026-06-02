@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 16:06'
+updated_date: '2026-06-02 16:21'
 labels:
   - compiler
   - event-contract
@@ -14,7 +14,7 @@ labels:
   - cycle-241
   - principled-deferral
 dependencies:
-  - TASK-0428
+  - TASK-0422.01
 priority: medium
 ---
 
