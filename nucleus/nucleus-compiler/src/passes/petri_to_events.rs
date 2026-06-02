@@ -329,6 +329,14 @@ fn walk(
             let per_worker_override = partition_ranges.get(iter_var);
             for (wid, body_events) in scratch {
                 if body_events.is_empty() {
+                    // Silent-by-design drop (module docs lines 304-308): a
+                    // worker that contributes NOTHING to a loop body gets no
+                    // `Event::Loop` at all, not an empty-bodied one. This is
+                    // INTENTIONAL and correct — NOT the build_dataflow
+                    // silent-statement-drop class. The defense-in-depth guard
+                    // for the one upstream-population-bug shape lives in
+                    // `debug_assert_partition_assigned_nonempty` (TASK-0419).
+                    debug_assert_partition_assigned_nonempty(wid, per_worker_override, *iter_var);
                     continue;
                 }
                 let projected_range = match per_worker_override.and_then(|m| m.get(&wid)) {
@@ -358,6 +366,58 @@ fn walk(
             }
         }
     }
+}
+
+/// Defense-in-depth guard (TASK-0419) for the empty-body `continue` in
+/// the `Repeat` arm of [`walk`]. It is the one site a future regression
+/// of the silent-statement-drop class could hide behind: a worker that
+/// projects an empty body gets no `Event::Loop` at all (intentional;
+/// module docs lines 304-308). That is correct for a worker that
+/// legitimately does nothing in the loop — but NOT for a worker that
+/// `partition=workers` / `partition=blocks2d` assigned an *exclusive*
+/// iteration slice (present in `per_worker_override`, i.e.
+/// `partition_worker_ranges[iter_var]`). Such a worker must contribute
+/// at least the body op(s) for its slice; an empty body means an
+/// upstream pass (`partition_workers` / `partition_blocks2d` /
+/// `sync_inject` / `transfer_inject` / `halo_inference` /
+/// `reuse_inference`) dropped its work silently. We assert loudly in
+/// dev/test rather than swallow it.
+///
+/// ## Why this cannot false-fire on valid input (AC#1 precondition)
+///
+/// Empirically DISCHARGED (TASK-0419): an unconditional `NUC_TRACE`
+/// probe at the call site fired ZERO times across (a) the full e2e
+/// matrix (385 cells), (b) a direct-driver sweep of all 18
+/// `partition=workers` / `partition=blocks2d` (example, schedule) pairs
+/// × 7 tier-1 backends, and (c) the full 1243-test workspace suite.
+/// `body_events.is_empty()` is in fact never true on any shipping
+/// input: a worker is a `scratch` key ONLY if an `emit_*` inserted ≥1
+/// event for it (every `out.entry(..).or_default()` in `emit_operation`
+/// / `emit_sync` / `emit_xfer` is immediately followed by `.push(..)`),
+/// and the nested `Repeat` arm itself `continue`s rather than inserting
+/// an empty vec. So no legitimate partition-assigned empty case exists,
+/// and the assert cannot panic-on-valid-input. It catches only a
+/// genuine upstream-population regression that newly inserts an
+/// empty-bodied scratch entry for a partition-assigned worker.
+///
+/// ## Release cost
+///
+/// `debug_assert!` is compiled out entirely in release builds — no
+/// e2e / determinism / byte-output change. Mirrors the
+/// `validate_event_lists_strict_per_worker` precedent in
+/// [`acfg_to_events`].
+fn debug_assert_partition_assigned_nonempty(
+    wid: WorkerId,
+    per_worker_override: Option<&BTreeMap<WorkerId, Range<i64>>>,
+    iter_var: IterVar,
+) {
+    debug_assert!(
+        per_worker_override.and_then(|m| m.get(&wid)).is_none(),
+        "petri_to_events: worker {wid:?} was assigned an exclusive \
+         partition=workers slice for iter_var {iter_var:?} but projected an \
+         EMPTY loop body — an upstream pass dropped this worker's body work \
+         (silent-drop regression, TASK-0419)"
+    );
 }
 
 fn emit_operation(op: &Operation, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
@@ -441,5 +501,66 @@ fn emit_xfer(x: &XferPlaceholder, out: &mut BTreeMap<WorkerId, Vec<Event>>) {
             };
             out.entry(x.dst).or_default().push(ev);
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// Unit tests — defense-in-depth guard (TASK-0419)
+// --------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `per_worker_override` map assigning `wid` an exclusive
+    /// slice for one iter_var, the way `partition_workers` /
+    /// `partition_blocks2d` populate `partition_worker_ranges[iter_var]`.
+    fn override_with(wid: WorkerId, range: Range<i64>) -> BTreeMap<WorkerId, Range<i64>> {
+        let mut m = BTreeMap::new();
+        m.insert(wid, range);
+        m
+    }
+
+    /// BITE TEST (AC#3). A worker that WAS assigned an exclusive
+    /// partition=workers slice but projects an EMPTY body must trip the
+    /// guard. This is the upstream-population-bug shape the guard exists
+    /// to catch loudly (silent-drop class, TASK-0419).
+    ///
+    /// PROVE-THE-CHECK-BITES: deleting the `debug_assert!` inside
+    /// `debug_assert_partition_assigned_nonempty` makes this test FAIL
+    /// (the call returns normally instead of panicking) — verified
+    /// manually during TASK-0419 by removing the assert and observing
+    /// `note: test did not panic as expected`.
+    ///
+    /// TASK-0291 dev-vs-release trap: `debug_assert!` is compiled OUT
+    /// under `--release`, so this `#[should_panic]` would FAIL in the
+    /// release profile (`just test-release`). Gate it with
+    /// `#[cfg(debug_assertions)]` so it only compiles/runs in dev; the
+    /// release run sees no such test and stays green.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "projected an EMPTY loop body")]
+    fn partition_assigned_worker_with_empty_body_trips_guard() {
+        let wid = WorkerId(2);
+        let iter_var = IterVar(7);
+        // wid is present in the per-worker override (partition assigned
+        // it the exclusive slice 4..8) yet its body projected nothing.
+        let ov = override_with(wid, 4..8);
+        debug_assert_partition_assigned_nonempty(wid, Some(&ov), iter_var);
+    }
+
+    /// NEGATIVE control: a worker that is NOT in the per-worker override
+    /// (e.g. host, or any worker with no partition=workers slice for
+    /// this iter_var) with an empty body is the LEGITIMATE silent-by-
+    /// design drop — the guard must NOT fire. Proves the guard is
+    /// narrow (no false-positive on the intentional do-nothing case).
+    #[test]
+    fn non_partition_assigned_worker_with_empty_body_does_not_trip() {
+        let iter_var = IterVar(7);
+        // Override exists for a DIFFERENT worker (1); worker 2 is not in it.
+        let ov = override_with(WorkerId(1), 0..4);
+        debug_assert_partition_assigned_nonempty(WorkerId(2), Some(&ov), iter_var);
+        // And the no-override-at-all case (no partition= on this loop).
+        debug_assert_partition_assigned_nonempty(WorkerId(2), None, iter_var);
     }
 }
