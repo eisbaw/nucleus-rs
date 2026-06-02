@@ -175,11 +175,15 @@
 //!   (all 55 schedules; see
 //!   `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
 //!   This pass faithfully projects whatever it receives; it no longer
-//!   surfaces unmatched Waits for shipping programs. The remaining
-//!   unverified surface is the mp-tcp/uds `host_mediation_inject` +
-//!   `host_data_relay_inject` post-passes, which re-route Push/Wait
-//!   through host — confirming inv(2) over THAT post-mediation
-//!   EventList is the open scope of TASK-0422 (gate wiring).
+//!   surfaces unmatched Waits for shipping programs. The mp-tcp/uds
+//!   `host_mediation_inject` + `host_data_relay_inject` post-passes
+//!   (which re-route Push/Wait through host) were subsequently verified
+//!   inv(2)-clean too (TASK-0422.01, cycle-243,
+//!   `driver/tests/task0422_01_inv2_post_mediation.rs`), and
+//!   `validate_event_lists` (the FULL surface incl inv(2)) is now wired
+//!   as a hard production gate at the driver's final EventList-
+//!   consumption point (TASK-0422, cycle-244 — `driver/src/main.rs`
+//!   `cmd_build`, before `dispatch::dispatch_backend`).
 //!
 //! ## Output determinism
 //!
@@ -243,17 +247,22 @@ pub fn acfg_to_events(acfg: &ACFG) -> BTreeMap<WorkerId, Vec<Event>> {
     // `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
     //
     // The assert is deliberately LEFT as the per-worker subset here,
-    // for two reasons that are NOT the stale one: (a) this projection
-    // boundary runs BEFORE the mp-tcp/uds `host_mediation_inject` /
+    // for a reason that is NOT the stale one: this projection boundary
+    // runs BEFORE the mp-tcp/uds `host_mediation_inject` /
     // `host_data_relay_inject` post-passes that re-route Push/Wait
-    // through host — inv(2) over the post-mediation EventList for those
-    // backends is not yet proven (TASK-0428 sweep covers the
-    // pthreads-{sync,async} chain only); (b) promoting this assert to
-    // the full validator, and/or wiring `validate_event_lists` as a
-    // hard production gate, is TASK-0422's scope and a separate risk
-    // surface. Invariant (2) remains exposed via
-    // [`crate::event_validate::validate_event_lists`] for callers that
-    // want it today (backend codegen past the mediation passes).
+    // through host, AND it is reached by the driver's PRE-mediation
+    // host-election preview projections (`driver/src/main.rs` ~484,
+    // ~537) — at those intermediate points inv(2) need not yet hold, so
+    // asserting the FULL validator here would fire on valid intermediate
+    // state. Invariant (2) is instead enforced by
+    // [`crate::event_validate::validate_event_lists`] as a HARD
+    // production gate at the FINAL EventList-consumption point in the
+    // driver (`cmd_build`, before `dispatch::dispatch_backend` —
+    // TASK-0422 cycle-244), which is the only point where the EventList
+    // is past mediation and actually handed to a backend. inv(2) over
+    // the post-mediation EventList was proven clean for all 4 mp-*
+    // backends by TASK-0422.01 (cycle-243), which is what made wiring
+    // that gate safe.
     //
     // Release builds: the `debug_assert!` is compiled out entirely.
     // The validator has zero cost in production compilation.

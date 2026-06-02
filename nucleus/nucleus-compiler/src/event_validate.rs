@@ -60,40 +60,53 @@
 //!   inverted range is faithfully projected; that is the projection's
 //!   contract, not a validator concern.
 //!
-//! ## How this is wired (and why not as a hard release-build assert)
+//! ## How this is wired
 //!
-//! [`validate_event_lists_strict_per_worker`] is wired as a
-//! `debug_assert!` at the output of [`acfg_to_events`](crate::passes::petri_to_events::acfg_to_events)
-//! (see `petri_to_events.rs`). It runs invariants (1), (3), (4), (5)
-//! — the *strictly per-worker* ones that hold across the entire
-//! pipeline.
+//! [`validate_event_lists`] (the FULL surface, including invariant (2)
+//! Push/Wait pair matching) is wired as a HARD production gate in the
+//! driver's `cmd_build` (`driver/src/main.rs`, immediately before
+//! `dispatch::dispatch_backend`, sibling of the accumulator cross-
+//! check) — TASK-0422 (cycle-244). That is the FINAL per-worker
+//! EventList that every backend consumes, after `acfg_to_events`,
+//! `inject_check_frames`, the mp-* `host_mediation_inject` /
+//! `host_data_relay_inject` re-routing, and `apply_safe_push_reorder`.
+//! A violation returns `Result::Err` (typed-error / String channel —
+//! never a panic; this project rejects panic-on-valid-input).
 //!
-//! Invariant (2) — Push/Wait pair matching — is **exposed via**
-//! [`validate_event_lists`] but **not asserted at the
-//! `acfg_to_events` boundary**.
+//! [`validate_event_lists_strict_per_worker`] is *additionally* wired
+//! as a `debug_assert!` at the output of
+//! [`acfg_to_events`](crate::passes::petri_to_events::acfg_to_events)
+//! (see `petri_to_events.rs`). It runs only invariants (1), (3), (4),
+//! (5) — the *strictly per-worker* ones — because that earlier boundary
+//! is ALSO reached by the driver's host-election PREVIEW projections on
+//! pre-mediation ACFGs (`main.rs` ~484, ~537), where invariant (2) need
+//! not yet hold. Promoting that `debug_assert` to the full validator
+//! would fire on those valid intermediate states. The full validator
+//! therefore belongs ONLY at the final consumption point above.
 //!
-//! The HISTORICAL reason (recorded in earlier revisions of this doc
-//! and `passes::petri_to_events`) was that `transfer_inject`'s
-//! cross-scope splicing limitation left the EventList with unmatched
-//! Wait events for legitimate shipping programs (example 02-split-add:
-//! producer at top level, consumer inside a `for`), so a hard assert
-//! of (2) would have crashed debug builds on valid input. **That
-//! premise is now STALE.** TASK-0136 (Pass A `hoist_invariant_waits` +
-//! Pass B cross-scope `splice_pushes_global`) and the sibling
-//! TASK-0149 / TASK-0151 / TASK-0364 work closed the gap; TASK-0428
-//! (cycle-242) empirically verified that inv(2) holds on the projected
+//! Invariant (2) — Push/Wait pair matching — is the part of the full
+//! surface that the strict subset deliberately omits.
+//!
+//! The HISTORICAL reason invariant (2) was once deferred entirely
+//! (recorded in earlier revisions of this doc and
+//! `passes::petri_to_events`) was that `transfer_inject`'s cross-scope
+//! splicing limitation left the EventList with unmatched Wait events
+//! for legitimate shipping programs (example 02-split-add: producer at
+//! top level, consumer inside a `for`), so a hard assert of (2) would
+//! have crashed debug builds on valid input. **That premise is now
+//! STALE.** TASK-0136 (Pass A `hoist_invariant_waits` + Pass B
+//! cross-scope `splice_pushes_global`) and the sibling TASK-0149 /
+//! TASK-0151 / TASK-0364 work closed the gap; TASK-0428 (cycle-242)
+//! empirically verified inv(2) on the projected (pre-mediation)
 //! EventList for the ENTIRE example corpus (all 55 schedules — see
-//! `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`).
-//!
-//! Invariant (2) is still not asserted at the `acfg_to_events`
-//! boundary for two *different* reasons: (a) that boundary runs before
-//! the mp-tcp/uds `host_mediation_inject` / `host_data_relay_inject`
-//! post-passes, whose post-mediation EventList is not yet covered by
-//! the TASK-0428 sweep (pthreads-{sync,async} chain only); (b) wiring
-//! [`validate_event_lists`] as a hard production gate is TASK-0422's
-//! scope and a separate risk surface. Callers that *know* their
-//! EventList is past the transfer-injection (and, for mp-* backends,
-//! mediation) gap can call [`validate_event_lists`] explicitly today.
+//! `tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus`),
+//! and TASK-0422.01 (cycle-243,
+//! `driver/tests/task0422_01_inv2_post_mediation.rs`) verified it on
+//! the POST-mediation EventList for all 4 mp-* backends (220 cells, 0
+//! violations) — which is what made wiring the production gate safe.
+//! The gate is COMPILE-time enforcement over whatever schedule is
+//! built; the corpus sweeps prove it rejects zero shipping programs,
+//! and the e2e bit-identical differential is defense-in-depth.
 //!
 //! Release builds skip the `debug_assert` entirely — the validator
 //! has zero cost in production compilation. This is a contract-
@@ -353,11 +366,16 @@ pub fn validate_event_lists(
 /// original reason (a `transfer_inject` cross-scope splicing
 /// limitation leaving unmatched Waits for shipping programs) is STALE
 /// as of TASK-0428 — inv(2) now holds across the entire example corpus
-/// (see this module's docs). This subset is retained as the
-/// `acfg_to_events` debug-assert because that boundary precedes the
-/// mp-tcp/uds mediation post-passes and because promoting it / wiring
-/// the full validator is TASK-0422's scope. Use [`validate_event_lists`]
-/// when you want inv(2) too.
+/// (see this module's docs). This subset is retained ONLY as the
+/// `acfg_to_events` debug-assert, because that boundary precedes the
+/// mp-tcp/uds mediation post-passes AND is reached by the driver's
+/// pre-mediation host-election preview projections (`main.rs` ~484,
+/// ~537) where inv(2) need not yet hold. The full validator
+/// [`validate_event_lists`] (inv(2) included) is wired as the hard
+/// production gate at the final EventList-consumption point in the
+/// driver (`driver/src/main.rs` `cmd_build`, before
+/// `dispatch::dispatch_backend` — TASK-0422 cycle-244). Use
+/// [`validate_event_lists`] when you want inv(2) too.
 ///
 /// Pure function; never panics on user-reachable input.
 pub fn validate_event_lists_strict_per_worker(

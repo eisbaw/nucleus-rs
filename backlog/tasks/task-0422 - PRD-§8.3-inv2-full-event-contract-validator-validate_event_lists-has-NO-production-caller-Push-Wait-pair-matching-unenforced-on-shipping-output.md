@@ -3,10 +3,11 @@ id: TASK-0422
 title: >-
   PRD §8.3 inv(2): full event-contract validator validate_event_lists has NO
   production caller (Push/Wait pair matching unenforced on shipping output)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@mped'
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 17:02'
+updated_date: '2026-06-02 17:54'
 labels:
   - compiler
   - event-contract
@@ -51,4 +52,36 @@ LIMITS step (2) must still respect:
  - This is COMPILE-time contract proof over the current corpus only; it is NOT a proof for arbitrary future schedules. A hard gate is therefore correct (it would catch a future regression), but the gate itself is the enforcement, not this sweep.
  - host_data_relay_inject no-ops for many schedules; the proof covers inv(2) on whatever each pass emits, with non-vacuity demonstrated for 09-producer-consumer/pipelined only.
  - The acfg_to_events debug_assert deliberately stays per-worker-subset because it precedes mediation (see corrected rationale in petri_to_events.rs); step (2) should add the FULL validate_event_lists call at/after the post-mediation projection, not promote the pre-mediation assert.
+
+Implementation Plan (cycle-244, step 2 gate-wiring):
+1. Wire validate_event_lists(&per_worker) as a HARD String-error gate in driver cmd_build, sibling of check_accumulator_consistency, right before dispatch_backend (main.rs ~743). Reads the FINAL per_worker (post acfg_to_events -> inject_check_frames -> apply_safe_push_reorder). ONE site = all 7 backends. Add to the nucleus_compiler use-block.
+2. VERIFIED inv(2)-preservation through the two post-projection transforms by reading their impls:
+   - inject_check_frames (passes/inject_check_frames.rs:185 inject_event): only rewrites Event::Loop nodes (sets check_frame); ALL non-Loop events incl Push/Wait are the `other => other` pass-through arm. Adds/removes NO Push or Wait. CONFIRMED.
+   - apply_safe_push_reorder (passes/safe_push_reorder.rs:138 reorder_boundary): partitions boundary event indices into hoistable_idx + others_idx and concatenates -> pure permutation, every event preserved, none added/deleted. validate inv(2) is SET-based (BTreeMap keyed by (src,dst,data,tile,seq)) so reorder cannot break pairing. CONFIRMED.
+   Structural argument HOLDS; the ~743 site is equivalent to the ~646 projection for inv(2) purposes.
+3. Bite test: a real .nuc violating inv(2) is impossible by design (corpus proven clean), so add a focused negative test in driver/tests/ that calls validate_event_lists (the EXACT fn the driver wires) on a hand-built unmatched-Push map, asserts Err(UnmatchedPush), and documents the driver wiring site. Honest: a true end-to-end driver-reject test is not feasible (no valid source produces a violation).
+4. Fix stale docs: event_validate.rs module-doc (63-99) + validate_event_lists_strict_per_worker doc (348-360); petri_to_events.rs module-doc (175-182) + acfg_to_events comment (245-256); tests/petri_to_events.rs TASK-0428 sweep comment (494-519). Do NOT touch the acfg_to_events debug_assert (stays subset; precedes mediation).
+5. Gate: just build && clippy && test && test-release && e2e; e2e must hold 385/328/0/57/0.
+
+RESULT (cycle-244): GATE WIRED. validate_event_lists (FULL surface incl PRD §8.3 inv(2) Push/Wait pairing) is now a HARD String-error production gate in driver cmd_build, sibling of check_accumulator_consistency, immediately before dispatch::dispatch_backend, reading the FINAL per_worker. ONE site covers all 7 backends (it is THE backend-consumption entry).
+
+inv(2)-PRESERVATION VERIFICATION (the load-bearing soundness claim) — CONFIRMED by reading both post-projection transform impls:
+ - inject_check_frames: inject_event (passes/inject_check_frames.rs:185) matches only Event::Loop (sets check_frame); every non-Loop event, incl Push/Wait, hits the `other => other` pass-through arm. Adds/removes/mutates NO Push or Wait.
+ - apply_safe_push_reorder: reorder_boundary (passes/safe_push_reorder.rs:138) classifies each boundary event index into hoistable_idx vs others_idx, then emits hoistable-then-others -> a PURE PERMUTATION within each top-level boundary; Sync events stay in place; no event added/deleted/field-mutated. validate inv(2) is SET-based (BTreeMap keyed (src,dst,data,tile,seq)) => reorder cannot change pairing.
+ Conclusion: the ~744 gate site is equivalent to the ~646 projection for inv(2); no transform could change the Push/Wait set. NO finding.
+
+BITE TEST: nucleus/driver/tests/task0422_gate_wired_reject.rs (2 fns):
+ - task0422_driver_gate_rejects_unmatched_push: calls validate_event_lists (THE fn the driver wires) on a hand-built unmatched-Push map, asserts Err(UnmatchedPush). Docstring + assertion document the exact driver wiring site.
+ - task0422_driver_gate_accepts_matched_pair: matched pair => Ok (non-vacuity guard).
+ HONEST LIMIT: a true end-to-end driver-reject test (real .nuc -> cmd_build Err) is NOT feasible: no valid source produces an inv(2) violation (corpus proven clean by TASK-0428 + TASK-0422.01), which is the whole reason wiring is safe. Such a source would itself be a NEW finding, not a fixture. The e2e differential is the complementary POSITIVE-direction corpus-wide proof (gate runs on every codegen build; 385/328/0/57/0 held).
+
+STALE DOCS FIXED (comment-doc-lie hygiene): event_validate.rs module-doc "How this is wired" + validate_event_lists_strict_per_worker docstring; petri_to_events.rs module-doc + acfg_to_events debug_assert rationale comment; tests/petri_to_events.rs TASK-0428 sweep comment. All now cite the driver gate site and do NOT overclaim (enforced on shipping codegen builds; e2e is defense-in-depth; NOT "all programs forever"). The acfg_to_events debug_assert LEFT as strict-per-worker SUBSET (untouched) — it precedes mediation AND is hit by the driver pre-mediation host-election preview projections (main.rs ~484/~537) where inv(2) need not hold.
+
+GATE: just build OK; just clippy clean (-D warnings, independently re-run); just test dev=1260/0/3 (+2); just test-release=1258/0/3 (+2); just e2e=385/328/0/57/0 (baseline HELD). No findings, no new tasks filed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+PRD §8.3 inv(2) (Push/Wait matched pairs) is now ENFORCED on shipping compiler output. validate_event_lists wired as a hard String-error gate in driver cmd_build (the final per_worker, before dispatch_backend; one site, all 7 backends). inv(2)-preservation through inject_check_frames (Loop-only rewrite, Push/Wait pass-through) and apply_safe_push_reorder (pure intra-boundary permutation) verified by reading both impls. Bite test driver/tests/task0422_gate_wired_reject.rs pins that the driver consumes this exact validator (rejects UnmatchedPush, accepts matched pairs); a true end-to-end driver-reject test is infeasible by design (no valid source violates inv(2) — corpus proven clean). Stale "no production caller / not wired" docs across event_validate.rs + petri_to_events.rs + tests corrected, not overclaimed. acfg_to_events debug_assert intentionally left as strict-per-worker subset (precedes mediation + driver preview projections). Gate green: dev 1260/0/3, release 1258/0/3, e2e 385/328/0/57/0 held; clippy clean. No findings, no new tasks.
+<!-- SECTION:FINAL_SUMMARY:END -->

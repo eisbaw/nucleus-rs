@@ -508,15 +508,17 @@ fn full_pipeline_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
 // prog.algo.nuc), projects to EventLists, and asserts
 // validate_event_lists (the FULL surface, including inv(2)) returns Ok.
 //
-// SCOPE / HONEST LIMIT: this is the pthreads-{sync,async} chain. The
+// SCOPE: this is the pthreads-{sync,async} backend-agnostic chain. The
 // mp-tcp-{bufsync,event,poll} / mp-uds-event backends additionally run
 // `host_mediation_inject` + `host_data_relay_inject` AFTER
 // inject_transfers; those passes re-route Push/Wait through host and
 // are NOT exercised here. inv(2) over THAT post-mediation EventList is
-// NOT proven by this test — it is forward-carried to TASK-0422 (the
-// gate-wiring task) as the remaining surface to confirm before
-// validate_event_lists is wired as a hard production gate for the
-// mp-* backends.
+// proven separately by TASK-0422.01 (cycle-243,
+// `driver/tests/task0422_01_inv2_post_mediation.rs`, 220 cells, 0
+// violations). With both proofs green, `validate_event_lists` (the FULL
+// surface incl inv(2)) is now wired as a HARD production gate at the
+// driver's final EventList-consumption point (TASK-0422, cycle-244 —
+// `driver/src/main.rs` `cmd_build`, before `dispatch::dispatch_backend`).
 #[test]
 fn task0428_inv2_holds_for_entire_example_corpus() {
     use nucleus_compiler::{
