@@ -32,6 +32,13 @@
 //! 5. **`Event::Free` is preceded by `Event::Alloc`** on the same
 //!    worker for the same `(data, tile)`. Per-worker. **LATENT today**
 //!    (same reason as (4): Alloc / Free are not emitted).
+//! 6. **Cross-worker `Sync` participant-set agreement** — two or more
+//!    [`Event::Sync`] events that share a [`SyncTag`] (the cross-worker
+//!    barrier join key, TASK-0172) MUST carry identical `participants`
+//!    sets. If a SyncTag is seen with >1 distinct participant set, the
+//!    disjoint per-worker `EventList`s disagree on who is in the
+//!    barrier. **Cross-worker** (needs the whole map). Recurses through
+//!    `Event::Loop` bodies like every other invariant. TASK-0423.
 //!
 //! ## Recursion through `Event::Loop`
 //!
@@ -45,13 +52,6 @@
 //!
 //! ## What is NOT checked (gaps recorded honestly)
 //!
-//! - **Cross-worker Sync participant agreement.** Two Sync events that
-//!   share a [`SyncTag`] on different workers
-//!   should have participant sets that agree (TASK-0172 made
-//!   `SyncTag` the cross-worker join key). This module does NOT yet
-//!   check that agreement; (3) only checks the per-event non-emptiness
-//!   invariant. Filed as a follow-up at the call site in
-//!   `validate_event_lists`.
 //! - **`IterTile` well-formedness** (no `start >= end`, no duplicate
 //!   `IterVar` axes). TASK-0015 deliberately left these undefined
 //!   pending a PRD decision (recorded honest limitation #6). Out of
@@ -112,7 +112,7 @@
 //! has zero cost in production compilation. This is a contract-
 //! internal check, not a user-facing diagnostic.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::event::{DataId, Event, IterTile, SeqTag, SyncTag, WorkerId};
 
@@ -189,6 +189,17 @@ pub enum EventValidationError {
         /// The barrier identity (TASK-0172) of the offending Sync.
         sync: SyncTag,
     },
+    /// Invariant (6): two or more [`Event::Sync`] events that share a
+    /// [`SyncTag`] (the cross-worker barrier join key — TASK-0172) were
+    /// seen with DIFFERENT `participants` sets. Every participant of one
+    /// barrier must carry the same participant set, or the disjoint
+    /// per-worker `EventList`s do not agree on who is in the barrier.
+    /// **Cross-worker** (needs every worker's list — TASK-0423).
+    SyncParticipantDisagreement {
+        /// The barrier identity (TASK-0172) seen with >1 distinct
+        /// participant set.
+        sync: SyncTag,
+    },
     /// Invariant (4): two [`Event::Alloc`] events for the same
     /// `(data, tile)` on the same worker without an intervening
     /// [`Event::Free`]. **LATENT today** (Alloc not emitted by
@@ -262,6 +273,12 @@ impl std::fmt::Display for EventValidationError {
                 "Event::Sync with sync_tag={} has empty participants",
                 sync.0
             ),
+            EventValidationError::SyncParticipantDisagreement { sync } => write!(
+                f,
+                "Event::Sync with sync_tag={} was seen with >1 distinct participant set \
+                 across workers (cross-worker barrier participant sets must agree)",
+                sync.0
+            ),
             EventValidationError::OverlappingAlloc { worker, data, tile } => write!(
                 f,
                 "worker {} has overlapping Alloc for (data={}, tile.rank={}) \
@@ -293,7 +310,8 @@ impl std::error::Error for EventValidationError {}
 /// ascending `WorkerId`; per-worker errors are emitted in event-
 /// position order; cross-worker Push/Wait errors are emitted after
 /// per-worker errors, sorted by `(src, dst, data, tile, seq)` via the
-/// `BTreeSet` index).
+/// `BTreeMap` index; cross-worker Sync participant-disagreement errors
+/// (invariant (6)) are emitted last, in ascending `SyncTag` order).
 ///
 /// **Latent invariants**: (4) `OverlappingAlloc` and (5)
 /// `FreeWithoutAlloc` are checked but cannot fire on any current
@@ -321,8 +339,24 @@ pub fn validate_event_lists(
     let mut pushes: BTreeMap<Key, IterTile> = BTreeMap::new();
     let mut waits: BTreeMap<Key, IterTile> = BTreeMap::new();
 
+    // Cross-worker Sync participant-set agreement index (invariant (6),
+    // TASK-0423). For each SyncTag we collect the SET of DISTINCT
+    // participant sets seen across all workers (and all Loop nesting).
+    // `BTreeSet<WorkerId>` is `Ord`, so `BTreeSet<BTreeSet<WorkerId>>`
+    // is a valid set-of-distinct-sets; `len() > 1` means workers
+    // disagree on the barrier membership for that tag. Iterated in
+    // `BTreeMap` (SyncTag) order for deterministic emission.
+    let mut sync_participants: BTreeMap<SyncTag, BTreeSet<BTreeSet<WorkerId>>> = BTreeMap::new();
+
     for (worker, list) in by_worker {
-        check_per_worker(*worker, list, &mut errors, &mut pushes, &mut waits);
+        check_per_worker(
+            *worker,
+            list,
+            &mut errors,
+            &mut pushes,
+            &mut waits,
+            &mut sync_participants,
+        );
     }
 
     // Cross-worker closure: every Push must be matched by a Wait with
@@ -348,6 +382,16 @@ pub fn validate_event_lists(
                 tile: tile.clone(),
                 seq: SeqTag(k.4),
             });
+        }
+    }
+
+    // Cross-worker invariant (6): every SyncTag must carry one and the
+    // same participant set across all workers (TASK-0423). >1 distinct
+    // set => disagreement. Emitted after Push/Wait cross-worker errors,
+    // in ascending SyncTag order (BTreeMap iteration) for determinism.
+    for (sync, distinct_sets) in &sync_participants {
+        if distinct_sets.len() > 1 {
+            errors.push(EventValidationError::SyncParticipantDisagreement { sync: *sync });
         }
     }
 
@@ -388,8 +432,22 @@ pub fn validate_event_lists_strict_per_worker(
     // than duplicating the walker.
     let mut pushes: BTreeMap<(u64, u64, u64, TileKey, u64), IterTile> = BTreeMap::new();
     let mut waits: BTreeMap<(u64, u64, u64, TileKey, u64), IterTile> = BTreeMap::new();
+    // Throwaway: `check_per_worker` populates this, but the strict
+    // subset deliberately does NOT consume it. Invariant (6)
+    // (SyncParticipantDisagreement) is CROSS-worker — it needs every
+    // worker's lists at once — so it lives ONLY in the full
+    // `validate_event_lists`, exactly like invariant (2). See module
+    // docs (TASK-0423).
+    let mut sync_participants: BTreeMap<SyncTag, BTreeSet<BTreeSet<WorkerId>>> = BTreeMap::new();
     for (worker, list) in by_worker {
-        check_per_worker(*worker, list, &mut errors, &mut pushes, &mut waits);
+        check_per_worker(
+            *worker,
+            list,
+            &mut errors,
+            &mut pushes,
+            &mut waits,
+            &mut sync_participants,
+        );
     }
     if errors.is_empty() {
         Ok(())
@@ -409,6 +467,9 @@ pub fn validate_event_lists_strict_per_worker(
 ///   module docs).
 /// - The (src, dst, data, tile, seq) keys of every Push and Wait into
 ///   the cross-worker index for closure-check by the caller.
+/// - Each `Event::Sync`'s `participants` set under its `SyncTag` into
+///   the cross-worker `sync_participants` index, for invariant (6)
+///   agreement-check by the caller (full validator only).
 ///
 /// Recurses through `Event::Loop` bodies (the loop body's Pushes /
 /// Waits / Allocs / Frees count as the enclosing worker's). Note:
@@ -422,14 +483,24 @@ fn check_per_worker(
     errors: &mut Vec<EventValidationError>,
     pushes: &mut BTreeMap<(u64, u64, u64, TileKey, u64), IterTile>,
     waits: &mut BTreeMap<(u64, u64, u64, TileKey, u64), IterTile>,
+    sync_participants: &mut BTreeMap<SyncTag, BTreeSet<BTreeSet<WorkerId>>>,
 ) {
     // Track currently-live `(DataId.0, tile_key)` Allocs on this
     // worker. `BTreeMap` value holds the original `IterTile` so
     // emitted errors are faithful.
     let mut live_allocs: BTreeMap<(u64, TileKey), IterTile> = BTreeMap::new();
-    walk_events(worker, list, errors, pushes, waits, &mut live_allocs);
+    walk_events(
+        worker,
+        list,
+        errors,
+        pushes,
+        waits,
+        &mut live_allocs,
+        sync_participants,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_events(
     worker: WorkerId,
     list: &[Event],
@@ -437,6 +508,7 @@ fn walk_events(
     pushes: &mut BTreeMap<(u64, u64, u64, TileKey, u64), IterTile>,
     waits: &mut BTreeMap<(u64, u64, u64, TileKey, u64), IterTile>,
     live_allocs: &mut BTreeMap<(u64, TileKey), IterTile>,
+    sync_participants: &mut BTreeMap<SyncTag, BTreeSet<BTreeSet<WorkerId>>>,
 ) {
     for ev in list {
         match ev {
@@ -482,6 +554,18 @@ fn walk_events(
                 if participants.is_empty() {
                     errors.push(EventValidationError::EmptySyncParticipants { sync: *sync });
                 }
+                // (6) cross-worker participant-set agreement index
+                // (TASK-0423): record this worker's view of the
+                // participant set under the barrier's SyncTag. The
+                // caller (full validator only) flags any tag whose
+                // recorded set-of-distinct-sets has len > 1. Note the
+                // empty set is still recorded here so an
+                // empty-vs-nonempty disagreement also surfaces (the
+                // empty case is additionally caught by (3)).
+                sync_participants
+                    .entry(*sync)
+                    .or_default()
+                    .insert(participants.clone());
             }
             Event::Alloc { data, tile, .. } => {
                 // (4) overlapping Alloc on same (data, tile) with no
@@ -514,7 +598,15 @@ fn walk_events(
                 // loop sees the body events in order; flattening for
                 // validation purposes is correct for the latent
                 // Alloc/Free path and for the Push/Wait closure.
-                walk_events(worker, body, errors, pushes, waits, live_allocs);
+                walk_events(
+                    worker,
+                    body,
+                    errors,
+                    pushes,
+                    waits,
+                    live_allocs,
+                    sync_participants,
+                );
             }
             Event::Fire { .. } => {
                 // Fire has no contract invariant in (1)-(5). Filed

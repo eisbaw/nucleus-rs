@@ -177,6 +177,95 @@ fn neg_empty_sync_participants() {
 }
 
 #[test]
+fn neg_sync_participant_disagreement() {
+    // Invariant (6), TASK-0423. Two Sync events share SyncTag(5) but
+    // carry DIFFERENT participant sets: worker 0 thinks the barrier is
+    // {0,1}, worker 1 thinks it is {1,2}. The cross-worker validator
+    // must flag SyncParticipantDisagreement { sync: SyncTag(5) }.
+    let set_01: BTreeSet<WorkerId> = [WorkerId(0), WorkerId(1)].into_iter().collect();
+    let set_12: BTreeSet<WorkerId> = [WorkerId(1), WorkerId(2)].into_iter().collect();
+    let map = two_workers(
+        (
+            0,
+            vec![Event::Sync {
+                participants: set_01,
+                kind: SyncKind::Barrier,
+                sync: SyncTag(5),
+            }],
+        ),
+        (
+            1,
+            vec![Event::Sync {
+                participants: set_12,
+                kind: SyncKind::Barrier,
+                sync: SyncTag(5),
+            }],
+        ),
+    );
+
+    let errors = validate_event_lists(&map).expect_err("must reject disagreeing participant sets");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e, EventValidationError::SyncParticipantDisagreement { sync: SyncTag(5) })),
+        "expected SyncParticipantDisagreement {{ sync: 5 }} among errors, got {errors:?}"
+    );
+
+    // Cross-worker invariant: the strict-per-worker subset must NOT
+    // flag it (mirrors the unmatched-Push carve-out — invariant (6) is
+    // cross-worker and lives only in the full validator).
+    assert!(
+        validate_event_lists_strict_per_worker(&map).is_ok(),
+        "strict-per-worker validator must NOT flag cross-worker Sync disagreement"
+    );
+}
+
+#[test]
+fn pos_sync_participants_agree() {
+    // Non-tautology guard: two Sync with the SAME tag AND identical
+    // participant sets must NOT produce a SyncParticipantDisagreement.
+    // (Sanity: proves the check keys on DISTINCT sets, not on merely
+    // seeing the tag more than once.)
+    let set_01: BTreeSet<WorkerId> = [WorkerId(0), WorkerId(1)].into_iter().collect();
+    let map = two_workers(
+        (
+            0,
+            vec![Event::Sync {
+                participants: set_01.clone(),
+                kind: SyncKind::Barrier,
+                sync: SyncTag(5),
+            }],
+        ),
+        (
+            1,
+            vec![Event::Sync {
+                participants: set_01,
+                kind: SyncKind::Barrier,
+                sync: SyncTag(5),
+            }],
+        ),
+    );
+
+    let result = validate_event_lists(&map);
+    assert!(
+        result
+            .as_ref()
+            .err()
+            .map(|errs| !errs
+                .iter()
+                .any(|e| matches!(e, EventValidationError::SyncParticipantDisagreement { .. })))
+            .unwrap_or(true),
+        "agreeing participant sets must NOT yield SyncParticipantDisagreement, got {result:?}"
+    );
+    // The whole map is in fact clean (the two Syncs are the only
+    // events), so the full validator returns Ok.
+    assert!(
+        result.is_ok(),
+        "agreeing 2-worker barrier should validate clean, got {result:?}"
+    );
+}
+
+#[test]
 fn neg_overlapping_alloc() {
     // Two Allocs for the same (data, tile) on the same worker with
     // no intervening Free.
