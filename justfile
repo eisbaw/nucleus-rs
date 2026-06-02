@@ -995,22 +995,31 @@ check-doc-cell-path-staleness:
 # -exec wc -l {} \; | sort -rn | awk '$1 > 1000 {print $2}'`.
 #
 # Each entry is a TASK-0340 AC#2 split target — the allow-list shrinks
-# as splits land. The allow-list is a printf-fed bash array (not a
-# heredoc — a column-0 heredoc body crashes just's parser; see
+# as splits land. The allow-list is a printf-fed positional list — i.e.
+# POSIX `printf '%s\n' a b c ...` with positional args, NOT a bash array
+# and NOT a heredoc (a column-0 heredoc body crashes just's parser; see
 # justfile-history). Adding/removing an entry is a one-line edit;
 # per-file LoC numbers are deliberately NOT enumerated (architect
 # cycle-176 P3.1 — they create drift debt with no automated guard).
 #
-# POSIX-shell portability (architect cycle-177 P1.1): the recipe uses
-# `comm -23` against TEMP FILES, not bash process substitution
-# `<(...)`. `just` defaults to `/bin/sh -cu`; on dash/ash/busybox-sh
-# `<(...)` would syntax-error before either direction runs, leaving
-# the regression-fence silently absent. The temp-file form via
-# `mktemp` + `trap "rm -f ... " EXIT` is POSIX-portable.
+# POSIX-shell portability (architect cycle-177 P1.1; TASK-0415 cycle-244):
+# the recipe uses `comm -23` against TEMP FILES, not bash process
+# substitution `<(...)`. `just` defaults to `/bin/sh -cu`; on
+# dash/ash/busybox-sh `<(...)` would syntax-error before either direction
+# runs, leaving the regression-fence silently absent. The temp-file form
+# via `mktemp` + `trap "rm -f ... " EXIT` is POSIX-portable. The recipe
+# also avoids `set -o pipefail`: although `pipefail` was added to POSIX in
+# Issue 8 (2024) and modern dash / bash-compat busybox accept it
+# (empirically verified cycle-244), it is NOT supported on pre-2024 or
+# non-bash-compat shells (e.g. a busybox built without
+# CONFIG_ASH_BASH_COMPAT — the busybox-sh named above), AND its exit
+# status is never consumed here (results are read from the temp file via
+# `comm`, so the `find|awk|sort` pipeline status is irrelevant). It bought
+# nothing; dropped for consistency with the sibling fences, none of which
+# use it.
 check-mega-files:
     @echo "checking nucleus/**/src/*.rs for files exceeding 1000 LoC..."
     @set -eu; \
-    set -o pipefail; \
     oversized_f=$(mktemp); \
     allow_f=$(mktemp); \
     trap "rm -f $oversized_f $allow_f" EXIT; \
