@@ -575,11 +575,20 @@ const CONFLICT_STATE_SPACE_CAP: usize = 50_000;
 ///
 /// 64 is generous for any plausible hand-built genuine-conflict net while
 /// excluding multi-worker shipping nets by an order of magnitude. Small
-/// nets reaching this limit are single-worker-shaped (strictly
-/// control-chain serialised ⇒ near-linear reachable markings), so the BFS
-/// stays fast on every net it actually runs on; the
-/// [`CONFLICT_STATE_SPACE_CAP`] visited-count cap is the secondary
-/// defensive bound for any small-but-concurrent future net.
+/// nets reaching this limit are typically single-worker-shaped (strictly
+/// control-chain serialised ⇒ near-linear reachable markings); the BFS is
+/// in any case bounded on every net it runs on by the
+/// [`CONFLICT_STATE_SPACE_CAP`] visited-count cap (the secondary defensive
+/// bound for a small-but-concurrent future net).
+///
+/// RESIDUAL COMPLETENESS GAP (TASK-0427.01): a GENUINELY-conflicting net
+/// with `> CONFLICT_BFS_TRANSITION_LIMIT` transitions takes the sound
+/// single-order under-approximation, NOT the complete BFS, so an off-order
+/// conflict in such a net would be missed. Dead today (v2 inject-pass
+/// guards make real conflicts impossible on every shipping schedule, and a
+/// `NUC_TRACE` advisory fires on every fallback). Closing it needs a
+/// reachability check that scales past the multi-worker product blowup —
+/// tracked as TASK-0427.01.
 const CONFLICT_BFS_TRANSITION_LIMIT: usize = 64;
 
 /// Canonical key for a [`Marking`] so it can live in a `BTreeSet` for the
@@ -767,12 +776,16 @@ pub fn check_net_sound(net: &Net) -> Result<(), PetriAnalysisError> {
     // boundedness + deadlock passes (its derivation is purely
     // structural/greedy and does not depend on conflict-freedom). The
     // conflict pass takes the order too, but since TASK-0427 it only USES
-    // it in the cap-exceeded fallback (its primary path is a coverability
-    // BFS that ignores any single order); handing it in still avoids a
-    // redundant `derive_firing_order` call on that fallback path — see
-    // TASK-0421/TASK-0427 and the `gate_stays_near_linear_under_large_net`
-    // perf pin (the conflict pass short-circuits on every shipping net
-    // before either the BFS or the fallback runs).
+    // it in the size-guard / cap-exceeded fallback (its primary path is a
+    // coverability BFS that ignores any single order); handing it in still
+    // avoids a redundant `derive_firing_order` call on that fallback path.
+    // See TASK-0421/TASK-0427. NOTE: the conflict pass short-circuits via
+    // the fast path ONLY on nets whose every place has < 2 consumers;
+    // multi-worker shipping nets DO contain benign contested places (e.g.
+    // 16-jacobi/distributed's gate net, 24 of them) and therefore reach the
+    // size-guarded single-order FALLBACK rather than the fast path — both
+    // are sound (never false-reject) and the fallback is what keeps the
+    // `gate_stays_near_linear_under_large_net` perf pin green on large nets.
     let order = derive_firing_order(net);
 
     check_conflict_free_with_order(net, Some(&order))

@@ -36,7 +36,7 @@
 
 use std::num::NonZeroU32;
 
-use nucleus_compiler::passes::boundedness::BoundednessError;
+use nucleus_compiler::passes::boundedness::{derive_firing_order, BoundednessError};
 use nucleus_compiler::passes::deadlock::DeadlockError;
 use nucleus_compiler::passes::net_soundness::{
     check_conflict_free, check_net_sound, ConflictError, PetriAnalysisError,
@@ -390,19 +390,27 @@ fn shipping_shaped_unrolled_loop_buffer_passes_no_false_reject() {
 /// consumers there.
 ///
 /// PROVE-IT-BITES (completeness upgrade): the OLD single-order replay
-/// ACCEPTED this net (returned `Ok`). `derive_firing_order` fires a
-/// loader (raising `p` to 1), then immediately drains `p` via `cons_x`
-/// (source-order-first) BEFORE the second loader can raise `p` to 2, so
-/// the `p == 2` marking — reachable on the interleaving "fire BOTH loaders
-/// first" — is never visited by that one order, and the conflict is
-/// missed. The new coverability BFS visits ALL reachable markings,
-/// reaches `p == 2` after firing both loaders, and flags the conflict.
+/// ACCEPTED this net (returned `Ok`). `derive_firing_order` is greedy
+/// first-firable in TransitionId/source order; here `cons_x` is defined
+/// BEFORE `load2` (id 1 < id 2), so after `load1` raises `p` to 1 the
+/// greedy scan fires `cons_x` (draining `p` back to 0) BEFORE `load2`
+/// can fire — the derived order is `[load1, cons_x, load2, cons_y,
+/// cons_z]` and `p` never reaches 2 along it. The co-enabling `p == 2`
+/// marking is reachable only on the OFF-order interleaving "fire BOTH
+/// loaders first", which that one order never visits, so the old replay
+/// missed the conflict. The new coverability BFS visits ALL reachable
+/// markings, reaches `p == 2`, and flags it. (The `assert_eq!(max_p, 1)`
+/// below pins this off-order property empirically — if
+/// `derive_firing_order`'s tiebreak ever changed so the order DID reach
+/// `p == 2`, this test would no longer exercise the completeness gain
+/// and would fail loudly rather than silently degrade to a tautology —
+/// the exact defect the architect review of the first draft caught.)
 ///
 /// The reported `position` is the BFS depth at which `p` first reaches 2:
-/// 2 firings (load1 + load2) from the initial marking. Pinned to the
-/// value observed empirically; the BFS is deterministic (FIFO frontier,
-/// successors in TransitionId order, `p == 2` is first reachable at
-/// depth 2 and not before — at `p == 1` only `cons_x` is enabled).
+/// 2 firings (load1 + load2) from the initial marking. The BFS is
+/// deterministic (FIFO frontier, successors in TransitionId order,
+/// `p == 2` first reachable at depth 2 and not before — at `p == 1` only
+/// `cons_x` is enabled).
 #[test]
 fn off_order_free_choice_conflict_now_detected() {
     let mut net = Net::new();
@@ -410,24 +418,57 @@ fn off_order_free_choice_conflict_now_detected() {
     let s2 = net.add_place("s2", cap(1), 1);
     let p = net.add_place("p", cap(2), 0);
 
-    // Two loaders deposit into p.
+    // load1 (id 0) deposits into p.
     let load1 = net.add_transition("load1", None);
     net.add_arc(ArcKind::PtoT, s1, load1, 1);
     net.add_arc(ArcKind::TtoP, p, load1, 1);
 
+    // cons_x (id 1) is defined BEFORE load2 on purpose: the greedy
+    // source-order tiebreak in `derive_firing_order` then fires cons_x
+    // (draining p to 0) before load2 raises p to 2, which is what keeps
+    // the conflict OFF the single derived order. (If load2 preceded
+    // cons_x, the derived order would itself reach p == 2 and the OLD
+    // single-order replay would already have caught the conflict — the
+    // test would be a tautology, not a completeness proof.)
+    let cons_x = net.add_transition("cons_x", None);
+    net.add_arc(ArcKind::PtoT, p, cons_x, 1);
+
+    // load2 (id 2) also deposits into p.
     let load2 = net.add_transition("load2", None);
     net.add_arc(ArcKind::PtoT, s2, load2, 1);
     net.add_arc(ArcKind::TtoP, p, load2, 1);
 
-    // Three consumers of p: cons_x needs 1, cons_y and cons_z need 2.
-    let cons_x = net.add_transition("cons_x", None);
-    net.add_arc(ArcKind::PtoT, p, cons_x, 1);
-
+    // cons_y (id 3), cons_z (id 4) each need 2 tokens from p.
     let cons_y = net.add_transition("cons_y", None);
     net.add_arc(ArcKind::PtoT, p, cons_y, 2);
 
     let cons_z = net.add_transition("cons_z", None);
     net.add_arc(ArcKind::PtoT, p, cons_z, 2);
+
+    // Empirical off-order proof: replay the single derived order and
+    // confirm `p` never exceeds 1 along it. The OLD single-order conflict
+    // check inspects ONLY these markings, so a max of 1 means it never saw
+    // the co-enabling `p == 2` marking and returned Ok — i.e. the net was a
+    // genuine FALSE NEGATIVE before the BFS upgrade. This is what makes the
+    // rejection below a real completeness gain rather than a tautology.
+    let order = derive_firing_order(&net);
+    let mut sim = net.clone();
+    sim.reset_to_initial();
+    let index = net.build_arc_index();
+    let mut max_p = sim.current_marking.get(p);
+    for tid in &order {
+        if sim.fire_in_place(*tid, &index).is_err() {
+            break;
+        }
+        max_p = max_p.max(sim.current_marking.get(p));
+    }
+    assert_eq!(
+        max_p, 1,
+        "fixture invariant: the derived order must never raise p above 1 (so the OLD \
+         single-order replay accepted this net); got max p = {max_p}. If this fails, \
+         derive_firing_order's tiebreak changed and the counterexample no longer \
+         exercises the off-order completeness gain — rebuild the fixture."
+    );
 
     let err = check_conflict_free(&net)
         .expect_err("off-order conflict on place p must now be detected by the BFS");
@@ -442,7 +483,7 @@ fn off_order_free_choice_conflict_now_detected() {
             // At p == 2 all three consumers are consumption-enabled
             // (cons_x needs 1, cons_y/cons_z need 2); the gate reports
             // every co-enabled consumer of the contested place, sorted by
-            // TransitionId (cons_x id 2 < cons_y id 3 < cons_z id 4).
+            // TransitionId (cons_x id 1 < cons_y id 3 < cons_z id 4).
             let names: Vec<&str> = transitions.iter().map(|(_, n)| n.as_str()).collect();
             assert_eq!(names, vec!["cons_x", "cons_y", "cons_z"]);
             assert!(
