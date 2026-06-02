@@ -46,9 +46,13 @@ fn multi_worker_emit_smoke_produces_per_worker_binaries() {
         .and_then(|p| p.parent())
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("mp-tcp-poll-test-scratch/skeleton_multi_worker_02_split");
-    let _ = std::fs::remove_dir_all(&stem);
-    std::fs::create_dir_all(&stem).expect("scratch dir");
+    // TASK-0426.01: per-call-unique stem (created once by the helper,
+    // never removed). The `out` subdir below rides under this now-unique
+    // stem, so no shared-mutable-path remove/create race remains.
+    let stem = test_common::unique_scratch_dir(
+        &target.join("mp-tcp-poll-test-scratch"),
+        "skeleton_multi_worker_02_split",
+    );
     let kernels_path = ex.join("kernels.rs");
     let out_dir = stem.join("out");
 

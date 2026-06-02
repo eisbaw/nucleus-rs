@@ -104,9 +104,11 @@ fn loop_body_w2w_push_is_typed_contract_gap() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/loop_body_w2w_push_hazard");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "loop_body_w2w_push_hazard",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -263,9 +265,11 @@ fn host_bound_push_inside_loop_does_not_trigger_guard() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/loop_body_host_push_negative");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "loop_body_host_push_negative",
+    );
 
     emit(&per_worker, &names, &sidecar, &kernels, &scratch).expect(
         "host-bound Push (dst == host) inside an Event::Loop body must NOT \
@@ -350,9 +354,11 @@ fn multi_iter_loop_body_w2w_push_is_typed_contract_gap() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/multi_iter_loop_body_hazard");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "multi_iter_loop_body_hazard",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     let e = r.expect_err(

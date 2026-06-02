@@ -39,10 +39,11 @@ fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
     );
     let kernels = ex.join("kernels.rs");
 
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
 
     let res =
         emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded bin emit");
@@ -341,10 +342,11 @@ fn emit_bin_example_multi(
         },
     );
     let kernels = ex.join("kernels.rs");
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
     emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-MCU bin emit")
 }
 
@@ -486,10 +488,11 @@ fn try_emit_bin_ex1_with_check(
         },
     );
     let kernels = ex.join("kernels.rs");
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
 
     emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).map(|res| {
         // ex1 is single-worker: exactly one bin at the root.

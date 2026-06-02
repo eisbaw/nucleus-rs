@@ -44,8 +44,11 @@ fn single_worker_emit_shape_and_compute_delegation() {
     let ex = repo_root().join("nuc-nucleus/examples/01-elementwise-add");
     let kernels = ex.join("kernels.rs");
 
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/single_worker_01");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mpi-blocking-test-scratch"),
+        "single_worker_01",
+    );
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
         .expect("mpi-blocking emit (single-worker 01-elementwise-add)");
@@ -154,8 +157,11 @@ fn multi_worker_02_split_spmd_shape_and_tag_discipline() {
     assert_eq!(used.len(), 2, "02-split/split must lower to two used workers");
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/multi_worker_02");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mpi-blocking-test-scratch"),
+        "multi_worker_02",
+    );
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
         .expect("mpi-blocking multi-worker emit (02-split/split)");
@@ -284,8 +290,11 @@ fn non_whole_world_barrier_emits_comm_split_subcomm_barrier() {
     // does NOT reject.
     let r = host_excluding_02_split();
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/comm_split_subcomm");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mpi-blocking-test-scratch"),
+        "comm_split_subcomm",
+    );
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
         .expect("a host-excluding barrier must now emit Comm_split, not reject");
@@ -316,8 +325,11 @@ fn comm_split_is_emitted_outside_the_rank_match_arms() {
     // into a rank arm (after the match) would flip this.
     let r = host_excluding_02_split();
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/split_before_match");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mpi-blocking-test-scratch"),
+        "split_before_match",
+    );
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch).expect("emit");
     let main_rs = std::fs::read_to_string(&res.main_rs).expect("main.rs");
@@ -381,8 +393,11 @@ fn one_worker_push_and_wait_of_same_pair_is_rejected_loud() {
     assert!(injected, "expected at least one Push to clone into a Wait");
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch = repo_root().join("nucleus/target/mpi-blocking-test-scratch/push_and_wait_same");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mpi-blocking-test-scratch"),
+        "push_and_wait_same",
+    );
 
     let err = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
         .expect_err("one worker pushing AND waiting the same pair must be rejected");

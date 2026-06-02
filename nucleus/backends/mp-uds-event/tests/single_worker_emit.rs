@@ -50,14 +50,16 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_mp_tcp_event() {
         .and_then(|p| p.parent())
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("mp-uds-event-test-scratch/single_worker_empty");
+    // TASK-0426.01: per-call-unique stem (created once by the helper,
+    // never removed). The `uds`/`tcp` subdirs ride under this unique stem.
+    let stem = test_common::unique_scratch_dir(
+        &target.join("mp-uds-event-test-scratch"),
+        "single_worker_empty",
+    );
     let uds_out = stem.join("uds");
     let tcp_out = stem.join("tcp");
-    let _ = std::fs::remove_dir_all(&uds_out);
-    let _ = std::fs::remove_dir_all(&tcp_out);
 
     let kernels = stem.join("empty_kernels.rs");
-    std::fs::create_dir_all(&stem).expect("scratch dir");
     std::fs::write(
         &kernels,
         "// Empty kernels.rs for the empty-eventlist test.\n",
@@ -180,11 +182,13 @@ fn single_worker_real_example_emits_byte_identical_to_mp_tcp_event() {
     );
     let kernels = ex.join("kernels.rs");
 
-    let scratch = root.join("nucleus/target/mp-uds-event-test-scratch/single_worker_01_naive");
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/mp-uds-event-test-scratch"),
+        "single_worker_01_naive",
+    );
     let uds_out = scratch.join("uds");
     let tcp_out = scratch.join("tcp");
-    let _ = std::fs::remove_dir_all(&uds_out);
-    let _ = std::fs::remove_dir_all(&tcp_out);
 
     let uds_res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &uds_out)
         .expect("mp-uds-event emit (single-worker real example)");

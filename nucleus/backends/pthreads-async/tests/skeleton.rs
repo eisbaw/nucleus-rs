@@ -65,8 +65,11 @@ fn multi_worker_emit_for_02_split_succeeds() {
         &test_common::LowerForTestOpts::default(),
     );
 
-    let scratch = root.join("nucleus/target/pthreads-async-test-scratch/multi_worker_02_split");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/pthreads-async-test-scratch"),
+        "multi_worker_02_split",
+    );
     let result = emit(
         &r.per_worker,
         &r.names,
@@ -137,19 +140,21 @@ fn single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync() {
         .and_then(|p| p.parent()) // nucleus/
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("pthreads-async-test-scratch/single_worker_empty");
+    // TASK-0426.01: per-call-unique stem (created once by the helper,
+    // never removed). The `async`/`sync` subdirs ride under this stem,
+    // so write_file is deterministic without a prior-run remove.
+    let stem = test_common::unique_scratch_dir(
+        &target.join("pthreads-async-test-scratch"),
+        "single_worker_empty",
+    );
     let async_out = stem.join("async");
     let sync_out = stem.join("sync");
-    // Clean any prior run so write_file is deterministic.
-    let _ = std::fs::remove_dir_all(&async_out);
-    let _ = std::fs::remove_dir_all(&sync_out);
 
     // Both backends accept a `kernels.rs` that exists but is empty —
     // empty event list -> no kernel call site -> kernels.rs content
     // does not appear in main.rs. We use the same file for both
     // backends so the kernels.rs copy step in each is identical.
     let kernels = stem.join("empty_kernels.rs");
-    std::fs::create_dir_all(&stem).expect("scratch dir");
     std::fs::write(
         &kernels,
         "// Empty kernels.rs for the empty-eventlist test.\n",
@@ -268,12 +273,13 @@ fn lower_example_01_naive() -> (
 fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
     let (per_worker, names, sidecar, kernels) = lower_example_01_naive();
 
-    let scratch =
-        repo_root().join("nucleus/target/pthreads-async-test-scratch/single_worker_01_naive");
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/pthreads-async-test-scratch"),
+        "single_worker_01_naive",
+    );
     let async_out = scratch.join("async");
     let sync_out = scratch.join("sync");
-    let _ = std::fs::remove_dir_all(&async_out);
-    let _ = std::fs::remove_dir_all(&sync_out);
 
     let async_res = emit(&per_worker, &names, &sidecar, &kernels, &async_out)
         .expect("pthreads-async emit (single-worker real example)");
@@ -367,11 +373,13 @@ fn const_in_indexexpr_pthreads_async_resolves_to_literal_value() {
         &test_common::LowerForTestOpts::default(),
     );
 
-    let scratch = repo_root()
-        .join("nucleus/target/pthreads-async-test-scratch/const_in_indexexpr_pthreads_async");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once by the helper,
+    // never removed). The `gen` subdir rides under this unique scratch.
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/pthreads-async-test-scratch"),
+        "const_in_indexexpr_pthreads_async",
+    );
     let kernels_path = scratch.join("kernels.rs");
-    std::fs::create_dir_all(&scratch).expect("create scratch dir");
     std::fs::write(&kernels_path, "// stub for emit-string test\n").unwrap();
 
     let result = emit(

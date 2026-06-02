@@ -323,10 +323,11 @@ fn emit_02_split_main_rs(scratch_name: &str) -> String {
         &sched_src,
         &test_common::LowerForTestOpts::default(),
     );
-    let scratch = root.join(format!(
-        "nucleus/target/pthreads-async-test-scratch/wave_b2_codegen_pins_{scratch_name}"
-    ));
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/pthreads-async-test-scratch"),
+        &format!("wave_b2_codegen_pins_{scratch_name}"),
+    );
     let result = emit(
         &r.per_worker,
         &r.names,
@@ -475,8 +476,11 @@ fn wave_b2_multi_emit_compiles() {
         &sched_src,
         &test_common::LowerForTestOpts::default(),
     );
-    let scratch = root.join("nucleus/target/pthreads-async-test-scratch/wave_b2_compile_check");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/pthreads-async-test-scratch"),
+        "wave_b2_compile_check",
+    );
     let _ = emit(
         &r.per_worker,
         &r.names,
@@ -564,11 +568,11 @@ fn transpose_15_distributed_rows_host_excluding_barrier_pthreads_async() {
     };
     let r = test_common::lower_for_test(&algo_src, &sched_src, &opts);
 
-    let scratch = root.join(
-        "nucleus/target/pthreads-async-test-scratch/\
-         transpose_15_distributed_rows_host_excluding_barrier",
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/pthreads-async-test-scratch"),
+        "transpose_15_distributed_rows_host_excluding_barrier",
     );
-    let _ = std::fs::remove_dir_all(&scratch);
     let result = emit(
         &r.per_worker,
         &r.names,

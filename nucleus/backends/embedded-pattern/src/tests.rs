@@ -55,10 +55,11 @@ fn emit_example_naive(example: &str, scratch_leaf: &str) -> String {
     );
     let kernels = ex.join("kernels.rs");
 
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
 
     let res = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded emit");
     // A naive single-worker schedule emits EXACTLY ONE project, at the
@@ -114,10 +115,11 @@ fn emit_example_multi(
     );
     let kernels = ex.join("kernels.rs");
 
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
 
     emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-worker emit")
 }
@@ -154,10 +156,11 @@ fn emit_example_multi_with_files(
     );
     let kernels = ex.join(kernels_file);
 
-    let out = root
-        .join("nucleus/target/embedded-pattern-test-scratch")
-        .join(scratch_leaf);
-    let _ = std::fs::remove_dir_all(&out);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
 
     emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-worker emit")
 }

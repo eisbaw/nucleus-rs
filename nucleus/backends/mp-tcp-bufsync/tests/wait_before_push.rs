@@ -114,9 +114,11 @@ fn wait_before_push_w2w_is_typed_contract_gap() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-bufsync-test-scratch/wait_before_push_hazard");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-bufsync-test-scratch"),
+        "wait_before_push_hazard",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -220,9 +222,11 @@ fn pure_consumer_wait_only_does_not_trigger_wait_before_push_check() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-bufsync-test-scratch/pure_consumer_wait_only");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-bufsync-test-scratch"),
+        "pure_consumer_wait_only",
+    );
 
     emit(&per_worker, &names, &sidecar, &kernels, &scratch).expect(
         "pure-consumer wait-only worker (no w2w Push) must NOT trigger the \

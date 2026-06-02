@@ -46,9 +46,12 @@ fn single_worker_input_routed_to_single_worker_arm() {
         .and_then(|p| p.parent())
         .map(|p| p.join("target"))
         .expect("workspace target/");
-    let stem = target.join("mp-uds-event-test-scratch/skeleton_single_worker_route");
-    let _ = std::fs::remove_dir_all(&stem);
-    std::fs::create_dir_all(&stem).expect("scratch dir");
+    // TASK-0426.01: per-call-unique stem (created once by the helper,
+    // never removed). The `out` subdir rides under this unique stem.
+    let stem = test_common::unique_scratch_dir(
+        &target.join("mp-uds-event-test-scratch"),
+        "skeleton_single_worker_route",
+    );
     let kernels_path = stem.join("kernels.rs");
     std::fs::write(&kernels_path, "// stub for routing test\n").expect("kernels.rs stub");
     let out_dir = stem.join("out");

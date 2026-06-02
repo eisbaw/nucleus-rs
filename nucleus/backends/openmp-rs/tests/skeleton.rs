@@ -59,8 +59,11 @@ fn multi_worker_emit_uses_rayon_scope_not_thread_spawn() {
     // as the pthreads-sync e2e cell's pipeline shape.
     let r = lower_for_test(&algo_src, &sched_src, &LowerForTestOpts::default());
 
-    let scratch = root.join("nucleus/target/openmp-rs-test-scratch/multi_worker_smoke_02_split");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/openmp-rs-test-scratch"),
+        "multi_worker_smoke_02_split",
+    );
     let kernels = ex.join("kernels.rs");
 
     let result = emit(&r.per_worker, &r.names, &r.sidecar, &kernels, &scratch)
@@ -142,10 +145,13 @@ fn empty_per_worker_succeeds_via_single_worker_arm() {
     let names = NameTables::default();
     let sidecar = nucleus_compiler::sidecar::NameSidecar::default();
 
-    let scratch = repo_root().join("nucleus/target/openmp-rs-test-scratch/empty_per_worker");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once by the helper,
+    // never removed) — kills the remove/create race class.
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/openmp-rs-test-scratch"),
+        "empty_per_worker",
+    );
     let kernels = scratch.join("kernels.rs");
-    std::fs::create_dir_all(&scratch).expect("scratch dir");
     std::fs::write(&kernels, "// empty\n").expect("kernels stub");
 
     let result = emit(

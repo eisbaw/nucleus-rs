@@ -55,8 +55,11 @@ fn multi_worker_emit_for_02_split_succeeds() {
         &test_common::LowerForTestOpts::default(),
     );
 
-    let scratch = root.join("nucleus/target/mp-tcp-event-test-scratch/multi_worker_02_split");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/mp-tcp-event-test-scratch"),
+        "multi_worker_02_split",
+    );
     let result = emit(
         &r.per_worker,
         &r.names,
@@ -260,9 +263,11 @@ fn host_excluding_barrier_is_typed_contract_gap() {
     // Reach into the emit path via a temp dir. The kernels.rs path
     // must exist on disk; use the 02-split-add fixture's.
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/host_excluding_barrier");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "host_excluding_barrier",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -353,9 +358,13 @@ fn transpose_15_distributed_rows_event_host_excluding_barrier_mediated() {
     let sched_src =
         std::fs::read_to_string(ex.join("schedules/distributed-rows.sched.nuc")).unwrap();
     let kernels = ex.join("kernels.rs");
-    let scratch =
-        root.join("nucleus/target/mp-tcp-event-test-scratch/transpose_15_distributed_rows");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    // The `unmediated` / `mediated` subdirs below stay under this now-
+    // unique parent, so they need no per-subdir uniqueness of their own.
+    let scratch = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/mp-tcp-event-test-scratch"),
+        "transpose_15_distributed_rows",
+    );
 
     let algo_ast = parse_algo(&algo_src).expect("algo parse");
     let sched_ast = parse_sched(&sched_src).expect("sched parse");
@@ -616,9 +625,11 @@ fn wait_without_matching_push_is_typed_contract_gap() {
     let sidecar = NameSidecar::default();
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/wait_without_matching_push");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "wait_without_matching_push",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -706,9 +717,11 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
     let sidecar = NameSidecar::default();
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/missing_sidecar_buffer");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "missing_sidecar_buffer",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -837,9 +850,11 @@ fn worker_to_worker_push_emits_host_relay() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/worker_to_worker_push");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "worker_to_worker_push",
+    );
 
     let result = emit(&per_worker, &names, &sidecar, &kernels, &scratch)
         .expect("cycle-149 host-relay lifts the cycle-79 w2w ContractGap; emit must Ok");
@@ -1011,9 +1026,11 @@ fn wait_before_push_w2w_is_typed_contract_gap() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/wait_before_push_hazard");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "wait_before_push_hazard",
+    );
 
     let r = emit(&per_worker, &names, &sidecar, &kernels, &scratch);
     match r {
@@ -1129,9 +1146,11 @@ fn pure_consumer_wait_only_does_not_trigger_wait_before_push_check() {
     );
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
-    let scratch =
-        repo_root().join("nucleus/target/mp-tcp-event-test-scratch/pure_consumer_wait_only");
-    let _ = std::fs::remove_dir_all(&scratch);
+    // TASK-0426.01: per-call-unique scratch (created once, never removed).
+    let scratch = test_common::unique_scratch_dir(
+        &repo_root().join("nucleus/target/mp-tcp-event-test-scratch"),
+        "pure_consumer_wait_only",
+    );
 
     emit(&per_worker, &names, &sidecar, &kernels, &scratch).expect(
         "pure-consumer wait-only worker (no w2w Push) must NOT trigger the \
