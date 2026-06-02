@@ -284,6 +284,129 @@ fn oracle_first_stall_position(net: &Net, firing_order: &[TransitionId]) -> Opti
     None
 }
 
+/// Boundedness analogue of [`oracle_first_stall_position`] (TASK-0425
+/// b.5): replay `firing_order` step by step and report whether the
+/// FIRST place-capacity overflow happens at some prefix of THIS order.
+///
+/// ## What it returns
+///
+/// - `Some(pos)` — at step `pos` the transition `firing_order[pos]` is
+///   token-ENABLED (every input place has enough tokens) but firing it
+///   would push some output place's count above its declared capacity.
+///   This is exactly the condition under which `check_bounded` returns
+///   `BoundednessError::CapacityExceeded`.
+/// - `None` — no prefix overflows. This bucket DELIBERATELY also covers
+///   the malformed-order case: if at some step the next transition is
+///   NOT token-enabled, we STOP and return `None`. Rationale: when the
+///   next transition cannot fire token-wise, `check_bounded` short-
+///   circuits to `BoundednessError::InvalidFiringOrder` (a deadlock-
+///   territory error), NOT `CapacityExceeded` — so for the IFF we are
+///   asserting (`CapacityExceeded` ⟺ overflow detected) such a step is
+///   "not an overflow". `derive_firing_order` can legitimately append
+///   stuck leftovers in source order (boundedness.rs `if order.len() <
+///   total`), so a non-enabled suffix is a real, reachable shape we
+///   must classify as non-overflow, exactly mirroring the pass.
+///
+/// ## Independence — and its precise limit (READ THIS)
+///
+/// This is a REFACTOR-REGRESSION GUARD over the SHIPPED order, NOT an
+/// independent oracle. The independence lives in the overflow-DETECTION
+/// logic: the needs/produces summation, the net-delta `would_be`
+/// arithmetic, and the `would_be > capacity` test below are
+/// re-implemented HERE from `net.arcs` / `net.places[..].capacity` /
+/// `Marking`, and do NOT call `check_bounded`, `Net::fire`, or
+/// `Net::fire_in_place`. So a divergence between this function and
+/// `check_bounded` on the same `(net, order)` is a genuine cross-check
+/// of the overflow contract, not a tautology.
+///
+/// What this does NOT buy: independence from the per-step ENABLING
+/// primitive's *meaning*. Both this function and `check_bounded`
+/// linearly walk the SAME order and decide "enabled?" by the SAME
+/// rule (sum PtoT arc weights per place, compare to tokens held). A bug
+/// in that shared enabling/marking model would propagate to both and
+/// escape this check. That is the SAME acceptable residual d.1 / d.3 /
+/// d.4 and [`oracle_first_stall_position`] carry, and it is intentional
+/// for v2's statically-determined firing orders (PRD §8.4). It does NOT
+/// close PRD §8.6's GENERAL single-order-vs-state-space equivalence —
+/// it closes the REVERSE direction (overflow ⇒ pass flags) ONLY for the
+/// one linearisation `derive_firing_order` actually ships; b.1's
+/// general-equivalence reverse gap (a BFS-reachable overflow the chosen
+/// order legitimately dodges) stays OPEN and is the honest residual.
+///
+/// ## Contract match with `fire_in_place` (boundedness overflow rule)
+///
+/// We mirror `petri::Net::fire_in_place`'s capacity arm exactly:
+/// per place, `would_be = have - consumed + produced` (net delta, so a
+/// self-looping buffer is checked at its post-firing count, not a
+/// transient peak), and overflow is `would_be > capacity.get()`.
+/// Unbounded places (`capacity == None`) never overflow.
+fn order_first_overflow_position(net: &Net, firing_order: &[TransitionId]) -> Option<usize> {
+    use std::collections::BTreeMap;
+
+    let mut marking = net.initial_marking.clone();
+
+    for (pos, &tid) in firing_order.iter().enumerate() {
+        let ti = tid.0 as usize;
+        if ti >= net.transitions.len() {
+            // UnknownTransition territory for check_bounded — not a
+            // capacity overflow. Stop (the pass returns on first error).
+            return None;
+        }
+
+        // Sum input (PtoT) arc weights per place and output (TtoP) per
+        // place, independently from net.arcs. Multiple arcs from/to the
+        // same place sum, matching fire_in_place.
+        let mut needs: BTreeMap<_, u32> = BTreeMap::new();
+        let mut produces: BTreeMap<_, u32> = BTreeMap::new();
+        for a in net.arcs.iter().filter(|a| a.transition == tid) {
+            match a.kind {
+                ArcKind::PtoT => {
+                    *needs.entry(a.place).or_insert(0) += a.weight;
+                }
+                ArcKind::TtoP => {
+                    *produces.entry(a.place).or_insert(0) += a.weight;
+                }
+            }
+        }
+
+        // Enabling check FIRST (mirrors fire_in_place ordering): if any
+        // input place lacks tokens, this is InvalidFiringOrder for the
+        // pass, NOT CapacityExceeded. Stop and report no overflow.
+        for (place, need) in &needs {
+            if marking.get(*place) < *need {
+                return None;
+            }
+        }
+
+        // Capacity check on the NET delta over the union of touched
+        // places.
+        let mut touched: Vec<_> = needs.keys().chain(produces.keys()).copied().collect();
+        touched.sort();
+        touched.dedup();
+        for place in &touched {
+            let have = marking.get(*place);
+            let consumed = needs.get(place).copied().unwrap_or(0);
+            let produced = produces.get(place).copied().unwrap_or(0);
+            let would_be = have - consumed + produced;
+            if let Some(cap) = net.places[place.0 as usize].capacity {
+                if would_be > cap.get() {
+                    return Some(pos);
+                }
+            }
+        }
+
+        // Commit the firing to the local marking and continue.
+        for place in &touched {
+            let have = marking.get(*place);
+            let consumed = needs.get(place).copied().unwrap_or(0);
+            let produced = produces.get(place).copied().unwrap_or(0);
+            marking.set(*place, have - consumed + produced);
+        }
+    }
+
+    None
+}
+
 /// Independent full-state-space deadlock oracle (TASK-0340.08.01 d.4).
 ///
 /// ## Epistemic shape — why this IS independent of the pass
@@ -1122,6 +1245,89 @@ proptest! {
                 // found. Documented in b.1.
             }
         }
+    }
+
+    /// b.5 — REVERSE-DIRECTION closure over the SHIPPED order
+    /// (TASK-0425, cycle-241 PRD-invariant audit GAP-3).
+    ///
+    /// ## What gap this closes (and what it does NOT)
+    ///
+    /// b.1 / b.3 assert only the SAFE direction against the BFS oracle:
+    /// `oracle finds no reachable overflow ⇒ check_bounded does not
+    /// report CapacityExceeded`. The reverse (`oracle finds overflow ⇒
+    /// pass MUST flag`) is DELIBERATELY NOT asserted there (see the
+    /// :one-direction rationale in b.1 / b.3): the BFS explores ALL
+    /// interleavings, but `derive_firing_order`'s single chosen
+    /// linearisation may legitimately DODGE an overflow path the BFS
+    /// finds — so the reverse genuinely does not hold against the
+    /// general BFS.
+    ///
+    /// b.5 closes that reverse direction for the ONE order the pass
+    /// actually ships, by NOT going through the BFS at all. It replays
+    /// the SAME `derive_firing_order(net)` linearisation through an
+    /// INDEPENDENT overflow detector ([`order_first_overflow_position`])
+    /// and asserts the BICONDITIONAL:
+    ///
+    /// ```text
+    /// check_bounded(net, order) == Err(CapacityExceeded { .. })
+    ///        ⟺
+    /// order_first_overflow_position(net, order).is_some()
+    /// ```
+    ///
+    /// Both directions hold here precisely because we removed the BFS's
+    /// freedom to consider orders the pass never ships: over a FIXED
+    /// order the question "does THIS order overflow?" is decidable, and
+    /// `check_bounded` and the independent detector must agree on it.
+    /// This is the boundedness analogue of how d.4 /
+    /// [`oracle_first_stall_position`] pin BOTH directions for deadlock.
+    ///
+    /// ## Honest limit — regression guard, not independent oracle
+    ///
+    /// This is a REFACTOR-REGRESSION guard over the SHIPPED order, NOT
+    /// an independent oracle. The detector re-implements the overflow
+    /// DETECTION (needs/produces summation, net-delta `would_be`,
+    /// `would_be > capacity` test) independently of `check_bounded` /
+    /// `Net::fire`, so a divergence is a genuine cross-check — but it
+    /// walks the SAME order and shares the per-step ENABLING model's
+    /// meaning with the pass. A bug in that shared enabling/marking
+    /// primitive would propagate to both and ESCAPE this check — the
+    /// SAME acceptable residual d.1 / d.3 / d.4 /
+    /// `oracle_first_stall_position` carry (intentional for v2's
+    /// statically-determined firing orders, PRD §8.4). b.5 does NOT
+    /// validate PRD §8.6's GENERAL single-order-vs-state-space
+    /// equivalence; it closes the reverse direction ONLY for the
+    /// specific derived linearisation. b.1's general-equivalence reverse
+    /// gap (a BFS-reachable overflow the chosen order dodges) stays OPEN
+    /// and is the honest remaining residual.
+    ///
+    /// ## Honest-failure path
+    ///
+    /// A failure here is either (a) a real `derive_firing_order` /
+    /// `check_bounded` disagreement (P1 — STOP, seed, file, `#[ignore]`,
+    /// do NOT weaken) or (b) the detector mis-modelling
+    /// `check_bounded`'s overflow contract (fix the detector to match
+    /// `fire_in_place` exactly). See the file //! "Honest-failure path".
+    #[test]
+    fn b5_check_bounded_overflow_iff_independent_replay_overflows(
+        (net, order) in net_and_derived_order()
+    ) {
+        let pass_says_overflow = matches!(
+            check_bounded(&net, &order),
+            Err(nucleus_compiler::passes::boundedness::BoundednessError::CapacityExceeded { .. })
+        );
+        let detector_says_overflow = order_first_overflow_position(&net, &order).is_some();
+
+        prop_assert_eq!(
+            pass_says_overflow,
+            detector_says_overflow,
+            "over the SHIPPED derive_firing_order linearisation, check_bounded \
+             ({}) and the independent overflow detector ({}) disagree on \
+             whether this order overflows a place capacity.\norder={:?}\nnet={:?}",
+            pass_says_overflow,
+            detector_says_overflow,
+            order,
+            net
+        );
     }
 }
 
