@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 10:04'
+updated_date: '2026-06-02 16:06'
 labels:
   - compiler
   - event-contract
@@ -29,3 +29,15 @@ SCOPE (gated on the transfer_inject cross-scope splice landing — file/find tha
 
 Pointers: src/event_validate.rs (validate_event_lists + the :48-84 deferral rationale); src/passes/petri_to_events.rs:225-241 (the strict-subset debug_assert + why inv(2) is excluded).
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+UNBLOCKED by TASK-0428 (cycle-242, commit e2a4ecd). Forward-carried from TASK-0428: the deferral premise this task documented ("transfer_inject leaves legitimate unmatched Waits, hard-asserting inv(2) crashes debug builds") is STALE. Empirically verified inv(2) holds on the projected EventList for the ENTIRE example corpus (55/55 schedules, 0 violations) via the real pipeline; 02-split-add (the cited reproducer) is Ok(()). Regression-pinned (tests/petri_to_events.rs::task0428_inv2_holds_for_entire_example_corpus). Stale docstrings at event_validate.rs:71-84 and petri_to_events.rs module-doc/debug_assert are corrected.
+
+REMAINING SCOPE for this task (now actionable): wire validate_event_lists as the EventList-consuming-backend entry gate. TWO sub-steps, in order:
+ (1) CONFIRM inv(2) over the POST-MEDIATION EventList for mp-tcp-{bufsync,event,poll} + mp-uds-event. TASK-0428 sweep covered only the pthreads-{sync,async} backend-agnostic chain; those mp-* backends run host_mediation_inject + host_data_relay_inject AFTER inject_transfers, re-routing Push/Wait through host. Extend the sweep to apply those two passes (driver main.rs ~464-end gates them on backend name + elects host) before validate_event_lists. If any post-mediation EventList violates inv(2), that is a NEW finding (mediation-pass bug or a genuine inv(2) reshape need) — do NOT just relax the check.
+ (2) Only after (1) is green: add the validate_event_lists call at the backend EventList-consumption entry (or promote the acfg_to_events debug_assert to the full validator IF (1) proves it safe pre-mediation too). The acfg_to_events assert site currently stays per-worker-subset deliberately because it precedes mediation (see corrected rationale comment there).
+
+The "principled deferral" framing in this task description is now historical — keep for provenance but the live blocker is (1), not the transfer_inject splice gap.
+<!-- SECTION:NOTES:END -->
