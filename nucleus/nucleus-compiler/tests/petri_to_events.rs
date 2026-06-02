@@ -647,10 +647,13 @@ fn task0428_inv2_holds_for_entire_example_corpus() {
 // Wait. TASK-0136's Pass A hoists the loop-invariant input Waits out of
 // the `for` (one crossing, not one per iteration) and Pass B splices
 // the matching host-side Push; the result is fully matched. This test
-// asserts that the real pipeline yields an inv(2)-clean EventList for
-// exactly that shape, so a regression in the hoist/splice machinery
-// re-opens here with a named reproducer rather than only in the broad
-// corpus sweep above.
+// asserts an inv(2)-clean EventList for exactly that shape via
+// `full_pipeline_acfg` (build_acfg -> inject_syncs -> inject_transfers).
+// 02-split-add carries no partition/block/halo/reuse directives, so that
+// shorter chain is identical to the driver's for THIS schedule (the broad
+// corpus sweep above runs the full driver chain). A regression in the
+// hoist/splice machinery re-opens here with a named reproducer rather
+// than only in the broad corpus sweep above.
 #[test]
 fn task0428_inv2_clean_for_02_split_add_reproducer() {
     let acfg = full_pipeline_acfg(
