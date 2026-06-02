@@ -36,10 +36,11 @@ fn repo_root() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
-    // TASK-0426: each call gets a process-and-call-unique subdir
-    // (`{name}-{pid}-{counter}`) so no two scratch_dir calls — across
-    // threads OR processes — ever share a path. The old code reused a fixed
-    // `target/{name}` and did remove_dir_all + create_dir_all on it.
+    // TASK-0426 / TASK-0426.01: each call gets a process-and-call-unique
+    // subdir (`{name}-{pid}-{counter}`), created once and never removed, so
+    // no two scratch_dir calls — across threads OR processes — ever share a
+    // path. The old code reused a fixed `target/{name}` and did
+    // remove_dir_all + create_dir_all on it.
     // LEADING MECHANISM (architect review, cycle 242): `repo_root()` derives
     // from CARGO_MANIFEST_DIR (source dir, PROFILE-INDEPENDENT), so
     // `just test` (dev) and `just test-release` (release) are two processes
@@ -48,18 +49,12 @@ fn scratch_dir(name: &str) -> PathBuf {
     // process's `write_kernels_stub` fs::write is mid-writing -> ENOENT.
     // (Within ONE `cargo test` process the tests already use unique leaf
     // names, so the original task's single-process hypothesis cannot fire —
-    // the cross-PROCESS collision is the live one.) The pid makes the two
-    // profiles' leaves disjoint; create-once / never-remove closes the race
-    // class by construction. NOT reproduction-verified (needs concurrent
-    // dev+release; unreproducible in 16 single-profile runs) — TASK-0426.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    // the cross-PROCESS collision is the live one.) NOT reproduction-verified
+    // (needs concurrent dev+release; unreproducible in 16 single-profile
+    // runs) — TASK-0426. The construction now lives in the shared helper
+    // (TASK-0426.01 de-duplicates the three hand-rolled copies in this crate).
     let target = repo_root().join("nucleus/target/mp-tcp-bufsync-check-frame-scratch");
-    let _ = fs::create_dir_all(&target);
-    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = target.join(format!("{name}-{}-{}", std::process::id(), nonce));
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    test_common::unique_scratch_dir(&target, name)
 }
 
 fn build_per_worker(

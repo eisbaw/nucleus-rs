@@ -50,17 +50,12 @@ fn repo_root() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
-    // TASK-0426: per-call-unique subdir so concurrent test threads never
-    // share a path (same shared-parent remove/create-vs-write race the
-    // check_frame_emit.rs sibling hit; fixed proactively here).
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    // TASK-0426 / TASK-0426.01: per-call-unique subdir (created once, never
+    // removed) so concurrent test threads/processes never share a path (same
+    // shared-parent remove/create-vs-write race the check_frame_emit.rs
+    // sibling hit). Routes through the shared helper (TASK-0426.01).
     let target = repo_root().join("nucleus/target/mp-tcp-bufsync-reuse-codegen-scratch");
-    let _ = fs::create_dir_all(&target);
-    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = target.join(format!("{name}-{}-{}", std::process::id(), nonce));
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    test_common::unique_scratch_dir(&target, name)
 }
 
 // Smallest multi-worker reuse fixture: host produces x, w0 computes

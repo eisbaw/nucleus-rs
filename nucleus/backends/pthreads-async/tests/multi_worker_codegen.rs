@@ -310,8 +310,11 @@ fn repo_root() -> std::path::PathBuf {
 /// the main.rs body. Each caller passes its OWN `scratch_name` (the test
 /// function name) so the scratch dirs do NOT collide under cargo's
 /// parallel test runner — a single shared scratch was the cycle-26
-/// race-flake source (`remove_dir_all` of test A racing the emit-then-
-/// read of test B). TASK-0241.
+/// race-flake source. Originally `scratch_name` alone guaranteed
+/// isolation (TASK-0241); since TASK-0426.01 the scratch is built by
+/// `test_common::unique_scratch_dir` (created once, never removed,
+/// `{leaf}-{pid}-{counter}`), so there is no longer any remove/create
+/// dance to race against in the first place.
 fn emit_02_split_main_rs(scratch_name: &str) -> String {
     let root = repo_root();
     let ex = root.join("nuc-nucleus/examples/02-split-add");
