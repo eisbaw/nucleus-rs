@@ -3,11 +3,11 @@ id: TASK-0347
 title: >-
   ACFG + link: handle identity-copy dataflow statements (reopen of
   TASK-0111/0097 DEFERRED trigger fired by 15-transpose)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-05-27 12:45'
-updated_date: '2026-05-28 05:50'
+updated_date: '2026-06-02 22:05'
 labels:
   - compiler
   - ir
@@ -230,6 +230,12 @@ Status stays In Progress: AC#1-3 genuinely unmet (structural, carried by
 TASK-0360); AC#4 met + gate-verified + review GO. Not marked Done because
 3 of 4 ACs are deferred — honest-partial, not AC-gamed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CLOSED cycle-244 (dependency-graph sanity): TASK-0347 was left In Progress in cycle-230 ONLY pending its ACFG/codegen follow-out TASK-0360 — which is now Done (resolved via its design slice as option (c): decline the kernel-optional refactor, make the bare-LValue dataflow RHS FAIL LOUD via BuildAcfgError::KernelLessDataflowRhs, keep the explicit-xpose-kernel surface). So TASK-0347 has no remaining open dependency. DISPOSITION (honest, NOT AC-gaming): AC#4 (link-side identity-copy gap, TASK-0097 concern) was MET in cycle-230 (commit bcde6b9, review GO) via propagate_copy_edges. AC#1/#2/#3 (kernel-less ACFG Operation + cross-worker data-move codegen + drop xpose bit-identical) were NOT built — they were DISPOSITIONED via TASK-0360 option-c (fail-loud + keep xpose surface; zero in-tree examples need the bare-LValue form today). The remaining CLEAN path (kernel-optional IR / data->worker schedule directive) is tracked as deferred-trigger TASK-0416 (depends on TASK-0360). The task per its own Honest scope LIMITS explicitly permitted this AC#4-only partial. No code change this cycle — pure tracker reconciliation of an already-reviewed prior outcome.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 - [ ] #1 ACFG: build_dataflow accepts bare-LValue RHS and emits an Operation with no kernel firing + a 'data move' DataflowEdge. Unit test fixture exercising 'out <-- in' with both same-worker and cross-worker placements
 - [ ] #2 Link / codegen: cross-worker data-move lowers to the same Xfer pair a Call would. Same-worker case lowers to an in-place assignment (or is structurally elided if the LHS and RHS are the same DataId)
