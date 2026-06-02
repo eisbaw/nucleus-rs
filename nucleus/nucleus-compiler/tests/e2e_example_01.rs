@@ -46,12 +46,24 @@ fn example_dir() -> PathBuf {
 /// crate's `target/` so that `cargo clean` sweeps generated artefacts
 /// without manual rm-rf.
 fn scratch_dir(name: &str) -> PathBuf {
+    // TASK-0426.01: each call gets a process-and-call-unique leaf
+    // (`{name}-{pid}-{counter}`), created once and never removed, so no
+    // two callers ever share a path. The old code reused a fixed
+    // `target/{name}` leaf and did `remove_dir_all + create_dir_all` on
+    // it; that leaf is profile-independent (roots at CARGO_MANIFEST_DIR),
+    // so `just test` (dev) and `just test-release` (release) run two
+    // processes sharing the same path — one's `remove_dir_all` could
+    // delete a dir the other is mid-`fs::write`-ing, surfacing ENOENT.
+    // A per-call-unique path that is never removed eliminates that race
+    // class by construction. (nucleus-compiler does not depend on the
+    // shared `test-common` crate, so the helper is inlined here rather
+    // than adding a dev-dependency for five lines.)
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let target = repo_root().join("nucleus/target/e2e-scratch");
     let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    // Idempotent: a previous run may have left state behind. Remove
-    // and recreate so each invocation starts clean.
-    let _ = fs::remove_dir_all(&dir);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = target.join(format!("{name}-{}-{}", std::process::id(), nonce));
     fs::create_dir_all(&dir).expect("create scratch dir");
     dir
 }

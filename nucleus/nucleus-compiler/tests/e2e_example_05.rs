@@ -39,10 +39,17 @@ fn example_dir() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
+    // TASK-0426.01: per-call-unique leaf (`{name}-{pid}-{counter}`),
+    // created once and never removed, so the dev/release `cargo test`
+    // processes (which share the profile-independent `target/{name}`
+    // path) cannot race remove_dir_all against fs::write. Inlined here
+    // because nucleus-compiler does not depend on `test-common`.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let target = repo_root().join("nucleus/target/e2e-scratch");
     let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    let _ = fs::remove_dir_all(&dir);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = target.join(format!("{name}-{}-{}", std::process::id(), nonce));
     fs::create_dir_all(&dir).expect("create scratch dir");
     dir
 }
