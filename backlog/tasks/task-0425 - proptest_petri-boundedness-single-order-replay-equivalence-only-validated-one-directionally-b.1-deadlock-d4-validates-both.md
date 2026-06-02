@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 09:06'
+updated_date: '2026-06-02 10:03'
 labels:
   - testing
   - proptest
@@ -43,4 +43,12 @@ GOTCHAS / contract facts (feed-forward):
 3. Unbounded places (capacity None) never overflow.
 4. The detector re-implements overflow DETECTION from net.arcs/net.places/Marking; it does NOT call check_bounded/Net::fire/fire_in_place -> genuine cross-check. But it shares the per-step enabling MODEL meaning with the pass -> a Net::fire enabling bug escapes both. SAME acceptable residual as d.1/d.3/d.4/oracle_first_stall_position; documented in the b5 + helper docstrings. Does NOT close PRD 8.6 general equivalence; b.1 general-equivalence reverse gap stays OPEN (honest residual stated).
 REJECTED approach: asserting reverse direction against the BFS oracle (oracle-overflow => pass flags) — that is exactly the direction b.1/b.3 correctly refuse because the chosen order may dodge a BFS-reachable overflow. b5 deliberately sidesteps the BFS and asserts over the FIXED shipped order only.
+
+Cycle-242 orchestrator review gate (independent, read-only):
+- qa-test-runner: GO. build OK; clippy clean (forced fresh recheck, no doc_lazy_continuation on +206 lines); test 1252 dev / 1250 release (0 failed, 3 ignored); e2e 385/328/0/57/0 x2; b5 green across 8 runs incl. 3x at PROPTEST_CASES=4000, no seed sensitivity / no flakiness.
+- mped-architect: GO. Verified line-by-line that order_first_overflow_position is a GENUINE independent cross-check (reads only initial_marking/arcs/places[].capacity; never calls check_bounded/Net::fire/fire_in_place) and matches check_bounded contract on all 4 points: net-delta capacity (not transient peak), multi-arc weight summation, None-capacity never overflows, non-enabled step short-circuits to non-overflow (the highest-risk point — handled correctly). Biconditional is real prop_assert_eq! with overflow=true cases asserted (NOT prop_assume-d away); ~22% bite rate confirmed plausible from derive_firing_order appending stuck leftovers in source order. Docstrings honest, no overclaim; b.1 general PRD-§8.6 equivalence reverse gap correctly left OPEN.
+
+LATENT residual (architect P3, non-blocking, NOT fixed — dead under current generator): order_first_overflow_position uses plain `have - consumed + produced` while fire_in_place uses checked_sub/checked_add().expect(). Safe under THIS property net_and_derived_order() (weight=1, <=4 places, capacity 1..=3 => single-digit token counts, no u32 overflow possible). FORWARD-CARRIED: if b5 is ever repointed at weighted_net_and_derived_order() (weight in 1..=3, as b.4 uses), mirror the checked_* arithmetic so the detector panics symmetrically with fire_in_place rather than wrapping. Re-check at that widening, not before.
+
+TASK-0425 stays DONE — both directions asserted over the shipped order, gate green, independent review GO.
 <!-- SECTION:NOTES:END -->
