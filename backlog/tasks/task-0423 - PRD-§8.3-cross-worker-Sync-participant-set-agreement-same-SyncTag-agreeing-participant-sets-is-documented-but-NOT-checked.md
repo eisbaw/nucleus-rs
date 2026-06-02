@@ -7,7 +7,7 @@ status: Done
 assignee:
   - claude
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 18:34'
+updated_date: '2026-06-02 18:53'
 labels:
   - compiler
   - event-contract
@@ -49,4 +49,6 @@ Gotchas / subtleties / decisions:
 Gate (actual numbers): e2e 385/328/0/57/0 (UNCHANGED -- corpus proof: the new HARD gate on every codegen build for all 7 backends rejected ZERO shipping schedules; no cell disagrees). dev tests 1262/0/3 (+2), release 1262... wait release 1260/0/3 (+2). clippy -D warnings clean (independently re-run). build + test + test-release + e2e all green.
 
 Honest limits: the check is LATENT (no current schedule produces disagreeing sets) -- confirmed empirically by green e2e, NOT by exhaustive proof. It is a tripwire against future partial/non-uniform-barrier codegen that mis-computes a participant set on one worker. Defense-in-depth only: the existing corpus sweeps (tests/petri_to_events.rs::task0428_*, driver/tests/task0422_01_*) now also implicitly assert no disagreement since they call validate_event_lists; no new sweep added (e2e covers end-to-end). No new follow-up tasks needed -- no stub/shortcut.
+
+Cycle-244 review gate (parallel read-only): qa-test-runner GO + mped-architect GO. AUTHORITATIVE review-confirmed numbers (supersede any stray figures in earlier notes): qa independently re-ran the full hard gate x2 — e2e 385/328/0/57/0 (stable), dev 1262/0/3, release 1260/0/3, clippy clean (-D warnings, the single #[allow(too_many_arguments)] on walk_events is the only suppression and masks nothing else); both bite tests run+pass x4. architect verified all 7 points: (1) check groups by SyncTag across ALL workers + recurses Loop bodies + deterministic BTreeMap emission + one error per tag; (2) cross-worker-only — SyncParticipantDisagreement emitted at exactly one site in validate_event_lists; strict-per-worker subset populates a throwaway map but never consumes it (verified literally true), so petri_to_events.rs:270 debug_assert is unaffected — mirrors the inv(2) carve-out; (3) both bite tests genuinely bite (neg input is otherwise-clean so inv(6) is the only firing invariant); (4) empty-set overlap with inv(3) is two DISTINCT true violations — acceptable as-is, no follow-up; (5) doc-lie sweep clean, gap moved to invariant (6), enumeration 1-5 -> 1-6, no overclaim; (6) the allow is acceptable; (7) no gate relaxed, no #[ignore], no snapshot/skip file touched, returns Result (no panic). P1/P2: none. P3: the allow (no action) + cosmetic stray-text in notes (this note is the correction). Status stays Done. NOTE the latency caveat: inv(6) true-positive path is exercised ONLY by the synthetic bite test (no shipping schedule disagrees — e2e-green proves non-false-positive, same status as latent invariants 4/5).
 <!-- SECTION:NOTES:END -->
