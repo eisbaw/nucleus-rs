@@ -53,7 +53,7 @@
 // COMPILE + CODEGEN of a pure kernel call in index position and its
 // value-correctness vs the oracle; a dedicated truly-unconstrained-input
 // fixture (which would need its OWN example dir to not perturb the shared
-// reference) is a filed follow-up.
+// reference) is the filed follow-up TASK-0432.
 //
 // Accumulate classification (re-verified for the call-wrapped index):
 // `histogram[bucket(input[i])]` is read (inside `inc(...)`) and written

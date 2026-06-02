@@ -15,8 +15,9 @@
 // at the scatter site, not a separate decomposed stage. A DISTRIBUTED
 // textbook scatter (partition the input, per-worker partial histograms,
 // cross-worker element-wise-sum combine — the analog of
-// `distributed.scatter.sched.nuc`) is OUT OF SCOPE for TASK-0430 and is a
-// filed broaden follow-up. Output is bit-identical to 08-histogram/naive,
+// `distributed.scatter.sched.nuc`) is OUT OF SCOPE for TASK-0430 and is
+// the filed broaden follow-up TASK-0432. Output is bit-identical to
+// 08-histogram/naive,
 // 08-histogram/scatter, and reference.bin.
 
 schedule for "../prog.textbook.algo.nuc" {

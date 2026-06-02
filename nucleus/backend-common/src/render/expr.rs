@@ -92,7 +92,10 @@ pub fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitEr
         // rustc surfaces any genuine mismatch loudly at build of the
         // generated crate. Adding the sig-driven cast would require
         // plumbing the callee's `KernelId` + param types through
-        // `render_int_expr`, which today takes only an `IrExpr`.
+        // `render_int_expr`, which today takes only an `IrExpr`. A bare
+        // iter-var arg (rendered `i64`) to an `i32`-param index kernel is
+        // the latent E0308 case — filed TASK-0431 (no current example
+        // needs it; the bounded/textbook scatters use data-ref args).
         IrExpr::Call { callee, args } => {
             let rendered = args
                 .iter()
