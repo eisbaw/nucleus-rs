@@ -40,6 +40,11 @@
 //!   field (no `..`), and [`sidecar_field_completeness_guard`] does the
 //!   same. Adding a serde-bearing field to `NameSidecar` forces a
 //!   COMPILE ERROR in both, which is the prompt to extend the generator.
+//! - The FIELDLESS tag enums fed by `prop_oneof!` `Just(..)` lists
+//!   (`SyncKind`, `ScalarType`, `IrBinOp`, `ViolationKind`) get the same
+//!   teeth via sibling wildcard-free `*_completeness_guard` matches — a
+//!   `prop_oneof!` list is NOT itself exhaustiveness-checked, so the
+//!   guard is what forces the break-to-update on a new variant.
 //!
 //! That break-to-update guard is the entire value over the 40 existing
 //! examples; it does NOT close a correctness gap (the examples already
@@ -183,6 +188,64 @@ fn sidecar_field_completeness_guard(s: &NameSidecar) {
     } = s;
 }
 
+// Exhaustiveness teeth for the FIELDLESS tag enums whose generators are
+// `prop_oneof!` lists of `Just(..)` (TASK-0420 review fold-back, architect
+// P3). A `prop_oneof!` list is NOT exhaustiveness-checked by the compiler,
+// so adding a variant to one of these enums would SILENTLY leave its
+// generator stale (the new variant simply never generated). These
+// wildcard-free `match` guards restore the break-to-update property: a new
+// variant fails to compile HERE, which is the prompt to extend the
+// matching `prop_oneof!` generator. Mirrors
+// `event_variant_completeness_guard`. `#[allow(dead_code)]` — never called;
+// exhaustiveness is checked at type-check regardless of liveness.
+#[allow(dead_code)]
+fn sync_kind_completeness_guard(k: &SyncKind) {
+    match k {
+        SyncKind::Barrier => {}
+        // INTENTIONALLY no `_ =>`. A new SyncKind variant must
+        // break-to-update the `sync_kind` generator.
+    }
+}
+
+#[allow(dead_code)]
+fn scalar_type_completeness_guard(t: &ScalarType) {
+    match t {
+        ScalarType::Usize
+        | ScalarType::Isize
+        | ScalarType::U8
+        | ScalarType::U16
+        | ScalarType::U32
+        | ScalarType::U64
+        | ScalarType::I8
+        | ScalarType::I16
+        | ScalarType::I32
+        | ScalarType::I64
+        | ScalarType::F32
+        | ScalarType::F64
+        | ScalarType::Bool => {}
+        // INTENTIONALLY no `_ =>`. A new ScalarType variant must
+        // break-to-update the `scalar_type` generator.
+    }
+}
+
+#[allow(dead_code)]
+fn ir_bin_op_completeness_guard(op: &IrBinOp) {
+    match op {
+        IrBinOp::Add | IrBinOp::Sub | IrBinOp::Mul | IrBinOp::Div | IrBinOp::Mod => {}
+        // INTENTIONALLY no `_ =>`. A new IrBinOp variant must
+        // break-to-update the `ir_bin_op` generator.
+    }
+}
+
+#[allow(dead_code)]
+fn violation_kind_completeness_guard(v: &ViolationKind) {
+    match v {
+        ViolationKind::Panic | ViolationKind::Log | ViolationKind::Count => {}
+        // INTENTIONALLY no `_ =>`. A new ViolationKind variant must
+        // break-to-update the `violation_kind` generator.
+    }
+}
+
 // --------------------------------------------------------------------
 // Leaf / scalar strategies
 // --------------------------------------------------------------------
@@ -201,11 +264,14 @@ fn range_i64() -> impl Strategy<Value = Range<i64>> {
     (any::<i64>(), any::<i64>()).prop_map(|(a, b)| a..b)
 }
 
-/// `ScalarType` — a fieldless tag enum. Exhaustive `prop_oneof!` over
-/// all 13 variants so the (unit-variant) serde encoding of each is
-/// exercised. No wildcard means a new `ScalarType` variant would force
-/// an update here too (defence in depth, though `ScalarType` is not the
-/// task's headline contract).
+/// `ScalarType` — a fieldless tag enum. `prop_oneof!` over all 13
+/// variants so the (unit-variant) serde encoding of each is exercised.
+/// NB a `prop_oneof!` list is NOT exhaustiveness-checked, so this list
+/// alone would go stale silently if a variant were added — the
+/// break-to-update teeth live in `scalar_type_completeness_guard` (a
+/// wildcard-free `match`), which fails to compile on a new variant and
+/// prompts extending this list. Defence in depth; `ScalarType` is not the
+/// task's headline contract.
 fn scalar_type() -> impl Strategy<Value = ScalarType> {
     prop_oneof![
         Just(ScalarType::Usize),
@@ -382,7 +448,10 @@ fn event_leaf() -> impl Strategy<Value = Event> {
             }
         ),
         // Sync { participants, kind, sync } — multi-participant sets
-        // (0..=4) incl. the empty set; SyncKind has one current variant.
+        // (0..=4) incl. the empty set; SyncKind has one current variant
+        // (Barrier), break-to-update guarded by
+        // `sync_kind_completeness_guard` — add the variant here when that
+        // match fails to compile.
         (
             prop::collection::btree_set(any::<u64>().prop_map(WorkerId), 0..=4),
             Just(SyncKind::Barrier),
