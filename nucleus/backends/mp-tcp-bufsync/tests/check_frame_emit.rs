@@ -37,13 +37,21 @@ fn repo_root() -> PathBuf {
 
 fn scratch_dir(name: &str) -> PathBuf {
     // TASK-0426: each call gets a process-and-call-unique subdir
-    // (`{name}-{pid}-{counter}`) so concurrent test threads NEVER share a
-    // path. The old code reused a fixed `target/{name}` and did
-    // remove_dir_all + create_dir_all on it; under parallel `cargo test`
-    // that remove/create dance raced with a sibling test's `fs::write`,
-    // intermittently surfacing ENOENT (NotFound) in `write_kernels_stub`.
-    // A per-call-unique path that is created once (never removed/recreated)
-    // removes the shared mutable filesystem state the race needs.
+    // (`{name}-{pid}-{counter}`) so no two scratch_dir calls — across
+    // threads OR processes — ever share a path. The old code reused a fixed
+    // `target/{name}` and did remove_dir_all + create_dir_all on it.
+    // LEADING MECHANISM (architect review, cycle 242): `repo_root()` derives
+    // from CARGO_MANIFEST_DIR (source dir, PROFILE-INDEPENDENT), so
+    // `just test` (dev) and `just test-release` (release) are two processes
+    // with different pids but the SAME pid-less leaf path; run concurrently,
+    // the dev process's remove_dir_all(leaf) deletes the dir the release
+    // process's `write_kernels_stub` fs::write is mid-writing -> ENOENT.
+    // (Within ONE `cargo test` process the tests already use unique leaf
+    // names, so the original task's single-process hypothesis cannot fire —
+    // the cross-PROCESS collision is the live one.) The pid makes the two
+    // profiles' leaves disjoint; create-once / never-remove closes the race
+    // class by construction. NOT reproduction-verified (needs concurrent
+    // dev+release; unreproducible in 16 single-profile runs) — TASK-0426.
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let target = repo_root().join("nucleus/target/mp-tcp-bufsync-check-frame-scratch");
