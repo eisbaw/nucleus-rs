@@ -91,7 +91,6 @@ use nucleus_compiler::{
     apply_partition_rows, apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder,
     build_acfg, build_sidecar, check_kernels_contract, check_net_sound, check_schedule_compat,
     inject_check_frames, inject_syncs, inject_transfers, link, load_capabilities,
-    validate_event_lists,
 };
 
 // Driver sub-modules (TASK-0388: carved out of this file to hold it
@@ -99,6 +98,7 @@ use nucleus_compiler::{
 // `dispatch` = per-backend `emit(...)` routing.
 mod args;
 mod dispatch;
+mod gate;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = env::args().collect();
@@ -701,94 +701,20 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // the centralized constructor.
     let names = nucleus_compiler::NameTables::from_acfg(&acfg);
 
-    // ---- Overlapping-write accumulator algorithm-level cross-check
-    //      (TASK-0343.03; hardens the cycle-189 structural detector
-    //      TASK-0343). ----
+    // ---- Post-projection EventList gates (TASK-0422.02, cycle-245):
+    //      overlapping-write accumulator cross-check (TASK-0343.03) +
+    //      full PRD §8.3 event-contract validation (TASK-0422/0423). ----
     //
-    // The backends classify the overlapping-write accumulator fan-in
-    // pattern PURELY STRUCTURALLY (per worker, >=2 whole-array Waits on
-    // one data symbol ⇒ element-wise sum combine at the host —
-    // `backend_common::multi_worker_walker::collect_accumulate_waits`).
-    // For every shipped schedule that structural shape coincides with
-    // the algorithm-level accumulator shape (LHS-appears-in-RHS, e.g.
-    // 08-histogram's `histogram[b] <-- bin_inc(histogram[b], ...)`), so
-    // this gate is a NO-OP on the entire e2e matrix. It exists to FAIL
-    // LOUD if an exotic schedule ever emits multiple whole-array pushes
-    // for NON-accumulator semantics, which the structural detector would
-    // otherwise silently mis-combine as a sum (a silent miscompile).
-    //
-    // Gated ONCE here, BEFORE the codegen dispatch below: the structural
-    // detector is shared across all backends (backend-common), the
-    // algorithm-IR is the same for any backend choice, and `per_worker` /
-    // `sidecar` / `names` are already built. The check reuses the EXACT
-    // structural detector the backends consume (`collect_pair_tiles` +
-    // `collect_accumulate_waits`) — no duplicated detection logic — and
-    // consults `linked.algo` for the LHS-appears-in-RHS accumulator shape
-    // via `names.data` (DataId -> name) as the bridge between the codegen
-    // DataId space and the algorithm-IR String-name space.
-    //
-    // NOTE on the `per_worker` it reads: for mp-tcp-event / mp-uds-event
-    // this is the `safe_push_reorder`-transformed map (built above), not
-    // the raw projection. That is fine — the detector is order-insensitive
-    // (`walk_waits` count + `.all()` whole-array predicate + `BTreeSet`
-    // output) and the reorder never changes a Wait's data/seq/tile — so
-    // the cross-check RESULT is backend-independent even though the input
-    // map differs per backend.
-    backend_common::multi_worker_walker::check_accumulator_consistency(
-        &linked.algo,
-        &per_worker,
-        &sidecar,
-        &names.data,
-    )
-    .map_err(|e| format!("accumulator cross-check error: {e}"))?;
-
-    // ---- PRD §8.3 invariant (2): Push/Wait events form matched pairs
-    //      (TASK-0422, cycle-244). ----
-    //
-    // This is the FINAL `per_worker` EventList that EVERY backend
-    // consumes: the projection (`acfg_to_events`, ~line 646), then
-    // `inject_check_frames` (timing annotations on `Event::Loop` —
-    // adds/removes NO Push or Wait), then `apply_safe_push_reorder`
-    // (mp-tcp-event / mp-uds-event only — a pure per-worker permutation
-    // of events within each top-level boundary; never inserts, deletes,
-    // or mutates a Push/Wait). Both post-projection transforms PRESERVE
-    // the Push/Wait set, so `validate_event_lists` here is equivalent to
-    // validating at the projection boundary, but at the TRUE backend-
-    // consumption point and AFTER the mp-* `host_mediation_inject` /
-    // `host_data_relay_inject` re-routing (those run earlier in this
-    // function, ~lines 464-553). ONE site covers all 7 backends.
-    //
-    // Why a hard `Result<(), String>` gate and not a `panic!`: this
-    // project rejects panic-on-valid-input. `validate_event_lists` is a
-    // pure, non-panicking function returning the full set of violations
-    // with a deterministic `Debug` (PRD design rule: fail-fast,
-    // contextual, typed-error surface — see memory
-    // `feedback-panic-not-diagnostic-recurring`).
-    //
-    // Why this is SAFE to wire as a hard gate (it returns Ok on every
-    // shipping program, so it cannot crash valid input): TASK-0428
-    // (cycle-242) proved inv(2) on the backend-agnostic pre-mediation
-    // EventList for the entire example corpus, and TASK-0422.01
-    // (cycle-243, `driver/tests/task0422_01_inv2_post_mediation.rs`)
-    // proved it on the POST-mediation EventList for all 4 mp-* backends
-    // (220 cells, 0 violations). The `just e2e` differential (every
-    // codegen build runs this gate) is the corpus-wide live proof that
-    // it rejects ZERO shipping programs at the true consumption point.
-    // It exists to FAIL LOUD if a future pass regression breaks pairing.
-    //
-    // NOTE: the `acfg_to_events` `debug_assert!`
-    // (`petri_to_events.rs`) deliberately stays the strict-per-worker
-    // SUBSET (excludes inv(2)) because that boundary is ALSO hit by the
-    // driver's host-election preview projections on pre-mediation ACFGs
-    // (~lines 484, 537), where inv(2) need not yet hold. The full
-    // validator belongs ONLY here, at the final consumption point.
-    validate_event_lists(&per_worker).map_err(|errs| {
-        format!(
-            "event-contract validation failed (PRD §8.3 inv(2), Push/Wait pairing): \
-             {} violation(s): {errs:?}",
-            errs.len()
-        )
-    })?;
+    // Factored into `gate::gate_per_worker_for_dispatch` so the reject
+    // arm is unit-testable (it is undriveable from any real `.nuc`
+    // source — the corpus is contract-clean — so before the carve-out a
+    // refactor could have silently dropped this gate and every test +
+    // e2e would still pass). The order (accumulator THEN validate), the
+    // error strings, and the `?`-propagation are byte-preserved by the
+    // extraction; see that fn's docstring for the full rationale and the
+    // honest residual (this call line itself is not test-proven to
+    // execute — only the extracted gate fn is). ONE site, all 7 backends.
+    gate::gate_per_worker_for_dispatch(&linked.algo, &per_worker, &sidecar, &names.data)?;
 
     dispatch::dispatch_backend(
         &backend,
