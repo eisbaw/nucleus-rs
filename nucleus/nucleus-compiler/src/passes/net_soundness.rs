@@ -42,8 +42,10 @@
 //!
 //! This is sound for v2's restricted nets specifically because their
 //! firing order is *statically determined* (PRD §8.4: no free-choice,
-//! no confusion, no conflicts — now CHECKED by step 1, not merely
-//! assumed) and they are *bounded by construction*.
+//! no confusion, no conflicts — partially checked by step 1, an
+//! under-approximating tripwire over the derived order, NOT a complete
+//! coverability proof; see [`check_conflict_free`]'s "Honest
+//! limitation") and they are *bounded by construction*.
 //! For that subclass the single-order replay is exactly equivalent to
 //! reachability (see the soundness justification in
 //! [`deadlock`](crate::passes::deadlock)'s module doc). A future
@@ -273,11 +275,35 @@ impl std::error::Error for ConflictError {}
 /// shipping schedule today (each transition consumes a fresh
 /// single-marked control place, serialising every worker). The check
 /// exists to catch a FUTURE inject-pass regression that emitted a net
-/// where a place genuinely enabled two consumers — which the
-/// boundedness/deadlock gates would NOT catch (they replay one
-/// arbitrary order and would silently pass on it while the real net was
-/// nondeterministic). The bite test in `tests/net_soundness.rs` pins
-/// the reject path at the function level.
+/// where a place co-enables two consumers *at a marking the derived
+/// order visits* — which the boundedness/deadlock gates would NOT catch
+/// (they replay the same single order and would silently pass on it).
+/// The bite test in `tests/net_soundness.rs` pins the reject path at the
+/// function level.
+///
+/// ## Honest limitation — under-approximation (false negatives, never
+/// false positives)
+///
+/// This is NOT a coverability search. It replays the SAME single
+/// [`derive_firing_order`] the boundedness/deadlock gates use and
+/// inspects only the markings ALONG that one order. PRD §8.6's
+/// "single-order replay ≡ all reachable markings" equivalence holds
+/// *because the net is conflict-free* — the very property checked here
+/// — so the check is necessarily circular at the edges: a conflict that
+/// is reachable only on a *different* interleaving (one the greedy
+/// order does not take, e.g. two producers that both deposit into a
+/// place before either consumer fires) is NOT detected. Concretely, a
+/// net where the derived order drains a place via one consumer before a
+/// second producer can raise the count enough to co-enable a rival
+/// consumer will pass even though the rival is co-enabled on another
+/// reachable path. So the gate is an UNDER-APPROXIMATION: it has false
+/// negatives (misses such off-order conflicts) but never false
+/// positives (never rejects a valid build — confirmed by the e2e
+/// baseline holding). It catches the most likely regression class (a
+/// conflict that manifests on the derived order, e.g. co-enabled at the
+/// initial marking) and is strictly better than no check; a complete
+/// guarantee would require a coverability analysis the gate
+/// deliberately is not (cf. `deadlock`'s "exact replay only" caveat).
 ///
 /// ## Determinism
 ///
@@ -380,8 +406,9 @@ fn check_conflict_free_with_order(
             // not a conflict; `check_bounded`/`check_deadlock_free`
             // diagnose it precisely. We simply stop the conflict scan
             // (the order cannot advance) — we have already inspected
-            // every marking reachable up to the stall, which is all the
-            // markings the real schedule reaches.
+            // every marking THIS DERIVED ORDER reaches up to the stall.
+            // (NOT every reachable marking — see the fn's "Honest
+            // limitation": off-order interleavings are not visited.)
             if sim.fire_in_place(tid, &index).is_err() {
                 break;
             }
