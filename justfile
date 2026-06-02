@@ -310,10 +310,20 @@ check-textual-replace-on-codegen:
 # source, both with coverage — mp-tcp-event's `runtime_src.rs` via
 # `mod runtime_src;`, and mp-tcp-common's `wire_runtime.rs` via
 # `pub mod wire { include!("wire_runtime.rs") }`.
+#
+# POSIX-shell portability (TASK-0415; cf. the doc-citation fences):
+# `just` runs `/bin/sh -cu`, so this recipe feeds a `mktemp` temp file
+# into a `while read` loop rather than a bash `done < <(...)` process
+# substitution (a bashism dash/ash/busybox-sh reject). `mktemp` +
+# `trap "rm -f ..." EXIT` is POSIX-portable.
 check-include-str-coverage:
     @echo "checking include_str! compile coverage..."
     @set -e; fail=0; \
+    inc_f=$(mktemp); \
+    trap "rm -f $inc_f" EXIT; \
+    rg -nH --type rust 'include_str!' nucleus/nucleus-compiler/src/ nucleus/backend-common/src/ nucleus/backends/*/src/ nucleus/mp-tcp-common/src/ 2>/dev/null > $inc_f || true; \
     while IFS= read -r line; do \
+        [ -n "$line" ] || continue; \
         file=$(echo "$line" | cut -d: -f1); \
         target=$(echo "$line" | grep -oE 'include_str!\([^)]*\)' | head -1 | sed -E 's/include_str!\("([^"]+)"\)/\1/'); \
         base=$(basename "$target" .rs); \
@@ -323,7 +333,7 @@ check-include-str-coverage:
             echo "FAIL: $file include_str!(\"$target\") has no matching 'mod ${base};' or 'include!(\"$target\")' in $crate_dir"; \
             fail=1; \
         fi; \
-    done < <(rg -nH --type rust 'include_str!' nucleus/nucleus-compiler/src/ nucleus/backend-common/src/ nucleus/backends/*/src/ nucleus/mp-tcp-common/src/ 2>/dev/null || true); \
+    done < $inc_f; \
     if [ $fail -ne 0 ]; then \
         echo ""; \
         echo "(memory: feedback-include-str-compile-coverage — bare include_str! does not compile the file content; add 'mod <name>;' or 'include!(\"<path>\");' in the same crate so 'cargo test' compiles it)"; \
