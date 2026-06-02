@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 17:54'
+updated_date: '2026-06-02 18:13'
 labels:
   - compiler
   - event-contract
@@ -78,6 +78,8 @@ BITE TEST: nucleus/driver/tests/task0422_gate_wired_reject.rs (2 fns):
 STALE DOCS FIXED (comment-doc-lie hygiene): event_validate.rs module-doc "How this is wired" + validate_event_lists_strict_per_worker docstring; petri_to_events.rs module-doc + acfg_to_events debug_assert rationale comment; tests/petri_to_events.rs TASK-0428 sweep comment. All now cite the driver gate site and do NOT overclaim (enforced on shipping codegen builds; e2e is defense-in-depth; NOT "all programs forever"). The acfg_to_events debug_assert LEFT as strict-per-worker SUBSET (untouched) — it precedes mediation AND is hit by the driver pre-mediation host-election preview projections (main.rs ~484/~537) where inv(2) need not hold.
 
 GATE: just build OK; just clippy clean (-D warnings, independently re-run); just test dev=1260/0/3 (+2); just test-release=1258/0/3 (+2); just e2e=385/328/0/57/0 (baseline HELD). No findings, no new tasks filed.
+
+Cycle-243 review gate (parallel read-only): qa-test-runner GO + mped-architect GO. qa independently re-ran the FULL hard gate x2: e2e 385/328/0/57/0 (stable), dev 1260/0/3, release 1258/0/3, clippy clean (-D warnings); both bite tests run+pass x2. architect INDEPENDENTLY verified the load-bearing inv(2)-preservation claim by reading both post-projection transforms: inject_check_frames is Loop-only (Push/Wait pass-through, inject_check_frames.rs:230) and apply_safe_push_reorder is a provable pure permutation (safe_push_reorder.rs:218-227) — neither inserts/deletes/re-keys a Push or Wait, and the validator matches set-wise on (src,dst,data,tile,seq), so the final-site gate (main.rs:785, before dispatch_backend, unconditional/all-7-backends, typed Result error not panic) is equivalent to the TASK-0422.01-proven projection artefact. debug_assert at petri_to_events.rs:269 correctly left as the strict-per-worker subset (untouched). Doc-lie sweep clean, no overclaim. P1/P2: none. P3.1 (no cmd_build-level test drives the gate CALL — reject arm undriveable from valid source; silent-removal risk for the tripwire) filed as TASK-0422.02. P3.2 (e2e from commit msg) resolved: qa re-ran independently x2. Status stays Done.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
