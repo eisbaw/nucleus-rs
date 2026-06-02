@@ -92,28 +92,25 @@ fn elect_host(acfg: &ACFG) -> Option<WorkerId> {
     elect_host_from_name_workers(&acfg.name_workers, &used)
 }
 
-/// Apply the post-`inject_transfers` mediation passes for `backend`,
-/// mirroring driver/src/main.rs ~464-553 EXACTLY:
-///   1. {all four}: elect -> apply_host_mediation_inject (None => pass through)
-///   2. {*-event only}: re-elect on post-mediation ACFG ->
-///      apply_host_data_relay_inject (None => pass through)
-fn apply_mediation(backend_applies_data_relay: bool, acfg: ACFG) -> ACFG {
-    // Step 1 — host_mediation_inject (all four mediated backends).
-    let acfg = match elect_host(&acfg) {
+/// Step 1 of mediation — `host_mediation_inject` (all four mediated
+/// backends). Elect host via the shared helper, then apply (None =>
+/// degenerate ACFG, pass through). Mirrors driver src/main.rs:484-499.
+fn apply_mediation_only(acfg: ACFG) -> ACFG {
+    match elect_host(&acfg) {
         Some(h) => apply_host_mediation_inject(acfg, h),
         None => acfg, // degenerate ACFG (every per-worker list empty); pass through.
-    };
-    // Step 2 — host_data_relay_inject (mp-tcp-event / mp-uds-event ONLY).
-    if backend_applies_data_relay {
-        // Re-project on the POST-mediation ACFG before re-electing —
-        // mediation may have added Sync events to host's list; the
-        // driver re-projects here too (src/main.rs:537).
-        match elect_host(&acfg) {
-            Some(h) => apply_host_data_relay_inject(acfg, h),
-            None => acfg,
-        }
-    } else {
-        acfg
+    }
+}
+
+/// Step 2 of mediation — `host_data_relay_inject` (mp-tcp-event /
+/// mp-uds-event ONLY). MUST be called on a POST-mediation ACFG: the
+/// driver re-projects + re-elects on the post-mediation ACFG before this
+/// pass (src/main.rs:531-550), because step 1 may have added Sync events
+/// to host's list. Mirrors that re-election exactly.
+fn apply_data_relay(acfg: ACFG) -> ACFG {
+    match elect_host(&acfg) {
+        Some(h) => apply_host_data_relay_inject(acfg, h),
+        None => acfg,
     }
 }
 
@@ -151,6 +148,18 @@ fn task0422_01_inv2_holds_post_mediation_for_mp_backends() {
     let mut violations: Vec<String> = Vec::new();
     let mut ok = 0usize;
     let mut errd = 0usize;
+    // Corpus-wide non-vacuity counters (architect P2/P3, cycle-243): how
+    // many cells each mediation pass GENUINELY reshapes (post-pass
+    // projection differs from the input projection). Without these, the
+    // whole sweep would still pass if the passes no-op'd everywhere —
+    // making it equivalent to the pre-mediation TASK-0428 sweep and
+    // proving nothing NEW. `mediation_reshaped` isolates
+    // host_mediation_inject (the only pass bufsync/poll run);
+    // `relay_reshaped` isolates host_data_relay_inject (event/uds only),
+    // measured as the delta ON TOP OF mediation so it cannot be
+    // attributed to step 1.
+    let mut mediation_reshaped = 0usize;
+    let mut relay_reshaped = 0usize;
 
     for d in exdirs {
         let algo_path = d.join("prog.algo.nuc");
@@ -228,12 +237,34 @@ fn task0422_01_inv2_holds_post_mediation_for_mp_backends() {
                 }
             };
 
+            // Pre-mediation projection (the TASK-0428 artefact) — the
+            // baseline the non-vacuity counters measure reshape against.
+            let pre_events = acfg_to_events(&base_acfg);
+
             // Per mp-* backend: apply that backend's post-injection
-            // mediation passes, project, and validate inv(2) (full
-            // surface). Each cell is independent (clone the base ACFG).
+            // mediation passes STAGE BY STAGE (so each pass's reshape is
+            // attributed independently), project, and validate inv(2)
+            // (full surface). Each cell is independent (clone base ACFG).
             for &(backend, applies_data_relay) in MEDIATED_BACKENDS {
-                let mediated = apply_mediation(applies_data_relay, base_acfg.clone());
-                let events = acfg_to_events(&mediated);
+                // Step 1 — host_mediation_inject (all four backends).
+                let med_only = apply_mediation_only(base_acfg.clone());
+                let med_only_events = acfg_to_events(&med_only);
+                if med_only_events != pre_events {
+                    mediation_reshaped += 1;
+                }
+                // Step 2 — host_data_relay_inject (event/uds only). Its
+                // reshape is the delta ON TOP OF mediation, so it cannot
+                // be mis-attributed to step 1.
+                let events = if applies_data_relay {
+                    let full = apply_data_relay(med_only);
+                    let full_events = acfg_to_events(&full);
+                    if full_events != med_only_events {
+                        relay_reshaped += 1;
+                    }
+                    full_events
+                } else {
+                    med_only_events
+                };
                 match validate_event_lists(&events) {
                     Ok(()) => ok += 1,
                     Err(errs) => {
@@ -246,7 +277,9 @@ fn task0422_01_inv2_holds_post_mediation_for_mp_backends() {
 
     eprintln!(
         "[TASK-0422.01] validated {ok} post-mediation (backend, schedule) cells \
-         ({} mp-* backends), {errd} pipeline errors, {} inv(2) violations",
+         ({} mp-* backends), {errd} pipeline errors, {} inv(2) violations; \
+         non-vacuity: mediation reshaped {mediation_reshaped} cell(s), \
+         data-relay reshaped {relay_reshaped} cell(s)",
         MEDIATED_BACKENDS.len(),
         violations.len()
     );
@@ -280,6 +313,32 @@ fn task0422_01_inv2_holds_post_mediation_for_mp_backends() {
          move or a `schedule for` path stop resolving?",
         55 * MEDIATED_BACKENDS.len(),
         MEDIATED_BACKENDS.len()
+    );
+    // NON-VACUITY (architect P3, cycle-243): host_mediation_inject — the
+    // ONLY mediation pass bufsync/poll run — must reshape the EventList
+    // for at least one corpus cell. If it reshapes zero, the bufsync/poll
+    // arms of this sweep are byte-identical to the pre-mediation TASK-0428
+    // sweep and prove nothing NEW for those two backends; that would
+    // itself be a finding to investigate, not a green pass.
+    assert!(
+        mediation_reshaped > 0,
+        "TASK-0422.01 non-vacuity: host_mediation_inject changed the projected \
+         EventList for 0 corpus cells — the bufsync/poll arms of this sweep would be \
+         equivalent to TASK-0428 (pre-mediation), so the post-mediation inv(2) claim \
+         for those backends is vacuous. Investigate (did the pass stop reshaping, or \
+         did the corpus lose every host-excluding-barrier schedule?)."
+    );
+    // NON-VACUITY (architect P2, cycle-243): host_data_relay_inject must
+    // reshape the EventList for at least one cell MEASURED AS THE DELTA ON
+    // TOP OF mediation (full_events != med_only_events) — so the reshape
+    // is attributed to data-relay specifically, not conflated with step 1.
+    assert!(
+        relay_reshaped > 0,
+        "TASK-0422.01 non-vacuity: host_data_relay_inject changed nothing beyond \
+         host_mediation_inject for any corpus cell — the event/uds arms add no distinct \
+         artefact over the mediation-only projection, so their post-mediation inv(2) \
+         claim is not exercising the data-relay rewrite. Investigate (did the w2w-Push-\
+         in-Repeat relay path stop triggering across the corpus?)."
     );
 }
 
@@ -321,30 +380,38 @@ fn build_base_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
 /// 09-producer-consumer/pipelined is the documented case (driver
 /// src/main.rs:513-520): a per-iteration worker-to-worker Push inside
 /// `for n in 0..16` that `host_data_relay_inject` re-routes through host.
-/// Under mp-tcp-event (mediation + data-relay) the projected EventList
-/// MUST differ from the pre-mediation projection.
+///
+/// The reshape is asserted as the delta of data-relay ON TOP OF mediation
+/// (post-mediation-only vs post-mediation+relay) — NOT vs the pre-
+/// mediation projection. That isolation matters (architect P2, cycle-243):
+/// a `pre != full` assertion would still pass if data-relay silently
+/// no-op'd while host_mediation_inject alone reshaped, which is exactly
+/// the no-op risk this test guards. Comparing the mediation-only stage to
+/// the full stage attributes the change to data-relay specifically.
 #[test]
 fn task0422_01_mediation_is_non_vacuous_for_pipelined() {
     let base = build_base_acfg(
         "09-producer-consumer/prog.algo.nuc",
         "09-producer-consumer/schedules/pipelined.sched.nuc",
     );
-    let pre = acfg_to_events(&base);
-    // mp-tcp-event applies mediation THEN data-relay.
-    let mediated = apply_mediation(true, base.clone());
-    let post = acfg_to_events(&mediated);
+    // mp-tcp-event applies mediation THEN data-relay. Stage them so the
+    // data-relay delta is isolated from the mediation delta.
+    let med_only = apply_mediation_only(base.clone());
+    let med_only_events = acfg_to_events(&med_only);
+    let full = apply_data_relay(med_only);
+    let full_events = acfg_to_events(&full);
     assert_ne!(
-        pre, post,
-        "TASK-0422.01 non-vacuity: 09-producer-consumer/pipelined under mp-tcp-event \
-         (mediation + data-relay) produced an IDENTICAL EventList to the pre-mediation \
-         projection — either the mediation passes silently no-op'd (then the broad sweep \
-         proves nothing beyond TASK-0428) or this schedule stopped exercising the \
-         documented w2w-Push-in-Repeat relay path. Investigate before trusting the sweep."
+        med_only_events, full_events,
+        "TASK-0422.01 non-vacuity: 09-producer-consumer/pipelined — host_data_relay_inject \
+         produced an EventList IDENTICAL to the mediation-only projection, i.e. it added \
+         nothing of its own. Either data-relay silently no-op'd (then the event/uds sweep \
+         proves nothing the bufsync/poll sweep doesn't) or this schedule stopped \
+         exercising the documented w2w-Push-in-Repeat relay path. Investigate."
     );
     // And the post-mediation result is still inv(2)-clean (redundant with
     // the sweep, but pins the specific reshaped artefact by name).
     assert_eq!(
-        validate_event_lists(&post),
+        validate_event_lists(&full_events),
         Ok(()),
         "TASK-0422.01: post-mediation EventList for 09-producer-consumer/pipelined \
          (mp-tcp-event) must satisfy PRD §8.3 inv(2)"
