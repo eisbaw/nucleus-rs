@@ -86,11 +86,10 @@ use std::process::ExitCode;
 
 use backend_common::elect_host_from_name_workers;
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_block_transforms, apply_halo_inference_partition_aware,
-    apply_host_data_relay_inject, apply_host_mediation_inject, apply_partition_blocks2d,
-    apply_partition_rows, apply_partition_workers, apply_reuse_inference, apply_safe_push_reorder,
-    build_acfg, build_sidecar, check_kernels_contract, check_net_sound, check_schedule_compat,
-    inject_check_frames, inject_syncs, inject_transfers, link, load_capabilities,
+    acfg_to_events, acfg_to_net, apply_host_data_relay_inject, apply_host_mediation_inject,
+    apply_safe_push_reorder, build_sidecar, check_kernels_contract, check_net_sound,
+    check_schedule_compat, inject_check_frames, link, load_capabilities, run_pre_mediation_passes,
+    PreMediationError,
 };
 
 // Driver sub-modules (TASK-0388: carved out of this file to hold it
@@ -286,145 +285,81 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         s
     })?;
 
-    // ---- Build ACFG + block transforms + inject syncs + inject transfers ----
+    // ---- Build ACFG + block transforms + partition + halo/reuse
+    //      inference + inject syncs + inject transfers ----
     //
-    // Block-transform runs *between* ACFG construction and the
-    // sync/transfer injection passes (TASK-0030). For schedules with
-    // no `block=` directives (examples 01-03 at M2), this pass is a
-    // pure identity and the downstream ACFG is bit-identical.
-    let acfg = build_acfg(&linked).map_err(|e| format!("acfg build error: {e}"))?;
-    let acfg =
-        apply_block_transforms(&linked, acfg).map_err(|e| format!("block-transform error: {e}"))?;
-    // Partition-workers loop-bound rewrite (TASK-0212): consume any
-    // `loop X : partition=workers` directive whose body is multi-worker
-    // and record a per-worker range override on the ACFG sidecar.
-    // `petri_to_events` honours the override at projection time. Runs
-    // after block-transform so the iter_var ids it records are the
-    // final ones, and before sync/transfer injection (which do not
-    // consult the sidecar — order is for diagnostic clarity).
-    let acfg = apply_partition_workers(&linked, acfg)
-        .map_err(|e| format!("partition-workers error: {e}"))?;
-    // Partition-rows row-band rewrite (TASK-0258): consume any
-    // `loop X : partition=rows` directive whose outer-of-2D-nest body
-    // is multi-worker. Writes into the SAME sidecar field
-    // `partition_worker_ranges` as apply_partition_workers — downstream
-    // consumers (sync_inject, petri_to_events, the backend walkers)
-    // do not distinguish which directive produced the per-worker
-    // range. The two passes target disjoint IterVar keys by grammar
-    // construction (at most one `partition=` option per loop), so
-    // order is observationally irrelevant; this call sits immediately
-    // after apply_partition_workers for diagnostic clarity.
-    let acfg =
-        apply_partition_rows(&linked, acfg).map_err(|e| format!("partition-rows error: {e}"))?;
-    // Partition-blocks2d 2D-grid rewrite (TASK-0259): consume any
-    // `loop X : partition=blocks2d` directive whose outer-of-2D-nest
-    // body is multi-worker. Writes TWO entries into
-    // `partition_worker_ranges` (one under the outer iter_var for the
-    // per-worker y-band, one under the inner iter_var for the per-
-    // worker x-band) — the walker's independent per-iter_var lookup
-    // applies each on the appropriate Repeat. Order between the three
-    // partition passes is observationally irrelevant (grammar accepts
-    // at most one `partition=` per loop → disjoint IterVar keys). This
-    // call sits immediately after apply_partition_rows for diagnostic
-    // clarity.
-    let acfg = apply_partition_blocks2d(&linked, acfg)
-        .map_err(|e| format!("partition-blocks2d error: {e}"))?;
-    // Halo-region inference (TASK-0260 Stage 1 + TASK-0275 promotion):
-    // walk `linked.algo.stmts` and infer per-(KernelId, IterVar) halo
-    // widths from affine kernel-arg DataRef indices. Populates
-    // `ACFG::halo_widths` for the transfer_inject consumer (TASK-0263,
-    // cycle 83, commit cf2f9ac) to extend per-tile transfer ranges.
+    // This whole backend-agnostic pre-mediation pass chain
+    // (build_acfg -> block_transforms -> partition_{workers,rows,
+    // blocks2d} -> halo-inference -> reuse-inference -> inject_syncs ->
+    // inject_transfers) is single-sourced in
+    // `nucleus_compiler::run_pre_mediation_passes` (TASK-0422.01.01.01).
+    // The driver and the `test_support` corpus-sweep helper both
+    // delegate to it, so the chain cannot drift between test and
+    // production. The driver-specific policy is just the two things the
+    // shared fn deliberately leaves to its caller:
     //
-    // DRIVER POLICY (TASK-0275): (B) PARTITION-POLICY-AWARE. For each
-    // typed `HaloInferenceError` the walker raises, the entry point
-    // looks at the enclosing-loop scope at the error-push site. If
-    // ANY iv in that scope carries a `partition=` directive in the
-    // schedule, the error is FATAL — the transfer_inject consumer
-    // would otherwise silently emit wrong-output tiles (missing halo
-    // strips on a partition boundary). Otherwise the error goes to an
-    // advisory bucket and lowering proceeds; the walker's partial halo
-    // widths for unaffected kernels stay committed.
+    //  (1) ERROR MAPPING — each pass's typed error becomes a DISTINCT
+    //      user-facing string (these strings are USER-FACING and
+    //      TEST-PINNED: `cli_reuse_strict.rs` asserts the
+    //      `reuse-inference error:` prefix; `task0371_*` asserts the
+    //      `partition-workers error:` prefix + variant substrings — see
+    //      the per-arm note below). Block-transform runs *between* ACFG
+    //      construction and the sync/transfer injection passes
+    //      (TASK-0030): for schedules with no `block=` directives
+    //      (examples 01-03 at M2) it is a pure identity and the
+    //      downstream ACFG is bit-identical.
     //
-    // Why (B) and NOT (A) strict (the TASK-0271 reuse precedent):
-    // the transfer_inject halo consumer is CONDITIONAL on the iv being
-    // partitioned. The reuse Tier 1 marker (TASK-0265) by contrast
-    // fires for EVERY recognised slot regardless of partition, so for
-    // reuse the (B) predicate "is this slot consumed?" was trivially
-    // true and (B) degenerated into (A). For halo it does not — the
-    // example-11 `step_or_seed` body reads
-    // `grid[(t + ITERS) % (ITERS + 1)]` (a constant Mod wrap the
-    // affine detector cannot fold), and the schedule carries ZERO
-    // `partition=` directives. A naive (A) strict mirror would
-    // newly-reject example 11; (B) keeps the cells PASS while still
-    // failing loud on the cases where backend output would be wrong.
-    // The decision context is TASK-0263 cycle-89 verification +
-    // TASK-0275's full reasoning.
+    //      Halo-inference DRIVER POLICY (TASK-0275): (B) PARTITION-
+    //      POLICY-AWARE. A typed `HaloInferenceError` is FATAL only when
+    //      its affected iv carries a `partition=` directive in scope
+    //      (the `transfer_inject` consumer would otherwise silently emit
+    //      wrong-output tiles — missing halo strips on a partition
+    //      boundary). The non-partition-scoped errors come back in the
+    //      advisory bucket (handled in (2)) and lowering proceeds; the
+    //      walker's partial halo widths for unaffected kernels stay
+    //      committed. Chosen over (A) strict because the halo consumer
+    //      is CONDITIONAL on the iv being partitioned — a naive (A)
+    //      mirror would newly-reject example 11 (`step_or_seed` reads
+    //      `grid[(t + ITERS) % (ITERS + 1)]`, a constant Mod wrap the
+    //      affine detector cannot fold, with ZERO `partition=` in the
+    //      schedule). The advisory/fatal split lives inside
+    //      `apply_halo_inference_partition_aware`.
     //
-    // E2E impact at promotion: 92/77/0/15/0 byte-identical. The only
-    // shipped halo-affecting partition= directive is
-    // `05-stencil/distributed`'s y-loop (`partition=workers`) whose
-    // `blur3` body is fully affine; example 11's two cells stay PASS
-    // because no `partition=` is attached to the Mod-indexed iv.
-    let (acfg, halo_errors_advisory) = apply_halo_inference_partition_aware(&linked, acfg)
-        .map_err(|e| format!("halo-inference error (under partitioned iv): {e}"))?;
+    //      Reuse-inference DRIVER POLICY (TASK-0271): STRICT — any typed
+    //      `ReuseInferenceError` is fatal. The cycle-87 Tier 1 landing
+    //      wired a walker-side marker consumer
+    //      (`render_reuse_marker_comment`) so EVERY recognised reuse
+    //      slot is consumed today; a silently-swallowed non-affine
+    //      `loop V : reuse;` would produce no marker line (and tomorrow
+    //      no buffer code) without warning. The asymmetry with halo's
+    //      (B) is intentional: reuse's marker fires on every recognised
+    //      slot, so (B)'s "is this slot consumed?" predicate is
+    //      trivially true and degenerates into (A). E2E at both
+    //      promotions: 92/77/0/15/0 byte-identical.
+    //
+    //  (2) HALO ADVISORY — the shared fn threads the non-fatal
+    //      halo-advisory bucket out; the driver `nuc_trace!`s each entry
+    //      (the test helper discards them).
+    let (acfg, halo_errors_advisory) =
+        run_pre_mediation_passes(&linked).map_err(|e| match e {
+            PreMediationError::AcfgBuild(e) => format!("acfg build error: {e}"),
+            PreMediationError::BlockTransform(e) => format!("block-transform error: {e}"),
+            PreMediationError::PartitionWorkers(e) => format!("partition-workers error: {e}"),
+            PreMediationError::PartitionRows(e) => format!("partition-rows error: {e}"),
+            PreMediationError::PartitionBlocks2d(e) => format!("partition-blocks2d error: {e}"),
+            PreMediationError::HaloInference(e) => {
+                format!("halo-inference error (under partitioned iv): {e}")
+            }
+            PreMediationError::ReuseInference(e) => format!("reuse-inference error: {e}"),
+            PreMediationError::SyncInject(e) => format!("sync-injection error: {e}"),
+            PreMediationError::TransferInject(e) => format!("transfer-injection error: {e}"),
+        })?;
     for e in &halo_errors_advisory {
         nucleus_compiler::nuc_trace!(
             "halo_inference: advisory (no `partition=` directive in scope, transfer_inject \
              halo consumer will not fire on the affected iv — lowering proceeds): {e}"
         );
     }
-    // Reuse loop-option inference (TASK-0261 Stage 1 + TASK-0271
-    // promotion): walk every `for V : reuse;` loop in
-    // `linked.algo.stmts` and infer per-(IterVar, DataId, axis)
-    // delay-line slots from affine `iv + b` DataRef accesses. Populates
-    // `ACFG::reuse_widths` for the Tier 1 marker consumer (TASK-0265
-    // cycle 87) and the forthcoming circular-buffer codegen (TASK-0269
-    // pthreads-sync + TASK-0270 multi-worker walker).
-    //
-    // STAGE 2 DRIVER POLICY (TASK-0271): STRICT. The cycle-87 Tier 1
-    // landing wired a walker-side marker consumer at the `Event::Loop`
-    // emit site (`render_reuse_marker_comment`), so EVERY recognised
-    // slot is consumed by the backend today. The cost-of-silent-swallow
-    // is therefore real: a non-affine `loop V : reuse;` body produces
-    // no marker line (and tomorrow no buffer code) without warning,
-    // surprising the user who wrote `reuse;`. We promote to the strict
-    // entry point — any typed `ReuseInferenceError` is a fatal compile
-    // error, surfaced via the existing `Display` impl (variant docs at
-    // `passes::reuse_inference::ReuseInferenceError`).
-    //
-    // Why strict over partition-policy-aware (option B in TASK-0271):
-    // every reuse slot already has a consumer (the Tier 1 marker), so
-    // the (B) predicate "is this slot consumed?" is trivially TRUE for
-    // every slot — (B) degenerates into (A). The narrower (B) rule
-    // "iv carries partition=" would still silently drop non-affine
-    // reuse on non-partitioned loops (exactly the 05-stencil/reuse
-    // shape), recreating the silent-failure mode. Strict closes both.
-    //
-    // E2E impact at promotion: 92/77/0/15/0 byte-identical. The only
-    // shipped non-skipped reuse loop (`05-stencil/reuse`, single-host
-    // 3x3 stencil over `img_in[y±1][x±1]`) is fully affine and lowers
-    // cleanly. `05-stencil/distributed` also carries `reuse;` but is
-    // SKIP across all backends per TASK-0267/TASK-0268 (unrelated to
-    // reuse codegen); when those clear, its `blur3` body is the same
-    // affine shape and will lower cleanly too.
-    //
-    // The sibling halo driver call above was promoted to (B)
-    // partition-policy-aware in TASK-0275 (cycle 96), NOT to (A) strict
-    // as this reuse call. The asymmetry is intentional: halo's
-    // `transfer_inject` consumer is conditional on the iv being
-    // partitioned, so naive (A) strict would newly-reject example 11
-    // (Mod-indexed `step_or_seed` with no partition= in scope). Reuse's
-    // Tier 1 marker fires on every recognised slot, so for reuse (B)
-    // degenerated into (A). The two driver calls' five-line shapes are
-    // similar (`apply_X(...).map_err(|e| ...)?`) but the entry-point
-    // names + the role of any returned advisory bucket differ — the
-    // speculative `iv_diag_policy` helper from cycle-87 review still
-    // has no real substance to lift.
-    let acfg =
-        apply_reuse_inference(&linked, acfg).map_err(|e| format!("reuse-inference error: {e}"))?;
-    let acfg = inject_syncs(acfg).map_err(|e| format!("sync-injection error: {e}"))?;
-    let acfg =
-        inject_transfers(&linked, acfg).map_err(|e| format!("transfer-injection error: {e}"))?;
 
     // TASK-0329 cycle 160 — host-mediation injection (CTRL arm of the
     // cycle-148/149 split of the original TASK-0175 combined filing).

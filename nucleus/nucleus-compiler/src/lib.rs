@@ -20,6 +20,12 @@ pub mod link;
 pub mod name_tables;
 pub mod passes;
 pub mod petri;
+// Backend-agnostic pre-mediation pass orchestration. The single
+// production definition of the pre-mediation pass chain (build_acfg ->
+// ... -> inject_transfers); both the driver's `cmd_build` and the
+// `test_support` helper delegate here, so the chain cannot drift
+// between test and production (TASK-0422.01.01.01).
+pub mod pipeline;
 pub mod sched;
 pub mod sidecar;
 // Cross-crate TEST-ONLY helpers (`#[doc(hidden)]` contents). Shares the
@@ -89,4 +95,5 @@ pub use passes::safe_push_reorder::apply_safe_push_reorder;
 pub use passes::sync_inject::{inject_syncs, SyncInjectError};
 pub use passes::transfer_inject::inject_transfers;
 pub use petri::{ArcKind, FireError, Marking, Net, Place, PlaceId, Transition, TransitionId};
+pub use pipeline::{run_pre_mediation_passes, PreMediationError};
 pub use sidecar::{build_sidecar, ConstValue, KernelSig, LoopBound, NameSidecar, SidecarError};
