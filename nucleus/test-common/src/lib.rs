@@ -49,10 +49,56 @@
 //! a strict mirror of the driver — it's an IR-shape mirror.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
+
+/// Create a process-and-call-unique scratch directory under `parent`.
+///
+/// Returns `parent/{leaf}-{pid}-{counter}`, where `pid` is this
+/// process's id and `counter` is a per-process atomic that increments
+/// on every call. The directory is created once and **never removed**.
+///
+/// # Why this exists (TASK-0426.01)
+///
+/// The backend test suites used to derive a scratch dir as
+/// `parent/{leaf}` (a fixed, *profile-independent* path — `parent`
+/// roots at `CARGO_MANIFEST_DIR`, which is identical for the dev and
+/// release builds) and then did `remove_dir_all + create_dir_all` on
+/// it. That `remove`/`create` dance is shared mutable filesystem state:
+///
+/// - Across THREADS within one `cargo test` process, two tests that
+///   happened to share a leaf would race on the same path.
+/// - Across PROCESSES, `just test` (dev profile) and `just test-release`
+///   (release profile) run two binaries with different pids but the
+///   SAME pid-less leaf path; one process's `remove_dir_all` can delete
+///   a dir the other is mid-`fs::write`-ing, surfacing ENOENT.
+///
+/// Embedding the pid AND a per-call atomic counter makes every returned
+/// path unique by construction, so no two callers — across threads OR
+/// processes — ever share a path. With no sharing there is nothing to
+/// `remove_dir_all`, so the race CLASS is eliminated structurally rather
+/// than papered over.
+///
+/// HONESTY CAVEAT (carried from TASK-0426): the original ENOENT flake
+/// was NOT reproducible in 16 runs; this is defense-in-depth that
+/// removes a latent race class, not a reproduction-verified bug fix.
+///
+/// # Panics
+///
+/// Panics (via `.expect`) if `create_dir_all` fails — this is a test
+/// helper and a failure here is an environment/test-author problem.
+pub fn unique_scratch_dir(parent: &Path, leaf: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let _ = std::fs::create_dir_all(parent);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = parent.join(format!("{leaf}-{}-{}", std::process::id(), nonce));
+    std::fs::create_dir_all(&dir).expect("create unique scratch dir");
+    dir
+}
 
 /// Toggles for optional pipeline stages.
 ///
@@ -380,6 +426,33 @@ schedule for "anything.algo.nuc" {
             "single-worker schedule produces no cross-worker transfers; \
              transfer_buffer_for_seq must be empty"
         );
+    }
+
+    #[test]
+    fn unique_scratch_dir_returns_distinct_existing_paths_per_call() {
+        // Two calls with the SAME leaf must yield DISTINCT directories
+        // (the per-call atomic counter differentiates them), and both
+        // must actually exist on disk. This is the core invariant that
+        // eliminates the TASK-0426 scratch-path race class.
+        let parent = std::env::temp_dir().join(format!(
+            "nucleus-test-common-unique-scratch-{}",
+            std::process::id()
+        ));
+        let a = unique_scratch_dir(&parent, "same-leaf");
+        let b = unique_scratch_dir(&parent, "same-leaf");
+        assert_ne!(a, b, "two calls with the same leaf must not collide");
+        assert!(a.is_dir(), "first scratch dir must exist");
+        assert!(b.is_dir(), "second scratch dir must exist");
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&std::process::id().to_string()),
+            "leaf must embed the pid for cross-process disjointness"
+        );
+        // Cleanup: this helper deliberately never removes, so the test
+        // tidies up its own parent (pid-scoped, safe to remove here).
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
