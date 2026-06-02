@@ -4,21 +4,26 @@
 //! native-gather landing TASK-0341.03.01 (architect P3.1).
 //!
 //! WHY THIS EXISTS: TASK-0374 unit-pinned the four fail-loud arms of
-//! `render_gather_index_load`. Three OTHER render entry points carry
+//! `render_gather_index_load`. Other render entry points carry
 //! fail-loud guards that had no unit test:
-//!   - `render_int_expr`   — the `IrExpr::Call` arm (expr.rs:72-74);
+//!   - `render_int_expr`'s `IrExpr::Call` arm — was a fail-loud guard;
+//!     TASK-0430 (X1') turned it into an EMITTING arm (a PURE kernel
+//!     call in index position now renders `kernels::<callee>(<args>)`),
+//!     so its test is now a POSITIVE render pin, not a fail-loud one;
 //!   - `render_const_expr` — the `IrExpr::DataRef | Call` loop-bound
-//!     arm (expr.rs:201-203);
-//!   - `render_flat_index` — its OWN three guards (fire.rs:519-522
-//!     empty, :529-536 missing-ResolvedType, :538-544 rank mismatch).
+//!     arm (loop-bound position stays fail-loud — a computed bound is
+//!     unimplemented);
+//!   - `render_flat_index` — its OWN three guards (empty,
+//!     missing-ResolvedType, rank mismatch).
 //!
-//! REACHABILITY — be honest about it. These are DEFENSE-IN-DEPTH and,
-//! UNLIKE TASK-0374's partial-rank arm (which IS source-reachable —
-//! `x[col[i]]` with a 2D `col` lowers fine), they are mostly NOT
-//! reachable from valid source today:
-//!   - a kernel call in index position is rejected at lowering
-//!     (`lower_index_expr`), so `render_int_expr`'s `Call` arm never
-//!     sees a `Call` from a real program;
+//! REACHABILITY — be honest about it. The remaining guards are
+//! DEFENSE-IN-DEPTH and, UNLIKE TASK-0374's partial-rank arm (which IS
+//! source-reachable — `x[col[i]]` with a 2D `col` lowers fine), they
+//! are mostly NOT reachable from valid source today:
+//!   - a kernel call in LOOP-BOUND position is rejected at lowering
+//!     (`allow_gather = false` for bounds); a PURE kernel call in
+//!     SUBSCRIPT position is now ADMITTED (TASK-0430) and reaches the
+//!     emitting `render_int_expr` Call arm from real source;
 //!   - a `DataRef`/`Call` in loop-bound position is rejected at
 //!     lowering (`allow_gather = false` for bounds), so
 //!     `render_const_expr`'s arm is unreachable from real source;
@@ -104,16 +109,16 @@ fn ident(n: &str) -> IrExpr {
 }
 
 // --------------------------------------------------------------------
-// render_int_expr — the `IrExpr::Call` arm (expr.rs:72-74)
+// render_int_expr — the `IrExpr::Call` arm (TASK-0430, X1')
 // --------------------------------------------------------------------
 
 #[test]
-fn int_expr_kernel_call_in_index_is_unsupported_feature() {
-    // expr.rs:72-74. A kernel call `f(k)` appearing where an integer
-    // index expression is expected is rejected fail-loud. NOT
-    // source-reachable: `lower_index_expr` rejects a Call in index
-    // position before codegen ever sees it. The check is independent
-    // of the tables, so empty fixtures suffice.
+fn int_expr_pure_kernel_call_in_index_emits_call() {
+    // TASK-0430 (X1'). A PURE kernel call `f(k)` in array-subscript index
+    // position is now EMITTED as `kernels::f(k)` (was rejected fail-loud
+    // pre-TASK-0430). The lowering pass is the gate (subscript-only,
+    // pure-callee-only); render just emits. The check is independent of
+    // the tables (no DataRef arg), so empty fixtures suffice.
     let (names, sidecar) = empty_fixtures();
     let ctx = RenderCtx::new(&names, &sidecar);
 
@@ -122,17 +127,36 @@ fn int_expr_kernel_call_in_index_is_unsupported_feature() {
         args: vec![ident("k")],
     };
 
-    let err = render_int_expr(&expr, &ctx)
-        .expect_err("a kernel call in integer-index position must fail loud (expr.rs:72-74)");
-    match err {
-        EmitError::UnsupportedFeature(msg) => {
-            assert!(
-                msg.contains("kernel call") && msg.contains("index"),
-                "expr.rs:72-74 message must name a kernel call in an index expression: {msg}"
-            );
-        }
-        other => panic!("expected UnsupportedFeature for a Call-in-index, got {other:?}"),
-    }
+    let rendered = render_int_expr(&expr, &ctx)
+        .expect("a pure kernel call in index position must render (TASK-0430)");
+    assert_eq!(
+        rendered, "kernels::f(k)",
+        "a Call-in-index must emit `kernels::<callee>(<args>)`; the surrounding \
+         subscript applies its own `as usize` cast"
+    );
+}
+
+#[test]
+fn int_expr_call_in_index_recurses_args() {
+    // A two-arg call with a binop arg pins that the arg list recurses
+    // through `render_int_expr` (each arg rendered, joined with `, `).
+    let (names, sidecar) = empty_fixtures();
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let expr = IrExpr::Call {
+        callee: "g".to_string(),
+        args: vec![
+            ident("k"),
+            IrExpr::BinOp(
+                nucleus_compiler::algo::IrBinOp::Add,
+                Box::new(ident("j")),
+                Box::new(IrExpr::IntLit(1)),
+            ),
+        ],
+    };
+
+    let rendered = render_int_expr(&expr, &ctx).expect("two-arg call in index must render");
+    assert_eq!(rendered, "kernels::g(k, (j + 1))");
 }
 
 // --------------------------------------------------------------------

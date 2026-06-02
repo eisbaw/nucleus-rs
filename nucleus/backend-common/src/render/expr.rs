@@ -66,12 +66,40 @@ pub fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitEr
         // `usize` in turn. The inner read MUST be FULL-RANK (every axis
         // of the index array indexed to a single scalar slot) — a
         // partial-rank gather index would be a sub-array, not an integer
-        // index value, so it is rejected fail-loud. Kernel calls in index
-        // position remain unsupported.
+        // index value, so it is rejected fail-loud. A PURE kernel call
+        // in index position is the sibling `IrExpr::Call` arm below
+        // (TASK-0430).
         IrExpr::DataRef(iref) => render_gather_index_load(iref, ctx),
-        IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
-            "kernel call inside an integer index expression".to_string(),
-        )),
+        // TASK-0430 (X1'): a PURE kernel call in array-SUBSCRIPT index
+        // position `histogram[bucket(input[i])]`. The lowering pass
+        // (`lower_index_expr`, subscript-only, pure-callee-only) is the
+        // gate; here we just emit the call. Each arg renders by
+        // structural recursion through `render_int_expr`: a scalar arg
+        // (`i`) renders affine, a data-ref arg (`input[i]`) hits the
+        // gather arm above (`render_gather_index_load`), a nested pure
+        // call recurses here. The emitted expression is `i32`-valued
+        // (the kernel's integer return); the surrounding subscript
+        // applies its own `as usize` cast, exactly as it does for the
+        // gather `DataRef` arm. Spelling matches the Fire call sites
+        // (`kernels::<callee>(<args>)`).
+        //
+        // NOTE: args are emitted WITHOUT a per-param `as <ty>` cast
+        // (unlike `render_fire_arg`'s scalar path). The kernel-sig cast
+        // is unnecessary here: every legal index-position arg is itself
+        // integer-shaped (an iter var, a const, an i32 gather load, or
+        // another pure-call returning an integer), and the bare
+        // expression already typechecks against an `i32`/`i64` param;
+        // rustc surfaces any genuine mismatch loudly at build of the
+        // generated crate. Adding the sig-driven cast would require
+        // plumbing the callee's `KernelId` + param types through
+        // `render_int_expr`, which today takes only an `IrExpr`.
+        IrExpr::Call { callee, args } => {
+            let rendered = args
+                .iter()
+                .map(|a| render_int_expr(a, ctx))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("kernels::{callee}({})", rendered.join(", ")))
+        }
     }
 }
 
