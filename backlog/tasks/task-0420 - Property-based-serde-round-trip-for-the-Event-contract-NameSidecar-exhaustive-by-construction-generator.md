@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mped'
 created_date: '2026-06-02 01:06'
-updated_date: '2026-06-02 01:33'
+updated_date: '2026-06-02 02:08'
 labels:
   - hardening
   - testing
@@ -63,6 +63,10 @@ PROPTEST_CASES=256 floor (documented in //!). Rich //! mirrors proptest_petri.rs
 NO round-trip failure found (256 + 256 + 4000-case stress all green) -> honest-failure path NOT triggered; clean additive outcome. No proptest-regressions/ written (repo commits none; none tracked/gitignored -> matched convention).
 GATE (actual): just build clean; just clippy clean -D warnings (removed an unused BTreeSet import that would have RED-ed clippy); just test 1247 passed/0 failed/3 ignored (proptest_serde 2 ok); just test-release 1245 passed/0 failed/3 ignored (proptest_serde 2 ok; 2 fewer than dev = expected debug_assert-gated #[should_panic] dev-only tests); just e2e 385/328/0/57/0 HELD EXACTLY. Non-flake: just test run 2x + 4000-case stress, all green, no seed file.
 GOTCHAS/SUBTLETIES: (1) ScalarType F32/F64 are FIELDLESS tags (no float payload) -> no NaN-equality hazard; no f32/f64 VALUE carried by either contract type. (2) BlockTag/ReuseSlot are NOT crate-root re-exported -> referenced via event::BlockTag / passes::reuse_inference::ReuseSlot. (3) String fields use small ASCII ident alphabet not arbitrary UTF-8 (full-Unicode JSON-escape fidelity is serde_json own contract). (4) recursion depth<=2 limit: a serde-recursion bug only at depth>=3 would be missed (no evidence such class exists; serde derive is depth-agnostic; tests/event.rs pins one hand-built depth-2 nest too).
+
+ORCHESTRATOR REVIEW GATE (phase3-ralph, parallel read-only, commit fcc3dff) — both GO. qa-test-runner INDEPENDENTLY RE-RAN: build+clippy clean (forced recompile, no doc_lazy_continuation on the large //! docstring); just test 1247/0/3; just test-release 1245/0/3; the proptest_serde binary genuinely runs its 2 properties (event_serde_roundtrip + sidecar_serde_roundtrip), passing across 4 invocations (non-flake), NOT a 0-case no-op; just e2e 385/328/0/57/0 x2 byte-identical; no proptest-regressions seed file leaked; tree clean. mped-architect INDEPENDENTLY VERIFIED the load-bearing break-to-update guard: Event 7/7 wildcard-free match (cross-checked enum); NameSidecar 11/11 serde fields no .. (independently enumerated src/sidecar.rs); round-trip is a real prop_assert_eq! with serde active (default=[serde]); ALL doc claims accurate incl the NaN-non-hazard (no f32/f64 VALUE carried by either contract — ScalarType F32/F64 are fieldless tags). 
+
+ORCHESTRATOR FOLD-BACK (commit f5a2856, in-thread, re-gated): architect P3.1 (SyncKind generator hardcoded Just(Barrier), un-guarded — a future Rendezvous/Quorum would silently never generate) + P3.2 (scalar_type doc OVERSTATED: claimed prop_oneof break-to-update enforcement that a Just(..) list does NOT have — a minor doc-lie). Fixed BOTH by adding wildcard-free *_completeness_guard matches for SyncKind/ScalarType/IrBinOp/ViolationKind (making the break-to-update claim TRUE rather than weakening it) + corrected the scalar_type doc + Sync-arm comment + module docstring. Re-gate: build+clippy clean (no doc_lazy_continuation), proptest_serde 2 props pass dev+release, just test 0 failed, e2e 385/328/0/57/0 HELD. RECORDED NUMBERS ARE REVIEWER-RE-RUN / orchestrator-re-run, not implementer-claimed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
