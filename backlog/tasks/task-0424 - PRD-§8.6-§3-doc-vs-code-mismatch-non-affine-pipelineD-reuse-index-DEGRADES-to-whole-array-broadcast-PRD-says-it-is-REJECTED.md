@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 07:52'
+updated_date: '2026-06-02 08:37'
 labels:
   - compiler
   - docs
@@ -48,4 +48,12 @@ GOTCHAS / FEED-FORWARD:
 3. No double-fire: the two early returns (return Some(Vec::new())) bypass the terminal bounds.is_empty() check, so each degradation emits exactly one trace line. Verified.
 
 REVIEW GATE CAVEAT (honest): qa-test-runner + mped-architect subagent spawn was NOT available as a callable tool this session. Per the feedback-api-overload-during-review-gate inline-fallback pattern, the orchestrator performed the review inline (full build/clippy/test/test-release/e2e + critical diff read: confirmed no doc-lie, no double-trace, behaviour unchanged, e2e bit-identity). Gate CONTENT preserved; independence-of-result lost. Low-risk change (docs + env-gated advisory trace, zero codegen-path effect).
+
+Cycle-242 orchestrator review gate (independent, read-only) — restores the independence the implementer lost when it self-reviewed inline:
+- qa-test-runner: GO. build OK; clippy clean (forced fresh re-check, no doc_lazy_continuation); test 1251 dev / 1249 release (0 failed, 3 ignored); e2e 385/328/0/57/0 x2, no flake.
+- mped-architect: GO with P2 (silent-sibling) + two P3 nits, all folded back in commit 3565602:
+  * P2: sibling order_halo_strip_bounds_by_data_dim degraded to whole-array at its ambiguity (od==id) and non-prefix (_-arm) branches WITHOUT the advisory trace its sibling just got — fixed: parallel NUC_TRACE added at both (repo recurring defect class #2, silent-sibling).
+  * P3: terminal trace in compute_partition_bounds_with_dim_prefix listed 2 sub-causes; the 1=>arm also reaches it when a partitioned iv lacks a per-worker range (3rd sub-cause) — message + comment now enumerate all three.
+  * P3 (process): review-independence restored by this gate; implementer self-review was the documented api-overload fallback but is NOT the loop norm.
+Post-fold-back gate re-run by orchestrator: build OK, clippy clean, test 1251 dev / 1249 release, e2e 385/328/0/57/0 x2. TASK-0424 stays DONE — both deliverables complete + hardened.
 <!-- SECTION:NOTES:END -->
