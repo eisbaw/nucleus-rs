@@ -6,14 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 02:28'
+updated_date: '2026-06-02 10:04'
 labels:
   - compiler
   - event-contract
   - prd-invariant-audit
   - cycle-241
 dependencies:
-  - TASK-0422
+  - TASK-0428
 priority: low
 ---
 
