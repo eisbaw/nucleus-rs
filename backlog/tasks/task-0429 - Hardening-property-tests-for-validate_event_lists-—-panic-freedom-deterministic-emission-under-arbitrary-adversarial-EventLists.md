@@ -7,7 +7,7 @@ status: Done
 assignee:
   - implementer
 created_date: '2026-06-02 20:17'
-updated_date: '2026-06-02 20:36'
+updated_date: '2026-06-02 20:53'
 labels:
   - compiler
   - event-contract
@@ -68,4 +68,6 @@ ok=709 any_err=3387; per-arm hit counts: unmatched_push=4709 unmatched_wait=4705
 
 ### Gate (green)
 just build OK; just clippy clean (-D warnings, re-run independently); dev test 1268/0/3 (was 1264, +4); release test 1266/0/3 (was 1262, +4); just e2e 385/328/0/57/0 EXACT (no regression); check-mega-files OK; check-include-str-coverage OK.
+
+Cycle-246 review gate (parallel read-only): qa-test-runner GO + mped-architect GO. qa: e2e 385/328/0/57/0, dev 1268/0/3, release 1266/0/3, clippy clean, fences green, 4 property tests stable x3 runs (proptest seeded, no flake). architect ran an INDEPENDENT 4096-case probe corroborating non-vacuity: all 7 error arms fire (SyncParticipantDisagreement/inv6 667x, UnmatchedPush 4616, UnmatchedWait 4687, EmptySyncParticipants 982, PushToSelf 1175, OverlappingAlloc 288, FreeWithoutAlloc 4522, Ok 711) — small-id-domain (0..=3) claim VERIFIED true in committed strategy; P3 variant-scoping verified correct against event_validate.rs:513-594 (Alloc/Free order-sensitive correctly EXCLUDED; Unmatched*/SyncParticipantDisagreement/EmptySyncParticipants/PushToSelf order-independent correctly INCLUDED); no prop_assume!/no #[ignore]/no production code touched. P1: none. P2: none. P3-1 (Display-set-key comment overclaimed "every field printed" — renders tile.rank() not tile contents) + P3-2 (copied Event strategy lacked the completeness guard proptest_serde.rs carries — silent-sibling trap) BOTH FIXED IN-THREAD commit 70f5e9b (gate re-run green: e2e 385/328/0/57/0, dev 1268/release 1266, clippy clean). P3-3 (matched-pair/Ok-closure arm thinly exercised ~1% of cases — acceptable for a panic/determinism/reorder suite; flagged so a future strengthen-matched-pair-coverage idea is not lost, NO task filed). Status stays Done.
 <!-- SECTION:NOTES:END -->
