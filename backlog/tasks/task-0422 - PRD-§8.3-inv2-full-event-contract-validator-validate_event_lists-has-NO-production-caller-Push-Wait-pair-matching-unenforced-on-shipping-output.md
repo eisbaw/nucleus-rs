@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-02 02:27'
-updated_date: '2026-06-02 16:21'
+updated_date: '2026-06-02 17:02'
 labels:
   - compiler
   - event-contract
@@ -40,4 +40,15 @@ REMAINING SCOPE for this task (now actionable): wire validate_event_lists as the
  (2) Only after (1) is green: add the validate_event_lists call at the backend EventList-consumption entry (or promote the acfg_to_events debug_assert to the full validator IF (1) proves it safe pre-mediation too). The acfg_to_events assert site currently stays per-worker-subset deliberately because it precedes mediation (see corrected rationale comment there).
 
 The "principled deferral" framing in this task description is now historical — keep for provenance but the live blocker is (1), not the transfer_inject splice gap.
+
+Forward-carried from TASK-0422.01 (cycle-243, commit 62c1c9e): STEP (1) IS GREEN. PRD §8.3 inv(2) (matched Push/Wait pairs) is empirically proven to hold on the POST-mediation EventList for ALL 4 mp-* backends (mp-tcp-{bufsync,event,poll} + mp-uds-event) across the entire example corpus: 220 (backend, schedule) cells, 0 inv(2) violations, 0 pipeline errors. Regression-pinned + non-vacuity-pinned at nucleus/driver/tests/task0422_01_inv2_post_mediation.rs.
+
+What step (2) (gate-wiring) can now ASSUME:
+ - validate_event_lists returns Ok on the post-mediation EventList that the mp-* backends actually consume, for every shipping schedule. Wiring it as a HARD gate at the mp-* backend EventList-consumption entry will NOT crash on any current corpus program. (This was the exact panic-on-valid-input risk that justified the original deferral; it is now discharged for the mediated backends too, not just the pre-mediation pthreads/openmp chain TASK-0428 covered.)
+ - The mediation pass set + host election to mirror lives at driver/src/main.rs ~464-553; the test mirrors it via backend_common::elect_host_from_name_workers (shared helper, no skew). If step (2) wires the gate INSIDE the driver after the mediation passes (rather than inside each backend), that single site covers all 4 mp-* backends.
+
+LIMITS step (2) must still respect:
+ - This is COMPILE-time contract proof over the current corpus only; it is NOT a proof for arbitrary future schedules. A hard gate is therefore correct (it would catch a future regression), but the gate itself is the enforcement, not this sweep.
+ - host_data_relay_inject no-ops for many schedules; the proof covers inv(2) on whatever each pass emits, with non-vacuity demonstrated for 09-producer-consumer/pipelined only.
+ - The acfg_to_events debug_assert deliberately stays per-worker-subset because it precedes mediation (see corrected rationale in petri_to_events.rs); step (2) should add the FULL validate_event_lists call at/after the post-mediation projection, not promote the pre-mediation assert.
 <!-- SECTION:NOTES:END -->
