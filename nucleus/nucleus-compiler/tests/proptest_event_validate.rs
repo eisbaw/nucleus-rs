@@ -226,6 +226,29 @@ fn event_leaf() -> impl Strategy<Value = Event> {
     ]
 }
 
+/// Exhaustiveness teeth for [`Event`] (TASK-0429 review P3-2). NO
+/// wildcard arm — adding a variant to `Event` breaks this match and
+/// forces a matching `event_leaf`/`event_strategy` arm so the new
+/// variant is actually fuzzed against the validator. Without this, a
+/// future `Event` variant would silently go un-generated HERE while the
+/// file still compiles green (the `feedback-silent-sibling-defect`
+/// pattern): `proptest_serde.rs` carries the same guard for its own
+/// copy of the strategy, but that guard only protects that file.
+#[allow(dead_code)]
+fn event_variant_completeness_guard(e: &Event) {
+    match e {
+        Event::Fire { .. } => {}
+        Event::Alloc { .. } => {}
+        Event::Push { .. } => {}
+        Event::Wait { .. } => {}
+        Event::Sync { .. } => {}
+        Event::Free { .. } => {}
+        Event::Loop { .. } => {}
+        // INTENTIONALLY no `_ =>` arm: a new Event variant must
+        // break-to-update the generator above.
+    }
+}
+
 /// Full `Event` strategy: leaf arms plus the recursive `Loop` arm
 /// (bounded depth ≤ 2). The loop body recurses into shallower events,
 /// so the validator's `Event::Loop`-body recursion is exercised. The
@@ -278,10 +301,15 @@ fn order_independent_errors(
                     | EventValidationError::FreeWithoutAlloc { .. }
             )
         })
-        // Use the Display string as a canonical set key. The variants
-        // are PartialEq+Eq but not Ord/Hash; the Display rendering is a
-        // total, deterministic textual identity (every field is
-        // printed) sufficient for set comparison.
+        // Use the Display string as a set key. The variants are
+        // PartialEq+Eq but not Ord/Hash; Display is deterministic and
+        // order-stable. NOTE it renders `tile.rank()` (axis count), NOT
+        // the full tile contents, so two errors differing ONLY in tile
+        // contents at the same rank collapse to one key. That is
+        // harmless for P3: such a collapse is itself independent of
+        // within-worker event order, so the before/after sets stay
+        // equal regardless. (P3 asserts reorder-invariance, not error
+        // injectivity.)
         .map(|e| e.to_string())
         .collect()
 }
