@@ -377,6 +377,179 @@ fn shipping_shaped_unrolled_loop_buffer_passes_no_false_reject() {
 }
 
 // --------------------------------------------------------------------
+// Completeness (TASK-0427): an OFF-ORDER conflict the old single-order
+// replay missed is now detected by the coverability BFS.
+// --------------------------------------------------------------------
+
+/// The architect's TASK-0421 counterexample to the OLD single-order
+/// replay. A place `p` (capacity 2) is fed by two loaders and consumed by
+/// three transitions: `cons_x` needs 1 token, `cons_y` and `cons_z` each
+/// need 2. The free-choice conflict is at the marking `p == 2`, where
+/// `cons_y` and `cons_z` are BOTH consumption-enabled (each needs 2) —
+/// `cons_x` (needs 1) is also enabled, so `p` has THREE co-enabled
+/// consumers there.
+///
+/// PROVE-IT-BITES (completeness upgrade): the OLD single-order replay
+/// ACCEPTED this net (returned `Ok`). `derive_firing_order` fires a
+/// loader (raising `p` to 1), then immediately drains `p` via `cons_x`
+/// (source-order-first) BEFORE the second loader can raise `p` to 2, so
+/// the `p == 2` marking — reachable on the interleaving "fire BOTH loaders
+/// first" — is never visited by that one order, and the conflict is
+/// missed. The new coverability BFS visits ALL reachable markings,
+/// reaches `p == 2` after firing both loaders, and flags the conflict.
+///
+/// The reported `position` is the BFS depth at which `p` first reaches 2:
+/// 2 firings (load1 + load2) from the initial marking. Pinned to the
+/// value observed empirically; the BFS is deterministic (FIFO frontier,
+/// successors in TransitionId order, `p == 2` is first reachable at
+/// depth 2 and not before — at `p == 1` only `cons_x` is enabled).
+#[test]
+fn off_order_free_choice_conflict_now_detected() {
+    let mut net = Net::new();
+    let s1 = net.add_place("s1", cap(1), 1);
+    let s2 = net.add_place("s2", cap(1), 1);
+    let p = net.add_place("p", cap(2), 0);
+
+    // Two loaders deposit into p.
+    let load1 = net.add_transition("load1", None);
+    net.add_arc(ArcKind::PtoT, s1, load1, 1);
+    net.add_arc(ArcKind::TtoP, p, load1, 1);
+
+    let load2 = net.add_transition("load2", None);
+    net.add_arc(ArcKind::PtoT, s2, load2, 1);
+    net.add_arc(ArcKind::TtoP, p, load2, 1);
+
+    // Three consumers of p: cons_x needs 1, cons_y and cons_z need 2.
+    let cons_x = net.add_transition("cons_x", None);
+    net.add_arc(ArcKind::PtoT, p, cons_x, 1);
+
+    let cons_y = net.add_transition("cons_y", None);
+    net.add_arc(ArcKind::PtoT, p, cons_y, 2);
+
+    let cons_z = net.add_transition("cons_z", None);
+    net.add_arc(ArcKind::PtoT, p, cons_z, 2);
+
+    let err = check_conflict_free(&net)
+        .expect_err("off-order conflict on place p must now be detected by the BFS");
+    match err {
+        ConflictError::FreeChoice {
+            place_name,
+            transitions,
+            position,
+            ..
+        } => {
+            assert_eq!(place_name, "p");
+            // At p == 2 all three consumers are consumption-enabled
+            // (cons_x needs 1, cons_y/cons_z need 2); the gate reports
+            // every co-enabled consumer of the contested place, sorted by
+            // TransitionId (cons_x id 2 < cons_y id 3 < cons_z id 4).
+            let names: Vec<&str> = transitions.iter().map(|(_, n)| n.as_str()).collect();
+            assert_eq!(names, vec!["cons_x", "cons_y", "cons_z"]);
+            assert!(
+                transitions.len() >= 2,
+                ">= 2 co-enabled consumers required for a free-choice conflict"
+            );
+            // BFS depth at which p first reaches 2: load1 + load2 = 2.
+            assert_eq!(position, 2);
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// Size guard (TASK-0427): a LARGE contested net falls back to the
+// single-order replay instead of an intractable product-state BFS.
+// --------------------------------------------------------------------
+
+/// REGRESSION PIN (TASK-0427). The first TASK-0427 draft ran the
+/// coverability BFS on every contested net. That is intractable on a real
+/// multi-worker net: the 16-jacobi/distributed × mp-tcp-event GATE net has
+/// 1179 places / 522 transitions / 24 contested places (the benign
+/// serialised cross-worker `Wait` fan-out — NOT a conflict, each wait is
+/// gated behind its own per-worker control place), and the BFS explored its
+/// reachable PRODUCT state space, churning for ~15 minutes toward the
+/// marking cap before falling back — which BLEW the `just e2e` per-cell
+/// build budget (the original implementer misdiagnosed it as a "transient
+/// build flake"; it was a deterministic 15-minute spin reproducible with a
+/// single `nucleus build`).
+///
+/// The fix is a transition-count guard: nets larger than the BFS limit use
+/// the historical single-order replay directly. This test builds a net
+/// that is LARGE (many transitions) and CONCURRENT (many independent worker
+/// chains, so an unguarded BFS would face a combinatorial product state
+/// space) yet genuinely conflict-free (each contested buffer's two
+/// consumers are serialised by a per-worker control chain, never
+/// co-enabled). The guard must short-circuit the BFS so this returns `Ok`
+/// FAST. Without the guard this test would hang.
+///
+/// Shape: `W` independent worker chains, each
+/// `(ctl0:1) -[push0]-> (ctl1), buf+1 ; (ctl1) -[push1]-> (ctl2), buf+1 ;`
+/// `(cc0:1) -[wait0]-> (cc1), buf-1 ; (cc1) -[wait1]-> (cc2), buf-1`.
+/// Each worker's `buf` is contested (wait0, wait1 both consume it) but the
+/// two waits are serialised by the consumer control chain, exactly the
+/// `shipping_shaped_unrolled_loop_buffer_passes_no_false_reject` shape —
+/// replicated `W` times to push the transition count past the limit and to
+/// make the concurrent product state space large.
+#[test]
+fn large_contested_net_falls_back_to_single_order_and_passes_fast() {
+    let mut net = Net::new();
+    // 40 workers × 4 transitions = 160 transitions — well past the
+    // 64-transition BFS limit, and 40-way concurrent so an unguarded BFS
+    // would face a product state space far beyond any tractable cap.
+    let workers = 40;
+    let mut contested_bufs = 0usize;
+    for w in 0..workers {
+        let ctl_p0 = net.add_place(format!("ctl_p{w}_0"), cap(1), 1);
+        let ctl_p1 = net.add_place(format!("ctl_p{w}_1"), cap(1), 0);
+        let ctl_p2 = net.add_place(format!("ctl_p{w}_2"), cap(1), 0);
+        let buf = net.add_place(format!("buf{w}"), cap(2), 0);
+        let ctl_c0 = net.add_place(format!("ctl_c{w}_0"), cap(1), 1);
+        let ctl_c1 = net.add_place(format!("ctl_c{w}_1"), cap(1), 0);
+        let ctl_c2 = net.add_place(format!("ctl_c{w}_2"), cap(1), 0);
+
+        let push0 = net.add_transition(format!("push{w}_0"), None);
+        net.add_arc(ArcKind::PtoT, ctl_p0, push0, 1);
+        net.add_arc(ArcKind::TtoP, ctl_p1, push0, 1);
+        net.add_arc(ArcKind::TtoP, buf, push0, 1);
+
+        let push1 = net.add_transition(format!("push{w}_1"), None);
+        net.add_arc(ArcKind::PtoT, ctl_p1, push1, 1);
+        net.add_arc(ArcKind::TtoP, ctl_p2, push1, 1);
+        net.add_arc(ArcKind::TtoP, buf, push1, 1);
+
+        let wait0 = net.add_transition(format!("wait{w}_0"), None);
+        net.add_arc(ArcKind::PtoT, ctl_c0, wait0, 1);
+        net.add_arc(ArcKind::TtoP, ctl_c1, wait0, 1);
+        net.add_arc(ArcKind::PtoT, buf, wait0, 1);
+
+        let wait1 = net.add_transition(format!("wait{w}_1"), None);
+        net.add_arc(ArcKind::PtoT, ctl_c1, wait1, 1);
+        net.add_arc(ArcKind::TtoP, ctl_c2, wait1, 1);
+        net.add_arc(ArcKind::PtoT, buf, wait1, 1);
+
+        contested_bufs += 1;
+    }
+
+    assert!(
+        net.transitions.len() > 64,
+        "fixture must exceed the BFS transition limit (got {})",
+        net.transitions.len()
+    );
+    assert_eq!(contested_bufs, workers, "every worker has a contested buf");
+
+    // Must return Ok via the single-order fallback, FAST. A wall-clock
+    // assertion pins the no-spin property: the old unguarded BFS took
+    // minutes on a net this concurrent; the guarded path is sub-millisecond.
+    let start = std::time::Instant::now();
+    check_conflict_free(&net)
+        .expect("large serialised-consumer net is conflict-free; guard must accept it");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_secs() < 2,
+        "size guard must short-circuit the BFS; took {elapsed:?} (a spin would be minutes)"
+    );
+}
+
+// --------------------------------------------------------------------
 // Determinism: the gate is a pure function of the net
 // --------------------------------------------------------------------
 

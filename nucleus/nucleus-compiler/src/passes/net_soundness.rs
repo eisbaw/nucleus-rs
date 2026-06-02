@@ -101,9 +101,9 @@
 //! that DID emit an unsound net) would be caught at build time rather
 //! than shipping as a runtime hang or buffer overrun.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::petri::{ArcKind, Net, PlaceId, TransitionId};
+use crate::petri::{ArcKind, Marking, Net, PlaceId, TransitionId};
 
 use super::boundedness::{check_bounded, derive_firing_order, BoundednessError};
 use super::deadlock::{check_deadlock_free, DeadlockError};
@@ -167,11 +167,10 @@ impl std::error::Error for PetriAnalysisError {}
 /// user-facing message without re-indexing into the net.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConflictError {
-    /// At a reachable marking along the derived firing order, two or
-    /// more distinct transitions that consume from `place` were each
-    /// enabled. The choice of which fires is therefore decided by
-    /// run-time token availability, not by the static order — a
-    /// free-choice conflict (PRD §8.4(a)).
+    /// At a reachable marking, two or more distinct transitions that
+    /// consume from `place` were each enabled. The choice of which fires
+    /// is therefore decided by run-time token availability, not by the
+    /// static order — a free-choice conflict (PRD §8.4(a)).
     FreeChoice {
         /// The contested input place.
         place: PlaceId,
@@ -181,10 +180,12 @@ pub enum ConflictError {
         /// [`TransitionId`] for a stable message. Each entry is the
         /// id plus its echoed name.
         transitions: Vec<(TransitionId, String)>,
-        /// How many transitions were fired before the marking at which
-        /// the conflict was observed. Zero-based; a conflict at the
-        /// initial marking reports `0`. Useful for pointing the user at
-        /// a source position once the order -> span map exists.
+        /// Minimum firings from the initial marking to a marking
+        /// exhibiting the conflict (the BFS depth at which the
+        /// coverability search first reaches a conflicting marking).
+        /// Zero-based; a conflict at the initial marking reports `0`.
+        /// Useful for pointing the user at a source position once the
+        /// order -> span map exists.
         position: usize,
     },
 }
@@ -202,9 +203,9 @@ impl std::fmt::Display for ConflictError {
                     transitions.iter().map(|(_, n)| n.as_str()).collect();
                 write!(
                     f,
-                    "conflict: place '{}' is a free-choice conflict at firing-order position {}: \
-                     transitions [{}] are simultaneously enabled and all consume from it, so which \
-                     fires is not statically determined (PRD §8.4(a))",
+                    "conflict: place '{}' is a free-choice conflict {} firing(s) from the initial \
+                     marking: transitions [{}] are simultaneously enabled and all consume from it, \
+                     so which fires is not statically determined (PRD §8.4(a))",
                     place_name,
                     position,
                     names.join(", ")
@@ -249,11 +250,16 @@ impl std::error::Error for ConflictError {}
 /// `PtoT` arcs to many distinct waits — exactly the benign serialised
 /// fan-out a structural predicate would mis-flag.)
 ///
-/// So the predicate is **reachability-aware**: we replay the
-/// deterministic firing order (the same [`derive_firing_order`] the
-/// boundedness/deadlock gates use) and, at the marking *before* each
-/// step (plus the final marking), check that no place has `>= 2` of its
-/// consumer transitions enabled at once.
+/// So the predicate is **reachability-aware**: for a small contested net we
+/// run a deterministic bounded coverability BFS over the net's reachable,
+/// capacity-respecting markings and, at EACH reachable marking, check that
+/// no place has `>= 2` of its consumer transitions enabled at once. Two
+/// guards keep this affordable (see "## Cost"): a fast path short-circuits
+/// the BFS entirely when no place even has `>= 2` consumers, and a
+/// transition-count guard routes LARGE contested nets (real multi-worker
+/// shipping nets DO have contested places — the benign serialised
+/// cross-worker `Wait` fan-out) to the historical single-order replay
+/// instead of an intractable product-state-space BFS.
 ///
 /// ## "Enabled" here = consumption-enabled (capacity ignored)
 ///
@@ -275,62 +281,116 @@ impl std::error::Error for ConflictError {}
 /// shipping schedule today (each transition consumes a fresh
 /// single-marked control place, serialising every worker). The check
 /// exists to catch a FUTURE inject-pass regression that emitted a net
-/// where a place co-enables two consumers *at a marking the derived
-/// order visits* — which the boundedness/deadlock gates would NOT catch
-/// (they replay the same single order and would silently pass on it).
-/// The bite test in `tests/net_soundness.rs` pins the reject path at the
-/// function level.
+/// where a place co-enables two consumers at ANY reachable marking —
+/// which the boundedness/deadlock gates would NOT catch (they replay a
+/// single order and would silently pass on it). The bite tests in
+/// `tests/net_soundness.rs` pin the reject path at the function level
+/// (one conflict visible at the initial marking, one reachable only on
+/// an off-order interleaving the old single-order replay missed).
 ///
-/// ## Honest limitation — under-approximation (false negatives, never
-/// false positives)
+/// ## Completeness — and the two residuals (TASK-0427)
 ///
-/// This is NOT a coverability search. It replays the SAME single
-/// [`derive_firing_order`] the boundedness/deadlock gates use and
-/// inspects only the markings ALONG that one order. PRD §8.6's
-/// "single-order replay ≡ all reachable markings" equivalence holds
-/// *because the net is conflict-free* — the very property checked here
-/// — so the check is necessarily circular at the edges: a conflict that
-/// is reachable only on a *different* interleaving (one the greedy
-/// order does not take, e.g. two producers that both deposit into a
-/// place before either consumer fires) is NOT detected. Concretely, a
-/// net where the derived order drains a place via one consumer before a
-/// second producer can raise the count enough to co-enable a rival
-/// consumer will pass even though the rival is co-enabled on another
-/// reachable path. So the gate is an UNDER-APPROXIMATION: it has false
-/// negatives (misses such off-order conflicts) but never false
-/// positives (never rejects a valid build — confirmed by the e2e
-/// baseline holding). It catches the most likely regression class (a
-/// conflict that manifests on the derived order, e.g. co-enabled at the
-/// initial marking) and is strictly better than no check; a complete
-/// guarantee would require a coverability analysis the gate
-/// deliberately is not (cf. `deadlock`'s "exact replay only" caveat).
+/// For SMALL contested nets (`<= CONFLICT_BFS_TRANSITION_LIMIT`
+/// transitions) whose reachable state space also fits within
+/// [`CONFLICT_STATE_SPACE_CAP`] markings, this gate is COMPLETE: the
+/// coverability BFS visits EVERY reachable, capacity-respecting marking
+/// and flags a conflict that co-enables two consumers at ANY of them,
+/// not only the markings one derived order happens to visit. This is a
+/// strict improvement over the prior single-order replay, which inspected
+/// only the markings along one [`derive_firing_order`] and therefore
+/// missed a conflict reachable solely on a *different* interleaving (two
+/// producers both depositing into a place before either consumer fires —
+/// the architect's counterexample in TASK-0421, pinned by
+/// `off_order_free_choice_conflict_now_detected` in
+/// `tests/net_soundness.rs`).
+///
+/// There are TWO residuals where the gate REVERTS to the historical
+/// single-order replay (an under-approximation: false negatives possible,
+/// NEVER false positives), each emitting a `NUC_TRACE` advisory:
+///
+/// 1. **Large contested net** (`> CONFLICT_BFS_TRANSITION_LIMIT`
+///    transitions). The BFS explores the net's reachable PRODUCT state
+///    space, which on a multi-worker net is combinatorial; running it on,
+///    e.g., the 522-transition 16-jacobi/distributed × mp-tcp-event gate
+///    net (24 contested places — the benign serialised cross-worker `Wait`
+///    fan-out) churns for ~15 minutes. So a net above the limit is NOT run
+///    through the BFS at all (see [`CONFLICT_BFS_TRANSITION_LIMIT`]). This
+///    is the COMMON regime for real shipping multi-worker nets — contrary
+///    to the original TASK-0421 premise that "no shipping net has a
+///    contested place", several do (the same benign serialised fan-out the
+///    `shipping_shaped_unrolled_loop_buffer_passes_no_false_reject` pin
+///    accepts, but at multi-worker scale).
+/// 2. **Small net that nonetheless exceeds the marking cap.** A net within
+///    the transition limit but whose reachable state space still exceeds
+///    [`CONFLICT_STATE_SPACE_CAP`]: the BFS truncates and falls back. A
+///    defensive bound only; no net within the transition limit is known to
+///    reach it.
+///
+/// So the gate is "complete for small contested nets within both caps;
+/// single-order under-approximation for large/blowup nets". In ALL regimes
+/// the gate never false-positives: it never rejects a valid build (the
+/// single-order replay is sound; confirmed by the e2e baseline holding and
+/// the `shipping_shaped_unrolled_loop_buffer_passes_no_false_reject`
+/// no-false-reject pin). v2's structural inject-pass guards make a genuine
+/// free-choice conflict impossible on every shipping schedule regardless,
+/// so the residual under-approximation has no effect on any real net; the
+/// completeness upgrade buys teeth against a FUTURE small-net inject-pass
+/// regression.
 ///
 /// ## Determinism
 ///
-/// `derive_firing_order` is deterministic; the per-marking enabled-set
-/// scan iterates the contested places in [`PlaceId`] order, so the
-/// reported conflict (first place in id order at the first conflicting
-/// marking) is byte-stable across runs.
+/// The BFS is deterministic: the frontier is a FIFO queue, successors are
+/// generated by firing transitions in [`TransitionId`] order, the visited
+/// set dedups on a canonical marking key, and the per-marking enabled-set
+/// scan iterates the contested places in [`PlaceId`] order. So the
+/// reported conflict — the first contested place (in id order) at the
+/// minimum-depth conflicting marking the FIFO reaches — and its reported
+/// `position` (BFS depth) are byte-stable across runs. The cap-fallback
+/// path inherits `derive_firing_order`'s determinism.
 ///
-/// ## Cost (the perf-pin contract, TASK-0377 / TASK-0421)
+/// ## Cost (the perf-pin contract, TASK-0377 / TASK-0421 / TASK-0427)
 ///
 /// The common case — *no* place has `>= 2` consumers — is detected in
-/// O(A) (one arc pass) and returns immediately with NO replay, so the
-/// gate adds only an O(A) constant on every shipping net (all of which
-/// are conflict-free; AC#1). When contested places DO exist, we replay
-/// the derived order once (O(T·deg), like each sibling pass) and at each
-/// marking re-check only the contested places' consumers, using a
-/// per-transition `needs` table precomputed in O(A). The
-/// `gate_stays_near_linear_under_large_net` pin in `tests/boundedness.rs`
-/// guards the near-linear bound.
+/// O(A) (one arc pass) and returns immediately, with NO BFS. This is the
+/// `gate_stays_near_linear_under_large_net` perf-pin net (16000
+/// transitions, each place with exactly ONE consumer ⇒ no contested place
+/// ⇒ fast path) and many shipping nets. The perf-pin claim holds: the BFS
+/// never runs on it.
+///
+/// When a place HAS `>= 2` consumers, the next gate is the **transition
+/// count** ([`CONFLICT_BFS_TRANSITION_LIMIT`]): a LARGE contested net
+/// (real multi-worker shipping nets — e.g. 16-jacobi/distributed has 522
+/// transitions, 24 contested places) does NOT run the BFS; it does ONE
+/// `derive_firing_order` + a single-order replay (O(A) + O(order)), the
+/// historical cost. This is what keeps the e2e per-cell build fast and
+/// bit-identical — running the BFS on those nets would churn for minutes.
+///
+/// Only a SMALL contested net (`<= CONFLICT_BFS_TRANSITION_LIMIT`
+/// transitions — the architect's counterexample, the synthetic tests)
+/// runs the coverability BFS: O(reachable-markings × T) bounded by
+/// [`CONFLICT_STATE_SPACE_CAP`], reusing one `sim` and firing in place
+/// (O(deg(t)) per successor, no per-step net clone), with each marking's
+/// conflict check touching only the contested places' consumers via a
+/// per-transition `needs` table precomputed in O(A). Such nets are tiny,
+/// so correctness/determinism/termination — not throughput — are the
+/// requirements; the transition limit and marking cap guarantee
+/// termination. The `gate_stays_near_linear_under_large_net` pin in
+/// `tests/boundedness.rs` guards the fast-path near-linear bound.
 pub fn check_conflict_free(net: &Net) -> Result<(), ConflictError> {
     check_conflict_free_with_order(net, None)
 }
 
-/// Internal worker. `order` lets [`check_net_sound`] hand in the firing
-/// order it already derived (the passes share one order), avoiding a
-/// redundant `derive_firing_order` call. `None` derives it on demand
-/// (the `pub fn check_conflict_free` entry point + tests).
+/// Internal worker. For a small contested net the conflict check is a
+/// coverability BFS over reachable markings that does NOT use `order`.
+/// `order` is used by the single-order fallback
+/// ([`conflict_free_single_order_fallback`]), which runs when the net is
+/// LARGER than [`CONFLICT_BFS_TRANSITION_LIMIT`] (the common case for real
+/// multi-worker shipping nets — their BFS product state space is
+/// intractable) or when a small net's BFS exceeds the marking cap. The
+/// fallback reuses the firing order [`check_net_sound`] already derived
+/// (the passes share one order), avoiding a redundant `derive_firing_order`
+/// call; `None` derives it on demand (the `pub fn check_conflict_free`
+/// entry point + tests pass `None`).
 fn check_conflict_free_with_order(
     net: &Net,
     order: Option<&[TransitionId]>,
@@ -351,8 +411,13 @@ fn check_conflict_free_with_order(
     consumers.retain(|_, cset| cset.len() >= 2);
 
     // Fast path: no contested place ⇒ structurally conflict-free, no
-    // replay needed. This is EVERY shipping net (AC#1) and the perf-pin
-    // net, so the gate stays O(A) there.
+    // replay needed. This covers MANY shipping nets and the perf-pin net
+    // (16000 transitions, one consumer per place), so the gate stays O(A)
+    // there. NOTE: contrary to the original TASK-0421 premise, NOT every
+    // shipping net hits this fast path — real multi-worker nets (e.g.
+    // 16-jacobi/distributed) have contested places (benign serialised
+    // cross-worker `Wait` fan-out) and fall through to the size guard
+    // below.
     if consumers.is_empty() {
         return Ok(());
     }
@@ -374,9 +439,176 @@ fn check_conflict_free_with_order(
         }
     }
 
-    // The derived order is the single sequence the gate replays. We walk
-    // it, inspecting the marking *before* each firing (and the terminal
-    // marking after the last firing) for a conflict.
+    let index = net.build_arc_index();
+
+    // SIZE GUARD (TASK-0427, empirically load-bearing). A contested place
+    // exists. The coverability BFS below explores the net's reachable
+    // PRODUCT state space, which on a multi-worker net is combinatorial in
+    // the number of transitions/control-chains. Contrary to the original
+    // TASK-0421 premise, real shipping nets DO have contested places: the
+    // 16-jacobi/distributed × mp-tcp-event gate net has 1179 places / 522
+    // transitions / 24 contested places (the benign serialised cross-worker
+    // Wait fan-out — the same shape `shipping_shaped_unrolled_loop_buffer_
+    // passes_no_false_reject` pins, but at multi-worker scale). On such a
+    // net the BFS would churn for ~15 minutes toward the visited cap before
+    // falling back — blowing the e2e per-cell budget. So we run the BFS
+    // ONLY on nets small enough for the state space to be tractable; larger
+    // nets use the historical single-order replay directly. This keeps the
+    // completeness upgrade honest (complete for SMALL contested nets — the
+    // architect's counterexample and the synthetic tests; single-order
+    // under-approximation for large ones, exactly as before TASK-0427) AND
+    // preserves the e2e bit-identity + perf invariants. The single-order
+    // replay never false-rejects, so the large-net path stays SOUND.
+    if net.transitions.len() > CONFLICT_BFS_TRANSITION_LIMIT {
+        crate::nuc_trace!(
+            "check_conflict_free: net has {} transitions (> the {}-transition BFS limit) \
+             and {} contested place(s); skipping the coverability BFS (its product state \
+             space is intractable at this size) and using the single derived-order replay, \
+             so the result is the single-order UNDER-APPROXIMATION for this net (sound — \
+             never false-rejects — but a conflict reachable only on an off-order \
+             interleaving may be missed). v2's structural inject-pass guards make any such \
+             conflict impossible on shipping schedules; this path is a defensive residual.",
+            net.transitions.len(),
+            CONFLICT_BFS_TRANSITION_LIMIT,
+            consumers.len()
+        );
+        return conflict_free_single_order_fallback(net, order, &consumers, &needs, &index);
+    }
+
+    // Small contested net ⇒ run the coverability BFS over ALL reachable,
+    // capacity-respecting markings (not just one order's markings).
+    let mut sim = net.clone();
+    sim.reset_to_initial();
+
+    // Frontier of (marking, depth). `visited` dedups by the canonical key
+    // (sorted (place.0, count) tuples). `Marking::set(p, 0)` removes the
+    // entry, so the BTreeMap never holds a zero count — two markings that
+    // are equal under `Marking::get` therefore map to the SAME key, which
+    // is what makes the dedup correct (no absent-vs-zero split).
+    let mut frontier: VecDeque<(Marking, usize)> = VecDeque::new();
+    let mut visited: BTreeSet<Vec<(u32, u32)>> = BTreeSet::new();
+    frontier.push_back((sim.current_marking.clone(), 0));
+    visited.insert(marking_key(&sim.current_marking));
+
+    while let Some((marking, depth)) = frontier.pop_front() {
+        // Check the conflict predicate at THIS reachable marking. The
+        // predicate is byte-identical to the old single-order path; only
+        // the SET of markings inspected widened. `position` is the BFS
+        // depth: the minimum firings to reach a conflicting marking.
+        if let Some(conflict) =
+            find_conflict_at_marking(net, &marking, &consumers, &needs, depth)
+        {
+            return Err(conflict);
+        }
+
+        // Defensive cap: v2 nets are tiny, so this only fires on a
+        // pathological future net. We do NOT hard-error (panic-on-valid-
+        // input is the antipattern this gate rejects); instead we FALL
+        // BACK to the bounded single-order replay (the historical
+        // behaviour) and emit an advisory that the result is the
+        // single-order UNDER-APPROXIMATION for this net (honest residual).
+        if visited.len() >= CONFLICT_STATE_SPACE_CAP {
+            crate::nuc_trace!(
+                "check_conflict_free: coverability BFS truncated at the {}-marking cap \
+                 for this net; falling back to the single derived-order replay, so the \
+                 result is the single-order UNDER-APPROXIMATION (a conflict reachable only \
+                 on an unvisited off-order interleaving above the cap may be missed)",
+                CONFLICT_STATE_SPACE_CAP
+            );
+            return conflict_free_single_order_fallback(net, order, &consumers, &needs, &index);
+        }
+
+        // Generate successors deterministically: fire each transition in
+        // TransitionId order from this marking. A transition that cannot
+        // fire (token-stall or capacity) is simply not enqueued — this
+        // restricts the BFS to reachable, in-bounds markings (capacity-
+        // respecting reachability; the conflict PREDICATE still ignores
+        // capacity, which is correct and unchanged).
+        //
+        // We reuse the single `sim` rather than cloning the whole net per
+        // transition: before each attempt we restore `sim.current_marking`
+        // to this frontier marking, then `fire_in_place` mutates only the
+        // places incident to the fired transition (O(deg(t))). On failure
+        // `fire_in_place` leaves the marking untouched, so the restore at
+        // the top of the next iteration is what guarantees independence.
+        for ti in 0..net.transitions.len() {
+            let tid = TransitionId(ti as u32);
+            sim.current_marking = marking.clone();
+            if sim.fire_in_place(tid, &index).is_err() {
+                continue;
+            }
+            let key = marking_key(&sim.current_marking);
+            if visited.insert(key) {
+                frontier.push_back((sim.current_marking.clone(), depth + 1));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Defensive upper bound on the number of distinct markings the
+/// coverability BFS in [`check_conflict_free`] will visit before falling
+/// back to the single-order under-approximation. v2 nets are tiny (a
+/// handful of control places per worker), so this is never reached on a
+/// real net; it exists purely to guarantee termination on a
+/// pathological future net rather than spinning. Mirrors the
+/// `STATE_SPACE_CAP` used by the `proptest_petri.rs` reachability oracle.
+const CONFLICT_STATE_SPACE_CAP: usize = 50_000;
+
+/// Maximum transition count for which [`check_conflict_free`] runs the
+/// coverability BFS. Above this, a contested net uses the historical
+/// single-order replay directly (no BFS).
+///
+/// Why a size guard at all (TASK-0427, empirically required): the BFS
+/// explores the net's reachable PRODUCT state space, which on a
+/// MULTI-WORKER net is combinatorial in the number of concurrent
+/// control-chains/transitions. Real shipping nets DO contain contested
+/// places (e.g. 16-jacobi/distributed × mp-tcp-event: 522 transitions, 24
+/// contested places — the benign serialised cross-worker `Wait` fan-out),
+/// so the fast path does NOT short-circuit them; without this guard the
+/// BFS churns for ~15 minutes toward [`CONFLICT_STATE_SPACE_CAP`] before
+/// the cap-fallback fires, blowing the e2e per-cell budget. The guard
+/// keeps the BFS on nets small enough to be tractable (the architect's
+/// 5-transition TASK-0421 counterexample, the synthetic test nets) and
+/// routes larger nets to the sound single-order replay.
+///
+/// 64 is generous for any plausible hand-built genuine-conflict net while
+/// excluding multi-worker shipping nets by an order of magnitude. Small
+/// nets reaching this limit are single-worker-shaped (strictly
+/// control-chain serialised ⇒ near-linear reachable markings), so the BFS
+/// stays fast on every net it actually runs on; the
+/// [`CONFLICT_STATE_SPACE_CAP`] visited-count cap is the secondary
+/// defensive bound for any small-but-concurrent future net.
+const CONFLICT_BFS_TRANSITION_LIMIT: usize = 64;
+
+/// Canonical key for a [`Marking`] so it can live in a `BTreeSet` for the
+/// BFS visited-set. `Marking` does not implement `Ord`; we extract the
+/// sorted `(place.0, count)` tuples. Because `Marking::set(p, 0)` removes
+/// the entry, the backing map never holds a zero count, so two markings
+/// equal under `Marking::get` produce the SAME key (no absent-vs-zero
+/// split) — the property the dedup relies on. Mirrors
+/// `tests/proptest_petri.rs::marking_key`.
+fn marking_key(m: &Marking) -> Vec<(u32, u32)> {
+    let mut v: Vec<(u32, u32)> = m.0.iter().map(|(p, n)| (p.0, *n)).collect();
+    v.sort();
+    v
+}
+
+/// Cap-exceeded fallback: the historical single-derived-order replay.
+/// Used ONLY when the coverability BFS hits [`CONFLICT_STATE_SPACE_CAP`]
+/// without finding a conflict (a pathological future net). It inspects
+/// only the markings along ONE order, so it is the under-approximation
+/// documented in [`check_conflict_free`]'s "Honest limitation" section.
+/// `order` is the shared firing order [`check_net_sound`] derived (reused
+/// to avoid a redundant `derive_firing_order`); `None` derives on demand.
+fn conflict_free_single_order_fallback(
+    net: &Net,
+    order: Option<&[TransitionId]>,
+    consumers: &BTreeMap<PlaceId, BTreeSet<TransitionId>>,
+    needs: &BTreeMap<TransitionId, BTreeMap<PlaceId, u32>>,
+    index: &crate::petri::ArcIndex,
+) -> Result<(), ConflictError> {
     let owned_order;
     let order: &[TransitionId] = match order {
         Some(o) => o,
@@ -388,28 +620,22 @@ fn check_conflict_free_with_order(
 
     let mut sim = net.clone();
     sim.reset_to_initial();
-    let index = net.build_arc_index();
 
-    // Inspect each reachable marking along the order, then fire to the
-    // next. `position` counts firings already committed, so the marking
-    // examined at `position == k` is the one after k firings (k == 0 is
-    // the initial marking).
+    // Inspect each marking along the order, then fire to the next.
+    // `position` counts firings already committed (position == 0 is the
+    // initial marking). This is the historical behaviour, preserved
+    // verbatim as the above-cap residual.
     for position in 0..=order.len() {
         if let Some(conflict) =
-            find_conflict_at_marking(net, &sim.current_marking, &consumers, &needs, position)
+            find_conflict_at_marking(net, &sim.current_marking, consumers, needs, position)
         {
             return Err(conflict);
         }
-        // Advance to the next marking (no-op past the last firing).
         if let Some(&tid) = order.get(position) {
             // A stall/overflow here is a boundedness/deadlock concern,
-            // not a conflict; `check_bounded`/`check_deadlock_free`
-            // diagnose it precisely. We simply stop the conflict scan
-            // (the order cannot advance) — we have already inspected
-            // every marking THIS DERIVED ORDER reaches up to the stall.
-            // (NOT every reachable marking — see the fn's "Honest
-            // limitation": off-order interleavings are not visited.)
-            if sim.fire_in_place(tid, &index).is_err() {
+            // not a conflict; we simply stop the scan (the order cannot
+            // advance).
+            if sim.fire_in_place(tid, index).is_err() {
                 break;
             }
         }
@@ -537,11 +763,16 @@ pub fn check_net_sound(net: &Net) -> Result<(), PetriAnalysisError> {
     // or masking — a downstream boundedness/deadlock answer computed on
     // an order that should never have been trusted.
     //
-    // The firing order is derived ONCE here and shared with all three
-    // passes (its derivation is purely structural/greedy and does not
-    // depend on conflict-freedom), so the conflict pass adds no
-    // redundant `derive_firing_order` call — see TASK-0421 and the
-    // `gate_stays_near_linear_under_large_net` perf pin.
+    // The firing order is derived ONCE here and shared with the
+    // boundedness + deadlock passes (its derivation is purely
+    // structural/greedy and does not depend on conflict-freedom). The
+    // conflict pass takes the order too, but since TASK-0427 it only USES
+    // it in the cap-exceeded fallback (its primary path is a coverability
+    // BFS that ignores any single order); handing it in still avoids a
+    // redundant `derive_firing_order` call on that fallback path — see
+    // TASK-0421/TASK-0427 and the `gate_stays_near_linear_under_large_net`
+    // perf pin (the conflict pass short-circuits on every shipping net
+    // before either the BFS or the fallback runs).
     let order = derive_firing_order(net);
 
     check_conflict_free_with_order(net, Some(&order))
