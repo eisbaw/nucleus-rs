@@ -1141,6 +1141,133 @@ for i : 0 .. b[0] {
 }
 
 // --------------------------------------------------------------------
+// TASK-0430 (X1'): a PURE kernel call in array-subscript index position.
+// --------------------------------------------------------------------
+
+/// AC#1 positive. A pure kernel call in SUBSCRIPT index position
+/// `histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])])`
+/// lowers cleanly: the LHS index list contains an `IrExpr::Call` whose
+/// arg is the gather DataRef `input[i]`. Mirrors the gather-lowering
+/// test idiom (the parser already admits the syntax; only
+/// `lower_index_expr` previously rejected a kernel call in index
+/// position).
+#[test]
+fn pure_call_in_subscript_index_lowers_to_call() {
+    use nucleus_compiler::algo::{IrExpr, IrStmt};
+    let src = "\
+const N    : usize = 8;
+const BINS : usize = 4;
+data input     : i32[N];
+data histogram : i32[BINS];
+kernel bucket : (i32) -> i32 pure;
+kernel inc    : (i32) -> i32 pure;
+for i : 0 .. N {
+    histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])]);
+}
+";
+    let ir = lower_str(src).expect("a pure call in subscript position must lower");
+
+    // The LHS index must be an `IrExpr::Call { callee: "bucket", .. }`
+    // whose sole arg is the gather DataRef `input[i]`.
+    fn lhs_index_is_pure_call(stmts: &[IrStmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            IrStmt::For { body, .. } => lhs_index_is_pure_call(body),
+            IrStmt::Dataflow { lhs, .. } => match lhs.indices.first() {
+                Some(IrExpr::Call { callee, args }) => {
+                    callee == "bucket"
+                        && matches!(
+                            args.first(),
+                            Some(IrExpr::DataRef(r)) if r.name == "input" && !r.indices.is_empty()
+                        )
+                }
+                _ => false,
+            },
+            _ => false,
+        })
+    }
+    assert!(
+        lhs_index_is_pure_call(&ir.stmts),
+        "the LHS index `bucket(input[i])` must lower to an IrExpr::Call \
+         wrapping the gather DataRef `input[i]`; got IR: {:#?}",
+        ir.stmts
+    );
+}
+
+/// AC#1 negative #1. An EFFECTFUL kernel in index position is rejected
+/// fail-loud with a typed `NonIntegerShapeExpr` naming the purity
+/// requirement — an effect cannot decide an address. NOT a panic, NOT a
+/// silent drop.
+#[test]
+fn effectful_call_in_index_is_rejected() {
+    let src = "\
+const N    : usize = 8;
+const BINS : usize = 4;
+data input     : i32[N];
+data histogram : i32[BINS];
+kernel pick : (i32) -> i32 effectful;
+kernel inc  : (i32) -> i32 pure;
+for i : 0 .. N {
+    histogram[pick(input[i])] <-- inc(histogram[pick(input[i])]);
+}
+";
+    let err = lower_str(src)
+        .expect_err("an effectful kernel in index position must be rejected")
+        .first()
+        .clone();
+    match &err.kind {
+        LowerErrorKind::NonIntegerShapeExpr { reason, .. } => {
+            assert!(
+                reason.contains("must be `pure`") && reason.contains("pick"),
+                "the rejection must name the offending kernel and the purity \
+                 requirement, got reason: {reason:?}"
+            );
+        }
+        other => panic!("expected NonIntegerShapeExpr for an effectful index call, got {other:?}"),
+    }
+    assert!(
+        err.span.is_some(),
+        "the effectful-index-call rejection must be LOCATED (Some(span))"
+    );
+}
+
+/// AC#1 negative #2. A pure kernel call in LOOP-BOUND position
+/// (`allow_gather = false`) must STILL be rejected — admitting a kernel
+/// call here would enable a computed trip count, a separate
+/// unimplemented feature. Preserves the const-loop-bound rule. The
+/// existing `synthetic_non_integer_shape_expr_is_located` also pins this
+/// path; this is the X1'-scoped sibling making the intent explicit.
+#[test]
+fn pure_call_in_loop_bound_is_still_rejected() {
+    let src = "\
+const N : usize = 8;
+data out : i32[N];
+kernel trip : () -> usize pure;
+kernel g    : () -> i32   pure;
+for i : 0 .. trip() {
+    out[i] <-- g();
+}
+";
+    let err = lower_str(src)
+        .expect_err("a pure call as a loop bound must be rejected (computed trip count)")
+        .first()
+        .clone();
+    match &err.kind {
+        LowerErrorKind::NonIntegerShapeExpr { reason, .. } => {
+            assert_eq!(
+                reason, "kernel calls are not allowed here",
+                "a loop-bound kernel call must give the loop-bound rejection, \
+                 not the subscript purity one"
+            );
+        }
+        other => panic!("expected NonIntegerShapeExpr for a loop-bound call, got {other:?}"),
+    }
+    assert!(
+        err.span.is_some(),
+        "the loop-bound call rejection must stay LOCATED (Some(span))"
+    );
+}
+
+// --------------------------------------------------------------------
 // TASK-0092: multi-error accumulation + cascade discipline.
 //
 // The project's #1 recurring defect (memory

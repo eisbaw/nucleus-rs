@@ -1140,16 +1140,24 @@ fn lower_indices(
 /// integer literals, consts, iteration variables in scope, arithmetic,
 /// and (for kernel arguments) data references and nested calls.
 ///
-/// `allow_gather` controls the ONE context-dependent case: a
-/// data-dependent (gather) index `x[col[k]]`, where an array's index
-/// is itself a runtime data read. It is legal ONLY in array-subscript
-/// position (`allow_gather == true`, set by [`lower_indices`] /
-/// [`lower_data_ref`]); in LOOP-BOUND position (`allow_gather ==
-/// false`, set by [`lower_for_into`]) a data ref stays rejected with a
-/// clean located [`LowerError`] — a data-dependent loop trip count is
-/// a separate, unimplemented feature, and admitting it here would push
-/// the failure downstream into the const-evaluator (worse diagnostic).
-/// Kernel calls are rejected in BOTH positions.
+/// `allow_gather` controls the context-dependent cases. In
+/// array-subscript position (`allow_gather == true`, set by
+/// [`lower_indices`] / [`lower_data_ref`]) TWO referentially-transparent
+/// data-dependent index forms are legal:
+///
+///   - a data-dependent (gather) index `x[col[k]]`, where an array's
+///     index is itself a runtime data read (TASK-0341.03.01); and
+///   - a PURE kernel call in index position `histogram[bucket(input[i])]`
+///     (TASK-0430, X1') — its args recurse through this same function,
+///     so a data-ref arg takes the gather path.
+///
+/// In LOOP-BOUND / const position (`allow_gather == false`, set by
+/// [`lower_for_into`]) BOTH are rejected with a clean located
+/// [`LowerError`] — a data-dependent loop trip count is a separate,
+/// unimplemented feature, and admitting it here would push the failure
+/// downstream into the const-evaluator (worse diagnostic). An EFFECTFUL
+/// kernel call is rejected in both positions (only a `pure` callee is
+/// admitted, and only in subscript position).
 fn lower_index_expr(
     expr: &SpExpr,
     ir: &AlgoIR,
@@ -1176,13 +1184,71 @@ fn lower_index_expr(
         // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
         // bare identifier in index/loop-bound position is the
         // `Expr::LValue` empty-indices arm below (`resolve_ident`).
-        Expr::Call(_) => Err(LowerError::at(
-            LowerErrorKind::NonIntegerShapeExpr {
-                decl: "<index/loop-bound expression>".into(),
-                reason: "kernel calls are not allowed here".to_string(),
-            },
-            expr.span.clone(),
-        )),
+        Expr::Call(c) => {
+            // TASK-0430 (X1'): a PURE kernel call in array-SUBSCRIPT
+            // position is the WRITE/index analog of the gather READ
+            // (TASK-0341.03.01): `histogram[bucket(input[i])]`. It is
+            // referentially transparent (a pure kernel mapping an
+            // integer-shaped value to an integer index), so it reuses
+            // the existing `IrExpr::Call` node and the existing arg
+            // lowering — no new AST/IR node, no new Event shape.
+            //
+            // Gated identically to the gather DataRef arm below:
+            //   - `allow_gather == false` (LOOP-BOUND / const position,
+            //     set by `lower_for_into`) keeps rejecting, preserving
+            //     the const-loop-bound rule (c): a computed trip count
+            //     is a SEPARATE, unimplemented feature.
+            //   - the callee must be a declared kernel that is `pure`.
+            //     An effectful callee in index position is rejected
+            //     fail-loud (an effect has no business deciding an
+            //     address — it would be evaluated for its address value
+            //     yet also fire its side effect, a contradiction;
+            //     mirrors the bare-effect-stmt purity rule at the
+            //     `Stmt::Effect` arm above, inverted).
+            let callee = &c.callee.node;
+            if !allow_gather {
+                return Err(LowerError::at(
+                    LowerErrorKind::NonIntegerShapeExpr {
+                        decl: "<index/loop-bound expression>".into(),
+                        reason: "kernel calls are not allowed here".to_string(),
+                    },
+                    expr.span.clone(),
+                ));
+            }
+            let Some(resolved) = ir.kernels.get(callee) else {
+                return Err(LowerError::at(
+                    LowerErrorKind::UnknownIdent(callee.clone()),
+                    c.callee.span.clone(),
+                ));
+            };
+            if resolved.purity != Purity::Pure {
+                return Err(LowerError::at(
+                    LowerErrorKind::NonIntegerShapeExpr {
+                        decl: "<index expression>".into(),
+                        reason: format!(
+                            "kernel `{callee}` in index position must be `pure` \
+                             (an effectful kernel cannot decide an address)"
+                        ),
+                    },
+                    c.callee.span.clone(),
+                ));
+            }
+            // Lower each argument as an index-position expression. This
+            // recursion is what makes `bucket(input[i])` work: a scalar
+            // arg (`i`) takes the affine path, and a data-ref arg
+            // (`input[i]`) takes the gather DataRef path of THIS same
+            // function (`allow_gather` stays `true`). A nested pure call
+            // arg (`outer(inner(input[i])))`) likewise recurses here.
+            let args = c
+                .args
+                .iter()
+                .map(|a| lower_index_expr(a, ir, scope, allow_gather))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(IrExpr::Call {
+                callee: callee.clone(),
+                args,
+            })
+        }
         Expr::LValue(lv) => {
             // Bare identifier (parser models it as zero-indexed
             // lvalue) resolves to a const / iter-var. An INDEXED data
