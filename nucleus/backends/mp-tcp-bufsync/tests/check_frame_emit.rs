@@ -36,10 +36,20 @@ fn repo_root() -> PathBuf {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
+    // TASK-0426: each call gets a process-and-call-unique subdir
+    // (`{name}-{pid}-{counter}`) so concurrent test threads NEVER share a
+    // path. The old code reused a fixed `target/{name}` and did
+    // remove_dir_all + create_dir_all on it; under parallel `cargo test`
+    // that remove/create dance raced with a sibling test's `fs::write`,
+    // intermittently surfacing ENOENT (NotFound) in `write_kernels_stub`.
+    // A per-call-unique path that is created once (never removed/recreated)
+    // removes the shared mutable filesystem state the race needs.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let target = repo_root().join("nucleus/target/mp-tcp-bufsync-check-frame-scratch");
     let _ = fs::create_dir_all(&target);
-    let dir = target.join(name);
-    let _ = fs::remove_dir_all(&dir);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = target.join(format!("{name}-{}-{}", std::process::id(), nonce));
     fs::create_dir_all(&dir).expect("create scratch dir");
     dir
 }
