@@ -614,16 +614,20 @@ pub(super) fn compute_partition_bounds_with_dim_prefix(
         }
     }
     if bounds.is_empty() {
-        // No dim carries a partitioned iv on this worker: the index is
-        // non-affine / data-dependent / opaque (recorded as an empty iv
-        // set by `record_access_per_dim`), or every covering iv is
-        // unpartitioned. Falls through to whole-array broadcast.
+        // No dim carries a partition-covered iv with a per-worker range on
+        // this worker. Three sub-causes collapse here (all value-correct):
+        //   (i)   the index is non-affine / data-dependent / opaque
+        //         (recorded as an empty iv set by `record_access_per_dim`);
+        //   (ii)  every covering iv is unpartitioned;
+        //   (iii) the (unique) partitioned iv has no range entry for THIS
+        //         worker (the `1 =>` arm above mapped it to `None`).
+        // Falls through to whole-array broadcast.
         crate::nuc_trace!(
             "transfer_inject::compute_partition_bounds_with_dim_prefix: degrade to \
              whole-array broadcast (data={data:?}, worker={worker:?}); reason: \
-             no partition-covered dim (non-affine/opaque index, or all covering ivs \
-             unpartitioned) — value-correct conservative fallback, no precise \
-             per-worker slice emitted",
+             no partition-covered dim (non-affine/opaque index, all covering ivs \
+             unpartitioned, or a partitioned iv lacks a range on this worker) — \
+             value-correct conservative fallback, no precise per-worker slice emitted",
         );
     }
     Some(bounds)
@@ -708,14 +712,42 @@ pub(super) fn order_halo_strip_bounds_by_data_dim(
     let outer_dim = per_dim.iter().position(|s| s.contains(&outer_iv));
     let inner_dim = per_dim.iter().position(|s| s.contains(&inner_iv));
     match (outer_dim, inner_dim) {
-        (Some(od), Some(id)) if od == id => Vec::new(),
+        (Some(od), Some(id)) if od == id => {
+            // TASK-0424 (architect P2): advisory trace on the structural
+            // whole-array degradation, parallel to the sibling
+            // `compute_partition_bounds_with_dim_prefix`. Ambiguity: both
+            // halo ivs index the SAME data dim (e.g. `a[outer + inner]`),
+            // so no unambiguous per-dim slice exists.
+            crate::nuc_trace!(
+                "transfer_inject::order_halo_strip_bounds_by_data_dim: degrade to \
+                 whole-array broadcast (data={data:?}, outer_iv={outer_iv:?}, \
+                 inner_iv={inner_iv:?}); reason: ambiguous (both ivs index the same \
+                 data dim {od}) — value-correct conservative fallback",
+            );
+            Vec::new()
+        }
         (Some(od), Some(id)) if od < id => {
             vec![(outer_iv, outer_range), (inner_iv, inner_range)]
         }
         (Some(_), Some(_)) => {
             vec![(inner_iv, inner_range), (outer_iv, outer_range)]
         }
-        _ => Vec::new(),
+        _ => {
+            // TASK-0424 (architect P2): advisory trace on the structural
+            // whole-array degradation, parallel to the sibling. Non-prefix:
+            // at least one of the two halo ivs does not index any observed
+            // data dim (e.g. `[k][inner_iv]` with `k` unpartitioned, so
+            // `outer_dim` is None), so a safe outer/inner slice ordering
+            // cannot be derived.
+            crate::nuc_trace!(
+                "transfer_inject::order_halo_strip_bounds_by_data_dim: degrade to \
+                 whole-array broadcast (data={data:?}, outer_iv={outer_iv:?}, \
+                 inner_iv={inner_iv:?}); reason: non-prefix (outer_dim={outer_dim:?}, \
+                 inner_dim={inner_dim:?}; at least one halo iv indexes no observed data \
+                 dim) — value-correct conservative fallback",
+            );
+            Vec::new()
+        }
     }
 }
 
