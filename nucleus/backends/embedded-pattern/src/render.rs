@@ -636,7 +636,14 @@ fn effect_drain_place(bindings: &FireBinding, ctx: &RenderCtx<'_>) -> Result<Str
             }
             // Indexed per-frame drain (ex14 fe_emit/rf_transmit): the
             // indexed frame place `D[start..start + sub_len]`, drained
-            // sized by the row.
+            // sized by the row. NOTE (TASK-0049.10.03): this assumes a
+            // PARTIAL-rank (sub-array `[T]`) place — `.as_ptr()` in the
+            // caller is valid on a slice. A FULL-rank-indexed scalar input
+            // (`render_indexed_place` -> `SliceForm::Scalar` `D[idx]`)
+            // would emit `D[idx].as_ptr()` which does not compile on a
+            // scalar `T`. No current shape hits this (ex14 data is 2-D, an
+            // `[frame]` index is partial-rank); a fail-loud guard is filed
+            // as TASK-0049.10.03.
             return render_indexed_place(slice, ctx);
         }
     }
