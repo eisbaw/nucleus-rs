@@ -554,43 +554,85 @@ fn rust_keyword_identifier_rejected_at_source_site() {
     }
 }
 
-/// TASK-0433 (for-loop-VARIABLE role): the AC#1 guarantee is that a
-/// Rust-keyword identifier can NEVER reach codegen. In the `for VAR :`
-/// position the `ident()` reject still bites (the `for_stmt` branch
-/// fails to parse, so `loop` is never admitted to the AST), but
-/// chumsky 0.9's error-merge surfaces the *more-consuming* downstream
-/// `{`-mismatch error rather than the `ident()` custom message — so
-/// the diagnostic is NOT anchored at the keyword. This is a
-/// PRE-EXISTING limitation, NOT introduced here: a *grammar* keyword
-/// in the same position (`for const : …`) produces the identical
-/// weak diagnostic. We pin BOTH facts so a future chumsky upgrade
-/// that improves error selection is noticed: (1) the for-var
-/// collision is REJECTED (never admitted), and (2) it currently has
-/// parity with the grammar-keyword case. Anchoring the for-var
-/// diagnostic at the keyword is filed as a follow-up.
+/// TASK-0434: the algo for-loop VARIABLE position now anchors its
+/// keyword-collision diagnostic AT the offending `VAR`, not at the
+/// downstream `{`.
+///
+/// Background: TASK-0433 guaranteed correctness (a reserved `VAR` is
+/// rejected and never reaches codegen) but the diagnostic pointed at
+/// the trailing `{` — chumsky 0.9 merges simultaneous alternative
+/// errors by furthest input position, and the `for_stmt` branch dying
+/// at `VAR` let the more-consuming `{`-mismatch win. TASK-0434's
+/// `for_loop_var()` parser consumes through the `{` on a collision so
+/// its error out-reaches the brace, while pinning the *display span*
+/// at `VAR`.
+///
+/// We assert the IMPROVED anchoring for BOTH reserved classes:
+/// - a Rust-reserved `VAR` (`loop`) reports the codegen-collision
+///   message (`Rust reserved word`) at `loop`;
+/// - a grammar-keyword `VAR` (`const`) reports the grammar message
+///   (`found keyword`) at `const`;
+/// - both anchor at the VAR token's (line, col) — line 2, col 5 (the
+///   char right after `for `), NOT the `{` on the same line.
+///
+/// The messages are the SAME ones the data/kernel/worker positions
+/// emit for the same word (shared `ident_collision_message`), so the
+/// for-var diagnostic stays consistent with the rest of the front-end.
 #[test]
-fn rust_keyword_for_loop_var_is_rejected_with_preexisting_grammar_parity() {
-    let rust_kw_src = "const N : usize = 4;\nfor loop : 0 .. N {\n}\n";
-    let grammar_kw_src = "const N : usize = 4;\nfor const : 0 .. N {\n}\n";
-    // Both must FAIL — `loop` is never admitted to the AST, matching
-    // the grammar-keyword reject's effect.
-    assert!(
-        parse_algo(rust_kw_src).is_err(),
-        "a Rust-keyword for-loop variable must be rejected (never reach codegen)"
-    );
-    let rust_err = expect_err(rust_kw_src);
-    let grammar_err = expect_err(grammar_kw_src);
-    // Parity: same line and the same (currently weak) message shape.
-    assert_eq!(
-        rust_err.line, grammar_err.line,
-        "for-var Rust-keyword reject must have parity with grammar-keyword reject"
-    );
-    assert_eq!(
-        rust_err.message, grammar_err.message,
-        "for-var Rust-keyword and grammar-keyword currently share the \
-         same downstream diagnostic (pre-existing chumsky error-merge \
-         behaviour); divergence means error selection changed"
-    );
+fn for_loop_var_keyword_collision_is_anchored_at_the_variable_token() {
+    // (src, offending-VAR, expected (line, col), message-substring).
+    let cases: &[(&str, &str, (usize, usize), &str)] = &[
+        (
+            "const N : usize = 4;\nfor loop : 0 .. N {\n}\n",
+            "loop",
+            (2, 5),
+            "Rust reserved word",
+        ),
+        (
+            "const N : usize = 4;\nfor const : 0 .. N {\n}\n",
+            "const",
+            (2, 5),
+            "expected identifier, found keyword",
+        ),
+    ];
+    for (src, var, (line, col), msg_substr) in cases {
+        // Correctness (TASK-0433 invariant): still rejected, so the
+        // reserved word never reaches the AST / codegen.
+        assert!(
+            parse_algo(src).is_err(),
+            "a reserved for-loop variable `{var}` must be rejected"
+        );
+        let err = expect_err(src);
+        // Anchored AT the VAR token, NOT the trailing `{`.
+        assert_eq!(
+            err.line, *line,
+            "for-var `{var}`: diagnostic must anchor at the VAR line, got {err:?}"
+        );
+        assert_eq!(
+            err.column, *col,
+            "for-var `{var}`: diagnostic must anchor at the VAR column \
+             (right after `for `), not the trailing `{{`, got {err:?}"
+        );
+        // The diagnostic must quote the offending word and carry the
+        // class-appropriate (shared) message.
+        assert!(
+            err.message.contains(&format!("`{var}`")),
+            "for-var `{var}`: diagnostic must quote the identifier, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(msg_substr),
+            "for-var `{var}`: diagnostic must contain {msg_substr:?}, got: {}",
+            err.message
+        );
+        // It must NOT be the old weak downstream `{`-mismatch message.
+        assert!(
+            !err.message.contains("found \"{\""),
+            "for-var `{var}`: must no longer surface the downstream \
+             `{{`-mismatch, got: {}",
+            err.message
+        );
+    }
 }
 
 /// TASK-0433 (positive / over-fire guard): an identifier that merely

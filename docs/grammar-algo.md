@@ -353,7 +353,9 @@ with no special case.
    concern, not a grammar concern. The grammar says nothing about how
    to emit errors.
 4. **Reserved words are not exhaustively listed.** Two distinct
-   reserved sets apply (both enforced in `algo/parser.rs::ident`):
+   reserved sets apply (both decided in one place,
+   `algo/parser.rs::ident_collision_message`, shared by `ident` and the
+   `for_loop_var` loop-variable parser):
    (a) the *grammar* keywords — `const`, `data`, `kernel`, `pure`,
    `effectful`, `for`, plus the scalar type names — which have
    syntactic meaning; adding a future grammar keyword (e.g. a new
@@ -366,13 +368,16 @@ with no special case.
    binding/path segment (`let mut {name}`) and `rustc` would otherwise
    fail on generated source the user never wrote (TASK-0433). The
    grammar reject is checked first, so the overlap (`const`, `for`)
-   keeps its grammar-specific message. Caveat: in `for VAR :`
-   loop-variable position a colliding `VAR` is still *rejected* (it
-   never reaches the AST or codegen), but chumsky 0.9's error-merge
-   surfaces a downstream block-`{` mismatch rather than a span-anchored
-   message at `VAR` — identical to the diagnostic a *grammar* keyword
-   (`for const :`) produces there. Anchoring that one position is the
-   filed follow-up TASK-0434; the safety property holds regardless.
+   keeps its grammar-specific message. The `for VAR :` loop-variable
+   position is anchored too: a dedicated `algo/parser.rs::for_loop_var`
+   parser (TASK-0434) routes through the same reject decision
+   (`ident_collision_message`) and, on a collision, consumes the rest
+   of the for-head through the opening `{` so its error out-reaches the
+   block-`{` in chumsky 0.9's furthest-position error-merge — while
+   pinning the display span at `VAR`. So both a Rust-reserved `VAR`
+   (`for loop :`) and a grammar-keyword `VAR` (`for const :`) report a
+   span-anchored message at `VAR`, with the same wording the data /
+   kernel / worker positions emit for the same word.
 5. **No Unicode identifier policy.** ASCII identifiers only in v2.
    Documented in the lexical section.
 6. **One existing example (`05-stencil`) does not conform.** Tracked

@@ -442,36 +442,78 @@ where
     p.then_ignore(comment_or_ws())
 }
 
+/// Raw identifier characters `[A-Za-z_][A-Za-z0-9_]*` as a `String`,
+/// with NO reserved-word check (that is the caller's job). Shared by
+/// [`ident`] and [`for_loop_var`] so the token shape lives in one place.
+fn ident_chars() -> impl Parser<char, String, Error = Simple<char>> + Clone {
+    filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
+        .chain(filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_').repeated())
+        .collect::<String>()
+}
+
+/// SINGLE source of truth for the identifier reject decision + wording.
+/// `Some(message)` ⇒ `s` collides with a reserved word and must be
+/// rejected; `None` ⇒ legal identifier. Both [`ident`] (data/kernel/
+/// worker names) and [`for_loop_var`] (the `for VAR :` position,
+/// TASK-0434) route through it, so the diagnostics are byte-identical
+/// for the same word. Grammar `KEYWORDS` are checked FIRST so the
+/// overlap (`const`, `for`) keeps the grammar message; a non-grammar
+/// Rust keyword falls through to the codegen-collision message
+/// (TASK-0433: codegen emits `let mut {name}` and rustc would fail).
+fn ident_collision_message(s: &str) -> Option<String> {
+    if KEYWORDS.contains(&s) {
+        Some(format!("expected identifier, found keyword `{}`", s))
+    } else if crate::reserved::is_rust_reserved(s) {
+        Some(crate::reserved::collision_message(s))
+    } else {
+        None
+    }
+}
+
 /// Identifier matcher. Rejects keywords. Yields a [`SpIdent`] whose
 /// span is exactly the identifier token's byte range (no surrounding
 /// whitespace — `pad` consumes trailing space *after* this combinator),
 /// so an "undeclared / duplicate `X`" diagnostic underlines just `X`.
 fn ident() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
-    let start = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_');
-    let cont = filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_');
-    start
-        .chain(cont.repeated())
-        .collect::<String>()
-        .try_map(|s, span| {
-            if KEYWORDS.contains(&s.as_str()) {
-                // Grammar-reserved word (data/kernel/for/scalar-type):
-                // syntactic meaning. Checked FIRST so the overlap with
-                // RUST_RESERVED (`const`, `for`) keeps the grammar
-                // diagnostic.
-                Err(Simple::custom(
-                    span,
-                    format!("expected identifier, found keyword `{}`", s),
-                ))
-            } else if crate::reserved::is_rust_reserved(&s) {
-                // Not a DSL grammar word, but a Rust keyword: codegen
-                // would emit `let mut {name}` / `kernels::{name}` and
-                // fail rustc on generated source (TASK-0433).
-                Err(Simple::custom(span, crate::reserved::collision_message(&s)))
-            } else {
-                Ok(s)
-            }
+    ident_chars()
+        .try_map(|s, span| match ident_collision_message(&s) {
+            Some(msg) => Err(Simple::custom(span, msg)),
+            None => Ok(s),
         })
         .map_with_span(Spanned::new)
+}
+
+/// The loop-variable position of `for VAR : lo .. hi { … }` (TASK-0434).
+///
+/// On a valid `VAR` this is exactly [`ident`] (same `SpIdent`, no extra
+/// consumption — positive for-loops and codegen unchanged). The
+/// difference is the ERROR PATH: `ident`'s reject fires at the variable
+/// position, but `for_stmt` is in a `choice` and chumsky 0.9 merges
+/// alternative errors by furthest input position (greater `at` wins —
+/// `chumsky::error::Located::max`), so the trailing-`{` mismatch PAST
+/// the keyword `VAR` won the merge and the user saw a confusing "found
+/// `{`" (TASK-0433 pinned this). Mirroring [`sched_directive_hint_stmt`]:
+/// on a collision we [`take_until`] the `{`, pushing our error's `at`
+/// past the brace, while keeping its display span on `var_span` so the
+/// diagnostic underlines `VAR`. Message is the shared
+/// [`ident_collision_message`] — identical to the data/kernel one.
+fn for_loop_var() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
+    ident_chars()
+        .map_with_span(|s, span: std::ops::Range<usize>| (s, span))
+        // Both arms are `.boxed()` to one concrete parser type (the
+        // `then_with` closure must return a single `P`). See the
+        // docstring for the chumsky furthest-`at` merge rationale.
+        .then_with(|(s, var_span)| match ident_collision_message(&s) {
+            None => {
+                let ident = Spanned::new(s.clone(), var_span.clone());
+                empty().map(move |()| ident.clone()).boxed()
+            }
+            Some(msg) => take_until(just('{'))
+                .try_map(move |_, _outer_span| {
+                    Err(Simple::custom(var_span.clone(), msg.clone()))
+                })
+                .boxed(),
+        })
 }
 
 /// Integer literal — decimal only (grammar §1).
@@ -801,13 +843,9 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
     // The error MESSAGE still names the schedule keyword, so the
     // user-visible diagnostic still reads "`place` is a schedule
     // directive — did you mean to put it in a *.sched.nuc file?".
-    let ident_chars = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
-        .chain(filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_').repeated())
-        .collect::<String>();
-
     let place_data_shape = pad(keyword("place_data"))
         .map_with_span(|(), span| ("place_data", span))
-        .then(ident_chars)
+        .then(ident_chars())
         .try_map(|((kw, span), _ident), outer_span| {
             Err(Simple::custom(
                 span.start..outer_span.end,
@@ -817,7 +855,7 @@ fn sched_directive_hint_stmt() -> impl Parser<char, Stmt, Error = Simple<char>> 
 
     let place_shape = pad(keyword("place"))
         .map_with_span(|(), span| ("place", span))
-        .then(ident_chars)
+        .then(ident_chars())
         .try_map(|((kw, span), _ident), outer_span| {
             Err(Simple::custom(
                 span.start..outer_span.end,
@@ -902,7 +940,7 @@ fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
                 .map(|(callee, args)| Stmt::Effect(Call { callee, args }));
 
             let for_stmt = pad(keyword("for"))
-                .ignore_then(pad(ident()))
+                .ignore_then(pad(for_loop_var()))
                 .then_ignore(pad(just(':')))
                 .then(expr_parser())
                 .then_ignore(pad(just('.')).then(pad(just('.'))))

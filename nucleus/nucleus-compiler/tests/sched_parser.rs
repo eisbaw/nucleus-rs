@@ -96,6 +96,58 @@ schedule for \"../prog.algo.nuc\" {
     );
 }
 
+/// TASK-0434 (sched sibling — already-correct anchoring pin): the algo
+/// `for VAR : …` position needed a dedicated `for_loop_var()` parser
+/// because the trailing `{` out-reached the var-reject in chumsky's
+/// furthest-position error-merge. The sched loop-variable positions
+/// (`loop VAR : …;` and `check loop VAR : …;`) do NOT have that
+/// problem: the directive is terminated by `;` and the option list
+/// follows the var directly, so no more-consuming downstream token
+/// competes — the `ident()` reject already wins and anchors at VAR.
+/// This test PINS that already-correct behaviour so a future grammar
+/// change (e.g. a brace-delimited loop body) that reintroduces the
+/// merge race is caught, and documents the asymmetry with the algo fix.
+#[test]
+fn sched_loop_var_keyword_collision_is_anchored_at_the_variable_token() {
+    // (src, offending-VAR, expected (line, col), message-substring).
+    let cases: &[(&str, &str, (usize, usize), &str)] = &[
+        // `loop ` is 5 chars → VAR at col 6.
+        (
+            "schedule for \"x\" {\nloop const : block = 4;\n}\n",
+            "const",
+            (2, 6),
+            "Rust reserved word",
+        ),
+        // `check loop ` is 11 chars → VAR at col 12.
+        (
+            "schedule for \"x\" {\ncheck loop const : block = 4;\n}\n",
+            "const",
+            (2, 12),
+            "Rust reserved word",
+        ),
+    ];
+    for (src, var, (line, col), msg_substr) in cases {
+        assert!(
+            parse_sched(src).is_err(),
+            "a reserved sched loop variable `{var}` must be rejected"
+        );
+        let err = expect_err(src);
+        assert_eq!(
+            err.line, *line,
+            "sched loop-var `{var}`: anchor at VAR line, got {err:?}"
+        );
+        assert_eq!(
+            err.column, *col,
+            "sched loop-var `{var}`: anchor at VAR column, got {err:?}"
+        );
+        assert!(
+            err.message.contains(msg_substr),
+            "sched loop-var `{var}`: diagnostic must contain {msg_substr:?}, got: {}",
+            err.message
+        );
+    }
+}
+
 // --------------------------------------------------------------------
 // Positive: existing example schedule files
 // --------------------------------------------------------------------
