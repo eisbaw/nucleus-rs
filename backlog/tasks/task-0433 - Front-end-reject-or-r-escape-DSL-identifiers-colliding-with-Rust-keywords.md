@@ -1,11 +1,11 @@
 ---
 id: TASK-0433
 title: 'Front-end: reject (or r#-escape) DSL identifiers colliding with Rust keywords'
-status: In Progress
+status: Done
 assignee:
   - '@me'
 created_date: '2026-06-03 03:33'
-updated_date: '2026-06-03 04:15'
+updated_date: '2026-06-03 04:16'
 labels:
   - compiler
   - frontend
