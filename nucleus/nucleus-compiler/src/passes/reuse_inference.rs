@@ -561,9 +561,12 @@ fn walk_for_iv(
                 var,
                 lo: _,
                 hi: _,
-                // `until` (epic S1) is inert here: reuse inference runs on an
-                // ACFG, and an `until`-loop is rejected at build_acfg (the
-                // first pre-mediation pass) before this pass runs.
+                // `until` (epic S1/S4) is inert here: reuse inference does
+                // NOT read the early-exit break predicate. (The build_acfg
+                // reject was LIFTED in TASK-0341.02.01.05.01 — `for..until`
+                // now lowers to `ACFGNode::Repeat { break_cond }`; this pass
+                // simply ignores the predicate, which is analysis-invisible
+                // to reuse inference by binding `until: _`.)
                 until: _,
                 body,
             } => {

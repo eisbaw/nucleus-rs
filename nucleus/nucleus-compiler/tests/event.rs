@@ -660,13 +660,34 @@ fn loop_distinct_structure_is_unequal_and_hashable() {
     let c = Event::loop_over(IterVar(0), 0..16, vec![sample_push()]);
     assert_ne!(a, c, "different body ⇒ different loop");
 
+    // TASK-0341.02.01.05.04 (architect P3 nit): two Loops differing ONLY
+    // in `break_cond` (Some vs None) must compare unequal AND hash-distinct
+    // (the manual Hash hashes `break_cond.is_some()`, so Some≠None must
+    // differ even though PartialEq is what actually distinguishes them).
+    use nucleus_compiler::algo::{IrCmpOp, IrExpr};
+    let with_break = Event::Loop {
+        iter_var: IterVar(0),
+        range: 0..16,
+        body: vec![sample_fire()],
+        block_tag: None,
+        check_frame: None,
+        break_cond: Some(IrExpr::Compare(
+            IrCmpOp::Lt,
+            Box::new(IrExpr::Ident("max_abs_diff".to_string())),
+            Box::new(IrExpr::Ident("epsilon".to_string())),
+        )),
+    };
+    // `a` is the same loop shape with break_cond None (loop_over yields None).
+    assert_ne!(a, with_break, "Some(break_cond) ⇒ different from None");
+
     // Event: Hash still holds with the recursive manual Hash.
     let mut set: HashSet<Event> = HashSet::new();
     set.insert(a.clone());
     set.insert(b);
     set.insert(c);
+    set.insert(with_break);
     set.insert(a); // duplicate of the first insert
-    assert_eq!(set.len(), 3, "three structurally distinct loops");
+    assert_eq!(set.len(), 4, "four structurally distinct loops");
 }
 
 #[test]

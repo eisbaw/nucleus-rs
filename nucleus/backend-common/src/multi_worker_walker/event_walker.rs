@@ -143,17 +143,33 @@ fn render_worker_events_inner(
                 body,
                 block_tag,
                 check_frame,
-                // `for..until` early-exit break (epic S4,
-                // TASK-0341.02.01.05.04) is emitted ONLY by the
-                // single-worker sequential backend this slice. Multi-worker
-                // break emit is a later slice (S7, TASK-0341.02.01.08); a
-                // `for..until` is not admitted for multi-worker
-                // partitioning today, so this walker never observes a
-                // `Some`. Bound `_` (not `..`-elided) keeps the silent-
-                // sibling guard: a future field addition is compiler-forced
-                // here too.
-                break_cond: _,
+                break_cond,
             } => {
+                // `for..until` early-exit break (epic S4,
+                // TASK-0341.02.01.05.04) is emitted ONLY by the tier-1
+                // single-worker sequential backend (`pthreads-sync`) this
+                // slice. Multi-worker break emit is a later slice (S7,
+                // TASK-0341.02.01.08). The "never observes a `Some`" claim
+                // is NOT structurally enforced: the partition path
+                // (transfer_inject/partition.rs, sync_inject.rs) preserves
+                // `break_cond` and petri_to_events clones it onto every
+                // per-worker Loop, so a `for..until` inside a
+                // `partition=workers` scope WOULD flow a `Some` here. Rather
+                // than silently dropping the predicate (which mis-lowers a
+                // convergence loop to a non-terminating full-cap loop —
+                // feedback-option-none-skip-arm-silent-drop), reject loud,
+                // mirroring `embedded-pattern/src/render.rs`. Inert today
+                // (no `for..until` example), fail-loud before S7.
+                if break_cond.is_some() {
+                    return Err(EmitError::UnsupportedFeature(
+                        "multi-worker backends do not yet lower `for..until` \
+                         early-exit (break-condition) loops; the runtime break \
+                         emit is tier-1 single-worker only this slice \
+                         (TASK-0341.02.01.05.04). Cross-backend / multi-worker \
+                         break emit is future work (S7, TASK-0341.02.01.08)."
+                            .to_string(),
+                    ));
+                }
                 let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                     EmitError::ContractGap(format!(
                         "iter var {iter_var:?} in Event::Loop has no name in NameTables"

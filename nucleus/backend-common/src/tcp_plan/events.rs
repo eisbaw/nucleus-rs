@@ -96,15 +96,30 @@ impl<W: WirePrimitives> Plan<'_, W> {
                     body,
                     block_tag,
                     check_frame,
-                    // `for..until` early-exit break (epic S4,
-                    // TASK-0341.02.01.05.04) is emitted only by the
-                    // single-worker sequential backend this slice; the
-                    // multi-process TCP plan walker is a later slice (S7,
-                    // TASK-0341.02.01.08) and never observes a `Some`
-                    // (a `for..until` is not multi-worker-partitioned
-                    // today). Bound `_` keeps the silent-sibling guard.
-                    break_cond: _,
+                    break_cond,
                 } => {
+                    // `for..until` early-exit break (epic S4,
+                    // TASK-0341.02.01.05.04) is emitted ONLY by the tier-1
+                    // single-worker sequential backend (`pthreads-sync`)
+                    // this slice; the multi-process TCP plan walker is a
+                    // later slice (S7, TASK-0341.02.01.08). The partition
+                    // path preserves `break_cond` (it is NOT structurally
+                    // barred from reaching here), so reject loud rather than
+                    // silently dropping the predicate and mis-lowering a
+                    // convergence loop to a non-terminating full-cap loop
+                    // (feedback-option-none-skip-arm-silent-drop). Mirrors
+                    // `embedded-pattern/src/render.rs`. Inert today.
+                    if break_cond.is_some() {
+                        return Err(EmitError::UnsupportedFeature(
+                            "multi-worker backends do not yet lower \
+                             `for..until` early-exit (break-condition) loops; \
+                             the runtime break emit is tier-1 single-worker \
+                             only this slice (TASK-0341.02.01.05.04). \
+                             Cross-backend / multi-worker break emit is future \
+                             work (S7, TASK-0341.02.01.08)."
+                                .to_string(),
+                        ));
+                    }
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(
                             "iter var {iter_var:?} in Event::Loop has no name in NameTables"
