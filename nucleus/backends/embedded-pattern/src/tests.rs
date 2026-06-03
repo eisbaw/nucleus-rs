@@ -596,13 +596,19 @@ fn ex14_effectful_indexed_input_lowers_to_per_frame_region_read_not_stub() {
             "worker `{worker}`: effectful per-frame input `{kernel}` must copy the \
              region into the indexed slice (copy_nonoverlapping):\n{src}"
         );
-        // The read targets the INDEXED slice of the datum (a sub-array
-        // place `datum[.. .. ..]`), not the whole array and not a scalar
-        // slot — the row, sized per frame.
+        // The read targets the INDEXED slice of the datum as a SUB-ARRAY
+        // place `datum[start..start + 16usize]` — the per-frame row, NOT
+        // the whole array and NOT a scalar slot. The ` + 16usize]` suffix
+        // is `render_indexed_place`'s `SliceForm::SubArray` form sized by
+        // SAMPLES_PER_FRAME (16); a scalar `datum[idx]` mis-lowering would
+        // lack it, and a whole-array mis-lowering would emit the bare
+        // `datum` name. Pinning the row size also guards against a wrong
+        // element-count regression (P3-2, architect review TASK-0049.10.01).
         assert!(
-            src.contains(&format!("{datum}[")),
+            src.contains(&format!("{datum}[")) && src.contains(" + 16usize]"),
             "worker `{worker}`: the per-frame read must target the indexed datum \
-             `{datum}[..]`:\n{src}"
+             as a sub-array row `{datum}[start..start + 16usize]` (not a scalar \
+             slot or the whole array):\n{src}"
         );
         // CRITICAL regression assertion: the zero-returning extracted stub
         // call must NOT be emitted for the effectful capture (the whole
