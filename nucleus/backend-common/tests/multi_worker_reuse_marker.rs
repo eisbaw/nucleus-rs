@@ -74,7 +74,7 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrBinOp, IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
     SeqTag, WorkerId,
@@ -465,6 +465,7 @@ fn multi_worker_walker_regular_arm_emits_real_buffer_codegen() {
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
 
@@ -605,6 +606,7 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
 
@@ -779,6 +781,7 @@ fn multi_worker_walker_dedupes_canonical_outer_axes_add_zero() {
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
     // ReuseSlot covers x-1..x+1 (length 3, min_offset -1). Two Fire

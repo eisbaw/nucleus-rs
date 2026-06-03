@@ -116,7 +116,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{
     ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId, SeqTag,
     WorkerId,
@@ -168,6 +168,7 @@ fn at_risk_tables() -> (NameTables, NameSidecar, DataId, SeqTag, IterVar, Kernel
                 dims: vec![8],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
     (names, sidecar, data, seq, iv, kernel)

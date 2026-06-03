@@ -85,6 +85,7 @@ pub struct Type {
 /// whether reordering, duplication, or elimination of a call is legal
 /// (PRD §6.2.2 #5, grammar §2 note 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Purity {
     Pure,
     Effectful,

@@ -547,3 +547,83 @@ fn real_ex14_sync_emits_three_workers_with_array_typed_pure_kernels() {
         );
     }
 }
+
+#[test]
+fn ex14_effectful_indexed_input_lowers_to_per_frame_region_read_not_stub() {
+    // TASK-0049.10.01 (BLOCKER 1 root fix, slice A): an EFFECTFUL kernel
+    // with an INDEXED output AND no inputs (`mic_in[frame] <-- fe_capture()`,
+    // declared `kernel fe_capture : () -> i32[16] effectful`) is
+    // STRUCTURALLY indistinguishable from a pure indexed compute, so
+    // before the purity bit reached the codegen contract it lowered to
+    // the verbatim-extracted `kernels::fe_capture()` STUB returning
+    // `[0i32; 16]` — firmware mic_in/bt_in were all zeros and could never
+    // match the real reference output. With purity mirrored into
+    // `KernelSig`, the effectful zero-input indexed firing now lowers to a
+    // PER-FRAME shim region-read into the indexed slice instead.
+    let res = emit_example_multi_with_files(
+        "14-hearing-aid",
+        "prog.embedded.algo.nuc",
+        "embedded_multimcu_sync.sched.nuc",
+        "kernels.embedded.rs",
+        "ex14_effectful_indexed_input",
+    );
+
+    let read = |name: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|w| w.worker_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("worker `{name}` project missing"));
+        std::fs::read_to_string(&w.lib_rs).expect("read worker lib.rs")
+    };
+
+    // fe runs `fe_capture` (mic_in[frame]); rf runs `rf_receive`
+    // (bt_in[frame]). Both are effectful, indexed-output, zero-input ->
+    // both must lower to the per-frame region read, NOT the stub call.
+    for (worker, kernel, datum) in [("fe", "fe_capture", "mic_in"), ("rf", "rf_receive", "bt_in")] {
+        let src = read(worker);
+
+        // The NEW per-frame effectful-input lowering: a shim region read
+        // (alloc_in_region + dma_wait + a null-guarded copy_nonoverlapping)
+        // into the indexed slice of the datum, sized by the indexed row.
+        assert!(
+            src.contains("shim.alloc_in_region(0, core::mem::size_of_val("),
+            "worker `{worker}`: effectful per-frame input `{kernel}` must read a \
+             shim region (alloc_in_region):\n{src}"
+        );
+        assert!(
+            src.contains("core::ptr::copy_nonoverlapping("),
+            "worker `{worker}`: effectful per-frame input `{kernel}` must copy the \
+             region into the indexed slice (copy_nonoverlapping):\n{src}"
+        );
+        // The read targets the INDEXED slice of the datum (a sub-array
+        // place `datum[.. .. ..]`), not the whole array and not a scalar
+        // slot — the row, sized per frame.
+        assert!(
+            src.contains(&format!("{datum}[")),
+            "worker `{worker}`: the per-frame read must target the indexed datum \
+             `{datum}[..]`:\n{src}"
+        );
+        // CRITICAL regression assertion: the zero-returning extracted stub
+        // call must NOT be emitted for the effectful capture (the whole
+        // point of BLOCKER 1).
+        assert!(
+            !src.contains(&format!("kernels::{kernel}(")),
+            "worker `{worker}`: effectful per-frame input `{kernel}` must NOT lower \
+             to the zero-returning stub `kernels::{kernel}(`:\n{src}"
+        );
+    }
+
+    // ADDITIVITY pin: the PURE indexed-output kernels (mix2, denoise on
+    // dsp) MUST still emit the extracted stub call — the new arm is
+    // additive and only diverts the effectful zero-input shape. This is
+    // the same positive assertion the TASK-0049.06 test makes; repeated
+    // here so the additivity is pinned in the SAME test that asserts the
+    // effectful divergence.
+    let dsp = read("dsp");
+    assert!(
+        dsp.contains("kernels::mix2(") && dsp.contains("kernels::denoise("),
+        "PURE indexed kernels (mix2/denoise) must STILL emit the extracted stub \
+         call — the effectful-input arm must be purely additive:\n{dsp}"
+    );
+}

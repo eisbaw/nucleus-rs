@@ -69,7 +69,7 @@
 //! ordering of the empty / data_name / ResolvedType / rank checks is
 //! load-bearing).
 
-use nucleus_compiler::algo::{IndexedRef, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IndexedRef, IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use nucleus_compiler::name_tables::NameTables;
 use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
@@ -131,6 +131,7 @@ fn fixtures_with_kernel_sig(
                 scalar: ScalarType::I32,
                 dims: vec![],
             }),
+            purity: Purity::Pure,
         },
     );
     (names, sidecar)
@@ -254,6 +255,7 @@ fn int_expr_call_in_index_cast_is_noop_shape_for_i32_gather_arg() {
                 scalar: ScalarType::I32,
                 dims: vec![],
             }),
+            purity: Purity::Pure,
         },
     );
     let ctx = RenderCtx::new(&names, &sidecar);
@@ -296,6 +298,7 @@ fn int_expr_call_in_index_skips_cast_for_nonscalar_param() {
                 scalar: ScalarType::I32,
                 dims: vec![],
             }),
+            purity: Purity::Pure,
         },
     );
     let ctx = RenderCtx::new(&names, &sidecar);

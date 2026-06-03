@@ -55,7 +55,7 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrBinOp, IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
 };
@@ -105,6 +105,7 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
 
@@ -262,6 +263,7 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
 
@@ -418,6 +420,7 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
                 dims: vec![],
             }],
             ret: None,
+            purity: Purity::Pure,
         },
     );
 

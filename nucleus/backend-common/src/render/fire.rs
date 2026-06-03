@@ -81,6 +81,37 @@ pub fn render_fire_output_assign(
     }
 }
 
+/// Render the LVALUE place-expression of an indexed [`DataSlice`] in
+/// the flat fixed-array / `Vec<T>` layout — i.e. the destination a
+/// write targets, WITHOUT an `= rhs` assignment. The two shapes mirror
+/// [`render_fire_output_assign`] exactly (they share
+/// `classify_data_slice`, the single source of truth), so a place
+/// produced here addresses the same backing region the assignment
+/// form would write:
+///
+/// - **Scalar** (full rank): `D[idx]` — a single element place.
+/// - **Sub-array** (partial prefix rank): `D[start..start + sub_len]`
+///   — a contiguous slice place.
+///
+/// This exists so a backend that needs to fill an indexed slot from a
+/// non-assignment source (e.g. the embedded-pattern backend copying a
+/// per-frame peripheral region into `mic_in[frame]` via a raw
+/// `core::ptr::copy_nonoverlapping` into `<place>.as_mut_ptr()`) can
+/// reuse the verified flat-index machinery instead of textually
+/// munging a rendered expression (a known defect class in this repo:
+/// sibling identifiers contain the iv as a substring — see
+/// `feedback-textual-replace-codegen-unsafe`). Caller is responsible
+/// for `o.indices.is_empty() == false`.
+pub fn render_indexed_place(o: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
+    let name = data_name(o.data, ctx)?;
+    match classify_data_slice(o, ctx)? {
+        SliceForm::Scalar(idx) => Ok(format!("{name}[{idx}]")),
+        SliceForm::SubArray { start, sub_len } => {
+            Ok(format!("{name}[{start}..{start} + {sub_len}usize]"))
+        }
+    }
+}
+
 // --------------------------------------------------------------------
 // Fire arguments
 // --------------------------------------------------------------------

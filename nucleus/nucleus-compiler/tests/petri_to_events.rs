@@ -1597,6 +1597,7 @@ fn sidecar_serde_roundtrip_is_byte_identical() {
 // via a synthetic scalar-param kernel + a synthetic `Scalar` arg.
 // --------------------------------------------------------------------
 
+use nucleus_compiler::algo::Purity;
 use nucleus_compiler::sidecar::KernelSig;
 use nucleus_compiler::ArgBinding;
 
@@ -1705,6 +1706,14 @@ fn sidecar_kernel_sigs_match_algoir_for_all_e2e_examples() {
                 sig.ret, rk.ret,
                 "{algo}: `{name}` ret must match AlgoIR verbatim"
             );
+            // TASK-0049.10.01: purity is now mirrored into KernelSig
+            // (the embedded backend distinguishes an effectful indexed-
+            // output peripheral read from a pure indexed compute on it).
+            // Assert it round-trips verbatim from the AlgoIR.
+            assert_eq!(
+                sig.purity, rk.purity,
+                "{algo}: `{name}` purity must match AlgoIR verbatim"
+            );
         }
 
         // RESOLVED FINDING: walk every Event::Fire's bindings; assert
@@ -1791,6 +1800,7 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
                 scalar: ScalarType::I32,
                 dims: vec![],
             }),
+            purity: Purity::Pure,
         },
     );
     let sidecar = NameSidecar {

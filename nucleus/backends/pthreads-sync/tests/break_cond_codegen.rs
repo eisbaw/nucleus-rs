@@ -18,7 +18,7 @@
 //! cap-hit-not-converged stderr diagnostic (TASK-0341.02.01.05.03). The
 //! `runtime_final_read_*` tests below pin those.
 
-use nucleus_compiler::algo::{IrCmpOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrCmpOp, IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{
     ArgBinding, DataId, DataSlice, Event, FireBinding, IterTile, IterVar, KernelId,
 };
@@ -63,6 +63,7 @@ fn fixtures(iv: IterVar, data: DataId, kernel: KernelId) -> (NameTables, NameSid
                 scalar: ScalarType::I32,
                 dims: vec![],
             }),
+            purity: Purity::Pure,
         },
     );
     (names, sidecar)

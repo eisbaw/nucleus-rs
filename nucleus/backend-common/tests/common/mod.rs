@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, IterTile, IterVar, KernelId, WorkerId};
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 use nucleus_compiler::NameTables;
@@ -129,6 +129,7 @@ impl Tables {
                     dims: vec![],
                 }],
                 ret: None,
+                purity: Purity::Pure,
             },
         );
         self

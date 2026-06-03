@@ -21,7 +21,7 @@
 //! lowering and break the embedded cross-compile). The two forms MUST
 //! differ on a sub-array arg and MUST be identical on a scalar arg.
 
-use nucleus_compiler::algo::{IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use nucleus_compiler::name_tables::NameTables;
 use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
@@ -54,6 +54,7 @@ fn fixtures(
         KernelSig {
             params: vec![param_ty],
             ret: None,
+            purity: Purity::Pure,
         },
     );
     (names, sidecar)

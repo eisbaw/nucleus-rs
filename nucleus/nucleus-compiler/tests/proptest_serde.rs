@@ -122,7 +122,9 @@ use std::ops::Range;
 
 use proptest::prelude::*;
 
-use nucleus_compiler::algo::{IndexedRef, IrBinOp, IrCmpOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{
+    IndexedRef, IrBinOp, IrCmpOp, IrExpr, Purity, ResolvedType, ScalarType,
+};
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, CheckFrame, DataId, DataSlice, Event, FireBinding, IterTile, IterVar,
     KernelId, Region, SeqTag, SyncKind, SyncTag, ViolationKind, WorkerId,
@@ -550,12 +552,23 @@ fn event_strategy() -> impl Strategy<Value = Event> {
 // 11 fields by name; a new field breaks both to compile).
 // --------------------------------------------------------------------
 
+/// `Purity` = the two-variant grammar marker (TASK-0049.10.01 added it
+/// to `KernelSig`'s serde surface). Both variants must round-trip.
+fn purity() -> impl Strategy<Value = Purity> {
+    prop_oneof![Just(Purity::Pure), Just(Purity::Effectful)]
+}
+
 fn kernel_sig() -> impl Strategy<Value = KernelSig> {
     (
         prop::collection::vec(resolved_type(), 0..=3),
         prop::option::of(resolved_type()),
+        purity(),
     )
-        .prop_map(|(params, ret)| KernelSig { params, ret })
+        .prop_map(|(params, ret, purity)| KernelSig {
+            params,
+            ret,
+            purity,
+        })
 }
 
 fn const_value() -> impl Strategy<Value = ConstValue> {

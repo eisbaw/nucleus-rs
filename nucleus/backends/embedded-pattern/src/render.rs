@@ -15,8 +15,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use backend_common::render::{data_name, render_fire_args_nostd, render_loop_bounds, RenderCtx};
+use backend_common::render::{
+    data_name, render_fire_args_nostd, render_indexed_place, render_loop_bounds, RenderCtx,
+};
 use backend_common::EmitError;
+use nucleus_compiler::algo::Purity;
 use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, ViolationKind};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -499,6 +502,64 @@ fn render_fire(
                 )))
             }
         }
+        // ---- Indexed OUTPUT, EFFECTFUL, zero-input: per-frame
+        //      peripheral region-read `mic_in[frame] <-- fe_capture()` ----
+        //
+        // ADDITIVE branch (TASK-0049.10.01): an effectful kernel with an
+        // indexed output AND no inputs is a PER-FRAME peripheral capture
+        // (fe_capture/rf_receive in ex14: `mic_in[frame] <-- fe_capture()`,
+        // `kernel fe_capture : () -> i32[16] effectful`). Structurally it
+        // is indistinguishable from a pure indexed compute (same Fire
+        // shape: indexed output, the only inputs being none), so WITHOUT
+        // the purity bit it lowered to the verbatim-extracted
+        // `kernels::fe_capture()` stub which returns `[0i32; 16]` — the
+        // firmware input arrays were all zeros and could never match the
+        // real reference output (BLOCKER 1). Here we instead read ONE
+        // indexed element's worth of bytes from the shim's input region
+        // into `mic_in[frame]`, modelled on the whole-array effectful-load
+        // arm above but targeting the indexed sub-slice (sized by the row,
+        // NOT the whole array). The shim cursor advances by the row size
+        // each frame, so sequential per-frame reads consume the input
+        // region in frame order. The stub shim returns null + the copy is
+        // null-guarded, so the M9 compile-only lib still compiles (the row
+        // stays zero-filled there; honest compile-only limit, same as the
+        // whole-array load arm).
+        //
+        // Per-frame effectful OUTPUT drain (fe_emit/rf_transmit, output =
+        // None) is slice B (TASK-0049.10.B) — the `None` arm above still
+        // drains the WHOLE array each frame and is intentionally untouched
+        // here. Per-worker input partitioning + multi-output .resc capture
+        // is slice C; renode-multimcu byte-exact is slice D. Slice A is
+        // INPUT-only and does NOT claim byte-exact.
+        Some(o)
+            if !o.indices.is_empty()
+                && bindings.inputs.is_empty()
+                && kernel_is_effectful(kernel, ctx)? =>
+        {
+            let place = render_indexed_place(o, ctx)?;
+            writeln!(
+                out,
+                "{pad}// effectful per-frame input `{callee}`: fill indexed slice `{place}` from the shim's input source."
+            )
+            .ok();
+            writeln!(
+                out,
+                "{pad}let __src = shim.alloc_in_region(0, core::mem::size_of_val(&{place}));"
+            )
+            .ok();
+            writeln!(out, "{pad}shim.dma_wait(0);").ok();
+            // Copy the per-frame bytes into the indexed slice IFF the shim
+            // handed back a non-null source (the stub returns null => no
+            // copy, so the compile-only lib's zero-fill is preserved).
+            writeln!(out, "{pad}if !__src.is_null() {{").ok();
+            writeln!(
+                out,
+                "{pad}    unsafe {{ core::ptr::copy_nonoverlapping(__src, {place}.as_mut_ptr() as *mut u8, core::mem::size_of_val(&{place})); }}"
+            )
+            .ok();
+            writeln!(out, "{pad}}}").ok();
+            Ok(())
+        }
         // ---- Indexed OUTPUT (pure compute): `c[i] <-- add(..)` ----
         Some(o) => {
             // no_std arg materialisation: a contiguous-prefix sub-array
@@ -517,6 +578,22 @@ fn render_fire(
             Ok(())
         }
     }
+}
+
+/// Is `kernel` declared `effectful`? Read from the codegen-contract
+/// sidecar's [`KernelSig`](nucleus_compiler::sidecar::KernelSig)
+/// `purity` field (mirrored from `ResolvedKernel::purity` in
+/// `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap
+/// (a `KernelId` with no signature in the sidecar) — fail loud with
+/// context rather than silently defaulting to `Pure` and mis-lowering.
+fn kernel_is_effectful(kernel: KernelId, ctx: &RenderCtx<'_>) -> Result<bool, EmitError> {
+    let sig = ctx.sidecar.kernel_sig(kernel).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "kernel id {kernel:?} has no KernelSig in the NameSidecar; \
+             cannot determine purity for effectful-input lowering"
+        ))
+    })?;
+    Ok(sig.purity == Purity::Effectful)
 }
 
 /// The Rust expression for the first `Data` input of an effect firing

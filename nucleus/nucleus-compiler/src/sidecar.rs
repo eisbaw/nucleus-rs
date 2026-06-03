@@ -90,7 +90,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::algo::{IrExpr, ResolvedType, ScalarType};
+use crate::algo::{IrExpr, Purity, ResolvedType, ScalarType};
 use crate::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use crate::link::LinkedIR;
 
@@ -377,26 +377,32 @@ pub struct NameSidecar {
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
-/// positional parameter [`ResolvedType`]s and the optional return
-/// type. Mirrors the fields of [`crate::algo::ResolvedKernel`] the
-/// backend actually consumes for argument rendering (the `name` is
-/// resolved via the `name_kernels` table; `purity` is irrelevant to
-/// codegen). Kept as a dedicated struct — rather than embedding
-/// `ResolvedKernel` — so the serde surface stays minimal (it reuses
-/// the feature-gated [`ResolvedType`] derive from TASK-0160 and adds
-/// none to the AlgoIR), exactly the [`ConstValue`] / `ResolvedConst`
-/// precedent.
+/// positional parameter [`ResolvedType`]s, the optional return type,
+/// and the kernel's [`Purity`]. Mirrors the fields of
+/// [`crate::algo::ResolvedKernel`] the backend actually consumes (the
+/// `name` is resolved via the `name_kernels` table; `name_span` is
+/// informational only). Kept as a dedicated struct — rather than
+/// embedding `ResolvedKernel` — so the serde surface stays minimal (it
+/// reuses the feature-gated [`ResolvedType`] derive from TASK-0160 plus
+/// the [`Purity`] derive from TASK-0049.10.01, and adds none to the
+/// AlgoIR), exactly the [`ConstValue`] / `ResolvedConst` precedent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct KernelSig {
     // DIVERGENCE HAZARD (TASK-0169 review): this is a structural
-    // *copy* of two `ResolvedKernel` fields, not a projection of the
-    // type itself (deliberate — embedding `ResolvedKernel` would drag
-    // `Purity`/serde in). If `ResolvedKernel` ever grows another
-    // codegen-relevant field (e.g. a variadic/ABI tag), mirror it
-    // here AND in `build_sidecar`'s kernel-sig section, or the
-    // EventList-only backend (TASK-0124) will silently diverge with
-    // no compile error.
+    // *copy* of `ResolvedKernel` fields, not a projection of the type
+    // itself (deliberate — embedding `ResolvedKernel` would drag its
+    // `name_span` / hand-written `PartialEq` in). If `ResolvedKernel`
+    // ever grows another codegen-relevant field (e.g. a variadic/ABI
+    // tag), mirror it here AND in `build_sidecar`'s kernel-sig
+    // section, or the EventList-only backend (TASK-0124) will silently
+    // diverge with no compile error. `purity` was the first such
+    // divergence the hazard actually caught: it was omitted as
+    // "irrelevant to argument rendering" but the embedded backend
+    // (TASK-0049.10.01) needs it to distinguish an effectful indexed-
+    // output peripheral-read kernel (`mic_in[frame] <-- fe_capture()`)
+    // from a pure indexed compute — structurally identical Fire
+    // shapes that must lower differently. It is now mirrored below.
     /// Positional parameter types, in declaration order. The i-th
     /// entry types the i-th `Event::Fire` argument; `is_scalar()`
     /// drives the `(expr) as usize` scalar-arg cast vs the
@@ -406,6 +412,13 @@ pub struct KernelSig {
     /// Return type: `None` for a unit (`()`) return, `Some(t)` for a
     /// typed return.
     pub ret: Option<ResolvedType>,
+    /// Kernel purity ([`Purity::Pure`] / [`Purity::Effectful`]),
+    /// mirrored verbatim from [`crate::algo::ResolvedKernel::purity`].
+    /// Codegen-relevant for the embedded-pattern backend: an effectful
+    /// indexed-output zero-input kernel lowers to a per-frame shim
+    /// region-read into the indexed slice rather than the pure
+    /// `kernels::<callee>(..)` stub call (TASK-0049.10.01).
+    pub purity: Purity,
 }
 
 /// A resolved const as the codegen contract needs it: its evaluated
@@ -606,9 +619,12 @@ pub fn build_sidecar(
     // (d) Per-KernelId signature. Invert acfg.name_kernels so the key
     //     is the canonical KernelId Event::Fire carries — exactly the
     //     name_data -> data_types inversion in (a), mirrored for
-    //     kernels. We copy only params + ret (the codegen-relevant
-    //     fields of ResolvedKernel); `purity` is irrelevant to
-    //     argument rendering and `name` is the map's resolution key.
+    //     kernels. We copy params + ret + purity (the codegen-relevant
+    //     fields of ResolvedKernel); `name` is the map's resolution key
+    //     and `name_span` is informational only. `purity` is mirrored
+    //     because the embedded-pattern backend distinguishes an
+    //     effectful indexed-output peripheral read from a pure indexed
+    //     compute on it (TASK-0049.10.01).
     let mut kernel_sigs: BTreeMap<KernelId, KernelSig> = BTreeMap::new();
     for (name, kid) in &acfg.name_kernels {
         // Every name in acfg.name_kernels was enumerated FROM
@@ -627,6 +643,7 @@ pub fn build_sidecar(
             KernelSig {
                 params: rk.params.clone(),
                 ret: rk.ret.clone(),
+                purity: rk.purity,
             },
         );
     }
