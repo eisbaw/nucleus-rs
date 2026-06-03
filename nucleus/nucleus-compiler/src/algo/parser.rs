@@ -95,8 +95,8 @@
 use chumsky::prelude::*;
 
 use super::ast::{
-    AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
-    Purity, SpExpr, SpItem, SpStmt, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, Call, CmpOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl,
+    KernelSig, Purity, SpExpr, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
 use super::tokens::{
     comment_or_ws, for_loop_var, ident, int_lit, keyword, pad, padded_spanned, scalar_type,
@@ -487,12 +487,43 @@ fn expr_parser() -> impl Parser<char, SpExpr, Error = Simple<char>> + Clone {
 
             // Additive.
             let add_op = choice((pad(just('+')).to(BinOp::Add), pad(just('-')).to(BinOp::Sub)));
-            mul.clone().then(add_op.then(mul).repeated()).foldl(
+            let add = mul.clone().then(add_op.then(mul).repeated()).foldl(
                 |lhs: SpExpr, (op, rhs): (BinOp, SpExpr)| {
                     let span = lhs.span.start..rhs.span.end;
                     Spanned::new(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span)
                 },
-            )
+            );
+
+            // Relational — a NEW level BELOW additive (grammar §1
+            // `RelExpr ::= AddExpr (CmpOp AddExpr)?`, TASK-0341.02.01.02 /
+            // epic S2). Single, non-associative comparison: the optional
+            // `(CmpOp AddExpr)?` admits AT MOST ONE comparison, so `a < b
+            // < c` does NOT parse (the `< c` is left as trailing input and
+            // the surrounding statement parser reports the unexpected
+            // token). Operators sit below additive, so `a + b <= c` parses
+            // as `(a+b) <= c`.
+            //
+            // ORDER matters: `<=`/`>=`/`==`/`!=` must be tried before the
+            // single-char `<`/`>` so a leading `<` of `<=` is not consumed
+            // as `Lt` leaving a stray `=`. (`!=` has no single-char prefix
+            // collision but is grouped with the others for readability.)
+            let cmp_op = choice((
+                pad(just("<=")).to(CmpOp::Le),
+                pad(just(">=")).to(CmpOp::Ge),
+                pad(just("==")).to(CmpOp::Eq),
+                pad(just("!=")).to(CmpOp::Ne),
+                pad(just('<')).to(CmpOp::Lt),
+                pad(just('>')).to(CmpOp::Gt),
+            ));
+            add.clone()
+                .then(cmp_op.then(add).or_not())
+                .map(|(lhs, maybe_cmp)| match maybe_cmp {
+                    None => lhs,
+                    Some((op, rhs)) => {
+                        let span = lhs.span.start..rhs.span.end;
+                        Spanned::new(Expr::Compare(op, Box::new(lhs), Box::new(rhs)), span)
+                    }
+                })
         },
     )
 }

@@ -17,8 +17,8 @@
 
 use nucleus_compiler::algo::span::Spanned;
 use nucleus_compiler::algo::{
-    parse_algo, AlgoAst, Expr, IndexedLValue, Item, KernelDecl, ParseError, ParseErrorKind,
-    ParseErrors, Purity, ScalarType, Stmt,
+    parse_algo, AlgoAst, BinOp, CmpOp, Expr, IndexedLValue, Item, KernelDecl, ParseError,
+    ParseErrorKind, ParseErrors, Purity, ScalarType, Stmt,
 };
 
 /// The body of the first top-level `for` loop. Spans (TASK-0082) mean
@@ -1484,4 +1484,106 @@ for i : 0 .. N {
         },
         other => panic!("expected `src[i]` as an Expr::LValue, got {other:?}"),
     }
+}
+
+// --------------------------------------------------------------------
+// TASK-0341.02.01.02 / epic S2: relational (bool-valued) operators.
+// Parser-level coverage: every operator parses to an `Expr::Compare`
+// with the right `CmpOp`; precedence sits BELOW additive; chaining
+// (`a < b < c`) does NOT parse (single, non-associative).
+// --------------------------------------------------------------------
+
+/// Project the FIRST top-level dataflow RHS expression. (S2 reaches a
+/// comparison via the dataflow RHS path; see lowering notes.)
+fn first_toplevel_dataflow_rhs(ast: &AlgoAst) -> &Expr {
+    ast.items
+        .iter()
+        .find_map(|i| match &i.node {
+            Item::Stmt(s) => match &s.node {
+                Stmt::Dataflow { rhs, .. } => Some(&rhs.node),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected a top-level dataflow statement")
+}
+
+/// Build a minimal program whose single bool-typed dataflow RHS is
+/// `EXPR`. `flag : bool` is the LHS; `a`,`b` are i32 data so the
+/// comparison has integer operands.
+fn prog_with_bool_rhs(rhs: &str) -> String {
+    format!(
+        "\
+data a : i32;
+data b : i32;
+data flag : bool;
+flag <-- {rhs};
+"
+    )
+}
+
+#[test]
+fn task0341_020102_each_relational_operator_parses_to_compare() {
+    for (src_op, want) in [
+        ("<=", CmpOp::Le),
+        ("<", CmpOp::Lt),
+        ("==", CmpOp::Eq),
+        ("!=", CmpOp::Ne),
+        (">", CmpOp::Gt),
+        (">=", CmpOp::Ge),
+    ] {
+        let src = prog_with_bool_rhs(&format!("a {src_op} b"));
+        let ast = parse_algo(&src).unwrap_or_else(|e| panic!("`a {src_op} b` must parse: {e:?}"));
+        match first_toplevel_dataflow_rhs(&ast) {
+            Expr::Compare(op, lhs, rhs) => {
+                assert_eq!(*op, want, "operator `{src_op}` must parse as {want:?}");
+                // Operands are bare LValues `a`, `b`.
+                assert!(
+                    matches!(&lhs.node, Expr::LValue(lv) if lv.name.node == "a"),
+                    "lhs must be `a`, got {:?}",
+                    lhs.node
+                );
+                assert!(
+                    matches!(&rhs.node, Expr::LValue(lv) if lv.name.node == "b"),
+                    "rhs must be `b`, got {:?}",
+                    rhs.node
+                );
+            }
+            other => panic!("`a {src_op} b` must be Expr::Compare, got {other:?}"),
+        }
+    }
+}
+
+/// Precedence: relational sits BELOW additive, so `a + b <= c` parses
+/// as `(a + b) <= c` — the comparison is the OUTER node and its lhs is
+/// the additive subtree, NOT `a + (b <= c)`.
+#[test]
+fn task0341_020102_relational_is_below_additive() {
+    let src = prog_with_bool_rhs("a + b <= a");
+    let ast = parse_algo(&src).expect("`a + b <= a` must parse");
+    match first_toplevel_dataflow_rhs(&ast) {
+        Expr::Compare(CmpOp::Le, lhs, _rhs) => {
+            // The comparison's LHS must be the additive `a + b`.
+            assert!(
+                matches!(&lhs.node, Expr::Binary(BinOp::Add, _, _)),
+                "lhs of `<=` must be the additive `(a + b)` (relational below additive), got {:?}",
+                lhs.node
+            );
+        }
+        other => panic!("`a + b <= a` must be a top-level Compare(Le), got {other:?}"),
+    }
+}
+
+/// Non-associative single comparison: chaining `a < b < c` must NOT
+/// parse (the grammar admits at most one `(CmpOp AddExpr)?`). The
+/// trailing `< c` is left unconsumed and the statement parser reports an
+/// error rather than building a nested Compare.
+#[test]
+fn task0341_020102_chained_comparison_does_not_parse() {
+    let src = prog_with_bool_rhs("a < b < b");
+    let res = parse_algo(&src);
+    assert!(
+        res.is_err(),
+        "chained `a < b < b` must NOT parse (single non-associative comparison); got {res:?}"
+    );
 }

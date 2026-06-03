@@ -177,6 +177,18 @@ pub enum IrExpr {
     Neg(Box<IrExpr>),
     /// Binary arithmetic.
     BinOp(IrBinOp, Box<IrExpr>, Box<IrExpr>),
+    /// A single relational comparison producing a **bool**-typed value
+    /// (TASK-0341.02.01.02 / epic S2). Lowered from [`super::ast::Expr::Compare`].
+    /// A distinct node from [`IrExpr::BinOp`] because the result type is
+    /// bool, not an integer — analysis passes that recover affine
+    /// coefficients / halo widths / const folds operate on INTEGER index
+    /// expressions and must never see this node in those contexts (the
+    /// lowering pass rejects a comparison in index / bound / const / shape
+    /// position with a typed [`LowerErrorKind::ComparisonNotAllowedHere`]).
+    /// SCOPE (S2): reachable only from a bool-typed dataflow RHS (and,
+    /// future, the S1 until-condition); full bool-DATA codegen is deferred
+    /// to TASK-0341.02.01.03.
+    Compare(IrCmpOp, Box<IrExpr>, Box<IrExpr>),
     /// Indexed read of a data symbol. Only legal as an argument to
     /// a kernel call (or as an identity-copy RHS).
     DataRef(IndexedRef),
@@ -193,6 +205,23 @@ pub enum IrBinOp {
     Mul,
     Div,
     Mod,
+}
+
+/// IR relational comparison operators (TASK-0341.02.01.02 / epic S2).
+/// Lowered 1:1 from [`super::ast::CmpOp`]. Result type is bool. Carries
+/// the same `serde` feature-gated derive as [`IrBinOp`] so the
+/// round-trip / determinism gate (`proptest_serde`) stays green;
+/// comparison on integers is exact and order-free, so the operator
+/// introduces no determinism concern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum IrCmpOp {
+    Le,
+    Lt,
+    Eq,
+    Ne,
+    Gt,
+    Ge,
 }
 
 /// IR statements. Mirrors [`super::ast::Stmt`] but with name-scoped
@@ -297,7 +326,10 @@ pub fn walk_dataref_names(e: &IrExpr, sink: &mut dyn FnMut(&str)) {
             }
         }
         IrExpr::Neg(inner) => walk_dataref_names(inner, sink),
-        IrExpr::BinOp(_, l, r) => {
+        // A comparison's two operands are integer expressions that may
+        // themselves read data (`flag <-- a[i] <= b[i]`); walk both so
+        // the collected data-ref set stays honest (TASK-0341.02.01.02).
+        IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
             walk_dataref_names(l, sink);
             walk_dataref_names(r, sink);
         }
@@ -394,6 +426,19 @@ pub enum LowerErrorKind {
     /// enforced — see [`crate::algo::ir`] module docs and
     /// `backlog/decisions/decision-0004`.
     EffectCalleeNotEffectful { callee: String },
+    /// A relational comparison (`a <= b`, `a == b`, …) appeared in a
+    /// position that requires an INTEGER value: an array index, a
+    /// for-loop bound, a const expression, or a shape dimension. A
+    /// comparison is bool-typed (grammar §1 `RelExpr`,
+    /// TASK-0341.02.01.02 / epic S2) and is legal ONLY where a bool is
+    /// expected (a bool-typed dataflow RHS; future: the S1 until
+    /// condition). This is a SEMANTIC reject of validly-parsed input
+    /// (`x[a<=b]` parses), so it must be a typed diagnostic rather than
+    /// a `panic!` (panic-not-diagnostic) or a silent drop. `position`
+    /// names the rejecting context for the message (e.g.
+    /// `"index/loop-bound expression"`, `"const \`N\`"`,
+    /// `"shape of \`grid\`"`).
+    ComparisonNotAllowedHere { position: String },
 }
 
 impl std::fmt::Display for LowerErrorKind {
@@ -459,6 +504,10 @@ impl std::fmt::Display for LowerErrorKind {
             LowerErrorKind::EffectCalleeNotEffectful { callee } => write!(
                 f,
                 "effect-statement callee `{callee}` references a pure kernel; expected effectful (grammar §2 note 5)"
+            ),
+            LowerErrorKind::ComparisonNotAllowedHere { position } => write!(
+                f,
+                "relational comparison (bool-valued) is not allowed in {position}; a comparison is legal only where a bool is expected"
             ),
         }
     }

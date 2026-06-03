@@ -45,12 +45,12 @@ pub mod span {
 
 pub use crate::span::Spanned;
 pub use ast::{
-    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig, Purity,
-    ScalarType, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, CmpOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
+    Purity, ScalarType, Stmt, Type, UnaryOp,
 };
 pub use ir::{
-    collect_dataref_names, walk_dataref_names, AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt,
-    LowerError, LowerErrorKind, LowerErrors, ResolvedConst, ResolvedData, ResolvedKernel,
+    collect_dataref_names, walk_dataref_names, AlgoIR, IndexedRef, IrBinOp, IrCmpOp, IrExpr,
+    IrStmt, LowerError, LowerErrorKind, LowerErrors, ResolvedConst, ResolvedData, ResolvedKernel,
     ResolvedType,
 };
 pub use lower::lower_algo;

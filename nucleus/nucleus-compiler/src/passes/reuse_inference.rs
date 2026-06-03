@@ -608,7 +608,10 @@ fn visit_expr_for_data_refs(
             }
         }
         IrExpr::Neg(inner) => visit_expr_for_data_refs(inner, iv_name, scope, ctx, accum, errors),
-        IrExpr::BinOp(_, lhs, rhs) => {
+        // A comparison can appear in a (bool-typed) RHS; descend into both
+        // integer operands so a reuse-bearing DataRef in either is still
+        // classified (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, lhs, rhs) | IrExpr::Compare(_, lhs, rhs) => {
             visit_expr_for_data_refs(lhs, iv_name, scope, ctx, accum, errors);
             visit_expr_for_data_refs(rhs, iv_name, scope, ctx, accum, errors);
         }
@@ -800,6 +803,10 @@ fn collect_iter_var_refs(e: &IrExpr, scope: &[String], out: &mut BTreeSet<String
             collect_iter_var_refs(rhs, scope, out);
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => {}
+        // A comparison is bool-valued and cannot appear in an index
+        // position (lowering rejects it); contributes no iter-var. No-op
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => {}
     }
 }
 
@@ -814,6 +821,10 @@ fn expr_contains_dataref_or_call(e: &IrExpr) -> bool {
         IrExpr::BinOp(_, lhs, rhs) => {
             expr_contains_dataref_or_call(lhs) || expr_contains_dataref_or_call(rhs)
         }
+        // A comparison cannot appear in an index position (lowering
+        // rejects it); not a data-dependent index. False
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => false,
     }
 }
 

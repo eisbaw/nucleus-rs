@@ -49,11 +49,11 @@ use core::ops::Range;
 use std::collections::{BTreeMap, HashSet};
 
 use super::ast::{
-    AlgoAst, BinOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, Purity, SpExpr,
-    SpStmt, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, CmpOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, Purity,
+    SpExpr, SpStmt, Stmt, Type, UnaryOp,
 };
 use super::ir::{
-    AlgoIR, IndexedRef, IrBinOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
+    AlgoIR, IndexedRef, IrBinOp, IrCmpOp, IrExpr, IrStmt, LowerError, LowerErrorKind, LowerErrors,
     ResolvedConst, ResolvedData, ResolvedKernel, ResolvedType,
 };
 
@@ -586,6 +586,15 @@ fn eval_const_expr(
                 LowerError::at(kind, expr.span.clone())
             })
         }
+        // A comparison is bool-valued; a const expression must evaluate
+        // to an integer. Reject with a typed span-anchored diagnostic
+        // (TASK-0341.02.01.02 / epic S2).
+        Expr::Compare(_, _, _) => Err(LowerError::at(
+            LowerErrorKind::ComparisonNotAllowedHere {
+                position: format!("const `{in_const}`"),
+            },
+            expr.span.clone(),
+        )),
         // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
         // bare identifier reaches the `Expr::LValue` empty-indices arm
         // below, which calls `eval_const_ident` — the real path.
@@ -682,6 +691,15 @@ fn eval_shape_expr(expr: &SpExpr, decl: &str, ir: &AlgoIR) -> Result<i64, LowerE
                 LowerError::at(kind, expr.span.clone())
             })
         }
+        // A comparison is bool-valued; a shape dimension must evaluate
+        // to a positive integer. Reject with a typed span-anchored
+        // diagnostic (TASK-0341.02.01.02 / epic S2).
+        Expr::Compare(_, _, _) => Err(LowerError::at(
+            LowerErrorKind::ComparisonNotAllowedHere {
+                position: format!("shape of `{decl}`"),
+            },
+            expr.span.clone(),
+        )),
         // TASK-0194: `Expr::Ident` removed (parser-unreachable). The
         // bare-identifier shape path is the `Expr::LValue`
         // empty-indices arm below (`eval_shape_ident`).
@@ -1181,6 +1199,17 @@ fn lower_index_expr(
             Box::new(lower_index_expr(lhs, ir, scope, allow_gather)?),
             Box::new(lower_index_expr(rhs, ir, scope, allow_gather)?),
         )),
+        // A relational comparison is bool-valued; an index / loop-bound
+        // position requires an INTEGER. Reject with a typed, span-anchored
+        // diagnostic (NOT a panic — `x[a<=b]` is validly parsed input, so
+        // panicking would be panic-not-diagnostic; NOT a silent drop)
+        // (TASK-0341.02.01.02 / epic S2).
+        Expr::Compare(_, _, _) => Err(LowerError::at(
+            LowerErrorKind::ComparisonNotAllowedHere {
+                position: "index/loop-bound expression".into(),
+            },
+            expr.span.clone(),
+        )),
         // TASK-0194: `Expr::Ident` removed (parser-unreachable). A
         // bare identifier in index/loop-bound position is the
         // `Expr::LValue` empty-indices arm below (`resolve_ident`).
@@ -1292,6 +1321,19 @@ fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Low
         }
         Expr::Binary(op, lhs, rhs) => Ok(IrExpr::BinOp(
             ast_binop_to_ir(*op),
+            Box::new(lower_rvalue(lhs, ir, scope)?),
+            Box::new(lower_rvalue(rhs, ir, scope)?),
+        )),
+        // A relational comparison is bool-valued and is ACCEPTED here:
+        // the RHS path is the one position where a bool is expected (a
+        // bool-typed dataflow RHS; TASK-0341.02.01.02 / epic S2). Its two
+        // operands are integer expressions, lowered through the same
+        // rvalue path. SCOPE: full bool-DATA codegen (Vec<bool> buffer /
+        // input.bin layout) is deferred to the S1 until-condition
+        // consumer (TASK-0341.02.01.03); S2 lands parser+AST+IR+lower
+        // only, so no example exercises this arm end-to-end yet.
+        Expr::Compare(op, lhs, rhs) => Ok(IrExpr::Compare(
+            ast_cmpop_to_ir(*op),
             Box::new(lower_rvalue(lhs, ir, scope)?),
             Box::new(lower_rvalue(rhs, ir, scope)?),
         )),
@@ -1417,6 +1459,21 @@ fn ast_binop_to_ir(op: BinOp) -> IrBinOp {
         BinOp::Mul => IrBinOp::Mul,
         BinOp::Div => IrBinOp::Div,
         BinOp::Mod => IrBinOp::Mod,
+    }
+}
+
+/// Map an AST [`CmpOp`] to its IR [`IrCmpOp`] (TASK-0341.02.01.02 /
+/// epic S2). 1:1; the two enums are kept separate so the AST and IR
+/// layers can diverge independently (matches the `BinOp`/`IrBinOp`
+/// split).
+fn ast_cmpop_to_ir(op: CmpOp) -> IrCmpOp {
+    match op {
+        CmpOp::Le => IrCmpOp::Le,
+        CmpOp::Lt => IrCmpOp::Lt,
+        CmpOp::Eq => IrCmpOp::Eq,
+        CmpOp::Ne => IrCmpOp::Ne,
+        CmpOp::Gt => IrCmpOp::Gt,
+        CmpOp::Ge => IrCmpOp::Ge,
     }
 }
 

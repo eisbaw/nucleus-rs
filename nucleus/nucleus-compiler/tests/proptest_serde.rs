@@ -122,7 +122,7 @@ use std::ops::Range;
 
 use proptest::prelude::*;
 
-use nucleus_compiler::algo::{IndexedRef, IrBinOp, IrExpr, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{IndexedRef, IrBinOp, IrCmpOp, IrExpr, ResolvedType, ScalarType};
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, CheckFrame, DataId, DataSlice, Event, FireBinding, IterTile, IterVar,
     KernelId, Region, SeqTag, SyncKind, SyncTag, ViolationKind, WorkerId,
@@ -238,6 +238,20 @@ fn ir_bin_op_completeness_guard(op: &IrBinOp) {
 }
 
 #[allow(dead_code)]
+fn ir_cmp_op_completeness_guard(op: &IrCmpOp) {
+    match op {
+        IrCmpOp::Le
+        | IrCmpOp::Lt
+        | IrCmpOp::Eq
+        | IrCmpOp::Ne
+        | IrCmpOp::Gt
+        | IrCmpOp::Ge => {}
+        // INTENTIONALLY no `_ =>`. A new IrCmpOp variant must
+        // break-to-update the `ir_cmp_op` generator (TASK-0341.02.01.02).
+    }
+}
+
+#[allow(dead_code)]
 fn violation_kind_completeness_guard(v: &ViolationKind) {
     match v {
         ViolationKind::Panic | ViolationKind::Log | ViolationKind::Count => {}
@@ -312,9 +326,26 @@ fn ir_bin_op() -> impl Strategy<Value = IrBinOp> {
     ]
 }
 
+/// Arbitrary [`IrCmpOp`] (TASK-0341.02.01.02 / S2). Exhaustive over all
+/// six relational variants so the serde round-trip / determinism gate
+/// exercises every operator (comparison on ints is exact / order-free,
+/// so there is no determinism concern in the operator itself; this only
+/// pins the serialise→deserialise identity).
+fn ir_cmp_op() -> impl Strategy<Value = IrCmpOp> {
+    prop_oneof![
+        Just(IrCmpOp::Le),
+        Just(IrCmpOp::Lt),
+        Just(IrCmpOp::Eq),
+        Just(IrCmpOp::Ne),
+        Just(IrCmpOp::Gt),
+        Just(IrCmpOp::Ge),
+    ]
+}
+
 /// Arbitrary [`IrExpr`] tree, bounded depth ≤ 2 over the recursive arms
-/// (`Neg`, `BinOp`, `DataRef` indices, `Call` args). Exhaustive over all
-/// six `IrExpr` variants at the leaf + recursive levels.
+/// (`Neg`, `BinOp`, `Compare`, `DataRef` indices, `Call` args).
+/// Exhaustive over all SEVEN `IrExpr` variants at the leaf + recursive
+/// levels (the seventh is the bool-valued `Compare`, TASK-0341.02.01.02).
 fn ir_expr() -> impl Strategy<Value = IrExpr> {
     let leaf = prop_oneof![
         any::<i64>().prop_map(IrExpr::IntLit),
@@ -325,6 +356,10 @@ fn ir_expr() -> impl Strategy<Value = IrExpr> {
             inner.clone().prop_map(|e| IrExpr::Neg(Box::new(e))),
             (ir_bin_op(), inner.clone(), inner.clone())
                 .prop_map(|(op, a, b)| IrExpr::BinOp(op, Box::new(a), Box::new(b))),
+            // TASK-0341.02.01.02 / S2: cover the bool-valued Compare node
+            // in the round-trip strategy too.
+            (ir_cmp_op(), inner.clone(), inner.clone())
+                .prop_map(|(op, a, b)| IrExpr::Compare(op, Box::new(a), Box::new(b))),
             (ident(), prop::collection::vec(inner.clone(), 0..=2))
                 .prop_map(|(name, indices)| IrExpr::DataRef(IndexedRef { name, indices })),
             (ident(), prop::collection::vec(inner, 0..=2))

@@ -521,7 +521,11 @@ pub(super) fn expr_references_partition_iv(
         },
         IrExpr::IntLit(_) => false,
         IrExpr::Neg(e) => expr_references_partition_iv(e, set, name_iter_vars),
-        IrExpr::BinOp(_, l, r) => {
+        // A comparison is bool-valued (cannot appear in an index position
+        // today); recurse into both operands defensively so the predicate
+        // stays sound if a future bool-RHS path routes here
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
             expr_references_partition_iv(l, set, name_iter_vars)
                 || expr_references_partition_iv(r, set, name_iter_vars)
         }

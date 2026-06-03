@@ -299,7 +299,11 @@ fn collect_dataref_consumers(
             }
         }
         IrExpr::Neg(inner) => collect_dataref_consumers(inner, worker, consumers),
-        IrExpr::BinOp(_, l, r) => {
+        // A comparison can appear in a (bool-typed) RHS; its two operands
+        // are integer expressions that may read data (`flag <-- a[i] <=
+        // b[i]`), so walk both to capture their consumers
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
             collect_dataref_consumers(l, worker, consumers);
             collect_dataref_consumers(r, worker, consumers);
         }

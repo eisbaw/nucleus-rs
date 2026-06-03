@@ -690,7 +690,10 @@ fn render_ir_expr(e: &nucleus_compiler::algo::IrExpr) -> String {
             };
             format!("({} {o} {})", render_ir_expr(l), render_ir_expr(r))
         }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+        // A comparison is bool-valued; index expressions are
+        // integer-only, so a Compare never reaches this test helper
+        // (TASK-0341.02.01.02 / S2). Controlled test input — unreachable.
+        IrExpr::DataRef(_) | IrExpr::Call { .. } | IrExpr::Compare(..) => {
             unreachable!("index expressions are integer-only (PRD §6.2.3)")
         }
     }
@@ -1279,7 +1282,9 @@ fn render_bound_from_sidecar(
                 render_bound_from_sidecar(r, consts)
             )
         }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+        // A comparison is bool-valued; loop bounds are integer-only, so a
+        // Compare never reaches this test helper (TASK-0341.02.01.02 / S2).
+        IrExpr::DataRef(_) | IrExpr::Call { .. } | IrExpr::Compare(..) => {
             unreachable!("loop bounds are integer-only (PRD §6.2.3)")
         }
     }
@@ -1544,7 +1549,9 @@ fn render_int_expr_mirror(e: &nucleus_compiler::algo::IrExpr) -> String {
                 render_int_expr_mirror(r)
             )
         }
-        IrExpr::DataRef(_) | IrExpr::Call { .. } => {
+        // A comparison is bool-valued; a Scalar ArgBinding integer
+        // expression never contains one (TASK-0341.02.01.02 / S2).
+        IrExpr::DataRef(_) | IrExpr::Call { .. } | IrExpr::Compare(..) => {
             unreachable!("a Scalar ArgBinding never contains a DataRef/Call")
         }
     }

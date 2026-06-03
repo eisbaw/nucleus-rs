@@ -590,7 +590,10 @@ fn collect_dataref_access_expr(
             }
         }
         IrExpr::Neg(inner) => collect_dataref_access_expr(inner, name_data, out),
-        IrExpr::BinOp(_, l, r) => {
+        // A comparison can appear in a (bool-typed) RHS; its two operands
+        // are integer expressions that may read data, so collect accesses
+        // from both (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
             collect_dataref_access_expr(l, name_data, out);
             collect_dataref_access_expr(r, name_data, out);
         }
@@ -669,6 +672,11 @@ fn try_eval_const(
             res.ok_or_else(|| ConstFoldError::Overflow(opname.into()))
         }
         IrExpr::Call { .. } | IrExpr::DataRef(_) => Err(ConstFoldError::NotConst),
+        // A comparison is bool-valued, not an integer constant, and cannot
+        // appear in a loop-bound / const position (lowering rejects it
+        // with ComparisonNotAllowedHere before this runs). `NotConst` is
+        // the correct, non-panicking answer (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => Err(ConstFoldError::NotConst),
     }
 }
 

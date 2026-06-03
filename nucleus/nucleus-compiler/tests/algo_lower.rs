@@ -14,8 +14,8 @@
 //! `lowers_example_05_stencil` below pins that it lowers cleanly.
 
 use nucleus_compiler::algo::{
-    lower_algo, parse_algo, AlgoIR, IrStmt, LowerError, LowerErrorKind, LowerErrors, ResolvedType,
-    ScalarType,
+    lower_algo, parse_algo, AlgoIR, IrCmpOp, IrExpr, IrStmt, LowerError, LowerErrorKind,
+    LowerErrors, ResolvedType, ScalarType,
 };
 use nucleus_compiler::error::offset_to_line_col;
 
@@ -2965,4 +2965,140 @@ for outer_i : 0 .. N {
         "second error must be UnknownIdent(never_k); got {:?}",
         all[1].kind,
     );
+}
+
+// --------------------------------------------------------------------
+// TASK-0341.02.01.02 / epic S2: relational (bool-valued) operators.
+// Lowering coverage:
+//   - POSITIVE: a comparison in a bool-typed dataflow RHS lowers to
+//     `IrExpr::Compare` (the one position where a bool is expected).
+//   - NEGATIVE: a comparison in index / loop-bound / const / shape
+//     position is REJECTED with a typed, SPAN-anchored
+//     `LowerErrorKind::ComparisonNotAllowedHere` (AC#3) — NOT a panic,
+//     NOT a silent drop.
+// SCOPE: full bool-DATA codegen is deferred to the S1 until-condition
+// consumer (TASK-0341.02.01.03); these tests assert lowering only.
+// --------------------------------------------------------------------
+
+/// Project the IR expr of the FIRST top-level dataflow statement.
+fn first_toplevel_dataflow_ir_rhs(ir: &AlgoIR) -> &IrExpr {
+    ir.stmts
+        .iter()
+        .find_map(|s| match s {
+            IrStmt::Dataflow { rhs, .. } => Some(rhs),
+            _ => None,
+        })
+        .expect("expected a top-level dataflow statement in IR")
+}
+
+#[test]
+fn task0341_020102_comparison_in_bool_rhs_lowers_to_compare() {
+    // `flag <-- a <= b;` — `flag` is bool, `a`/`b` are i32. The RHS
+    // lowers to an `IrExpr::Compare(Le, DataRef(a), DataRef(b))`.
+    let src = "\
+data a : i32;
+data b : i32;
+data flag : bool;
+flag <-- a <= b;
+";
+    let ir = lower_str(src).expect("a comparison in a bool-typed RHS must lower");
+    match first_toplevel_dataflow_ir_rhs(&ir) {
+        IrExpr::Compare(IrCmpOp::Le, lhs, rhs) => {
+            assert!(
+                matches!(lhs.as_ref(), IrExpr::DataRef(r) if r.name == "a"),
+                "lhs must be DataRef(a), got {lhs:?}"
+            );
+            assert!(
+                matches!(rhs.as_ref(), IrExpr::DataRef(r) if r.name == "b"),
+                "rhs must be DataRef(b), got {rhs:?}"
+            );
+        }
+        other => panic!("RHS must lower to IrExpr::Compare(Le, ..), got {other:?}"),
+    }
+}
+
+#[test]
+fn task0341_020102_comparison_in_index_position_is_rejected() {
+    // `out[a <= b]` — a bool in an index position. Rejected with a
+    // span-anchored ComparisonNotAllowedHere (AC#3).
+    let src = "\
+const N : usize = 4;
+data a : i32;
+data b : i32;
+data out : i32[N];
+out[a <= b] <-- a;
+";
+    let err = lower_str(src)
+        .map_err(|e| e.first().clone())
+        .expect_err("comparison in index position must be rejected");
+    assert!(
+        matches!(err.kind, LowerErrorKind::ComparisonNotAllowedHere { ref position } if position.contains("index")),
+        "expected ComparisonNotAllowedHere(index/..), got {:?}",
+        err.kind
+    );
+    // AC#3: the diagnostic is span-anchored at the comparison substring.
+    let span = err.span.expect("ComparisonNotAllowedHere must carry a span");
+    assert_eq!(
+        &src[span.clone()],
+        "a <= b",
+        "span must underline the comparison `a <= b`, got `{}`",
+        &src[span]
+    );
+}
+
+#[test]
+fn task0341_020102_comparison_in_loop_bound_is_rejected() {
+    // `for i : 0 .. (N <= N)` — a bool in loop-bound position. The bound
+    // path is `lower_index_expr` with `allow_gather == false`, which
+    // routes the comparison to the same typed reject.
+    let src = "\
+const N : usize = 4;
+data a : i32[N];
+for i : 0 .. (N <= N) {
+    a[i] <-- a[i];
+}
+";
+    let err = lower_str(src)
+        .map_err(|e| e.first().clone())
+        .expect_err("comparison in loop-bound position must be rejected");
+    assert!(
+        matches!(err.kind, LowerErrorKind::ComparisonNotAllowedHere { ref position } if position.contains("loop-bound")),
+        "expected ComparisonNotAllowedHere(index/loop-bound), got {:?}",
+        err.kind
+    );
+    assert!(err.span.is_some(), "loop-bound reject must be span-anchored");
+}
+
+#[test]
+fn task0341_020102_comparison_in_const_position_is_rejected() {
+    // `const C : usize = 1 <= 2;` — a bool in a const expression.
+    let src = "\
+const C : usize = 1 <= 2;
+";
+    let err = lower_str(src)
+        .map_err(|e| e.first().clone())
+        .expect_err("comparison in const expr must be rejected");
+    assert!(
+        matches!(err.kind, LowerErrorKind::ComparisonNotAllowedHere { ref position } if position.contains("const")),
+        "expected ComparisonNotAllowedHere(const C), got {:?}",
+        err.kind
+    );
+    assert!(err.span.is_some(), "const reject must be span-anchored");
+}
+
+#[test]
+fn task0341_020102_comparison_in_shape_position_is_rejected() {
+    // `data x : i32[1 <= 2];` — a bool in a shape dimension.
+    let src = "\
+data x : i32[1 <= 2];
+";
+    let err = lower_str(src)
+        .map_err(|e| e.first().clone())
+        .expect_err("comparison in shape dim must be rejected");
+    assert!(
+        matches!(err.kind, LowerErrorKind::ComparisonNotAllowedHere { ref position } if position.contains("shape")),
+        "expected ComparisonNotAllowedHere(shape of x), got {:?}",
+        err.kind
+    );
+    assert!(err.span.is_some(), "shape reject must be span-anchored");
 }

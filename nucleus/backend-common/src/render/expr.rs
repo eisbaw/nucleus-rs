@@ -128,6 +128,15 @@ pub fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitEr
                 .collect::<Result<Vec<_>, EmitError>>()?;
             Ok(format!("kernels::{callee}({})", rendered.join(", ")))
         }
+        // A relational comparison is bool-valued; this renderer emits an
+        // INTEGER index expression. The lowering pass already rejects a
+        // comparison in index/loop-bound position with a typed
+        // LowerErrorKind::ComparisonNotAllowedHere, so this arm is a
+        // defense-in-depth backstop — a typed EmitError (NOT a panic) on
+        // the contract-violating path (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => Err(EmitError::UnsupportedFeature(
+            "relational comparison (bool-valued) in an integer index expression".to_string(),
+        )),
     }
 }
 
@@ -272,6 +281,13 @@ pub fn render_const_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, Emit
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => Err(EmitError::UnsupportedFeature(
             "data-ref / call inside a const expression (loop bound)".to_string(),
+        )),
+        // A comparison is bool-valued; a const expression (loop bound)
+        // must be integer. Lowering already rejects it
+        // (ComparisonNotAllowedHere); typed EmitError backstop, no panic
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => Err(EmitError::UnsupportedFeature(
+            "relational comparison (bool-valued) inside a const expression (loop bound)".to_string(),
         )),
     }
 }

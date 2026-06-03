@@ -187,5 +187,10 @@ pub(super) fn canonicalise_outer_axis(e: &IrExpr) -> IrExpr {
         // pull in the `IndexedRef` import for zero observable gain on
         // any legal input).
         IrExpr::DataRef(_) | IrExpr::Call { .. } => e.clone(),
+        // A relational comparison is bool-valued and cannot appear in an
+        // outer-axis index subtree (lowering rejects a comparison in index
+        // position). Pass through unchanged — same posture as the
+        // DataRef / Call arm above (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => e.clone(),
     }
 }

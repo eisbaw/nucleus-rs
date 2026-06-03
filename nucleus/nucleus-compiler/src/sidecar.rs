@@ -779,7 +779,10 @@ pub(crate) fn collect_cumulative_data_names(
                 r.indices.iter().any(|ix| rhs_self_read_differs(ix, lhs))
             }
             IrExpr::Call { args, .. } => args.iter().any(|a| rhs_self_read_differs(a, lhs)),
-            IrExpr::BinOp(_, a, b) => {
+            // A comparison can appear in a (bool-typed) RHS; descend into
+            // both operands so a self-read in either is still detected
+            // (TASK-0341.02.01.02 / S2).
+            IrExpr::BinOp(_, a, b) | IrExpr::Compare(_, a, b) => {
                 rhs_self_read_differs(a, lhs) || rhs_self_read_differs(b, lhs)
             }
             IrExpr::Neg(inner) => rhs_self_read_differs(inner, lhs),

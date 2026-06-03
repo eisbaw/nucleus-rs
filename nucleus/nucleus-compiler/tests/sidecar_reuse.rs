@@ -526,7 +526,9 @@ fn defensive_unknown_data_in_ref_returns_typed_err() {
                 }
             }
             IrExpr::Neg(inner) => rename_ref(inner),
-            IrExpr::BinOp(_, l, r) => {
+            // A comparison's operands may contain the DataRef being
+            // poisoned; recurse into both (TASK-0341.02.01.02 / S2).
+            IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
                 rename_ref(l);
                 rename_ref(r);
             }

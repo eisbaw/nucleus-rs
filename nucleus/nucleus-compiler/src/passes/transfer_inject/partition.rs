@@ -782,6 +782,10 @@ pub(super) fn collect_ivs_from_expr(
             collect_ivs_from_expr(lhs, name_iter_vars, out);
             collect_ivs_from_expr(rhs, name_iter_vars, out);
         }
+        // A comparison is bool-valued and cannot appear in an index
+        // position (lowering rejects it); it attributes no iter-var to the
+        // indexed dim. Record nothing (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => {}
         IrExpr::DataRef(_) => {
             // TASK-0373: UNREACHABLE on the production path —
             // `record_access_per_dim` marks any dim containing a

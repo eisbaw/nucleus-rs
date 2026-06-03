@@ -96,6 +96,23 @@ ArgList        ::= RValue (',' RValue)* ;
 IndexExpr      ::= AddExpr ;
 ConstExpr      ::= AddExpr ;
 
+(* RelExpr is a NEW level BELOW additive (TASK-0341.02.01.02 / epic S2):
+   a single, NON-ASSOCIATIVE relational comparison producing a BOOL value.
+   The optional `(CmpOp AddExpr)?` admits AT MOST ONE comparison, so
+   `a < b < c` does not parse. Operators sit below additive, so
+   `a + b <= c` parses as `(a+b) <= c`.
+
+   The reference parser (`expr_parser`) returns a RelExpr as its TOP
+   expression (it folds an AddExpr then optionally one comparison). A
+   comparison is bool-typed and is legal ONLY where a bool is expected —
+   today that is a bool-typed dataflow RHS (and, future, the S1
+   `for..until` condition). It is REJECTED at lower time
+   (`LowerErrorKind::ComparisonNotAllowedHere`) in IndexExpr / loop-bound
+   / ConstExpr / shape position (bool-in-int). Full bool-DATA codegen is
+   deferred to the S1 until-condition consumer (TASK-0341.02.01.03). *)
+RelExpr        ::= AddExpr (CmpOp AddExpr)? ;
+CmpOp          ::= '<=' | '<' | '==' | '!=' | '>' | '>=' ;
+
 AddExpr        ::= MulExpr (('+' | '-') MulExpr)* ;
 MulExpr        ::= UnaryExpr (('*' | '/' | '%') UnaryExpr)* ;
 UnaryExpr      ::= ('-')? Atom ;

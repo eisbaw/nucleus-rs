@@ -263,7 +263,9 @@ fn expr_touches_data(e: &IrExpr, data_name: &str) -> bool {
     match e {
         IrExpr::DataRef(r) => r.name == data_name,
         IrExpr::Call { args, .. } => args.iter().any(|a| expr_touches_data(a, data_name)),
-        IrExpr::BinOp(_, l, r) => {
+        // A comparison can appear in a (bool-typed) RHS; its operands may
+        // read data, so walk both (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, l, r) | IrExpr::Compare(_, l, r) => {
             expr_touches_data(l, data_name) || expr_touches_data(r, data_name)
         }
         IrExpr::Neg(inner) => expr_touches_data(inner, data_name),

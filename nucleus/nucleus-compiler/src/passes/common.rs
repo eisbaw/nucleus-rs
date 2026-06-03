@@ -311,6 +311,12 @@ pub(crate) fn expr_mentions(e: &IrExpr, iv: &str) -> bool {
         IrExpr::Neg(inner) => expr_mentions(inner, iv),
         IrExpr::BinOp(_, lhs, rhs) => expr_mentions(lhs, iv) || expr_mentions(rhs, iv),
         IrExpr::DataRef(_) | IrExpr::Call { .. } => false,
+        // A relational comparison is bool-valued and cannot appear in an
+        // index position (lowering rejects it with
+        // ComparisonNotAllowedHere); this predicate only ever sees integer
+        // index expressions. Treat conservatively as "does not mention the
+        // iv" — it contributes no affine term (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => false,
     }
 }
 
@@ -343,6 +349,11 @@ pub(crate) fn expr_contains_dataref_or_call(e: &IrExpr) -> bool {
         IrExpr::BinOp(_, lhs, rhs) => {
             expr_contains_dataref_or_call(lhs) || expr_contains_dataref_or_call(rhs)
         }
+        // A comparison cannot appear in an index position (lowering
+        // rejects it). It is bool-valued, not a gather address, so it is
+        // not a data-dependent index — return false (TASK-0341.02.01.02 /
+        // S2).
+        IrExpr::Compare(..) => false,
     }
 }
 
@@ -388,6 +399,11 @@ pub(crate) fn eval_const_int(e: &IrExpr, consts: &BTreeMap<String, ResolvedConst
             }
         }
         IrExpr::DataRef(_) | IrExpr::Call { .. } => None,
+        // A comparison is bool-valued, not an integer constant, and cannot
+        // appear in an index/const position (lowering rejects it). `None`
+        // means "not a foldable affine constant" — the conservative,
+        // no-diagnostic-owed answer (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => None,
     }
 }
 

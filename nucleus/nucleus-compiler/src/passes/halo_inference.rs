@@ -904,7 +904,10 @@ fn expr_bands_target(
     match e {
         IrExpr::IntLit(_) | IrExpr::Ident(_) => false,
         IrExpr::Neg(inner) => expr_bands_target(inner, target, loop_vars, linked),
-        IrExpr::BinOp(_, a, b) => {
+        // A comparison can appear in a (bool-typed) RHS; a banding DataRef
+        // may be buried in either integer operand (`flag <-- a[i+1] <=
+        // b`), so descend into both (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, a, b) | IrExpr::Compare(_, a, b) => {
             expr_bands_target(a, target, loop_vars, linked)
                 || expr_bands_target(b, target, loop_vars, linked)
         }
@@ -1157,7 +1160,10 @@ fn visit_expr_for_calls(
         IrExpr::Neg(inner) => {
             visit_expr_for_calls(inner, lhs_data_dependent, scope, ctx, out, errors)
         }
-        IrExpr::BinOp(_, lhs, rhs) => {
+        // A comparison can appear in a (bool-typed) RHS; a nested kernel
+        // call may be in either operand, so visit both
+        // (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, lhs, rhs) | IrExpr::Compare(_, lhs, rhs) => {
             visit_expr_for_calls(lhs, lhs_data_dependent, scope, ctx, out, errors);
             visit_expr_for_calls(rhs, lhs_data_dependent, scope, ctx, out, errors);
         }
@@ -1272,7 +1278,10 @@ fn visit_arg(
             )
         }
         IrExpr::Neg(inner) => visit_arg(inner, call_site, scope, ctx, out, errors),
-        IrExpr::BinOp(_, lhs, rhs) => {
+        // A comparison's operands may wrap a banding DataRef (`k(a[y] <=
+        // b)`); descend into both so a buried banding access is still
+        // classified (TASK-0341.02.01.02 / S2).
+        IrExpr::BinOp(_, lhs, rhs) | IrExpr::Compare(_, lhs, rhs) => {
             visit_arg(lhs, call_site, scope, ctx, out, errors);
             visit_arg(rhs, call_site, scope, ctx, out, errors);
         }
@@ -1476,6 +1485,10 @@ fn collect_iter_var_refs(
         // before us); the no-op here is reached only on the
         // already-rejected path during unit tests of this helper.
         IrExpr::DataRef(_) | IrExpr::Call { .. } => {}
+        // A comparison is bool-valued and cannot appear in an index
+        // position (lowering rejects it); it contributes no iter-var to an
+        // affine index. No-op (TASK-0341.02.01.02 / S2).
+        IrExpr::Compare(..) => {}
     }
 }
 

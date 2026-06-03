@@ -157,6 +157,26 @@ pub enum Expr {
     /// Binary arithmetic: `+ - * / %` with standard precedence
     /// (grammar §1 `AddExpr`, `MulExpr`).
     Binary(BinOp, Box<SpExpr>, Box<SpExpr>),
+    /// A single relational comparison `lhs CMPOP rhs` producing a
+    /// **bool**-typed value (grammar §1 `RelExpr`, TASK-0341.02.01.02 /
+    /// epic S2). Deliberately a DEDICATED node, NOT a [`BinOp`] variant:
+    /// `BinOp` is closed over integer-valued arithmetic, whereas a
+    /// comparison yields `bool` (a distinct result type) and sits at its
+    /// own precedence level BELOW additive. Folding it into `BinOp` would
+    /// invite later passes to treat a comparison as an integer operand.
+    ///
+    /// Precedence is non-associative single comparison: `RelExpr ::=
+    /// AddExpr (CmpOp AddExpr)?`. Chaining (`a < b < c`) does not parse.
+    ///
+    /// SCOPE (S2): a comparison is legal ONLY where a bool is expected —
+    /// today that is a bool-typed dataflow RHS (and, future, the S1
+    /// `for..until` condition, TASK-0341.02.01.03). It is REJECTED with a
+    /// typed [`crate::algo::ir::LowerErrorKind::ComparisonNotAllowedHere`]
+    /// in index / loop-bound / const / shape position (bool-in-int).
+    /// Full bool-DATA codegen (`Vec<bool>` buffer / input.bin layout) is
+    /// OUT OF SCOPE for S2 and deferred to the S1 until-condition
+    /// consumer (TASK-0341.02.01.03).
+    Compare(CmpOp, Box<SpExpr>, Box<SpExpr>),
     /// A call expression used as an RValue (grammar `RValue ::=
     /// CallExpr | LValue`).
     Call(Call),
@@ -176,6 +196,26 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+}
+
+/// Relational comparison operators (grammar §1 `RelExpr`,
+/// TASK-0341.02.01.02 / epic S2). Each produces a **bool**-typed value
+/// from two integer-valued operands. Single, non-associative: the
+/// grammar admits at most one per `RelExpr` (no `a < b < c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CmpOp {
+    /// `<=`
+    Le,
+    /// `<`
+    Lt,
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
 }
 
 /// `IDENT '(' (RValue (',' RValue)*)? ')'` (grammar `CallExpr`).
