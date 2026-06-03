@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 23:12'
-updated_date: '2026-06-02 23:45'
+updated_date: '2026-06-03 00:49'
 labels:
   - compiler
   - grammar
@@ -81,6 +81,18 @@ SUBTLETIES / REJECTED APPROACHES / LIMITS:
 - FIXTURE LIMIT: shared input.bin pre-clipped to [0,BINS) -> bucket(v)==v at RUNTIME for this fixture (modulo is a runtime no-op); the UNCONSTRAINED-input strength is demonstrated at algorithm-surface/codegen, not at runtime. Dedicated unconstrained fixture + distributed textbook scatter = TASK-0432.
 - ARG-CAST LIMIT: render_int_expr Call arm emits args without a sig-driven as-type cast; a bare iter-var (i64) arg to an i32-param index kernel would hit a loud E0308 at generated-crate build (not a silent miscompile). No current example needs it. = TASK-0431.
 - Downstream passes (transfer_inject record_access_per_dim, halo_inference expr_contains_dataref_or_call, acfg collect_dataref_access) ALREADY handle a Call-in-index conservatively (OPAQUE / data-dependent / index-first recursion, built by TASK-0373); single-worker textbook needs none of it but it is in place for the distributed follow-up. The TASK-0373 UNREACHABLE-on-production comments in partition.rs are now slightly less true (a pure Call-in-index can reach production single-worker) but their behaviour (record nothing -> whole-array) stays correct - noted for TASK-0432 to revisit if it widens distributed scatter.
+
+REVIEW GATE (cycle 246, orchestrator-independent — the implementer self-reviewed inline; this is the real parallel gate): qa-test-runner GO + mped-architect GO.
+
+qa (re-run): build OK; clippy clean x3 incl forced recompile of nucleus-compiler+backend-common; test 1273 dev / 1271 release (0 failed); e2e POSITIVE 392/335/0/57/0 (pass 328->335 = the 7 new 08-histogram/textbook cells; no previously-passing cell regressed); FULL just ci exit 0 (all 9 structural fences OK + all 3 negative/falsifier arms correctly bit). VALUE-CORRECTNESS confirmed (not deadlock-only): qa independently recomputed the histogram from input.bin and it byte-matches reference.bin; all 7 textbook cells are [[required]] PASS via the harness oracle byte-diff, not skipped.
+
+architect: GO, no P1/P2. All 6 risks verified against code: (1) lowering gate correct — call admitted ONLY when allow_gather (subscript), loop-bound position still rejects (const-bound rule intact), purity genuinely checked, effectful->typed error, guard ORDERING pinned by test; (2) silent-sibling CLEAN — exactly one shared backend-common render arm consumed by all 7 backends, render_const_expr loop-bound path still rejects Call, no per-backend sibling; (3) accumulate-classification correct (structural IrExpr eq; bucket-wrap does not change it) AND noted the single-worker cell does not even exercise the classifier (codegen unconditionally correct); (4) no doc-lies; (5) typed errors not panic; (6) follow-ups TASK-0431/0432 honest + code-xref.
+
+P3 DISPOSITIONS:
+- P3-1 (architect): accumulate-classifier header note could be misread as a single-worker-cell dependency. FOLDED in-thread (commit 65630b2): added a SCOPE clause stating the classifier is distribution-time forward-verification (TASK-0432), not a dependency of the single-worker cell. e2e re-verified inert 392/335/0/57/0.
+- P3-2 (qa+architect): unconstrained-input strength is compile+codegen-only (pre-clipped shared fixture makes bucket a runtime no-op). Honestly disclosed in 3 places + filed TASK-0432. No action (acceptable documented limit).
+
+All 3 ACs met + gate green + review GO. Done status confirmed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
