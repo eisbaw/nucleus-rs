@@ -22,11 +22,101 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use backend_common::render::{render_bool_expr, EmitError, RenderCtx};
 use nucleus_compiler::algo::IrExpr;
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, Event};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use crate::walk_fire_outputs;
+
+/// Render the TOP-LEVEL event stream of the single-worker `fn main`,
+/// handling the `for..until` early-exit machinery in one place
+/// (extracted from `render_main_rs` in cycle-262 per architect P2-1 so
+/// the cohesive break logic does not grow `lib.rs`, which is already at
+/// the mega-file fence — TASK-0437).
+///
+/// When the stream carries no break loop ([`collect_break_loop_info`]
+/// returns `None`) this is exactly `render_events(.., 1, ..)` — the
+/// byte-identical plain-program path. When it DOES carry one, we
+/// declare `__nuc_break_gen` (sentinel -1) before the loop; STRUCTURALLY
+/// rewrite post-loop reads of break-written arrays from `[CAP]` to
+/// `[__nuc_final_gen]` ([`rewrite_final_reads`]); then render every
+/// top-level event, splicing the cap-hit-not-converged diagnostic +
+/// `__nuc_final_gen` resolution ([`emit_cap_hit_resolution`]) immediately
+/// after the break loop so they precede the (rewritten) extraction reads.
+/// The break EMIT itself (the capture-before-break line) is
+/// [`emit_break_check`], called from the `Event::Loop` arm of
+/// `render_event` in `lib.rs`.
+pub(crate) fn render_top_level_events(
+    events: &[Event],
+    out: &mut String,
+    ctx: &RenderCtx<'_>,
+    sidecar: &NameSidecar,
+) -> Result<(), EmitError> {
+    match collect_break_loop_info(events) {
+        None => crate::render_events(events, out, 1, ctx),
+        Some(info) => {
+            let mut rewritten: Vec<Event> = events.to_vec();
+            rewrite_final_reads(&mut rewritten, &info, sidecar, false);
+            // `__nuc_break_gen`: -1 sentinel = did-not-converge. An i64 to
+            // match the loop var's emitted type (`for t in (..)_i64`).
+            writeln!(
+                out,
+                "    // `for..until` break-generation capture \
+                 (TASK-0341.02.01.05.02): -1 = did-not-converge sentinel."
+            )
+            .ok();
+            writeln!(out, "    let mut __nuc_break_gen: i64 = -1;").ok();
+            writeln!(out).ok();
+            for e in &rewritten {
+                crate::render_event(e, out, 1, ctx, None)?;
+                if matches!(
+                    e,
+                    Event::Loop {
+                        break_cond: Some(_),
+                        ..
+                    }
+                ) {
+                    emit_cap_hit_resolution(out, &info);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Emit the `for..until` early-exit break check as the LAST statement of
+/// the loop body — AFTER the body and AFTER any `check_frame` latency
+/// measurement closes, so the final (break-causing) iteration is still
+/// fully executed (and measured) before the loop terminates. The
+/// predicate is a bool `IrExpr::Compare` over runtime data values (e.g.
+/// `max_abs_diff < epsilon`), rendered via the scalar VALUE renderer
+/// [`render_bool_expr`].
+///
+/// The CAPTURE (`__nuc_break_gen = {var}`) happens BEFORE the `break`, so
+/// the recorded value is the last EXECUTED generation `var` (the body for
+/// that iteration is already fully run). On cap-hit (the predicate never
+/// fires) `__nuc_break_gen` stays at the -1 sentinel declared in
+/// [`render_top_level_events`] — the cap-hit-not-converged observability
+/// signal (TASK-0341.02.01.05.03), resolved post-loop by
+/// [`emit_cap_hit_resolution`]. Caller emits this only when
+/// `break_cond.is_some()`; a plain `for` loop emits nothing here
+/// (byte-identical to the pre-S4 backend — the regression guard).
+pub(crate) fn emit_break_check(
+    out: &mut String,
+    cond: &IrExpr,
+    var: &str,
+    body_pad: &str,
+    body_ctx: &RenderCtx<'_>,
+) -> Result<(), EmitError> {
+    let cond_src = render_bool_expr(cond, body_ctx)?;
+    writeln!(
+        out,
+        "{body_pad}if {cond_src} {{ __nuc_break_gen = {var}; break; }}"
+    )
+    .ok();
+    Ok(())
+}
 
 /// What a `for..until` early-exit loop needs the surrounding `fn main`
 /// to know so the runtime break-generation final-read
@@ -127,6 +217,17 @@ pub(crate) fn rewrite_final_reads(
                 let inside = in_break_loop || break_cond.is_some();
                 rewrite_final_reads(body, info, sidecar, inside);
             }
+            // Documented invariant, NOT an accidental silent skip
+            // (cycle-262 architect P3-1): the final-read rewrite only
+            // targets an INDEXED `Fire` input read of a break-written
+            // array. In single-worker pthreads-sync scope a post-loop
+            // `Push`/`Wait`/`Sync` cannot occur (no inter-worker transfer
+            // — multi-worker `break_cond` is fail-loud rejected in the
+            // multi_worker_walker / tcp_plan walkers), and `Alloc`/`Free`
+            // carry no readable index expression. So no other variant can
+            // host a rewritable read here; if that ever changes (a
+            // multi-worker break in S7), this arm must grow a case rather
+            // than silently pass (feedback-option-none-skip-arm-silent-drop).
             _ => {}
         }
     }

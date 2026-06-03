@@ -1022,8 +1022,10 @@ check-doc-cell-path-staleness:
 #   - pthreads-sync/src/lib.rs — the shared single-worker main.rs emitter
 #     (consumed by pthreads-async / mp-tcp-bufsync / openmp-rs /
 #     mp-tcp-poll / mp-uds-event); bulk is the render_event Event-arm
-#     match. Pre-existing >1000 LoC at cycle-262 (1032 at HEAD). Split
-#     tracked by TASK-0437.
+#     match. Pre-existing >1000 LoC (1032 pre-cycle-262); the cycle-262
+#     break wiring was kept OUT of it (moved to break_loop.rs per the
+#     architect P2-1 fold), so it is ~flat at 1035, NOT grown. Full
+#     sub-1000 split tracked by TASK-0437.
 #   - passes/block_transform.rs — the strip-mine tile/seq/inner pass;
 #     pre-existing >1000 LoC, untouched by cycle-262. Split → TASK-0437.
 #   - nucleus-compiler/src/event.rs — the EventList contract types
