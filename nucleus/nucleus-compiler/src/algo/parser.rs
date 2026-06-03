@@ -96,10 +96,14 @@ use chumsky::prelude::*;
 
 use super::ast::{
     AlgoAst, BinOp, Call, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
-    Purity, ScalarType, SpExpr, SpIdent, SpItem, SpStmt, Stmt, Type, UnaryOp,
+    Purity, SpExpr, SpItem, SpStmt, Stmt, Type, UnaryOp,
+};
+use super::tokens::{
+    comment_or_ws, for_loop_var, ident, int_lit, keyword, pad, padded_spanned, scalar_type,
 };
 use crate::error::map_all_chumsky_errors;
 pub use crate::error::{ParseError, ParseErrorKind, ParseErrors};
+use crate::lexical::ident_chars;
 use crate::span::Spanned;
 
 /// Internal: the tail of an identifier-led atom — either a call's
@@ -150,37 +154,13 @@ pub fn parse_algo(src: &str) -> Result<AlgoAst, ParseErrors> {
 // Grammar
 // --------------------------------------------------------------------
 
-/// Reserved words — identifiers may not collide with these. Listed
-/// explicitly per grammar §6 note 4.
-const KEYWORDS: &[&str] = &[
-    "const",
-    "data",
-    "kernel",
-    "pure",
-    "effectful",
-    "for",
-    "usize",
-    "isize",
-    "u8",
-    "u16",
-    "u32",
-    "u64",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "f32",
-    "f64",
-    "bool",
-];
-
 /// Schedule-directive reserved words that, when they appear in
 /// statement position of an algorithm file, get an actionable hint
 /// ("did you mean to put it in a `*.sched.nuc` file?") rather than a
 /// generic "unexpected `=`" / "unexpected ident" diagnostic
 /// (TASK-0083; promised by `docs/grammar-algo.md` §3).
 ///
-/// These keywords are NOT in [`KEYWORDS`] (the algorithm grammar's
+/// These keywords are NOT in [`KEYWORDS`](super::tokens::KEYWORDS) (the algorithm grammar's
 /// reserved set) — they remain legal as plain identifiers (e.g.
 /// `data block : f32[16];` is still accepted). The hint only fires
 /// when the surrounding shape is unambiguously a schedule directive:
@@ -405,163 +385,6 @@ fn brace_balanced_recovery() -> impl Parser<char, (), Error = Simple<char>> + Cl
     choice((lone_semicolon, brace_block_item, flat_item))
 }
 
-/// Whitespace + line comments. Grammar §1 lexical rules.
-fn comment_or_ws() -> impl Parser<char, (), Error = Simple<char>> + Clone {
-    let line_comment = just("//")
-        .then(take_until(text::newline().or(end())))
-        .ignored();
-    line_comment
-        .or(one_of(" \t\r\n").ignored())
-        .repeated()
-        .ignored()
-}
-
-/// Helper: capture a node's span on the bare token **before** the
-/// trailing whitespace/comment padding is consumed, so the span is the
-/// tight extent of the source text the node was parsed from (no
-/// trailing layout). Leading layout is already consumed by the
-/// *previous* token's pad, matching `ParseError`'s offset convention.
-///
-/// This is the span-correctness primitive (TASK-0082): `pad(p)` alone
-/// would, if `.map_with_span`-wrapped on the outside, fold the trailing
-/// whitespace into the span — wrong for a diagnostic that underlines a
-/// token. `padded_spanned(p)` wraps with the span fixed first, then
-/// eats trailing layout.
-fn padded_spanned<P, T>(p: P) -> impl Parser<char, Spanned<T>, Error = Simple<char>> + Clone
-where
-    P: Parser<char, T, Error = Simple<char>> + Clone,
-{
-    p.map_with_span(Spanned::new).then_ignore(comment_or_ws())
-}
-
-/// Helper: token followed by trailing whitespace/comments.
-fn pad<P, T>(p: P) -> impl Parser<char, T, Error = Simple<char>> + Clone
-where
-    P: Parser<char, T, Error = Simple<char>> + Clone,
-{
-    p.then_ignore(comment_or_ws())
-}
-
-/// Raw identifier characters `[A-Za-z_][A-Za-z0-9_]*` as a `String`,
-/// with NO reserved-word check (that is the caller's job). Shared by
-/// [`ident`] and [`for_loop_var`] so the token shape lives in one place.
-fn ident_chars() -> impl Parser<char, String, Error = Simple<char>> + Clone {
-    filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
-        .chain(filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_').repeated())
-        .collect::<String>()
-}
-
-/// SINGLE source of truth for the identifier reject decision + wording.
-/// `Some(message)` ⇒ `s` collides with a reserved word and must be
-/// rejected; `None` ⇒ legal identifier. Both [`ident`] (data/kernel/
-/// worker names) and [`for_loop_var`] (the `for VAR :` position,
-/// TASK-0434) route through it, so the diagnostics are byte-identical
-/// for the same word. Grammar `KEYWORDS` are checked FIRST so the
-/// overlap (`const`, `for`) keeps the grammar message; a non-grammar
-/// Rust keyword falls through to the codegen-collision message
-/// (TASK-0433: codegen emits `let mut {name}` and rustc would fail).
-fn ident_collision_message(s: &str) -> Option<String> {
-    if KEYWORDS.contains(&s) {
-        Some(format!("expected identifier, found keyword `{}`", s))
-    } else if crate::reserved::is_rust_reserved(s) {
-        Some(crate::reserved::collision_message(s))
-    } else {
-        None
-    }
-}
-
-/// Identifier matcher. Rejects keywords. Yields a [`SpIdent`] whose
-/// span is exactly the identifier token's byte range (no surrounding
-/// whitespace — `pad` consumes trailing space *after* this combinator),
-/// so an "undeclared / duplicate `X`" diagnostic underlines just `X`.
-fn ident() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
-    ident_chars()
-        .try_map(|s, span| match ident_collision_message(&s) {
-            Some(msg) => Err(Simple::custom(span, msg)),
-            None => Ok(s),
-        })
-        .map_with_span(Spanned::new)
-}
-
-/// The loop-variable position of `for VAR : lo .. hi { … }` (TASK-0434).
-///
-/// On a valid `VAR` this is exactly [`ident`] (same `SpIdent`, no extra
-/// consumption — positive for-loops and codegen unchanged). The
-/// difference is the ERROR PATH: `ident`'s reject fires at the variable
-/// position, but `for_stmt` is in a `choice` and chumsky 0.9 merges
-/// alternative errors by furthest input position (greater `at` wins —
-/// `chumsky::error::Located::max`), so the trailing-`{` mismatch PAST
-/// the keyword `VAR` won the merge and the user saw a confusing "found
-/// `{`" (TASK-0433 pinned this). Mirroring [`sched_directive_hint_stmt`]:
-/// on a collision we [`take_until`] the `{`, pushing our error's `at`
-/// past the brace, while keeping its display span on `var_span` so the
-/// diagnostic underlines `VAR`. Message is the shared
-/// [`ident_collision_message`] — identical to the data/kernel one.
-fn for_loop_var() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
-    ident_chars()
-        .map_with_span(|s, span: std::ops::Range<usize>| (s, span))
-        // Both arms are `.boxed()` to one concrete parser type (the
-        // `then_with` closure must return a single `P`). See the
-        // docstring for the chumsky furthest-`at` merge rationale.
-        .then_with(|(s, var_span)| match ident_collision_message(&s) {
-            None => {
-                let ident = Spanned::new(s.clone(), var_span.clone());
-                empty().map(move |()| ident.clone()).boxed()
-            }
-            Some(msg) => take_until(just('{'))
-                .try_map(move |_, _outer_span| {
-                    Err(Simple::custom(var_span.clone(), msg.clone()))
-                })
-                .boxed(),
-        })
-}
-
-/// Integer literal — decimal only (grammar §1).
-fn int_lit() -> impl Parser<char, i64, Error = Simple<char>> + Clone {
-    filter(|c: &char| c.is_ascii_digit())
-        .repeated()
-        .at_least(1)
-        .collect::<String>()
-        .try_map(|s, span| {
-            s.parse::<i64>()
-                .map_err(|e| Simple::custom(span, format!("invalid integer `{}`: {}", s, e)))
-        })
-}
-
-/// Scalar-type keyword.
-fn scalar_type() -> impl Parser<char, ScalarType, Error = Simple<char>> + Clone {
-    // Order matters within `choice` when prefixes overlap (e.g. `i8`
-    // vs `i16`); `text::keyword` would help but isn't in chumsky 0.9
-    // for this token shape. We disambiguate by sorting longest-first.
-    // Match an exact scalar-type keyword and ensure it is not the
-    // prefix of a longer identifier (e.g. `u8` must not start `u8_t`).
-    // We use `rewind()` on a one-char alnum/_ peek so the check is
-    // truly non-consuming and the alternation in `choice` below
-    // remains well-behaved.
-    let kw = |s: &'static str, t: ScalarType| {
-        just(s)
-            .then_ignore(
-                none_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").rewind(),
-            )
-            .to(t)
-    };
-    choice((
-        kw("usize", ScalarType::Usize),
-        kw("isize", ScalarType::Isize),
-        kw("u16", ScalarType::U16),
-        kw("u32", ScalarType::U32),
-        kw("u64", ScalarType::U64),
-        kw("u8", ScalarType::U8),
-        kw("i16", ScalarType::I16),
-        kw("i32", ScalarType::I32),
-        kw("i64", ScalarType::I64),
-        kw("i8", ScalarType::I8),
-        kw("f32", ScalarType::F32),
-        kw("f64", ScalarType::F64),
-        kw("bool", ScalarType::Bool),
-    ))
-}
-
 /// Expression parser — covers `IndexExpr` and `ConstExpr` (grammar §1
 /// merges them at parse time).
 fn expr_parser() -> impl Parser<char, SpExpr, Error = Simple<char>> + Clone {
@@ -737,19 +560,6 @@ fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> +
         .map(|((name, sig), purity)| KernelDecl { name, sig, purity })
 }
 
-/// A reserved-word matcher that ensures the keyword is not the prefix
-/// of a longer identifier (e.g. `for_each` does not start `for`).
-fn keyword(kw: &'static str) -> impl Parser<char, (), Error = Simple<char>> + Clone {
-    // See `scalar_type` for the `rewind()` rationale: ensure the
-    // keyword is not the prefix of a longer identifier without
-    // consuming the lookahead character.
-    just(kw)
-        .then_ignore(
-            none_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").rewind(),
-        )
-        .ignored()
-}
-
 /// Indexed LValue `IDENT ('[' EXPR ']')*`.
 fn lvalue_parser() -> impl Parser<char, IndexedLValue, Error = Simple<char>> + Clone {
     pad(ident())
@@ -783,7 +593,7 @@ fn lvalue_parser() -> impl Parser<char, IndexedLValue, Error = Simple<char>> + C
 ///
 /// # Disambiguation against valid algorithm uses
 ///
-/// `block`/`place`/etc. are NOT in algorithm [`KEYWORDS`], so they
+/// `block`/`place`/etc. are NOT in algorithm [`KEYWORDS`](super::tokens::KEYWORDS), so they
 /// remain legal as plain identifiers (e.g.
 /// `data block : f32[16]; block <-- foo();`). Detection therefore
 /// requires the FULL shape — `<kw>` alone does not fire; a `<kw>`

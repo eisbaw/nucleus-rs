@@ -206,30 +206,21 @@ fn keyword(kw: &'static str) -> impl Parser<char, (), Error = Simple<char>> + Cl
 /// whitespace — callers wrap this in `pad`, which consumes trailing
 /// space *after* this combinator), so a "duplicate / undeclared `X`"
 /// diagnostic underlines just `X` (TASK-0086 / TASK-0196).
+///
+/// Token shape and reject decision are the shared
+/// [`crate::lexical::ident_chars`] / [`crate::lexical::ident_collision_message`]
+/// (TASK-0435 de-dup of the algo/sched twin), fed the schedule
+/// grammar's own [`KEYWORDS`] — checked FIRST so the overlap with the
+/// Rust-reserved set (`for`, `in`, `loop`, `async`, `true`, `false`)
+/// keeps the grammar diagnostic; a worker / worker_class / memory_region
+/// name that is a non-grammar Rust keyword falls through to the
+/// codegen-collision message (TASK-0433: it would reach codegen as a
+/// bare binding and fail rustc).
 fn ident() -> impl Parser<char, SpName, Error = Simple<char>> + Clone {
-    let start = filter(|c: &char| c.is_ascii_alphabetic() || *c == '_');
-    let cont = filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_');
-    start
-        .chain(cont.repeated())
-        .collect::<String>()
-        .try_map(|s, span| {
-            if KEYWORDS.contains(&s.as_str()) {
-                // Schedule-grammar reserved word. Checked FIRST so the
-                // overlap with RUST_RESERVED (`for`, `in`, `loop`,
-                // `async`, `true`, `false`) keeps the grammar
-                // diagnostic.
-                Err(Simple::custom(
-                    span,
-                    format!("expected identifier, found keyword `{}`", s),
-                ))
-            } else if crate::reserved::is_rust_reserved(&s) {
-                // A worker / worker_class / memory_region name that is
-                // a Rust keyword reaches codegen as a bare binding and
-                // fails rustc on generated source (TASK-0433).
-                Err(Simple::custom(span, crate::reserved::collision_message(&s)))
-            } else {
-                Ok(s)
-            }
+    crate::lexical::ident_chars()
+        .try_map(|s, span| match crate::lexical::ident_collision_message(&s, KEYWORDS) {
+            Some(msg) => Err(Simple::custom(span, msg)),
+            None => Ok(s),
         })
         .map_with_span(Spanned::new)
 }

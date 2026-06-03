@@ -16,6 +16,7 @@ pub mod contract;
 pub mod error;
 pub mod event;
 pub mod event_validate;
+pub mod lexical;
 pub mod link;
 pub mod name_tables;
 pub mod passes;

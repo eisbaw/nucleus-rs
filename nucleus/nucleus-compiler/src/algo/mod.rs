@@ -31,6 +31,7 @@ pub mod ast;
 pub mod ir;
 pub mod lower;
 pub mod parser;
+mod tokens;
 
 /// Back-compat path alias. The span wrapper was promoted to the
 /// shared [`crate::span`] module (TASK-0086) so the schedule AST can
