@@ -72,7 +72,7 @@
 use nucleus_compiler::algo::{IndexedRef, IrExpr, ResolvedType, ScalarType};
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
 use nucleus_compiler::name_tables::NameTables;
-use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
 
 use backend_common::render::{
     render_const_expr, render_fire_args, render_fire_output_assign, render_flat_index,
@@ -103,6 +103,39 @@ fn fixtures_with_data(did: DataId, name: &str, dims: Vec<usize>) -> (NameTables,
     (names, sidecar)
 }
 
+/// A `(NameTables, NameSidecar)` where kernel `kid` is NAMED `name`
+/// and has the given positional SCALAR param types (TASK-0431). Used to
+/// pin the index-position arg cast: a scalar param drives the
+/// `(arg) as <ty>` cast in `render_int_expr`'s `Call` arm exactly as it
+/// does in `render_fire_arg`.
+fn fixtures_with_kernel_sig(
+    kid: KernelId,
+    name: &str,
+    params: Vec<ScalarType>,
+) -> (NameTables, NameSidecar) {
+    let mut names = NameTables::default();
+    names.kernel.insert(kid, name.to_string());
+
+    let mut sidecar = NameSidecar::default();
+    sidecar.kernel_sigs.insert(
+        kid,
+        KernelSig {
+            params: params
+                .into_iter()
+                .map(|s| ResolvedType {
+                    scalar: s,
+                    dims: vec![],
+                })
+                .collect(),
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+        },
+    );
+    (names, sidecar)
+}
+
 /// Convenience: an `i32`-valued ident index expression.
 fn ident(n: &str) -> IrExpr {
     IrExpr::Ident(n.to_string())
@@ -113,12 +146,18 @@ fn ident(n: &str) -> IrExpr {
 // --------------------------------------------------------------------
 
 #[test]
-fn int_expr_pure_kernel_call_in_index_emits_call() {
+fn int_expr_pure_kernel_call_in_index_emits_call_no_sig_degrades_bare() {
     // TASK-0430 (X1'). A PURE kernel call `f(k)` in array-subscript index
     // position is now EMITTED as `kernels::f(k)` (was rejected fail-loud
     // pre-TASK-0430). The lowering pass is the gate (subscript-only,
-    // pure-callee-only); render just emits. The check is independent of
-    // the tables (no DataRef arg), so empty fixtures suffice.
+    // pure-callee-only); render just emits.
+    //
+    // TASK-0431 DEGRADATION PIN: with EMPTY fixtures the callee name `f`
+    // is absent from `names.kernel`, so the sig lookup yields `None` and
+    // the per-param cast is SKIPPED — the bare arg `k` is emitted, NOT
+    // `(k) as <ty>`. This mirrors `render_fire_arg`'s fallback (it casts
+    // only when `param_ty` is `Some` and scalar) and is panic-free on a
+    // missing-sig contract regression.
     let (names, sidecar) = empty_fixtures();
     let ctx = RenderCtx::new(&names, &sidecar);
 
@@ -131,15 +170,17 @@ fn int_expr_pure_kernel_call_in_index_emits_call() {
         .expect("a pure kernel call in index position must render (TASK-0430)");
     assert_eq!(
         rendered, "kernels::f(k)",
-        "a Call-in-index must emit `kernels::<callee>(<args>)`; the surrounding \
-         subscript applies its own `as usize` cast"
+        "a Call-in-index with NO resolvable sig must emit the bare arg \
+         (`kernels::<callee>(<args>)`, no cast); the surrounding subscript \
+         applies its own `as usize` cast"
     );
 }
 
 #[test]
-fn int_expr_call_in_index_recurses_args() {
+fn int_expr_call_in_index_recurses_args_no_sig_degrades_bare() {
     // A two-arg call with a binop arg pins that the arg list recurses
     // through `render_int_expr` (each arg rendered, joined with `, `).
+    // Empty fixtures => no sig => bare args (TASK-0431 degradation).
     let (names, sidecar) = empty_fixtures();
     let ctx = RenderCtx::new(&names, &sidecar);
 
@@ -157,6 +198,118 @@ fn int_expr_call_in_index_recurses_args() {
 
     let rendered = render_int_expr(&expr, &ctx).expect("two-arg call in index must render");
     assert_eq!(rendered, "kernels::g(k, (j + 1))");
+}
+
+#[test]
+fn int_expr_call_in_index_casts_iter_var_arg_to_i32_param() {
+    // TASK-0431 — the FIX. A bare iter-var arg `i` (rendered `i64` in the
+    // generated host source) passed to an `i32`-param PURE index kernel
+    // `shift(i)` would hit E0308 at build of the generated crate without
+    // a cast. `render_int_expr`'s `Call` arm now resolves the callee's
+    // `KernelId` (inverting `names.kernel` by name), reads the sidecar
+    // `KernelSig`, and casts each scalar arg `(arg) as <param_ty>` —
+    // mirroring `render_fire_arg`'s scalar path EXACTLY.
+    let kid = KernelId(7);
+    let (names, sidecar) = fixtures_with_kernel_sig(kid, "shift", vec![ScalarType::I32]);
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let expr = IrExpr::Call {
+        callee: "shift".to_string(),
+        args: vec![ident("i")],
+    };
+
+    let rendered = render_int_expr(&expr, &ctx)
+        .expect("a pure index kernel call with a resolvable i32-param sig must render");
+    assert_eq!(
+        rendered, "kernels::shift((i) as i32)",
+        "an iter-var (i64) arg to an i32-param index kernel must be cast `(i) as i32` \
+         so the generated crate typechecks (TASK-0431)"
+    );
+}
+
+#[test]
+fn int_expr_call_in_index_cast_is_noop_shape_for_i32_gather_arg() {
+    // TASK-0431 — the cast is a SEMANTIC no-op for the SHIPPED cells.
+    // `bucket(input[i])`'s arg lowers to a gather DataRef (`input[i]`,
+    // already `i32`). Mirroring `render_fire_arg`, the cast is ALWAYS
+    // applied when the param is scalar (it does not try to detect an
+    // already-i32 arg) — so the emission is `(input[...]) as i32`, an
+    // inert no-op. This pins that the redundant cast is intentional and
+    // matches the Fire-arg rule (relevant to the clippy `unnecessary_cast`
+    // discussion: the cast lives in GENERATED source, compiled by rustc
+    // in the e2e harness, not clippy-gated as part of `just clippy`).
+    let kid = KernelId(3);
+    // input is a rank-1 i32 array so `input[i]` is a full-rank scalar load.
+    let did = DataId(0);
+    let (mut names, mut sidecar) = fixtures_with_data(did, "input", vec![8]);
+    names.kernel.insert(kid, "bucket".to_string());
+    sidecar.kernel_sigs.insert(
+        kid,
+        KernelSig {
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+        },
+    );
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let expr = IrExpr::Call {
+        callee: "bucket".to_string(),
+        args: vec![IrExpr::DataRef(IndexedRef {
+            name: "input".to_string(),
+            indices: vec![ident("i")],
+        })],
+    };
+
+    let rendered = render_int_expr(&expr, &ctx)
+        .expect("bucket(input[i]) with a resolvable i32-param sig must render");
+    assert_eq!(
+        rendered, "kernels::bucket((input[(i) as usize]) as i32)",
+        "an i32 gather-load arg to an i32-param index kernel is cast `(...) as i32` — \
+         a semantic no-op, matching render_fire_arg's always-cast-scalar-param rule"
+    );
+}
+
+#[test]
+fn int_expr_call_in_index_skips_cast_for_nonscalar_param() {
+    // TASK-0431 DEGRADATION: a NON-scalar param type (an aggregate
+    // `i32[4]`) is not a cast target — the arg is emitted BARE, no
+    // `as <ty>`. Mirrors `render_fire_arg` (which only casts when the
+    // param `is_scalar()`); panic-free on an aggregate-param sig.
+    let kid = KernelId(5);
+    let mut names = NameTables::default();
+    names.kernel.insert(kid, "agg".to_string());
+    let mut sidecar = NameSidecar::default();
+    sidecar.kernel_sigs.insert(
+        kid,
+        KernelSig {
+            params: vec![ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![4], // aggregate, NOT scalar
+            }],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+        },
+    );
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let expr = IrExpr::Call {
+        callee: "agg".to_string(),
+        args: vec![ident("k")],
+    };
+
+    let rendered = render_int_expr(&expr, &ctx).expect("a non-scalar-param call must still render");
+    assert_eq!(
+        rendered, "kernels::agg(k)",
+        "a non-scalar (aggregate) param must NOT receive a scalar `as <ty>` cast"
+    );
 }
 
 // --------------------------------------------------------------------

@@ -7,11 +7,12 @@
 //! bounds with `_i64` literal spelling. `bin_op_str` is the small
 //! shared `IrBinOp -> &str` mapper both renderers share.
 
-use nucleus_compiler::algo::{IrBinOp, IrExpr};
+use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType};
 use nucleus_compiler::event::IterVar;
 
 use super::ctx::{RenderCtx, RenderCtxPub};
 use super::error::EmitError;
+use super::types::rust_scalar_type;
 
 /// Render an integer-valued index/scalar expression as Rust.
 ///
@@ -83,26 +84,66 @@ pub fn render_int_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitEr
         // gather `DataRef` arm. Spelling matches the Fire call sites
         // (`kernels::<callee>(<args>)`).
         //
-        // NOTE: args are emitted WITHOUT a per-param `as <ty>` cast
-        // (unlike `render_fire_arg`'s scalar path). The kernel-sig cast
-        // is unnecessary here: every legal index-position arg is itself
-        // integer-shaped (an iter var, a const, an i32 gather load, or
-        // another pure-call returning an integer), and the bare
-        // expression already typechecks against an `i32`/`i64` param;
-        // rustc surfaces any genuine mismatch loudly at build of the
-        // generated crate. Adding the sig-driven cast would require
-        // plumbing the callee's `KernelId` + param types through
-        // `render_int_expr`, which today takes only an `IrExpr`. A bare
-        // iter-var arg (rendered `i64`) to an `i32`-param index kernel is
-        // the latent E0308 case — filed TASK-0431 (no current example
-        // needs it; the bounded/textbook scatters use data-ref args).
+        // Per-param `as <ty>` cast (TASK-0431): each rendered arg is
+        // cast to the callee's i-th scalar param type, MIRRORING
+        // `render_fire::render_fire_arg`'s scalar path. Without it a
+        // bare iter-var arg (rendered `i64`) to an `i32`-param index
+        // kernel `histogram[shift(i)]` would hit E0308 at build of the
+        // generated crate — rustc catches it loudly, not a silent
+        // miscompile, but a usability footgun in the path TASK-0430
+        // just opened. The cast is a semantic no-op for the shipped
+        // cells (`bucket(input[i])`: `input[i]` is already `i32`, so
+        // `(input[...]) as i32` is inert), and matches `render_fire_arg`
+        // exactly — which ALSO always casts a scalar arg when the sig
+        // gives a scalar param, regardless of the arg's apparent type.
+        //
+        // The callee's `KernelId` is resolved by inverting
+        // `ctx.names.kernel` (KernelId -> name) by name — the same
+        // inversion `render_gather_index_load` does for `ctx.names.data`.
+        // The sig comes from `ctx.sidecar.kernel_sig`. DEGRADATION
+        // (panic-not-diagnostic discipline): if the callee name is not
+        // in `names.kernel`, or `kernel_sig` is `None` (a contract
+        // regression), or a param index is out of range, or the param
+        // is NON-scalar, we emit the BARE arg (no cast) and let rustc
+        // surface any genuine mismatch — exactly `render_fire_arg`'s
+        // fallback (it only casts when `param_ty` is `Some` and scalar).
+        // No `panic!` on otherwise-valid input.
         IrExpr::Call { callee, args } => {
+            // Resolve callee KernelId by inverting names.kernel by name.
+            let sig = ctx
+                .names
+                .kernel
+                .iter()
+                .find(|(_, n)| n.as_str() == callee.as_str())
+                .map(|(k, _)| *k)
+                .and_then(|kid| ctx.sidecar.kernel_sig(kid));
             let rendered = args
                 .iter()
-                .map(|a| render_int_expr(a, ctx))
-                .collect::<Result<Vec<_>, _>>()?;
+                .enumerate()
+                .map(|(i, a)| {
+                    let arg_src = render_int_expr(a, ctx)?;
+                    let param_ty: Option<&ResolvedType> = sig.and_then(|s| s.params.get(i));
+                    Ok(cast_index_arg(arg_src, param_ty))
+                })
+                .collect::<Result<Vec<_>, EmitError>>()?;
             Ok(format!("kernels::{callee}({})", rendered.join(", ")))
         }
+    }
+}
+
+/// Apply the sidecar-driven scalar param cast to a rendered
+/// index-position kernel argument (TASK-0431). Mirrors the scalar arm
+/// of [`super::fire::render_fire_arg`]: cast `(arg) as <ty>` IFF the
+/// param type is `Some` and scalar; otherwise emit the bare arg and
+/// let rustc surface a genuine mismatch. A `None`/non-scalar param
+/// (missing sig, out-of-range index, or aggregate param) degrades to
+/// the bare arg — no panic on otherwise-valid input.
+fn cast_index_arg(arg_src: String, param_ty: Option<&ResolvedType>) -> String {
+    match param_ty {
+        Some(pty) if pty.is_scalar() => {
+            format!("({arg_src}) as {}", rust_scalar_type(&pty.scalar))
+        }
+        _ => arg_src,
     }
 }
 
