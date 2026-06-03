@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::event::{
-    DataId, Event, FireBinding, IterTile, KernelId, SeqTag, SyncKind, SyncTag, WorkerId,
+    DataId, Event, FireBinding, IterTile, IterVar, KernelId, SeqTag, SyncKind, SyncTag, WorkerId,
 };
 use nucleus_compiler::NameTables;
 
@@ -59,6 +59,13 @@ fn wait(src: WorkerId, seq: u64) -> Event {
         tile: IterTile::empty(),
         seq: SeqTag(seq),
     }
+}
+
+/// Wrap a barrier in a single-iteration `Loop` — exercises the
+/// `flatten_salients` loop-body inlining (an in-loop barrier, like
+/// 02-split-add's per-iteration `barrier1`).
+fn loop_barrier(tag: u64, participants: &[WorkerId]) -> Event {
+    Event::loop_over(IterVar(0), 0..4, vec![barrier(tag, participants)])
 }
 
 fn names_for(workers: &[(WorkerId, &str)]) -> NameTables {
@@ -119,6 +126,32 @@ fn single_participant_barrier_is_accepted() {
 
     verify_control_sync_subsumed(&per_worker, &names)
         .expect("a single-participant barrier is vacuous and must be accepted");
+}
+
+/// ACCEPT: an IN-LOOP barrier (the 02-split-add `barrier1` analogue) whose
+/// straddling cross-worker IO is carried by a data edge. Pins that
+/// `flatten_salients` inlines the loop body so the before/after-barrier IO
+/// straddle linearizes correctly (architect P3-2).
+#[test]
+fn loop_nested_barrier_subsumed_by_data_edge_is_accepted() {
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(WA, vec![io_save(), push(WB, 5), loop_barrier(9, &[WA, WB])]);
+    per_worker.insert(WB, vec![loop_barrier(9, &[WA, WB]), wait(WA, 5), io_save()]);
+    let names = names_for(&[(WA, "fe"), (WB, "rf")]);
+    verify_control_sync_subsumed(&per_worker, &names)
+        .expect("an in-loop barrier subsumed by a data edge must be accepted");
+}
+
+/// REJECT: the same in-loop barrier, but with NO data edge connecting the
+/// straddling IO — the linearization must still catch it.
+#[test]
+fn loop_nested_standalone_barrier_ordering_cross_worker_io_is_rejected() {
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(WA, vec![io_save(), loop_barrier(9, &[WA, WB])]);
+    per_worker.insert(WB, vec![loop_barrier(9, &[WA, WB]), io_save()]);
+    let names = names_for(&[(WA, "fe"), (WB, "rf")]);
+    verify_control_sync_subsumed(&per_worker, &names)
+        .expect_err("an in-loop standalone control barrier ordering cross-worker IO must reject");
 }
 
 /// ACCEPT: the real shipped multi-MCU schedule. `02-split-add/split`

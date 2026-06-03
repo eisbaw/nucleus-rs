@@ -394,9 +394,23 @@ pub(crate) fn verify_control_sync_subsumed(
             }
             match s {
                 Salient::Push { seq } => {
+                    // A `SeqTag` is unique per (src,dst,data) and loop bodies
+                    // inline once, so each seq has exactly one Push in the
+                    // flattened stream. If a future lowering ever flattened a
+                    // seq twice, last-write-wins here would SILENTLY drop the
+                    // earlier edge from the HB graph — an under-approximation
+                    // (false-accept). Fail loud in dev rather than miscompile.
+                    debug_assert!(
+                        !push_of.contains_key(seq),
+                        "duplicate Push SeqTag {seq} in the flattened stream"
+                    );
                     push_of.insert(*seq, node(l, i));
                 }
                 Salient::Wait { seq } => {
+                    debug_assert!(
+                        !wait_of.contains_key(seq),
+                        "duplicate Wait SeqTag {seq} in the flattened stream"
+                    );
                     wait_of.insert(*seq, node(l, i));
                 }
                 _ => {}
@@ -463,13 +477,31 @@ pub(crate) fn verify_control_sync_subsumed(
                 }
             }
         }
+        // Participants are inferred from which lanes carry this tag's
+        // `Salient::Sync` — equivalent to `Event::Sync.participants` because
+        // `petri_to_events` emits one `Event::Sync` into EVERY declared
+        // participant's stream (1:1), so lane-presence == the declared set.
         let participants: Vec<usize> = first_sync.keys().copied().collect();
         if participants.len() < 2 {
             continue; // a single-lane (vacuous) barrier orders nothing.
         }
-        // IO straddling the barrier, per lane: strictly before its FIRST
-        // instance / strictly after its LAST instance (conservative — only
-        // IO entirely outside every barrier instance counts).
+        // Each `SyncTag` appears AT MOST ONCE per worker: a barrier is one
+        // program point and `flatten_salients` inlines loop bodies once, so
+        // an in-loop barrier is not duplicated. Hence first==last per lane and
+        // "before the first instance" / "after the last instance" is simply
+        // "before / after the barrier". If a future lowering ever emitted the
+        // SAME tag twice in one worker, IO BETWEEN the instances would be
+        // dropped from both sets — an UNDER-approximation (false-ACCEPT, the
+        // unsafe direction). Assert the invariant so that regresses loudly
+        // rather than silently miscompiling.
+        debug_assert!(
+            first_sync == last_sync,
+            "control-sync guard assumes each SyncTag occurs once per worker \
+             (loop bodies inline once); tag {tag} repeats in some worker, which \
+             would make the IO-straddle test under-approximate (false-accept)"
+        );
+        // IO straddling the barrier, per lane: strictly before its (sole)
+        // instance on `wi` / strictly after its (sole) instance on `wj`.
         for &wi in &participants {
             let fi = first_sync[&wi];
             let before: Vec<usize> = io_idx[wi].iter().copied().filter(|&i| i < fi).collect();
