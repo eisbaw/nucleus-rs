@@ -65,6 +65,14 @@
 // ACCUMULATE fan-in (same class as `prog.scatter.algo.nuc`). The
 // `bucket()` wrapper does NOT change the classification. `histogram` is
 // pre-initialised to zero (the additive identity).
+//
+// SCOPE of the classifier note above: `collect_cumulative_data_names`
+// runs only on the DISTRIBUTED / multi-worker transfer-inject path. The
+// shipped textbook cell is SINGLE-WORKER, whose codegen is a direct
+// in-place read-modify-write that is unconditionally correct regardless
+// of the classifier. The classification reasoning here is therefore
+// forward-verification for the distributed follow-up (TASK-0432), NOT a
+// dependency of this single-worker cell's correctness.
 
 const N    : usize = 256;     // total input length
 const BINS : usize = 16;      // histogram bin count
