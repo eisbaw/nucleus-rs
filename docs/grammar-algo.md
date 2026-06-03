@@ -84,8 +84,12 @@ ForStmt        ::= 'for' Ident ':' ConstExpr '..' ConstExpr ('until' Expr)? '{' 
    distinguishes `until` from the `{` body-opener. `until` is a reserved
    word (it may not be used as an identifier).
 
-   COND is a full `Expr` (a RelExpr — typically a comparison), lowered
-   through the bool-accepting rvalue path. INERT in S1: an `until`-loop
+   COND is a full `Expr` — the parser admits any expression here (e.g.
+   `until a + b`, `until kernel_call()`), not a RelExpr-restricted
+   nonterminal; in practice it is a comparison (`until diff <= tol`). It
+   is lowered through the bool-accepting rvalue path; S1 adds NO bool/int
+   type-check, so a non-bool COND is positionally accepted today (the real
+   bool-context validation lands with S4, TASK-0341.02.01.05). INERT in S1: an `until`-loop
    parses + lowers to IR but is REJECTED at the ACFG-build boundary with
    the typed `BuildAcfgError::UntilLoopUnsupported` naming epic
    TASK-0341.02.01 — no example exercises it yet, so e2e is unchanged.
