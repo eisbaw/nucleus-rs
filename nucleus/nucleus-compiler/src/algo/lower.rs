@@ -1018,14 +1018,16 @@ fn lower_for_into(
     // recorded through `acc`, and suppresses emission of this `For` so a
     // poisoned COND never reaches the ACFG layer.
     //
-    // LIMIT (forward-carried to S4, TASK-0341.02.01.05): S1 adds NO
-    // bool-context type-check. `lower_rvalue` accepts a plain int rvalue as
-    // COND (e.g. `until x` where `x` is an i32 ref) with no bool gate, and
-    // accepts a comparison in any rvalue position. That is acceptable here
-    // ONLY because the entire `until`-loop is rejected at the ACFG-build
-    // boundary (`BuildAcfgError::UntilLoopUnsupported`) before any consumer
-    // observes COND. COND is NOT type-checked by S1; the real bool-context
-    // validation + runtime break-generation are S4's job.
+    // LIMIT: lowering adds NO bool-context type-check here. `lower_rvalue`
+    // accepts a plain int rvalue as COND (e.g. `until x` where `x` is an
+    // i32 ref) and a comparison in any rvalue position. The bool-context
+    // gate lives DOWNSTREAM at the ACFG boundary: since epic S4
+    // (TASK-0341.02.01.05.01) `build_acfg` requires the until-COND to be a
+    // bool `IrExpr::Compare`, rejecting anything else with
+    // `BuildAcfgError::UntilCondNotComparison`. (Before S4 the whole
+    // until-loop was rejected at that boundary; S4 lifted that to real
+    // lowering + the Compare gate.) The runtime break-generation final-read
+    // is the remaining S4 work (TASK-0341.02.01.05.02/.04).
     let until_ir = match until {
         None => Ok(None),
         Some(cond) => match lower_rvalue(cond, ir, scope) {

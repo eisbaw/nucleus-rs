@@ -1018,3 +1018,125 @@ schedule for "../prog.algo.nuc" {
     assert!(msg.contains("loop `i`"), "msg: {msg}");
     assert!(msg.contains("relational comparison"), "msg: {msg}");
 }
+
+// TASK-0341.02.01.05.01 / epic S4, AC#1 (review fold-back, cycle-260):
+// the KEYSTONE soundness claim, exercised through the Petri layer rather
+// than asserted only at the ACFG layer. A `for..until` must (a) build a
+// Net that is byte-for-byte structurally identical to the equivalent
+// plain `for` over the same cap (the break predicate is ANALYSIS-INVISIBLE
+// — it derives no place/transition), and (b) pass the boundedness,
+// deadlock-freedom, and net-soundness gates. (a) is the proof that
+// `acfg_to_petri` genuinely elides `break_cond`; (b) is the proof that
+// the over-approximation on the full-N unroll holds, so any early-exit
+// prefix 0..k (a sub-trace of a bounded net) is bounded a fortiori.
+#[test]
+fn for_until_net_is_identical_to_plain_for_and_passes_petri_gates() {
+    use nucleus_compiler::passes::acfg_to_petri::acfg_to_net;
+    use nucleus_compiler::passes::{boundedness, deadlock, net_soundness};
+
+    // Identical programs save for the `until a[0] <= a[0]` halt clause.
+    let body = |until: &str| {
+        format!(
+            r#"
+const N : usize = 8;
+
+data a : i32[N];
+data b : i32[N];
+
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+
+a <-- load_input();
+
+for i : 0 .. N {until}{{
+    b[i] <-- id(a[i]);
+}}
+
+save_output(b);
+"#,
+            until = until
+        )
+    };
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+
+    let net_until = acfg_to_net(
+        &build_acfg(&linked_from_inline_src(&body("until a[0] <= a[0] "), sched))
+            .expect("for..until lowers"),
+    );
+    let net_plain = acfg_to_net(
+        &build_acfg(&linked_from_inline_src(&body(""), sched)).expect("plain for lowers"),
+    );
+
+    // (a) Analysis-invisibility: the break predicate adds NO Petri
+    // structure — same place + transition counts as the plain for.
+    assert_eq!(
+        net_until.places.len(),
+        net_plain.places.len(),
+        "break_cond must not add Petri places"
+    );
+    assert_eq!(
+        net_until.transitions.len(),
+        net_plain.transitions.len(),
+        "break_cond must not add Petri transitions"
+    );
+
+    // (b) The for..until net passes all three per-build gates green.
+    let firing_order = boundedness::derive_firing_order(&net_until);
+    boundedness::check_bounded(&net_until, &firing_order)
+        .expect("for..until: boundedness must hold (cap N unroll)");
+    deadlock::check_deadlock_free(&net_until, &firing_order)
+        .expect("for..until: deadlock-freedom must hold");
+    net_soundness::check_net_sound(&net_until).expect("for..until: net soundness must hold");
+}
+
+// TASK-0341.02.01.05.01 / epic S4 (review fold-back, cycle-260, P2-3):
+// the new `ACFGNode::Repeat.break_cond` field round-trips through serde
+// with a `Some(Compare(..))` payload — not just the `None` case the
+// proptest synth sites cover. Round-trips the REAL lowered for..until
+// ACFG root (which carries `break_cond: Some`), so the field is
+// empirically exercised end-to-end, not argued transitively.
+#[cfg(feature = "serde")]
+#[test]
+fn for_until_acfg_break_cond_some_serde_round_trips() {
+    let algo = r#"
+const N : usize = 8;
+
+data a : i32[N];
+data b : i32[N];
+
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+
+a <-- load_input();
+
+for i : 0 .. N until a[0] <= a[0] {
+    b[i] <-- id(a[i]);
+}
+
+save_output(b);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+    let acfg = build_acfg(&linked_from_inline_src(algo, sched)).expect("for..until lowers");
+    let json = serde_json::to_string(&acfg.root).expect("serialize ACFG root");
+    let back: ACFGNode = serde_json::from_str(&json).expect("deserialize ACFG root");
+    assert_eq!(
+        acfg.root, back,
+        "ACFG root (with break_cond: Some(Compare)) must serde round-trip identically"
+    );
+}

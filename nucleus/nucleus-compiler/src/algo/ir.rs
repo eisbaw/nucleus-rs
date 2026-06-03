@@ -249,8 +249,12 @@ pub enum IrStmt {
         hi: IrExpr,
         /// Optional `until COND` halt predicate (epic S1). `None` for an
         /// ordinary fixed-iteration loop. Lowered through the
-        /// bool-accepting rvalue path (`lower_rvalue`). INERT: rejected at
-        /// `build_acfg` with `BuildAcfgError::UntilLoopUnsupported`.
+        /// bool-accepting rvalue path (`lower_rvalue`). Since epic S4
+        /// (TASK-0341.02.01.05.01) this is NO LONGER inert: `build_acfg`
+        /// lowers it to a capped `ACFGNode::Repeat` carrying the predicate
+        /// in `break_cond`, and gates COND to a bool `IrExpr::Compare`
+        /// (`BuildAcfgError::UntilCondNotComparison` otherwise). The
+        /// runtime break EMIT is still deferred (TASK-0341.02.01.05.04).
         until: Option<IrExpr>,
         body: Vec<IrStmt>,
     },
