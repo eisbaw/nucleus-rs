@@ -555,6 +555,93 @@ schedule = "distributed.scatter"
 backend  = "openmp-rs"
 milestone = "M6"
 
+# 08-histogram/distributed.textbook: TASK-0432 — the DISTRIBUTED textbook
+# scatter, the multi-worker "broaden" of 08-histogram/textbook
+# (single-worker, TASK-0430) and the call-wrapped-index sibling of
+# 08-histogram/distributed.scatter (TASK-0384). Drives
+# prog.textbook.algo.nuc via the schedule's `schedule for` (TASK-0049.03;
+# kernels.textbook.rs paired by the variant rule, TASK-0049.08). 4 compute
+# workers i-band-partition the input `i` loop; each COMPUTES its element's
+# bin LOCALLY via the pure `bucket(input[i])` kernel (placed on the
+# compute workers) and scatters into its OWN PRIVATE full-width partial
+# histogram (whole-array replicate, because the data-dependent write index
+# `bucket(input[i])` marks histogram's dim 0 OPAQUE in
+# `transfer_inject::record_access_per_dim` → whole-array broadcast). The
+# host then sums the four partials ELEMENT-WISE — the same OVERLAPPING-
+# WRITE accumulator combine TASK-0343 landed and TASK-0384 reused
+# (`collect_accumulate_waits` + `render_wait_assign(accumulate)`:
+# `histogram[k] = histogram[k].wrapping_add(partial_w[k])`). NO new combine
+# shape: the textbook variant reuses the same helper as distributed.scatter
+# verbatim.
+#
+# CUMULATIVE CLASSIFIER (the live risk TASK-0432 verifies on the actual
+# distributed path): the self-read `histogram[bucket(input[i])]` (inside
+# inc) and the LHS `histogram[bucket(input[i])]` carry the IDENTICAL
+# `bucket(input[i])` IrExpr::Call, so the cumulative-array discriminator
+# (`collect_cumulative_data_names`, keying on the self-read index
+# STRUCTURALLY DIFFERING from the LHS index) does NOT fire ⇒ NOT cumulative
+# ⇒ stays a `wrapping_add` ACCUMULATE fan-in (same class as
+# distributed.scatter). The bucket() wrapper does NOT change the
+# classification. Verified empirically by output bit-identity below, not
+# just by the narrative.
+#
+# SOUNDNESS (same boundary as TASK-0384 AC#1): replicate-per-worker +
+# element-wise-sum is sound ONLY for this INPUT-INDEX partition (the
+# partitioned iv `i` indexes the SOURCE `input[i]`, never the scatter
+# target `histogram` affinely). A BIN partition stays FATAL via the halo
+# `is_scatter_rmw` gate (`error_is_fatal_under_partition` →
+# `scatter_target_replicates_whole_array`).
+#
+# All 7 tier-1 backends admit + run BIT-IDENTICAL vs reference.bin
+# (TASK-0432), including BOTH strict-FIFO backends (mp-tcp-bufsync AND
+# mp-tcp-poll): `input` is the only host->worker broadcast and there is no
+# gather-index array (the bin is computed LOCALLY per worker from its own
+# `input` band), so the Push/Wait FIFO order trap
+# (project-mp-tcp-event-vs-bufsync-safety-profile / TASK-0389) does NOT
+# bite. Output is the identical histogram as 08-histogram/naive, /scatter,
+# /distributed.scatter, and reference.bin.
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "openmp-rs"
+milestone = "M6"
+
 # 15-transpose/naive: TASK-0341.01 AC#1 (pthreads-sync) landed cycle
 # 204 + TASK-0341.01.02 AC#3 (cross-backend promotion to the other 6
 # tier-1 backends) landed cycle 205. Single-`host` schedule with an

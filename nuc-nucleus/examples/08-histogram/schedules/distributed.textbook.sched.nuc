@@ -1,0 +1,99 @@
+// DISTRIBUTED textbook-scatter schedule (TASK-0432) — the multi-worker
+// "broaden" of the single-worker `textbook.sched.nuc` (TASK-0430) and the
+// call-wrapped-index sibling of `distributed.scatter.sched.nuc`
+// (TASK-0384).
+//
+// Drives `prog.textbook.algo.nuc` (the X1' textbook scatter where the bin
+// is COMPUTED by a PURE kernel call in INDEX position:
+// `histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])])`).
+// The e2e harness selects the algorithm from this `schedule for` path
+// (TASK-0049.03) and pairs `kernels.textbook.rs` by the variant rule
+// (TASK-0049.08), so an `08-histogram/distributed.textbook` cell compiles
+// the textbook variant under the distributed placement.
+//
+// The shape (identical to distributed.scatter, with `bucket` added on the
+// compute workers):
+//   host    — owns I/O (load_input / save_output) and the cross-worker
+//             partial-histogram element-wise-sum combine.
+//   w0..w3  — each compute worker owns a DISJOINT i-band of `input`
+//             (the outer `i` loop is the partition axis), COMPUTES each
+//             element's bin LOCALLY via `bucket(input[i])`, and scatters
+//             into its OWN PRIVATE full-width partial histogram
+//             (`let mut histogram: Vec<i32> = vec![0; 16]`).
+//
+// Why this is sound (the same boundary as TASK-0384). The partition is
+// over the INPUT INDEX `i`, NOT over histogram bins. Each worker holds
+// the FULL `histogram` (whole-array replicate, because its write index
+// `bucket(input[i])` is data-dependent → opaque dim in
+// `transfer_inject::record_access_per_dim` → whole-array broadcast), so a
+// scatter to ANY bin lands in that worker's private partial. The host
+// then sums the four partials ELEMENT-WISE (TASK-0343
+// `collect_accumulate_waits` + `render_wait_assign(accumulate)`:
+// `histogram[k] = histogram[k].wrapping_add(partial_w[k])`). That sum
+// equals the single-worker histogram exactly: every input element is
+// counted once, in exactly one worker's band, into the bin its `bucket`
+// selects.
+//
+// Why the `bucket()` wrapper does NOT change the accumulate class. The
+// self-read `histogram[bucket(input[i])]` (inside `inc(...)`) and the LHS
+// `histogram[bucket(input[i])]` carry the IDENTICAL `bucket(input[i])`
+// `IrExpr::Call`, so the cumulative-array discriminator
+// (`sidecar::collect_cumulative_data_names`, which keys on the self-read
+// index STRUCTURALLY DIFFERING from the LHS index) does NOT fire ⇒ NOT
+// cumulative ⇒ stays a `wrapping_add` ACCUMULATE fan-in, the same class
+// as `distributed.scatter`. This is the first test of that claim on the
+// actual distributed / transfer-inject codegen path (it was
+// forward-verification only for the single-worker cell).
+//
+// `bucket` is placed on the compute workers (NOT host): it is a pure
+// index-computing kernel called inside the partitioned loop body, so each
+// worker evaluates it locally on its own i-band — no `bucket` value
+// crosses a channel.
+//
+// A BIN partition (a worker owning only a band of `histogram`) would be
+// UNSOUND for this replicate-then-sum shape (a worker would silently drop
+// every scatter that lands outside its band). The compiler keeps that
+// shape FATAL via the halo `is_scatter_rmw` gate
+// (`error_is_fatal_under_partition` →
+// `scatter_target_replicates_whole_array`): a scatter RMW under partition
+// is admitted ONLY when no partitioned iv affinely indexes the scatter
+// target. Here the only iv `i` indexes the SOURCE `input[i]`, so
+// `histogram` is never affinely banded — the admit shape.
+//
+// Cross-worker edges:
+//   input      host -> { w0..w3 }   (host loads, each worker consumes
+//                                    its i-band)
+//   histogram  { w0..w3 } -> host   (workers produce full-width
+//                                    partials, host element-wise-sums)
+//
+// All `sync` transfers. `input` is the only host->worker broadcast and
+// there is no gather-index array (the bin is computed LOCALLY per worker
+// from its own `input` band), so the Push/Wait FIFO order trap
+// (project-mp-tcp-event-vs-bufsync-safety-profile / TASK-0389) does NOT
+// bite on the strict-FIFO backends — the same FIFO profile as
+// distributed.scatter. Output is bit-identical to 08-histogram/naive,
+// /scatter, /distributed.scatter, and reference.bin (verified, TASK-0432).
+
+schedule for "../prog.textbook.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O + cross-worker combine on host.
+    place load_input  on host;
+    place save_output on host;
+
+    // The pure bin-bucketing and per-hit increment kernels distributed
+    // across the compute workers — both evaluated locally on each
+    // worker's i-band, no cross-worker value crossing.
+    place bucket on { w0, w1, w2, w3 };
+    place inc    on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one i-band per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    // `input` i-bands to each worker; `histogram` replicates whole-array
+    // (data-dependent write index ⇒ opaque dim ⇒ whole-array broadcast)
+    // and the partials are element-wise-summed at the host.
+    transfer input     : sync;
+    transfer histogram : sync;
+}
