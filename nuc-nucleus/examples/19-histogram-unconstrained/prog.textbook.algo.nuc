@@ -1,0 +1,66 @@
+// Histogram — TEXTBOOK SCATTER over TRULY-UNCONSTRAINED input (TASK-0432
+// AC#2). Identical ALGORITHM SURFACE to 08-histogram/prog.textbook.algo.nuc
+// (the X1' pure-kernel-call-in-index histogram, TASK-0430):
+//
+//     histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])]);
+//
+// WHY A SEPARATE EXAMPLE DIR. The e2e harness uses ONE oracle
+// (`reference.bin`) per example dir, and 08-histogram's committed
+// `input.bin` is pre-clipped to `[0, BINS)`, so `bucket(v) == v` at
+// runtime there and the modulo is a NO-OP — the unconstrained-input
+// strength of `bucket()` is demonstrated only at the algorithm/codegen
+// level for that fixture. THIS example ships its OWN `input.bin` with
+// values genuinely OUTSIDE `[0, BINS)` (negatives and values ≥ BINS), and
+// its OWN `reference.bin` computed THROUGH the Euclidean-remainder bucket
+// `((v % BINS) + BINS) % BINS`. So `bucket()` does REAL runtime work here:
+// every out-of-range value is folded into `[0, BINS)` by the modulo, and
+// the output is bit-identical to the oracle ONLY if the compiled
+// `bucket()`-in-index path actually evaluates the modulo (a bare scatter
+// `histogram[input[i]]` would index out of bounds and panic / be wrong).
+//
+// The reference oracle (reference/src/main.rs) does NOT validate input ∈
+// [0, BINS) — that is the whole point. It computes the bin through the
+// same modulo the kernel does (structurally different spelling per
+// docs/reference-impl-policy.md §2), so a backend matching it bit-for-bit
+// genuinely exercised the bucketing.
+//
+// Everything else (accumulate classification, scope, soundness) is as in
+// 08-histogram/prog.textbook.algo.nuc — see that file's header for the
+// full reasoning. In brief: `histogram[bucket(input[i])]` is read (inside
+// `inc`) and written at the SAME data-dependent index; both sides carry
+// the IDENTICAL `bucket(input[i])` `IrExpr::Call`, so the cumulative-array
+// discriminator does NOT fire ⇒ NOT cumulative ⇒ `wrapping_add` ACCUMULATE
+// fan-in. `histogram` is pre-initialised to zero (the additive identity).
+
+const N    : usize = 256;     // total input length
+const BINS : usize = 16;      // histogram bin count
+
+// Input array and the BINS-wide accumulator output. Each `data` symbol is
+// assigned by exactly one dataflow statement (PRD §6.2.1).
+data input     : i32[N];
+data histogram : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()          -> i32[N]    effectful;
+kernel save_output : (i32[BINS]) -> ()        effectful;
+
+// Value->bin bucketing kernel — PURE, used in INDEX position. Maps an
+// UNCONSTRAINED input value into `[0, BINS)` via a non-negative modulo.
+// For THIS fixture's out-of-range values this does real runtime work
+// (`-1 -> BINS-1`, `BINS -> 0`, etc.).
+kernel bucket      : (i32)        -> i32       pure;
+
+// Per-hit increment kernel — pure, reorderable. `inc(acc) = acc + 1`.
+kernel inc         : (i32)        -> i32       pure;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+input <-- load_input();
+
+// Textbook scatter. `histogram` is pre-initialised to zero (additive
+// identity). For each input element, COMPUTE its bin via `bucket(...)`
+// and increment that bin.
+for i : 0 .. N {
+    histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])]);
+}
+
+save_output(histogram);

@@ -1,0 +1,26 @@
+// Single-worker textbook-scatter schedule for 19-histogram-unconstrained
+// (TASK-0432 AC#2). Mirrors 08-histogram/schedules/textbook.sched.nuc:
+// drives `prog.textbook.algo.nuc` (selected via `schedule for`,
+// TASK-0049.03; `kernels.textbook.rs` paired by the variant rule,
+// TASK-0049.08).
+//
+// Single worker (`host`): the data-dependent WRITE
+// `histogram[bucket(input[i])]` needs the whole of `histogram` mutable on
+// one worker, trivially satisfied (no transfers, no cross-worker bin
+// fan-in). `bucket` is placed on the same worker — a pure index-computing
+// kernel called inline at the scatter site. UNLIKE 08-histogram, THIS
+// example's `input.bin` carries values outside `[0, BINS)`, so `bucket()`
+// does REAL runtime work and the output is bit-identical to `reference.bin`
+// (computed THROUGH the modulo) only if the compiled index path evaluates
+// the kernel.
+
+schedule for "../prog.textbook.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place bucket      on host;
+    place inc         on host;
+
+    // No loop transforms, no transfer directives (single worker).
+}

@@ -1,0 +1,38 @@
+// DISTRIBUTED textbook-scatter schedule for 19-histogram-unconstrained
+// (TASK-0432 AC#2). The multi-worker broaden, identical in shape to
+// 08-histogram/schedules/distributed.textbook.sched.nuc (TASK-0432 AC#1) —
+// see that file's header for the full soundness reasoning. The ONLY
+// difference is the FIXTURE: this example's `input.bin` is truly
+// unconstrained (negatives and values >= BINS), so `bucket()` does real
+// runtime work on each worker's i-band.
+//
+//   host    — owns I/O + the cross-worker partial-histogram element-wise-
+//             sum combine.
+//   w0..w3  — each owns a DISJOINT i-band of `input`, COMPUTES each
+//             element's bin LOCALLY via `bucket(input[i])`, scatters into
+//             its OWN private full-width partial histogram (whole-array
+//             replicate: data-dependent write index => opaque dim =>
+//             whole-array broadcast). Host element-wise-sums the partials
+//             (TASK-0343 accumulate combine).
+//
+// Sound for the INPUT-INDEX partition (the iv `i` indexes the SOURCE
+// `input[i]`, never the scatter target `histogram` affinely); a BIN
+// partition stays FATAL via the halo `is_scatter_rmw` gate. The bin is
+// computed LOCALLY per worker (no gather-index array crosses), so the
+// TASK-0389 strict-FIFO Push/Wait trap does not bite. All `sync`
+// transfers. Output bit-identical to `reference.bin` and to this example's
+// single-worker `textbook` cell (verified, TASK-0432).
+
+schedule for "../prog.textbook.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_input  on host;
+    place save_output on host;
+    place bucket on { w0, w1, w2, w3 };
+    place inc    on { w0, w1, w2, w3 };
+
+    loop i : partition=workers;
+
+    transfer input     : sync;
+    transfer histogram : sync;
+}

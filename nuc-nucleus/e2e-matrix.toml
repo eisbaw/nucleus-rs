@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -638,6 +638,109 @@ milestone = "M6"
 
 [[required]]
 example  = "08-histogram"
+schedule = "distributed.textbook"
+backend  = "openmp-rs"
+milestone = "M6"
+
+# 19-histogram-unconstrained: TASK-0432 AC#2 — the dedicated
+# truly-unconstrained-input fixture for the X1' pure-call-in-index scatter.
+# Identical ALGORITHM SURFACE to 08-histogram/textbook (TASK-0430):
+# `histogram[bucket(input[i])] <-- inc(histogram[bucket(input[i])])`, but
+# its OWN input.bin carries values OUTSIDE [0, BINS) (111 negatives, 108
+# values >= BINS, only 37 already in range) and its OWN reference.bin is
+# computed THROUGH the Euclidean-remainder bucket `((v%BINS)+BINS)%BINS`
+# (oracle uses `i32::rem_euclid`, structurally different from the kernel's
+# manual modulo per reference-impl-policy §2; oracle does NOT validate
+# range — the fold is the point). So `bucket()` does REAL runtime work
+# here (vs the no-op on the pre-clipped 08 fixture): a bare scatter
+# `histogram[input[i]]` would index out of bounds — only the bucketed
+# index lands in [0, BINS). The post-bucket distribution is intentionally
+# NON-UNIFORM (a ramp 1,3,..,31 across the 16 bins) so the oracle
+# discriminates a correct bucketing from a wrong one. Two schedules:
+# single-worker `textbook` and `distributed.textbook` (input-index
+# partition + element-wise-sum combine, same shape as
+# 08-histogram/distributed.textbook). All 7 tier-1 backends bit-identical
+# vs reference.bin (verified, TASK-0432).
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "textbook"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
+schedule = "distributed.textbook"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "19-histogram-unconstrained"
 schedule = "distributed.textbook"
 backend  = "openmp-rs"
 milestone = "M6"
