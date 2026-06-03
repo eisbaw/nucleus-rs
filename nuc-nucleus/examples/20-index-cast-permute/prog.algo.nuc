@@ -24,24 +24,29 @@
 //
 //     out[idx(i)] <-- pass(src[i]);
 //
-// with `idx(i) = i` (identity) and `pass(x) = x` (identity passthrough).
-// So `out` is a verbatim copy of `src`, and the oracle is just "copy the
-// input array". The point is NOT the arithmetic — it is the SHAPE: a pure
-// kernel `idx` called in INDEX position with a BARE ITER VAR `i`. The
-// 15-transpose precedent established that a pure identity kernel is the
-// canonical way to express a permutation (a kernel-less RHS is rejected
-// by acfg::build::build_dataflow, TASK-0360); `idx` reuses that pattern
-// in INDEX position.
+// with `idx(i) = N-1-i` (reversal) and `pass(x) = x` (identity
+// passthrough). So `out` is `src` reversed. The reversal (vs an identity)
+// is deliberate (TASK-0431.01): it makes the e2e oracle VALUE-
+// DISCRIMINATING — a backend that emitted the `(i) as i32` cast but
+// mis-evaluated the index, or merely copied `src`→`out`, would mismatch
+// `reference.bin`, which an identity oracle (`reference.bin == src`)
+// could not catch. The point remains the SHAPE: a pure kernel `idx`
+// called in INDEX position with a BARE ITER VAR `i`. The 15-transpose
+// precedent established that a pure kernel is the canonical way to
+// express a permutation (a kernel-less RHS is rejected by
+// acfg::build::build_dataflow, TASK-0360); `idx` reuses that pattern in
+// INDEX position.
 //
-// SOUNDNESS. `idx(i) = i` is a bijection over `0..N`, so each `out` slot
+// SOUNDNESS. `idx(i) = N-1-i` is a bijection over `0..N`, so each `out` slot
 // is written exactly once (PRD §6.2.1 single-assignment holds). `idx` is
 // pure (deterministic, side-effect-free), so it is sound in index
 // position (PRD §6.2). `out` and `src` are distinct data symbols — no
 // read/write aliasing. (The input array is named `src`, not `in`,
-// because `in` is a reserved Rust keyword — the generated host source
-// declares the array as a Rust `let`, so a data symbol named `in` would
-// emit `let mut in = ...` and fail to compile. Verified empirically while
-// landing TASK-0431.)
+// because `in` is a reserved Rust keyword. Such an identifier is now
+// rejected fail-loud at the front-end with a source-site diagnostic
+// (TASK-0433); before that guard landed it slipped through and emitted
+// `let mut in = ...`, failing rustc on generated source — the footgun
+// that motivated both TASK-0431's discovery and the TASK-0433 reject.)
 //
 // CUMULATIVE-CLASSIFIER NOTE (forward-verification, not a dependency of
 // this single-worker cell). The write index `idx(i)` is NOT a self-read

@@ -1,21 +1,23 @@
 //! Reference implementation of example 20-index-cast-permute.
 //!
-//! The algorithm is the IDENTITY permutation `out[idx(i)] <-- pass(in[i])`
-//! with `idx(i) = i` (identity bijection) and `pass(x) = x` (identity
-//! passthrough). So `out` is a verbatim COPY of `in`: `out[i] = in[i]`
-//! for every `i` in `0..N`.
+//! The algorithm is the REVERSAL permutation `out[idx(i)] <-- pass(in[i])`
+//! with `idx(i) = N-1-i` (reversal bijection) and `pass(x) = x` (identity
+//! passthrough). So `out` is `in` REVERSED: `out[N-1-i] = in[i]` for
+//! every `i` in `0..N`.
 //!
 //! The example exists to exercise the TASK-0431 codegen path — a PURE
 //! index kernel called with a BARE ITER VAR argument (`idx(i)`), which
 //! forces the `(i) as i32` sidecar-driven cast in the generated crate.
-//! The arithmetic is intentionally trivial so the oracle is a plain copy;
-//! a backend matching this reference bit-for-bit demonstrates the cast
-//! shape compiled and ran correctly across the tier-1 matrix.
+//! The reversal (vs an identity, TASK-0431.01) makes the oracle
+//! VALUE-DISCRIMINATING: a backend that emitted the cast but mis-evaluated
+//! the index — or merely copied `in`→`out` without evaluating `idx` at
+//! all — would now MISMATCH this reference, which an identity oracle
+//! (`reference.bin == input.bin`) could not catch.
 //!
 //! Structural independence from kernels.rs (policy §2): this reference
-//! does NOT call `idx`/`pass`; it computes the identity-permutation
-//! result directly as a memcpy-shaped loop. A backend matching it
-//! bit-for-bit is unlikely to be "wrong in the same way".
+//! does NOT call `idx`/`pass`; it computes the reversal-permutation
+//! result directly with a `out[N-1-i] = in[i]` loop. A backend matching
+//! it bit-for-bit is unlikely to be "wrong in the same way".
 //!
 //! Input format (`input.bin`):
 //!   - bytes [0 .. 4*N) — N i32 little-endian words (the array `in`).
@@ -23,7 +25,7 @@
 //!     wrong-length file would mask fixture drift).
 //!
 //! Output format (`reference.bin`):
-//!   - bytes [0 .. 4*N) — N i32 LE words, the array `out` (== `in`).
+//!   - bytes [0 .. 4*N) — N i32 LE words, the array `out` (== `in` reversed).
 //!
 //! N is fixed at the value declared in `prog.algo.nuc`. If that const
 //! changes, this binary must change in the same commit (policy §3).
@@ -110,11 +112,13 @@ fn main() -> ExitCode {
         *slot = i32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
     }
 
-    // Identity permutation: out[idx(i)] = pass(in[i]) with idx, pass the
-    // identity => out[i] = in[i]. Strict left-to-right.
+    // Reversal permutation: out[idx(i)] = pass(in[i]) with idx(i)=N-1-i
+    // and pass the identity => out[N-1-i] = in[i], i.e. out is in
+    // reversed. Strict left-to-right (computed directly, not via idx —
+    // structural independence, policy §2).
     let mut out = [0i32; N];
     for (i, &v) in input.iter().enumerate() {
-        out[i] = v;
+        out[N - 1 - i] = v;
     }
 
     // Encode and write output.

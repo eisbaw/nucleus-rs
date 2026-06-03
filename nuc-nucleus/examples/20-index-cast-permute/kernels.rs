@@ -15,8 +15,15 @@ use std::io::Write;
 const N: usize = 256;
 
 /// Index-computing kernel — PURE, called in INDEX position with a BARE
-/// ITER VAR argument (`out[idx(i)] <-- ...`). `idx(i) = i` (the identity
-/// bijection over `0..N`).
+/// ITER VAR argument (`out[idx(i)] <-- ...`). `idx(i) = N-1-i` (the
+/// REVERSAL bijection over `0..N`).
+///
+/// The reversal (rather than the identity) is deliberate (TASK-0431.01):
+/// it makes the oracle VALUE-DISCRIMINATING — `out` is `src` reversed,
+/// so a backend that merely copied `src`→`out` WITHOUT evaluating `idx`
+/// would now mismatch `reference.bin`, whereas an identity `idx` left the
+/// oracle satisfiable by a plain copy. It is still a bijection over
+/// `0..N`, so each `out` slot is written exactly once (PRD §6.2.1).
 ///
 /// The `i32` parameter type is the whole point of this example: the loop
 /// iter var renders `i64` in the generated host source, so the codegen
@@ -24,7 +31,7 @@ const N: usize = 256;
 /// crate fails E0308. This kernel body is deterministic and
 /// side-effect-free, so it is sound in index position (PRD §6.2).
 pub fn idx(i: i32) -> i32 {
-    i
+    (N as i32) - 1 - i
 }
 
 /// Identity passthrough for the value (15-transpose `xpose` precedent).
