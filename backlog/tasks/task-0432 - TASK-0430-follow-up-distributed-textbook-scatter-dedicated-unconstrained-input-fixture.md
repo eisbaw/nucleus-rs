@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 23:43'
-updated_date: '2026-06-03 01:39'
+updated_date: '2026-06-03 02:16'
 labels:
   - compiler
   - scatter
@@ -63,4 +63,12 @@ GATE: full `just ci` exited 0 (both negative arms bit correctly: xbackend-corrup
 LIMITS / scope NOT covered: none beyond ACs. No prereq tasks needed — the classifier and codegen path handled bucket()-in-index distributed cleanly with no new machinery. TASK-0431 (index-arg cast follow-up) unaffected here (bucket takes i32 input[i], returns i32 used as index; the existing as-usize subscript cast path was exercised correctly across all 7 backends).
 
 GOTCHA: first two input.bin generators (linear coprime step, LCG low-bits) produced perfectly UNIFORM post-bucket histograms (16/bin) — a weak oracle that would also pass under a wrong bijective bucket. Switched to an isqrt-skewed map to force a non-uniform ramp distribution so the oracle genuinely discriminates correct bucketing. Documented the generator in the README for reproducibility.
+
+REVIEW GATE (cycle 247, orchestrator-independent parallel read-only): qa-test-runner GO + mped-architect GO.
+
+qa NUMBERS (re-run, not transcribed): build OK; clippy clean (-D warnings); just test 1223/0/3 dev; just test-release 1271/0/3 (dev->release +48 = pre-existing TASK-0291 debug_assert should_panic, not new); just e2e 413/356/0/57/0 with 0 fail / 0 required-fail, reproduced 3x (2 standalone + the ci run) = non-flake; full just ci EXIT 0 with every structural fence OK (textual-replace, include-str-coverage, doc-citation/bare/test-name/cell-path staleness, mega-files, doc-links). All 21 new required cells (AC#1 7 + AC#2 14) byte-identical vs reference.bin (value-correct, not just non-hanging).
+
+architect COMPLETENESS: PASS across all 6 focus areas. No inherited verbatim-copy lies (header rewritten, cites TASK-0432 own + TASK-0384 as sibling-boundary only; no no-bucket-kernel leak; bucket genuinely placed on {w0..w3}). Cumulative classifier: collect_cumulative_data_names (sidecar.rs:762) fires only when self-read DataRef indices != lhs indices; IrExpr (ir.rs:168) derives plain structural PartialEq/Eq (no span/aux), so Call{bucket,[input[i]]} compares EQUAL both sides -> classifier does NOT fire -> wrapping_add accumulate -> CORRECT FOR THE RIGHT REASON, not accidental. AC#2 oracle independent (std-only, int-only, deterministic, outside workspace, rem_euclid == kernel ((v%BINS)+BINS)%BINS incl negatives); input genuinely unconstrained (111 neg / 108 >=BINS / 37 in-range = 219/256 do real bucket work); reference.bin is the NON-UNIFORM ramp 1,3,..,31 (discriminating oracle), recomputed independently byte-identical. No silent backend drops; no AC-gaming.
+
+P1/P2: none. P3 (non-blocking, no code change this cycle): (P3a) classifier non-firing is correct-but-FRAGILE-by-construction (depends on both bucket(input[i]) index sites staying structurally-identical IrExpr::Call; a future CSE/asymmetric index rewrite could flip it to cumulative -> replicate+sum xN-wrong). Adequately disclosed in both schedule/algo headers as forward-verification + pinned today by the e2e byte-match; forward-carried to TASK-0343.03.02. (P3b) regen-references trusts committed reference.bin (informational; architect recomputed -> matches).
 <!-- SECTION:NOTES:END -->
