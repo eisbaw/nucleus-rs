@@ -1,0 +1,22 @@
+// Naive single-worker schedule for the TASK-0341.02.01.04 (S3)
+// max-abs-diff reduction fixture. Mirrors 03-reduction/naive: one
+// worker `host`, every kernel placed there, no loop transforms, no
+// transfers (everything on one worker => no cross-worker edges).
+//
+// The point is the single-worker bit-identity proof: if this lowers,
+// links, emits, builds, runs and produces reference.bin under
+// pthreads-sync, the scalar-producing max-abs-diff reduction is sound
+// on existing machinery (S3 AC#1).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_new    on host;
+    place load_old    on host;
+    place save_output on host;
+    place max_abs_acc on host;
+    place max_combine on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

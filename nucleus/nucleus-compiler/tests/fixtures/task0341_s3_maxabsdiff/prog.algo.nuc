@@ -1,0 +1,98 @@
+// TASK-0341.02.01.04 (grammar-epic S3) — scalar-producing reduction:
+// max-abs-diff (L-infinity norm) over a GENERATION PAIR of i32 arrays.
+//
+// PURPOSE — empirical premise-verification, not new machinery.
+// ---------------------------------------------------------------
+// The S3 task body claimed "NO existing machinery to reuse" for a
+// scalar-producing reduction. That premise is FALSE: this fixture is
+// expressed ENTIRELY with shapes that already ship bit-identical:
+//   - 03-reduction: the two-phase reduction (per-partition accumulate
+//     into `partials[w]`, then a tree-combine of partials into a
+//     scalar `result`). This fixture is that exact shape with the
+//     fold op changed from `+` to `max`.
+//   - 07-matmul:    the 3-arg pure accumulator `c[i][j] <-- madd(
+//     c[i][j], a[i][k], b[k][j])` — the LHS appears as arg 1 of the
+//     RHS kernel and two more array reads supply args 2 and 3. This
+//     fixture's `max_abs_acc(partials[w], new[w][i], old[w][i])` is
+//     structurally identical (3-arg pure accumulator folding two
+//     extra array operands).
+//   - 08-histogram: `bin_inc(histogram[b], input[i], b)` is a third
+//     instance of the 3-arg pure accumulator.
+// So both load-bearing shapes (3-arg pure call in a dataflow RHS AND
+// an indexed-accumulator self-read folding two extra array args) are
+// PROVEN today. S3 needs no grammar/IR change — only kernel bodies.
+//
+// THE MAX-IDENTITY CRUX (why no `init=` clause is needed).
+// --------------------------------------------------------
+// 03-reduction's README correctly notes general min/max reductions
+// need their identity (INT_MIN / INT_MAX) materialised, which v2's
+// zero-init pre-init pass cannot supply. BUT max-abs-diff is special:
+// every per-element `abs(new - old) >= 0`, so 0 IS the correct
+// max-identity here — `max(0, nonneg) == nonneg`. The codegen's
+// existing zero-init of `partials` (the ADDITIVE identity for sum) is
+// therefore ALSO the correct identity for THIS max reduction. No
+// language change, no `init=` clause.
+//
+// NORM = MAX (L-infinity), pinned for S6 (TASK-0341.02.01.07).
+// `max` is associative, commutative, AND exact on i32 (and in FP), so
+// this reduction is ALREADY schedule-order-independent: any fold order
+// over the per-element non-negative abs-diffs yields the identical
+// scalar. S6's deterministic-reduction machinery is therefore a NO-OP
+// for the max norm (it would only be needed for a sum/L1 norm). The
+// order-independence is pinned by a sibling unit test
+// (`task0341_s3_order_independence.rs`).
+//
+// SCOPE: this is the REDUCTION in isolation. The generation pair is
+// modelled as two independent top-level input arrays `new` / `old`
+// (NOT an until-loop — that is S1/S4, landed inert). Integer-only per
+// PRD §10.1 (bit-identity).
+
+const N             : usize = 32;                // elements per generation
+const NUM_WORKERS   : usize = 4;                 // partition count
+const PARTITION_SIZE: usize = N / NUM_WORKERS;   // 8 per partition
+
+// The generation pair (two i32 arrays), per-worker partials, two
+// tree-combine intermediates, and the final scalar max-abs-diff.
+// Each `data` symbol is assigned by exactly one dataflow statement
+// (PRD §6.2.1).
+data new      : i32[NUM_WORKERS][PARTITION_SIZE];
+data old      : i32[NUM_WORKERS][PARTITION_SIZE];
+data partials : i32[NUM_WORKERS];
+data half1    : i32;
+data half2    : i32;
+data maxdiff  : i32;
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_new    : () -> i32[NUM_WORKERS][PARTITION_SIZE] effectful;
+kernel load_old    : () -> i32[NUM_WORKERS][PARTITION_SIZE] effectful;
+kernel save_output : (i32) -> ()                            effectful;
+
+// Reduction-step kernels — pure, reorderable, deduplicable.
+// `max_abs_acc(acc, n, o)` is the 3-arg per-element fold step for
+// phase 1: returns `max(acc, abs(n - o))`. `max_combine(a, b)` is the
+// binary tree-reduction step for phase 2: returns `max(a, b)`.
+kernel max_abs_acc : (i32, i32, i32) -> i32 pure;
+kernel max_combine : (i32, i32)      -> i32 pure;
+
+// Load both generations on whoever owns I/O (the schedule decides).
+new <-- load_new();
+old <-- load_old();
+
+// Phase 1 — per-partition max-abs-diff accumulation. `partials` is
+// pre-initialised to zero by the codegen; because every
+// `abs(new - old) >= 0`, zero is the correct max-identity here. Each
+// (w, i) iteration folds one element-pair into `partials[w]`.
+for w : 0 .. NUM_WORKERS {
+    for i : 0 .. PARTITION_SIZE {
+        partials[w] <-- max_abs_acc(partials[w], new[w][i], old[w][i]);
+    }
+}
+
+// Phase 2 — tree combine of partials into the scalar max-abs-diff.
+// Depth=2 for NUM_WORKERS=4; explicit and audit-friendly. Each
+// intermediate scalar is single-assigned.
+half1   <-- max_combine(partials[0], partials[1]);
+half2   <-- max_combine(partials[2], partials[3]);
+maxdiff <-- max_combine(half1, half2);
+
+save_output(maxdiff);
