@@ -596,19 +596,24 @@ fn ex14_effectful_indexed_input_lowers_to_per_frame_region_read_not_stub() {
             "worker `{worker}`: effectful per-frame input `{kernel}` must copy the \
              region into the indexed slice (copy_nonoverlapping):\n{src}"
         );
-        // The read targets the INDEXED slice of the datum as a SUB-ARRAY
+        // The read fills the INDEXED slice of the datum as a SUB-ARRAY
         // place `datum[start..start + 16usize]` — the per-frame row, NOT
-        // the whole array and NOT a scalar slot. The ` + 16usize]` suffix
-        // is `render_indexed_place`'s `SliceForm::SubArray` form sized by
-        // SAMPLES_PER_FRAME (16); a scalar `datum[idx]` mis-lowering would
-        // lack it, and a whole-array mis-lowering would emit the bare
-        // `datum` name. Pinning the row size also guards against a wrong
-        // element-count regression (P3-2, architect review TASK-0049.10.01).
+        // the whole array and NOT a scalar slot. ANCHORED to the actual
+        // fill line (`copy_nonoverlapping(__src, datum[...`) rather than a
+        // file-wide `datum[` + ` + 16usize]` pair: the worker file ALSO
+        // contains `mic_in[` from the pure-compute input reads
+        // (`mix2(mic_in[frame], ..)`, `denoise(mic_in[frame])`) and other
+        // ` + 16usize]` sub-array slices, so an unanchored pair would NOT
+        // bite a whole-array mis-fill regression (architect review
+        // TASK-0049.10.02 P2-1; the same hardening as the slice-B drain
+        // test below). The ` + 16usize]` row-sizing also guards a wrong
+        // element-count and a scalar `datum[idx]` mis-lowering.
         assert!(
-            src.contains(&format!("{datum}[")) && src.contains(" + 16usize]"),
-            "worker `{worker}`: the per-frame read must target the indexed datum \
-             as a sub-array row `{datum}[start..start + 16usize]` (not a scalar \
-             slot or the whole array):\n{src}"
+            src.contains(&format!("core::ptr::copy_nonoverlapping(__src, {datum}["))
+                && src.contains(" + 16usize]"),
+            "worker `{worker}`: the per-frame read must fill the indexed datum \
+             as a sub-array row (`copy_nonoverlapping(__src, {datum}[start..start \
+             + 16usize]...`), not a scalar slot or the whole array:\n{src}"
         );
         // CRITICAL regression assertion: the zero-returning extracted stub
         // call must NOT be emitted for the effectful capture (the whole
@@ -686,17 +691,31 @@ fn ex14_effectful_indexed_output_drains_per_frame_row_not_whole_array() {
         );
         // The drained place is the INDEXED datum as a SUB-ARRAY row
         // `datum[start..start + 16usize]` — the per-frame frame slice, NOT
-        // the whole array. The ` + 16usize]` suffix is
-        // `render_indexed_place`'s `SliceForm::SubArray` form sized by
-        // SAMPLES_PER_FRAME (16); a whole-array mis-drain would emit the
-        // bare `datum` name and LACK this suffix (this is exactly how the
-        // slice-A test pins the INPUT side). Pinning the row size also
-        // guards against a wrong element-count regression.
+        // the whole array. ANCHORED to the actual drain line
+        // (`dma_push(0, datum[...`) rather than a file-wide `datum[` +
+        // ` + 16usize]` pair: the fe worker file ALSO contains `spk_out[`
+        // from the indexed write `spk_out[frame] <-- denoise(..)` and
+        // ` + 16usize]` from the slice-A `mixed[frame]` input read, so an
+        // unanchored pair would STILL pass if the drain reverted to the
+        // whole-array `dma_push(0, spk_out.as_ptr()..)` shape (architect
+        // review TASK-0049.10.02 P2-1). The ` + 16usize]` row-sizing also
+        // guards a wrong element-count regression.
         assert!(
-            src.contains(&format!("{datum}[")) && src.contains(" + 16usize]"),
+            src.contains(&format!("shim.dma_push(0, {datum}[")) && src.contains(" + 16usize]"),
             "worker `{worker}`: the per-frame drain must target the indexed datum \
-             as a sub-array row `{datum}[start..start + 16usize]` (not the whole \
-             array `{datum}`):\n{src}"
+             as a sub-array row (`dma_push(0, {datum}[start..start + 16usize]...`), \
+             not the whole array `{datum}`:\n{src}"
+        );
+        // The CRITICAL anti-regression: the whole-array drain shape
+        // `dma_push(0, {datum}.as_ptr()` must NOT appear — if the indexed
+        // branch were lost, the bare-array drain would re-emit exactly this
+        // (a regression the anchored positive assertion alone could miss if
+        // both shapes coexisted).
+        assert!(
+            !src.contains(&format!("shim.dma_push(0, {datum}.as_ptr()")),
+            "worker `{worker}`: effectful per-frame output `{kernel}` must NOT drain \
+             the WHOLE array (`dma_push(0, {datum}.as_ptr()`) — only the per-frame \
+             row:\n{src}"
         );
     }
 
