@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -742,6 +742,66 @@ milestone = "M6"
 [[required]]
 example  = "19-histogram-unconstrained"
 schedule = "distributed.textbook"
+backend  = "openmp-rs"
+milestone = "M6"
+
+# 20-index-cast-permute: TASK-0431 AC#2 — the dedicated build-clean
+# witness for a PURE index kernel called with a BARE ITER VAR argument.
+# `out[idx(i)] <-- pass(src[i])`, idx/pass the identity, so the oracle is
+# a plain copy (reference.bin == input.bin). The load-bearing assertion is
+# NOT the (deliberately trivial) arithmetic but that the generated crate
+# BUILDS CLEAN with the TASK-0431 cast: the index emits
+# `out[(kernels::idx((i) as i32)) as usize] = ...`, where `(i) as i32` is
+# the sidecar-driven cast of the i64 loop counter to the i32 `idx` param.
+# Without the cast (pre-TASK-0431) the generated crate fails E0308 — which
+# the harness, compiling each emitted crate, turns into a cell FAIL. Every
+# previously-shipped X1' cell (08-histogram/textbook+scatter+distributed,
+# 19-histogram-unconstrained) calls the index kernel with a GATHER LOAD
+# arg (`bucket(input[i])`, already i32); none exercises the bare-iter-var
+# i64->i32 shape this example pins. Single-worker `naive` only — the cast
+# is rendered by the shared `render_int_expr` and is identical in single-
+# and multi-worker codegen, so one cell × 7 backends is the minimal
+# sufficient witness. The render-string is also unit-pinned directly in
+# backend-common/tests/render_guard_siblings.rs (TASK-0431).
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "20-index-cast-permute"
+schedule = "naive"
 backend  = "openmp-rs"
 milestone = "M6"
 

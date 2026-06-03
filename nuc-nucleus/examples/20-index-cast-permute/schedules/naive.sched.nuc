@@ -1,0 +1,26 @@
+// Single-worker schedule for 20-index-cast-permute (TASK-0431 AC#2).
+//
+// One worker (`host`): the identity permutation `out[idx(i)] <-- pass(in[i])`
+// needs the whole of `out` mutable on one worker, trivially satisfied (no
+// transfers, no cross-worker fan-in). The pure index kernel `idx` and the
+// pure passthrough `pass` are placed on the same worker — `idx` is called
+// inline at the scatter index site with a BARE ITER VAR argument, which is
+// the X1' cast shape this example exists to exercise (TASK-0431).
+//
+// DELIBERATELY single-worker only. A distributed variant would partition
+// the `i` loop, but the cast shape under test (`kernels::idx((i) as i32)`)
+// is identical in single- and multi-worker codegen (the index expression
+// is rendered by the shared `render_int_expr`), so the single-worker cell
+// is the minimal sufficient build-clean witness. Adding a distributed
+// variant would broaden coverage but is out of AC#2 scope.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place idx         on host;
+    place pass        on host;
+
+    // No loop transforms, no transfer directives (single worker).
+}

@@ -1,0 +1,85 @@
+// Identity permutation scatter with a PURE index kernel taking a BARE
+// ITER VAR argument (TASK-0431 AC#2).
+//
+// WHY THIS EXAMPLE EXISTS. TASK-0430 opened the X1' codegen path: a PURE
+// kernel call in array-SUBSCRIPT index position, rendered by the shared
+// `render_int_expr` `IrExpr::Call` arm. Every previously-shipped cell
+// (08-histogram/textbook + scatter + their distributed variants,
+// 19-histogram-unconstrained) calls the index kernel with a GATHER LOAD
+// argument — `bucket(input[i])`, where `input[i]` is already `i32`. None
+// of them exercises a BARE ITER VAR argument.
+//
+// A bare iter var (`i`) renders `i64` in the generated host source (loop
+// counters are `i64`, see render/expr.rs). Passed to an `i32`-param index
+// kernel WITHOUT a per-param cast, the generated crate would hit E0308 at
+// build (rustc catches it loudly — not a silent miscompile — but it is a
+// usability footgun in the exact path TASK-0430 opened). TASK-0431 adds
+// the sidecar-driven `(arg) as <ty>` cast to the `Call` arm, mirroring
+// `render_fire_arg`. THIS example is the e2e build-clean witness: the
+// emitted index expression is `kernels::idx((i) as i32)`, and every
+// tier-1 backend's generated crate must compile and produce output
+// bit-identical to `reference.bin`.
+//
+// THE ALGORITHM is a deliberately trivial IDENTITY permutation:
+//
+//     out[idx(i)] <-- pass(src[i]);
+//
+// with `idx(i) = i` (identity) and `pass(x) = x` (identity passthrough).
+// So `out` is a verbatim copy of `src`, and the oracle is just "copy the
+// input array". The point is NOT the arithmetic — it is the SHAPE: a pure
+// kernel `idx` called in INDEX position with a BARE ITER VAR `i`. The
+// 15-transpose precedent established that a pure identity kernel is the
+// canonical way to express a permutation (a kernel-less RHS is rejected
+// by acfg::build::build_dataflow, TASK-0360); `idx` reuses that pattern
+// in INDEX position.
+//
+// SOUNDNESS. `idx(i) = i` is a bijection over `0..N`, so each `out` slot
+// is written exactly once (PRD §6.2.1 single-assignment holds). `idx` is
+// pure (deterministic, side-effect-free), so it is sound in index
+// position (PRD §6.2). `out` and `src` are distinct data symbols — no
+// read/write aliasing. (The input array is named `src`, not `in`,
+// because `in` is a reserved Rust keyword — the generated host source
+// declares the array as a Rust `let`, so a data symbol named `in` would
+// emit `let mut in = ...` and fail to compile. Verified empirically while
+// landing TASK-0431.)
+//
+// CUMULATIVE-CLASSIFIER NOTE (forward-verification, not a dependency of
+// this single-worker cell). The write index `idx(i)` is NOT a self-read
+// of `out` — `out` is written, never read here. The accumulate /
+// cumulative discriminator (sidecar.rs) only fires on a self-read whose
+// indices differ from the LHS; there is no self-read, so it cannot fire.
+// This note is pinned by the e2e byte-match; the distributed variant is
+// NOT shipped (single-worker only, see schedules/).
+
+const N : usize = 256;     // array length; 256 * 4 bytes = 1 KiB
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1;
+// the dataflow writes each out[idx(i)] exactly once across i in 0..N
+// (idx is the identity bijection).
+data src : i32[N];
+data out : i32[N];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()       -> i32[N] effectful;
+kernel save_output : (i32[N]) -> ()     effectful;
+
+// Index-computing kernel — PURE, used in INDEX position with a BARE ITER
+// VAR argument (`idx(i)`). `(i32) -> i32`: the `i32` param is what forces
+// the `(i) as i32` cast in codegen (the iter var renders `i64`).
+// `idx(i) = i` (identity bijection over 0..N).
+kernel idx  : (i32) -> i32 pure;
+
+// Identity passthrough for the value — pure (15-transpose `xpose`
+// precedent). `pass(x) = x`.
+kernel pass : (i32) -> i32 pure;
+
+// Load the input on whoever owns I/O (the schedule decides).
+src <-- load_input();
+
+// Identity permutation scatter. The index `idx(i)` is the X1' shape under
+// test: a pure kernel call in subscript position with a bare iter-var arg.
+for i : 0 .. N {
+    out[idx(i)] <-- pass(src[i]);
+}
+
+save_output(out);
