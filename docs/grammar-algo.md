@@ -366,7 +366,13 @@ with no special case.
    binding/path segment (`let mut {name}`) and `rustc` would otherwise
    fail on generated source the user never wrote (TASK-0433). The
    grammar reject is checked first, so the overlap (`const`, `for`)
-   keeps its grammar-specific message.
+   keeps its grammar-specific message. Caveat: in `for VAR :`
+   loop-variable position a colliding `VAR` is still *rejected* (it
+   never reaches the AST or codegen), but chumsky 0.9's error-merge
+   surfaces a downstream block-`{` mismatch rather than a span-anchored
+   message at `VAR` — identical to the diagnostic a *grammar* keyword
+   (`for const :`) produces there. Anchoring that one position is the
+   filed follow-up TASK-0434; the safety property holds regardless.
 5. **No Unicode identifier policy.** ASCII identifiers only in v2.
    Documented in the lexical section.
 6. **One existing example (`05-stencil`) does not conform.** Tracked

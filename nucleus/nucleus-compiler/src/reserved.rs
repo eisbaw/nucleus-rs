@@ -49,13 +49,17 @@
 /// membership probe order is a stable, auditable property of the
 /// source — no hash-set iteration on the error path.
 ///
-/// Contextual keywords (`union`, `dyn` is strict in 2018 so included,
-/// `gen`, `raw`, `macro_rules`, `'static`/lifetime forms) that are
-/// legal as plain identifiers in real Rust are deliberately included
-/// in the **conservative** strict+reserved set where they would
-/// collide with a bare binding/path segment; `union`, `gen`, `dyn`
-/// are listed because they are at least reserved or strict and
-/// rejecting them costs the user nothing (no example uses them).
+/// Edition note on the strict-vs-contextual boundary. `dyn`, `async`,
+/// `await` are STRICT keywords (2018+), so a bare Rust binding named
+/// for any of them is illegal — they MUST be in the set. `try` is a
+/// reserved word (2018) and `gen` is reserved (2024); both are
+/// included as conservative reserved-set members. `union` is the one
+/// genuinely CONTEXTUAL keyword present here — it is legal as a plain
+/// Rust identifier, so rejecting it is a conservative over-inclusion,
+/// not a correctness requirement; it costs the user nothing (no
+/// example uses it). Words that are contextual *but never collide with
+/// a bare binding/path segment* — e.g. `macro_rules`, `raw` — are
+/// deliberately NOT in the set.
 pub const RUST_RESERVED: &[&str] = &[
     "Self",
     "abstract",
