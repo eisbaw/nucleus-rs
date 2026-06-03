@@ -369,21 +369,22 @@ with no special case.
    fail on generated source the user never wrote (TASK-0433). The
    grammar reject is checked first, so the overlap (`const`, `for`)
    keeps its grammar-specific message. The `for VAR :` loop-variable
-   position is anchored too: a dedicated `algo/parser.rs::for_loop_var`
-   parser (TASK-0434) routes through the same reject decision
+   position is anchored too: a dedicated `algo/tokens.rs::for_loop_var`
+   parser (TASK-0434; moved out of `parser.rs` by the TASK-0435 token-
+   layer split) routes through the same reject decision
    (`ident_collision_message`) and, on a collision, consumes the rest
-   of the for-head through the opening `{` so its error out-reaches the
-   block-`{` in chumsky 0.9's furthest-position error-merge — while
-   pinning the display span at `VAR`. So both a Rust-reserved `VAR`
-   (`for loop :`) and a grammar-keyword `VAR` (`for const :`) report a
-   span-anchored message at `VAR`, with the same wording the data /
-   kernel / worker positions emit for the same word. Edge case
-   (TASK-0434.01): the `VAR` anchoring relies on reaching the `{`; on
-   brace-less *truncated* input (`for loop : 0 .. N` at EOF) the
-   diagnostic degrades to a generic "expected `{`" at end-of-input. The
-   reserved `VAR` is still REJECTED (never reaches the AST or codegen —
-   the safety property holds unconditionally); only the malformed-input
-   diagnostic position degrades.
+   of the for-head through the opening `{` *or end-of-input* so its
+   error out-reaches the block-`{` in chumsky 0.9's furthest-position
+   error-merge — while pinning the display span at `VAR`. So both a
+   Rust-reserved `VAR` (`for loop :`) and a grammar-keyword `VAR`
+   (`for const :`) report a span-anchored message at `VAR`, with the
+   same wording the data / kernel / worker positions emit for the same
+   word. This holds on brace-less *truncated* input too
+   (`for loop : 0 .. N` at EOF): TASK-0434.01 added `end()` as a
+   `take_until` terminator so the `VAR`-anchored message fires at EOF
+   rather than degrading to a generic "end of input" diagnostic. The
+   reserved `VAR` is in all cases REJECTED (never reaches the AST or
+   codegen — the safety property holds unconditionally).
 5. **No Unicode identifier policy.** ASCII identifiers only in v2.
    Documented in the lexical section.
 6. **One existing example (`05-stencil`) does not conform.** Tracked

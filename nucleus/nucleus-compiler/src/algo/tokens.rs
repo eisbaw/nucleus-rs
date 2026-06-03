@@ -112,6 +112,18 @@ pub(super) fn ident() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clon
 /// while keeping its display span on `var_span` so the diagnostic
 /// underlines `VAR`. Message is the shared [`ident_collision_message`]
 /// — identical to the data/kernel one.
+///
+/// The `take_until` terminator is `'{' | end-of-input` (TASK-0434.01):
+/// on TRUNCATED input with no opening brace (e.g. `for loop : 0 .. N`
+/// at EOF) the bare `just('{')` form would run `take_until` to EOF and
+/// FAIL before the `try_map` emits the VAR-anchored message, so the
+/// user got a generic "found end of input" at EOF instead. Adding the
+/// `end()` alternative lets `take_until` terminate at EOF too, so the
+/// VAR-anchored diagnostic fires on the brace-less case as well. The
+/// braced case is unchanged: `take_until` is non-greedy and still stops
+/// at the FIRST `{` (pinned by
+/// `for_loop_var_keyword_collision_is_anchored_at_the_variable_token`;
+/// brace-less case pinned by `for_loop_var_keyword_collision_anchored_on_truncated_braceless_input`).
 pub(super) fn for_loop_var() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
     ident_chars()
         .map_with_span(|s, span: std::ops::Range<usize>| (s, span))
@@ -123,7 +135,10 @@ pub(super) fn for_loop_var() -> impl Parser<char, SpIdent, Error = Simple<char>>
                 let ident = Spanned::new(s.clone(), var_span.clone());
                 empty().map(move |()| ident.clone()).boxed()
             }
-            Some(msg) => take_until(just('{'))
+            // Terminate at the first `{` OR end-of-input (both `()`-typed
+            // so the `.or()` arms unify) so the VAR-anchored error also
+            // fires on truncated brace-less input (TASK-0434.01).
+            Some(msg) => take_until(just('{').ignored().or(end()))
                 .try_map(move |_, _outer_span| {
                     Err(Simple::custom(var_span.clone(), msg.clone()))
                 })

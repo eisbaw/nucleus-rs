@@ -635,6 +635,69 @@ fn for_loop_var_keyword_collision_is_anchored_at_the_variable_token() {
     }
 }
 
+/// TASK-0434.01: the VAR-anchored keyword-collision diagnostic must
+/// also fire on TRUNCATED input with no opening brace (`for VAR : lo ..
+/// hi` at EOF). The `for_loop_var` collision path `take_until`s the
+/// block `{` to out-reach the chumsky furthest-position merge; before
+/// TASK-0434.01 the bare `just('{')` terminator ran to EOF and FAILED
+/// on brace-less input, so the user got a generic "found end of input"
+/// instead of the VAR-anchored message. The `end()` terminator
+/// alternative fixes it. Correctness was never affected (the reserved
+/// VAR is rejected either way); this pins the diagnostic QUALITY.
+#[test]
+fn for_loop_var_keyword_collision_anchored_on_truncated_braceless_input() {
+    // No `{ … }` body, EOF right after the range. (src, VAR, (line,col),
+    // message-substring) — mirrors the braced sibling test's shape.
+    let cases: &[(&str, &str, (usize, usize), &str)] = &[
+        (
+            "const N : usize = 4;\nfor loop : 0 .. N",
+            "loop",
+            (2, 5),
+            "Rust reserved word",
+        ),
+        (
+            "const N : usize = 4;\nfor const : 0 .. N",
+            "const",
+            (2, 5),
+            "expected identifier, found keyword",
+        ),
+    ];
+    for (src, var, (line, col), msg_substr) in cases {
+        assert!(
+            parse_algo(src).is_err(),
+            "a reserved for-loop variable `{var}` must be rejected (truncated input)"
+        );
+        let err = expect_err(src);
+        assert_eq!(
+            err.line, *line,
+            "for-var `{var}` (truncated): diagnostic must anchor at the VAR line, got {err:?}"
+        );
+        assert_eq!(
+            err.column, *col,
+            "for-var `{var}` (truncated): diagnostic must anchor at the VAR column, \
+             not end-of-input, got {err:?}"
+        );
+        assert!(
+            err.message.contains(&format!("`{var}`")),
+            "for-var `{var}` (truncated): diagnostic must quote the identifier, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(msg_substr),
+            "for-var `{var}` (truncated): diagnostic must contain {msg_substr:?}, got: {}",
+            err.message
+        );
+        // Must NOT degrade to the generic EOF message the bare-`{`
+        // terminator produced pre-TASK-0434.01.
+        assert!(
+            !err.message.contains("end of input"),
+            "for-var `{var}` (truncated): must not surface the generic end-of-input \
+             message, got: {}",
+            err.message
+        );
+    }
+}
+
 /// TASK-0433 (positive / over-fire guard): an identifier that merely
 /// CONTAINS a Rust keyword as a prefix/substring is still accepted.
 /// The reject must bite on exact equality only, mirroring the grammar
