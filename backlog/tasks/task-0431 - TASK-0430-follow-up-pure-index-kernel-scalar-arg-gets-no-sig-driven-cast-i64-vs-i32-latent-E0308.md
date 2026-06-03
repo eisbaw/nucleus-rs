@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 23:43'
-updated_date: '2026-06-03 02:59'
+updated_date: '2026-06-03 03:33'
 labels:
   - compiler
   - scatter
@@ -61,4 +61,12 @@ GOTCHA (forward-carry — general, not TASK-0431-specific): a data symbol named 
 e2e: 413/356/0/57/0 (baseline, reproduced) -> 420/363/0/57/0 (+7 pass, the 7 new cells). Full just ci EXIT 0 (check/clippy/test 1276 dev/test-release/structural fences textual-replace+include-str+doc-citation+mega-file + 4 negative/determinism arms ALL OK; xbackend-corruption arm correctly bit 49 applied/15 detected; required-coverage typo detected). The 5 existing index-kernel cell families (08 textbook/scatter + distributed, 19) STILL PASS unchanged (cast is inert no-op on their i32 gather args).
 
 NOTE: orchestrator runs an independent parallel review gate after return; this self-cert is not authoritative.
+
+REVIEW GATE (cycle 248, orchestrator-independent parallel read-only): qa-test-runner GO + mped-architect GO.
+
+qa NUMBERS (re-run, not transcribed): build OK; clippy clean -D warnings incl a FORCED rebuild of backend-common/render/expr.rs (no clippy::unnecessary_cast on the new (i32-arg) as i32 path — generated crates are rustc-compiled by the harness, not clippy-gated; workspace itself clean); just test 1276/0/3 dev; just test-release 1274/0/3 (dev->release delta 2 = pre-existing TASK-0291 debug_assert should_panic); just e2e 420/363/0/57/0 with 0 fail / 0 required-fail; full just ci EXIT 0 (all structural fences OK incl check-doc-cell-path-staleness resolving the new 20-index-cast-permute/naive citations + check-mega-files; all 4 negative/determinism arms bit correctly). New 20-index-cast-permute cells 7/7 PASS individually; existing 08-histogram/textbook 7/7 + 19-histogram-unconstrained 14/14 still PASS unchanged (cast is inert no-op on their i32 gather args). Stable across 4 e2e runs.
+
+architect COMPLETENESS: PASS. AC#1 cast_index_arg (expr.rs:135) mirrors render_fire_arg scalar arm (fire.rs:365-375) EXACTLY; KernelId inversion matches render_gather_index_load pattern; PANIC-SAFE at every edge (kernel_sig->Option, params.get->Option, is_scalar total, rust_scalar_type total match, name find->Option; all 4 degradation paths fall through to bare arg via _ => arm; no unwrap/panic/[] on new path). +4 unit tests genuinely exercise i32-cast / inert-gather / non-scalar-degrade / no-sig-degrade. Comment-lie sweep CLEAN: stale Call-arm comment fully rewritten, git-grep across examples/source/matrix found no surviving no-cast/filed-TASK-0431 lie (the new example prose is correct COUNTERFACTUAL framing). AC#2 build-clean argument STATICALLY VALID (idx param genuinely i32, iter var i genuinely i64 -> pre-fix E0308 -> cell FAIL -> a PASS witnesses the cast). Oracle independent per policy. No silent backend drop (7/7 required). No AC-gaming.
+
+P1/P2: none. P3 dispositions: (P3-1) AC#2 value-oracle weak (identity idx/pass -> reference.bin == input.bin; a copy-only backend would also match). AC genuinely met (build-clean + render-string pins carry the proof) so NOT a re-open; filed TASK-0431.01 to strengthen to a non-identity reversal for a discriminating value-oracle. (P3-2) Rust-keyword / DSL-identifier collision (data `in` -> `let mut in` rustc failure; worked around in->src) is a real latent defect CLASS across every identifier x every backend, NOT a one-off; filed TASK-0433 (fail-loud front-end keyword check or r#-escaping codegen) — overriding the implementer choice not to file. (qa P3 pre-existing intra-doc-link warnings, not introduced here, ci does not gate on them.)
 <!-- SECTION:NOTES:END -->
