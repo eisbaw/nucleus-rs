@@ -1,6 +1,6 @@
 // Single-worker schedule for 20-index-cast-permute (TASK-0431 AC#2).
 //
-// One worker (`host`): the identity permutation `out[idx(i)] <-- pass(in[i])`
+// One worker (`host`): the reversal permutation `out[idx(i)] <-- pass(src[i])`
 // needs the whole of `out` mutable on one worker, trivially satisfied (no
 // transfers, no cross-worker fan-in). The pure index kernel `idx` and the
 // pure passthrough `pass` are placed on the same worker — `idx` is called
