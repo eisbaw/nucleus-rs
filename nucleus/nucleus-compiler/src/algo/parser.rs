@@ -454,10 +454,19 @@ fn ident() -> impl Parser<char, SpIdent, Error = Simple<char>> + Clone {
         .collect::<String>()
         .try_map(|s, span| {
             if KEYWORDS.contains(&s.as_str()) {
+                // Grammar-reserved word (data/kernel/for/scalar-type):
+                // syntactic meaning. Checked FIRST so the overlap with
+                // RUST_RESERVED (`const`, `for`) keeps the grammar
+                // diagnostic.
                 Err(Simple::custom(
                     span,
                     format!("expected identifier, found keyword `{}`", s),
                 ))
+            } else if crate::reserved::is_rust_reserved(&s) {
+                // Not a DSL grammar word, but a Rust keyword: codegen
+                // would emit `let mut {name}` / `kernels::{name}` and
+                // fail rustc on generated source (TASK-0433).
+                Err(Simple::custom(span, crate::reserved::collision_message(&s)))
             } else {
                 Ok(s)
             }

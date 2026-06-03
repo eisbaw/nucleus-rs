@@ -503,6 +503,115 @@ for y : 1 .. H {
     );
 }
 
+/// TASK-0433: a DSL identifier that collides with a Rust keyword is
+/// rejected at the `.nuc` source site, NOT silently admitted to be
+/// emitted as un-compilable generated Rust (`let mut in = …`). The
+/// diagnostic must underline the identifier and name the codegen
+/// reason. Covers the concrete TASK-0431 trigger (`data in`), a
+/// kernel-name collision (`match`), and the raw-identifier-
+/// INCOMPATIBLE keywords (`crate`, `self`) that even an `r#`-escape
+/// strategy could not have rescued (AC#1, AC#2, AC#3).
+#[test]
+fn rust_keyword_identifier_rejected_at_source_site() {
+    // (src, offending-keyword, (expected line, expected col)).
+    let cases: &[(&str, &str, (usize, usize))] = &[
+        // The original TASK-0431 trigger.
+        ("data in : i32[4];\n", "in", (1, 6)),
+        // A kernel name colliding with a Rust keyword.
+        (
+            "data x : i32[4];\nkernel match : (i32) -> i32 pure;\n",
+            "match",
+            (2, 8),
+        ),
+        // Raw-identifier-incompatible: `r#crate` / `r#self` are
+        // rejected by rustc, so these MUST be source-site rejects.
+        ("data crate : i32[4];\n", "crate", (1, 6)),
+        ("data self : i32[4];\n", "self", (1, 6)),
+    ];
+    for (src, kw, (line, col)) in cases {
+        let err = expect_err(src);
+        assert_eq!(err.line, *line, "kw `{kw}`: wrong line in {err:?}");
+        assert_eq!(err.column, *col, "kw `{kw}`: wrong col in {err:?}");
+        assert!(
+            err.message.contains(&format!("`{kw}`")),
+            "kw `{kw}`: diagnostic must quote the identifier, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Rust reserved word"),
+            "kw `{kw}`: diagnostic must name the codegen-collision \
+             reason (not the grammar-keyword message), got: {}",
+            err.message
+        );
+        // It must be a source-site PARSE error, never a generic
+        // grammar-keyword message that conflates the two concepts.
+        assert!(
+            !err.message.contains("expected identifier, found keyword"),
+            "kw `{kw}`: Rust-reserved collision must NOT reuse the \
+             grammar-keyword message, got: {}",
+            err.message
+        );
+    }
+}
+
+/// TASK-0433 (for-loop-VARIABLE role): the AC#1 guarantee is that a
+/// Rust-keyword identifier can NEVER reach codegen. In the `for VAR :`
+/// position the `ident()` reject still bites (the `for_stmt` branch
+/// fails to parse, so `loop` is never admitted to the AST), but
+/// chumsky 0.9's error-merge surfaces the *more-consuming* downstream
+/// `{`-mismatch error rather than the `ident()` custom message — so
+/// the diagnostic is NOT anchored at the keyword. This is a
+/// PRE-EXISTING limitation, NOT introduced here: a *grammar* keyword
+/// in the same position (`for const : …`) produces the identical
+/// weak diagnostic. We pin BOTH facts so a future chumsky upgrade
+/// that improves error selection is noticed: (1) the for-var
+/// collision is REJECTED (never admitted), and (2) it currently has
+/// parity with the grammar-keyword case. Anchoring the for-var
+/// diagnostic at the keyword is filed as a follow-up.
+#[test]
+fn rust_keyword_for_loop_var_is_rejected_with_preexisting_grammar_parity() {
+    let rust_kw_src = "const N : usize = 4;\nfor loop : 0 .. N {\n}\n";
+    let grammar_kw_src = "const N : usize = 4;\nfor const : 0 .. N {\n}\n";
+    // Both must FAIL — `loop` is never admitted to the AST, matching
+    // the grammar-keyword reject's effect.
+    assert!(
+        parse_algo(rust_kw_src).is_err(),
+        "a Rust-keyword for-loop variable must be rejected (never reach codegen)"
+    );
+    let rust_err = expect_err(rust_kw_src);
+    let grammar_err = expect_err(grammar_kw_src);
+    // Parity: same line and the same (currently weak) message shape.
+    assert_eq!(
+        rust_err.line, grammar_err.line,
+        "for-var Rust-keyword reject must have parity with grammar-keyword reject"
+    );
+    assert_eq!(
+        rust_err.message, grammar_err.message,
+        "for-var Rust-keyword and grammar-keyword currently share the \
+         same downstream diagnostic (pre-existing chumsky error-merge \
+         behaviour); divergence means error selection changed"
+    );
+}
+
+/// TASK-0433 (positive / over-fire guard): an identifier that merely
+/// CONTAINS a Rust keyword as a prefix/substring is still accepted.
+/// The reject must bite on exact equality only, mirroring the grammar
+/// `KEYWORDS` prefix guard (`in_` is not `in`).
+#[test]
+fn rust_keyword_prefix_identifier_still_accepted() {
+    let src = "\
+const N : usize = 4;
+data in_ : i32[N];
+data match_thing : i32[N];
+data crater : i32[N];
+for loops : 0 .. N {
+    in_[loops] <-- inc(loops);
+}
+";
+    let ast = parse_algo(src).expect("near-miss identifiers must parse");
+    assert_eq!(ast.count_data(), 3, "in_/match_thing/crater are valid data");
+}
+
 /// TASK-0083: schedule directives in algorithm files get a tailored
 /// hint, not a generic "unexpected `=`" / "unexpected ident" error.
 ///

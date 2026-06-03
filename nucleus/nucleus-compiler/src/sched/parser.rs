@@ -214,10 +214,19 @@ fn ident() -> impl Parser<char, SpName, Error = Simple<char>> + Clone {
         .collect::<String>()
         .try_map(|s, span| {
             if KEYWORDS.contains(&s.as_str()) {
+                // Schedule-grammar reserved word. Checked FIRST so the
+                // overlap with RUST_RESERVED (`for`, `in`, `loop`,
+                // `async`, `true`, `false`) keeps the grammar
+                // diagnostic.
                 Err(Simple::custom(
                     span,
                     format!("expected identifier, found keyword `{}`", s),
                 ))
+            } else if crate::reserved::is_rust_reserved(&s) {
+                // A worker / worker_class / memory_region name that is
+                // a Rust keyword reaches codegen as a bare binding and
+                // fails rustc on generated source (TASK-0433).
+                Err(Simple::custom(span, crate::reserved::collision_message(&s)))
             } else {
                 Ok(s)
             }

@@ -26,6 +26,12 @@ pub mod petri;
 // `test_support` helper delegate here, so the chain cannot drift
 // between test and production (TASK-0422.01.01.01).
 pub mod pipeline;
+// Rust-keyword reserved set for DSL identifiers (TASK-0433). Single
+// source of truth shared by both sub-language parsers so a `.nuc`
+// symbol named `in`/`match`/`loop`/… is rejected at the source site
+// rather than emitted as un-compilable generated Rust. See
+// `reserved.rs` for the fail-loud-vs-`r#`-escape rationale.
+pub mod reserved;
 pub mod sched;
 pub mod sidecar;
 // Cross-crate TEST-ONLY helpers (`#[doc(hidden)]` contents). Shares the

@@ -352,10 +352,21 @@ with no special case.
 3. **No location tracking syntax.** Line/column reporting is a parser
    concern, not a grammar concern. The grammar says nothing about how
    to emit errors.
-4. **Reserved words are not exhaustively listed.** The implicit list
-   is `const`, `data`, `kernel`, `pure`, `effectful`, `for`, plus the
-   scalar type names. Adding a future keyword (e.g. `let`) needs a
-   grammar revision.
+4. **Reserved words are not exhaustively listed.** Two distinct
+   reserved sets apply (both enforced in `algo/parser.rs::ident`):
+   (a) the *grammar* keywords — `const`, `data`, `kernel`, `pure`,
+   `effectful`, `for`, plus the scalar type names — which have
+   syntactic meaning; adding a future grammar keyword (e.g. a new
+   statement form) needs a grammar revision. (b) the *Rust-keyword*
+   reserved set (`nucleus-compiler/src/reserved.rs::RUST_RESERVED`):
+   an identifier equal to a Rust strict/reserved keyword (`in`, `let`,
+   `match`, `move`, `loop`, `fn`, `crate`, `self`, …) is rejected with
+   a codegen-collision diagnostic at the identifier's source span,
+   because every backend emits the identifier verbatim as a bare Rust
+   binding/path segment (`let mut {name}`) and `rustc` would otherwise
+   fail on generated source the user never wrote (TASK-0433). The
+   grammar reject is checked first, so the overlap (`const`, `for`)
+   keeps its grammar-specific message.
 5. **No Unicode identifier policy.** ASCII identifiers only in v2.
    Documented in the lexical section.
 6. **One existing example (`05-stencil`) does not conform.** Tracked

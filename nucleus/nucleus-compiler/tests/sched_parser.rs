@@ -65,6 +65,37 @@ fn read_example(relpath: &str) -> String {
         .unwrap_or_else(|e| panic!("failed to read {}: {}", full.display(), e))
 }
 
+/// TASK-0433: a worker / worker_class / memory_region name that
+/// collides with a Rust keyword reaches codegen as a bare binding and
+/// would fail rustc on generated source. The sched parser must reject
+/// it at the `.sched.nuc` source site with the codegen-collision
+/// diagnostic, mirroring the algo parser. (The sched grammar already
+/// reserves a few Rust keywords — `in`/`loop`/`for`/`async` — via its
+/// own KEYWORDS; this guards the rest, e.g. `match`/`move`/`crate`.)
+#[test]
+fn rust_keyword_worker_name_rejected_at_source_site() {
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { match };
+    place add on match;
+}
+";
+    let err = expect_err(src);
+    // `match` is on line 2; `workers = { ` is 16 chars, so col 17.
+    assert_eq!(err.line, 2, "{err:?}");
+    assert_eq!(err.column, 17, "{err:?}");
+    assert!(
+        err.message.contains("`match`"),
+        "diagnostic must quote the identifier, got: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Rust reserved word"),
+        "diagnostic must name the codegen-collision reason, got: {}",
+        err.message
+    );
+}
+
 // --------------------------------------------------------------------
 // Positive: existing example schedule files
 // --------------------------------------------------------------------

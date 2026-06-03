@@ -545,8 +545,16 @@ could canonicalise; the grammar does not.
    `reuse`, `partition`, `sync`, `async`, `buffer`, `notify`,
    `latency_max`, `on_violation`) and the value-side atoms (`none`,
    `shared`, `event`, `poll`, `rows`, `blocks2d`, `workers`, `panic`,
-   `log`, `count`, `true`, `false`). Adding a future keyword needs a
-   grammar revision.
+   `log`, `count`, `true`, `false`). Adding a future grammar keyword
+   needs a grammar revision. SEPARATELY, a worker / worker_class /
+   memory_region name equal to a Rust strict/reserved keyword
+   (`match`, `move`, `crate`, `self`, …) is rejected with a
+   codegen-collision diagnostic at its source span — the same
+   `nucleus-compiler/src/reserved.rs::RUST_RESERVED` set the algorithm
+   parser uses, because those names are emitted verbatim as bare Rust
+   bindings by every backend (TASK-0433). The grammar reject is
+   checked first, so the overlap (`for`, `in`, `loop`, `async`,
+   `true`, `false`) keeps its grammar-specific message.
 8. **No Unicode identifier policy.** ASCII identifiers only in v2.
 9. **Comments inside multi-line tokens are not specified.** `// ...`
    ends at the next `\n`. No block comments. No nested comments.
