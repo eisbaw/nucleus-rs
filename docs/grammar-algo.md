@@ -377,7 +377,13 @@ with no special case.
    pinning the display span at `VAR`. So both a Rust-reserved `VAR`
    (`for loop :`) and a grammar-keyword `VAR` (`for const :`) report a
    span-anchored message at `VAR`, with the same wording the data /
-   kernel / worker positions emit for the same word.
+   kernel / worker positions emit for the same word. Edge case
+   (TASK-0434.01): the `VAR` anchoring relies on reaching the `{`; on
+   brace-less *truncated* input (`for loop : 0 .. N` at EOF) the
+   diagnostic degrades to a generic "expected `{`" at end-of-input. The
+   reserved `VAR` is still REJECTED (never reaches the AST or codegen —
+   the safety property holds unconditionally); only the malformed-input
+   diagnostic position degrades.
 5. **No Unicode identifier policy.** ASCII identifiers only in v2.
    Documented in the lexical section.
 6. **One existing example (`05-stencil`) does not conform.** Tracked
