@@ -1,0 +1,38 @@
+# Standalone reference implementation for example 21-jacobi-converge.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or
+# on any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace = ".."]` link).
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/21-jacobi-converge/reference/Cargo.toml -- \
+#     --in    nuc-nucleus/examples/21-jacobi-converge/input.bin \
+#     --out   nuc-nucleus/examples/21-jacobi-converge/reference.bin
+#
+# Regenerate `input.bin` (the committed seed) with `--gen-input`:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/21-jacobi-converge/reference/Cargo.toml -- \
+#     --gen-input \
+#     --out   nuc-nucleus/examples/21-jacobi-converge/input.bin
+
+[package]
+name        = "jacobi-converge-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 21-jacobi-converge."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "jacobi-converge-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"

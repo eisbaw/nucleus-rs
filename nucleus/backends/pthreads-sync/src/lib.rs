@@ -113,6 +113,7 @@ use backend_common::render::{
 // every backend re-exports it identically.
 pub use backend_common::render::EmitError;
 
+mod break_loop;
 mod multi_worker;
 
 // --------------------------------------------------------------------
@@ -391,7 +392,57 @@ fn render_main_rs(
     // its `abs_subst` map starts empty and is grown per-occurrence in
     // `render_event` when a strip-mined `block_tag` arrives.
     let ctx = RenderCtx::new(names, sidecar);
-    render_events(events, &mut out, 1, &ctx)?;
+
+    // `for..until` runtime break-generation final-read + cap-hit
+    // observability (TASK-0341.02.01.05.02 / .05.03). If the EventList
+    // carries an early-exit loop, the post-loop extraction must read the
+    // RUNTIME break generation (`field[k]`), not the compile-time cap
+    // (`field[CAP]` is unwritten/stale-zero on early-exit). We:
+    //   1. declare `__nuc_break_gen` (sentinel -1) before the loop;
+    //   2. (the Loop arm) capture `__nuc_break_gen = t` at the break;
+    //   3. after the loop, emit the cap-hit-not-converged diagnostic
+    //      (sentinel still -1) and resolve `__nuc_final_gen`
+    //      (= `__nuc_break_gen` on convergence, = `CAP` on cap-hit so the
+    //      last computed generation is read);
+    //   4. STRUCTURALLY rewrite the post-loop reads of break-written
+    //      arrays from `[CAP]` to `[__nuc_final_gen]`.
+    // `None` for every plain program -> none of this is emitted and the
+    // event stream renders unchanged (byte-identical regression guard).
+    match break_loop::collect_break_loop_info(events) {
+        None => {
+            render_events(events, &mut out, 1, &ctx)?;
+        }
+        Some(info) => {
+            let mut rewritten: Vec<Event> = events.to_vec();
+            break_loop::rewrite_final_reads(&mut rewritten, &info, sidecar, false);
+            // `__nuc_break_gen`: -1 sentinel = did-not-converge. An i64 to
+            // match the loop var's emitted type (`for t in (..)_i64`).
+            writeln!(
+                out,
+                "    // `for..until` break-generation capture \
+                 (TASK-0341.02.01.05.02): -1 = did-not-converge sentinel."
+            )
+            .ok();
+            writeln!(out, "    let mut __nuc_break_gen: i64 = -1;").ok();
+            writeln!(out).ok();
+            // Render every top-level event; immediately after the break
+            // loop, splice the cap-hit diagnostic + `__nuc_final_gen` so
+            // they precede the (rewritten) extraction reads.
+            for e in &rewritten {
+                render_event(e, &mut out, 1, &ctx, None)?;
+                let is_break_loop = matches!(
+                    e,
+                    Event::Loop {
+                        break_cond: Some(_),
+                        ..
+                    }
+                );
+                if is_break_loop {
+                    break_loop::emit_cap_hit_resolution(&mut out, &info);
+                }
+            }
+        }
+    }
 
     writeln!(out, "}}").ok();
     Ok(out)
@@ -439,7 +490,7 @@ fn collect_pre_init_data(
     Ok(out)
 }
 
-fn walk_fire_outputs(
+pub(crate) fn walk_fire_outputs(
     events: &[Event],
     whole_array: &mut BTreeSet<DataId>,
     indexed: &mut BTreeSet<DataId>,
@@ -915,7 +966,21 @@ fn render_event(
             // pre-S4 backend; this is the regression guard).
             if let Some(cond) = break_cond {
                 let cond_src = render_bool_expr(cond, &body_ctx)?;
-                writeln!(out, "{body_pad}if {cond_src} {{ break; }}").ok();
+                // Break-generation CAPTURE (TASK-0341.02.01.05.02): record
+                // the loop var at the iteration that breaks into the
+                // file-scoped `__nuc_break_gen` (declared in
+                // `render_main_rs` before the loop, sentinel -1). The
+                // capture happens BEFORE the `break` so the value is the
+                // last EXECUTED generation `t` (the body for iteration `t`
+                // is already fully run above). On cap-hit (cond never
+                // fires) `__nuc_break_gen` stays at the -1 sentinel — that
+                // is the cap-hit-not-converged observability signal
+                // (.05.03), distinguished post-loop in `render_main_rs`.
+                writeln!(
+                    out,
+                    "{body_pad}if {cond_src} {{ __nuc_break_gen = {var}; break; }}"
+                )
+                .ok();
             }
             writeln!(out, "{pad}}}").ok();
             Ok(())

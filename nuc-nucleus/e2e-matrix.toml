@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1118,6 +1118,80 @@ example  = "16-jacobi"
 schedule = "distributed"
 backend  = "mp-tcp-poll"
 reason   = "TASK-0341.02.02 AC#3 honest-BLOCKED, cycle 209: same TASK-0330 in-Loop w2w Push gap as the mp-tcp-bufsync sibling above (mp-tcp-poll inherits bufsync's flat host-relay model + per-pair FIFO constraint). Same in-Loop-w2w root as the 5 wait_slice backends (cycle 211b) but fails LOUD vs their runtime deadlock; remediation is the host-relay model, NOT a wait_slice change."
+milestone = "M6"
+
+# 21-jacobi-converge/naive: epic S5 (TASK-0341.02.01.06) landed cycle
+# 262 — the FIRST non-inert consumer of the `for..until` data-dependent
+# loop-termination machinery (epics S1-S4). 2D Jacobi convergence
+# variant on an H=W=8 grid: the loop runs `for t : 0 .. ITERS_CAP+1
+# until maxdiff[t] <= TOL`, where `maxdiff[t]` is the per-generation
+# L-infinity (max-abs-diff) convergence scalar (the 03-reduction /
+# S3-fixture two-phase reduction shape, INDEXED BY GENERATION so
+# single-assignment holds). The single-worker pthreads-sync backend
+# emits the runtime break (`if (maxdiff[t] <= TOL) { __nuc_break_gen =
+# t; break; }`), captures the break generation, and REWRITES the
+# extraction's generation-axis index from the compile-time cap to the
+# runtime `__nuc_final_gen` so `field[k]` (the converged generation) is
+# read on early-exit (TASK-0341.02.01.05.02). Cap-hit is observable via
+# a stderr diagnostic + the -1 sentinel (TASK-0341.02.01.05.03). With
+# the committed seed it breaks at generation 30 (< cap 64) while the
+# interior is still NON-zero, so the runtime final-read is LOAD-BEARING
+# (TOL=2, not 0: at the exact zero fixed point the converged interior
+# would be byte-identical to the unwritten cap slice and a broken
+# compiler would false-pass — see README "Why TOL=2"). PASSes
+# bit-identical vs reference.bin (verified by direct emit+build+run+cmp).
+#
+# SINGLE-WORKER pthreads-sync ONLY: the break emit is tier-1
+# single-worker today; the multi-worker walkers (multi_worker_walker /
+# tcp_plan) fail loud on `break_cond`, and the embedded pattern rejects
+# it. The other 6 tier-1 backends are [[skip]]'d below; the multi-worker
+# / 7-backend break differential is epic S7 (TASK-0341.02.01.08).
+[[required]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "pthreads-async"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "mp-tcp-event"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "openmp-rs"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
+milestone = "M6"
+
+[[skip]]
+example  = "21-jacobi-converge"
+schedule = "naive"
+backend  = "mp-uds-event"
+reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
 # 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210

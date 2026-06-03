@@ -1017,6 +1017,21 @@ check-doc-cell-path-staleness:
 # `comm`, so the `find|awk|sort` pipeline status is irrelevant). It bought
 # nothing; dropped for consistency with the sibling fences, none of which
 # use it.
+#
+# Allow-list rationale (cycle-262 additions; see the printf list below):
+#   - pthreads-sync/src/lib.rs — the shared single-worker main.rs emitter
+#     (consumed by pthreads-async / mp-tcp-bufsync / openmp-rs /
+#     mp-tcp-poll / mp-uds-event); bulk is the render_event Event-arm
+#     match. Pre-existing >1000 LoC at cycle-262 (1032 at HEAD). Split
+#     tracked by TASK-0437.
+#   - passes/block_transform.rs — the strip-mine tile/seq/inner pass;
+#     pre-existing >1000 LoC, untouched by cycle-262. Split → TASK-0437.
+#   - nucleus-compiler/src/event.rs — the EventList contract types
+#     (Event / FireBinding / DataSlice / IterTile + serde); pre-existing
+#     >1000 LoC (1036 at HEAD), untouched by cycle-262. Split → TASK-0437.
+# NOTE (feedback-cheap-subset-blind-to-structural-fences): all three were
+# found RED at cycle-262 HEAD — the cheap pre-commit subset does not run
+# this fence, so they crossed 1000 LoC silently over prior cycles.
 check-mega-files:
     @echo "checking nucleus/**/src/*.rs for files exceeding 1000 LoC..."
     @set -eu; \
@@ -1036,6 +1051,9 @@ check-mega-files:
         'nucleus/backends/pthreads-async/src/multi_worker.rs' \
         'nucleus/e2e/src/main.rs' \
         'nucleus/e2e/src/tests.rs' \
+        'nucleus/backends/pthreads-sync/src/lib.rs' \
+        'nucleus/nucleus-compiler/src/passes/block_transform.rs' \
+        'nucleus/nucleus-compiler/src/event.rs' \
         | sort > $allow_f; \
     new_megafile=$(comm -23 $oversized_f $allow_f); \
     stale_allow=$(comm -23 $allow_f $oversized_f); \

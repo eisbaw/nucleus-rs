@@ -1,0 +1,193 @@
+// Jacobi iteration on a 2D grid — CONVERGENCE-CHECK variant.
+//
+// Landed cycle 262 (epic S5; TASK-0341.02.01.06). This is the FIRST
+// non-inert consumer of the `for..until` data-dependent loop-
+// termination machinery built across epics S1-S4. It is the
+// convergence sibling of 16-jacobi (the fixed-iteration variant):
+// where 16-jacobi runs a COMPILE-TIME-fixed ITERS rounds, this example
+// runs UNTIL the per-generation convergence scalar drops to the
+// tolerance, OR a compile-time cap (whichever comes first).
+//
+//   field[t][y][x] = (field[t-1][y-1][x] + field[t-1][y+1][x]
+//                   + field[t-1][y][x-1] + field[t-1][y][x+1]) / 4
+//                   (t >= 1, y in 1..H-1, x in 1..W-1)
+//   field[0][y][x] = seed[y][x]   (t == 0, seed via the same kernel)
+//
+//   maxdiff[t]     = max over the interior of
+//                    |field[t][y][x] - field[t-1][y][x]|   (L-infinity)
+//
+//   for t : 0 .. ITERS_CAP+1 until maxdiff[t] <= TOL
+//
+// What this example demonstrates:
+//   - The bounded early-exit `for..until` loop surface
+//     (docs/grammar-algo.md `ForStmt ::= ... ('until' Expr)?`). The
+//     `..ITERS_CAP+1` upper bound is the COMPILE-TIME CAP that keeps
+//     the Petri unroll statically bounded (an early-exit prefix
+//     0..k is a sub-trace of the bounded net, bounded a fortiori — the
+//     halt predicate is analysis-invisible). `until maxdiff[t] <= TOL`
+//     is the data-dependent HALT predicate.
+//   - A per-generation convergence scalar recomputed each round and
+//     compared in the `until` clause. `maxdiff` is the max-abs-diff
+//     (L-infinity norm) of consecutive generations — the same two-phase
+//     reduction shape as 03-reduction / the S3 fixture, but INDEXED BY
+//     GENERATION `t` so single-assignment (PRD §6.2.1) holds: each
+//     `maxdiff[t]` / `partials[t]` slot is written exactly once.
+//   - Runtime break-generation final-read: the extraction reads
+//     `field[ITERS_CAP]`, which codegen REWRITES to the runtime break
+//     generation `field[k]` on the single-worker pthreads-sync backend
+//     (TASK-0341.02.01.05.02). On early-exit at k < cap, slice ITERS_CAP
+//     is unwritten — the converged generation lives in slice k.
+//   - Cap-hit-not-converged observability (TASK-0341.02.01.05.03): a run
+//     that exhausts the cap without converging emits a stderr diagnostic
+//     and extracts the last computed generation — NOT a silent stop.
+//
+// What this example does NOT demonstrate:
+//   - Multi-worker / distributed `for..until`. The break emit is
+//     tier-1 SINGLE-WORKER pthreads-sync ONLY today; the multi-worker
+//     walkers fail loud on a `break_cond`. The 7-backend / multi-worker
+//     break differential is epic S7 (TASK-0341.02.01.08). The other
+//     six tier-1 backends are e2e-skipped on this example with that
+//     reason; only `naive` × `pthreads-sync` is [[required]].
+//   - Floating-point arithmetic. As in 16-jacobi, integer `/ 4`
+//     truncating division is used for bit-determinism across schedules
+//     and backends. The Dirichlet zero-boundary makes the interior
+//     diffuse toward the ZERO fixed point; with the committed seed
+//     `maxdiff[t]` decays 288, 184, 98, ... and first drops to <= TOL=2
+//     at generation 30.
+//
+// WHY TOL = 2 (not 0) — the runtime final-read must be LOAD-BEARING
+// ----------------------------------------------------------------
+// The early-exit value-correctness (TASK-0341.02.01.05.02) is only
+// genuinely tested if the converged generation `field[k]` DIFFERS from
+// the unwritten cap slice `field[ITERS_CAP]` (all-zero). At the exact
+// integer fixed point (`TOL=0`, k=39) the interior is ALL ZEROS, which
+// is byte-identical to the unwritten cap slice — so a TOL=0 run would
+// PASS even if the runtime-final-read rewrite were absent (a silent-
+// drop false pass; feedback-option-none-skip-arm-silent-drop). With
+// TOL=2 the loop breaks at k=30 while the interior is still NON-ZERO
+// (interior sum 108), so reading the hard-coded `field[ITERS_CAP]`
+// (zeros) would yield a WRONG result: the runtime read of `field[k]`
+// is load-bearing and the differential vs reference.bin actually bites.
+// The break gen 30 is comfortably < the cap of 64, so the early-exit
+// path IS exercised (verify: the reference oracle breaks at k < cap).
+//
+// Single-assignment shape (PRD §6.2.1)
+// ------------------------------------
+// Five top-level `data` symbols, each the LHS of exactly one Dataflow
+// statement (statement-level; a for-nest is one Dataflow expanded over
+// its iteration domain). `partials` and `maxdiff` are indexed by the
+// generation `t` so the per-generation reduction does not multi-assign
+// a single slot — the same trick the `field` full-history array uses
+// for the iterated state.
+//   - `seed`     — loaded once via `load_input()`.
+//   - `field`    — full per-generation state `i32[ITERS_CAP+1][H][W]`.
+//   - `partials` — per-generation L-infinity accumulator `i32[ITERS_CAP+1]`
+//                  (one scalar per generation; folded over the interior).
+//   - `maxdiff`  — per-generation convergence scalar `i32[ITERS_CAP+1]`.
+//   - `result`   — final (converged) generation extracted via `ident`.
+
+const H         : usize = 8;        // grid height
+const W         : usize = 8;        // grid width
+const ITERS_CAP : usize = 64;       // compile-time iteration cap (> the break gen 30)
+const TOL       : i32   = 2;        // L-infinity convergence tolerance
+
+
+// Whole-program input, full per-generation state, per-generation
+// reduction scalars, and the converged-generation output. Each is
+// single-assignment at the symbol level.
+data seed     : i32[H][W];
+data field    : i32[ITERS_CAP+1][H][W];
+data partials : i32[ITERS_CAP+1];
+data maxdiff  : i32[ITERS_CAP+1];
+data result   : i32[H][W];
+
+
+// Pure 5-tap Jacobi step with a seed-fallback path for t == 0. Same
+// kernel + same six-arg signature as 16-jacobi's `jacobi5_or_seed`:
+// four prev-generation neighbour taps, the seed cell, and `t`.
+kernel jacobi5_or_seed : (i32, i32, i32, i32, i32, i32) -> i32 pure;
+
+// 3-arg pure L-infinity accumulator (the 07-matmul `madd` shape):
+// `max_abs_acc(acc, new, old)` returns `max(acc, |new - old|)`. The
+// `|new - old|` is OVERFLOW-SAFE (i64-widening; TASK-0436) — NOT the
+// S3 fixture's `wrapping_sub().abs()`, which panics / mis-ranks at
+// i32::MIN. Zero-init of `partials` IS the correct max-identity here
+// (every |new-old| >= 0, so max(0, nonneg) == nonneg).
+kernel max_abs_acc : (i32, i32, i32) -> i32 pure;
+
+// Identity copy. Stages the per-generation accumulator into the
+// `maxdiff[t]` scalar AND stages the converged `field[k]` cells into
+// the flat `result` array.
+kernel ident : (i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; `Vec<i32>` on the Rust side (TASK-0103).
+kernel load_input  : ()         -> i32[H][W] effectful;
+kernel save_output : (i32[H][W]) -> ()        effectful;
+
+
+// Dataflow.
+//
+// 1. Load the seed.
+seed <-- load_input();
+
+// 2. Iterate UNTIL converged or the cap. One `for..until` loop whose
+//    body (a) computes generation `field[t]` (the Jacobi step; the
+//    same `(t + ITERS_CAP) % (ITERS_CAP + 1)` prev-index trick as
+//    16-jacobi, which is `t-1` for t>=1 and `ITERS_CAP` (the zero-init
+//    slice) at t==0); (b) folds the per-generation L-infinity scalar
+//    `partials[t]` over the interior (max-abs-diff between `field[t]`
+//    and the previous generation); (c) stages it into `maxdiff[t]`.
+//    The `until maxdiff[t] <= TOL` clause halts as soon as a generation
+//    equals its predecessor (the integer fixed point).
+//
+//    maxdiff[0] = max |field[0] - field[ITERS_CAP]| = max |seed - 0|
+//    (the zero-init prev slice), which is non-zero, so the loop never
+//    halts at t==0.
+for t : 0 .. ITERS_CAP+1 until maxdiff[t] <= TOL {
+    // (a) Compute generation t.
+    for y : 1 .. H-1 {
+    for x : 1 .. W-1 {
+        field[t][y][x] <-- jacobi5_or_seed(
+            field[(t + ITERS_CAP) % (ITERS_CAP + 1)][y-1][x],
+            field[(t + ITERS_CAP) % (ITERS_CAP + 1)][y+1][x],
+            field[(t + ITERS_CAP) % (ITERS_CAP + 1)][y][x-1],
+            field[(t + ITERS_CAP) % (ITERS_CAP + 1)][y][x+1],
+            seed[y][x],
+            t
+        );
+    }}
+    // (b) Per-generation L-infinity reduction over the interior:
+    //     partials[t] = max over (ay, ax) of
+    //                   |field[t][ay][ax] - field[t-1][ay][ax]|.
+    //     `partials[t]` is the 3-arg pure self-read accumulator (the
+    //     07-matmul `madd` shape); its zero-init slot is the max-
+    //     identity. The previous-generation index is the same
+    //     `(t + ITERS_CAP) % (ITERS_CAP + 1)` as the step above.
+    for ay : 1 .. H-1 {
+    for ax : 1 .. W-1 {
+        partials[t] <-- max_abs_acc(
+            partials[t],
+            field[t][ay][ax],
+            field[(t + ITERS_CAP) % (ITERS_CAP + 1)][ay][ax]
+        );
+    }}
+    // (c) Stage the accumulator into the convergence scalar the
+    //     `until` clause reads.
+    maxdiff[t] <-- ident(partials[t]);
+}
+
+// 3. Extract the converged generation into a flat 2D array. Source-
+//    level this reads `field[ITERS_CAP]` (the cap slice); the single-
+//    worker pthreads-sync backend REWRITES the outer index to the
+//    runtime break generation `field[k]` (TASK-0341.02.01.05.02), so
+//    on early-exit at k < cap the actual converged generation is read.
+//    Distinct loop-variable names (ry/rx) per the one-namespace rule
+//    (PRD §6.2.3).
+for ry : 0 .. H {
+for rx : 0 .. W {
+    result[ry][rx] <-- ident(field[ITERS_CAP][ry][rx]);
+}}
+
+// 4. Save the converged generation.
+save_output(result);

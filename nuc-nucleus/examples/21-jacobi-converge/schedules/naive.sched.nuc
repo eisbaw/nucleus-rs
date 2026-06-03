@@ -1,0 +1,24 @@
+// Naive schedule: single worker, no decomposition.
+//
+// Landed cycle 262 (epic S5; TASK-0341.02.01.06). Every kernel runs on
+// `host`; no cross-worker dataflow means no `transfer` directives. The
+// result must be bit-identical to reference.bin.
+//
+// SINGLE-WORKER ONLY by design: the `for..until` break emit is tier-1
+// single-worker pthreads-sync only today. A `partition=workers`
+// schedule would hit the multi-worker walker's fail-loud guard on
+// `break_cond`. The multi-worker / cross-backend break differential is
+// epic S7 (TASK-0341.02.01.08).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input       on host;
+    place save_output      on host;
+    place jacobi5_or_seed  on host;
+    place max_abs_acc      on host;
+    place ident            on host;
+
+    // No loop transforms.
+    // No transfer directives — there are no cross-worker edges.
+}
