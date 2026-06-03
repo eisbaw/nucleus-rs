@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use crate::emit;
 
 mod bin_shape;
+mod sync_guard;
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = nucleus/backends/embedded-pattern. Three

@@ -238,8 +238,11 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
                  // these pipeline schedules; a no-op is correct here and is\n        \
                  // VERIFIED by the byte-exact reference.bin diff (not assumed).\n        \
                  // A schedule whose correctness needs a standalone control\n        \
-                 // barrier (no data edge) would need a real UART barrier\n        \
-                 // protocol — TASK-0049.05 follow-up.\n    \
+                 // barrier (one ordering two workers' external IO with no\n        \
+                 // subsuming data edge) is REJECTED LOUD at emit time by\n        \
+                 // multimcu::verify_control_sync_subsumed (TASK-0049.05.01),\n        \
+                 // so it can never reach this no-op silently; a real UART\n        \
+                 // barrier protocol for that case is TASK-0049.05 follow-up.\n    \
              }\n",
     );
     // monotonic_ns + report_violation (SysTick; same logic as Usart1Shim).

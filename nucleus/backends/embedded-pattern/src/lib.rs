@@ -437,6 +437,15 @@ pub fn emit_bin(
         })?;
 
     let multi_worker = used_workers.len() > 1;
+    // Fail loud (TASK-0049.05.01) if a control-only `Event::Sync` would be
+    // silently miscompiled by the no-op `irq_barrier` — i.e. it orders two
+    // workers' external IO with no subsuming data edge. Inert for every
+    // shipped schedule (02-split-add routes all IO through `host`); a real
+    // tripwire for a future standalone-barrier schedule. Runs before any
+    // emit so the rejection precedes side-effecting file writes.
+    if multi_worker {
+        multimcu::verify_control_sync_subsumed(per_worker, names)?;
+    }
     // Build the transport plan up front for the multi-worker case; it is
     // the SINGLE source of truth shared by both the per-worker shim codegen
     // and the generated `.resc` (so the wiring cannot drift).
