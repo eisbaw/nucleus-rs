@@ -780,16 +780,64 @@ fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
                 .then_ignore(just(';'))
                 .map(|(callee, args)| Stmt::Effect(Call { callee, args }));
 
+            // Optional `until COND` halt clause (TASK-0341.02.01.03 /
+            // epic S1). LL(1): a single token after the upper bound
+            // distinguishes `until` from the `{` body-opener (and `until`
+            // is a reserved word, so it cannot be a body identifier).
+            //
+            // Malformed-COND diagnostic is anchored at the `until` TOKEN
+            // (TASK-0434 VAR-anchoring precedent — avoid a diffuse span
+            // over the whole loop): we capture the keyword's tight span,
+            // then on a COND that fails to parse re-emit a custom error at
+            // that span via `take_until('{')`. chumsky 0.9 merges `choice`
+            // alternative errors by furthest input position; pushing the
+            // recovery's `at` to the `{` while keeping the display span on
+            // the `until` token mirrors `for_loop_var`'s pattern.
+            let until_span = padded_spanned(keyword("until").to(()));
+            let until_clause = until_span.then_with(|kw: Spanned<()>| {
+                let kw_span = kw.span.clone();
+                let recover_span = kw_span.clone();
+                expr_parser()
+                    .map(Some)
+                    // Recovery: on a COND that fails to parse, consume
+                    // THROUGH the loop body `{` (or to EOF) so this error's
+                    // `at` position is PAST the brace and WINS chumsky 0.9's
+                    // furthest-position `choice` merge, while the DISPLAY
+                    // span stays pinned on the `until` token (TASK-0434
+                    // for_loop_var precedent — the brace-mismatch error
+                    // otherwise wins and mislocates the diagnostic at `{`).
+                    .or(
+                        take_until(just('{').ignored().or(end())).try_map(move |_, _outer_span| {
+                            Err(Simple::custom(
+                                recover_span.clone(),
+                                "`until` must be followed by a boolean halt \
+                                 condition before the loop body `{` (e.g. \
+                                 `until diff <= tol`) — epic S1 / \
+                                 TASK-0341.02.01.03"
+                                    .to_string(),
+                            ))
+                        }),
+                    )
+                    .boxed()
+            });
+
             let for_stmt = pad(keyword("for"))
                 .ignore_then(pad(for_loop_var()))
                 .then_ignore(pad(just(':')))
                 .then(expr_parser())
                 .then_ignore(pad(just('.')).then(pad(just('.'))))
                 .then(expr_parser())
+                .then(until_clause.or_not().map(|o| o.flatten()))
                 .then_ignore(pad(just('{')))
                 .then(stmt.clone().repeated())
                 .then_ignore(just('}'))
-                .map(|(((var, lo), hi), body)| Stmt::For { var, lo, hi, body });
+                .map(|((((var, lo), hi), until), body)| Stmt::For {
+                    var,
+                    lo,
+                    hi,
+                    until,
+                    body,
+                });
 
             // Order: schedule-directive hint first (TASK-0083) — it
             // probes for the unambiguous `<sched_kw> =` / `place IDENT`

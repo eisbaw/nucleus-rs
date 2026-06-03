@@ -26,6 +26,12 @@ pub(super) const KEYWORDS: &[&str] = &[
     "pure",
     "effectful",
     "for",
+    // `until` is the bounded early-exit loop halt-clause keyword
+    // (`for i : 0 .. N until COND { … }`, TASK-0341.02.01.03 / epic S1).
+    // Reserved so it cannot be a body/iter identifier — this keeps the
+    // optional-`until` clause LL(1) (a single token distinguishes the
+    // `until` clause from the `{` body-opener after the upper bound).
+    "until",
     "usize",
     "isize",
     "u8",

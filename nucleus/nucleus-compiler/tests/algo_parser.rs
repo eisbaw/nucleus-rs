@@ -1587,3 +1587,150 @@ fn task0341_020102_chained_comparison_does_not_parse() {
         "chained `a < b < b` must NOT parse (single non-associative comparison); got {res:?}"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0341.02.01.03 / epic S1: `for IDENT : LO .. HI until COND { … }`
+// bounded early-exit loop surface syntax. Parser-level coverage: the
+// optional `until COND` clause parses into the new `Stmt::For.until`
+// field; a plain loop leaves it `None`; a malformed `until` (no COND
+// before `{`) is rejected with the diagnostic anchored at the `until`
+// token (TASK-0434 VAR-anchoring precedent). INERT — rejected later at
+// the ACFG boundary (covered in `algo_lower` / `acfg_build` tests).
+// --------------------------------------------------------------------
+
+/// Project the FIRST top-level `for` statement (the whole `Stmt::For`,
+/// not just its body) so the `until` field can be inspected.
+fn first_toplevel_for(ast: &AlgoAst) -> &Stmt {
+    ast.items
+        .iter()
+        .find_map(|i| match &i.node {
+            Item::Stmt(s) => match &s.node {
+                f @ Stmt::For { .. } => Some(f),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected a top-level for statement")
+}
+
+/// AC#1 positive: `for i : 0 .. N until COND { … }` parses with the new
+/// AST node carrying var / bounds / COND / body. The COND is a bool
+/// comparison (`a <= b`), reached through the same `Expr::Compare` path
+/// S2 added.
+#[test]
+fn task0341_020103_for_until_parses_with_cond_field() {
+    let src = "\
+const N : usize = 8;
+data a : i32;
+data b : i32;
+data x : i32[N];
+for i : 0 .. N until a <= b {
+    x[i] <-- inc(i);
+}
+";
+    let ast = parse_algo(src).expect("`for i : 0..N until a <= b { … }` must parse");
+    match first_toplevel_for(&ast) {
+        Stmt::For {
+            var,
+            lo,
+            hi,
+            until,
+            body,
+        } => {
+            assert_eq!(var.node, "i", "loop var must be `i`");
+            assert!(
+                matches!(&lo.node, Expr::IntLit(0)),
+                "lo bound must be `0`, got {:?}",
+                lo.node
+            );
+            assert!(
+                matches!(&hi.node, Expr::LValue(lv) if lv.name.node == "N"),
+                "hi (cap) bound must be `N`, got {:?}",
+                hi.node
+            );
+            let cond = until
+                .as_ref()
+                .expect("`until` clause must populate the until field");
+            assert!(
+                matches!(&cond.node, Expr::Compare(CmpOp::Le, _, _)),
+                "until COND must parse as `a <= b` (Compare(Le)), got {:?}",
+                cond.node
+            );
+            assert_eq!(body.len(), 1, "body must hold the single dataflow stmt");
+        }
+        other => panic!("expected Stmt::For, got {other:?}"),
+    }
+}
+
+/// AC#1 negative-control: a PLAIN fixed-iteration loop (no `until`)
+/// still parses and leaves `until: None` — the field is genuinely
+/// optional and the existing loop surface is unchanged.
+#[test]
+fn task0341_020103_plain_for_leaves_until_none() {
+    let src = "\
+const N : usize = 4;
+data x : i32[N];
+for i : 0 .. N {
+    x[i] <-- inc(i);
+}
+";
+    let ast = parse_algo(src).expect("plain `for` must still parse");
+    match first_toplevel_for(&ast) {
+        Stmt::For { until, .. } => assert!(
+            until.is_none(),
+            "a plain for-loop must leave `until` as None, got {until:?}"
+        ),
+        other => panic!("expected Stmt::For, got {other:?}"),
+    }
+}
+
+/// AC#3: a malformed `until` (the keyword present but NO condition
+/// before the body `{`) is rejected with the diagnostic anchored AT
+/// the `until` token, not at a diffuse whole-loop span or the `{`.
+/// `until` is on line 3 starting at column 16 (`for i : 0 .. N ` is 15
+/// chars, so `until` begins at column 16).
+#[test]
+fn task0341_020103_malformed_until_is_anchored_at_the_until_token() {
+    let src = "\
+const N : usize = 4;
+data x : i32[N];
+for i : 0 .. N until {
+    x[i] <-- inc(i);
+}
+";
+    assert!(
+        parse_algo(src).is_err(),
+        "`until` with no condition before `{{` must be rejected"
+    );
+    let err = expect_err(src);
+    assert_eq!(
+        err.line, 3,
+        "malformed-until diagnostic must anchor on the `until` line, got {err:?}"
+    );
+    assert_eq!(
+        err.column, 16,
+        "malformed-until diagnostic must anchor at the `until` token \
+         (column 16), not the trailing `{{`, got {err:?}"
+    );
+    assert!(
+        err.message.contains("until") && err.message.contains("TASK-0341.02.01.03"),
+        "diagnostic must name the `until` clause and the epic, got: {}",
+        err.message
+    );
+}
+
+/// `until` is a RESERVED word (added to algo KEYWORDS): it may not be a
+/// loop variable / identifier, which is what keeps the optional-clause
+/// grammar LL(1). Using it as a for-var is rejected.
+#[test]
+fn task0341_020103_until_is_a_reserved_word() {
+    let src = "\
+const N : usize = 4;
+for until : 0 .. N {
+}
+";
+    assert!(
+        parse_algo(src).is_err(),
+        "`until` must be reserved and rejected as a loop variable"
+    );
+}

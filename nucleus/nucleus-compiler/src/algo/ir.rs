@@ -233,11 +233,25 @@ pub enum IrStmt {
     /// `CALL(...)` as a statement (effectful by convention; the
     /// purity check is a later pass).
     Effect { callee: String, args: Vec<IrExpr> },
-    /// `for VAR : LO .. HI { BODY }`.
+    /// `for VAR : LO .. HI (until COND)? { BODY }`.
+    ///
+    /// `until` is the OPTIONAL bounded early-exit halt predicate
+    /// (TASK-0341.02.01.03 / epic S1). When `Some`, the loop is a capped
+    /// early-exit loop (the `hi` bound is the compile-time cap). It is an
+    /// OPTIONAL FIELD, not a new variant — see the [`super::ast::Stmt::For`]
+    /// docstring for the rationale (compiler-forced at every construction
+    /// site; downstream `{ var, .., }` matches stay inert; SOUND only
+    /// because an `until`-loop is rejected at the ACFG-build boundary, the
+    /// first pre-mediation pass, before any pass that ignores this field).
     For {
         var: String,
         lo: IrExpr,
         hi: IrExpr,
+        /// Optional `until COND` halt predicate (epic S1). `None` for an
+        /// ordinary fixed-iteration loop. Lowered through the
+        /// bool-accepting rvalue path (`lower_rvalue`). INERT: rejected at
+        /// `build_acfg` with `BuildAcfgError::UntilLoopUnsupported`.
+        until: Option<IrExpr>,
         body: Vec<IrStmt>,
     },
 }

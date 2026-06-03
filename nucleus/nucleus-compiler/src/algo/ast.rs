@@ -235,11 +235,29 @@ pub enum Stmt {
     /// `CALL ;` — bare effectful call as a statement (grammar
     /// `EffectStmt`). Purity check happens later (grammar §2 note 5).
     Effect(Call),
-    /// `for IDENT : EXPR .. EXPR { Stmt* }`
+    /// `for IDENT : EXPR .. EXPR (until COND)? { Stmt* }`
+    ///
+    /// `until` is the OPTIONAL bounded early-exit halt clause
+    /// (TASK-0341.02.01.03 / epic S1). When `Some`, the loop is a
+    /// capped early-exit loop: the `hi` bound stays the compile-time CAP
+    /// (statically bounded) and `until` carries the halt predicate COND.
+    ///
+    /// It is an OPTIONAL FIELD, not a new `Stmt` variant, deliberately:
+    /// a field is compiler-forced at every CONSTRUCTION site (so no
+    /// construction can silently omit COND), while the existing match
+    /// sites that destructure with `{ var, .., }` remain inert and ignore
+    /// it. That inertness is SOUND only because an `until`-loop is
+    /// rejected at the ACFG-build boundary (`build_acfg`, the FIRST
+    /// pre-mediation pass — see `crate::pipeline::run_pre_mediation_passes`)
+    /// BEFORE any downstream analysis pass (block/partition/halo/reuse/
+    /// sync/transfer/sidecar) consumes the IR. S1 is INERT.
     For {
         var: SpIdent,
         lo: SpExpr,
         hi: SpExpr,
+        /// Optional `until COND` halt predicate (epic S1). `None` for an
+        /// ordinary fixed-iteration loop. Spanned at the COND expression.
+        until: Option<SpExpr>,
         body: Vec<SpStmt>,
     },
 }

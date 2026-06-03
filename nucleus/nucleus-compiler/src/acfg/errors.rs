@@ -143,6 +143,34 @@ pub enum BuildAcfgError {
         /// The offending non-kernel-call RHS expression, verbatim.
         rhs: IrExpr,
     },
+    /// A `for VAR : LO .. HI until COND { … }` bounded early-exit loop —
+    /// the `until` halt clause is parsed + lowered (epic S1,
+    /// TASK-0341.02.01.03) but is NOT YET consumable by any downstream
+    /// pass / backend. This is the INERT rejection boundary: the surface
+    /// syntax, AST node, IR node, and bool-accepting COND lowering all
+    /// land, but the loop is rejected HERE — the first pre-mediation pass
+    /// (`build_acfg`) — with this typed error naming the epic, BEFORE any
+    /// analysis pass (block/partition/halo/reuse/sync/transfer/sidecar)
+    /// observes the `until` field. That ordering is what makes the
+    /// `{ var, .., }`-ignoring downstream matches sound (epic S1 design
+    /// decision; see `crate::pipeline::run_pre_mediation_passes`).
+    ///
+    /// This is **diagnosable user input**, not a compiler invariant
+    /// (a typed error, NOT a `panic!`), structurally analogous to
+    /// [`BuildAcfgError::NonConstLoopBound`]: a grammar-legal form the
+    /// codegen does not yet support. Carries the loop variable and the
+    /// epic id so the diagnostic names where the work is tracked.
+    ///
+    /// Runtime early-exit (Event break-condition + codegen) is epic S4/S5
+    /// work (TASK-0341.02.01.05 / .06); until then every `until`-loop is
+    /// rejected here.
+    UntilLoopUnsupported {
+        /// The loop variable of the rejected `until`-loop (e.g. `i`).
+        var: String,
+        /// The epic this surface form is tracked under, for the
+        /// diagnostic. Always `"TASK-0341.02.01"`.
+        epic: &'static str,
+    },
 }
 
 impl std::fmt::Display for BuildAcfgError {
@@ -184,6 +212,18 @@ impl std::fmt::Display for BuildAcfgError {
                  `{lhs} <-- id(...)`, exactly as 15-transpose uses `xpose`. \
                  (A first-class kernel-less data-move is deferred — see \
                  TASK-0360.)"
+            ),
+            BuildAcfgError::UntilLoopUnsupported { var, epic } => write!(
+                f,
+                "loop `{var}` uses an `until COND` bounded early-exit halt \
+                 clause, which is not yet supported: the surface syntax, \
+                 AST/IR nodes, and condition lowering land (epic S1), but \
+                 runtime early-exit (Event break-condition + backend \
+                 codegen) is later epic work. This loop is rejected at the \
+                 ACFG-build boundary. Use a plain fixed-iteration loop \
+                 (`for {var} : LO .. HI {{ … }}`, no `until`) for now. \
+                 (Tracked under {epic} — the data-dependent loop-termination \
+                 grammar-extension epic.)"
             ),
         }
     }

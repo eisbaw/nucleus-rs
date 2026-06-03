@@ -355,6 +355,7 @@ fn build_linked_for_partition_test(
         var: "y".to_string(),
         lo: IrExpr::IntLit(0),
         hi: IrExpr::IntLit(16),
+        until: None,
         body: vec![IrStmt::Dataflow {
             lhs: IndexedRef {
                 name: "out".to_string(),

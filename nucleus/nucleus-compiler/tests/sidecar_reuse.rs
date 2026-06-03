@@ -292,6 +292,7 @@ fn defensive_unknown_loop_var_returns_typed_err() {
         var: "j".to_string(),
         lo: IrExpr::IntLit(1),
         hi: IrExpr::IntLit(15),
+        until: None,
         body: vec![IrStmt::Dataflow {
             lhs: IndexedRef {
                 name: "out".to_string(),
@@ -443,6 +444,7 @@ fn defensive_unknown_data_in_ref_returns_typed_err() {
         var: "i".to_string(),
         lo: IrExpr::IntLit(1),
         hi: IrExpr::IntLit(15),
+        until: None,
         body: vec![IrStmt::Dataflow {
             lhs: IndexedRef {
                 name: "out".to_string(),
@@ -655,6 +657,7 @@ fn task0271_strict_rejects_non_affine_reuse_body() {
         var: "V".to_string(),
         lo: IrExpr::IntLit(0),
         hi: IrExpr::IntLit(16),
+        until: None,
         body: vec![IrStmt::Dataflow {
             lhs: IndexedRef {
                 name: "out".to_string(),

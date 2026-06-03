@@ -561,6 +561,10 @@ fn walk_for_iv(
                 var,
                 lo: _,
                 hi: _,
+                // `until` (epic S1) is inert here: reuse inference runs on an
+                // ACFG, and an `until`-loop is rejected at build_acfg (the
+                // first pre-mediation pass) before this pass runs.
+                until: _,
                 body,
             } => {
                 let mut next_scope = scope.to_vec();
@@ -1058,6 +1062,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(1),
             hi: ir_int(15),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1100,6 +1105,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(2),
             hi: ir_int(14),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1154,6 +1160,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(16),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call("K", vec![data_ref("grid", vec![ir_id("i")])]),
@@ -1175,6 +1182,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(1),
             hi: ir_int(15),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1266,6 +1274,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(3),
             hi: ir_int(11),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1303,6 +1312,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(16),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1334,6 +1344,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(16),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1365,6 +1376,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(8),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1393,10 +1405,12 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(4),
+            until: None,
             body: vec![IrStmt::For {
                 var: "j".to_string(),
                 lo: ir_int(0),
                 hi: ir_int(4),
+                until: None,
                 body: vec![IrStmt::Dataflow {
                     lhs: lhs("out", vec![ir_id("i"), ir_id("j")]),
                     rhs: ir_call(
@@ -1426,6 +1440,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(16),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1473,6 +1488,7 @@ mod tests {
                 var: "i".to_string(),
                 lo: ir_int(1),
                 hi: ir_int(15),
+                until: None,
                 body: vec![IrStmt::Dataflow {
                     lhs: lhs("out", vec![ir_id("i")]),
                     rhs: ir_call(
@@ -1509,6 +1525,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(1),
             hi: ir_int(15),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call(
@@ -1592,10 +1609,12 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(2),
             hi: ir_int(14),
+            until: None,
             body: vec![IrStmt::For {
                 var: "j".to_string(),
                 lo: ir_int(2),
                 hi: ir_int(14),
+                until: None,
                 body: vec![IrStmt::Dataflow {
                     lhs: lhs("out", vec![ir_id("i"), ir_id("j")]),
                     rhs: ir_call(
@@ -1675,6 +1694,7 @@ mod tests {
             var: "i".to_string(),
             lo: ir_int(0),
             hi: ir_int(16),
+            until: None,
             body: vec![IrStmt::Dataflow {
                 lhs: lhs("out", vec![ir_id("i")]),
                 rhs: ir_call("K", vec![ir_int(7)]),

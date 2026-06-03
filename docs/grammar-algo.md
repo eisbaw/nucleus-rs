@@ -72,7 +72,26 @@ DataflowStmt   ::= LValue '<--' RValue ';' ;
 
 EffectStmt     ::= CallExpr ';' ;          (* bare side-effecting kernel call *)
 
-ForStmt        ::= 'for' Ident ':' ConstExpr '..' ConstExpr '{' Stmt* '}' ;
+ForStmt        ::= 'for' Ident ':' ConstExpr '..' ConstExpr ('until' Expr)? '{' Stmt* '}' ;
+
+(* The optional `until COND` clause is the bounded early-exit loop surface
+   (TASK-0341.02.01.03 / epic S1). The `..ConstExpr` upper bound stays the
+   COMPILE-TIME CAP that keeps the loop statically bounded; `COND` is the
+   HALT predicate (e.g. `until diff <= tol`). `until` was chosen over
+   `while` because COND-as-halt reads as author intent and `while` invites
+   misreading the cap as not-a-real-bound (epic keystone). The grammar is
+   LL(1)-clean: after the upper `ConstExpr`, a single token of lookahead
+   distinguishes `until` from the `{` body-opener. `until` is a reserved
+   word (it may not be used as an identifier).
+
+   COND is a full `Expr` (a RelExpr — typically a comparison), lowered
+   through the bool-accepting rvalue path. INERT in S1: an `until`-loop
+   parses + lowers to IR but is REJECTED at the ACFG-build boundary with
+   the typed `BuildAcfgError::UntilLoopUnsupported` naming epic
+   TASK-0341.02.01 — no example exercises it yet, so e2e is unchanged.
+   S1 adds NO bool-context type-check of COND (lower_rvalue accepts a plain
+   int rvalue as COND too); the real bool-context validation + runtime
+   break-generation are deferred to S4 (TASK-0341.02.01.05). *)
 
 (* ---------- LHS / RHS ---------- *)
 

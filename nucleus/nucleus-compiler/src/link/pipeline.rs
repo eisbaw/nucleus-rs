@@ -297,7 +297,18 @@ fn find_loop_iter_count(
     consts: &BTreeMap<String, crate::algo::ResolvedConst>,
 ) -> Option<i64> {
     for s in stmts {
-        if let IrStmt::For { var, lo, hi, body } = s {
+        // `until` (epic S1, TASK-0341.02.01.03) is intentionally ignored:
+        // the iteration extent is the static CAP `lo..hi` regardless of the
+        // early-exit halt predicate, which is what the pipeline=D diagnostic
+        // wants. (An `until`-loop is rejected later, at build_acfg.)
+        if let IrStmt::For {
+            var,
+            lo,
+            hi,
+            until: _,
+            body,
+        } = s
+        {
             if var == target_var {
                 let lo_v = crate::acfg::eval_const(lo, consts)?;
                 let hi_v = crate::acfg::eval_const(hi, consts)?;

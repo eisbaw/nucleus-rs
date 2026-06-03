@@ -223,7 +223,29 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<ACFGNode, BuildAcfgEr
     match stmt {
         IrStmt::Dataflow { lhs, rhs } => build_dataflow(lhs, rhs, ctx),
         IrStmt::Effect { callee, args } => Ok(build_effect(callee, args, ctx)),
-        IrStmt::For { var, lo, hi, body } => {
+        IrStmt::For {
+            var,
+            lo,
+            hi,
+            until,
+            body,
+        } => {
+            // INERT rejection of the bounded early-exit loop (epic S1,
+            // TASK-0341.02.01.03). The `until COND` halt clause parses +
+            // lowers to IR, but no downstream pass / backend consumes it
+            // yet, so reject it HERE — the FIRST pre-mediation pass — with
+            // a typed error naming the epic (NOT a panic). This is upstream
+            // of every pass that destructures `IrStmt::For` with `{ .. }`
+            // and would otherwise silently ignore the `until` field; that
+            // ordering is the inert-soundness argument (see the
+            // `ast::Stmt::For` / `IrStmt::For` docstrings and
+            // `crate::pipeline::run_pre_mediation_passes`).
+            if until.is_some() {
+                return Err(BuildAcfgError::UntilLoopUnsupported {
+                    var: var.clone(),
+                    epic: "TASK-0341.02.01",
+                });
+            }
             let iter_var = ctx
                 .name_iter_vars
                 .get(var)

@@ -869,7 +869,19 @@ fn collect_loop_bounds(
 ) -> Result<(), SidecarError> {
     use crate::algo::IrStmt;
     for s in stmts {
-        if let IrStmt::For { var, lo, hi, body } = s {
+        // `until` (epic S1, TASK-0341.02.01.03) is intentionally ignored:
+        // the sidecar loop-bound is the static CAP `lo..hi`. The driver
+        // runs run_pre_mediation_passes (build_acfg first) BEFORE
+        // build_sidecar, so an `until`-loop is already rejected by the time
+        // this runs — this match never observes a `Some(until)` in practice.
+        if let IrStmt::For {
+            var,
+            lo,
+            hi,
+            until: _,
+            body,
+        } = s
+        {
             let iv = *name_iter_vars.get(var).unwrap_or_else(|| {
                 panic!(
                     "sidecar: loop var `{var}` has no IterVar in \

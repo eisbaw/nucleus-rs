@@ -878,3 +878,72 @@ schedule for "../prog.algo.nuc" {
     // load_input + id(in loop) + save_output = 3 operations.
     assert_eq!(acfg.operation_count(), 3, "load + id + save");
 }
+
+// --------------------------------------------------------------------
+// TASK-0341.02.01.03 / epic S1: a `for … until COND { … }` bounded
+// early-exit loop is INERT — it parses, lowers to `IrStmt::For` with a
+// `Some(until)`, and is REJECTED at the ACFG-build boundary with the
+// typed `BuildAcfgError::UntilLoopUnsupported` naming the epic (NOT a
+// panic). This is the AC#2 boundary: build_acfg is the FIRST
+// pre-mediation pass, so the loop never reaches a downstream pass that
+// would silently ignore the `until` field.
+// --------------------------------------------------------------------
+
+#[test]
+fn build_acfg_for_until_loop_is_typed_error_not_panic() {
+    use nucleus_compiler::acfg::BuildAcfgError;
+
+    // A capped early-exit loop. The COND (`a[0] <= a[0]`) is a bool
+    // comparison over a pre-existing data symbol — decoupled from any
+    // reduction (epic S3), exercising the loop-control surface alone.
+    // Single-assignment holds, so parse/lower/link all succeed; only
+    // build_acfg rejects it.
+    let algo = r#"
+const N : usize = 8;
+
+data a : i32[N];
+data b : i32[N];
+
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+
+a <-- load_input();
+
+for i : 0 .. N until a[0] <= a[0] {
+    b[i] <-- id(a[i]);
+}
+
+save_output(b);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+
+    let linked = linked_from_inline_src(algo, sched);
+
+    // The contract: a typed error, NOT a panic.
+    let err = build_acfg(&linked).expect_err("an `until`-loop must be a typed error");
+
+    match &err {
+        BuildAcfgError::UntilLoopUnsupported { var, epic } => {
+            assert_eq!(var, "i", "offending loop variable is `i`");
+            assert_eq!(
+                *epic, "TASK-0341.02.01",
+                "the rejection must name the grammar-extension epic"
+            );
+        }
+        other => panic!("expected UntilLoopUnsupported, got {other:?}"),
+    }
+
+    // The Display string carries an actionable, source-free diagnostic.
+    let msg = err.to_string();
+    assert!(msg.contains("loop `i`"), "msg: {msg}");
+    assert!(msg.contains("until"), "msg: {msg}");
+    assert!(msg.contains("TASK-0341.02.01"), "msg: {msg}");
+}

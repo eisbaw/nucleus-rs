@@ -223,6 +223,7 @@ fn accumulator_rejects_non_accumulator_detected_inside_loop_statement() {
         var: "i".to_string(),
         lo: IrExpr::IntLit(0),
         hi: IrExpr::IntLit(4),
+        until: None,
         body: vec![dataflow("out", "compute", vec![data_ref("input")])],
     });
 

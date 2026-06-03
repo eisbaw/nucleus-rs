@@ -880,7 +880,13 @@ fn lower_stmt_into(
     acc: &mut Accum,
 ) -> Option<IrStmt> {
     match &stmt.node {
-        Stmt::For { var, lo, hi, body } => lower_for_into(var, lo, hi, body, ir, scope, acc),
+        Stmt::For {
+            var,
+            lo,
+            hi,
+            until,
+            body,
+        } => lower_for_into(var, lo, hi, until.as_ref(), body, ir, scope, acc),
         _ => match lower_stmt(stmt, ir, scope) {
             Ok(lowered) => Some(lowered),
             Err(e) => {
@@ -934,10 +940,19 @@ fn lower_stmt_into(
 /// downstream cascade, and the iter-var would have ambiguous meaning
 /// inside the body — descending would emit double-counted noise about
 /// `i` being both the shadowed declaration and the loop variable.
+// Eight positional args (var/lo/hi/until/body + ir/scope/acc) — one over
+// the clippy cap after the epic-S1 `until` addition (TASK-0341.02.01.03).
+// Bundling the AST fields into a struct would just re-spell the
+// `Stmt::For` destructure at the single call site for no clarity gain;
+// the threaded ir/scope/acc context is the same pattern the sibling
+// lower helpers use. Same justification as the `reuse_inference` /
+// `halo_inference` allows above.
+#[allow(clippy::too_many_arguments)]
 fn lower_for_into(
     var: &super::ast::SpIdent,
     lo: &SpExpr,
     hi: &SpExpr,
+    until: Option<&SpExpr>,
     body: &[SpStmt],
     ir: &AlgoIR,
     scope: &mut Scope,
@@ -991,6 +1006,37 @@ fn lower_for_into(
     // `acc` independently — a never-declared kernel call in the body
     // is reported even when the bounds failed.
     scope.push_loop(var_name.clone());
+
+    // Lower the optional `until COND` halt predicate (TASK-0341.02.01.03 /
+    // epic S1) with the iter-var IN SCOPE (a COND may reference the loop
+    // var, e.g. `until i >= warmup`). It is lowered through the
+    // BOOL-ACCEPTING rvalue path (`lower_rvalue`) — NOT `lower_index_expr`,
+    // which is an INTEGER position and would reject a comparison with
+    // `ComparisonNotAllowedHere` (the positional where-allowed rule from
+    // epic S2, TASK-0341.02.01.02 cycle-257 hard precondition). A COND
+    // failure (e.g. an unknown ident inside it) is an independent error
+    // recorded through `acc`, and suppresses emission of this `For` so a
+    // poisoned COND never reaches the ACFG layer.
+    //
+    // LIMIT (forward-carried to S4, TASK-0341.02.01.05): S1 adds NO
+    // bool-context type-check. `lower_rvalue` accepts a plain int rvalue as
+    // COND (e.g. `until x` where `x` is an i32 ref) with no bool gate, and
+    // accepts a comparison in any rvalue position. That is acceptable here
+    // ONLY because the entire `until`-loop is rejected at the ACFG-build
+    // boundary (`BuildAcfgError::UntilLoopUnsupported`) before any consumer
+    // observes COND. COND is NOT type-checked by S1; the real bool-context
+    // validation + runtime break-generation are S4's job.
+    let until_ir = match until {
+        None => Ok(None),
+        Some(cond) => match lower_rvalue(cond, ir, scope) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => {
+                acc.record_stmt_error(e);
+                Err(())
+            }
+        },
+    };
+
     let mut body_ir = Vec::with_capacity(body.len());
     let mut any_body_failed = false;
     for s in body {
@@ -1003,11 +1049,12 @@ fn lower_for_into(
     }
     scope.pop();
 
-    match (lo_ir, hi_ir) {
-        (Some(lo_ir), Some(hi_ir)) if !any_body_failed => Some(IrStmt::For {
+    match (lo_ir, hi_ir, until_ir) {
+        (Some(lo_ir), Some(hi_ir), Ok(until_ir)) if !any_body_failed => Some(IrStmt::For {
             var: var_name.clone(),
             lo: lo_ir,
             hi: hi_ir,
+            until: until_ir,
             body: body_ir,
         }),
         _ => None,

@@ -3102,3 +3102,51 @@ data x : i32[1 <= 2];
     );
     assert!(err.span.is_some(), "shape reject must be span-anchored");
 }
+
+// --------------------------------------------------------------------
+// TASK-0341.02.01.03 / epic S1: the `for … until COND { … }` halt
+// predicate lowers through the BOOL-ACCEPTING rvalue path
+// (`lower_rvalue`), NOT the integer index path. The COND therefore
+// lowers to `IrStmt::For.until = Some(IrExpr::Compare(...))`. (S2's
+// cycle-257 hard precondition: a comparison is accepted only in rvalue
+// position; an integer position would reject it.)
+// --------------------------------------------------------------------
+
+#[test]
+fn task0341_020103_for_until_cond_lowers_via_bool_rvalue_path() {
+    let src = "\
+const N : usize = 8;
+data a : i32[N];
+data b : i32[N];
+kernel id : (i32) -> i32 pure;
+for i : 0 .. N until a[0] <= a[0] {
+    b[i] <-- id(a[i]);
+}
+";
+    let ast = parse_algo(src).expect("must parse");
+    let ir = lower_algo(&ast).expect("must lower (COND via lower_rvalue, not index path)");
+
+    // Find the for-statement and inspect its `until`.
+    let for_stmt = ir
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            f @ IrStmt::For { .. } => Some(f),
+            _ => None,
+        })
+        .expect("expected an IrStmt::For");
+
+    match for_stmt {
+        IrStmt::For { var, until, .. } => {
+            assert_eq!(var, "i");
+            let cond = until
+                .as_ref()
+                .expect("until COND must lower to Some(IrExpr)");
+            assert!(
+                matches!(cond, IrExpr::Compare(IrCmpOp::Le, _, _)),
+                "until COND must lower to a bool Compare(Le) (rvalue path), got {cond:?}"
+            );
+        }
+        other => panic!("expected IrStmt::For, got {other:?}"),
+    }
+}

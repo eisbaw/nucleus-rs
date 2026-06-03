@@ -54,14 +54,17 @@ fn jacobi_like_stmts() -> Vec<IrStmt> {
         var: "t".to_string(),
         lo: IrExpr::IntLit(0),
         hi: ident("ITERS"),
+        until: None,
         body: vec![IrStmt::For {
             var: "y".to_string(),
             lo: IrExpr::IntLit(1),
             hi: ident("H"),
+            until: None,
             body: vec![IrStmt::For {
                 var: "x".to_string(),
                 lo: IrExpr::IntLit(1),
                 hi: ident("W"),
+                until: None,
                 body: vec![df],
             }],
         }],
@@ -96,6 +99,7 @@ fn histogram_like_stmts() -> Vec<IrStmt> {
         var: "i".to_string(),
         lo: IrExpr::IntLit(0),
         hi: ident("N"),
+        until: None,
         body: vec![df],
     }]
 }
@@ -126,10 +130,12 @@ fn stencil_like_stmts() -> Vec<IrStmt> {
         var: "y".to_string(),
         lo: IrExpr::IntLit(1),
         hi: ident("H"),
+        until: None,
         body: vec![IrStmt::For {
             var: "x".to_string(),
             lo: IrExpr::IntLit(1),
             hi: ident("W"),
+            until: None,
             body: vec![df],
         }],
     }]
@@ -178,10 +184,12 @@ fn game_of_life_like_stmts() -> Vec<IrStmt> {
         var: "t".to_string(),
         lo: IrExpr::IntLit(0),
         hi: ident("ITERS"),
+        until: None,
         body: vec![IrStmt::For {
             var: "i".to_string(),
             lo: IrExpr::IntLit(0),
             hi: ident("N"),
+            until: None,
             body: vec![df],
         }],
     }]
