@@ -279,6 +279,7 @@ fn whole_array_wait_inside_event_loop_body_included() {
         body: vec![inner_wait],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
     let events = vec![outer_loop];
 

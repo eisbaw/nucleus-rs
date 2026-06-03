@@ -252,8 +252,8 @@ fn event_variant_completeness_guard(e: &Event) {
 /// Full `Event` strategy: leaf arms plus the recursive `Loop` arm
 /// (bounded depth ≤ 2). The loop body recurses into shallower events,
 /// so the validator's `Event::Loop`-body recursion is exercised. The
-/// loop's own `iter_var`/`range`/`block_tag`/`check_frame` are
-/// validator-irrelevant, so set to simple/None values.
+/// loop's own `iter_var`/`range`/`block_tag`/`check_frame`/`break_cond`
+/// are validator-irrelevant, so set to simple/None values.
 fn event_strategy() -> impl Strategy<Value = Event> {
     event_leaf().prop_recursive(2, 16, 3, |inner| {
         (iter_var(), range_i64(), prop::collection::vec(inner, 0..=3)).prop_map(
@@ -263,6 +263,7 @@ fn event_strategy() -> impl Strategy<Value = Event> {
                 body,
                 block_tag: None,
                 check_frame: None,
+                break_cond: None,
             },
         )
     })

@@ -411,6 +411,7 @@ fn neg_self_push_inside_loop_body() {
             }],
             block_tag: None,
             check_frame: None,
+            break_cond: None,
         }],
     );
 

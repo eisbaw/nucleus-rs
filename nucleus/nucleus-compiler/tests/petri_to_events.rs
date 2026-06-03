@@ -326,6 +326,7 @@ fn repeat_preserves_structure_in_event_list() {
             body,
             block_tag,
             check_frame,
+            break_cond: _,
         } => {
             assert_eq!(
                 *iter_var,
@@ -356,6 +357,75 @@ fn repeat_preserves_structure_in_event_list() {
     // The Fire is still reachable via recursion (helper sanity).
     let fires = flatten_fires(w0);
     assert_eq!(fires.len(), 1);
+}
+
+#[test]
+fn repeat_break_cond_projects_to_event_loop_break_cond() {
+    // TASK-0341.02.01.05.04 AC#1. A `for..until` source loop lowers to an
+    // `ACFGNode::Repeat` carrying its convergence predicate in
+    // `break_cond`; the EventList projection (`acfg_to_events`) must
+    // thread that predicate verbatim onto the per-worker `Event::Loop`
+    // (where the single-worker backend emits the runtime `break`). The
+    // predicate is a bool `IrExpr::Compare` (`max_abs_diff < epsilon`).
+    use nucleus_compiler::algo::{IrCmpOp, IrExpr};
+    let cond = IrExpr::Compare(
+        IrCmpOp::Lt,
+        Box::new(IrExpr::Ident("max_abs_diff".to_string())),
+        Box::new(IrExpr::Ident("epsilon".to_string())),
+    );
+    let body = ACFGNode::Sequence(vec![op_node(&[0], 100, vec![], Some(0))]);
+    let root = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: nucleus_compiler::event::IterVar(7),
+        range: 0..3,
+        body: Box::new(body),
+        block_tag: None,
+        break_cond: Some(cond.clone()),
+    }]);
+    let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
+
+    let events = acfg_to_events(&acfg);
+    let w0 = events.get(&WorkerId(0)).unwrap();
+    assert_eq!(w0.len(), 1, "one rolled Loop");
+    match &w0[0] {
+        Event::Loop { break_cond, .. } => {
+            assert_eq!(
+                break_cond.as_ref(),
+                Some(&cond),
+                "the Repeat.break_cond predicate must be projected verbatim onto Event::Loop.break_cond"
+            );
+        }
+        other => panic!("expected one Event::Loop, got {other:?}"),
+    }
+}
+
+#[test]
+fn repeat_without_break_cond_projects_to_none() {
+    // TASK-0341.02.01.05.04 AC#1 (regression guard). A plain fixed-
+    // iteration `for` loop (no `until`) must project to `break_cond:
+    // None` — byte-identical to the pre-S4 projection, so no plain loop
+    // gains a spurious break.
+    let body = ACFGNode::Sequence(vec![op_node(&[0], 100, vec![], Some(0))]);
+    let root = ACFGNode::Sequence(vec![ACFGNode::Repeat {
+        iter_var: nucleus_compiler::event::IterVar(7),
+        range: 0..3,
+        body: Box::new(body),
+        block_tag: None,
+        break_cond: None,
+    }]);
+    let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
+
+    let events = acfg_to_events(&acfg);
+    let w0 = events.get(&WorkerId(0)).unwrap();
+    assert_eq!(w0.len(), 1, "one rolled Loop");
+    match &w0[0] {
+        Event::Loop { break_cond, .. } => {
+            assert_eq!(
+                *break_cond, None,
+                "a plain `for` loop (no until) must project to break_cond: None"
+            );
+        }
+        other => panic!("expected one Event::Loop, got {other:?}"),
+    }
 }
 
 #[test]

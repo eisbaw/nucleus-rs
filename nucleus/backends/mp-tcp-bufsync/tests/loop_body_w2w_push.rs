@@ -78,6 +78,7 @@ fn loop_body_w2w_push_is_typed_contract_gap() {
         }],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
@@ -208,6 +209,7 @@ fn host_bound_push_inside_loop_does_not_trigger_guard() {
         }],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
@@ -344,6 +346,7 @@ fn multi_iter_loop_body_w2w_push_is_typed_contract_gap() {
         }],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();

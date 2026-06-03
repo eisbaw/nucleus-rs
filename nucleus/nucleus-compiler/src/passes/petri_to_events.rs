@@ -308,15 +308,14 @@ fn walk(
             range,
             body,
             block_tag,
-            // The bounded early-exit halt predicate (epic S4,
-            // TASK-0341.02.01.05.01). NOT consumed yet: the runtime break
-            // EMIT + bool render path is deferred to TASK-0341.02.01.05.04.
-            // Bound (not `..`-elided) so that consumer slice is
-            // compiler-forced to wire it up here rather than silently drop
-            // it. Until then the EventList projects a `for..until` exactly
-            // like a plain `for` over the cap range — codegen-inert, which
-            // is the .05.01 contract (no example consumer).
-            break_cond: _,
+            // The bounded early-exit halt predicate (epic S4). CONSUMED
+            // by TASK-0341.02.01.05.04: it rides each per-worker
+            // `Event::Loop.break_cond` below, where the single-worker
+            // sequential backend emits the runtime `break`. `None` for
+            // every plain `for` loop (byte-identical projection, no
+            // codegen change). The field stays bound (not `..`-elided)
+            // so a future field addition is compiler-forced here.
+            break_cond,
         } => {
             // STRUCTURE-PRESERVING (TASK-0159). The analysis Net
             // (`acfg_to_petri`) still unrolls — boundedness / deadlock
@@ -402,6 +401,20 @@ fn walk(
                     // `acfg_to_events` signature unchanged keeps every
                     // existing test call site stable.
                     check_frame: None,
+                    // The `for..until` early-exit predicate (epic S4,
+                    // TASK-0341.02.01.05.04). The SAME predicate rides
+                    // every worker's projected Loop: single-worker
+                    // sequential codegen (`pthreads-sync`) is the only
+                    // consumer this slice, and a `for..until` is rejected
+                    // for multi-worker partitioning today, so there is no
+                    // per-worker predicate divergence to model. (When
+                    // multi-worker break emit lands — S7,
+                    // TASK-0341.02.01.08 — revisit whether a partitioned
+                    // convergence loop needs a per-worker predicate; for
+                    // now the uniform clone is the faithful projection.)
+                    // `None` for every plain `for` -> byte-identical to
+                    // the pre-S4 projection (no e2e change).
+                    break_cond: break_cond.clone(),
                 });
             }
         }

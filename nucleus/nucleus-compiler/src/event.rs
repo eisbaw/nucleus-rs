@@ -816,6 +816,44 @@ pub enum Event {
         /// deserialises as `None`); see [`CheckFrame`].
         #[cfg_attr(feature = "serde", serde(default))]
         check_frame: Option<CheckFrame>,
+        /// `Some(cond)` iff this loop is a source `for..until` early-exit
+        /// loop (epic S4, TASK-0341.02.01.05.04): the bounded
+        /// convergence/halt predicate, projected verbatim from
+        /// [`crate::acfg::ACFGNode::Repeat::break_cond`] so the codegen
+        /// backend can emit a runtime `break`. `None` for every ordinary
+        /// fixed-iteration `for` loop AND for every synthesised tile /
+        /// partition / strip-mined inner loop (`block_tag.is_some()`
+        /// loops are compiler machinery, never a source convergence loop,
+        /// so they never carry a break predicate).
+        ///
+        /// ## Why a third additive field on this SAME variant (not a new event)
+        ///
+        /// Same argument as `block_tag` / `check_frame` above: the break
+        /// predicate is a per-loop-**occurrence** fact one-for-one with
+        /// the `Repeat` node it projects from. A separate `Break` event
+        /// would (a) duplicate the loop-identity join key (`iter_var`),
+        /// (b) project ambiguously onto per-worker EventLists, and (c)
+        /// force every existing consumer to acquire pairing logic. An
+        /// optional annotation is the minimal, silent-sibling-safe change.
+        ///
+        /// ## ANALYSIS-INVISIBLE TO THE NET (keystone soundness)
+        ///
+        /// This field is purely a *codegen* contract; no analysis pass
+        /// reads it. Boundedness is proved on the full-`range` unroll, and
+        /// any early-exit prefix `0..k` (`k <= range.len()`) is a sub-trace
+        /// of that bounded net, hence bounded a fortiori (epic keystone
+        /// soundness argument, architect GO design-review cycle-254). The
+        /// runtime break is emitted only in the single-worker sequential
+        /// backend this slice (`pthreads-sync`); multi-worker / 7-backend
+        /// break emit is a later slice (TASK-0341.02.01.08 / S7).
+        ///
+        /// `IrExpr` is the same node that already rides
+        /// `ArgBinding::Scalar` / the `Repeat.break_cond` source, so the
+        /// serde round-trip / determinism gate is already covered.
+        /// serde-default keeps the wire form backward compatible (an old
+        /// payload with no `break_cond` deserialises as `None`).
+        #[cfg_attr(feature = "serde", serde(default))]
+        break_cond: Option<IrExpr>,
     },
 }
 
@@ -890,6 +928,7 @@ impl Hash for Event {
                 body,
                 block_tag,
                 check_frame,
+                break_cond,
             } => {
                 6u8.hash(state);
                 iter_var.hash(state);
@@ -906,6 +945,19 @@ impl Hash for Event {
                 // check directive don't collide in `HashSet` paths
                 // (TASK-0052.02).
                 check_frame.hash(state);
+                // `IrExpr` deliberately does NOT implement `Hash` (it
+                // mirrors the AST, which doesn't — see the binding-type
+                // Hash impls above). Hash only the 1-byte presence
+                // discriminant, exactly as the `Range` endpoints are
+                // hashed component-wise rather than via a `Range: Hash`:
+                // two loops that differ ONLY in their break predicate may
+                // collide in a `HashSet`, which is acceptable for a `Hash`
+                // impl (equality stays exact via the derived `PartialEq`,
+                // which DOES compare the full `IrExpr`). The break
+                // predicate is a codegen-only annotation, so loops in the
+                // dedup paths (which precede codegen) never actually carry
+                // distinct predicates today; the discriminant suffices.
+                break_cond.is_some().hash(state);
                 // Recurse the body; length first so a prefix can't
                 // collide with a different-length body.
                 body.len().hash(state);
@@ -951,6 +1003,10 @@ impl Event {
             body,
             block_tag: None,
             check_frame: None,
+            // Plain fixed-iteration loop: no early-exit predicate. The
+            // `for..until` projection sets `Some` directly via the
+            // struct literal in `petri_to_events` (TASK-0341.02.01.05.04).
+            break_cond: None,
         }
     }
 
@@ -971,6 +1027,10 @@ impl Event {
             body,
             block_tag: Some(block_tag),
             check_frame: None,
+            // A strip-mined inner loop is compiler machinery, never a
+            // source `for..until` convergence loop, so it carries no
+            // break predicate (TASK-0341.02.01.05.04).
+            break_cond: None,
         }
     }
 }

@@ -135,6 +135,7 @@ fn push_nested_in_loop_is_collected() {
         body: vec![inner_push],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();

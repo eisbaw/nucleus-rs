@@ -165,7 +165,28 @@ fn render_event(
             body,
             block_tag,
             check_frame,
+            break_cond,
         } => {
+            // `for..until` early-exit break (epic S4,
+            // TASK-0341.02.01.05.04) is emitted ONLY by the tier-1
+            // single-worker sequential backend (`pthreads-sync`) this
+            // slice. The embedded (M9/M10) lowering does not yet port the
+            // break emit; rather than silently dropping the predicate
+            // (which would mis-lower a convergence loop to a non-
+            // terminating full-cap loop), reject loud with a forward link.
+            // A naive embedded schedule carries no `for..until` today, so
+            // this is inert; cross-backend break emit is later work
+            // (S7, TASK-0341.02.01.08).
+            if break_cond.is_some() {
+                return Err(EmitError::UnsupportedFeature(
+                    "embedded-pattern does not yet lower `for..until` early-exit \
+                     (break-condition) loops; the runtime break emit is tier-1 \
+                     single-worker only this slice (TASK-0341.02.01.05.04). \
+                     Cross-backend break emit is future work \
+                     (S7, TASK-0341.02.01.08)."
+                        .to_string(),
+                ));
+            }
             // M9 scope: the naive single-worker schedules carry no
             // block-transform (no `block=`) and no real-time check
             // frames. Reject them with a forward link rather than

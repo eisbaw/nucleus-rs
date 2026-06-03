@@ -558,6 +558,7 @@ mod tests {
             body: vec![body_push.clone()],
             block_tag: None,
             check_frame: None,
+            break_cond: None,
         };
         let events = vec![wait(w2(), d(1), tile.clone(), seq(2)), outer.clone()];
         let out = run_one(events);
@@ -720,6 +721,7 @@ mod tests {
             body: vec![inner_fire],
             block_tag: None,
             check_frame: None,
+            break_cond: None,
         };
         let events = vec![outer_loop, push(w2(), d(1), tile.clone(), seq(1))];
         let out = run_one(events.clone());
@@ -794,6 +796,7 @@ mod tests {
             body: vec![inner_wait],
             block_tag: None,
             check_frame: None,
+            break_cond: None,
         };
         let events = vec![outer_loop, push(w2(), d(1), tile.clone(), seq(1))];
         let out = run_one(events.clone());

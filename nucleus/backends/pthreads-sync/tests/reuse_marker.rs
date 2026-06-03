@@ -135,6 +135,7 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
             is_partial: false,
         }),
         check_frame: None,
+        break_cond: None,
     };
 
     // Enclosing tile loop: 0..4, untagged. Required by the strip-mine
@@ -147,6 +148,7 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
         body: vec![inner_loop],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let out = render_single_worker_main(&[tile_loop], &names, &sidecar)
@@ -309,6 +311,7 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
             is_partial: false,
         }),
         check_frame: None,
+        break_cond: None,
     };
 
     let tile_loop = Event::Loop {
@@ -317,6 +320,7 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
         body: vec![inner_loop],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let out = render_single_worker_main(&[tile_loop], &names, &sidecar)
@@ -458,6 +462,7 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
         body: vec![fire],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let out = render_single_worker_main(&[loop_ev], &names, &sidecar)

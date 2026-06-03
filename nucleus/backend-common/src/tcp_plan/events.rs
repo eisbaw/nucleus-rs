@@ -96,6 +96,14 @@ impl<W: WirePrimitives> Plan<'_, W> {
                     body,
                     block_tag,
                     check_frame,
+                    // `for..until` early-exit break (epic S4,
+                    // TASK-0341.02.01.05.04) is emitted only by the
+                    // single-worker sequential backend this slice; the
+                    // multi-process TCP plan walker is a later slice (S7,
+                    // TASK-0341.02.01.08) and never observes a `Some`
+                    // (a `for..until` is not multi-worker-partitioned
+                    // today). Bound `_` keeps the silent-sibling guard.
+                    break_cond: _,
                 } => {
                     let var = self.names.iter_var.get(iter_var).ok_or_else(|| {
                         EmitError::ContractGap(format!(

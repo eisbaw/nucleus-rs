@@ -79,7 +79,9 @@ pub(crate) mod types;
 
 pub use ctx::{RenderCtx, RenderCtxPub};
 pub use error::EmitError;
-pub use expr::{render_const_expr, render_const_expr_pub, render_int_expr, render_loop_bounds};
+pub use expr::{
+    render_bool_expr, render_const_expr, render_const_expr_pub, render_int_expr, render_loop_bounds,
+};
 pub use fire::{
     data_name, render_fire_args, render_fire_args_nostd, render_fire_args_pub,
     render_fire_output_assign, render_fire_output_assign_pub, render_flat_index,

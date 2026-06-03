@@ -102,7 +102,7 @@ use backend_common::check_frame::{
 };
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use backend_common::render::{
-    data_name, render_array_init_for, render_const_expr, render_fire_args,
+    data_name, render_array_init_for, render_bool_expr, render_const_expr, render_fire_args,
     render_fire_output_assign, render_loop_bounds, render_reuse_buf_decls,
     render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
 };
@@ -567,6 +567,7 @@ fn render_event(
             body,
             block_tag,
             check_frame,
+            break_cond,
         } => {
             let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                 EmitError::ContractGap(format!(
@@ -610,6 +611,26 @@ fn render_event(
             // the (reused) IterVar — single source of truth, not
             // duplicated into the tag.
             if let Some(tag) = block_tag {
+                // A `for..until` early-exit predicate (TASK-0341.02.01.05.04)
+                // is a SOURCE-loop fact; a strip-mined inner loop is
+                // compiler machinery (`block_transform`) and the projection
+                // (`petri_to_events`) only ever sets `break_cond` from the
+                // source `Repeat`, which is never tagged. A tagged loop
+                // carrying a break predicate is therefore a projection-layer
+                // bug — fail loud rather than silently dropping the break
+                // (the strip-mined arm below returns early without an emit
+                // site for it). Mirrors the check_frame+block_tag guard
+                // further down.
+                if break_cond.is_some() {
+                    return Err(EmitError::ContractGap(format!(
+                        "Event::Loop {{ iter_var: {iter_var:?} }} carries BOTH a \
+                         break_cond (for..until predicate) and a block_tag — \
+                         `petri_to_events` only projects break_cond from the \
+                         untagged SOURCE Repeat, so a tagged loop must never \
+                         carry one. This is a projection-layer bug \
+                         (TASK-0341.02.01.05.04 invariant)."
+                    )));
+                }
                 let lo_src = ctx
                     .sidecar
                     .loop_bounds
@@ -880,6 +901,21 @@ fn render_event(
                 }
             } else {
                 render_events_in(body, out, body_indent, &body_ctx, Some(*iter_var))?;
+            }
+            // `for..until` early-exit break (epic S4,
+            // TASK-0341.02.01.05.04). Emitted as the LAST statement of the
+            // loop body, AFTER the body and AFTER any `check_frame`
+            // latency measurement closes — so the final (break-causing)
+            // iteration is still fully executed and (if a check_frame is
+            // present) still measured before the loop terminates. The
+            // predicate is a bool `IrExpr::Compare` over runtime data
+            // values (e.g. `max_abs_diff < epsilon`); `render_bool_expr`
+            // renders it via the scalar VALUE renderer. `None` for every
+            // plain `for` loop -> nothing emitted (byte-identical to the
+            // pre-S4 backend; this is the regression guard).
+            if let Some(cond) = break_cond {
+                let cond_src = render_bool_expr(cond, &body_ctx)?;
+                writeln!(out, "{body_pad}if {cond_src} {{ break; }}").ok();
             }
             writeln!(out, "{pad}}}").ok();
             Ok(())

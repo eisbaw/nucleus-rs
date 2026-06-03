@@ -7,7 +7,7 @@
 //! bounds with `_i64` literal spelling. `bin_op_str` is the small
 //! shared `IrBinOp -> &str` mapper both renderers share.
 
-use nucleus_compiler::algo::{IrBinOp, IrExpr, ResolvedType};
+use nucleus_compiler::algo::{IrBinOp, IrCmpOp, IrExpr, ResolvedType};
 use nucleus_compiler::event::IterVar;
 
 use super::ctx::{RenderCtx, RenderCtxPub};
@@ -299,6 +299,63 @@ fn bin_op_str(op: &IrBinOp) -> &'static str {
         IrBinOp::Mul => "*",
         IrBinOp::Div => "/",
         IrBinOp::Mod => "%",
+    }
+}
+
+/// The Rust relational operator spelling for an [`IrCmpOp`]. Mirrors
+/// [`bin_op_str`]: a small, total `IrCmpOp -> &str` mapper shared by the
+/// bool renderer. Rust's relational operators are spelled identically to
+/// the IR's, so this is a 1:1 map.
+fn cmp_op_str(op: &IrCmpOp) -> &'static str {
+    match op {
+        IrCmpOp::Le => "<=",
+        IrCmpOp::Lt => "<",
+        IrCmpOp::Eq => "==",
+        IrCmpOp::Ne => "!=",
+        IrCmpOp::Gt => ">",
+        IrCmpOp::Ge => ">=",
+    }
+}
+
+/// Render a **bool**-valued relational expression as Rust, for the
+/// `for..until` early-exit predicate (epic S4, TASK-0341.02.01.05.04).
+///
+/// The only bool shape the language admits today is a single relational
+/// comparison [`IrExpr::Compare`] (`lower_rvalue` accepts a Compare in
+/// bool position; `lower_index_expr` / `eval_const_expr` /
+/// `eval_shape_expr` reject one with `ComparisonNotAllowedHere`). The two
+/// operands are runtime SCALAR VALUES — the convergence reduction result
+/// vs an epsilon, e.g. `max_abs_diff < epsilon` — NOT index positions, so
+/// each is rendered through the scalar VALUE renderer
+/// [`render_int_expr`] (an `Ident` -> the bare scalar variable in scope,
+/// an `IntLit` -> the literal, a `DataRef` -> a runtime load). Reusing
+/// `render_int_expr` keeps a single source of truth for scalar-value
+/// rendering rather than duplicating the operand cases.
+///
+/// A non-`Compare` top-level expression in bool position is a typed
+/// [`EmitError`] (NOT a panic): a bool position must be a `Compare`
+/// today, and a bare integer / data-ref reaching here would be a
+/// lowering-layer contract violation. This is fail-loud, not a silent
+/// drop. (Note: this differs from the `IrExpr::Compare(..)` arms of
+/// [`render_int_expr`] / [`render_const_expr`], which correctly REJECT a
+/// Compare because those are INTEGER positions; here a Compare is the
+/// only ACCEPTED shape. The two are duals, not duplicates.)
+pub fn render_bool_expr(e: &IrExpr, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
+    match e {
+        IrExpr::Compare(op, l, r) => {
+            let ls = render_int_expr(l, ctx)?;
+            let rs = render_int_expr(r, ctx)?;
+            Ok(format!("({ls} {} {rs})", cmp_op_str(op)))
+        }
+        // Any non-relational expression in bool position is a
+        // lowering-layer contract violation (the only bool the language
+        // admits is a single relational comparison). Typed error, no
+        // panic.
+        _ => Err(EmitError::UnsupportedFeature(
+            "non-relational expression in a bool (for..until predicate) position — \
+             the only bool shape admitted today is a single relational comparison"
+                .to_string(),
+        )),
     }
 }
 

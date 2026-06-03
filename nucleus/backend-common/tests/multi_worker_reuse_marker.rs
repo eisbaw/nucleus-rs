@@ -164,6 +164,7 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated() {
         body: vec![],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let ctx = WalkerCtx {
@@ -237,6 +238,7 @@ fn multi_worker_walker_skips_reuse_marker_when_reuse_widths_empty() {
         body: vec![],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let ctx = WalkerCtx {
@@ -338,6 +340,7 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_bloc
             is_partial: false,
         }),
         check_frame: None,
+        break_cond: None,
     };
 
     // Enclosing tile loop: 0..4, untagged. Provides the `enclosing`
@@ -350,6 +353,7 @@ fn multi_worker_walker_emits_reuse_marker_when_reuse_widths_populated_under_bloc
         body: vec![inner_loop],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let ctx = WalkerCtx {
@@ -504,6 +508,7 @@ fn multi_worker_walker_regular_arm_emits_real_buffer_codegen() {
         body: vec![fire],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
@@ -645,6 +650,7 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
             is_partial: false,
         }),
         check_frame: None,
+        break_cond: None,
     };
 
     // Enclosing tile loop: 0..4, untagged. Required so the strip-mine
@@ -655,6 +661,7 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
         body: vec![inner_loop],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();
@@ -840,6 +847,7 @@ fn multi_worker_walker_dedupes_canonical_outer_axes_add_zero() {
         body: vec![fire1, fire2],
         block_tag: None,
         check_frame: None,
+        break_cond: None,
     };
 
     let (rendezvous_ids, pair_tiles) = empty_walker_maps();

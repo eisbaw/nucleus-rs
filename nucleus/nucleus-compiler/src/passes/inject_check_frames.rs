@@ -190,6 +190,7 @@ fn inject_event(event: Event, by_iter_var: &BTreeMap<IterVar, CheckFrame>) -> Ev
             body,
             block_tag,
             check_frame: existing,
+            break_cond,
         } => {
             // Recurse first so a nested loop's frame is set even if the
             // outer one is not a match.
@@ -222,6 +223,10 @@ fn inject_event(event: Event, by_iter_var: &BTreeMap<IterVar, CheckFrame>) -> Ev
                 body,
                 block_tag,
                 check_frame,
+                // Carried through verbatim: this pass only populates
+                // `check_frame`; the `for..until` break predicate
+                // (TASK-0341.02.01.05.04) is orthogonal and preserved.
+                break_cond,
             }
         }
         // Non-Loop events are pass-through: a `check loop` directive

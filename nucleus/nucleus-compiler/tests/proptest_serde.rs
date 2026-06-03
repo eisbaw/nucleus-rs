@@ -519,14 +519,26 @@ fn event_strategy() -> impl Strategy<Value = Event> {
             prop::collection::vec(inner, 0..=3),
             prop::option::of(block_tag()),
             prop::option::of(check_frame()),
+            // `break_cond: Option<IrExpr>` (epic S4,
+            // TASK-0341.02.01.05.04). Generate `Some`/`None` over the full
+            // `ir_expr()` strategy so the serde round-trip / determinism
+            // gate exercises the new additive field — including a `Some`
+            // carrying a relational `Compare` (the convergence predicate
+            // shape). serde-default backward-compat (old payload -> `None`)
+            // is pinned separately in the unit test
+            // `event_loop_break_cond_default`.
+            prop::option::of(ir_expr()),
         )
-            .prop_map(|(iter_var, range, body, block_tag, check_frame)| Event::Loop {
-                iter_var,
-                range,
-                body,
-                block_tag,
-                check_frame,
-            })
+            .prop_map(
+                |(iter_var, range, body, block_tag, check_frame, break_cond)| Event::Loop {
+                    iter_var,
+                    range,
+                    body,
+                    block_tag,
+                    check_frame,
+                    break_cond,
+                },
+            )
     })
 }
 

@@ -546,6 +546,7 @@ fn loop_constructor_carries_iter_var_range_and_body() {
             body: b,
             block_tag,
             check_frame,
+            break_cond,
         } => {
             assert_eq!(*iter_var, IterVar(3));
             assert_eq!(*range, 1..15, "concrete bound carried verbatim");
@@ -557,6 +558,11 @@ fn loop_constructor_carries_iter_var_range_and_body() {
             // check-frame is populated only by the post-projection
             // pass `inject_check_frames`, never by the constructor.
             assert_eq!(*check_frame, None, "loop_over yields no check_frame");
+            // TASK-0341.02.01.05.04: `loop_over` is the plain-loop
+            // constructor; the `for..until` break predicate is set only by
+            // the projection (`petri_to_events`) from a source `Repeat`,
+            // never by this constructor.
+            assert_eq!(*break_cond, None, "loop_over yields no break_cond");
         }
         other => panic!("expected Event::Loop, got {other:?}"),
     }
@@ -595,6 +601,7 @@ fn loop_serde_backward_compat_without_check_frame_field() {
             iter_var,
             check_frame,
             block_tag,
+            break_cond,
             ..
         } => {
             assert_eq!(iter_var, IterVar(5));
@@ -603,9 +610,43 @@ fn loop_serde_backward_compat_without_check_frame_field() {
                 "missing check_frame in wire form -> None (serde default)"
             );
             assert_eq!(block_tag, None, "missing block_tag -> None (serde default)");
+            // TASK-0341.02.01.05.04: `break_cond` is the third additive
+            // `#[serde(default)]` field; a legacy payload that predates it
+            // must still parse, defaulting to `None`.
+            assert_eq!(
+                break_cond, None,
+                "missing break_cond in wire form -> None (serde default)"
+            );
         }
         other => panic!("expected Event::Loop, got {other:?}"),
     }
+}
+
+#[test]
+fn loop_serde_roundtrip_with_break_cond() {
+    // TASK-0341.02.01.05.04: an `Event::Loop` carrying a `for..until`
+    // break predicate (`Some(Compare(..))`) must survive serde verbatim
+    // — the `IrExpr::Compare` node is the same shape already pinned by
+    // `proptest_serde`, but this names the Loop-field carrier explicitly.
+    use nucleus_compiler::algo::{IrCmpOp, IrExpr};
+    let cond = IrExpr::Compare(
+        IrCmpOp::Lt,
+        Box::new(IrExpr::Ident("max_abs_diff".to_string())),
+        Box::new(IrExpr::Ident("epsilon".to_string())),
+    );
+    let e = Event::Loop {
+        iter_var: IterVar(3),
+        range: 0..16,
+        body: vec![sample_fire()],
+        block_tag: None,
+        check_frame: None,
+        break_cond: Some(cond),
+    };
+    assert_eq!(
+        roundtrip(&e),
+        e,
+        "a Loop with a break_cond must survive serde round-trip verbatim"
+    );
 }
 
 #[test]

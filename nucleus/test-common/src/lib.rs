@@ -524,6 +524,7 @@ schedule for "anything.algo.nuc" {
             body: vec![sync(&[w1, w2], 5)],
             block_tag: None,
             check_frame: None,
+            break_cond: None,
         };
         let mut pw: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
         pw.insert(w1, vec![nested]);

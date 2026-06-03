@@ -143,6 +143,16 @@ fn render_worker_events_inner(
                 body,
                 block_tag,
                 check_frame,
+                // `for..until` early-exit break (epic S4,
+                // TASK-0341.02.01.05.04) is emitted ONLY by the
+                // single-worker sequential backend this slice. Multi-worker
+                // break emit is a later slice (S7, TASK-0341.02.01.08); a
+                // `for..until` is not admitted for multi-worker
+                // partitioning today, so this walker never observes a
+                // `Some`. Bound `_` (not `..`-elided) keeps the silent-
+                // sibling guard: a future field addition is compiler-forced
+                // here too.
+                break_cond: _,
             } => {
                 let var = ctx.names.iter_var.get(iter_var).ok_or_else(|| {
                     EmitError::ContractGap(format!(
