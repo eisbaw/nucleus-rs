@@ -1,6 +1,10 @@
 //! Behaviour-pin for the zero-init invariant on the time-stepped
 //! state arrays of 16-jacobi and 11-game-of-life (TASK-0348, filed as
-//! TASK-0341.02 cycle-206 architect P3.3).
+//! TASK-0341.02 cycle-206 architect P3.3) — AND, co-located because it
+//! is the other half of the same 16-jacobi `field[ITERS+1]` history
+//! buffer model, the hard-coded `field[ITERS]` final-extraction pin
+//! (`jacobi_result_extraction_reads_hardcoded_iters_slice`,
+//! TASK-0341.02.01.09, grammar-epic S0b).
 //!
 //! ## What this pins — and what it does NOT
 //!
@@ -212,6 +216,13 @@ fn jacobi_result_extraction_reads_hardcoded_iters_slice() {
     // READS, which index the modular prev-gen slice
     // `field[((((t + 4) % (4 + 1))) * 64 + ...]` — so this substring
     // uniquely identifies the hard-coded final extraction.
+    //
+    // NOTE the discriminator keys on the LITERAL `(4)` (= ITERS) and
+    // `* 64` (= H*W): a benign dims change (ITERS or H/W) will ALSO trip
+    // this assert even though the buffer model is intact — in that case
+    // update the literals, exactly as the sibling size pin's docstring
+    // says for `vec![0; 320]`. The PREMISE-DRIFT failure mode this guards
+    // is the slice going runtime / the buffer model changing.
     let hardcoded_extract = "kernels::ident(field[((4) * 64 +";
     assert!(
         main_rs.contains(hardcoded_extract),
