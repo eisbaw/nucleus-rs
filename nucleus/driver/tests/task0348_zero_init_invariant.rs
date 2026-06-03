@@ -172,6 +172,62 @@ fn jacobi_field_and_result_are_zero_initialised() {
     assert_zero_init(&main_rs, "16-jacobi", "result", 64);
 }
 
+/// TASK-0341.02.01.09 (grammar-epic S0b) — pin the OTHER half of the
+/// codegen invariant the data-dependent-loop-termination epic depends
+/// on: the 16-jacobi result extraction reads a **hard-coded slice
+/// `field[ITERS]`** (`field[((4) * 64 + ...)]`, the `(4)` is `ITERS`
+/// rendered literally, `* 64` is the `H*W` slice stride).
+///
+/// ## Why this pin exists
+///
+/// The S0 feasibility spike (TASK-0341.02.01.01) established that a
+/// convergence loop `for t : 0 .. N until COND { … }` which early-exits
+/// at generation `k < N` would read this `field[ITERS]` slice — which is
+/// NEVER WRITTEN on early-exit and stays zero — so the convergence
+/// variant's S4/S5 fix must change the final extraction to read the
+/// **runtime** break-generation slice `field[k]` instead. The entire
+/// fix premise rests on the current shape being a hard-coded `field[ITERS]`
+/// over a full `(ITERS+1)`-slice history buffer (the buffer *size* is
+/// pinned by `jacobi_field_and_result_are_zero_initialised` above as
+/// `vec![0; 320]`).
+///
+/// The spike that proved this lives in `cruft/` (a standalone rustc file
+/// outside the cargo workspace) and nothing in CI compiles it — so it
+/// cannot detect substrate drift. THIS is the real workspace tripwire
+/// (architect review of the spike, cycle-255, P2): if a future cycle
+/// changes the field-buffer lowering — e.g. lands a 2-slice double-buffer
+/// optimization, or makes the extraction slice runtime as part of the S4
+/// fix itself — this pin BITES and the S4 implementer gets a hard,
+/// precise signal that the premise has changed, instead of a silently
+/// stale `cruft/` snapshot. When S4 lands the runtime-slice extraction,
+/// this pin is EXPECTED to fail and must be updated/retired as part of
+/// that slice (its failure at that point is the feature landing, not a
+/// regression).
+#[test]
+fn jacobi_result_extraction_reads_hardcoded_iters_slice() {
+    let main_rs = build_naive_main_rs("16-jacobi", "jacobi-extract");
+    // The result-extract loop copies field[ITERS] -> result via `ident`.
+    // ITERS=4 renders as the literal `(4)`; the slice stride is `* 64`
+    // (H*W). This bare-literal slice base is distinct from the step
+    // READS, which index the modular prev-gen slice
+    // `field[((((t + 4) % (4 + 1))) * 64 + ...]` — so this substring
+    // uniquely identifies the hard-coded final extraction.
+    let hardcoded_extract = "kernels::ident(field[((4) * 64 +";
+    assert!(
+        main_rs.contains(hardcoded_extract),
+        "EARLY-EXIT-FIX PREMISE DRIFT (TASK-0341.02.01.09): 16-jacobi's emitted \
+         main.rs no longer extracts the final result from the hard-coded slice \
+         `field[ITERS]` via `{hardcoded_extract}…`. The data-dependent-loop epic \
+         (TASK-0341.02.01) S4/S5 fix is premised on this exact shape: a full \
+         (ITERS+1)-slice history buffer whose final extraction reads the static \
+         slice ITERS (which is why early-exit at k<ITERS reads the wrong, \
+         unwritten slice). If you are LANDING the S4 runtime-slice extraction, \
+         this pin failing is EXPECTED — update/retire it as part of that slice. \
+         Otherwise the buffer model drifted and the S0 spike finding \
+         (cruft/spike-0341-02-01-01) is now stale.\n--- emitted main.rs ---\n{main_rs}"
+    );
+}
+
 #[test]
 fn game_of_life_grid_and_result_are_zero_initialised() {
     let main_rs = build_naive_main_rs("11-game-of-life", "gol");
