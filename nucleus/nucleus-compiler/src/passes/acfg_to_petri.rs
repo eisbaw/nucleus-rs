@@ -358,7 +358,18 @@ impl<'a> NetBuilder<'a> {
                 }
             }
             ACFGNode::Repeat { range, body, .. } => {
-                // Unroll. `range.len()` is the iteration count; for
+                // Unroll over the FULL cap range. The `..` deliberately
+                // elides `break_cond` (epic S4, TASK-0341.02.01.05.01): a
+                // `for..until` halt predicate is ANALYSIS-INVISIBLE to the
+                // Net. Boundedness is an over-approximation proved on the
+                // full-N unroll; any early-exit prefix `0..k` (k <= N) is a
+                // sub-trace of this bounded net, hence bounded a fortiori.
+                // The convergence predicate is not a control place, so the
+                // Net treats a `for..until` exactly as a plain `for` over
+                // `range`. (The break is emitted later, from the EventList
+                // — see `petri_to_events` + TASK-0341.02.01.05.04.)
+                //
+                // `range.len()` is the iteration count; for
                 // a malformed empty range we simply emit nothing,
                 // which is also the firing semantics ("zero firings").
                 let count = range.end.saturating_sub(range.start).max(0) as u64;

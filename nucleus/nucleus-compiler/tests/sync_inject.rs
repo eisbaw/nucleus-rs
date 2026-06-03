@@ -100,6 +100,7 @@ fn repeat(body: Vec<ACFGNode>) -> ACFGNode {
         range: Range { start: 0, end: 1 },
         body: Box::new(ACFGNode::Sequence(body)),
         block_tag: None,
+        break_cond: None,
     }
 }
 
@@ -595,6 +596,7 @@ fn partitioned_repeat_acfg(body: Vec<ACFGNode>, partitioned: bool, worker_ids: &
         range: Range { start: 0, end: 16 },
         body: Box::new(ACFGNode::Sequence(body)),
         block_tag: None,
+        break_cond: None,
     }]));
 
     if partitioned {

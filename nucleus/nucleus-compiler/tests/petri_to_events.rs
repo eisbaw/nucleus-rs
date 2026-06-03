@@ -310,6 +310,7 @@ fn repeat_preserves_structure_in_event_list() {
         range: 0..3,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
 
@@ -372,6 +373,7 @@ fn repeat_empty_range_emits_loop_with_empty_range() {
         range: 5..5,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
 
@@ -402,6 +404,7 @@ fn repeat_worker_with_empty_body_gets_no_loop() {
         range: 0..4,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
 
@@ -999,6 +1002,7 @@ fn determinism_two_projections_of_same_acfg_match() {
             range: 0..2,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
         ACFGNode::Sync(SyncPlaceholder {
             participants,

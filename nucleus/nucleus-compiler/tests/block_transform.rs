@@ -474,6 +474,7 @@ fn smoke_synthetic_acfg_is_buildable() {
         range: 0..8,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     };
     assert_eq!(repeat.count_repeats(), 1);
 

@@ -116,12 +116,14 @@ fn build_2d_acfg_with_partition_and_halo(
         range: inner_range.clone(),
         body: Box::new(ACFGNode::Sequence(vec![body_op])),
         block_tag: None,
+        break_cond: None,
     };
     let outer = ACFGNode::Repeat {
         iter_var: outer_iv,
         range: outer_range.clone(),
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Partition sidecar: per-worker y-band (from outer_iv) + x-band
@@ -569,12 +571,14 @@ fn positive_placement_after_producing_op() {
         range: 0..16,
         body: Box::new(ACFGNode::Sequence(vec![body_op])),
         block_tag: None,
+        break_cond: None,
     };
     let outer = ACFGNode::Repeat {
         iter_var: outer_iv,
         range: 0..16,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Partition sidecar: per-worker y-band + x-band, 2x2 grid over

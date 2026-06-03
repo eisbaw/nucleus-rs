@@ -219,6 +219,7 @@ mod tests {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let out = apply_host_mediation_inject(empty_acfg(root), host());
         match &out.root {

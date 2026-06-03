@@ -171,6 +171,36 @@ pub enum BuildAcfgError {
         /// diagnostic. Always `"TASK-0341.02.01"`.
         epic: &'static str,
     },
+    /// A `for..until COND` loop's halt predicate `COND` is not a
+    /// relational comparison.
+    ///
+    /// Epic S4 (TASK-0341.02.01.05.01) makes `for..until` non-inert by
+    /// lowering it to a capped `Repeat`, so the halt predicate now
+    /// reaches codegen and must be a **bool**-valued expression. The only
+    /// bool-valued `IrExpr` in v2 today is [`IrExpr::Compare`](crate::algo::ir::IrExpr::Compare)
+    /// (a single relational comparison — epic S2); a plain integer rvalue
+    /// (`until x` where `x : i32`), a kernel call, or any non-Compare
+    /// expression is NOT bool and is rejected here.
+    ///
+    /// This is a DELIBERATE pragmatic bool-context gate, not a full bool
+    /// type system: the rule is "an `until`-COND must be a relational
+    /// comparison", which is exactly the convergence-check shape
+    /// (`diff <= tol`). S1 lowered COND through the bool-accepting
+    /// `lower_rvalue` WITHOUT a bool gate (harmless then because the whole
+    /// loop was rejected by [`BuildAcfgError::UntilLoopUnsupported`]); this
+    /// variant closes that S1-left gap. A first-class bool type-checker is
+    /// a larger follow-up (file if warranted).
+    ///
+    /// This is **diagnosable user input**, a typed error, NOT a `panic!`
+    /// and NOT a silent accept (the silent-accept affordance is the
+    /// `feedback-option-none-skip-arm-silent-drop` anti-pattern). Carries
+    /// the loop variable and the offending predicate verbatim.
+    UntilCondNotComparison {
+        /// The loop variable of the offending `until`-loop (e.g. `t`).
+        var: String,
+        /// The non-comparison COND expression, verbatim from the IR.
+        cond: IrExpr,
+    },
 }
 
 impl std::fmt::Display for BuildAcfgError {
@@ -224,6 +254,18 @@ impl std::fmt::Display for BuildAcfgError {
                  (`for {var} : LO .. HI {{ … }}`, no `until`) for now. \
                  (Tracked under {epic} — the data-dependent loop-termination \
                  grammar-extension epic.)"
+            ),
+            BuildAcfgError::UntilCondNotComparison { var, cond } => write!(
+                f,
+                "loop `{var}` has an `until COND` halt predicate `{cond:?}` \
+                 that is not a relational comparison. An `until`-COND must \
+                 be a bool-valued expression, and the only bool-valued form \
+                 in v2 is a single relational comparison (`a <= b`, `a < b`, \
+                 `a == b`, etc.) — exactly the convergence-check shape \
+                 (`diff <= tol`). A plain integer (`until x` where `x` is \
+                 an i32), a kernel call, or any other non-comparison \
+                 expression is not bool. Use a relational comparison as the \
+                 halt predicate."
             ),
         }
     }

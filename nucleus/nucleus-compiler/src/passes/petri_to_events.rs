@@ -308,6 +308,15 @@ fn walk(
             range,
             body,
             block_tag,
+            // The bounded early-exit halt predicate (epic S4,
+            // TASK-0341.02.01.05.01). NOT consumed yet: the runtime break
+            // EMIT + bool render path is deferred to TASK-0341.02.01.05.04.
+            // Bound (not `..`-elided) so that consumer slice is
+            // compiler-forced to wire it up here rather than silently drop
+            // it. Until then the EventList projects a `for..until` exactly
+            // like a plain `for` over the cap range — codegen-inert, which
+            // is the .05.01 contract (no example consumer).
+            break_cond: _,
         } => {
             // STRUCTURE-PRESERVING (TASK-0159). The analysis Net
             // (`acfg_to_petri`) still unrolls — boundedness / deadlock

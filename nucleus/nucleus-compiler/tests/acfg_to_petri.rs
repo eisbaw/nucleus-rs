@@ -315,6 +315,7 @@ fn repeat_unrolls_body() {
         range: 0..3,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
     let net = acfg_to_net(&acfg);
@@ -335,6 +336,7 @@ fn repeat_empty_range_emits_no_transitions() {
         range: 5..5,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     }]);
     let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0)]);
     let net = acfg_to_net(&acfg);
@@ -440,6 +442,7 @@ fn determinism_two_lowerings_of_same_acfg_match() {
             range: 0..2,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
         ACFGNode::Sync(SyncPlaceholder {
             participants,

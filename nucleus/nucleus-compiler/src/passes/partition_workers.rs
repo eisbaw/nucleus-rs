@@ -461,6 +461,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2]), op_on(&[2, 3])])),
             block_tag: None,
+            break_cond: None,
         };
         let (range, workers) = find_loop(&inner, IterVar(7)).unwrap();
         assert_eq!(range, 0..16);
@@ -477,6 +478,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[0])])),
             block_tag: None,
+            break_cond: None,
         };
         assert!(find_loop(&inner, IterVar(99)).is_none());
     }

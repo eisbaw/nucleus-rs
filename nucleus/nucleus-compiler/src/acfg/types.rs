@@ -29,6 +29,11 @@ use crate::event::{
     ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, SyncTag, WorkerId,
 };
 use crate::sched::NotifyKind;
+// `IrExpr` carries the `until COND` break predicate on a source
+// `for..until` loop (epic S4, TASK-0341.02.01.05.01). It is the same
+// node already carried by `ArgBinding::Scalar`, so the serde contract
+// (and the determinism gate) already covers it.
+use crate::algo::IrExpr;
 
 // --------------------------------------------------------------------
 // Types
@@ -445,6 +450,44 @@ pub enum ACFGNode {
         /// (mechanical) destructuring churn.
         #[cfg_attr(feature = "serde", serde(default))]
         block_tag: Option<BlockTag>,
+        /// `Some(cond)` iff this `Repeat` is a source `for..until` loop
+        /// (epic S4, TASK-0341.02.01.05.01): the bounded early-exit halt
+        /// predicate, carried verbatim from the IR so codegen can emit
+        /// the runtime break. `None` for every ordinary fixed-iteration
+        /// `for` loop AND for every synthesised tile / partition / inner
+        /// loop (those are compiler machinery, never a source convergence
+        /// loop, so they carry no break predicate).
+        ///
+        /// ANALYSIS-INVISIBLE TO THE NET. The Petri unroll
+        /// ([`crate::passes::acfg_to_petri`]) MUST ignore this field: a
+        /// `for..until` lowers to the SAME bounded structure as a plain
+        /// `for` over the cap `range`, and the convergence predicate is
+        /// not a control place the Net models. Boundedness is proved on
+        /// the full-`range` unroll; any early-exit prefix `0..k`
+        /// (`k <= range.len()`) is a sub-trace of that bounded net, hence
+        /// bounded a fortiori (epic keystone soundness argument, architect
+        /// GO design-review cycle-254). The field survives to the
+        /// EventList projection ([`crate::passes::petri_to_events`]),
+        /// which is the *codegen* contract; the runtime break is emitted
+        /// there + in the backend (deferred to TASK-0341.02.01.05.04).
+        ///
+        /// Why a payload field and not a per-`IterVar` sidecar — same
+        /// argument as `block_tag` above: the break predicate is a
+        /// per-loop-**occurrence** fact, and `block_transform` reuses one
+        /// `IterVar` across strip-mined passes. A per-`IterVar` map would
+        /// conflate occurrences (the TASK-0180 double-count failure mode),
+        /// and there is no stable per-loop-id substrate to key a sidecar
+        /// on; the per-occurrence node is the only safe carrier. The field
+        /// is also silent-sibling-safe: the compiler forces every
+        /// construct site to set it (only the source-loop builder in
+        /// [`crate::acfg::build_acfg`] ever sets `Some`).
+        ///
+        /// serde-default so an old wire payload (no field) deserialises
+        /// as `None`; the carried `IrExpr` is the same node already in
+        /// `ArgBinding::Scalar`, so the round-trip / determinism gate is
+        /// already covered.
+        #[cfg_attr(feature = "serde", serde(default))]
+        break_cond: Option<IrExpr>,
     },
     /// Sequential composition of nodes inside one scope.
     Sequence(Vec<ACFGNode>),

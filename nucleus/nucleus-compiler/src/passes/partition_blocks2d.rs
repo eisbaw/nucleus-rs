@@ -678,6 +678,7 @@ mod tests {
             range: 0..4,
             body: Box::new(ACFGNode::Sequence(vec![op])),
             block_tag: None,
+            break_cond: None,
         };
         let body = ACFGNode::Sequence(vec![inner]);
         assert!(contains_repeat(&body));
@@ -707,12 +708,14 @@ mod tests {
             range: 5..15,
             body: Box::new(ACFGNode::Sequence(vec![op])),
             block_tag: None,
+            break_cond: None,
         };
         let outer = ACFGNode::Repeat {
             iter_var: IterVar(7),
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![inner])),
             block_tag: None,
+            break_cond: None,
         };
         let (iv, range) = find_first_inner_repeat(&outer, IterVar(7)).unwrap();
         assert_eq!(iv, IterVar(8));
@@ -744,6 +747,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op])),
             block_tag: None,
+            break_cond: None,
         };
         assert!(find_first_inner_repeat(&outer, IterVar(7)).is_none());
     }
@@ -784,6 +788,7 @@ mod tests {
                 range: 0..4,
                 body: Box::new(inner),
                 block_tag: None,
+                break_cond: None,
             }
         }
 

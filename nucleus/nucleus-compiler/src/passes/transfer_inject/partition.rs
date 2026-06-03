@@ -330,6 +330,7 @@ pub(super) fn rewrite_partition_tiles_inner(
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
@@ -340,6 +341,9 @@ pub(super) fn rewrite_partition_tiles_inner(
                 data_dim_iv_map,
             )),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
     }

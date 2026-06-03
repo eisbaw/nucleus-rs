@@ -187,6 +187,7 @@ pub(super) fn rewrite_cumulative_band_tiles(
             range,
             body,
             block_tag,
+            break_cond,
         } => Ok(ACFGNode::Repeat {
             iter_var,
             range,
@@ -198,6 +199,9 @@ pub(super) fn rewrite_cumulative_band_tiles(
                 data_dims,
             )?),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         }),
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => Ok(leaf),
     }
@@ -250,6 +254,7 @@ pub(super) fn hoist_cumulative_w2w_to_repeat_body(
                         range,
                         body,
                         block_tag,
+                        break_cond,
                     } if partition_ranges.contains_key(&iter_var) => {
                         // Strip cumulative w2w Xfers from the partition
                         // Repeat's subtree; collect them.
@@ -260,6 +265,9 @@ pub(super) fn hoist_cumulative_w2w_to_repeat_body(
                             range,
                             body: Box::new(body),
                             block_tag,
+                            // Structure-preserving (only `body` changes);
+                            // carry the halt predicate through unchanged.
+                            break_cond,
                         });
                         // SEND-then-RECV: all Pushes, then all Waits.
                         // Within each role preserve discovery order
@@ -281,6 +289,7 @@ pub(super) fn hoist_cumulative_w2w_to_repeat_body(
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
@@ -290,6 +299,9 @@ pub(super) fn hoist_cumulative_w2w_to_repeat_body(
                 partition_ranges,
             )),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf => leaf,
     }
@@ -331,11 +343,15 @@ pub(super) fn strip_cumulative_xfers(
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(strip_cumulative_xfers(*body, cumulative_data, out)),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf => leaf,
     }
@@ -562,6 +578,7 @@ pub(super) fn extend_xfer_tiles_inner(
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
@@ -572,6 +589,9 @@ pub(super) fn extend_xfer_tiles_inner(
                 source_ranges,
             )),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_)) => leaf,
     }

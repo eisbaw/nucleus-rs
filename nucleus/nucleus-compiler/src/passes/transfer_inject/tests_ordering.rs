@@ -82,6 +82,7 @@ fn task0389_producer_rank_recurses_into_repeat_body_first_occurrence() {
             range: 0..4,
             body: Box::new(ACFGNode::Sequence(vec![producer_op(KernelId(11), y)])),
             block_tag: None,
+            break_cond: None,
         },
     ]);
 
@@ -253,6 +254,7 @@ fn task038901_crux_cohoisted_pushes_textual_order_vs_rank() {
                 producer_op(KernelId(11), b),
             ])),
             block_tag: None,
+            break_cond: None,
         },
         // Top-level Waits, in rank order a then b.
         ACFGNode::Xfer(wait_ph(w0, host, a, 100)),
@@ -304,6 +306,7 @@ fn task038901_three_cohoisted_pushes_preserve_rank_order() {
                 producer_op(KernelId(12), c),
             ])),
             block_tag: None,
+            break_cond: None,
         },
         ACFGNode::Xfer(wait_ph(w0, host, a, 100)),
         ACFGNode::Xfer(wait_ph(w0, host, b, 101)),
@@ -346,6 +349,7 @@ fn task038901_cohoist_robust_to_wait_placement_order() {
                 producer_op(KernelId(11), b),
             ])),
             block_tag: None,
+            break_cond: None,
         },
         ACFGNode::Xfer(wait_ph(w0, host, b, 101)),
         ACFGNode::Xfer(wait_ph(w0, host, a, 100)),

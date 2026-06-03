@@ -579,6 +579,7 @@ pub(super) fn prepend_strip_pairs(
             range,
             body,
             block_tag,
+            break_cond,
         } => {
             // A bare Repeat (not wrapped in a Sequence) whose iter_var
             // matches a group: wrap it. In practice `build_acfg` always
@@ -591,6 +592,9 @@ pub(super) fn prepend_strip_pairs(
                 range,
                 body: new_body,
                 block_tag,
+                // Structure-preserving rewrite (only `body` changes);
+                // carry the `for..until` halt predicate through unchanged.
+                break_cond,
             }
         }
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_)) => leaf,

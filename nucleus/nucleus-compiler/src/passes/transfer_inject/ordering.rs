@@ -175,11 +175,15 @@ pub(super) fn splice_after_producer(node: ACFGNode, push: &XferPlaceholder) -> A
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(splice_after_producer(*body, push)),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf => leaf,
     }
@@ -234,11 +238,15 @@ pub(super) fn splice_after_repeat(
             range,
             body,
             block_tag,
+            break_cond,
         } => ACFGNode::Repeat {
             iter_var,
             range,
             body: Box::new(splice_after_repeat(*body, cut_iv, push)),
             block_tag,
+            // Structure-preserving rewrite (only `body` changes); carry
+            // the `for..until` halt predicate through unchanged.
+            break_cond,
         },
         leaf => leaf,
     }

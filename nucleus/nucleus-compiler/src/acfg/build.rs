@@ -230,22 +230,38 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<ACFGNode, BuildAcfgEr
             until,
             body,
         } => {
-            // INERT rejection of the bounded early-exit loop (epic S1,
-            // TASK-0341.02.01.03). The `until COND` halt clause parses +
-            // lowers to IR, but no downstream pass / backend consumes it
-            // yet, so reject it HERE — the FIRST pre-mediation pass — with
-            // a typed error naming the epic (NOT a panic). This is upstream
-            // of every pass that destructures `IrStmt::For` with `{ .. }`
-            // and would otherwise silently ignore the `until` field; that
-            // ordering is the inert-soundness argument (see the
-            // `ast::Stmt::For` / `IrStmt::For` docstrings and
-            // `crate::pipeline::run_pre_mediation_passes`).
-            if until.is_some() {
-                return Err(BuildAcfgError::UntilLoopUnsupported {
-                    var: var.clone(),
-                    epic: "TASK-0341.02.01",
-                });
-            }
+            // Bounded early-exit `for..until` lowering (epic S4,
+            // TASK-0341.02.01.05.01). The `until COND` halt clause now
+            // lowers to a real capped `Repeat` carrying the predicate in
+            // `break_cond` — it is no longer rejected here. The cap (`hi`)
+            // keeps the loop statically bounded; the Net unroll
+            // (`acfg_to_petri`) IGNORES `break_cond` (analysis-invisible —
+            // see the `ACFGNode::Repeat.break_cond` docstring). The
+            // ex-`UntilLoopUnsupported` reject was the opacity gate this
+            // slice LIFTS (architect S1 fold-forward item 4): it must not
+            // be left rejecting a now-supported shape.
+            //
+            // BOOL-CONTEXT GATE (closes the S1-left gap, see
+            // `lower::lower_for_into`): S1 lowered COND through the
+            // bool-accepting `lower_rvalue` WITHOUT a bool type-check, so
+            // an `until x` (x:i32) or a kernel call slips through as a
+            // non-bool COND. The halt predicate now reaches codegen, so it
+            // MUST be bool. The only bool-valued `IrExpr` in v2 is
+            // `IrExpr::Compare`; anything else is a typed error
+            // (`UntilCondNotComparison`) — NOT a panic, NOT a silent
+            // accept. This is a deliberate pragmatic gate ("until-COND must
+            // be a relational comparison" = exactly the convergence shape),
+            // not a full bool type system.
+            let break_cond = match until {
+                None => None,
+                Some(cond @ IrExpr::Compare(..)) => Some(cond.clone()),
+                Some(cond) => {
+                    return Err(BuildAcfgError::UntilCondNotComparison {
+                        var: var.clone(),
+                        cond: cond.clone(),
+                    });
+                }
+            };
             let iter_var = ctx
                 .name_iter_vars
                 .get(var)
@@ -274,6 +290,10 @@ fn build_stmt(stmt: &IrStmt, ctx: &BuildCtx<'_>) -> Result<ACFGNode, BuildAcfgEr
                 // it iterates its real range. `block_transform` may
                 // later replace it with a tagged inner nest.
                 block_tag: None,
+                // The bounded early-exit halt predicate (epic S4). `Some`
+                // only for a `for..until`; a plain `for` carries `None`.
+                // This is the ONLY production site that ever sets `Some`.
+                break_cond,
             })
         }
     }

@@ -88,12 +88,14 @@ fn build_2d_acfg(
         range: inner_range,
         body: Box::new(ACFGNode::Sequence(vec![op_on(body_workers)])),
         block_tag: None,
+        break_cond: None,
     };
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(outer_id),
         range: outer_range,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        break_cond: None,
     };
 
     ACFG {
@@ -136,6 +138,7 @@ fn build_1d_acfg(
         range,
         body: Box::new(ACFGNode::Sequence(vec![op_on(body_workers)])),
         block_tag: None,
+        break_cond: None,
     };
 
     ACFG {

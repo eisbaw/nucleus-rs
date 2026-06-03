@@ -79,6 +79,7 @@ fn build_synthetic_acfg(
         range,
         body: Box::new(ACFGNode::Sequence(vec![op_on(body_workers)])),
         block_tag: None,
+        break_cond: None,
     };
 
     ACFG {
@@ -387,6 +388,7 @@ fn non_divisible_range_spillover_policy() {
             range: 0..17,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2, 3])])),
             block_tag: None,
+            break_cond: None,
         }]),
         name_kernels: Default::default(),
         name_data: Default::default(),
@@ -459,6 +461,7 @@ fn insufficient_work_range_is_rejected() {
             range: 0..3,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2, 3, 4])])),
             block_tag: None,
+            break_cond: None,
         }]),
         name_kernels: Default::default(),
         name_data: Default::default(),
@@ -552,6 +555,7 @@ fn unknown_loop_var_when_no_repeat_carries_the_resolved_iter_var() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2])])),
             block_tag: None,
+            break_cond: None,
         }]),
         name_kernels: Default::default(),
         name_data: Default::default(),
@@ -637,6 +641,7 @@ fn partitioned_repeat_skips_body_entry_exit_syncs() {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
         op_on(&[0], &[1], None),
     ]);
@@ -727,6 +732,7 @@ fn non_partitioned_repeat_keeps_body_entry_exit_syncs() {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
         op_on(&[0], &[1], None),
     ]);
@@ -809,6 +815,7 @@ fn transfer_fanout_composes_with_partition_sidecar() {
             range: 0..8,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
     ]);
 

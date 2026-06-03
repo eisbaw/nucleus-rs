@@ -190,6 +190,7 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
         range: 0..4,
         body: Box::new(intra_tile_body),
         block_tag: None,
+        break_cond: None,
     };
     let per_tile_body = ACFGNode::Sequence(vec![inner_repeat]);
     let outer_repeat = ACFGNode::Repeat {
@@ -197,6 +198,7 @@ fn wait_hoists_out_of_block_inner_intra_tile_loop() {
         range: 0..4,
         body: Box::new(per_tile_body),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer_repeat]);
 
@@ -330,6 +332,7 @@ fn loop_invariant_wait_hoists_out_of_plain_loops() {
         range: 0..4,
         body: Box::new(intra_body),
         block_tag: None,
+        break_cond: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
@@ -337,6 +340,7 @@ fn loop_invariant_wait_hoists_out_of_plain_loops() {
         range: 0..4,
         body: Box::new(outer_body),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer]);
 
@@ -412,6 +416,7 @@ fn hoisting_is_idempotent() {
         range: 0..4,
         body: Box::new(intra_body),
         block_tag: None,
+        break_cond: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
@@ -419,6 +424,7 @@ fn hoisting_is_idempotent() {
         range: 0..4,
         body: Box::new(outer_body),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer]);
 
@@ -488,6 +494,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         range: 0..4,
         body: Box::new(intra_j),
         block_tag: None,
+        break_cond: None,
     };
     let per_j_tile = ACFGNode::Sequence(vec![inner_j]);
     let outer_j = ACFGNode::Repeat {
@@ -495,6 +502,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         range: 0..4,
         body: Box::new(per_j_tile),
         block_tag: None,
+        break_cond: None,
     };
     let intra_i = ACFGNode::Sequence(vec![outer_j]);
     let inner_i = ACFGNode::Repeat {
@@ -502,6 +510,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         range: 0..4,
         body: Box::new(intra_i),
         block_tag: None,
+        break_cond: None,
     };
     let per_i_tile = ACFGNode::Sequence(vec![inner_i]);
     let outer_i = ACFGNode::Repeat {
@@ -509,6 +518,7 @@ fn nested_block_inner_hoists_to_outermost_per_tile() {
         range: 0..4,
         body: Box::new(per_i_tile),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![producer, outer_i]);
 
@@ -582,6 +592,7 @@ fn in_intra_tile_producer_consumer_is_not_hoisted() {
         range: 0..4,
         body: Box::new(intra),
         block_tag: None,
+        break_cond: None,
     };
     let outer_body = ACFGNode::Sequence(vec![inner]);
     let outer = ACFGNode::Repeat {
@@ -589,6 +600,7 @@ fn in_intra_tile_producer_consumer_is_not_hoisted() {
         range: 0..4,
         body: Box::new(outer_body),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![outer]);
 
@@ -738,6 +750,7 @@ fn example_02_shape() -> (ACFG, LinkedIR) {
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![add])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![load_a, load_b, loop_i, save]);
 
@@ -836,18 +849,21 @@ fn mixed_block_and_nonblock_program_pairs_the_nonblock_transfer() {
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consume_d])),
         block_tag: None,
+        break_cond: None,
     };
     let tile_loop = ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![inner_block])),
         block_tag: None,
+        break_cond: None,
     };
     let plain_loop = ACFGNode::Repeat {
         iter_var: IterVar(4),
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![consume_e])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
 
@@ -1000,18 +1016,21 @@ fn block_nested_in_plain_loop_pairs_the_invariant_wait() {
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consume_e])),
         block_tag: None,
+        break_cond: None,
     };
     let tile_loop = ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![inner_block])),
         block_tag: None,
+        break_cond: None,
     };
     let plain_loop = ACFGNode::Repeat {
         iter_var: IterVar(5),
         range: 0..4,
         body: Box::new(ACFGNode::Sequence(vec![consume_d, tile_loop])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![load_d, load_e, plain_loop]);
 
@@ -1093,18 +1112,21 @@ fn mixed_block_nonblock_tree_is_structurally_idempotent() {
                 num_full: 1,
                 is_partial: false,
             }),
+            break_cond: None,
         };
         let tile_loop = ACFGNode::Repeat {
             iter_var: IterVar(2),
             range: 0..2,
             body: Box::new(ACFGNode::Sequence(vec![inner_block])),
             block_tag: None,
+            break_cond: None,
         };
         let plain_loop = ACFGNode::Repeat {
             iter_var: IterVar(4),
             range: 0..4,
             body: Box::new(ACFGNode::Sequence(vec![consume_e])),
             block_tag: None,
+            break_cond: None,
         };
         let root = ACFGNode::Sequence(vec![load_d, load_e, tile_loop, plain_loop]);
         let mut name_data: BTreeMap<String, DataId> = BTreeMap::new();
@@ -1254,6 +1276,7 @@ fn task0335_01_slot_aware_sync_stop_in_hoisted_waits_drain() {
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consumer_a])),
         block_tag: None,
+        break_cond: None,
     };
 
     // ---- Sync barrier BETWEEN the two block-inner sibling Repeats.
@@ -1270,6 +1293,7 @@ fn task0335_01_slot_aware_sync_stop_in_hoisted_waits_drain() {
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consumer_b])),
         block_tag: None,
+        break_cond: None,
     };
 
     let root = ACFGNode::Sequence(vec![producer, repeat_a, sync_barrier, repeat_b]);

@@ -1014,6 +1014,7 @@ fn build_widened_acfg(nw: u64, top_items: Vec<WideItem>, loop_spec: LoopSpec) ->
                 range: 0..inner_len,
                 body: Box::new(ACFGNode::Sequence(inner_body)),
                 block_tag: None,
+                break_cond: None,
             });
         }
         nodes.push(ACFGNode::Repeat {
@@ -1021,6 +1022,7 @@ fn build_widened_acfg(nw: u64, top_items: Vec<WideItem>, loop_spec: LoopSpec) ->
             range: 0..outer_len,
             body: Box::new(ACFGNode::Sequence(body_children)),
             block_tag: None,
+            break_cond: None,
         });
     }
 

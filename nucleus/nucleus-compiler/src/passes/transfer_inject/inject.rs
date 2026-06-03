@@ -478,6 +478,7 @@ pub(super) fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut St
             range,
             body,
             block_tag,
+            break_cond,
         } => {
             // Build the enclosing-tile contribution from this Repeat.
             // We re-walk the body with the contribution pushed onto a
@@ -493,6 +494,9 @@ pub(super) fn inject_in_node(node: ACFGNode, ctx: &InjectCtx<'_>, state: &mut St
                 // body; the strip-mine rebinding tag is structural and
                 // survives verbatim (TASK-0180).
                 block_tag,
+                // ... likewise the `for..until` halt predicate is carried
+                // through unchanged.
+                break_cond,
             }
         }
         // Leaves: nothing to inject inside.
@@ -541,6 +545,7 @@ pub(super) fn inject_in_node_with_tile(
             range,
             body,
             block_tag,
+            break_cond,
         } => {
             let mut nested = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
@@ -562,6 +567,8 @@ pub(super) fn inject_in_node_with_tile(
                 // Transparent reconstruction — preserve the strip-mine
                 // rebinding tag verbatim (TASK-0180).
                 block_tag,
+                // ... and the `for..until` halt predicate, unchanged.
+                break_cond,
             }
         }
         leaf @ (ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_)) => {

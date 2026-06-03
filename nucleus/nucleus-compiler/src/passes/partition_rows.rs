@@ -509,6 +509,7 @@ mod tests {
             range: 0..4,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1])])),
             block_tag: None,
+            break_cond: None,
         }]);
         assert!(contains_repeat(&body));
     }
@@ -529,12 +530,14 @@ mod tests {
             range: 0..8,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2, 3])])),
             block_tag: None,
+            break_cond: None,
         };
         let outer = ACFGNode::Repeat {
             iter_var: IterVar(7),
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![inner])),
             block_tag: None,
+            break_cond: None,
         };
         let (range, has_inner, workers) = find_outer_of_2d(&outer, IterVar(7)).unwrap();
         assert_eq!(range, 0..16);
@@ -555,6 +558,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op_on(&[1, 2])])),
             block_tag: None,
+            break_cond: None,
         };
         let (range, has_inner, workers) = find_outer_of_2d(&outer, IterVar(7)).unwrap();
         assert_eq!(range, 0..16);

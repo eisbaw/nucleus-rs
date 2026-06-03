@@ -160,6 +160,17 @@ pub enum BlockTransformError {
     /// purely so the pass fails closed if invoked on an
     /// inconsistently-constructed `(LinkedIR, ACFG)` pair.
     UnknownLoopVar { var: String },
+    /// `block=N` targets a `for..until` bounded early-exit loop (epic S4,
+    /// TASK-0341.02.01.05.01). Strip-mining rebinds the source iter var
+    /// to `tile*N + inner`, but the `until COND` halt predicate references
+    /// the source iter var directly, so tiling the loop would require
+    /// re-deriving the predicate against the rebound index — codegen work
+    /// that does not exist yet. Rather than silently DROP the break
+    /// predicate when `tile_nest` synthesises fresh loops (the
+    /// `feedback-option-none-skip-arm-silent-drop` anti-pattern), reject
+    /// the combination loudly with a typed error. `block=` on a plain
+    /// fixed-iteration loop is unaffected.
+    BlockOnUntilLoop { var: String },
 }
 
 impl std::fmt::Display for BlockTransformError {
@@ -178,6 +189,15 @@ impl std::fmt::Display for BlockTransformError {
                 f,
                 "schedule has `loop {var} : block=...` but the ACFG contains no loop with \
                  variable `{var}` (linker-pass invariant violation)"
+            ),
+            BlockTransformError::BlockOnUntilLoop { var } => write!(
+                f,
+                "schedule has `loop {var} : block=...` on a `for..until` bounded early-exit \
+                 loop; strip-mining a loop with an `until COND` halt predicate is not yet \
+                 supported (the predicate references the source iteration variable, which \
+                 tiling rebinds). Remove the `block=` directive on `{var}`, or use a plain \
+                 fixed-iteration loop. (Tracked under the data-dependent loop-termination \
+                 epic, TASK-0341.02.01.)"
             ),
         }
     }
@@ -254,6 +274,15 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
             // doesn't loop over. The linker should reject this, but
             // fail closed.
             return Err(BlockTransformError::UnknownLoopVar { var: var.clone() });
+        }
+        // Reject `block=` on a `for..until` loop (epic S4). Tiling
+        // synthesises fresh loops via `tile_nest`, which would SILENTLY
+        // DROP the break predicate (the source loop is replaced, not
+        // rewritten in place). Fail loud here rather than downstream — the
+        // predicate references the source iter var and tiling rebinds it,
+        // so this is genuinely unsupported until a later codegen slice.
+        if loop_has_break_cond_by_id(&acfg.root, iter_var) {
+            return Err(BlockTransformError::BlockOnUntilLoop { var: var.clone() });
         }
     }
 
@@ -389,6 +418,34 @@ fn find_loop_range_by_id(node: &ACFGNode, target: IterVar) -> Option<(i64, i64)>
     }
 }
 
+/// `true` iff the first `Repeat` in `node`'s subtree whose `iter_var`
+/// equals `target` carries a `for..until` break predicate
+/// (`break_cond.is_some()`). Used by [`apply_block_transforms`] to reject
+/// a `block=` directive on a `for..until` loop (epic S4) BEFORE the
+/// rewrite, so the silent break-predicate drop in `tile_nest` cannot
+/// occur. Mirrors [`find_loop_range_by_id`]'s "first match wins,
+/// outermost only" traversal.
+fn loop_has_break_cond_by_id(node: &ACFGNode, target: IterVar) -> bool {
+    match node {
+        ACFGNode::Repeat {
+            iter_var,
+            body,
+            break_cond,
+            ..
+        } => {
+            if *iter_var == target {
+                break_cond.is_some()
+            } else {
+                loop_has_break_cond_by_id(body, target)
+            }
+        }
+        ACFGNode::Sequence(children) => children
+            .iter()
+            .any(|c| loop_has_break_cond_by_id(c, target)),
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) | ACFGNode::Xfer(_) => false,
+    }
+}
+
 /// Build one `(outer tile-loop, inner intra-tile-loop)` nest.
 ///
 /// Shape: `Repeat(tile_id, outer_range) { Sequence[ Repeat(inner_id,
@@ -422,6 +479,10 @@ fn tile_nest(
         range: 0..inner_len,
         body: Box::new(body.clone()),
         block_tag: Some(inner_tag),
+        // Synthesised tile loops never carry a `for..until` predicate
+        // (the source loop being tiled is guaranteed not to be one — see
+        // the `BlockOnUntilLoop` guard in `apply_block_transforms`).
+        break_cond: None,
     };
     // The synthesised tile loop's variable never appears in a body
     // index (block_transform only renames the source loop into a
@@ -431,6 +492,8 @@ fn tile_nest(
         range: outer_range,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        // Synthesised loop — no halt predicate (see above).
+        break_cond: None,
     }
 }
 
@@ -453,7 +516,15 @@ fn rewrite_node(
             range,
             body,
             block_tag,
+            break_cond,
         } => {
+            // INVARIANT (epic S4): a `for..until` loop (break_cond.is_some)
+            // can NOT reach the tiling `Some` arm below — `block=` on such
+            // a loop is rejected up front in `apply_block_transforms`
+            // (`BlockOnUntilLoop`). So `break_cond` is threaded ONLY through
+            // the two pass-through arms (degenerate + non-target); the
+            // tiling arm rebuilds via `tile_nest` (break_cond: None on the
+            // synthesised loops) and never carries one.
             let new_body = rewrite_node(*body, tile_var_for);
             match tile_var_for.get(&iter_var) {
                 Some((_, tile_id, n)) => {
@@ -474,6 +545,10 @@ fn rewrite_node(
                             // (it has none unless a future nested-block
                             // pass re-enters; never invent one here).
                             block_tag,
+                            // Pass-through: preserve the halt predicate.
+                            // (Unreachable for a `for..until` given the
+                            // BlockOnUntilLoop guard, but keep it sound.)
+                            break_cond,
                         };
                     }
                     let num_full = len / n_i64; // whole tiles of width N
@@ -564,6 +639,10 @@ fn rewrite_node(
                     // Not a block= target: passes through with its
                     // existing tag (none for a source loop).
                     block_tag,
+                    // ... and its halt predicate, unchanged. A
+                    // non-targeted `for..until` (e.g. nested under a
+                    // tiled loop) survives the rewrite verbatim.
+                    break_cond,
                 },
             }
         }
@@ -611,6 +690,7 @@ mod tests {
             range: 0..32,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let outer = ACFGNode::Sequence(vec![op(), inner]);
         assert_eq!(find_loop_range_by_id(&outer, IterVar(7)), Some((0, 32)));
@@ -625,6 +705,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let out = rewrite_node(n.clone(), &tile_map);
         assert_eq!(out, n);
@@ -639,6 +720,7 @@ mod tests {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let out = rewrite_node(n, &tile_map);
         match out {
@@ -647,6 +729,7 @@ mod tests {
                 range: outer_range,
                 body,
                 block_tag: outer_tag,
+                break_cond: _,
             } => {
                 assert_eq!(outer, IterVar(5));
                 assert_eq!(outer_range, 0..4); // 16 / 4 = 4 tiles
@@ -705,6 +788,7 @@ mod tests {
             range: 1..15,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let out = rewrite_node(n, &tile_map);
 
@@ -730,6 +814,7 @@ mod tests {
                     range,
                     body,
                     block_tag: outer_tag,
+                    break_cond: _,
                 } => {
                     assert_eq!(*outer, IterVar(5), "outer is the tile var");
                     assert_eq!(*range, outer_range);
@@ -802,6 +887,7 @@ mod tests {
             range: 0..100,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let out = rewrite_node(n, &tile_map);
         let seq = match out {
@@ -865,6 +951,7 @@ mod tests {
             range: 0..64,
             body: Box::new(ACFGNode::Sequence(vec![op()])),
             block_tag: None,
+            break_cond: None,
         };
         let out = rewrite_node(n, &tile_map);
 
@@ -892,6 +979,7 @@ mod tests {
                     range,
                     body,
                     block_tag: outer_tag,
+                    break_cond: _,
                 } => {
                     assert_eq!(*outer, IterVar(7), "outer is the tile var");
                     assert_eq!(*range, outer_range);

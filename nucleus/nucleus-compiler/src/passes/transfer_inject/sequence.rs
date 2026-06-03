@@ -405,6 +405,7 @@ pub(super) fn hoist_invariant_waits(
             range,
             body,
             block_tag,
+            break_cond,
         } => {
             let mut nested: Vec<(IterVar, std::ops::Range<i64>)> = enclosing_tile.to_vec();
             nested.push((iter_var, range.clone()));
@@ -448,6 +449,9 @@ pub(super) fn hoist_invariant_waits(
                     // strip-mine rebinding tag is preserved verbatim
                     // (TASK-0180).
                     block_tag,
+                    // ... likewise the `for..until` halt predicate is
+                    // carried through unchanged.
+                    break_cond,
                 },
                 bubble,
             )

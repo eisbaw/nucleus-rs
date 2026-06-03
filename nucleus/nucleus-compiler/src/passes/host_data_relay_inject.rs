@@ -687,6 +687,7 @@ mod tests {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root);
         let out = apply_host_data_relay_inject(acfg, host());
@@ -750,6 +751,7 @@ mod tests {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         });
         acfg.name_workers = name_workers;
 
@@ -790,6 +792,7 @@ mod tests {
             range: 0..4,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let once = apply_host_data_relay_inject(empty_acfg(root), host());
         let twice = apply_host_data_relay_inject(once.clone(), host());
@@ -807,6 +810,7 @@ mod tests {
             range: 0..4,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root.clone());
         let out = apply_host_data_relay_inject(acfg, host());
@@ -826,6 +830,7 @@ mod tests {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let mut acfg = empty_acfg(root);
         acfg.pipeline_depth_for_seq.insert(
@@ -868,6 +873,7 @@ mod tests {
             range: 0..4,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root);
         let out = apply_host_data_relay_inject(acfg, host());
@@ -915,6 +921,7 @@ mod tests {
             range: 0..4,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root);
         let out = apply_host_data_relay_inject(acfg, host());
@@ -939,12 +946,14 @@ mod tests {
             range: 0..4,
             body: Box::new(inner_body),
             block_tag: None,
+            break_cond: None,
         };
         let outer = ACFGNode::Repeat {
             iter_var: IterVar(1),
             range: 0..2,
             body: Box::new(inner),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(outer);
         let out = apply_host_data_relay_inject(acfg, host());
@@ -979,6 +988,7 @@ mod tests {
             range: 0..16,
             body: Box::new(in_repeat_pair),
             block_tag: None,
+            break_cond: None,
         };
         let mut root_kids: Vec<ACFGNode> = top_level_pair.clone();
         root_kids.push(repeat);
@@ -1067,6 +1077,7 @@ mod tests {
             range: 0..16,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root);
         let out = apply_host_data_relay_inject(acfg, host());
@@ -1203,6 +1214,7 @@ mod tests {
             range: 0..4,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         };
         let acfg = empty_acfg(root);
         let out = apply_host_data_relay_inject(acfg, host());

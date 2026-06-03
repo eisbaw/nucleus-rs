@@ -880,24 +880,26 @@ schedule for "../prog.algo.nuc" {
 }
 
 // --------------------------------------------------------------------
-// TASK-0341.02.01.03 / epic S1: a `for … until COND { … }` bounded
-// early-exit loop is INERT — it parses, lowers to `IrStmt::For` with a
-// `Some(until)`, and is REJECTED at the ACFG-build boundary with the
-// typed `BuildAcfgError::UntilLoopUnsupported` naming the epic (NOT a
-// panic). This is the AC#2 boundary: build_acfg is the FIRST
-// pre-mediation pass, so the loop never reaches a downstream pass that
-// would silently ignore the `until` field.
+// TASK-0341.02.01.05.01 / epic S4: a `for … until COND { … }` bounded
+// early-exit loop is now NON-INERT — it LOWERS to an `ACFGNode::Repeat`
+// over the compile-time cap range carrying the halt predicate in
+// `break_cond: Some(IrExpr::Compare(...))`. This SUPERSEDES the epic-S1
+// inert behaviour (which rejected the loop at build_acfg with
+// `BuildAcfgError::UntilLoopUnsupported`); the S1 reject was the opacity
+// gate this slice LIFTS (architect S1 fold-forward item 4 — do not leave
+// it rejecting a now-supported shape). The runtime break EMIT is still
+// deferred (TASK-0341.02.01.05.04); this asserts the codegen-free
+// lowering only.
 // --------------------------------------------------------------------
 
 #[test]
-fn build_acfg_for_until_loop_is_typed_error_not_panic() {
-    use nucleus_compiler::acfg::BuildAcfgError;
+fn build_acfg_for_until_compare_cond_lowers_to_repeat_with_break_cond() {
+    use nucleus_compiler::acfg::ACFGNode;
+    use nucleus_compiler::algo::{IrCmpOp, IrExpr};
 
     // A capped early-exit loop. The COND (`a[0] <= a[0]`) is a bool
     // comparison over a pre-existing data symbol — decoupled from any
     // reduction (epic S3), exercising the loop-control surface alone.
-    // Single-assignment holds, so parse/lower/link all succeed; only
-    // build_acfg rejects it.
     let algo = r#"
 const N : usize = 8;
 
@@ -927,23 +929,92 @@ schedule for "../prog.algo.nuc" {
 
     let linked = linked_from_inline_src(algo, sched);
 
-    // The contract: a typed error, NOT a panic.
-    let err = build_acfg(&linked).expect_err("an `until`-loop must be a typed error");
+    // S4: build_acfg now SUCCEEDS — the until-loop lowers to a capped
+    // Repeat carrying the break predicate.
+    let acfg = build_acfg(&linked).expect("a Compare-COND until-loop must lower cleanly");
+
+    // Find the lone Repeat in the root and inspect its `break_cond`.
+    fn find_repeat(node: &ACFGNode) -> Option<&ACFGNode> {
+        match node {
+            ACFGNode::Repeat { .. } => Some(node),
+            ACFGNode::Sequence(cs) => cs.iter().find_map(find_repeat),
+            _ => None,
+        }
+    }
+    let repeat = find_repeat(&acfg.root).expect("the for..until lowered to a Repeat");
+    let ACFGNode::Repeat {
+        range, break_cond, ..
+    } = repeat
+    else {
+        unreachable!("find_repeat returns a Repeat");
+    };
+
+    // Cap N kept: the Repeat iterates the full compile-time range 0..N.
+    assert_eq!(*range, 0..8, "the compile-time cap N=8 is the Repeat range");
+
+    // The halt predicate survives to the ACFG layer as a bool Compare.
+    match break_cond {
+        Some(IrExpr::Compare(IrCmpOp::Le, _, _)) => {}
+        other => panic!("expected break_cond = Some(Compare(Le, ..)), got {other:?}"),
+    }
+}
+
+// TASK-0341.02.01.05.01 / epic S4: bool-context gate. The `until COND`
+// must be a relational comparison (`IrExpr::Compare`, the only
+// bool-valued IrExpr in v2). A non-Compare COND — here a plain data read
+// `a[0]` (i32, not bool) — is rejected with the typed
+// `BuildAcfgError::UntilCondNotComparison` (NOT a panic, NOT a silent
+// accept). This closes the gap S1 left: `lower_rvalue` accepts a plain
+// int rvalue as COND with no bool gate; S4 adds the bool-context check at
+// the ACFG boundary.
+// --------------------------------------------------------------------
+
+#[test]
+fn build_acfg_for_until_non_compare_cond_is_typed_error() {
+    use nucleus_compiler::acfg::BuildAcfgError;
+
+    // The COND `a[0]` is a plain i32 data read — NOT a bool comparison.
+    let algo = r#"
+const N : usize = 8;
+
+data a : i32[N];
+data b : i32[N];
+
+kernel load_input  : ()    -> i32[N] effectful;
+kernel id          : (i32) -> i32    pure;
+kernel save_output : (i32[N]) -> ()  effectful;
+
+a <-- load_input();
+
+for i : 0 .. N until a[0] {
+    b[i] <-- id(a[i]);
+}
+
+save_output(b);
+"#;
+    let sched = r#"
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input  on host;
+    place id          on host;
+    place save_output on host;
+}
+"#;
+
+    let linked = linked_from_inline_src(algo, sched);
+
+    let err =
+        build_acfg(&linked).expect_err("a non-Compare until-COND must be a typed error, not Ok");
 
     match &err {
-        BuildAcfgError::UntilLoopUnsupported { var, epic } => {
+        BuildAcfgError::UntilCondNotComparison { var, .. } => {
             assert_eq!(var, "i", "offending loop variable is `i`");
-            assert_eq!(
-                *epic, "TASK-0341.02.01",
-                "the rejection must name the grammar-extension epic"
-            );
         }
-        other => panic!("expected UntilLoopUnsupported, got {other:?}"),
+        other => panic!("expected UntilCondNotComparison, got {other:?}"),
     }
 
-    // The Display string carries an actionable, source-free diagnostic.
+    // The Display string is actionable + source-free.
     let msg = err.to_string();
     assert!(msg.contains("loop `i`"), "msg: {msg}");
-    assert!(msg.contains("until"), "msg: {msg}");
-    assert!(msg.contains("TASK-0341.02.01"), "msg: {msg}");
+    assert!(msg.contains("relational comparison"), "msg: {msg}");
 }

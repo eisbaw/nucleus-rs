@@ -737,6 +737,7 @@ fn task0366_fail_loud_error_propagates_through_nested_sequence_and_repeat() {
         range: 0..5,
         body: Box::new(ACFGNode::Sequence(vec![xfer])),
         block_tag: None,
+        break_cond: None,
     }]);
 
     let result = rewrite_cumulative_band_tiles(
@@ -807,12 +808,14 @@ fn task034102_hoist_w2w_send_then_recv_after_partition_repeat() {
             push.clone(),
         ])),
         block_tag: None,
+        break_cond: None,
     };
     let for_t = ACFGNode::Repeat {
         iter_var: t_iv,
         range: 0..5,
         body: Box::new(ACFGNode::Sequence(vec![inner_y])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![for_t]);
 
@@ -890,6 +893,7 @@ fn task034102_hoist_noop_when_no_cumulative_data() {
             policy,
         })])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![inner]);
     let empty: BTreeSet<DataId> = BTreeSet::new();

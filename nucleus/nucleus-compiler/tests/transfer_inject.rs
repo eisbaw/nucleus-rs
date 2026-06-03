@@ -728,6 +728,7 @@ fn fanout_per_worker_tile_for_input_direction() {
             range: 0..8,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
     ]);
     let mut acfg = synthetic_acfg(
@@ -789,6 +790,7 @@ fn fanout_per_worker_tile_for_output_direction() {
             range: 0..8,
             body: Box::new(producer_body),
             block_tag: None,
+            break_cond: None,
         },
         op(&[0], 101, vec![0], Some(1)),
     ]);
@@ -1034,6 +1036,7 @@ fn partition_with_pipeline_populates_pipeline_depth_per_fanout_pair() {
             range: 0..8,
             body: Box::new(body),
             block_tag: None,
+            break_cond: None,
         },
     ]);
     let mut acfg = synthetic_acfg(
@@ -1135,6 +1138,7 @@ fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
         range: 0..6,
         body: Box::new(inner_body),
         block_tag: None,
+        break_cond: None,
     }]);
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),
@@ -1143,6 +1147,7 @@ fn rewrite_partition_tiles_bounds_in_nest_order_not_itervar_id_order() {
             range: 0..4,
             body: Box::new(outer_body),
             block_tag: None,
+            break_cond: None,
         },
     ]);
     let mut acfg = synthetic_acfg(
@@ -1256,12 +1261,14 @@ fn rewrite_partition_tiles_three_level_nest_order() {
         range: 0..4,
         body: Box::new(innermost_body),
         block_tag: None,
+        break_cond: None,
     }]);
     let outer_body = ACFGNode::Sequence(vec![ACFGNode::Repeat {
         iter_var: IterVar(2),
         range: 0..4,
         body: Box::new(middle_body),
         block_tag: None,
+        break_cond: None,
     }]);
     let root = ACFGNode::Sequence(vec![
         op(&[0], 100, vec![], Some(0)),
@@ -1270,6 +1277,7 @@ fn rewrite_partition_tiles_three_level_nest_order() {
             range: 0..4,
             body: Box::new(outer_body),
             block_tag: None,
+            break_cond: None,
         },
     ]);
     let mut acfg = synthetic_acfg(
@@ -1401,6 +1409,7 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
         range: 0..16,
         body: Box::new(k_body),
         block_tag: None,
+        break_cond: None,
     };
     let j_body = ACFGNode::Sequence(vec![k_loop]);
     let j_loop = ACFGNode::Repeat {
@@ -1408,6 +1417,7 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
         range: 0..16,
         body: Box::new(j_body),
         block_tag: None,
+        break_cond: None,
     };
     let i_body = ACFGNode::Sequence(vec![j_loop]);
     let i_loop = ACFGNode::Repeat {
@@ -1415,6 +1425,7 @@ fn rewrite_partition_tiles_filters_non_indexing_iv_for_07_matmul_shape() {
         range: 0..16,
         body: Box::new(i_body),
         block_tag: None,
+        break_cond: None,
     };
 
     // Host-side load_a / load_b ops at top level (producers of a, b).
@@ -1647,6 +1658,7 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
         range: 0..16,
         body: Box::new(k_body),
         block_tag: None,
+        break_cond: None,
     };
     let j_body = ACFGNode::Sequence(vec![k_loop]);
     let j_loop = ACFGNode::Repeat {
@@ -1654,6 +1666,7 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
         range: 0..16,
         body: Box::new(j_body),
         block_tag: None,
+        break_cond: None,
     };
     let i_body = ACFGNode::Sequence(vec![j_loop]);
     let i_loop = ACFGNode::Repeat {
@@ -1661,6 +1674,7 @@ fn rewrite_partition_tiles_dim_prefix_check_for_07_matmul_blocks2d_shape() {
         range: 0..16,
         body: Box::new(i_body),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -1872,12 +1886,14 @@ fn rewrite_partition_tiles_drops_ambiguous_multi_partitioned_iv_per_dim() {
         range: 0..16,
         body: Box::new(ACFGNode::Sequence(vec![body_op])),
         block_tag: None,
+        break_cond: None,
     };
     let i_loop = ACFGNode::Repeat {
         iter_var: IV_I,
         range: 0..16,
         body: Box::new(ACFGNode::Sequence(vec![j_loop])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Host producer of a (forces a fan-out Xfer to compute workers).
@@ -1971,12 +1987,14 @@ fn build_stencil_like_acfg(halo_y: u64, halo_x: u64) -> (ACFG, LinkedIR) {
         range: 1..15,
         body: Box::new(ACFGNode::Sequence(vec![body_op])),
         block_tag: None,
+        break_cond: None,
     };
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(7), // y
         range: 1..15,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        break_cond: None,
     };
     // Producer of `d` is host (worker 0) — outside the y-loop.
     let root = ACFGNode::Sequence(vec![op(&[0], 99, vec![], Some(0)), outer]);
@@ -2112,12 +2130,14 @@ fn halo_extends_multiple_axes_when_both_partitioned() {
         range: 0..8,
         body: Box::new(ACFGNode::Sequence(vec![body_op])),
         block_tag: None,
+        break_cond: None,
     };
     let outer = ACFGNode::Repeat {
         iter_var: IterVar(7), // y
         range: 0..8,
         body: Box::new(ACFGNode::Sequence(vec![inner])),
         block_tag: None,
+        break_cond: None,
     };
     let root = ACFGNode::Sequence(vec![op(&[0], 99, vec![], Some(0)), outer]);
     let mut acfg = synthetic_acfg(
@@ -2289,8 +2309,10 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![hblur_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
     // Pass-2 nest: for vy : 0..16 { for vx : 0..16 { for vm : 0..16 { vblur_op } } }
     let pass2 = ACFGNode::Repeat {
@@ -2304,10 +2326,13 @@ fn task0324_ac5_positive_fires_on_06_distributed2_shape() {
                 range: 0..16,
                 body: Box::new(ACFGNode::Sequence(vec![vblur_op])),
                 block_tag: None,
+                break_cond: None,
             }])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Host loader for in_arr, host saver for out.
@@ -2562,6 +2587,7 @@ fn task0324_ac5_negative_does_not_fire_on_13_cnn_batch_parallel_shape() {
         range: 0..16,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -2758,8 +2784,10 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![hblur_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
     let pass2 = ACFGNode::Repeat {
         iter_var: IV_VY,
@@ -2772,10 +2800,13 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
                 range: 0..16,
                 body: Box::new(ACFGNode::Sequence(vec![vblur_op])),
                 block_tag: None,
+                break_cond: None,
             }])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -2969,6 +3000,7 @@ fn task0325_ac2_negative_partial_overlap_aligned_read() {
         range: 0..16,
         body: Box::new(body),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -3136,8 +3168,10 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![hblur_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
     let pass2 = ACFGNode::Repeat {
         iter_var: IV_VY,
@@ -3150,10 +3184,13 @@ fn task0325_ac2_positive_partial_overlap_reverse_direction() {
                 range: 0..16,
                 body: Box::new(ACFGNode::Sequence(vec![vblur_op])),
                 block_tag: None,
+                break_cond: None,
             }])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -3360,8 +3397,10 @@ fn task0328_ac2_positive_partition_producer_topfile_consumer() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer: reads `tmp[5][3]` at TOP-LEVEL on {w0..w3}. The
@@ -3600,8 +3639,10 @@ fn task0328_ac2_negative_no_partition_anywhere() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer at TOP-LEVEL reads `tmp[5][3]` on {w0..w3}. Same shape
@@ -3803,8 +3844,10 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer reads `tmp[k][j]` where k, j are NON-partition outer
@@ -3836,8 +3879,10 @@ fn task0328_ac2_positive_topfile_consumer_nonpartition_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![reader_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -4057,8 +4102,10 @@ fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer: reads `tmp[5][3]` at TOP LEVEL on {w0..w3, w4} —
@@ -4321,8 +4368,10 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer: reads `tmp[hy*2][hx]` at TOP LEVEL on the SAME set
@@ -4354,8 +4403,10 @@ fn task0326_ac1_positive_arithmetic_matched_partition_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![reader_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -4557,8 +4608,10 @@ fn task0326_ac1_negative_arithmetic_mismatched_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer: reads `tmp[other_iv][hx]` at TOP LEVEL on {w0..w3}.
@@ -4595,8 +4648,10 @@ fn task0326_ac1_negative_arithmetic_mismatched_iv() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![reader_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -4808,8 +4863,10 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![writer_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     // Consumer: reads `tmp[hy+1][hx]` on {w0..w3} — same partition iv,
@@ -4846,8 +4903,10 @@ fn task0326_ac1_negative_arithmetic_mismatched_arithmetic() {
             range: 0..16,
             body: Box::new(ACFGNode::Sequence(vec![reader_op])),
             block_tag: None,
+            break_cond: None,
         }])),
         block_tag: None,
+        break_cond: None,
     };
 
     fn host_loader(data_out: DataId) -> ACFGNode {
@@ -5284,12 +5343,14 @@ fn task0335_02_sync_stop_in_place_or_bubble_preserves_cross_epoch_hoist() {
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consumer_1])),
         block_tag: None,
+        break_cond: None,
     };
     let repeat_2 = ACFGNode::Repeat {
         iter_var: IterVar(8),
         range: 0..2,
         body: Box::new(ACFGNode::Sequence(vec![consumer_2])),
         block_tag: None,
+        break_cond: None,
     };
     let sync_barrier = ACFGNode::Sync(nucleus_compiler::acfg::SyncPlaceholder {
         // All 5 workers participate. Variant matters; participants
