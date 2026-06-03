@@ -301,8 +301,8 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     //  (1) ERROR MAPPING — each pass's typed error becomes a DISTINCT
     //      user-facing string (these strings are USER-FACING and
     //      TEST-PINNED: `cli_reuse_strict.rs` asserts the
-    //      `reuse-inference error:` prefix; `task0371_*` asserts the
-    //      `partition-workers error:` prefix + variant substrings — see
+    //      `reuse-inference error:` prefix; `task0371_partition_insufficient_work_reject.rs` asserts
+    //      the `partition-workers error:` prefix + variant substrings — see
     //      the per-arm note below). Block-transform runs *between* ACFG
     //      construction and the sync/transfer injection passes
     //      (TASK-0030): for schedules with no `block=` directives
