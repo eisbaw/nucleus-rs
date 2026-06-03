@@ -36,20 +36,34 @@ const N: usize = 32;
 pub fn max_abs_acc(acc: i32, n: i32, o: i32) -> i32 {
     // Per-element L-infinity fold step. `(n - o).abs()` is the
     // per-element absolute difference; folding it with `max` over the
-    // partition gives the per-partition max-abs-diff. `wrapping_sub`
-    // documents the overflow contract (PRD §10.1 bit-determinism); the
-    // committed fixture stays well inside the i32 range. `.abs()` of a
-    // value is always >= 0, so the zero-initialised `acc` is the
-    // correct max-identity (max(0, nonneg) == nonneg) — the crux that
-    // lets this reduction reuse the existing zero-init pre-init pass
-    // with NO `init=` clause.
+    // partition gives the per-partition max-abs-diff.
+    //
+    // OVERFLOW LIMIT (architect P2-1, cycle-259): `wrapping_sub` does NOT
+    // make this overflow-safe — it only documents wraparound semantics on
+    // the subtraction. The following `.abs()` STILL panics in debug (and
+    // returns the negative `i32::MIN` in release, which would mis-rank the
+    // max fold and BREAK the "abs>=0 ⇒ 0 is the max-identity" invariant)
+    // when `n.wrapping_sub(o) == i32::MIN` (reachable e.g. n=0,
+    // o=i32::MIN). This fixture is SOUND only because its committed input
+    // is bounded (operands in [-500,-97], max abs-diff 186) — nowhere near
+    // overflow. S5/.06 wires this SAME shape against REAL, unbounded
+    // 16-jacobi generation data: that variant MUST use `unsigned_abs()`
+    // (→ u32, widen/compare) or i64-widening before `.abs()`. Tracked as
+    // TASK-0436; do NOT copy this kernel verbatim into S5.
+    //
+    // Modulo that bound: `.abs()` is always >= 0, so the zero-initialised
+    // `acc` is the correct max-identity (max(0, nonneg) == nonneg) — the
+    // crux that lets this reduction reuse the existing zero-init pre-init
+    // pass with NO `init=` clause.
     acc.max(n.wrapping_sub(o).abs())
 }
 
 pub fn max_combine(a: i32, b: i32) -> i32 {
     // Binary tree-reduction step. `max` is associative, commutative,
     // and exact on i32 — so the scalar result is independent of the
-    // fold order (pinned by task0341_s3_order_independence.rs).
+    // fold order (pinned by task0341_s3_order_independence.rs). (This
+    // epic is integer-only per PRD §10.1; IEEE-754 FP max has NaN /
+    // signed-zero subtleties that are out of scope here.)
     a.max(b)
 }
 

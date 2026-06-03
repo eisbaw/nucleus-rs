@@ -8,8 +8,11 @@
 //! The order-independence claim is a property of the REDUCTION ALGEBRA
 //! (`max` over per-element non-negative `abs(new - old)`), not of any
 //! particular codegen. `max` is associative, commutative, and exact on
-//! i32 (and even in IEEE-754 FP — no rounding), so ANY fold order over
-//! the per-element abs-diffs yields the IDENTICAL scalar. This test
+//! i32, so ANY fold order over the per-element abs-diffs yields the
+//! IDENTICAL scalar. (This epic is integer-only per PRD §10.1; IEEE-754
+//! FP max avoids the *rounding* non-determinism a float SUM has, but has
+//! its own NaN / signed-zero subtleties — out of scope here, flagged so a
+//! future float-norm cycle that reopens S6 is not misled.) This test
 //! pins exactly that: it folds the same multiset of element-pairs under
 //! many distinct orders (sequential, reversed, several pseudo-random
 //! permutations, and the depth-2 tree shape the fixture's prog.algo.nuc

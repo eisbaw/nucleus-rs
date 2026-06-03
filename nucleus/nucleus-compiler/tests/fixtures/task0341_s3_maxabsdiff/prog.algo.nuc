@@ -16,8 +16,10 @@
 //     fixture's `max_abs_acc(partials[w], new[w][i], old[w][i])` is
 //     structurally identical (3-arg pure accumulator folding two
 //     extra array operands).
-//   - 08-histogram: `bin_inc(histogram[b], input[i], b)` is a third
-//     instance of the 3-arg pure accumulator.
+//     (07-matmul `madd` is the LIVE 3-arg-accumulator proof; 08-histogram
+//     documents a `bin_inc(histogram[b], input[i], b)` masked-accumulator
+//     shape in its prose, but its live scatter statement uses the 2-arg
+//     `inc(...)`, so madd — not bin_inc — is the load-bearing citation.)
 // So both load-bearing shapes (3-arg pure call in a dataflow RHS AND
 // an indexed-accumulator self-read folding two extra array args) are
 // PROVEN today. S3 needs no grammar/IR change — only kernel bodies.
