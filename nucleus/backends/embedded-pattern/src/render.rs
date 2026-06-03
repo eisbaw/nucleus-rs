@@ -430,10 +430,15 @@ fn render_fire(
         // ---- Effectful OUTPUT (save): `save_output(c)` ----
         None => {
             // The effect's data argument is the region drained to the
-            // peripheral. There is exactly one aggregate data input on
-            // the tier-1 save kernels; route it through `dma_push` then
-            // `dma_wait`. The stub shim no-ops both.
-            let drained = first_data_input(bindings, ctx)?;
+            // peripheral; route it through `dma_push` then `dma_wait`
+            // (the stub shim no-ops both). `effect_drain_place` returns
+            // the BARE array name for a whole-array save (tier-1
+            // `save_output(c)`, byte-identical to before) and the INDEXED
+            // FRAME place `spk_out[start..start + 16usize]` for a
+            // per-frame indexed drain (ex14 `fe_emit(spk_out[frame])`),
+            // so `size_of_val(&{drained})` sizes the whole array or the
+            // one frame row respectively (TASK-0049.10.02, slice B).
+            let drained = effect_drain_place(bindings, ctx)?;
             writeln!(
                 out,
                 "{pad}// effectful output `{callee}`: drain region to peripheral via shim."
@@ -596,18 +601,43 @@ fn kernel_is_effectful(kernel: KernelId, ctx: &RenderCtx<'_>) -> Result<bool, Em
     Ok(sig.purity == Purity::Effectful)
 }
 
-/// The Rust expression for the first `Data` input of an effect firing
-/// (the array a `save_*` kernel drains). Tier-1 save kernels take
-/// exactly one aggregate argument.
-fn first_data_input(bindings: &FireBinding, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
+/// The Rust place-expression for the first `Data` input of an effect
+/// firing — the region a `save_*` / per-frame `*_emit` kernel drains to
+/// the peripheral. Returns the drain TARGET sized for the `dma_push` /
+/// `size_of_val` shape in the `None` arm of [`render_fire`]:
+///
+/// - **Empty indices** (the tier-1 `save_output(c)` / `save_image(img)`
+///   shape, and every shipped M6 + M10 + 02-split-add cell): the BARE
+///   data name `c`. `size_of_val(&c)` is the whole fixed-array — drain
+///   the whole array, BYTE-IDENTICAL to the pre-TASK-0049.10.02 emit.
+/// - **Non-empty indices** (the ex14 per-frame `fe_emit(spk_out[frame])`
+///   / `rf_transmit(bt_out[frame])` shape): the INDEXED frame place via
+///   [`render_indexed_place`] (`spk_out[start..start + 16usize]`).
+///   `size_of_val(&place)` is the per-frame row, so the drain targets
+///   exactly the one indexed frame slice instead of the whole array each
+///   frame (TASK-0049.10.02, slice B — the structural mirror of slice
+///   A's per-frame INPUT region read). `.as_ptr()` / `size_of_val` work
+///   on a `[T]` sub-array place exactly as on a `[T; N]` array, so the
+///   `dma_push` / `dma_wait` shape in the caller is otherwise unchanged.
+///
+/// `render_indexed_place` REQUIRES non-empty indices (its documented
+/// caller responsibility), so the empty-indices arm is gated to the bare
+/// `data_name` path. No textual `String::replace` on a rendered expr —
+/// the indexed place is built structurally by the shared helper.
+fn effect_drain_place(bindings: &FireBinding, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
     use nucleus_compiler::event::ArgBinding;
     for inp in &bindings.inputs {
         if let ArgBinding::Data(slice) = inp {
-            // Whole-array reference (a save kernel takes the whole
-            // array): emit the bare data name. (An indexed save is not a
-            // tier-1 shape; if it ever appears the bare name is still the
-            // backing array, which is the region to drain.)
-            return data_name(slice.data, ctx);
+            if slice.indices.is_empty() {
+                // Whole-array reference (a tier-1 save kernel takes the
+                // whole array): the bare data name is the region to
+                // drain. Unchanged whole-array drain.
+                return data_name(slice.data, ctx);
+            }
+            // Indexed per-frame drain (ex14 fe_emit/rf_transmit): the
+            // indexed frame place `D[start..start + sub_len]`, drained
+            // sized by the row.
+            return render_indexed_place(slice, ctx);
         }
     }
     Err(EmitError::ContractGap(

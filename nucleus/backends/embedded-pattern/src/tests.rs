@@ -633,3 +633,95 @@ fn ex14_effectful_indexed_input_lowers_to_per_frame_region_read_not_stub() {
          call — the effectful-input arm must be purely additive:\n{dsp}"
     );
 }
+
+#[test]
+fn ex14_effectful_indexed_output_drains_per_frame_row_not_whole_array() {
+    // TASK-0049.10.02 (BLOCKER 1/3, slice B): the structural mirror of
+    // slice A for the OUTPUT (effectful save) side. ex14 fires
+    // `fe_emit(spk_out[frame])` / `rf_transmit(bt_out[frame])` — effectful
+    // kernels with NO output (`() ` return => FireBinding.output == None)
+    // and an INDEXED one-frame data input, once PER frame inside the
+    // for-frame loop. The `None` (save) arm previously drained the BARE
+    // array name `spk_out` => `size_of_val(&spk_out)` = the WHOLE array,
+    // every frame (N_FRAMES x over-drain). With `effect_drain_place` the
+    // indexed-input drain now targets the per-frame row place
+    // `spk_out[start..start + 16usize]` instead.
+    let res = emit_example_multi_with_files(
+        "14-hearing-aid",
+        "prog.embedded.algo.nuc",
+        "embedded_multimcu_sync.sched.nuc",
+        "kernels.embedded.rs",
+        "ex14_effectful_indexed_output",
+    );
+
+    let read = |name: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|w| w.worker_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("worker `{name}` project missing"));
+        std::fs::read_to_string(&w.lib_rs).expect("read worker lib.rs")
+    };
+
+    // fe runs `fe_emit(spk_out[frame])`; rf runs `rf_transmit(bt_out[frame])`.
+    // Both are effectful, output=None, single INDEXED data input -> both
+    // must drain the indexed FRAME row, NOT the whole array.
+    for (worker, kernel, datum) in [
+        ("fe", "fe_emit", "spk_out"),
+        ("rf", "rf_transmit", "bt_out"),
+    ] {
+        let src = read(worker);
+
+        // The effectful-save drain shape is UNCHANGED (dma_push(0, ...
+        // .as_ptr() + dma_wait) — only the drained PLACE changes.
+        assert!(
+            src.contains("shim.dma_push(0, ") && src.contains(".as_ptr() as *const u8"),
+            "worker `{worker}`: effectful per-frame output `{kernel}` must still \
+             drain via shim.dma_push(0, <place>.as_ptr()):\n{src}"
+        );
+        assert!(
+            src.contains("shim.dma_wait(0);"),
+            "worker `{worker}`: effectful per-frame output `{kernel}` must wait the \
+             drain DMA (dma_wait):\n{src}"
+        );
+        // The drained place is the INDEXED datum as a SUB-ARRAY row
+        // `datum[start..start + 16usize]` — the per-frame frame slice, NOT
+        // the whole array. The ` + 16usize]` suffix is
+        // `render_indexed_place`'s `SliceForm::SubArray` form sized by
+        // SAMPLES_PER_FRAME (16); a whole-array mis-drain would emit the
+        // bare `datum` name and LACK this suffix (this is exactly how the
+        // slice-A test pins the INPUT side). Pinning the row size also
+        // guards against a wrong element-count regression.
+        assert!(
+            src.contains(&format!("{datum}[")) && src.contains(" + 16usize]"),
+            "worker `{worker}`: the per-frame drain must target the indexed datum \
+             as a sub-array row `{datum}[start..start + 16usize]` (not the whole \
+             array `{datum}`):\n{src}"
+        );
+    }
+
+    // ADDITIVITY pin: a WHOLE-ARRAY save (empty-indices input, the tier-1
+    // `save_output(c)` shape) must STILL drain the BARE array name with NO
+    // sub-array ` + 16usize]` suffix on the drain. Example 1's naive
+    // single-worker schedule fires `save_output(c)` on the whole array
+    // `c` (`kernel save_output : (i32[N]) -> () effectful`). This is the
+    // regression guard for the 7 M6 + M10 ex1/5/9 + 02-split-add cells:
+    // the empty-indices drain path is byte-unchanged.
+    let ex1 = emit_example_naive("01-elementwise-add", "ex01_naive_drain_pin");
+    assert!(
+        ex1.contains("shim.dma_push(0, c.as_ptr() as *const u8"),
+        "WHOLE-ARRAY save (save_output(c)) must drain the BARE array name `c` \
+         (empty-indices path byte-unchanged):\n{ex1}"
+    );
+    // The whole-array drain line must size by `size_of_val(&c)` (the whole
+    // array) — and crucially must NOT carry the ` + 16usize]` sub-array
+    // row-sizing suffix that the indexed per-frame drain uses. Example 1
+    // has no SAMPLES_PER_FRAME (16-wide) sub-array anywhere, so its
+    // absence pins that the additive indexed arm did not leak into the
+    // whole-array path.
+    assert!(
+        !ex1.contains(" + 16usize]"),
+        "WHOLE-ARRAY save must NOT emit a `[start..start + 16usize]` sub-array \
+         drain — the indexed per-frame arm must be purely additive:\n{ex1}"
+    );
+}
