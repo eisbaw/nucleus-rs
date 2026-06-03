@@ -1324,14 +1324,23 @@ fn lower_rvalue(expr: &SpExpr, ir: &AlgoIR, scope: &Scope) -> Result<IrExpr, Low
             Box::new(lower_rvalue(lhs, ir, scope)?),
             Box::new(lower_rvalue(rhs, ir, scope)?),
         )),
-        // A relational comparison is bool-valued and is ACCEPTED here:
-        // the RHS path is the one position where a bool is expected (a
-        // bool-typed dataflow RHS; TASK-0341.02.01.02 / epic S2). Its two
-        // operands are integer expressions, lowered through the same
-        // rvalue path. SCOPE: full bool-DATA codegen (Vec<bool> buffer /
-        // input.bin layout) is deferred to the S1 until-condition
-        // consumer (TASK-0341.02.01.03); S2 lands parser+AST+IR+lower
-        // only, so no example exercises this arm end-to-end yet.
+        // A relational comparison is bool-valued and is ACCEPTED in ANY
+        // rvalue position (TASK-0341.02.01.02 / epic S2). The where-allowed
+        // rule today is purely POSITIONAL, not type-checked: integer
+        // positions (index / loop-bound / const / shape) reject a Compare
+        // with a typed `ComparisonNotAllowedHere`, while this rvalue path
+        // accepts it. There is NO bool/int type-checker yet, so this arm
+        // also accepts a comparison in places a real type system would
+        // reject — a kernel argument, or nested as an int operand via the
+        // `Expr::Binary` arm above (`(a<=b)+1`). The intended consumer is a
+        // bool-typed dataflow RHS / (future, S1) until-condition, but that
+        // intent is NOT enforced here. Its two operands are integer
+        // expressions, lowered through the same rvalue path. SCOPE: full
+        // bool-DATA codegen (Vec<bool> buffer / input.bin layout) is
+        // deferred to the S1 until-condition consumer (TASK-0341.02.01.03),
+        // which must add the real bool-context validation; S2 lands
+        // parser+AST+IR+lower only, so no example exercises this arm
+        // end-to-end yet.
         Expr::Compare(op, lhs, rhs) => Ok(IrExpr::Compare(
             ast_cmpop_to_ir(*op),
             Box::new(lower_rvalue(lhs, ir, scope)?),
