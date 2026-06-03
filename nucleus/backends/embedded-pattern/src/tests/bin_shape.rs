@@ -418,6 +418,15 @@ fn multi_worker_bin_emits_one_firmware_per_mcu_with_real_uart_transport() {
         host.contains("shim.alloc_in_region("),
         "host effectful load must use alloc_in_region:\n{host}"
     );
+    // TASK-0049.10.04 regression: `host` is the SINGLE loader (loads BOTH
+    // a + b, contiguous from byte 0), so its per-worker input base offset
+    // MUST stay 0 — Mechanism A leaves single-loader schedules byte-identical
+    // (the 02-split-add renode byte-exact path depends on this).
+    assert!(
+        host.contains("const NUC_INPUT_BASE: usize = 0;")
+            && host.contains("input_cursor: NUC_INPUT_BASE,"),
+        "single-loader host must keep input base offset 0 (regression-safe):\n{host}"
+    );
 
     // w0: link_recv a + b, computes, link_push c.
     assert!(
@@ -455,6 +464,95 @@ fn multi_worker_bin_emits_one_firmware_per_mcu_with_real_uart_transport() {
     assert!(
         w0_release < host_release,
         "receivers-first boot: w0 must be released before host:\n{resc}"
+    );
+}
+
+/// Lower a multi-worker schedule from EXPLICIT algo/kernels files (the
+/// ex14 `prog.embedded.algo.nuc` + `kernels.embedded.rs` per-frame variant)
+/// and ATTEMPT the multi-MCU BIN emit; return the `emit_bin` Result so a
+/// caller can assert either the emitted bins OR a typed rejection. Mirrors
+/// `emit_bin_example_multi` but parameterises the algorithm + kernels file
+/// names (TASK-0049.10.04).
+fn try_emit_bin_example_multi_with_files(
+    example: &str,
+    algo_file: &str,
+    schedule_file: &str,
+    kernels_file: &str,
+    scratch_leaf: &str,
+) -> Result<crate::MultiBinEmitResult, crate::EmitError> {
+    use crate::emit_bin;
+    let root = repo_root();
+    let ex = root.join("nuc-nucleus/examples").join(example);
+    let algo_src = std::fs::read_to_string(ex.join(algo_file)).expect("algo source");
+    let sched_src =
+        std::fs::read_to_string(ex.join("schedules").join(schedule_file)).expect("sched source");
+    let r = test_common::lower_for_test(
+        &algo_src,
+        &sched_src,
+        &test_common::LowerForTestOpts {
+            apply_block_transforms: false,
+            apply_partition_workers: false,
+            inject_check_frames: false,
+        },
+    );
+    let kernels = ex.join(kernels_file);
+    let out = test_common::unique_scratch_dir(
+        &root.join("nucleus/target/embedded-pattern-test-scratch"),
+        scratch_leaf,
+    );
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out)
+}
+
+#[test]
+fn ex14_multimcu_cross_worker_input_partition_fails_loud_pending_decl_order() {
+    // TASK-0049.10.04 (BLOCKER 2 slice C1): per-worker INPUT partition.
+    //
+    // Two coupled results are asserted here:
+    //
+    // (1) CLASSIFICATION (silent-sibling of slice A) — ex14 `fe`/`rf` perform
+    //     INDEXED effectful loads (`mic_in[frame] <-- fe_capture()`,
+    //     `bt_in[frame] <-- rf_receive()`). Before this slice the multi-MCU
+    //     classifier `is_effectful_load` only matched WHOLE-ARRAY loads, so
+    //     NEITHER fe nor rf was recognised as a loader. With the purity-gated
+    //     indexed arm BOTH are now loaders — which is exactly WHY
+    //     `compute_input_offsets` sees TWO loader workers and reaches the
+    //     cross-worker branch. The rejection message naming both fe and rf is
+    //     direct evidence the classification fix recognises both.
+    //
+    // (2) OFFSET — the cross-worker offset cannot be computed correctly from
+    //     the codegen contract: the reference input.bin is declaration-order
+    //     (mic then bt) but DataId is ALPHABETICAL (bt_in=0 < mic_in=2), so
+    //     DataId-order concatenation would put `mic_in` at byte 256 (the
+    //     REVERSE of the reference). Rather than emit a byte-wrong offset
+    //     (which slice D would fail on), the emit FAILS LOUD and defers to
+    //     TASK-0049.10.06 (thread declaration order into the contract). This
+    //     is the honest BLOCKED state for AC#2, NOT a workaround.
+    let err = try_emit_bin_example_multi_with_files(
+        "14-hearing-aid",
+        "prog.embedded.algo.nuc",
+        "embedded_multimcu_sync.sched.nuc",
+        "kernels.embedded.rs",
+        "ex14_multimcu_input_partition",
+    )
+    .expect_err(
+        "ex14's cross-worker input partition must FAIL LOUD until declaration \
+         order is threaded into the contract (TASK-0049.10.06), not emit a \
+         byte-wrong offset",
+    );
+    let msg = format!("{err:?}");
+    // (1) classification: BOTH fe and rf are recognised as loaders (the
+    //     message enumerates the loader workers; `WorkerId` Debug is the
+    //     stable id form used by the rejection).
+    assert!(
+        msg.contains("each load input") && msg.contains("CROSS-WORKER"),
+        "rejection must identify the cross-worker input-partition shape: {msg}"
+    );
+    // (2) the rejection must name the root cause + the follow-up so the
+    //     BLOCKED state is greppable and not mistaken for a generic failure.
+    assert!(
+        msg.contains("DataId") && msg.contains("declaration") && msg.contains("TASK-0049.10.06"),
+        "rejection must cite the DataId-vs-declaration-order root cause + the \
+         TASK-0049.10.06 follow-up: {msg}"
     );
 }
 

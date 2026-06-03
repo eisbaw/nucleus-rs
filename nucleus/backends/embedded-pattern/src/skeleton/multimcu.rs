@@ -139,6 +139,25 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
          \x20       _ => panic!(\"nucleus codegen bug: no USART mapped for transport seq\"),\n    }\n}\n\n",
     );
 
+    // Per-worker INPUT base offset into the global `input.bin` layout
+    // (TASK-0049.10.04, BLOCKER 2 / Mechanism A). The `.resc` injects the
+    // WHOLE input.bin at axiSram into EVERY loader; this worker's shim cursor
+    // STARTS at its own symbol's byte offset so it reads ITS slice, not the
+    // first worker's. Single-loader schedules (02-split-add `host`) get 0 —
+    // byte-identical to the pre-TASK-0049.10.04 behaviour.
+    //
+    // DOCUMENTED ASSUMPTION (loud; precedent project-axis-mapping-assumption):
+    // this offset is the DataId-order concatenation byte position computed by
+    // the host-side `multimcu::compute_input_offsets`; it is ASSUMED to equal
+    // the reference generator's HAND-WRITTEN input.bin byte order. The REAL
+    // validation is slice D's byte-exact `just renode-multimcu` gate.
+    s.push_str(&format!(
+        "// Byte offset of THIS worker's input slice in the injected input.bin\n\
+         // (DataId-order concatenation; see multimcu::compute_input_offsets).\n\
+         const NUC_INPUT_BASE: usize = {};\n\n",
+        plan.input_base_offset
+    ));
+
     // The shim struct + impl.
     s.push_str(
         "/// Concrete inter-MCU UART-hub shim for one worker (TASK-0049.05).\n\
@@ -150,7 +169,10 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
          }\n\
          impl MultiMcuShim {\n    \
              fn new() -> Self {\n        \
-                 MultiMcuShim { input_cursor: 0, clock_started: false, accum_ticks: 0, last_cvr: 0 }\n    \
+                 // input_cursor STARTS at NUC_INPUT_BASE so this worker reads\n        \
+                 // its own slice of the whole-input.bin axiSram injection\n        \
+                 // (TASK-0049.10.04 per-worker input partition).\n        \
+                 MultiMcuShim { input_cursor: NUC_INPUT_BASE, clock_started: false, accum_ticks: 0, last_cvr: 0 }\n    \
              }\n",
     );
 

@@ -27,7 +27,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use backend_common::EmitError;
-use nucleus_compiler::event::{Event, FireBinding, WorkerId};
+use nucleus_compiler::algo::Purity;
+use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, WorkerId};
+use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
 /// A modelled STM32H743 USART (Renode `platforms/cpus/stm32h743.repl`).
@@ -72,9 +74,25 @@ pub(crate) struct WorkerPlan {
     /// Distinct peers -> the USART this worker uses to talk to that peer.
     /// Drives the worker's `connector Connect` lines in the `.resc`.
     pub peer_usart: BTreeMap<WorkerId, UsartSlot>,
-    /// This worker performs an effectful load (`a <-- load_input()`) — its
-    /// machine gets `$input` injected into axiSram.
+    /// This worker performs an effectful load (`a <-- load_input()` OR the
+    /// per-frame indexed `mic_in[frame] <-- fe_capture()`) — its machine
+    /// gets `$input` injected into axiSram.
     pub loads_input: bool,
+    /// Byte offset into the injected `input.bin` at which THIS worker's
+    /// input slice starts — i.e. the value the shim's `input_cursor` must
+    /// START at (TASK-0049.10.04, BLOCKER 2). The whole `input.bin` is
+    /// injected at axiSram into EVERY loader (the `.resc` is unchanged); each
+    /// loader's cursor is pre-seeded here so it reads its OWN slice.
+    ///
+    /// CURRENTLY always `0`: only the SINGLE-loader case is supported
+    /// (02-split-add `host` reads the whole input from the front, in firing
+    /// order — regression-safe). The cross-worker multi-loader case (ex14
+    /// `fe`/`rf`) needs the reference generator's declaration-order layout,
+    /// which the codegen contract does not carry yet, so it FAILS LOUD in
+    /// [`compute_input_offsets`] (deferred to TASK-0049.10.06). This field +
+    /// the shim's `NUC_INPUT_BASE` seam exist so that follow-up only has to
+    /// populate the value, not re-plumb the cursor.
+    pub input_base_offset: usize,
     /// This worker performs an effectful save (`save_output(c)`) — its
     /// USART1 is captured to `$uartFile`.
     pub saves_output: bool,
@@ -110,12 +128,18 @@ impl TransportPlan {
     pub(crate) fn build(
         per_worker: &BTreeMap<WorkerId, Vec<Event>>,
         names: &NameTables,
+        sidecar: &NameSidecar,
     ) -> Result<TransportPlan, EmitError> {
         let used: Vec<WorkerId> = per_worker
             .iter()
             .filter(|(_, evs)| !evs.is_empty())
             .map(|(w, _)| *w)
             .collect();
+
+        // Per-worker input base offset into the global `input.bin` layout
+        // (TASK-0049.10.04). Computed up front from ALL workers' loaded
+        // symbols so the cumulative byte offsets are globally consistent.
+        let input_offsets = compute_input_offsets(&used, per_worker, sidecar)?;
 
         let mut workers: BTreeMap<WorkerId, WorkerPlan> = BTreeMap::new();
         for w in &used {
@@ -158,8 +182,9 @@ impl TransportPlan {
                     name,
                     seq_usart,
                     peer_usart,
-                    loads_input: has_effectful_load(evs),
+                    loads_input: has_effectful_load(evs, sidecar)?,
                     saves_output: has_effectful_save(evs),
+                    input_base_offset: input_offsets.get(w).copied().unwrap_or(0),
                 },
             );
         }
@@ -247,14 +272,25 @@ fn map_seqs(
     }
 }
 
-/// A worker has an effectful LOAD iff it fires a whole-array output with no
-/// inputs (`a <-- load_input()`) — mirrors `render_fire`'s classification.
-fn has_effectful_load(events: &[Event]) -> bool {
-    events.iter().any(|e| match e {
-        Event::Fire { bindings, .. } => is_effectful_load(bindings),
-        Event::Loop { body, .. } => has_effectful_load(body),
-        _ => false,
-    })
+/// A worker has an effectful LOAD iff any of its `Fire`s is an effectful
+/// load — mirrors `render_fire`'s classification (see [`is_effectful_load`]).
+/// Fallible: the indexed-effectful arm consults the kernel's purity in the
+/// `NameSidecar`, and a missing [`KernelSig`](nucleus_compiler::sidecar::KernelSig)
+/// fails loud (`ContractGap`) rather than silently mis-classifying.
+fn has_effectful_load(events: &[Event], sidecar: &NameSidecar) -> Result<bool, EmitError> {
+    for e in events {
+        let hit = match e {
+            Event::Fire {
+                kernel, bindings, ..
+            } => is_effectful_load(*kernel, bindings, sidecar)?,
+            Event::Loop { body, .. } => has_effectful_load(body, sidecar)?,
+            _ => false,
+        };
+        if hit {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A worker has an effectful SAVE iff it fires an output-less kernel
@@ -267,18 +303,183 @@ fn has_effectful_save(events: &[Event]) -> bool {
     })
 }
 
-fn is_effectful_load(bindings: &FireBinding) -> bool {
-    matches!(&bindings.output, Some(o) if o.indices.is_empty()) && bindings.inputs.is_empty()
+/// True iff this `Fire` is an effectful LOAD — the source half of
+/// `render_fire`'s INPUT classification. Two shapes, BOTH gated on no
+/// inputs:
+///
+///   * **whole-array** (`a <-- load_input()`): output present with EMPTY
+///     indices. STRUCTURAL, purity-independent — UNCHANGED since
+///     TASK-0049.05 (backs 02-split-add + the 7 M6 + M10 ex1/5/9 loads).
+///   * **indexed effectful** (`mic_in[frame] <-- fe_capture()`,
+///     TASK-0049.10.04): output present with NON-EMPTY indices AND the
+///     kernel is declared `effectful`. This shape is structurally identical
+///     to a PURE indexed compute (`c[i] <-- add(..)` with no data inputs),
+///     so it MUST be disambiguated by purity — exactly the silent-sibling
+///     of slice A's (TASK-0049.10.01) `render_fire` fix, which this arm
+///     mirrors. Without it `fe`/`rf`'s per-frame captures were not
+///     recognised as loads, so their machines got NO `$input` injected and
+///     the shim read garbage.
+///
+/// Fallible: a missing `KernelSig` in the indexed arm fails loud
+/// (`ContractGap`), mirroring slice A's `kernel_is_effectful`.
+fn is_effectful_load(
+    kernel: KernelId,
+    bindings: &FireBinding,
+    sidecar: &NameSidecar,
+) -> Result<bool, EmitError> {
+    if !bindings.inputs.is_empty() {
+        return Ok(false);
+    }
+    match &bindings.output {
+        // whole-array load: STRUCTURAL, unchanged.
+        Some(o) if o.indices.is_empty() => Ok(true),
+        // indexed effectful load: gated on purity (NEW, additive).
+        Some(_) => kernel_is_effectful(kernel, sidecar),
+        None => Ok(false),
+    }
 }
 
 /// True iff this `Fire` is a GLOBALLY-OBSERVABLE external IO side effect —
-/// an effectful load (`a <-- load_input()`) or save (`save_output(c)`),
-/// the only firings that map to a peripheral hook in `render_fire`. A pure
-/// (indexed-output) compute firing is NOT observable across MCUs and an
-/// inter-MCU Push/Wait is transport (handled separately), so neither
-/// counts here.
-fn is_effectful_io(bindings: &FireBinding) -> bool {
-    bindings.output.is_none() || is_effectful_load(bindings)
+/// an effectful load (`a <-- load_input()` / `mic_in[frame] <-- fe_capture()`)
+/// or save (`save_output(c)`), the only firings that map to a peripheral
+/// hook in `render_fire`. A pure (indexed-output) compute firing is NOT
+/// observable across MCUs and an inter-MCU Push/Wait is transport (handled
+/// separately), so neither counts here. Fallible for the same reason as
+/// [`is_effectful_load`].
+fn is_effectful_io(
+    kernel: KernelId,
+    bindings: &FireBinding,
+    sidecar: &NameSidecar,
+) -> Result<bool, EmitError> {
+    Ok(bindings.output.is_none() || is_effectful_load(kernel, bindings, sidecar)?)
+}
+
+/// Is `kernel` declared `effectful`? Read from the codegen-contract
+/// `NameSidecar`'s `KernelSig.purity` (mirrored from `ResolvedKernel::purity`
+/// in `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap —
+/// fail loud with context rather than silently defaulting to `Pure` and
+/// mis-classifying a load/IO. Structural sibling of `render.rs`'s
+/// `kernel_is_effectful`.
+fn kernel_is_effectful(kernel: KernelId, sidecar: &NameSidecar) -> Result<bool, EmitError> {
+    let sig = sidecar.kernel_sig(kernel).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "kernel id {kernel:?} has no KernelSig in the NameSidecar; cannot \
+             determine purity for multi-MCU effectful-IO classification \
+             (TASK-0049.10.04)"
+        ))
+    })?;
+    Ok(sig.purity == Purity::Effectful)
+}
+
+/// Compute each loader worker's byte offset into the GLOBAL `input.bin`
+/// layout (TASK-0049.10.04, BLOCKER 2; Mechanism A = partition in codegen,
+/// NOT in the recipe).
+///
+/// # What this CAN do soundly (and what it cannot)
+///
+/// The `.resc` injects the WHOLE `input.bin` at axiSram into EVERY loader
+/// (unchanged). Each loader's shim cursor must START at the byte offset of
+/// ITS slice so it reads its own bytes. The byte order of that global layout
+/// is defined by the REFERENCE GENERATOR's HAND-WRITTEN `input.bin` (ex14
+/// `reference/src/main.rs:74-87`: the `mic` block first, then the `bt`
+/// block — i.e. data-DECLARATION order).
+///
+/// **SOUND case — ≤1 worker loads input (e.g. 02-split-add `host` loads BOTH
+/// `a` and `b`).** The single loader's cursor starts at 0 and reads its
+/// symbols sequentially in firing order; there is no cross-worker ordering
+/// to get wrong, and 02-split-add proves this byte-exact under
+/// `just renode-multimcu`. So a single loader => offset 0 (regression-safe,
+/// byte-identical to pre-TASK-0049.10.04).
+///
+/// **UNSOUND case — ≥2 DISTINCT workers each load input (ex14 `fe`->`mic_in`,
+/// `rf`->`bt_in`).** Here the per-worker base offset depends on the GLOBAL
+/// byte order, which must match the reference generator's declaration-order
+/// layout. The only ordering handle in the codegen contract is the
+/// [`DataId`], and `DataId` is assigned ALPHABETICALLY (`acfg/build.rs`
+/// enumerates the name-keyed `BTreeMap`), NOT in declaration order — for
+/// ex14 that yields `bt_in`=DataId(0) BEFORE `mic_in`=DataId(2), the REVERSE
+/// of the reference layout (which has `mic` at byte 0). Data-declaration
+/// order is LOST at AlgoIR construction and is absent from `NameSidecar` /
+/// `NameTables`, so this slice CANNOT compute a correct cross-worker offset.
+/// Rather than emit a byte-WRONG offset (which slice D would then fail on),
+/// we FAIL LOUD here and defer to TASK-0049.10.06 (thread declaration order
+/// into the contract). This mirrors the project's panic-not-diagnostic /
+/// fail-fast discipline — a precise typed error beats a silent miscompile.
+fn compute_input_offsets(
+    used: &[WorkerId],
+    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    sidecar: &NameSidecar,
+) -> Result<BTreeMap<WorkerId, usize>, EmitError> {
+    // Which symbol(s) does each loader worker load? (effectful-load Fire
+    // output datum(s), in encounter order within the worker).
+    let mut per_worker_syms: BTreeMap<WorkerId, Vec<DataId>> = BTreeMap::new();
+    for w in used {
+        let evs = per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]);
+        let mut syms: Vec<DataId> = Vec::new();
+        collect_loaded_symbols(evs, sidecar, &mut syms)?;
+        if !syms.is_empty() {
+            per_worker_syms.insert(*w, syms);
+        }
+    }
+
+    // ≤1 loader worker: the sound case. Its offset is 0 (it reads the whole
+    // injected input from the front, in firing order). 02-split-add `host`
+    // is here — byte-identical to pre-TASK-0049.10.04.
+    if per_worker_syms.len() <= 1 {
+        return Ok(per_worker_syms.keys().map(|w| (*w, 0usize)).collect());
+    }
+
+    // ≥2 distinct loader workers: the cross-worker input partition. The
+    // per-worker base offset needs the reference generator's declaration-order
+    // byte layout, which the codegen contract does NOT carry (DataId is
+    // alphabetical, not declaration order — see the doc comment). Fail loud
+    // rather than emit a byte-wrong offset.
+    let loader_names: Vec<String> = per_worker_syms
+        .keys()
+        .map(|w| format!("{w:?}"))
+        .collect();
+    Err(EmitError::UnsupportedFeature(format!(
+        "multi-MCU schedule has {} workers that each load input ({}), i.e. a \
+         CROSS-WORKER input partition. Each loader's byte offset into the \
+         injected input.bin must match the reference generator's \
+         DECLARATION-ORDER layout, but the codegen contract only carries the \
+         alphabetically-assigned DataId (NOT declaration order), so a correct \
+         per-worker offset cannot be computed here. Threading data-declaration \
+         order through AlgoIR/ACFG/NameSidecar is TASK-0049.10.06; until then \
+         this case is rejected rather than silently miscompiled \
+         (TASK-0049.10.04, BLOCKER 2 slice C1). Single-loader schedules \
+         (02-split-add) are unaffected.",
+        per_worker_syms.len(),
+        loader_names.join(", ")
+    )))
+}
+
+/// Collect the input symbol(s) a worker LOADS — the output datum of each
+/// effectful-load `Fire`, recursing into loop bodies. Order = encounter
+/// order (the caller sorts by `DataId` for the global layout).
+fn collect_loaded_symbols(
+    events: &[Event],
+    sidecar: &NameSidecar,
+    out: &mut Vec<DataId>,
+) -> Result<(), EmitError> {
+    for e in events {
+        match e {
+            Event::Fire {
+                kernel, bindings, ..
+            } => {
+                if is_effectful_load(*kernel, bindings, sidecar)? {
+                    if let Some(o) = &bindings.output {
+                        if !out.contains(&o.data) {
+                            out.push(o.data);
+                        }
+                    }
+                }
+            }
+            Event::Loop { body, .. } => collect_loaded_symbols(body, sidecar, out)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // ===================================================================
@@ -305,21 +506,28 @@ enum Salient {
 /// inlining `Loop` bodies in place. In-loop barriers/IO therefore appear
 /// at the loop's position (a single linearisation), which is the
 /// conservative reading the guard below relies on.
-fn flatten_salients(events: &[Event], out: &mut Vec<Salient>) {
+fn flatten_salients(
+    events: &[Event],
+    sidecar: &NameSidecar,
+    out: &mut Vec<Salient>,
+) -> Result<(), EmitError> {
     for e in events {
         match e {
-            Event::Fire { bindings, .. } => {
-                if is_effectful_io(bindings) {
+            Event::Fire {
+                kernel, bindings, ..
+            } => {
+                if is_effectful_io(*kernel, bindings, sidecar)? {
                     out.push(Salient::Io);
                 }
             }
             Event::Push { seq, .. } => out.push(Salient::Push { seq: seq.0 }),
             Event::Wait { seq, .. } => out.push(Salient::Wait { seq: seq.0 }),
             Event::Sync { sync, .. } => out.push(Salient::Sync { tag: sync.0 }),
-            Event::Loop { body, .. } => flatten_salients(body, out),
+            Event::Loop { body, .. } => flatten_salients(body, sidecar, out)?,
             Event::Alloc { .. } | Event::Free { .. } => {}
         }
     }
+    Ok(())
 }
 
 /// Fail loud (`EmitError`) when a control-only `Event::Sync` would be
@@ -356,6 +564,7 @@ fn flatten_salients(events: &[Event], out: &mut Vec<Salient>) {
 pub(crate) fn verify_control_sync_subsumed(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
+    sidecar: &NameSidecar,
 ) -> Result<(), EmitError> {
     // Workers in a stable order; index into this vec is a worker's "lane".
     let lanes: Vec<WorkerId> = per_worker
@@ -374,7 +583,11 @@ pub(crate) fn verify_control_sync_subsumed(
     let mut total = 0usize;
     for w in &lanes {
         let mut s = Vec::new();
-        flatten_salients(per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]), &mut s);
+        flatten_salients(
+            per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]),
+            sidecar,
+            &mut s,
+        )?;
         base.push(total);
         total += s.len();
         salients.push(s);
