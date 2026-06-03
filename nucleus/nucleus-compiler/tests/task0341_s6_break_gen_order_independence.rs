@@ -8,15 +8,17 @@
 //!
 //! `task0341_s3_order_independence.rs` already pins that the SCALAR
 //! `maxdiff` of a SINGLE generation pair is fold-order-independent (max
-//! is associative + commutative + exact on i32). S6's distinct claim is
-//! one level up: across a MULTI-generation convergence run, the
-//! break-generation `k` = `first t such that maxdiff[t] <= tol` is the
-//! SAME under any reduction fold order. That follows from the scalar pin
-//! (each per-generation `maxdiff[t]` is order-free, so the whole sequence
-//! is, so its first-crossing is) — but the convergence test is the actual
-//! observable the backend emits (`if maxdiff[t] <= tol { break }`), so we
-//! pin the break-generation directly rather than only the scalar it reads.
-//! This is the "prove the guard bites at the convergence level" test.
+//! is associative + commutative + exact on i32). The break-generation
+//! `k` = `first t such that maxdiff[t] <= tol` being order-free is a
+//! COROLLARY of that scalar pin — no new algebra: if each per-generation
+//! `maxdiff[t]` is order-free, the whole sequence is, so its first
+//! tol-crossing is too. This test's added value is therefore narrower
+//! than "a new property": it pins that corollary (a) directly at the
+//! ACTUAL OBSERVABLE the backend emits (`if maxdiff[t] <= tol { break }`)
+//! against fixture/seed drift, and (b) folding with the POST-TASK-0436
+//! overflow-safe abs the shipped example really runs (S3 used the
+//! pre-0436 `wrapping_sub().abs()` spelling). It is a regression guard on
+//! the convergence observable, not a fresh determinism claim.
 //!
 //! ## Overflow-safe abs — pins the ACTUALLY-SHIPPED reduction
 //!
@@ -184,6 +186,25 @@ fn break_generation_is_fold_order_independent() {
         break_gen(&gens, tol, maxdiff_tree),
         reference_break,
         "balanced-tree fold association"
+    );
+
+    // 5. The CAP-HIT sentinel path is also order-invariant. With an
+    //    impossible `tol = -1` (every `maxdiff >= 0`) NO generation
+    //    converges, so `break_gen` returns the `T_CAP` sentinel (the
+    //    backend's `__nuc_final_gen = cap` cap-hit resolution, .05.03)
+    //    under EVERY fold order — exercising the non-convergence branch
+    //    that the converging fixture above never reaches.
+    let cap_hit_seq = break_gen(&gens, -1, |c, p| maxdiff_in_order(c, p, &seq));
+    assert_eq!(cap_hit_seq, T_CAP, "tol=-1 must hit the cap (no convergence)");
+    assert_eq!(
+        break_gen(&gens, -1, |c, p| maxdiff_in_order(c, p, &rev)),
+        cap_hit_seq,
+        "cap-hit sentinel is order-invariant (reversed)"
+    );
+    assert_eq!(
+        break_gen(&gens, -1, maxdiff_tree),
+        cap_hit_seq,
+        "cap-hit sentinel is order-invariant (tree)"
     );
 }
 
