@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::event::{
     ArgBinding, BlockTag, DataId, DataSlice, IterTile, IterVar, KernelId, SeqTag, SyncTag, WorkerId,
 };
-use crate::sched::NotifyKind;
+use crate::sched::{NotifyKind, TransportMode};
 // `IrExpr` carries the `until COND` break predicate on a source
 // `for..until` loop (epic S4, TASK-0341.02.01.05.01). It is the same
 // node already carried by `ArgBinding::Scalar`, so the serde contract
@@ -338,6 +338,9 @@ impl From<NotifyKind> for NotifyMode {
 ///   (`buffer=N`); `1` is the default ("no extra buffering").
 ///   `>1` enables pipelining.
 /// - `notify` is the notification mode (event/poll/default).
+/// - `transport` is the backend transport-path hint (`mode=pio|dma`).
+///   Default `Pio`. A *codegen* hint only — value-equivalent across
+///   modes; TASK-0438.02 makes the embedded backend diverge on it.
 ///
 /// Conflicts between `sync` and `async` in the schedule are not
 /// caught at this layer — the linker/lowering passes can deduplicate
@@ -354,6 +357,10 @@ pub struct TransferPolicy {
     pub buffer: u64,
     /// Notification mode chosen by the schedule.
     pub notify: NotifyMode,
+    /// Backend transport-path hint (`mode=pio|dma`). Default: `Pio`.
+    /// Read by TASK-0438.02's embedded backend to diverge DMA-async vs
+    /// PIO-sync codegen; inert in this slice (both render as PIO).
+    pub transport: TransportMode,
 }
 
 impl Default for TransferPolicy {
@@ -362,6 +369,7 @@ impl Default for TransferPolicy {
             synchronous: true,
             buffer: 1,
             notify: NotifyMode::Default,
+            transport: TransportMode::Pio,
         }
     }
 }

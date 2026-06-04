@@ -43,6 +43,8 @@
 //!   Same rationale.
 
 use crate::span::Spanned;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// An identifier / name as written in source, plus the byte range of
 /// the identifier token. Diagnostics that name a worker, class,
@@ -310,6 +312,7 @@ pub enum TransferOption {
     Async,
     Buffer(u64),
     Notify(NotifyKind),
+    Transport(TransportMode),
 }
 
 /// `NotifyKind ::= 'event' | 'poll'`.
@@ -317,6 +320,30 @@ pub enum TransferOption {
 pub enum NotifyKind {
     Event,
     Poll,
+}
+
+/// `TransportMode ::= 'pio' | 'dma'`.
+///
+/// Backend transport-path hint on a `transfer` edge (`mode=pio|dma`),
+/// parallel to `notify=`. PIO = CPU-driven synchronous transfer (volatile
+/// load/store loop); DMA = engine-driven asynchronous transfer (descriptor
+/// arm + IRQ/flag wait). This is a *codegen* hint, not algorithmic state:
+/// both modes are value-equivalent. Default is `Pio` (= current behaviour).
+/// TASK-0438.02 makes the embedded backend diverge on this; until then it
+/// is threaded but renders identically. See TASK-0438.
+///
+/// Carries serde derives (feature-gated) because [`TransferPolicy`] in
+/// `crate::acfg::types` holds it by value and is itself serialisable —
+/// unlike `NotifyKind`, which is mirrored into the serde-capable acfg
+/// `NotifyMode`. We store the schedule enum directly here since there
+/// is no analog distinction (`Default` vs explicit) to preserve.
+///
+/// [`TransferPolicy`]: crate::acfg::types::TransferPolicy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum TransportMode {
+    Pio,
+    Dma,
 }
 
 // --------------------------------------------------------------------

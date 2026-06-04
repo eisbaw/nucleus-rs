@@ -61,7 +61,9 @@
 use core::ops::Range;
 use std::collections::BTreeMap;
 
-use super::ast::{MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, ViolationKind};
+use super::ast::{
+    MemorySpec, NotifyKind, PartitionKind, SimdSpec, TimeLit, TransportMode, ViolationKind,
+};
 
 /// Synthetic class name used for simple-form worker entries
 /// (`workers = { host, w0 }` — no explicit class per entry).
@@ -302,6 +304,8 @@ pub enum ResolvedTransferOption {
     /// `buffer=N`, N > 0.
     Buffer(u64),
     Notify(NotifyKind),
+    /// `mode=pio|dma` backend transport-path hint. See [`TransportMode`].
+    Transport(TransportMode),
 }
 
 // --------------------------------------------------------------------

@@ -400,6 +400,12 @@ pub fn check_schedule_compat(caps: &Capabilities, sched: &SchedIR) -> Result<(),
                         });
                     }
                 }
+                // `mode=pio|dma` (TASK-0438.01): both transport modes are
+                // accepted by every backend in this slice — codegen does
+                // not yet diverge (TASK-0438.02). No capability requirement.
+                // Exhaustive (no `_ =>`) on purpose: a future transport mode
+                // that needs a capability gate must be considered here.
+                ResolvedTransferOption::Transport(_) => {}
             }
         }
     }

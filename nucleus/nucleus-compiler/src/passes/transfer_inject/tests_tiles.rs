@@ -559,6 +559,8 @@ fn task0366_partitioned_cumulative_none_band_raises_fail_loud_error() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let xfer = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,
@@ -645,6 +647,8 @@ fn task0366_unpartitioned_cumulative_keeps_whole_array_no_error() {
         synchronous: false,
         buffer: 2,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let whole_array_tile = IterTile::new(vec![(t_iv, 0..9), (i_iv, 0..32)]);
     let xfer = ACFGNode::Xfer(XferPlaceholder {
@@ -719,6 +723,8 @@ fn task0366_fail_loud_error_propagates_through_nested_sequence_and_repeat() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let xfer = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,
@@ -778,6 +784,8 @@ fn task034102_hoist_w2w_send_then_recv_after_partition_repeat() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let wait = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Wait,
@@ -879,6 +887,8 @@ fn task034102_hoist_noop_when_no_cumulative_data() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let inner = ACFGNode::Repeat {
         iter_var: y_iv,

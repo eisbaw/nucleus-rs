@@ -43,7 +43,7 @@ pub use ast::{
     CheckAssert, CheckDirective, Directive, LoopDirective, LoopOption, MemoryAtom,
     MemoryRegionDecl, MemorySpec, NotifyKind, PartitionKind, PlaceDataDirective, PlaceDirective,
     PlaceTarget, SchedAst, SimdSpec, TimeLit, TimeUnit, TransferDirective, TransferOption,
-    ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
+    TransportMode, ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
 pub use ir::{
     ResolvedCheckAssert, ResolvedCheckDirective, ResolvedLoopDirective, ResolvedLoopOption,

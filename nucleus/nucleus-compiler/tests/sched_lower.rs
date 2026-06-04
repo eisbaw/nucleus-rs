@@ -1265,6 +1265,50 @@ schedule for \"../prog.algo.nuc\" {
 }
 
 #[test]
+fn negative_duplicate_transfer_mode_option() {
+    // TASK-0438.01 AC#2: a second `mode=` on one transfer is a typed
+    // DuplicateTransferOption error (option == "mode"), NOT silently
+    // dropped. This proves the dup-detection guard bites.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    transfer x : async, mode=pio, mode=dma;
+}
+";
+    let err = lower_str(src)
+        .expect_err("duplicate mode option must fail")
+        .first()
+        .clone();
+    assert_eq!(
+        err.kind,
+        SchedLowerErrorKind::DuplicateTransferOption {
+            data: "x".into(),
+            option: "mode".into(),
+        }
+    );
+}
+
+#[test]
+fn positive_transfer_mode_lowers_to_resolved_transport() {
+    // TASK-0438.01 AC#3 (lower half): `mode=dma` lowers to
+    // ResolvedTransferOption::Transport(Dma), carried — not dropped.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    transfer x : async, mode=dma;
+}
+";
+    let ir = lower_str(src).expect("mode=dma must lower");
+    let opts = &ir.transfers.get("x").expect("transfer x").options;
+    assert!(
+        opts.contains(&ResolvedTransferOption::Transport(
+            nucleus_compiler::sched::TransportMode::Dma
+        )),
+        "resolved options must carry Transport(Dma), got {opts:?}"
+    );
+}
+
+#[test]
 fn positive_reordered_distinct_loop_options_still_lower() {
     // §2 note 7 / §5.1: order is insignificant; distinct options OK.
     let src = "\

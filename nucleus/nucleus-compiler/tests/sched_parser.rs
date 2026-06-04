@@ -18,7 +18,7 @@
 
 use nucleus_compiler::sched::{
     parse_sched, CheckAssert, Directive, LoopOption, ParseError, ParseErrorKind, ParseErrors,
-    PlaceTarget, SimdSpec, TimeUnit, TransferOption,
+    PlaceTarget, SimdSpec, TimeUnit, TransferOption, TransportMode,
 };
 
 /// The primary (earliest) error only.
@@ -1424,5 +1424,92 @@ fn algo_path_invariant_under_schedule_file_directory() {
         ast1.algo_path, ast2.algo_path,
         "TASK-0277 contract: parse_sched is a pure function of source bytes; \
          no parent-dir resolution possible."
+    );
+}
+
+// --------------------------------------------------------------------
+// TASK-0438.01: `mode=pio|dma` transport-mode hint on a transfer edge.
+// --------------------------------------------------------------------
+
+/// Extract the single transfer directive's options from a schedule
+/// source, for the `mode=` tests below.
+fn xfer_options(src: &str) -> Vec<TransferOption> {
+    let ast = parse_sched(src).expect("schedule must parse");
+    ast.directives
+        .iter()
+        .find_map(|d| match &d.node {
+            Directive::Transfer(t) if t.data.node == "x" => Some(t.options.clone()),
+            _ => None,
+        })
+        .expect("transfer x")
+}
+
+#[test]
+fn parses_transfer_mode_pio() {
+    // TASK-0438.01 AC#1 (positive): `mode=pio` -> Transport(Pio).
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    transfer x : sync, mode=pio;
+}
+";
+    assert_eq!(
+        xfer_options(src),
+        vec![TransferOption::Sync, TransferOption::Transport(TransportMode::Pio)]
+    );
+}
+
+#[test]
+fn parses_transfer_mode_dma() {
+    // TASK-0438.01 AC#1 (positive): `mode=dma` -> Transport(Dma).
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    transfer x : async, mode=dma;
+}
+";
+    assert_eq!(
+        xfer_options(src),
+        vec![TransferOption::Async, TransferOption::Transport(TransportMode::Dma)]
+    );
+}
+
+#[test]
+fn parses_transfer_mode_with_buffer_multi_option() {
+    // TASK-0438.01 AC#1 (positive, multi-option): `mode=` composes with
+    // the existing `buffer=`/`async` options in one directive.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    transfer x : async, mode=dma, buffer=4;
+}
+";
+    assert_eq!(
+        xfer_options(src),
+        vec![
+            TransferOption::Async,
+            TransferOption::Transport(TransportMode::Dma),
+            TransferOption::Buffer(4),
+        ]
+    );
+}
+
+#[test]
+fn negative_transfer_mode_bogus_is_rejected() {
+    // TASK-0438.01 AC#1 (negative): only `pio` and `dma` are accepted;
+    // an unknown mode keyword must fail to parse.
+    let src = "\
+schedule for \"../prog.algo.nuc\" {
+    workers = { host };
+    place k on host;
+    transfer x : sync, mode=bogus;
+}
+";
+    assert!(
+        parse_sched(src).is_err(),
+        "mode=bogus must be a parse error"
     );
 }

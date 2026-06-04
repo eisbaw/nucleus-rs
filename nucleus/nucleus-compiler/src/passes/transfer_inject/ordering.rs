@@ -787,6 +787,10 @@ pub(super) fn policy_from_directive(dir: &ResolvedTransferDirective) -> Transfer
             ResolvedTransferOption::Async => p.synchronous = false,
             ResolvedTransferOption::Buffer(n) => p.buffer = *n,
             ResolvedTransferOption::Notify(k) => p.notify = NotifyMode::from(*k),
+            // TASK-0438.02 reads policy.transport to diverge DMA-async vs
+            // PIO-sync backend codegen; until then both render identically
+            // (PIO).
+            ResolvedTransferOption::Transport(m) => p.transport = *m,
         }
     }
     p

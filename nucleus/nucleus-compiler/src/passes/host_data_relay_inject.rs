@@ -1201,6 +1201,8 @@ mod tests {
             synchronous: false,
             buffer: 4,
             notify: NotifyMode::Event,
+            // TASK-0438.01: transport is incidental here; default Pio.
+            ..TransferPolicy::default()
         };
         let mut p = pair_xfers(w1(), w2(), d(7), 3);
         for c in p.iter_mut() {

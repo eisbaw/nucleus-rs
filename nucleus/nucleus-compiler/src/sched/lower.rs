@@ -1163,6 +1163,17 @@ fn lower_transfer(
                         ));
                     }
                 }
+                TransferOption::Transport(_) => {
+                    if seen.insert("mode", ()).is_some() {
+                        return Err(SchedLowerError::at(
+                            SchedLowerErrorKind::DuplicateTransferOption {
+                                data: data.clone(),
+                                option: "mode".to_string(),
+                            },
+                            data_span.clone(),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -1204,6 +1215,7 @@ fn lower_transfer_option(
             ResolvedTransferOption::Buffer(*n)
         }
         TransferOption::Notify(k) => ResolvedTransferOption::Notify(*k),
+        TransferOption::Transport(m) => ResolvedTransferOption::Transport(*m),
     })
 }
 

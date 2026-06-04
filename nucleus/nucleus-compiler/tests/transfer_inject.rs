@@ -36,7 +36,7 @@ use nucleus_compiler::algo::{lower_algo, parse_algo};
 use nucleus_compiler::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use nucleus_compiler::link::{self, LinkedIR, WorkerEntity};
 use nucleus_compiler::passes::transfer_inject::inject_transfers;
-use nucleus_compiler::sched::{lower_sched, parse_sched};
+use nucleus_compiler::sched::{lower_sched, parse_sched, TransportMode};
 
 // --------------------------------------------------------------------
 // Synthetic-ACFG helpers
@@ -299,6 +299,7 @@ fn policy_sync() {
             synchronous: true,
             buffer: 1,
             notify: NotifyMode::Default,
+            transport: TransportMode::Pio,
         }
     );
 }
@@ -312,6 +313,7 @@ fn policy_async() {
             synchronous: false,
             buffer: 1,
             notify: NotifyMode::Default,
+            transport: TransportMode::Pio,
         }
     );
 }
@@ -325,6 +327,7 @@ fn policy_async_buffer_2() {
             synchronous: false,
             buffer: 2,
             notify: NotifyMode::Default,
+            transport: TransportMode::Pio,
         }
     );
 }
@@ -338,8 +341,42 @@ fn policy_async_buffer_2_notify_event() {
             synchronous: false,
             buffer: 2,
             notify: NotifyMode::Event,
+            transport: TransportMode::Pio,
         }
     );
+}
+
+// TASK-0438.01 AC#3: the `mode=` hint threads end-to-end through
+// transfer-injection into TransferPolicy.transport as a typed field.
+
+#[test]
+fn policy_mode_dma_threads_to_transport_dma() {
+    // mode=dma must reach TransferPolicy as transport == Dma.
+    let p = policy_after_inject("transfer d : async, mode=dma;");
+    assert_eq!(
+        p,
+        TransferPolicy {
+            synchronous: false,
+            buffer: 1,
+            notify: NotifyMode::Default,
+            transport: TransportMode::Dma,
+        }
+    );
+}
+
+#[test]
+fn policy_no_mode_defaults_to_transport_pio() {
+    // Absence of `mode=` -> default Pio (regression-safe default that
+    // keeps 02-split-add / 14-hearing-aid byte-identical until .02).
+    let p = policy_after_inject("transfer d : sync;");
+    assert_eq!(p.transport, TransportMode::Pio);
+}
+
+#[test]
+fn policy_mode_pio_explicit_threads_to_transport_pio() {
+    // Explicit mode=pio is value-equal to the default.
+    let p = policy_after_inject("transfer d : sync, mode=pio;");
+    assert_eq!(p.transport, TransportMode::Pio);
 }
 
 // --------------------------------------------------------------------

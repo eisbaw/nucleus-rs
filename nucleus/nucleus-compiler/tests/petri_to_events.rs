@@ -502,6 +502,8 @@ fn petri_wrapper_agrees_with_acfg_entry_point() {
         synchronous: false,
         buffer: 4,
         notify: NotifyMode::Event,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let push = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,

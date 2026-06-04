@@ -165,6 +165,8 @@ fn two_worker_xfer_pair_yields_intermediate_place_and_two_transitions() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let push = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,
@@ -357,6 +359,8 @@ fn buffer_capacity_follows_policy_buffer_field() {
         synchronous: false,
         buffer: 4,
         notify: NotifyMode::Event,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let push = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,
@@ -590,6 +594,8 @@ fn synthetic_pipeline_depth_sets_initial_marking() {
         synchronous: false,
         buffer: 4, // capacity high enough to hold the head-start
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let push = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,
@@ -649,6 +655,8 @@ fn synthetic_no_pipeline_depth_keeps_initial_marking_zero() {
         synchronous: true,
         buffer: 1,
         notify: NotifyMode::Default,
+        // TASK-0438.01: transport is incidental here; default Pio.
+        ..TransferPolicy::default()
     };
     let push = ACFGNode::Xfer(XferPlaceholder {
         role: XferRole::Push,

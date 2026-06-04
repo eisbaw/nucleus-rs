@@ -53,7 +53,7 @@ use super::ast::{
     CheckAssert, CheckDirective, Directive, LoopDirective, LoopOption, MemoryAtom,
     MemoryRegionDecl, MemorySpec, NotifyKind, PartitionKind, PlaceDataDirective, PlaceDirective,
     PlaceTarget, SchedAst, SimdSpec, SpDirective, SpName, TimeLit, TimeUnit, TransferDirective,
-    TransferOption, ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
+    TransferOption, TransportMode, ViolationKind, WorkerClassDecl, WorkerEntry, WorkersDecl,
 };
 use crate::error::{map_all_chumsky_errors, ParseErrors};
 use crate::span::Spanned;
@@ -617,12 +617,21 @@ fn transfer_option() -> impl Parser<char, TransferOption, Error = Simple<char>> 
         .ignore_then(pad(just('=')))
         .ignore_then(pad(int_lit()))
         .map(TransferOption::Buffer);
+    let mode_kind = choice((
+        keyword("pio").to(TransportMode::Pio),
+        keyword("dma").to(TransportMode::Dma),
+    ));
+    let mode = pad(keyword("mode"))
+        .ignore_then(pad(just('=')))
+        .ignore_then(pad(mode_kind))
+        .map(TransferOption::Transport);
 
     choice((
         pad(keyword("sync")).to(TransferOption::Sync),
         pad(keyword("async")).to(TransferOption::Async),
         buffer,
         notify,
+        mode,
     ))
 }
 
