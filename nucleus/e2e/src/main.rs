@@ -2734,11 +2734,16 @@ const REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE: &str = "__nuc_typo_negative_
 /// `[[required]]` entry to the in-memory `Manifest` whose `schedule` is the
 /// `REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE` sentinel — a name that
 /// cannot match any discovered `*.sched.nuc` file. The synthetic entry's
-/// `example`, `backend`, and `milestone` are taken from `manifest.required[0]`
-/// (the first real required entry) so:
+/// `example`, `backend`, and `milestone` are taken from the first real
+/// required entry IN THE ACTIVE TIER (TASK-0446: the first entry whose
+/// `is_mpi_backend` matches `with_mpi` — tier-1 by default, an mpi backend
+/// under `--with-mpi`) so:
 ///   * `example` is in `runnable_examples` (otherwise `plan_cells` would not
 ///     iterate over it and the cell would silently leave the coverage scope),
-///   * `backend` is in `manifest.backends` (same reasoning),
+///   * `backend` is in the active tier's backend list, so the
+///     `required_coverage_gaps` tier filter (`active_backends(with_mpi)`)
+///     keeps the synthetic cell in scope (otherwise it is filtered out and
+///     the negative arm tests nothing),
 ///   * `milestone` lies in any `--milestone` band that includes at least one
 ///     real required cell (bare `just e2e` has no milestone filter, so any
 ///     value is fine; the recipe runs without `--milestone`, but mirroring an
@@ -2769,7 +2774,10 @@ const REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE: &str = "__nuc_typo_negative_
 /// unaffected), `Err` if the gate was set but the manifest is too degenerate
 /// to inject into. Deterministic by construction: same input manifest plus
 /// same env state = identical injection (no clock/PID/RNG).
-fn maybe_inject_required_coverage_negative(manifest: &mut Manifest) -> Result<bool, String> {
+fn maybe_inject_required_coverage_negative(
+    manifest: &mut Manifest,
+    with_mpi: bool,
+) -> Result<bool, String> {
     if std::env::var("NUC_REQUIRED_COVERAGE_NEGATIVE").as_deref() != Ok("1") {
         return Ok(false);
     }
@@ -2783,38 +2791,56 @@ fn maybe_inject_required_coverage_negative(manifest: &mut Manifest) -> Result<bo
     );
 
     // Pick (example, backend, milestone) from the first real required entry
-    // so the synthetic cell survives `cell_matches_filters` and the active
-    // milestone gate. Fallback path is only relevant on a degenerate manifest
-    // — see docstring.
+    // IN THE ACTIVE TIER so the synthetic cell survives `cell_matches_filters`,
+    // the active milestone gate, AND the `required_coverage_gaps` tier filter.
+    // Fallback path is only relevant on a degenerate manifest — see docstring.
     //
-    // TASK-0444 orthogonality: the first `[[required]]` entry is a TIER-1
-    // (`backends`) cell, so this negative seam is tier-1-only by
-    // construction. The `required-coverage-check-negative` recipe runs in
-    // the default shell WITHOUT `--with-mpi`, so the synthetic cell's
-    // backend matches the active tier and `required_coverage_gaps` sees it.
-    // If a future cycle ever adds an mpi negative arm, it must anchor on an
-    // mpi backend AND run under `--with-mpi`, or the tier gate at
-    // `required_coverage_gaps` would filter the synthetic cell out (the
-    // `attributed == 0` backstop then forces a clean exit → recipe FAILs
-    // loud, the safe direction, but the arm would test nothing).
-    let (example, backend, milestone) = if let Some(first) = manifest.required.first() {
-        (
-            first.example.clone(),
-            first.backend.clone(),
-            first.milestone.clone(),
-        )
+    // TASK-0446 tier-awareness: the synthetic cell's backend MUST be in the
+    // tier this run actually scopes to (`active_backends(with_mpi)`), or
+    // `required_coverage_gaps` filters it out and the `attributed == 0`
+    // backstop forces a clean exit (recipe FAILs loud, the safe direction,
+    // but the arm tests nothing). The first overall `[[required]]` entry is a
+    // TIER-1 (`backends`) cell, so `.first()` alone is tier-1-only by
+    // construction — which is correct for the default-shell
+    // `required-coverage-check-negative` recipe (no `--with-mpi`) but wrong
+    // for the mpi arm. Select the first required entry whose
+    // `is_mpi_backend` matches `with_mpi`, so:
+    //   * `--with-mpi` unset  → first tier-1 required cell (unchanged behaviour);
+    //   * `--with-mpi` set    → first mpi-tier required cell, so the synthetic
+    //     gap is attributable under the mpi-tier coverage gate
+    //     (`required-coverage-check-negative-mpi`, run under `.#mpi`).
+    let anchor = manifest
+        .required
+        .iter()
+        .find(|e| manifest.is_mpi_backend(&e.backend) == with_mpi)
+        .map(|e| (e.example.clone(), e.backend.clone(), e.milestone.clone()));
+    let (example, backend, milestone) = if let Some(anchored) = anchor {
+        anchored
     } else {
+        // Degenerate / no in-tier required entry: anchor example on
+        // `runnable_examples` and backend on the active tier's backend list.
+        // Milestone "M1" is a hard-coded best-effort default (see docstring's
+        // fallback caveat) — never reached on today's manifest (both tiers
+        // carry real `[[required]]` entries).
         let example = manifest.runnable_examples.first().cloned().ok_or_else(|| {
             "NUC_REQUIRED_COVERAGE_NEGATIVE=1 but manifest has no \
              runnable_examples to anchor a synthetic required entry against \
              (degenerate manifest)"
                 .to_string()
         })?;
-        let backend = manifest.backends.first().cloned().ok_or_else(|| {
-            "NUC_REQUIRED_COVERAGE_NEGATIVE=1 but manifest has no \
-             backends to anchor a synthetic required entry against \
-             (degenerate manifest)"
-                .to_string()
+        let active_tier = if with_mpi {
+            &manifest.mpi_backends
+        } else {
+            &manifest.backends
+        };
+        let backend = active_tier.first().cloned().ok_or_else(|| {
+            format!(
+                "NUC_REQUIRED_COVERAGE_NEGATIVE=1 but manifest has no {} to \
+                 anchor a synthetic required entry against (degenerate \
+                 manifest for the {} tier)",
+                if with_mpi { "mpi_backends" } else { "backends" },
+                if with_mpi { "mpi" } else { "default" },
+            )
         })?;
         (example, backend, "M1".to_string())
     };
@@ -4772,7 +4798,13 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // `maybe_perturb_for_nondet_test` / `maybe_corrupt_wire_for_xbackend`
     // discipline (the env flag is the seam; the on-disk manifest stays
     // clean). Sibling of those two functions in this file.
-    let required_coverage_injected = maybe_inject_required_coverage_negative(&mut manifest)?;
+    // TASK-0446: pass the active tier so the synthetic cell anchors on a
+    // backend the downstream `required_coverage_gaps` tier filter actually
+    // sees (tier-1 by default; mpi backend under `--with-mpi`). The probe
+    // below has not run yet, but injection is a pure manifest mutation that
+    // needs no mpiexec; the gap check fires before any cell is built.
+    let required_coverage_injected =
+        maybe_inject_required_coverage_negative(&mut manifest, args.with_mpi)?;
 
     // Tier-2 MPI gate (TASK-0444). `--with-mpi` runs the `mpi_backends`
     // tier, which REQUIRES the `.#mpi` dev shell (rsmpi build deps + a

@@ -2756,7 +2756,7 @@ fn req_cov_inject_is_strict_noop_when_env_unset() {
     std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
     let mut m = sample_manifest_with_one_required();
     let before_len = m.required.len();
-    let injected = maybe_inject_required_coverage_negative(&mut m);
+    let injected = maybe_inject_required_coverage_negative(&mut m, false);
     assert_eq!(injected, Ok(false), "env unset must report no injection");
     assert_eq!(
         m.required.len(),
@@ -2779,7 +2779,7 @@ fn req_cov_inject_appends_synthetic_required_when_env_set() {
     let original_len = m.required.len();
 
     std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
-    let injected = maybe_inject_required_coverage_negative(&mut m);
+    let injected = maybe_inject_required_coverage_negative(&mut m, false);
     std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
 
     assert_eq!(injected, Ok(true), "gate=1 must report an injection");
@@ -2819,7 +2819,7 @@ fn req_cov_inject_then_gap_detected_end_to_end() {
     let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
 
     std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
-    let _ = maybe_inject_required_coverage_negative(&mut m).expect("inject");
+    let _ = maybe_inject_required_coverage_negative(&mut m, false).expect("inject");
     std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
 
     let gaps = required_coverage_gaps(&m, &plan, &Args::default()).expect("ok");
@@ -2865,12 +2865,66 @@ fn req_cov_inject_errs_loud_on_degenerate_manifest() {
         fault_assert: vec![],
     };
     std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
-    let r = maybe_inject_required_coverage_negative(&mut m);
+    let r = maybe_inject_required_coverage_negative(&mut m, false);
     std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
     assert!(
         r.is_err(),
         "degenerate manifest (no runnable_examples and no required) \
          must surface a loud Err, got {r:?}"
+    );
+}
+
+#[test]
+fn req_cov_inject_anchors_on_mpi_tier_under_with_mpi() {
+    // TASK-0446: the decisive tier-awareness regression. On a two-tier
+    // manifest, injecting under `with_mpi=true` MUST anchor the synthetic
+    // cell on the mpi-tier backend (not the first overall required entry,
+    // which is tier-1). Otherwise `required_coverage_gaps` under the mpi
+    // tier filters the synthetic cell out, the attribution count is 0, and
+    // the mpi negative arm tests nothing (the exact failure the pre-0446
+    // `.first()` anchor would have caused — see the function's tier-aware
+    // comment). End-to-end: the synthetic cell then surfaces as an
+    // attributable gap under the mpi-tier coverage gate.
+    let _guard = req_cov_neg_env_lock();
+    let mut m = manifest_two_tiers();
+
+    std::env::set_var("NUC_REQUIRED_COVERAGE_NEGATIVE", "1");
+    let injected = maybe_inject_required_coverage_negative(&mut m, true);
+    std::env::remove_var("NUC_REQUIRED_COVERAGE_NEGATIVE");
+
+    assert_eq!(injected, Ok(true), "gate=1 must report an injection");
+    let last = m.required.last().expect("injected entry");
+    assert_eq!(last.schedule, REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE);
+    // The load-bearing assertion: anchored on the mpi tier, NOT tier-1.
+    assert_eq!(
+        last.backend, "mpi-blocking",
+        "under --with-mpi the synthetic cell must anchor on an mpi backend \
+         (got {}), or the mpi-tier coverage gate filters it out",
+        last.backend
+    );
+    assert_ne!(
+        last.backend, "pthreads-sync",
+        "the synthetic cell must NOT anchor on the tier-1 first required entry \
+         under --with-mpi"
+    );
+
+    // End-to-end: under the mpi tier, the synthetic cell is an attributable
+    // gap (its sentinel schedule was never planned). The plan contains only
+    // the REAL mpi cell.
+    let args = Args {
+        with_mpi: true,
+        ..Args::default()
+    };
+    let plan = vec![planned("01-elementwise-add", "naive", "mpi-blocking")];
+    let gaps = required_coverage_gaps(&m, &plan, &args).expect("ok");
+    let attributed = gaps
+        .iter()
+        .filter(|c| c.schedule == REQUIRED_COVERAGE_NEGATIVE_SENTINEL_SCHEDULE)
+        .count();
+    assert_eq!(
+        attributed, 1,
+        "the mpi-anchored synthetic cell must surface as exactly one \
+         attributable gap under the mpi-tier coverage gate (got {gaps:?})"
     );
 }
 

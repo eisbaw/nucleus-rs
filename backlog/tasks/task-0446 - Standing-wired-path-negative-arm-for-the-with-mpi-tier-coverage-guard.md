@@ -1,9 +1,11 @@
 ---
 id: TASK-0446
 title: Standing wired-path negative arm for the --with-mpi tier coverage guard
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@mark'
 created_date: '2026-06-04 10:52'
+updated_date: '2026-06-04 23:41'
 labels:
   - M7
   - validation

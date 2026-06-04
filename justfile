@@ -92,6 +92,31 @@ e2e-milestone M:
 e2e-mpi:
     nix develop .#mpi --command bash -c "cd nucleus && cargo run --release --bin nucleus-e2e -- --with-mpi"
 
+# TASK-0446: the STANDING WIRED-PATH negative arm for the --with-mpi
+# tier coverage guard — the mpi-tier sibling of
+# `required-coverage-check-negative` (the tier-1 arm wired into `just
+# ci`). The tier-1 arm anchors its synthetic typo'd `[[required]]` cell
+# on a tier-1 backend and runs WITHOUT --with-mpi, so it does NOT
+# exercise the mpi-tier branch of `run_inner`'s required-coverage
+# hard-fail; the pure-function unit tests cover the LOGIC but not the
+# WIRED call. A refactor could sever the mpi-tier hard-fail with unit
+# tests + `just e2e-mpi` green. This recipe closes that standing-bite
+# gap: under `.#mpi`, it runs the harness with --with-mpi AND
+# NUC_REQUIRED_COVERAGE_NEGATIVE=1, which (TASK-0446 tier-aware
+# injection) appends ONE synthetic mpi-tier `[[required]]` cell whose
+# sentinel schedule cannot match any *.sched.nuc file. The wired
+# mpi-tier `required_coverage_gaps` then yields a gap, `run_inner`
+# returns Err, and the harness exits non-zero — SUCCEEDS iff the harness
+# correctly FAILS. The gap check fires BEFORE any cell is built, so this
+# is CHEAP (no rsmpi cross-builds; only needs the mpiexec startup probe
+# the `.#mpi` shell satisfies). Same TASK-0188 belt-and-suspenders
+# contract as the tier-1 arm: asserts NUC_REQUIRED_COVERAGE_GAP_DETECTED
+# is present AND >=1 IN ADDITION to the exit-code inversion. DELIBERATELY
+# NOT in `just ci` (needs `.#mpi`, same out-of-default-ci rule as
+# `e2e-mpi` / `check-mpi`); run it alongside `just e2e-mpi`.
+required-coverage-check-negative-mpi:
+    nix develop .#mpi --command bash -c 'cd nucleus && out=$(mktemp) && trap "rm -f $out" EXIT && { if NUC_REQUIRED_COVERAGE_NEGATIVE=1 cargo run --release --bin nucleus-e2e -- --with-mpi >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE "^NUC_REQUIRED_COVERAGE_GAP_DETECTED=[0-9]+" "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED signal MISSING under --with-mpi — cannot prove the mpi-tier required-coverage guard detected the injected sentinel cell (TASK-0188/0446 harness contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED=$n — the mpi-tier required-coverage guard detected NO injection-attributable gap (TASK-0446)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: mpi-tier required-coverage guard did NOT exit non-zero on the injected sentinel mpi required cell (TASK-0446 wired --with-mpi path silently neutered)"; exit 1; else echo "OK: mpi-tier required-coverage guard correctly bit on the injected sentinel mpi required cell (--with-mpi)"; fi'
+
 # Verify PRD §1 / §10.1: same source + same backend = byte-identical
 # emitted code. Builds every cell twice and diffs the generated files.
 # TASK-0033.
