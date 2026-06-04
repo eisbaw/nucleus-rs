@@ -78,6 +78,18 @@ use serde::Deserialize;
 struct Manifest {
     runnable_examples: Vec<String>,
     backends: Vec<String>,
+    /// Tier-2 (M7) MPI backends, kept SEPARATE from `backends` because
+    /// they require the `.#mpi` dev shell (rsmpi build deps + a
+    /// localhost MPI launcher) the default-shell matrix and `just ci`
+    /// deliberately lack (TASK-0063/0068 tiered-shell design). They run
+    /// ONLY under the `--with-mpi` flag (`just e2e-mpi`), which scopes a
+    /// run to THIS tier INSTEAD of `backends` — mutually exclusive in a
+    /// single invocation, mirroring the renode-multimcu-gate's
+    /// out-of-default-matrix separation. `#[serde(default)]` so a
+    /// manifest without the key is byte-identical to the pre-feature
+    /// shape and bare `just e2e` is unaffected. TASK-0444.
+    #[serde(default)]
+    mpi_backends: Vec<String>,
     #[serde(default)]
     required: Vec<RequiredEntry>,
     #[serde(default)]
@@ -291,6 +303,37 @@ fn milestone_in_gate(entry: Milestone, gate: Option<Milestone>) -> bool {
 }
 
 impl Manifest {
+    /// The backends in scope for THIS run's tier (TASK-0444). The
+    /// default-shell matrix runs `backends` (tier-1); `--with-mpi`
+    /// runs `mpi_backends` INSTEAD. The two tiers are mutually
+    /// exclusive within one invocation — `--with-mpi` is a focused
+    /// out-of-default-matrix gate (sibling of renode-multimcu-gate),
+    /// not an *additive* one, so it does not re-run the 427 tier-1
+    /// cells under the heavier `.#mpi` shell.
+    fn active_backends(&self, with_mpi: bool) -> &[String] {
+        if with_mpi {
+            &self.mpi_backends
+        } else {
+            &self.backends
+        }
+    }
+
+    /// True iff `backend` is a tier-2 MPI backend (declared under
+    /// `mpi_backends`). The tier-gate predicate: a cell whose backend's
+    /// mpi-ness does not match the active `--with-mpi` mode is out of
+    /// scope for this run (not planned, not a coverage obligation, not
+    /// a dead-fault-assert). Two helpers express the gate from the SAME
+    /// `mpi_backends` field, kept consistent by construction — so the
+    /// planning and coverage sites cannot drift, the discipline
+    /// `milestone_in_gate` enforces for the milestone axis:
+    ///   - `plan_cells` selects via `active_backends(with_mpi)` (which
+    ///     returns exactly the cells where `is_mpi_backend == with_mpi`);
+    ///   - `required_coverage_gaps` and `fault_assert_orphans` call
+    ///     `is_mpi_backend` directly to scope their obligation.
+    fn is_mpi_backend(&self, backend: &str) -> bool {
+        self.mpi_backends.iter().any(|b| b == backend)
+    }
+
     /// Parse + validate every `[[required]]` entry's milestone tag,
     /// returning a `Cell -> Milestone` map. A typo'd milestone tag is
     /// a typed error here (fail loud at load), never a silent
@@ -489,6 +532,17 @@ struct Args {
     /// like this — fail LOUD up front, not after the matrix has run).
     /// Per-cell perf-threshold gating is Stage 3 (out of scope here).
     baseline: Option<PathBuf>,
+    /// Run the tier-2 MPI tier (`mpi_backends`) INSTEAD of the default
+    /// `backends` tier (TASK-0444). Set by `--with-mpi` (driven by
+    /// `just e2e-mpi`, which enters the `.#mpi` dev shell). When true,
+    /// `plan_cells` / `required_coverage_gaps` / `fault_assert_orphans`
+    /// scope to the mpi tier via `Manifest::is_mpi_backend`, and
+    /// `run_inner` HARD-FAILS at startup if `mpiexec` is not on PATH —
+    /// silently skipping the tier-2 cells (e.g. when this flag is set
+    /// from the default shell by mistake) would be the silent-coverage-
+    /// loss class the project repeatedly guards against. Default false =
+    /// byte-identical to the pre-flag harness (bare `just e2e`).
+    with_mpi: bool,
 }
 
 /// Upper bound on `--jobs N`. See [`Args::jobs`].
@@ -506,6 +560,7 @@ impl Default for Args {
             format: Format::Text,
             emit_timings: None,
             baseline: None,
+            with_mpi: false,
         }
     }
 }
@@ -540,6 +595,15 @@ fn parse_args(argv: &[OsString]) -> Result<Args, String> {
             }
             "--check-determinism" => {
                 a.check_determinism = true;
+                i += 1;
+            }
+            "--with-mpi" => {
+                // TASK-0444: run the tier-2 `mpi_backends` tier instead
+                // of the default `backends` tier. Requires the `.#mpi`
+                // dev shell; `run_inner` probes `mpiexec` up front and
+                // hard-fails if absent (no silent skip). Invoke via
+                // `just e2e-mpi`.
+                a.with_mpi = true;
                 i += 1;
             }
             "--jobs" | "-j" => {
@@ -665,12 +729,18 @@ fn print_help() {
          \n\
          USAGE:\n    \
              nucleus-e2e [--example NAME] [--schedule NAME] [--backend NAME] \
-[--milestone ID] [--check-determinism] [--jobs N | -j N] [--format text|junit] \
+[--milestone ID] [--check-determinism] [--with-mpi] [--jobs N | -j N] [--format text|junit] \
 [--emit-timings PATH] [--baseline PATH]\n\
          \n\
          Bare invocation runs every cell declared in\n\
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
          matching cells.\n\
+         \n\
+         --with-mpi: run the tier-2 `mpi_backends` tier (mpi-blocking)\n\
+         INSTEAD of the default `backends` tier (TASK-0444). Requires\n\
+         the `.#mpi` dev shell — HARD-FAILS at startup if `mpiexec` is\n\
+         not on PATH (no silent skip). Invoke via `just e2e-mpi`. The\n\
+         out-of-default-matrix sibling of `just renode-multimcu-gate`.\n\
          \n\
          --jobs N / -j N: parallel cell execution (TASK-0023.01).\n\
          Default 1 (sequential, byte-for-byte identical to pre-flag\n\
@@ -1122,7 +1192,13 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                     continue;
                 }
             }
-            for backend in &manifest.backends {
+            // Tier gate (TASK-0444): `--with-mpi` runs the `mpi_backends`
+            // tier INSTEAD of `backends` (mutually exclusive). A tier-1
+            // run never plans mpi cells (they need the `.#mpi` shell) and
+            // an mpi run never plans tier-1 cells. `required_coverage_gaps`
+            // / `fault_assert_orphans` apply the SAME `is_mpi_backend`
+            // predicate so the coverage obligation stays in lockstep.
+            for backend in manifest.active_backends(args.with_mpi) {
                 if let Some(want) = &args.backend {
                     if want != backend {
                         continue;
@@ -1150,8 +1226,19 @@ fn plan_cells(paths: &Paths, manifest: &Manifest, args: &Args) -> Result<Vec<Pla
                 let in_band_skip =
                     skip_m.is_some_and(|(_, m)| milestone_in_gate(*m, args.milestone));
 
-                if args.milestone.is_some() && !in_band_required && !in_band_skip {
-                    // Out of this milestone tier — do not plan it.
+                // TASK-0444: `--with-mpi` runs a TIGHT tier too (like
+                // `--milestone`): only DECLARED cells (in-band required +
+                // declared skips) are planned, NOT the bare informational
+                // cells. Without this, the mpi tier would build+run every
+                // example×schedule on mpi-blocking (~60 cells, most
+                // capability-rejected or irrelevant) — minutes of wasted
+                // cross-compilation for a focused 3-cell gate. The mpi
+                // gate's coverage is exactly its declared cells, the same
+                // explicit-declaration discipline the tier-1 matrix uses.
+                let tight_tier = args.milestone.is_some() || args.with_mpi;
+                if tight_tier && !in_band_required && !in_band_skip {
+                    // Out of this tier (milestone band or mpi gate) — do
+                    // not plan it.
                     continue;
                 }
 
@@ -1307,6 +1394,16 @@ fn required_coverage_gaps(
             // Out of example/schedule/backend scope.
             continue;
         }
+        if manifest.is_mpi_backend(&cell.backend) != args.with_mpi {
+            // Tier gate (TASK-0444), lockstep with plan_cells'
+            // `active_backends` selection: an mpi-tier required cell is a
+            // coverage obligation ONLY under `--with-mpi`, and a tier-1
+            // required cell only when NOT `--with-mpi`. A cell out of the
+            // active tier was never planned, so it must not be flagged a
+            // gap (that would make `just e2e` fail on the M7 cells it
+            // deliberately does not run in the default shell).
+            continue;
+        }
         if !milestone_in_gate(m, args.milestone) {
             // Out of the cumulative milestone band — NOT a gating
             // cell this run (plan_cells did not flag it required
@@ -1359,6 +1456,15 @@ fn fault_assert_orphans(
     for fa in &manifest.fault_assert {
         let cell = fa.cell();
         if !cell_matches_filters(&cell, args) {
+            continue;
+        }
+        if manifest.is_mpi_backend(&cell.backend) != args.with_mpi {
+            // Tier gate (TASK-0444), lockstep with plan_cells /
+            // required_coverage_gaps: a fault assert on a cell outside
+            // the active tier is not a dead no-op for this run — the
+            // cell legitimately does not run here (it belongs to the
+            // other tier's gate). No mpi `[[fault_assert]]` exists today;
+            // this keeps the three call sites from drifting if one lands.
             continue;
         }
         match planned.iter().find(|p| p.cell == cell) {
@@ -2679,6 +2785,17 @@ fn maybe_inject_required_coverage_negative(manifest: &mut Manifest) -> Result<bo
     // so the synthetic cell survives `cell_matches_filters` and the active
     // milestone gate. Fallback path is only relevant on a degenerate manifest
     // — see docstring.
+    //
+    // TASK-0444 orthogonality: the first `[[required]]` entry is a TIER-1
+    // (`backends`) cell, so this negative seam is tier-1-only by
+    // construction. The `required-coverage-check-negative` recipe runs in
+    // the default shell WITHOUT `--with-mpi`, so the synthetic cell's
+    // backend matches the active tier and `required_coverage_gaps` sees it.
+    // If a future cycle ever adds an mpi negative arm, it must anchor on an
+    // mpi backend AND run under `--with-mpi`, or the tier gate at
+    // `required_coverage_gaps` would filter the synthetic cell out (the
+    // `attributed == 0` backstop then forces a clean exit → recipe FAILs
+    // loud, the safe direction, but the arm would test nothing).
     let (example, backend, milestone) = if let Some(first) = manifest.required.first() {
         (
             first.example.clone(),
@@ -4655,6 +4772,34 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
     // discipline (the env flag is the seam; the on-disk manifest stays
     // clean). Sibling of those two functions in this file.
     let required_coverage_injected = maybe_inject_required_coverage_negative(&mut manifest)?;
+
+    // Tier-2 MPI gate (TASK-0444). `--with-mpi` runs the `mpi_backends`
+    // tier, which REQUIRES the `.#mpi` dev shell (rsmpi build deps + a
+    // localhost MPI launcher). Probe `mpiexec` BEFORE planning and
+    // HARD-FAIL if absent: silently skipping the tier-2 cells (e.g. when
+    // `just e2e-mpi`'s `nix develop .#mpi` wrapper is bypassed, or the
+    // flag is passed from the default shell) would be the silent-
+    // coverage-loss class TASK-0163 closed for the required matrix and
+    // that the project's memory repeatedly flags. The default-shell
+    // matrix (`--with-mpi` unset) never reaches this probe, so bare
+    // `just e2e` / `just ci` are unaffected and need no MPI.
+    if args.with_mpi {
+        let probe = Command::new("mpiexec").arg("--version").output();
+        let ok = matches!(&probe, Ok(o) if o.status.success());
+        if !ok {
+            return Err(
+                "--with-mpi requires the `.#mpi` dev shell: `mpiexec` was not \
+                 found on PATH (or failed to run). Launch via `just e2e-mpi`, \
+                 which enters `nix develop .#mpi`. Refusing to run so the \
+                 tier-2 mpi-blocking cells are never silently skipped."
+                    .to_string(),
+            );
+        }
+        eprintln!(
+            "nucleus-e2e: tier-2 MPI gate (--with-mpi) — running the \
+             `mpi_backends` tier under the `.#mpi` shell"
+        );
+    }
 
     if let Some(m) = &args.milestone {
         // PRD §11 milestone gate, now genuine (TASK-0167): the

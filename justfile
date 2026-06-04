@@ -69,6 +69,29 @@ e2e:
 e2e-milestone M:
     cd nucleus && cargo run --release --bin nucleus-e2e -- --milestone {{M}}
 
+# Tier-2 (M7) MPI differential e2e — the mpi-blocking arm of the
+# cross-backend matrix, now COUNTED (TASK-0444). Enters the `.#mpi` dev
+# shell (OpenMPI + rsmpi build deps + localhost mpiexec) and runs the
+# nucleus-e2e harness with `--with-mpi`, which scopes the run to the
+# `mpi_backends` tier (mpi-blocking) declared in e2e-matrix.toml INSTEAD
+# of the default tier-1 `backends`. Each cell generates the SPMD MPI
+# project, cross-builds it, launches it under `mpiexec -n N` (N = the
+# schedule's used-worker count baked into run.sh — all ranks live), and
+# byte-diffs output.bin against the example's reference.bin — the SAME
+# oracle the tier-1 differential uses, so this is a real apples-to-
+# apples cross-backend check. Self-contained: it enters `.#mpi` itself,
+# so it runs from the default shell:  just e2e-mpi
+#
+# DELIBERATELY NOT in `just ci` / bare `just e2e`: the default shell has
+# no MPI (TASK-0068 tiered-shell design). The harness HARD-FAILS if
+# mpiexec is absent (no silent skip). The focused out-of-default-matrix
+# sibling of `renode-multimcu-gate` (the tier-3 embedded gate); the
+# mpi-blocking BACKEND crate itself is still built by `just ci` (a
+# normal std workspace member emitting strings). This is the COUNTED
+# matrix companion to the value-correctness gate `just check-mpi`.
+e2e-mpi:
+    nix develop .#mpi --command bash -c "cd nucleus && cargo run --release --bin nucleus-e2e -- --with-mpi"
+
 # Verify PRD §1 / §10.1: same source + same backend = byte-identical
 # emitted code. Builds every cell twice and diffs the generated files.
 # TASK-0033.

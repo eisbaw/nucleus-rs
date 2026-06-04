@@ -138,6 +138,24 @@ runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-p
 # surface IS async + buffer + event.
 backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event", "openmp-rs", "mp-tcp-poll", "mp-uds-event"]
 
+# Tier-2 (M7) MPI backends (TASK-0444). Kept SEPARATE from `backends`
+# above because they require the `.#mpi` dev shell (rsmpi build deps +
+# a localhost `mpiexec` launcher) that the default-shell matrix and
+# `just ci` deliberately do NOT provide (TASK-0063/0068 tiered-shell
+# design). They are NEVER run by bare `just e2e`; they run ONLY under
+# the harness `--with-mpi` flag (the `just e2e-mpi` recipe, which enters
+# `nix develop .#mpi`), which scopes a run to THIS tier INSTEAD of
+# `backends` — mutually exclusive in a single invocation, the focused
+# out-of-default-matrix sibling of `renode-multimcu-gate` (the tier-3
+# embedded gate). The harness HARD-FAILS if `mpiexec` is absent so the
+# tier-2 cells can never silently vanish from coverage (TASK-0163
+# discipline on the new axis). The `[[required]]` cells for this tier
+# carry `backend = "mpi-blocking"` + `milestone = "M7"` and are diffed
+# against the SAME `reference.bin` oracle the tier-1 differential uses,
+# so an mpi cell passing IS a real apples-to-apples cross-backend check
+# — now COUNTED, not just `just check-mpi`'s out-of-band assertion.
+mpi_backends = ["mpi-blocking"]
+
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
 # informational (status PASS, but absent from the required set).
@@ -168,6 +186,45 @@ example  = "03-reduction"
 schedule = "naive"
 backend  = "pthreads-sync"
 milestone = "M1"
+
+# --- Tier-2 (M7) mpi-blocking differential cells (TASK-0444) ----------
+#
+# The mpi-blocking arm of the cross-backend matrix for examples 1-3.
+# These run ONLY under `just e2e-mpi` (= harness `--with-mpi`, the
+# `mpi_backends` tier; see the `mpi_backends` key above) — bare
+# `just e2e` / `just ci` never touch them (the default shell has no
+# MPI). Each generates the SPMD MPI project, cross-builds it under
+# `.#mpi`, launches it via `mpiexec -n N` (N = the schedule's
+# used-worker count, baked into the emitted run.sh — ALL ranks live,
+# the worst case, NOT -n 1 which hides Send/Recv ordering bugs), and
+# byte-diffs output.bin against the example's `reference.bin` oracle.
+# Exactly the three triples `just check-mpi` already proves byte-exact,
+# now COUNTED in the matrix:
+#   - 01-elementwise-add/naive   (single worker, -n 1)
+#   - 02-split-add/split         (multi-worker SPMD, -n 2)
+#   - 03-reduction/distributed   (multi-worker SPMD tree-reduce, -n 5)
+# milestone = "M7" — the PRD §11 milestone whose acceptance gate owns
+# the first tier-2 backend (mpi-blocking), per the manifest-header
+# milestone scheme. The cumulative milestone gate is ORTHOGONAL to the
+# tier gate: `--with-mpi` already restricts to mpi_backends, so these
+# never appear in a tier-1 `--milestone M<k>` run.
+[[required]]
+example  = "01-elementwise-add"
+schedule = "naive"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "02-split-add"
+schedule = "split"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "03-reduction"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
 
 # Example 04 prefix-sum: only the NAIVE schedule is a required
 # differential cell. It is byte-identical to the hand-written

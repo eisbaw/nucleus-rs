@@ -450,6 +450,31 @@ fn manifest_actual_file_parses() {
         "manifest declares zero runnable examples"
     );
     assert!(!m.backends.is_empty(), "manifest declares zero backends");
+    // TASK-0444: the shipped manifest declares the tier-2 mpi tier and
+    // its three differential cells. Pin them so a future edit that
+    // drops mpi-blocking from the matrix fails loud here (it would
+    // otherwise just silently stop being covered by `just e2e-mpi`).
+    assert!(
+        m.is_mpi_backend("mpi-blocking"),
+        "manifest must declare mpi-blocking under mpi_backends"
+    );
+    assert!(
+        !m.backends.iter().any(|b| b == "mpi-blocking"),
+        "mpi-blocking must NOT be in the default tier-1 `backends` (it needs .#mpi)"
+    );
+    for (ex, sc) in [
+        ("01-elementwise-add", "naive"),
+        ("02-split-add", "split"),
+        ("03-reduction", "distributed"),
+    ] {
+        assert!(
+            m.required.iter().any(|r| r.example == ex
+                && r.schedule == sc
+                && r.backend == "mpi-blocking"
+                && r.milestone == "M7"),
+            "manifest must declare the M7 mpi-blocking required cell {ex}/{sc}"
+        );
+    }
 }
 
 /// Synthetic single-cell matrix: build a manifest in memory that
@@ -467,6 +492,7 @@ fn plan_picks_required_cell_when_filtered() {
     let manifest = Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![RequiredEntry {
             example: "01-elementwise-add".to_string(),
             schedule: "naive".to_string(),
@@ -553,6 +579,7 @@ fn typo_in_required_schedule_is_a_coverage_gap() {
     let manifest = Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         // `naiv` is a one-char typo of the real `naive` schedule.
         required: vec![req("01-elementwise-add", "naiv", "pthreads-sync", "M1")],
         skip: vec![],
@@ -574,6 +601,7 @@ fn required_also_in_skip_is_not_a_gap() {
     let manifest = Manifest {
         runnable_examples: vec!["03-reduction".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![req("03-reduction", "distributed", "pthreads-sync", "M1")],
         skip: vec![skip_e(
             "03-reduction",
@@ -603,6 +631,7 @@ fn planned_required_is_not_a_gap() {
     let manifest = Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
         skip: vec![],
         fault_assert: vec![],
@@ -624,6 +653,7 @@ fn cli_filter_scopes_coverage_check() {
     let manifest = Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string(), "07-matmul".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![
             req("01-elementwise-add", "naive", "pthreads-sync", "M1"),
             req("07-matmul", "naive", "pthreads-sync", "M1"),
@@ -776,6 +806,7 @@ fn milestone_gate_is_cumulative_over_required_flagging() {
     let manifest = Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M3")],
         skip: vec![],
         fault_assert: vec![],
@@ -824,6 +855,7 @@ fn typo_in_milestone_tagged_required_is_a_gap_under_that_milestone() {
     let manifest = Manifest {
         runnable_examples: vec!["06-separable-filter".to_string()],
         backends: vec!["mp-tcp-bufsync".to_string()],
+        mpi_backends: vec![],
         // `naiv` is a one-char typo; this cell is tagged M3.
         required: vec![req("06-separable-filter", "naiv", "mp-tcp-bufsync", "M3")],
         skip: vec![],
@@ -867,6 +899,7 @@ fn out_of_band_skip_does_not_exempt_in_band_required() {
     let manifest = Manifest {
         runnable_examples: vec!["03-reduction".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![req("03-reduction", "ghost", "pthreads-sync", "M1")],
         // Skip is tagged M3 — out of band for an M1 run.
         skip: vec![skip_e(
@@ -962,12 +995,21 @@ fn required_counts_strictly_grow_per_milestone() {
     // ONLY cells are `[[skip]]`s has zero required at any gate
     // band, breaking strict-monotonicity. The gate semantics is
     // "required count", so the discovery must match.
+    // TASK-0444: the milestone-growth invariant is about the DEFAULT
+    // (tier-1) cumulative `--milestone` gate. mpi-tier required cells
+    // (`mpi_backends`, milestone M7) live on the ORTHOGONAL `--with-mpi`
+    // axis and are never planned by the default-tier `plan_cells` here
+    // (which uses `active_backends(false)`), so they must not bump
+    // `top` — that would create empty M4..M7 bands and spuriously break
+    // strict monotonicity. Scope the top-milestone discovery to the
+    // tier-1 required cells, matching what `count()` actually plans.
     let top: Milestone = manifest
         .required
         .iter()
+        .filter(|r| !manifest.is_mpi_backend(&r.backend))
         .map(|r| Milestone::parse(&r.milestone).expect("manifest milestone tags must parse"))
         .max()
-        .expect("manifest must contain at least one [[required]] cell");
+        .expect("manifest must contain at least one tier-1 [[required]] cell");
 
     // Count required cells at each gate band from M1 up to top.
     let counts: Vec<(Milestone, usize)> = (1..=top.0)
@@ -2566,10 +2608,116 @@ fn sample_manifest_with_one_required() -> Manifest {
     Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![req("01-elementwise-add", "naive", "pthreads-sync", "M1")],
         skip: vec![],
         fault_assert: vec![],
     }
+}
+
+// --- TASK-0444: tier-2 MPI gate (`--with-mpi` / `mpi_backends`) -------
+
+/// A manifest with BOTH a tier-1 backend and an mpi tier, and one
+/// `[[required]]` cell in each tier. Used by the tier-gate tests below.
+fn manifest_two_tiers() -> Manifest {
+    Manifest {
+        runnable_examples: vec!["01-elementwise-add".to_string()],
+        backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec!["mpi-blocking".to_string()],
+        required: vec![
+            req("01-elementwise-add", "naive", "pthreads-sync", "M1"),
+            req("01-elementwise-add", "naive", "mpi-blocking", "M7"),
+        ],
+        skip: vec![],
+        fault_assert: vec![],
+    }
+}
+
+#[test]
+fn mpi_backends_defaults_empty_when_key_absent() {
+    // A manifest WITHOUT the `mpi_backends` key parses to an empty
+    // tier — byte-identical to the pre-feature shape, so bare
+    // `just e2e` (which never sets --with-mpi) is unaffected.
+    let src = "runnable_examples = [\"x\"]\nbackends = [\"pthreads-sync\"]\n";
+    let m: Manifest = toml::from_str(src).expect("parse");
+    assert!(
+        m.mpi_backends.is_empty(),
+        "absent mpi_backends key must default to empty"
+    );
+    assert!(!m.is_mpi_backend("pthreads-sync"));
+}
+
+#[test]
+fn active_backends_selects_tier_by_with_mpi() {
+    let m = manifest_two_tiers();
+    // Default tier (no --with-mpi) is the tier-1 `backends`.
+    assert_eq!(m.active_backends(false), &["pthreads-sync".to_string()]);
+    // --with-mpi swaps to `mpi_backends` INSTEAD (mutually exclusive).
+    assert_eq!(m.active_backends(true), &["mpi-blocking".to_string()]);
+    assert!(m.is_mpi_backend("mpi-blocking"));
+    assert!(!m.is_mpi_backend("pthreads-sync"));
+}
+
+#[test]
+fn mpi_required_cell_is_not_a_gap_in_default_tier() {
+    // The decisive regression: an mpi-tier `[[required]]` cell must NOT
+    // be a coverage gap in the DEFAULT (tier-1) run, even though it is
+    // milestone-in-gate (no --milestone). It is simply out of the
+    // active tier and was never planned — flagging it would make bare
+    // `just e2e` fail on the M7 cells it deliberately does not run.
+    let m = manifest_two_tiers();
+    let plan = vec![planned("01-elementwise-add", "naive", "pthreads-sync")];
+    let gaps = required_coverage_gaps(&m, &plan, &Args::default()).expect("ok");
+    assert!(
+        gaps.is_empty(),
+        "mpi cell must not be a gap in the default tier, got {gaps:?}"
+    );
+}
+
+#[test]
+fn tier1_required_cell_is_not_a_gap_under_with_mpi() {
+    // Symmetric: under --with-mpi the run is scoped to the mpi tier, so
+    // a tier-1 `[[required]]` cell is out of the active tier and must
+    // not be flagged a gap.
+    let m = manifest_two_tiers();
+    let args = Args {
+        with_mpi: true,
+        ..Args::default()
+    };
+    // Plan contains the mpi cell (the one this run actually plans).
+    let plan = vec![planned("01-elementwise-add", "naive", "mpi-blocking")];
+    let gaps = required_coverage_gaps(&m, &plan, &args).expect("ok");
+    assert!(
+        gaps.is_empty(),
+        "tier-1 cell must not be a gap under --with-mpi, got {gaps:?}"
+    );
+}
+
+#[test]
+fn mpi_required_cell_unplanned_is_a_gap_under_with_mpi() {
+    // The mpi tier still gets the FULL TASK-0163 silent-vanish guard:
+    // under --with-mpi, an in-tier `[[required]]` mpi cell that is not
+    // planned (e.g. its schedule was typo'd) IS a coverage gap. The
+    // tier gate must not become an escape hatch from the coverage
+    // obligation it is in scope for.
+    let m = Manifest {
+        mpi_backends: vec!["mpi-blocking".to_string()],
+        // `naiv` is a one-char typo of the real `naive` schedule.
+        required: vec![req("01-elementwise-add", "naiv", "mpi-blocking", "M7")],
+        ..manifest_two_tiers()
+    };
+    let args = Args {
+        with_mpi: true,
+        ..Args::default()
+    };
+    // Plan has only the real `naive` cell, not the typo'd one.
+    let plan = vec![planned("01-elementwise-add", "naive", "mpi-blocking")];
+    let gaps = required_coverage_gaps(&m, &plan, &args).expect("ok");
+    assert_eq!(
+        gaps,
+        vec![cell("01-elementwise-add", "naiv", "mpi-blocking")],
+        "typo'd in-tier mpi required cell must still be a gap under --with-mpi"
+    );
 }
 
 #[test]
@@ -2684,6 +2832,7 @@ fn req_cov_inject_errs_loud_on_degenerate_manifest() {
     let mut m = Manifest {
         runnable_examples: vec![],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required: vec![],
         skip: vec![],
         fault_assert: vec![],
@@ -2898,6 +3047,7 @@ fn manifest_fa(required: Vec<RequiredEntry>, fault_assert: Vec<FaultAssert>) -> 
     Manifest {
         runnable_examples: vec!["01-elementwise-add".to_string()],
         backends: vec!["pthreads-sync".to_string()],
+        mpi_backends: vec![],
         required,
         skip: vec![],
         fault_assert,
