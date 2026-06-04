@@ -778,7 +778,7 @@ pub(super) fn entity_to_workerid_set(
 /// in order; later options override earlier ones for the same field.
 ///
 /// The defaults match [`TransferPolicy::default`]: synchronous, buffer
-/// 1, notify-default.
+/// 1, notify-default, transport PIO.
 pub(super) fn policy_from_directive(dir: &ResolvedTransferDirective) -> TransferPolicy {
     let mut p = TransferPolicy::default();
     for opt in &dir.options {

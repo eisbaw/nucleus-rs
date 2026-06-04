@@ -336,7 +336,11 @@ pub enum NotifyKind {
 /// `crate::acfg::types` holds it by value and is itself serialisable —
 /// unlike `NotifyKind`, which is mirrored into the serde-capable acfg
 /// `NotifyMode`. We store the schedule enum directly here since there
-/// is no analog distinction (`Default` vs explicit) to preserve.
+/// is no analog distinction (`Default` vs explicit) to preserve, so a
+/// mirror type would be redundant boilerplate. The cost of that choice
+/// is a small layering departure: this is the one enum in `sched::ast`
+/// that depends on the `serde` feature (siblings `TransferOption` /
+/// `NotifyKind` do not). Accepted deliberately over the mirror.
 ///
 /// [`TransferPolicy`]: crate::acfg::types::TransferPolicy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
