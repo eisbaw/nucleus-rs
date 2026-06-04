@@ -166,21 +166,24 @@ pub fn render_indexed_subarray_place(
     o: &DataSlice,
     ctx: &RenderCtx<'_>,
 ) -> Result<String, EmitError> {
-    let name = data_name(o.data, ctx)?;
     match classify_data_slice(o, ctx)? {
-        // Reuse the `render_indexed_place` SubArray spelling verbatim by
-        // re-classifying (cheap; same single source of truth) — the two
-        // helpers MUST agree on the sub-array region they address.
-        SliceForm::SubArray { start, sub_len } => {
-            Ok(format!("{name}[{start}..{start} + {sub_len}usize]"))
+        // SubArray: DELEGATE the place spelling to `render_indexed_place`
+        // so the `[T]` sub-array string has a SINGLE source of truth — this
+        // helper only ADDS the Scalar rejection on top. (Re-classifying
+        // inside `render_indexed_place` is cheap and deterministic.) A
+        // future edit to the sub-array spelling therefore cannot silently
+        // diverge the two helpers.
+        SliceForm::SubArray { .. } => render_indexed_place(o, ctx),
+        SliceForm::Scalar(idx) => {
+            let name = data_name(o.data, ctx)?;
+            Err(EmitError::UnsupportedFeature(format!(
+                "full-rank-indexed scalar effectful IO place `{name}[{idx}]` has no \
+                 `.as_ptr()`/`.as_mut_ptr()`: the no_std DMA shim requires a `[T]` \
+                 sub-array place, but this access is full-rank (a single `T`). \
+                 Partial-rank index the datum (leave a trailing dim free) or widen \
+                 the shim to a scalar path (TASK-0049.10.03)."
+            )))
         }
-        SliceForm::Scalar(idx) => Err(EmitError::UnsupportedFeature(format!(
-            "full-rank-indexed scalar effectful IO place `{name}[{idx}]` has no \
-             `.as_ptr()`/`.as_mut_ptr()`: the no_std DMA shim requires a `[T]` \
-             sub-array place, but this access is full-rank (a single `T`). \
-             Partial-rank index the datum (leave a trailing dim free) or widen \
-             the shim to a scalar path (TASK-0049.10.03)."
-        ))),
     }
 }
 
