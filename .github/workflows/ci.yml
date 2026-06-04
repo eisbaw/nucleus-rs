@@ -31,8 +31,10 @@
 # that tier — the `milestone` job's matrix covers M1..M3 on every PR
 # and push, so a milestone branch's PR is gated by (at least) its
 # tier; `just e2e-milestone M<k>` is the exact command to reproduce a
-# given tier locally. Tier-2/3 (MPI M7+, Renode M9+) remain disabled
-# placeholders below — backends/runtimes do not exist yet.
+# given tier locally. Tier-3 (Renode M9-M11) is now a REAL job
+# (`renode-multimcu` below) — the no_std embedded backend (M9) and the
+# Renode multi-MCU co-sim (M10/M11) exist and pass locally. Tier-2 (MPI
+# M7+) remains a disabled placeholder — see the `gate` job comment.
 #
 # Limitations recorded in TASK-0057 notes (AC#6/#7): runner choice
 # (GitHub-hosted vs self-hosted) and Nix/Cargo cache strategy/cost;
@@ -74,13 +76,13 @@ jobs:
   # merge-blocking check. It runs the FULL e2e matrix (bare `just
   # e2e`), unaffected by the milestone work.
   #
-  # Future tiers (deliberately disabled, not stubbed): tier-2 MPI CI
-  # is TASK-0164 (lands with M7), tier-3 Renode is TASK-0165 (M9+).
-  # The backends/runtimes do not exist yet; enabling a row now would
-  # be a job that fails or fakes success — both forbidden. When
-  # enabled they must run a tier-appropriate recipe
-  # (compile-mandatory / run-best-effort per PRD §10.2/§10.3), NOT
-  # `just ci`.
+  # Tier-2 MPI CI (TASK-0164, lands with M7) is still a disabled
+  # placeholder — that runtime is not wired into a CI recipe yet, and a
+  # row that fails or fakes success is forbidden. Tier-3 Renode (M9-M11,
+  # TASK-0165) is NO LONGER a placeholder: the `renode-multimcu` job
+  # below runs the real multi-MCU value-correctness gate. Per
+  # PRD §10.2/§10.3 every non-tier-1 row runs a tier-appropriate recipe
+  # (compile-mandatory / run-best-effort), NOT `just ci`.
   gate:
     name: tier-1 gate
     runs-on: ubuntu-latest
@@ -220,3 +222,58 @@ jobs:
 
       - name: just port-stress-check (TASK-0176 AC#2 / TASK-0252)
         run: nix develop -c just port-stress-check
+
+  # Tier-3 Renode multi-MCU value-correctness gate (TASK-0049.10.08 AC#4,
+  # TASK-0165). Runs `just renode-multimcu-gate`: two STM32H7 Renode
+  # co-sims — 02-split-add (2-MCU, 1024B) + 14-hearing-aid (REAL 3-MCU
+  # fe/dsp/rf hearing-aid, 512B) — each BYTE-EXACT vs reference.bin, fail
+  # loud on any mismatch. This is the M11 multi-MCU value-correctness
+  # proof (PRD §10.3 point 3), now that the staged-release boot-order fix
+  # (TASK-0049.05.03) resolved the ex14 rf frame-3 stall.
+  #
+  # Tier-3 run-best-effort (PRD §10.3), NOT part of the merge-blocking
+  # `just ci` — deliberately a SEPARATE job, like `port-stress`. It enters
+  # `.#embedded` + `.#renode` internally; the Renode closure is ~1-2GB and
+  # two co-sims take several minutes, so the `if:` guard scopes it to
+  # push-to-main/master + schedule + manual dispatch only (NOT per-PR) to
+  # keep PR walltime bounded — same rationale as port-stress. Reproduce
+  # locally verbatim with `nix develop -c just renode-multimcu-gate`.
+  #
+  # HONESTY CAVEAT (TASK-0057 AC#6/#7): this repo has NO git remote, so
+  # this workflow has NEVER executed on a real runner — the gate is
+  # DECLARED + locally reproducible, not observed-green in CI. A
+  # GitHub-hosted runner must also fetch the ~1-2GB Renode/embedded Nix
+  # closure on cold start; if that proves infeasible on hosted runners,
+  # a self-hosted runner with a warm Nix store is the fallback (TASK-0165
+  # / TASK-0057 runner-choice note). Mirrors the gate/port-stress Nix +
+  # Cargo cache shape to bound cold-start cost.
+  renode-multimcu:
+    name: tier-3 Renode multi-MCU value-correctness
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nucleus/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: just renode-multimcu-gate (M11 02-split-add + ex14 byte-exact)
+        run: nix develop -c just renode-multimcu-gate

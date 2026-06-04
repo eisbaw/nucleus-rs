@@ -1640,6 +1640,35 @@ renode-multimcu EX="02-split-add" SCHED="split":
         exit 1; \
     fi
 
+# Tier-3 M11 multi-MCU VALUE-CORRECTNESS standing gate (TASK-0049.10.08
+# AC#4). Runs BOTH proven `renode-multimcu` co-sims as ONE fail-loud
+# command — a STANDING gate, not a remembered manual invocation:
+#
+#   1. 02-split-add/split   — 2 STM32H7 MCUs (host + w0), sync transfers;
+#      BYTE-EXACT 1024B vs reference.bin (the original M11 multi-MCU proof).
+#   2. 14-hearing-aid/embedded_multimcu_sync — the REAL 3-MCU (fe/dsp/rf)
+#      hearing-aid pipeline; BYTE-EXACT 512B (spk_out 256 ++ bt_out 256)
+#      vs reference.bin. Unblocked by the staged-release boot-order
+#      fixpoint (TASK-0049.05.03) which resolved the rf frame-3 stall;
+#      this proves ex14 per-frame VALUES are correct end-to-end.
+#
+# `just` runs prerequisite recipes before the body, so both `renode-multimcu`
+# invocations run; each fails LOUD (exit 1) on any byte-count/diff mismatch,
+# which fails this gate. No new co-sim logic lives here — it composes the
+# parameterised recipe (PRD §12.3 anti-bloat: one standing gate, not
+# per-example one-offs).
+#
+# DELIBERATELY NOT wired into `just ci` / `just e2e`: the DEFAULT dev shell
+# has NO thumbv7em-none-eabihf std and NO Renode closure (only `.#embedded`
+# + `.#renode` do; `renode-multimcu` enters them itself). Same
+# tier-3-outside-default-ci rule as check-embedded / renode-embedded
+# (TASK-0223). The 7 `embedded_multimcu` cells in e2e-matrix.toml stay
+# `[[skip]]` for the same reason — the standing gate is THIS Renode recipe
+# path, NOT the e2e matrix. The ci.yml `renode-multimcu` job runs this gate
+# best-effort (PRD §10.3); it is NOT part of the merge-blocking `just ci`.
+renode-multimcu-gate: (renode-multimcu "02-split-add" "split") (renode-multimcu "14-hearing-aid" "embedded_multimcu_sync")
+    @echo "OK: tier-3 M11 multi-MCU value-correctness gate PASSED — 02-split-add 2-MCU 1024B + 14-hearing-aid 3-MCU 512B both BYTE-EXACT vs reference.bin (TASK-0049.10.08 AC#4)."
+
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
 # generalisation to examples 1/5/9). Unlike `renode-uart-smoke` (a hand-
