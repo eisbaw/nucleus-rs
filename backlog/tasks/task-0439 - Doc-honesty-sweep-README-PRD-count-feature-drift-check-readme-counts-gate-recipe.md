@@ -7,7 +7,7 @@ status: Done
 assignee:
   - mark@radix63.dk
 created_date: '2026-06-04 08:16'
-updated_date: '2026-06-04 08:54'
+updated_date: '2026-06-04 09:10'
 labels: []
 dependencies: []
 ---
@@ -84,4 +84,6 @@ MUTATION TEST evidence:
 CHEAP SUBSET (all green): just test 1369/0/3; just test-release 1367/0/3 (2-test delta = TASK-0291 debug_assert should_panic divergence, expected); just e2e total:427 pass:364 fail:0 skipped:63 required-fail:0 (EXACT baseline). Doc fences: check-narrative-doc-lie + check-include-str-coverage + check-textual-replace-on-codegen all OK.
 
 renode-multimcu-gate NOT run (structurally unaffected by doc/justfile edits, no codegen touched) — qa reviewer to confirm once per brief.
+
+REVIEW GATE (orchestrator-run, parallel read-only) — GO/GO. qa-test-runner independently re-ran: new gate exit 0 clean; mutation BOTH directions bite (extra dir -> exit 1; bumped sentinel -> exit 1; cleanup -> green); wired into just ci (justfile:196); build OK; clippy clean; dev tests 1369/0/3; release 1367/0/3 (standalone); e2e total:427 pass:364 fail:0 skipped:63 required-fail:0 (exact baseline); doc fences pass; renode-multimcu-gate BYTE-EXACT 02-split-add (1024B) + 14-hearing-aid (512B) — recipe not collaterally broken; tree clean post-mutation (no 99-* dir). mped-architect: independently verified ls examples = 21, §9 = 14-row table, grep -i spi PRD = exactly ONE surviving line (the true Renode general-capability line 1080, correctly LEFT INTACT), both Nucleus-multi-MCU claims now UART, §9 note names 15-21 correctly with no fabricated stresses. NO P1. ONE P2 (prose-vs-sentinel drift hole: architect empirically confirmed changing prose word while leaving sentinel kept gate GREEN — the exact drift class this task kills, on the human surface). FOLDED IN-THREAD (commit 88bd91f) rather than deferred: README prose now leads with a greppable digit ('21 worked'), and check-readme-counts asserts ALL THREE surfaces (dir count, prose digit, sentinel) agree. Re-verified: clean tree passes (21/21/21); prose=14 vs sentinel=21 now FAILS exit 1 (hole closed). P3 nits (stale mktemp plan-claim; scope-comment correct) — no action needed. Done stands; all 8 ACs hold + P2 hardening landed.
 <!-- SECTION:NOTES:END -->
