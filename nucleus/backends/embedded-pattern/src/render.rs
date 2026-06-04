@@ -16,7 +16,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use backend_common::render::{
-    data_name, render_fire_args_nostd, render_indexed_place, render_loop_bounds, RenderCtx,
+    data_name, render_fire_args_nostd, render_indexed_subarray_place, render_loop_bounds,
+    RenderCtx,
 };
 use backend_common::EmitError;
 use nucleus_compiler::algo::Purity;
@@ -541,7 +542,10 @@ fn render_fire(
                 && bindings.inputs.is_empty()
                 && kernel_is_effectful(kernel, ctx)? =>
         {
-            let place = render_indexed_place(o, ctx)?;
+            // Guarded: a full-rank-indexed scalar place has no
+            // `.as_mut_ptr()` and would emit non-compiling firmware —
+            // fail loud at codegen instead (TASK-0049.10.03).
+            let place = render_indexed_subarray_place(o, ctx)?;
             writeln!(
                 out,
                 "{pad}// effectful per-frame input `{callee}`: fill indexed slice `{place}` from the shim's input source."
@@ -612,18 +616,22 @@ fn kernel_is_effectful(kernel: KernelId, ctx: &RenderCtx<'_>) -> Result<bool, Em
 ///   the whole array, BYTE-IDENTICAL to the pre-TASK-0049.10.02 emit.
 /// - **Non-empty indices** (the ex14 per-frame `fe_emit(spk_out[frame])`
 ///   / `rf_transmit(bt_out[frame])` shape): the INDEXED frame place via
-///   [`render_indexed_place`] (`spk_out[start..start + 16usize]`).
+///   [`render_indexed_subarray_place`] (`spk_out[start..start + 16usize]`).
 ///   `size_of_val(&place)` is the per-frame row, so the drain targets
 ///   exactly the one indexed frame slice instead of the whole array each
 ///   frame (TASK-0049.10.02, slice B — the structural mirror of slice
 ///   A's per-frame INPUT region read). `.as_ptr()` / `size_of_val` work
 ///   on a `[T]` sub-array place exactly as on a `[T; N]` array, so the
 ///   `dma_push` / `dma_wait` shape in the caller is otherwise unchanged.
+///   A FULL-rank-indexed scalar place (`D[idx]`, a single `T`) has no
+///   `.as_ptr()` and is rejected by the guarded helper at codegen
+///   (TASK-0049.10.03) rather than emitting non-compiling firmware.
 ///
-/// `render_indexed_place` REQUIRES non-empty indices (its documented
-/// caller responsibility), so the empty-indices arm is gated to the bare
-/// `data_name` path. No textual `String::replace` on a rendered expr —
-/// the indexed place is built structurally by the shared helper.
+/// `render_indexed_subarray_place` REQUIRES non-empty indices (its
+/// documented caller responsibility), so the empty-indices arm is gated
+/// to the bare `data_name` path. No textual `String::replace` on a
+/// rendered expr — the indexed place is built structurally by the shared
+/// helper.
 fn effect_drain_place(bindings: &FireBinding, ctx: &RenderCtx<'_>) -> Result<String, EmitError> {
     use nucleus_compiler::event::ArgBinding;
     for inp in &bindings.inputs {
@@ -636,15 +644,17 @@ fn effect_drain_place(bindings: &FireBinding, ctx: &RenderCtx<'_>) -> Result<Str
             }
             // Indexed per-frame drain (ex14 fe_emit/rf_transmit): the
             // indexed frame place `D[start..start + sub_len]`, drained
-            // sized by the row. NOTE (TASK-0049.10.03): this assumes a
-            // PARTIAL-rank (sub-array `[T]`) place — `.as_ptr()` in the
-            // caller is valid on a slice. A FULL-rank-indexed scalar input
-            // (`render_indexed_place` -> `SliceForm::Scalar` `D[idx]`)
-            // would emit `D[idx].as_ptr()` which does not compile on a
-            // scalar `T`. No current shape hits this (ex14 data is 2-D, an
-            // `[frame]` index is partial-rank); a fail-loud guard is filed
-            // as TASK-0049.10.03.
-            return render_indexed_place(slice, ctx);
+            // sized by the row. The caller applies `.as_ptr()`, which is
+            // valid only on a `[T]` slice — so we use the GUARDED helper
+            // `render_indexed_subarray_place` (TASK-0049.10.03): a
+            // PARTIAL-rank index yields the sub-array place; a FULL-rank
+            // index (`SliceForm::Scalar` `D[idx]`, a single `T` with no
+            // `.as_ptr()`) is rejected at codegen with a typed
+            // `EmitError::UnsupportedFeature` instead of emitting firmware
+            // that fails the cross-compile with an opaque rustc error. No
+            // current shape hits the Scalar arm (ex14 data is 2-D, an
+            // `[frame]` index is partial-rank).
+            return render_indexed_subarray_place(slice, ctx);
         }
     }
     Err(EmitError::ContractGap(

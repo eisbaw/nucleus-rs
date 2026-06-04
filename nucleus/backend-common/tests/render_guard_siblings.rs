@@ -76,7 +76,7 @@ use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
 
 use backend_common::render::{
     render_const_expr, render_fire_args, render_fire_output_assign, render_flat_index,
-    render_int_expr, EmitError, RenderCtx,
+    render_indexed_subarray_place, render_int_expr, EmitError, RenderCtx,
 };
 
 /// A `(NameTables, NameSidecar)` carrying ZERO data symbols. Each test
@@ -703,4 +703,73 @@ fn fire_output_scalar_data_indexed_is_masked_by_over_indexed_guard() {
         }
         other => panic!("expected UnsupportedFeature (over-indexed) for indexed scalar data, got {other:?}"),
     }
+}
+
+// --------------------------------------------------------------------
+// render_indexed_subarray_place — the full-rank-indexed-scalar fail-loud
+// guard (TASK-0049.10.03). The embedded no_std per-frame effectful IO
+// arms apply `.as_ptr()`/`.as_mut_ptr()` to this helper's result, which
+// is valid ONLY on a `[T]` sub-array place. A full-rank index yields a
+// scalar `D[idx]` (a single `T`, no `.as_ptr()`) and MUST be rejected at
+// codegen rather than emit firmware that fails the cross-compile.
+// --------------------------------------------------------------------
+
+#[test]
+fn indexed_subarray_place_full_rank_scalar_is_unsupported_feature() {
+    // A FULL-rank index (1 index over rank-1 data `i32[4]`) classifies as
+    // `SliceForm::Scalar` (`D[(i) as usize]`, a single `i32`). The guarded
+    // helper MUST reject it — if the Scalar arm fell through to the
+    // SubArray formatting this assert would fail (it would return `Ok`).
+    let did = DataId(0);
+    let (names, sidecar) = fixtures_with_data(did, "x", vec![4]); // rank 1
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let slice = DataSlice {
+        data: did,
+        indices: vec![ident("i")], // full-rank => Scalar
+    };
+
+    let err = render_indexed_subarray_place(&slice, &ctx).expect_err(
+        "a full-rank-indexed scalar place has no `.as_ptr()`; the guarded \
+         sub-array helper must fail loud (TASK-0049.10.03)",
+    );
+    match err {
+        EmitError::UnsupportedFeature(msg) => {
+            assert!(
+                msg.contains("full-rank") && msg.contains("`x[")
+                    && msg.contains("as_ptr"),
+                "message must name the full-rank scalar place `x[..]` and the \
+                 missing `.as_ptr()` (TASK-0049.10.03): {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0049.10.03"),
+                "message must reference TASK-0049.10.03: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedFeature for a full-rank scalar place, got {other:?}"),
+    }
+}
+
+#[test]
+fn indexed_subarray_place_partial_rank_is_ok_subarray() {
+    // A PARTIAL-rank index (1 index over rank-2 data `i32[3][4]`)
+    // classifies as `SliceForm::SubArray`: a contiguous `[T]` slice with
+    // `sub_len == 4` and `start == (i) * 4`. The guarded helper returns
+    // `Ok` with the SAME spelling `render_indexed_place` would produce, so
+    // the embedded arm's `.as_ptr()`/`.as_mut_ptr()` typechecks.
+    let did = DataId(0);
+    let (names, sidecar) = fixtures_with_data(did, "x", vec![3, 4]); // rank 2
+    let ctx = RenderCtx::new(&names, &sidecar);
+
+    let slice = DataSlice {
+        data: did,
+        indices: vec![ident("frame")], // partial-rank => SubArray
+    };
+
+    let rendered = render_indexed_subarray_place(&slice, &ctx)
+        .expect("a partial-rank sub-array place must render Ok (TASK-0049.10.03)");
+    assert_eq!(
+        rendered, "x[((frame) * 4) as usize..((frame) * 4) as usize + 4usize]",
+        "partial-rank place must be the contiguous `[T]` sub-array spelling"
+    );
 }

@@ -85,7 +85,8 @@ pub use expr::{
 pub use fire::{
     data_name, render_fire_args, render_fire_args_nostd, render_fire_args_pub,
     render_fire_output_assign, render_fire_output_assign_pub, render_flat_index,
-    render_flat_index_pub, render_indexed_place, write_file, SubArrayForm,
+    render_flat_index_pub, render_indexed_place, render_indexed_subarray_place, write_file,
+    SubArrayForm,
 };
 pub use group::ReuseRewriteGroup;
 pub use reuse::{

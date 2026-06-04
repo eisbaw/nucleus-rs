@@ -112,6 +112,50 @@ pub fn render_indexed_place(o: &DataSlice, ctx: &RenderCtx<'_>) -> Result<String
     }
 }
 
+/// Like [`render_indexed_place`], but REQUIRES the slice to classify as
+/// a contiguous sub-array (`[T]`) and FAILS LOUD on a full-rank-indexed
+/// scalar place (TASK-0049.10.03).
+///
+/// The embedded `no_std` per-frame effectful IO arms apply `.as_ptr()`
+/// / `.as_mut_ptr()` to the result of this helper before handing it to a
+/// raw `core::ptr::copy_nonoverlapping` / DMA-push shim. Those methods
+/// exist on a `[T]` slice (the `SubArray` shape) but NOT on a single
+/// `T` (the `Scalar` shape: `D[idx]` is one element). A full-rank index
+/// therefore would emit `D[idx].as_ptr()`, which does not compile on a
+/// scalar `T` and surfaces only as an opaque `rustc` error during the
+/// downstream firmware cross-compile — a silent broken-emit /
+/// panic-not-diagnostic gap.
+///
+/// No current shape reaches the `Scalar` arm (ex14's peripheral data is
+/// 2-D `i32[N_FRAMES][SAMPLES]`, so an `[frame]` index is partial-rank =>
+/// always `SubArray`), but a future 1-D effectful kernel
+/// (`x : i32[N]`, `emit(x[i])`) would. This helper turns that latent
+/// gap into a typed [`EmitError::UnsupportedFeature`] at codegen time.
+///
+/// Caller is responsible for `o.indices.is_empty() == false` (same
+/// contract as [`render_indexed_place`]).
+pub fn render_indexed_subarray_place(
+    o: &DataSlice,
+    ctx: &RenderCtx<'_>,
+) -> Result<String, EmitError> {
+    let name = data_name(o.data, ctx)?;
+    match classify_data_slice(o, ctx)? {
+        // Reuse the `render_indexed_place` SubArray spelling verbatim by
+        // re-classifying (cheap; same single source of truth) — the two
+        // helpers MUST agree on the sub-array region they address.
+        SliceForm::SubArray { start, sub_len } => {
+            Ok(format!("{name}[{start}..{start} + {sub_len}usize]"))
+        }
+        SliceForm::Scalar(idx) => Err(EmitError::UnsupportedFeature(format!(
+            "full-rank-indexed scalar effectful IO place `{name}[{idx}]` has no \
+             `.as_ptr()`/`.as_mut_ptr()`: the no_std DMA shim requires a `[T]` \
+             sub-array place, but this access is full-rank (a single `T`). \
+             Partial-rank index the datum (leave a trailing dim free) or widen \
+             the shim to a scalar path (TASK-0049.10.03)."
+        ))),
+    }
+}
+
 // --------------------------------------------------------------------
 // Fire arguments
 // --------------------------------------------------------------------
