@@ -1,11 +1,11 @@
 ---
 id: TASK-0440
 title: PRD §8.3 inv(2)/inv(6) validator durability test - synthetic reject cell
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-06-04 08:16'
-updated_date: '2026-06-04 22:43'
+updated_date: '2026-06-04 23:01'
 labels: []
 dependencies: []
 ---
@@ -70,4 +70,22 @@ Restoring the line -> compiles clean (Finished dev profile). So the literal gate
 GOTCHA for next agent: Result::expect_err in the existing gate_rejects_unmatched_push test requires the Ok type to be Debug, so GatedPerWorker needs #[derive(Debug)] (added, documented as test-only). dispatch.rs no longer names BTreeMap/Event/WorkerId (per_worker type inferred from events()), so those 3 imports were removed to keep clippy -D warnings clean.
 
 GATE NUMBERS (all green inside nix dev shell): build --release OK; clippy --workspace --all-targets -D warnings OK; cargo test OK (gate_witness_threads_event_list_through + gate_rejects/accepts all pass); cargo test --release OK (0 fail); e2e total 427 / pass 364 / fail 0 / skipped 63 / required-fail 0 (baseline held).
+
+LANDED (commit e9826f3 + review fold 676ad7e). Implemented as the COMPILE-TIME WITNESS (mped-architect implementer did NOT refuse). 
+
+BITE EVIDENCE (fail-then-pass, independently re-reproduced by BOTH qa-test-runner AND mped-architect reviewers, not just the implementer): commenting out the cmd_build `let gated = gate::gate_per_worker_for_dispatch(...)?;` line yields `error[E0425]: cannot find value gated in this scope` at the dispatch call -> `could not compile nucleus`; restoring -> compiles clean. The gate call is genuinely compile-time load-bearing.
+
+REVIEW GATE (parallel read-only, both GO, range e9826f3):
+- qa-test-runner (numbers RE-RUN by reviewer): build --release OK; clippy --workspace --all-targets -D warnings OK; cargo test 1375/0/3 dev; cargo test --release 1373/0/3 (2-delta = expected debug_assert should_panic divergence); nucleus-e2e 427/364/0/63/0 EXACT (baseline held). Bite reproduced (E0425), tree left clean.
+- mped-architect: GO. Witness SOUND (sole constructor gate.rs tail, private field, no pub ctor/Default/Clone, NO production emit path bypasses dispatch_backend — all 10 emit sites in dispatch.rs, dispatch_backend has 1 call site, --emit-pn returns before per_worker projection). Doc-lie audit CLEAN (every rewritten claim verified; old "deliberately NOT added/only way is a fault hook" now reads as superseded-history). Division of labor honestly scoped (witness=call-site durability; validator LOGIC stays proven by gate.rs unit tests + event_validate.rs). 3x P3.
+
+P3 FOLD (676ad7e, in-thread, doc+test-only): P3-1 (architect-recommended) INVARIANT guard comment at GatedPerWorker struct def vs an in-module second constructor skipping the checks (the residual trust boundary). P3-3 extracted matched_pair_map() helper (DRY the 2 duplicate inline builders). P3-2 (gate_accepts_matched_pair calls gate twice) left as-is per architect (pre-existing, cosmetic). Re-verified: build/clippy -D warnings/driver tests (incl 3 gate tests) green; no production codegen change so e2e held by construction.
+
+GOTCHA forward-carried: a compile-time witness needs NO standing runtime test — cargo build (run by just ci every time) re-enforces it, so the durability protection cannot silently regress. The residual trust boundary is an in-gate.rs second constructor (guarded by comment, not type). Driver crate cargo package name is `nucleus` (not nucleus-driver).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE (commit e9826f3 + review fold 676ad7e; both review-gate agents GO). Closed the TASK-0422.02 honest residual — the PRD §8.3 event-contract gate call in cmd_build was not test-proven to execute (a refactor could silently delete it). Chosen mechanism: a COMPILE-TIME WITNESS GatedPerWorker (private field, sole constructor = the gate success path) that dispatch_backend REQUIRES — strictly stronger than the runtime fault-injection hook TASK-0422.02 declined on maintainability grounds (cannot regress even with all tests deleted; zero production-hot-path scaffolding). Deleting the gate call now FAILS TO COMPILE (E0425, reproduced by both reviewers). Rewrote the now-false HONEST RESIDUAL docstrings to the witness-closed reality. Gate (reviewer-re-run): build/clippy/test 1375/test-release 1373/e2e 427/364/0/63/0 all green. The original 50-LoC synthetic-reject-test scope was already shipped (task0422_gate_wired_reject + gate.rs unit tests); this delivered the GENUINE residual (call-site durability) the task goal named.
+<!-- SECTION:FINAL_SUMMARY:END -->
