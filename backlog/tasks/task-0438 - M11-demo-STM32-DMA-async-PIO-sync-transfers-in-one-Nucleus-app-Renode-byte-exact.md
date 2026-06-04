@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-03 21:55'
-updated_date: '2026-06-04 07:01'
+updated_date: '2026-06-04 08:04'
 labels: []
 dependencies: []
 ---
@@ -68,4 +68,6 @@ PRE-BRIEF (orchestrator, cycle start 2026-06-04): empirical machinery map comple
 DESIGN DECISION (open Q#1 RESOLVED): DMA-vs-PIO lives as a new `TransferOption` HINT on the `transfer` edge (`mode=pio|dma`), parallel to `notify=`. NOT in algo IR (transport is codegen concern). NOT per-Fire flag. Default = PIO (=current behavior) so 02/ex14 stay byte-exact.
 
 DECOMPOSED into 3 sub-slices: .01 DSL+IR+policy threading (no codegen divergence, regression-safe); .02 backend divergent codegen (DMA arm+IRQ-wait stub vs PIO volatile loop); .03 new demo example + Renode platform + byte-exact gate. Open Q#2 (peripheral) leaning GPDMA-over-USART to reuse UARTHub fabric; Q#3 (HAL) current template is cortex-m-rt only + bare volatile regs (no HAL); Q#4 (IRQ wait) deferred to .02. Starting .01.
+
+SLICE .01 LANDED + review GO/GO (commits be99066, 7b50098; tracker 9b3a994). Transport-mode hint (mode=pio|dma) threads end-to-end DSL->IR->TransferPolicy.transport, default Pio, regression-safe (renode byte-exact preserved for 02 + ex14). Design Q#1 (HINT-on-edge) now empirically VALIDATED in code. Remaining: .02 (backend divergent codegen — meatier, warrants fresh cycle) then .03 (demo example + Renode + byte-exact gate). Per the cycle's stop-after-first-sub-slice directive, stopping here with clean handoff.
 <!-- SECTION:NOTES:END -->
