@@ -113,7 +113,14 @@ e2e-mpi:
 # contract as the tier-1 arm: asserts NUC_REQUIRED_COVERAGE_GAP_DETECTED
 # is present AND >=1 IN ADDITION to the exit-code inversion. DELIBERATELY
 # NOT in `just ci` (needs `.#mpi`, same out-of-default-ci rule as
-# `e2e-mpi` / `check-mpi`); run it alongside `just e2e-mpi`.
+# `e2e-mpi` / `check-mpi`); run it alongside `just e2e-mpi`. A bundling
+# meta-recipe that runs the whole mpi gate (incl. both falsifiers) in
+# one command is tracked as TASK-0447.
+# NB the body is wrapped in `nix develop .#mpi --command bash -c '...'`,
+# so it must contain NO interior apostrophes (hence `trap "rm -f $out"
+# EXIT` with `$out` expanded at trap-set time, not the tier-1 sibling's
+# single-quoted `trap 'rm -f "$out"' EXIT`). Both are correct; the
+# divergence is forced by the outer single-quote wrapping, not style.
 required-coverage-check-negative-mpi:
     nix develop .#mpi --command bash -c 'cd nucleus && out=$(mktemp) && trap "rm -f $out" EXIT && { if NUC_REQUIRED_COVERAGE_NEGATIVE=1 cargo run --release --bin nucleus-e2e -- --with-mpi >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE "^NUC_REQUIRED_COVERAGE_GAP_DETECTED=[0-9]+" "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED signal MISSING under --with-mpi — cannot prove the mpi-tier required-coverage guard detected the injected sentinel cell (TASK-0188/0446 harness contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED=$n — the mpi-tier required-coverage guard detected NO injection-attributable gap (TASK-0446)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: mpi-tier required-coverage guard did NOT exit non-zero on the injected sentinel mpi required cell (TASK-0446 wired --with-mpi path silently neutered)"; exit 1; else echo "OK: mpi-tier required-coverage guard correctly bit on the injected sentinel mpi required cell (--with-mpi)"; fi'
 
