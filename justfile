@@ -1538,33 +1538,59 @@ renode-multimcu-uart-smoke:
 # stm32h7`), cross-compiles each under .#embedded, and co-simulates them as
 # N STM32H7 machines wired by the GENERATED multimcu.resc under .#renode —
 # REAL inter-MCU UART-hub transport (link_push = USART TX, link_recv =
-# blocking USART RX), receivers-first start-gating. It captures the
-# output-worker's USART1 and `cmp`s it BYTE-EXACT against the example's
-# reference.bin (PRD §10.3 point 3 value-correctness, end-to-end across
-# real co-simulated MCUs).
+# blocking USART RX), receivers-first start-gating. Each SAVER worker writes
+# its USART1 to its own file backend ($<worker>Uart; single-saver schedules
+# keep $uartFile for recipe-compat); the recipe reads the emitted
+# output_captures.txt manifest, injects one var per saver pointing at a
+# DISTINCT temp file, then CONCATENATES the per-saver files in MANIFEST order
+# (= TransportPlan.output_captures decl-order) and `cmp`s the concatenation
+# BYTE-EXACT against the example's reference.bin (PRD §10.3 point 3 value-
+# correctness, end-to-end across real co-simulated MCUs).
 #
 # PARAMETERISED (PRD §12.3): positional EX (example dir) + SCHED (schedule
 # stem under schedules/), defaulting to the proven 02-split-add/split
 # (host+w0). The worker bin var names ($<worker>Bin) are derived from the
 # generated per-worker project dirs, so the recipe is worker-name-agnostic.
+# The ALGO + KERNELS are resolved FROM the schedule's `schedule for "<path>"`
+# directive (relative to schedules/) + the repo kernels-naming convention
+# (prog.algo.nuc->kernels.rs, prog.embedded.algo.nuc->kernels.embedded.rs),
+# mirroring the e2e harness — so ex14 drives prog.embedded.algo.nuc /
+# kernels.embedded.rs while 02-split-add stays on the default pair.
 #   just renode-multimcu                      # 02-split-add/split (default)
 #   just renode-multimcu 02-split-add split   # explicit
+#   just renode-multimcu 14-hearing-aid embedded_multimcu_sync  # multi-saver
 #
 # Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
 # `just ci` — same tier-3-outside-default-ci rule as renode-embedded /
 # renode-multimcu-uart-smoke (needs the .#embedded + .#renode shells).
 renode-multimcu EX="02-split-add" SCHED="split":
-    @echo "tier-3 M11 GENERATED multi-MCU {{EX}}/{{SCHED}} -> Renode co-sim -> reference.bin diff (TASK-0049.05)"
+    @echo "tier-3 M11 GENERATED multi-MCU {{EX}}/{{SCHED}} -> Renode co-sim -> reference.bin diff (TASK-0049.05/0049.10.08)"
     @set -eu; \
     exdir="$(pwd)/nuc-nucleus/examples/{{EX}}"; \
+    sched="$exdir/schedules/{{SCHED}}.sched.nuc"; \
     input="$exdir/input.bin"; reference="$exdir/reference.bin"; \
-    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
-    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; capdir="$(mktemp -d)"; \
+    trap 'rm -rf "$gen" "$capdir"; rm -f "$out" "$log"' EXIT; \
+    echo "=== resolving algo + kernels from the schedule's \`schedule for\` directive ==="; \
+    rel="$(grep -E '^[[:space:]]*schedule[[:space:]].*for' "$sched" | grep -v '^[[:space:]]*//' | head -n1 | sed -n 's/.*"\([^"]*\)".*/\1/p')"; \
+    if [ -z "$rel" ]; then echo "FAIL: no \`schedule for \"...\"\` directive in $sched"; exit 1; fi; \
+    algo="$exdir/schedules/$rel"; \
+    base="$(basename "$algo")"; \
+    case "$base" in \
+        prog.algo.nuc) kfile="kernels.rs" ;; \
+        prog.*.algo.nuc) variant="${base#prog}"; variant="${variant%.algo.nuc}"; kfile="kernels${variant}.rs" ;; \
+        *) kfile="kernels.rs" ;; \
+    esac; \
+    kernels="$exdir/$kfile"; \
+    if [ ! -f "$algo" ]; then echo "FAIL: resolved algo not found: $algo"; exit 1; fi; \
+    if [ ! -f "$kernels" ]; then echo "FAIL: resolved kernels not found: $kernels"; exit 1; fi; \
+    echo "    algo=$algo"; echo "    kernels=$kernels"; \
     echo "=== generating multi-MCU bins (embedded-pattern --shim stm32h7) ==="; \
     cd nucleus && cargo build --release --bin nucleus --quiet; \
     ./target/release/nucleus build \
-        --algo "$exdir/prog.algo.nuc" \
-        --sched "$exdir/schedules/{{SCHED}}.sched.nuc" \
+        --algo "$algo" \
+        --kernels "$kernels" \
+        --sched "$sched" \
         --backend embedded-pattern --shim stm32h7 \
         --out "$gen"; \
     cd ..; \
@@ -1577,20 +1603,38 @@ renode-multimcu EX="02-split-add" SCHED="split":
         if [ ! -f "$elf" ]; then echo "FAIL: worker $w ELF not produced: $elf"; exit 1; fi; \
         binargs="$binargs -e \$${w}Bin=@$elf"; \
     done; \
-    echo "=== running multi-MCU co-sim in Renode (.#renode), capturing output USART1 ==="; \
+    manifest="$gen/output_captures.txt"; \
+    if [ ! -f "$manifest" ]; then echo "FAIL: emit produced no capture manifest $manifest"; exit 1; fi; \
+    echo "=== capture manifest (per-saver file_var, decl-order concat order): ==="; cat "$manifest"; \
+    capargs=""; capfiles=""; n=0; \
+    while IFS= read -r fv; do \
+        [ -z "$fv" ] && continue; \
+        cf="$capdir/$fv.bin"; : >"$cf"; \
+        capargs="$capargs -e \$${fv}=@$cf"; \
+        capfiles="$capfiles $cf"; \
+        n=$((n+1)); \
+    done < "$manifest"; \
+    if [ "$n" -eq 0 ]; then echo "FAIL: capture manifest $manifest is empty"; exit 1; fi; \
+    echo "=== running multi-MCU co-sim in Renode (.#renode), capturing $n saver USART1 file backend(s) ==="; \
     nix develop .#renode --command renode --disable-xwt --console --plain \
-        $binargs -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$gen/multimcu.resc" >"$log" 2>&1; \
+        $binargs $capargs -e "\$input=@$input" -e "include @$gen/multimcu.resc" >"$log" 2>&1; \
+    : >"$out"; \
+    for cf in $capfiles; do \
+        sz="$(wc -c < "$cf")"; \
+        echo "    saver capture $(basename "$cf"): $sz bytes"; \
+        cat "$cf" >>"$out"; \
+    done; \
     captured="$(wc -c < "$out")"; expected="$(wc -c < "$reference")"; \
-    echo "=== captured $captured bytes over USART1 (reference.bin is $expected bytes) ==="; \
+    echo "=== concatenated $captured bytes over $n saver USART1 file backend(s) (reference.bin is $expected bytes) ==="; \
     if [ "$captured" -ne "$expected" ]; then \
-        echo "FAIL: captured $captured bytes, expected exactly $expected (reference.bin). The co-sim did not stream the full output region."; \
+        echo "FAIL: concatenated $captured bytes, expected exactly $expected (reference.bin). The co-sim did not stream the full output region across all savers."; \
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
     fi; \
     if cmp -s "$out" "$reference"; then \
-        echo "OK: multi-MCU co-sim USART1 output is BYTE-EXACT identical to reference.bin ($expected bytes) — M11 {{EX}}/{{SCHED}} value-correctness verified (PRD §10.3 point 3)."; \
+        echo "OK: multi-MCU co-sim concatenated saver output is BYTE-EXACT identical to reference.bin ($expected bytes) — M11 {{EX}}/{{SCHED}} value-correctness verified (PRD §10.3 point 3)."; \
     else \
-        echo "FAIL: captured USART1 output differs from reference.bin (first differing byte):"; \
+        echo "FAIL: concatenated saver output differs from reference.bin (first differing byte):"; \
         cmp "$out" "$reference" || true; \
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
