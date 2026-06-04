@@ -316,6 +316,9 @@ fn defensive_unknown_loop_var_returns_typed_err() {
         data,
         kernels,
         stmts,
+        // Decl order is inert for this sidecar fixture (data built
+        // directly, not from source); empty (TASK-0049.10.06).
+        data_decl_order: Vec::new(),
     };
 
     let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();
@@ -468,6 +471,9 @@ fn defensive_unknown_data_in_ref_returns_typed_err() {
         data,
         kernels,
         stmts,
+        // Decl order is inert for this sidecar fixture (data built
+        // directly, not from source); empty (TASK-0049.10.06).
+        data_decl_order: Vec::new(),
     };
     let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();
     workers.insert(
@@ -683,6 +689,9 @@ fn task0271_strict_rejects_non_affine_reuse_body() {
         data,
         kernels,
         stmts,
+        // Decl order is inert for this sidecar fixture (data built
+        // directly, not from source); empty (TASK-0049.10.06).
+        data_decl_order: Vec::new(),
     };
 
     let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();

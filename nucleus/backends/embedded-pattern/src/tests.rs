@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use crate::emit;
 
 mod bin_shape;
+mod input_offsets;
 mod sync_guard;
 
 fn repo_root() -> PathBuf {

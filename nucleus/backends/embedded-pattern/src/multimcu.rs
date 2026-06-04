@@ -84,14 +84,15 @@ pub(crate) struct WorkerPlan {
     /// injected at axiSram into EVERY loader (the `.resc` is unchanged); each
     /// loader's cursor is pre-seeded here so it reads its OWN slice.
     ///
-    /// CURRENTLY always `0`: only the SINGLE-loader case is supported
-    /// (02-split-add `host` reads the whole input from the front, in firing
-    /// order — regression-safe). The cross-worker multi-loader case (ex14
-    /// `fe`/`rf`) needs the reference generator's declaration-order layout,
-    /// which the codegen contract does not carry yet, so it FAILS LOUD in
-    /// [`compute_input_offsets`] (deferred to TASK-0049.10.06). This field +
-    /// the shim's `NUC_INPUT_BASE` seam exist so that follow-up only has to
-    /// populate the value, not re-plumb the cursor.
+    /// For a SINGLE-loader schedule (02-split-add `host` reads the whole
+    /// input from the front, in firing order) this is `0` — regression-safe,
+    /// byte-identical to pre-TASK-0049.10.04. For the cross-worker
+    /// multi-loader case (ex14 `fe`→`mic_in`, `rf`→`bt_in`) it is the byte
+    /// offset of the worker's FIRST loaded symbol in the reference
+    /// generator's DECLARATION-ORDER `input.bin` layout, computed by
+    /// [`compute_input_offsets`] off [`NameSidecar::data_decl_order`]
+    /// (threaded into the contract by TASK-0049.10.06) — for ex14 that is
+    /// `fe`=0, `rf`=256. The shim's `NUC_INPUT_BASE` seam consumes this.
     pub input_base_offset: usize,
     /// This worker performs an effectful save (`save_output(c)`) — its
     /// USART1 is captured to `$uartFile`.
@@ -372,40 +373,60 @@ fn kernel_is_effectful(kernel: KernelId, sidecar: &NameSidecar) -> Result<bool, 
 }
 
 /// Compute each loader worker's byte offset into the GLOBAL `input.bin`
-/// layout (TASK-0049.10.04, BLOCKER 2; Mechanism A = partition in codegen,
-/// NOT in the recipe).
+/// layout (TASK-0049.10.04 BLOCKER 2 + TASK-0049.10.06; Mechanism A =
+/// partition in codegen, NOT in the recipe).
 ///
-/// # What this CAN do soundly (and what it cannot)
+/// # The global layout
 ///
 /// The `.resc` injects the WHOLE `input.bin` at axiSram into EVERY loader
 /// (unchanged). Each loader's shim cursor must START at the byte offset of
 /// ITS slice so it reads its own bytes. The byte order of that global layout
 /// is defined by the REFERENCE GENERATOR's HAND-WRITTEN `input.bin` (ex14
-/// `reference/src/main.rs:74-87`: the `mic` block first, then the `bt`
-/// block — i.e. data-DECLARATION order).
+/// `reference/src/main.rs`: the `mic` block first, then the `bt` block — i.e.
+/// data-DECLARATION order), so the offsets here are computed by ordering the
+/// LOADED input symbols by their position in
+/// [`NameSidecar::data_decl_order`] (TASK-0049.10.06 threaded declaration
+/// order into the codegen contract). `DataId` order is NOT used: `DataId` is
+/// assigned ALPHABETICALLY (`acfg::build`), which for ex14 would put
+/// `bt_in`=DataId(0) before `mic_in`=DataId(2) — the REVERSE of the
+/// reference layout.
 ///
-/// **SOUND case — ≤1 worker loads input (e.g. 02-split-add `host` loads BOTH
-/// `a` and `b`).** The single loader's cursor starts at 0 and reads its
-/// symbols sequentially in firing order; there is no cross-worker ordering
-/// to get wrong, and 02-split-add proves this byte-exact under
-/// `just renode-multimcu`. So a single loader => offset 0 (regression-safe,
-/// byte-identical to pre-TASK-0049.10.04).
+/// # Computation
 ///
-/// **UNSOUND case — ≥2 DISTINCT workers each load input (ex14 `fe`->`mic_in`,
-/// `rf`->`bt_in`).** Here the per-worker base offset depends on the GLOBAL
-/// byte order, which must match the reference generator's declaration-order
-/// layout. The only ordering handle in the codegen contract is the
-/// [`DataId`], and `DataId` is assigned ALPHABETICALLY (`acfg/build.rs`
-/// enumerates the name-keyed `BTreeMap`), NOT in declaration order — for
-/// ex14 that yields `bt_in`=DataId(0) BEFORE `mic_in`=DataId(2), the REVERSE
-/// of the reference layout (which has `mic` at byte 0). Data-declaration
-/// order is LOST at AlgoIR construction and is absent from `NameSidecar` /
-/// `NameTables`, so this slice CANNOT compute a correct cross-worker offset.
-/// Rather than emit a byte-WRONG offset (which slice D would then fail on),
-/// we FAIL LOUD here and defer to TASK-0049.10.06 (thread declaration order
-/// into the contract). This mirrors the project's panic-not-diagnostic /
-/// fail-fast discipline — a precise typed error beats a silent miscompile.
-fn compute_input_offsets(
+/// Only the symbols that are actually loaded participate in the layout.
+/// Each loaded symbol's byte size = element count
+/// ([`NameSidecar::alloc_len`], the product of its `dims`) × the FIXED
+/// element byte width ([`ScalarType::fixed_byte_width`]; i32 ⇒ 4, NOT
+/// hardcoded). The cumulative byte offset of a symbol is the sum of the byte
+/// sizes of all loaded symbols that PRECEDE it in declaration order. A
+/// worker's base offset is the offset of its FIRST loaded symbol.
+///
+/// # Cases
+///
+/// - **≤1 loader worker (e.g. 02-split-add `host` loads BOTH `a` and `b`).**
+///   The single loader's cursor starts at 0 and reads its symbols
+///   sequentially in firing order; there is no cross-worker ordering to get
+///   wrong. Early-returns offset 0 — byte-identical to
+///   pre-TASK-0049.10.04, and `just renode-multimcu 02-split-add` proves it
+///   byte-exact.
+///
+/// - **≥2 distinct loader workers (ex14 `fe`→`mic_in`, `rf`→`bt_in`).** The
+///   cross-worker input partition. Each worker's base offset is the
+///   declaration-order cumulative offset of its first loaded symbol — for
+///   ex14, `fe`(mic_in)=0, `rf`(bt_in)=256.
+///
+/// # Fail-loud cases (typed [`EmitError`], never a wrong offset)
+///
+/// - A loaded symbol absent from `data_decl_order` (contract desync).
+/// - A loaded symbol with a platform-dependent scalar width
+///   (`usize`/`isize`), whose on-target byte width is ambiguous for a
+///   byte-exact layout.
+/// - A worker whose loaded symbols are NON-CONTIGUOUS in the global
+///   declaration-order layout (some other worker's symbol falls between two
+///   of this worker's) — this slice models a worker as one contiguous slice,
+///   so a non-contiguous load is a shape it cannot emit a single base offset
+///   for.
+pub(crate) fn compute_input_offsets(
     used: &[WorkerId],
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     sidecar: &NameSidecar,
@@ -429,29 +450,123 @@ fn compute_input_offsets(
         return Ok(per_worker_syms.keys().map(|w| (*w, 0usize)).collect());
     }
 
-    // ≥2 distinct loader workers: the cross-worker input partition. The
-    // per-worker base offset needs the reference generator's declaration-order
-    // byte layout, which the codegen contract does NOT carry (DataId is
-    // alphabetical, not declaration order — see the doc comment). Fail loud
-    // rather than emit a byte-wrong offset.
-    let loader_names: Vec<String> = per_worker_syms
-        .keys()
-        .map(|w| format!("{w:?}"))
+    // ≥2 distinct loader workers: the cross-worker input partition. Build the
+    // GLOBAL input.bin layout = the LOADED input symbols ordered by their
+    // position in the reference generator's declaration-order layout
+    // (sidecar.data_decl_order). Accumulate the per-symbol byte offset, then
+    // read each worker's base off its FIRST loaded symbol.
+
+    // The set of symbols actually loaded (any worker), so the layout only
+    // includes participating symbols (unloaded data — e.g. ex14 `mixed`,
+    // outputs — does NOT appear in input.bin).
+    let loaded_syms: BTreeSet<DataId> = per_worker_syms
+        .values()
+        .flat_map(|v| v.iter().copied())
         .collect();
-    Err(EmitError::UnsupportedFeature(format!(
-        "multi-MCU schedule has {} workers that each load input ({}), i.e. a \
-         CROSS-WORKER input partition. Each loader's byte offset into the \
-         injected input.bin must match the reference generator's \
-         DECLARATION-ORDER layout, but the codegen contract only carries the \
-         alphabetically-assigned DataId (NOT declaration order), so a correct \
-         per-worker offset cannot be computed here. Threading data-declaration \
-         order through AlgoIR/ACFG/NameSidecar is TASK-0049.10.06; until then \
-         this case is rejected rather than silently miscompiled \
-         (TASK-0049.10.04, BLOCKER 2 slice C1). Single-loader schedules \
-         (02-split-add) are unaffected.",
-        per_worker_syms.len(),
-        loader_names.join(", ")
-    )))
+
+    // Cumulative byte offset of each loaded symbol, walking declaration order.
+    let mut offset_of: BTreeMap<DataId, usize> = BTreeMap::new();
+    let mut cursor: usize = 0usize;
+    for did in &sidecar.data_decl_order {
+        if !loaded_syms.contains(did) {
+            continue;
+        }
+        offset_of.insert(*did, cursor);
+        cursor = cursor
+            .checked_add(symbol_byte_size(*did, sidecar)?)
+            .ok_or_else(|| {
+                EmitError::UnsupportedFeature(format!(
+                    "input.bin byte layout overflowed usize accumulating \
+                     symbol {did:?} (TASK-0049.10.06)"
+                ))
+            })?;
+    }
+
+    // Every loaded symbol MUST appear in declaration order (else the layout
+    // is incomplete and offsets would be wrong). A miss means the contract's
+    // data_decl_order does not cover a loaded symbol — fail loud.
+    for did in &loaded_syms {
+        if !offset_of.contains_key(did) {
+            return Err(EmitError::UnsupportedFeature(format!(
+                "loaded input symbol {did:?} is absent from \
+                 NameSidecar.data_decl_order; the global input.bin byte \
+                 layout cannot be computed (decl-order contract desync, \
+                 TASK-0049.10.06)"
+            )));
+        }
+    }
+
+    // Per worker: base = offset of its FIRST loaded symbol (declaration-order
+    // position). Verify the worker's loaded symbols are CONTIGUOUS in the
+    // global layout — this slice models a worker as one contiguous input
+    // slice. Non-contiguous (another worker's symbol interleaved) is a shape
+    // we cannot represent with a single base offset; fail loud.
+    let mut out: BTreeMap<WorkerId, usize> = BTreeMap::new();
+    for (w, syms) in &per_worker_syms {
+        // Order this worker's symbols by their declaration-order offset.
+        let mut owned: Vec<(usize, usize)> = syms
+            .iter()
+            .map(|did| (offset_of[did], symbol_byte_size(*did, sidecar)))
+            .map(|(off, sz)| Ok::<_, EmitError>((off, sz?)))
+            .collect::<Result<_, _>>()?;
+        owned.sort_by_key(|(off, _)| *off);
+
+        // Contiguity: each symbol's offset must equal the running end of the
+        // previous one.
+        let base = owned[0].0;
+        let mut end = base;
+        for (off, sz) in &owned {
+            if *off != end {
+                return Err(EmitError::UnsupportedFeature(format!(
+                    "worker {w:?} loads input symbols that are NON-CONTIGUOUS \
+                     in the global declaration-order input.bin layout \
+                     (expected next symbol at byte {end}, found one at byte \
+                     {off}); a single per-worker base offset cannot describe a \
+                     non-contiguous slice. This multi-loader interleaving \
+                     shape is out of scope for TASK-0049.10.06."
+                )));
+            }
+            end += sz;
+        }
+        out.insert(*w, base);
+    }
+    Ok(out)
+}
+
+/// Byte size of one data symbol's full allocation in the global
+/// `input.bin` layout: element count × fixed element byte width
+/// (TASK-0049.10.06). Fails loud (typed [`EmitError`]) if the symbol is
+/// absent from the sidecar or has a platform-dependent scalar width
+/// (`usize`/`isize`), whose on-target byte size is ambiguous for a
+/// byte-exact layout.
+fn symbol_byte_size(did: DataId, sidecar: &NameSidecar) -> Result<usize, EmitError> {
+    let ty = sidecar.data_type(did).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "input symbol {did:?} has no ResolvedType in NameSidecar.data_types; \
+             cannot size its input.bin block (TASK-0049.10.06)"
+        ))
+    })?;
+    let elems = sidecar.alloc_len(did).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "input symbol {did:?} has no alloc_len in NameSidecar; cannot size \
+             its input.bin block (TASK-0049.10.06)"
+        ))
+    })?;
+    let width = ty.scalar.fixed_byte_width().ok_or_else(|| {
+        EmitError::UnsupportedFeature(format!(
+            "input symbol {did:?} has scalar type {:?}, whose byte width is \
+             platform-dependent (usize/isize differ between 64-bit host and \
+             32-bit embedded target); a byte-exact input.bin layout needs a \
+             fixed width. Out of scope for TASK-0049.10.06.",
+            ty.scalar
+        ))
+    })?;
+    elems.checked_mul(width).ok_or_else(|| {
+        EmitError::UnsupportedFeature(format!(
+            "input symbol {did:?} byte size overflowed usize ({elems} elems × \
+             {width} bytes) (TASK-0049.10.06)"
+        ))
+    })
 }
 
 /// Collect the input symbol(s) a worker LOADS — the output datum of each

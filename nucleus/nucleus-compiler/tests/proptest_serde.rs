@@ -185,6 +185,7 @@ fn sidecar_field_completeness_guard(s: &NameSidecar) {
         partition_pairs: _,
         grid_shape_for_outer_iv: _,
         cumulative_data: _,
+        data_decl_order: _,
         // INTENTIONALLY no `..`. A new serde-bearing field must
         // break-to-update the round-trip generator.
     } = s;
@@ -636,9 +637,14 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         prop::collection::btree_map(iter_var(), (any::<u32>(), any::<u32>()), 0..=3);
     // cumulative_data: BTreeSet<DataId>
     let cumulative_data = prop::collection::btree_set(any::<u64>().prop_map(DataId), 0..=3);
+    // data_decl_order: Vec<DataId> (TASK-0049.10.06). A simple ordered Vec;
+    // the round-trip is structural so a handful of ids per case suffices.
+    let data_decl_order =
+        prop::collection::vec(any::<u64>().prop_map(DataId), 0..=4);
 
-    // `prop_oneof!`/tuple strategies cap at 12-ish elements; bundle into
-    // nested tuples to stay under the arity ceiling, then re-spread.
+    // `prop_oneof!`/tuple strategies cap at 12-ish elements; bundle the last
+    // two scalar-ordering fields into a nested tuple to stay under the arity
+    // ceiling, then re-spread.
     (
         data_types,
         consts,
@@ -650,7 +656,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-        cumulative_data,
+        (cumulative_data, data_decl_order),
     )
         .prop_map(
             |(
@@ -664,7 +670,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 reuse_widths,
                 partition_pairs,
                 grid_shape_for_outer_iv,
-                cumulative_data,
+                (cumulative_data, data_decl_order),
             )| NameSidecar {
                 data_types,
                 consts,
@@ -677,6 +683,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 partition_pairs,
                 grid_shape_for_outer_iv,
                 cumulative_data,
+                data_decl_order,
             },
         )
 }

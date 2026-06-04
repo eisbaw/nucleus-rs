@@ -278,6 +278,24 @@ pub struct AlgoIR {
     pub kernels: BTreeMap<String, ResolvedKernel>,
     /// Top-level statements in source order.
     pub stmts: Vec<IrStmt>,
+    /// Data-symbol names in DECLARATION order (the index-vec the
+    /// `data` BTreeMap doc above anticipates for when source order
+    /// becomes important). `data` is keyed by name and therefore
+    /// alphabetical; this captures the order the `data ...` decls
+    /// appear in the source `AlgoAst.items` (TASK-0049.10.06).
+    ///
+    /// Load-bearing for the embedded multi-MCU backend: the reference
+    /// `input.bin`/`reference.bin` generators lay out per-symbol blocks
+    /// in declaration order, and `DataId` is assigned alphabetically
+    /// (`acfg::build`), so the only sound global byte layout is keyed
+    /// off this vector, NOT off `DataId`.
+    ///
+    /// Invariant: exactly the names that successfully lower into `data`
+    /// appear here, in `AlgoAst.items` order (`lower_data` pushes only
+    /// on the same success path as the `data.insert`). A decl that
+    /// fails to lower appears in neither map. Deterministic: a `Vec`
+    /// built in source-item order, no HashMap iteration.
+    pub data_decl_order: Vec<String>,
 }
 
 /// Recursively visit an [`IrExpr`] and insert every [`IrExpr::DataRef`]'s

@@ -67,6 +67,31 @@ pub enum ScalarType {
     Bool,
 }
 
+impl ScalarType {
+    /// The FIXED on-wire byte width of one element of this scalar type,
+    /// or `None` for the platform-dependent widths (`Usize`/`Isize`)
+    /// whose size differs between a 64-bit host and a 32-bit embedded
+    /// target.
+    ///
+    /// This is the EXACT width a fixed-width little-endian serialiser
+    /// (e.g. the reference `input.bin`/`reference.bin` generators, or
+    /// the embedded multi-MCU input partition) must use — NOT a budget
+    /// estimate. A consumer that needs a width for `Usize`/`Isize` must
+    /// decide the target word size itself (or fail loud) rather than
+    /// have this method silently guess; that is why this returns
+    /// `Option` instead of defaulting `Usize`/`Isize` to 8.
+    pub fn fixed_byte_width(&self) -> Option<usize> {
+        use ScalarType::*;
+        match self {
+            U8 | I8 | Bool => Some(1),
+            U16 | I16 => Some(2),
+            U32 | I32 | F32 => Some(4),
+            U64 | I64 | F64 => Some(8),
+            Usize | Isize => None,
+        }
+    }
+}
+
 /// A typed data shape: a scalar plus zero or more dimensions.
 ///
 /// `DimList` in the grammar is `('[' ConstExpr ']')+`. Here an empty

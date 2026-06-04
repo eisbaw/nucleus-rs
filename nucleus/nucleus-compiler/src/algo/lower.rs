@@ -450,6 +450,16 @@ fn lower_data(
             ty,
         },
     );
+    // Capture declaration order alongside the name-keyed insert
+    // (TASK-0049.10.06). `lower_algo` iterates `ast.items` in source
+    // order, and only a successfully-lowered data decl reaches this
+    // line, so `data_decl_order` ends up as exactly the source order of
+    // the data symbols that made it into `ir.data`. Pushed on the
+    // SAME success path as the insert above so the two stay consistent
+    // (a decl that fails `resolve_type` returns early and lands in
+    // neither). The duplicate/cascade guard above also guarantees no
+    // name is pushed twice.
+    ir.data_decl_order.push(name.clone());
     Ok(())
 }
 

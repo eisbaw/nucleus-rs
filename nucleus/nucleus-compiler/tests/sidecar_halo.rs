@@ -375,6 +375,9 @@ fn build_linked_for_partition_test(
         data,
         kernels,
         stmts,
+        // Decl order is inert for this sidecar fixture (data built
+        // directly, not from source); empty (TASK-0049.10.06).
+        data_decl_order: Vec::new(),
     };
 
     let mut workers: BTreeMap<String, ResolvedWorker> = BTreeMap::new();

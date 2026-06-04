@@ -504,55 +504,66 @@ fn try_emit_bin_example_multi_with_files(
 }
 
 #[test]
-fn ex14_multimcu_cross_worker_input_partition_fails_loud_pending_decl_order() {
-    // TASK-0049.10.04 (BLOCKER 2 slice C1): per-worker INPUT partition.
+fn ex14_multimcu_cross_worker_input_partition_emits_decl_order_offsets() {
+    // TASK-0049.10.06 (BLOCKER 2 ROOT): per-worker INPUT partition, now with
+    // declaration order threaded into the codegen contract. This test was
+    // previously `..._fails_loud_pending_decl_order` and pinned the OLD
+    // BLOCKED state; it now pins the EMIT progressing PAST the rejection with
+    // the CORRECT declaration-order byte offsets (AC#2 + AC#4 at the emit
+    // layer, on the REAL ex14 sources).
     //
-    // Two coupled results are asserted here:
+    // Two coupled results are asserted:
     //
-    // (1) CLASSIFICATION (silent-sibling of slice A) — ex14 `fe`/`rf` perform
-    //     INDEXED effectful loads (`mic_in[frame] <-- fe_capture()`,
-    //     `bt_in[frame] <-- rf_receive()`). Before this slice the multi-MCU
-    //     classifier `is_effectful_load` only matched WHOLE-ARRAY loads, so
-    //     NEITHER fe nor rf was recognised as a loader. With the purity-gated
-    //     indexed arm BOTH are now loaders — which is exactly WHY
-    //     `compute_input_offsets` sees TWO loader workers and reaches the
-    //     cross-worker branch. The rejection message naming both fe and rf is
-    //     direct evidence the classification fix recognises both.
+    // (1) CLASSIFICATION (silent-sibling of slice A, TASK-0049.10.04) — ex14
+    //     `fe`/`rf` perform INDEXED effectful loads (`mic_in[frame] <--
+    //     fe_capture()`, `bt_in[frame] <-- rf_receive()`). The purity-gated
+    //     indexed arm recognises BOTH as loaders, so `compute_input_offsets`
+    //     sees TWO loader workers and takes the cross-worker branch.
     //
-    // (2) OFFSET — the cross-worker offset cannot be computed correctly from
-    //     the codegen contract: the reference input.bin is declaration-order
-    //     (mic then bt) but DataId is ALPHABETICAL (bt_in=0 < mic_in=2), so
-    //     DataId-order concatenation would put `mic_in` at byte 256 (the
-    //     REVERSE of the reference). Rather than emit a byte-wrong offset
-    //     (which slice D would fail on), the emit FAILS LOUD and defers to
-    //     TASK-0049.10.06 (thread declaration order into the contract). This
-    //     is the honest BLOCKED state for AC#2, NOT a workaround.
-    let err = try_emit_bin_example_multi_with_files(
+    // (2) OFFSET — the reference input.bin is DECLARATION order (mic_in@0 then
+    //     bt_in@256) but DataId is ALPHABETICAL (bt_in=0 < mic_in=2), the
+    //     REVERSE. The emit now orders the global layout by
+    //     `NameSidecar.data_decl_order` (threaded AST->IR->ACFG->sidecar by
+    //     this task), so `fe`(mic_in) gets base offset 0 and `rf`(bt_in) gets
+    //     base offset 256 — matching the reference generator's hand-written
+    //     layout, NOT the byte-reversed DataId order.
+    let res = try_emit_bin_example_multi_with_files(
         "14-hearing-aid",
         "prog.embedded.algo.nuc",
         "embedded_multimcu_sync.sched.nuc",
         "kernels.embedded.rs",
         "ex14_multimcu_input_partition",
     )
-    .expect_err(
-        "ex14's cross-worker input partition must FAIL LOUD until declaration \
-         order is threaded into the contract (TASK-0049.10.06), not emit a \
-         byte-wrong offset",
+    .expect(
+        "ex14's cross-worker input partition must now EMIT (declaration order \
+         is threaded into the contract, TASK-0049.10.06) — past the old \
+         fail-loud rejection",
     );
-    let msg = format!("{err:?}");
-    // (1) classification: BOTH fe and rf are recognised as loaders (the
-    //     message enumerates the loader workers; `WorkerId` Debug is the
-    //     stable id form used by the rejection).
+
+    // The per-worker shim seeds its input cursor from
+    // `const NUC_INPUT_BASE: usize = <offset>;` (skeleton/multimcu.rs). Read
+    // fe's and rf's emitted main.rs and assert the declaration-order offsets.
+    // ex14 frame = N_FRAMES(4) * SAMPLES_PER_FRAME(16) = 64 i32 = 256 bytes.
+    let read_base = |worker: &str| -> String {
+        let w = res
+            .workers
+            .iter()
+            .find(|b| b.worker_name.as_deref() == Some(worker))
+            .unwrap_or_else(|| panic!("emit produced no `{worker}` worker bin"));
+        std::fs::read_to_string(&w.main_rs).expect("read worker main.rs")
+    };
+    let fe_main = read_base("fe");
+    let rf_main = read_base("rf");
     assert!(
-        msg.contains("each load input") && msg.contains("CROSS-WORKER"),
-        "rejection must identify the cross-worker input-partition shape: {msg}"
+        fe_main.contains("const NUC_INPUT_BASE: usize = 0;"),
+        "fe loads mic_in (declared FIRST) -> NUC_INPUT_BASE 0; emitted main.rs \
+         did not carry it"
     );
-    // (2) the rejection must name the root cause + the follow-up so the
-    //     BLOCKED state is greppable and not mistaken for a generic failure.
     assert!(
-        msg.contains("DataId") && msg.contains("declaration") && msg.contains("TASK-0049.10.06"),
-        "rejection must cite the DataId-vs-declaration-order root cause + the \
-         TASK-0049.10.06 follow-up: {msg}"
+        rf_main.contains("const NUC_INPUT_BASE: usize = 256;"),
+        "rf loads bt_in (declared SECOND, 256 bytes after mic_in) -> \
+         NUC_INPUT_BASE 256; emitted main.rs did not carry it. A byte-WRONG \
+         DataId-order layout would have put rf at 0 and fe at 256."
     );
 }
 

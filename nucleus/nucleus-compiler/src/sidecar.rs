@@ -374,6 +374,29 @@ pub struct NameSidecar {
     /// as empty.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cumulative_data: std::collections::BTreeSet<DataId>,
+
+    /// Data symbols in DECLARATION order, as [`DataId`]s
+    /// (TASK-0049.10.06). The codegen-contract surface for
+    /// `AlgoIR::data_decl_order`: the order the `data ...` decls appear
+    /// in the source, mapped through `ACFG::name_data` to the canonical
+    /// [`DataId`] the EventList carries.
+    ///
+    /// Why this exists despite `data_types` already holding every
+    /// `DataId`: `data_types` is a `BTreeMap` keyed by `DataId`, and
+    /// `DataId` is assigned ALPHABETICALLY (`acfg::build` enumerates the
+    /// name-keyed `BTreeMap`), so iterating `data_types` yields
+    /// alphabetical, NOT declaration, order. The embedded multi-MCU
+    /// backend's global `input.bin` / `reference.bin` byte layout must
+    /// match the reference generator's HAND-WRITTEN declaration-order
+    /// block layout; this vector is the only sound ordering handle for
+    /// that (see `embedded_pattern::multimcu::compute_input_offsets`).
+    ///
+    /// Deterministic: a `Vec` built in `AlgoIR::data_decl_order` order,
+    /// no HashMap iteration. serde-default so an old wire payload (no
+    /// field) deserialises as empty (backends that don't need a global
+    /// byte layout simply never read it).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub data_decl_order: Vec<DataId>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -726,6 +749,33 @@ pub fn build_sidecar(
         .filter_map(|n| acfg.name_data.get(n).copied())
         .collect();
 
+    // (j) Data-declaration order as DataIds (TASK-0049.10.06). Map each
+    //     name in `linked.algo.data_decl_order` (already in source
+    //     declaration order, built by `lower_data`) through
+    //     `acfg.name_data` to its canonical DataId. Mirrors the (a)
+    //     name_data -> data_types inversion, but iterating the
+    //     ORDER-bearing Vec instead of the alphabetical map so the
+    //     resulting Vec<DataId> preserves declaration order. A name
+    //     present here but absent from `acfg.name_data` is a
+    //     compiler-internal desync (build_acfg enumerated name_data FROM
+    //     the same linked.algo.data the order vec was built alongside) —
+    //     fail loud with context, exactly like the (a)/(d) blocks, never
+    //     silently drop a symbol the backend's byte layout depends on.
+    let data_decl_order: Vec<DataId> = linked
+        .algo
+        .data_decl_order
+        .iter()
+        .map(|name| {
+            *acfg.name_data.get(name).unwrap_or_else(|| {
+                panic!(
+                    "sidecar: data symbol `{name}` is in \
+                     linked.algo.data_decl_order but not in ACFG \
+                     name_data — decl-order<->id table desync"
+                )
+            })
+        })
+        .collect();
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -738,6 +788,7 @@ pub fn build_sidecar(
         partition_pairs,
         grid_shape_for_outer_iv,
         cumulative_data,
+        data_decl_order,
     })
 }
 

@@ -1575,6 +1575,9 @@ mod tests {
             data,
             kernels,
             stmts,
+            // Decl order is inert for halo inference (this fixture builds
+            // `data` directly, not from source); empty (TASK-0049.10.06).
+            data_decl_order: Vec::new(),
         };
 
         // Minimal SchedIR: one placement of K on a single worker.
@@ -2486,6 +2489,9 @@ mod tests {
             data,
             kernels,
             stmts,
+            // Decl order is inert for halo inference (this fixture builds
+            // `data` directly, not from source); empty (TASK-0049.10.06).
+            data_decl_order: Vec::new(),
         };
         let mut places: BTreeMap<String, ResolvedPlacement> = BTreeMap::new();
         places.insert(
