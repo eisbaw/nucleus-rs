@@ -25,11 +25,11 @@ deliberately out of scope for v2.
 
 - **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
   Start here. Everything else is implementation.
-- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — twenty-one
-  worked examples (fourteen driving examples per PRD §9 plus seven
-  later extensions, 15–21) from element-wise add (one kernel, one
-  for-loop) to CNN inference (multi-layer i32 deterministic) and a
-  multi-MCU hearing aid. Each example is `prog.algo.nuc` + one or more
+- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 21 worked
+  examples (fourteen driving examples per PRD §9 plus seven later
+  extensions, 15–21) from element-wise add (one kernel, one for-loop)
+  to CNN inference (multi-layer i32 deterministic) and a multi-MCU
+  hearing aid. Each example is `prog.algo.nuc` + one or more
   `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
   impl + an `input.bin` + an expected `reference.bin`.
   <!-- check-readme-counts: examples=21 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->

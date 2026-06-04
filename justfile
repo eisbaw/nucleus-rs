@@ -1093,18 +1093,23 @@ check-mega-files:
 # actual > declared) with a remediation message naming the file + sentinel.
 #
 # Filesystem truth: count of nuc-nucleus/examples/NN-name/ directories.
-# Declared value:   a greppable machine-readable sentinel in README.md of
-#                   the exact form `<!-- check-readme-counts: examples=NN ... -->`.
+# Declared values:  TWO surfaces in README.md, BOTH machine-checked so the
+#   human-facing word cannot silently drift from the machine sentinel
+#   (TASK-0439 review P2):
+#     (a) prose digit  — the `NN worked` count in the examples bullet;
+#     (b) sentinel     — `<!-- check-readme-counts: examples=NN ... -->`.
+#   All three (dir count, prose digit, sentinel) must agree.
 #
 # SCOPE: this polices ONLY the README example-count claim against the dir
 # count. It deliberately does NOT police PRD §9 — §9 is an intentionally
 # CURATED 14-row driving-example table (≠ 21 shipped dirs), so checking it
 # against the directory count would be a guaranteed false-positive.
 check-readme-counts:
-    @echo "checking README.md example-count sentinel against nuc-nucleus/examples/ dir count..."
+    @echo "checking README.md example counts (prose + sentinel) against nuc-nucleus/examples/ dir count..."
     @set -eu; \
     actual=$(find nuc-nucleus/examples -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '); \
     declared=$(grep -oE '<!-- check-readme-counts: examples=[0-9]+' README.md | grep -oE '[0-9]+$' || true); \
+    prose=$(grep -oE '[0-9]+ worked' README.md | grep -oE '^[0-9]+' | head -n1 || true); \
     if [ -z "$declared" ]; then \
         echo "FAIL: no machine-readable count sentinel found in README.md."; \
         echo "  Expected a line of the form:"; \
@@ -1112,17 +1117,23 @@ check-readme-counts:
         echo "  Add it next to the examples bullet in README.md's Pointers section."; \
         exit 1; \
     fi; \
-    if [ "$declared" != "$actual" ]; then \
+    if [ -z "$prose" ]; then \
+        echo "FAIL: no greppable prose count ('NN worked examples') found in README.md."; \
+        echo "  The examples bullet must lead with a digit, e.g. '$actual worked'."; \
+        exit 1; \
+    fi; \
+    if [ "$declared" != "$actual" ] || [ "$prose" != "$actual" ]; then \
         echo "FAIL: README example-count drift."; \
-        echo "  declared (README.md sentinel): $declared"; \
+        echo "  prose    (README.md 'NN worked'): $prose"; \
+        echo "  sentinel (README.md comment):     $declared"; \
         echo "  actual   (nuc-nucleus/examples/ dirs): $actual"; \
         echo ""; \
-        echo "Fix: update BOTH the prose count AND the sentinel"; \
+        echo "Fix: update BOTH the prose digit ('$actual worked examples') AND the sentinel"; \
         echo "  <!-- check-readme-counts: examples=$actual ... -->"; \
         echo "in README.md to $actual, OR reconcile the examples/ directory set."; \
         exit 1; \
     fi; \
-    echo "OK: README sentinel (examples=$declared) matches nuc-nucleus/examples/ dir count ($actual)."
+    echo "OK: README prose ($prose) + sentinel ($declared) match nuc-nucleus/examples/ dir count ($actual)."
 
 # Tier-3 compile-only acceptance. Three arms, all real
 # `cargo check --target thumbv7em-none-eabihf` cross-compiles against
