@@ -244,9 +244,16 @@ milestone = "M7"
 # `just check-mpi-nonblocking` proves byte-exact vs `reference.bin`
 # under the DEFAULT eager protocol (the forced-rendezvous arm stays in
 # that recipe; e2e uses default eager). Each is a schedule mpi-blocking
-# structurally CANNOT run (it lacks `supports_async`): a worker<->worker
-# halo (05/distributed{,-2d}), a host-excluding sub-communicator barrier
-# (09/pipelined), or a pipelined async grid (11/pipelined). The harness
+# structurally CANNOT run (it lacks `supports_async`): a genuine
+# worker<->worker halo (05/distributed-2d's 2x2 grid — real E/W/N/S
+# strip exchanges between worker ranks; 05/distributed's 1D row-band by
+# contrast is host-star, its halo strips ride the host-broadcast img_in
+# so it is NOT a w<->w transfer — verified in the emitted code), a
+# host-excluding sub-communicator barrier (09/pipelined — a compiler-
+# injected MPI_Comm_split sub-comm barrier over {producer,consumer}
+# EXCLUDING the host, NOT a schedule-surface notify=barrier; the
+# `stream` edge itself is notify=event), or a pipelined async grid
+# (11/pipelined). The harness
 # launches each via the emitted `run.sh` with default ranks = the
 # schedule's used-worker count (n below), so no harness change is needed
 # (TASK-0445 readiness witness: mpi-nonblocking's render_run_sh is the

@@ -736,7 +736,8 @@ fn print_help() {
          `nuc-nucleus/e2e-matrix.toml`. Flags narrow the matrix to\n\
          matching cells.\n\
          \n\
-         --with-mpi: run the tier-2 `mpi_backends` tier (mpi-blocking)\n\
+         --with-mpi: run the tier-2 `mpi_backends` tier (mpi-blocking +\n\
+         mpi-nonblocking)\n\
          INSTEAD of the default `backends` tier (TASK-0444). Requires\n\
          the `.#mpi` dev shell — HARD-FAILS at startup if `mpiexec` is\n\
          not on PATH (no silent skip). Invoke via `just e2e-mpi`. The\n\
@@ -4791,7 +4792,8 @@ fn run_inner(paths: &Paths, args: Args) -> Result<i32, String> {
                 "--with-mpi requires the `.#mpi` dev shell: `mpiexec` was not \
                  found on PATH (or failed to run). Launch via `just e2e-mpi`, \
                  which enters `nix develop .#mpi`. Refusing to run so the \
-                 tier-2 mpi-blocking cells are never silently skipped."
+                 tier-2 mpi cells (mpi-blocking + mpi-nonblocking) are \
+                 never silently skipped."
                     .to_string(),
             );
         }
