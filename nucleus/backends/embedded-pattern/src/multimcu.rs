@@ -94,9 +94,50 @@ pub(crate) struct WorkerPlan {
     /// (threaded into the contract by TASK-0049.10.06) — for ex14 that is
     /// `fe`=0, `rf`=256. The shim's `NUC_INPUT_BASE` seam consumes this.
     pub input_base_offset: usize,
-    /// This worker performs an effectful save (`save_output(c)`) — its
-    /// USART1 is captured to `$uartFile`.
+    /// This worker performs an effectful save (`save_output(c)` /
+    /// `fe_emit(spk_out[frame])`) — its USART1 is captured to a file backend.
+    /// Equivalent to `!saved_outputs.is_empty()`; kept as a precomputed bool
+    /// because the shim codegen (`skeleton::multimcu`) only needs the
+    /// boolean "does this worker enable USART1 TX for capture".
     pub saves_output: bool,
+    /// The OUTPUT symbol(s) this worker drains to its capture USART1, in
+    /// encounter order — the first `ArgBinding::Data` input datum of each
+    /// output-less (effectful-save) `Fire`. For ex14 each saver drains
+    /// exactly one (`fe`→`spk_out`, `rf`→`bt_out`); a worker with no save
+    /// has this empty (TASK-0049.10.05, BLOCKER 3 slice C2).
+    pub saved_outputs: Vec<DataId>,
+}
+
+/// One saver worker's deterministic output capture, ordered globally by the
+/// drained symbol's position in [`NameSidecar::data_decl_order`] (NOT
+/// alphabetical `DataId`). The `.resc` writes this saver's USART1 to
+/// `$<file_var>`; slice D concatenates the per-saver files in this list's
+/// order to reconstruct the reference output layout (TASK-0049.10.05).
+#[derive(Debug, Clone)]
+pub(crate) struct OutputCapture {
+    /// The saver worker.
+    pub worker: WorkerId,
+    /// The OUTPUT symbol this saver drains (ex14: `fe`→`spk_out`,
+    /// `rf`→`bt_out`).
+    pub data: DataId,
+    /// The `.resc` file-backend var (`$<file_var>`) this saver's USART1
+    /// writes to — the SINGLE SOURCE OF TRUTH for the capture file name (the
+    /// `.resc` generator reads it directly; the shim needs only the boolean
+    /// [`WorkerPlan::saves_output`]).
+    ///
+    /// SINGLE-saver / MULTI-saver ASYMMETRY (LOAD-BEARING, READ THIS): with
+    /// exactly ONE saver in the whole schedule, the var is `uartFile` —
+    /// byte-identical to the pre-TASK-0049.10.05 emit, because the
+    /// `just renode-multimcu` recipe injects and reads `$uartFile` for the
+    /// single saver (02-split-add `host`). Changing it would break that
+    /// recipe (a slice-D concern, out of scope here). With ≥2 savers (ex14
+    /// `fe`+`rf`) each saver gets a DISTINCT var `<sanitized-worker>Uart`
+    /// (e.g. `feUart`, `rfUart`) so the two no longer collide on one shared
+    /// `$uartFile`. Slice D extends the recipe to inject + concatenate these
+    /// per-saver files in this list's order. The asymmetry exists SOLELY to
+    /// keep the existing single-saver recipe byte-compatible while the
+    /// multi-saver recipe is built.
+    pub file_var: String,
 }
 
 /// One inter-MCU `UARTHub`, wiring exactly two workers. The USART each
@@ -119,6 +160,16 @@ pub(crate) struct TransportPlan {
     pub hubs: Vec<Hub>,
     /// Receivers-first release order for the `.resc` start-gating.
     pub boot_order: Vec<WorkerId>,
+    /// The deterministic per-saver output-capture list, ordered by the
+    /// drained symbol's position in [`NameSidecar::data_decl_order`] (NOT
+    /// alphabetical `DataId`) so the captured files concatenate in the
+    /// reference output layout. For ex14 this is `[spk_out(fe), bt_out(rf)]`
+    /// (decl order: `spk_out` line 80 before `bt_out` line 81), matching
+    /// `reference.bin` = spk_out@0 ++ bt_out@256 — NOT the DataId reversal
+    /// (`bt_out`=DataId(1) < `spk_out`=DataId(4)). Slice D's recipe injects
+    /// `$<file_var>` per entry and concatenates IN THIS ORDER before the
+    /// byte-exact diff (TASK-0049.10.05, BLOCKER 3 slice C2).
+    pub output_captures: Vec<OutputCapture>,
 }
 
 impl TransportPlan {
@@ -176,6 +227,11 @@ impl TransportPlan {
             let mut seq_usart: BTreeMap<u64, UsartSlot> = BTreeMap::new();
             map_seqs(evs, &peer_usart, &mut seq_usart);
 
+            // OUTPUT-capture symbols this worker drains (TASK-0049.10.05).
+            // `saves_output` is derived from this so the two cannot drift.
+            let mut saved_outputs: Vec<DataId> = Vec::new();
+            collect_saved_symbols(evs, &mut saved_outputs);
+
             workers.insert(
                 *w,
                 WorkerPlan {
@@ -184,11 +240,19 @@ impl TransportPlan {
                     seq_usart,
                     peer_usart,
                     loads_input: has_effectful_load(evs, sidecar)?,
-                    saves_output: has_effectful_save(evs),
+                    saves_output: !saved_outputs.is_empty(),
+                    saved_outputs,
                     input_base_offset: input_offsets.get(w).copied().unwrap_or(0),
                 },
             );
         }
+
+        // Deterministic per-saver output-capture list (ordered by
+        // data_decl_order) + the single-/multi-saver file-var asymmetry,
+        // computed once the full worker set is known (TASK-0049.10.05). This
+        // is the SINGLE SOURCE OF TRUTH for the capture file vars — the
+        // `.resc` generator reads it directly.
+        let output_captures = compute_output_capture(&workers, sidecar)?;
 
         // One hub per unordered worker-pair that shares an edge. Each
         // endpoint uses its own assigned USART for the peer (they need not
@@ -228,6 +292,7 @@ impl TransportPlan {
             workers,
             hubs,
             boot_order,
+            output_captures,
         })
     }
 }
@@ -294,13 +359,53 @@ fn has_effectful_load(events: &[Event], sidecar: &NameSidecar) -> Result<bool, E
     Ok(false)
 }
 
-/// A worker has an effectful SAVE iff it fires an output-less kernel
-/// (`save_output(c)`) — mirrors `render_fire`'s classification.
-fn has_effectful_save(events: &[Event]) -> bool {
-    events.iter().any(|e| match e {
-        Event::Fire { bindings, .. } => bindings.output.is_none(),
-        Event::Loop { body, .. } => has_effectful_save(body),
-        _ => false,
+/// Collect the OUTPUT symbol(s) a worker SAVES — the drained datum of each
+/// output-less (effectful-save) `Fire`, recursing into loop bodies, in
+/// encounter order, deduped (TASK-0049.10.05).
+///
+/// An effectful save is an output-less `Fire` (`save_output(c)` /
+/// `fe_emit(spk_out[frame])`) — the SAME structural classification
+/// `is_effectful_io` and `render_fire` use (`bindings.output.is_none()`).
+/// The drained datum is the FIRST `ArgBinding::Data` input (the symbol whose
+/// bytes stream out USART1): `fe_emit(spk_out[frame])` →`spk_out`,
+/// `rf_transmit(bt_out[frame])` →`bt_out`. A save whose argument is not a
+/// data read (e.g. a bare scalar) drains no capturable symbol and is skipped
+/// here — its USART1 still carries whatever `render_fire` streams, but there
+/// is no named output symbol to order in the capture layout.
+///
+/// Mirrors [`collect_loaded_symbols`] (the INPUT-side sibling) — same
+/// recursion, same `!out.contains` dedup, same encounter-order contract
+/// (the caller sorts by `data_decl_order` for the global layout).
+fn collect_saved_symbols(events: &[Event], out: &mut Vec<DataId>) {
+    for e in events {
+        match e {
+            Event::Fire { bindings, .. } if bindings.output.is_none() => {
+                if let Some(did) = first_data_input(bindings) {
+                    if !out.contains(&did) {
+                        out.push(did);
+                    }
+                }
+            }
+            Event::Loop { body, .. } => collect_saved_symbols(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// The `DataId` of the first `ArgBinding::Data` input of a firing, if any —
+/// the symbol an effectful-save drains. A `Scalar`/`Nested` argument is not a
+/// capturable data read, so it is skipped.
+///
+/// SIBLING-CONSISTENCY: this is the SAME first-`Data`-input selection that
+/// `render::effect_drain_place` uses to pick the region a save drains to the
+/// peripheral. A save with NO `Data` input is rejected there with a typed
+/// `ContractGap` (it cannot lower at all), so a `None` here mirrors a firing
+/// that produces no capturable bytes — consistent, not a silent drop.
+fn first_data_input(bindings: &FireBinding) -> Option<DataId> {
+    use nucleus_compiler::event::ArgBinding;
+    bindings.inputs.iter().find_map(|a| match a {
+        ArgBinding::Data(slice) => Some(slice.data),
+        _ => None,
     })
 }
 
@@ -597,6 +702,113 @@ fn collect_loaded_symbols(
     Ok(())
 }
 
+/// Compute the deterministic per-saver OUTPUT-capture list, ordered by the
+/// drained symbol's position in [`NameSidecar::data_decl_order`] (NOT
+/// alphabetical `DataId`) — the OUTPUT-side mirror of [`compute_input_offsets`]
+/// (TASK-0049.10.05, BLOCKER 3 slice C2).
+///
+/// # Why declaration order, not `DataId`
+///
+/// The reference output layout (ex14 `reference/src/main.rs`) is
+/// `spk_out` (256 B) ++ `bt_out` (256 B) — DECLARATION order (`spk_out` line
+/// 80 before `bt_out` line 81). But `DataId` is assigned ALPHABETICALLY
+/// (`acfg::build`): `bt_out`=DataId(1) < `spk_out`=DataId(4) — the REVERSE.
+/// So a capture order derived from `DataId` would be backwards; this orders
+/// by `data_decl_order` index, exactly as the INPUT side does, so slice D
+/// concatenates the per-saver files into `reference.bin` order.
+///
+/// # File-var asymmetry (LOAD-BEARING — see [`WorkerPlan::capture_file_var`])
+///
+/// * **Exactly one saver** (02-split-add `host`): var = `uartFile`,
+///   byte-identical to the pre-TASK-0049.10.05 `.resc` so the
+///   `just renode-multimcu` recipe (which injects/reads `$uartFile`) keeps
+///   passing. The single-saver case is regression-pinned by the renode
+///   byte-exact gate.
+/// * **≥2 savers** (ex14 `fe`+`rf`): each saver gets a DISTINCT var
+///   `<sanitized-worker>Uart` (`feUart`, `rfUart`) so the two no longer
+///   collide on a shared `$uartFile`. Slice D extends the recipe to inject +
+///   concatenate these.
+///
+/// # Fail-loud (typed [`EmitError`], never a wrong order)
+///
+/// A saved symbol absent from `data_decl_order` is a contract desync (mirrors
+/// the analogous INPUT case in [`compute_input_offsets`]) — fail loud rather
+/// than emit an unordered/partial capture list.
+fn compute_output_capture(
+    workers: &BTreeMap<WorkerId, WorkerPlan>,
+    sidecar: &NameSidecar,
+) -> Result<Vec<OutputCapture>, EmitError> {
+    // (worker, drained DataId) for every saver, in WorkerId then encounter
+    // order. ex14 each saver drains exactly one; a (hypothetical) worker
+    // draining several contributes one entry per distinct saved symbol.
+    let mut saver_syms: Vec<(WorkerId, DataId)> = Vec::new();
+    for (w, wp) in workers {
+        for did in &wp.saved_outputs {
+            saver_syms.push((*w, *did));
+        }
+    }
+    if saver_syms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Single-saver vs multi-saver var asymmetry (recipe-compat). "Saver" is
+    // counted by DISTINCT worker, not by drained symbol: a lone saver
+    // draining two symbols still writes one USART1 -> `$uartFile`.
+    let distinct_savers: BTreeSet<WorkerId> = saver_syms.iter().map(|(w, _)| *w).collect();
+    let single_saver = distinct_savers.len() == 1;
+
+    // Order the saved symbols by their declaration-order index. A symbol
+    // absent from `data_decl_order` is a contract desync — fail loud.
+    let decl_index = |did: DataId| -> Result<usize, EmitError> {
+        sidecar
+            .data_decl_order
+            .iter()
+            .position(|d| *d == did)
+            .ok_or_else(|| {
+                EmitError::UnsupportedFeature(format!(
+                    "saved output symbol {did:?} is absent from \
+                     NameSidecar.data_decl_order; the per-saver output-capture \
+                     order cannot be computed (decl-order contract desync, \
+                     TASK-0049.10.05)"
+                ))
+            })
+    };
+
+    // Sort by decl-order index (tie-break on WorkerId for determinism, though
+    // distinct savers drain distinct symbols in the schedules we model).
+    let mut keyed: Vec<(usize, WorkerId, DataId)> = saver_syms
+        .iter()
+        .map(|(w, did)| Ok::<_, EmitError>((decl_index(*did)?, *w, *did)))
+        .collect::<Result<_, _>>()?;
+    keyed.sort_by(|(ia, wa, _), (ib, wb, _)| ia.cmp(ib).then(wa.cmp(wb)));
+
+    let mut out: Vec<OutputCapture> = Vec::with_capacity(keyed.len());
+    for (_, w, did) in keyed {
+        let file_var = if single_saver {
+            "uartFile".to_string()
+        } else {
+            format!("{}Uart", sanitize_var(&workers[&w].name))
+        };
+        out.push(OutputCapture {
+            worker: w,
+            data: did,
+            file_var,
+        });
+    }
+    Ok(out)
+}
+
+/// Sanitise a worker name into a Renode/monitor variable token: keep ASCII
+/// alphanumerics, map every other char to `_`. The `.resc` var is referenced
+/// as `$<name>Uart`; worker names in this repo are already simple tokens
+/// (`fe`, `rf`, `host`, `w0`) so this is a defensive normalisation, mirroring
+/// how the recipe derives `$<worker>Bin` from worker directory names.
+fn sanitize_var(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
 // ===================================================================
 // TASK-0049.05.01 — fail-loud guard for a control-only `Event::Sync`
 // whose ordering is NOT subsumed by the data edges.
@@ -882,7 +1094,14 @@ const AXISRAM_BASE: &str = "0x24000000";
 /// `include`-ing this script:
 ///   * `$<worker>Bin` = @<path to that worker's cross-compiled ELF>, one
 ///     per used worker (e.g. `$hostBin`, `$w0Bin`);
-///   * `$uartFile`     = @<path the output-capture worker's USART1 writes>;
+///   * the OUTPUT-CAPTURE file var(s) the saver USART1(s) write to
+///     (TASK-0049.10.05): with EXACTLY ONE saver this is the single
+///     `$uartFile` (byte-identical to pre-C2; the `renode-multimcu` recipe
+///     injects/reads it for 02-split-add `host`); with ≥2 savers each saver
+///     gets a DISTINCT `$<worker>Uart` (ex14 `$feUart`, `$rfUart`) — the
+///     exact vars + their reference-layout concatenation order are
+///     [`TransportPlan::output_captures`] (decl-order, slice D concatenates
+///     in that order);
 ///   * `$input`        = @<path to the input.bin injected into loaders>.
 pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
     use std::fmt::Write as _;
@@ -933,11 +1152,22 @@ pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
                 writeln!(s, "connector Connect {} {}", usart.renode_name, h.name).ok();
             }
         }
-        if plan_w.saves_output {
-            s.push_str(
-                "# This worker saves output -> capture its USART1 to the file backend.\n",
-            );
-            s.push_str("usart1 CreateFileBackend $uartFile true\n");
+        // Effectful-output capture (TASK-0049.10.05). Driven off the plan's
+        // `output_captures` (the SINGLE SOURCE OF TRUTH for the per-saver
+        // file var + drained symbol + decl-order) so the `.resc`, the shim,
+        // and slice D's concat order cannot drift. Single saver -> `$uartFile`
+        // (recipe-compatible, byte-identical to pre-C2); multi-saver -> each
+        // saver's DISTINCT `$<worker>Uart` so they no longer collide on one
+        // shared file.
+        for cap in plan.output_captures.iter().filter(|c| c.worker == plan_w.worker) {
+            writeln!(
+                s,
+                "# This worker saves output `{:?}` -> capture its USART1 to the \
+                 file backend (slice D concatenates in output_captures order).",
+                cap.data,
+            )
+            .ok();
+            writeln!(s, "usart1 CreateFileBackend ${} true", cap.file_var).ok();
         }
         if plan_w.loads_input {
             writeln!(

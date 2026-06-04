@@ -21,6 +21,7 @@ use crate::emit;
 
 mod bin_shape;
 mod input_offsets;
+mod output_capture;
 mod sync_guard;
 
 fn repo_root() -> PathBuf {

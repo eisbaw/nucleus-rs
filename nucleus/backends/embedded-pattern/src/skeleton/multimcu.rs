@@ -14,9 +14,10 @@
 //!   * `link_recv(seq, dst, len)` -> BLOCKING RX poll-on-RXNE + read RDR,
 //!     filling `dst` (the receive local) with exactly `len` bytes;
 //!   * `dma_push(0, ..)` -> the effectful `save_output` raw USART1 stream
-//!     (the output-capture worker only) — DISTINCT channel namespace from
-//!     `link_push`, so peripheral IO and inter-MCU transport never collide
-//!     on one channel id (TASK-0049.05 trap #1);
+//!     (saver workers only; there may be several — ex14 `fe`+`rf`, each
+//!     captured to its own `.resc` file backend, TASK-0049.10.05) — DISTINCT
+//!     channel namespace from `link_push`, so peripheral IO and inter-MCU
+//!     transport never collide on one channel id (TASK-0049.05 trap #1);
 //!   * `alloc_in_region` -> the Renode-injected axiSram input region (the
 //!     input-loading worker only);
 //!   * `irq_barrier` -> a no-op (documented below).
