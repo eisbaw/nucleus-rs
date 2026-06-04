@@ -1213,8 +1213,13 @@ pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
             // and settle before the next machine starts transmitting.
             s.push_str("emulation RunFor \"0.002\"\n");
         } else {
-            // Last machine released: run the whole co-simulation to
-            // completion (bounded, fully determinate).
+            // Last machine released: run for a FIXED emulated-seconds window.
+            // 0.3 s is sufficient for the 02-split-add single-pass case (one
+            // host->w0->host hop), NOT a proof of "to completion". A deeper
+            // pipeline (e.g. ex14's 4-frame x 3-MCU schedule) needs a larger
+            // or save-count-gated window; sizing the window to schedule depth
+            // is tracked with the unframed-multiplex transport work
+            // (TASK-0049.05.02). This window is bounded + determinate.
             s.push_str("emulation RunFor \"0.3\"\n");
         }
     }
