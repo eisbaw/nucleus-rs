@@ -193,6 +193,7 @@ ci:
     just check-doc-test-name-staleness
     just check-doc-cell-path-staleness
     just check-mega-files
+    just check-readme-counts
     just check-doc-links
     just e2e
     just determinism-check
@@ -1085,6 +1086,43 @@ check-mega-files:
         exit 1; \
     fi; \
     echo "OK: no non-allow-listed nucleus/**/src/*.rs file exceeds 1000 LoC; no allow-list entry is stale."
+
+# Doc-honesty gate (TASK-0439): the README example-count claim must match
+# the on-disk reality. Same shape as check-mega-files — filesystem truth
+# vs a declared value, fails BOTH directions (declared > actual and
+# actual > declared) with a remediation message naming the file + sentinel.
+#
+# Filesystem truth: count of nuc-nucleus/examples/NN-name/ directories.
+# Declared value:   a greppable machine-readable sentinel in README.md of
+#                   the exact form `<!-- check-readme-counts: examples=NN ... -->`.
+#
+# SCOPE: this polices ONLY the README example-count claim against the dir
+# count. It deliberately does NOT police PRD §9 — §9 is an intentionally
+# CURATED 14-row driving-example table (≠ 21 shipped dirs), so checking it
+# against the directory count would be a guaranteed false-positive.
+check-readme-counts:
+    @echo "checking README.md example-count sentinel against nuc-nucleus/examples/ dir count..."
+    @set -eu; \
+    actual=$(find nuc-nucleus/examples -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '); \
+    declared=$(grep -oE '<!-- check-readme-counts: examples=[0-9]+' README.md | grep -oE '[0-9]+$' || true); \
+    if [ -z "$declared" ]; then \
+        echo "FAIL: no machine-readable count sentinel found in README.md."; \
+        echo "  Expected a line of the form:"; \
+        echo "    <!-- check-readme-counts: examples=$actual ... -->"; \
+        echo "  Add it next to the examples bullet in README.md's Pointers section."; \
+        exit 1; \
+    fi; \
+    if [ "$declared" != "$actual" ]; then \
+        echo "FAIL: README example-count drift."; \
+        echo "  declared (README.md sentinel): $declared"; \
+        echo "  actual   (nuc-nucleus/examples/ dirs): $actual"; \
+        echo ""; \
+        echo "Fix: update BOTH the prose count AND the sentinel"; \
+        echo "  <!-- check-readme-counts: examples=$actual ... -->"; \
+        echo "in README.md to $actual, OR reconcile the examples/ directory set."; \
+        exit 1; \
+    fi; \
+    echo "OK: README sentinel (examples=$declared) matches nuc-nucleus/examples/ dir count ($actual)."
 
 # Tier-3 compile-only acceptance. Three arms, all real
 # `cargo check --target thumbv7em-none-eabihf` cross-compiles against
