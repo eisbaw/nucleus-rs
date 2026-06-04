@@ -364,8 +364,10 @@ fn has_effectful_load(events: &[Event], sidecar: &NameSidecar) -> Result<bool, E
 /// encounter order, deduped (TASK-0049.10.05).
 ///
 /// An effectful save is an output-less `Fire` (`save_output(c)` /
-/// `fe_emit(spk_out[frame])`) — the SAME structural classification
-/// `is_effectful_io` and `render_fire` use (`bindings.output.is_none()`).
+/// `fe_emit(spk_out[frame])`) — the SAME `bindings.output.is_none()` SAVE arm
+/// that `render_fire` routes through `effect_drain_place`. (Note this is
+/// NARROWER than `is_effectful_io`, which ALSO counts effectful LOADs — those
+/// have `output.is_some()` and are not saves.)
 /// The drained datum is the FIRST `ArgBinding::Data` input (the symbol whose
 /// bytes stream out USART1): `fe_emit(spk_out[frame])` →`spk_out`,
 /// `rf_transmit(bt_out[frame])` →`bt_out`. A save whose argument is not a
@@ -717,7 +719,7 @@ fn collect_loaded_symbols(
 /// by `data_decl_order` index, exactly as the INPUT side does, so slice D
 /// concatenates the per-saver files into `reference.bin` order.
 ///
-/// # File-var asymmetry (LOAD-BEARING — see [`WorkerPlan::capture_file_var`])
+/// # File-var asymmetry (LOAD-BEARING — see [`OutputCapture::file_var`])
 ///
 /// * **Exactly one saver** (02-split-add `host`): var = `uartFile`,
 ///   byte-identical to the pre-TASK-0049.10.05 `.resc` so the
