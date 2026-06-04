@@ -1010,6 +1010,16 @@ Examples added later must justify which orthogonal axis they cover —
 either a new algorithmic dependency pattern *or* a new scheduling
 challenge. No "kitchen sink" examples.
 
+The table above is the curated *driving* set (examples 1–14). Per the
+"added later" clause, `examples/` has since grown to **21** directories:
+examples 15–21 (transpose, jacobi, spmv, multigather,
+histogram-unconstrained, index-cast-permute, jacobi-converge) are later
+extensions, each covering an orthogonal axis not reached by 1–14. They
+are not driving examples and are intentionally absent from the table
+above; the README example-count gate (`just check-readme-counts`)
+polices the README claim against the on-disk directory count, not this
+curated §9 table.
+
 ## 10. Validation
 
 Cross-(schedule × backend) differential testing is the central
@@ -1081,7 +1091,7 @@ For each `(algorithm, schedule, tier-3 backend, target shim)` quad:
 Tier 3's CI cost drops sharply once Renode is in the loop: no
 hardware needed, no per-runner setup beyond the Renode container.
 Multi-worker tier-3 schedules (workers on different MCUs connected
-over SPI or Ethernet) become CI-testable in the same loop — Renode
+over UART) become CI-testable in the same loop — Renode
 can co-simulate them.
 
 ### 10.4 What's load-bearing
@@ -1130,7 +1140,7 @@ remaining tiers become engineering exercises whose detail comes later.
   `reuse` loop option works. Examples 5–7 benefit measurably. Full
   tier-1 matrix still green.
 - **M6 — Full tier-1 matrix.** Remaining tier-1 backends from §7.1.
-  All 12 algorithms × required schedules × all tier-1 backends.
+  All 14 §9 driving examples × required schedules × all tier-1 backends.
 
 ### Tier 2 — HPC cluster (scoped, not designed)
 
@@ -1149,7 +1159,7 @@ remaining tiers become engineering exercises whose detail comes later.
   workloads). Single-MCU at first.
 - **M11 — Multi-MCU Renode.** A tier-3 schedule with workers spread
   across two co-simulated MCUs (e.g. master STM32 + sensor STM32
-  connected over SPI). Validates that the multi-worker embedded
+  connected over UART). Validates that the multi-worker embedded
   story is more than theoretical. Hardware-in-the-loop remains a
   stretch goal, not a milestone.
 
@@ -1271,7 +1281,7 @@ What the justfile is **not**:
   `compute_partition_bounds_with_dim_prefix` (transfer_inject/partition);
   see TASK-0424 for the doc-vs-code reconciliation that produced this
   wording and the advisory `NUC_TRACE` diagnostic on the fallback.
-- **Source single-file rule vs. example count.** 12 examples × N
+- **Source single-file rule vs. example count.** 21 examples × N
   schedules is fine. If we ever need shared code across examples or
   across schedules of one example, reconsider — but not before then.
 - **Schedule completeness checking.** A schedule that omits placement
