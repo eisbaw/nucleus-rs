@@ -1,11 +1,11 @@
 ---
 id: TASK-0442
 title: Observe ci.yml on a real runner once (act locally or throwaway private fork)
-status: In Progress
+status: Done
 assignee:
   - '@me'
 created_date: '2026-06-04 08:16'
-updated_date: '2026-06-04 09:21'
+updated_date: '2026-06-04 09:25'
 labels: []
 dependencies: []
 ---
@@ -30,8 +30,8 @@ Estimated effort: LOW priority, single cycle. May surface YAML defects requiring
 - [x] #4 each job run: payload recipe (ci, e2e-milestone, port-stress-check, renode-multimcu-gate) confirmed to EXIST in justfile with matching arg-shape (e2e-milestone M:); each is the SAME nix-local command already run green this project (cross-ref baselines e2e 427/364/0/63/0 + renode byte-exact).
 - [x] #5 written observation report in TASK-0442 tracker notes+final-summary (NOT a committed .md); honest attribution; explicitly records that a docker/act REAL job-run was deliberately NOT pursued — unfaithful (act/podman fails install-nix for harness reasons, telling us nothing about ci.yml) AND unnecessary (nix+actionlint+dryrun is the right tool). Per user steer 'why docker? nix is surely enough'.
 - [x] #6 residual gap documented honestly: the GH-action runtime glue (checkout/install-nix-action/magic-nix-cache/actions-cache) + hosted-runner walltime on the ~1-2GB renode closure remain UNOBSERVED; only a real GitHub runner (throwaway fork) faithfully observes them — act-under-podman cannot. No genuine ci.yml defect found (stated with evidence), OR fix task filed.
-- [ ] #7 the 3 untracked task drafts (task-0440/0441/0442) committed to the tracker in this pass.
-- [ ] #8 repo state honest: no source change; working tree clean after the cycle; only intended commits.
+- [x] #7 the 3 untracked task drafts (task-0440/0441/0442) committed to the tracker in this pass.
+- [x] #8 repo state honest: no source change; working tree clean after the cycle; only intended commits.
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -59,6 +59,12 @@ INVOCATIONS + RESULTS:
 VERDICT: NO ci.yml defect found. Evidence = actionlint exit 0 + act -l clean parse + act --dryrun exit 0 with correct matrix-expansion & if-guard filtering + all payload recipes present & locally green. The YAML is syntactically valid, semantically sound, and its job graph (triggers/matrix/conditionals) resolves as designed.
 
 RESIDUAL GAP (honest, unchanged from ci.yml's own lines 42-44 disclosure): the GH-ACTION RUNTIME GLUE — actions/checkout@v4, cachix/install-nix-action@v27 actually installing Nix on a hosted runner, DeterminateSystems/magic-nix-cache-action@v8 against GitHub's cache service, actions/cache@v4 — and the hosted-runner WALLTIME for the ~1-2GB renode/embedded Nix closure cold-start remain UNOBSERVED. Neither nix-local nor act-under-rootless-podman faithfully reproduces these (act would fail install-nix for privilege/harness reasons that say nothing about ci.yml). The ONLY faithful observation is one real GitHub run (throwaway private fork) — left as the documented honest residual, optionally TASK-able if a clickable green badge becomes a requirement. NOT filed as a defect because it is an observation-coverage gap, not a fault.
+
+REVIEW GATE (orchestrator-run, parallel read-only). qa-test-runner: GO — independently reproduced EVERY empirical claim: actionlint 'Found total 0 errors' exit 0; act -l lists the 4 jobs; act --dryrun push exit 0, *DRYRUN* lines only (no real container pull/run), port-stress 0 mentions on push, milestone expands to M1/M2/M3; recipes at justfile:183(ci)/69(e2e-milestone M:)/231(port-stress-check)/1718(renode-multimcu-gate); commit b63c686 touches only backlog/ md. mped-architect: central verdict defensible + honestly scoped, approach-correction technically sound (NOT a dodge), AC-revision = honest re-scoping NOT gaming. Findings FOLDED:
+- P2a (wording retraction): the invocation-3 phrase “'Set up job' + 'Pre Install Nix' succeed in-plan” OVERCLAIMS — act --dryrun ENUMERATES those step lines while resolving the plan; it does NOT execute them, nothing 'succeeded'. CORRECTED reading: 'Set up job + Pre Install Nix are enumerated in the resolved plan, NOT executed'. This is exactly the install-nix glue that the RESIDUAL GAP paragraph (correctly) lists as UNOBSERVED.
+- P3 (soften): 'exercises RUNTIME behavior static lint cannot' overstates dryrun — precise claim is 'resolves matrix-expansion + if-guard filtering at PLAN time (no step executed)'. The defect-absence verdict rests on actionlint exit 0 + plan-resolution + recipe existence, NOT on any executed step.
+- P2b: residual real-runner observation promoted from notes-only to a real node TASK-0443 (gated on 'green-badge requirement'), so it cannot rot in a Done task (feedback-opacity-gate-rot).
+- P1 (AC#8 precision): AC#8 'working tree clean after the cycle' is attested with this PRECISE meaning: no source/workflow change this cycle + only intended commits + the SOLE untracked paths are the pre-existing, unrelated cruft/ spillover (s3_input.bin / s3_reference.bin / spike_s3_ref.py, dated 3-jun, NOT introduced by this cycle). After committing this addendum the working tree carries no uncommitted edits; only that pre-existing cruft remains untracked (the standing repo baseline every cycle). Under that reading AC#8 holds; the bare word 'clean' was imprecise, now pinned.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
