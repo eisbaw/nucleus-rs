@@ -1,11 +1,11 @@
 ---
 id: TASK-0445
 title: M8 mpi-nonblocking into the counted e2e matrix (async cells)
-status: In Progress
+status: Done
 assignee:
   - '@mark'
 created_date: '2026-06-04 10:52'
-updated_date: '2026-06-04 23:22'
+updated_date: '2026-06-04 23:29'
 labels:
   - M8
   - backend
@@ -24,9 +24,9 @@ Extend TASK-0444's mpi tier to the M8 mpi-nonblocking backend. Today mpi-nonbloc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mpi-nonblocking added to mpi_backends; just e2e-mpi runs both mpi backends' declared cells byte-exact vs reference.bin
-- [ ] #2 async-only schedules (05/distributed-2d w<->w halo, 09/pipelined host-excluding barrier, 11/pipelined) counted; dual eager/rendezvous concern noted (e2e uses default eager — forced-rendezvous stays in check-mpi-nonblocking)
-- [ ] #3 default just e2e unchanged; --with-mpi still hard-fails without mpiexec
+- [x] #1 mpi-nonblocking added to mpi_backends; just e2e-mpi runs both mpi backends' declared cells byte-exact vs reference.bin
+- [x] #2 async-only schedules (05/distributed-2d w<->w halo, 09/pipelined host-excluding barrier, 11/pipelined) counted; dual eager/rendezvous concern noted (e2e uses default eager — forced-rendezvous stays in check-mpi-nonblocking)
+- [x] #3 default just e2e unchanged; --with-mpi still hard-fails without mpiexec
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -39,4 +39,8 @@ PLAN (cycle, orchestrator-direct per TASK-0444 precedent + feedback-spawned-agen
 PROOF 1 OBSERVED (orchestrator-run just e2e-mpi via nix develop, full log /tmp/e2e-mpi-0445.log): 7 cells, total:7 pass:7 fail:0 skipped:0 required-fail:0 EXIT=0. The 4 NEW mpi-nonblocking async cells all byte-exact vs reference.bin: 05-stencil/distributed (n=5, 17.9s), 05-stencil/distributed-2d (n=5 w<->w halo, 19.1s), 09-producer-consumer/pipelined (n=3 host-excluding sub-comm barrier, 17.8s), 11-game-of-life/pipelined (n=2, 17.9s); plus the 3 pre-existing mpi-blocking cells still PASS. Harness diffs each run.sh output against reference.bin so PASS == byte-exact. PROOF 2 (default just e2e == 427 baseline) IN PROGRESS — confirmed planner reports "running 427 cell(s)" (mpi cells correctly OUT of default scope), awaiting totals.
 
 PROOF 2 OBSERVED (orchestrator-run default just e2e via nix develop, log /tmp/e2e-default-0445.log): planner "running 427 cell(s)" then total:427 pass:364 fail:0 skipped:63 required-fail:0 EXIT=0 — IDENTICAL to the recorded 427/364/0/63/0 baseline. The 7 mpi cells stayed OUT of default scope (orthogonal --with-mpi axis via is_mpi_backend/active_backends, TASK-0444 machinery). cargo test -p e2e 100+1+1 pass (extended tier-2 manifest pin with M8 mpi-nonblocking sibling assertion); cargo clippy -p e2e --all-targets clean. AC#1/#2/#3 all met by observation. Proceeding to commit + mandatory parallel review gate (qa-test-runner + mped-architect).
+
+REVIEW GATE (parallel read-only, on commit e78fe4e): qa-test-runner GO — cargo test -p e2e 102/0 (x2 samples, non-flaky), clippy clean, release build OK, all 4 declared cell example+schedule+reference files exist on disk, test cell tuples match toml exactly (no drift). mped-architect GO with doc-accuracy findings. DISPOSITION: P3 (1D vs 2D halo overstatement) + P3 (stale mpi-blocking-only help/error strings in main.rs) ACCEPTED+folded in commit 4aaea21. P2 (architect: "09/pipelined is not a host-excluding barrier") REJECTED as empirically refuted: the barrier is COMPILER-INJECTED (emitted target/mpi-m8/09.../src/main.rs:146 world.split_by_color over ranks{1,2}=producer,consumer EXCLUDING host rank 0, then sub-comm barrier), NOT a schedule-surface notify=barrier; AC#2 + recipe comment + memory were all correct. Architect made the feedback-implementer-disclosure-mechanism-wrong reviewer-subagent error (inferred absence from the DSL surface). Verified BOTH halo claims empirically too: 1D distributed = host-star (8 worker channels all peer rank0); 2D distributed = genuine w<->w (worker arms build channels to other worker ranks). Post-fold gate: cargo test -p e2e 102 pass, clippy clean, toml decodes. Heavy e2e NOT re-run for the doc-only fold (zero codegen/cell-count impact).
+
+FINAL: mpi-nonblocking is now a COUNTED e2e differential backend (M8) — the matrix is 9-of-9 backends (only embedded-pattern stays out by design via renode-multimcu-gate). Pure toml + test-pin change; ZERO harness change (mpi-nonblocking render_run_sh is the same mpiexec -n N / default-ranks path as mpi-blocking, so TASK-0444 --with-mpi machinery covers it). 4 new [[required]] M8 cells (05-stencil/distributed{,-2d}, 09-producer-consumer/pipelined, 11-game-of-life/pipelined) declared + pinned in the tier-2 manifest test. VERIFIED (orchestrator-run, both observed): just e2e-mpi 7/7 PASS byte-exact required-fail:0 exit0 (3 mpi-blocking + 4 mpi-nonblocking async); default just e2e 427/364/0/63/0 exit0 UNCHANGED (mpi out of default scope). Both reviewers GO; P3 doc folds in 4aaea21; architect P2 empirically refuted (injected sub-comm barrier is real). Commits e78fe4e + 4aaea21.
 <!-- SECTION:NOTES:END -->
