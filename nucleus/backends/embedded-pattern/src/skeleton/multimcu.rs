@@ -120,8 +120,9 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
     // The seq -> USART base lookup (both link_push and link_recv consult it).
     s.push_str(
         "/// Map a cross-worker transport channel (`SeqTag`) to the USART it\n\
-         /// rides on for THIS worker (one USART per peer; computed by the\n\
-         /// host-side TransportPlan so it matches the generated .resc).\n\
+         /// rides on for THIS worker (one DEDICATED USART per channel/seq,\n\
+         /// TASK-0049.05.02; computed by the host-side TransportPlan so it\n\
+         /// matches the generated .resc).\n\
          fn mmcu_link_base(seq: usize) -> usize {\n    match seq {\n",
     );
     for (seq, usart) in &plan.seq_usart {
@@ -132,9 +133,10 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
     }
     // The `_` arm is UNREACHABLE by construction: every `seq` reaching
     // link_push/link_recv was registered in this table at codegen (the
-    // host-side TransportPlan::map_seqs walks the SAME events that emit the
-    // Push/Wait). A hit here is a nucleus codegen bug, never valid input —
-    // so a panic (a brick on bare metal) is the correct invariant guard.
+    // host-side TransportPlan::build collect_seqs walks the SAME events that
+    // emit the Push/Wait). A hit here is a nucleus codegen bug, never valid
+    // input — so a panic (a brick on bare metal) is the correct invariant
+    // guard.
     s.push_str(
         "        // Unreachable: every link `seq` is registered above at codegen.\n\
          \x20       _ => panic!(\"nucleus codegen bug: no USART mapped for transport seq\"),\n    }\n}\n\n",
@@ -186,10 +188,12 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
              /// construction), then start the SysTick clock.\n    \
              fn init(&mut self) {\n",
     );
-    // Distinct link USART bases (deduped, deterministic order).
+    // Distinct link USART bases (deduped, deterministic order). One USART
+    // per channel (seq) since TASK-0049.05.02, so this enables RX on every
+    // channel's dedicated USART.
     let mut seen: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     let mut link_bases: Vec<UsartSlot> = Vec::new();
-    for u in plan.peer_usart.values() {
+    for u in plan.seq_usart.values() {
         if seen.insert(u.base) {
             link_bases.push(*u);
         }

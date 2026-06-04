@@ -443,16 +443,34 @@ fn multi_worker_bin_emits_one_firmware_per_mcu_with_real_uart_transport() {
         "w0 must lower the pure `add` compute:\n{w0}"
     );
 
-    // The generated multi-machine .resc: one UARTHub, both workers
-    // connected on the SAME peer USART (single peer => one hub), the
-    // receivers-first boot order (w0 released before host), and the host's
-    // USART1 captured (it saves output) + axiSram injection (it loads).
+    // PER-SEQ TRANSPORT (TASK-0049.05.02): one UARTHub per CHANNEL, NOT one
+    // per worker-pair. host->w0 carries TWO same-direction channels (seq0=a,
+    // seq1=b); each MUST get its OWN hub + USART so they cannot cross on a
+    // shared byte FIFO. seq2 (w0->host, c) is the third channel. So three
+    // distinct hubs, and seq0/seq1 ride DISTINCT USARTs in the link table.
     let resc_path = res.resc.expect("multi-worker emit must generate a .resc");
     let resc = std::fs::read_to_string(&resc_path).expect("read .resc");
-    assert!(resc.contains("CreateUARTHub \"link_host_w0\""), "must create the host<->w0 hub:\n{resc}");
+    for hub in ["link_host_w0_s0", "link_host_w0_s1", "link_w0_host_s2"] {
+        assert!(
+            resc.contains(&format!("CreateUARTHub \"{hub}\"")),
+            "must create the per-channel hub `{hub}`:\n{resc}"
+        );
+    }
+    // The BITE for the ex14 deadlock fix: the two SAME-DIRECTION channels
+    // (seq0=a, seq1=b, both host->w0) land on DISTINCT USARTs (usart2 vs
+    // usart3) in BOTH firmwares' mmcu_link_base tables — not the pre-fix
+    // single shared usart2 that let same-direction streams interleave.
+    for (name, src) in [("host", &host), ("w0", &w0)] {
+        assert!(
+            src.contains("0 => 0x40004400") && src.contains("1 => 0x40004800"),
+            "{name}: same-direction seq0 (a) and seq1 (b) must ride DISTINCT \
+             USARTs (usart2 0x40004400 vs usart3 0x40004800):\n{src}"
+        );
+    }
+    // Each channel's hub is Connected by BOTH endpoints (seq0 on usart2).
     assert!(
         resc.matches("connector Connect usart2").count() == 2,
-        "both workers must Connect their usart2 to the hub:\n{resc}"
+        "both workers must Connect their usart2 to the seq0 hub:\n{resc}"
     );
     assert!(resc.contains("usart1 CreateFileBackend $uartFile true"), "host USART1 must be captured:\n{resc}");
     assert!(resc.contains("sysbus LoadBinary $input 0x24000000"), "host input must inject to axiSram:\n{resc}");

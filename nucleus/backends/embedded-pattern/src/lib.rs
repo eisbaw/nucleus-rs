@@ -90,7 +90,8 @@
 //! `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (real inter-MCU
 //! UART-hub transport: `link_push` -> USART TX, `link_recv` -> blocking
 //! USART RX), PLUS a generated multi-machine `out_dir/multimcu.resc`
-//! wiring the bins on a `UARTHub` per worker-pair (see [`multimcu`]). The
+//! wiring the bins on a `UARTHub` per CHANNEL (`SeqTag`) — one dedicated
+//! byte FIFO per transport channel (TASK-0049.05.02; see [`multimcu`]). The
 //! per-worker effectful IO (`save_output` raw USART1 stream,
 //! `load_input` from the injected axiSram region) stays on its OWN
 //! channel namespace (`dma_push(0)` / `alloc_in_region`), DISJOINT from
@@ -408,8 +409,8 @@ fn emit_one_worker_lib(
 /// MULTI-WORKER SCOPE (TASK-0049.05): one bin per worker under
 /// `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (`link_push` ->
 /// USART TX, `link_recv` -> blocking USART RX), wired by the
-/// [`multimcu::TransportPlan`] (one `UARTHub` per worker-pair, receivers-
-/// first boot order), PLUS a generated `out_dir/multimcu.resc` AND an
+/// [`multimcu::TransportPlan`] (one `UARTHub` per CHANNEL/`SeqTag`,
+/// receivers-first boot order), PLUS a generated `out_dir/multimcu.resc` AND an
 /// ordered `out_dir/output_captures.txt` capture manifest. The
 /// `renode-multimcu` recipe co-simulates the bins, captures each saver
 /// worker's USART1 to its own file backend, concatenates those files in

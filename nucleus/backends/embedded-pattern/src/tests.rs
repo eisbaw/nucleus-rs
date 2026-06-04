@@ -23,6 +23,7 @@ mod bin_shape;
 mod input_offsets;
 mod output_capture;
 mod sync_guard;
+mod transport_per_seq;
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = nucleus/backends/embedded-pattern. Three

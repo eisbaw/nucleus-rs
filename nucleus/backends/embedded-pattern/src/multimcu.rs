@@ -9,11 +9,17 @@
 //! ([`render_multimachine_resc`]) must agree on:
 //!
 //!   * which USART each cross-worker channel (`SeqTag`) rides on, per
-//!     worker (the shim's `link_push`/`link_recv` seq->USART table);
-//!   * one `UARTHub` per worker-PAIR that shares any transport edge
-//!     (Renode's UARTHub is a BROADCAST bus — a dedicated hub per pair
-//!     keeps point-to-point traffic collision-free, and the 9 USARTs the
-//!     stm32h743 platform models give ample fan-out);
+//!     worker (the shim's `link_push`/`link_recv` seq->USART table) — ONE
+//!     dedicated USART per `SeqTag` (TASK-0049.05.02), NOT shared per peer;
+//!   * one `UARTHub` per CHANNEL (`SeqTag`) (Renode's UARTHub is a
+//!     BROADCAST bus — a dedicated hub per channel keeps every transport
+//!     stream on its OWN byte FIFO, so two SAME-DIRECTION channels between
+//!     one worker pair can never interleave/cross on a shared FIFO; the 9
+//!     USARTs the stm32h743 platform models give ample fan-out for the
+//!     channel counts these schedules use — `usart1` minus the 8-slot pool
+//!     below). A worker using more than 8 distinct channels fails loud;
+//!     scaling past that needs per-seq framing on a shared FIFO
+//!     (TASK-0049.05.02 follow-up);
 //!   * a receivers-first BOOT ORDER so the
 //!     receiver-RX-enabled-before-sender-TX start-gating discipline
 //!     (TASK-0049.01: Renode's `UARTBase.WriteChar` DROPS bytes that
@@ -48,8 +54,10 @@ pub(crate) struct UsartSlot {
 /// The cross-worker transport USART pool, in deterministic allocation
 /// order. `usart1` (0x4001_1000) is DELIBERATELY ABSENT — it is the
 /// effectful-output capture channel. Eight slots; a worker needing more
-/// than eight DISTINCT peers fails loud (a real STM32H743 has exactly
-/// these UARTs).
+/// than eight DISTINCT CHANNELS (`SeqTag`s) fails loud (a real STM32H743
+/// has exactly these UARTs). Each channel gets its OWN slot so two
+/// same-direction channels cannot cross on one shared byte FIFO
+/// (TASK-0049.05.02).
 pub(crate) const TRANSPORT_USARTS: [UsartSlot; 8] = [
     UsartSlot { renode_name: "usart2", base: 0x4000_4400 },
     UsartSlot { renode_name: "usart3", base: 0x4000_4800 },
@@ -67,13 +75,15 @@ pub(crate) struct WorkerPlan {
     pub worker: WorkerId,
     pub name: String,
     /// `SeqTag.0` -> the USART that channel rides on, for THIS worker. Both
-    /// `link_push(seq)` and `link_recv(seq)` consult it. (All channels to
-    /// the same peer share that peer's USART; opposite directions on one
-    /// hub never temporally overlap in the pipeline schedules.)
+    /// `link_push(seq)` and `link_recv(seq)` consult it, AND it drives the
+    /// worker's `connector Connect` lines in the `.resc`. INJECTIVE: every
+    /// distinct channel (`SeqTag`) gets its OWN dedicated USART
+    /// (TASK-0049.05.02), so two channels — even two in the SAME direction
+    /// between one worker pair — never share a byte FIFO and cannot
+    /// interleave/cross. (Before TASK-0049.05.02 this grouped channels by
+    /// PEER, which let `fe`'s two same-direction sends to `dsp` collide on
+    /// one FIFO and starve the downstream worker — the ex14 deadlock.)
     pub seq_usart: BTreeMap<u64, UsartSlot>,
-    /// Distinct peers -> the USART this worker uses to talk to that peer.
-    /// Drives the worker's `connector Connect` lines in the `.resc`.
-    pub peer_usart: BTreeMap<WorkerId, UsartSlot>,
     /// This worker performs an effectful load (`a <-- load_input()` OR the
     /// per-frame indexed `mic_in[frame] <-- fe_capture()`) — its machine
     /// gets `$input` injected into axiSram.
@@ -140,14 +150,18 @@ pub(crate) struct OutputCapture {
     pub file_var: String,
 }
 
-/// One inter-MCU `UARTHub`, wiring exactly two workers. The USART each
-/// endpoint Connects with is the worker's own `peer_usart[other]` (the
-/// single source of truth), so the hub only needs the worker-pair + name.
+/// One inter-MCU `UARTHub`, dedicated to exactly ONE channel (`SeqTag`).
+/// Both endpoints Connect their own `seq_usart[seq]` (the single source of
+/// truth) to this hub keyed by `seq`, so the hub only needs the channel
+/// `seq` + a name (the name already encodes sender→receiver via the two
+/// worker names). One hub per channel (TASK-0049.05.02) keeps each
+/// transport stream on its own byte FIFO.
 #[derive(Debug, Clone)]
 pub(crate) struct Hub {
     pub name: String,
-    pub a: WorkerId,
-    pub b: WorkerId,
+    /// The channel (`SeqTag.0`) this hub carries — its dedicated FIFO. Both
+    /// the `.resc` connect lines and the per-worker `seq_usart` join on it.
+    pub seq: u64,
 }
 
 /// The whole-schedule transport plan, shared by the shim codegen and the
@@ -156,7 +170,8 @@ pub(crate) struct Hub {
 pub(crate) struct TransportPlan {
     /// Per used worker, in `WorkerId` order.
     pub workers: BTreeMap<WorkerId, WorkerPlan>,
-    /// One hub per worker-pair sharing any edge, in deterministic order.
+    /// One hub per CHANNEL (`SeqTag`), in ascending `seq` order
+    /// (TASK-0049.05.02).
     pub hubs: Vec<Hub>,
     /// Receivers-first release order for the `.resc` start-gating.
     pub boot_order: Vec<WorkerId>,
@@ -204,28 +219,33 @@ impl TransportPlan {
                 ))
             })?;
 
-            // Distinct peers, in WorkerId order, get USART slots in order.
-            let mut peers: BTreeSet<WorkerId> = BTreeSet::new();
-            collect_peers(evs, &mut peers);
-            if peers.len() > TRANSPORT_USARTS.len() {
+            // Distinct CHANNELS (seqs), in ascending seq order, each get
+            // their OWN USART slot (TASK-0049.05.02). A per-seq (not
+            // per-peer) assignment is the ONLY correct unit: two channels in
+            // the SAME direction between one worker pair (ex14 `fe`→`dsp`
+            // seq0 + seq2) MUST land on distinct byte FIFOs or they
+            // interleave on the receiver's single RX FIFO and the streams
+            // cross (the ex14 deadlock — rf starved at frame 3).
+            let mut seqs: BTreeSet<u64> = BTreeSet::new();
+            collect_seqs(evs, &mut seqs);
+            if seqs.len() > TRANSPORT_USARTS.len() {
                 return Err(EmitError::UnsupportedFeature(format!(
-                    "worker `{name}` has {} distinct cross-MCU peers but the \
-                     STM32H743 platform models only {} transport USARTs \
-                     (usart1 is reserved for the output-capture stream). A \
-                     denser interconnect needs a different transport topology \
-                     (TASK-0049.05).",
-                    peers.len(),
+                    "worker `{name}` uses {} distinct cross-MCU transport \
+                     channels (seqs) but the STM32H743 platform models only \
+                     {} transport USARTs (usart1 is reserved for the \
+                     output-capture stream). Each channel needs its OWN USART \
+                     so same-direction multi-seq cannot cross on a shared byte \
+                     FIFO (TASK-0049.05.02); scaling past 8 channels needs \
+                     per-seq framing on a shared FIFO (TASK-0049.05.02 \
+                     follow-up).",
+                    seqs.len(),
                     TRANSPORT_USARTS.len()
                 )));
             }
-            let mut peer_usart: BTreeMap<WorkerId, UsartSlot> = BTreeMap::new();
-            for (i, p) in peers.iter().enumerate() {
-                peer_usart.insert(*p, TRANSPORT_USARTS[i]);
-            }
-
-            // Map each channel (seq) to its peer's USART.
             let mut seq_usart: BTreeMap<u64, UsartSlot> = BTreeMap::new();
-            map_seqs(evs, &peer_usart, &mut seq_usart);
+            for (i, s) in seqs.iter().enumerate() {
+                seq_usart.insert(*s, TRANSPORT_USARTS[i]);
+            }
 
             // OUTPUT-capture symbols this worker drains (TASK-0049.10.05).
             // `saves_output` is derived from this so the two cannot drift.
@@ -238,7 +258,6 @@ impl TransportPlan {
                     worker: *w,
                     name,
                     seq_usart,
-                    peer_usart,
                     loads_input: has_effectful_load(evs, sidecar)?,
                     saves_output: !saved_outputs.is_empty(),
                     saved_outputs,
@@ -254,36 +273,53 @@ impl TransportPlan {
         // `.resc` generator reads it directly.
         let output_captures = compute_output_capture(&workers, sidecar)?;
 
-        // One hub per unordered worker-pair that shares an edge. Each
-        // endpoint uses its own assigned USART for the peer (they need not
-        // be the same index — `connector Connect` joins both to the hub).
+        // One hub per CHANNEL (seq), wiring its Push sender to its Wait
+        // receiver (TASK-0049.05.02). Each endpoint Connects its own
+        // `seq_usart[seq]` (they need not be the same index — `connector
+        // Connect` joins both to the hub). Endpoints are read GLOBALLY: a
+        // `SeqTag` is unique program-wide (event.rs: single monotonic
+        // counter) with exactly one Push sender and one Wait receiver, so
+        // each seq maps to exactly one (sender, receiver) pair.
+        let mut seq_endpoints: BTreeMap<u64, SeqEndpoints> = BTreeMap::new();
+        for w in &used {
+            let evs = per_worker.get(w).map(Vec::as_slice).unwrap_or(&[]);
+            collect_seq_endpoints(*w, evs, &mut seq_endpoints)?;
+        }
         let mut hubs: Vec<Hub> = Vec::new();
-        let mut seen_pairs: BTreeSet<(WorkerId, WorkerId)> = BTreeSet::new();
-        for (w, plan) in &workers {
-            for peer in plan.peer_usart.keys() {
-                let (a, b) = if w < peer { (*w, *peer) } else { (*peer, *w) };
-                if !seen_pairs.insert((a, b)) {
-                    continue;
-                }
-                // Fail loud on a one-sided edge: the peer must carry a
-                // matching Push/Wait (so it has a USART assigned back to us).
-                for (x, y) in [(a, b), (b, a)] {
-                    if workers.get(&x).and_then(|p| p.peer_usart.get(&y)).is_none() {
-                        return Err(EmitError::ContractGap(format!(
-                            "transport edge {a:?}<->{b:?} is one-sided: worker \
-                             {x:?} has no matching Push/Wait with {y:?} \
-                             (TASK-0049.05)"
-                        )));
-                    }
-                }
-                let na = &workers[&a].name;
-                let nb = &workers[&b].name;
-                hubs.push(Hub {
-                    name: format!("link_{na}_{nb}"),
-                    a,
-                    b,
-                });
-            }
+        for (seq, ep) in &seq_endpoints {
+            // Fail loud on a one-sided channel: a Push with no matching Wait
+            // (or vice versa) would deadlock the receiver / drop the sender's
+            // bytes — never silently emit it.
+            let sender = ep.sender.ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "transport channel seq {seq} has a Wait (receiver) but no \
+                     matching Push (sender) — one-sided channel \
+                     (TASK-0049.05.02)"
+                ))
+            })?;
+            let receiver = ep.receiver.ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "transport channel seq {seq} has a Push (sender) but no \
+                     matching Wait (receiver) — one-sided channel \
+                     (TASK-0049.05.02)"
+                ))
+            })?;
+            let na = workers.get(&sender).map(|p| p.name.as_str()).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "transport channel seq {seq} sender {sender:?} has no \
+                     WorkerPlan/name (TASK-0049.05.02)"
+                ))
+            })?;
+            let nb = workers.get(&receiver).map(|p| p.name.as_str()).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "transport channel seq {seq} receiver {receiver:?} has no \
+                     WorkerPlan/name (TASK-0049.05.02)"
+                ))
+            })?;
+            hubs.push(Hub {
+                name: format!("link_{na}_{nb}_s{seq}"),
+                seq: *seq,
+            });
         }
 
         let boot_order = compute_boot_order(per_worker, &used);
@@ -297,45 +333,81 @@ impl TransportPlan {
     }
 }
 
-/// Collect the distinct peer workers a worker talks to (Push `dst` / Wait
-/// `src`), recursing into loop bodies.
-fn collect_peers(events: &[Event], out: &mut BTreeSet<WorkerId>) {
+/// Collect the distinct CHANNELS (`SeqTag.0`) a worker participates in (as
+/// a Push sender or a Wait receiver), recursing into loop bodies. Each
+/// distinct seq gets its OWN USART/hub (TASK-0049.05.02) so same-direction
+/// multi-seq cannot cross on a shared byte FIFO.
+fn collect_seqs(events: &[Event], out: &mut BTreeSet<u64>) {
     for e in events {
         match e {
-            Event::Push { dst, .. } => {
-                out.insert(*dst);
+            Event::Push { seq, .. } | Event::Wait { seq, .. } => {
+                out.insert(seq.0);
             }
-            Event::Wait { src, .. } => {
-                out.insert(*src);
-            }
-            Event::Loop { body, .. } => collect_peers(body, out),
+            Event::Loop { body, .. } => collect_seqs(body, out),
             _ => {}
         }
     }
 }
 
-/// Map every channel `seq` this worker uses to its peer's assigned USART.
-fn map_seqs(
+/// The two endpoints of one channel: the worker that PUSHes (sends) and the
+/// worker that WAITs (receives). A `SeqTag` is unique program-wide with
+/// exactly one of each, so both slots fill exactly once; a duplicate sender
+/// or receiver is a contract violation and fails loud in
+/// [`collect_seq_endpoints`].
+#[derive(Default, Clone, Copy)]
+struct SeqEndpoints {
+    sender: Option<WorkerId>,
+    receiver: Option<WorkerId>,
+}
+
+/// Record worker `w`'s Push/Wait events into the global per-seq endpoint
+/// map, walking the STATIC event tree once (recursing into loop bodies).
+/// Fails loud if a seq gets TWO distinct senders or TWO distinct receivers
+/// (a `SeqTag` must have exactly one Push and one Wait — see `event.rs`).
+/// If the same seq appears more than once in ONE worker's static event
+/// list (e.g. a Push inside a loop body), the re-assertion is idempotent
+/// because `prev == w` (same worker) — only a DIFFERENT worker claiming the
+/// same role trips the guard.
+fn collect_seq_endpoints(
+    w: WorkerId,
     events: &[Event],
-    peer_usart: &BTreeMap<WorkerId, UsartSlot>,
-    out: &mut BTreeMap<u64, UsartSlot>,
-) {
+    out: &mut BTreeMap<u64, SeqEndpoints>,
+) -> Result<(), EmitError> {
     for e in events {
         match e {
-            Event::Push { dst, seq, .. } => {
-                if let Some(u) = peer_usart.get(dst) {
-                    out.insert(seq.0, *u);
+            Event::Push { seq, .. } => {
+                let ep = out.entry(seq.0).or_default();
+                if let Some(prev) = ep.sender {
+                    if prev != w {
+                        return Err(EmitError::ContractGap(format!(
+                            "transport channel seq {} has two distinct Push \
+                             senders ({prev:?} and {w:?}); a SeqTag must have \
+                             exactly one sender (TASK-0049.05.02)",
+                            seq.0
+                        )));
+                    }
                 }
+                ep.sender = Some(w);
             }
-            Event::Wait { src, seq, .. } => {
-                if let Some(u) = peer_usart.get(src) {
-                    out.insert(seq.0, *u);
+            Event::Wait { seq, .. } => {
+                let ep = out.entry(seq.0).or_default();
+                if let Some(prev) = ep.receiver {
+                    if prev != w {
+                        return Err(EmitError::ContractGap(format!(
+                            "transport channel seq {} has two distinct Wait \
+                             receivers ({prev:?} and {w:?}); a SeqTag must \
+                             have exactly one receiver (TASK-0049.05.02)",
+                            seq.0
+                        )));
+                    }
                 }
+                ep.receiver = Some(w);
             }
-            Event::Loop { body, .. } => map_seqs(body, peer_usart, out),
+            Event::Loop { body, .. } => collect_seq_endpoints(w, body, out)?,
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// A worker has an effectful LOAD iff any of its `Fire`s is an effectful
@@ -1124,8 +1196,10 @@ pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
         "# GENERATED multi-machine Renode script (embedded-pattern, M11 BIN).\n\
          # Do not edit; rerun `nucleus build --shim stm32h7` on a multi-worker\n\
          # schedule to regenerate. One machine per worker, wired by a UARTHub\n\
-         # per worker-pair (Renode's UARTHub is a broadcast bus; a dedicated\n\
-         # hub per pair keeps point-to-point transport collision-free).\n\
+         # per CHANNEL (SeqTag) (Renode's UARTHub is a broadcast bus; a\n\
+         # dedicated hub per channel keeps every transport stream on its own\n\
+         # byte FIFO, so two same-direction channels between one worker pair\n\
+         # never cross — TASK-0049.05.02).\n\
          #\n\
          # START-GATING (load-bearing, TASK-0049.01): Renode's\n\
          # UARTBase.WriteChar DROPS bytes that arrive before the receiver\n\
@@ -1134,7 +1208,7 @@ pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
          # every receiver is RX-enabled before any peer transmits to it.\n\n",
     );
 
-    // 1. One UARTHub per worker-pair.
+    // 1. One UARTHub per channel (seq).
     for h in &plan.hubs {
         writeln!(s, "emulation CreateUARTHub \"{}\"", h.name).ok();
     }
@@ -1144,13 +1218,11 @@ pub(crate) fn render_multimachine_resc(plan: &TransportPlan) -> String {
     for plan_w in plan.workers.values() {
         writeln!(s, "mach create \"{}\"", plan_w.name).ok();
         s.push_str("machine LoadPlatformDescription @platforms/cpus/stm32h743.repl\n");
-        // Connect this worker's USART for each peer to that pair's hub.
-        for (peer, usart) in &plan_w.peer_usart {
-            if let Some(h) = plan
-                .hubs
-                .iter()
-                .find(|h| (h.a == plan_w.worker && h.b == *peer) || (h.b == plan_w.worker && h.a == *peer))
-            {
+        // Connect this worker's USART for each CHANNEL (seq) to that
+        // channel's dedicated hub (TASK-0049.05.02). `seq_usart` is injective
+        // so each connect targets a distinct USART + distinct hub.
+        for (seq, usart) in &plan_w.seq_usart {
+            if let Some(h) = plan.hubs.iter().find(|h| h.seq == *seq) {
                 writeln!(s, "connector Connect {} {}", usart.renode_name, h.name).ok();
             }
         }
