@@ -642,18 +642,21 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     //
     // Factored into `gate::gate_per_worker_for_dispatch` so the reject
     // arm is unit-testable (it is undriveable from any real `.nuc`
-    // source — the corpus is contract-clean — so before the carve-out a
-    // refactor could have silently dropped this gate and every test +
-    // e2e would still pass). The order (accumulator THEN validate), the
-    // error strings, and the `?`-propagation are byte-preserved by the
-    // extraction; see that fn's docstring for the full rationale and the
-    // honest residual (this call line itself is not test-proven to
-    // execute — only the extracted gate fn is). ONE site, all 7 backends.
-    gate::gate_per_worker_for_dispatch(&linked.algo, &per_worker, &sidecar, &names.data)?;
+    // source — the corpus is contract-clean). The order (accumulator
+    // THEN validate), the error strings, and the `?`-propagation are
+    // byte-preserved by the extraction; see that fn's docstring for the
+    // full rationale. This call line is now COMPILE-TIME load-bearing
+    // (TASK-0440): it yields the `GatedPerWorker` witness that
+    // `dispatch_backend` requires, so deleting/bypassing the gate makes
+    // the driver fail to BUILD — a strictly stronger guarantee than the
+    // earlier "one visible call site" structural argument. ONE site, all
+    // 7 backends.
+    let gated =
+        gate::gate_per_worker_for_dispatch(&linked.algo, &per_worker, &sidecar, &names.data)?;
 
     dispatch::dispatch_backend(
         &backend,
-        &per_worker,
+        gated,
         &names,
         &sidecar,
         &kernels_path,

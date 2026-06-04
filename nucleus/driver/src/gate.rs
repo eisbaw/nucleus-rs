@@ -11,23 +11,65 @@
 //! docstrings). Naming the gate fn turns the `cmd_build` call into a
 //! single visible line and makes the reject arm drivable from a test.
 //!
-//! HONEST RESIDUAL (TASK-0422.02): this extraction proves the gate
-//! COMPOSITION rejects an inv(2)-violating EventList, and reduces the
-//! `cmd_build`-side risk to one greppable call line. It does NOT prove
-//! that literal call line in `cmd_build` still executes — a refactor
-//! that deleted `gate::gate_per_worker_for_dispatch(...)?` would still
-//! pass every test (unit + e2e). The ONLY way to prove the literal
-//! invocation is a `#[cfg(test)]`-gated fault-injection hook in the
-//! production hot path, which this project's maintainability standards
-//! disfavor; it was deliberately NOT added. The structural argument
-//! (one visible call site) + e2e-green remain the live correctness
-//! evidence; this test guards the EXTRACTED gate against regressing to a
-//! no-op composition.
+//! WITNESS-CLOSED RESIDUAL (TASK-0440): the TASK-0422.02 extraction
+//! proved the gate COMPOSITION rejects an inv(2)-violating EventList and
+//! reduced the `cmd_build`-side risk to one greppable call line, but it
+//! could NOT prove that literal call line in `cmd_build` still EXECUTES
+//! — a refactor that deleted `gate::gate_per_worker_for_dispatch(...)?`
+//! would still pass every test (unit + e2e). TASK-0422.02 recorded this
+//! as an "honest residual" and claimed the ONLY way to close it was a
+//! `#[cfg(test)]`-gated fault-injection hook in the production hot path,
+//! deliberately declined on maintainability grounds.
+//!
+//! That claim was INCOMPLETE. The residual is now CLOSED by a
+//! COMPILE-TIME WITNESS ([`GatedPerWorker`], TASK-0440): the gate fn
+//! returns a token whose ONLY constructor is the gate's own success
+//! path, and `dispatch::dispatch_backend` consumes that token INSTEAD of
+//! a bare `&per_worker`. Deleting or bypassing the `cmd_build` gate call
+//! therefore leaves no token to dispatch with — the driver FAILS TO
+//! COMPILE. This is strictly stronger than a runtime fault hook (it
+//! cannot regress even if every test were deleted) and adds ZERO
+//! production-hot-path test scaffolding, resolving the exact
+//! maintainability objection TASK-0422.02 raised. The runtime gate LOGIC
+//! (that the validator actually rejects) stays proven by the unit tests
+//! below + `nucleus-compiler/tests/event_validate.rs`.
 
 use std::collections::BTreeMap;
 
 use nucleus_compiler::algo::AlgoIR;
 use nucleus_compiler::{validate_event_lists, DataId, Event, NameSidecar, WorkerId};
+
+/// Compile-time witness that the post-projection EventList gate
+/// ([`gate_per_worker_for_dispatch`]) RAN and ACCEPTED `per_worker`
+/// (TASK-0440).
+///
+/// The `per_worker` field is PRIVATE and there is no `pub` constructor,
+/// so no module outside `gate` can build one. The ONLY value of this
+/// type comes from the gate fn's success path — therefore *holding* a
+/// `GatedPerWorker` is PROOF the gate ran on that exact EventList.
+///
+/// `dispatch::dispatch_backend` takes this token instead of a bare
+/// `&BTreeMap<WorkerId, Vec<Event>>`, which makes the `cmd_build` gate
+/// call COMPILE-TIME LOAD-BEARING: deleting it leaves no token to
+/// dispatch with, so the driver fails to build. This SUPERSEDES the
+/// TASK-0422.02 "honest residual" (which declined a runtime
+/// fault-injection hook on maintainability grounds) with a stronger,
+/// zero-runtime-cost mechanism.
+///
+/// `Debug` is derived only so `Result::expect_err` (used by the reject
+/// unit test) can format the `Ok` arm; it is not relied on otherwise.
+#[derive(Debug)]
+pub(crate) struct GatedPerWorker<'a> {
+    per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
+}
+
+impl<'a> GatedPerWorker<'a> {
+    /// The gated EventList this token witnesses. Borrows for `'a`, the
+    /// same lifetime as the `per_worker` the gate accepted.
+    pub(crate) fn events(&self) -> &'a BTreeMap<WorkerId, Vec<Event>> {
+        self.per_worker
+    }
+}
 
 /// The post-projection EventList gates EVERY backend's input must pass
 /// before `dispatch::dispatch_backend`. Gated ONCE here on the FINAL
@@ -97,12 +139,18 @@ use nucleus_compiler::{validate_event_lists, DataId, Event, NameSidecar, WorkerI
 /// `cmd_build` -> process exit 1, no panic). The error strings are
 /// byte-preserved from the historical inline sequence so behavior / e2e
 /// is unchanged by the extraction.
-pub(crate) fn gate_per_worker_for_dispatch(
+///
+/// On success returns a [`GatedPerWorker`] witness (TASK-0440) that
+/// borrows the accepted `per_worker`. That token is the SOLE input
+/// `dispatch::dispatch_backend` accepts, so a caller cannot dispatch
+/// without first calling this gate — the wiring is enforced by the type
+/// system, not just by convention.
+pub(crate) fn gate_per_worker_for_dispatch<'a>(
     algo: &AlgoIR,
-    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
     sidecar: &NameSidecar,
     data_names: &BTreeMap<DataId, String>,
-) -> Result<(), String> {
+) -> Result<GatedPerWorker<'a>, String> {
     backend_common::multi_worker_walker::check_accumulator_consistency(
         algo,
         per_worker,
@@ -119,7 +167,7 @@ pub(crate) fn gate_per_worker_for_dispatch(
         )
     })?;
 
-    Ok(())
+    Ok(GatedPerWorker { per_worker })
 }
 
 #[cfg(test)]
@@ -137,10 +185,14 @@ mod tests {
     //! from real input — so this hand-built map is the only way to bite
     //! it. We do NOT fake an end-to-end `.nuc` reject (none exists).
     //!
-    //! HONEST RESIDUAL: this proves the extracted gate fn rejects; it
-    //! does NOT prove the literal `cmd_build` call line executes (see the
-    //! module docstring). The accumulator cross-check arm is a no-op on
-    //! this input (no whole-array multi-Wait), so the rejection comes
+    //! These prove the extracted gate fn rejects (runtime LOGIC). That
+    //! the literal `cmd_build` call line executes is now proven SEPARATELY
+    //! and more strongly by the [`GatedPerWorker`] compile-time witness
+    //! (TASK-0440, see the module docstring): deleting the call fails to
+    //! build. So these tests own the runtime-detection proof, the witness
+    //! owns the wired-presence proof — together they close the residual
+    //! TASK-0422.02 left open. The accumulator cross-check arm is a no-op
+    //! on this input (no whole-array multi-Wait), so the rejection comes
     //! from the `validate_event_lists` arm — which is exactly the gate
     //! TASK-0422 wired.
 
@@ -234,6 +286,48 @@ mod tests {
             gate_per_worker_for_dispatch(&algo, &m, &sidecar, &data_names).is_ok(),
             "a matched Push/Wait pair must pass the gate composition; got {:?}",
             gate_per_worker_for_dispatch(&algo, &m, &sidecar, &data_names).err()
+        );
+    }
+
+    #[test]
+    fn gate_witness_threads_event_list_through() {
+        // The GatedPerWorker witness (TASK-0440) must hand back the SAME
+        // EventList the gate accepted — `dispatch_backend` reads its
+        // `per_worker` exclusively through `gated.events()`, so a witness
+        // that returned a different/empty map would silently feed the
+        // backends the wrong contract. Pin pointer identity (same `&map`).
+        let algo = AlgoIR::default();
+        let sidecar = NameSidecar::default();
+        let data_names: BTreeMap<DataId, String> = BTreeMap::new();
+
+        let mut m = BTreeMap::new();
+        m.insert(
+            WorkerId(0),
+            vec![Event::Push {
+                dst: WorkerId(1),
+                data: DataId(3),
+                tile: IterTile::empty(),
+                seq: SeqTag(11),
+            }],
+        );
+        m.insert(
+            WorkerId(1),
+            vec![Event::Wait {
+                src: WorkerId(0),
+                data: DataId(3),
+                tile: IterTile::empty(),
+                seq: SeqTag(11),
+            }],
+        );
+
+        let gated = gate_per_worker_for_dispatch(&algo, &m, &sidecar, &data_names)
+            .expect("matched Push/Wait pair must pass the gate");
+        // Same logical contents...
+        assert_eq!(gated.events(), &m);
+        // ...and the same borrow (no copy/rebuild of the map).
+        assert!(
+            std::ptr::eq(gated.events(), &m),
+            "witness must borrow the gated map, not a rebuilt copy"
         );
     }
 }

@@ -6,34 +6,39 @@
 //! docstring; the "arg-parse" seam lives in `args.rs`.
 //!
 //! [`dispatch_backend`] is the final step of `cmd_build`: it takes the
-//! fully-projected per-worker EventList contract (`per_worker` + reverse
-//! name tables + codegen sidecar — the SAME inputs every
-//! EventList-consuming backend receives) and routes to the elected
-//! backend's `emit(...)`, printing the deterministic machine-parseable
-//! summary the e2e harness parses. The `--shim` validity check (a
-//! tier-3 selector meaningful only for embedded-pattern) is gated here,
-//! immediately before the dispatch, because the embedded arm is its
-//! only consumer.
+//! fully-projected per-worker EventList contract (as a
+//! [`crate::gate::GatedPerWorker`] witness — the SAME inputs every
+//! EventList-consuming backend receives, but only OBTAINABLE by passing
+//! the post-projection gate, TASK-0440 — plus reverse name tables +
+//! codegen sidecar) and routes to the elected backend's `emit(...)`,
+//! printing the deterministic machine-parseable summary the e2e harness
+//! parses. The `--shim` validity check (a tier-3 selector meaningful
+//! only for embedded-pattern) is gated here, immediately before the
+//! dispatch, because the embedded arm is its only consumer.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use nucleus_compiler::{Event, NameSidecar, NameTables, WorkerId};
+use nucleus_compiler::{NameSidecar, NameTables};
 
 /// Route the projected EventList contract to the elected backend's
-/// `emit(...)` and print the success summary. `shim` is the validated
-/// `--shim` selector (tier-3 / embedded-pattern only). Returns the
-/// String-channel error of any codegen failure (panic-safe — the
-/// EventList path never aborts the process).
+/// `emit(...)` and print the success summary. The EventList arrives as a
+/// [`crate::gate::GatedPerWorker`] witness, so this fn is unreachable
+/// unless the post-projection gate ran and accepted it (TASK-0440).
+/// `shim` is the validated `--shim` selector (tier-3 / embedded-pattern
+/// only). Returns the String-channel error of any codegen failure
+/// (panic-safe — the EventList path never aborts the process).
 pub(crate) fn dispatch_backend(
     backend: &str,
-    per_worker: &BTreeMap<WorkerId, Vec<Event>>,
+    gated: crate::gate::GatedPerWorker<'_>,
     names: &NameTables,
     sidecar: &NameSidecar,
     kernels_path: &Path,
     out_dir: &Path,
     shim: Option<&str>,
 ) -> Result<(), String> {
+    // The witness is the SOLE source of `per_worker`; the rest of the
+    // function is unchanged. Holding `gated` is proof the gate ran.
+    let per_worker = gated.events();
     // `--shim` is a tier-3 selector (M10, TASK-0048.01). A `--shim` on a
     // backend that has no shim concept is a user error — reject it loudly
     // rather than silently ignore it (PRD fail-fast rule). Only the
