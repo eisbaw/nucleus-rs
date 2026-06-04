@@ -184,8 +184,8 @@ fn render_multimcu_shim_impl(plan: &WorkerPlan) -> String {
     // output-capture USART1 (if this worker saves), then SysTick.
     s.push_str(
         "    /// Enable every USART this worker uses (RX-first so the\n    \
-             /// .resc's receivers-first boot order makes RX-before-TX hold by\n    \
-             /// construction), then start the SysTick clock.\n    \
+             /// .resc's staged-release boot order (compute_boot_order) makes\n    \
+             /// RX-before-TX hold by construction), then start the SysTick clock.\n    \
              fn init(&mut self) {\n",
     );
     // Distinct link USART bases (deduped, deterministic order). One USART

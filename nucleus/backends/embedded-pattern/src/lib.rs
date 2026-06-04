@@ -410,7 +410,8 @@ fn emit_one_worker_lib(
 /// `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (`link_push` ->
 /// USART TX, `link_recv` -> blocking USART RX), wired by the
 /// [`multimcu::TransportPlan`] (one `UARTHub` per CHANNEL/`SeqTag`,
-/// receivers-first boot order), PLUS a generated `out_dir/multimcu.resc` AND an
+/// staged-release boot order — see `multimcu::compute_boot_order`), PLUS a
+/// generated `out_dir/multimcu.resc` AND an
 /// ordered `out_dir/output_captures.txt` capture manifest. The
 /// `renode-multimcu` recipe co-simulates the bins, captures each saver
 /// worker's USART1 to its own file backend, concatenates those files in
