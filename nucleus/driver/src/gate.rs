@@ -58,6 +58,14 @@ use nucleus_compiler::{validate_event_lists, DataId, Event, NameSidecar, WorkerI
 ///
 /// `Debug` is derived only so `Result::expect_err` (used by the reject
 /// unit test) can format the `Ok` arm; it is not relied on otherwise.
+///
+/// INVARIANT (the trust boundary of this witness): construct this type at
+/// EXACTLY ONE site — the tail of [`gate_per_worker_for_dispatch`], AFTER
+/// both checks have passed. The private field stops *other modules* from
+/// minting a token, but a second in-module `GatedPerWorker { .. }` (e.g. a
+/// careless early-return) would forge a witness that skipped the checks.
+/// Do NOT add another constructor, a `pub fn new`, `Default`, or `Clone`:
+/// the whole guarantee is "holding this token ⇒ the gate ran on this map".
 #[derive(Debug)]
 pub(crate) struct GatedPerWorker<'a> {
     per_worker: &'a BTreeMap<WorkerId, Vec<Event>>,
@@ -220,6 +228,32 @@ mod tests {
         m
     }
 
+    /// The matched sibling of [`unmatched_push_map`]: worker 0 pushes to
+    /// worker 1 AND worker 1 Waits for it — a contract-clean EventList the
+    /// gate must accept. Shared by the two positive tests below.
+    fn matched_pair_map() -> BTreeMap<WorkerId, Vec<Event>> {
+        let mut m = BTreeMap::new();
+        m.insert(
+            WorkerId(0),
+            vec![Event::Push {
+                dst: WorkerId(1),
+                data: DataId(3),
+                tile: IterTile::empty(),
+                seq: SeqTag(11),
+            }],
+        );
+        m.insert(
+            WorkerId(1),
+            vec![Event::Wait {
+                src: WorkerId(0),
+                data: DataId(3),
+                tile: IterTile::empty(),
+                seq: SeqTag(11),
+            }],
+        );
+        m
+    }
+
     #[test]
     fn gate_rejects_unmatched_push() {
         // Minimal valid sibling args: an EMPTY algo has no accumulator
@@ -262,25 +296,7 @@ mod tests {
         let sidecar = NameSidecar::default();
         let data_names: BTreeMap<DataId, String> = BTreeMap::new();
 
-        let mut m = BTreeMap::new();
-        m.insert(
-            WorkerId(0),
-            vec![Event::Push {
-                dst: WorkerId(1),
-                data: DataId(3),
-                tile: IterTile::empty(),
-                seq: SeqTag(11),
-            }],
-        );
-        m.insert(
-            WorkerId(1),
-            vec![Event::Wait {
-                src: WorkerId(0),
-                data: DataId(3),
-                tile: IterTile::empty(),
-                seq: SeqTag(11),
-            }],
-        );
+        let m = matched_pair_map();
 
         assert!(
             gate_per_worker_for_dispatch(&algo, &m, &sidecar, &data_names).is_ok(),
@@ -300,25 +316,7 @@ mod tests {
         let sidecar = NameSidecar::default();
         let data_names: BTreeMap<DataId, String> = BTreeMap::new();
 
-        let mut m = BTreeMap::new();
-        m.insert(
-            WorkerId(0),
-            vec![Event::Push {
-                dst: WorkerId(1),
-                data: DataId(3),
-                tile: IterTile::empty(),
-                seq: SeqTag(11),
-            }],
-        );
-        m.insert(
-            WorkerId(1),
-            vec![Event::Wait {
-                src: WorkerId(0),
-                data: DataId(3),
-                tile: IterTile::empty(),
-                seq: SeqTag(11),
-            }],
-        );
+        let m = matched_pair_map();
 
         let gated = gate_per_worker_for_dispatch(&algo, &m, &sidecar, &data_names)
             .expect("matched Push/Wait pair must pass the gate");
