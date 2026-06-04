@@ -150,11 +150,22 @@ backends = ["pthreads-sync", "mp-tcp-bufsync", "pthreads-async", "mp-tcp-event",
 # embedded gate). The harness HARD-FAILS if `mpiexec` is absent so the
 # tier-2 cells can never silently vanish from coverage (TASK-0163
 # discipline on the new axis). The `[[required]]` cells for this tier
-# carry `backend = "mpi-blocking"` + `milestone = "M7"` and are diffed
-# against the SAME `reference.bin` oracle the tier-1 differential uses,
-# so an mpi cell passing IS a real apples-to-apples cross-backend check
-# — now COUNTED, not just `just check-mpi`'s out-of-band assertion.
-mpi_backends = ["mpi-blocking"]
+# carry `backend = "mpi-blocking"` (M7) or `backend = "mpi-nonblocking"`
+# (M8) + their milestone tag and are diffed against the SAME
+# `reference.bin` oracle the tier-1 differential uses, so an mpi cell
+# passing IS a real apples-to-apples cross-backend check — now COUNTED,
+# not just `just check-mpi{,-nonblocking}`'s out-of-band assertion.
+#
+# mpi-nonblocking (TASK-0445) is the M8 async sibling: same `.#mpi`
+# shell, same `run.sh` (`mpiexec -n N`) launch path, but
+# `supports_async = true` so it ADMITS the async schedules mpi-blocking
+# rejects (worker<->worker halo, host-excluding barrier). Its declared
+# cells are exactly the four `just check-mpi-nonblocking` proves
+# byte-exact under the DEFAULT eager protocol; the dual forced-rendezvous
+# arm stays in `check-mpi-nonblocking` (e2e uses default eager only).
+# Adding it brings the COUNTED matrix to 9 of 9 backends (only
+# embedded-pattern stays out, by design via renode-multimcu-gate).
+mpi_backends = ["mpi-blocking", "mpi-nonblocking"]
 
 # Required cells — every entry here MUST pass for `just e2e` to exit 0.
 # Status reported as PASS or FAIL. Anything not listed runs as
@@ -225,6 +236,44 @@ example  = "03-reduction"
 schedule = "distributed"
 backend  = "mpi-blocking"
 milestone = "M7"
+
+# --- Tier-2 (M8) mpi-nonblocking async differential cells (TASK-0445) -
+# The M8 arm. These run ONLY under `just e2e-mpi` (= harness
+# `--with-mpi`, the `mpi_backends` tier) — same out-of-default-ci rule
+# as the M7 mpi-blocking cells above. They are the FOUR async schedules
+# `just check-mpi-nonblocking` proves byte-exact vs `reference.bin`
+# under the DEFAULT eager protocol (the forced-rendezvous arm stays in
+# that recipe; e2e uses default eager). Each is a schedule mpi-blocking
+# structurally CANNOT run (it lacks `supports_async`): a worker<->worker
+# halo (05/distributed{,-2d}), a host-excluding sub-communicator barrier
+# (09/pipelined), or a pipelined async grid (11/pipelined). The harness
+# launches each via the emitted `run.sh` with default ranks = the
+# schedule's used-worker count (n below), so no harness change is needed
+# (TASK-0445 readiness witness: mpi-nonblocking's render_run_sh is the
+# same `mpiexec -n N` path as mpi-blocking's).
+[[required]]
+example  = "05-stencil"
+schedule = "distributed"
+backend  = "mpi-nonblocking"
+milestone = "M8"
+
+[[required]]
+example  = "05-stencil"
+schedule = "distributed-2d"
+backend  = "mpi-nonblocking"
+milestone = "M8"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "pipelined"
+backend  = "mpi-nonblocking"
+milestone = "M8"
+
+[[required]]
+example  = "11-game-of-life"
+schedule = "pipelined"
+backend  = "mpi-nonblocking"
+milestone = "M8"
 
 # Example 04 prefix-sum: only the NAIVE schedule is a required
 # differential cell. It is byte-identical to the hand-written

@@ -475,6 +475,33 @@ fn manifest_actual_file_parses() {
             "manifest must declare the M7 mpi-blocking required cell {ex}/{sc}"
         );
     }
+    // TASK-0445: the M8 mpi-nonblocking arm — the four async schedules
+    // mpi-blocking structurally cannot run. Pin them as the M7 siblings
+    // are pinned so a future edit dropping mpi-nonblocking (or one of
+    // its async cells) from the matrix fails loud here rather than
+    // silently stopping being covered by `just e2e-mpi`.
+    assert!(
+        m.is_mpi_backend("mpi-nonblocking"),
+        "manifest must declare mpi-nonblocking under mpi_backends"
+    );
+    assert!(
+        !m.backends.iter().any(|b| b == "mpi-nonblocking"),
+        "mpi-nonblocking must NOT be in the default tier-1 `backends` (it needs .#mpi)"
+    );
+    for (ex, sc) in [
+        ("05-stencil", "distributed"),
+        ("05-stencil", "distributed-2d"),
+        ("09-producer-consumer", "pipelined"),
+        ("11-game-of-life", "pipelined"),
+    ] {
+        assert!(
+            m.required.iter().any(|r| r.example == ex
+                && r.schedule == sc
+                && r.backend == "mpi-nonblocking"
+                && r.milestone == "M8"),
+            "manifest must declare the M8 mpi-nonblocking required cell {ex}/{sc}"
+        );
+    }
 }
 
 /// Synthetic single-cell matrix: build a manifest in memory that
