@@ -228,7 +228,13 @@ pub struct BinEmitResult {
 /// yields exactly one bin (at `out_dir` root) and `resc: None` (the
 /// single-machine `tests/renode/embedded/run.resc` already covers it); a
 /// multi-worker schedule yields one bin per worker under
-/// `out_dir/<worker>/` plus `out_dir/multimcu.resc` wiring them.
+/// `out_dir/<worker>/` plus `out_dir/multimcu.resc` wiring them and an
+/// ordered `out_dir/output_captures.txt` capture manifest (one saver
+/// `file_var` per line, in `TransportPlan.output_captures` decl-order —
+/// the recipe reads it for both var-injection and concat order,
+/// TASK-0049.10.08). The manifest path is NOT carried on this struct
+/// (the recipe finds it by fixed name beside the `.resc`); `resc: Some`
+/// is the multi-worker discriminant for both files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiBinEmitResult {
     /// One bin per used worker, in deterministic worker-id order.
@@ -403,11 +409,16 @@ fn emit_one_worker_lib(
 /// `out_dir/<worker>/` with the CONCRETE `MultiMcuShim` (`link_push` ->
 /// USART TX, `link_recv` -> blocking USART RX), wired by the
 /// [`multimcu::TransportPlan`] (one `UARTHub` per worker-pair, receivers-
-/// first boot order), PLUS a generated `out_dir/multimcu.resc`. The
-/// `renode-multimcu` recipe co-simulates the bins and `cmp`s the
-/// output-capture worker's USART1 against `reference.bin`. Value-
-/// correctness is proven for the 02-split-add 2-MCU schedule; ex14 stays
-/// gated on TASK-0049.02 (stateful per-frame kernels).
+/// first boot order), PLUS a generated `out_dir/multimcu.resc` AND an
+/// ordered `out_dir/output_captures.txt` capture manifest. The
+/// `renode-multimcu` recipe co-simulates the bins, captures each saver
+/// worker's USART1 to its own file backend, concatenates those files in
+/// [`multimcu::TransportPlan::output_captures`] order (the manifest order)
+/// and `cmp`s the concatenation against `reference.bin` (TASK-0049.10.08,
+/// BLOCKER 3 slice D). Value-correctness is proven for the 02-split-add
+/// 2-MCU schedule; ex14 stays gated on TASK-0049.02 (stateful per-frame
+/// kernels — slice D wires the transport/capture, not the per-frame
+/// compute VALUES).
 pub fn emit_bin(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -499,11 +510,37 @@ pub fn emit_bin(
         )?);
     }
 
-    // Multi-worker: emit the multi-machine Renode `.resc` wiring the bins.
+    // Multi-worker: emit the multi-machine Renode `.resc` wiring the bins,
+    // PLUS the ordered capture manifest `out_dir/output_captures.txt`.
     let resc = if let Some(p) = &plan {
         let resc_src = multimcu::render_multimachine_resc(p);
         let resc_path = out_dir.join("multimcu.resc");
         write_file(&resc_path, &resc_src)?;
+
+        // Ordered capture manifest (TASK-0049.10.08, BLOCKER 3 slice D).
+        // ONE `file_var` per line, in `TransportPlan.output_captures` order
+        // (i.e. `NameSidecar::data_decl_order` — NOT WorkerId order). This
+        // file is the SINGLE source of truth the `renode-multimcu` recipe
+        // reads for BOTH which `$<file_var>` vars to inject AND the order in
+        // which to concatenate the per-saver capture files before the
+        // byte-exact `reference.bin` diff. The recipe MUST NOT grep the
+        // `.resc` for ordering: the `.resc` emits its `CreateFileBackend`
+        // lines per machine in WorkerId order, which need NOT match decl
+        // order (ex14: `bt_out`=DataId(1) < `spk_out`=DataId(4), but decl
+        // order is spk_out-before-bt_out). For ex14 this manifest is
+        // `feUart\nrfUart`; for the single-saver 02-split-add it is the lone
+        // line `uartFile`.
+        let manifest_src: String = p
+            .output_captures
+            .iter()
+            .map(|c| c.file_var.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Trailing newline so the file is a clean N-line list (a final
+        // empty line on read is tolerated by the recipe's line-skip).
+        let manifest_src = format!("{manifest_src}\n");
+        write_file(&out_dir.join("output_captures.txt"), &manifest_src)?;
+
         Some(resc_path)
     } else {
         None

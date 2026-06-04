@@ -567,6 +567,67 @@ fn ex14_multimcu_cross_worker_input_partition_emits_decl_order_offsets() {
     );
 }
 
+/// Read the `output_captures.txt` capture manifest beside the emitted
+/// `.resc` (TASK-0049.10.08, BLOCKER 3 slice D). The manifest lives at
+/// `out_dir/output_captures.txt`; `res.resc` is `out_dir/multimcu.resc`,
+/// so the manifest is its sibling.
+fn read_capture_manifest(res: &crate::MultiBinEmitResult) -> String {
+    let resc = res
+        .resc
+        .as_ref()
+        .expect("multi-worker emit must produce a .resc (and a manifest beside it)");
+    let manifest = resc
+        .parent()
+        .expect("resc has a parent out_dir")
+        .join("output_captures.txt");
+    std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|e| panic!("read capture manifest {}: {e}", manifest.display()))
+}
+
+#[test]
+fn ex14_capture_manifest_is_decl_order_fe_then_rf() {
+    // TASK-0049.10.08 (BLOCKER 3 slice D): the multi-SAVER manifest lists one
+    // `file_var` per saver in `TransportPlan.output_captures` order, which is
+    // DECL order (spk_out@fe before bt_out@rf), NOT WorkerId / DataId order.
+    // This is the single source of truth the `renode-multimcu` recipe reads
+    // for BOTH var-injection and concat order, so the captured files
+    // reconstruct the reference layout (spk_out@0 ++ bt_out@256).
+    let res = try_emit_bin_example_multi_with_files(
+        "14-hearing-aid",
+        "prog.embedded.algo.nuc",
+        "embedded_multimcu_sync.sched.nuc",
+        "kernels.embedded.rs",
+        "ex14_capture_manifest",
+    )
+    .expect("ex14 multi-MCU bin emit");
+    let manifest = read_capture_manifest(&res);
+    // Two savers, decl order: fe (spk_out, declared first) then rf (bt_out).
+    let lines: Vec<&str> = manifest.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines,
+        vec!["feUart", "rfUart"],
+        "ex14 capture manifest must be decl-order [feUart, rfUart] \
+         (spk_out before bt_out), not WorkerId/DataId order; got:\n{manifest}"
+    );
+}
+
+#[test]
+fn single_saver_capture_manifest_is_lone_uartfile() {
+    // TASK-0049.10.08 (BLOCKER 3 slice D): the SINGLE-saver schedule
+    // (02-split-add, host drains `c`) keeps the recipe-compatible `uartFile`
+    // var and the manifest is exactly that one line — concat-of-one is
+    // byte-identical to the captured file, so the 1024B reference diff is
+    // unchanged.
+    let res = emit_bin_example_multi("02-split-add", "split.sched.nuc", "split_manifest");
+    let manifest = read_capture_manifest(&res);
+    let lines: Vec<&str> = manifest.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines,
+        vec!["uartFile"],
+        "single-saver 02-split-add manifest must be the lone `uartFile` line; got:\n{manifest}"
+    );
+}
+
 // ---- TASK-0048.04: no_std monotonic clock for Event::Loop check_frame ----
 
 /// Lower example 1 with `schedule_file` (a schedule under
