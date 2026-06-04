@@ -75,8 +75,8 @@ use nucleus_compiler::name_tables::NameTables;
 use nucleus_compiler::sidecar::{KernelSig, NameSidecar};
 
 use backend_common::render::{
-    render_const_expr, render_fire_args, render_fire_output_assign, render_flat_index,
-    render_indexed_subarray_place, render_int_expr, EmitError, RenderCtx,
+    kernel_is_effectful, render_const_expr, render_fire_args, render_fire_output_assign,
+    render_flat_index, render_indexed_subarray_place, render_int_expr, EmitError, RenderCtx,
 };
 
 /// A `(NameTables, NameSidecar)` carrying ZERO data symbols. Each test
@@ -772,4 +772,72 @@ fn indexed_subarray_place_partial_rank_is_ok_subarray() {
         rendered, "x[((frame) * 4) as usize..((frame) * 4) as usize + 4usize]",
         "partial-rank place must be the contiguous `[T]` sub-array spelling"
     );
+}
+
+// --------------------------------------------------------------------
+// kernel_is_effectful — the lifted shared purity classifier
+// (TASK-0049.10.07). One impl de-dups the two byte-identical embedded
+// backend copies (render.rs + multimcu.rs); pin its three outcomes here
+// so a future purity change cannot silently drift the canonical helper.
+// --------------------------------------------------------------------
+
+/// A `NameSidecar` with kernel `kid` registered with the given `purity`
+/// (zero params, scalar `i32` return). No `NameTables` needed — the
+/// helper reads only the sidecar.
+fn sidecar_with_kernel_purity(kid: KernelId, purity: Purity) -> NameSidecar {
+    let mut sidecar = NameSidecar::default();
+    sidecar.kernel_sigs.insert(
+        kid,
+        KernelSig {
+            params: vec![],
+            ret: Some(ResolvedType {
+                scalar: ScalarType::I32,
+                dims: vec![],
+            }),
+            purity,
+        },
+    );
+    sidecar
+}
+
+#[test]
+fn kernel_is_effectful_true_for_effectful_sig() {
+    let kid = KernelId(0);
+    let sidecar = sidecar_with_kernel_purity(kid, Purity::Effectful);
+    assert!(
+        kernel_is_effectful(kid, &sidecar)
+            .expect("an effectful kernel sig must classify without a contract gap"),
+        "Purity::Effectful must classify as effectful (TASK-0049.10.07)"
+    );
+}
+
+#[test]
+fn kernel_is_effectful_false_for_pure_sig() {
+    let kid = KernelId(0);
+    let sidecar = sidecar_with_kernel_purity(kid, Purity::Pure);
+    assert!(
+        !kernel_is_effectful(kid, &sidecar)
+            .expect("a pure kernel sig must classify without a contract gap"),
+        "Purity::Pure must NOT classify as effectful (TASK-0049.10.07)"
+    );
+}
+
+#[test]
+fn kernel_is_effectful_missing_sig_is_contract_gap() {
+    // A KernelId with NO signature in the sidecar is a contract gap — the
+    // helper fails loud rather than silently defaulting to Pure and
+    // mis-lowering an effectful peripheral-IO firing.
+    let kid = KernelId(0);
+    let sidecar = NameSidecar::default(); // no kernel_sigs entry
+    let err = kernel_is_effectful(kid, &sidecar)
+        .expect_err("a missing KernelSig must fail loud (TASK-0049.10.07)");
+    match err {
+        EmitError::ContractGap(msg) => {
+            assert!(
+                msg.contains("no KernelSig") && msg.contains("purity"),
+                "missing-sig message must name the absent KernelSig + purity intent: {msg}"
+            );
+        }
+        other => panic!("expected ContractGap for a missing KernelSig, got {other:?}"),
+    }
 }

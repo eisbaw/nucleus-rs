@@ -9,8 +9,9 @@
 //! because every callsite that needs flat-index also needs DataSlice
 //! classification (and vice versa).
 
-use nucleus_compiler::algo::ResolvedType;
+use nucleus_compiler::algo::{Purity, ResolvedType};
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, KernelId};
+use nucleus_compiler::sidecar::NameSidecar;
 
 use super::ctx::{RenderCtx, RenderCtxPub};
 use super::error::EmitError;
@@ -29,6 +30,33 @@ pub fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> 
         .get(&did)
         .cloned()
         .ok_or_else(|| EmitError::ContractGap(format!("data id {did:?} has no name in NameTables")))
+}
+
+/// Is `kernel` declared `effectful`? Reads the codegen-contract
+/// [`NameSidecar`]'s [`KernelSig`](nucleus_compiler::sidecar::KernelSig)
+/// `purity` field (mirrored from `ResolvedKernel::purity` in
+/// `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap (a
+/// `KernelId` with no signature in the sidecar) — fail loud with context
+/// rather than silently defaulting to `Pure` and mis-lowering an
+/// effectful peripheral-IO firing.
+///
+/// Lifted from the two byte-identical embedded-backend impls
+/// (`render.rs`'s effectful-input lowering reaching via `ctx.sidecar`,
+/// and `multimcu.rs`'s multi-MCU effectful-IO classification) so the
+/// purity-classification rule lives in ONE place — a single source of
+/// truth defending `feedback-silent-sibling-defect` on the next purity
+/// change (TASK-0049.10.07).
+pub fn kernel_is_effectful(
+    kernel: KernelId,
+    sidecar: &NameSidecar,
+) -> Result<bool, EmitError> {
+    let sig = sidecar.kernel_sig(kernel).ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "kernel id {kernel:?} has no KernelSig in the NameSidecar; \
+             cannot determine purity for effectful-IO lowering"
+        ))
+    })?;
+    Ok(sig.purity == Purity::Effectful)
 }
 
 // --------------------------------------------------------------------

@@ -41,7 +41,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use backend_common::EmitError;
-use nucleus_compiler::algo::Purity;
 use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -509,7 +508,8 @@ fn first_data_input(bindings: &FireBinding) -> Option<DataId> {
 ///     the shim read garbage.
 ///
 /// Fallible: a missing `KernelSig` in the indexed arm fails loud
-/// (`ContractGap`), mirroring slice A's `kernel_is_effectful`.
+/// (`ContractGap`) via the shared
+/// [`backend_common::render::kernel_is_effectful`].
 fn is_effectful_load(
     kernel: KernelId,
     bindings: &FireBinding,
@@ -522,7 +522,7 @@ fn is_effectful_load(
         // whole-array load: STRUCTURAL, unchanged.
         Some(o) if o.indices.is_empty() => Ok(true),
         // indexed effectful load: gated on purity (NEW, additive).
-        Some(_) => kernel_is_effectful(kernel, sidecar),
+        Some(_) => backend_common::render::kernel_is_effectful(kernel, sidecar),
         None => Ok(false),
     }
 }
@@ -540,23 +540,6 @@ fn is_effectful_io(
     sidecar: &NameSidecar,
 ) -> Result<bool, EmitError> {
     Ok(bindings.output.is_none() || is_effectful_load(kernel, bindings, sidecar)?)
-}
-
-/// Is `kernel` declared `effectful`? Read from the codegen-contract
-/// `NameSidecar`'s `KernelSig.purity` (mirrored from `ResolvedKernel::purity`
-/// in `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap —
-/// fail loud with context rather than silently defaulting to `Pure` and
-/// mis-classifying a load/IO. Structural sibling of `render.rs`'s
-/// `kernel_is_effectful`.
-fn kernel_is_effectful(kernel: KernelId, sidecar: &NameSidecar) -> Result<bool, EmitError> {
-    let sig = sidecar.kernel_sig(kernel).ok_or_else(|| {
-        EmitError::ContractGap(format!(
-            "kernel id {kernel:?} has no KernelSig in the NameSidecar; cannot \
-             determine purity for multi-MCU effectful-IO classification \
-             (TASK-0049.10.04)"
-        ))
-    })?;
-    Ok(sig.purity == Purity::Effectful)
 }
 
 /// Compute each loader worker's byte offset into the GLOBAL `input.bin`

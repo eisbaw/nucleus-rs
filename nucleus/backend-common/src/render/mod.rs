@@ -83,7 +83,7 @@ pub use expr::{
     render_bool_expr, render_const_expr, render_const_expr_pub, render_int_expr, render_loop_bounds,
 };
 pub use fire::{
-    data_name, render_fire_args, render_fire_args_nostd, render_fire_args_pub,
+    data_name, kernel_is_effectful, render_fire_args, render_fire_args_nostd, render_fire_args_pub,
     render_fire_output_assign, render_fire_output_assign_pub, render_flat_index,
     render_flat_index_pub, render_indexed_place, render_indexed_subarray_place, write_file,
     SubArrayForm,

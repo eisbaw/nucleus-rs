@@ -20,7 +20,6 @@ use backend_common::render::{
     RenderCtx,
 };
 use backend_common::EmitError;
-use nucleus_compiler::algo::Purity;
 use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, ViolationKind};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -540,7 +539,7 @@ fn render_fire(
         Some(o)
             if !o.indices.is_empty()
                 && bindings.inputs.is_empty()
-                && kernel_is_effectful(kernel, ctx)? =>
+                && backend_common::render::kernel_is_effectful(kernel, ctx.sidecar)? =>
         {
             // Guarded: a full-rank-indexed scalar place has no
             // `.as_mut_ptr()` and would emit non-compiling firmware —
@@ -587,22 +586,6 @@ fn render_fire(
             Ok(())
         }
     }
-}
-
-/// Is `kernel` declared `effectful`? Read from the codegen-contract
-/// sidecar's [`KernelSig`](nucleus_compiler::sidecar::KernelSig)
-/// `purity` field (mirrored from `ResolvedKernel::purity` in
-/// `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap
-/// (a `KernelId` with no signature in the sidecar) — fail loud with
-/// context rather than silently defaulting to `Pure` and mis-lowering.
-fn kernel_is_effectful(kernel: KernelId, ctx: &RenderCtx<'_>) -> Result<bool, EmitError> {
-    let sig = ctx.sidecar.kernel_sig(kernel).ok_or_else(|| {
-        EmitError::ContractGap(format!(
-            "kernel id {kernel:?} has no KernelSig in the NameSidecar; \
-             cannot determine purity for effectful-input lowering"
-        ))
-    })?;
-    Ok(sig.purity == Purity::Effectful)
 }
 
 /// The Rust place-expression for the first `Data` input of an effect
