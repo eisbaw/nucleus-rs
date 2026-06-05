@@ -1,0 +1,101 @@
+% fig:pipeline --- the full compilation pipeline, one deterministic chain.
+% Faithful to chapters/06-architecture.tex sec:arch-pipeline (stage list + the
+% fixed, total pass order) and sec:arch-gate (gate = conflict-free -> bounded ->
+% deadlock-free, on EVERY build, failure = compile error). The two boundaries
+% (algorithm/schedule at link; middle-end/presentation at projection) are marked.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      box/.style={draw, rounded corners=2pt, align=center, inner sep=3pt,
+                  minimum height=6mm, fill=blue!8, text width=58mm},
+      src/.style={draw, rounded corners=2pt, align=center, inner sep=3pt,
+                 fill=gray!14, text width=37mm, minimum height=8mm},
+      ir/.style={draw, align=center, inner sep=3pt, fill=green!12,
+                 text width=37mm, minimum height=8mm},
+      gate/.style={draw, align=center, inner sep=3pt, fill=orange!16,
+                   text width=58mm, minimum height=6mm},
+      err/.style={draw, rounded corners=2pt, align=center, inner sep=3pt,
+                  fill=red!12, text width=27mm, minimum height=9mm},
+      sm/.style={draw, rounded corners=1pt, fill=orange!10, inner sep=1.5pt,
+                 font=\scriptsize, align=center},
+      a/.style={-{Latex[length=2mm]}, thick},
+      bnd/.style={densely dashed, thick, gray!55!black},
+    ]
+    % --- inputs ---
+    \node[src] (alg) at (-2.2,0) {\textbf{algorithm} file\\\scriptsize\texttt{*.algo.nuc} $+$ Rust kernels};
+    \node[src] (sch) at (2.2,0) {\textbf{schedule} file\\\scriptsize\texttt{*.sched.nuc}};
+    % --- parse to two IRs ---
+    \node[ir] (air) at (-2.2,-1.5) {Algorithm IR\\\scriptsize typed; kernels $+$ dataflow; \emph{no} decomposition};
+    \node[ir] (sir) at (2.2,-1.5) {Schedule IR\\\scriptsize workers, placements, loop \& transfer directives};
+    \draw[a] (alg) -- node[right=1pt,font=\scriptsize]{parse} (air);
+    \draw[a] (sch) -- node[right=1pt,font=\scriptsize]{parse} (sir);
+    % --- link ---
+    \node[box, fill=green!12] (link) at (0,-3.0) {\textbf{Link} $\rightarrow$ Linked IR\\\scriptsize kernels bound to workers; loops $+$ IO semantics attached};
+    \draw[a] (air) |- (link);
+    \draw[a] (sir) |- (link);
+    % --- ACFG + transforms ---
+    \node[box] (acfg) at (0,-4.4) {\textbf{Build ACFG} (op / seq / repeat tree $+$ sidecars)};
+    \draw[a] (link) -- (acfg);
+    \node[box, fill=blue!8, text width=72mm] (xf) at (0,-5.8)
+      {\textbf{Transforms} (fixed, total order)};
+    \node[sm] (t1) at (-3.0,-6.55) {block};
+    \node[sm, right=1.2mm of t1] (t2) {partition};
+    \node[sm, right=1.2mm of t2] (t3) {halo};
+    \node[sm, right=1.2mm of t3] (t4) {reuse};
+    \node[sm, right=1.2mm of t4] (t5) {sync\\inject};
+    \node[sm, right=1.2mm of t5] (t6) {transfer\\inject};
+    \foreach \a/\b in {t1/t2,t2/t3,t3/t4,t4/t5,t5/t6} \draw[-{Latex[length=1.2mm]}] (\a)--(\b);
+    \node[draw, dashed, rounded corners, fit=(xf)(t1)(t6), inner sep=2.5pt] (xfbox) {};
+    \draw[a] (acfg) -- (xf);
+    % --- elaborated ACFG -> petri -> gate ---
+    \node[box, text width=72mm] (eacfg) at (0,-7.5) {\textbf{Elaborated ACFG} $\rightarrow$ lower to \textbf{Petri-net IR}};
+    \draw[a] (xfbox.south) -- (eacfg);
+    \node[gate, text width=72mm] (gate) at (0,-8.8)
+      {\textbf{Soundness gate} (every build): conflict-free $\rightarrow$ bounded $\rightarrow$ deadlock-free};
+    \draw[a] (eacfg) -- (gate);
+    \node[err] (err) at (5.6,-8.8) {\textbf{compile error}\\\scriptsize names offending place / transition};
+    \draw[a, red!55!black] (gate) -- node[above,font=\scriptsize]{fail} (err);
+    % --- projection ---
+    \node[box, text width=72mm] (proj) at (0,-10.1)
+      {\textbf{Per-worker projection} $\rightarrow$ one EventList per worker};
+    \draw[a] (gate) -- node[right=1pt,font=\scriptsize]{pass} (proj);
+    % --- codegen ---
+    \node[box, fill=gray!12, text width=72mm] (cg) at (0,-11.7)
+      {\textbf{Backend codegen} (1 of 10): render each event for one runtime $+$ transport};
+    \draw[a] (proj) -- (cg);
+    \node[box, fill=gray!14, text width=40mm] (out) at (0,-13.0) {\texttt{out/} : generated Rust project};
+    \draw[a] (cg) -- (out);
+
+    % --- backend-independent region shading ---
+    \begin{scope}[on background layer]
+      \node[fill=blue!4, rounded corners, fit=(air)(sir)(link)(acfg)(xfbox)(eacfg)(gate)(proj),
+            inner sep=4pt] (mid) {};
+    \end{scope}
+    \node[font=\scriptsize\itshape, anchor=west, rotate=90] at (-4.6,-6.5)
+      {backend-independent middle end};
+
+    % --- the two boundaries ---
+    \draw[bnd] (-4.5,-2.25) -- (4.5,-2.25)
+      node[right,font=\scriptsize,text width=0pt]{};
+    \node[font=\scriptsize, fill=white, inner sep=1pt] at (0,-2.25)
+      {\textit{algorithm\,/\,schedule boundary} --- the two files meet only here};
+    \draw[bnd] (-4.5,-10.9) -- (4.5,-10.9);
+    \node[font=\scriptsize, fill=white, inner sep=1pt] at (0,-10.9)
+      {\textit{middle-end\,/\,presentation boundary} --- only EventLists cross};
+  \end{tikzpicture}
+  \caption[The compilation pipeline]{The compilation pipeline: a single
+    deterministic chain of passes. The algorithm and schedule are parsed
+    independently into typed intermediate representations (IRs) that meet only at
+    \emph{link} (the algorithm/schedule boundary); from the linked form the
+    compiler builds an application control-flow graph (ACFG), applies the
+    schedule's transforms in a fixed total order
+    (block, partition, halo, reuse, sync-inject, transfer-inject), lowers the
+    elaborated ACFG to a Petri net, and runs the soundness gate on \emph{every}
+    build --- a failure is a compile error naming the offending place or
+    transition, never a runtime hang. The net is then projected to one totally
+    ordered EventList per worker; only those lists cross the
+    middle-end/presentation boundary into a chosen backend. Everything above that
+    line (shaded) is backend-independent by construction.}
+  \label{fig:pipeline}
+\end{figure}

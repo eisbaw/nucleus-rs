@@ -1,0 +1,66 @@
+% fig:boundaries --- the two architectural boundaries and their independence test.
+% Faithful to chapters/06-architecture.tex sec:arch-boundaries:
+%   (1) algorithm/schedule boundary: algo IR has no worker/buffer/IO; they meet
+%       only at link. Test = independence (rewrite one without the other).
+%   (2) middle-end/presentation boundary: parse..projection is backend-free; the
+%       backend consumes only EventLists, never the algorithm or schedule.
+%   A leak across either surfaces as a backend that disagrees (the differential test).
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      zone/.style={draw, rounded corners=3pt, align=center, inner sep=5pt,
+                   text width=92mm},
+      a/.style={-{Latex[length=2mm]}, thick},
+      bnd/.style={densely dashed, very thick, gray!55!black},
+    ]
+    % top: the two source concerns
+    \node[draw, rounded corners=2pt, fill=gray!14, align=center, text width=40mm,
+          inner sep=4pt] (alg) at (-2.4,0.4) {\textbf{Algorithm} (\emph{what})\\
+          \scriptsize no workers, no buffers, no IO, no sync};
+    \node[draw, rounded corners=2pt, fill=gray!14, align=center, text width=40mm,
+          inner sep=4pt] (sch) at (2.4,0.4) {\textbf{Schedule} (\emph{how})\\
+          \scriptsize workers, partition, loop transforms, IO semantics};
+
+    % boundary 1
+    \draw[bnd] (-5.0,-0.9) -- (5.0,-0.9);
+    \node[font=\footnotesize\bfseries, fill=white, inner sep=2pt] at (0,-0.9)
+      {boundary 1: algorithm\,/\,schedule};
+
+    % middle: backend-independent middle end
+    \node[zone, fill=blue!8] (mid) at (0,-2.2)
+      {\textbf{Backend-independent middle end}\\[2pt]
+       \scriptsize link\, $\rightarrow$\, ACFG\, $\rightarrow$\, transforms\,
+       $\rightarrow$\, halo/transfer inference\, $\rightarrow$\, Petri-net IR\,
+       $+$\, soundness gate\, $\rightarrow$\, per-worker projection};
+    \draw[a] (alg) -- (mid.north -| alg);
+    \draw[a] (sch) -- (mid.north -| sch);
+    \node[font=\scriptsize, fill=white, inner sep=1pt] at (0,-1.45)
+      {meet \emph{only} at link};
+
+    % boundary 2
+    \draw[bnd] (-5.0,-3.6) -- (5.0,-3.6);
+    \node[font=\footnotesize\bfseries, fill=white, inner sep=2pt] at (0,-3.6)
+      {boundary 2: middle-end\,/\,presentation};
+    \node[draw, fill=green!14, rounded corners=2pt, font=\scriptsize, inner sep=2pt]
+      (ev) at (0,-4.15) {only \textbf{EventLists} cross};
+    \draw[a] (mid) -- (ev);
+
+    % bottom: the backends (presentation)
+    \node[zone, fill=gray!12] (be) at (0,-5.3)
+      {\textbf{Backends} (presentation)\\[2pt]
+       \scriptsize threads\, $\cdot$\, OpenMP\, $\cdot$\, TCP\, $\cdot$\, Unix
+       sockets\, $\cdot$\, MPI\, $\cdot$\, embedded DMA/UART --- render events only};
+    \draw[a] (ev) -- (be);
+  \end{tikzpicture}
+  \caption[The two architectural boundaries]{The two boundaries the architecture
+    rests on. \emph{Boundary 1} (algorithm/schedule): the algorithm IR carries no
+    worker, buffer, or IO information; those enter only at the link step, so the
+    two files meet exactly once. \emph{Boundary 2} (middle-end/presentation):
+    every pass from parsing through per-worker projection is backend-independent,
+    and a backend consumes only the per-worker EventLists --- never the algorithm
+    or schedule. Each boundary is real precisely when either side can be rewritten
+    independently; a leak across either one surfaces as a backend that disagrees
+    with the others in the cross-backend differential test.}
+  \label{fig:boundaries}
+\end{figure}

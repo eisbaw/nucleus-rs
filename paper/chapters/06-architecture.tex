@@ -25,6 +25,8 @@ worker; and finally a chosen backend renders each worker's event list into code.
 Each named stage is defined in its own section below; this paragraph is only the
 map.
 
+\input{figures/pipeline}
+
 The pass order is fixed and total: build the ACFG; apply blocking; apply the
 chosen partition (per-worker ranges, row bands, or a two-dimensional grid); infer
 halos; infer reuse; inject synchronisations; inject transfers. Each pass either
@@ -51,6 +53,8 @@ never the algorithm or schedule directly. Anything backend-specific that appeare
 above this line would be a defect. The cross-backend differential test
 (\cref{ch:validation}) is what keeps both boundaries honest: a leak across
 either one shows up as a backend that disagrees with the others.
+
+\input{figures/boundaries}
 
 \section{Algorithm IR and linking}\label{sec:arch-link}
 
@@ -83,6 +87,8 @@ neighbour pairs for two-dimensional partitions, and the initial-marking depth fo
 each pipelined transfer. Keeping these as sidecars rather than rewriting the node
 structure lets each pass add precisely the information it derives without
 disturbing what earlier passes established.
+
+\input{figures/acfg}
 
 The schedule's loop transformations are applied to the ACFG in order. Blocking
 strip-mines a loop into a tile loop wrapping an intra-tile loop, splitting a
@@ -161,6 +167,8 @@ uniformly as rectangular slices in iteration space, and memory regions are opaqu
 tags the backend interprets, so the same contract serves a shared-memory thread
 and a message-passing rank alike.
 
+\input{figures/petri}
+
 \section{The soundness gate}\label{sec:arch-gate}
 
 Before any code is emitted, the net is checked, and the check runs on \emph{every}
@@ -206,6 +214,8 @@ push on its source worker and a wait on its destination worker. Because the walk
 is deterministic and worker lists are kept in a sorted map, two compilations of
 the same program yield byte-identical event lists --- a prerequisite for the
 reproducibility the validation strategy depends on.
+
+\input{figures/projection}
 
 The event lists are the sole interface to the backend. Everything the backend
 needs to know about decomposition, transfers, and synchronisation is in them; the

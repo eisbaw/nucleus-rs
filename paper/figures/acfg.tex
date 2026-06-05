@@ -1,0 +1,69 @@
+% fig:acfg --- the ACFG as a data structure: a node tree plus sidecar tables.
+% Faithful to chapters/06-architecture.tex sec:arch-acfg:
+%   nodes = operations (kernel firing + dataflow edges), sequences, repeats
+%           (loops w/ back-edge), later joined by sync + transfer nodes.
+%   sidecars = auxiliary maps kept BESIDE the tree, keyed by node identity:
+%     per-worker loop ranges (partition), per-axis halo widths (halo),
+%     reuse-window slots (reuse), grid shape + neighbour pairs (2D partition),
+%     initial-marking depth (pipeline). Generic shape; the stencil instance is
+%     fig:wt-acfg.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      seq/.style={draw, rounded corners, fill=gray!15, inner sep=3pt, minimum height=6mm},
+      op/.style={draw, fill=blue!10, inner sep=3pt, minimum height=6mm},
+      rep/.style={draw, fill=orange!14, inner sep=3pt, minimum height=6mm},
+      sx/.style={draw, fill=green!12, inner sep=3pt, minimum height=6mm, font=\footnotesize},
+      t/.style={-{Latex[length=1.5mm]}},
+      back/.style={-{Latex[length=1.5mm]}, densely dashed, gray!55!black},
+    ]
+    % ---- node tree (generic): Op/Repeat are authored; Sync/Xfer are injected
+    %      as PEER nodes of the enclosing Seq (not nested under one another). ----
+    \node[seq] (seq) at (0,0) {\texttt{Seq}};
+    \node[op]  (op1) at (-3.0,-1.3) {\texttt{Op}};
+    \node[rep] (rep) at (-1.0,-1.3) {\texttt{Repeat}};
+    \node[sx, fill=green!12]  (sync) at (1.0,-1.3) {\texttt{Sync}};
+    \node[sx, fill=green!12] (xfer) at (3.0,-1.3) {\texttt{Xfer}};
+    \node[op]  (op2) at (-1.0,-2.6) {\texttt{Op}};
+    \draw[t] (seq) -- (op1);
+    \draw[t] (seq) -- (rep);
+    \draw[t] (seq) -- (sync);
+    \draw[t] (seq) -- (xfer);
+    \draw[t] (rep) -- (op2);
+    \draw[back] (op2.west) to[out=180,in=180,looseness=1.8]
+      node[left=1pt,font=\scriptsize,pos=0.5]{back-edge} (rep.west);
+
+    \node[font=\footnotesize\bfseries] at (0,0.9) {node tree};
+    \node[font=\scriptsize, align=left, anchor=north west] at (-3.7,-3.3)
+      {\textit{node kinds:} \texttt{Op} (kernel firing $+$ read/write dataflow edges),
+       \texttt{Seq}, \texttt{Repeat} (loop with back-edge); the green
+       \texttt{Sync} (barrier)\\ and \texttt{Xfer} (push/wait) are \emph{injected}
+       peer nodes, added by the sync/transfer passes.};
+
+    % ---- sidecar tables ----
+    \node[draw, fill=yellow!10, rounded corners, align=left, font=\scriptsize,
+          text width=52mm, inner sep=4pt, anchor=north west] (side) at (5.6,0.6)
+      {\textbf{Sidecar tables} (kept beside the tree, keyed by \emph{any} node's id):\\[2pt]
+       $\bullet$ per-worker loop ranges \hfill (partition)\\
+       $\bullet$ per-axis halo widths \hfill (halo)\\
+       $\bullet$ reuse-window slots \hfill (reuse)\\
+       $\bullet$ grid shape $+$ neighbour pairs \hfill (2D partition)\\
+       $\bullet$ initial-marking depth \hfill (pipeline)};
+    \draw[densely dotted, gray!55!black] (xfer.east) to[out=0,in=180]
+      node[above=1pt,font=\scriptsize]{keyed by node id} (side.west);
+  \end{tikzpicture}
+  \caption[The ACFG data structure]{The application control-flow graph (ACFG):
+    a tree whose nodes are operations (a kernel firing with its read/write
+    dataflow edges), sequences, and repeats (loops with a back-edge), later
+    joined by the injected synchronisation and transfer nodes (green, added as
+    peer nodes of the enclosing sequence by the sync and transfer passes). Rather
+    than rewriting the tree, each middle-end pass populates \emph{sidecar}
+    tables ---
+    auxiliary maps kept beside the tree and keyed by node identity --- so a pass
+    adds precisely the information it derives (per-worker ranges, halo widths,
+    reuse slots, grid/neighbour data, pipeline initial-marking depth) without
+    disturbing what earlier passes established. The concrete instance for the
+    stencil is shown in \cref{fig:wt-acfg}.}
+  \label{fig:acfg}
+\end{figure}

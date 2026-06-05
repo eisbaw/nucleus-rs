@@ -1,0 +1,61 @@
+% fig:composition --- one algorithm x many schedules x many backends.
+% Faithful to chapters/04 sec (lst around line 90) + 01-introduction:
+%   one algorithm composes with many schedules (retarget by editing only the
+%   schedule: threads -> cluster ranks -> embedded cores); each schedule composes
+%   with many backends (any backend whose capabilities are a superset of what the
+%   schedule demands). The boundary is real iff either file changes independently.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      alg/.style={draw, rounded corners=3pt, fill=gray!15, align=center,
+                  inner sep=4pt, minimum height=9mm, text width=24mm},
+      sch/.style={draw, rounded corners=2pt, fill=blue!10, align=center,
+                  inner sep=3pt, font=\footnotesize, text width=26mm, minimum height=8mm},
+      be/.style={draw, fill=green!12, align=center, inner sep=2pt,
+                 font=\scriptsize, text width=20mm, minimum height=5mm},
+      a/.style={-{Latex[length=1.8mm]}, thick},
+    ]
+    % one algorithm
+    \node[alg] (alg) at (0,0) {\textbf{one algorithm}\\\scriptsize the \emph{what}};
+    % many schedules
+    \node[sch] (s1) at (3.6,2.0) {threads\\\scriptsize partition $+$ async buffers};
+    \node[sch] (s2) at (3.6,0.0) {cluster\\\scriptsize ranks $+$ MPI transfers};
+    \node[sch] (s3) at (3.6,-2.0) {embedded\\\scriptsize cores $+$ sync UART};
+    \draw[a] (alg) -- (s1);
+    \draw[a] (alg) -- (s2);
+    \draw[a] (alg) -- (s3);
+    \node[font=\scriptsize\itshape, align=center, fill=white, inner sep=1pt] at (1.7,1.45) {edit \emph{only}\\the schedule};
+
+    % many backends per schedule (show fan-out from one schedule)
+    \node[be] (b1) at (7.6,1.0) {\texttt{pthreads-async}};
+    \node[be] (b2) at (7.6,0.2) {\texttt{mp-tcp-event}};
+    \node[be] (b3) at (7.6,-0.6) {\texttt{mp-uds-event}};
+    \draw[a] (s2.east) -- (b1);
+    \draw[a] (s2.east) -- (b2);
+    \draw[a] (s2.east) -- (b3);
+    \node[font=\scriptsize, align=center, text width=26mm] at (7.6,-1.6)
+      {\dots any backend whose capabilities $\supseteq$ schedule demands};
+
+    % grey fan stubs from s1,s3 to indicate they too fan out
+    \draw[a, gray!55] (s1.east) -- ++(1.2,0.2);
+    \draw[a, gray!55] (s1.east) -- ++(1.2,-0.2);
+    \draw[a, gray!55] (s3.east) -- ++(1.2,0.2);
+    \draw[a, gray!55] (s3.east) -- ++(1.2,-0.2);
+
+    \node[font=\footnotesize\bfseries] at (3.6,3.3) {many schedules};
+    \node[font=\footnotesize\bfseries] at (7.6,2.0) {many backends};
+  \end{tikzpicture}
+  \caption[Algorithm/schedule/backend composition]{The separation is meaningful
+    only if it composes in both directions. \emph{One algorithm composes with
+    many schedules}: the same arithmetic is decomposed first across threads, then
+    across cluster ranks, then across embedded cores, by editing only the
+    schedule. \emph{Each schedule composes with many backends}: the same
+    decomposition is lowered to whichever runtime and transport a backend
+    provides, and a schedule compiles against any backend whose capabilities are
+    a superset of what it demands (only one schedule's fan-out is drawn in full;
+    the grey stub arrows indicate the other schedules fan out the same way). The
+    boundary is real exactly when either file can be changed independently and the
+    other still works --- a property that is tested, not asserted.}
+  \label{fig:composition}
+\end{figure}

@@ -1,0 +1,79 @@
+% fig:projection --- per-worker projection: elaborated ACFG -> N EventLists.
+% Faithful to chapters/06-architecture.tex sec:arch-projection:
+%   depth-first walk in source order; rules:
+%     Seq      -> visit children left to right
+%     Repeat   -> ONE Loop event per worker (structure preserved, not unrolled)
+%     Op       -> Fire on each worker it is placed on
+%     Sync     -> Barrier on each participant
+%     Xfer     -> Push on src worker, Wait on dst worker
+%   deterministic walk + sorted worker map => byte-identical lists across builds.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      node/.style={draw, rounded corners=2pt, inner sep=3pt, fill=blue!8,
+                   minimum height=5.5mm, font=\footnotesize},
+      ev/.style={draw, inner sep=2.5pt, font=\scriptsize, minimum height=5mm,
+                 align=center},
+      a/.style={-{Latex[length=2mm]}, thick},
+    ]
+    % ---- left: elaborated ACFG (children spread so no edge crosses a node) ----
+    % children drawn L->R as Op, Sync, Repeat so depth-first projection yields
+    % Fire, Barrier, Loop{...} -- matching the event lists on the right.
+    \node[node, fill=gray!15] (seq) at (-0.5,0) {Seq};
+    \node[node] (op) at (-2.6,-1.2) {Op @\,$\{$w0,w1$\}$};
+    \node[node, fill=green!12] (sy) at (-0.5,-1.2) {Sync};
+    \node[node, fill=orange!14] (rep) at (1.4,-1.2) {Repeat};
+    \node[node, fill=green!12] (xf) at (1.4,-2.4) {Xfer w0$\to$w1};
+    \draw[-{Latex[length=1.4mm]}] (seq)--(op);
+    \draw[-{Latex[length=1.4mm]}] (seq)--(sy);
+    \draw[-{Latex[length=1.4mm]}] (seq)--(rep);
+    \draw[-{Latex[length=1.4mm]}] (rep)--(xf);
+    \node[font=\footnotesize\bfseries] at (-0.5,0.8) {elaborated ACFG};
+
+    % ---- middle: projection walk ----
+    \node[draw, rounded corners, fill=yellow!12, align=left, font=\scriptsize,
+          text width=40mm, inner sep=3pt] (rules) at (5.1,-1.2)
+      {\textbf{depth-first, source order}\\
+       Seq\, $\to$ children L\,$\to$\,R\\
+       Repeat\, $\to$ one \texttt{Loop} event\\
+       Op\, $\to$ \texttt{Fire} on placed workers\\
+       Sync\, $\to$ \texttt{Barrier} on participants\\
+       Xfer\, $\to$ \texttt{Push} (src) $/$ \texttt{Wait} (dst)};
+    \draw[a] (2.4,-1.2) -- (rules.west);
+
+    % ---- right: per-worker event lists ----
+    \node[font=\footnotesize\bfseries] at (9.7,0.8) {one EventList per worker};
+    % w0
+    \node[ev, fill=blue!10] (a0) at (8.7,0.0) {\texttt{Fire}};
+    \node[ev, fill=green!12, below=1mm of a0] (a1) {\texttt{Barrier}};
+    \node[ev, fill=orange!14, below=1mm of a1] (a2) {\texttt{Loop}\,$\{$\,\texttt{Push}$\to$w1\,$\}$};
+    \node[font=\scriptsize, above=0.3mm of a0] {w0};
+    \node[draw, dashed, rounded corners, fit=(a0)(a2), inner sep=2pt] {};
+    % w1
+    \node[ev, fill=blue!10] (b0) at (11.0,0.0) {\texttt{Fire}};
+    \node[ev, fill=green!12, below=1mm of b0] (b1) {\texttt{Barrier}};
+    \node[ev, fill=orange!14, below=1mm of b1] (b2) {\texttt{Loop}\,$\{$\,\texttt{Wait}$\leftarrow$w0\,$\}$};
+    \node[font=\scriptsize, above=0.3mm of b0] {w1};
+    \node[draw, dashed, rounded corners, fit=(b0)(b2), inner sep=2pt] {};
+    \draw[a] (rules.east) to[out=0,in=180] (a0.west);
+
+    \node[font=\scriptsize\itshape, align=center, text width=60mm] at (9.8,-3.1)
+      {deterministic walk $+$ sorted worker map $\Rightarrow$
+       byte-identical lists across builds};
+  \end{tikzpicture}
+  \caption[Per-worker projection]{Per-worker projection turns the elaborated
+    ACFG into one totally ordered event list per worker. The walk is depth-first
+    in source order: a sequence visits its children left to right; a repeat wraps
+    each worker's projected body in a single \texttt{Loop} event (preserving the
+    iteration structure rather than unrolling it); an operation emits a
+    \texttt{Fire} on each worker it is placed on; a synchronisation emits a
+    barrier on each participant; and a transfer emits a \texttt{Push} on its
+    source worker and a \texttt{Wait} on its destination. Because the walk is
+    deterministic and worker lists are kept in a sorted map, two compilations of
+    the same program yield byte-identical event lists --- the prerequisite for
+    the reproducibility the validation strategy depends on. (\texttt{@\{w0,w1\}}
+    is the schedule's placement annotation; \texttt{Loop\{\dots\}} denotes the
+    events enclosed by a worker's loop.)}
+  \label{fig:projection}
+\end{figure}

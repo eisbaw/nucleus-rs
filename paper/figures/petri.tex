@@ -1,0 +1,75 @@
+% fig:petri --- the Petri-net IR structure + the event contract it projects to.
+% Faithful to chapters/06-architecture.tex sec:arch-petri:
+%   place kinds  = data slot | communication channel | barrier; each carries a
+%                  capacity (declared buffer size) + initial marking (pipeline/
+%                  double-buffer head-start).
+%   transition kinds = kernel firing | transfer | synchronisation.
+%   net is for analysis/inspection; the backend consumes the EVENT CONTRACT:
+%   per-worker events Fire / Push(+seq tag) / Wait / Sync(+sync tag) / Loop,
+%   with Alloc/Free RESERVED but not yet emitted. Generic; stencil = fig:wt-net.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      place/.style={draw, circle, minimum size=9mm, inner sep=1pt, fill=green!10,
+                    align=center, font=\scriptsize},
+      tr/.style={draw, fill=gray!70, minimum width=2.2mm, minimum height=9mm},
+      a/.style={-{Latex[length=1.6mm]}},
+    ]
+    % ---- generic net fragment ----
+    \node[place] (p1) at (0,0) {data\\slot};
+    \node[tr] (t1) at (1.5,0) {};
+    \node[place] (p2) at (3.0,0) {channel\\cap $k$};
+    \node[tr] (t2) at (4.5,0) {};
+    \node[place] (p3) at (6.0,0) {barrier};
+    \draw[a] (p1) -- (t1);
+    \draw[a] (t1) -- (p2);
+    \draw[a] (p2) -- (t2);
+    \draw[a] (t2) -- (p3);
+    % token (initial marking) in the channel place
+    \filldraw (3.0,0.18) circle (0.6mm);
+    \node[font=\scriptsize, above=1.2mm of p2] {init.\ marking};
+    \node[font=\scriptsize, below=0.5mm of t1, align=center] {firing\,/\\transfer};
+    \node[font=\scriptsize, below=0.5mm of t2] {sync};
+    \node[font=\footnotesize\bfseries] at (3.0,1.75) {Petri-net IR (analysis \& inspection only)};
+
+    % ---- legend of kinds ----
+    \node[draw, rounded corners, fill=gray!6, align=left, font=\scriptsize,
+          text width=52mm, inner sep=4pt, anchor=north west] (leg) at (-0.2,-1.2)
+      {\textbf{places} (state): data slot $\cdot$ channel (capacity $=$ buffer
+       size) $\cdot$ barrier; each with an initial marking.\\
+       \textbf{transitions} (events): kernel firing $\cdot$ transfer $\cdot$
+       synchronisation.};
+
+    % ---- projection to the event contract ----
+    \node[draw, rounded corners, fill=blue!8, align=left, font=\scriptsize,
+          text width=58mm, inner sep=4pt, anchor=north west] (ec) at (6.6,1.0)
+      {\textbf{Event contract} (sole backend interface --- one list per worker):\\[2pt]
+       $\bullet$ \texttt{Fire}\ \ run a kernel over an iteration tile\\
+       $\bullet$ \texttt{Push}\ \ send a tile to a worker \emph{(seq tag)}\\
+       $\bullet$ \texttt{Wait}\ \ receive the matching tile\\
+       $\bullet$ \texttt{Sync}\ \ barrier over participants \emph{(sync tag)}\\
+       $\bullet$ \texttt{Loop}\ \ preserve iteration structure\\
+       $\bullet$ \texttt{Alloc} / \texttt{Free}\ \ \emph{reserved, not yet emitted}};
+    \draw[a, thick] (5.0,0.35) to[out=40,in=180]
+      node[below=0pt,font=\scriptsize,pos=0.45]{project} (6.55,0.55);
+  \end{tikzpicture}
+  \caption[The Petri-net IR and the event contract]{The Petri-net IR and the
+    event contract the backend actually consumes. In the net, \emph{places} hold
+    state --- a data slot, a communication channel (whose capacity is the declared
+    buffer size), or a barrier --- each with an initial marking that encodes a
+    pipelined or double-buffered head-start; \emph{transitions} are kernel
+    firings, transfers, and synchronisations. The net exists only for analysis
+    and the soundness gate. Each transition is projected onto the worker that owns
+    it to form the \emph{event contract}: a per-worker list drawn from a small
+    fixed vocabulary (\texttt{Fire}, \texttt{Push} and \texttt{Wait} carrying a
+    sequence tag, \texttt{Sync} carrying a shared sync tag, \texttt{Loop}), with
+    \texttt{Alloc}/\texttt{Free} reserved but not yet emitted. A \emph{sequence
+    tag} is the compile-time identity pairing one \texttt{Push} with its matching
+    \texttt{Wait}; a \emph{sync tag} is a single identifier shared by all
+    participants of one barrier. (Circles are places, bars are transitions, and a
+    filled dot is a token, in the standard Petri-net convention.) This is the sole
+    interface to the backends; the concrete net for the stencil is
+    \cref{fig:wt-net}.}
+  \label{fig:petri}
+\end{figure}
