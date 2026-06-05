@@ -1,21 +1,234 @@
 \chapter{Validation}\label{ch:validation}
-% Content cycle: C4. Intent: explain the testing methodology and why it
-% constitutes a falsification of the model, not just a smoke test.
+
+A genericity claim --- one algorithm, many schedules, many backends, all in
+agreement --- is only worth as much as the instrument that could refute it. This
+chapter describes that instrument. The central design decision is to make the
+claim \emph{mechanically falsifiable} rather than merely plausible: every worked
+example is run through every applicable schedule on every capable backend, and any
+disagreement, by a single byte, is a hard failure that names the offending cell.
+The validation strategy is therefore not a smoke test that confirms the system
+runs; it is a falsification rig built to make the separation of algorithm,
+schedule, and target fail loudly if it leaks anywhere. The chapter presents that
+rig (\cref{sec:val-suite,sec:val-differential}), the compile-time soundness gate
+as a second, orthogonal guarantee (\cref{sec:val-gate}), the negative tests that
+prove every check actually bites (\cref{sec:val-negative}), the
+compile-mandatory/run-best-effort discipline for the cluster and embedded tiers
+(\cref{sec:val-tiers}), and the reproducibility substrate the whole apparatus
+rests on (\cref{sec:val-repro}). \Cref{ch:results} reports what the rig has so far
+established and, as importantly, what it has not.
 
 \section{The test suite is the specification}\label{sec:val-suite}
 
+The project adopts a deliberately austere rule: a capability is considered to
+exist only when a committed example exercises it end-to-end. There is no separate
+prose specification that the implementation is measured against; the corpus of
+worked examples, together with the matrix that declares which schedule and backend
+combinations each example requires, \emph{is} the specification. A feature with no
+example is not a feature.
+
+This inverts the usual relationship between document and artefact. A written
+specification drifts from the implementation the moment either changes, and the
+drift is silent --- nothing forces the two back into agreement. An executable
+specification cannot drift, because it is run on every change and a divergence is a
+build failure. The cost is that the specification is only as complete as the
+example corpus, and gaps in the corpus are gaps in the guarantee; this is an honest
+limitation, returned to in \cref{sec:val-tiers} and \cref{sec:res-limits}. The
+benefit is that every claim this dissertation makes about what the system does is,
+by construction, backed by an artefact that a reader can run.
+
+Each example is a small directory: an algorithm in the algorithm sublanguage, one
+or more schedules, a set of scalar kernels, a fixed input, and a reference output
+--- a golden file produced once by an independent reference implementation and then
+held immutable. The reference output is the oracle. The unit of testing is a
+\emph{cell} --- one triple of (example, schedule, backend), the smallest thing the
+matrix can require and the harness can run --- and a cell's emitted program is
+correct exactly when, fed the fixed input, it reproduces the reference output
+byte-for-byte. Which cells the matrix \emph{requires} to pass is itself a committed,
+reviewable declaration, so the distinction between a required cell and a deliberately
+skipped one is explicit rather than incidental. Because the oracle is a fixed byte string rather than a
+re-execution of the same generator, it cannot drift in lockstep with a bug in the
+compiler: a defect that corrupts both the emitted code and a freshly computed
+expectation would still be caught, because the committed reference predates the
+defect.
+
 \section{The tier-1 bit-identical differential rig}\label{sec:val-differential}
-% Same source -> N backends -> diff vs reference output.
+
+Differential testing --- running the same input through multiple implementations
+and treating any disagreement as a bug, without needing to know in advance which
+implementation is wrong --- is a well-established way to find compiler defects
+without a complete formal oracle~\cite{mckeeman1998differential,yang2011csmith}.
+The classical form compares independent compilers for the same language. The form
+used here is sharper, because the multiple implementations are not independent
+tools that merely ought to agree: they are the \emph{same algorithm} compiled
+under the \emph{same schedule} to different backends, and the entire thesis of the
+system is that they \emph{must} agree. A disagreement is therefore not just a bug
+in one backend; it is direct evidence that the algorithm, schedule, or
+target boundary has leaked --- that some decision which should have been confined
+to one layer has bled into another (\cref{fig:differential-rig}).
+
+The rig is the seven tier-1 backends of \cref{sec:be-tier1}. They are chosen to be
+cheap to build and run, so the full schedule-by-backend matrix fits on a developer
+laptop and on every continuous-integration invocation, and they are chosen to be
+\emph{maximally diverse} in the dimension that matters. They span shared memory,
+TCP loopback, and Unix-domain sockets; synchronous and asynchronous transfers;
+buffered and unbuffered channels; and blocking, polled, and event-reactor
+notification disciplines. The diversity is the point. A leak in the
+algorithm/schedule or middle-end/presentation boundary that happened to corrupt
+the output would have to corrupt it \emph{identically} across seven such different
+runtimes to escape detection --- and an error that produces the same wrong bytes
+on a spinning poll loop, an \texttt{epoll} reactor, and a barrier-synchronised
+thread pool is far less likely than one that manifests differently, or only on
+some, and is thereby caught. Two of the seven, \texttt{openmp-rs} and
+\texttt{pthreads-sync}, are deliberately capability-identical but run on different
+substrates, so a disagreement between just those two would isolate the fault to the
+substrate rather than the schedule.
+
+Concretely, the harness enumerates every required cell and for each one emits the
+project, builds it with the host toolchain, runs it against the fixed input, and
+compares the result to the example's reference output. A cell passes only if it
+builds, runs, and matches.
+Because all seven backends are compared against the same immutable reference, a set
+of cells that all pass are transitively byte-identical to one another: the
+reference is the shared fixed point through which mutual agreement is established.
+The harness reports a one-line-per-cell table and a totals line; a non-zero count
+of required-cell failures fails the build.
 
 \section{The soundness gate as a compile-time guarantee}\label{sec:val-gate}
 
+The differential rig is a dynamic check: it runs emitted code and inspects the
+bytes it produces. The soundness gate is its static complement. As described in
+\cref{sec:arch-gate}, before any backend code is emitted the Petri-net
+intermediate representation~\cite{murata1989petri} is checked for conflict-freedom,
+boundedness, and deadlock-freedom, and a failure is reported as a compile error
+naming the offending place or stalled transition rather than as a runtime hang
+discovered later.
+
+For validation the gate matters for a reason beyond the guarantee it gives the
+user: it runs on \emph{every} build of \emph{every} cell in the matrix. Each of
+the hundreds of differential cells therefore also exercises the gate on a real,
+shipping net, and every committed schedule is, by the fact that it builds at all,
+a positive witness that the gate accepts sound nets without false rejection. The
+gate currently rejects nothing in the example corpus --- which is the correct
+outcome, since every committed schedule is sound, and which is only meaningful
+because the negative tests of \cref{sec:val-negative} prove the gate is capable of
+rejecting. A check that accepts everything because it is empty looks identical, in
+a green build, to one that accepts everything because everything is genuinely
+sound; only an adversarial test that hands it a deliberately broken net can tell
+the two apart.
+
+The gate's soundness is bounded, and the bound is stated plainly. It is an exact
+replay over a single, statically-determined firing order, sound for the restricted
+class of nets this language produces precisely because those nets have no
+non-deterministic token routing, and it is emphatically not a general model checker
+for arbitrary Petri nets (\cref{sec:arch-gate}). Within its class it is both sound
+and inexpensive; outside that class it makes no claim. Conflating the two would
+overstate the result, so the dissertation does not.
+
 \section{Negative falsifiers: proving the checks bite}\label{sec:val-negative}
-% Determinism, cross-backend, and required-coverage falsifiers.
+
+A passing test suite establishes that the checks accept what they should. It says
+nothing about whether they would \emph{reject} what they should --- a check that
+can never fail provides no assurance at all, however green the build. The project
+therefore carries a set of \emph{negative falsifiers}: tests that deliberately
+inject a fault and fail unless the corresponding check catches it. Each is paired
+with an explicit signal proving the injection actually perturbed something, so that
+a falsifier which silently became a no-op --- the most dangerous failure mode for a
+negative test, since a no-op test is permanently and invisibly green --- is itself
+caught.
+
+Three such falsifiers guard the dynamic rig at the level of the test harness. The
+\emph{determinism falsifier} injects nondeterminism into the code generator and
+requires that the determinism check --- which compiles each cell twice and compares
+the two emissions --- detects the perturbation; it reports the number of cells it
+perturbed and fails if that number is zero. The \emph{cross-backend falsifier}
+corrupts the byte-level message framing of one message-passing backend and
+requires that the differential test detects the resulting byte divergence, defined
+precisely as a comparison failure on exactly that backend, so the falsifier cannot
+be satisfied by an unrelated failure. The \emph{required-coverage falsifier}
+injects a typo'd required cell --- a cell the matrix demands but that can never run
+--- and requires that the coverage guard, which checks that every declared-required
+cell was actually run, refuses to let it silently vanish; this defends the
+specification itself against erosion, since without the guard, deleting a required
+cell would quietly shrink the matrix and weaken every claim built on it. The same
+coverage falsifier is run a second time scoped to the cluster tier, so the
+message-passing matrix is protected by the identical mechanism rather than an
+approximation of it.
+
+The static soundness gate is exercised adversarially by a separate, complementary
+means: rather than an end-to-end injection, its rejection capability is established
+by unit tests that hand the gate deliberately unsound nets --- an over-capacity net
+that must be rejected as a boundedness error, a stalling net that must be rejected
+as a deadlock, and a free-choice net that must be rejected as a conflict --- and
+assert that each is refused with the correct diagnosis. The gate's acceptance of
+sound nets, in turn, is witnessed by every passing cell in the matrix. So the
+positive and negative directions are both covered for the gate, just not by the
+same instrument that covers the harness.
+
+These falsifiers and adversarial tests are not decoration. They convert each check
+from an assertion that \emph{happens} to hold on the current corpus into one that
+has been shown to fail on a corpus engineered to break it --- the difference between
+a claim that is true and a claim that is testable. A green differential matrix is
+only meaningful because the cross-backend falsifier proves the matrix can go red.
 
 \section{Tier-2 and tier-3 validation}\label{sec:val-tiers}
-% Compile-mandatory, run-best-effort; localhost MPI; in-simulator HIL.
+
+The tier-1 backends are cheap enough to run in full on every build. The cluster and
+embedded tiers are not: they need a message-passing runtime or an
+instruction-set simulator that is not present in every environment. The project
+handles this with the \emph{compile-mandatory, run-best-effort} discipline introduced
+in \cref{ch:backends}, and what follows is its validation-specific reading.
+Every backend, on every tier, must \emph{compile} for every schedule it is required
+to support; compilation is never waived, because a backend that fails to generate
+buildable code for a required schedule is a hard failure regardless of whether a
+runtime is on hand to execute it. The \emph{running and diffing} of the emitted
+code, by contrast, is performed wherever the necessary runtime exists and is
+treated as a best-effort confirmation on top of the mandatory compile.
+
+For the two MPI backends~\cite{mpiforum2021} of \cref{sec:be-tier2}, the runtime is
+a local \texttt{mpiexec}, which suffices to launch the single-program
+multiple-data binary across ranks on one machine; a full cluster is not required to
+establish value-correctness, only to measure performance, which is out of scope
+here. Where \texttt{mpiexec} is available the cluster cells are run and their output
+diffed against the same reference files the tier-1 rig uses, so the MPI backends
+are held to byte-exact value-correctness, not merely to compiling.
+
+For the embedded backend of \cref{sec:be-tier3}, the runtime is the Renode
+instruction-set simulator, which can co-simulate several microcontrollers wired
+together over a virtual UART fabric. The compile-mandatory half is exercised by
+cross-compiling each worker as a \texttt{no\_std} library for the embedded target;
+the run-best-effort half is a standing gate that generates the bare-metal binaries,
+cross-compiles them, co-simulates them, captures the output bytes, and diffs them
+against the reference file --- failing loud on any byte mismatch. Because the
+embedded tier needs a target toolchain and a simulator closure that the default
+development shell does not carry, its cells are marked as handled by this dedicated
+gate rather than by the tier-1 runtime matrix; the separation is explicit, so a
+reader is never misled into thinking an embedded cell ran inside the tier-1 totals
+when it was in fact validated by the simulator gate.
 
 \section{Reproducibility}\label{sec:val-repro}
-% Pinned toolchain; deterministic, byte-identical codegen.
 
-\todo{Write Chapter 8 (cycle C4).}
+The entire apparatus rests on two reproducibility properties, one of the toolchain
+and one of the compiler.
+
+The toolchain is pinned. The build environment --- the Rust compiler version, every
+dependency, the MPI libraries, the embedded cross-compiler, and the simulator --- is
+described by a Nix flake --- a content-addressed, declaratively pinned
+specification --- so that the same inputs produce the same environment on any
+machine that evaluates it~\cite{dolstra2004nix}. This matters for a differential test in particular: if
+two backends were built with two different compiler versions, a disagreement
+between them could be an artefact of the toolchain rather than evidence of a
+boundary leak, and the falsification rig would be measuring the wrong thing.
+Pinning removes that confound. The single pinned toolchain is also the sole source
+of truth for the minimum supported compiler version, so there is no second place
+for it to drift out of agreement with.
+
+The compiler is deterministic. The projection that turns the elaborated program
+into per-worker event lists walks the structure in a fixed source order and keeps
+all worker collections in sorted maps, so two compilations of the same program emit
+byte-identical \emph{source} (\cref{sec:arch-projection}). This is not a convenience; it is a
+precondition of the whole validation strategy. Byte-identical emission is what
+makes the determinism check meaningful --- it compiles each cell twice and compares
+--- and it is what lets the differential test attribute any divergence to a
+genuine difference between backends rather than to incidental nondeterminism in the
+generator. Determinism of the compiler and pinning of the toolchain are, together,
+the foundation on which every result in the next chapter stands.
