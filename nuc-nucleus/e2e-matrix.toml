@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity", "26-bin-min"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1529,6 +1529,107 @@ milestone = "M6"
 
 [[required]]
 example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 26-bin-min: TASK-0343.01.02 — the MIN-COMBINE (NON-ZERO-IDENTITY)
+# sibling of 08-histogram/distributed and 25-bin-parity/distributed.
+# The kernel `bin_min` declares `combine=min`, whose identity is
+# `i32::MAX` (NOT zero). The accumulator MUST pre-init to `i32::MAX` at
+# every init site across all 7 tier-1 backends (per-worker partial AND
+# host); the host element-wise combine emits `result[_k] =
+# result[_k].min(_tmp[_k])` (method form). The fixture is maximally
+# sensitive to a MISSED init site: ALL `val` strictly positive and bin
+# 15 EMPTY, so every output element diverges under a wrong 0-init
+# (`min(0, positive)=0` on non-empty bins; `0` instead of `i32::MAX` on
+# the empty bin). A wrong/missing identity init on ANY one backend
+# breaks the 7-way bit-identity — that divergence IS the proof no site
+# was missed. (It already bit a real defect during development: the
+# pthreads-async multi-worker init site was the structurally-identical
+# silent sibling, fixed in the same cycle.) Both schedules registered:
+# naive is the single-worker identity-init smoke; distributed is the
+# load-bearing cross-worker MIN-combine differential.
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "26-bin-min"
 schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"

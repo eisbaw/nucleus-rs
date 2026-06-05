@@ -1,0 +1,56 @@
+// Distributed schedule for example 26-bin-min (TASK-0343.01.02).
+//
+// The MIN-combine (non-zero-identity) sibling of 08-histogram/
+// distributed and 25-bin-parity/distributed. Mirrors them EXACTLY
+// (i-band partition, whole-array replicate, host element-wise combine)
+// — the load-bearing difference is the combine op AND its NON-ZERO
+// identity: `bin_min` declares `combine=min`, whose identity is
+// `i32::MAX`. Every per-worker partial AND the host `result` MUST
+// pre-init to `i32::MAX` (not 0), and the host emits
+// `result[_k] = result[_k].min(_tmp[_k])` (method form).
+//
+// Shape:
+//   host    — owns I/O (load_key / load_val / save_output).
+//   w0..w3  — each compute worker owns one i-band of the inputs and
+//             min-folds it into a private FULL-width `result` (whole-
+//             array replicate, pre-init i32::MAX). The compiler
+//             partitions the outer `i` loop across the four workers via
+//             partition=workers.
+//
+// Cross-worker edges:
+//   key     host -> { w0..w3 }   (host loads, workers consume)
+//   val     host -> { w0..w3 }   (host loads, workers consume)
+//   result  { w0..w3 } -> host   (workers produce, host MIN-combines)
+//
+// Why the combine is sound: `min` is associative + commutative, and the
+// i-band partition is a DISJOINT cover of the inputs — each input is
+// min-folded into its bin exactly once, in exactly one worker's partial.
+// A worker whose band contains no `key==b` keeps `result[b] == i32::MAX`
+// (the identity), so the host `min(i32::MAX, ...)` correctly ignores it.
+// The element-wise min of the 4 full partials equals the global per-bin
+// minimum, independent of worker arrival order => bit-identical across
+// all 7 tier-1 backends (PRD §10.1).
+//
+// All `sync` (the default transfer mode). `partition=workers` is the
+// partition policy for the outer `i` loop — the same shape examples
+// 03-reduction / 08-histogram / 25-bin-parity use.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O on host.
+    place load_key    on host;
+    place load_val    on host;
+    place save_output on host;
+
+    // The pure step kernel distributed across compute workers.
+    place bin_min on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one slice per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer key    : sync;
+    transfer val    : sync;
+    transfer result : sync;
+}

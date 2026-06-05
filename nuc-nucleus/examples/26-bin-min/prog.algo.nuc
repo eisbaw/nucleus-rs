@@ -1,0 +1,97 @@
+// Bin-min — array-output MIN-combine accumulator (TASK-0343.01.02).
+//
+// Two input streams of equal length N:
+//   - `key[i]` in [0, BINS)  — the bin each value belongs to.
+//   - `val[i]` strictly POSITIVE i32 — the value to min-fold.
+// The output is a BINS-element i32 array where `result[b]` is the
+// MINIMUM `val[i]` over all `i` with `key[i] == b`, or — for an EMPTY
+// bin (no `i` maps to `b`) — the MIN-identity `i32::MAX`.
+//
+// This is the MIN sibling of 08-histogram (which SUMS per-bin hits)
+// and the NON-ZERO-IDENTITY sibling of 25-bin-parity (which XOR-folds,
+// identity 0). It exists to exercise the NEW identity-aware
+// accumulator pre-init (TASK-0343.01.02): the kernel declares
+// `combine=min`, whose identity is `i32::MAX` (NOT zero), so the
+// per-worker partial AND the host accumulator MUST pre-init to
+// `i32::MAX` at every init site across all 7 tier-1 backends. The host
+// element-wise combine emits `result[_k] = result[_k].min(_tmp[_k])`
+// (method form).
+//
+// Why this fixture is maximally sensitive to a missed init site
+// -------------------------------------------------------------
+// ALL `val` are strictly positive, and the fixture has >=1 EMPTY bin.
+// So:
+//   - every NON-empty bin's correct result is positive; a backend that
+//     wrongly pre-inits to 0 yields `min(0, positive) == 0` => DIVERGES.
+//   - every EMPTY bin's correct result is `i32::MAX`; a 0-init backend
+//     yields `0` => DIVERGES.
+// A wrong/missing identity init on ANY ONE of the 7 backends therefore
+// breaks the 7-way bit-identity differential — that divergence IS the
+// proof that no init site was missed. (MAX-combine with positive values
+// would NOT catch a 0-init on a non-empty bin, so MIN is used here.)
+//
+// Why the distributed combine is sound: `min` is associative +
+// commutative, and the i-band partition over the OUTER input index `i`
+// is a DISJOINT cover of the inputs. Each worker whole-array-replicates
+// `result` (pre-init `i32::MAX`) and min-folds only its own i-band; a
+// worker that sees no `key==b` keeps `result[b] == i32::MAX`. The host
+// element-wise `min` of the 4 full partials equals the global per-bin
+// min independent of worker arrival order => bit-identical across all 7
+// tier-1 backends (PRD §10.1) and equals the independent reference
+// oracle. Mirrors 08-histogram/distributed EXACTLY (i-band partition,
+// whole-array replicate, host element-wise combine) — only the combine
+// op + its non-zero identity differ.
+//
+// What this example does NOT demonstrate:
+//   - Float reductions: PRD §10.1 demands bit-identity; integer min
+//     only (i32 `Ord::min`, total order, no NaN).
+//   - max / and: same identity-aware machinery, different identity
+//     (T::MIN / all-ones); min is the maximally-sensitive demo.
+
+const N    : usize = 256;     // total input length (per stream)
+const BINS : usize = 16;      // min-bin count
+
+// Two input arrays and the BINS-wide accumulator output. Each `data`
+// symbol is assigned by exactly one dataflow statement (PRD §6.2.1).
+data key    : i32[N];
+data val    : i32[N];
+data result : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+// `load_key` reads key from input.bin positions [0..N);
+// `load_val` reads val from positions [N..2N) (same two-input file
+// convention as 01-elementwise-add / 23-dot-product).
+kernel load_key    : ()          -> i32[N]   effectful;
+kernel load_val    : ()          -> i32[N]   effectful;
+kernel save_output : (i32[BINS]) -> ()       effectful;
+
+// Per-element masked min-fold kernel — pure, reorderable. Returns
+// `min(acc, v)` iff `k == b`, else `acc`. The conditional /
+// data-dependent indexing lives in the Rust kernel body (PRD §6.2.2:
+// arbitrary Rust); the algorithm uses only the rectangular masked-
+// accumulate shape 03/04/08 already prove bit-identical.
+//
+// `combine=min` (TASK-0343.01.02): under partition=workers each worker
+// whole-array-replicates `result` (pre-init i32::MAX) and the host
+// element-wise MIN-combines the per-worker partials. min is
+// associative + commutative => order-independent => bit-identical
+// across all 7 tier-1 backends (PRD §10.1).
+kernel bin_min     : (i32, i32, i32, i32) -> i32   pure combine=min;
+
+// Load both input streams on whoever owns I/O (the schedule decides).
+key <-- load_key();
+val <-- load_val();
+
+// Per-input rectangular masked min-accumulator. `result` is pre-
+// initialised to `i32::MAX` by the codegen (the MIN identity); each
+// (i, b) iteration calls `bin_min(result[b], key[i], val[i], b)` which
+// returns `min(result[b], val[i])` iff `key[i] == b`, else `result[b]`.
+// The fold builds the full per-bin minimum across all N inputs and all
+// BINS bins; empty bins retain the i32::MAX identity.
+for i : 0 .. N {
+    for b : 0 .. BINS {
+        result[b] <-- bin_min(result[b], key[i], val[i], b);
+    }
+}
+
+save_output(result);
