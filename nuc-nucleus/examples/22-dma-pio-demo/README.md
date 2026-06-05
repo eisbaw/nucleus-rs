@@ -113,9 +113,11 @@ gains[i]   = 200 + (i % 100) as i32  // [200, 299], straddles unity (256)
 The gain band straddles Q8 unity (`256`), so some samples are
 attenuated (`gain < 256`) and some amplified (`gain >= 256`) — a
 non-trivial pattern where a dropped or swapped element shows up in the
-output. The worst-case magnitude `|127 * 299| >> 8 = 148` stays well
-inside `i32` (no overflow for the committed fixture; `wrapping_mul`
-documents the contract regardless).
+output. The product is bounded by `|127 * 299| >> 8 = 148` (a loose
+cross-product bound — those two extremes never co-occur at the same
+index, so the actual max `|out|` over the committed fixture is smaller);
+either way it stays well inside `i32` (no overflow for the committed
+fixture; `wrapping_mul` documents the contract regardless).
 
 The fixtures are committed binaries (per
 [`docs/reference-impl-policy.md`](../../../docs/reference-impl-policy.md)

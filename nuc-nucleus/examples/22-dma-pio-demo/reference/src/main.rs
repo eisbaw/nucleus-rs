@@ -34,8 +34,10 @@
 //!                                          // unity (256), so some
 //!                                          // samples are attenuated
 //!                                          // and some amplified.
-//! Worst-case |out| ~= 127 * 299 >> 8 = 148, nowhere near i32 limits;
-//! `wrapping_mul` documents the overflow contract regardless.
+//! |out| is bounded by 127 * 299 >> 8 = 148 (a loose cross-product
+//! bound: those extremes never co-occur at the same index, so the
+//! realized max is smaller), nowhere near i32 limits; `wrapping_mul`
+//! documents the overflow contract regardless.
 //!
 //! N is fixed at 256 to match `const N : usize = 256` in
 //! `prog.algo.nuc`. If that const changes, this binary must change in
