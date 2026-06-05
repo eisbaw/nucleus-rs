@@ -55,7 +55,7 @@ use backend_common::check_frame::{
 };
 use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
-use backend_common::render::{render_array_init_for, rust_type_of};
+use backend_common::render::{render_array_init_for_combine, rust_type_of};
 
 use crate::ring_buffer::{emit_ring_instance_decl, emit_ring_struct_decl};
 use crate::{EmitError, NameTables};
@@ -528,7 +528,11 @@ impl<'a> Plan<'a> {
                 ))
             })?;
             let rty = rust_type_of(ty);
-            let init = render_array_init_for(ty);
+            // Identity-aware: an accumulator-fan-in datum pre-inits to
+            // its combine identity (TASK-0343.01.02); every other datum
+            // sees `None` → zero, unchanged.
+            let init =
+                render_array_init_for_combine(ty, self.sidecar.combine_for_data.get(did).copied());
             writeln!(out, "{pad}let mut {name}: {rty} = {init};").ok();
         }
         if !pre_init.is_empty() {
