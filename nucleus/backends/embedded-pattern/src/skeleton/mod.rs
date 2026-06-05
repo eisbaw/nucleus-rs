@@ -33,18 +33,29 @@ pub use multimcu::*;
 /// suite can pin its exact shape and the M10 shim author has one
 /// canonical reference for the trait surface.
 ///
-/// The SIX methods: `alloc_in_region` (reserve backing storage
+/// The required methods: `alloc_in_region` (reserve backing storage
 /// in a named region — a TCM / shared-SRAM / SDRAM address on real
 /// hardware), `dma_push` (enqueue a DMA descriptor draining a buffer to
 /// a peripheral / peer), `dma_wait` (block until a DMA channel
-/// completes), `irq_barrier` (an IRQ-completion control barrier),
-/// `monotonic_ns` (the PRD §6.3.5 tier-3 backend-specified monotonic
-/// clock that `check loop V : latency_max=T` measures against — TASK-
-/// 0048.04), and `report_violation` (the `on_violation=log` sink). The
-/// `StubShim` no-ops all six — `monotonic_ns` returns 0 and
+/// completes), `link_push` / `link_recv` (cross-worker inter-MCU
+/// transport — M11 TASK-0049.05), `irq_barrier` (an IRQ-completion
+/// control barrier), `monotonic_ns` (the PRD §6.3.5 tier-3
+/// backend-specified monotonic clock that `check loop V :
+/// latency_max=T` measures against — TASK-0048.04), and
+/// `report_violation` (the `on_violation=log` sink). The `StubShim`
+/// no-ops every required method — `monotonic_ns` returns 0 and
 /// `report_violation` does nothing (M9 AC#6 "no real timing"; a
 /// generated lib that carries a check_frame compiles but does not
 /// measure or report), compile-only (AC#3 / AC#6).
+///
+/// Plus three DEFAULT (provided) methods for the modelled DMA-async
+/// transport path (TASK-0438.02): `dma_link_arm` / `dma_link_recv_arm`
+/// delegate to `link_push` / `link_recv` (same UART fabric — modelled
+/// DMA shape, not a silicon DMA engine, AC#4), and `dma_link_poll`
+/// returns `true` (synchronous-completion model). Being defaulted, NO
+/// shim (`StubShim`, `MultiMcuShim`, `Usart1Shim`) needs to override
+/// them; a `mode=dma` transfer edge therefore moves bytes correctly
+/// over the existing transport with zero new per-shim impl code.
 pub const NUCLEUS_SHIM_SRC: &str = "\
 /// The hardware-abstraction trait the generated `no_std` code lowers
 /// against. A per-MCU SHIM crate (M10+, TASK-0048) implements this with
@@ -85,6 +96,39 @@ pub trait NucleusShim {
     /// concrete multi-MCU shim polls the channel's USART RX and fills
     /// `dst`.
     fn link_recv(&mut self, seq: usize, dst: *mut u8, len: usize);
+    /// Arm a MODELLED DMA send descriptor for cross-worker transport
+    /// channel `seq` (TASK-0438.02). This is the DMA-async analogue of
+    /// [`Self::link_push`]; the default implementation DELEGATES to
+    /// `link_push`, so the bytes ride the SAME UART fabric — a MODELLED
+    /// DMA SHAPE, not a silicon DMA engine. A per-MCU shim wanting a real
+    /// DMA-engine TX overrides this (deferred to TASK-0048.12); every
+    /// shim today (StubShim, MultiMcuShim, Usart1Shim) inherits the
+    /// delegate, keeping a DMA-mode cell byte-exact-capable over the
+    /// existing transport.
+    fn dma_link_arm(&mut self, seq: usize, src: *const u8, len: usize) {
+        self.link_push(seq, src, len);
+    }
+    /// Arm a MODELLED DMA receive descriptor for cross-worker transport
+    /// channel `seq` (TASK-0438.02) — the DMA-async analogue of
+    /// [`Self::link_recv`]. Default DELEGATES to `link_recv` (same UART
+    /// fabric, modelled DMA shape, not silicon DMA).
+    fn dma_link_recv_arm(&mut self, seq: usize, dst: *mut u8, len: usize) {
+        self.link_recv(seq, dst, len);
+    }
+    /// Poll the MODELLED DMA completion flag for channel `seq`
+    /// (TASK-0438.02). The default returns `true` unconditionally: the
+    /// modelled `dma_link_arm` / `dma_link_recv_arm` complete the transfer
+    /// SYNCHRONOUSLY inside the arm call (the bytes move over the UART
+    /// there and then), so completion is immediately observable. The
+    /// generated code spins on this (`while !dma_link_poll(seq) {}`) and
+    /// the spin terminates on its first iteration — there is no real
+    /// DMA-complete IRQ in the model, which is precisely why the generated
+    /// wait spins rather than `wfi`s (a `wfi` would block forever). A real
+    /// DMA-engine shim (TASK-0048.12) overrides this to read the silicon
+    /// transfer-complete bit.
+    fn dma_link_poll(&mut self, _seq: usize) -> bool {
+        true
+    }
     /// An IRQ-completion control barrier identified by `tag`. Unused by
     /// the single-worker examples 1 + 5 (no `Event::Sync` in a naive
     /// schedule); declared for the M10/M11 multi-MCU barrier surface. The
@@ -293,13 +337,20 @@ mod tests {
         // report_violation log sink), and the two M11 TASK-0049.05
         // cross-worker transport methods (link_push / link_recv — distinct
         // from the effectful dma_push/dma_wait so a real multi-MCU shim can
-        // route peripheral IO and inter-MCU transport to different USARTs).
+        // route peripheral IO and inter-MCU transport to different USARTs),
+        // and the three TASK-0438.02 modelled-DMA transport hooks
+        // (dma_link_arm / dma_link_recv_arm / dma_link_poll — DEFAULT
+        // methods delegating to link_push/link_recv, so no per-shim impl
+        // churn; the generated DMA-mode path emits an arm + completion-spin).
         for m in [
             "fn alloc_in_region",
             "fn dma_push",
             "fn dma_wait",
             "fn link_push",
             "fn link_recv",
+            "fn dma_link_arm",
+            "fn dma_link_recv_arm",
+            "fn dma_link_poll",
             "fn irq_barrier",
             "fn monotonic_ns",
             "fn report_violation",

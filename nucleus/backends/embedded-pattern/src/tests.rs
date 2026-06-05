@@ -24,6 +24,7 @@ mod boot_order;
 mod input_offsets;
 mod output_capture;
 mod sync_guard;
+mod transport_mode_render;
 mod transport_per_seq;
 
 fn repo_root() -> PathBuf {

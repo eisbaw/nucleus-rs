@@ -21,6 +21,7 @@ use backend_common::render::{
 };
 use backend_common::EmitError;
 use nucleus_compiler::event::{DataId, Event, FireBinding, KernelId, ViolationKind};
+use nucleus_compiler::sched::TransportMode;
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
@@ -352,17 +353,69 @@ fn render_event(
             // Push/Wait data so the symbol is in scope).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
-            writeln!(
-                out,
-                "{pad}// Push `{name}` (seq {chan}) to peer worker via the inter-MCU transport."
-            )
-            .ok();
-            writeln!(
-                out,
-                "{pad}shim.link_push({chan}, {name}.as_ptr() as *const u8, \
-                 core::mem::size_of_val(&{name}));"
-            )
-            .ok();
+            // Per-seq transport mode (TASK-0438.02). Threaded from the
+            // schedule's `transfer DATA : mode=pio|dma` directive through
+            // `TransferPolicy.transport` into `NameSidecar.
+            // transfer_transport_for_seq`. A seq absent here renders the
+            // unchanged PIO path — so a schedule with NO `mode=` directive
+            // is byte-identical to pre-TASK-0438.02 (load-bearing for the
+            // 02-split-add / 14-hearing-aid byte-exact gate, AC#3).
+            let mode = ctx
+                .sidecar
+                .transfer_transport_for_seq
+                .get(seq)
+                .copied()
+                .unwrap_or(TransportMode::Pio);
+            match mode {
+                TransportMode::Pio => {
+                    // PIO comment + call kept BYTE-IDENTICAL to pre-TASK-0438.02
+                    // so a no-`mode=` schedule (02-split-add / 14-hearing-aid)
+                    // emits an unchanged Push (AC#3).
+                    writeln!(
+                        out,
+                        "{pad}// Push `{name}` (seq {chan}) to peer worker via the inter-MCU transport."
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}shim.link_push({chan}, {name}.as_ptr() as *const u8, \
+                         core::mem::size_of_val(&{name}));"
+                    )
+                    .ok();
+                }
+                TransportMode::Dma => {
+                    // DMA-async push: arm a transfer descriptor, then spin on
+                    // the completion flag. This is a MODELLED DMA SHAPE, NOT a
+                    // silicon DMA engine (AC#4) — the bytes ride the SAME UART
+                    // fabric (the default `dma_link_arm` delegates to
+                    // `link_push`). The real STM32H7 DMA engine is deferred to
+                    // TASK-0048.12.
+                    //
+                    // SPIN, not `wfi` (AC#2): the modelled shim completes the
+                    // transfer synchronously inside the arm call (no real
+                    // DMA-complete IRQ fires), so `wfi` would deadlock waiting
+                    // for an interrupt that never arrives. `dma_link_poll`
+                    // returns true immediately, so the spin loop is the honest
+                    // structural completion-wait and terminates on its first
+                    // iteration.
+                    writeln!(
+                        out,
+                        "{pad}// DMA-async push of `{name}` (seq {chan}): arm descriptor, then spin on completion."
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}shim.dma_link_arm({chan}, {name}.as_ptr() as *const u8, \
+                         core::mem::size_of_val(&{name}));"
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
+                    )
+                    .ok();
+                }
+            }
             Ok(())
         }
         Event::Wait { data, seq, .. } => {
@@ -377,17 +430,49 @@ fn render_event(
             // (loads, computes, and Waits).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
-            writeln!(
-                out,
-                "{pad}// Wait for `{name}` (seq {chan}) from peer worker; receive into the local."
-            )
-            .ok();
-            writeln!(
-                out,
-                "{pad}shim.link_recv({chan}, {name}.as_mut_ptr() as *mut u8, \
-                 core::mem::size_of_val(&{name}));"
-            )
-            .ok();
+            // Per-seq transport mode (TASK-0438.02) — symmetric to the Push
+            // arm. PIO/absent: the existing blocking byte-loop receive; DMA:
+            // a descriptor-arm + completion-spin. See the Push arm for the
+            // SPIN-not-wfi rationale and the modelled-vs-silicon caveat.
+            let mode = ctx
+                .sidecar
+                .transfer_transport_for_seq
+                .get(seq)
+                .copied()
+                .unwrap_or(TransportMode::Pio);
+            match mode {
+                TransportMode::Pio => {
+                    writeln!(
+                        out,
+                        "{pad}// Wait for `{name}` (seq {chan}) from peer worker; receive into the local."
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}shim.link_recv({chan}, {name}.as_mut_ptr() as *mut u8, \
+                         core::mem::size_of_val(&{name}));"
+                    )
+                    .ok();
+                }
+                TransportMode::Dma => {
+                    writeln!(
+                        out,
+                        "{pad}// DMA-async receive of `{name}` (seq {chan}): arm descriptor, then spin on completion."
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}shim.dma_link_recv_arm({chan}, {name}.as_mut_ptr() as *mut u8, \
+                         core::mem::size_of_val(&{name}));"
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
+                    )
+                    .ok();
+                }
+            }
             Ok(())
         }
         Event::Sync { sync, .. } => {
