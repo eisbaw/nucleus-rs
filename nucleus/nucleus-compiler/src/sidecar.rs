@@ -92,6 +92,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::algo::{IrExpr, Purity, ResolvedType, ScalarType};
 use crate::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
+use crate::sched::TransportMode;
 use crate::link::LinkedIR;
 
 /// The unevaluated source bounds of a `for` loop, captured before
@@ -234,6 +235,36 @@ pub struct NameSidecar {
     /// deserialises as empty.
     #[cfg_attr(feature = "serde", serde(default))]
     pub transfer_buffer_for_seq: BTreeMap<SeqTag, u64>,
+
+    /// Per-SeqTag transfer transport mode — the `transfer DATA :
+    /// mode=pio|dma` hint the schedule's directive carries through to
+    /// the matched Push/Wait pair (TASK-0438.02). Exact structural
+    /// mirror of [`transfer_buffer_for_seq`](Self::transfer_buffer_for_seq):
+    /// the value lives in `ACFG::XferPlaceholder::policy.transport`
+    /// upstream (threaded by TASK-0438.01), but the backend receives
+    /// only `NameSidecar` per the EventList contract (TASK-0124), so it
+    /// rides along the sidecar.
+    ///
+    /// The embedded-pattern backend joins this map with `Event::Push`/
+    /// `Event::Wait`'s `seq` to choose between the PIO byte-loop
+    /// (`shim.link_push`/`link_recv`) and a structurally distinct
+    /// DMA-shaped descriptor-arm + completion-spin emit. A seq absent
+    /// here (or [`TransportMode::Pio`]) renders the unchanged PIO path —
+    /// so any schedule without a `mode=` directive is byte-identical to
+    /// pre-TASK-0438.02 (load-bearing for the 02-split-add / 14-hearing
+    /// -aid byte-exact gate).
+    ///
+    /// One entry per matched Push/Wait pair (the seq is unique per
+    /// pair; both endpoints share it — `passes::transfer_inject`
+    /// guarantees that invariant, same contract as
+    /// [`transfer_buffer_for_seq`](Self::transfer_buffer_for_seq)).
+    ///
+    /// Empty for any algorithm that produces no cross-worker transfers.
+    /// Determinism: `BTreeMap` keyed by SeqTag; iteration is in numeric
+    /// order. serde-default so an older wire payload (no field)
+    /// deserialises as empty (all transfers default to PIO).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode>,
 
     /// Per-(KernelId, IterVar) halo width inferred from the kernel's
     /// access pattern (TASK-0260, Stage 1). Mirrors
@@ -693,6 +724,15 @@ pub fn build_sidecar(
     let mut transfer_buffer_for_seq: BTreeMap<SeqTag, u64> = BTreeMap::new();
     collect_transfer_buffers(&acfg.root, &mut transfer_buffer_for_seq);
 
+    // (f') Per-SeqTag transfer transport mode (TASK-0438.02). Exact
+    //      mirror of (f): walk the same post-pass ACFG tree and key the
+    //      policy.transport hint by seq. A Push and its matching Wait
+    //      share one seq + one transport value (transfer_inject pairs
+    //      them), so the second insertion under a given key is
+    //      idempotent — same invariant as the buffer map.
+    let mut transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode> = BTreeMap::new();
+    collect_transfer_transports(&acfg.root, &mut transfer_transport_for_seq);
+
     // (g) Per-(KernelId, IterVar) halo widths (TASK-0260 Stage 1).
     //     Forwarded verbatim from the ACFG sidecar `halo_widths`, which
     //     the `passes::halo_inference` pass populated by walking
@@ -783,6 +823,7 @@ pub fn build_sidecar(
         kernel_sigs,
         partition_worker_ranges,
         transfer_buffer_for_seq,
+        transfer_transport_for_seq,
         halo_widths,
         reuse_widths,
         partition_pairs,
@@ -897,6 +938,34 @@ fn collect_transfer_buffers(node: &crate::acfg::ACFGNode, out: &mut BTreeMap<Seq
         }
         ACFGNode::Repeat { body, .. } => {
             collect_transfer_buffers(body, out);
+        }
+    }
+}
+
+/// Walk an ACFG subtree, populating `out` with `(seq -> policy.transport)`
+/// from every `XferPlaceholder` encountered (TASK-0438.02). Exact mirror
+/// of [`collect_transfer_buffers`] — same traversal, same idempotent
+/// double-write across the Push/Wait pair (both endpoints share one seq
+/// and one `policy.transport`, so the second insertion under a given key
+/// is a no-op). We accept the redundant write rather than branching on
+/// role — simpler + no behavior difference.
+fn collect_transfer_transports(
+    node: &crate::acfg::ACFGNode,
+    out: &mut BTreeMap<SeqTag, TransportMode>,
+) {
+    use crate::acfg::ACFGNode;
+    match node {
+        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
+        ACFGNode::Xfer(x) => {
+            out.insert(x.seq, x.policy.transport);
+        }
+        ACFGNode::Sequence(children) => {
+            for c in children {
+                collect_transfer_transports(c, out);
+            }
+        }
+        ACFGNode::Repeat { body, .. } => {
+            collect_transfer_transports(body, out);
         }
     }
 }

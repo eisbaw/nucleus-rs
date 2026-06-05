@@ -130,6 +130,7 @@ use nucleus_compiler::event::{
     KernelId, Region, SeqTag, SyncKind, SyncTag, ViolationKind, WorkerId,
 };
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
+use nucleus_compiler::sched::TransportMode;
 use nucleus_compiler::sidecar::{ConstValue, KernelSig, LoopBound, NameSidecar};
 
 /// Case count floor for both round-trip properties. proptest's default
@@ -180,6 +181,7 @@ fn sidecar_field_completeness_guard(s: &NameSidecar) {
         kernel_sigs: _,
         partition_worker_ranges: _,
         transfer_buffer_for_seq: _,
+        transfer_transport_for_seq: _,
         halo_widths: _,
         reuse_widths: _,
         partition_pairs: _,
@@ -614,6 +616,12 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
     // transfer_buffer_for_seq: BTreeMap<SeqTag, u64>
     let transfer_buffer_for_seq =
         prop::collection::btree_map(any::<u64>().prop_map(SeqTag), any::<u64>(), 0..=3);
+    // transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode> (TASK-0438.02)
+    let transfer_transport_for_seq = prop::collection::btree_map(
+        any::<u64>().prop_map(SeqTag),
+        prop_oneof![Just(TransportMode::Pio), Just(TransportMode::Dma)],
+        0..=3,
+    );
     // halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>
     let halo_widths = prop::collection::btree_map(
         any::<u64>().prop_map(KernelId),
@@ -656,7 +664,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-        (cumulative_data, data_decl_order),
+        (cumulative_data, data_decl_order, transfer_transport_for_seq),
     )
         .prop_map(
             |(
@@ -670,7 +678,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 reuse_widths,
                 partition_pairs,
                 grid_shape_for_outer_iv,
-                (cumulative_data, data_decl_order),
+                (cumulative_data, data_decl_order, transfer_transport_for_seq),
             )| NameSidecar {
                 data_types,
                 consts,
@@ -678,6 +686,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 kernel_sigs,
                 partition_worker_ranges,
                 transfer_buffer_for_seq,
+                transfer_transport_for_seq,
                 halo_widths,
                 reuse_widths,
                 partition_pairs,
