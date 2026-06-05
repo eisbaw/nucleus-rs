@@ -1,0 +1,30 @@
+// Naive schedule for example 23-dot-product.
+//
+// Single worker `host`, every kernel placed there. Smoke test for the
+// algorithm/schedule split end-to-end against this algorithm file, and
+// the cross-backend differential workhorse: if `23-dot-product` parses,
+// lowers, links, and emits reference-matching bytes under this schedule
+// on every tier-1 backend, the map-reduce composition is sound.
+//
+// No `transfer` directives: with everything on one worker no data
+// crosses worker boundaries. PRD §6.3.4 only requires `transfer` for
+// cross-worker edges; the link pass enforces that.
+//
+// No loop transforms: no `block=`, no `vectorize=`, no `partition=`.
+// The point of the smoke test is "the algorithm runs sequentially and
+// produces the reference". A distributed schedule (partitioning the
+// `w` axis, as sketched in 03-reduction) is out of scope here.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input   on host;
+    place load_input_b on host;
+    place save_output  on host;
+    place mul          on host;
+    place accumulate   on host;
+    place combine      on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

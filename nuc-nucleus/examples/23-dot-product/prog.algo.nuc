@@ -1,0 +1,143 @@
+// Dot product (inner product) — the canonical MAP-REDUCE pattern.
+//
+// Two input vectors a, b of equal length N (each laid out as
+// NUM_WORKERS x PARTITION_SIZE so the partition axis is exposed at the
+// algorithm level, identical to 03-reduction). The result is the
+// scalar inner product  result = sum_k a[k] * b[k]. Expressed as
+// three phases:
+//   Phase 0 (MAP): elementwise products `prod[w][i] = a[w][i] * b[w][i]`.
+//   Phase 1 (per-partition accumulate): each of NUM_WORKERS rows of
+//     `prod` is folded into `partials[w]` with `accumulate(acc, x)`.
+//   Phase 2 (tree combine): pairwise `combine(a, b)` reduces the four
+//     partials into the single scalar `result`.
+//
+// This is a DISTINCT vertical from its two parents:
+//   - 01-elementwise-add is a PURE MAP (load -> per-index kernel ->
+//     save), no reduction.
+//   - 03-reduction is a PURE REDUCE over a SINGLE input array, no map.
+//   - 23-dot-product is MAP-THEN-REDUCE over TWO inputs — the smallest
+//     standalone inner product. 07-matmul and 17-spmv use dot-products
+//     internally but there is no standalone one; this example fills
+//     that gap. The MAP phase is exactly 01's two-input elementwise
+//     shape (now 2D-indexed), and phases 1-2 are byte-for-byte the
+//     same two-phase reduction as 03-reduction.
+//
+// What this example demonstrates:
+//   - Composition of two already-proven dataflow shapes at the
+//     algorithm level: a two-input elementwise map feeding a two-phase
+//     tree reduction, with no new codegen surface.
+//   - The explicit `prod` intermediate. v2 codegen disallows nested
+//     kernel calls inside an argument expression, so the "fused"
+//     spelling `accumulate(partials[w], mul(a[w][i], b[w][i]))` would
+//     not compile. Materialising the map output into its own data
+//     symbol (`prod`) is the convention used throughout the examples
+//     (same reasoning as the `half1`/`half2` intermediates in 03).
+//   - Accumulating pattern in the algorithm sublanguage. The LHS
+//     `partials[w]` appears on the RHS of the SAME dataflow statement;
+//     the single-assignment rule (PRD §6.2.1) is on the data symbol
+//     (one statement assigns `partials`), not on every iteration of
+//     the enclosing loops. The codegen pre-initialises `partials` to
+//     zero (the additive identity for sum), so the inner-loop fold is
+//     well-defined — identical to 03.
+//   - 2D shapes `a,b,prod : i32[NUM_WORKERS][PARTITION_SIZE]` so the
+//     inner references `a[w][i]`, `b[w][i]`, `prod[w][i]` use only
+//     iteration variables in their index expressions (the codegen's
+//     flat-index renderer resolves the row-major stride at compile
+//     time from each data symbol's shape; only `render_const_expr`
+//     resolves consts to literals — so referring to a const inside a
+//     flat index expression would leak an undefined identifier into
+//     the generated Rust. Shape-driven indexing sidesteps that).
+//
+// What this example does NOT demonstrate:
+//   - Distributed placement across compute workers. Like 03, the
+//     naive schedule places everything on `host`; a distributed
+//     variant would partition the `w` axis but is out of scope here
+//     (the naive cross-backend differential is the acceptance signal).
+//   - Float dot products. PRD §10.1 demands bit-identity; floating-
+//     point sum order is not deterministic across reorderings.
+//     Integer only.
+//   - Fused multiply-accumulate as a single kernel. Kept as separate
+//     `mul` + `accumulate` so the map and reduce phases stay visibly
+//     distinct (and so the reduce phases are literally 03's kernels).
+//
+// Numeric choice & determinism (PRD §10.1): i32 throughout, with
+// `wrapping_mul` in the map and `wrapping_add` in both the accumulate
+// and combine steps. Integer arithmetic is bit-deterministic by
+// language definition. `wrapping_add` is associative AND commutative
+// over i32 (two's-complement modular arithmetic forms a commutative
+// ring), so the tree-combine pairing order is irrelevant to the
+// result — every backend and every reordering produces the same
+// bytes. This is the SAME property 03-reduction relies on for its
+// cross-backend bit-identity. The committed fixture (see reference/)
+// keeps every product and every partial sum well inside the i32
+// range, but the wrapping spelling documents overflow intent
+// defensively.
+
+const N             : usize = 256;               // per-vector length
+const NUM_WORKERS   : usize = 4;                 // partition count
+const PARTITION_SIZE: usize = N / NUM_WORKERS;   // 64 per partition
+
+// Two input vectors, the elementwise products (map output), the
+// per-worker partials, two tree-reduction intermediates, and the
+// final scalar result. Each `data` symbol is assigned by exactly one
+// dataflow statement (PRD §6.2.1).
+data a        : i32[NUM_WORKERS][PARTITION_SIZE];   // first vector
+data b        : i32[NUM_WORKERS][PARTITION_SIZE];   // second vector
+data prod     : i32[NUM_WORKERS][PARTITION_SIZE];   // elementwise products
+data partials : i32[NUM_WORKERS];
+data half1    : i32;
+data half2    : i32;
+data result   : i32;
+
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+// `load_input` reads a from input.bin positions [0..N);
+// `load_input_b` reads b from positions [N..2N) (same two-input file
+// convention as 01-elementwise-add).
+kernel load_input   : () -> i32[NUM_WORKERS][PARTITION_SIZE] effectful;
+kernel load_input_b : () -> i32[NUM_WORKERS][PARTITION_SIZE] effectful;
+kernel save_output  : (i32) -> ()                            effectful;
+
+// Map / reduce step kernels — pure, reorderable, deduplicable.
+// `mul(a, b)` is the elementwise map step (phase 0).
+// `accumulate(acc, x)` is the per-element fold step (phase 1).
+// `combine(a, b)` is the binary tree-reduction step (phase 2).
+// All are scalar (i32, i32) -> i32 so the contract pass (TASK-0012,
+// scalar-only at M1) accepts them directly.
+kernel mul          : (i32, i32) -> i32 pure;
+kernel accumulate   : (i32, i32) -> i32 pure;
+kernel combine      : (i32, i32) -> i32 pure;
+
+
+// Load both input vectors on whoever owns I/O (the schedule decides).
+a <-- load_input();
+b <-- load_input_b();
+
+// Phase 0 — MAP: elementwise products a[w][i] * b[w][i]. The explicit
+// `prod` edge is required because v2 forbids nested kernel calls in an
+// argument expression (see header).
+for w : 0 .. NUM_WORKERS {
+    for i : 0 .. PARTITION_SIZE {
+        prod[w][i] <-- mul(a[w][i], b[w][i]);
+    }
+}
+
+// Phase 1 — per-partition accumulation over `prod`. IDENTICAL to
+// 03-reduction phase 1 (only the source array differs: `prod` instead
+// of `a`). `partials` is pre-initialised to zero (the additive
+// identity for sum); each (w, i) iteration folds one product into
+// `partials[w]`.
+for w : 0 .. NUM_WORKERS {
+    for i : 0 .. PARTITION_SIZE {
+        partials[w] <-- accumulate(partials[w], prod[w][i]);
+    }
+}
+
+// Phase 2 — tree combine of partials into the scalar result. Depth=2
+// for NUM_WORKERS=4; explicit and audit-friendly. IDENTICAL to
+// 03-reduction phase 2. Each intermediate scalar is single-assigned.
+half1  <-- combine(partials[0], partials[1]);
+half2  <-- combine(partials[2], partials[3]);
+result <-- combine(half1, half2);
+
+save_output(result);

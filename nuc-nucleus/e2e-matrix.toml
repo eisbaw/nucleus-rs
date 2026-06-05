@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1368,6 +1368,57 @@ milestone = "M6"
 
 [[required]]
 example  = "17-spmv"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 23-dot-product/naive: TASK-0448 — the canonical MAP-REDUCE (inner
+# product). Standalone dot product (elementwise multiply two vectors
+# then two-phase tree sum-reduce to a scalar) — uncovered by the
+# existing examples (07-matmul/17-spmv embed dot-products but there was
+# no standalone one). Pure composition: 01's two-input elementwise map
+# feeding 03's two-phase tree reduction; NO new codegen surface. i32 /
+# wrapping (associative+commutative), so the tree-combine order is
+# irrelevant and all 7 tier-1 backends emit bytes bit-identical to
+# reference.bin. Mirrors the 17-spmv naive block (naive x 7 tier-1, M6).
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "23-dot-product"
 schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"
