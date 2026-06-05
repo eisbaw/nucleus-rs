@@ -55,6 +55,7 @@ fn fixtures(
             params: vec![param_ty],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
     (names, sidecar)

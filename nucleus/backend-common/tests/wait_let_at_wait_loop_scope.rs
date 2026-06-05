@@ -169,6 +169,7 @@ fn at_risk_tables() -> (NameTables, NameSidecar, DataId, SeqTag, IterVar, Kernel
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
     (names, sidecar, data, seq, iv, kernel)

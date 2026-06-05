@@ -64,6 +64,7 @@ fn fixtures(iv: IterVar, data: DataId, kernel: KernelId) -> (NameTables, NameSid
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
     (names, sidecar)

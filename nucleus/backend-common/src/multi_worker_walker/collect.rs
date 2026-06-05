@@ -453,6 +453,27 @@ pub fn check_accumulator_consistency(
                      multiple whole-array pushes for non-accumulator semantics"
                 )));
             }
+            // SOUNDNESS reject (TASK-0343.01.01 AC#4): an
+            // overlapping-write accumulator MUST declare its combine
+            // identity on its owning kernel. Pre-TASK-0343.01.01 the
+            // codegen silently assumed `sum` (`wrapping_add`); an
+            // accumulator with no `combine = <op>` is now a fail-loud
+            // EmitError so a non-sum fan-in cannot be mis-combined as a
+            // sum. `combine_for_data` is built in `build_sidecar` from
+            // the accumulator's Dataflow-RHS callee kernel's `combine`
+            // attribute — absent here ⇔ no attribute declared.
+            if !sidecar.combine_for_data.contains_key(data) {
+                return Err(EmitError::AccumulatorShapeMismatch(format!(
+                    "data symbol `{name}` is an overlapping-write accumulator fan-in \
+                     (>=2 whole-array Waits ⇒ element-wise host combine), but its owning \
+                     kernel declares NO `combine = <op>` identity. The host combine would \
+                     otherwise silently assume `sum` (the pre-TASK-0343.01.01 hardcoded \
+                     behaviour), which is unsound for a non-sum accumulator. Declare the \
+                     identity on the kernel that writes `{name}` on its `<--` RHS: \
+                     `combine = sum|or|xor`. (min/max/and need identity-aware init and are \
+                     deferred to TASK-0343.01.02.)"
+                )));
+            }
         }
     }
     Ok(())

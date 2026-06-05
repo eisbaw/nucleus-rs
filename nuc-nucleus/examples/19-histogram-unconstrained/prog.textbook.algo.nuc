@@ -51,7 +51,10 @@ kernel save_output : (i32[BINS]) -> ()        effectful;
 kernel bucket      : (i32)        -> i32       pure;
 
 // Per-hit increment kernel — pure, reorderable. `inc(acc) = acc + 1`.
-kernel inc         : (i32)        -> i32       pure;
+// `combine=sum`: distributed-replicate fan-in sums per-worker partials
+// at the host (TASK-0343.01.01); `wrapping_add`, byte-identical to the
+// pre-attribute combine.
+kernel inc         : (i32)        -> i32       pure combine=sum;
 
 // Load the entire input on whoever owns I/O (the schedule decides).
 input <-- load_input();

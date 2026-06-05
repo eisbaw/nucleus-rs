@@ -106,6 +106,7 @@ fn pthreads_sync_emits_reuse_marker_when_reuse_widths_populated_under_block_tag(
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
 
@@ -264,6 +265,7 @@ fn pthreads_sync_strip_mine_arm_emits_real_buffer_codegen() {
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
 
@@ -421,6 +423,7 @@ fn codegen_recognises_const_named_offset_via_affine_decompose() {
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
 

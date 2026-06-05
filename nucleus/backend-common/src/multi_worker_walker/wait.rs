@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::algo::{ResolvedType, ScalarType};
+use nucleus_compiler::algo::{CombineOp, ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, IterTile, IterVar, SeqTag};
 use nucleus_compiler::sidecar::NameSidecar;
 
@@ -131,7 +131,7 @@ pub fn render_wait_assign(
                         "accumulate Wait of data {data:?} has no ResolvedType in NameSidecar"
                     ))
                 })?;
-                render_accumulate_assign(name, rhs, ty)
+                render_accumulate_assign(sidecar, data, name, rhs, ty)
             } else if let_at_wait.contains(&data) {
                 // TASK-0349 cycle 220: whole-array recv on a data
                 // symbol whose ONLY Waits are whole-array (and which
@@ -548,78 +548,135 @@ pub(super) fn is_whole_array_recv(
     Ok(wait_slice(sidecar, data, tile)?.is_none())
 }
 
-/// Element-wise sum-identity accumulate emit for the overlapping-write
-/// fan-in arm of `render_wait_assign` (TASK-0343, cycle 189).
+/// Combine emit form for one [`CombineOp`] (TASK-0343.01.01).
 ///
-/// Emits one of:
-/// - Array: `{ let _tmp = <rhs>; for _k in 0..<LEN>usize { <name>[_k] =
-///   <name>[_k].wrapping_add(_tmp[_k]); } }`. `<LEN>` is the product of
-///   `ty.dims` (flat element count; matches `render_array_init`'s
-///   per-backend zero-init).
-/// - Scalar: `<name> = <name>.wrapping_add(<rhs>);`. The scalar case
-///   is structurally degenerate but kept for completeness — if a
-///   future schedule fans a scalar accumulator into a host worker
-///   the emit is well-defined without falling back to the array form.
+/// - `Method(m)` → `<lhs> = <lhs>.<m>(<rhs>);` — the `sum`
+///   (`wrapping_add`) form, preserved byte-identical with the
+///   pre-TASK-0343.01.01 hardcoded emit.
+/// - `Operator(o)` → `<lhs> = <lhs> <o> <rhs>;` — the bitwise `or`
+///   (`|`) / `xor` (`^`) forms.
+enum CombineForm {
+    Method(&'static str),
+    Operator(&'static str),
+}
+
+impl CombineForm {
+    /// Emit `<lhs> = <combine of lhs and rhs>` (no trailing `;`).
+    fn emit(&self, lhs: &str, rhs: &str) -> String {
+        match self {
+            CombineForm::Method(m) => format!("{lhs} = {lhs}.{m}({rhs})"),
+            CombineForm::Operator(o) => format!("{lhs} = {lhs} {o} {rhs}"),
+        }
+    }
+}
+
+/// Element-wise overlapping-write accumulate emit for the fan-in arm
+/// of `render_wait_assign` (TASK-0343 cycle 189; combine identity
+/// generalised TASK-0343.01.01).
+///
+/// The combine identity is DECLARED by the accumulator's owning kernel
+/// (`combine = sum|or|xor`) and resolved here via
+/// `sidecar.combine_for_data[data]`. Emits one of:
+/// - Array: `{ let _tmp = <rhs>; for _k in 0..<LEN>usize { <combine of
+///   name[_k], _tmp[_k]>; } }`. `<LEN>` is the product of `ty.dims`
+///   (flat element count; matches `render_array_init`'s per-backend
+///   zero-init).
+/// - Scalar: `<combine of name, rhs>;`. Structurally degenerate but
+///   kept for completeness.
+///
+/// where `<combine>` is `name[_k].wrapping_add(_tmp[_k])` for `sum`,
+/// `name[_k] | _tmp[_k]` for `or`, `name[_k] ^ _tmp[_k]` for `xor`.
+/// All three share the additive-identity ZERO so the existing
+/// per-backend zero-init is correct unchanged.
+///
+/// # Soundness reject (TASK-0343.01.01 AC#4 / #7)
+///
+/// `data` ABSENT from `sidecar.combine_for_data` means its owning
+/// kernel declared NO combine identity. Pre-TASK-0343.01.01 this arm
+/// silently assumed `sum`; now it fails LOUD with `EmitError::ContractGap`.
+/// (The driver gate `check_accumulator_consistency` catches this
+/// earlier, but the render path stays fail-loud as a defence in depth.)
+/// `min`/`max`/`and` (non-zero identity, identity-aware init) cannot
+/// reach here — the parser rejects them up front pointing at
+/// TASK-0343.01.02 — so there is no silent fallthrough for them either.
 ///
 /// # Scalar-type carve-out
 ///
 /// Returns `EmitError::ContractGap` for floats / bool (filed as
-/// TASK-0343 follow-up). Sum identity is integer-only in v2 today:
-/// - Float addition collides with PRD §10.1 bit-identity (sum order
-///   is not associative-stable).
-/// - Bool has no canonical "sum" identity (OR vs AND vs XOR are
-///   distinct algebraic operators; the user-level intent must be
-///   declared explicitly when the follow-up lands).
-fn render_accumulate_assign(name: &str, rhs: &str, ty: &ResolvedType) -> Result<String, EmitError> {
-    let op = accumulate_op_for_scalar(&ty.scalar)?;
+/// TASK-0343 follow-up): float addition is not associative-stable
+/// (PRD §10.1) and bool has no canonical numeric combine in v2 today.
+/// The carve-out applies to `sum`; the bitwise `or`/`xor` ops are
+/// integer-only by their emit form and hit the same integer-type
+/// gate.
+fn render_accumulate_assign(
+    sidecar: &NameSidecar,
+    data: DataId,
+    name: &str,
+    rhs: &str,
+    ty: &ResolvedType,
+) -> Result<String, EmitError> {
+    let op = sidecar.combine_for_data.get(&data).copied().ok_or_else(|| {
+        EmitError::ContractGap(format!(
+            "render_wait_assign: accumulate fan-in on data {data:?} (`{name}`) whose \
+             owning kernel declares NO `combine = <op>` identity. Pre-TASK-0343.01.01 \
+             this arm silently assumed `sum`; it now fails loud. Declare a combine \
+             identity on the kernel that writes `{name}` on its `<--` RHS \
+             (`combine = sum|or|xor`). min/max/and need identity-aware init and are \
+             deferred to TASK-0343.01.02."
+        ))
+    })?;
+    let form = combine_form_for_scalar(op, &ty.scalar)?;
     if ty.dims.is_empty() {
         // Scalar accumulator. The pre-init in each backend has set
-        // `<name>` to the sum identity (0 for integers; see
-        // `render_array_init` / `rust_scalar_zero` in each backend's
-        // `multi_worker.rs`).
-        Ok(format!("{name} = {name}.{op}({rhs});"))
+        // `<name>` to the combine identity (0 for sum/or/xor; see
+        // `render_array_init` / `rust_scalar_zero`).
+        Ok(format!("{};", form.emit(name, rhs)))
     } else {
         let total: usize = ty.dims.iter().copied().product();
+        let body = form.emit(&format!("{name}[_k]"), "_tmp[_k]");
         Ok(format!(
             "{{ let _tmp = {rhs}; \
              for _k in 0..{total}usize {{ \
-             {name}[_k] = {name}[_k].{op}(_tmp[_k]); \
+             {body}; \
              }} }}"
         ))
     }
 }
 
-/// Per-scalar-type accumulate operator name. Integer-only in cycle
-/// 189; float / bool carve-outs surface as `EmitError::ContractGap`
-/// pointing to the TASK-0343 follow-up bucket.
-fn accumulate_op_for_scalar(t: &ScalarType) -> Result<&'static str, EmitError> {
-    match t {
+/// Resolve the [`CombineForm`] for `(op, scalar)`. Integer-only:
+/// float / bool surface as `EmitError::ContractGap` pointing at the
+/// TASK-0343 float/bool follow-up. `sum` → `wrapping_add` (method),
+/// `or` → `|`, `xor` → `^` (operators).
+fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm, EmitError> {
+    let integer = matches!(
+        t,
         ScalarType::Usize
-        | ScalarType::Isize
-        | ScalarType::U8
-        | ScalarType::U16
-        | ScalarType::U32
-        | ScalarType::U64
-        | ScalarType::I8
-        | ScalarType::I16
-        | ScalarType::I32
-        | ScalarType::I64 => Ok("wrapping_add"),
-        ScalarType::F32 | ScalarType::F64 => Err(EmitError::ContractGap(
-            "render_wait_assign: accumulate fan-in on a float-scalar data symbol — \
-             sum identity collides with PRD §10.1 bit-identity invariant (float \
-             addition is not associative-stable across worker arrival order); \
-             not supported in TASK-0343 cycle 189 (filed as TASK-0343.02: float / \
-             bool follow-up — needs PRD §10.1-compatible identity declared by the \
-             user via TASK-0343.01 kernel attribute)"
-                .into(),
-        )),
-        ScalarType::Bool => Err(EmitError::ContractGap(
-            "render_wait_assign: accumulate fan-in on a bool-scalar data symbol — \
-             no canonical sum identity (OR vs AND vs XOR are distinct algebraic \
-             operators); not supported in TASK-0343 cycle 189 (filed as TASK-0343.02: \
-             float / bool follow-up — needs identity declared by the user via \
-             TASK-0343.01 kernel attribute)"
-                .into(),
-        )),
+            | ScalarType::Isize
+            | ScalarType::U8
+            | ScalarType::U16
+            | ScalarType::U32
+            | ScalarType::U64
+            | ScalarType::I8
+            | ScalarType::I16
+            | ScalarType::I32
+            | ScalarType::I64
+    );
+    if !integer {
+        let what = match t {
+            ScalarType::F32 | ScalarType::F64 => "float",
+            ScalarType::Bool => "bool",
+            _ => "non-integer",
+        };
+        return Err(EmitError::ContractGap(format!(
+            "render_wait_assign: accumulate fan-in (combine={op:?}) on a {what}-scalar \
+             data symbol — the zero-identity combine ops are integer-only in v2 \
+             (float addition is not associative-stable per PRD §10.1; bool has no \
+             canonical numeric combine). Filed as TASK-0343.02 (float/bool follow-up)."
+        )));
     }
+    Ok(match op {
+        CombineOp::Sum => CombineForm::Method("wrapping_add"),
+        CombineOp::Or => CombineForm::Operator("|"),
+        CombineOp::Xor => CombineForm::Operator("^"),
+    })
 }

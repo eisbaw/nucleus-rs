@@ -132,6 +132,7 @@ fn fixtures_with_kernel_sig(
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
     (names, sidecar)
@@ -256,6 +257,7 @@ fn int_expr_call_in_index_cast_is_noop_shape_for_i32_gather_arg() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
     let ctx = RenderCtx::new(&names, &sidecar);
@@ -299,6 +301,7 @@ fn int_expr_call_in_index_skips_cast_for_nonscalar_param() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
     let ctx = RenderCtx::new(&names, &sidecar);
@@ -795,6 +798,7 @@ fn sidecar_with_kernel_purity(kid: KernelId, purity: Purity) -> NameSidecar {
                 dims: vec![],
             }),
             purity,
+            combine: None,
         },
     );
     sidecar

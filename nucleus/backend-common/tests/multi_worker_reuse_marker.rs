@@ -466,6 +466,7 @@ fn multi_worker_walker_regular_arm_emits_real_buffer_codegen() {
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
 
@@ -607,6 +608,7 @@ fn multi_worker_walker_strip_mine_arm_emits_real_buffer_codegen() {
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
 
@@ -782,6 +784,7 @@ fn multi_worker_walker_dedupes_canonical_outer_axes_add_zero() {
             }],
             ret: None,
             purity: Purity::Pure,
+            combine: None,
         },
     );
     // ReuseSlot covers x-1..x+1 (length 3, min_offset -1). Two Fire

@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use nucleus_compiler::algo::{IrExpr, Purity, ResolvedType, ScalarType};
+use nucleus_compiler::algo::{CombineOp, IrExpr, Purity, ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, IterTile, IterVar, KernelId, WorkerId};
 use nucleus_compiler::sidecar::{KernelSig, LoopBound, NameSidecar};
 use nucleus_compiler::NameTables;
@@ -130,8 +130,19 @@ impl Tables {
                 }],
                 ret: None,
                 purity: Purity::Pure,
+                combine: None,
             },
         );
+        self
+    }
+
+    /// Declare the overlapping-write combine identity for an accumulator
+    /// `DataId` (TASK-0343.01.01): populates `sidecar.combine_for_data`.
+    /// A fixture exercising the accumulate fan-in MUST set this for every
+    /// accumulator data symbol, or `check_accumulator_consistency` /
+    /// `render_accumulate_assign` fail loud (the AC#4 soundness reject).
+    pub fn with_combine_for_data(mut self, data: DataId, op: CombineOp) -> Self {
+        self.sidecar.combine_for_data.insert(data, op);
         self
     }
 

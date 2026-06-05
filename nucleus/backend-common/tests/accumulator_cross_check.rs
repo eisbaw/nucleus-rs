@@ -47,7 +47,7 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_compiler::algo::{AlgoIR, IndexedRef, IrExpr, IrStmt, ScalarType};
+use nucleus_compiler::algo::{AlgoIR, CombineOp, IndexedRef, IrExpr, IrStmt, ScalarType};
 use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
 
 use backend_common::multi_worker_walker::check_accumulator_consistency;
@@ -150,6 +150,9 @@ fn accumulator_ok_for_lhs_in_rhs_accumulator() {
     let data = DataId(0);
     let (names, sidecar) = common::Tables::new()
         .with_data_typed(data, "histogram", ScalarType::I32, vec![16])
+        // TASK-0343.01.01: a real accumulator declares its combine
+        // identity; the gate now requires it (AC#4 soundness reject).
+        .with_combine_for_data(data, CombineOp::Sum)
         .with_worker(WorkerId(0), "host")
         .with_worker(WorkerId(1), "w0")
         .with_worker(WorkerId(2), "w1")
@@ -169,9 +172,68 @@ fn accumulator_ok_for_lhs_in_rhs_accumulator() {
     per_worker.insert(WorkerId(0), host_with_n_whole_array_waits(data, 4));
 
     check_accumulator_consistency(&algo, &per_worker, &sidecar, &names.data).expect(
-        "the LHS-in-RHS accumulator (08-histogram shape) MUST be accepted — the cross-check \
-         must not over-reject the real shipped shape",
+        "the LHS-in-RHS accumulator (08-histogram shape) WITH a declared combine \
+         identity MUST be accepted — the cross-check must not over-reject the real \
+         shipped shape",
     );
+}
+
+#[test]
+fn accumulator_rejects_lhs_in_rhs_accumulator_without_combine_identity() {
+    // TASK-0343.01.01 AC#4 NEGATIVE TEST: a genuine algorithm-level
+    // accumulator (LHS-in-RHS) with N>=2 whole-array Waits BUT whose
+    // owning kernel declared NO `combine = <op>` identity. Pre-
+    // TASK-0343.01.01 the host combine silently assumed `sum`; the gate
+    // must now reject this loudly so a non-sum accumulator can never be
+    // mis-combined as a sum. This is the soundness teeth: the ONLY
+    // difference from `accumulator_ok_for_lhs_in_rhs_accumulator` is the
+    // ABSENCE of `with_combine_for_data`.
+    let data = DataId(0);
+    let (names, sidecar) = common::Tables::new()
+        .with_data_typed(data, "histogram", ScalarType::I32, vec![16])
+        // NOTE: deliberately NO .with_combine_for_data(...) — the kernel
+        // declared no combine identity.
+        .with_worker(WorkerId(0), "host")
+        .with_worker(WorkerId(1), "w0")
+        .with_worker(WorkerId(2), "w1")
+        .with_worker(WorkerId(3), "w2")
+        .with_worker(WorkerId(4), "w3")
+        .build();
+
+    let mut algo = AlgoIR::default();
+    algo.stmts.push(dataflow(
+        "histogram",
+        "bin_inc",
+        vec![data_ref("histogram"), data_ref("input")],
+    ));
+
+    let mut per_worker: BTreeMap<WorkerId, Vec<Event>> = BTreeMap::new();
+    per_worker.insert(WorkerId(0), host_with_n_whole_array_waits(data, 4));
+
+    let err = check_accumulator_consistency(&algo, &per_worker, &sidecar, &names.data).expect_err(
+        "an overlapping-write accumulator whose owning kernel declares NO combine \
+         identity MUST be rejected (TASK-0343.01.01 AC#4); silently assuming sum is \
+         unsound for a non-sum accumulator",
+    );
+
+    match err {
+        EmitError::AccumulatorShapeMismatch(msg) => {
+            assert!(
+                msg.contains("histogram"),
+                "reject must NAME the offending accumulator `histogram`; got: {msg}"
+            );
+            assert!(
+                msg.contains("combine"),
+                "reject must mention the missing `combine` identity so it is actionable; \
+                 got: {msg}"
+            );
+            assert!(
+                msg.contains("TASK-0343.01.02"),
+                "reject must point min/max/and at the follow-up TASK-0343.01.02; got: {msg}"
+            );
+        }
+        other => panic!("expected EmitError::AccumulatorShapeMismatch; got: {other:?}"),
+    }
 }
 
 #[test]

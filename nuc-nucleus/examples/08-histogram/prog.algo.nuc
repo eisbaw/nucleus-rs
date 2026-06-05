@@ -79,7 +79,11 @@ kernel save_output : (i32[BINS]) -> ()        effectful;
 // §6.2.2: arbitrary Rust); the algorithm uses only the rectangular
 // masked-accumulate shape that examples 03 / 04 already prove
 // bit-identical at M1.
-kernel bin_inc     : (i32, i32, i32) -> i32   pure;
+// `combine=sum`: under partition=workers each worker whole-array-
+// replicates `histogram` and the host element-wise SUMs the per-worker
+// partials (TASK-0343.01.01). Maps to `wrapping_add` → byte-identical
+// with the pre-TASK-0343.01.01 hardcoded combine.
+kernel bin_inc     : (i32, i32, i32) -> i32   pure combine=sum;
 
 // Load the entire input on whoever owns I/O (the schedule decides).
 input <-- load_input();

@@ -59,7 +59,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use nucleus_compiler::algo::ScalarType;
+use nucleus_compiler::algo::{CombineOp, ScalarType};
 use nucleus_compiler::event::{DataId, Event, IterTile, IterVar, SeqTag, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
@@ -87,8 +87,21 @@ fn make_histogram_tables(
     dims: Vec<usize>,
     scalar: ScalarType,
 ) -> (NameTables, NameSidecar) {
+    make_histogram_tables_combine(data_id, dims, scalar, CombineOp::Sum)
+}
+
+/// As [`make_histogram_tables`] but with an explicit combine identity
+/// (TASK-0343.01.01) — the accumulate render path now resolves the op
+/// from `sidecar.combine_for_data`, so a fan-in fixture must declare it.
+fn make_histogram_tables_combine(
+    data_id: DataId,
+    dims: Vec<usize>,
+    scalar: ScalarType,
+    op: CombineOp,
+) -> (NameTables, NameSidecar) {
     common::Tables::new()
         .with_data_typed(data_id, "histogram", scalar, dims)
+        .with_combine_for_data(data_id, op)
         .with_worker(WorkerId(0), "host")
         .with_worker(WorkerId(1), "w0")
         .with_worker(WorkerId(2), "w1")
@@ -322,4 +335,129 @@ fn accumulate_emit_scalar_uses_wrapping_add_directly() {
          name.wrapping_add(rhs);` shape (no element-wise loop); \
          got: {out}"
     );
+}
+
+/// Render one whole-array accumulate Wait for a given combine op and
+/// return the emitted statement. Helper for the AC#3 per-op emit pins.
+fn render_array_accumulate(op: CombineOp) -> String {
+    let data = DataId(0);
+    let (_, sidecar) = make_histogram_tables_combine(data, vec![16], ScalarType::I32, op);
+    let seq = SeqTag(0);
+    let mut tiles: PairTiles = BTreeMap::new();
+    tiles.insert((data, seq), IterTile::empty());
+    render_wait_assign(
+        &sidecar,
+        &tiles,
+        "histogram",
+        data,
+        seq,
+        "slot_0.wait()",
+        true,
+        WalkerCtx::empty_let_at_wait_set(),
+    )
+    .expect("accumulate must render")
+}
+
+#[test]
+fn accumulate_emit_array_op_strings_per_combine_op() {
+    // TASK-0343.01.01 AC#3: assert the exact emitted string for EACH
+    // zero-identity combine op. `sum` is the method form
+    // (`.wrapping_add(...)`); `or`/`xor` are the operator forms
+    // (`|`/`^`) — a structurally distinct emit arm. If a future refactor
+    // collapses the operator arm back to a method call (or swaps the
+    // operator), one of these bites.
+    assert_eq!(
+        render_array_accumulate(CombineOp::Sum),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k].wrapping_add(_tmp[_k]); } }",
+        "sum must emit the `.wrapping_add(...)` METHOD form"
+    );
+    assert_eq!(
+        render_array_accumulate(CombineOp::Or),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k] | _tmp[_k]; } }",
+        "or must emit the bitwise `|` OPERATOR form"
+    );
+    assert_eq!(
+        render_array_accumulate(CombineOp::Xor),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k] ^ _tmp[_k]; } }",
+        "xor must emit the bitwise `^` OPERATOR form"
+    );
+}
+
+#[test]
+fn accumulate_emit_scalar_op_strings_per_combine_op() {
+    // AC#3 scalar arm: the zero-dim accumulator emit for each op.
+    let render_scalar = |op: CombineOp| -> String {
+        let data = DataId(0);
+        let (_, sidecar) = make_histogram_tables_combine(data, vec![], ScalarType::I32, op);
+        let seq = SeqTag(0);
+        let mut tiles: PairTiles = BTreeMap::new();
+        tiles.insert((data, seq), IterTile::empty());
+        render_wait_assign(
+            &sidecar,
+            &tiles,
+            "histogram",
+            data,
+            seq,
+            "slot_0.wait()",
+            true,
+            WalkerCtx::empty_let_at_wait_set(),
+        )
+        .expect("scalar accumulate must render")
+    };
+    assert_eq!(
+        render_scalar(CombineOp::Sum),
+        "histogram = histogram.wrapping_add(slot_0.wait());"
+    );
+    assert_eq!(
+        render_scalar(CombineOp::Or),
+        "histogram = histogram | slot_0.wait();"
+    );
+    assert_eq!(
+        render_scalar(CombineOp::Xor),
+        "histogram = histogram ^ slot_0.wait();"
+    );
+}
+
+#[test]
+fn accumulate_emit_no_combine_declared_returns_contract_gap() {
+    // TASK-0343.01.01 AC#4 (render-path defence in depth): an accumulate
+    // Wait on a data symbol with NO `combine_for_data` entry must fail
+    // loud rather than silently assume sum. The driver gate catches this
+    // earlier, but the render path stays fail-loud as belt-and-braces.
+    let data = DataId(0);
+    // Build WITHOUT a combine identity (plain Tables, no
+    // with_combine_for_data).
+    let (_, sidecar) = common::Tables::new()
+        .with_data_typed(data, "histogram", ScalarType::I32, vec![16])
+        .with_worker(WorkerId(0), "host")
+        .build();
+    let seq = SeqTag(0);
+    let mut tiles: PairTiles = BTreeMap::new();
+    tiles.insert((data, seq), IterTile::empty());
+
+    let err = render_wait_assign(
+        &sidecar,
+        &tiles,
+        "histogram",
+        data,
+        seq,
+        "slot_0.wait()",
+        true,
+        WalkerCtx::empty_let_at_wait_set(),
+    )
+    .expect_err("accumulate with no declared combine identity MUST return ContractGap");
+
+    match err {
+        EmitError::ContractGap(msg) => {
+            assert!(
+                msg.contains("combine") && msg.contains("TASK-0343.01.02"),
+                "no-combine ContractGap must mention the missing `combine` identity \
+                 AND point min/max/and at TASK-0343.01.02; got: {msg}"
+            );
+        }
+        other => panic!("expected ContractGap; got: {other:?}"),
+    }
 }

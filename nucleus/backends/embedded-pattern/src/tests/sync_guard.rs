@@ -199,6 +199,7 @@ fn sidecar_with_effectful_load() -> NameSidecar {
                 dims: vec![16],
             }),
             purity: Purity::Effectful,
+            combine: None,
         },
     );
     sc
@@ -251,6 +252,7 @@ fn indexed_pure_compute_is_not_cross_worker_io() {
                 dims: vec![16],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
 

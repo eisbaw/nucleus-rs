@@ -86,7 +86,11 @@ kernel save_output : (i32[BINS]) -> ()        effectful;
 // bin directly, so there is nothing to mask. `wrapping_add` documents
 // the overflow contract (PRD §10.1); the committed fixture's max bin
 // count is far below i32::MAX.
-kernel inc         : (i32)        -> i32       pure;
+// `combine=sum`: a distributed schedule that replicates `histogram`
+// and partitions over `i` sums per-worker partials at the host
+// (TASK-0343.01.01); maps to `wrapping_add` (byte-identical to the
+// pre-attribute combine).
+kernel inc         : (i32)        -> i32       pure combine=sum;
 
 // Load the entire input on whoever owns I/O (the schedule decides).
 input <-- load_input();
