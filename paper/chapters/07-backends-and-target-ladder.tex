@@ -1,18 +1,193 @@
 \chapter{Backends and the Target Ladder}\label{ch:backends}
-% Content cycle: C3. Intent: show the same EventList realised across three
-% tiers; defend backend orthogonality and the capability matrix.
+
+A backend turns the per-worker event lists of \cref{sec:arch-projection} into
+code for one combination of runtime and transport. Because the
+middle-end/presentation boundary is real, a backend sees only an event list,
+never the algorithm or schedule --- and this chapter argues that the restriction
+is enabling rather than limiting: the same event list drives ten backends across
+three qualitatively different tiers, and the low cost of adding one
+(\cref{sec:be-cost}) is itself evidence that the boundary is doing its job. The
+chapter presents the ten backends, organised as a three-tier ladder from cheap
+commodity CPU through message-passing clusters to embedded microcontrollers
+(\cref{fig:target-ladder}), and defends the capability matrix that makes backend
+choice orthogonal to the schedule.
+
+The three tiers differ not only in target but in how thoroughly each is tested.
+Tier-1 backends are both compiled and run on every continuous-integration
+invocation --- they are the cheap rig. Tier-2 backends must compile for every
+required schedule and are run and compared wherever a message-passing runtime is
+available. Tier-3 backends must likewise compile for every required schedule and
+are run under simulation where a hardware shim exists. This
+\emph{compile-mandatory, run-best-effort} discipline is referred to by name in the
+tier sections below.
 
 \section{The capability matrix and backend orthogonality}\label{sec:be-matrix}
 
+Each backend declares its capabilities as a small committed text file --- a
+capability matrix --- listing its transport, its supported notification
+mechanisms, whether it supports asynchronous and buffered transfers, its maximum
+buffer depth, and its worker classes and memory regions
+(\cref{fig:capability-matrix}). \Cref{tab:capabilities} reproduces the matrix for
+all ten backends.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}llllcc@{}}
+    \toprule
+    Backend & Tier & Transport & Notify & Async & Buffer \\
+    \midrule
+    \texttt{openmp-rs}       & 1 & shared memory & barrier, blocking        & no  & 1 \\
+    \texttt{pthreads-sync}   & 1 & shared memory & barrier, blocking        & no  & 1 \\
+    \texttt{pthreads-async}  & 1 & shared memory & event                    & yes & 64 \\
+    \texttt{mp-tcp-bufsync}  & 1 & TCP loopback  & barrier, blocking        & no  & 1 \\
+    \texttt{mp-tcp-poll}     & 1 & TCP loopback  & poll, barrier, blocking  & no  & 1 \\
+    \texttt{mp-tcp-event}    & 1 & TCP loopback  & event                    & yes & 64 \\
+    \texttt{mp-uds-event}    & 1 & Unix socket   & event                    & yes & 64 \\
+    \texttt{mpi-blocking}    & 2 & MPI           & barrier, blocking        & no  & 1 \\
+    \texttt{mpi-nonblocking} & 2 & MPI           & barrier, blocking, event & yes & 64 \\
+    \texttt{embedded-pattern}& 3 & DMA/UART      & barrier, blocking        & no  & 1 \\
+    \bottomrule
+  \end{tabular}
+  \caption{The capability matrix of the ten backends, reproduced from each
+  backend's committed declaration. ``Notify'' lists the notification mechanisms
+  the backend supports; ``Async'' is whether it supports asynchronous transfers;
+  ``Buffer'' is the maximum in-flight buffer depth. \texttt{mpi-nonblocking} is a
+  strict superset of \texttt{mpi-blocking}: it accepts every synchronous schedule
+  the blocking backend does, plus asynchronous ones.}
+  \label{tab:capabilities}
+\end{table}
+
+Orthogonality is the property that backend choice is independent of the schedule,
+mediated only by this matrix. A schedule compiles against any backend whose
+capabilities are a superset of what the schedule demands. A schedule that asks
+for an asynchronous, event-notified, double-buffered transfer compiles on
+\texttt{pthreads-async} or \texttt{mp-tcp-event} but is \emph{rejected at compile
+time} on \texttt{pthreads-sync}, whose matrix offers neither async nor buffering
+--- rejected with a message naming the missing capability, never papered over
+with a silent downgrade that would make the same schedule mean different things on
+different backends. Two backends can also be made deliberately capability-identical
+to isolate a variable: \texttt{openmp-rs} and \texttt{pthreads-sync} expose the
+same matrix but run on different substrates (a work-stealing thread pool versus
+raw threads), so a disagreement between them would implicate the substrate, not
+the schedule.
+
 \section{Tier 1 --- CPU}\label{sec:be-tier1}
-% The seven CPU backends; the falsification rig.
+
+The seven tier-1 backends run on a commodity CPU and emit hosted Rust. They are
+the cheap test harness and the falsification rig: because they are inexpensive to
+build and run, the cross-backend differential test (\cref{ch:validation}) can
+exercise the full schedule-by-backend matrix on a laptop. They span the IO
+design space of \cref{sec:bg-io} along two axes --- where a worker lives, and how
+data moves between workers.
+
+\emph{Shared-memory backends} map a worker to a thread. \texttt{pthreads-sync}
+uses operating-system threads with condition-variable rendezvous and synchronous,
+unbuffered transfers; \texttt{pthreads-async} uses threads with ring buffers for
+asynchronous, buffered, event-notified transfers; and \texttt{openmp-rs} maps
+workers onto a work-stealing thread pool, reusing the synchronous shared-memory
+lowering. \emph{Message-passing backends} map a worker to an operating-system
+process. \texttt{mp-tcp-bufsync}, \texttt{mp-tcp-poll}, and \texttt{mp-tcp-event}
+communicate over TCP loopback sockets, differing in their notification discipline
+--- blocking receive, non-blocking poll, and an event reactor respectively (an
+event reactor is an IO loop that waits on operating-system readiness
+notifications, via \texttt{epoll} or \texttt{kqueue}, rather than spinning or
+blocking per transfer) --- and \texttt{mp-uds-event} is the event reactor over
+Unix domain sockets instead of TCP. The synchronous TCP backends share one wire-protocol substrate and the two
+event-reactor backends share another, each differing only in the transport-specific
+calls, so that the same scheduling logic is exercised across distinct transports.
+
+Together the seven cover the cross-product that matters: synchronous and
+asynchronous, buffered and unbuffered, event-driven and polled, over shared
+memory, TCP, and Unix sockets. That spread is what gives the differential test its
+power --- a leak in the algorithm/schedule or middle-end/presentation boundary is
+unlikely to manifest identically across seven such different realisations.
 
 \section{Tier 2 --- HPC clusters}\label{sec:be-tier2}
-% MPI blocking and non-blocking; SPMD rank dispatch.
+
+The two tier-2 backends target distributed-memory clusters through MPI, the
+dominant message-passing standard. Both emit single-program multiple-data (SPMD)
+code: one Rust binary that dispatches on its MPI rank, so rank $r$ executes
+worker $r$'s event list (\cref{fig:mpi-spmd}). SPMD is the natural fit for MPI,
+which launches many copies of one binary and lets each discover its identity by
+querying its rank; emitting a separate binary per worker, as the embedded tier
+does, would require external orchestration that MPI does not provide. The
+generated project depends on the established Rust MPI bindings, and runs under
+\texttt{mpiexec}.
+
+\texttt{mpi-blocking} renders a push as a blocking \texttt{MPI\_Send} and a wait
+as a blocking \texttt{MPI\_Recv}, with barriers as \texttt{MPI\_Barrier};
+\texttt{mpi-nonblocking} renders a push as a buffered non-blocking send and a wait
+as a non-blocking receive completed by \texttt{MPI\_Wait}, which is what its
+asynchronous, buffered capability advertises. The two share a common MPI planning
+substrate and differ only in the rendezvous prelude and the send/receive calls
+they emit; the rank assignment, barrier handling, and event-walk are identical.
+Following the tier's compile-mandatory, run-best-effort discipline, tier-2
+backends must compile for every required schedule, and are run and compared where
+an MPI runtime is available (a local \texttt{mpiexec} suffices); collective
+recognition --- emitting \texttt{MPI\_Allreduce} or \texttt{MPI\_Scatter} when the
+scheduler recognises the pattern --- is deliberately left to future work, so the
+backends emit correct point-to-point communication that is merely not optimal.
 
 \section{Tier 3 --- Embedded}\label{sec:be-tier3}
-% no_std, DMA/IRQ shims, multi-MCU co-simulation.
+
+The tier-3 backend, \texttt{embedded-pattern}, targets \texttt{no\_std}
+microcontrollers. It emits target-agnostic event-list lowering and delegates all
+hardware specifics --- DMA descriptors, interrupt-vector binding, memory-region
+addresses --- to a per-microcontroller \emph{shim} that implements a small
+hardware-abstraction trait. The generic backend is written once; each
+microcontroller family is a separate shim crate, of which the system ships one
+reference shim as proof of concept.
+
+The backend emits in two modes. A library mode produces a self-contained
+\texttt{no\_std} crate per worker that compiles against a do-nothing stub shim ---
+enough to prove the lowering type-checks on the embedded target without hardware.
+A binary mode, given a concrete shim, produces bare-metal binaries that run under
+the Renode instruction-set simulator. The interesting case is multiple
+microcontrollers co-simulated together (\cref{fig:embedded-multimcu}): the
+backend emits one binary per worker plus a generated Renode machine description
+that wires the binaries together over a UART hub, with one bounded FIFO per
+transfer channel. Two subtleties are handled here that have no analogue on the
+hosted tiers, where the operating system and its socket buffers absorb startup
+races. First, a boot order is computed so that a receiver enables its input before
+a sender transmits: on a bare-metal UART channel there is no buffer to hold early
+bytes, so a byte sent before the receiver is listening is simply lost. The
+compiler stages the releases of the cores until every transmit is preceded by its
+matching receive-enable. Second, a control-only synchronisation that would order two cores'
+external IO with no data edge between them is rejected at compile time, because no
+data transfer is present to carry the ordering on this substrate.
+
+Three examples exercise this path end-to-end and reproduce their reference output
+byte-exactly under co-simulation: a two-worker split-and-add; a three-core
+hearing-aid pipeline with heterogeneous front-end, DSP, and RF-controller workers
+and bidirectional dataflow between them; and a two-microcontroller demonstration
+that contrasts DMA-driven and programmed-IO transports for the same transfer. The
+hearing-aid example is the load-bearing demonstration that the typed,
+heterogeneous worker form lowers to a real multi-microcontroller system. Following the tier's discipline, tier-3 backends
+must compile for every required schedule, and are run in Renode where a shim and
+machine description exist.
 
 \section{Adding a backend: cost classes and the shim model}\label{sec:be-cost}
 
-\todo{Write Chapter 7 (cycle C3).}
+The three tiers have genuinely different cost classes, and conflating them would
+misrepresent the engineering. The bulk of each backend's logic --- the event-list
+walker, the expression and index renderers, the host-election rule, the
+check-loop templates, and the per-transport planning substrates --- lives in a
+shared library; each backend crate is correspondingly thin, providing only the
+transport-specific renderings --- a few hundred lines for the simplest synchronous
+backends, more for the event-reactor and embedded backends, but in every case
+small relative to the shared codegen they sit on. This is what makes a new tier-1
+backend cheap: copy a sibling, swap the wire and notification calls, and reuse the
+shared single-worker emitter --- days to weeks of work.
+
+A tier-2 backend is more expensive --- weeks to months --- because it brings in
+MPI library bindings, SPMD code generation, and cluster continuous integration. A
+tier-3 shim is the most expensive --- months per microcontroller family --- because
+it must supply concrete DMA controllers, interrupt-vector tables, memory layout,
+linker scripts, and real-time validation under \texttt{no\_std} constraints. This
+shim sprawl is real and, in principle, unbounded: every new microcontroller family
+is another shim. The system caps its own commitment at one reference shim and
+treats further shims as out-of-tree contributions, which is why the capability
+matrix and the hardware-abstraction trait are committed, reviewable text: they are
+the contract a contributor's shim must satisfy. \Cref{ch:discussion} returns to
+this maintenance burden as one of the honest costs of the approach.

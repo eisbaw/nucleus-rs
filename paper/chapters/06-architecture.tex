@@ -1,32 +1,241 @@
 \chapter{Architecture and Methodology}\label{ch:architecture}
-% Content cycle: C3. Intent: walk the compilation pipeline end to end; defend
-% the two boundaries; explain the soundness gate and why it is sound here.
+
+This chapter walks the compiler from its two source files to per-worker code,
+defends the two boundaries the architecture rests on, and explains the soundness
+gate and why it is sound for the restricted class of programs the language
+admits. The compiler is implemented in Rust; the description here is of the
+shipping system, not an idealised sketch.
 
 \section{The compilation pipeline}\label{sec:arch-pipeline}
-% parse -> typed algorithm IR -> link -> ACFG -> transforms -> transfer/halo
-% inference -> Petri-net IR -> soundness gate -> per-worker projection ->
-% presentation-layer codegen. (Central figure.)
+
+Compilation is a single, deterministic chain of passes
+(\cref{fig:pipeline}). The algorithm and schedule files are parsed
+independently. The algorithm is desugared and type-checked into a typed
+algorithm intermediate representation (IR) that contains kernels and dataflow but
+no decomposition. The schedule is then \emph{linked} against that IR, binding
+kernels to workers and attaching loop transformations and IO semantics. From the
+linked form the compiler builds an application control-flow graph (ACFG) --- a
+tree-structured intermediate form whose nodes are operations, sequences, and
+loops, defined in \cref{sec:arch-acfg} --- applies the schedule's transformations
+to it, infers the halo regions and reuse windows implied by the access patterns,
+and injects the synchronisations and data transfers the decomposition requires.
+The fully elaborated ACFG is lowered to a Petri net, which the soundness gate
+checks; the same ACFG is then projected to a totally-ordered event list per
+worker; and finally a chosen backend renders each worker's event list into code.
+Each named stage is defined in its own section below; this paragraph is only the
+map.
+
+The pass order is fixed and total: build the ACFG; apply blocking; apply the
+chosen partition (per-worker ranges, row bands, or a two-dimensional grid); infer
+halos; infer reuse; inject synchronisations; inject transfers. Each pass either
+succeeds or returns a typed error that becomes a compile diagnostic; none of them
+consults a backend, because everything above the projection step is
+backend-independent by construction.
 
 \section{The two boundaries}\label{sec:arch-boundaries}
-% Algorithm/schedule; middle-end/presentation.
+
+Two boundaries must hold for the architecture to be honest, and both are visible
+in the pipeline (\cref{fig:boundaries}).
+
+The first is the \emph{algorithm/schedule} boundary. The algorithm IR contains no
+worker bindings, no buffer sizes, and no IO semantics; all of those enter only at
+the link step, from the schedule. The test of this boundary is independence: if
+either file can be rewritten without the other, the boundary is real. Renaming a
+worker or changing a transfer's buffering touches only the schedule; rewriting a
+kernel body touches only the algorithm and its sibling Rust file.
+
+The second is the \emph{middle-end/presentation} boundary. Everything from
+parsing through per-worker projection is backend-independent; the backend enters
+only at the final codegen step, and it consumes only the per-worker event lists,
+never the algorithm or schedule directly. Anything backend-specific that appeared
+above this line would be a defect. The cross-backend differential test
+(\cref{ch:validation}) is what keeps both boundaries honest: a leak across
+either one shows up as a backend that disagrees with the others.
 
 \section{Algorithm IR and linking}\label{sec:arch-link}
 
+Parsing the algorithm yields a typed IR over shaped arrays, kernels with
+shape-typed signatures and purity, and a dataflow body of single-assignment
+writes and affine loops. A separate contract pass checks each kernel's Rust body
+against its declared signature and purity before scheduling begins, so a kernel
+whose implementation disagrees with its contract is rejected early rather than
+miscompiled.
+
+Linking combines this IR with the parsed schedule. It resolves every name the
+schedule mentions against the algorithm's name table --- a schedule that places a
+non-existent kernel, or that leaves a kernel unplaced, is rejected here --- and
+attaches to each kernel its worker placement and to each loop its
+transformations and the IO semantics of the data that crosses workers. The output
+is a \emph{linked} form: the algorithm's dataflow, now annotated with where each
+operation runs and how its data moves, but not yet elaborated into concrete
+transfers.
+
 \section{The ACFG and its transforms}\label{sec:arch-acfg}
-% vectorise, block, pipeline, reuse.
+
+The linked form is built into an ACFG (\cref{fig:acfg}): a tree whose nodes are
+operations (a kernel firing with its dataflow edges), sequences, and repeats
+(loops with a back-edge), later joined by synchronisation and transfer nodes. The
+ACFG carries a set of \emph{sidecar} tables --- auxiliary maps kept beside the
+node tree rather than inside it, keyed by node identity --- which downstream
+passes populate incrementally: per-worker loop ranges from partitioning, per-axis halo widths
+from halo inference, reuse-window slots from reuse inference, a grid shape and
+neighbour pairs for two-dimensional partitions, and the initial-marking depth for
+each pipelined transfer. Keeping these as sidecars rather than rewriting the node
+structure lets each pass add precisely the information it derives without
+disturbing what earlier passes established.
+
+The schedule's loop transformations are applied to the ACFG in order. Blocking
+strip-mines a loop into a tile loop wrapping an intra-tile loop, splitting a
+non-divisible range into full tiles plus a trailing partial tile so the
+decomposition is faithful to the original iteration count. Partitioning rewrites a
+distributed loop's per-worker ranges: a row-band partition cuts the outer loop
+into contiguous bands (with a documented spill-over policy when the rows do not
+divide evenly), and a two-dimensional partition cuts a grid. Reuse and pipelining
+record their information in the sidecars for the transfer and projection stages to
+consume. Vectorisation is deliberately not a transform here --- it is left to the
+host compiler --- for the reason given in \cref{sec:lang-schedule}.
 
 \section{Transfer and halo inference}\label{sec:arch-transfer}
-% Automatic transfer synthesis, not automatic parallelism extraction.
+
+With the decomposition fixed, the compiler synthesises the communication it
+implies. This is the step that distinguishes the system from a hand-written
+parallel program: the programmer never writes a send or a receive.
+
+Transfer injection walks the ACFG tracking, for each data symbol, the worker that
+last produced it. Wherever a consumer runs on a different worker than the
+producer, it emits a matched pair of transfer nodes --- a push on the producer
+and a wait on the consumer --- carrying a fresh, globally unique sequence tag. The
+sequence tag is the compile-time identity that lets the receiving side know
+exactly which send each receive pairs with, without any runtime matching
+machinery. For a distributed producer feeding a distributed consumer, the pass
+fans the pairs out across the worker cross-product.
+
+Halo inference derives, from each kernel's declared access offsets, how far beyond
+its own partition a worker must read. The stencil's offsets of $-1,0,+1$ in each
+dimension yield a halo width of one; transfer injection then extends each
+worker's transferred tile by that halo so the boundary values are present. This is
+transfer \emph{synthesis} from an explicit decomposition, not parallelism
+discovery: the compiler computes the consequences of a decomposition the
+programmer chose, a far narrower and decidable problem.
+
+The inference is careful at its edges. When a partitioned index is affine and
+forms a contiguous prefix of the partition dimensions, each worker receives a
+precise tiled slice; when it is not --- a sparse, multi-variable, or
+data-dependent index --- the pass conservatively degrades to broadcasting the
+whole array, which is always a correct superset of what the worker might read, at
+some cost in communication volume. Data-dependent indices (gather and scatter)
+take this whole-array path on the data-dependent dimension; a scatter whose target
+would have to be split along an affine partition axis is rejected as a typed
+error rather than silently mis-handled.
 
 \section{The Petri-net IR and the event contract}\label{sec:arch-petri}
 
+The elaborated ACFG is lowered to a Petri net (\cref{fig:petri}). The net is a
+small place/transition net --- the implementation is well under a thousand lines,
+not a general-purpose Petri-net toolkit --- in which a transition is a
+kernel firing, a transfer, or a synchronisation, and a place is a data slot, a
+communication channel, or a barrier. Each place carries a capacity (the declared
+buffer size) and an initial marking (the head-start a pipelined or double-buffered
+transfer provides). The net exists for analysis and inspection; it is not what the
+backend consumes.
+
+What the backend consumes is the \emph{event contract}: a per-worker list of
+events, each the projection of one transition onto the worker that owns it. It is
+a contract in a precise sense --- it is the sole interface between the
+backend-independent middle-end and the backends, and it cuts both ways: the
+middle-end guarantees the list is well-formed and has passed the soundness gate,
+and each backend undertakes to render every event faithfully. The contract has a
+small fixed vocabulary. A \texttt{Fire} runs a kernel over an iteration tile; a
+\texttt{Push} sends a data tile to a destination worker under a sequence tag, and
+a matching \texttt{Wait} receives it; a \texttt{Sync} is a control-only barrier
+over a set of participants, each carrying the same stable sync tag so that
+disjoint per-worker lists agree on which barrier is which without a global walk;
+and a \texttt{Loop} preserves an iteration's structure rather than unrolling it. A
+sync tag plays a different role from a sequence tag: a sequence tag uniquely
+identifies one push/wait pair on a data channel, whereas a sync tag is a single
+identifier shared by every participant of one barrier. The contract also reserves \texttt{Alloc} and \texttt{Free} events
+for explicit memory-region placement; in the current system the backends manage
+local storage themselves and these two are not yet emitted, an honest gap noted
+here and revisited in \cref{ch:discussion}. Iteration tiles are described
+uniformly as rectangular slices in iteration space, and memory regions are opaque
+tags the backend interprets, so the same contract serves a shared-memory thread
+and a message-passing rank alike.
+
 \section{The soundness gate}\label{sec:arch-gate}
-% Boundedness, deadlock, conflict-freedom by exact replay over the
-% deterministic firing order; why this is sound for the restricted class.
+
+Before any code is emitted, the net is checked, and the check runs on \emph{every}
+build, not only under a diagnostic flag (\cref{fig:pipeline}). A failure is a
+compile error, with a message naming the offending place or the stalled
+transition --- never a runtime hang discovered later.
+
+The gate has three parts, run in order. A \emph{conflict-freedom} check confirms
+that no place has two consumer transitions simultaneously enabled --- so every
+token has at most one possible consumer, and the firing order therefore
+determines a single execution trace rather than a branching set of them. This is
+the precondition that makes the next two checks sound: with one trace to consider,
+they need only replay it. A \emph{boundedness} check
+replays the firing order and rejects any firing that would push a place past its
+capacity, reporting the place and the overflowing marking. A
+\emph{deadlock-freedom} check replays the same order and rejects the first stall
+--- a required transition whose input place lacks tokens --- reporting the stalled
+transition and the deficient place. The error labelling is careful: a stall
+observed while checking boundedness is reported as a deadlock, not a capacity
+error, so the diagnosis matches the underlying fault.
+
+The crucial point is \emph{why} this is sound despite being far cheaper than a
+general Petri-net analysis. The firing order is statically determined: the
+compiler derives one deterministic order (source order, refined by dataflow
+constraints), and for the restricted net class --- bounded by construction, and
+with no non-deterministic token routing (no point at which the choice of which
+transition consumes a token could change the outcome) --- replaying that single
+order is equivalent to exploring every reachable marking. The gate is therefore an exact replay over one
+order, not a reachability or coverability search. This is a real limitation, and
+it is stated as such: the gate is sound for the statically-ordered nets this
+language produces, and is emphatically not a general model checker for arbitrary
+Petri nets. Within its class it is both sound and inexpensive.
 
 \section{Per-worker projection}\label{sec:arch-projection}
-% worker -> ordered EventList.
+
+Projection turns the elaborated ACFG into one totally-ordered event list per
+worker (\cref{fig:projection}). The walk is depth-first in source order: a
+sequence visits its children left to right; a repeat wraps each worker's projected
+body in a single loop event, preserving the iteration structure rather than
+unrolling it; an operation emits a fire on each worker it is placed on; a
+synchronisation emits a barrier event on each participant; and a transfer emits a
+push on its source worker and a wait on its destination worker. Because the walk
+is deterministic and worker lists are kept in a sorted map, two compilations of
+the same program yield byte-identical event lists --- a prerequisite for the
+reproducibility the validation strategy depends on.
+
+The event lists are the sole interface to the backend. Everything the backend
+needs to know about decomposition, transfers, and synchronisation is in them; the
+backend never sees the algorithm, the schedule, or the net.
 
 \section{Presentation-layer codegen}\label{sec:arch-codegen}
 
-\todo{Write Chapter 6 (cycle C3).}
+The final step renders each worker's event list into source code for a chosen
+backend. The same event has different renderings in different backends: a push is
+a memory write under a shared-memory backend, a socket write under a
+message-passing backend, a non-blocking send under MPI, and a DMA descriptor
+enqueue on an embedded target; a barrier is a thread barrier, an
+\texttt{MPI\_Barrier}, or a coordinated interrupt rendezvous. The kernel bodies
+are emitted verbatim from the algorithm's sibling Rust file, and array indices are
+flattened to row-major offsets using the declared shapes.
+
+A large fraction of the rendering logic is shared across backends rather than
+duplicated: the event-list walker, the expression and index renderers, the
+check-loop templates, and the host-election rule (the policy that designates one
+worker as the coordinating host for operations needing a single orchestrator, such
+as program IO) all live in a common library that every backend consumes, with each
+backend providing only the thin, transport-specific pieces.
+
+With codegen described, both boundaries this chapter set out to defend are now
+visible in the artefact. The algorithm/schedule boundary is the link step: nothing
+target-specific exists above it, because the algorithm IR is built before any
+schedule is consulted. The middle-end/presentation boundary is the projection
+step: every pass from parsing to projection is backend-free, and the backend
+enters only here, consuming event lists and nothing else. A leak across either
+boundary would surface as a backend that disagrees with the others ---
+which is exactly what the validation strategy of \cref{ch:validation} is built to
+detect. \Cref{ch:backends} first describes the backends this codegen targets and
+the capability matrix that governs which schedules each can accept.

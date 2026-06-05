@@ -1,19 +1,252 @@
 \chapter{The \nuclang{} Language}\label{ch:language}
-% Content cycle: C3. Intent: present the two sublanguages by example; show the
-% boundary is real; state precisely what cannot be expressed and why.
+
+This chapter presents \nuclang{}, the surface language in which an algorithm and
+a schedule are written. It is two small sublanguages that share one name table:
+an algorithm sublanguage that says what to compute, and a schedule sublanguage
+that says how to lay it out across workers and with what IO semantics. The
+chapter introduces each by example, works one algorithm through several
+schedules to show the boundary is real, and states precisely what the language
+deliberately cannot express. All examples are drawn from the implemented system.
 
 \section{Two sublanguages, one name table}\label{sec:lang-two}
 
+A program is exactly two files: an algorithm file and a schedule file. The
+algorithm file (\texttt{.algo.nuc}) declares data, kernels, and dataflow. The
+schedule file (\texttt{.sched.nuc}) names the algorithm's kernels and loops and
+binds them to workers, loop transformations, and transfer semantics. There is no
+third file, no module system, and no imports; kernel \emph{bodies} live in an
+adjacent ordinary Rust file compiled by the host toolchain.
+
+The two sublanguages share one namespace. A schedule refers to a kernel or a
+loop variable by the same name the algorithm gave it; a schedule that names a
+kernel the algorithm does not define, or that fails to place a kernel the
+algorithm does define, is a compile error. This shared name table is the entire
+coupling between the files: the algorithm is meaningless to change for
+scheduling reasons, and the schedule cannot express anything about what is
+computed. An algorithm without a schedule does not compile (there is no default
+schedule, because an implicit default would hide exactly the decisions the
+language exists to make explicit); a schedule without an algorithm is
+meaningless.
+
 \section{The algorithm sublanguage}\label{sec:lang-algorithm}
-% Shape-typed Rust kernels, dataflow, iteration, pure/effectful, single
-% assignment (no aliasing by construction).
+
+The algorithm sublanguage has just enough surface to express dataflow over
+shaped arrays. It has no notion of workers, blocking, buffers, or transfers.
+\Cref{lst:algo} shows a complete algorithm: a $3\times3$ box-blur stencil.
+
+\begin{lstlisting}[language=Nuc,caption={A complete algorithm file: a $3\times3$ stencil. It declares shape, kernels, and dataflow --- and nothing about decomposition.},label={lst:algo}]
+const H : usize = 16;
+const W : usize = 16;
+
+data img_in  : i32[H][W];
+data img_out : i32[H][W];
+
+kernel blur3      : (i32,i32,i32,i32,i32,i32,i32,i32,i32) -> i32 pure;
+kernel load_image : ()           -> i32[H][W] effectful;
+kernel save_image : (i32[H][W])  -> ()        effectful;
+
+img_in <-- load_image();
+
+for y : 1 .. H-1 {
+for x : 1 .. W-1 {
+    img_out[y][x] <-- blur3(
+        img_in[y-1][x-1], img_in[y-1][x], img_in[y-1][x+1],
+        img_in[y  ][x-1], img_in[y  ][x], img_in[y  ][x+1],
+        img_in[y+1][x-1], img_in[y+1][x], img_in[y+1][x+1]);
+}}
+
+save_image(img_out);
+\end{lstlisting}
+
+Four properties of this sublanguage are load-bearing.
+
+\paragraph{Shaped, single-assignment data.} Arrays carry an explicit shape and
+element type (\texttt{i32[H][W]}); scalars are degenerate arrays. There are no
+pointers and no aliases: a slice such as \texttt{img\_in[y-1..y+2]} is a
+read-only view, never a writable alias. Each array location is written exactly
+once --- the loop in \cref{lst:algo} writes each interior \texttt{img\_out[y][x]}
+once and no more. Single assignment is what makes the producer of every value
+unambiguous, which in turn is what lets the compiler infer inter-worker
+transfers soundly (\cref{sec:arch-transfer}).
+
+\paragraph{Kernels are real, shape-typed Rust functions.} A \texttt{kernel}
+declaration is a \emph{contract} --- a shape-typed signature and a purity
+annotation --- whose body is an ordinary Rust function in a sibling file. The
+compiler generates the code that calls the kernel; it never substitutes text into
+the body. The blur kernel above is a pure function of nine integers returning
+their sum divided by nine; the I/O kernels read and write the image buffer.
+Aggregate parameters lower to a row-major \texttt{Vec<T>} on the Rust side, and a
+contract-checking pass verifies that each Rust function matches the shape and
+purity its declaration promises. Treating kernel bodies as opaque Rust buys the
+host language's type checker, borrow checker, unit testing, and IDE tooling for
+free, and it eliminates the text-substitution hazards of a templating approach.
+
+\paragraph{Mandatory purity annotation.} Every kernel is annotated \texttt{pure}
+or \texttt{effectful}. A pure kernel has no side effects and may be reordered,
+deduplicated, or eliminated; an effectful kernel has its ordering preserved
+within its block and is never duplicated. There is no third, unannotated case ---
+the annotation is required --- which closes a class of silent reordering bugs.
+
+\paragraph{Affine, const-bounded iteration.} Loops have plain bounds and an
+iteration variable, and the bounds fold to compile-time constants. The iteration
+variables (\texttt{y}, \texttt{x} above) are the handles a schedule will later
+refer to. Iteration variables and data share one namespace, disambiguated by
+scope. The kernel's nine-neighbour access pattern on \texttt{img\_in} --- offsets
+of $-1,0,+1$ in each dimension --- is exactly what the compiler reads to infer
+halo regions when a schedule distributes the work; the access pattern is in the
+algorithm, but the decision to distribute is not.
+
+What is deliberately absent is as important as what is present: no worker names,
+no \texttt{block=} or \texttt{pipeline=}, no \texttt{transfer=} or
+\texttt{buffer=}, no conditionals across worker boundaries, no recursion, no
+closures, no generics. Every one of those belongs in the schedule, or nowhere.
 
 \section{The schedule sublanguage}\label{sec:lang-schedule}
-% Workers, mapping, blocking/tiling, reuse/pipeline, IO semantics, check.
+
+A schedule binds an algorithm's kernels and loops to a worker topology and
+chooses IO semantics. Schedules are short --- a typical one fits on a screen.
+\Cref{lst:sched} shows a distributed schedule for the stencil of
+\cref{lst:algo}.
+
+\begin{lstlisting}[language=Nuc,caption={A distributed schedule for the stencil. Decomposition, loop transforms, and IO semantics are all here; none of it appears in the algorithm.},label={lst:sched}]
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on { w0, w1, w2, w3 };
+
+    loop y : partition=rows;
+    loop x : block=64, reuse;
+
+    transfer img_in  : async, buffer=2, notify=event;
+    transfer img_out : sync;
+}
+\end{lstlisting}
+
+The schedule has four kinds of directive.
+
+\paragraph{Workers (space).} The \texttt{workers} set names the concurrent units;
+their cardinality is fixed at compile time. The simple form shown here is a flat
+pool, suitable for commodity CPU and clusters. A richer \emph{typed} form, used
+for heterogeneous targets, additionally declares worker \emph{classes} --- groups
+of workers with distinct capabilities such as SIMD width and available memories
+--- together with named memory regions and directives that bind data to them. On a
+homogeneous backend the typed form collapses to the simple form, so the same
+surface extends from a thread pool to a heterogeneous embedded system-on-chip
+without a second sublanguage; \cref{sec:be-tier3} exercises it on a
+multi-microcontroller target.
+
+\paragraph{Placement.} Each kernel is placed on exactly one worker or, with
+\texttt{on \{\dots\}}, distributed across several. Distributing \texttt{blur3}
+across the four compute workers tells the compiler to partition that loop's
+iteration space across them. Every kernel must have exactly one placement; an
+unplaced kernel is a compile error.
+
+\paragraph{Loop transformations (time).} A \texttt{loop} directive attaches
+transformations to a loop variable by name. \texttt{block=N} tiles the iteration
+into chunks of $N$; \texttt{partition=rows} (and \texttt{partition=blocks2d})
+chooses how a distributed loop is cut across workers; \texttt{reuse} recycles
+loop-carried slices; \texttt{pipeline=D} software-pipelines with depth $D$.
+Combinations that make no sense --- a two-dimensional partition on a
+one-dimensional loop, a pipeline depth that exceeds the tile count --- are
+rejected at compile time. Notably there is no \texttt{vectorize} directive: SIMD
+is delegated to the host Rust compiler, because prescribing a vector width in the
+schedule would force every backend to honour it and so conflict with the
+byte-identical-across-backends guarantee.
+
+\paragraph{Transfer / IO semantics.} A \texttt{transfer} directive sets the IO
+semantics of a data symbol that crosses workers: \texttt{sync} or \texttt{async},
+\texttt{buffer=N} for in-flight depth, and \texttt{notify=event} or
+\texttt{notify=poll} for the wakeup discipline. These are exactly the dimensions
+of \cref{sec:bg-io}, raised to first-class directives. A transfer that crosses
+workers \emph{must} carry a directive --- omitting it is a compile error naming
+the data symbol --- so that one schedule cannot silently mean different things on
+different backends. The compiler resolves each directive against the chosen
+backend's declaration of which transfer mechanisms it supports (its capability
+matrix, whose structure \cref{sec:be-matrix} describes); asking for \texttt{async}
+on a backend that does not support it is a hard error, not a silent downgrade.
+
+A schedule may additionally attach \texttt{check} assertions --- for example
+\texttt{check loop frame : latency\_max = 10ms} --- which inject measurement code
+that verifies a property at run time. These are checkable, not prescriptive: the
+compiler reports whether the hand-written schedule meets the bound, but has no
+cost model and does not adjust the schedule to meet it.
 
 \section{A worked example: one algorithm, many schedules}\label{sec:lang-example}
 
-\section{What the language cannot express, and why}\label{sec:lang-limits}
-% Data-dependent writes (scatter), convergence-driven termination, recursion.
+The single algorithm of \cref{lst:algo} composes with a family of schedules that
+decompose it in increasingly aggressive ways, with no change to the algorithm
+file. The smoke-test schedule places all three kernels on one \texttt{host}
+worker and applies no transforms:
 
-\todo{Write Chapter 5 (cycle C3).}
+\begin{lstlisting}[language=Nuc,caption={The naive single-worker schedule for the same algorithm.},label={lst:sched-naive}]
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_image on host;
+    place save_image on host;
+    place blur3      on host;
+}
+\end{lstlisting}
+
+A second schedule keeps the single worker but tiles the outer loop with
+\texttt{loop y : block=4}, exercising the strip-mining transform (including a
+trailing partial tile, since the loop length is not a multiple of four). A third
+is the distributed schedule of \cref{lst:sched}, which partitions the outer loop
+into row bands across four workers; here the compiler must infer that each
+worker's \texttt{blur3} needs a one-row halo from its neighbours' bands, and
+synthesise the transfers that carry those halo strips --- none of which is
+visible in the algorithm. A fourth partitions the same loop into a
+two-dimensional grid, which additionally requires genuine worker-to-worker halo
+exchange on the east--west seams.
+
+The crucial property is that all of these schedules drive the \emph{same}
+algorithm file and, on the same input, must produce the \emph{same} output. The
+naive schedule is the reference behaviour; every other schedule is required to
+match it byte-for-byte. This is the algorithm/schedule boundary made concrete:
+the decomposition changed completely --- from one worker to four, from no
+transfers to halo exchange --- while the arithmetic did not change at all. The
+mechanism that turns this from an aspiration into a test is the subject of
+\cref{ch:validation}.
+
+\section{What the language cannot express, and why}\label{sec:lang-limits}
+
+The language's restrictions are deliberate, and each one buys a property the
+model depends on. They are stated here rather than discovered later.
+
+\paragraph{No data-dependent control flow.} There is no conditional in the
+algorithm sublanguage and no data-dependent loop termination. A loop that runs
+``until converged'' cannot be written, because its trip count is not a
+compile-time constant and the firing order would no longer be statically
+determined. Iterative solvers with convergence-driven termination are therefore
+out of scope.
+
+\paragraph{Limited data-dependent indexing.} A data-dependent \emph{read} (a
+gather, where an array is indexed by another array's contents) and a
+data-dependent \emph{write} (a scatter, such as a histogram) \emph{are}
+expressible, and the compiler handles the data-dependent dimension conservatively
+--- broadcasting a gathered array in whole, or replicating and recombining a
+scattered target. What cannot be expressed is a scatter whose target is itself
+partitioned along an affine axis, which is rejected rather than mis-compiled.
+Combined with the absence of convergence-driven termination, this means full
+sparse iterative solvers fall outside the language.
+
+\paragraph{No recursion, no higher-order kernels.} Kernels are first-order and
+non-recursive. Recursive or higher-order structure has no static firing order
+and so cannot be scheduled in this model.
+
+\paragraph{No carried scans in the surface.} An in-array prefix scan whose
+recurrence carries across iterations cannot be written directly, because it would
+require either a conditional to guard the boundary or a second assignment to the
+same symbol. Such patterns are instead expressed as a kernel-level idiom --- the
+carry logic lives inside an ordinary Rust kernel over a rectangular
+reduction-accumulator --- which keeps the algorithm sublanguage free of
+conditionals and single-valued per symbol, exactly the properties the
+intermediate representation and the differential test rely on.
+
+These limits share one root cause --- the model trades expressiveness for a
+statically determined, deterministic firing order --- and they are not merely
+documented but enforced: each prohibited construct is rejected by a specific
+compiler pass with a typed diagnostic rather than mis-compiled, as the next chapter
+shows when it constructs and checks that firing order. \Cref{ch:discussion} weighs
+the trade honestly.

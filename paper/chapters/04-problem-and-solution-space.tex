@@ -1,19 +1,180 @@
 \chapter{Problem Statement and Solution Space}\label{ch:problem}
-% Content cycle: C3. Intent: state the gap precisely, survey the design space,
-% and justify the central commitments before any implementation detail.
+
+The previous chapters established the portability problem informally and
+positioned it against the literature. This chapter states the gap precisely,
+maps the space of possible solutions, and justifies the central design
+commitments --- the algorithm/schedule separation and the single Petri-net
+intermediate representation --- before any implementation detail. The defence of
+those commitments is deferred to the chapters that realise them; here the
+argument is only that they are the right commitments to make.
 
 \section{The portability gap, precisely}\label{sec:prob-gap}
 
+Consider a parallel computation $C$ and a set of target platforms
+$T_1,\dots,T_n$ that differ in their concurrency model and their communication
+substrate: shared-memory threads, distributed processes over sockets, ranks of a
+message-passing cluster, cores of an embedded system-on-chip. To run $C$ on
+$T_i$ a programmer must supply three things: the \emph{arithmetic} of $C$; a
+\emph{decomposition} that assigns the work and data of $C$ to the concurrent
+units of $T_i$; and the \emph{IO} that moves intermediate results between those
+units with definite semantics (synchronous or asynchronous, buffered or not,
+event-driven or polled, over the substrate $T_i$ provides).
+
+The gap is this: only the first of the three is naturally portable. The
+arithmetic of $C$ is the same on every $T_i$, but in current practice the
+decomposition and the IO are written by hand, separately for each target, and
+interleaved with the arithmetic in the source. The artefact that runs on $T_i$
+is therefore not $C$ but a target-specific program $P_i$ in which $C$ is no
+longer cleanly recoverable. There are $n$ such programs, they must be maintained
+together, and the parts that differ between them --- the decomposition and the IO
+--- are exactly the parts most prone to deadlock, buffer mismanagement, and
+ordering errors.
+
+A precise statement of the goal follows directly. We want a representation in
+which $C$ is written \emph{once}, with no decomposition and no IO in it, together
+with a separate, per-target description of the decomposition and IO, such that a
+compiler can mechanically produce each $P_i$. Success is not subjective: if the
+single $C$ truly contains no target-specific information, then every $P_i$
+generated from it must compute the same function, and that can be tested by
+running them on common input and comparing outputs.
+
 \section{The design space}\label{sec:prob-design-space}
-% Where can decomposition + IO live? Trade-offs of each choice.
+
+Where can the decomposition and IO live? There are four broad options, and the
+choice among them determines everything that follows.
+
+\paragraph{In the algorithm.} The traditional answer: write the decomposition
+and IO directly into the source, once per target. This is maximally expressive
+--- anything the target supports can be expressed --- but it is exactly the
+status quo whose cost the previous section described. The arithmetic is no longer
+portable because it is no longer separable.
+
+\paragraph{In a general-purpose runtime.} Delegate decomposition and IO to a
+library or runtime --- a thread pool, a message-passing library, an async
+executor. This factors the mechanism out of the source, but it does not make the
+\emph{choice} of mechanism portable: a program written against one runtime is
+not a program against another, and the runtime fixes the IO semantics rather than
+exposing them as choices. Portability across runtimes is not achieved.
+
+\paragraph{Inferred automatically by the compiler.} Have the compiler discover
+the decomposition from the sequential source, as automatic parallelisers and
+polyhedral compilers do. This maximises convenience but at the cost of
+predictability and of a powerful, complex analysis; and for irregular cases the
+discovery fails or produces something the programmer cannot control. The portion
+that \emph{is} decidable cheaply --- given an explicit decomposition, inferring
+the data transfers it implies --- is worth keeping; the open-ended discovery is
+not.
+
+\paragraph{In a separate schedule the compiler consumes.} Have the programmer
+state the decomposition and IO explicitly, but in a \emph{separate} description
+that names the parts of the algorithm without being part of it, and have the
+compiler combine the two. This keeps the arithmetic portable (it never mentions a
+target), keeps the decomposition explicit and predictable (the programmer writes
+it, the compiler does not guess it), and lets the IO semantics be stated as
+selectable directives rather than baked into a runtime. The compiler still does
+the genuinely mechanical work --- synthesising the transfers the decomposition
+implies and lowering them to each target.
+
+This last option is the one this work takes. It is the design point that the
+compute-scheduling languages reached for performance, applied instead to
+decomposition and IO across distributed and embedded targets.
 
 \section{The central commitment: algorithm/schedule separation}\label{sec:prob-split}
-% One algorithm, many schedules; one schedule, many backends.
+
+The architecture commits to a strict separation between two artefacts: an
+\emph{algorithm}, which states what to compute and contains no worker, no buffer,
+no transport, and no synchronisation; and a \emph{schedule}, which states how to
+decompose the algorithm across workers and with what IO semantics, and which
+names the algorithm's kernels and loops without redefining them.
+
+The separation is meaningful only if it composes in both directions
+(\cref{fig:composition}). One algorithm must compose with many schedules: the
+same arithmetic, decomposed first across threads, then across cluster ranks, then
+across embedded cores, by editing only the schedule. And one schedule must
+compose with many backends: the same decomposition, lowered to whichever runtime
+and transport the chosen backend provides. The boundary is real exactly when
+either file can be changed independently and the other still works --- a property
+that is not asserted but tested (\cref{ch:validation}).
+
+The payoff of getting the boundary right is that the expensive, error-prone work
+--- choosing and tuning the decomposition and IO --- becomes a small, isolated,
+swappable description, while the arithmetic, written once, is never touched
+again. The risk is that the boundary leaks: that some target-specific assumption
+creeps into the algorithm, or some algorithmic detail leaks into the schedule.
+The differential test is designed precisely to expose such leaks.
 
 \section{Why a single Petri-net IR}\label{sec:prob-petri-ir}
-% One model carrying transfers, synchronisation, and soundness.
+
+Combining an algorithm with a schedule produces a concurrent program with
+inter-worker communication, and three questions about that communication must be
+answered before any code is emitted. Does it stay within its declared buffers
+(boundedness)? Can it hang (deadlock)? Is its outcome independent of the order in
+which independent events happen to occur (determinism)? Answering these with
+separate, ad-hoc analyses --- one for buffer sizing, one for deadlock, each with
+its own model of the program --- invites the analyses to disagree with each other
+and with the code that is finally generated.
+
+The commitment here is to answer all three from \emph{one} model: a Petri net
+(\cref{sec:bg-petri}) whose transitions are the program's kernel firings, data
+transfers, and synchronisations, and whose places are its data slots,
+communication channels, and barriers. Buffer capacity becomes a place capacity;
+the head-start of a pipelined or double-buffered transfer becomes an initial
+marking; boundedness becomes the question of whether any place exceeds its
+capacity, and deadlock becomes the reachability of a marking in which no
+transition can fire. One representation carries transfer synthesis,
+synchronisation, and the soundness questions together, and the code emitted for
+each worker is a projection of that same net --- so the analysis and the artefact
+cannot drift apart.
+
+Using the full theory of Petri nets would be both unnecessary and expensive. The
+nets this work builds are deliberately a small, restricted subclass --- bounded
+by construction and with a statically determined firing order --- which is what
+allows the soundness questions to be decided cheaply, as the next section commits
+and \cref{sec:arch-gate} realises.
 
 \section{Design commitments and deliberate non-goals}\label{sec:prob-commitments}
-% The restrictions that make the genericity claim falsifiable.
 
-\todo{Write Chapter 4 (cycle C3).}
+The genericity claim --- ``the algorithm is independent of schedule and
+backend'' --- is only worth making if it can be falsified. Several design
+commitments exist specifically to keep it falsifiable, and several capabilities
+are deliberately given up to keep the model tractable.
+
+\paragraph{Determinism, hence a restricted algorithm class.} Byte-identical
+comparison across backends is only meaningful if each backend's output is itself
+deterministic. The algorithm class is therefore restricted to deterministic
+computation: affine loop bounds and indices, single-assignment arrays (no
+aliasing, so the producer of every value is unambiguous), and integer-valued
+arithmetic --- or floating-point only where reductions do not reorder. This is a
+real restriction, stated plainly: it is what makes the falsification test
+possible.
+
+\paragraph{Static scheduling, hence a decidable soundness gate.} In a general
+concurrent system the order in which independent operations happen is decided at
+run time, by whichever inputs become available first; here, that order is instead
+fixed at compile time, derived from the dataflow and the source order. This gives
+up dynamic adaptivity but buys a soundness gate that is a single deterministic
+replay rather than a state-space search, and it is the only regime that suits hard
+real-time embedded targets in any case.
+
+\paragraph{Explicit decomposition, hence predictability.} The programmer
+annotates the decomposition; the compiler infers the transfers it implies but
+does not discover parallelism. This narrows what can be expressed but keeps the
+compilation outcome predictable and the analysis tractable.
+
+\paragraph{Deliberate non-goals.} The model does not target general-purpose GPU
+or accelerator programming; it does not perform polyhedral analysis; it does not
+support data-dependent control flow (such as convergence-driven loop
+termination), data-dependent loop trip counts, or recursion; and its schedule
+assertions are checked, not optimised against (there is no cost model). Some
+data-dependent \emph{indexing} is supported --- both gather reads and scatter
+writes, handled conservatively --- but full sparse solvers, which additionally
+need data-dependent termination, remain out of reach. \Cref{ch:discussion}
+returns to each of these as an honest limitation rather than an oversight.
+
+Together these commitments define a model that is narrower than a general
+parallel programming system but whose central claim can be put to a concrete,
+mechanical test. Realising the commitments demands, first, a surface language in
+which the algorithm genuinely contains none of the schedule's decisions --- the
+subject of the next chapter --- and then a compiler that combines the two
+(\cref{ch:architecture}) and the backends that target the result
+(\cref{ch:backends}).
