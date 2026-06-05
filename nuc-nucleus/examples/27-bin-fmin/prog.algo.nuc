@@ -1,0 +1,111 @@
+// Bin-fmin — FLOAT array-output MIN-combine accumulator (TASK-0343.02).
+//
+// The f32 analog of 26-bin-min. Two input streams of equal length N:
+//   - `key[i]` in [0, BINS)  — the i32 bin each value belongs to.
+//   - `val[i]` strictly POSITIVE, FINITE, NaN-free f32 — the value to
+//     min-fold.
+// The output is a BINS-element f32 array where `result[b]` is the
+// MINIMUM `val[i]` over all `i` with `key[i] == b`, or — for an EMPTY
+// bin (no `i` maps to `b`) — the float MIN-identity `f32::INFINITY`.
+//
+// This exists to exercise the float arm of the order-independence
+// combine policy (TASK-0343.02): the kernel declares `combine=min`,
+// whose float identity is `f32::INFINITY` (NOT 0.0, and NOT `f32::MAX`
+// which is the largest FINITE value). So the per-worker partial AND the
+// host accumulator MUST pre-init to `f32::INFINITY` at every init site
+// across all 7 tier-1 backends. The host element-wise combine emits
+// `result[_k] = result[_k].min(_tmp[_k])` (Rust `f32::min`, method
+// form).
+//
+// Why float MIN is ADMISSIBLE while float SUM is REJECTED
+// -------------------------------------------------------
+// PRD §10.1 requires byte-identical output across backends that reduce
+// the per-worker partials in DIFFERENT orders. `min` is associative +
+// commutative for DISTINCT FINITE NON-NaN values, so the reduced bits
+// are reduction-order-independent => bit-identical across all 7 tier-1
+// backends. Float `sum`, by contrast, is NON-associative under IEEE-754
+// (rounding depends on the addition order), so it is REJECTED at emit
+// with a typed error citing PRD §10.1 — there is no float-sum cell.
+//
+// NaN / signed-zero caveat (documented, out of scope)
+// ---------------------------------------------------
+// Rust `f32::min` "ignores NaN" and treats -0.0 / +0.0 as equal, so a
+// bin mixing ±0.0, or an all-NaN bin, is NOT guaranteed bit-stable
+// under reordering — which bit pattern surfaces can depend on order.
+// THIS FIXTURE AVOIDS THAT: every `val` is strictly positive, finite,
+// NaN-free, and distinct enough to avoid ±0.0/NaN ties, so the
+// order-independence guarantee holds here.
+//
+// Why this fixture is maximally sensitive to a missed/wrong init site
+// -------------------------------------------------------------------
+// ALL `val` are strictly positive, and the fixture has >=1 EMPTY bin.
+// So:
+//   - every NON-empty bin's correct result is positive; a backend that
+//     wrongly pre-inits to 0.0 yields `min(0.0, positive) == 0.0`
+//     => DIVERGES.
+//   - every EMPTY bin's correct result is `f32::INFINITY`; a 0.0-init
+//     backend yields `0.0` => DIVERGES.
+// A wrong/missing identity init on ANY ONE of the 7 backends therefore
+// breaks the 7-way bit-identity differential — that divergence IS the
+// proof that no init site was missed. (MAX-combine with positive values
+// would NOT catch a 0.0-init on a non-empty bin, so MIN is used here.)
+//
+// Why the distributed combine is sound: `min` is associative +
+// commutative, and the i-band partition over the OUTER input index `i`
+// is a DISJOINT cover of the inputs. Each worker whole-array-replicates
+// `result` (pre-init `f32::INFINITY`) and min-folds only its own i-band;
+// a worker that sees no `key==b` keeps `result[b] == f32::INFINITY`. The
+// host element-wise `min` of the 4 full partials equals the global
+// per-bin min independent of worker arrival order => bit-identical
+// across all 7 tier-1 backends (PRD §10.1) and equals the independent
+// reference oracle. Mirrors 26-bin-min EXACTLY — only the scalar type
+// (f32 vs i32) and its identity (INFINITY vs i32::MAX) differ.
+
+const N    : usize = 256;     // total input length (per stream)
+const BINS : usize = 16;      // min-bin count
+
+// Two input arrays and the BINS-wide accumulator output. `key` is i32
+// (the bin index), `val` and `result` are f32. Each `data` symbol is
+// assigned by exactly one dataflow statement (PRD §6.2.1).
+data key    : i32[N];
+data val    : f32[N];
+data result : f32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+// `load_key` reads i32 key from input.bin words [0..N); `load_val`
+// reads f32 val from words [N..2N) (same two-input file convention as
+// 26-bin-min, but the val stream is f32 LE).
+kernel load_key    : ()          -> i32[N]   effectful;
+kernel load_val    : ()          -> f32[N]   effectful;
+kernel save_output : (f32[BINS]) -> ()       effectful;
+
+// Per-element masked min-fold kernel — pure, reorderable. Returns
+// `min(acc, v)` iff `k == b`, else `acc`. The conditional /
+// data-dependent indexing lives in the Rust kernel body (PRD §6.2.2);
+// the algorithm uses only the rectangular masked-accumulate shape.
+//
+// `combine=min` (TASK-0343.02 float arm): under partition=workers each
+// worker whole-array-replicates `result` (pre-init f32::INFINITY) and
+// the host element-wise MIN-combines the per-worker partials. min is
+// order-independent on distinct finite values => bit-identical across
+// all 7 tier-1 backends (PRD §10.1).
+kernel bin_fmin    : (f32, i32, f32, i32) -> f32   pure combine=min;
+
+// Load both input streams on whoever owns I/O (the schedule decides).
+key <-- load_key();
+val <-- load_val();
+
+// Per-input rectangular masked min-accumulator. `result` is pre-
+// initialised to `f32::INFINITY` by the codegen (the float MIN
+// identity); each (i, b) iteration calls
+// `bin_fmin(result[b], key[i], val[i], b)` which returns
+// `min(result[b], val[i])` iff `key[i] == b`, else `result[b]`. The
+// fold builds the full per-bin minimum across all N inputs and all
+// BINS bins; empty bins retain the f32::INFINITY identity.
+for i : 0 .. N {
+    for b : 0 .. BINS {
+        result[b] <-- bin_fmin(result[b], key[i], val[i], b);
+    }
+}
+
+save_output(result);

@@ -1,0 +1,57 @@
+// Distributed schedule for example 27-bin-fmin (TASK-0343.02).
+//
+// The FLOAT MIN-combine sibling of 26-bin-min/distributed. Mirrors it
+// EXACTLY (i-band partition, whole-array replicate, host element-wise
+// combine) — the load-bearing difference is the scalar TYPE (f32 vs
+// i32) and so its identity: `bin_fmin` declares `combine=min`, whose
+// float identity is `f32::INFINITY`. Every per-worker partial AND the
+// host `result` MUST pre-init to `f32::INFINITY` (not 0.0), and the
+// host emits `result[_k] = result[_k].min(_tmp[_k])` (Rust f32::min,
+// method form).
+//
+// Shape:
+//   host    — owns I/O (load_key / load_val / save_output).
+//   w0..w3  — each compute worker owns one i-band of the inputs and
+//             min-folds it into a private FULL-width `result` (whole-
+//             array replicate, pre-init f32::INFINITY). The compiler
+//             partitions the outer `i` loop across the four workers via
+//             partition=workers.
+//
+// Cross-worker edges:
+//   key     host -> { w0..w3 }   (host loads, workers consume)
+//   val     host -> { w0..w3 }   (host loads, workers consume)
+//   result  { w0..w3 } -> host   (workers produce, host MIN-combines)
+//
+// Why the combine is sound: `min` is associative + commutative for the
+// distinct finite positive values this fixture commits to, and the
+// i-band partition is a DISJOINT cover of the inputs — each input is
+// min-folded into its bin exactly once, in exactly one worker's partial.
+// A worker whose band contains no `key==b` keeps `result[b] ==
+// f32::INFINITY` (the identity), so the host `min(f32::INFINITY, ...)`
+// correctly ignores it. The element-wise min of the 4 full partials
+// equals the global per-bin minimum, independent of worker arrival
+// order => bit-identical across all 7 tier-1 backends (PRD §10.1).
+//
+// All `sync` (the default transfer mode). `partition=workers` is the
+// partition policy for the outer `i` loop — the same shape examples
+// 03-reduction / 08-histogram / 25-bin-parity / 26-bin-min use.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O on host.
+    place load_key    on host;
+    place load_val    on host;
+    place save_output on host;
+
+    // The pure step kernel distributed across compute workers.
+    place bin_fmin on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one slice per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer key    : sync;
+    transfer val    : sync;
+    transfer result : sync;
+}

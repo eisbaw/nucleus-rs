@@ -1,0 +1,24 @@
+// Naive schedule for example 27-bin-fmin (TASK-0343.02).
+//
+// Single worker `host`, every kernel placed there. The language-sanity
+// slice: smoke test that the algorithm parses, lowers, and emits
+// bit-identical bytes against `reference.bin`. Even in the single-
+// worker path the `result` accumulator must pre-init to the float MIN
+// identity `f32::INFINITY` (NOT 0.0) for the min-fold to be correct —
+// so this cell already exercises the identity-aware init on the single-
+// worker emit path. No `transfer` directives (no cross-worker edges)
+// and no loop transforms — the distributed schedule
+// (schedules/distributed.sched.nuc) is where the partition-axis
+// MIN-combine actually flexes.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_key    on host;
+    place load_val    on host;
+    place save_output on host;
+    place bin_fmin    on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity", "26-bin-min"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity", "26-bin-min", "27-bin-fmin"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1630,6 +1630,108 @@ milestone = "M6"
 
 [[required]]
 example  = "26-bin-min"
+schedule = "distributed"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 27-bin-fmin: TASK-0343.02 — the FLOAT (f32) MIN-COMBINE sibling of
+# 26-bin-min. Proves the ADMISSIBLE arm of the float order-independence
+# combine policy: `bin_fmin` declares `combine=min` on an f32
+# accumulator, whose identity is `f32::INFINITY` (NOT 0.0, NOT f32::MAX
+# — the largest FINITE value). Every init site across all 7 tier-1
+# backends MUST pre-init to `f32::INFINITY`; the host element-wise
+# combine emits `result[_k] = result[_k].min(_tmp[_k])` (Rust f32::min,
+# method form). The fixture is NaN-free with distinct strictly-positive
+# finite f32 vals and bin 15 EMPTY, so float min is order-independent
+# (PRD §10.1 bit-identity holds) AND maximally sensitive to a missed
+# init site: a wrong 0.0-init yields `min(0.0, positive)=0.0` on every
+# non-empty bin and `0.0` instead of `f32::INFINITY` on the empty bin,
+# so every output element diverges and the 7-way differential bites.
+# The REJECTED arm (float `combine=sum`, non-associative per PRD §10.1)
+# is NOT an e2e cell — it is a typed emit reject, covered by the
+# wait_assign_accumulate float-sum negative unit test. naive is the
+# single-worker identity-init smoke; distributed is the load-bearing
+# cross-worker float MIN-combine differential.
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "27-bin-fmin"
 schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"

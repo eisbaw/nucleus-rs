@@ -25,20 +25,22 @@ deliberately out of scope for v2.
 
 - **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
   Start here. Everything else is implementation.
-- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 26 worked
-  examples (fourteen driving examples per PRD §9 plus twelve later
-  extensions, 15–26) from element-wise add (one kernel, one for-loop)
+- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 27 worked
+  examples (fourteen driving examples per PRD §9 plus thirteen later
+  extensions, 15–27) from element-wise add (one kernel, one for-loop)
   to CNN inference (multi-layer i32 deterministic), a multi-MCU
   hearing aid, a DMA-async + PIO-sync transport demo, a map-reduce
   dot product (inner product), a rank-1 outer product (the
   rank-expansion counterpart of a reduction), a distributed
   XOR-combine bin-parity (the non-sum accumulator-combine identity),
-  and a distributed MIN-combine bin-min (the non-zero-identity
-  accumulator combine, init to `i32::MAX`). Each example is
-  `prog.algo.nuc` + one or more `schedules/*.sched.nuc` + a
-  `kernels.rs` + an independent reference impl + an `input.bin` + an
-  expected `reference.bin`.
-  <!-- check-readme-counts: examples=26 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
+  a distributed MIN-combine bin-min (the non-zero-identity
+  accumulator combine, init to `i32::MAX`), and a distributed FLOAT
+  MIN-combine bin-fmin (the f32 order-independent combine, init to
+  `f32::INFINITY`; float sum is rejected as non-associative per PRD
+  §10.1). Each example is `prog.algo.nuc` + one or more
+  `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
+  impl + an `input.bin` + an expected `reference.bin`.
+  <!-- check-readme-counts: examples=27 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
 - **[`docs/`](docs/)** — grammar documents and the reference-impl
   policy.
 - **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`
