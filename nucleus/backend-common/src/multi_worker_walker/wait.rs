@@ -715,7 +715,7 @@ fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm,
                  different backends yield different bits — violating the PRD §10.1 \
                  bit-identity invariant. Use combine=min/max (order-independent on \
                  distinct finite values), or supply a deterministic summation kernel \
-                 (Kahan / fixed worker-id-sorted fold; deferred, TASK-0343.02)."
+                 (Kahan / fixed worker-id-sorted fold; deferred, TASK-0343.06)."
             ))),
             Or | Xor | And => Err(EmitError::ContractGap(format!(
                 "render_wait_assign: accumulate fan-in (combine={op:?}) on a float-scalar \
