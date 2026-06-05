@@ -1,0 +1,85 @@
+// Bin-parity — array-output XOR-combine accumulator (TASK-0343.01.01).
+//
+// Input is a stream of N i32 values, each constrained to the bin
+// range [0, BINS). The output is a BINS-element i32 array where
+// `parity[b]` is the PARITY (count mod 2) of input elements that
+// equal `b`: 1 if an odd number of inputs equal `b`, else 0.
+//
+// This is the XOR sibling of 08-histogram (which SUMS per-bin hits).
+// It exists to exercise the NEW non-`wrapping_add` combine arm of the
+// overlapping-write accumulator fan-in (TASK-0343.01.01): the kernel
+// declares `combine=xor`, so the host element-wise combine of the
+// per-worker partials emits `parity[_k] = parity[_k] ^ _tmp[_k]`
+// (operator form) instead of `.wrapping_add(...)` (method form).
+//
+// Why XOR is the right thing to demonstrate
+// -----------------------------------------
+//   - XOR is associative + commutative ⇒ the cross-worker combine is
+//     ORDER-INDEPENDENT across worker arrival ⇒ bit-identical across
+//     all 7 tier-1 backends (PRD §10.1). This is a STRONGER
+//     determinism story than float sum (which is not associative-
+//     stable) — see the parent TASK-0343.01 note.
+//   - XOR shares the additive-identity ZERO with sum/or, so the
+//     existing per-backend zero-init of `parity` is correct unchanged
+//     (no identity-aware init — that is min/max/and, deferred to
+//     TASK-0343.01.02).
+//   - Partitioning over the OUTER input index `i` (NOT over the
+//     accumulator bins `b`) makes each worker WHOLE-ARRAY-REPLICATE
+//     `parity` and XOR-fold only its own i-band; the host XORs the 4
+//     full partials element-wise. XOR of the disjoint per-band partials
+//     equals the global parity (each input toggles its bin exactly
+//     once; partition is a disjoint cover of the inputs). Mirrors
+//     08-histogram/distributed EXACTLY (i-band partition, whole-array
+//     replicate, host element-wise combine) — only the combine op
+//     differs.
+//
+// What this example does NOT demonstrate
+// --------------------------------------
+//   - Non-zero-identity combine (min->MAX, max->MIN, and->all-ones):
+//     those need identity-aware init and are deferred to
+//     TASK-0343.01.02.
+//   - Float reductions: PRD §10.1 demands bit-identity; integer XOR
+//     only here.
+//
+// Numeric choice: i32 throughout, matching 08-histogram so the same
+// committed `input.bin` (values pre-clipped to [0, BINS)) is reused.
+
+const N    : usize = 256;     // total input length
+const BINS : usize = 16;      // parity bin count
+
+// Input array and the BINS-wide accumulator output. Each `data`
+// symbol is assigned by exactly one dataflow statement (PRD §6.2.1).
+data input  : i32[N];
+data parity : i32[BINS];
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_input  : ()          -> i32[N]    effectful;
+kernel save_output : (i32[BINS]) -> ()        effectful;
+
+// Per-element bin-parity-toggle kernel — pure, reorderable. Returns
+// `acc ^ 1` iff `value == bin`, else `acc`. The conditional /
+// data-dependent indexing lives in the Rust kernel body (PRD §6.2.2:
+// arbitrary Rust); the algorithm uses only the rectangular masked-
+// accumulate shape 03/04/08 already prove bit-identical.
+//
+// `combine=xor` (TASK-0343.01.01): under partition=workers each worker
+// whole-array-replicates `parity` and the host element-wise XORs the
+// per-worker partials. XOR is associative+commutative ⇒ order-
+// independent ⇒ bit-identical across all 7 tier-1 backends (PRD §10.1).
+kernel bin_xor     : (i32, i32, i32) -> i32   pure combine=xor;
+
+// Load the entire input on whoever owns I/O (the schedule decides).
+input <-- load_input();
+
+// Per-input rectangular masked accumulator. `parity` is pre-initialised
+// to zero by the codegen (the XOR identity); each (i, b) iteration calls
+// `bin_xor(parity[b], input[i], b)` which returns `parity[b] ^ 1` iff
+// `input[i] == b`, else `parity[b]`. The fold builds the full per-bin
+// parity across all N inputs and all BINS bins.
+for i : 0 .. N {
+    for b : 0 .. BINS {
+        parity[b] <-- bin_xor(parity[b], input[i], b);
+    }
+}
+
+save_output(parity);

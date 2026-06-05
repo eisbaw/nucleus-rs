@@ -25,17 +25,18 @@ deliberately out of scope for v2.
 
 - **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
   Start here. Everything else is implementation.
-- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 24 worked
-  examples (fourteen driving examples per PRD §9 plus ten later
-  extensions, 15–24) from element-wise add (one kernel, one for-loop)
+- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 25 worked
+  examples (fourteen driving examples per PRD §9 plus eleven later
+  extensions, 15–25) from element-wise add (one kernel, one for-loop)
   to CNN inference (multi-layer i32 deterministic), a multi-MCU
   hearing aid, a DMA-async + PIO-sync transport demo, a map-reduce
-  dot product (inner product), and a rank-1 outer product (the
-  rank-expansion counterpart of a reduction). Each example is
-  `prog.algo.nuc` + one or more `schedules/*.sched.nuc` + a
-  `kernels.rs` + an independent reference impl + an `input.bin` + an
-  expected `reference.bin`.
-  <!-- check-readme-counts: examples=24 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
+  dot product (inner product), a rank-1 outer product (the
+  rank-expansion counterpart of a reduction), and a distributed
+  XOR-combine bin-parity (the non-sum accumulator-combine identity).
+  Each example is `prog.algo.nuc` + one or more
+  `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
+  impl + an `input.bin` + an expected `reference.bin`.
+  <!-- check-readme-counts: examples=25 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
 - **[`docs/`](docs/)** — grammar documents and the reference-impl
   policy.
 - **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`

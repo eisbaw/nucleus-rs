@@ -1,0 +1,19 @@
+// Naive schedule for example 25-bin-parity (TASK-0343.01.01).
+//
+// Single worker `host`, every kernel placed there. The language-sanity
+// slice: smoke test that the algorithm parses, lowers, and emits
+// bit-identical bytes against `reference.bin`. No `transfer` directives
+// (no cross-worker edges) and no loop transforms — the distributed
+// schedule (schedules/distributed.sched.nuc) is where the partition-axis
+// XOR-combine actually flexes.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place bin_xor     on host;
+
+    // No loop transforms.
+    // No transfer directives — no cross-worker edges.
+}

@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1475,6 +1475,61 @@ milestone = "M6"
 [[required]]
 example  = "24-outer-product"
 schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 25-bin-parity/distributed: TASK-0343.01.01 — the XOR-COMBINE sibling
+# of 08-histogram/distributed, exercising the NEW non-`wrapping_add`
+# accumulator fan-in arm. The kernel `bin_xor` declares `combine=xor`,
+# so the host element-wise combine emits `parity[_k] = parity[_k] ^
+# _tmp[_k]` (OPERATOR form) instead of `.wrapping_add(...)` (METHOD
+# form). i-band partition over the OUTER input index => each worker
+# whole-array-replicates `parity` => host XORs 4 full partials. XOR is
+# associative + commutative AND the partition is a disjoint cover of the
+# inputs => the combine is order-independent => bit-identical across all
+# 7 tier-1 backends (PRD §10.1) and equals the independent direct-index
+# `parity[v] ^= 1` reference oracle. The naive (single-worker) schedule
+# is the language-sanity smoke; the distributed cells below are the
+# load-bearing cross-worker XOR-combine differential.
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "25-bin-parity"
+schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"
 

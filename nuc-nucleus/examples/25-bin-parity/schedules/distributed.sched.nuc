@@ -1,0 +1,47 @@
+// Distributed schedule for example 25-bin-parity (TASK-0343.01.01).
+//
+// The XOR-combine sibling of 08-histogram/distributed. Mirrors it
+// EXACTLY (i-band partition, whole-array replicate, host element-wise
+// combine) — the ONLY difference is the combine op: `bin_xor` declares
+// `combine=xor`, so the host emits `parity[_k] = parity[_k] ^ _tmp[_k]`
+// (operator form) instead of `.wrapping_add(...)` (method form).
+//
+// Shape:
+//   host    — owns I/O (load_input / save_output).
+//   w0..w3  — each compute worker owns one i-band of `input` and
+//             XOR-folds it into a private FULL-width `parity` (whole-
+//             array replicate). The compiler partitions the outer `i`
+//             loop across the four workers via partition=workers.
+//
+// Cross-worker edges:
+//   input   host -> { w0..w3 }   (host loads, workers consume)
+//   parity  { w0..w3 } -> host   (workers produce, host XOR-combines)
+//
+// Why the combine is sound: XOR is associative + commutative, and the
+// i-band partition is a DISJOINT cover of the inputs — each input
+// toggles its bin exactly once, in exactly one worker's partial. So the
+// element-wise XOR of the 4 full partials equals the global per-bin
+// parity, independent of worker arrival order ⇒ bit-identical across
+// all 7 tier-1 backends (PRD §10.1).
+//
+// All `sync` (the default transfer mode). `partition=workers` is the
+// partition policy for the outer `i` loop — the same shape examples
+// 03-reduction / 08-histogram use.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    // I/O on host.
+    place load_input  on host;
+    place save_output on host;
+
+    // The pure step kernel distributed across compute workers.
+    place bin_xor on { w0, w1, w2, w3 };
+
+    // Outer loop is the partition axis; one slice per compute worker.
+    loop i : partition=workers;
+
+    // Cross-worker data — one transfer per data symbol that crosses.
+    transfer input  : sync;
+    transfer parity : sync;
+}
