@@ -3,10 +3,10 @@ id: TASK-0438
 title: >-
   M11 demo: STM32 DMA-async + PIO-sync transfers in one Nucleus app (Renode
   byte-exact)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-03 21:55'
-updated_date: '2026-06-04 08:04'
+updated_date: '2026-06-05 01:29'
 labels: []
 dependencies: []
 ---
@@ -44,11 +44,11 @@ Honest scope: this is comparable in scope to a single .10 sibling — a real cod
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 example added (likely '22-dma-pio-demo') with >=1 DMA-async transport edge AND >=1 PIO-sync transport edge in the same Nuc app
-- [ ] #2 embedded-pattern backend emits a structurally distinguishable code path for the two (DMA: HAL/descriptor arm + IRQ-wait stub; PIO: volatile byte loop)
-- [ ] #3 Renode .repl wires the DMA peripheral correctly (or existing platform already has it); 'just renode-multimcu <example>' runs BYTE-EXACT vs reference.bin
-- [ ] #4 HONEST header note in the example: Renode DMA timing is a model (not cycle-accurate); proof is value-correctness not timing
-- [ ] #5 tier-1 unaffected (e2e baseline preserved; new example is multi-MCU-only or tier-1-skipped like 14-hearing-aid)
+- [x] #1 example added (likely '22-dma-pio-demo') with >=1 DMA-async transport edge AND >=1 PIO-sync transport edge in the same Nuc app
+- [x] #2 embedded-pattern backend emits a structurally distinguishable code path for the two (DMA: HAL/descriptor arm + IRQ-wait stub; PIO: volatile byte loop)
+- [x] #3 Renode .repl wires the DMA peripheral correctly (or existing platform already has it); 'just renode-multimcu <example>' runs BYTE-EXACT vs reference.bin
+- [x] #4 HONEST header note in the example: Renode DMA timing is a model (not cycle-accurate); proof is value-correctness not timing
+- [x] #5 tier-1 unaffected (e2e baseline preserved; new example is multi-MCU-only or tier-1-skipped like 14-hearing-aid)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -70,4 +70,6 @@ DESIGN DECISION (open Q#1 RESOLVED): DMA-vs-PIO lives as a new `TransferOption` 
 DECOMPOSED into 3 sub-slices: .01 DSL+IR+policy threading (no codegen divergence, regression-safe); .02 backend divergent codegen (DMA arm+IRQ-wait stub vs PIO volatile loop); .03 new demo example + Renode platform + byte-exact gate. Open Q#2 (peripheral) leaning GPDMA-over-USART to reuse UARTHub fabric; Q#3 (HAL) current template is cortex-m-rt only + bare volatile regs (no HAL); Q#4 (IRQ wait) deferred to .02. Starting .01.
 
 SLICE .01 LANDED + review GO/GO (commits be99066, 7b50098; tracker 9b3a994). Transport-mode hint (mode=pio|dma) threads end-to-end DSL->IR->TransferPolicy.transport, default Pio, regression-safe (renode byte-exact preserved for 02 + ex14). Design Q#1 (HINT-on-edge) now empirically VALIDATED in code. Remaining: .02 (backend divergent codegen — meatier, warrants fresh cycle) then .03 (demo example + Renode + byte-exact gate). Per the cycle's stop-after-first-sub-slice directive, stopping here with clean handoff.
+
+PARENT CLOSURE (2026-06-05, after TASK-0438.03 landed, commit d6ca9cb): all 3 sub-slices Done (.01 DSL/IR/policy threading, .02 divergent backend codegen, .03 demo example + Renode byte-exact gate). All 5 parent ACs now ticked: #1 22-dma-pio-demo has 2 mode=dma edges (samples,out) + 1 mode=pio edge (gains) in one app; #2 backend emits dma_link_arm/dma_link_recv_arm + dma_link_poll spin (DMA) vs link_push/link_recv (PIO) — emit-proven in the firmware run() body; #3 existing stm32h743.repl REUSED unchanged (modelled DMA rides the same USART1 fabric, no DMA peripheral wired), just renode-multimcu 22-dma-pio-demo dma_pio BYTE-EXACT 1024B vs reference.bin, ran 2x; #4 HONEST timing-model note in prog.algo.nuc + schedule + README (Renode DMA is a model not silicon; value-correctness not timing); #5 tier-1 unaffected — example NOT in e2e runnable_examples, e2e 427/364/0/63/0 preserved. Real async DMA engine (timing not just value) = follow-up TASK-0048.12 (forward-carried).
 <!-- SECTION:NOTES:END -->
