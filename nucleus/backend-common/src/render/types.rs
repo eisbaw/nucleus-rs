@@ -73,27 +73,58 @@ pub fn render_array_init_for(ty: &ResolvedType) -> String {
 /// cannot drift silently between backends.
 ///
 /// - `None` / `Sum` / `Or` / `Xor` → zero (additive / bitwise-OR /
-///   bitwise-XOR identity), spelled by [`rust_scalar_zero`].
-/// - `Min` → type MAX (`min(MAX, x) == x`).
-/// - `Max` → type MIN.
-/// - `And` → all-ones, spelled `!0T` UNIFORMLY for both signed and
-///   unsigned integers (`!0i32 == -1`, `!0u32 == u32::MAX`; `!0T`
+///   bitwise-XOR identity, and the bool OR/XOR identity `false`),
+///   spelled by [`rust_scalar_zero`].
+/// - `Min` → the greatest element: integer `{T}::MAX`; **float
+///   `{f32|f64}::INFINITY`** (`x.min(INFINITY) == x` for any non-NaN
+///   `x`, where `{T}::MAX` would be the largest FINITE value and so
+///   wrongly clamp out a `+INFINITY` input value).
+/// - `Max` → the least element: integer `{T}::MIN`; **float
+///   `{f32|f64}::NEG_INFINITY`**.
+/// - `And` → all-ones for integers, spelled `!0T` UNIFORMLY for both
+///   signed and unsigned (`!0i32 == -1`, `!0u32 == u32::MAX`; `!0T`
 ///   parses as `!(0T)`). NOTE: `T::MAX` would be WRONG for signed `&`
-///   (it is `0111…1`, not all-ones).
+///   (it is `0111…1`, not all-ones). For **bool**, the AND identity is
+///   `true` (`x && true == x`).
 ///
-/// Integer-only for the non-zero ops: float / bool are rejected at the
-/// `combine_form_for_scalar` gate before any accumulate emit, so a
-/// `Min`/`Max`/`And` identity literal is only ever requested for an
-/// integer scalar here. Float/bool fall through to the zero literal
-/// (harmless — they can only arrive via the zero-identity arms).
+/// # Admissibility (TASK-0343.02)
+///
+/// The non-zero ops are admitted per-type-class by
+/// `combine_form_for_scalar`: float admits `min`/`max` (rejecting
+/// `sum`/bitwise), bool admits `and`/`or`/`xor` (rejecting
+/// `sum`/`min`/`max`). So float `Min`/`Max` and bool `And` ARE reached
+/// here (with the identities above); the combos that never pass the
+/// gate (float `And`, bool `Min`/`Max`) still return a sane literal
+/// below — they can only arrive via a path the gate already rejected,
+/// so the value is never emitted, but it must not panic.
+///
+/// # NaN / signed-zero caveat
+///
+/// Float `min`/`max` are admitted because they are order-independent
+/// for DISTINCT FINITE NON-NaN values — so the reduced bits are
+/// reduction-order-independent and bit-identical across backends (PRD
+/// §10.1). A bin mixing `-0.0`/`+0.0`, or an all-NaN bin, is NOT
+/// guaranteed bit-stable under reordering (`f32::min` ignores NaN and
+/// treats ±0 as equal); that is an out-of-scope documented caveat. The
+/// 27-bin-fmin fixture is NaN-free with distinct positive finite values.
 pub fn combine_identity_literal(t: &ScalarType, combine: Option<CombineOp>) -> String {
     let rty = rust_scalar_type(t);
+    let is_float = matches!(t, ScalarType::F32 | ScalarType::F64);
+    let is_bool = matches!(t, ScalarType::Bool);
     match combine {
         None | Some(CombineOp::Sum) | Some(CombineOp::Or) | Some(CombineOp::Xor) => {
             rust_scalar_zero(t).to_string()
         }
+        // Min identity is the GREATEST element of the type. Integers:
+        // `T::MAX`. Floats: `+INFINITY` (NOT `f32::MAX`, which is the
+        // largest finite — it would clamp a genuine `+INFINITY` value).
+        Some(CombineOp::Min) if is_float => format!("{rty}::INFINITY"),
         Some(CombineOp::Min) => format!("{rty}::MAX"),
+        // Max identity is the LEAST element. Floats: `-INFINITY`.
+        Some(CombineOp::Max) if is_float => format!("{rty}::NEG_INFINITY"),
         Some(CombineOp::Max) => format!("{rty}::MIN"),
+        // And identity: bool `true`; integer all-ones `!0T`.
+        Some(CombineOp::And) if is_bool => "true".to_string(),
         Some(CombineOp::And) => format!("!0{rty}"),
     }
 }

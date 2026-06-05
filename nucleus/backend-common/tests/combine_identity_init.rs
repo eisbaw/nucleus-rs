@@ -169,3 +169,99 @@ fn zero_init_would_diverge_from_min_identity() {
          element (the 7-way bit-identity differential bites this)"
     );
 }
+
+// ---------------------------------------------------------------------
+// TASK-0343.02 — float / bool identity literals.
+// ---------------------------------------------------------------------
+
+#[test]
+fn float_min_identity_is_positive_infinity() {
+    // The MIN identity is the GREATEST element of the ordered type: for
+    // float that is `+INFINITY`, NOT `f32::MAX` (the largest FINITE
+    // value, which would wrongly clamp out a genuine `+INFINITY` input).
+    assert_eq!(
+        combine_identity_literal(&ScalarType::F32, Some(CombineOp::Min)),
+        "f32::INFINITY"
+    );
+    assert_eq!(
+        combine_identity_literal(&ScalarType::F64, Some(CombineOp::Min)),
+        "f64::INFINITY"
+    );
+    // Concept cross-check: `x.min(INFINITY) == x` for any finite x.
+    assert_eq!(std::hint::black_box(3.5_f32).min(f32::INFINITY), 3.5_f32);
+}
+
+#[test]
+fn float_max_identity_is_negative_infinity() {
+    assert_eq!(
+        combine_identity_literal(&ScalarType::F32, Some(CombineOp::Max)),
+        "f32::NEG_INFINITY"
+    );
+    assert_eq!(
+        combine_identity_literal(&ScalarType::F64, Some(CombineOp::Max)),
+        "f64::NEG_INFINITY"
+    );
+    assert_eq!(
+        std::hint::black_box(3.5_f32).max(f32::NEG_INFINITY),
+        3.5_f32
+    );
+}
+
+#[test]
+fn bool_and_identity_is_true() {
+    // The AND identity is `true` (`x && true == x`); OR/XOR keep the
+    // zero literal `false` via the zero-identity path.
+    assert_eq!(
+        combine_identity_literal(&ScalarType::Bool, Some(CombineOp::And)),
+        "true"
+    );
+    assert_eq!(
+        combine_identity_literal(&ScalarType::Bool, Some(CombineOp::Or)),
+        "false",
+        "bool OR identity is `false` (the zero literal)"
+    );
+    assert_eq!(
+        combine_identity_literal(&ScalarType::Bool, Some(CombineOp::Xor)),
+        "false",
+        "bool XOR identity is `false` (the zero literal)"
+    );
+}
+
+/// Float-min sensitivity pin (AC#7): a 0-init (or any finite init) under
+/// `combine=min` over strictly-positive floats with an EMPTY bin would
+/// DIVERGE from the `f32::INFINITY` identity. An empty bin must surface
+/// `f32::INFINITY` (bits 0x7F800000); a 0.0-init would yield `0.0`, and
+/// `min(0.0, positive) == 0.0` corrupts every non-empty bin too. This is
+/// exactly why 27-bin-fmin uses MIN (not MAX) over positive values.
+#[test]
+fn zero_init_would_diverge_from_float_min_identity() {
+    let min_init = combine_identity_literal(&ScalarType::F32, Some(CombineOp::Min));
+    let zero_init = combine_identity_literal(&ScalarType::F32, None);
+    assert_eq!(min_init, "f32::INFINITY");
+    assert_eq!(zero_init, "0.0");
+    assert_ne!(
+        min_init, zero_init,
+        "a float `combine=min` accumulator MUST init to f32::INFINITY, \
+         never 0.0 — min(0.0, positive)=0.0 corrupts the output and the \
+         empty bin must read INFINITY bits (0x7F800000)"
+    );
+    // The empty-bin output bits the reference oracle commits to.
+    assert_eq!(f32::INFINITY.to_bits(), 0x7F80_0000);
+}
+
+#[test]
+fn float_array_init_wraps_infinity_in_vec() {
+    let ty = ResolvedType {
+        scalar: ScalarType::F32,
+        dims: vec![16],
+    };
+    assert_eq!(
+        render_array_init_for_combine(&ty, Some(CombineOp::Min)),
+        "vec![f32::INFINITY; 16]",
+        "float min array accumulator pre-inits to vec![f32::INFINITY; N]"
+    );
+    assert_eq!(
+        render_array_init_for_combine(&ty, Some(CombineOp::Max)),
+        "vec![f32::NEG_INFINITY; 16]"
+    );
+}

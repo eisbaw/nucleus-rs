@@ -601,13 +601,17 @@ impl CombineForm {
 /// identity (`combine_identity_literal`), so there is no silent
 /// fallthrough.
 ///
-/// # Scalar-type carve-out
+/// # Scalar-type admissibility (TASK-0343.02)
 ///
-/// Returns `EmitError::ContractGap` for floats / bool (filed as
-/// TASK-0343 follow-up): float addition is not associative-stable
-/// (PRD §10.1) and bool has no canonical numeric combine in v2 today.
-/// The carve-out applies to all six ops uniformly — they are
-/// integer-only and hit the same integer-type gate.
+/// `combine_form_for_scalar` admits a combine op ONLY when it is
+/// order-independent (associative + commutative) on the scalar type,
+/// the PRD §10.1 bit-identity precondition. Integer: all six ops.
+/// Float (f32/f64): `min`/`max` only — `sum` is non-associative
+/// (different per-backend reduction orders give different bits) and
+/// `or`/`xor`/`and` are undefined on float; both reject with a typed
+/// `EmitError::ContractGap`. Bool: `and`/`or`/`xor` only — `sum` (no
+/// canonical identity) and `min`/`max` (spelled and/or) reject. No
+/// panic, no silent fallthrough.
 fn render_accumulate_assign(
     sidecar: &NameSidecar,
     data: DataId,
@@ -642,48 +646,102 @@ fn render_accumulate_assign(
     }
 }
 
-/// Resolve the [`CombineForm`] for `(op, scalar)`. Integer-only:
-/// float / bool surface as `EmitError::ContractGap` pointing at the
-/// TASK-0343 float/bool follow-up. `sum` → `wrapping_add`, `min` →
-/// `min`, `max` → `max` (methods); `or` → `|`, `xor` → `^`, `and` →
-/// `&` (operators).
+/// Resolve the [`CombineForm`] for `(op, scalar)`, admitting a combine
+/// op ONLY when it is ORDER-INDEPENDENT (associative + commutative) on
+/// the scalar type. Order-independence is the load-bearing
+/// admissibility predicate: the cross-backend differential reduces the
+/// per-worker partials in DIFFERENT orders, so a host fan-in combine
+/// must give bit-identical bytes regardless of arrival order (PRD
+/// §10.1). Every reject is a distinct typed `EmitError::ContractGap`
+/// (no panic, no silent fallthrough); float-sum's message cites
+/// non-associativity + PRD §10.1 explicitly.
+///
+/// Per scalar-type class (TASK-0343.02):
+/// - **Integer** (all width/sign): all six ops admitted unchanged.
+///   `sum` → `wrapping_add`, `min`/`max` → `min`/`max` (methods);
+///   `or` → `|`, `xor` → `^`, `and` → `&` (operators).
+/// - **Float** (f32/f64): `min`/`max` ADMITTED — they are
+///   order-independent for distinct finite non-NaN values, so the
+///   reduced bits are reduction-order-independent (`f32::min` /
+///   `f32::max` methods; the accumulator pre-inits to `INFINITY` /
+///   `NEG_INFINITY`, see `combine_identity_literal` in
+///   `render::types`).
+///   `sum` REJECTED — IEEE-754 float addition is NOT associative, so
+///   different per-backend reduction orders yield different bits,
+///   violating the PRD §10.1 bit-identity invariant. `or`/`xor`/`and`
+///   REJECTED — bitwise ops are undefined on float.
+/// - **Bool**: `and`/`or`/`xor` ADMITTED (`&`/`|`/`^`, all valid +
+///   associative + commutative on `bool`; identities `true`/`false`/
+///   `false`). `sum` REJECTED — no canonical bool sum. `min`/`max`
+///   REJECTED — use `and`/`or` (the bool lattice meet/join) instead.
+///
+/// # NaN / signed-zero caveat (AC#5)
+///
+/// Float `min`/`max` admissibility rests on order-independence for
+/// distinct FINITE NON-NaN values. Rust `f32::min` "ignores NaN" and
+/// treats `-0.0`/`+0.0` as equal, so a bin containing both `±0.0`, or
+/// an all-NaN bin, is NOT guaranteed bit-stable under reordering —
+/// which bit pattern surfaces can depend on reduction order. That is an
+/// OUT-OF-SCOPE documented caveat; the committed 27-bin-fmin fixture is
+/// NaN-free with distinct positive finite values, so the guarantee
+/// holds there.
 fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm, EmitError> {
-    let integer = matches!(
-        t,
-        ScalarType::Usize
-            | ScalarType::Isize
-            | ScalarType::U8
-            | ScalarType::U16
-            | ScalarType::U32
-            | ScalarType::U64
-            | ScalarType::I8
-            | ScalarType::I16
-            | ScalarType::I32
-            | ScalarType::I64
-    );
-    if !integer {
-        let what = match t {
-            ScalarType::F32 | ScalarType::F64 => "float",
-            ScalarType::Bool => "bool",
-            _ => "non-integer",
-        };
-        return Err(EmitError::ContractGap(format!(
-            "render_wait_assign: accumulate fan-in (combine={op:?}) on a {what}-scalar \
-             data symbol — the zero-identity combine ops are integer-only in v2 \
-             (float addition is not associative-stable per PRD §10.1; bool has no \
-             canonical numeric combine). Filed as TASK-0343.02 (float/bool follow-up)."
-        )));
+    use CombineOp::*;
+    use ScalarType::*;
+    match t {
+        // Integer — every op order-independent, admitted unchanged.
+        Usize | Isize | U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 => Ok(match op {
+            Sum => CombineForm::Method("wrapping_add"),
+            Or => CombineForm::Operator("|"),
+            Xor => CombineForm::Operator("^"),
+            // TASK-0343.01.02 non-zero-identity ops. `min`/`max` use
+            // the inherent `Ord` methods; `and` is the bitwise
+            // operator. The accumulator's pre-init must already hold
+            // the matching identity (MAX / MIN / all-ones) — see
+            // `combine_identity_literal`.
+            Min => CombineForm::Method("min"),
+            Max => CombineForm::Method("max"),
+            And => CombineForm::Operator("&"),
+        }),
+        // Float — only the order-independent lattice ops (min/max) are
+        // admissible; sum is non-associative, bitwise undefined.
+        F32 | F64 => match op {
+            Min => Ok(CombineForm::Method("min")),
+            Max => Ok(CombineForm::Method("max")),
+            Sum => Err(EmitError::ContractGap(format!(
+                "render_wait_assign: accumulate fan-in (combine=sum) on a float-scalar \
+                 data symbol ({t:?}) is REJECTED: IEEE-754 float addition is NOT \
+                 associative, so the per-worker partials reduced in different orders by \
+                 different backends yield different bits — violating the PRD §10.1 \
+                 bit-identity invariant. Use combine=min/max (order-independent on \
+                 distinct finite values), or supply a deterministic summation kernel \
+                 (Kahan / fixed worker-id-sorted fold; deferred, TASK-0343.02)."
+            ))),
+            Or | Xor | And => Err(EmitError::ContractGap(format!(
+                "render_wait_assign: accumulate fan-in (combine={op:?}) on a float-scalar \
+                 data symbol ({t:?}) is REJECTED: bitwise combine ops (or/xor/and) are \
+                 undefined on float. Use combine=min/max for a float accumulator."
+            ))),
+        },
+        // Bool — the lattice/parity ops are order-independent; sum has
+        // no canonical bool identity; min/max are spelled and/or.
+        Bool => match op {
+            And => Ok(CombineForm::Operator("&")),
+            Or => Ok(CombineForm::Operator("|")),
+            Xor => Ok(CombineForm::Operator("^")),
+            Sum => Err(EmitError::ContractGap(
+                "render_wait_assign: accumulate fan-in (combine=sum) on a bool-scalar \
+                 data symbol is REJECTED: bool has no canonical sum identity in v2. \
+                 Declare the intended fan-in explicitly: combine=or (any), combine=and \
+                 (all), or combine=xor (parity)."
+                    .to_string(),
+            )),
+            Min | Max => Err(EmitError::ContractGap(format!(
+                "render_wait_assign: accumulate fan-in (combine={op:?}) on a bool-scalar \
+                 data symbol is REJECTED: min/max on bool are ambiguous in v2. Use the \
+                 bool lattice ops instead — combine=and is the meet (min), combine=or \
+                 is the join (max)."
+            ))),
+        },
     }
-    Ok(match op {
-        CombineOp::Sum => CombineForm::Method("wrapping_add"),
-        CombineOp::Or => CombineForm::Operator("|"),
-        CombineOp::Xor => CombineForm::Operator("^"),
-        // TASK-0343.01.02 non-zero-identity ops. `min`/`max` use the
-        // inherent `Ord` methods; `and` is the bitwise operator. The
-        // accumulator's pre-init must already hold the matching
-        // identity (MAX / MIN / all-ones) — see `combine_identity_literal`.
-        CombineOp::Min => CombineForm::Method("min"),
-        CombineOp::Max => CombineForm::Method("max"),
-        CombineOp::And => CombineForm::Operator("&"),
-    })
 }
