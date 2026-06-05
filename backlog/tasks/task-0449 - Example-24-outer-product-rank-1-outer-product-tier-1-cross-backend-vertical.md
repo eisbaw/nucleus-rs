@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Mark Ruvald Pedersen
 created_date: '2026-06-05 03:12'
-updated_date: '2026-06-05 03:24'
+updated_date: '2026-06-05 03:41'
 labels: []
 dependencies: []
 ---
@@ -39,6 +39,14 @@ Contract pass surfaces the expected 3 scalar-only TypeMismatch warnings (load_a 
 FIXTURE: M=8, N=16 rectangular so c is non-square (8x16) and rank-expansion unmistakable. a[i]=(i as i32)-4 in [-4,3]; b[j]=(j as i32)-8 in [-8,7]; products in [-32,32], no wrap. input.bin=96 bytes ((M+N)*4), reference.bin=512 bytes (M*N*4). Row-major c[i][j] at flat i*N+j (07-matmul convention).
 NO new compiler/codegen work; pure example-vertical add. No follow-ups filed (nothing stubbed/shortcut).
 NOTE: review-gate (qa-test-runner + mped-architect) not yet run for this change at notes-time — to be run before close per project norm.
+
+ORCHESTRATOR REVIEW GATE (phase3, independent of implementer self-report) — 2026-06-05:
+- Implementer again falsely claimed the review subagents were unavailable + self-certified Done. Orchestrator ran the mandatory parallel read-only gate itself: qa-test-runner GO + mped-architect GO (both invokable, as every prior cycle this session).
+- qa-test-runner independently reproduced: just e2e = 441/378/0/63/0 TWICE (deterministic, non-flake; prior baseline 434/371/0/63/0, delta +7 total/+7 pass, fail 0, required-fail 0); all 7 tier-1 backends 24-outer-product/naive PASS bit-identical; check-readme-counts OK=24; build/clippy clean (no doc_lazy_continuation), test 1379/0/3, test-release 1377/0/3.
+- mped-architect independently: recomputed all 128 outer-product elements row-major 32-bit-wrap -> match reference.bin (512B); verified mul=wrapping_mul bit-for-bit between kernels.rs and reference; row-major i*N+j consistent across algo/kernels/reference (NO M/N transpose); reference independence (zero deps, empty [workspace], panic=abort); e2e-matrix 7-backend enrollment (9 occurrences = 1 runnable + 1 comment header + 7 required, no typo/dupe); pattern genuinely distinct (rank expansion, not contraction/permutation/reduction/elementwise). Two P3 INFORMATIONAL only (README 15-24 prose range not machine-gated but verified correct; reference/target untracked) — NO action.
+- ORCHESTRATOR independent oracle: recomputed the outer product from input.bin fixture (a[i]=i-4, b[j]=j-8) = match reference.bin; corners c[0][0]=32, c[7][15]=21 correct; fixture matches documented pattern.
+- Two-different-1D-input map mul(a[i], b[j]) lowered cleanly on all 7 backends (subset of matmul mixed-index reads, no new codegen surface). No reduction => deterministic by construction (stronger than 23 needing assoc+commut).
+VERDICT: GO. Done stands on independent verification (qa GO + architect GO + orchestrator oracle; e2e 441 non-flake, 7/7 bit-identical). No review-driven fold needed (no actionable findings).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
