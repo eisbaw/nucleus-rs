@@ -284,8 +284,183 @@ The same host-and-four-workers lists just described are what the next sections l
 to shared-memory threads, to MPI ranks, and to bare-metal microcontrollers --- the
 same events, three very different renderings.
 
-% ---------------------------------------------------------------------------
-% Part 2 (TASK-0451.10.02): IR -> backend lowering. The sections below take the
-% per-worker event lists produced above and show them rendered to pthreads, MPI,
-% and embedded code. Written in the next content cycle.
-% ---------------------------------------------------------------------------
+\section{One event list, three renderings}\label{sec:wt-lowering}
+
+A backend consumes the per-worker event lists and nothing else
+(\cref{sec:arch-codegen}). It renders each event into code for one combination of
+runtime and transport, and the central observation of this chapter is visible only
+once that rendering is laid side by side across backends: the events that compute
+--- fire a kernel, loop --- go through a \emph{shared} renderer, while only the events
+that communicate --- push, wait, barrier --- are rendered per-backend
+(\cref{fig:wt-lowering}). This is the middle-end/presentation boundary
+(\cref{sec:arch-boundaries}) --- the line separating the shared, backend-independent
+lowering from the per-backend rendering of transport --- made mechanical: there is one
+emitter for the inside of a worker and a small per-backend emitter for the seams
+between workers.
+
+The consequence is literal, not approximate. Emitting the stencil's distributed event
+lists to the shared-memory \texttt{pthreads-async} backend and to the
+distributed-memory \texttt{mpi-nonblocking} backend produces, for each compute
+worker, \emph{byte-for-byte the same compute body} --- the same tiled, reuse-windowed
+loop, the same nine-argument \texttt{blur3} call, the same circular-buffer index
+arithmetic, down to the character (the transport sections of the two files, of
+course, differ). The two generated programs diverge only where a worker sends or
+receives a band or meets a barrier. The sections below show each of the three
+renderings of the same event lists from \cref{sec:wt-events} --- two of them, the
+hosted backends, running that exact distributed schedule, the third running a
+synchronous variant its transport requires --- and the last explains why all three
+agree to the byte.
+
+\section{Shared memory: the pthreads rendering}\label{sec:wt-pthreads}
+
+The \texttt{pthreads-async} backend maps each worker to an operating-system thread
+and each transfer channel to a bounded ring buffer shared between two threads
+(\cref{sec:be-tier1}). The host's \texttt{main} allocates one ring per transfer ---
+four for the \texttt{img\_in} sends, each a two-slot ring matching the schedule's
+\texttt{buffer=2}, and four single-slot rings for the synchronous \texttt{img\_out}
+returns --- and two five-party barriers, then spawns the four compute-worker threads
+and runs the host's own event list inline.
+
+Each event renders to a shared-memory primitive. A \emph{push} becomes a
+\texttt{ring.push(payload)} into the destination worker's channel; a \emph{wait}
+becomes a \texttt{ring.wait()} followed by a copy of the received band into the
+worker's local array; a \emph{barrier} becomes a \texttt{barrier.wait()} on the
+shared five-party barrier; and a \emph{fire} becomes a direct call to the kernel.
+The ring is a condition-variable queue --- a producer blocks when it is full, a
+consumer blocks when it is empty --- so the asynchronous, event-notified semantics
+the schedule asked for are realised by the operating system's condition variables
+rather than by any polling. The host stages the four input bands into the
+two-deep rings, both barriers pass, and the four output bands are collected; the
+compute worker for the first band runs exactly the loop \cref{sec:wt-acfg}
+described, reading its received rows $0..6$ and writing its band rows $1..5$.
+
+\section{Distributed memory: the MPI rendering}\label{sec:wt-mpi}
+
+The \texttt{mpi-nonblocking} backend maps each worker to an MPI rank and emits a
+single program that every rank runs, branching on its rank to execute that worker's
+event list (\cref{sec:be-tier2,fig:mpi-spmd}). Where the shared-memory backend
+spawned four threads from a host \texttt{main}, the MPI backend emits one \texttt{match
+world.rank()} --- a branch on the process's rank within the MPI communicator --- with
+five arms: rank $0$ is the host, ranks $1$ through $4$ are the compute workers, and
+the program is launched as five processes with
+\texttt{mpiexec~-n~5}. The same event list that drove the host thread now drives
+rank $0$; the same list that drove the first compute thread now drives rank $1$.
+
+The transport primitives are entirely different from the ring buffers, yet they
+realise the same event semantics. A transfer channel becomes a small wrapper over an
+MPI peer and a message tag (a small integer the receiver uses to select which
+incoming message to take). A \emph{push} is a buffered non-blocking send
+(\texttt{MPI\_Ibsend} into a process-attached send buffer) whose completion is local:
+it returns once the payload has been copied into that buffer, without waiting for the
+peer to post its receive. This is what gives the asynchronous, buffered behaviour the
+schedule requested, and what keeps a wait-before-push exchange from deadlocking --- if
+two workers each waited to receive before sending, neither would proceed, whereas a
+local-completion send lets each post its send first and then wait. A \emph{wait} is a
+matched probe (\texttt{MPI\_Mprobe}, which learns the incoming element count) followed
+by a non-blocking matched receive and its completion. A \emph{barrier} is
+\texttt{MPI\_Barrier} over the whole communicator. Each channel pins its MPI message
+tag to the transfer's compile-time identity --- every distinct transfer edge in the
+event list gets a unique tag --- so two concurrent transfers between the same pair of
+ranks carry different tags and cannot be matched by the wrong receive. The rank assignment, the message tags, and the receive slices are all
+computed by the same projection that produced the event lists; the backend only
+chooses how to spell a push and a wait.
+
+And the inside of each rank is the shared compute body unchanged. Rank $1$ receives
+rows $0..6$ into the same array offset (\texttt{img\_in[0..96]}: six rows of sixteen
+in row-major order), runs the byte-identical tiled, reuse-windowed \texttt{blur3}
+loop, and sends its output array back to the host, which recovers this worker's band
+rows $1..5$ at the same offset the pthreads host used (\texttt{img\_out[16..80]}) ---
+the identical arithmetic the pthreads thread ran, wrapped in \texttt{MPI\_Ibsend} and
+\texttt{MPI\_Mprobe} instead of \texttt{ring.push} and \texttt{ring.wait}.
+
+\section{The capability boundary}\label{sec:wt-capability}
+
+The two renderings above were both possible because both backends advertise the
+capabilities the stencil's distributed schedule demands: asynchronous transfers, a
+buffer of depth two, and event notification. Not every backend does, and the event
+contract is where the mismatch is caught. The schedule's \texttt{img\_in} transfer
+asks for \texttt{async}, \texttt{buffer=2}, and \texttt{notify=event}; a backend
+whose capability declaration offers only synchronous, single-buffer, blocking
+transfers cannot honour it. When the same program is aimed at such a backend ---
+\texttt{mpi-blocking}, or the embedded backend of the next section --- compilation
+\emph{fails}, with a diagnostic naming each unmet demand: that the transfer requests
+asynchrony the backend does not support, a buffer depth beyond the backend's maximum
+of one, and an event notification mode the backend does not offer. This is not a
+runtime surprise or a silent downgrade to blocking behaviour --- which would make the
+same schedule mean different things on different backends --- but a compile-time
+rejection (\cref{sec:be-matrix}). A schedule and a backend compose only when the
+backend's capabilities are a superset of what the event list demands; here a capable
+sibling such as \texttt{pthreads-async} carries the schedule, and the synchronous
+backends carry the synchronous schedules of the same algorithm instead.
+
+\section{Bare metal: the embedded rendering}\label{sec:wt-embedded}
+
+The embedded backend renders an event list to a \texttt{no\_std} crate for a
+microcontroller, with no operating system, no heap, and no threads
+(\cref{sec:be-tier3}). Because its transport is a synchronous UART or DMA fabric, it
+declares only synchronous, single-buffer, blocking transfers, so --- as just shown ---
+it rejects the stencil's asynchronous distributed schedule. The same stencil
+\emph{algorithm} under a synchronous schedule --- one whose transfers drop the
+\texttt{async}, \texttt{buffer}, and event-notify directives in favour of plain
+blocking transfers --- lowers cleanly, and exhibits the third rendering of the event
+contract.
+
+Three things change relative to the hosted backends, and all three follow from the
+target rather than from the algorithm. First, storage: the heap-allocated
+\texttt{Vec} arrays of the hosted backends become fixed-size stack arrays
+(\texttt{[i32; 256]}), since there is no allocator. Second, the effectful kernels:
+where the hosted backends call \texttt{load\_image} and \texttt{save\_image} as
+ordinary functions, the embedded backend lowers them to calls on a
+\emph{hardware-abstraction trait} --- a Rust interface that each per-microcontroller
+shim implements concretely --- so loading the image becomes a region allocation and a
+DMA wait, and saving it becomes a DMA push to a peripheral followed by a wait. Third,
+the transport: a cross-worker \emph{push} becomes a \texttt{link\_push} on the trait,
+keyed by the transfer's sequence tag (the same compile-time transfer identity the MPI
+backend mapped to a message tag), and a \emph{wait} becomes a matching
+\texttt{link\_recv}; a \emph{barrier} becomes an interrupt-driven synchronisation
+hook. The generic backend emits against the trait once; each microcontroller family
+supplies a shim that binds these hooks to real DMA descriptors, interrupt vectors,
+and memory addresses.
+
+The \emph{compute kernel}, though, is the same: the pure \texttt{blur3} body is
+copied verbatim into the embedded crate, character for character. The loop that
+calls it differs from the hosted renderings --- this is the synchronous naive
+schedule, with no partitioning across workers and no reuse window, so the loop is an
+unpartitioned doubly-nested sweep over the whole image rather than the tiled,
+reuse-windowed per-band loop the distributed schedule produced. What does not change
+is the arithmetic each \texttt{blur3} call performs: the only kernel that changes
+\emph{form} is the effectful IO, because only it touches hardware. For a multi-worker embedded
+schedule the cross-worker pushes and waits become real inter-microcontroller UART
+transfers, and a boot order is computed so that each receiver enables its link
+before its sender transmits, because a bare-metal UART has no buffer to hold an
+early byte (\cref{sec:be-tier3}); the dedicated multi-microcontroller examples
+exercise that path under co-simulation and reproduce their reference output
+byte-exactly (\cref{sec:res-tiers}).
+
+\section{Why the three agree to the byte}\label{sec:wt-byteident}
+
+The three renderings just walked through differ in almost everything a systems
+programmer would notice --- threads versus processes versus bare-metal cores; ring
+buffers versus MPI messages versus UART links; a heap versus fixed arrays --- and yet
+the hosted two produce byte-identical output, and the embedded one reproduces the
+same reference bytes under co-simulation. The walkthrough makes the reason concrete
+rather than asserted. For the two backends running the \emph{same} (distributed)
+schedule, the compute that determines every output byte is emitted by one shared
+single-worker renderer, so it is the \emph{same source text}: the \texttt{blur3}
+calls and their reuse-buffer index arithmetic are character-for-character identical
+between the shared-memory and MPI programs. The embedded backend runs a different
+(synchronous) schedule and so emits a different loop, but the value-determining part
+--- the \texttt{blur3} kernel body --- is the same verbatim kernel. In every case that
+arithmetic is integer arithmetic, which is deterministic and reorder-independent by
+the language's design (\cref{sec:lang-limits}), so no backend's scheduling choices
+can perturb a value. What the backends \emph{do} differ in --- how a band is moved from
+one worker to another --- is value-preserving: a ring, an \texttt{MPI\_Ibsend}, and a
+\texttt{link\_push} each move the band as an opaque byte payload, none reinterpreting
+or recomputing it, and the soundness gate has already established that none overflows
+or deadlocks for this program. For this stencil, whose workers write disjoint output
+bands with no cross-worker reduction, identical compute over a value-preserving
+transport yields identical output --- where workers instead combine into a shared
+accumulator, byte-identity additionally requires the combine to be order-independent,
+which the integer-arithmetic restriction supplies (\cref{sec:res-bitidentity}). The
+cross-backend differential test of \cref{ch:validation} is the
+empirical check that this reasoning holds, and the walkthrough is why it holds.
