@@ -1075,13 +1075,6 @@ check-doc-cell-path-staleness:
 # use it.
 #
 # Allow-list rationale (cycle-262 additions; see the printf list below):
-#   - pthreads-sync/src/lib.rs — the shared single-worker main.rs emitter
-#     (consumed by pthreads-async / mp-tcp-bufsync / openmp-rs /
-#     mp-tcp-poll / mp-uds-event); bulk is the render_event Event-arm
-#     match. Pre-existing >1000 LoC (1032 pre-cycle-262); the cycle-262
-#     break wiring was kept OUT of it (moved to break_loop.rs per the
-#     architect P2-1 fold), so it is ~flat at 1035, NOT grown. Full
-#     sub-1000 split tracked by TASK-0437.01 (the pthreads-sync half).
 #   - nucleus-compiler/src/event.rs — the EventList contract types
 #     (Event / FireBinding / DataSlice / IterTile + serde); pre-existing
 #     >1000 LoC (1036 at HEAD), untouched by cycle-262. Split → TASK-0437.
@@ -1111,7 +1104,6 @@ check-mega-files:
         'nucleus/backends/pthreads-async/src/multi_worker.rs' \
         'nucleus/e2e/src/main.rs' \
         'nucleus/e2e/src/tests.rs' \
-        'nucleus/backends/pthreads-sync/src/lib.rs' \
         'nucleus/nucleus-compiler/src/event.rs' \
         | sort > $allow_f; \
     new_megafile=$(comm -23 $oversized_f $allow_f); \
