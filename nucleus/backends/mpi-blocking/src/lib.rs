@@ -127,7 +127,10 @@ pub struct EmitResult {
 /// 0/1 used workers → a single binary whose compute body is the *shared*
 /// single-worker renderer (byte-identical arithmetic to pthreads-sync),
 /// wrapped in MPI_Init/Finalize + a `rank == 0` guard. ≥2 used workers →
-/// a forward-linked [`EmitError::ContractGap`] (TASK-0045.01).
+/// one rank-dispatched binary (`match world.rank()`) whose `Push`/`Wait`
+/// lower to blocking MPI `Send`/`Recv` (tag = rendezvous id) and whose
+/// `Sync` lowers to a whole-world `MPI_Barrier` (TASK-0045.01; see
+/// [`multi_worker`] for the lowering and its scope limits).
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
