@@ -33,7 +33,7 @@ pub fn data_name(did: DataId, ctx: &RenderCtx<'_>) -> Result<String, EmitError> 
 }
 
 /// Is `kernel` declared `effectful`? Reads the codegen-contract
-/// [`NameSidecar`]'s [`KernelSig`](nucleus_compiler::sidecar::KernelSig)
+/// [`NameSidecar`]'s `KernelSig` (`nucleus_compiler::sidecar::KernelSig`)
 /// `purity` field (mirrored from `ResolvedKernel::purity` in
 /// `build_sidecar`; TASK-0049.10.01). A missing sig is a contract gap (a
 /// `KernelId` with no signature in the sidecar) — fail loud with context
