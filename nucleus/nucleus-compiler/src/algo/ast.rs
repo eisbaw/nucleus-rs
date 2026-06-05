@@ -126,23 +126,16 @@ pub enum Purity {
 /// algebraic identity instead of the pre-TASK-0343.01.01 hardcoded
 /// `wrapping_add`.
 ///
-/// # Scope (TASK-0343.01.01 — the zero-identity slice)
+/// # Identity per op
 ///
-/// Only the THREE identities that share the additive-identity ZERO are
-/// admitted here: `Sum` (`wrapping_add`), `Or` (`|`), `Xor` (`^`). All
-/// three need NO init change — the existing per-backend zero-init
-/// (`render_array_init` / `rust_scalar_zero`) is already correct
-/// (`0` is the identity for all three). They are also all
-/// associative + commutative ⇒ order-independent across worker arrival
-/// ⇒ bit-identical (PRD §10.1).
-///
-/// The NON-zero-identity ops (`min` → identity MAX, `max` → identity
-/// MIN, `and` → identity all-ones) require identity-aware init across
-/// the ~4 zero-init sites and are DEFERRED to TASK-0343.01.02. They
-/// are deliberately ABSENT from this enum — the parser rejects any
-/// `combine = <op>` whose `<op>` is not one of `sum|or|xor` with a
-/// typed error pointing at TASK-0343.01.02, so there is no silent
-/// fallthrough.
+/// `Sum`/`Or`/`Xor` share the additive identity ZERO; their init was
+/// already correct in TASK-0343.01.01. The NON-zero-identity ops
+/// `Min` (identity = type MAX), `Max` (identity = type MIN), `And`
+/// (identity = all-ones) were added in TASK-0343.01.02 and REQUIRE
+/// identity-aware accumulator pre-init (the init literal is chosen by
+/// `combine_identity_literal` in `backend-common`'s render layer, not
+/// the hardcoded zero). All six ops are associative + commutative ⇒
+/// order-independent across worker arrival ⇒ bit-identical (PRD §10.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CombineOp {
@@ -153,6 +146,14 @@ pub enum CombineOp {
     Or,
     /// Bitwise XOR `^` (identity 0).
     Xor,
+    /// `.min()` — minimum (identity = type MAX, so `min(MAX, x) == x`).
+    /// TASK-0343.01.02; requires identity-aware init.
+    Min,
+    /// `.max()` — maximum (identity = type MIN). TASK-0343.01.02.
+    Max,
+    /// Bitwise AND `&` (identity = all-ones, spelled `!0T`).
+    /// TASK-0343.01.02.
+    And,
 }
 
 /// `const NAME : SCALAR = EXPR ;`

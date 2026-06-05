@@ -102,7 +102,7 @@ use backend_common::check_frame::{
 };
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 use backend_common::render::{
-    data_name, render_array_init_for, render_const_expr, render_fire_args,
+    data_name, render_array_init_for_combine, render_const_expr, render_fire_args,
     render_fire_output_assign, render_loop_bounds, render_reuse_buf_decls,
     render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
 };
@@ -472,11 +472,17 @@ pub(crate) fn walk_fire_outputs(
     }
 }
 
-/// `vec![<zero>; product(dims)]` for an array, or the scalar zero
-/// literal for a scalar — sized + typed ENTIRELY from the sidecar
-/// (no AlgoIR). Local wrapper that adds a named-DataId contract-gap
-/// error around `backend_common::render::render_array_init_for`
-/// (TASK-0244 single source of truth for the string shape).
+/// `vec![<identity>; product(dims)]` for an array, or the scalar
+/// identity literal for a scalar — sized + typed ENTIRELY from the
+/// sidecar (no AlgoIR). Local wrapper that adds a named-DataId
+/// contract-gap error around
+/// `backend_common::render::render_array_init_for_combine` (TASK-0244
+/// single source of truth for the string shape). The identity is the
+/// data symbol's combine identity if it owns an accumulator fan-in
+/// (`combine_for_data`), else zero (TASK-0343.01.02). Even in the
+/// single-worker path a `combine=min|max|and` accumulator must
+/// pre-init to its identity to stay bit-identical to the multi-worker
+/// per-partition partials.
 fn render_array_init(did: DataId, sidecar: &NameSidecar, name: &str) -> Result<String, EmitError> {
     let ty = sidecar.data_type(did).ok_or_else(|| {
         EmitError::ContractGap(format!(
@@ -484,7 +490,10 @@ fn render_array_init(did: DataId, sidecar: &NameSidecar, name: &str) -> Result<S
              (build_sidecar should carry every ACFG data symbol)"
         ))
     })?;
-    Ok(render_array_init_for(ty))
+    Ok(render_array_init_for_combine(
+        ty,
+        sidecar.combine_for_data.get(&did).copied(),
+    ))
 }
 
 // `rust_scalar_zero`, `bin_op_str`, `render_int_expr`,

@@ -592,30 +592,23 @@ fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> +
     // (the name sits right after `kernel`), so the contextual parse is
     // unambiguous.
     //
-    // SCOPE (TASK-0343.01.01 zero-identity slice): only `sum|or|xor`
-    // are accepted here. `min|max|and` (non-zero identity, identity-
-    // aware init) are DEFERRED to TASK-0343.01.02 — they parse as a
-    // bare ident and are REJECTED below with a typed error pointing
-    // there, so there is no silent fallthrough.
+    // All six combine identities are accepted (TASK-0343.01.01 zero-
+    // identity ops sum|or|xor + TASK-0343.01.02 non-zero-identity ops
+    // min|max|and). The non-zero ops carry an identity-aware init
+    // (min->MAX, max->MIN, and->all-ones) resolved in the backend
+    // render layer.
     let combine_op = pad(ident()).try_map(|id, span| match id.node.as_str() {
         "sum" => Ok(CombineOp::Sum),
         "or" => Ok(CombineOp::Or),
         "xor" => Ok(CombineOp::Xor),
-        "min" | "max" | "and" => Err(Simple::custom(
-            span,
-            format!(
-                "kernel combine identity `{}` is a NON-ZERO-identity op (min->MAX, \
-                 max->MIN, and->all-ones); it needs identity-aware init and is \
-                 deferred to TASK-0343.01.02. TASK-0343.01.01 accepts only the \
-                 zero-identity ops `sum`, `or`, `xor`.",
-                id.node
-            ),
-        )),
+        "min" => Ok(CombineOp::Min),
+        "max" => Ok(CombineOp::Max),
+        "and" => Ok(CombineOp::And),
         other => Err(Simple::custom(
             span,
             format!(
                 "unknown kernel combine identity `{other}`; expected one of \
-                 `sum`, `or`, `xor` (TASK-0343.01.01)"
+                 `sum`, `or`, `xor`, `min`, `max`, `and`"
             ),
         )),
     });

@@ -82,6 +82,10 @@ fn collect_data_decls(
                  the embedded backend sizes fixed arrays from `dims`"
             ))
         })?;
+        // Zero (NOT combine-identity, TASK-0343.01.02): tier-3 embedded
+        // has no multi-worker accumulator fan-in path (single-MCU, no
+        // partition partials to host-combine), so no `combine=min|max|
+        // and` accumulator reaches here; the zero init is correct.
         if ty.is_scalar() {
             // A scalar datum (dims == []) → a single mutable binding.
             let scalar = backend_common::render::rust_scalar_type(&ty.scalar);

@@ -409,6 +409,10 @@ pub fn render_reuse_buf_decls(
             ))
         })?;
         let scalar_ty = rust_scalar_type(&ty.scalar);
+        // Zero (NOT combine-identity, TASK-0343.01.02): this is a
+        // circular-buffer reuse window, never an accumulator fan-in —
+        // every slot is fully overwritten by the prologue/loop before
+        // read, so the init value is dead. Stays zero deliberately.
         let zero = rust_scalar_zero(&ty.scalar);
         for g in gs {
             // 1. Buffer decl.

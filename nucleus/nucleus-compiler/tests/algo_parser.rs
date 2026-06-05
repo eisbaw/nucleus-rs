@@ -578,20 +578,25 @@ fn combine_named_kernel_still_legal_without_attribute() {
 }
 
 #[test]
-fn combine_attribute_min_max_and_rejected_pointing_at_followup() {
-    // min/max/and (non-zero identity, identity-aware init) are OUT OF
-    // SCOPE for TASK-0343.01.01 — rejected with a typed error pointing
-    // at the deferral task TASK-0343.01.02. No silent fallthrough.
-    for op in ["min", "max", "and"] {
-        let src = format!("kernel k : (i32, i32) -> i32 pure combine={op};\n");
-        let err = expect_err(&src);
-        assert!(
-            err.message.contains("TASK-0343.01.02"),
-            "`combine={op}` reject must point at the deferral task \
-             TASK-0343.01.02; got: {}",
-            err.message
-        );
-    }
+fn combine_attribute_min_max_and_parse() {
+    // TASK-0343.01.02: the non-zero-identity ops min/max/and now PARSE
+    // (the .01.01 rejection is gone). Identity-aware init lives in the
+    // backend render layer, not the parser.
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine=min;"),
+        Some(CombineOp::Min),
+        "`combine=min` must parse to CombineOp::Min"
+    );
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine = max ;"),
+        Some(CombineOp::Max),
+        "`combine = max` must parse to CombineOp::Max"
+    );
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine=and;"),
+        Some(CombineOp::And),
+        "`combine=and` must parse to CombineOp::And"
+    );
 }
 
 #[test]

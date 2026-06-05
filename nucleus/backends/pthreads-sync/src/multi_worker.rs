@@ -87,7 +87,7 @@ use backend_common::check_frame::{
 };
 use backend_common::elect_host_from_worker_names;
 use backend_common::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
-use backend_common::render::{rust_scalar_type, EmitError};
+use backend_common::render::{render_array_init_for_combine, rust_scalar_type, EmitError};
 
 // --------------------------------------------------------------------
 // Entry point
@@ -551,7 +551,11 @@ impl<'a> Plan<'a> {
                 ))
             })?;
             let rty = rust_type_of(ty);
-            let init = render_array_init(ty);
+            // Identity-aware: an accumulator-fan-in datum pre-inits to
+            // its combine identity (TASK-0343.01.02); every other datum
+            // sees `None` → zero, unchanged.
+            let init =
+                render_array_init_for_combine(ty, self.sidecar.combine_for_data.get(did).copied());
             writeln!(out, "{pad}let mut {name}: {rty} = {init};").ok();
         }
         if !pre_init.is_empty() {
@@ -653,24 +657,11 @@ fn rust_type_of(ty: &nucleus_compiler::algo::ResolvedType) -> String {
     }
 }
 
-fn render_array_init(ty: &nucleus_compiler::algo::ResolvedType) -> String {
-    if ty.is_scalar() {
-        rust_scalar_zero(&ty.scalar).to_string()
-    } else {
-        let total: usize = ty.dims.iter().copied().product();
-        let zero = rust_scalar_zero(&ty.scalar);
-        format!("vec![{zero}; {total}]")
-    }
-}
-
-fn rust_scalar_zero(t: &nucleus_compiler::algo::ScalarType) -> &'static str {
-    use nucleus_compiler::algo::ScalarType::*;
-    match t {
-        F32 | F64 => "0.0",
-        Bool => "false",
-        _ => "0",
-    }
-}
+// Pre-init array/scalar literal rendering is delegated to the shared
+// `backend_common::render::render_array_init_for_combine` (single
+// source of truth for the combine-identity init across all backends,
+// TASK-0343.01.02) — there is no longer a local `render_array_init` /
+// `rust_scalar_zero` copy that could drift.
 
 // Expression / index / bound rendering is delegated entirely to the
 // crate-level shared shims (`render_fire_args_pub`,

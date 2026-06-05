@@ -29,7 +29,7 @@ use crate::check_frame::{
     collect_count_check_frames, emit_count_guard_local, emit_count_reporter_struct,
     emit_count_static,
 };
-use crate::render::{render_array_init_for, rust_type_of, RenderCtxPub};
+use crate::render::{render_array_init_for_combine, rust_type_of, RenderCtxPub};
 use crate::tcp_plan::walkers::relay_phase_insertion_point;
 use crate::tcp_plan::{Plan, WirePrimitives};
 use crate::EmitError;
@@ -346,7 +346,11 @@ impl<W: WirePrimitives> Plan<'_, W> {
                 ))
             })?;
             let rty = rust_type_of(ty);
-            let init = render_array_init_for(ty);
+            // Identity-aware: an accumulator-fan-in datum pre-inits to
+            // its combine identity (TASK-0343.01.02); every other datum
+            // sees `None` → zero, unchanged.
+            let init =
+                render_array_init_for_combine(ty, self.sidecar.combine_for_data.get(did).copied());
             writeln!(out, "    let mut {name}: {rty} = {init};").ok();
         }
         if !pre_init.is_empty() {

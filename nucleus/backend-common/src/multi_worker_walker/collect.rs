@@ -470,8 +470,7 @@ pub fn check_accumulator_consistency(
                      otherwise silently assume `sum` (the pre-TASK-0343.01.01 hardcoded \
                      behaviour), which is unsound for a non-sum accumulator. Declare the \
                      identity on the kernel that writes `{name}` on its `<--` RHS: \
-                     `combine = sum|or|xor`. (min/max/and need identity-aware init and are \
-                     deferred to TASK-0343.01.02.)"
+                     `combine = sum|or|xor|min|max|and`."
                 )));
             }
         }

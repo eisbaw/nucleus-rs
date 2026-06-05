@@ -38,7 +38,7 @@ use crate::event_plan::walkers::relay_phase_insertion_point;
 use crate::event_plan::{EventTransport, Plan};
 use crate::multi_worker_walker::{self as walker, WalkerCtx};
 use crate::project_skeleton::multi_binary::render_run_sh_multi;
-use crate::render::{render_array_init_for, rust_type_of};
+use crate::render::{render_array_init_for_combine, rust_type_of};
 use crate::EmitError;
 
 impl<T: EventTransport> Plan<'_, T> {
@@ -140,7 +140,11 @@ impl<T: EventTransport> Plan<'_, T> {
                 ))
             })?;
             let rty = rust_type_of(ty);
-            let init = render_array_init_for(ty);
+            // Identity-aware: an accumulator-fan-in datum pre-inits to
+            // its combine identity (TASK-0343.01.02); every other datum
+            // sees `None` → zero, unchanged.
+            let init =
+                render_array_init_for_combine(ty, self.sidecar.combine_for_data.get(did).copied());
             writeln!(out, "    let mut {name}: {rty} = {init};").ok();
         }
         if !pre_init.is_empty() {

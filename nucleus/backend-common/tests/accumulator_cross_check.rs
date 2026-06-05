@@ -228,8 +228,8 @@ fn accumulator_rejects_lhs_in_rhs_accumulator_without_combine_identity() {
                  got: {msg}"
             );
             assert!(
-                msg.contains("TASK-0343.01.02"),
-                "reject must point min/max/and at the follow-up TASK-0343.01.02; got: {msg}"
+                msg.contains("sum|or|xor|min|max|and"),
+                "reject must list the accepted combine ops so it is actionable; got: {msg}"
             );
         }
         other => panic!("expected EmitError::AccumulatorShapeMismatch; got: {other:?}"),

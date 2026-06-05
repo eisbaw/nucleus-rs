@@ -596,18 +596,18 @@ impl CombineForm {
 /// silently assumed `sum`; now it fails LOUD with `EmitError::ContractGap`.
 /// (The driver gate `check_accumulator_consistency` catches this
 /// earlier, but the render path stays fail-loud as a defence in depth.)
-/// `min`/`max`/`and` (non-zero identity, identity-aware init) cannot
-/// reach here — the parser rejects them up front pointing at
-/// TASK-0343.01.02 — so there is no silent fallthrough for them either.
+/// `min`/`max`/`and` (non-zero identity) are now accepted
+/// (TASK-0343.01.02); their accumulator pre-init carries the matching
+/// identity (`combine_identity_literal`), so there is no silent
+/// fallthrough.
 ///
 /// # Scalar-type carve-out
 ///
 /// Returns `EmitError::ContractGap` for floats / bool (filed as
 /// TASK-0343 follow-up): float addition is not associative-stable
 /// (PRD §10.1) and bool has no canonical numeric combine in v2 today.
-/// The carve-out applies to `sum`; the bitwise `or`/`xor` ops are
-/// integer-only by their emit form and hit the same integer-type
-/// gate.
+/// The carve-out applies to all six ops uniformly — they are
+/// integer-only and hit the same integer-type gate.
 fn render_accumulate_assign(
     sidecar: &NameSidecar,
     data: DataId,
@@ -621,15 +621,14 @@ fn render_accumulate_assign(
              owning kernel declares NO `combine = <op>` identity. Pre-TASK-0343.01.01 \
              this arm silently assumed `sum`; it now fails loud. Declare a combine \
              identity on the kernel that writes `{name}` on its `<--` RHS \
-             (`combine = sum|or|xor`). min/max/and need identity-aware init and are \
-             deferred to TASK-0343.01.02."
+             (`combine = sum|or|xor|min|max|and`)."
         ))
     })?;
     let form = combine_form_for_scalar(op, &ty.scalar)?;
     if ty.dims.is_empty() {
         // Scalar accumulator. The pre-init in each backend has set
-        // `<name>` to the combine identity (0 for sum/or/xor; see
-        // `render_array_init` / `rust_scalar_zero`).
+        // `<name>` to the combine identity (0 for sum/or/xor; MAX/MIN/
+        // all-ones for min/max/and; see `combine_identity_literal`).
         Ok(format!("{};", form.emit(name, rhs)))
     } else {
         let total: usize = ty.dims.iter().copied().product();
@@ -645,8 +644,9 @@ fn render_accumulate_assign(
 
 /// Resolve the [`CombineForm`] for `(op, scalar)`. Integer-only:
 /// float / bool surface as `EmitError::ContractGap` pointing at the
-/// TASK-0343 float/bool follow-up. `sum` → `wrapping_add` (method),
-/// `or` → `|`, `xor` → `^` (operators).
+/// TASK-0343 float/bool follow-up. `sum` → `wrapping_add`, `min` →
+/// `min`, `max` → `max` (methods); `or` → `|`, `xor` → `^`, `and` →
+/// `&` (operators).
 fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm, EmitError> {
     let integer = matches!(
         t,
@@ -678,5 +678,12 @@ fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm,
         CombineOp::Sum => CombineForm::Method("wrapping_add"),
         CombineOp::Or => CombineForm::Operator("|"),
         CombineOp::Xor => CombineForm::Operator("^"),
+        // TASK-0343.01.02 non-zero-identity ops. `min`/`max` use the
+        // inherent `Ord` methods; `and` is the bitwise operator. The
+        // accumulator's pre-init must already hold the matching
+        // identity (MAX / MIN / all-ones) — see `combine_identity_literal`.
+        CombineOp::Min => CombineForm::Method("min"),
+        CombineOp::Max => CombineForm::Method("max"),
+        CombineOp::And => CombineForm::Operator("&"),
     })
 }

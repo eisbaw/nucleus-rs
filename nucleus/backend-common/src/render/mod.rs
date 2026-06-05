@@ -94,5 +94,6 @@ pub use reuse::{
     render_reuse_per_iter_update, render_reuse_per_iter_update_pub,
 };
 pub use types::{
-    render_array_init_for, rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of,
+    combine_identity_literal, render_array_init_for, render_array_init_for_combine,
+    rust_scalar_type, rust_scalar_type_pub, rust_scalar_zero, rust_type_of,
 };

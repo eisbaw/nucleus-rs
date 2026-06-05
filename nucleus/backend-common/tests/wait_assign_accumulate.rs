@@ -384,6 +384,26 @@ fn accumulate_emit_array_op_strings_per_combine_op() {
          histogram[_k] = histogram[_k] ^ _tmp[_k]; } }",
         "xor must emit the bitwise `^` OPERATOR form"
     );
+    // TASK-0343.01.02 non-zero-identity ops. min/max are the `.min`/
+    // `.max` METHOD forms; `and` is the bitwise `&` OPERATOR form.
+    assert_eq!(
+        render_array_accumulate(CombineOp::Min),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k].min(_tmp[_k]); } }",
+        "min must emit the `.min(...)` METHOD form"
+    );
+    assert_eq!(
+        render_array_accumulate(CombineOp::Max),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k].max(_tmp[_k]); } }",
+        "max must emit the `.max(...)` METHOD form"
+    );
+    assert_eq!(
+        render_array_accumulate(CombineOp::And),
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k] & _tmp[_k]; } }",
+        "and must emit the bitwise `&` OPERATOR form"
+    );
 }
 
 #[test]
@@ -419,6 +439,19 @@ fn accumulate_emit_scalar_op_strings_per_combine_op() {
         render_scalar(CombineOp::Xor),
         "histogram = histogram ^ slot_0.wait();"
     );
+    // TASK-0343.01.02 non-zero-identity scalar arms.
+    assert_eq!(
+        render_scalar(CombineOp::Min),
+        "histogram = histogram.min(slot_0.wait());"
+    );
+    assert_eq!(
+        render_scalar(CombineOp::Max),
+        "histogram = histogram.max(slot_0.wait());"
+    );
+    assert_eq!(
+        render_scalar(CombineOp::And),
+        "histogram = histogram & slot_0.wait();"
+    );
 }
 
 #[test]
@@ -453,9 +486,9 @@ fn accumulate_emit_no_combine_declared_returns_contract_gap() {
     match err {
         EmitError::ContractGap(msg) => {
             assert!(
-                msg.contains("combine") && msg.contains("TASK-0343.01.02"),
+                msg.contains("combine") && msg.contains("sum|or|xor|min|max|and"),
                 "no-combine ContractGap must mention the missing `combine` identity \
-                 AND point min/max/and at TASK-0343.01.02; got: {msg}"
+                 AND list the accepted ops; got: {msg}"
             );
         }
         other => panic!("expected ContractGap; got: {other:?}"),
