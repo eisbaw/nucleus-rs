@@ -1,0 +1,291 @@
+\chapter{A Compilation, End to End}\label{ch:walkthrough}
+% Inserted after the Backends chapter; chapter numbering is label-based, so
+% downstream chapters renumber automatically. Content cycle: C10.
+% Part 1 (this file, sections up to the EventList) traces one program from
+% source through every IR stage to the per-worker event lists. Part 2 (the
+% backend-lowering sections) shows the same event lists rendered to three
+% backends.
+
+The previous chapters described the language, the pipeline, and the backends one
+concern at a time. This chapter puts them together. It takes a single program ---
+the $3\times3$ stencil of \cref{lst:algo} under the distributed schedule of
+\cref{lst:sched}, already familiar from \cref{sec:lang-example} --- and follows it
+through every stage of the compiler, from the two source files to the per-worker
+event lists and then, in the second half, to generated code on three different
+backends. Nothing here is new machinery; everything is a concrete instance of a
+pass defined in \cref{ch:architecture}. The purpose is to make the abstract
+pipeline legible by watching one program move through it, with the actual
+intermediate forms shown at each step.
+
+The stencil is a good specimen because it is small enough to draw in full yet
+exercises the parts of the compiler that do real work: it has a neighbourhood
+access pattern that forces halo inference, an outer loop that is partitioned across
+workers, an inner loop that is both tiled and reuse-optimised, and two transfers
+with different IO semantics. Every figure and every intermediate form in this
+chapter was produced by the shipping compiler on this exact input; the generated
+code in the second half is reproduced from its output verbatim.
+
+\section{The two inputs}\label{sec:wt-inputs}
+
+Recall the division of labour. The algorithm file (\cref{lst:algo}) declares two
+$16\times16$ arrays of 32-bit integers, \texttt{img\_in} and \texttt{img\_out};
+three kernels --- a side-effecting (\emph{effectful}) \texttt{load\_image}, a pure
+\texttt{blur3} taking nine neighbours, and an effectful \texttt{save\_image} (the
+purity distinction is made precise in \cref{sec:wt-semantics}); and a dataflow body that
+loads the image, writes each interior \texttt{img\_out[y][x]} from the nine
+\texttt{img\_in} neighbours around it, and saves the result. It says nothing about
+workers, transfers, tiling, or buffering.
+
+The distributed schedule (\cref{lst:sched}) supplies exactly those things, and only
+those things. It declares five workers --- a \texttt{host} and four compute workers
+\texttt{w0}--\texttt{w3}; places \texttt{load\_image} and \texttt{save\_image} on
+the host and \texttt{blur3} on the four compute workers; partitions the outer
+\texttt{y} loop into row bands across them; tiles and reuse-optimises the inner
+\texttt{x} loop; and asks that \texttt{img\_in} be streamed asynchronously with a
+two-deep, event-notified buffer while \texttt{img\_out} is written back
+synchronously. The compiler's task is to reconcile these two files into one
+deterministic, sound, per-worker execution.
+
+\section{The algorithm sublanguage, precisely}\label{sec:wt-semantics}
+
+Before tracing the passes, it is worth stating precisely what the algorithm means,
+because several later passes are sound only because of these semantics
+(\cref{sec:lang-algorithm} introduced them; here they are pinned down on the
+example).
+
+\paragraph{Shaped, statically-sized arrays.} Every array has a shape fixed at
+compile time. The constants \texttt{H} and \texttt{W} are evaluated to $16$ during
+lowering, so \texttt{img\_in} and \texttt{img\_out} have fully concrete type
+\texttt{i32[16][16]}. There are no runtime-sized arrays, and every index expression
+can therefore be reasoned about as an affine function of the loop variables.
+
+\paragraph{Shape-typed kernels with declared purity.} A kernel's signature gives
+the shapes of its arguments and result, and a purity. \texttt{blur3} is
+\emph{pure}: its result depends only on its arguments, so the compiler is free to
+reorder, duplicate, or eliminate its calls. The reuse pass relies on the
+elimination licence --- carrying a previously-read value over rather than re-reading
+it --- and the partition pass relies on replication: because a pure kernel has no
+hidden shared state, each worker may run it independently over its own band.
+\texttt{load\_image} and \texttt{save\_image} are
+\emph{effectful}: their relative order within a basic block is preserved and they
+are never duplicated, because they touch the outside world. The kernel bodies live
+in a sibling Rust file and are checked against these signatures before scheduling
+begins; the algorithm sublanguage itself sees only the signatures.
+
+\paragraph{Single assignment.} Each interior \texttt{img\_out[y][x]} is written
+exactly once, and the lowering rejects a program that assigns the same datum twice
+in one scope. Single assignment makes each datum's producer \emph{unique}; together
+with the affine, static indices described below, that producer is also statically
+\emph{identifiable}. At link time the compiler uses the coarser of these two facts
+--- which kernel is placed on which worker --- to compute, for every array, its
+producing and consuming worker sets; the partition pass later refines this to which
+worker owns which cell.
+
+\paragraph{Affine loops and the static firing model.} The loop bounds
+(\texttt{1..H-1}) and every array index (\texttt{y-1}, \texttt{x+1}, and so on) are
+affine in the loop variables with compile-time-constant coefficients. There is no
+data-dependent control flow and no data-dependent trip count. As a consequence the
+entire \emph{firing schedule} --- which kernel instances run, in what order, reading
+and writing which array cells --- is determined statically, before any value is
+known. This is the property that the entire middle-end leans on: because the firing
+order is fixed by the program text rather than by runtime data, the compiler can
+reason about decomposition, transfers, and soundness once, at compile time. That
+answer --- which kernel instances fire, what data moves where, and whether the
+coordination is bounded and deadlock-free --- is a property of the program text and
+therefore holds for every input, independent of the values being computed; it is a
+claim about the schedule and its coordination, not about the numerical results. The
+price is the restricted class
+(\cref{sec:lang-limits}); the return is everything that follows in this chapter.
+
+\section{Parsing and lowering to the algorithm IR}\label{sec:wt-algoir}
+
+The two files are parsed independently into abstract syntax trees and then lowered
+into typed intermediate representations. Lowering the algorithm performs the work
+the semantics above describe: it evaluates the constants (\texttt{H}, \texttt{W}
+$\rightarrow 16$), resolves every array and kernel to a fully concrete shape-typed
+form, checks the single-assignment discipline, and checks that each effectful
+statement calls an effectful kernel. The result is the algorithm IR: a map of
+resolved constants, a map of resolved data symbols with their concrete types, a map
+of resolved kernels with their signatures and purity, and the dataflow body as a
+list of statements --- a load, a doubly-nested loop whose innermost statement writes
+\texttt{img\_out} from nine \texttt{img\_in} reads, and a save. Crucially, the
+algorithm IR still contains no notion of a worker, a transfer, or a buffer; it is
+the \emph{what}, fully typed, and nothing else.
+
+The schedule is lowered in parallel into the schedule IR, which resolves the worker
+declarations, the placements, the loop directives (the \texttt{partition} on
+\texttt{y}; the \texttt{block} and \texttt{reuse} on \texttt{x}), and the two
+transfer policies. At this point the two IRs are independent objects that have
+never referred to each other.
+
+\section{Linking: binding the algorithm to the schedule}\label{sec:wt-link}
+
+Linking is where the two halves first meet (\cref{sec:arch-link}). It produces the
+linked IR, which holds both source IRs together with the cross-references the
+compiler derives by reconciling them: the placement of each kernel onto its worker
+set, and, for each array, its producing worker set and its consuming worker sets.
+For the stencil this resolution is the first concrete sign of the decomposition.
+\texttt{load\_image} and \texttt{save\_image} bind to \texttt{host}; \texttt{blur3}
+binds to the set $\{\texttt{w0},\texttt{w1},\texttt{w2},\texttt{w3}\}$.
+\texttt{img\_in} is therefore produced on the host and consumed on all four compute
+workers; \texttt{img\_out} is produced on the compute workers and consumed on the
+host. Those producer/consumer facts are precisely the data movements the later
+transfer pass must synthesise, but linking only records them; it inserts nothing
+yet. Linking also enforces completeness: every kernel must be placed, and every
+cross-worker producer/consumer pair must be reconcilable, or linking fails with a
+diagnostic.
+
+\section{The ACFG and its transforms}\label{sec:wt-acfg}
+
+From the linked IR the compiler builds the application control-flow graph
+(\cref{sec:arch-acfg}), a tree whose nodes are operations, sequences, and loops
+(\cref{fig:wt-acfg}). For the stencil the initial tree is a sequence of three
+items: an operation firing \texttt{load\_image} on the host; a repeat over
+\texttt{y} containing a repeat over \texttt{x} containing an operation that fires
+\texttt{blur3}; and an operation firing \texttt{save\_image} on the host. Each
+operation carries a small dataflow record naming the arrays it reads and writes and
+the index expressions it uses --- the nine \texttt{img\_in} accesses and the one
+\texttt{img\_out} write, recorded as affine index expressions, which the inference
+passes will read.
+
+The schedule's transforms are then applied to this tree, in the fixed order the
+pipeline defines, each pass either rewriting the tree or annotating it. Throughout,
+loop and band ranges are written half-open: $a..b$ denotes the integers
+$a, a{+}1, \dots, b{-}1$.
+
+\begin{itemize}
+  \item \textbf{Tiling.} The \texttt{block=64} directive on \texttt{x} strip-mines
+        the inner loop into a tile loop over an outer tile index and an intra-tile
+        loop. The interior \texttt{x} range is $1..15$, of length 14; since the
+        block size 64 exceeds it, there is a single tile here. The structure is
+        nonetheless materialised, so the same code path handles the partial-tile
+        case that arises when the block does not divide the range.
+  \item \textbf{Partitioning.} The \texttt{partition=rows} directive on \texttt{y}
+        is consumed by the row-band pass, which overrides each compute worker's
+        \texttt{y} range with its band. The outer range $1..15$ likewise has length
+        14, which does not divide evenly by four; the compiler distributes the
+        remainder with a floor-with-spillover policy, handing
+        $\lceil 14/4 \rceil = 4$ rows to the first two workers and
+        $\lfloor 14/4 \rfloor = 3$ to the last two, giving the contiguous bands
+        $1..5$, $5..9$, $9..12$, $12..15$ (\cref{fig:wt-bands}). The partition passes for
+        per-worker ranges, row bands, and two-dimensional grids are mutually
+        exclusive alternatives selected by the directive; here only the row-band
+        pass fires.
+  \item \textbf{Halo inference.} The halo pass reads \texttt{blur3}'s access
+        pattern and finds that each output row $y$ reads input rows $y-1$, $y$, and
+        $y+1$ (and analogously $x-1, x, x+1$): offsets of $-1$, $0$, $+1$ in both
+        dimensions, recognised because each index is affine in the loop variable.
+        It records a halo of width one on \texttt{img\_in} along the partitioned
+        \texttt{y} axis. This is the fact that makes a row-band partition correct:
+        a worker computing rows $1..5$ needs input rows $0..6$ --- its band plus one
+        halo row above and below.
+  \item \textbf{Reuse inference.} The \texttt{reuse} directive on \texttt{x} is
+        discharged by the reuse pass, which recognises that as \texttt{x} advances
+        by one the three-wide window of \texttt{img\_in} reads shifts by one, so two
+        of every three reads can be carried over. It annotates the loop with a
+        three-slot circular delay line per input row. This is the optimisation
+        earlier iterations of the system could not express; here it falls out of a
+        one-word directive and the access pattern.
+\end{itemize}
+
+After these passes the ACFG is no longer a faithful echo of the source loop nest:
+it encodes four per-worker bands, a tiled and reuse-windowed inner loop, and the
+knowledge that \texttt{img\_in} carries a one-row halo --- yet still contains no
+transfers or synchronisations. Those are injected next.
+
+\section{Injecting synchronisation and transfers}\label{sec:wt-inject}
+
+Two final middle-end passes turn the decomposition implied by the ACFG into
+explicit coordination: the synchronisation pass and the transfer pass
+(\cref{sec:arch-transfer}). The synchronisation pass inserts the barriers that
+bracket the distributed phase: one before the compute workers begin, after the host
+has the input ready, and one after they finish, before the host collects the
+output. Each barrier names its participants --- here all five workers --- and is
+given a stable \emph{sync tag}, a compile-time identifier shared by every
+participant of that barrier (\cref{sec:arch-petri}), so the projection can match the
+same barrier across workers without a global walk.
+
+The transfer pass then consumes the producer/consumer facts from linking and the
+halo width from inference, and synthesises matched send/receive pairs. For
+\texttt{img\_in} it emits, for each compute worker, a transfer from the host
+carrying that worker's band \emph{plus its halo rows}: worker \texttt{w0}, which
+computes rows $1..5$, receives input rows $0..6$; worker \texttt{w1}, computing
+$5..9$, receives rows $4..10$; and so on. These transfers carry the schedule's
+\texttt{img\_in} policy --- asynchronous, two-deep buffer, event notification. For
+\texttt{img\_out} it emits, for each compute worker, a transfer back to the host
+carrying just that worker's band of results, under the synchronous policy (a
+single-deep, blocking channel: the host receives each band before the worker could
+send another). The result is the fully elaborated ACFG: decomposition, halos, synchronisation, and IO
+semantics all explicit, and still not one line of backend-specific code.
+
+\section{The Petri net and the soundness gate}\label{sec:wt-net}
+
+The elaborated ACFG is now lowered to a Petri net and checked
+(\cref{sec:arch-gate,fig:wt-net}). In a Petri net, \emph{places} hold tokens up to a
+capacity and \emph{transitions} fire by consuming tokens from their input places and
+producing tokens in their output places. Here places model the things that hold
+state --- each array region a worker owns, each transfer channel, and each barrier
+--- and transitions model the things that happen: the host's \texttt{load\_image} firing,
+the four \texttt{img\_in} sends and their matching receives, each worker's
+\texttt{blur3} firings, the two barriers, the four \texttt{img\_out} sends and
+receives, and the host's \texttt{save\_image} firing. A channel place has a finite
+capacity drawn from the transfer's buffer policy --- two for the asynchronous
+\texttt{img\_in} channels, one for the synchronous \texttt{img\_out} channels.
+
+The gate runs its three checks in a fixed order (\cref{sec:arch-gate}). It first
+confirms \emph{conflict-freedom}: no place offers a token to two competing
+consumers. This is the load-bearing precondition. For the restricted net class this
+language produces --- which by construction has no data-dependent token routing ---
+conflict-freedom removes the only remaining source of choice, so every firing order
+is a permutation of one partial order and reaches the same states; that is what
+makes a single replayed order representative of all of them. The argument is
+specific to this class and is not a general Petri-net property. On that basis the
+gate derives one deterministic firing order and replays it, checking
+\emph{boundedness} --- no channel place ever exceeds the capacity its buffer policy
+sets --- and \emph{deadlock-freedom} --- no required transition is left permanently
+un-fireable, whether because an input place never receives its token or because a
+bounded output place stays full in a cyclic wait. For the stencil the net passes:
+the two-deep input buffers never overflow, because the host pushes exactly one band
+into each per-worker channel before reaching the barrier, well within the two-deep
+capacity; and the barriers admit a completing order. Had the schedule
+asked for a single-deep buffer where two were needed, or arranged a cyclic wait,
+the gate would have rejected the program here, at compile time, naming the
+offending place or transition --- not produced code that hangs. This check runs on
+this program, as on every program, before any code is emitted.
+
+\section{Projection to per-worker event lists}\label{sec:wt-events}
+
+The last middle-end step projects the elaborated ACFG into one totally-ordered
+event list per worker (\cref{sec:arch-projection,fig:wt-events}). The walk is
+deterministic, so the lists are reproducible byte-for-byte across compilations. The
+events are drawn from a small fixed vocabulary --- fire a kernel, push a data region
+to a worker, wait for a region from a worker, participate in a barrier, and loop ---
+and they are the \emph{sole} interface to the backend: everything the decomposition
+decided is encoded in them, and nothing else crosses the line.
+
+For the stencil the host's list reads: fire \texttt{load\_image}; push
+\texttt{img\_in} to \texttt{w0}, \texttt{w1}, \texttt{w2}, \texttt{w3}; barrier;
+barrier; wait for \texttt{img\_out} from \texttt{w0}, \texttt{w1}, \texttt{w2},
+\texttt{w3}; fire \texttt{save\_image}. The host stages all four input bands into
+the buffered channels, then the two barriers bracket the phase during which it has
+nothing to do, then it collects the four output bands. The two barriers are the
+same pre- and post-compute synchronisations of \cref{sec:wt-inject}: the first
+releases the workers once every input band has been pushed, the second waits until
+every worker has finished and pushed its output. Each compute worker's list is the
+mirror image. Worker \texttt{w0}'s reads: barrier; wait for \texttt{img\_in} from
+the host; a loop over its band rows $1..5$, whose body is the tiled, reuse-windowed
+inner loop firing \texttt{blur3}; push \texttt{img\_out} to the host; barrier. The
+loop event carries the iteration structure rather than an unrolled body, so a
+backend emits a loop construct rather than one replicated body per iteration,
+keeping generated code compact regardless of trip count.
+
+These event lists are the output of the middle end and the input to every backend.
+The same host-and-four-workers lists just described are what the next sections lower
+to shared-memory threads, to MPI ranks, and to bare-metal microcontrollers --- the
+same events, three very different renderings.
+
+% ---------------------------------------------------------------------------
+% Part 2 (TASK-0451.10.02): IR -> backend lowering. The sections below take the
+% per-worker event lists produced above and show them rendered to pthreads, MPI,
+% and embedded code. Written in the next content cycle.
+% ---------------------------------------------------------------------------
