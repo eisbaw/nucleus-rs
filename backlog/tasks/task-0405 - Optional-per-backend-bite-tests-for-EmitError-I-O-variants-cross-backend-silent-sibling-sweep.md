@@ -3,11 +3,11 @@ id: TASK-0405
 title: >-
   Optional: per-backend bite tests for EmitError I/O variants (cross-backend
   silent-sibling sweep)
-status: To Do
+status: In Progress
 assignee:
   - '@mark'
 created_date: '2026-06-01 06:21'
-updated_date: '2026-06-01 10:26'
+updated_date: '2026-06-05 12:52'
 labels:
   - hardening
   - testing
@@ -29,4 +29,6 @@ LOW / OPTIONAL: the sites are mechanical identical copies and the grep audit alr
 
 <!-- SECTION:NOTES:BEGIN -->
 Forward-carried from TASK-0410/0411 (cycle-237): the just-ci gate does NOT build docs, so any change touching a doc-linked symbol (removing/narrowing a pub item, removing an error variant referenced by [`...`]) must run cargo doc --workspace --no-deps before/after and diff the generated-N-warning sum (baseline 10). For bite/sibling-sweep tasks that ADD tests this is usually moot, but if the work removes or renames a symbol carrying an intra-doc-link, add the cargo-doc diff to the gate.
+
+Implementation plan (cycle): TEST-ONLY. Add 3 bite tests x 9 sibling backends (27 total) for EmitError::{KernelsReadFailed,OutputCreateFailed,WriteFailed}, mirroring canonical pthreads-sync/tests/emit.rs TASK-0404 pattern. Fixture: test_common::lower_for_test on 01-elementwise-add/naive (single-worker reaches all 3 fs sites before any ContractGap). Scratch via test_common::unique_scratch_dir. Per-backend first-write (WriteFailed target) discovered by reading each emit(): pthreads-async/openmp-rs/embedded-pattern = out/Cargo.toml; mp-tcp-{bufsync,event,poll}/mp-uds-event/mpi-{blocking,nonblocking} = out/src/kernels.rs. New tests/ dirs for mpi-blocking, mpi-nonblocking, embedded-pattern. embedded-pattern returns MultiEmitResult and emits no_std lib (single-worker project_dir=out_dir). Will teeth-check by breaking one .map_err then reverting, run full just ci once, hold e2e baseline 483/420/0/63/0.
 <!-- SECTION:NOTES:END -->
