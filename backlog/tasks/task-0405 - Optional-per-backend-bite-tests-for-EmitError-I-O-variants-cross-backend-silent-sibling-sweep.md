@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@mark'
 created_date: '2026-06-01 06:21'
-updated_date: '2026-06-05 13:34'
+updated_date: '2026-06-05 13:55'
 labels:
   - hardening
   - testing
@@ -48,4 +48,10 @@ FORWARD-CARRIED LESSONS for the next person:
 4. CONFIRMED: mpi-blocking / mpi-nonblocking / embedded-pattern are NORMAL host std crates; just ci builds+runs these tests WITHOUT any MPI/embedded toolchain (the mpi crate dep lives only in the GENERATED project). All three already had test-common + nucleus-compiler as dev-dependencies.
 5. Uniform fixture that reaches all 3 fs sites with real teeth: test_common::lower_for_test on 01-elementwise-add/naive (single-worker; never trips a multi-worker ContractGap before the I/O), + test_common::unique_scratch_dir for scratch (project convention; never hand-roll target.join+remove_dir_all).
 6. just ci output piped through tail truncates the real-e2e totals (only the negative NUC_XBACKEND_NEGATIVE arm survives, which shows fail:21 by DESIGN - 57 corrupted/18 detected). Do not misread that as a regression; re-run standalone just e2e for the true baseline line. Gate exit 0 is authoritative.
+
+Cycle orchestrator INDEPENDENT review gate (parallel, read-only) — both GO:
+- qa-test-runner: GO. Independently RE-RAN (not implementer-claimed): just build clean; clippy --workspace --all-targets clean (9 new test crates freshly checked, no doc_lazy_continuation/needless_borrow); just test 1432/0/3 dev; just test-release 1430/0/3; just e2e 483/420/0/63/0 x2 (non-flaky). Sampled 4 backends incl mpi-blocking/mpi-nonblocking/embedded-pattern: each emit_io_errors.rs reports exactly 3 tests, run + pass with real typed-EmitError assertions (not 0-case no-ops). Zero production src/ change; tree clean (only pre-existing cruft/*).
+- mped-architect: GO, no P1/P2. Verified NON-VACUOUS per-backend (fixture = 01-elementwise-add/naive, workers={host} = single-worker, reaches fs-I/O before any branch); WriteFailed first-write targets correct vs actual emit() (Cargo.toml: pthreads-async/openmp-rs/embedded-pattern; src/kernels.rs: 4 mp-* + 2 mpi-*); SITE grep-audit independently re-confirmed clean (all 10 backends .map_err(EmitError::...)/write_file()->WriteFailed, none unwrap/expect/?-on-raw-io); teeth-check credible (commit has no src/ file; assertions pin variant+path); docs no overclaim.
+- Architect P3 (informational) folded back IN-THREAD by orchestrator (commit e211713): mpi-blocking emit() fn-doc was a STALE DOC-LIE — claimed >=2-worker -> EmitError::ContractGap stub, but TASK-0045.01 landed the real SPMD arm (lib.rs:167 render_main_rs_multi) and the module header already described it correctly. Rewrote fn-doc to match reality + mpi-nonblocking sibling style. Verified mpi-nonblocking sibling fn-doc ALREADY correct (NOT a silent-sibling pair). Doc-only; clippy clean; cargo doc shows only the pre-existing benign "links to private item multi_worker" convention warning (just ci does not build docs).
+DELIVERABLE: 27 bite tests (9 backends x 3 I/O EmitError variants), all real-teeth-verified, grep-audit clean (no silent-sibling defect found, no follow-up needed), full just ci GREEN, e2e baseline held 483/420/0/63/0. Commits: de699b6 (tests) + e211713 (P3 doc fix). TASK-0405 stays DONE.
 <!-- SECTION:NOTES:END -->
